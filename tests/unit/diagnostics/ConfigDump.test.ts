@@ -30,7 +30,7 @@ import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Config } from '../../../src/config/Config.js';
 import type { ConfigObject, ConfigValue } from '../../../src/config/HoconParser.js';
-import { configDumpLines } from '../../../src/diagnostics/ConfigDump.js';
+import { configDumpLines, resolveConfigLeaves, secretLayerPaths } from '../../../src/diagnostics/ConfigDump.js';
 import { DiagnosticsOptions } from '../../../src/diagnostics/DiagnosticsOptions.js';
 import { CONFIG_REDACTED } from '../../../src/util/Constants.js';
 import { RecordingLogger, type RecordedLog } from '../../util/RecordingLogger.js';
@@ -200,21 +200,21 @@ describe('configDumpLines — the text the dump writes', () => {
     expect(text).not.toContain('hunter2');
   });
 
-  test('a field inside a list is read by its head word, and a boolean is never withheld', () => {
-    // The same three properties the path rule has: the head word decides,
+  test('a field inside a list is read by every word of its name, and a boolean is never withheld', () => {
+    // The same three properties the path rule has: any whole word decides,
     // camel humps split, and a boolean carries nothing whatever it is called.
     const text = configDumpLines(layered({
       'my-app': {
         upstreams: [
-          { host: 'db-2', 'api-key': 'sk-live-3', 'key-prefix': 'orders:', passivation: 'idle' },
-          { host: 'db-3', clientSecret: 'hunter3', auth: false },
+          { host: 'db-2', 'api-key': 'sk-live-3', 'auth-header': 'Bearer y', passivation: 'idle' },
+          { host: 'db-3', clientSecret: 'hunter3', 'key-prefix': 'orders:', auth: false },
         ],
       },
     }));
 
     expect(printed(text, 'my-app.upstreams')).toBe(
-      '[{"host":"db-2","api-key":"<redacted>","key-prefix":"orders:","passivation":"idle"},'
-      + '{"host":"db-3","clientSecret":"<redacted>","auth":false}]',
+      '[{"host":"db-2","api-key":"<redacted>","auth-header":"<redacted>","passivation":"idle"},'
+      + '{"host":"db-3","clientSecret":"<redacted>","key-prefix":"<redacted>","auth":false}]',
     );
   });
 
@@ -350,6 +350,17 @@ describe('configDumpLines — the text the dump writes', () => {
     expect(text).toContain('actor-ts.system.name = "billing\\n  actor-ts.cluster.seed-nodes');
   });
 
+  test('a newline inside a key cannot forge a line of the dump either (found while #1546)', () => {
+    // A quoted HOCON key may hold any character, an escaped newline included,
+    // and the path is printed before the value is.  A key that is not a bare
+    // one prints the way HOCON quotes it, escapes and all.
+    const forgery = 'x\n  actor-ts.cluster.seed-nodes = ["evil"]  [reference]\n  y';
+    const text = configDumpLines(layered({ 'my-app': { [forgery]: 'v' } }));
+
+    expect(text.split('\n')).not.toContain('  actor-ts.cluster.seed-nodes = ["evil"]  [reference]');
+    expect(text).toContain(`  my-app.${JSON.stringify(forgery)} = "v"  [override]`);
+  });
+
   test('a list stays a list', () => {
     // Flattening `seed-nodes` into `seed-nodes.0` and `seed-nodes.1` would
     // turn one setting nobody configured into two.
@@ -365,20 +376,21 @@ describe('six layers, five names, and the secrets file (#1546)', () => {
   /**
    * An application file and a secrets file, each with a production profile.
    *
-   * Every key is named like nothing in particular — `set-by-secrets` reads as
-   * a `set` to the name rule, the preposition moving the head in front of it
-   * — so a key withheld here was withheld because of the file it is in.
+   * Every key is named like nothing in particular — no word of any of them is
+   * one the name rule reads, which is why the secrets file appears in them as
+   * `sealed` — so a key withheld here was withheld because of the file it is
+   * in.
    */
   const PROFILED = {
     'application.conf': [
-      'my-app { set-by-application = "a", set-by-profile = "a", set-by-secrets = "a",'
-        + ' set-by-secrets-profile = "a" }',
-      'profiles.production.my-app { set-by-profile = "b", set-by-secrets = "b", set-by-secrets-profile = "b" }',
+      'my-app { set-by-application = "a", set-by-profile = "a", set-by-sealed = "a",'
+        + ' set-by-sealed-profile = "a" }',
+      'profiles.production.my-app { set-by-profile = "b", set-by-sealed = "b", set-by-sealed-profile = "b" }',
     ].join('\n'),
     'secrets.conf': [
-      'my-app { set-by-secrets = "s3cr3t-root", endpoint-value = "s3cr3t-1", set-by-secrets-profile = "c",'
-        + ' set-by-secrets-only = "c" }',
-      'profiles.production.my-app { set-by-secrets-profile = "s3cr3t-profile", set-by-secrets-only = "s3cr3t-2" }',
+      'my-app { set-by-sealed = "s3cr3t-root", endpoint-value = "s3cr3t-1", set-by-sealed-profile = "c",'
+        + ' set-by-sealed-only = "c" }',
+      'profiles.production.my-app { set-by-sealed-profile = "s3cr3t-profile", set-by-sealed-only = "s3cr3t-2" }',
     ].join('\n'),
   } as const;
 
@@ -414,11 +426,11 @@ describe('six layers, five names, and the secrets file (#1546)', () => {
     expect(originOf(text, 'actor-ts.dispatcher.throughput')).toBe('reference');
     expect(originOf(text, 'my-app.set-by-application')).toBe('application');
     expect(originOf(text, 'my-app.set-by-profile')).toBe('profile, overrides a lower layer');
-    expect(originOf(text, 'my-app.set-by-secrets')).toBe('secrets, overrides a lower layer');
-    expect(originOf(text, 'my-app.set-by-secrets-profile')).toBe('secrets, overrides a lower layer');
+    expect(originOf(text, 'my-app.set-by-sealed')).toBe('secrets, overrides a lower layer');
+    expect(originOf(text, 'my-app.set-by-sealed-profile')).toBe('secrets, overrides a lower layer');
     // Displaced is counted in layers, not names: the profile's value of a key
     // only the secrets file sets still overrides the root's.
-    expect(originOf(text, 'my-app.set-by-secrets-only')).toBe('secrets, overrides a lower layer');
+    expect(originOf(text, 'my-app.set-by-sealed-only')).toBe('secrets, overrides a lower layer');
     expect(originOf(text, 'my-app.from-code')).toBe('override');
   });
 
@@ -426,8 +438,8 @@ describe('six layers, five names, and the secrets file (#1546)', () => {
     const text = profiledDump();
 
     expect(printed(text, 'my-app.endpoint-value')).toBe(CONFIG_REDACTED);
-    expect(printed(text, 'my-app.set-by-secrets')).toBe(CONFIG_REDACTED);
-    expect(printed(text, 'my-app.set-by-secrets-profile')).toBe(CONFIG_REDACTED);
+    expect(printed(text, 'my-app.set-by-sealed')).toBe(CONFIG_REDACTED);
+    expect(printed(text, 'my-app.set-by-sealed-profile')).toBe(CONFIG_REDACTED);
     expect(text).not.toContain('s3cr3t');
     // The application file's keys of the same shape print: the file decides.
     expect(printed(text, 'my-app.set-by-profile')).toBe('"b"');
@@ -447,7 +459,7 @@ describe('six layers, five names, and the secrets file (#1546)', () => {
   test('the header counts the secrets-file values apart from the keys withheld by name', () => {
     const head = profiledDump().split('\n')[0]!;
 
-    // set-by-secrets, endpoint-value, set-by-secrets-profile and set-by-secrets-only.
+    // set-by-sealed, endpoint-value, set-by-sealed-profile and set-by-sealed-only.
     expect(head).toContain(`, ${STOCK_WITHHELD.length} redacted by key name, 4 redacted from a secrets file,`);
   });
 
@@ -468,6 +480,112 @@ describe('six layers, five names, and the secrets file (#1546)', () => {
 
   test('without a profile the header says so', () => {
     expect(configDumpLines(layered({})).split('\n')[0]!).toContain('; profile: (none);');
+  });
+
+  /**
+   * Keys a HOCON file quotes because they hold a dot — a host name, a domain,
+   * a version — at the secrets file's root, nested, and in its profile, and
+   * one in each of the application file's two layers.
+   *
+   * None is named like a credential, so a value withheld here was withheld
+   * because of the file it is in.  `"region.name"` sits beside the
+   * application file's nested `region.name`: two keys that read the same once
+   * their segments are joined with a dot.
+   */
+  const QUOTED = {
+    'application.conf': [
+      'my-app { "hosts.internal" = "db-1", region { name = "eu" } }',
+      'profiles.production.my-app { "release.channel" = "stable" }',
+    ].join('\n'),
+    'secrets.conf': [
+      '"db.dsn" = "dotted-root-1"',
+      'my-app { "stripe.live" = "dotted-nested-2", "region.name" = "dotted-beside-3" }',
+      'profiles.production { my-app { "payments.v2" = "dotted-profile-4" } }',
+    ].join('\n'),
+  } as const;
+
+  const SECRETS_FILE_VALUES = ['dotted-root-1', 'dotted-nested-2', 'dotted-beside-3', 'dotted-profile-4'] as const;
+
+  const quotedConfig = <T>(body: (config: Config) => T): T => inDirectory(QUOTED, (directory) => body(Config.load({
+    appConfPath: join(directory, 'application.conf'),
+    secretsConfPath: join(directory, 'secrets.conf'),
+    profile: 'production',
+  })));
+
+  test('a secrets-file value under a quoted key holding a dot is withheld — at the root, nested, in a profile', () => {
+    quotedConfig((config) => {
+      const text = configDumpLines(config);
+      const leaves = resolveConfigLeaves(config);
+
+      for (const value of SECRETS_FILE_VALUES) {
+        expect(text).not.toContain(value);
+        // Found by its value, so this holds however the path is spelled.
+        const leaf = leaves.find((one) => one.value === value);
+        expect(leaf, `no leaf holds ${value}`).toBeDefined();
+        expect(leaf!.inSecretsFile).toBe(true);
+        expect(leaf!.secret).toBe(true);
+      }
+      expect(text.split('\n')[0]!).toContain(', 4 redacted from a secrets file,');
+    });
+  });
+
+  test('a quoted key holding a dot is attributed to the layer that set it', () => {
+    quotedConfig((config) => {
+      const layerHolding = (value: string): string | undefined =>
+        resolveConfigLeaves(config).find((one) => one.value === value)?.layer;
+
+      for (const value of SECRETS_FILE_VALUES) expect(layerHolding(value)).toBe('secrets');
+      expect(layerHolding('db-1')).toBe('application');
+      expect(layerHolding('stable')).toBe('profile');
+    });
+  });
+
+  test('a key holding a dot prints quoted, as HOCON writes it, so it cannot pass for two keys', () => {
+    quotedConfig((config) => {
+      const text = configDumpLines(config);
+
+      expect(text).toContain('\n  "db.dsn" = <redacted>  [secrets]');
+      expect(text).toContain('\n  my-app."stripe.live" = <redacted>  [secrets]');
+      expect(text).toContain('\n  my-app."payments.v2" = <redacted>  [secrets]');
+      expect(text).toContain('\n  my-app."hosts.internal" = "db-1"  [application]');
+      expect(text).toContain('\n  my-app."release.channel" = "stable"  [profile]');
+      // The secrets file's key and the application file's nested one, each on
+      // its own line under its own layer.
+      expect(text).toContain('\n  my-app."region.name" = <redacted>  [secrets]');
+      expect(text).toContain('\n  my-app.region.name = "eu"  [application]');
+    });
+  });
+
+  test('the paths a worker is sent spell a quoted key the way the worker reads it', () => {
+    // WorkerMesh sends the main thread's tree and `secretLayerPaths` of it; the
+    // worker merges the tree as its overrides and holds its own leaves against
+    // those paths.  Only one spelling of a key holding a dot can match.
+    quotedConfig((main) => {
+      const carried = Config._withSecretPaths(main.toJSON(), secretLayerPaths(main));
+      const worker = Config.load({ appConfPath: 'no-such-application.conf', overrides: carried });
+      const text = configDumpLines(worker);
+
+      expect(secretLayerPaths(main)).toEqual([
+        '"db.dsn"', 'my-app."payments.v2"', 'my-app."region.name"', 'my-app."stripe.live"',
+      ]);
+      for (const value of SECRETS_FILE_VALUES) expect(text).not.toContain(value);
+      expect(text).toContain('\n  my-app.region.name = "eu"  [override]');
+    });
+  });
+
+  test('a quoted key cannot borrow the exemption of a shipped key it reads like', () => {
+    // `actor-ts.distributed-data.durable-keys` prints although `keys` names a
+    // credential, because reference.conf says what it holds.  A key of the
+    // application's own that only reads like it once joined with dots is
+    // another key, and the name rule reads it.
+    const text = configDumpLines(Config.load({
+      appConfPath: 'no-such-application.conf',
+      overrides: Config.parseString('actor-ts { "distributed-data.durable-keys" = "sk-live-9" }'),
+    }));
+
+    expect(text).not.toContain('sk-live-9');
+    expect(printed(text, 'actor-ts."distributed-data.durable-keys"')).toBe(CONFIG_REDACTED);
+    expect(printed(text, 'actor-ts.distributed-data.durable-keys')).toBe('[]');
   });
 });
 
@@ -505,7 +623,10 @@ const STOCK_WITHHELD: readonly string[] = [
  * `keyspace` contains `key`, and `token-reload-interval` is a duration.  A
  * dump that hides these is worse than useless — it hides exactly the tuning an
  * operator turned the dump on to check, and teaches them the output cannot be
- * trusted.
+ * trusted.  Six of them hold a credential word whole — `per-key`, both
+ * `key-prefix`es, `token-path`, `token-reload-interval`, `kms-key-id` — and
+ * since every word of a name is read (#867) they print only because
+ * `CONFIG_NEVER_REDACTED_PATHS` names them, which these rows pin.
  */
 const STOCK_PRINTED: readonly (readonly [string, string])[] = [
   ['actor-ts.sharding.passivation-idle', '"5m"'],
@@ -644,41 +765,57 @@ describe('which key names count as naming a secret', () => {
     expect(printed(text, 'my-app.authority')).toBe('"eu-west"');
   });
 
-  test('the last word of the name says what the value is', () => {
-    // `api-key` is a key; `key-prefix` is a prefix that happens to be about
-    // keys.  Head-final is what separates the credential from the setting
-    // named after one.
-    const text = configDumpLines(layered({
-      'my-app': { 'api-key': 'sk-live-1', 'key-prefix': 'orders:', 'token-path': '/run/tok' },
-    }));
+  /**
+   * Names with a credential word that is not the last one, each with a value
+   * that would be worth having: the cases a rule reading only the last word
+   * of a name printed in full (#867).
+   */
+  const CREDENTIAL_WORD_NOT_LAST: Readonly<Record<string, string | number>> = {
+    'auth-header': 'Bearer eyJhbGciOiJIUzI1NiJ9.e30.sig',
+    'secret-value': 'hunter2',
+    'password-plain': 'correct horse',
+    'token-string': 'tk-live-1',
+    'api-key-id': 'AKIA0000EXAMPLE',
+    'token-bucket-size': 64,
+    'key-prefix': 'orders:',
+    'max-requests-per-token': 50,
+    'secret-per-tenant': 'hunter3',
+  };
 
-    expect(printed(text, 'my-app.api-key')).toBe(CONFIG_REDACTED);
-    expect(printed(text, 'my-app.key-prefix')).toBe('"orders:"');
-    expect(printed(text, 'my-app.token-path')).toBe('"/run/tok"');
+  test('any whole word of a name can name the credential, wherever it stands', () => {
+    // `auth-header` carries a bearer token, and nothing about the order of
+    // words in a name says which one names the value.  So every word is read,
+    // and a tuning value with a credential word in its name — a token bucket's
+    // size — is withheld with it: an unreadable number costs less than a
+    // printed password.
+    const text = configDumpLines(layered({ 'my-app': CREDENTIAL_WORD_NOT_LAST }));
+
+    for (const name of Object.keys(CREDENTIAL_WORD_NOT_LAST)) {
+      expect(printed(text, `my-app.${name}`), name).toBe(CONFIG_REDACTED);
+    }
   });
 
-  test('a preposition moves the head in front of it', () => {
-    // `subscribers-per-key` is a count of subscribers.  `secret-per-tenant`
-    // is still a secret — the rule takes what precedes the preposition, so it
-    // reads the qualified side, not the object.
-    const text = configDumpLines(layered({
-      'my-app': { 'max-requests-per-token': 50, 'secret-per-tenant': 'hunter2' },
-    }));
+  test('a boolean under any of those names is still never withheld', () => {
+    const booleans = Object.fromEntries(Object.keys(CREDENTIAL_WORD_NOT_LAST).map((name, index) =>
+      [name, [true, 'off', 'yes'][index % 3]!]));
+    const text = configDumpLines(layered({ 'my-app': booleans }));
 
-    expect(printed(text, 'my-app.max-requests-per-token')).toBe('50');
-    expect(printed(text, 'my-app.secret-per-tenant')).toBe(CONFIG_REDACTED);
+    for (const [name, value] of Object.entries(booleans)) {
+      expect(printed(text, `my-app.${name}`), name).toBe(JSON.stringify(value));
+    }
   });
 
   test('a camelCase key is read as words too, so it cannot slip through', () => {
     // Nothing forces an application subtree into kebab-case, and a redaction
     // that only understands one spelling is a redaction with a hole in it.
     const text = configDumpLines(layered({
-      'my-app': { apiKey: 'sk-live-2', clientSecret: 'hunter2', keyPrefix: 'orders:' },
+      'my-app': { apiKey: 'sk-live-2', clientSecret: 'hunter2', keyPrefix: 'orders:', authHeader: 'Bearer x' },
     }));
 
     expect(printed(text, 'my-app.apiKey')).toBe(CONFIG_REDACTED);
     expect(printed(text, 'my-app.clientSecret')).toBe(CONFIG_REDACTED);
-    expect(printed(text, 'my-app.keyPrefix')).toBe('"orders:"');
+    expect(printed(text, 'my-app.keyPrefix')).toBe(CONFIG_REDACTED);
+    expect(printed(text, 'my-app.authHeader')).toBe(CONFIG_REDACTED);
   });
 
   test('a value from HOCON’s boolean vocabulary is never withheld', () => {
