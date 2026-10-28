@@ -371,6 +371,30 @@ describe('auto-down = off — the opt-out parks the peer (#1426)', () => {
     }
   });
 
+  test('a parked run that restarts and falls silent again is reported again — the warning leaves with the old run\'s entry', async () => {
+    // The restart replaces the parked run's entry (#940): the old one is
+    // deleted and the new one admitted.  No detection tick runs in between,
+    // so nothing but the delete itself can forget that the slot was reported —
+    // and a slot remembered as reported would let the new run's own parking go
+    // unsaid.
+    const node = await startNode('park-warning-restart', 9_447, { autoDown: false });
+    const firstRun = new NodeAddress('park-warning-restart', PEER_HOST, 9_548, 'run-1');
+    const secondRun = new NodeAddress('park-warning-restart', PEER_HOST, 9_548, 'run-2');
+    gossipSelfRecord(node.cluster, firstRun, 'up');
+    lastHeardFrom(node.cluster, firstRun, SILENT_PAST_DOWN_MS);
+    tick(node.cluster);
+    expect(parkingWarnings(node.log)).toHaveLength(1);
+
+    internals(node.cluster).mergeMember(secondRun, 'unreachable', {
+      address: secondRun.toJSON(), status: 'joining', version: Date.now() + 1_000, roles: [],
+    });
+    expect(internals(node.cluster).members.get(secondRun.toString())?.address.incarnation).toBe('run-2');
+    lastHeardFrom(node.cluster, secondRun, SILENT_PAST_DOWN_MS);
+    tick(node.cluster);
+
+    expect(parkingWarnings(node.log)).toHaveLength(2);
+  });
+
   test('a peer heard from again and silent a second time is reported a second time', async () => {
     const node = await startNode('park-warning-again', 9_446, { autoDown: false });
     const peer = peerAddress('park-warning-again', 9_547);
