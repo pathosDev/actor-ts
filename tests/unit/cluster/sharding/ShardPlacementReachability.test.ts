@@ -53,6 +53,7 @@ import type { MemberStatus } from '../../../../src/cluster/Protocol.js';
 import {
   type AllocationStrategy,
   HashAllocationStrategy,
+  LeastShardAllocationStrategy,
 } from '../../../../src/cluster/sharding/AllocationStrategy.js';
 import type {
   GetShardHome,
@@ -799,6 +800,73 @@ describe('rebalancing moves a shard off a registered region that is no candidate
       // of the parked one or the absent one: neither is a member that is up.
       shards: { 'peer-a': [0, 1], 'peer-r': [2, 3], 'peer-y': [6, 7] },
     }]);
+  });
+});
+
+describe('LeastShardAllocationStrategy moves a non-candidate region\'s shards too (#1467)', () => {
+  // It balances by the candidates' loads alone, so a shard on a node that is no
+  // candidate never weighed in, and it stayed there for good — the refused
+  // region's shards included.  Now it proposes those first, whatever the
+  // candidates' spread, out of the same per-pass budget.
+
+  test('without the role: the shards go to the candidates that are up, a pass\'s budget at a time', async () => {
+    const placement = await startPlacement('least-shard-off-role-less', {
+      role: ROLE,
+      strategy: new LeastShardAllocationStrategy(1, 3),
+    });
+    stageMember(placement, 'peer-a', 'up', [ROLE]);
+    stageMember(placement, 'peer-b', 'up', [ROLE]);
+    stageMember(placement, 'peer-x', 'unreachable', [ROLE]);
+    stageMember(placement, 'peer-y', 'up');
+    const held = [0, 1, 2, 3, 4, 5];
+    fabricate(placement, [['peer-a', []], ['peer-b', []], ['peer-x', []], ['peer-y', held]]);
+    const { coordinator } = placement;
+
+    // Not while the set settles.
+    coordinator.rebalanceTick();
+    expect(inFlight(coordinator), 'a hand-off started before the set had settled').toEqual([]);
+
+    // Both candidates that are up hold nothing, so balancing them alone would
+    // move nothing: the shards are proposed ahead of the threshold, three a pass.
+    letTheSetSettle(coordinator);
+    coordinator.rebalanceTick();
+    expect(inFlight(coordinator)).toEqual([[0, 'peer-y'], [1, 'peer-y'], [2, 'peer-y']]);
+    completeEveryHandOff(placement);
+    coordinator.rebalanceTick();
+    expect(inFlight(coordinator)).toEqual([[3, 'peer-y'], [4, 'peer-y'], [5, 'peer-y']]);
+    completeEveryHandOff(placement);
+
+    // Each allocated to the least-loaded candidate that is up: three apiece,
+    // none on the parked one.
+    const owners = ownersByShard(coordinator);
+    expect(held.map((shardId) => owners.get(shardId)))
+      .toEqual(['peer-a', 'peer-b', 'peer-a', 'peer-b', 'peer-a', 'peer-b']);
+    coordinator.rebalanceTick();
+    expect(inFlight(coordinator), 'a balanced map still had something to move').toEqual([]);
+  });
+
+  test('refused over its shard count: the shards a snapshot seeded it with go to a candidate', async () => {
+    const placement = await startPlacement('least-shard-off-refused', {
+      strategy: new LeastShardAllocationStrategy(1, 3),
+    });
+    for (const host of ['peer-a', 'peer-b', 'peer-r']) stageMember(placement, host, 'up');
+    // The candidates are level, so balancing them alone would move nothing.
+    fabricate(placement, [['peer-a', [0]], ['peer-b', [1]], ['peer-r', [3, 5]]]);
+    const { coordinator } = placement;
+    coordinator.refusedRegions.add(keyOf(placement, 'peer-r'));
+    letTheSetSettle(coordinator);
+
+    coordinator.rebalanceTick();
+    expect(inFlight(coordinator)).toEqual([[3, 'peer-r'], [5, 'peer-r']]);
+
+    // A refused region gave its shards up when it was refused, so each hand-off
+    // ends at its timeout, forced the way the coordinator's own timer forces it.
+    for (const shardId of [3, 5]) {
+      coordinator.rebalanceInProgress.get(shardId)!.timer.cancel();
+      coordinator.onHandOffTimeout(shardId);
+    }
+    expect([3, 5].map((shardId) => hostOf(coordinator.shardHome.get(shardId)))).toEqual(['peer-a', 'peer-b']);
+    expect(coordinator.regions.get(keyOf(placement, 'peer-r'))!.shards.size).toBe(0);
   });
 });
 

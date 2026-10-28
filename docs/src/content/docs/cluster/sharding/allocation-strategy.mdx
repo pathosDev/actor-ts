@@ -88,9 +88,12 @@ The formula:
 
 - **Allocate**: pick the candidate with the fewest shards
   currently hosted (ties broken by address order).
-- **Rebalance**: if `max(shardCount) - min(shardCount) >=
-  rebalanceThreshold`, move shards off the busiest node(s) to the
-  least.  At most `maxSimultaneousRebalance` shards per pass.
+- **Rebalance**: first, every shard on a node that is no candidate —
+  a region refused over its shard count, or on a member without the
+  type's role — whatever the candidates' spread.  Then, if
+  `max(shardCount) - min(shardCount) >= rebalanceThreshold` among the
+  candidates, move shards off the busiest node(s) to the least.  At
+  most `maxSimultaneousRebalance` shards per pass, both kinds together.
 
 **Picks:**
 
@@ -178,9 +181,10 @@ That decides how your strategy is called:
   candidates on purpose: it also lists a region registered on an up
   member that is no candidate — refused over its shard count, or without
   the type's role — so that its shards can be proposed for a move onto a
-  candidate.  `HashAllocationStrategy` proposes every one of them;
-  `LeastShardAllocationStrategy` weighs only the candidates and leaves
-  them where they are.
+  candidate.  Both built-in strategies propose every one of them —
+  `LeastShardAllocationStrategy` ahead of its threshold check, within
+  its per-pass budget.  A custom strategy that weighs only the
+  candidates leaves them where they are.
 
 Either way a pick that is not among the candidates the call was given is
 never placed — the coordinator logs it at `WARN`, naming the pick and the

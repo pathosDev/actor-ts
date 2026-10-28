@@ -49,7 +49,9 @@ Vier Pfade:
    Mitglied `up` ist, und erst, wenn deren Menge zur Ruhe gekommen ist.
    `LeastShardAllocationStrategy` gibt Shards zum Drainen von
    beschäftigten Nodes zurück; `HashAllocationStrategy` gibt
-   Shards zurück, deren Hash-Ziel gewandert ist.
+   Shards zurück, deren Hash-Ziel gewandert ist. Beide geben auch die
+   Shards einer Region zurück, die kein Kandidat ist (siehe
+   [Mitglieder, die nicht up sind](#mitglieder-die-nicht-up-sind)).
 3. **Eine Region, die stoppt** — eine Region meldet sich beim
    Koordinator ab, während sie herunterfährt, und ihre Shards werden
    sofort neu verteilt. Das deckt eine Region ab, die auf einem Node
@@ -162,8 +164,8 @@ geändert hat:
   vorgeschlagen hat. Das Rebalancing sieht dabei auch die Shards einer
   Region, die auf einem Mitglied registriert ist, das `up` ist, die aber
   kein Kandidat ist — wegen ihrer Shard-Anzahl abgewiesen oder ohne die
-  Rolle des Typs —, sodass die Default-Strategie diese auf die
-  zulässigen Regionen verschiebt.
+  Rolle des Typs —, sodass beide eingebauten Strategien diese auf die
+  zulässigen Regionen verschieben.
 
 Das Fenster wird aus den Downing-Zeiten abgeleitet, nicht konfiguriert:
 `failure-detector.down-after` ohne Split-Brain-Strategie, und mit einer

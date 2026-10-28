@@ -93,10 +93,14 @@ Die Formel:
 - **Allokation**: wähle den Kandidaten mit den wenigsten aktuell
   gehosteten Shards (Gleichstand wird per Adress-Ordnung
   gebrochen).
-- **Rebalance**: wenn `max(shardCount) - min(shardCount) >=
-  rebalanceThreshold`, bewege Shards weg vom geschäftigsten Node
-  zum am wenigsten beschäftigten. Höchstens
-  `maxSimultaneousRebalance` Shards pro Durchgang.
+- **Rebalance**: zuerst jeden Shard auf einem Node, der kein Kandidat
+  ist — eine Region, die wegen ihrer Shard-Anzahl abgewiesen wurde,
+  oder eine auf einem Mitglied ohne die Rolle des Typs —, gleich wie
+  die Last unter den Kandidaten verteilt ist. Dann, wenn
+  `max(shardCount) - min(shardCount) >= rebalanceThreshold` unter den
+  Kandidaten, bewege Shards weg vom geschäftigsten Node zum am wenigsten
+  beschäftigten. Höchstens `maxSimultaneousRebalance` Shards pro
+  Durchgang, beide Arten zusammen.
 
 **Macht gut:**
 
@@ -190,9 +194,10 @@ Davon hängt ab, wie deine Strategie aufgerufen wird:
   die auf einem Mitglied registriert ist, das `up` ist, die aber kein
   Kandidat ist — wegen ihrer Shard-Anzahl abgewiesen oder ohne die Rolle
   des Typs —, damit ihre Shards für einen Umzug auf einen Kandidaten
-  vorgeschlagen werden können. `HashAllocationStrategy` schlägt jeden
-  davon vor; `LeastShardAllocationStrategy` gewichtet nur die Kandidaten
-  und lässt sie, wo sie sind.
+  vorgeschlagen werden können. Beide eingebauten Strategien schlagen
+  jeden davon vor — `LeastShardAllocationStrategy` noch vor ihrer
+  Schwellenprüfung, innerhalb ihres Budgets pro Durchgang. Eine eigene
+  Strategie, die nur die Kandidaten gewichtet, lässt sie, wo sie sind.
 
 In beiden Fällen wird eine Wahl, die nicht unter den übergebenen
 Kandidaten ist, nie zugewiesen — der Koordinator meldet sie auf `WARN`,
