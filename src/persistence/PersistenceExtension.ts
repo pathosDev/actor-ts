@@ -1,6 +1,6 @@
 import type { ActorSystem } from '../ActorSystem.js';
 import { ClusterExtensionId } from '../cluster/ClusterExtension.js';
-import type { Config } from '../config/Config.js';
+import { ConfigError, type Config } from '../config/Config.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
 import { CoordinatedStartupId } from '../CoordinatedStartup.js';
 import { StartupPhases } from '../CoordinatedStartupOptions.js';
@@ -1097,7 +1097,8 @@ export type PersistencePluginIds = {
 /**
  * The three plugin selectors — `actor-ts.persistence.journal.plugin`,
  * `….snapshot-store.plugin` and `….durable-state.plugin` — each falling back to
- * the id the extension registers its in-memory reference store under.
+ * the id the extension registers its in-memory reference store under when
+ * nothing was written where it belongs.
  *
  * Exported, and the only place the extension reads them, so that the read a
  * per-block test asserts is the read the runtime makes: what binds a selector
@@ -1117,22 +1118,70 @@ export type PersistencePluginIds = {
  * `" actor-ts.persistence.journal.postgres "` is an unknown id the lookup
  * refuses, not a near miss quietly corrected into a selection.
  *
+ * **Only an empty place falls back.**  `Config.load` lays reference.conf
+ * underneath every runtime config, so there a selector goes missing only when
+ * a value has been written where its block belongs, or a block above it —
+ * `actor-ts.persistence.durable-state = "actor-ts.persistence.durable-state.sqlite"`,
+ * `actor-ts.persistence = "postgres"`.  Read as unset, that selected the
+ * in-memory store with no error and the startup reported ready, and a
+ * deployment that wrote its plug-in id onto the block lost its journal or its
+ * state on the next restart.  Such a value is refused, naming the key and
+ * saying it must be a block; an axis left as reference.conf ships it keeps the
+ * in-memory default, as does a config with nothing at all under that path.
+ *
  * The three are read together, so a selector holding no id at all — `null`, a
- * block, a list — is refused by whichever axis resolves first rather than only
- * by its own: it is a mistake in the file whichever store the application uses.
+ * block, a list — or a value in place of a block is refused by whichever axis
+ * resolves first rather than only by its own: it is a mistake in the file
+ * whichever store the application uses.
  */
 export function readPersistencePluginIdsFromConfig(config: Config): PersistencePluginIds {
   const keys = ConfigKeys.persistence;
   return {
-    journal: readPluginId(config, keys.journal.plugin, keys.journal.inMemory),
-    snapshotStore: readPluginId(config, keys.snapshotStore.plugin, keys.snapshotStore.inMemory.root),
-    durableState: readPluginId(config, keys.durableState.plugin, keys.durableState.inMemory),
+    journal: readPluginId(config, keys.journal.plugin, keys.journal.inMemory, 'journal'),
+    snapshotStore: readPluginId(config, keys.snapshotStore.plugin, keys.snapshotStore.inMemory.root, 'snapshot store'),
+    durableState: readPluginId(config, keys.durableState.plugin, keys.durableState.inMemory, 'durable-state store'),
   };
 }
 
-/** One selector: the id it holds, or `fallback` when it is absent. */
-function readPluginId(config: Config, selector: string, fallback: string): string {
-  return config.hasPath(selector) ? config.getString(selector) : fallback;
+/**
+ * One selector: the id it holds, or `fallback` when nothing was written where
+ * it belongs — refused when a value stands where its block, or a block above
+ * it, belongs (see {@link readPersistencePluginIdsFromConfig}).
+ */
+function readPluginId(config: Config, selector: string, fallback: string, axis: StoreAxis): string {
+  if (config.hasPath(selector)) return config.getString(selector);
+  refuseValueWhereABlockBelongs(config, selector, axis);
+  return fallback;
+}
+
+/**
+ * Walk the blocks `selector` lives in, outermost first, and refuse the first
+ * that holds a value instead.  Stops at the first that is not there at all —
+ * nothing written, so nothing to refuse.
+ */
+function refuseValueWhereABlockBelongs(config: Config, selector: string, axis: StoreAxis): void {
+  const segments = selector.split('.');
+  for (let depth = 1; depth < segments.length; depth++) {
+    const path = segments.slice(0, depth).join('.');
+    if (!config.hasPath(path)) return;
+    if (holdsBlock(config, path)) continue;
+    const mustBe = depth === segments.length - 1 ? 'must be a block with a plugin field' : 'must be a block';
+    throw new ConfigError(
+      `Config at "${path}" ${mustBe}, not a value — select the ${axis} with `
+        + `${selector} = "<plugin id>". Read as unset, it would quietly keep the ${axis} in memory.`,
+    );
+  }
+}
+
+/** Whether `path` holds a block, as opposed to a string, a number, a list or `null`. */
+function holdsBlock(config: Config, path: string): boolean {
+  try {
+    config.getObject(path);
+    return true;
+  } catch (error) {
+    if (error instanceof ConfigError) return false;
+    throw error;
+  }
 }
 
 /**
@@ -1142,8 +1191,9 @@ function readPluginId(config: Config, selector: string, fallback: string): strin
  * inside `create`, so that a selection made in configuration alone is
  * resolved, and its stores opened, as part of the startup (#1473).
  *
- * A selector that holds no id at all answers yes: it is a mistake the
- * resolution names, and naming it at startup is the point.
+ * A selector that holds no id at all, or a value where a block belongs,
+ * answers yes: it is a mistake the resolution names, and naming it at startup
+ * is the point.
  */
 export function selectsPersistencePlugin(config: Config): boolean {
   let selected: PersistencePluginIds;

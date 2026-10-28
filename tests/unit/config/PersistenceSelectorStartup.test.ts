@@ -3,8 +3,10 @@ import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Config, ConfigError } from '../../../src/config/Config.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { InMemoryDurableStateStore } from '../../../src/persistence/durable-state-stores/InMemoryDurableStateStore.js';
 import { InMemoryJournal } from '../../../src/persistence/journals/InMemoryJournal.js';
 import { PersistenceExtensionId, type PersistencePlugin } from '../../../src/persistence/PersistenceExtension.js';
+import { InMemorySnapshotStore } from '../../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
 
 /**
  * #1425 — a persistence selection the configuration got wrong, met the way an
@@ -114,6 +116,94 @@ describe('a selector holding no id fails the startup and every axis (#1425)', ()
       expect(() => extension.snapshotStore).toThrow(refusal);
       expect(() => extension.durableStateStore).toThrow(refusal);
       await rejectionOf(system.whenReady());
+    } finally {
+      await stopped(system);
+    }
+  });
+});
+
+type ValueWhereABlockBelongsCase = {
+  readonly name: string;
+  readonly hocon: string;
+  readonly key: string;
+  /** What the refusal says `key` must be: an axis block needs its plugin field, a block above it only to be one. */
+  readonly mustBe: string;
+};
+
+/**
+ * Values written where a block belongs.  `Config.load` lays reference.conf
+ * underneath, so at runtime a selector is absent only when such a value has
+ * replaced its block or a block above it — and absent, it read as "not set",
+ * the in-memory store was selected with no error, and the startup reported
+ * ready.  A deployment that wrote the plug-in id onto the block lost its
+ * journal or its state on the next restart.
+ */
+const VALUES_WHERE_A_BLOCK_BELONGS: ValueWhereABlockBelongsCase[] = [
+  {
+    name: 'the durable-state block replaced by its plug-in id',
+    hocon: 'actor-ts.persistence.durable-state = "actor-ts.persistence.durable-state.sqlite"',
+    key: 'actor-ts.persistence.durable-state',
+    mustBe: 'must be a block with a plugin field',
+  },
+  {
+    name: 'the snapshot-store block replaced by its plug-in id',
+    hocon: 'actor-ts.persistence.snapshot-store = "actor-ts.persistence.snapshot-store.sqlite"',
+    key: 'actor-ts.persistence.snapshot-store',
+    mustBe: 'must be a block with a plugin field',
+  },
+  {
+    name: 'the journal block set to null',
+    hocon: 'actor-ts.persistence.journal = null',
+    key: 'actor-ts.persistence.journal',
+    mustBe: 'must be a block with a plugin field',
+  },
+  {
+    name: 'the persistence block replaced by a backend\'s name',
+    hocon: 'actor-ts.persistence = "postgres"',
+    key: 'actor-ts.persistence',
+    mustBe: 'must be a block',
+  },
+];
+
+describe('a value where a persistence block belongs fails the startup, naming the key (#1425)', () => {
+  test.each(VALUES_WHERE_A_BLOCK_BELONGS)('$name fails the startup naming $key', async ({ hocon, key, mustBe }) => {
+    const system = systemOver('value-where-a-block-belongs', hocon);
+    try {
+      const error = await rejectionOf(system.whenReady());
+
+      expect(error.cause).toBeInstanceOf(ConfigError);
+      expect((error.cause as Error).message).toStartWith(`Config at "${key}" ${mustBe}, not a value`);
+    } finally {
+      await stopped(system);
+    }
+  });
+
+  test.each(VALUES_WHERE_A_BLOCK_BELONGS)('$name fails all three axes', async ({ hocon, key, mustBe }) => {
+    const system = systemOver('value-where-a-block-belongs-every-axis', hocon);
+    const extension = system.extension(PersistenceExtensionId);
+    try {
+      const refusal = `Config at "${key}" ${mustBe}, not a value`;
+
+      expect(() => extension.journal).toThrow(refusal);
+      expect(() => extension.snapshotStore).toThrow(refusal);
+      expect(() => extension.durableStateStore).toThrow(refusal);
+      await rejectionOf(system.whenReady());
+    } finally {
+      await stopped(system);
+    }
+  });
+
+  test('a file that leaves every axis block at reference.conf\'s default starts on the in-memory stores', async () => {
+    // Beside the axis blocks, not in place of one: reference.conf's selectors
+    // are still there, so nothing is refused and nothing is selected.
+    const system = systemOver('every-axis-at-its-default', 'actor-ts.persistence.snapshot-is-optional = on');
+    try {
+      await system.whenReady();
+      const extension = system.extension(PersistenceExtensionId);
+
+      expect(extension.journal).toBeInstanceOf(InMemoryJournal);
+      expect(extension.snapshotStore).toBeInstanceOf(InMemorySnapshotStore);
+      expect(extension.durableStateStore).toBeInstanceOf(InMemoryDurableStateStore);
     } finally {
       await stopped(system);
     }

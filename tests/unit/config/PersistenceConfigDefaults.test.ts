@@ -1543,6 +1543,35 @@ describe('readPersistencePluginIdsFromConfig', () => {
     expectExactOptions(readPersistencePluginIdsFromConfig(unrelated), IN_MEMORY_PLUGIN_IDS);
   });
 
+  test.each(PLUGIN_SELECTORS)('an axis block written without a plugin field falls back as well', ({ selector }) => {
+    // Absent because nothing was written there, which is what the fallback is
+    // for: at runtime reference.conf supplies the shipped selector anyway.
+    const axisBlock = selector.slice(0, -'.plugin'.length);
+
+    expectExactOptions(
+      readPersistencePluginIdsFromConfig(Config.parseString(`${axisBlock} { table = "events" }`)),
+      IN_MEMORY_PLUGIN_IDS,
+    );
+  });
+
+  // Absent because a value replaced the block it lives in is a different case.
+  // reference.conf lies underneath every runtime config, so that is the only
+  // way a selector goes missing there, and read as unset it selected the
+  // in-memory store with no error: a deployment that wrote the plug-in id onto
+  // the block lost its journal or its state on the next restart.
+  test.each([
+    { key: 'actor-ts.persistence.journal', written: '"actor-ts.persistence.journal.sqlite"', mustBe: 'must be a block with a plugin field' },
+    { key: 'actor-ts.persistence.snapshot-store', written: 'null', mustBe: 'must be a block with a plugin field' },
+    { key: 'actor-ts.persistence.durable-state', written: '[a]', mustBe: 'must be a block with a plugin field' },
+    { key: 'actor-ts.persistence', written: '"postgres"', mustBe: 'must be a block' },
+    { key: 'actor-ts', written: '42', mustBe: 'must be a block' },
+  ])('$key holding $written instead of a block is refused, naming it', ({ key, written, mustBe }) => {
+    const config = Config.parseString(`${key} = ${written}`);
+
+    expect(() => readPersistencePluginIdsFromConfig(config)).toThrow(ConfigError);
+    expect(() => readPersistencePluginIdsFromConfig(config)).toThrow(`Config at "${key}" ${mustBe}, not a value`);
+  });
+
   test.each(PLUGIN_SELECTORS)('$selector moves $field and nothing else', ({ field, selector }) => {
     const options = readPersistencePluginIdsFromConfig(
       Config.parseString(`${selector} = "actor-ts.persistence.custom"`),
