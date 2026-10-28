@@ -1,6 +1,10 @@
 import { armChainedTimeout, type Cancellable, unreferencedHostTimers } from '../Scheduler.js';
 import { MAX_TIMER_DELAY_MS } from '../util/Constants.js';
-import { redactParsedUrlCredentials, redactUrlCredentials } from '../util/RedactUrlCredentials.js';
+import {
+  redactErrorCredentials,
+  redactParsedUrlCredentials,
+  redactUrlCredentials,
+} from '../util/RedactUrlCredentials.js';
 import {
   DEFAULT_HTTP_CLIENT_MAX_REDIRECTS,
   DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES,
@@ -49,6 +53,17 @@ const BODY_DESCRIBING_HEADERS: readonly string[] = [
 
 /** The only schemes a redirect may land on — per the Fetch spec, as the platform enforces. */
 const FOLLOWABLE_SCHEMES: ReadonlySet<string> = new Set(['http:', 'https:']);
+
+/**
+ * What the runtime threw, with every credential in it masked: an `Error`
+ * through {@link redactErrorCredentials}, a thrown string through the scan.
+ * Only for what the platform raises — this client's own errors name parsed
+ * URLs, masked exactly, and the scan would misread an `@` past their host.
+ */
+function redactedFailure(error: unknown): unknown {
+  if (error instanceof Error) return redactErrorCredentials(error);
+  return typeof error === 'string' ? redactUrlCredentials(error) : error;
+}
 
 /** `location` resolved against the URL whose response sent it, or `undefined` when it does not parse. */
 function resolvedLocation(location: string, base: URL): URL | undefined {
@@ -223,13 +238,7 @@ export class HttpClient {
         body: this.serialiseBody(request.body),
       };
       for (let hops = 0; ; hops++) {
-        const res = await fetch(current, {
-          method: hop.method,
-          headers: hop.headers,
-          body: hop.body as unknown as BodyInit | null | undefined,
-          signal: controller.signal,
-          redirect: 'manual',
-        });
+        const res = await this.fetchHop(current, hop, controller.signal);
         const location = res.headers.get('location');
         // A 3xx without a Location is the final answer, exactly as it is for
         // the platform — and so is any non-redirect status.  `'manual'` keeps
@@ -247,6 +256,31 @@ export class HttpClient {
     } finally {
       if (timer) clearTimeout(timer);
       chain?.cancel();
+    }
+  }
+
+  /**
+   * One hop through the platform's `fetch`, never followed by it.
+   *
+   * What `fetch` throws is the runtime's own error, and it names the URL it
+   * was handed, credential included: Node refuses a URL with a userinfo
+   * outright, with a `TypeError` whose message is that URL, and Bun attaches
+   * it as the `path` of a failed connection.  None of this client's masking
+   * ran on it, so it is masked here, before it propagates (#1458).  An error
+   * with nothing to mask — the abort the deadline causes among them — comes
+   * back as itself.
+   */
+  private async fetchHop(url: URL, hop: RequestHop, signal: AbortSignal): Promise<Response> {
+    try {
+      return await fetch(url, {
+        method: hop.method,
+        headers: hop.headers,
+        body: hop.body as unknown as BodyInit | null | undefined,
+        signal,
+        redirect: 'manual',
+      });
+    } catch (error) {
+      throw redactedFailure(error);
     }
   }
 
@@ -388,7 +422,7 @@ export class HttpClient {
     const chunks: Uint8Array[] = [];
     let total = 0;
     for (;;) {
-      const chunk = await reader.read();
+      const chunk = await this.nextChunk(() => reader.read());
       if (chunk.done) break;
       total += chunk.value.byteLength;
       if (total > maxBytes) {
@@ -407,6 +441,21 @@ export class HttpClient {
       offset += part.byteLength;
     }
     return buffer;
+  }
+
+  /**
+   * The next chunk of a body, as `read` hands it over.  A connection that
+   * breaks mid-body fails the read with the runtime's own error, which on Bun
+   * carries the request URL as its `path` — so it is masked the way
+   * {@link fetchHop} masks one.  Generic over the result, because the DOM
+   * library and the runtimes' own type the reader's answer differently.
+   */
+  private async nextChunk<R>(read: () => Promise<R>): Promise<R> {
+    try {
+      return await read();
+    } catch (error) {
+      throw redactedFailure(error);
+    }
   }
 
   /** Release an intermediate 3xx body; a failure here is never the caller's problem. */

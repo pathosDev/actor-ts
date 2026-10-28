@@ -446,7 +446,7 @@ describe('SseActor — refuses a redirect (#787)', () => {
 async function refusalOfRedirectTo(
   location: string,
   connectUrl: (host: string) => string = (host) => `http://${host}/`,
-): Promise<{ readonly refusal: string; readonly host: string }> {
+): Promise<{ readonly refusal: string; readonly published: string; readonly host: string }> {
   const feed = Bun.serve({
     port: 0,
     fetch(): Response {
@@ -467,7 +467,7 @@ async function refusalOfRedirectTo(
     await awaitCondition(() => causes.length > 0, {
       timeoutMs: 4_000, label: 'the connect refused the redirect',
     });
-    return { refusal: actor.refusals[0] ?? '', host };
+    return { refusal: actor.refusals[0] ?? '', published: causes[0] ?? '', host };
   } finally {
     await sys.terminate();
     feed.stop(true);
@@ -501,6 +501,32 @@ describe('SseActor — names a refused redirect exactly (found while #1458)', ()
   test('a relative Location is named resolved against the connect URL', async () => {
     const { refusal, host } = await refusalOfRedirectTo('/@user');
     expect(refusal).toContain(`HTTP 302 to http://${host}/@user.  `);
+  });
+
+  /**
+   * A `Location` whose userinfo the scan cannot see, because no `scheme://`
+   * stands in front of it: scheme-relative, a special scheme with no slashes,
+   * and backslashes, which WHATWG reads as slashes for a special scheme.  All
+   * three resolve to a URL with a credential.  Named through the scan, as
+   * before #1458, all three reached the refusal and the published
+   * `BrokerReconnectFailed` in clear; naming the resolved target masks them,
+   * and a change that sent any of them back to the scan would print the
+   * password again.  Asserted on the refusal as built and as published.
+   */
+  const userinfoTheScanCannotSee: Array<[string, string]> = [
+    ['//tenant:s3cr3t@moved.invalid/feed', 'http://***@moved.invalid/feed'],
+    ['https:tenant:s3cr3t@moved.invalid/feed', 'https://***@moved.invalid/feed'],
+    ['http:\\\\tenant:s3cr3t@moved.invalid\\feed', 'http://***@moved.invalid/feed'],
+  ];
+
+  test.each(userinfoTheScanCannotSee)('a redirect to %p is refused with its credential masked', async (location, named) => {
+    const { refusal, published } = await refusalOfRedirectTo(location);
+    expect(refusal).toContain(`HTTP 302 to ${named}.  `);
+    for (const text of [refusal, published]) {
+      expect(text).not.toContain('s3cr3t');
+      expect(text).not.toContain('tenant');
+    }
+    expect(published).toContain(`HTTP 302 to ${named}.  `);
   });
 
   test('a credential in the Location is masked, and an @ past its host is kept', async () => {

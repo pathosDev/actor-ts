@@ -9,6 +9,9 @@
  *   - `redactUrlCredentials` runs over the `Location` header of a redirect
  *     (`HttpClient`), so the input is whatever server the caller was pointed
  *     at.  484 ms of blocked event loop at the 16 KiB header limit.
+ *   - `redactedUrlLabel` was never a regex, but since #1458 it walks every
+ *     userinfo it masks and parses the stretches inside it, on every
+ *     reconnect tick of a broker actor — so it is held to the same growth.
  *   - `resolveStaticPath` runs over the decoded remainder of a request path.
  *   - `addressMatchesPins` runs over a hostname from a DNS or Kubernetes API
  *     response (`DnsSeedProvider`, `KubernetesApiSeedProvider`).
@@ -55,7 +58,7 @@
  *     closes the gap to the defect this file exists to catch.
  */
 import { describe, expect, test } from 'bun:test';
-import { redactUrlCredentials } from '../../src/util/RedactUrlCredentials.js';
+import { redactUrlCredentials, redactedUrlLabel } from '../../src/util/RedactUrlCredentials.js';
 import { addressMatchesPins, parseAddressPin } from '../../src/util/CidrMatch.js';
 import { resolveStaticPath } from '../../src/http/static/StaticPath.js';
 import { stripSurrounding, stripTrailing } from '../../src/util/StripCharacters.js';
@@ -185,6 +188,54 @@ describe('scans over remote input are linear (#1198)', () => {
     expectLinearGrowth(
       'redactUrlCredentials (unterminated authority)',
       measureGrowth((size) => `https://${'a'.repeat(size)}`, (input) => redactUrlCredentials(input)),
+    );
+  }, MEASUREMENT_TIMEOUT_MS);
+
+  test('redactUrlCredentials — a userinfo that runs on past line breaks', () => {
+    // A secret read from a file keeps the scan going past its newline
+    // (#1458), so a value of nothing but line breaks and `@`s is one long
+    // userinfo, and one with a `://` on every line is many short ones.
+    expectLinearGrowth(
+      'redactUrlCredentials (line breaks)',
+      measureGrowth((size) => `https://u${'\n@'.repeat(size / 2)}h`, (input) => redactUrlCredentials(input)),
+    );
+    expectLinearGrowth(
+      'redactUrlCredentials (a URL on every line)',
+      measureGrowth((size) => 'a://u\n@h\n'.repeat(Math.ceil(size / 9)), (input) => redactUrlCredentials(input)),
+    );
+  }, MEASUREMENT_TIMEOUT_MS);
+
+  test('redactedUrlLabel — one userinfo over a list, every stretch of it a question', () => {
+    // A configured endpoint, and the label is published on every reconnect
+    // tick (#1458).  One userinfo runs from the `://` to the last `@`, and
+    // each comma and each `/` inside it asks whether a host stood in front of
+    // it — a parse of that stretch.  `b:x` is no host, so no answer ends the
+    // walk early.
+    expectLinearGrowth(
+      'redactedUrlLabel (stretches inside one userinfo)',
+      measureGrowth(
+        (size) => `nats://${'u:p@h1:4222,a@b:x/'.repeat(Math.ceil(size / 17))}@h`,
+        (input) => redactedUrlLabel(input),
+      ),
+    );
+  }, MEASUREMENT_TIMEOUT_MS);
+
+  test('redactedUrlLabel — one userinfo of many short stretches, each a valid host', () => {
+    // Every comma asks whether the stretch in front of it is a host, and
+    // `a` is one — so a parse that re-read the userinfo from its start, not
+    // from the last comma, would read the whole growing prefix each time and
+    // succeed at the end of it.  An invalid stretch stops a parse early and
+    // hides exactly that cost.
+    expectLinearGrowth(
+      'redactedUrlLabel (valid host stretches)',
+      measureGrowth((size) => `nats://${'a,'.repeat(size / 2)}@h`, (input) => redactedUrlLabel(input)),
+    );
+  }, MEASUREMENT_TIMEOUT_MS);
+
+  test('redactedUrlLabel — a scheme-less list, one userinfo per entry', () => {
+    expectLinearGrowth(
+      'redactedUrlLabel (scheme-less entries)',
+      measureGrowth((size) => 'u:p/q@h1:4222,'.repeat(Math.ceil(size / 14)), (input) => redactedUrlLabel(input)),
     );
   }, MEASUREMENT_TIMEOUT_MS);
 

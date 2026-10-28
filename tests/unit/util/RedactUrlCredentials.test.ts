@@ -15,6 +15,7 @@ import {
   redactUrlCredentials,
   redactedUrlLabel,
 } from '../../../src/util/RedactUrlCredentials.js';
+import { releasedRedactedUrlLabel } from './RedactedUrlLabelV0170.fixture.js';
 
 describe('redactUrlCredentials', () => {
   // Mutable tuples on purpose: with `readonly` elements Bun's `test.each`
@@ -149,13 +150,35 @@ describe('redactUrlCredentials', () => {
    * `?` or `#`, and a password containing one printed whole — so the original
    * pattern stays as well, as the statement of what that move may do: mask
    * further, and nothing else.  Wherever the original masked, the grammar
-   * masks at least as far, which is `grammar(original(x)) === grammar(x)`.
-   * The generator is seeded, so a failure names a reproducible input rather
-   * than a number that never comes back.
+   * masks at least as far, which is `grammar(original(x)) === grammar(x)` —
+   * except where the original's userinfo holds a line break the line rule
+   * reads as the end of a line: one no `@` follows, with an `@` in front of
+   * it or a space or a tab behind it.  A userinfo ends on its own line since
+   * #1458 moved it past the `/`, and those are the inputs that move gave up,
+   * counted below.  The generator is seeded, so a failure names a
+   * reproducible input rather than a number that never comes back.
    */
   describe('behaviour is byte-identical to the grammar written as a regex (#1198, #1458)', () => {
-    /** A scheme, `://`, then everything up to the last `@` before the next `://`. */
-    const URL_USERINFO = /([A-Za-z][A-Za-z0-9+.-]*:\/\/)(?:(?!:\/\/)[\s\S])*@/g;
+    /**
+     * A scheme, `://`, then everything up to the last `@` before the next
+     * `://`, read across line breaks the way the scan reads them.  A run of
+     * breaks that an `@` follows is part of the userinfo; one that does not
+     * is too, but only in front of the first `@` — and from there on no space
+     * or tab may follow.  Hence two shapes: no such run at all, or one ahead
+     * of every `@` with no space or tab behind it.  A run is matched whole,
+     * which is what `(?![\r\n@])` and `(?=@)` behind `[\r\n]+` make sure of.
+     */
+    const URL_USERINFO = new RegExp(
+      '([A-Za-z][A-Za-z0-9+.-]*:\\/\\/)'
+      + '(?:'
+      + '(?:(?!:\\/\\/)[^\\r\\n@])*[\\r\\n]+(?![\\r\\n@])'
+      + '(?:(?!:\\/\\/)[^\\r\\n@ \\t]|[\\r\\n]+(?![\\r\\n@]))*'
+      + '(?:(?!:\\/\\/)[^\\r\\n \\t]|[\\r\\n]+(?=@))*'
+      + '|'
+      + '(?:(?!:\\/\\/)[^\\r\\n]|[\\r\\n]+(?=@))*'
+      + ')@',
+      'g',
+    );
 
     /** #1198's oracle: the authority ended at the first `/`, `?` or `#`. */
     const BEFORE_1458_URL_USERINFO = /([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/?#]*@/g;
@@ -169,12 +192,25 @@ describe('redactUrlCredentials', () => {
     }
 
     /**
+     * Whether a userinfo the original pattern masked holds a run of line
+     * breaks the line rule reads as the end of a line: one no `@` follows,
+     * with an `@` in front of it or a space or a tab behind it.
+     */
+    function originalUserinfoCrossesALine(value: string): boolean {
+      return [...value.matchAll(BEFORE_1458_URL_USERINFO)].some((match) => {
+        const userinfo = match[0].slice(match[1]!.length, -1);
+        return /@[^\r\n]*[\r\n]+[^\r\n@]|[\r\n]+(?=[^\r\n@])[\s\S]*[ \t]/.test(userinfo);
+      });
+    }
+
+    /**
      * The pattern's vocabulary, drawn as **tokens** rather than characters:
      * `://` has to appear as a unit or a random draw over single characters
      * almost never produces a URL at all, and a corpus of near-misses tests
-     * only the no-op path.
+     * only the no-op path.  The line breaks and the tab are what the line rule
+     * turns on.
      */
-    const TOKENS = ['://', '//', '@', 'a', 'A', 'ab', '1', '+', '.', '-', ':', '/', '?', '#', 'x', ' '];
+    const TOKENS = ['://', '//', '@', 'a', 'A', 'ab', '1', '+', '.', '-', ':', '/', '?', '#', 'x', ' ', '\n', '\r\n', '\r', '\t'];
 
     /** Scheme-legal characters — what `[A-Za-z0-9+.-]*` accepts. */
     const SCHEME_TOKENS = ['a', 'A', 'ab', '1', '+', '.', '-', 'x'];
@@ -182,9 +218,10 @@ describe('redactUrlCredentials', () => {
     /**
      * Userinfo-legal characters — everything but a `://`.  `/`, `?` and `#`
      * are in since #1458: they are what a pasted password carries, and what
-     * the original pattern stopped at.
+     * the original pattern stopped at.  So is a line break, which a secret
+     * read from a file ends with.
      */
-    const USERINFO_TOKENS = ['a', 'A', 'ab', '1', '+', '.', '-', ':', '@', 'x', ' ', '/', '?', '#'];
+    const USERINFO_TOKENS = ['a', 'A', 'ab', '1', '+', '.', '-', ':', '@', 'x', ' ', '/', '?', '#', '\n', '\t'];
 
     /** xorshift32 — a seeded generator, so a counter-example stays reachable. */
     function randomSequence(seed: number): () => number {
@@ -230,14 +267,20 @@ describe('redactUrlCredentials', () => {
       const maskedLessThanTheOriginal: string[] = [];
       let redacted = 0;
       let movedBy1458 = 0;
+      let lineBreaks = 0;
+      let givenUp = 0;
       for (let i = 0; i < 20_000; i++) {
         const input = generateInput(next);
         const expected = grammarRedaction(input);
         const actual = redactUrlCredentials(input);
         if (expected !== input) redacted++;
         if (expected !== before1458Redaction(input)) movedBy1458++;
+        if (/[\r\n]/.test(input) && expected !== input) lineBreaks++;
         if (actual !== expected) disagreements.push(input);
-        if (redactUrlCredentials(before1458Redaction(input)) !== actual) maskedLessThanTheOriginal.push(input);
+        if (redactUrlCredentials(before1458Redaction(input)) !== actual) {
+          if (originalUserinfoCrossesALine(input)) givenUp++;
+          else maskedLessThanTheOriginal.push(input);
+        }
       }
       // Sliced: five reproducible counter-examples are a diagnosis, twenty
       // thousand are a wall of text.
@@ -250,6 +293,11 @@ describe('redactUrlCredentials', () => {
       // And it has to reach the inputs #1458 is about, or agreeing with the
       // grammar proves no more than agreeing with the original did.
       expect(movedBy1458).toBeGreaterThan(2_000);
+      // Masked values that hold a line break — where the line rule decides —
+      // and the inputs the rule gives up, which have to exist for the
+      // exception above to be an exception rather than a blank cheque.
+      expect(lineBreaks).toBeGreaterThan(1_000);
+      expect(givenUp).toBeGreaterThan(0);
     });
 
     test('agrees on long adversarial shapes', () => {
@@ -269,6 +317,10 @@ describe('redactUrlCredentials', () => {
         `https://u${'/?#'.repeat(1_000)}@host`,
         `${'https://h/a@b '.repeat(500)}`,
         `${'a://'.repeat(1_000)}u@h`,
+        // -- the line rule: line breaks with and without indentation behind them
+        `https://u${'\n@'.repeat(1_000)}host`,
+        `https://u${'\n @'.repeat(1_000)}host`,
+        `${'a://u@h\n    at f (/x/@s/y)\n'.repeat(300)}`,
       ];
       for (const shape of shapes) {
         expect(redactUrlCredentials(shape)).toBe(grammarRedaction(shape));
@@ -475,44 +527,53 @@ describe('redactedUrlLabel', () => {
     ['nats://u:SECRET1@n1.example,nats://u:SECRET2@n2.example', 'nats://***@n1.example,nats://***@n2.example'],
     ['u:SECRET1@h1:4222,nats://u:SECRET2@h2:4222', '***@h1:4222,nats://***@h2:4222'],
     // A path on the first entry ended its authority, so the parse succeeded
-    // and read the scheme-less second entry as more path.  The first host
-    // goes too since a password may hold a comma: `h1:4222/x,u:SECRET2` is
-    // byte for byte such a password, with a `/` in it as well, and what is
-    // left is one URL (see the describe on commas below).
-    ['nats://h1:4222/x,u:SECRET2@h2:4222', 'nats://h2:4222'],
+    // and read the scheme-less second entry as more path.  Both hosts go now:
+    // `h1:4222/x,u:SECRET2` is byte for byte a password with a comma and a `/`
+    // in it, and also a valid URL for `h1:4222` — `h2` is right for neither
+    // reading alone, so no host is named (see the describe on an `@` past the
+    // host below).
+    ['nats://h1:4222/x,u:SECRET2@h2:4222', 'nats://***'],
     // -- what the JetStream actors build: `nats://` in front of that list
     ['nats://nats://u:SECRET1@h1:4222', 'nats://nats://***@h1:4222'],
     ['nats://nats://u:SECRET1@h1:4222,nats://u:SECRET2@h2:4222', 'nats://nats://***@h1:4222,nats://***@h2:4222'],
     ['nats://nats://u:SECRET1@h1:4222,nats://u:SECRET2@h2:4222/kv/orders', 'nats://nats://***@h1:4222,nats://***@h2:4222/kv/orders'],
     // The property below, on the unfixed tree: its first counterexample
-    // (seed 1424, unshrunk because the suite ends on the first failure).
+    // (seed 1424, unshrunk because the suite ends on the first failure).  The
+    // first entry's userinfo runs to the last `@` — a comma is no bound, or a
+    // password with an `@` in front of one prints the rest — and in front of
+    // its `/` lies a valid authority, so no host is named (#1458).
     [
       'nats://redis://TOKEN0@10.0.0.4:39378/kv/orders,:SECRET1@10.0.0.4?token=QUERYSECRET',
-      'nats://redis://***@10.0.0.4:39378/kv/orders,***@10.0.0.4',
+      'nats://redis://***',
     ],
     // -- a secret with an unescaped `/`, `?` or `#` in it (found while
     //    #1458).  The parse fails on all of these, and the scan behind it
     //    ended the userinfo at the delimiter: the first two printed the whole
-    //    password, the rest everything up to the `?` or `#`.
+    //    password, the rest everything up to the `?` or `#`.  Behind a `/`
+    //    where `pa` is no port, the scan's reading is the only one and its
+    //    host is named; behind a `?` or `#` the same bytes are a query or a
+    //    fragment, which the label never shows, so it ends at the mask.
     ['amqp://user:pa/PW1@host:5672/vhost', 'amqp://host:5672/vhost'],
     ['https://user:pa/PW1@host/feed', 'https://host/feed'],
-    ['amqp://user:pa?PW1@host:5672/vhost', 'amqp://host:5672/vhost'],
-    ['amqp://user:pa#PW1@host:5672/vhost', 'amqp://host:5672/vhost'],
-    ['redis://:pa#PW1@cache:6379/0', 'redis://cache:6379/0'],
-    ['user:pa#PW1@h1:4222', '***@h1:4222'],
-    ['a:pa#PW1@h1:4222,b:pb/PW2@h2:4222', '***@h1:4222,***@h2:4222'],
+    ['amqp://user:pa?PW1@host:5672/vhost', 'amqp://***'],
+    ['amqp://user:pa#PW1@host:5672/vhost', 'amqp://***'],
+    ['redis://:pa#PW1@cache:6379/0', 'redis://***'],
+    ['user:pa#PW1@h1:4222', '***'],
+    ['a:pa#PW1@h1:4222,b:pb/PW2@h2:4222', '***'],
+    ['a:pa/PW1@h1:4222,b:pb/PW2@h2:4222', '***@h1:4222,***@h2:4222'],
     // And these the parse accepted, which put the secret into the host, port
     // and path the label is built from: a numeric front reads as a port, a
-    // token as a host.
-    ['amqp://user:12/PW1@host:5672/vhost', 'amqp://host:5672/vhost'],
-    ['amqp://user:12#PW1@host:5672/vhost', 'amqp://host:5672/vhost'],
-    ['libsql://tok/en@db.turso.io', 'libsql://db.turso.io'],
+    // token as a host.  Both readings are valid URLs, for different hosts, so
+    // the label names neither.
+    ['amqp://user:12/PW1@host:5672/vhost', 'amqp://***'],
+    ['amqp://user:12#PW1@host:5672/vhost', 'amqp://***'],
+    ['libsql://tok/en@db.turso.io', 'libsql://***'],
     // The property below, extended over that alphabet, on the unfixed tree:
     // its first counterexample (seed 1424, unshrunk).  The label came back as
     // `nats://redis://TOKEN0` — the token, and not the second server.
     [
       'nats://redis://TOKEN0?TAIL0N0?TAIL0N1@10.0.0.4:39378/kv/orders,tls://TOKEN1@[::1]:29713',
-      'nats://redis://***@10.0.0.4:39378/kv/orders,tls://***@[::1]:29713',
+      'nats://redis://***',
     ],
   ];
 
@@ -572,8 +633,11 @@ describe('redactedUrlLabel', () => {
    * ones nobody did.  Each entry carries its own markers where a credential
    * goes, the entries are joined the ways the broker actors join them — with
    * or without the `nats://` the JetStream actors put in front — and no
-   * marker may reach the label, while every host has to: "replace it all
-   * with ***" satisfies the first half and fails the second.
+   * marker may reach the label, while every host the label names has to be
+   * one of the list's.  A list that leaves nothing to read two ways — each
+   * entry opened by its own `scheme://`, or none, and no delimiter in any
+   * secret — has to keep every host: "replace it all with ***" satisfies the
+   * first two laws and fails that one.
    *
    * Since #1458 a secret is drawn over the delimiters too: an unescaped `/`,
    * `?` or `#` between fragments that are markers of their own, behind a
@@ -584,15 +648,15 @@ describe('redactedUrlLabel', () => {
    *
    * And over a comma, wherever a `://` opens the entry (found while #1458):
    * the scheme-form userinfo of the whole list is masked before the list is
-   * split, so a comma in front of the first `@` can no longer cut a password
-   * in two.  A scheme-less entry has nothing that says where its userinfo
-   * begins, so a comma in its password reads as a list separator to any rule
-   * and none is drawn there.  The same reading has a price in hosts: an entry
-   * a `://` opens and no credential follows, trailed by scheme-less entries up
-   * to one that carries a credential, is that credential's userinfo — byte
-   * for byte a password with a comma in it — so those hosts are not asserted.
+   * split, so a comma can no longer cut a password in two.  A scheme-less
+   * entry has nothing that says where its userinfo begins, so a comma in its
+   * password reads as a list separator to any rule and none is drawn there.
+   * The same reading has a price in hosts, which is why only the lists above
+   * are held to keeping them: a userinfo runs to the last `@` before the next
+   * `://`, past every comma, so an entry with no scheme of its own and a
+   * credential takes the hosts in front of it back to the last `://` with it.
    */
-  test('no credential reaches the label and every host does, for any joined server list', () => {
+  test('no credential reaches the label and no host is invented, for any joined server list', () => {
     const entryArbitrary = fc.record({
       scheme: fc.constantFrom('', 'nats://', 'tls://', 'redis://'),
       credential: fc.constantFrom('none', 'token', 'user-and-password', 'password-only'),
@@ -633,25 +697,303 @@ describe('redactedUrlLabel', () => {
       const query = list.query ? '?token=QUERYSECRET,QUERYTAIL' : '';
       const label = redactedUrlLabel(`${prefix}${rendered.join(list.separator)}${query}`);
       for (const marker of markers) expect(label).not.toContain(marker);
-      // The hosts the comma reading takes with it, worked out from the list
-      // rather than from the label: an opened entry with no credential, and
-      // every scheme-less one after it, up to the first with a credential.
-      const taken = new Set<number>();
-      list.entries.forEach((entry, index) => {
-        if (!opened(index) || entry.credential !== 'none') return;
-        for (let next = index + 1; next < list.entries.length; next++) {
-          if (opened(next)) return;
-          if (list.entries[next]!.credential === 'none') continue;
-          for (let held = index; held < next; held++) taken.add(held);
-          return;
-        }
-      });
-      list.entries.forEach((entry, index) => {
-        if (!taken.has(index)) expect(label).toContain(entry.host);
-      });
+      const hosts = list.entries.map((entry) => `${entry.host}${entry.port === null ? '' : `:${entry.port}`}`);
+      for (const host of presentedHosts(label)) expect(hosts).toContain(host);
+      const plain = list.entries.every((entry) => entry.secretDelimiters.length === 0);
+      const allOpened = list.entries.every((entry) => entry.scheme !== '');
+      const noneOpened = !list.jetStreamPrefix && list.entries.every((entry) => entry.scheme === '');
+      if (plain && (allOpened || noneOpened)) {
+        for (const entry of list.entries) expect(label).toContain(entry.host);
+      }
     }));
   });
 });
+
+/** mulberry32 — a seeded generator, so a counterexample names a reproducible draw. */
+function mulberry32(seed: number): () => number {
+  let state = seed;
+  return () => {
+    state |= 0;
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
+  };
+}
+
+/** The markers of `markers` that `label` shows, compared the way a reader would: case-insensitively. */
+function shownMarkers(label: string, markers: readonly string[]): string[] {
+  const lowered = label.toLowerCase();
+  return markers.filter((marker) => lowered.includes(marker.toLowerCase()));
+}
+
+/**
+ * The label against the one v0.17.0 shipped (#1458).
+ *
+ * The work on #1458 rewrote `redactedUrlLabel` three times after the release,
+ * each rewrite masking further for the shapes it was written for — and one of
+ * them printed part of a password the release had hidden.  Splitting a list at
+ * a comma once an `@` had been seen labelled `amqp://user:a@b,c@host` as
+ * `amqp://***@b,***@host`, where v0.17.0, which read the authority to its last
+ * `@`, printed `amqp://host`; and a scheme-less entry behind a `scheme://` one
+ * was masked only to its first comma.  The tables above pin the shapes somebody
+ * thought of.  This holds the label to the release over generated server
+ * lists, credential by credential: a marker v0.17.0 kept out of its label
+ * stays out of this one.
+ *
+ * The generator is the one the regression was measured with, draw for draw and
+ * seed included, so its first count on the unfixed tree — draws where the
+ * release printed no credential and the label printed one — is the number the
+ * measurement reported.
+ */
+describe('redactedUrlLabel prints no credential v0.17.0 hid (#1458)', () => {
+  // What the measurement printed for each class, and what the release printed.
+  const releaseRegressions: Array<[string, string]> = [
+    // A password with an `@` in front of a comma: v0.17.0 printed `amqp://host`.
+    ['amqp://user:a@b,c@host', 'amqp://***@host'],
+    ['redis://S0AQ@S0BQ,S0CQ@n1.example/kv, https://10.0.0.4/kv', 'redis://***@n1.example/kv, https://10.0.0.4/kv'],
+    ['nats://:S0AQ@S0BQ,S0CQ@h1:4000,nats://S1AQ@[::1]', 'nats://***@h1:4000,nats://***@[::1]'],
+    // A scheme-less entry with a comma in its password, behind a `scheme://` one.
+    ['nats://S0AQ@[::1],U1Q:S1AQ,S1BQ,S1CQ@n1.example:4001', 'nats://***@n1.example:4001'],
+    ['amqp://U0Q:S0AQ@S0BQ@h1:4000,S1AQ,S1BQ@10.0.0.4?token=QT,QU', 'amqp://***@10.0.0.4'],
+  ];
+
+  test.each(releaseRegressions)('%p keeps every credential v0.17.0 hid', (input, expected) => {
+    expect(redactedUrlLabel(input)).toBe(expected);
+  });
+
+  test('the frozen v0.17.0 label is the release\'s — it hid these, and printed this one whole', () => {
+    // The oracle only proves something while it is the release: a copy that
+    // drifted towards the current label would agree with it for free.
+    expect(releasedRedactedUrlLabel('amqp://user:a@b,c@host')).toBe('amqp://host');
+    expect(releasedRedactedUrlLabel('amqp://user:a,b@host')).toBe('amqp://host');
+    expect(releasedRedactedUrlLabel('a:SECRET1@h1:4222')).toBe('a://SECRET1@h1:4222');
+    expect(releasedRedactedUrlLabel('amqp://user:pa/PW1@host:5672/vhost')).toBe('amqp://user:pa/PW1@host:5672/vhost');
+  });
+
+  test('over 200 000 generated server lists, no credential the release kept out of its label reaches this one', () => {
+    const random = mulberry32(0x39b5);
+    const pick = <T>(choices: readonly T[]): T => choices[Math.floor(random() * choices.length)]!;
+    let releaseCleanLabelLeaks = 0;
+    let releaseHidSome = 0;
+    const regressions: string[] = [];
+    for (let draw = 0; draw < 200_000; draw++) {
+      const entries = 1 + Math.floor(random() * 3);
+      const markers: string[] = [];
+      const parts: string[] = [];
+      for (let entry = 0; entry < entries; entry++) {
+        const scheme = pick(['', 'nats://', 'amqp://', 'redis://', 'https://']);
+        const kind = pick(['none', 'user-and-password', 'token', 'password-only']);
+        let credential = '';
+        if (kind !== 'none') {
+          const pieces = 1 + Math.floor(random() * 3);
+          let secret = '';
+          for (let piece = 0; piece < pieces; piece++) {
+            const marker = `S${entry}${String.fromCharCode(65 + piece)}Q`;
+            markers.push(marker);
+            secret += (piece === 0 ? '' : pick([',', '@', '/', '?', '#', ':', ',', '@'])) + marker;
+          }
+          const user = `U${entry}Q`;
+          if (kind === 'user-and-password') {
+            markers.push(user);
+            credential = `${user}:${secret}@`;
+          } else if (kind === 'token') {
+            credential = `${secret}@`;
+          } else {
+            credential = `:${secret}@`;
+          }
+        }
+        const host = pick(['h1', 'n1.example', '10.0.0.4', '[::1]']);
+        const port = random() < 0.5 ? `:${4000 + entry}` : '';
+        const path = pick(['', '', '/kv']);
+        parts.push(`${scheme}${credential}${host}${port}${path}`);
+      }
+      const prefix = random() < 0.2 ? 'nats://' : '';
+      const value = `${prefix}${parts.join(pick([',', ', ']))}${random() < 0.2 ? '?token=QT,QU' : ''}`;
+      const shownByRelease = shownMarkers(releasedRedactedUrlLabel(value), markers);
+      const shown = shownMarkers(redactedUrlLabel(value), markers);
+      if (shownByRelease.length < markers.length) releaseHidSome++;
+      if (shownByRelease.length === 0 && shown.length > 0) releaseCleanLabelLeaks++;
+      if (shown.some((marker) => !shownByRelease.includes(marker))) regressions.push(value);
+    }
+    // Sliced: five reproducible counterexamples are a diagnosis.
+    expect({ releaseCleanLabelLeaks, regressions: regressions.length, first: regressions.slice(0, 5) })
+      .toEqual({ releaseCleanLabelLeaks: 0, regressions: 0, first: [] });
+    // The comparison proves something only where the release hid a credential.
+    expect(releaseHidSome).toBeGreaterThan(50_000);
+  }, 30_000);
+});
+
+/**
+ * An `@` past the host never names another host (#1458).
+ *
+ * The scan reads up to the last `@` before the next `://` as userinfo, because
+ * a pasted password carries `/`, `?` and `#` as they are.  The label rebuilt
+ * itself from a parse of what the scan left, and the parse drops a userinfo —
+ * so `https://user:pass@hooks.example/notify?to=ops@example.com` was labelled
+ * `https://example.com/`: a different host, with nothing to say a mask had
+ * been applied, in the field the broker lifecycle events and the WebSocket
+ * client's warning hand on as the connection's identity.  The same string read
+ * as WHATWG reads it is a valid URL for `hooks.example`, and read as the scan
+ * reads it a password ending in `ops`: no host can be named that is right for
+ * both, so none is, and `***` says why.  And what follows that `@` sits behind
+ * a `?`, which the release always cut — a query token with an `@` in it gave
+ * its tail to the label as a host.
+ */
+describe('an "@" past the host never names another host (#1458)', () => {
+  const masked: Array<[string, string]> = [
+    // -- http: a credentialed URL, and two with no credential at all
+    ['https://user:pass@hooks.example/notify?to=ops@example.com', 'https://***'],
+    ['https://host/a@b', 'https://***'],
+    ['https://registry.npmjs.org/@types%2fnode', 'https://***'],
+    // -- ws: an `@` in the path, and one inside a query token
+    ['wss://user:pass@chat.example.com/rooms/@general', 'wss://***'],
+    ['wss://chat.example.com/rooms/@general', 'wss://***'],
+    ['wss://feed.example.com/ws?token=QUERYHEAD@QUERYTAIL', 'wss://***'],
+    // -- amqp: an `@` in the vhost, and a password whose front is a valid port
+    ['amqp://user:pass@rabbit:5672/@orders', 'amqp://***'],
+    ['amqp://user:12/PW1@host:5672/vhost', 'amqp://***'],
+    // -- nats: an `@` in the query, and a credential-free entry with a path in
+    //    front of a credentialed one
+    ['nats://user:pass@h1:4222?name=ops@example.com', 'nats://***'],
+    ['nats://h1:4222/x,u:SECRET2@h2:4222', 'nats://***'],
+    // -- how WHATWG finds a special scheme's authority: past any `/` and `\`
+    //    behind the `://`, and up to a `\` as well as a `/`
+    ['https:///host/a@b', 'https://***'],
+    ['https://user:12\\PW1@host/feed', 'https://***'],
+    // -- a scheme-less entry: a host and port in front of a `/`
+    ['memuser:SECRET1@cache:11211/@x', '***'],
+  ];
+
+  test.each(masked)('%p is labelled with no host rather than a wrong one', (input, expected) => {
+    expect(redactedUrlLabel(input)).toBe(expected);
+  });
+
+  // Where only one reading is a URL at all, its host is the URL's host and is
+  // named: `user:pa` is not a host and a port, so `pa/PW1` is a password.
+  const named: Array<[string, string]> = [
+    ['amqp://user:pa/PW1@host:5672/vhost', 'amqp://host:5672/vhost'],
+    ['https://user:pa/PW1@host/feed', 'https://host/feed'],
+    // A `\` ends no authority of a scheme that is not special.
+    ['amqp://user:12\\PW1@host:5672/vhost', 'amqp://host:5672/vhost'],
+    ['wss://reader:hunter2@feed.example.com/ws/orders?token=s3cr3t', 'wss://feed.example.com/ws/orders'],
+    ['nats://u:p1@h1:4222,nats://u:p2@h2:4222', 'nats://***@h1:4222,nats://***@h2:4222'],
+    // The space a `, ` join leaves stays where it was.
+    ['a:SECRET1@h1:4222, b:SECRET2@h2:4222', '***@h1:4222, ***@h2:4222'],
+  ];
+
+  test.each(named)('%p names its own host', (input, expected) => {
+    expect(redactedUrlLabel(input)).toBe(expected);
+  });
+
+  test('the last "@" ends a scheme-less userinfo too, not the first', () => {
+    // A password with an `@` in it, the way memjs takes a server entry.  Ending
+    // the userinfo at the first `@` would print the rest of it as the host.
+    expect(redactedUrlLabel('user:pa@SECRET@host')).toBe('***@host');
+    expect(redactedUrlLabel('memuser:p@SECRET@cache:11211,memuser:q@SECRET2@cache2:11211'))
+      .toBe('***@cache:11211,***@cache2:11211');
+  });
+
+  /**
+   * The law over generated values: no marker the release kept out of its
+   * label — a userinfo fragment, or a query or fragment token — reaches this
+   * one, and every host the label names is one of the value's own.  Both laws
+   * hold for a label that names nothing, so a third one holds the label to
+   * naming: a single URL that leaves nothing to read two ways — no delimiter
+   * in its secret, no `@` behind its host — keeps exactly its host.
+   */
+  test('over 100 000 generated values, no hidden token is shown and no host is invented', () => {
+    const random = mulberry32(1458);
+    const pick = <T>(choices: readonly T[]): T => choices[Math.floor(random() * choices.length)]!;
+    const leaks: string[] = [];
+    const invented: string[] = [];
+    const unnamed: string[] = [];
+    let plainSingles = 0;
+    for (let draw = 0; draw < 100_000; draw++) {
+      const entries = 1 + Math.floor(random() * 3);
+      const markers: string[] = [];
+      const hosts = new Set<string>();
+      const parts: string[] = [];
+      // Whether the value can be read two ways: a delimiter in a secret, or an
+      // `@` behind a host.
+      let ambiguous = false;
+      for (let entry = 0; entry < entries; entry++) {
+        const scheme = pick(['', 'nats://', 'amqp://', 'redis://', 'https://', 'wss://']);
+        const kind = pick(['none', 'none', 'user-and-password', 'token', 'password-only']);
+        // A scheme-less entry has nothing that says where its userinfo
+        // begins, so a comma in its password reads as a list separator to any
+        // rule, and the half in front of it is out of reach (the label's own
+        // documentation says so): no comma is drawn there.
+        const delimiters = scheme === '' ? ['@', '/', '?', '#', ':'] : [',', '@', '/', '?', '#', ':'];
+        let credential = '';
+        if (kind !== 'none') {
+          let secret = '';
+          const pieces = 1 + Math.floor(random() * 3);
+          for (let piece = 0; piece < pieces; piece++) {
+            const marker = `S${entry}${String.fromCharCode(65 + piece)}Q`;
+            markers.push(marker);
+            if (piece > 0) ambiguous = true;
+            secret += (piece === 0 ? '' : pick(delimiters)) + marker;
+          }
+          markers.push(`U${entry}Q`);
+          credential = kind === 'user-and-password' ? `U${entry}Q:${secret}@`
+            : kind === 'token' ? `${secret}@` : `:${secret}@`;
+        }
+        const host = pick(['h1', 'n1.example', '10.0.0.4', '[::1]']);
+        const port = random() < 0.5 ? `:${4000 + entry}` : '';
+        hosts.add(`${host}${port}`);
+        // Words behind an `@` in a path that must never be named as a host.
+        const path = pick(['', '', '/kv', '/rooms/@general', '/a@other.example', '/@scope/x']);
+        if (path.includes('@')) ambiguous = true;
+        parts.push(`${scheme}${credential}${host}${port}${path}`);
+      }
+      // A query or fragment token is a credential too: the label drops the
+      // query because a `?token=` is where one goes when the userinfo does not
+      // carry it.
+      const tail = pick(['', '', '?token=Q0Q', '?token=Q0Q@Q1Q', '?to=ops@mail.example', '#F0Q@F1Q']);
+      if (tail.includes('@')) ambiguous = true;
+      markers.push('Q0Q', 'Q1Q', 'F0Q', 'F1Q');
+      const prefix = random() < 0.2 ? 'nats://' : '';
+      const value = `${prefix}${parts.join(pick([',', ', ']))}${tail}`;
+      const label = redactedUrlLabel(value);
+      const shownByRelease = shownMarkers(releasedRedactedUrlLabel(value), markers);
+      if (shownMarkers(label, markers).some((marker) => !shownByRelease.includes(marker))) leaks.push(value);
+      const presented = presentedHosts(label);
+      if (presented.some((host) => !hosts.has(host))) invented.push(`${value} -> ${label}`);
+      if (entries === 1 && prefix === '' && !ambiguous && parts[0]!.includes('://')) {
+        plainSingles++;
+        if (presented.length !== 1 || !hosts.has(presented[0]!)) unnamed.push(`${value} -> ${label}`);
+      }
+    }
+    expect({ leaks: leaks.slice(0, 5), invented: invented.slice(0, 5), unnamed: unnamed.slice(0, 5) })
+      .toEqual({ leaks: [], invented: [], unnamed: [] });
+    // The third law proves something only over enough single URLs (3 253 of
+    // the 100 000 draws under this seed).
+    expect(plainSingles).toBeGreaterThan(3_000);
+  }, 30_000);
+});
+
+/**
+ * The hosts a label names: for each comma-separated entry, what follows its
+ * schemes and its `***@` up to the path.  An entry that ends in a bare `***`
+ * names none — that is the label saying it could not tell.
+ */
+function presentedHosts(label: string): string[] {
+  const hosts: string[] = [];
+  for (const entry of label.split(',')) {
+    let rest = entry.trimStart();
+    for (;;) {
+      const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.exec(rest);
+      if (scheme === null) break;
+      rest = rest.slice(scheme[0].length);
+    }
+    if (rest.startsWith('***@')) rest = rest.slice(4);
+    if (rest === '' || rest.startsWith('***')) continue;
+    const slash = rest.indexOf('/');
+    hosts.push(slash === -1 ? rest : rest.slice(0, slash));
+  }
+  return hosts;
+}
 
 describe('redactErrorCredentials (#1388)', () => {
   test('masks the userinfo in the message, the stack and a string property', () => {
@@ -732,6 +1074,146 @@ describe('redactErrorCredentials (#1388)', () => {
     expect(redacted.message).toBe('socket hang up');
     expect(redacted.stack).toBe(original.stack);
   });
+
+  /**
+   * Found while #1458.  A copy answers through the original's prototype, and
+   * for a `DOMException` that is the problem: `name`, `message` and `code`
+   * are getters reading slots only the `DOMException` constructor fills, so on
+   * a plain `Error` given that prototype they throw — on Bun, Node and Deno
+   * alike.  `fetch` rejects with one when its request is aborted, which is how
+   * `HttpClient`'s deadline and `SseActor`'s connect deadline end a request,
+   * and Deno's `WebSocket` throws one whose message names the URL.
+   */
+  test('a credential-free error comes back as itself, nested errors included', () => {
+    const plain = new Error('socket hang up');
+    expect(redactErrorCredentials(plain)).toBe(plain);
+    const caused = new Error('reconnect failed', { cause: new Error('connect ECONNREFUSED 10.0.0.1:5672') });
+    expect(redactErrorCredentials(caused)).toBe(caused);
+    const aggregate = new AggregateError([new Error('a'), new Error('b')], 'all connection attempts failed');
+    expect(redactErrorCredentials(aggregate)).toBe(aggregate);
+  });
+
+  test('an AbortError comes back answering its name', () => {
+    const abort = new DOMException('The operation was aborted.', 'AbortError');
+    const redacted = redactErrorCredentials(abort);
+    expect(redacted.name).toBe('AbortError');
+    expect(redacted).toBeInstanceOf(DOMException);
+  });
+
+  test('a DOMException that names a credentialed URL is masked and still answers name and code', () => {
+    const invalid = new DOMException("Invalid URL: 'ws://user:hunter2@exa mple.com/ws'", 'SyntaxError');
+    const redacted = redactErrorCredentials(invalid);
+    expect(redacted.message).toBe("Invalid URL: 'ws://***@exa mple.com/ws'");
+    expect(redacted.name).toBe('SyntaxError');
+    expect((redacted as DOMException).code).toBe(DOMException.SYNTAX_ERR);
+    expect(redacted).toBeInstanceOf(DOMException);
+    expect(invalid.message).toContain('hunter2');
+  });
+});
+
+/**
+ * A userinfo ends on its own line (#1458).
+ *
+ * Once the userinfo ran past `/`, `?` and `#` to the last `@` before the next
+ * `://`, it also ran across line breaks — and every frame of a driver from a
+ * scoped package carries an `@`.  On Bun the stack is an own data property,
+ * so `redactErrorCredentials` scans it, and a credential-free error came back
+ * with its target and its first frame folded into one `***`.  `BrokerActor`
+ * publishes that copy as the cause of a disconnect.  Before #1458 the first
+ * `/` of the first frame ended the scan.
+ *
+ * A line break is no part of a URL, but it is part of a secret read from a
+ * file — the trailing newline — so the scan does not simply stop there: past
+ * a line break it stops at the first space or tab, where a stack frame and a
+ * line of prose begin and a secret pasted into a URL does not.
+ */
+describe('a userinfo ends on its own line (#1458)', () => {
+  // A driver error as Bun on Linux renders it: POSIX paths, and an `@` in
+  // every frame of a scoped package.
+  const frames = [
+    '    at dial (/app/node_modules/@nats-io/transport-node/lib/connect.js:8:27)',
+    '    at connect (/app/node_modules/@nats-io/transport-node/lib/connect.js:4:10)',
+    '    at connectImplementation (/app/node_modules/actor-ts/dist/io/broker/NatsActor.js:120:5)',
+  ];
+
+  /** An error whose stack is the given lines, held the way Bun holds it: as an own data property. */
+  function errorWithStack(message: string, stack: string): Error {
+    const error = new Error(message);
+    Object.defineProperty(error, 'stack', { value: stack, writable: true, configurable: true, enumerable: false });
+    return error;
+  }
+
+  test('a credential-free driver error comes back byte for byte, stack included', () => {
+    const stack = ['Error: connect ECONNREFUSED nats://h1:4222', ...frames].join('\n');
+    const redacted = redactErrorCredentials(errorWithStack('connect ECONNREFUSED nats://h1:4222', stack));
+    expect(redacted.message).toBe('connect ECONNREFUSED nats://h1:4222');
+    expect(redacted.stack).toBe(stack);
+  });
+
+  test('a credential in the message is masked on its own line, and the frames stay', () => {
+    const stack = ['Error: connect ECONNREFUSED amqp://svc:hunter2@rabbit:5672', ...frames].join('\n');
+    const redacted = redactErrorCredentials(errorWithStack('connect ECONNREFUSED amqp://svc:hunter2@rabbit:5672', stack));
+    expect(redacted.stack).toBe(['Error: connect ECONNREFUSED amqp://***@rabbit:5672', ...frames].join('\n'));
+  });
+
+  test('a line of prose after the URL is no part of it, with CRLF line endings too', () => {
+    for (const lineBreak of ['\n', '\r\n']) {
+      const message = `connect ECONNREFUSED amqp://svc:hunter2@rabbit:5672${lineBreak}retrying as ops@backup`;
+      expect(redactUrlCredentials(message))
+        .toBe(`connect ECONNREFUSED amqp://***@rabbit:5672${lineBreak}retrying as ops@backup`);
+      expect(redactUrlCredentials(`connect nats://h1:4222${lineBreak}retrying as ops@backup`))
+        .toBe(`connect nats://h1:4222${lineBreak}retrying as ops@backup`);
+    }
+  });
+
+  test('a secret read from a file keeps its trailing newline masked', () => {
+    // `amqp://user:${readFileSync(secretFile)}@rabbit` — the newline is the
+    // file's, WHATWG drops it, and a driver that does not fails to connect, so
+    // the reconnect loop prints the URL on every tick.
+    for (const [input, expected] of [
+      ['amqp://user:s3cr3t\n@rabbit:5672/vhost', 'amqp://***@rabbit:5672/vhost'],
+      ['amqp://user:s3cr3t\r\n@rabbit:5672/vhost', 'amqp://***@rabbit:5672/vhost'],
+      // With a `/` in it as well, as a base64 password often has.
+      ['amqp://user:aB3/xY+z\n@rabbit:5672/vhost', 'amqp://***@rabbit:5672/vhost'],
+      // The user name read from a file instead.
+      ['amqp://alice\n:s3cr3t@rabbit:5672/vhost', 'amqp://***@rabbit:5672/vhost'],
+    ] as const) {
+      expect(redactUrlCredentials(input)).toBe(expected);
+    }
+  });
+
+  test('a tab or a space after a line break ends the scan the same way', () => {
+    for (const indent of [' ', '\t']) {
+      const stack = `Error: connect nats://h1:4222\n${indent}at dial (/app/node_modules/@nats-io/x.js:1:2)`;
+      expect(redactUrlCredentials(stack)).toBe(stack);
+    }
+  });
+
+  test('a masked line keeps the next line whole, whatever that line starts with', () => {
+    // Once an `@` has been seen the userinfo already has an end on its own
+    // line, so a line break behind it ends the scan — an unindented line of
+    // prose or a second JSON record with an `@` in it is no part of it.
+    for (const lineBreak of ['\n', '\r\n']) {
+      expect(redactUrlCredentials(`amqp://svc:hunter2@rabbit:5672${lineBreak}ops@example.com is not authorized`))
+        .toBe(`amqp://***@rabbit:5672${lineBreak}ops@example.com is not authorized`);
+      expect(redactUrlCredentials(`{"url":"amqp://u:hunter2@h"}${lineBreak}{"email":"ops@x"}`))
+        .toBe(`{"url":"amqp://***@h"}${lineBreak}{"email":"ops@x"}`);
+    }
+  });
+
+  test('a secret that a line break runs through is still masked whole', () => {
+    // `openssl base64` wraps at 64 columns, and a file can hold the secret on
+    // more than one line; a line break that an `@` or `:` follows is the end
+    // of a value read from a file, never the start of a line of prose.
+    for (const [input, expected] of [
+      ['amqp://user:QUJDREVG\nR0hJSktM\n@rabbit:5672/vhost', 'amqp://***@rabbit:5672/vhost'],
+      ['amqp://user:QUJDREVG\nR0hJSktM@rabbit:5672/vhost', 'amqp://***@rabbit:5672/vhost'],
+      ['amqp://user:p@ss\n@rabbit:5672/vhost', 'amqp://***@rabbit:5672/vhost'],
+      ['amqp://user:p@ss\r\n@rabbit:5672/vhost', 'amqp://***@rabbit:5672/vhost'],
+    ] as const) {
+      expect(redactUrlCredentials(input)).toBe(expected);
+    }
+  });
 });
 
 /**
@@ -760,7 +1242,10 @@ describe('a password with an unescaped "/", "?" or "#" in it (found while #1458)
   test.each(delimiters)('redactedUrlLabel keeps no fragment of a password containing %p', (delimiter) => {
     const label = redactedUrlLabel(urlWith(delimiter));
     for (const marker of markers) expect(label).not.toContain(marker);
-    expect(label).toBe('amqp://rabbit.example:5672/vhost');
+    // Behind a `/` the host is named — `USER:FRONT` is no host and port, so
+    // the scan's reading is the only one.  Behind a `?` or `#` the same bytes
+    // are a query or a fragment, which the label never shows (#1458).
+    expect(label).toBe(delimiter === '/' ? 'amqp://rabbit.example:5672/vhost' : 'amqp://***');
   });
 
   test.each(delimiters)('redactErrorCredentials keeps no fragment of a password containing %p', (delimiter) => {
@@ -780,20 +1265,21 @@ describe('a password with an unescaped "/", "?" or "#" in it (found while #1458)
   // A numeric front is the shape the WHATWG parse behind the label accepts
   // rather than rejects: `USER:12` reads as a host and a port, and the rest
   // of the password as a path, a query or a fragment.  The parse succeeding
-  // is what used to put the password into the label.
+  // is what used to put the password into the label — and it is also why no
+  // host is named: the same bytes are a valid URL for `USER:12` (#1458).
   test.each(delimiters)('a password with a numeric front and %p in it reaches no label', (delimiter) => {
-    expect(redactedUrlLabel(`amqp://USER:12${delimiter}BACK@rabbit.example:5672/vhost`))
-      .toBe('amqp://rabbit.example:5672/vhost');
-    expect(redactedUrlLabel(`https://USER:12${delimiter}BACK@feed.example/events`))
-      .toBe('https://feed.example/events');
+    expect(redactedUrlLabel(`amqp://USER:12${delimiter}BACK@rabbit.example:5672/vhost`)).toBe('amqp://***');
+    expect(redactedUrlLabel(`https://USER:12${delimiter}BACK@feed.example/events`)).toBe('https://***');
   });
 
   test.each(delimiters)('every entry of a joined list is masked by the same rule, with %p in each password', (delimiter) => {
     const password = `FRONT${delimiter}BACK`;
-    // The label splits a list at its commas and masks entry by entry, a
-    // scheme-less entry included.
-    expect(redactedUrlLabel(`nats://u:${password}@h1:4222,v:${password}@h2:4222,nats://w:${password}@h3:4222`))
-      .toBe('nats://***@h1:4222,***@h2:4222,nats://***@h3:4222');
+    const label = redactedUrlLabel(`nats://u:${password}@h1:4222,v:${password}@h2:4222,nats://w:${password}@h3:4222`);
+    for (const marker of ['FRONT', 'BACK']) expect(label).not.toContain(marker);
+    // A userinfo runs to the last `@` before the next `://`, past a comma, so
+    // the scheme-less entry's credential takes `h1` with it; the `***@` that
+    // stays says so.  Behind a `?` or `#` the label ends.
+    expect(label).toBe(delimiter === '/' ? 'nats://***@h2:4222,nats://***@h3:4222' : 'nats://***');
     // The scan has no list in mind, and needs none: the next `://` ends one
     // entry's userinfo.
     expect(redactUrlCredentials(`nats://u:${password}@h1:4222,nats://v:${password}@h2:4222`))
@@ -801,7 +1287,8 @@ describe('a password with an unescaped "/", "?" or "#" in it (found while #1458)
   });
 
   test.each(delimiters)('a scheme-less user:password@host with %p in the password reaches no label', (delimiter) => {
-    expect(redactedUrlLabel(`USER:FRONT${delimiter}BACK@cache.example:11211`)).toBe('***@cache.example:11211');
+    expect(redactedUrlLabel(`USER:FRONT${delimiter}BACK@cache.example:11211`))
+      .toBe(delimiter === '/' ? '***@cache.example:11211' : '***');
   });
 });
 
@@ -810,30 +1297,37 @@ describe('a password with an unescaped "/", "?" or "#" in it (found while #1458)
  * anything, so a password with a comma in it was cut in two, and the part in
  * front of the comma — an entry with no `@` in it — came back as it was:
  * `amqp://user:a,b@host` was labelled `amqp://user:a,***@host`.  The
- * scheme-form userinfo of the whole value is masked first now, by the scan
- * with one more stop: a comma once an `@` has been seen, which is where the
- * next entry of a credentialed list begins.
+ * scheme-form userinfo of the whole value is masked first now, by the scan,
+ * to the last `@` before the next `://` — past every comma, since a password
+ * with an `@` in front of its comma is byte for byte a credentialed list, and
+ * v0.17.0 hid it whole.  A comma behind which a list could go on keeps the
+ * `***@` in the label, so a reader can tell that hosts may be under it.
  */
 describe('a password with a comma in it (found while #1458)', () => {
   // Mutable tuples, for the same `test.each` typing reason as above.
   const labelled: ReadonlyArray<[string, string]> = [
+    // `user:a` is no host and port, so the comma is the password's own and
+    // the mask hid a userinfo only.
     ['amqp://user:a,b@host', 'amqp://host'],
     ['amqp://user:a,b@host:5672/vhost', 'amqp://host:5672/vhost'],
-    ['amqp://user:a,b,c@host', 'amqp://host'],
-    ['amqp://user:,@host', 'amqp://host'],
     ['amqp://user:a,b@host:5672/vhost?heartbeat=10', 'amqp://host:5672/vhost'],
     ['nats://nats://u:p,1@h1:4222', 'nats://nats://***@h1:4222'],
-    // In a list, a comma after the `@` still starts the next entry, so every
-    // host stays — a scheme-less entry behind it included.
+    // `b` and `user:` are valid hosts, so a list could go on behind them.
+    ['amqp://user:a,b,c@host', 'amqp://***@host'],
+    ['amqp://user:,@host', 'amqp://***@host'],
+    // Each entry opened by its own scheme keeps its host: the next `://` ends
+    // the userinfo in front of it.
     ['nats://u:p,1@h1:4222,nats://v:p,2@h2:4222', 'nats://***@h1:4222,nats://***@h2:4222'],
-    ['nats://u:p,1@h1:4222,v:p2@h2:4222', 'nats://***@h1:4222,***@h2:4222'],
     ['amqp://h1,amqp://user:a,b@h2', 'amqp://h1,amqp://***@h2'],
+    // A scheme-less entry behind one is part of its userinfo, up to its `@`.
+    ['nats://u:p,1@h1:4222,v:p2@h2:4222', 'nats://***@h2:4222'],
     // The joined-list property, extended over a comma, on the unfixed tree:
     // its first counterexample (the pinned seed, unshrunk).  The label came
-    // back with `TOKEN0/TAIL0N0` in it.
+    // back with `TOKEN0/TAIL0N0` in it.  In front of the `/` lies a valid
+    // authority, so no host is named.
     [
       'nats://redis://TOKEN0/TAIL0N0,TAIL0N1@10.0.0.4:39378/kv/orders,tls://TOKEN1@[::1]:29713',
-      'nats://redis://***@10.0.0.4:39378/kv/orders,tls://***@[::1]:29713',
+      'nats://redis://***',
     ],
   ];
 
@@ -845,19 +1339,25 @@ describe('a password with a comma in it (found while #1458)', () => {
     for (const front of ['FRONT', '12']) {
       const label = redactedUrlLabel(`amqp://USER:${front},BACK@rabbit.example:5672/vhost`);
       for (const marker of ['USER', front, 'BACK']) expect(label).not.toContain(marker);
-      expect(label).toBe('amqp://rabbit.example:5672/vhost');
+      // `USER:12` is a valid host and port, `USER:FRONT` is not.
+      expect(label).toBe(front === '12' ? 'amqp://***@rabbit.example:5672/vhost' : 'amqp://rabbit.example:5672/vhost');
     }
   });
 
-  test('a credentialed list keeps every host, as it did before', () => {
+  // The price of the release's reading, pinned so that it stays a decision:
+  // an entry with no scheme of its own and a credential takes the hosts in
+  // front of it, back to the last `://`, into its userinfo — exactly as
+  // `amqp://user:a@b,c@host` takes `b`, which has to stay hidden.
+  test('a credentialed list without a scheme on every entry keeps only the hosts the last "@" leaves', () => {
     expect(redactedUrlLabel('nats://u:P1@h1:4222,v:P2@h2:4222,nats://w:P3@h3:4222'))
-      .toBe('nats://***@h1:4222,***@h2:4222,nats://***@h3:4222');
+      .toBe('nats://***@h2:4222,nats://***@h3:4222');
+    expect(redactedUrlLabel('nats://h1:4222,u:SECRET2@h2:4222')).toBe('nats://***@h2:4222');
   });
 
-  // The price, pinned so that it stays a decision: an entry with no
-  // credential in front of a scheme-less one that has one is the same string
-  // as a password with a comma in it, and is labelled as that one URL.
-  test('a credential-free entry in front of a scheme-less credentialed one goes with its userinfo', () => {
-    expect(redactedUrlLabel('nats://h1:4222,u:SECRET2@h2:4222')).toBe('nats://h2:4222');
+  // The limit the documentation names, pinned so that the page stays true:
+  // with no `scheme://` in front, nothing says where the userinfo begins, and
+  // the comma reads as the list separator it usually is.
+  test('a scheme-less user:a,b@host keeps the half in front of its comma', () => {
+    expect(redactedUrlLabel('user:a,b@host')).toBe('user:a,***@host');
   });
 });

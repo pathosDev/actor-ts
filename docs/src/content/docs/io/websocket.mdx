@@ -226,7 +226,10 @@ The close is accompanied by one warning line.  It names the connection by
 a redacted label (`wss://feed.example.com/ws/orders`) rather than by
 `url`: the userinfo and the query string are stripped, since a WebSocket
 endpoint is commonly authenticated with a `?token=…`, and the path is kept
-because it is what tells two connections to the same host apart.  The same
+because it is what tells two connections to the same host apart.  A URL with
+an `@` past its host — in a path such as `/rooms/@general`, or in a query
+token — is labelled `wss://***` instead: the same bytes could be a password,
+and the host behind the `@` would then be the wrong one.  The same
 masking is available to your own code as
 [`redactedUrlLabel`](/reference/utility-helpers/).
 
