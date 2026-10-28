@@ -84,12 +84,14 @@ async function main(): Promise<void> {
   // than competing with it from a hand-rolled handler.
   //
   // Who removes a node that dies without leaving: with no strategy the
-  // failure detector only parks a silent node at `unreachable`, and its
-  // shards would stay stranded with it.  keep-majority lets the two
-  // survivors of three remove it once the view has held still for
-  // `stableAfterMs` — about 1.5 s + 3 s after the kill at these settings —
-  // and the minority side of a real partition removes itself instead of
-  // forking the cluster.  Ctrl+C is a graceful leave and needs none of it.
+  // failure detector removes a silent node itself at `downAfterMs` and the
+  // survivors take over its shards — but under a real partition both sides
+  // remove each other and run on as two clusters, each with its own copy of
+  // every shard.  keep-majority lets the two survivors of three remove it
+  // once the view has held still for `stableAfterMs` — about 1.5 s + 3 s
+  // after the kill at these settings — and the minority side of a real
+  // partition removes itself instead of forking the cluster.  Ctrl+C is a
+  // graceful leave and needs none of it.
   const bootstrapOptions = ClusterBootstrapOptions.create('counter-cluster')
     .withLogLevel(LogLevel.Info)
     .withHost(host)

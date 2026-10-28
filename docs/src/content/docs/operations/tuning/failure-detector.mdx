@@ -66,16 +66,22 @@ A node dies, but the cluster takes 10+ seconds to react.
 Singletons / sharded entities don't move for a long time.
 ```
 
-**Cause**: either nothing removes a crashed node, or
-`unreachableAfterMs` + the downing-strategy delay is too long.
-With no downing strategy and `failure-detector.auto-down` at its
-default `off`, the detector only parks a silent member at
-`unreachable`, and nothing moves until it comes back or someone
-downs it.
+**Cause**: either the crashed node is never removed, or its removal
+comes late.  With no downing strategy the detector removes a silent
+member at `downAfterMs` — `failure-detector.auto-down` is on by
+default — so failover takes `downAfterMs` plus the hand-off; with a
+strategy, `unreachableAfterMs` plus the strategy's `stable-after`.
+Under the
+opt-out `auto-down = off` with no strategy, the detector only parks
+the member at `unreachable`, and nothing moves until it comes back
+or someone downs it.
 
-**Fix**: first make sure something removes the node: a downing
-strategy (`split-brain-resolver.active-strategy`) or
-`failure-detector.auto-down = on`.  Then lower
+**Fix**: first make sure something removes the node: the default
+`failure-detector.auto-down = on`, or — the right choice for
+production, because the default forks the cluster under a real
+partition — a downing strategy such as `lease-majority`
+(`split-brain-resolver.active-strategy`, see
+[downing strategies](/cluster/downing-strategies/)).  Then lower
 `unreachableAfterMs` and `downAfterMs` proportionally, and with a
 strategy its `stable-after` too.
 

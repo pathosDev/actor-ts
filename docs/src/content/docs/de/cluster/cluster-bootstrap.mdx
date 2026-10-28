@@ -195,6 +195,18 @@ Join liest seinen eigenen Schlüssel, also entscheiden
 `actor-ts.logger.sinks.*` in der Datei genau so wie bei einem direkten
 `Cluster.join`.
 
+`failureDetectorAutoDown` ist das Feld, das man kennen sollte, wenn kein
+`downing` gesetzt ist.  Ungesetzt liest der Join
+`actor-ts.cluster.failure-detector.auto-down`, das `on` ausgeliefert wird:
+Der Failure Detector entfernt einen Peer, der über `down-after` hinaus still
+bleibt, und die überlebenden Nodes übernehmen seine Shards und Singletons.
+`false` ist das Opt-out, und im Code gesetzt gewinnt es gegen die Datei,
+der Failure Detector parkt den Peer dann stattdessen auf `unreachable`.  Das
+Beispiel unten konfiguriert `KeepMajority`, die Form, die ein
+Produktions-Deployment übernehmen sollte: Ohne Strategie entfernt bei einer
+echten Partition jede Seite die andere, und beide laufen als zwei Cluster
+weiter — siehe [Downing-Strategien](/de/cluster/downing-strategies/).
+
 ```ts
 import { ClusterBootstrapOptions, KeepMajority } from 'actor-ts/cluster';
 

@@ -316,7 +316,8 @@ Antwort ändert.
 | `minimum-members-before-up` nicht erreicht, und niemand antwortet | ja |
 | Ein Mitglied ist `up` | nein — dieser Leader befördert den Node |
 | Eine aufgeschobene `selfElection` steht noch aus | nein — und feuert sie, bildet der Node einen Cluster aus einem Mitglied |
-| `minimum-members-before-up` nicht erreicht, Peers vorhanden | nein — der Cluster wartet auf Mitglieder, er steckt nicht fest |
+| `minimum-members-before-up` nicht erreicht, lebende Peers vorhanden | nein — der Cluster wartet auf Mitglieder, er steckt nicht fest |
+| `minimum-members-before-up` nicht erreicht, die Peers, die geantwortet haben, sind seitdem gestorben | ja, sobald sie weg sind — vom Default bei `down-after` entfernt oder dort unter `failure-detector.auto-down = off` geparkt, was als weg zählt; ein Peer, der nur `unreachable` ist, vor `down-after`, zählt weiterhin als lebendig |
 
 Ein paar Details regeln die Ränder:
 

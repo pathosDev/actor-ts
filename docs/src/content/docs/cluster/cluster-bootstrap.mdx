@@ -187,6 +187,17 @@ key, so `actor-ts.cluster.app-version`, `split-brain-resolver.stable-after`
 or `actor-ts.logger.sinks.*` in the file decide exactly as they would on a
 direct `Cluster.join`.
 
+`failureDetectorAutoDown` is the one to know about when no `downing` is
+set.  Unset, the join reads `actor-ts.cluster.failure-detector.auto-down`,
+which ships `on`: the failure detector removes a peer that stays silent past
+`down-after`, and the surviving nodes take over its shards and singletons.
+`false` is the opt-out, and set in code it wins over the file, so the
+failure detector parks the peer at `unreachable` instead.  The sample below
+configures `KeepMajority`, the shape a production deployment should copy:
+with no strategy, a real partition leaves each side removing the other and
+running on as two clusters — see
+[downing strategies](/cluster/downing-strategies/).
+
 ```ts
 import { ClusterBootstrapOptions, KeepMajority } from 'actor-ts/cluster';
 

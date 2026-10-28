@@ -17,8 +17,11 @@
  * failover works when you kill the node currently holding the
  * HTTP singleton.  A killed node is removed by the keep-majority
  * strategy `application.conf` configures, about 4.5 s after it
- * dies; without a strategy the failure detector would only park it
- * at `unreachable` and nothing would take over its rooms.
+ * dies.  Without a strategy the failure detector would remove it
+ * itself at `down-after`, but a real network partition would then
+ * leave two chat clusters, each with its own HTTP singleton and its
+ * own copy of every room; keep-majority has the minority side remove
+ * itself instead.
  *
  * `main.ts` is purely wiring — every actor lives in its own file
  * under `actors/`, and the directive DSL routes (landing page, static
