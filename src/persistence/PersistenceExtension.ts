@@ -144,8 +144,8 @@ const journalBreakerClassifiers: Readonly<Record<JournalOperation, (error: Error
  * the load a recovery starts with — the one snapshot-store call an entity
  * cannot do without (#1496).  Saves and deletes are not counted: a store that
  * refuses writes and reads fine — a full disk, a quota, a missing write or
- * delete grant — serves every load, and counted, ten refused snapshots or
- * compactions opened the breaker and failed every recovery on the node, an
+ * delete grant — serves every load, and counted, ten refused saves or
+ * compactions opened the breaker and failed every recovery on the node: an
  * entity with `integrity()` or `encryption()` even under `snapshot-is-optional`,
  * which never tolerates a failed load for such an entity.
  */
