@@ -112,8 +112,45 @@ export class EntityRestartTick {
   constructor(readonly entityId: string) {}
 }
 
+/**
+ * "Stop, unless you still have work" — the region's empty-shard sweep asking
+ * a shard to go away (#1441).
+ *
+ * The region judges a shard empty by its own index, and that index lags the
+ * shard: an entity that a routed message or a recovery start has just created
+ * is reported only once the shard has run, behind the sweep's tick.  A stop
+ * sent on that view alone went in behind the very work the region had just
+ * handed over, and took it down with the shard.  So the shard has the last
+ * word: it reads the request behind everything it was sent first and stops
+ * only if it has nothing to lose; otherwise it answers
+ * {@link ShardPassivationDeclined} and goes on.
+ *
+ * A class rather than a `sharding.`-kinded object, for the reason
+ * {@link EntityStopTimeout} is one: nothing off the wire can be `instanceof`
+ * it, so no peer can stop another node's shard.  It names the shard it was
+ * meant for, which is what a dead letter shows when the shard was already gone.
+ */
+export class ShardPassivationRequest {
+  constructor(readonly shardId: number) {}
+}
+
+/**
+ * A shard's answer to a {@link ShardPassivationRequest} it did not honour: it
+ * still had work, so it keeps running and its region routes to it again
+ * (#1441).  A class for the request's reason.
+ */
+export class ShardPassivationDeclined {
+  constructor(readonly shardId: number) {}
+}
+
 /** Everything a shard can find in its mailbox, including system traffic. */
-export type ShardInbox = ShardMessage | Terminated | Passivate | EntityStopTimeout | EntityRestartTick;
+export type ShardInbox =
+  | ShardMessage
+  | Terminated
+  | Passivate
+  | EntityStopTimeout
+  | EntityRestartTick
+  | ShardPassivationRequest;
 
 /**
  * One message held for a passivating entity, with the sender it arrived with.
@@ -264,6 +301,10 @@ export class Shard extends Actor<ShardInbox> {
       .with({ kind: 'sharding.GetShardStats' }, (m) => this.onGetShardStats(m))
       .with(P.instanceOf(Terminated), (m) => this.onEntityTerminated(m))
       .with(P.instanceOf(Passivate), (m) => this.onPassivate(m))
+      // Ahead of the two timer messages, whose classes have the same shape:
+      // the matcher's types tell classes apart by shape alone, so the arm
+      // after `EntityStopTimeout` is typed with whatever shape is left.
+      .with(P.instanceOf(ShardPassivationRequest), () => this.onShardPassivationRequest())
       .with(P.instanceOf(EntityStopTimeout), (m) => this.onEntityStopTimeout(m))
       .with(P.instanceOf(EntityRestartTick), (m) => this.onEntityRestartTick(m))
       .otherwise((m) => this.onUnhandled(m));
@@ -365,6 +406,36 @@ export class Shard extends Actor<ShardInbox> {
     this.releaseHeld(held.length);
     const state = this.entities.get(tick.entityId) ?? this.createEntity(tick.entityId);
     for (const { message, sender } of held) state.ref.tell(message as never, sender);
+  }
+
+  /**
+   * The region's empty-shard sweep asking this shard to go away (#1441) — see
+   * {@link ShardPassivationRequest} for why the shard is the one to decide.
+   *
+   * Read behind everything the region sent before it, so whatever it handed
+   * over has been applied by now: a routed message has created its entity, a
+   * recovery start its remembered one.  An idle shard stops through the system
+   * lane, as the `PoisonPill` it replaces did, so nothing queued behind the
+   * request runs first — the region buffers what it routes from the moment it
+   * asked, so none of its own traffic is there.  A busy one says so and goes
+   * on, and the region routes to it again.
+   */
+  private onShardPassivationRequest(): void {
+    if (this.isIdle()) {
+      this.context.stopSelf();
+      return;
+    }
+    const declined = new ShardPassivationDeclined(this.config.shardId);
+    this.context.parent.toNullable()?.tell(declined as never);
+  }
+
+  /**
+   * Whether stopping this shard would lose nothing: no entity, running or
+   * passivating — the one created by the routed message or the recovery start
+   * just ahead of the request included.
+   */
+  private isIdle(): boolean {
+    return this.entities.size === 0;
   }
 
   /**

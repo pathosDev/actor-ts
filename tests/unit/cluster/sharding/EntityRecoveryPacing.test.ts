@@ -988,4 +988,62 @@ describe('constant-rate entity recovery (#851)', () => {
     // A spent entry is no reason to keep a shard: only a start still owed is.
     expect(harness.shardIsUp(SHARD_B)).toBe(false);
   });
+
+  /**
+   * The batch that spends a shard's last owed start, with a sweep in the gap
+   * before the shard's spawn report (#851, #1441).  The owed shard was kept
+   * alive with the empty clock it got when its registry was queued, long since
+   * run out; once the batch has spent the entry, nothing in the region's index
+   * says the shard is busy until the report comes back — and a sweep tick
+   * queued right behind the batch got there first, stopped the shard and the
+   * entity the batch had just started, and nothing brought it back.
+   *
+   * A message for another entity of the shard goes in behind the sweep, so the
+   * case waits on something that happens either way: it is held while the
+   * sweep's outcome is open and delivered once that is settled.
+   */
+  test.each([
+    { sweepWhileOwed: true, name: '851-final-batch', port: 45_580 },
+    { sweepWhileOwed: false, name: '851-final-batch-unswept', port: 45_581 },
+  ])('the entity the batch spending its shard\'s last owed start creates survives a sweep right behind it (a sweep while owed first: $sweepWhileOwed)', async ({ sweepWhileOwed, name, port }) => {
+    const harness = await startRegion(name, port, {
+      ...paced(1),
+      passivationIdleMs: 0,
+      shardPassivationIdleMs: CAPTURED_SWEEP_MS,
+    });
+    const [firstOnA, secondOnA] = idsOnShard(SHARD_A, 2) as [string, string];
+    const [onB, laterOnB] = idsOnShard(SHARD_B, 2) as [string, string];
+
+    harness.place(SHARD_A);
+    harness.remember(SHARD_A, [firstOnA, secondOnA]);
+    // B's actor is created when its registry is queued, and its empty clock
+    // with it; its one entity waits behind A's second.
+    harness.place(SHARD_B);
+    harness.remember(SHARD_B, [onB]);
+    expect(await harness.entitiesOn(SHARD_A)).toEqual([firstOnA]);
+    await waitOutSweepWindow();
+    if (sweepWhileOwed) {
+      // The long-queue case the owed-skip exists for: a sweep comes round while
+      // B still waits its turn, and leaves it standing.
+      harness.scheduler.fireSweep();
+      expect(await harness.entitiesOn(SHARD_A)).toEqual([firstOnA]);
+      expect(harness.shardIsUp(SHARD_B)).toBe(true);
+    }
+    harness.scheduler.fireNext();
+    expect(await harness.entitiesOn(SHARD_A)).toEqual([firstOnA, secondOnA].sort());
+
+    // One synchronous step: the batch that spends B's last owed entry, the
+    // sweep tick right behind it, and a message for another of B's entities.
+    harness.scheduler.fireNext();
+    harness.scheduler.fireSweep();
+    harness.send(laterOnB);
+    await awaitCondition(() => started.includes(laterOnB), {
+      timeoutMs: 4_000,
+      label: "the message behind the sweep reached B's other entity",
+    });
+
+    // The remembered entity is still the one the batch started.
+    expect(await harness.entitiesOn(SHARD_B)).toEqual([onB, laterOnB].sort());
+    expect(started.filter((id) => id === onB)).toHaveLength(1);
+  });
 });
