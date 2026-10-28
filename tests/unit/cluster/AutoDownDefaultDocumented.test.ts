@@ -25,11 +25,18 @@
  *   conflict by taking the old side is the likeliest way they would, and it
  *   brings the old sentence back verbatim.  This half is a list of phrasings,
  *   not an understanding of them: a paraphrase gets past it.
+ *
+ * The shipped value is read from the bundled `reference.conf`, so the
+ * structured half follows it wherever it moves; the phrase list is written for
+ * the removal default and says so when it stops being the one that ships.  A
+ * third, smaller part holds the readiness page to what the `cluster-transport`
+ * check expects of a peer parked under the opt-out.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { Config } from '../../../src/config/Config.js';
+import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 
 const REPOSITORY_ROOT = join(import.meta.dir, '..', '..', '..');
 const DOCUMENTATION = 'docs/src/content/docs';
@@ -38,12 +45,17 @@ const AUTO_DOWN = 'actor-ts.cluster.failure-detector.auto-down';
 const read = (path: string): string => readFileSync(join(REPOSITORY_ROOT, path), 'utf8');
 
 /**
- * `failure-detector.auto-down` as it ships (#1426).  Spelled out rather than
- * read from `REFERENCE_CONF`, so this file states what the pages have to say
- * on its own; `DocumentedDefaults` is what holds the bundled file and
+ * `failure-detector.auto-down` as the bundled `reference.conf` ships it
+ * (#1426), read through the parser an `application.conf` goes through, so the
+ * configuration reference's sample and key table follow the shipped value
+ * rather than a copy of it.  `DocumentedDefaults` holds the bundled file and
  * `DEFAULT_FAILURE_DETECTOR_AUTO_DOWN` to each other.
  */
-const SHIPPED_AUTO_DOWN = true;
+const SHIPPED_AUTO_DOWN = Config.parseString(REFERENCE_CONF).getBoolean(AUTO_DOWN);
+
+/** How the pages spell the shipped value of the switch, and the opt-out's. */
+const SHIPPED_SPELLING = SHIPPED_AUTO_DOWN ? 'auto-down = on' : 'auto-down = off';
+const OPT_OUT_SPELLING = SHIPPED_AUTO_DOWN ? 'auto-down = off' : 'auto-down = on';
 
 type Language = {
   readonly name: string;
@@ -122,30 +134,31 @@ describe('#1426 — the pages state the shipped auto-down default', () => {
         .toBe(SHIPPED_AUTO_DOWN ? '`on`' : '`off`');
     });
 
-    test(`${language.name}: the failure-detector decision table marks the removal row as the default`, () => {
+    test(`${language.name}: the failure-detector decision table marks the shipped row as the default`, () => {
       const path = page(language, 'cluster/failure-detector.mdx');
       const rows = rowsWhere(read(path), /^`down`/);
       const defaults = rows.filter((cells) => language.defaultMarker.test(cells[0]!));
       expect(
         defaults.map((cells) => cells[0]),
         `${path}: the decision table has to mark exactly one \`down\` row as the default, and it is the `
-        + 'row where the detector removes the peer (`auto-down = on`).',
-      ).toEqual([expect.stringMatching(/`auto-down = on`/)]);
-      for (const cells of rows.filter((row) => /`auto-down = off`/.test(row[0]!))) {
-        expect(cells[0], `${path}: the parking row is the opt-out, not the default.`).toMatch(language.optOutMarker);
+        + `row for the shipped \`${SHIPPED_SPELLING}\`.`,
+      ).toEqual([expect.stringContaining(`\`${SHIPPED_SPELLING}\``)]);
+      for (const cells of rows.filter((row) => row[0]!.includes(`\`${OPT_OUT_SPELLING}\``))) {
+        expect(cells[0], `${path}: the \`${OPT_OUT_SPELLING}\` row is the opt-out, not the default.`)
+          .toMatch(language.optOutMarker);
       }
     });
 
-    test(`${language.name}: the downing page's removal table marks the detector's route as the default`, () => {
+    test(`${language.name}: the downing page's removal table marks the shipped route as the default`, () => {
       const path = page(language, 'cluster/downing-strategies.mdx');
       const rows = rowsWhere(read(path), /auto-down/);
-      const removal = rows.filter((cells) => /auto-down = on/.test(cells[0]!));
-      const parking = rows.filter((cells) => /auto-down = off/.test(cells[0]!));
-      expect(removal.length, `${path}: no removal-table row for the detector's own route.`).toBe(1);
-      expect(parking.length, `${path}: no removal-table row for the opt-out.`).toBe(1);
-      expect(removal[0]![0], `${path}: the detector's own route is the default.`).toMatch(language.defaultMarker);
-      expect(parking[0]![0], `${path}: parking is the opt-out.`).toMatch(language.optOutMarker);
-      expect(parking[0]![0], `${path}: parking is not the default.`).not.toMatch(language.defaultMarker);
+      const shipped = rows.filter((cells) => cells[0]!.includes(SHIPPED_SPELLING));
+      const optOut = rows.filter((cells) => cells[0]!.includes(OPT_OUT_SPELLING));
+      expect(shipped.length, `${path}: no removal-table row for the shipped \`${SHIPPED_SPELLING}\`.`).toBe(1);
+      expect(optOut.length, `${path}: no removal-table row for the opt-out \`${OPT_OUT_SPELLING}\`.`).toBe(1);
+      expect(shipped[0]![0], `${path}: the shipped route is the default.`).toMatch(language.defaultMarker);
+      expect(optOut[0]![0], `${path}: the other route is the opt-out.`).toMatch(language.optOutMarker);
+      expect(optOut[0]![0], `${path}: the opt-out is not the default.`).not.toMatch(language.defaultMarker);
     });
   }
 });
@@ -279,6 +292,7 @@ const GUARDED_FILES: readonly string[] = [
     page(language, 'testing/parallel-multi-node.mdx'),
     page(language, 'cluster/joining-and-seeds.mdx'),
     page(language, 'cluster/cluster-bootstrap.mdx'),
+    page(language, 'observability/management/health-checks.mdx'),
   ]),
   // The examples that configure keep-majority say why in a comment, and the
   // reason they gave was the parking default.
@@ -331,6 +345,14 @@ function unitsOf(path: string, text: string): string[] {
 
 describe('#1426 — no page or example says the detector parks by default', () => {
   test('none of the phrasings the parking default was written in is back', () => {
+    // The list below is written for the removal default.  If the bundled file
+    // ships `auto-down = off` again, the sentences it refuses are the right
+    // ones, and it is the list that has to be rewritten, not the pages.
+    expect(
+      SHIPPED_AUTO_DOWN,
+      `reference.conf ships ${AUTO_DOWN} = off, and this phrase list refuses exactly the sentences `
+      + 'that describe that default.  Rewrite the list for the shipped value before trusting it.',
+    ).toBe(true);
     const found: string[] = [];
     for (const path of GUARDED_FILES) {
       for (const sentence of unitsOf(path, read(path))) {
@@ -350,4 +372,98 @@ describe('#1426 — no page or example says the detector parks by default', () =
       + '`failure-detector.auto-down = on` is the default, and `off` is the opt-out that parks it.',
     ).toEqual([]);
   });
+});
+
+/**
+ * The readiness page says which peers `cluster-transport` still expects.
+ *
+ * A peer parked past `down-after` under `auto-down = off` with no downing
+ * strategy is not one of them (`expectedPeers` in
+ * `src/cluster/ClusterHealthChecks.ts`), so the survivor of a crash is ready
+ * again at `down-after` under the opt-out exactly as under the default.  A
+ * reader who believed the opposite would hold a parked survivor out of the
+ * load balancer for good, or keep it there with a probe of their own.
+ *
+ * The exception is narrow, and the page has to keep it narrow: a peer that is
+ * only `unreachable`, short of `down-after`, still counts, and so does a peer
+ * a configured downing provider is holding — only the no-provider opt-out
+ * parks into the set `expectedPeers` subtracts.  Keyed on markers within one
+ * sentence each, like the rest of this file: a sentence that defines the
+ * expected peers *and* excepts the parked one; one that says the survivor is
+ * ready again at `down-after` — not "not ready again"; one that keeps a peer
+ * short of `down-after` counted; and no sentence that claims the opposite of
+ * the code for a parked peer or for one a strategy holds.
+ */
+type ExpectedPeersText = {
+  readonly path: string;
+  readonly section: string;
+  readonly definition: readonly RegExp[];
+  readonly readyAgain: RegExp;
+  readonly stillCounts: readonly RegExp[];
+  readonly contradictions: readonly RegExp[];
+};
+
+const EXPECTED_PEERS_TEXTS: readonly ExpectedPeersText[] = [
+  {
+    path: page(LANGUAGES[0]!, 'observability/management/health-checks.mdx'),
+    section: '## The built-in checks',
+    definition: [/\bexpects?\b/i, /\bexcept\b/i, /\bparked\b/i, /`down-after`/, /auto-down/],
+    readyAgain: /(?<!\b(?:not|never|no longer) )\bready again at `down-after`/i,
+    stillCounts: [/\bnot yet past `down-after`/i, /\bstill counts\b/i],
+    contradictions: [
+      /\bparked\b[^.]*?\b(?:stays|remains|is still|still) (?:expected|counted)\b/i,
+      /\bstrateg\w*\b[^.]*?\b(?:is |are )?(?:not|no longer) (?:expected|counted)\b/i,
+    ],
+  },
+  {
+    path: page(LANGUAGES[1]!, 'observability/management/health-checks.mdx'),
+    section: '## Die eingebauten Checks',
+    definition: [/\berwartet\b/, /\bAusnahme\b/, /\bgeparkt\b/, /`down-after`/, /auto-down/],
+    readyAgain: /\bbei `down-after` wieder bereit\b/,
+    stillCounts: [/`down-after`\s+noch nicht erreicht/, /\bzählt weiterhin\b/],
+    contradictions: [
+      /\bgeparkt\w*\b[^.]*?\b(?:bleibt|wird weiterhin|weiterhin) (?:erwartet|gezählt)\b/,
+      /\bStrategie\b[^.]*?\b(?:nicht|nicht mehr) (?:erwartet|gezählt)\b/,
+    ],
+  },
+];
+
+/** The prose of the `## ` section headed exactly `heading`, as sentences. */
+function sectionSentences(path: string, heading: string): string[] {
+  const lines = read(path).split(/\r?\n/);
+  const start = lines.indexOf(heading);
+  if (start < 0) throw new Error(`${path}: the heading "${heading}" is gone — re-point this guard.`);
+  const next = lines.findIndex((line, index) => index > start && line.startsWith('## '));
+  return unitsOf(path, lines.slice(start + 1, next < 0 ? undefined : next).join('\n'));
+}
+
+describe('#1426 — the readiness page says a parked peer is not an expected peer', () => {
+  for (const text of EXPECTED_PEERS_TEXTS) {
+    test(`${text.path}: cluster-transport does not wait for a peer parked past down-after`, () => {
+      const sentences = sectionSentences(text.path, text.section);
+      expect(
+        sentences.some((sentence) => text.definition.every((marker) => marker.test(sentence))),
+        `${text.path}: no sentence in "${text.section}" defines the peers cluster-transport still expects `
+        + 'and excepts one parked past down-after under failure-detector.auto-down = off with no strategy. '
+        + 'expectedPeers in src/cluster/ClusterHealthChecks.ts leaves such a peer out.',
+      ).toBe(true);
+      expect(
+        sentences.some((sentence) => text.readyAgain.test(sentence)),
+        `${text.path}: no sentence in "${text.section}" says the survivor of a crash is ready again at `
+        + 'down-after — under the opt-out it parks the dead peer then and stops expecting it.',
+      ).toBe(true);
+      expect(
+        sentences.some((sentence) => text.stillCounts.every((marker) => marker.test(sentence))),
+        `${text.path}: no sentence in "${text.section}" says that a peer unreachable short of down-after `
+        + 'still counts — the exception is the parked peer only, and a short blip still takes a lone '
+        + 'survivor out of rotation.',
+      ).toBe(true);
+      const contradicting = sentences.filter((sentence) => text.contradictions.some((pattern) => pattern.test(sentence)));
+      expect(
+        contradicting,
+        `${text.path}: ${contradicting.length} sentence(s) in "${text.section}" contradict expectedPeers: a `
+        + 'parked peer is not expected, and a peer a configured strategy is holding still is.',
+      ).toEqual([]);
+    });
+  }
 });
