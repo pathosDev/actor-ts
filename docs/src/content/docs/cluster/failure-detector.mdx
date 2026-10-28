@@ -149,7 +149,7 @@ for production, configure `lease-majority` or another
 [downing strategy](/cluster/downing-strategies/).
 `auto-down = off` is the opt-out — the detector parks the peer
 instead, and a crashed node stays a member until an operator or a
-strategy removes it.
+strategy removes it, or it restarts on the same address.
 
 `auto-down` deletes the member rather than tombstoning it, so
 nothing is left to refuse the address afterwards: a peer whose view

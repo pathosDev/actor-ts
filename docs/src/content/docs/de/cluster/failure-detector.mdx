@@ -158,7 +158,8 @@ Spaltung: Für Produktion konfiguriere `lease-majority` oder eine
 andere [Downing-Strategie](/de/cluster/downing-strategies/).
 `auto-down = off` ist das Opt-out — der Detector parkt den Peer
 stattdessen, und ein abgestürzter Node bleibt Mitglied, bis ein
-Operator oder eine Strategie ihn entfernt.
+Operator oder eine Strategie ihn entfernt oder er auf derselben
+Adresse neu startet.
 
 `auto-down` löscht das Mitglied, statt einen Tombstone anzulegen,
 also bleibt danach nichts, das die Adresse abweisen würde: Ein Peer,
