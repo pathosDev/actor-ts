@@ -261,6 +261,11 @@ describe('Persistence seam metrics (#1496)', () => {
       expect(observations.steps).toEqual(['done', 'done', 'done', 'done']);
       expect(observationsOf(registry, JOURNAL_LATENCY, APPEND)).toBe(4);
       expect(observationsAbove(registry, JOURNAL_LATENCY, APPEND, 0.1) - slowBefore).toBe(3);
+      // And in seconds, which only an upper bound can say: the lower one holds
+      // for any unit that reads 150 ms as more than 0.1.  Nothing of a 150 ms
+      // append lands above the 5 s bucket on any clock this suite can finish
+      // on, and read in milliseconds every slow one would.
+      expect(observationsAbove(registry, JOURNAL_LATENCY, APPEND, 5)).toBe(0);
       // The breaker never noticed, and could not have: a slow success is a success.
       expect(extension.journalBreaker!.state).toBe('closed');
       expect(samplesOf(registry, JOURNAL_FAILURES)).toEqual([]);
@@ -336,6 +341,9 @@ describe('Persistence seam metrics (#1496)', () => {
       // quantile to zero exactly while the store is down.
       expect(observationsOf(registry, JOURNAL_LATENCY, APPEND)).toBe(1);
       expect(observationsAbove(registry, JOURNAL_LATENCY, APPEND, 0.025)).toBe(1);
+      // Observed in seconds on the failure path too: a 30 ms timeout read as
+      // milliseconds would land above the 5 s bucket.
+      expect(observationsAbove(registry, JOURNAL_LATENCY, APPEND, 5)).toBe(0);
     } finally {
       await system.terminate();
     }
