@@ -321,9 +321,14 @@ Use for:
   process: `GET /cluster/members` shows it back at `up` with a newer
   `version`.  Downing it then removes the healthy run, which is not
   told and keeps running outside the cluster.
-- **Settling a partition by hand** without a strategy: down the
-  other side's members from the side you keep, and stop the
-  processes on the side you drop, since they are not told.
+- **Settling a partition by hand** under `auto-down = off` without a
+  strategy: down the other side's members from the side you keep,
+  and stop the processes on the side you drop, since they are not
+  told.  Under the default there is nothing left to settle by then —
+  each side has removed the other at `down-after` and runs on as a
+  cluster of its own; configure `lease-majority` or another
+  [downing strategy](/cluster/downing-strategies/) so that one side
+  wins instead.
 - **Removing a member a configured strategy has left parked**
   because it has not reached a verdict.
 

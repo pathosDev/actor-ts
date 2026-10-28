@@ -63,7 +63,11 @@ Ursachen:
    Netzwerks. Siehe
    [Failure-Detector-Tuning](/de/operations/tuning/failure-detector/).
 2. **Netzwerk-Partitionen** (echte — diagnostiziere auf
-   Infrastruktur-Ebene).
+   Infrastruktur-Ebene). Ohne Downing-Strategie ist eine, die über
+   `down-after` hinaus anhält, kein Flappen mehr: Jede Seite entfernt
+   die andere und läuft als eigener Cluster weiter. Konfiguriere für
+   Produktion `lease-majority` oder eine andere
+   [Downing-Strategie](/de/cluster/downing-strategies/).
 3. **GC-Pausen** länger als die Unreachable-Schwelle.
 
 Diagnostik:

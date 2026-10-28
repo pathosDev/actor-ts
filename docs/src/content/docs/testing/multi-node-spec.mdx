@@ -179,6 +179,12 @@ pushes lost, frames overtaking each other, a peer that is slow rather than
 dead. `degrade(roleA, roleB, profile)` is that middle, and `restore(roleA,
 roleB)` undoes it.
 
+A `partition` that outlasts `downAfterMs` behaves as it does in production:
+with no `downing` strategy, each side removes the other and runs on alone, and
+a later `heal` does not bring the two back together
+([issue #930](https://github.com/pathosDev/actor-ts/issues/930)). A spec that
+wants one side to win gives the roles a strategy through `downing`.
+
 ```ts
 const spec = new MultiNodeSpec(MultiNodeSpecOptions.create()
   .withRoles(['a', 'b', 'c'])

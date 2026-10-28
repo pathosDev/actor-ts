@@ -935,6 +935,10 @@ neither side heartbeats or gossips a peer it holds unreachable, and
 a deleted one is not in its map to address at all, so after a
 symmetric partition neither side hears from the other again
 ([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
+Under the default, both sides of a real partition therefore remove
+each other and run on as two clusters, which is one more reason a
+production deployment configures `lease-majority` or another
+[downing strategy](/cluster/downing-strategies/).
 And an expired tombstone is pruned once the larger of its
 time-to-live and `tombstone.min-retention` has passed. Either way
 there is nothing left to compare against, and the branch that files

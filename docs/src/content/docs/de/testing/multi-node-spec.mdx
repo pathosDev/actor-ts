@@ -181,6 +181,12 @@ Fünftel der Gossip-Pushes verloren, Frames, die einander überholen, ein Peer,
 der langsam statt tot ist. `degrade(roleA, roleB, profile)` ist diese Mitte,
 `restore(roleA, roleB)` nimmt sie zurück.
 
+Eine `partition`, die `downAfterMs` überdauert, verhält sich wie in Produktion:
+Ohne `downing`-Strategie entfernt jede Seite die andere und läuft allein weiter,
+und ein späteres `heal` bringt die beiden nicht wieder zusammen
+([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)). Ein Spec, der
+eine Seite gewinnen lassen will, gibt den Rollen über `downing` eine Strategie.
+
 ```ts
 const spec = new MultiNodeSpec(MultiNodeSpecOptions.create()
   .withRoles(['a', 'b', 'c'])

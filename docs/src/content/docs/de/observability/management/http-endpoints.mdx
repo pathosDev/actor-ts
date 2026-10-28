@@ -337,10 +337,15 @@ Nutze für:
   `GET /cluster/members` zeigt ihn wieder auf `up` mit neuerer
   `version`. Ihn dann zu downen entfernt den gesunden Lauf, der nicht
   benachrichtigt wird und außerhalb des Clusters weiterläuft.
-- **Eine Partition von Hand auflösen** ohne Strategie: Downe die
-  Mitglieder der anderen Seite von der Seite aus, die du behältst,
-  und stoppe die Prozesse auf der Seite, die du aufgibst, denn sie
-  werden nicht benachrichtigt.
+- **Eine Partition von Hand auflösen** unter `auto-down = off` ohne
+  Strategie: Downe die Mitglieder der anderen Seite von der Seite
+  aus, die du behältst, und stoppe die Prozesse auf der Seite, die du
+  aufgibst, denn sie werden nicht benachrichtigt.  Unter dem Default
+  gibt es bis dahin nichts mehr aufzulösen — jede Seite hat die
+  andere bei `down-after` entfernt und läuft als eigener Cluster
+  weiter; konfiguriere `lease-majority` oder eine andere
+  [Downing-Strategie](/de/cluster/downing-strategies/), damit
+  stattdessen eine Seite gewinnt.
 - **Entfernen eines Mitglieds, das eine konfigurierte Strategie
   geparkt gelassen hat**, weil sie zu keinem Urteil gekommen ist.
 

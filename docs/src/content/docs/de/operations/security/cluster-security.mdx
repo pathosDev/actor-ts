@@ -1017,6 +1017,11 @@ gelöschten hat sie gar nicht mehr in ihrer Map, um ihn zu
 adressieren — nach einer symmetrischen Partition hört also keine
 Seite je wieder von der anderen
 ([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
+Unter dem Default entfernen sich die beiden Seiten einer echten
+Partition also gegenseitig und laufen als zwei Cluster weiter — ein
+weiterer Grund, warum ein Produktions-Deployment `lease-majority`
+oder eine andere [Downing-Strategie](/de/cluster/downing-strategies/)
+konfiguriert.
 Und ein abgelaufener Tombstone wird entfernt, sobald der größere
 Wert von seiner Lebensdauer und `tombstone.min-retention` verstrichen
 ist. So oder so bleibt nichts zum Vergleichen übrig, und der Zweig,

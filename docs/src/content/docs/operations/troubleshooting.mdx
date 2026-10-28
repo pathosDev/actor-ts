@@ -61,7 +61,11 @@ Causes:
    jitter.  See
    [failure-detector tuning](/operations/tuning/failure-detector/).
 2. **Network partitions** (real ones — diagnose at the
-   infrastructure level).
+   infrastructure level).  With no downing strategy, one that lasts
+   past `down-after` is no longer a flap: each side removes the other
+   and runs on as a cluster of its own.  Configure `lease-majority` or
+   another [downing strategy](/cluster/downing-strategies/) for
+   production.
 3. **GC pauses** longer than the unreachable threshold.
 
 Diagnostics:
