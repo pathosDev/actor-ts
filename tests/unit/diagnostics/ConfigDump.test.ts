@@ -30,7 +30,7 @@ import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Config } from '../../../src/config/Config.js';
 import type { ConfigObject, ConfigValue } from '../../../src/config/HoconParser.js';
-import { configDumpLines, resolveConfigLeaves } from '../../../src/diagnostics/ConfigDump.js';
+import { configDumpLines, resolveConfigLeaves, secretLayerPaths } from '../../../src/diagnostics/ConfigDump.js';
 import { DiagnosticsOptions } from '../../../src/diagnostics/DiagnosticsOptions.js';
 import { CONFIG_REDACTED } from '../../../src/util/Constants.js';
 import { RecordingLogger, type RecordedLog } from '../../util/RecordingLogger.js';
@@ -552,6 +552,23 @@ describe('six layers, five names, and the secrets file (#1546)', () => {
       // its own line under its own layer.
       expect(text).toContain('\n  my-app."region.name" = <redacted>  [secrets]');
       expect(text).toContain('\n  my-app.region.name = "eu"  [application]');
+    });
+  });
+
+  test('the paths a worker is sent spell a quoted key the way the worker reads it', () => {
+    // WorkerMesh sends the main thread's tree and `secretLayerPaths` of it; the
+    // worker merges the tree as its overrides and holds its own leaves against
+    // those paths.  Only one spelling of a key holding a dot can match.
+    quotedConfig((main) => {
+      const carried = Config._withSecretPaths(main.toJSON(), secretLayerPaths(main));
+      const worker = Config.load({ appConfPath: 'no-such-application.conf', overrides: carried });
+      const text = configDumpLines(worker);
+
+      expect(secretLayerPaths(main)).toEqual([
+        '"db.dsn"', 'my-app."payments.v2"', 'my-app."region.name"', 'my-app."stripe.live"',
+      ]);
+      for (const value of SECRETS_FILE_VALUES) expect(text).not.toContain(value);
+      expect(text).toContain('\n  my-app.region.name = "eu"  [override]');
     });
   });
 
