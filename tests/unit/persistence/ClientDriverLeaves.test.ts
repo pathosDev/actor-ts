@@ -631,6 +631,8 @@ describe('MongoDB: a setting made twice is refused, naming both sides', () => {
     expect(() => build({ url: MONGO_URL, clientOptions: { rejectUnauthorized: false } })).not.toThrow();
     expect(() => build({ url: MONGO_URL, clientOptions: { secureContext: createSecureContext() } })).not.toThrow();
     expect(() => build({ client })).not.toThrow();
+    // A null client is no client to the open, which reads the url and the CA file.
+    expect(() => build({ client: null as unknown as MongoClientLike, url: MONGO_URL, caFile: caPath })).not.toThrow();
   });
 });
 

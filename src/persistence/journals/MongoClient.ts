@@ -262,7 +262,8 @@ export abstract class MongoOptionsValidatorBase<T extends MongoConnection> exten
     }
 
     if (s.caFile !== undefined) {
-      if (s.client !== undefined) {
+      // Read as `buildMongoResource` reads it: a null client is no client.
+      if (s.client !== undefined && s.client !== null) {
         this.fail(
           'caFile',
           '(the ca-file leaf) is set beside a pre-built client, which was configured where it was built and never '
