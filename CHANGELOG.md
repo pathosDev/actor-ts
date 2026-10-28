@@ -59,6 +59,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the new HTTP middleware page for JWT, English and German, with a pitfalls
   section.
 
+  An RSA key is refused when its public exponent is below 3 or even (RFC
+  8017 §3.1): a configured JWK by its field when the middleware is built,
+  and any RSA key, a PEM key or a JWK-set entry, when it is imported, on
+  Bun, Node and Deno alike. A JWK set that cannot be fetched is logged at
+  warn once per outage, with the set's URL and the cause and any credentials
+  in either masked, a deadline that ran out named as one; further failed
+  retries go to debug and the fetch that succeeds again to info. Every set
+  entry that yields no key is logged at debug with its position, its kid and
+  the reason. `JwtAuthOptions` gains `logger` / `withLogger(logger)`, by
+  default the console at warn.
+
 - **`actor-ts.remote.connect-timeout` (`connectTimeoutMs` /
   `withConnectTimeoutMs` on `ClusterOptions` and `TcpTransportOptions`)
   gives a cluster dial a connect deadline of its own** (#1475). A dial that
@@ -1420,6 +1431,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   documented spread compiles without a cast. The Express page no longer
   shows an `https` server wrapped around the app, which was never listened
   on and left the port serving plain HTTP.
+
+  A `ca` that holds no certificate is refused at validation, naming
+  `tls.ca`, whatever `requestClientCert` says — an empty or blank string, an
+  empty or whitespace-only byte array, an empty array, `null`, or a
+  `ca-file` naming an empty file. `node:tls` reads such a `ca` as none and
+  would have checked client certificates against the runtime's default trust
+  store; measured on node v26.10.0, `ca: ''` and `ca: null` behind a demand
+  admitted a client certificate signed by a CA in that store on all three
+  backends. On Deno the Fastify backend — the default — now refuses
+  `requestClientCert` at bind as Express and Hono already did, since Deno's
+  `node:https` accepts it and enforces nothing, and a Fastify backend built
+  by hand is refused when its `https` verifies client certificates
+  differently from the server options. Client certificates minted for the
+  run pin the `ca` mapping on every backend, on Bun and Node, in the unit
+  suite and the cross-runtime smoke case.
 
 - **Receiver-side flow control on `WebsocketClientActor`** (#1523).
   `withInboundHighWaterMark(frames)` pauses the socket once that many decoded
@@ -5247,35 +5273,39 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   default itself instead of the call shape, so the two cannot drift apart
   again.
 
-- **BREAKING — The dump withholds a value when a whole word of the key's
+- **BREAKING — The dump withholds a value when any whole word of the key's
   name is `password`, `passphrase`, `passwd`, `secret`, `token`, `key`,
-  `credential` or `auth` — singular or plural, in any path segment, so a
-  branch named `credentials` withholds everything beneath it (#867).**
+  `credential` or `auth` — singular or plural, in any path segment and
+  wherever in the name it stands, so a branch named `credentials` withholds
+  everything beneath it (#867).**
 
-  Whole words, and the last word of each name at that, because that is the
-  word saying what the value is: `api-key` is a key, but `key-prefix` is a
-  prefix, `passivation-idle` is a timeout and `max-subscribers-per-key` is a
-  count. A preposition moves that head in front of it, and a value drawn
-  from HOCON's boolean vocabulary is never withheld whatever its key is
-  called. A stock configuration withholds twelve keys, every one a
-  credential slot. It is the same list and the same rule the DevTools config
-  panel has used since #553 — the walk, the layer attribution and the
-  redaction now live in one place (`src/diagnostics/ConfigDump.ts`) rather
-  than two, so a key withheld from the panel cannot reach a log file
-  instead.
+  So `auth-header`, `secret-value` and `api-key-id` are withheld as well as
+  `api-key`. A name is cut into words at every character that is not a
+  letter or a digit and at camelCase humps, so `passivation-idle` holds no
+  `pass` and `keyspace` no `key`, and a value drawn from HOCON's boolean
+  vocabulary is never withheld whatever its key is called. The rule errs
+  toward withholding: an application's `token-bucket-size` or `key-prefix`
+  prints as `<redacted>`, while the keys `reference.conf` ships that read
+  that way — `cluster.receptionist.max-subscribers-per-key`, the redis and
+  memcached `key-prefix`, the Kubernetes lease's `token-path` and
+  `token-reload-interval`, and the object-storage `kms-key-id` — are
+  exempted by full path, so a stock configuration withholds twelve keys,
+  every one a credential slot. It is the same list and the same rule the
+  DevTools config panel has used since #553 — the walk, the layer
+  attribution and the redaction now live in one place
+  (`src/diagnostics/ConfigDump.ts`) rather than two, so a key withheld from
+  the panel cannot reach a log file instead.
 
   Redaction by key name is a heuristic and it is the weaker half of the
   guarantee: by the time the tree is merged, a `${?DATABASE_PASSWORD}` is an
   ordinary string, so a secret in a key called `dsn` or `connection-string`
   is printed in full unless it is the userinfo of a URL, which both
-  renderers mask by value under any key name (#1458). Nor is a name whose
-  last word is an identifier or a location read as the thing itself —
-  `kms-key-id` is an id and `token-path` is a filesystem path, and both
-  print. Both `configuration.mdx` pages and `troubleshooting.mdx` say so in
-  as many words, a test pins the gap open so that sentence cannot rot, and
-  the key ships `off` because the defence that does not depend on a guess is
-  not printing the tree. Values are JSON-encoded, so a newline inside one
-  cannot forge a line of the dump it is part of.
+  renderers mask by value under any key name (#1458). Both
+  `configuration.mdx` pages and `troubleshooting.mdx` say so in as many
+  words, a test pins the gap open so that sentence cannot rot, and the key
+  ships `off` because the defence that does not depend on a guess is not
+  printing the tree. Values are JSON-encoded, so a newline inside one cannot
+  forge a line of the dump it is part of.
 
   `CONFIG_SECRET_PATTERN`, `CONFIG_NEVER_REDACTED_PATHS` and
   `CONFIG_REDACTED` live in `src/util/Constants.ts` and are on the
@@ -5499,6 +5529,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **The DevTools config panel attributes a key that holds a dot — quoted in
+  HOCON, `"stripe.live"` — to the layer that set it; it reported every such
+  key as `reference`, because it looked the key up as nested keys that no
+  layer held** (#1546). Such a key's path now arrives quoted as HOCON writes
+  it, `my-app."stripe.live"`, so it no longer reads as the nested keys
+  `my-app.stripe.live`; bare keys arrive as before.
+
+- **A TLS dial to a peer addressed by an IP literal with no `serverName` set
+  now connects, and the peer is verified against the IP SAN in its
+  certificate** (#1475). `NodeTcpBackend` announced the host as the TLS
+  server name, and node:tls refuses an IP literal there, so every such dial
+  failed with ERR_INVALID_ARG_VALUE before a byte was sent: on Node already
+  in 0.17.0, and on Bun once its cluster dials went through Bun's own
+  node:tls. A dial now announces a configured `serverName` as configured, a
+  host name as before, and nothing for an IP literal, so both documented TLS
+  recipes, which address their nodes by IP, connect. The recipes on the
+  transports and cluster security pages also parse the node address without
+  the actor-ts:// prefix that put the system name out of step with the
+  cluster's, import what they use, and issue the per-node certificate with
+  an IP SAN.
 
 - **A `ProducerController` keeps retransmitting a send whose retransmit the
   consumer refused** (#1230). When a retransmit's `tell` threw — a bounded
@@ -8026,6 +8077,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **`HttpClient` no longer propagates the credential of a request URL in the
+  error the runtime's `fetch` throws** (#1458). On Node, `fetch` refuses a
+  URL with a userinfo outright, and its `TypeError` named the URL, password
+  included, in message and stack; on Bun a refused or broken connection
+  carried the request URL, credential included, as the error's own `path`
+  property, from the fetch and from a body read alike. Both are now masked
+  before they propagate, keeping the error's type and `code`; an error with
+  nothing to mask, such as the abort the deadline causes, propagates as
+  itself. A redirect refused or cut off by `maxRedirects` also no longer
+  prints the credential of a `Location` the scan cannot see — a
+  scheme-relative `//user:pass@host`, `https:user:pass@host` or the
+  backslash form — which v0.17.0 printed in clear; the target is named as
+  the URL it resolves to, with its credential masked.
+
 - **JWT verification closes the classic pitfalls by construction** (#810).
   `alg: none` is refused in any spelling, because the algorithm must be
   exactly one the application allowed; every key is imported once for one
@@ -8045,6 +8110,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the whole `libsql://` URL, token included, into its message and the
   error's value; the shared rule masks them, so a refusal that fails a
   startup does not write the token to the log.
+
+  A SQLite store that refuses a remote path no longer carries a token from
+  the URL's query in its error. The shared rule masked only the userinfo,
+  and `@libsql/client` takes the token as a query parameter just as readily,
+  so `libsql://host?authToken=…` reached the `OptionsError` message and
+  value verbatim from all three stores and from the registration refusal
+  that fails `ActorSystem.create`. The refused value is now rendered as its
+  `redactedUrlLabel`: scheme, host and path, with the userinfo, the query
+  and the fragment dropped.
 
 - **Under the new default the failure detector no longer reclaims
   gossip-introduced phantom members** (#1426). A phantom is never heard
@@ -8185,6 +8259,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   a comma in the password of a scheme-less `user:a,b@host` is still out of
   reach, since nothing marks where that userinfo begins.
 
+  `redactedUrlLabel` masks a password with a comma in it whole, wherever its
+  `@` stands. A userinfo runs to its last `@` before the next `://`, as
+  WHATWG reads an authority, so `amqp://user:a,b@host` is labelled
+  `amqp://host` and `amqp://user:a@b,c@host` `amqp://***@host`; ending it at
+  a comma once an `@` had been seen printed `b`. The label is held to the
+  v0.17.0 label over 200,000 generated server lists: no credential the
+  release kept out reaches it. A credentialed list whose entries do not each
+  open with their own `scheme://` keeps only the hosts behind that last `@`,
+  and the `***@` stays to say hosts went with the mask:
+  `nats://h1:4222,u:p@h2:4222` is labelled `nats://***@h2:4222`. A comma in
+  the password of a scheme-less `user:a,b@host` is still out of reach, since
+  nothing marks where that userinfo begins.
+
 - **BREAKING — A password containing an unescaped `/`, `?` or `#` no longer
   reaches a log line, an error or an endpoint label** (#1458).
   `redactUrlCredentials`, `redactErrorCredentials` and `redactedUrlLabel`
@@ -8204,10 +8291,41 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `SseActor`, which redact the URL the runtime parsed exactly, through
   `redactParsedUrlCredentials`.
 
+  `redactErrorCredentials` leaves a credential-free stack as it is, because
+  a userinfo ends on its own line. Every frame of a driver from a scoped
+  package carries an `@`, so a userinfo read on to the next `://` folded a
+  credential-free target and the frame behind it into one `***` on Bun,
+  where an error's stack is scanned, and `BrokerActor` published that copy
+  as the cause of a disconnect. Once an `@` has been seen a line break ends
+  the userinfo, and before the first `@` the scan reads past a line break
+  only up to the first space or tab, so a stack frame or the next line of a
+  log is left alone, while a secret read from a file is still masked whole,
+  whether a trailing newline lands in front of the `@` or the secret is
+  wrapped over lines. An error with nothing to mask comes back as itself
+  rather than a copy, and a `DOMException` is copied as one, so its `name`
+  and `code` still answer.
+
+  `redactedUrlLabel` no longer names a host that is not the URL's own.
+  Because a userinfo runs to its last `@`, a URL with an `@` past its host
+  was labelled with whatever followed that `@`, and the parse behind the
+  label dropped the mask:
+  `https://user:pass@hooks.example/notify?to=ops@example.com` was labelled
+  `https://example.com/`, `wss://chat.example.com/rooms/@general`
+  `wss://general/`, and a query token with an `@` in it handed its tail to
+  the label as the host. The label now shows nothing behind the first `?` or
+  `#`, and names a host only where every reading of the bytes agrees on it;
+  where the same bytes are also a valid URL for another host it ends at the
+  mask, so all three come back as `https://***` or `wss://***`. A
+  credentialed URL whose password holds a `/` in front of which no valid
+  host stands keeps its host: `amqp://user:pa/PW1@host:5672/vhost` is
+  labelled `amqp://host:5672/vhost`.
+
   **Migration.** Nothing to change unless code compares or re-parses what
   `redactUrlCredentials` or `redactedUrlLabel` return: an `@` in a URL's
   path, query or fragment now ends its userinfo, so `https://host/a@b`
-  renders as `https://***@b`.
+  renders as `https://***@b` from `redactUrlCredentials`, and
+  `redactedUrlLabel` labels such a URL `scheme://***` rather than by a host,
+  so code that parses labels must not expect a host for it.
 
 - **The dependency audit gate is green again on two of the three Bun
   lockfiles it reads, and one advisory that no release fixes holds the
@@ -8252,6 +8370,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   in a WorkerMesh worker: the worker receives the main thread's tree as one
   overrides object, so WorkerMesh now sends the main thread's secret paths
   beside it and the worker withholds the same keys.
+
+  That includes a key the secrets file quotes because it holds a dot - a
+  host or a domain name such as `webhooks."hooks.example.com"` - at the
+  file's root, nested or in its active profile: the boot dump, the DevTools
+  answer and a `WorkerMesh` worker's dump withhold it and attribute it to
+  the layer that set it. The renderers walked the merged tree into
+  dot-joined paths and asked each layer for those, which no layer holding
+  such a key ever answered, so its value printed in full under `reference`.
+  A key that is not a bare HOCON key now prints in double quotes, as HOCON
+  writes it - `my-app."stripe.live"` is one key, `my-app.stripe.live` two -
+  so it can no longer pass for the nested keys it reads like, borrow the
+  exemption of a shipped key, or write a line of its own into the dump.
 
 - **BREAKING — A connection string read from HOCON may no longer switch TLS
   certificate verification off** (#1490). The `url` leaf of the Postgres,
