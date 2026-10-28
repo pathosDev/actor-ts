@@ -103,17 +103,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `Cluster.join` a deadline of its own, off by default** (#1500). When it
   passes and nothing can promote the node any more — no member is `up`, no
   self-election of its own is pending, and no peer is present that only
-  `minimum-members-before-up` holds back — the node logs one warning naming
-  the key and the stall remedy, leaves, and runs the coordinated-shutdown
-  pipeline with the new `ClusterJoinUnsuccessfulReason`, exported from the
-  root; otherwise it asks again every `seed-retry-interval`. `'immediate'`
-  with seeds and `'never'` give up, a deferred `selfElection` forms its
-  cluster of one instead, a node its own timer moved to `weakly-up` counts
-  as not joined, and an `awaitReady()` still pending — `Cluster.bootstrap`'s
-  own included — rejects at once with a `ClusterReadyTimeoutError` that
-  names the key. A value shorter than `seed-retry-interval` is refused, and
-  behind `Cluster.bootstrap`'s stable observation so is one that does not
-  exceed `self-election-grace` + 5 s, before the join.
+  `minimum-members-before-up` holds back, where a peer parked past
+  `down-after` under `failure-detector.auto-down = off` does not count as
+  present — the node logs one warning naming the key and the stall remedy,
+  leaves, and runs the coordinated-shutdown pipeline with the new
+  `ClusterJoinUnsuccessfulReason`, exported from the root; otherwise it asks
+  again every `seed-retry-interval`. `'immediate'` with seeds and `'never'`
+  give up, a deferred `selfElection` forms its cluster of one instead, a
+  node its own timer moved to `weakly-up` counts as not joined, and an
+  `awaitReady()` still pending — `Cluster.bootstrap`'s own included —
+  rejects at once with a `ClusterReadyTimeoutError` that names the key. A
+  value shorter than `seed-retry-interval` is refused, and behind
+  `Cluster.bootstrap`'s stable observation so is one that does not exceed
+  `self-election-grace` + 5 s, before the join.
 
 - **A downed peer gets no quarantine of its own: what refuses it is its
   tombstone, and the downing-strategies page now says, per downing route,
@@ -121,18 +123,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   strategy's decision and the peer's own `leave` refuse the same run for the
   larger of `actor-ts.cluster.tombstone.time-to-live` and
   `tombstone.min-retention`, 24 h at the defaults, and readmit it with its
-  old roles after the prune; `failure-detector.auto-down = on` deletes the
-  entry and readmits the same run on its next frame, and the default removes
-  nothing at all. A restart is readmitted at once by its fresh version,
-  which is also why the same run restamping its version gets back in and why
-  a peer with standing can gossip a tombstone ahead of time to keep a
+  old roles on its next gossip frame after the prune; the failure detector's
+  own removal — the default with no strategy configured,
+  `failure-detector.auto-down = on` — deletes the entry and readmits the
+  same run on its next gossip frame (a heartbeat alone finds no entry), and
+  under the opt-out `auto-down = off` nothing is removed. A restart is
+  readmitted at once by its fresh version, and one whose previous run was
+  never removed ends that run first, with `MemberDown` and `MemberRemoved`
+  for the old incarnation; the same run restamping its version gets back in,
+  and a peer with standing can gossip a tombstone ahead of time to keep a
   restart out; both close only once the incarnation is required on the wire
   (#823, #940). The refusal covers membership only: a downed node's frames
   still arrive and its messages are still delivered. The cluster-security
-  page no longer says the failure detector reclaims a phantom member under
-  the default, no longer justifies the opt-in route's delete with a
-  partition-heal recovery it does not give (#930), and states for both
-  routes when an evicted sender's replay mark goes.
+  page says which phantom members the detector reclaims — those a gossip
+  merge registered, at `down-after` under the default — and that one filed
+  from a frame's sender field is never watched by it (#939), and states for
+  both routes when an evicted sender's replay mark goes.
 
 - **A node whose own downing decision removes it can now stand itself down
   instead of only leaving the cluster** (#1456). With
@@ -694,6 +700,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `SnapshotOperation`, are exported from `actor-ts/persistence`, so a
   wrapper around either breaker seam can name its argument's type.
 
+  The metrics never decide a store call: a registry that refuses a write,
+  such as one where an application family already holds a stock name, is
+  reported once per registry, and the call still returns, or fails with,
+  what the store said. `persistence_breaker_state` is brought up to date
+  again in a registry installed a second time after it missed a transition,
+  at the next call through either seam.
+
 - **BREAKING — Projections can take their events in groups with
   `withHandleGroup`, on all three projection option builders: the handler
   receives up to `groupAfterEnvelopes` events per call
@@ -727,6 +740,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   a `groupAfterEnvelopes` set in its own code still is. No
   `group-after-duration` ships, because the groups are cut from what each
   poll returned, so the poll interval already is the window.
+
+  `handle` and `handleGroup` are both called with the projection's merged
+  options as `this`, the receiver `handle` had in v0.17.0, so a
+  method-shorthand or `function` handler reads `this.name`,
+  `this.persistenceId` or `this.tag` with either. A failed group is retried
+  as a group formed again from its first event, so events journaled during
+  the backoff join it and the attempt count carries over; under
+  `retry-and-skip` a split costs two retry budgets, the group's and then the
+  failing event's own. `ProjectionOptionsValidator` used without a cursor
+  field still accepts options that set no handler, as in v0.17.0: only a
+  projection the factories spawn must have one.
+  `actor-ts.projection.group-after-envelopes` is read only for a
+  `handleGroup` projection, so a value the integer reader refuses (`2.5`, a
+  word) leaves a `handle` projection running and refuses a grouped one with
+  a `ConfigError` naming the key; `readProjectionOptionsFromConfig` takes an
+  optional `handler` (`'handle'` or `'handleGroup'`) for that and reads the
+  whole block without it.
 
   **Migration.** `ProjectionOptionsType.handle` is optional now (a reader of
   the field sees `| undefined`), and a projection without a handler is
@@ -2247,7 +2277,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   upcaster that cannot fold one entity's history fails that recovery without
   counting as a journal outage. `deleteHistory`'s snapshot and journal
   deletes go through their breakers too, so `call-timeout` bounds a stalled
-  delete the way it bounds an append. #1496
+  delete the way it bounds an append. A refused delete or snapshot save
+  never counts against a breaker, though: the journal breaker counts failed
+  appends and replays and the snapshot breaker failed snapshot loads, so a
+  store that refuses deletes or snapshot writes and serves everything else
+  fails that compaction or that snapshot and nothing more. An open breaker
+  still refuses those calls, and the failure counters still count them.
+  #1496
 
 - **`actor-ts.cluster.minimum-members-before-up` (int, default `1`) holds
   every `joining` / `weakly-up` → `up` transition until at least that many
@@ -3650,16 +3686,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   waits until the shard is back, one whose shard is handing off is dropped
   without costing the batch a slot (its registry travels with the shard),
   and the empty-shard sweep leaves a shard alone while a recovery still owes
-  it a start.
+  it a start. The batch that spends a shard's last owed start no longer
+  races the empty-shard sweep: the shard confirms it is empty before it
+  stops, so a remembered entity the batch has just started keeps running
+  even when the shard's empty clock ran out while it waited its turn.
 
-  Under `entity-recovery.strategy = all`, a remembered registry that reached
-  a region while its shard was passivating was told to the stopping shard
-  actor and lost with it, so the shard came back empty while the coordinator
-  still listed every entity; one that arrived while the shard handed off was
-  dead-lettered the same way. A registry for a passivating shard is now held
-  and started in the shard that replaces it, unless the shard moved away in
-  the meantime, and one for a shard handing off is left to the new owner the
-  coordinator ships it to — the two rules the paced drain already followed.
+  The paced drain never starts an entry into a shard that is passivating or
+  handing off; the same two rules now hold for an unpaced registry too, a
+  fix listed under Fixed.
 
 - **The object-storage persistence plugin can now be configured from HOCON.
   A new `actor-ts.persistence.snapshot-store.object-storage` block carries
@@ -4046,6 +4080,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (#1388).  A multi-node test now pins that node-local scope as an assertion
   rather than prose.
 
+- **`actor-ts.cluster.failure-detector.auto-down` lets a cluster with no
+  downing strategy opt out of the failure detector's own removal of a
+  crashed peer** (#1426). In code it is `withFailureDetectorAutoDown(…)`. On
+  is the default and the removal every earlier release made: a peer silent
+  past `down-after` is downed and removed, so an n-node cluster keeps
+  running down to its last available node, which takes over the peer's
+  shards and singletons; under a real partition both sides remove each other
+  and carry on, unless lease-majority or another split-brain strategy is
+  configured. `auto-down = off` parks the peer at `unreachable` instead,
+  announced `MemberUnreachable` and never `MemberDown` or `MemberRemoved`,
+  until a strategy, `Cluster.down` or `POST /cluster/down` removes it; the
+  node logs one warning per parked peer naming the two keys and those three
+  ways out, and the survivor of a crash is ready again at `down-after` all
+  the same, because the `cluster-transport` readiness check no longer
+  expects a parked peer while a peer only unreachable short of `down-after`
+  still counts. The switch governs both the simple and the φ-accrual
+  detector, a configured strategy decides every removal whatever it says,
+  and the detector's removal line is logged at info (#994). `MultiNodeSpec`,
+  `ParallelMultiNodeSpec` and `ClusterBootstrap` take
+  `failureDetectorAutoDown`.
+
 ### Changed
 
 - **BREAKING — With `actor-ts.coordinated-shutdown.exit-process` on, a run
@@ -4118,8 +4173,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   in order with their senders, capped per shard at `buffer-size` with the
   newest dead-lettered past it; a `StartEntity` waits for the end of the
   wait, a `PassivateEntity` for an entity backing off is answered with
-  `EntityStopped`, and a shard that stops dead-letters what it holds. The
-  leaves are also `ShardingOptions` fields (`entityRestartBackoffMinMs`,
+  `EntityStopped` only when a message has reached the entity since its stop
+  was reported, so one stop is reported once and the coordinator records one
+  `stopped` under `rememberEntities`; and a shard that stops dead-letters
+  what it holds. The empty-shard sweep leaves a shard alone while an entity
+  of it backs off: holding messages for the entity, waiting on a return a
+  `StartEntity` armed, or still inside the wait with nothing held keeps the
+  shard, so a `shard-passivation-idle` shorter than an entity's wait neither
+  dead-letters what is held nor starts the backoff over at `min`. The leaves
+  are also `ShardingOptions` fields (`entityRestartBackoffMinMs`,
   `entityRestartBackoffMaxMs`, `entityRestartBackoffRandomFactor`,
   `entityRestartBackoffResetAfterMs`) with matching builder methods,
   validated like the shard failure backoff's, and `ShardConfig` gains the
@@ -4257,12 +4319,28 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   inherit the main thread's selection but not the code that registered its
   plug-ins.
 
+  Every in-repo store that talks to a backend reaches it when it opens,
+  whatever `autoCreateTables` (for MongoDB `autoCreateIndexes`) says, so a
+  database the node cannot reach fails the startup in every configuration,
+  an operator-managed schema included. A relational store that runs no DDL
+  sends a ping: `SELECT 1`, unless its `SqlDialect` declares another
+  statement through the new optional `pingSql()` (such as
+  `SELECT 1 FROM DUAL` for an engine that cannot select a constant without a
+  table). A MongoDB store sends `{ ping: 1 }` before it creates any index,
+  through the new optional `MongoDatabaseLike.command`, and a DynamoDB store
+  with `autoCreateTables` off describes its own table. Each is one round
+  trip per open, never one per operation, and a refusal fails the open as
+  `<Store>.open failed: …`, naming the store. The persistence overview and
+  the Postgres, libSQL, SQL Server, MariaDB, MongoDB and DynamoDB pages say
+  so.
+
   **Migration.** Register persistence plug-ins through
   `ActorSystemOptions.withPersistence({ plugins })` — a plug-in selected in
   HOCON but registered after `ActorSystem.create` now fails the startup, and
   a store that cannot open at boot now terminates the system; set
   `autoStart: false` in the persistence `behavior` to keep opening on first
-  use.
+  use. With `autoCreateTables` off, a DynamoDB store's role now needs
+  `dynamodb:DescribeTable` on its table, because the open describes it.
 
 - **BREAKING — Lease settings that no reader ever read are refused at
   startup instead of being silently ignored** (#1454). They are `owner`,
@@ -4277,28 +4355,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   an effect); set a code-built lease's name, owner and acquire retries with
   its builder, or switch the consumer's `use-lease` on and let the framework
   derive them.
-
-- **BREAKING — With no downing strategy configured, the failure detector no
-  longer removes an unreachable peer on its own** (#1426). A peer it
-  declares down is parked at unreachable, announced `MemberUnreachable` and
-  never `MemberDown` or `MemberRemoved`, until a strategy, `Cluster.down` or
-  `POST /cluster/down` removes it, and the node logs one warning per parked
-  peer naming the two keys and those three ways out. The old removal is
-  opt-in as `actor-ts.cluster.failure-detector.auto-down` (`off` by default,
-  `withFailureDetectorAutoDown(…)` in code): it governs both the simple and
-  the φ-accrual detector, is refused at startup beside a configured
-  split-brain-resolver strategy (which decides every removal), and its
-  removal line is now logged at info (#994). Parking does not keep a
-  partitioned cluster at one singleton: the leader is the first `up` member,
-  so a singleton that follows the leader still moves on each side.
-  `MultiNodeSpec` and `ParallelMultiNodeSpec` take
-  `failureDetectorAutoDown`, and the chat, voice and counter-node samples
-  configure keep-majority so a killed node is still removed.
-
-  **Migration.** With no downing strategy the failure detector no longer
-  removes an unreachable peer; set
-  `actor-ts.cluster.failure-detector.auto-down = on` to restore it, or
-  configure `split-brain-resolver.active-strategy`.
 
 - **BREAKING — `PhiAccrualFailureDetector`'s `acceptableHeartbeatPauseMs`
   defaults to 3 s instead of 0 (`phi.acceptable-heartbeat-pause = 3s`)**
@@ -4479,14 +4535,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   or `ShardCoordinator`** (#1441). A region declines a coordinator-only
   kind, a `sharding.` kind it does not know (a newer member's) and a shard
   message such as `sharding.StartEntity` or `sharding.GetShardStats` told to
-  it instead of to a shard ref; the coordinator declines a kind meant for a
-  region; a shard declines anything its ref is told that is not a shard
-  message. None of the three declines anything under healthy traffic — a
-  multi-node test now drives a cluster through routing, passivation, a
-  rebalance, a graceful leave and a leader failover and holds the counter at
-  zero — so a rate on these classes is protocol drift. Until #1179 bounds
-  dead-letter publication, a peer sending such frames in a storm produces
-  one dead letter per frame.
+  it instead of to a shard ref; the leader's coordinator declines a kind
+  meant for a region (a coordinator that is not the leader drops every frame
+  before it dispatches, and a peer's body that is not a sharding message is
+  dropped with a debug line, as before); a shard declines anything its ref
+  is told that is not a shard message. None of the three declines anything
+  under healthy traffic — a multi-node test now drives a cluster through
+  routing, passivation, a rebalance, a graceful leave and a leader failover
+  and holds the counter at zero — so a rate on these classes is protocol
+  drift. Until #1179 bounds dead-letter publication, a peer sending such
+  frames in a storm produces one dead letter per frame.
 
 - **BREAKING — The request-timeout middleware's deadline field is
   `deadlineMs`, set with `withDeadlineMs(...)`** (#1463). The field was
@@ -4507,12 +4565,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   purpose in its own override should call `this.unhandled(message)` to keep
   that record.
 
-- **A persistence plugin selector that holds no id at all (`null`, a block
-  or a list) is now refused by whichever store is resolved first, not only
-  by its own: `actor-ts.persistence.durable-state.plugin = null` fails the
-  first journal resolution as well** (#1425). The three selectors are read
+- **BREAKING — A persistence plugin selector that holds no id at all
+  (`null`, a block or a list) is now refused by whichever store is resolved
+  first, not only by its own:
+  `actor-ts.persistence.snapshot-store.plugin = null` fails the first
+  journal resolution as well** (#1425). The three selectors are read
   together by one reader now; a selector that holds an id resolves exactly
-  as before.
+  as before, the id taken as written, with no trimming and no change of
+  case.
+
+  **Migration.** Fix or remove the malformed selector: a sibling store no
+  longer resolves while one selector holds no id.
 
 - **BREAKING — A URL the runtime has already parsed is now redacted exactly,
   so a credential-free URL with an `@` in its path or query keeps its host
@@ -5527,6 +5590,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   and the second an `Error` whose whole message was the string `undefined`;
   `attempts: Infinity` stays legal and still means retry until success.
 
+- **BREAKING — A value written where a persistence block belongs now fails
+  the startup** (#1425).
+  `actor-ts.persistence.durable-state = "actor-ts.persistence.durable-state.sqlite"`
+  or `actor-ts.persistence = "postgres"` used to read as no selection, which
+  kept the journal, snapshot store or durable-state store in memory while
+  the startup reported ready, and the data was lost on the next restart. The
+  startup now fails with a `ConfigError` naming the key and saying that the
+  store's axis must be a block with a `plugin` field. An axis left as
+  `reference.conf` ships it keeps its in-memory default.
+
+  **Migration.** Write the store's block with its `plugin` field, for
+  example `actor-ts.persistence.journal.plugin = "…"`, instead of a value in
+  place of the block.
+
 
 ### Fixed
 
@@ -5614,25 +5691,41 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   one (5 s and 20 s at the shipped defaults). While the set is settling, a
   shard is asked for over every registered region first and that pick stands
   when its member is up, otherwise it is asked again over the eligible
-  regions, and the strategy is not asked to rebalance; once it has settled,
-  allocation and rebalancing both run over the eligible regions only, and a
-  proposed hand-off from an owner that is not up is dropped. A member that
-  goes unreachable and comes back within the window therefore moves no
-  shard, one that stays parked costs one round of moves between the healthy
-  members, and a parked node's shards wait for the downing decision instead
-  of being handed off into a second live home. A request for a new shard
-  with no eligible region stays pending and logs one warning per episode,
-  and is answered once the member is up again. A region whose registration
-  was refused over its shard count (#633) is no longer a placement candidate
-  either, even when a coordinator-state snapshot seeded it before the
-  refusal.
+  regions, and the strategy is not asked to rebalance. Once it has settled,
+  shards are placed on the eligible regions only, and rebalancing is shown
+  the shards of every region on an up member, so the shards of a registered
+  region that is no candidate (refused over its shard count, or without the
+  type's role) are moved onto a candidate, while a proposed hand-off from an
+  owner that is not up is dropped. Both built-in strategies propose those
+  shards: `LeastShardAllocationStrategy` puts them ahead of its threshold
+  check and counts them against `maxSimultaneousRebalance`, then balances
+  the candidates with what is left of that budget. A member that goes
+  unreachable and comes back within the window therefore moves no shard
+  placed before it, one that stays parked costs one round of moves between
+  the healthy members, one that flaps faster than the window holds
+  rebalancing off for as long as it flaps, and a parked node's shards wait
+  for the downing decision instead of being handed off into a second live
+  home. A request for a new shard with no eligible region stays pending
+  until the membership decides and logs one warning per episode; while #930
+  is open a member cut off by a symmetric partition does not come back on
+  its own after the network heals, so there the request waits until
+  auto-down, a split-brain strategy or an operator removes the member. A
+  strategy answer outside the candidates it was handed is never placed, and
+  the coordinator logs it at warn once per shard. A region whose
+  registration was refused over its shard count (#633) is no longer a
+  placement candidate either, even when a coordinator-state snapshot seeded
+  it before the refusal, and the shards the snapshot homed on it are
+  rebalanced onto a candidate.
 
   **Migration.** A custom `AllocationStrategy` may be asked `allocate()`
-  twice for one shard while membership settles (every registered region,
-  then only those whose member is up), and `rebalance()` now sees only up
-  members' regions and runs only after their set has held still for the
-  settle window (down-after, or stable-after with a split-brain strategy);
-  do not count an `allocate()` call as a placement.
+  twice for one shard while membership settles (every registered region with
+  every region's shards, then only the up members' regions) and must not
+  count a call as a placement; an answer outside the candidates a call was
+  given is never placed and is logged at warn once per shard; `rebalance()`
+  runs only after the up members' set has held still for the settle window
+  (down-after, or stable-after with a split-brain strategy), with the
+  eligible regions as candidates and the shards of every region on an up
+  member, a non-candidate's included.
 
 - **The cold-start stall warning no longer counts a peer's `removed`
   tombstone or `down` record as a peer it can see** (#1500). A node whose
@@ -5661,6 +5754,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   entities, and the registry is asked for when the shard is re-created,
   which brings remembered siblings back. An entity's own restarts inside its
   budget are unchanged — the shard still decides those, at once.
+
+  What a region had already routed into a shard that fails by escalation,
+  and that the entity had not reached yet, goes to dead letters with the
+  shard, each message with its sender; only what the region routes after the
+  death waits for the re-created shard. The restart in place this replaced
+  kept those messages but tore down every entity of the shard; the overview
+  now says so beside the region buffer.
 
 - **The replicated event sourcing overview said the journal must be shared
   across replicas and drew a shared journal, while each replica appends
@@ -5696,27 +5796,43 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   weakly-up page now show the seven statuses the cluster has** (#1477). They
   drew an `exiting` state that does not exist and no `down` at all, and the
   overview labelled every removal as kept for the tombstone TTL, while the
-  detector's opt-in auto-down removal deletes the member outright. The
-  management page's `POST /cluster/leave` section named the same state and
-  said the actor system then terminates; the endpoint only calls
-  `cluster.leave()`, and the page now says the system keeps running.
+  failure detector's own removal — the default with no strategy configured —
+  deletes the member outright. The management page's `POST /cluster/leave`
+  section named the same state and said the actor system then terminates;
+  the endpoint only calls `cluster.leave()`, and the page now says the
+  system keeps running.
+
+  The cluster-security page no longer justifies the failure detector's
+  delete with a recovery after a partition heals: the page claimed it in
+  v0.17.0 too, and it never held, because gossip and heartbeats only target
+  reachable members (#930).
 
 - **The FAQ, the cluster overview and the management-endpoints page now say
   what a cluster without a downing strategy does** (#1427). They said it
   waits indefinitely, that the default needs manual intervention during a
   partition, and that downing a member stops its actors. With no strategy
-  and `actor-ts.cluster.failure-detector.auto-down` off, a member the
-  failure detector declares down is parked at `unreachable`, its shards
-  still homed on it and its watchers told nothing, until it heartbeats
-  again, an operator downs it with `Cluster.down` or `POST /cluster/down`
-  (behind `actor-ts.management.enable-down-endpoint`), or a strategy is
-  configured; `auto-down = on` lets the detector remove it, which is right
-  for one crashed node and forks the cluster under a partition; with a
-  strategy the detector only parks and the strategy decides; and none of
+  the failure detector removes a member it declares down at `down-after` —
+  `actor-ts.cluster.failure-detector.auto-down` ships `on` — and the last
+  available node takes over its shards and singletons; that is right for a
+  crashed node and forks the cluster under a partition, where both sides
+  remove each other and run on as two clusters that do not merge again when
+  the network heals (#930), so the pages recommend `lease-majority` or
+  another strategy for production. With two or more survivors one survivor's
+  gossip can bring a removed member back as `unreachable` until it is
+  removed again, so `POST /cluster/down` can still find it. Under the
+  opt-out `auto-down = off` the member is parked at `unreachable`, its
+  shards still homed on it and its watchers told nothing, until an operator
+  downs it with `Cluster.down` or `POST /cluster/down` (behind
+  `actor-ts.management.enable-down-endpoint`), a strategy is configured, or
+  it restarts on the same address, which ends the old run with `MemberDown`
+  and `MemberRemoved` before the new one joins; a heartbeat brings a parked
+  member back after a pause, never after a symmetric partition. With a
+  strategy the detector only parks and the strategy decides, and none of
   this keeps the leader, or a singleton without a role, where it was.
-  `POST /cluster/down` is documented as the way out of that default and as a
+  `POST /cluster/down` is documented as the way out of the opt-out and as a
   change to the calling node's view: the downed process is not told and
-  keeps running until it is stopped (#940).
+  keeps running until it is stopped (#940), and after a restart on the same
+  address that process is the new, healthy run.
 
 - **BREAKING — `ProjectionActor.byPersistenceId` and `byTag` refuse an
   incomplete projection with an `OptionsError` naming the field** (#1448).
@@ -5727,12 +5843,26 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   a `TypeError` naming no field; and a `handle` or `handleGroup` that is not
   a function failed only at the first event. `ProjectionOptionsValidator`
   takes the cursor field (`persistenceId` or `tag`) as an optional
-  constructor argument; given, it requires a non-empty `name`, a `query` and
-  that field, and without it it checks only the values present.
+  constructor argument; given, it requires a non-empty `name`, a `query`,
+  that field and a handler, and without it it checks only the values
+  present.
+
+  The refusal also holds for values that are present but name nothing — a
+  `null` `query`, an empty or non-string `persistenceId`, a `null` `tag` —
+  and for two that every poll would fail on: a query without the method this
+  projection's polls call (`currentEventsByPersistenceId` or
+  `currentEventsByTag`), and a tag filter the query layer refuses (longer
+  than 255 characters, an operator that is not a list, a value that is
+  neither a string nor a filter object), refused with the query layer's own
+  reason. What the read side accepts on purpose still spawns: an empty tag,
+  `{}`, `{ any: [] }`.
 
   **Migration.** Give every projection a `name`: one without was keyed
   `undefined` in the offset store and is now refused, so
-  `withName('undefined')` resumes that cursor.
+  `withName('undefined')` resumes that cursor. Pass a `PersistenceQuery` and
+  a tag filter the query layer accepts: one whose query lacks the method its
+  polls call, or whose filter the query layer refuses, now throws at
+  `byPersistenceId` / `byTag` instead of spawning and failing every poll.
 
 - **The lease documentation now matches the code** (#1494).
   `InMemoryLease`'s store is per isolate (one process or one worker thread,
@@ -5951,6 +6081,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   both sweeps — idle entities and empty shards — run on the region's own
   turn.
 
+  The empty-shard sweep now asks a shard to stop instead of stopping it, and
+  the shard stops only when it has nothing to lose. On its own turn the
+  region still judged a shard by its index, which learns of an entity only
+  from the shard's spawn report, so a first message for a new entity routed
+  just ahead of the sweep tick reached a shard the sweep then stopped, and
+  the entity went down before it read the message; the same happened to a
+  remembered entity a recovery batch, paced or not, had just started. A
+  shard that has an entity, or one backing off, declines and keeps running;
+  the region routes to it again, hands it what it buffered meanwhile and
+  starts any registry it held. A shard the coordinator moved elsewhere while
+  it declined keeps the entity it was busy with.
+
 - **A `sharding.GetShardStats` told to a shard without a usable `replyTo`
   threw inside the shard, and the restart that followed stopped every entity
   of that shard while the region went on counting them** (#1437). The shard
@@ -5960,7 +6102,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   cooperatively was replayed into the next incarnation without its sender,
   so an entity answering `this.sender` answered nobody and an `ask` that
   landed in that window timed out** (#1441). The shard now keeps each
-  buffered message together with the sender it arrived with.
+  buffered message together with the sender it arrived with, on the
+  region-driven path too: a `PassivateEntity` from a `max-entities` eviction
+  or the idle sweep.
 
 - **`EventStream.subscribe` and `unsubscribe` now refuse a subscriber that
   is not an `ActorRef` with a `TypeError` at the call site, as they already
@@ -6291,14 +6435,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   open is still in flight no longer leaves a live connection behind it. The
   SQLite journal no longer looks open when its tag backfill failed. The
   Cassandra stores refuse `start()` and every operation after `close()`
-  instead of reconnecting, and `close()` shuts down a client the store
-  created even when the start failed after creating it.
+  instead of reconnecting, and a start that fails after creating its own
+  client shuts that client down before it rejects, so the next start creates
+  a fresh one; an injected client is still left running. A tag query through
+  `CassandraQuery`'s tag index opens the journal before it reads, so it no
+  longer fails on a journal that owns its client and was not opened yet, and
+  after `close()` it rejects with the journal's own closed error.
 
   `CassandraRememberEntitiesStore`, the sharding store built on the same
   Cassandra connection, now does the same: it refuses `start()` and every
-  operation after `close()`, and its `close()` lets a start still in flight
-  settle and then shuts down a client the store created, even when that
-  start failed after creating it; an injected client is still left running.
+  operation after `close()`, its `close()` lets a start still in flight
+  settle and then shuts down a client the store created, and a start that
+  fails after creating its own client shuts that client down before it
+  rejects, so the next start creates a fresh one; an injected client is
+  still left running.
 
 - **A cluster transport connection that was given up now stays given up**
   (#1476). On Bun and Deno a dial whose TCP connect took longer than
@@ -8036,6 +8186,35 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   object), and the per-actor throttle now has a dedicated docs page
   (`fundamentals/throttling`, EN + DE).
 
+- **A node that restarts on the same `host:port` now ends its previous
+  incarnation on every node that still holds it** (#1426). The old run is
+  announced `MemberDown` and `MemberRemoved` before the new run's
+  `MemberJoined`. The merge used to replace the old run's record by version
+  and announce only the new run, so remote death watch, which reacts to
+  those two events alone, never sent the watchers of the old run's actors
+  their `Terminated` (`addressTerminated`) when the restart came back inside
+  `down-after` — and, under `auto-down = off`, when a parked peer restarted.
+  A reconnect of the same run announces nothing, and a record without an
+  incarnation (from a peer that predates the field, or relayed through one
+  that stripped it) keeps the silent replacement, because there a restart
+  and a reconnect look alike.
+
+- **A shard the region has asked to passivate stays closed to traffic when
+  the coordinator repeats its placement** (#1441). Every region sees such a
+  repeat after a leader change; the next message now waits for the shard
+  that replaces the passivating one instead of going into the stopping actor
+  and to dead letters.
+
+- **Under `entity-recovery.strategy = all`, a remembered registry that
+  reached a region while its shard was passivating was told to the stopping
+  shard actor and lost with it, so the shard came back empty while the
+  coordinator still listed every entity** (#851). One that arrived while the
+  shard handed off was dead-lettered the same way. A registry for a
+  passivating shard is now held and started in the shard that replaces it,
+  unless the shard moved away in the meantime, and one for a shard handing
+  off is left to the new owner the coordinator ships it to — the two rules
+  the paced drain follows.
+
 ### Removed
 
 - **BREAKING — `OtelLoggerAdapterOptions` is gone: `otelLogger(options)` now
@@ -8140,12 +8319,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   framework reads when the client opens and hands to the driver as its `ca`
   with TLS on, and an unreadable file, or one holding no PEM certificate,
   fails the store's first use naming the leaf and the path without quoting
-  the file** (#1490). `ca-file` is refused beside anything that would drop
-  it or make it moot — a `tlsCAFile` in the url or in `clientOptions` (the
-  driver reads that file only when it was handed no CA), a `ca` in
-  `clientOptions`, a `tls` or `ssl` set to `false`, or a `tlsInsecure` or
-  `tlsAllowInvalidCertificates` that switches certificate verification off —
-  so a configured CA always means verified TLS against that CA.
+  the file** (#1490). `ca-file` is refused when the store is built beside
+  anything that would drop it or set it aside — a `tlsCAFile` in the url or
+  in `clientOptions` (the driver reads that file only when it was handed no
+  CA), a `ca` in `clientOptions`, a `tls` or `ssl` set to `false`, a
+  `tlsInsecure` or `tlsAllowInvalidCertificates` that switches certificate
+  verification off, a `rejectUnauthorized` of `false` in `clientOptions` in
+  any letter case of the key (the switch `tlsInsecure` sets), a
+  `secureContext` there (its own trust store is used in place of the CA), or
+  a pre-built `client` (configured where it was built, it never reads the
+  leaf) — so a configured CA always means verified TLS against that CA.
 
 - **A WebSocket hub no longer takes a decoded message body for one of its
   own signals** (#1431). `WebsocketServerActor` dispatched on `kind` alone,
