@@ -178,8 +178,15 @@ Davon hängt ab, wie deine Strategie aufgerufen wird:
   zulässigen Regionen allein. `rebalance` wird gar nicht aufgerufen.
 - **Sobald die Menge** für das Beruhigungsfenster **stillgehalten hat**,
   wird `allocate` **einmal** gefragt, mit den zulässigen Regionen, und
-  `rebalance` wird mit den zulässigen Regionen und den Shards aufgerufen,
-  die sie halten.
+  `rebalance` wird mit den zulässigen Regionen als Kandidaten und den
+  Shards jeder Region aufgerufen, deren Mitglied `up` ist. Diese Map ist
+  absichtlich breiter als die Kandidaten: Sie enthält auch eine Region,
+  die auf einem Mitglied registriert ist, das `up` ist, die aber kein
+  Kandidat ist — wegen ihrer Shard-Anzahl abgewiesen oder ohne die Rolle
+  des Typs —, damit ihre Shards für einen Umzug auf einen Kandidaten
+  vorgeschlagen werden können. `HashAllocationStrategy` schlägt jeden
+  davon vor; `LeastShardAllocationStrategy` gewichtet nur die Kandidaten
+  und lässt sie, wo sie sind.
 
 In beiden Fällen wird eine Wahl, die nicht unter den übergebenen
 Kandidaten ist, nie zugewiesen, und ein `rebalance`-Vorschlag für einen
@@ -229,10 +236,10 @@ Ordnung.
 
 `rebalance` läuft alle `rebalanceIntervalMs` (Default 2 s), sobald die
 Menge der Mitglieder, die `up` sind, zur Ruhe gekommen ist. Es sieht die
-Regionen auf diesen Mitgliedern und jeden Shard, den sie halten — keine
-Region auf einem Mitglied, das `unreachable` ist oder noch beitritt.
-Halte es unter ~100 ms, um die übrige Arbeit des Koordinators nicht zu
-blockieren.
+zulässigen Regionen als Kandidaten und jeden Shard, den eine Region auf
+einem Mitglied hält, das `up` ist — nichts von einer Region auf einem
+Mitglied, das `unreachable` ist oder noch beitritt. Halte es unter
+~100 ms, um die übrige Arbeit des Koordinators nicht zu blockieren.
 
 ## Auswahl
 

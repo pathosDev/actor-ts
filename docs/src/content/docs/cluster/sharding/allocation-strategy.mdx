@@ -168,7 +168,14 @@ That decides how your strategy is called:
   the eligible regions alone.  `rebalance` is not called at all.
 - **Once the set has held still** for the settle window, `allocate` is
   asked **once**, with the eligible regions, and `rebalance` is called
-  with the eligible regions and the shards they hold.
+  with the eligible regions as candidates and the shards of every region
+  whose member is up.  That map is wider than the candidates on purpose:
+  it also lists a region registered on an up member that is no
+  candidate — refused over its shard count, or without the type's role
+  — so that its shards can be proposed for a move onto a candidate.
+  `HashAllocationStrategy` proposes every one of them;
+  `LeastShardAllocationStrategy` weighs only the candidates and leaves
+  them where they are.
 
 Either way a pick that is not among the candidates the call was given is
 never placed, and a `rebalance` proposal for a shard whose current owner
@@ -214,10 +221,10 @@ membership settles — bounded by `numShards` (default 64).  Even an
 expensive strategy is fine here.
 
 `rebalance` runs every `rebalanceIntervalMs` (default 2 s) once the
-set of members that are `up` has settled.  It sees the regions on those
-members and every shard they hold — not a region on a member that is
-`unreachable` or still joining.  Keep it under 100 ms or so to avoid
-blocking the coordinator's other work.
+set of members that are `up` has settled.  It sees the eligible regions
+as candidates and every shard a region on an up member holds — nothing
+of a region on a member that is `unreachable` or still joining.  Keep it
+under 100 ms or so to avoid blocking the coordinator's other work.
 
 ## Picking
 

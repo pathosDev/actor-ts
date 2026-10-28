@@ -866,6 +866,17 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     return shardCountsOf(this.regions.values());
   }
 
+  /**
+   * {@link shardCountsOf} over every registered region whose member is `up` —
+   * the eligible regions, and with them the ones that are no candidate: refused
+   * over their shard count, or on a member without the type's role.  What
+   * {@link rebalanceTick} shows the strategy, and why it is wider than the
+   * candidates is said there (#1467).
+   */
+  private shardCountsOnUpMembers(): Map<string, Set<number>> {
+    return shardCountsOf(Array.from(this.regions.values()).filter((info) => this.isUpMember(info.node)));
+  }
+
   /* ------------------------------- Handlers -------------------------------- */
 
   private onBeginHandOffAcknowledgment(): void {
@@ -1809,19 +1820,33 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   /* ------------------------------- Rebalance ------------------------------- */
 
   /**
-   * One voluntary rebalance pass: over the eligible regions only, once their
-   * set has settled, and bounded by the configured ceiling (#1467, #850).
+   * One voluntary rebalance pass: onto the eligible regions, off any region
+   * whose member is up, once the eligible set has settled, and bounded by the
+   * configured ceiling (#1467, #850).
    *
-   * **Eligible regions only.**  The strategy sees the regions whose member is
-   * `up` and the shards those hold — nothing of a region on a member that is
-   * not.  Such a region is never handed a shard, so balancing it in would
-   * propose moves onto a node that cannot take them; and a hand-off *from* it
-   * can only time out into a force-reallocation, which gives the shard a second
-   * live home while the cut-off node keeps running it.  So whatever the strategy
-   * returns — a custom one may return any id — a proposal whose current owner is
-   * not up is dropped before the ceiling is applied.  A parked member's shards
-   * stay where they are until the membership decides about it: removed, its
-   * regions go through {@link onMemberRemoved}; back `up`, it is eligible again.
+   * **Up members only.**  The strategy is handed the eligible regions as its
+   * candidates and the shards of every region whose member is `up` — nothing of
+   * a region on a member that is not.  Such a region is never handed a shard,
+   * so balancing it in would propose moves onto a node that cannot take them;
+   * and a hand-off *from* it can only time out into a force-reallocation, which
+   * gives the shard a second live home while the cut-off node keeps running it.
+   * So whatever the strategy returns — a custom one may return any id — a
+   * proposal whose current owner is not up is dropped before the ceiling is
+   * applied.  A parked member's shards stay where they are until the membership
+   * decides about it: removed, its regions go through {@link onMemberRemoved};
+   * back `up`, it is eligible again.
+   *
+   * **Off a region that is no candidate.**  The map is wider than the
+   * candidates on purpose.  A region on an up member can be registered and
+   * still be no candidate — refused over its shard count (#633), or on a member
+   * without the type's role — and hold shards all the same: a coordinator-state
+   * snapshot seeds them before the refusal, a registration claims them.  Shown
+   * only the candidates' shards, a strategy never proposes moving those, so a
+   * refused region goes on being named the home of shards it hashes under
+   * another count — the split the refusal exists to prevent.  Shown them,
+   * {@link HashAllocationStrategy} proposes every one, because its slot is
+   * always a candidate.  That reopens no loop: the shard is allocated over the
+   * eligible regions, which never include the region it left.
    *
    * **Once settled.**  While the eligible set is settling the strategy is not
    * asked at all, so a member that goes `unreachable` and comes back within the
@@ -1856,7 +1881,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     const eligible = this.observeEligibleSet();
     if (!this.isEligibleSetSettled()) return;
     const proposed = this.options.allocationStrategy.rebalance(
-      shardCountsOf(eligible.map(([, info]) => info)),
+      this.shardCountsOnUpMembers(),
       nodesOf(eligible),
       new Set(this.rebalanceInProgress.keys()),
     );

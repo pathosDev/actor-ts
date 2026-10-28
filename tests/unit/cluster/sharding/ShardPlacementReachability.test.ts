@@ -54,7 +54,10 @@ import {
   type AllocationStrategy,
   HashAllocationStrategy,
 } from '../../../../src/cluster/sharding/AllocationStrategy.js';
-import type { GetShardHome, HandOffComplete } from '../../../../src/cluster/sharding/ShardingProtocol.js';
+import type {
+  GetShardHome,
+  HandOffComplete,
+} from '../../../../src/cluster/sharding/ShardingProtocol.js';
 import { StartShardingOptions } from '../../../../src/cluster/sharding/StartShardingOptions.js';
 import { Config } from '../../../../src/config/Config.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
@@ -113,6 +116,57 @@ class ProposesEveryShardStrategy implements AllocationStrategy {
   }
 }
 
+/** One call a strategy received, as it saw it: the hosts it was handed, and the shard map by host. */
+type StrategyCall = {
+  readonly method: 'allocate' | 'rebalance';
+  /** The shard asked about; `null` for a `rebalance`. */
+  readonly shardId: number | null;
+  readonly candidates: readonly string[];
+  readonly shards: Readonly<Record<string, readonly number[]>>;
+};
+
+function recordCall(
+  method: StrategyCall['method'],
+  shardId: number | null,
+  candidates: ReadonlyArray<NodeAddress>,
+  currentShards: ReadonlyMap<string, ReadonlySet<number>>,
+): StrategyCall {
+  // Copied at call time: the sets are the coordinator's, and they move on.
+  const shards: Record<string, number[]> = {};
+  for (const [address, shardIds] of currentShards) {
+    shards[hostOfAddress(address)] = [...shardIds].sort((left, right) => left - right);
+  }
+  return { method, shardId, candidates: candidates.map((candidate) => candidate.host), shards };
+}
+
+/**
+ * The default strategy's answers, with every call written down as the strategy
+ * saw it.  What the coordinator hands a strategy is the contract a custom one is
+ * written against, so it is asserted as such rather than inferred from where
+ * the default strategy's answers happen to land.
+ */
+class RecordsWhatItIsShown extends HashAllocationStrategy {
+  readonly calls: StrategyCall[] = [];
+
+  override allocate(
+    shardId: number,
+    candidates: ReadonlyArray<NodeAddress>,
+    currentShards: ReadonlyMap<string, ReadonlySet<number>> = new Map(),
+  ): NodeAddress {
+    this.calls.push(recordCall('allocate', shardId, candidates, currentShards));
+    return super.allocate(shardId, candidates, currentShards);
+  }
+
+  override rebalance(
+    currentShards: ReadonlyMap<string, ReadonlySet<number>>,
+    candidates: ReadonlyArray<NodeAddress>,
+    rebalanceInProgress: ReadonlySet<number>,
+  ): Set<number> {
+    this.calls.push(recordCall('rebalance', null, candidates, currentShards));
+    return super.rebalance(currentShards, candidates, rebalanceInProgress);
+  }
+}
+
 /** A registry entry as the coordinator keeps it — every field, so a fabricated one is indistinguishable. */
 type RegionInfo = {
   readonly node: NodeAddress;
@@ -135,6 +189,8 @@ interface CoordinatorInternals {
   readonly shardHome: Map<number, string>;
   readonly pending: Map<number, unknown[]>;
   readonly rebalanceInProgress: Map<number, InFlightHandOff>;
+  /** Region keys refused over their shard count (#633) — still in `regions` when a snapshot seeded them first. */
+  readonly refusedRegions: Set<string>;
   readonly membershipSettleWindowMs: number;
   eligibleSetRecord: EligibleSetRecord | null;
   candidates(): NodeAddress[];
@@ -143,6 +199,7 @@ interface CoordinatorInternals {
   rebalanceTick(): void;
   onGetShardHome(message: GetShardHome): void;
   onHandOffComplete(message: HandOffComplete): void;
+  onHandOffTimeout(shardId: number): void;
   onLeaderChanged(): void;
 }
 
@@ -221,6 +278,11 @@ async function startPlacement(systemName: string, fixture: PlacementFixture = {}
     logger: fixture.logger,
     configure: (options) => {
       options.withFailureDetector(SHORT_FAILURE_DETECTOR);
+      // The cases park members at `unreachable`, which is what the detector
+      // does with auto-down off; with it on it removes a silent peer at
+      // down-after instead.  Set rather than inherited, so no case rests on
+      // which of the two the shipped configuration happens to choose.
+      options.withFailureDetectorAutoDown(false);
       if (fixture.role !== undefined) options.withRoles([fixture.role]);
     },
   });
@@ -292,6 +354,12 @@ function regionPath(host: string): string {
 /** The registry key the coordinator uses for the fabricated region on `host`. */
 function keyOf(placement: Placement, host: string): string {
   return `${peerAddress(placement, host)}|${regionPath(host)}`;
+}
+
+/** The host of a `system@host:port` address string — how a strategy's map is keyed. */
+function hostOfAddress(address: string): string {
+  const match = /@([^:]+):/.exec(address);
+  return match ? match[1]! : address;
 }
 
 /** Which fabricated host a registry key belongs to, so a failure prints `x` rather than a key. */
@@ -611,6 +679,95 @@ describe('rebalancing waits for the set of up members to hold still (#1467)', ()
     // Everything else it proposed was taken: the filter is on the owner, not a
     // refusal of the whole proposal.
     expect(moving.map(([shardId]) => shardId)).toEqual(ALL_SHARDS.filter((shardId) => shardId % 3 !== 2));
+  });
+});
+
+describe('rebalancing moves a shard off a registered region that is no candidate (#1467)', () => {
+  // A region can be registered, on a member that is up, and still be no
+  // candidate — refused over its shard count, or on a member without the
+  // type's role — and hold shards all the same: a coordinator-state snapshot
+  // seeds them before the refusal, a registration claims them, a role is taken
+  // off a node.  Rebalancing moves them onto the candidates.  Handing the
+  // strategy only the candidates' shards left them where they were for good.
+
+  test('a region on an up member without the role gives its shards up to the candidates that are up', async () => {
+    const placement = await startPlacement('rebalance-off-role-less', { role: ROLE });
+    stageMember(placement, 'peer-a', 'up', [ROLE]);
+    stageMember(placement, 'peer-b', 'up', [ROLE]);
+    stageMember(placement, 'peer-x', 'unreachable', [ROLE]);
+    stageMember(placement, 'peer-y', 'up');
+    const held = ALL_SHARDS.slice(0, NUM_SHARDS / 2);
+    fabricate(placement, [['peer-a', []], ['peer-b', []], ['peer-x', []], ['peer-y', held]]);
+    const { coordinator } = placement;
+
+    // Not while the set settles: the window holds for these shards as for any.
+    coordinator.rebalanceTick();
+    expect(inFlight(coordinator), 'a hand-off started before the set had settled').toEqual([]);
+
+    letTheSetSettle(coordinator);
+    coordinator.rebalanceTick();
+    expect(inFlight(coordinator)).toEqual(held.map((shardId): [number, string] => [shardId, 'peer-y']));
+
+    completeEveryHandOff(placement);
+    // Over the two candidates that are up, in address order — none onto the
+    // parked one, which is a candidate too.
+    const owners = ownersByShard(coordinator);
+    expect(held.map((shardId) => owners.get(shardId)))
+      .toEqual(held.map((shardId) => (shardId % 2 === 0 ? 'peer-a' : 'peer-b')));
+  });
+
+  test('a region refused over its shard count gives up the shards a snapshot seeded it with', async () => {
+    // The state a seeding snapshot followed by the region's own refused
+    // `Register` leaves behind: the entry stays, with its shards, and its key is
+    // refused.  For as long as the shards are homed there, every region asking
+    // for one is told the refused region has it — a region that hashes entity
+    // ids under another count, which is the split the refusal exists to
+    // prevent.
+    const placement = await startPlacement('rebalance-off-refused');
+    for (const host of ['peer-a', 'peer-b', 'peer-r']) stageMember(placement, host, 'up');
+    fabricate(placement, [['peer-a', []], ['peer-b', []], ['peer-r', [3, 5]]]);
+    const { coordinator } = placement;
+    coordinator.refusedRegions.add(keyOf(placement, 'peer-r'));
+
+    letTheSetSettle(coordinator);
+    coordinator.rebalanceTick();
+    expect(inFlight(coordinator)).toEqual([[3, 'peer-r'], [5, 'peer-r']]);
+
+    // A refused region gave its shards up when it was refused, so it does not
+    // answer the hand-off: each one ends at its timeout, forced the way the
+    // coordinator's own timer forces it.
+    for (const shardId of [3, 5]) {
+      coordinator.rebalanceInProgress.get(shardId)!.timer.cancel();
+      coordinator.onHandOffTimeout(shardId);
+    }
+    expect([3, 5].map((shardId) => hostOf(coordinator.shardHome.get(shardId)))).toEqual(['peer-b', 'peer-b']);
+    expect(coordinator.regions.get(keyOf(placement, 'peer-r'))!.shards.size).toBe(0);
+  });
+
+  test('rebalance is shown the shards of every region on an up member, and nothing of a member that is not up', async () => {
+    const strategy = new RecordsWhatItIsShown();
+    const placement = await startPlacement('rebalance-map', { role: ROLE, strategy });
+    stageMember(placement, 'peer-a', 'up', [ROLE]);
+    stageMember(placement, 'peer-r', 'up', [ROLE]);
+    stageMember(placement, 'peer-x', 'unreachable', [ROLE]);
+    stageMember(placement, 'peer-y', 'up');
+    fabricate(placement, [['peer-a', [0, 1]], ['peer-r', [2, 3]], ['peer-x', [4, 5]], ['peer-y', [6, 7]]]);
+    const { coordinator } = placement;
+    coordinator.refusedRegions.add(keyOf(placement, 'peer-r'));
+    letTheSetSettle(coordinator);
+    strategy.calls.length = 0;
+
+    coordinator.rebalanceTick();
+
+    expect(strategy.calls).toEqual([{
+      method: 'rebalance',
+      shardId: null,
+      // The candidates are the eligible regions: up, not refused, with the role.
+      candidates: ['peer-a'],
+      // The map is every region on an up member, candidate or not, and nothing
+      // of the parked one: its shards wait for the decision about its member.
+      shards: { 'peer-a': [0, 1], 'peer-r': [2, 3], 'peer-y': [6, 7] },
+    }]);
   });
 });
 

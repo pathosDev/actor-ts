@@ -156,10 +156,14 @@ geändert hat:
   zulässigen Regionen. Um ein Rebalancing wird die Strategie gar nicht
   erst gebeten.
 - **Sobald die Menge für das Beruhigungsfenster stillgehalten hat**,
-  laufen Allokation und Rebalancing beide nur über die zulässigen
+  legen Allokation und Rebalancing Shards beide nur auf die zulässigen
   Regionen, und ein vorgeschlagener Umzug weg von einem Besitzer, der
   nicht `up` ist, wird verworfen, gleich welche Strategie ihn
-  vorgeschlagen hat.
+  vorgeschlagen hat. Das Rebalancing sieht dabei auch die Shards einer
+  Region, die auf einem Mitglied registriert ist, das `up` ist, die aber
+  kein Kandidat ist — wegen ihrer Shard-Anzahl abgewiesen oder ohne die
+  Rolle des Typs —, sodass die Default-Strategie diese auf die
+  zulässigen Regionen verschiebt.
 
 Das Fenster wird aus den Downing-Zeiten abgeleitet, nicht konfiguriert:
 `failure-detector.down-after` ohne Split-Brain-Strategie, und mit einer

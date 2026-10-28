@@ -139,9 +139,12 @@ The coordinator tracks the set of regions whose member is up — the
   up.  Only a pick on a member that is not up is asked again, over the
   eligible regions.  The strategy is not asked to rebalance at all.
 - **Once the set has held still for the settle window**, allocation and
-  rebalancing both run over the eligible regions only, and a proposed
-  move away from an owner that is not up is dropped, whichever strategy
-  proposed it.
+  rebalancing both place shards on the eligible regions only, and a
+  proposed move away from an owner that is not up is dropped, whichever
+  strategy proposed it.  Rebalancing does see the shards of a region
+  that is registered on an up member but is no candidate — refused over
+  its shard count, or without the type's role — so the default strategy
+  moves those onto the eligible regions.
 
 The window is derived from the downing timings rather than configured:
 `failure-detector.down-after` with no split-brain strategy, and the

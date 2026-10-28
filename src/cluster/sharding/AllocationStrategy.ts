@@ -19,8 +19,12 @@ import { NodeAddress } from '../NodeAddress.js';
  * - Once the set has held still for the settle window — failure-detector
  *   `down-after`, or the split-brain resolver's `stable-after` when a resolver
  *   is configured and that is longer — `allocate` is asked **once**, with the
- *   eligible regions, and `rebalance` is called with the eligible regions and
- *   the shards they hold.
+ *   eligible regions, and `rebalance` is called with the eligible regions as
+ *   candidates and the shards of every region whose member is up.  That map
+ *   is wider than the candidates: it also lists a region that is registered
+ *   on an up member but is no candidate — refused over its shard count, or
+ *   without the type's role — so that its shards can be proposed for a move
+ *   onto a candidate.
  *
  * Either way a pick outside the candidates a call was given is not placed, and
  * a `rebalance` proposal for a shard whose current owner's member is not up is
@@ -134,8 +138,9 @@ export class LeastShardAllocationStrategy implements AllocationStrategy {
     if (candidates.length < 2) return out;
 
     // Only the candidates' loads count.  The coordinator hands `rebalance` the
-    // eligible regions — those whose member is up — and only the shards they
-    // hold, so there is nobody else to weigh.
+    // eligible regions — those whose member is up — as candidates, and its map
+    // may also list a region on an up member that is no candidate; that one is
+    // not weighed here, so this strategy never proposes moving its shards.
     const loads: Array<[string, number, ReadonlySet<number>]> = candidates.map(c => [
       c.toString(),
       currentShards.get(c.toString())?.size ?? 0,
