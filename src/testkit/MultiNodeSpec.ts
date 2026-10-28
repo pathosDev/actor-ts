@@ -203,10 +203,10 @@ export class MultiNodeSpec {
       try {
         cluster = await Cluster.join(system, clusterOptions);
       } catch (error) {
-        // A refused join — auto-down beside a role's provider is the one a
-        // spec can configure itself into — must not leave this role's system
-        // running behind a node `stop()` cannot see: it is recorded below,
-        // only after the join succeeded.
+        // A refused join — options a spec can configure itself into, such as
+        // a gossip interval or a stability window the validator rejects —
+        // must not leave this role's system running behind a node `stop()`
+        // cannot see: it is recorded below, only after the join succeeded.
         await system.terminate();
         throw error;
       }
@@ -255,8 +255,9 @@ export class MultiNodeSpec {
    * once `failureDetector.unreachableAfterMs` passes without a frame from
    * it, and reach `down` at `downAfterMs`.  What `down` does then is the
    * spec's choice: a role's {@link MultiNodeSpecOptionsType.downing}
-   * provider decides, {@link MultiNodeSpecOptionsType.failureDetectorAutoDown}
-   * removes the node, and with neither it stays a member at `unreachable`.
+   * provider decides; without one the shipped
+   * {@link MultiNodeSpecOptionsType.failureDetectorAutoDown} removes the
+   * node, and with that switched off it stays a member at `unreachable`.
    * The terminated node's `cluster` and `system` references stay live
    * for assertion purposes; calls to them post-crash will error.
    */

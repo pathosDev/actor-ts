@@ -13,11 +13,11 @@
  *   tombstone, so the **same run** of the peer — same incarnation, the version
  *   it was removed at — is refused until the prune, and comes back with its
  *   old roles after it.
- * - The failure detector's own removal (`failure-detector.auto-down = on`, no
- *   provider) deletes the entry: the one route with no refusal, so the same
- *   run is readmitted on its next frame.  Under the default it removes nothing
- *   at all — the peer is parked at `unreachable`, and its next heartbeat
- *   brings it back.
+ * - The failure detector's own removal (`failure-detector.auto-down = on`, the
+ *   default, no provider) deletes the entry: the one route with no refusal, so
+ *   the same run is readmitted on its next frame.  Under the opt-out
+ *   (`auto-down = off`) it removes nothing at all — the peer is parked at
+ *   `unreachable`, and its next heartbeat brings it back.
  * - The tombstone is a version floor, not a ban.  A restart (new incarnation,
  *   version from a fresh wall clock) out-versions it and is readmitted at once,
  *   and so is the same run restamping its version, because no refusal compares
@@ -417,8 +417,8 @@ describe("the failure detector's route — the one with no refusal (#1477, #1426
     expect(announced).toEqual([`removed ${run}`, `up ${run}`]);
   });
 
-  test('under the default the peer is parked, never removed, and its next heartbeat brings it back', async () => {
-    const { cluster } = await startNode('refusal-parked', 9_477);
+  test('under auto-down = off the peer is parked, never removed, and its next heartbeat brings it back', async () => {
+    const { cluster } = await startNode('refusal-parked', 9_477, { autoDown: false });
     const run = peerRun('refusal-parked', 9_577, 'run-1');
     const version = Date.now();
     announce(cluster, run, version);

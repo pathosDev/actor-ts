@@ -129,10 +129,12 @@ export function singletonHost(cluster: Cluster, role?: string): Option<Member> {
  * The cost of excluding them is real and is the lesser one: while a role host
  * is unreachable to its peers the singleton is hosted *from their point of
  * view* nowhere, and messages routed from that side dead-letter until the
- * member is downed or comes back.  Something has to down it — a downing
- * strategy, `failure-detector.auto-down = on` after `downAfterMs`, or an
- * operator — because the default parks a silent member at `unreachable`
- * (#1426).  Availability is then recoverable and bounded by downing; a second
+ * member is downed or comes back.  Something has to down it — the shipped
+ * `failure-detector.auto-down = on` after `downAfterMs`, a downing strategy,
+ * or an operator, the last two being all that is left once a strategy is
+ * configured or auto-down is switched off, which parks a silent member at
+ * `unreachable` (#1426).  Availability is then recoverable and bounded by
+ * downing; a second
  * live singleton is neither.  On the no-lease
  * path the two properties cannot both be had — an unreachable node cannot be
  * asked to stand down, because reaching it is the thing that failed.  Where

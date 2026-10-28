@@ -432,10 +432,11 @@ function joinOptionsFor(
   // whatever travels from here is an explicit option, which outranks
   // `actor-ts.cluster.*` in the join's merge, so a field travels only when
   // the caller set it (#860).  Tested against `undefined` rather than for
-  // truthiness, because `false` and `0` are answers here — auto-down off, or
-  // the escalation off, over a file that turns it on; no join deadline over a
-  // file that sets one.  The resolver policy goes as written: the join merges
-  // it per field, so a field the caller left out still comes from the file.
+  // truthiness, because `false` and `0` are answers here — auto-down off over
+  // the shipped `on`, the escalation off over a file that turns it on, no join
+  // deadline over a file that sets one.  The resolver policy goes as written:
+  // the join merges it per field, so a field the caller left out still comes
+  // from the file.
   if (resolvedOptions.appVersion !== undefined) clusterOptions.withAppVersion(resolvedOptions.appVersion);
   if (resolvedOptions.failureDetectorAutoDown !== undefined) {
     clusterOptions.withFailureDetectorAutoDown(resolvedOptions.failureDetectorAutoDown);

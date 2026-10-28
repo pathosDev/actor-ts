@@ -358,7 +358,7 @@ describe('what the detector announces while a downing provider holds a peer (#92
     // and auto-down on, the detector owns the eviction and says so.  If this
     // arm ever stopped announcing `MemberDown`, the assertions above would be
     // measuring a tick that never reached a `down` verdict at all.  (Auto-down
-    // is opt-in since #1426; the default parks the peer exactly like a
+    // is the shipped default; `auto-down = off` parks the peer exactly like a
     // provider that has not answered — `FailureDetectorAutoDown.test.ts`.)
     const node = await startNode('hold-announce-control', 9_293, undefined, true);
     nodes.push(node);
@@ -376,10 +376,12 @@ describe('what the detector announces while a downing provider holds a peer (#92
     expect(internals(node.cluster).members.has(peer.toString())).toBe(false);
   });
 
-  test('with no provider and auto-down off — the default — the same silence is held the same way', async () => {
+  test('with no provider and auto-down off — the opt-out — the same silence is held the same way', async () => {
     // The control arm's other half (#1426): no provider and nobody else to
     // decide either, so the detector parks the peer exactly as it does for a
     // provider that has not answered — one `MemberUnreachable`, no `MemberDown`.
+    // The helper sets the switch explicitly (`false` unless a case passes
+    // `true`), so this case pins the opt-out, not the shipped default.
     const node = await startNode('hold-announce-default', 9_295);
     nodes.push(node);
     const peer = peerAddress('hold-announce-default', 9_395);

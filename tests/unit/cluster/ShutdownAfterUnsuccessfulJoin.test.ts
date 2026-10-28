@@ -84,6 +84,17 @@ type NodeSpec = {
   readonly selfElection?: SelfElectionPolicy;
   readonly minimumMembersBeforeUp?: number;
   readonly weaklyUpAfterMs?: number;
+  /**
+   * The detector's three thresholds; absent keeps them minutes long, so no
+   * peer a case introduces is ever judged.  On the case's virtual clock.
+   */
+  readonly failureDetector?: {
+    readonly heartbeatIntervalMs: number;
+    readonly unreachableAfterMs: number;
+    readonly downAfterMs: number;
+  };
+  /** `failure-detector.auto-down` in code; absent leaves the shipped `on`. */
+  readonly autoDown?: boolean;
 };
 
 type NodeHandle = {
@@ -147,12 +158,13 @@ async function startNode(systemName: string, port: number, spec: NodeSpec = {}):
     .withTransport(new InMemoryTransport(address))
     .withSeeds([`${SEED_HOST}:${port}`])
     .withSeedRetryIntervalMs(RETRY_INTERVAL_MS)
-    .withFailureDetector({
+    .withFailureDetector(spec.failureDetector ?? {
       heartbeatIntervalMs: 60_000,
       unreachableAfterMs: 120_000,
       downAfterMs: 240_000,
     })
     .withGossipIntervalMs(60_000);
+  if (spec.autoDown !== undefined) clusterOptions.withFailureDetectorAutoDown(spec.autoDown);
   if (spec.giveUpMs !== undefined) clusterOptions.withShutdownAfterUnsuccessfulJoinMs(spec.giveUpMs);
   if (spec.selfElection !== undefined) clusterOptions.withSelfElection(spec.selfElection);
   if (spec.minimumMembersBeforeUp !== undefined) {
@@ -452,6 +464,65 @@ describe('and does not give up while something can still promote the node', () =
     expect(caught).toBeInstanceOf(OptionsError);
     expect((caught as OptionsError).field).toBe('shutdownAfterUnsuccessfulJoinMs');
     expect(nodes).toEqual([]);
+  });
+});
+
+describe('under auto-down = off, a peer parked past down-after is not a live peer (#1426)', () => {
+  // The opt-out parks a dead peer at `unreachable` for good, and the threshold
+  // does not count an `unreachable` record as present.  Counted as a live peer
+  // anyway, it made the verdict ask the threshold forever — "the missing
+  // members may still join" — so a node whose only answering peer had died
+  // never gave up: the pod that never joins and never exits.  A parked peer
+  // can promote nobody, so the verdict leaves it out.
+  const TIGHT_DETECTOR = { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 } as const;
+
+  test('minimum-members-before-up = 2: the only answering peer dies, and the deadline gives up', async () => {
+    const node = await startNode('give-up-parked-peer', 9_820, {
+      giveUpMs: DEADLINE_MS,
+      minimumMembersBeforeUp: 2,
+      failureDetector: TIGHT_DETECTOR,
+      autoDown: false,
+    });
+    // It answered once — this frame is all the node ever hears from it.
+    const peer = new NodeAddress('give-up-parked-peer', SEED_HOST, 9_820);
+    introducePeer(node, peer, 'joining');
+
+    node.scheduler.advance(DEADLINE_MS - 1);
+    // Parked by now, and still a member: the opt-out removes nobody.
+    expect(internals(node.cluster).members.get(peer.toString())?.status).toBe('unreachable');
+    expect(warningsContaining(node, 'parked at unreachable')).toHaveLength(1);
+    expectStillJoining(node);
+
+    node.scheduler.advance(1);
+
+    expectGaveUp(node);
+    await awaitTerminated(node);
+  });
+
+  test('a peer only unreachable — short of down-after — still holds the verdict; parked, it no longer does', async () => {
+    // The other direction, left as it was on purpose: a leader that is silent
+    // for less than down-after may answer again, and one heartbeat would make
+    // it `up`.  The deadline falls inside that window, so the node waits; the
+    // re-check after the parking gives up.
+    const node = await startNode('give-up-transient-peer', 9_821, {
+      giveUpMs: RETRY_INTERVAL_MS * 3,
+      minimumMembersBeforeUp: 2,
+      failureDetector: TIGHT_DETECTOR,
+      autoDown: false,
+    });
+    const leader = new NodeAddress('give-up-transient-peer', SEED_HOST, 9_821);
+    introducePeer(node, leader, 'up');
+
+    node.scheduler.advance(RETRY_INTERVAL_MS * 3);
+    expect(internals(node.cluster).members.get(leader.toString())?.status).toBe('unreachable');
+    expect(warningsContaining(node, 'parked at unreachable')).toEqual([]);
+    expectStillJoining(node);
+
+    node.scheduler.advance(RETRY_INTERVAL_MS * 3);
+
+    expect(warningsContaining(node, 'parked at unreachable')).toHaveLength(1);
+    expectGaveUp(node);
+    await awaitTerminated(node);
   });
 });
 

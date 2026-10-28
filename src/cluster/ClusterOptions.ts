@@ -35,15 +35,17 @@ export const DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION: FailureDetectorImplementat
  * whether the failure detector removes an unreachable peer on its own word
  * when no split-brain strategy is configured (#1426).
  *
- * Off, because the detector cannot tell a crash from a partition.  Cut a
- * cluster in two and every node's detector reaches `down-after` for every
- * peer across the cut at about the same moment; a detector that removes on
- * that verdict turns one cluster into two, each hosting its own singletons and
- * owning its own copy of every shard.  Off parks the peer at `unreachable`
- * instead, and a strategy, `Cluster.down` or the management endpoint decides —
- * the cost being that a crashed node stays a member until one of them does.
+ * On, because an n-node cluster has to stay operational with only one node
+ * left: with nothing configured, a peer silent past `down-after` is downed and
+ * removed, and the last available node takes over everything it hosted, its
+ * shards and singletons included.  The price of on: the detector cannot tell a
+ * crash from a partition, so under a real partition both sides remove each
+ * other and carry on, unless lease-majority or another split-brain strategy
+ * is configured.  The price of off, the opt-out that parks the peer at
+ * `unreachable` instead: a crashed node stays a member until a strategy,
+ * `Cluster.down` or `POST /cluster/down` removes it.
  */
-export const DEFAULT_FAILURE_DETECTOR_AUTO_DOWN = false;
+export const DEFAULT_FAILURE_DETECTOR_AUTO_DOWN = true;
 
 /**
  * Built-in default for {@link ClusterOptionsType.runCoordinatedShutdownWhenDown}
@@ -105,9 +107,11 @@ export const DEFAULT_MAX_MEMBERS = 1_000;
  * Ten times {@link DEFAULT_MAX_MEMBERS} because tombstones are the entries
  * that legitimately outnumber live members — every node that ever left leaves
  * one for {@link ClusterOptionsType.tombstoneTtlMs}.  A gossiped tombstone is
- * reclaimed by nothing else for a day; a phantom in an active status is parked
- * at `unreachable` until a strategy or an operator removes it (#1426), so the
- * two residues are bounded by two caps rather than one.
+ * reclaimed by nothing else for a day; a phantom in an active status is
+ * removed at `down-after` and can be gossiped straight back, or — with a
+ * strategy configured or auto-down off — parked at `unreachable` until a
+ * strategy or an operator removes it (#1426), so the two residues are bounded
+ * by two caps rather than one.
  */
 export const DEFAULT_MAX_TOMBSTONES = 10_000;
 
@@ -392,20 +396,28 @@ export type ClusterOptionsType = {
   readonly failureDetectorImplementation?: FailureDetectorImplementation;
   /**
    * Whether the failure detector removes an unreachable peer itself when no
-   * {@link downing} provider is configured — `false` by default (#1426).
+   * {@link downing} provider is configured — `true` by default (#1426).
    *
-   * `false` parks the peer at `unreachable` once the detector says `down`, and
-   * nothing removes it until a strategy, `Cluster.down` or the management
-   * endpoint does.  `true` is the removal every release before #1426 made:
-   * the peer is deleted and announced `MemberDown` then `MemberRemoved` —
-   * which, under a partition, every side does to the other at the same moment.
+   * `true` is the shipped behaviour: once the detector says `down` the peer is
+   * deleted and announced `MemberDown` then `MemberRemoved`, so the last
+   * available node takes over what the peer hosted.  Its price: under a real
+   * partition both sides remove each other and carry on, unless lease-majority
+   * or another split-brain strategy is configured.  `false` is the opt-out
+   * that parks the peer at `unreachable` instead.  Its price: a crashed node
+   * stays a member until a strategy, `Cluster.down` or `POST /cluster/down`
+   * removes it.
+   *
+   * It governs the no-provider case and nothing else.  A configured
+   * {@link downing} provider decides every removal (#929) and the detector only
+   * parks a peer for it, whatever this field says — so the two may stand side
+   * by side, and the shipped `true` beside a strategy leaves the strategy in
+   * charge.
    *
    * A sibling field rather than a member of {@link failureDetector}, for the
    * reason {@link failureDetectorImplementation} is one: it governs *both*
    * detectors — φ-accrual reaches `down` too — while that block holds the
    * simple detector's thresholds, and `FailureDetector` would carry a field it
-   * never reads.  Refused beside a configured {@link downing} provider, which
-   * owns every removal since #929, so the switch would be silently inert.
+   * never reads.
    */
   readonly failureDetectorAutoDown?: boolean;
   /** Failure detector thresholds — the `'simple'` implementation's. */
@@ -585,11 +597,11 @@ export type ClusterOptionsType = {
    * Optional split-brain resolver.  When provided, the cluster invokes
    * `provider.decide(view)` and force-downs every address in the returned set,
    * regardless of failure-detector state, and the detector itself only parks
-   * an unreachable peer (#929).  Without a provider nothing decides: a peer
-   * the detector declares `down` is parked at `unreachable` until an operator
-   * removes it, unless {@link failureDetectorAutoDown} lets the detector
-   * remove it on its own — which handles a crash and forks a partitioned
-   * cluster, since every side removes the other at once (#1426).
+   * an unreachable peer (#929).  Without a provider the detector decides, per
+   * {@link failureDetectorAutoDown}: by default it removes a peer it declares
+   * `down` on its own — which handles a crash and forks a partitioned cluster,
+   * since every side removes the other at once — and with the switch off it
+   * parks the peer at `unreachable` until an operator removes it (#1426).
    *
    * **Not on every transition.**  Since #839 the call is gated by
    * {@link splitBrainResolver}: the provider is consulted once the membership
@@ -661,13 +673,13 @@ export type ClusterOptionsType = {
    * unauthenticated gossip, so a peer with standing can name addresses this
    * node has never seen and get an entry allocated for each, with no join
    * involved (#138).  Such a phantom is never heard from, so the failure
-   * detector declares it `down` and — with no strategy and auto-down off,
-   * the default — parks it at `unreachable`, where it holds its slot until a
-   * strategy or an operator removes it (#1426).  This cap is therefore the
-   * whole bound on the live residue, not only on the burst; only
-   * `failureDetectorAutoDown` reclaims a phantom on its own, at
-   * `downAfterMs` — and it deletes without a tombstone, so a node that still
-   * carries the phantom gossips it straight back.
+   * detector declares it `down`.  Under the default `failureDetectorAutoDown`
+   * the detector then deletes it at `downAfterMs` — without a tombstone, so a
+   * node that still carries the phantom gossips it straight back — and with
+   * a strategy configured, or the switch off, it parks it at `unreachable`,
+   * where it holds its slot until a strategy or an operator removes it
+   * (#1426).  This cap is therefore the whole bound on the live residue, not
+   * only on the burst.
    *
    * Default: 1000 — far above any cluster this framework is built for, and
    * far below the ~110 000 entries at which this node's *own* gossip frame
@@ -683,8 +695,9 @@ export type ClusterOptionsType = {
    * it — only {@link tombstoneTtlMs} does, a day later.  A peer that gossips
    * `removed` records for addresses this node has never seen therefore parks
    * entries here for 24 h.  That is one of the two variants of #138 that
-   * accumulate; the other is a live phantom the detector parks at
-   * `unreachable`, which {@link maxMembers} bounds (#1426).
+   * accumulate; the other is a live phantom — parked at `unreachable` when a
+   * strategy is configured or auto-down is off, deleted and gossiped straight
+   * back under the default — which {@link maxMembers} bounds (#1426).
    *
    * Refusing one costs nothing: a tombstone for an address with no local
    * record suppresses nothing that exists.  Locally-minted tombstones
@@ -931,9 +944,14 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
   }
 
   /**
-   * Let the failure detector remove an unreachable peer itself when no
-   * downing provider is configured.  Default `false`: the peer is parked at
-   * `unreachable` until a strategy or an operator decides (#1426).
+   * Whether the failure detector removes an unreachable peer itself when no
+   * downing provider is configured (#1426).  Default `true`, whose price is
+   * that under a real partition both sides remove each other and carry on,
+   * unless lease-majority or another split-brain strategy is configured.
+   * `false` opts out and parks the peer at `unreachable`, whose price is that a
+   * crashed node stays a member until a strategy, `Cluster.down` or
+   * `POST /cluster/down` removes it.  A configured provider decides every
+   * removal either way.
    */
   withFailureDetectorAutoDown(autoDown: boolean): this {
     return this.set('failureDetectorAutoDown', autoDown);
@@ -1192,21 +1210,12 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
     // named at startup, instead of a cluster that quietly runs the detector
     // they did not ask for (#840).
     this.oneOf('failureDetectorImplementation', ['simple', 'phi']);
-    // Cross-field (#1426).  Since #929 a configured provider owns every removal
-    // and the detector only parks, so auto-down beside one would be a switch
-    // that silently does nothing — while whoever set it meant the detector to
-    // remove.  Refused here, on the merged settings, so a provider named in
-    // HOCON counts exactly like one passed to `withDowning`.
-    if (s.failureDetectorAutoDown === true && s.downing !== undefined) {
-      this.fail(
-        'failureDetectorAutoDown',
-        'must not be true while a downing provider is configured (downing, or '
-        + `${ConfigKeys.cluster.splitBrainResolver.activeStrategy}): the provider decides every `
-        + `removal, so ${ConfigKeys.cluster.failureDetector.autoDown} = on would be ignored — `
-        + 'set one of the two',
-        s.failureDetectorAutoDown,
-      );
-    }
+    // No cross-field rule between `failureDetectorAutoDown` and `downing`
+    // (#1426).  A provider decides every removal and auto-down only governs
+    // the no-provider case, so the pair is not a contradiction — and with
+    // `true` the shipped default, the merged settings could not tell the
+    // default from a deliberate `on`, so refusing the pair would refuse every
+    // strategy configuration.
     this.positiveNumber('gossipIntervalMs');
     this.positiveNumber('seedRetryIntervalMs');
     this.positiveNumber('tombstoneTtlMs');
