@@ -415,6 +415,76 @@ describe('JwtAuth — the claims', () => {
   });
 });
 
+describe('JwtAuth — nothing in a token is judged before its signature verifies', () => {
+  // Read any earlier, the claims would answer a token nobody signed: the 401
+  // would tell its sender which audience and issuer this service accepts, and
+  // where its clock stands, one guess at a time.
+  const ISSUER = 'https://issuer.example/';
+  const middleware = JwtAuth(rs256({ issuer: ISSUER, audience: 'orders-api' }));
+  const payloads: readonly Record<string, unknown>[] = [
+    claims({ iss: ISSUER, aud: 'orders-api' }),
+    claims({ iss: ISSUER, aud: 'billing' }),
+    claims({ iss: 'https://guess.example/', aud: 'orders-api' }),
+    claims({ iss: ISSUER, aud: 'orders-api', exp: NOW - 31 }),
+    claims({ iss: ISSUER, aud: 'orders-api', exp: NOW - 29 }),
+    claims({ iss: ISSUER, aud: 'orders-api', nbf: NOW + 3_600 }),
+    { sub: 'user-1', iss: ISSUER, aud: 'orders-api' },
+    claims({ iss: ISSUER, aud: 'orders-api', exp: 'tomorrow' }),
+    claims({ iss: ISSUER, aud: ['orders-api', 7] }),
+  ];
+  const notJson = async (kid: string, signer: Signer): Promise<string> => {
+    const signingInput = `${jsonSegment({ alg: 'RS256', kid })}.${base64url(encoder.encode('not json'))}`;
+    return `${signingInput}.${base64url(await signer(encoder.encode(signingInput)))}`;
+  };
+  /** What a client learns from the answer: whether it got through, the status, the body's error and the challenge. */
+  const answer = async (token: string): Promise<Record<string, unknown>> => {
+    const outcome = await through(middleware, bearer(token));
+    return {
+      reached: outcome.reached,
+      status: outcome.response.status,
+      error: outcome.reached ? undefined : errorOf(outcome),
+      challenge: outcome.response.headers?.['www-authenticate'],
+    };
+  };
+  const refusedWith = (error: string): Record<string, unknown> => ({
+    reached: false, status: Status.Unauthorized, error, challenge: 'Bearer realm="actor-ts", error="invalid_token"',
+  });
+
+  test('signed with the right key, these claims are judged — each check answers for itself', async () => {
+    // The fixture is only worth something if the claims would give themselves
+    // away: this is what each one says once its signature verifies.
+    const judged: (string | undefined)[] = [];
+    for (const payload of payloads) judged.push((await answer(await signToken({ alg: 'RS256', kid: 'rsa-1' }, payload, rsaSigner(rsa))))['error'] as string | undefined);
+    judged.push((await answer(await notJson('rsa-1', rsaSigner(rsa))))['error'] as string | undefined);
+    expect(judged).toEqual([
+      undefined,
+      'token audience not accepted',
+      'token issuer not accepted',
+      'token expired',
+      undefined,
+      'token not yet valid',
+      'token has no expiry',
+      'token claims malformed',
+      'token claims malformed',
+      'token claims malformed',
+    ]);
+  });
+
+  test('signed with another key, every one of them gets the same signature error', async () => {
+    for (const payload of payloads) {
+      expect(await answer(await signToken({ alg: 'RS256', kid: 'rsa-1' }, payload, rsaSigner(attacker)))).toEqual(refusedWith('token signature invalid'));
+    }
+    expect(await answer(await notJson('rsa-1', rsaSigner(attacker)))).toEqual(refusedWith('token signature invalid'));
+  });
+
+  test('naming a key nobody holds, every one of them gets the same key error', async () => {
+    for (const payload of payloads) {
+      expect(await answer(await signToken({ alg: 'RS256', kid: 'nobody' }, payload, rsaSigner(attacker)))).toEqual(refusedWith('no key verifies this token'));
+    }
+    expect(await answer(await notJson('nobody', rsaSigner(attacker)))).toEqual(refusedWith('no key verifies this token'));
+  });
+});
+
 describe('JwtAuth — construction', () => {
   test('algorithms is required, and options that cannot work are refused when the middleware is built', () => {
     expect(() => JwtAuth({} as JwtAuthOptionsType)).toThrow(/algorithms is required/);
