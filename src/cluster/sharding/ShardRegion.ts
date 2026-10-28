@@ -2709,24 +2709,23 @@ export class ShardRegion<TMessage = unknown>
    * At most one request per shard is ever out — the sweep skips a passivating
    * shard — so the answer belongs to the request still standing, if any.  A
    * hand-off or a release that overtook it has sent its own stop, and its
-   * `Terminated` settles both.  A shard moved elsewhere meanwhile is not this
-   * region's to keep: it is stopped as the request would have stopped it, and
-   * its `Terminated` flushes what waited for it to the new home.
+   * `Terminated` settles both.
+   *
+   * A shard the coordinator moved elsewhere meanwhile is left running, as a
+   * shard moved away without a hand-off always is here: stopping it would take
+   * down the very entity the request found busy, and with it what the region
+   * had routed there before the move.  What arrived for it since went to its
+   * new home with the move.  The rest mirrors {@link completeShardPassivation}.
    */
   private onShardPassivationDeclined(message: ShardPassivationDeclined): void {
     const shardId = message.shardId;
     if (!this.passivatingShards.has(shardId) || this.handingOff.has(shardId)) return;
-    const shard = this.shards.get(shardId);
-    if (shard === undefined) return;
-    if (!this.localShards.has(shardId)) {
-      shard.stop();
-      return;
-    }
     this.log.debug(
       `[sharding] shard ${shardId} of '${this.config.typeName}' still had work, so it stays`,
     );
     this.passivatingShards.delete(shardId);
-    this.shardState.set(shardId, 'owned');
+    if (this.localShards.has(shardId)) this.shardState.set(shardId, 'owned');
+    else this.shardState.delete(shardId);
     this.flushBuffer(shardId);
     this.startRegistryHeldThroughPassivation(shardId);
   }

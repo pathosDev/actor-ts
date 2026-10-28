@@ -1053,3 +1053,82 @@ describe('a shard that stops unexpectedly is backed off (#1437)', () => {
     expect(await harness.statsOf(SHARD)).toBeUndefined();
   }, 15_000);
 });
+
+/**
+ * The empty-shard sweep asks a shard to stop, and a shard handed work just
+ * ahead of the request declines (#1441).  What else can happen to the shard
+ * while that answer is on its way is what these cases fix: a hand-off keeps
+ * its own stop and its buffer, and a shard the coordinator moved elsewhere in
+ * the meantime keeps the entity the request found busy.
+ */
+describe('the empty-shard sweep\'s request, overtaken while the shard declines it (#1441)', () => {
+  /** The empty-shard window runs on the wall clock, so it is waited out there. */
+  async function waitOutShardWindow(): Promise<void> {
+    const placedAt = Date.now();
+    await awaitCondition(() => Date.now() - placedAt > CAPTURED_SWEEP_MS, {
+      timeoutMs: ASK_TIMEOUT_MS,
+      intervalMs: 10,
+      label: 'the shard stood empty for its window',
+    });
+  }
+
+  const sweepOnly: RegionSettings = { passivationIdleMs: 0, shardPassivationIdleMs: CAPTURED_SWEEP_MS };
+
+  /** The work commands for `sequence` that went to dead letters, from anywhere. */
+  const deadWorkFor = (sequence: number): DeadLetter[] => letters.filter((letter) => {
+    const message = letter.message as { kind?: unknown; sequence?: unknown; message?: { kind?: unknown; sequence?: unknown } };
+    const work = message.kind === 'sharding.EntityEnvelope' ? message.message : message;
+    return work?.kind === 'work' && work.sequence === sequence;
+  });
+
+  test('a hand-off ordered behind the request keeps its own stop, and what arrives while the shard goes waits for its next home', async () => {
+    const harness = await startRegion('sweep-request-hand-off', 47_456, sweepOnly);
+    await placed(harness);
+    await waitOutShardWindow();
+
+    // One synchronous step: the first message for a new entity, the sweep tick
+    // behind it — the shard will decline — a hand-off behind both, and a
+    // message that arrives while the shard is going.  The decline reaches the
+    // region during the hand-off, and must not reopen the shard to traffic:
+    // routed into the actor the hand-off stopped, the message would go down
+    // with it.
+    harness.send(ID, 1);
+    harness.scheduler.fireSweep();
+    harness.handOff(SHARD);
+    harness.send(ID, 2);
+    await awaitCondition(
+      () => coordinatorFrames.some((frame) => frame.kind === 'sharding.HandOffComplete' && frame.shardId === SHARD),
+      { timeoutMs: ASK_TIMEOUT_MS, label: 'the region completed the hand-off' },
+    );
+
+    // Placed here again, the shard takes what waited for it.
+    await placed(harness);
+    await awaitCondition(() => delivered.includes(`${ID}#2`), {
+      timeoutMs: ASK_TIMEOUT_MS,
+      label: 'the message held through the hand-off reached the shard',
+    });
+    expect(deadWorkFor(2)).toEqual([]);
+  }, 15_000);
+
+  test('a shard the coordinator moves elsewhere while the request is out keeps the entity the request found busy', async () => {
+    const harness = await startRegion('sweep-request-moved', 47_457, sweepOnly);
+    await placed(harness);
+    await waitOutShardWindow();
+
+    // The first message for a new entity, routed before the move; the sweep
+    // tick and the move behind it.  The shard declines, since it has just
+    // created that entity — and stopping it now, because it is no longer this
+    // region's, would take the message down with it.
+    harness.send(ID, 1);
+    harness.scheduler.fireSweep();
+    harness.placeElsewhere(SHARD);
+    await awaitCondition(() => delivered.includes(`${ID}#1`) || deadWorkFor(1).length > 0, {
+      timeoutMs: ASK_TIMEOUT_MS,
+      label: 'the message was handled, or dead-lettered',
+    });
+    await harness.fence();
+    expect(delivered).toEqual([`${ID}#1`]);
+    expect(deadWorkFor(1)).toEqual([]);
+    expect(harness.scheduler.armed).toHaveLength(0);
+  }, 15_000);
+});
