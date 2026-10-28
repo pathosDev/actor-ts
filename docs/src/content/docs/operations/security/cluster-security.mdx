@@ -579,22 +579,32 @@ set far above real usage bounds very little.
 
 Splitting members from tombstones is not tidiness: the two kinds
 of phantom have different lifetimes. A phantom member in `up` /
-`joining` / `unreachable` is a member the failure detector is
-watching, and nothing ever heartbeats for it, so both detectors
-declare it `down` — φ measuring the silence from the moment it
-was merged. What that verdict does is the downing configuration's
-call. Under the default it removes nothing: the phantom is parked
-at `unreachable` like any silent peer and holds its live slot
-until a strategy or an operator removes it, so `max-members` is
-the whole bound on live phantoms. Only
-`failure-detector.auto-down = on` reclaims one on the detector's
-word, `down-after` after the attacker stops feeding it — and only
-for good once no other node still carries it, because that route
-deletes without a tombstone and a node that has not deleted the
-phantom yet gossips it back. A record gossiped as **`removed`**
-is watched by nothing: only `cluster.tombstone.time-to-live`
-reclaims it, a day later. Two residues with two lifetimes, so two
-caps. Refusing a tombstone costs nothing, because a tombstone for
+`joining` / `unreachable` that arrives as a record in a gossip
+frame is a member the failure detector watches from the moment it
+is merged, and nothing ever heartbeats for it, so both detectors
+declare it `down` — φ measuring the silence from that moment.
+What that verdict does is the downing configuration's call. Under
+the default — no strategy, `failure-detector.auto-down = on` — the
+detector removes it, `down-after` after the attacker stops feeding
+it, and for good only once no other node still carries it, because
+that route deletes without a tombstone and a node that has not
+deleted the phantom yet gossips it back. With a strategy
+configured, or under `auto-down = off`, the phantom is parked at
+`unreachable` like any silent peer and holds its live slot until a
+strategy or an operator removes it. A phantom that arrives through
+a frame's *sender* field instead — a `from` naming an address this
+node holds no record of — is filed as `joining` without being
+registered with the detector at all, so no detector ever declares
+it `down`: it is promoted like any joining member and holds its
+slot as an `up` member — this node's leader, if its address sorts
+first — until an operator removes it
+([issue #939](https://github.com/pathosDev/actor-ts/issues/939)).
+`max-members` is therefore the one bound on live phantoms that holds
+on every route. A record gossiped as **`removed`** is watched by
+nothing: only the tombstone prune reclaims it, once the larger of
+`cluster.tombstone.time-to-live` and `tombstone.min-retention` has
+passed — a day at the defaults. Two residues with two lifetimes, so
+two caps. Refusing a tombstone costs nothing, because a tombstone for
 an address this node holds no record of suppresses nothing that
 exists — while a refused *live* record costs a legitimate member
 one gossip round, and comes with a `WARN` naming the cap.
@@ -612,8 +622,10 @@ tombstone bucket without giving up a map slot, so the next flood
 of tombstones was admitted too, and alternating the two grew the
 map without bound while respecting both caps at every individual
 step. A refused *conversion* leaves the member live, where it goes
-the way any silent member does: parked at `unreachable` until a
-strategy, an operator or `auto-down` removes it.
+the way any silent member does: removed by the detector at
+`down-after` under the default, or — with a strategy configured or
+under `auto-down = off` — parked at `unreachable` until a strategy
+or an operator removes it.
 
 Tombstones this node mints itself — a peer's `leave`, a downing
 decision, an operator `down()` — convert a record it already
@@ -632,13 +644,15 @@ memory.
 :::note[The order these landed in mattered]
 The failure detector's `down → delete` cascade used to be what
 bounded phantom *live* members to seconds. That deletion is now
-gated — behind a configured `DowningProvider`, and with none
-behind `failure-detector.auto-down`, which ships off — so the
-implicit bound is gone: a parked phantom has no lifetime at all,
-and stays until a strategy or an operator removes it. These caps
-were the precondition for that change rather than an independent
-hardening step, and `max-members` is what bounds live phantoms
-since.
+gated — a configured `DowningProvider` takes the decision over, and
+with none `failure-detector.auto-down` decides, which ships on — so
+wherever a strategy is configured or `auto-down` is off the implicit
+bound is gone: a parked phantom has no lifetime at all, and stays
+until a strategy or an operator removes it. Even under the default
+the cascade reclaims only a phantom the detector watches, which the
+sender-field door above never registers. These caps were the
+precondition for gating it rather than an independent hardening
+step, and `max-members` is what bounds live phantoms since.
 :::
 
 ## Who may say what
@@ -913,21 +927,25 @@ receiver that costs nothing: every record in it loses the
 "higher version wins" comparison to the record already on file.
 What makes it an exploit is an entry the receiver has
 **deleted**, and two paths delete one. The failure detector's own
-removal — opt-in, under `failure-detector.auto-down = on` with no
-strategy configured — deletes outright rather than leaving a
-tombstone. That was once justified as letting a healed partition
-re-discover the peer, and deleting buys no such thing: neither side
-heartbeats or gossips a peer it holds unreachable, and a deleted
-one is not in its map to address at all, so after a symmetric
-partition neither side hears from the other again
+removal — the default with no strategy configured, under
+`failure-detector.auto-down = on` — deletes outright rather than
+leaving a tombstone. That was once justified as letting a healed
+partition re-discover the peer, and deleting buys no such thing:
+neither side heartbeats or gossips a peer it holds unreachable, and
+a deleted one is not in its map to address at all, so after a
+symmetric partition neither side hears from the other again
 ([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
-And an expired tombstone is pruned once its time-to-live has
-passed. Either way there is nothing left to compare against, and
-the branch that files a first sighting has no lower version bound
-at all. The other removals — an operator's `down()`, a strategy's
-decision, a peer's `leave` — leave a tombstone that out-versions
-the recording until that prune, and under the default the detector
-removes nothing.
+And an expired tombstone is pruned once the larger of its
+time-to-live and `tombstone.min-retention` has passed. Either way
+there is nothing left to compare against, and the branch that files
+a first sighting has no lower version bound at all. The other
+removals — an operator's `down()`, a strategy's decision, a peer's
+`leave` — leave a tombstone that out-versions the recording until
+that prune; with a strategy configured or under `auto-down = off`,
+the detector itself removes no one. A restart that replaces a live
+record of its previous run deletes that record too, but the new
+run's record takes the key at a higher version in the same step, so
+a recording of the old run still loses the comparison.
 
 So replaying a downed member's own pre-down record brought it
 back: same address, same version, `up`, carrying the roles it
@@ -971,8 +989,10 @@ from both sides rather than one.
 
 An address additionally carries an **incarnation**: which
 *process* is answering at that `system@host:port`, minted once
-per `Cluster.join`. It is deliberately carried and not yet acted
-on. The field is optional on the wire, so that a node running
+per `Cluster.join`. It is deliberately carried, and acted on only to
+decide what a restart announces — a record of a new incarnation
+ends the old run's membership before the new run joins — never to
+refuse a record. The field is optional on the wire, so that a node running
 either version understands one running the other — and an
 optional field is bypassed by *stripping* it, which means a
 refusal keyed on a mismatch would be one an attacker opts out of
@@ -998,12 +1018,13 @@ carried, which is the wire break above.
 Second, a missing mark admits everything, and there are three ways
 to be missing one — only one of which is the sender's own
 eviction. An evicted member's mark goes when its entry does, for
-the reason above: at once on the opt-in `auto-down` route, which
-deletes, and on every other removal only when the tombstone is
+the reason above: at once on the detector's own `auto-down` route,
+which deletes, and on every other removal only when the tombstone is
 pruned, since a tombstone keeps the mark along with the entry.
-Under `auto-down` an ordinary partition takes out sender and
-subject together, so that route arrives ready to use; under the
-default a partition evicts nobody — both are parked, marks
+Under the default `auto-down` an ordinary partition takes out
+sender and subject together, so that route arrives ready to use;
+with a strategy configured or under `auto-down = off` a partition
+evicts nobody until something decides — both are parked, marks
 intact — and behind a tombstone the mark lasts exactly as long as
 the refusal does. A fresh or restarted process starts with none at
 all. And a member learned

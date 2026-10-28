@@ -117,8 +117,10 @@ const OLD_PHRASINGS: readonly OldPhrasing[] = [
   { pattern: /\bby default,? (?:it|the detector) (?:only )?parks\b/i },
   { pattern: /\bthe default parks\b/i },
   { pattern: /\bby the default with no strategy\b/i },
-  { pattern: /\b(?:the default|by default)\b.*\b(?:removes|evicts) (?:nothing|nobody|no one)\b/i },
-  { pattern: /\bunder the default\b.*\b(?:removes|evicts) (?:nothing|nobody|no one)\b/i },
+  // "The default ... removes nothing", unless an opt-out or a strategy is
+  // named in between — "under the default X; with a strategy or under the
+  // opt-out, nobody" is the corrected sentence, not the old one.
+  { pattern: /\b(?:the default|by default)\b(?:(?!opt-out|auto-down`?\s*=\s*`?off|strateg)[\s\S])*?\b(?:removes|evicts) (?:nothing|nobody|no one)\b/i },
   { pattern: /\bremoves nobody\b/i },
   { pattern: /\bthe default is manual\b/i },
   { pattern: /\bopt(?:s|ed)?[- ]in(?:to)?\b/i, alongside: ABOUT_AUTO_DOWN },
@@ -136,7 +138,7 @@ const OLD_PHRASINGS: readonly OldPhrasing[] = [
   { pattern: /\bPer Default parkt\b/i },
   { pattern: /\bparkt auch der Default\b/ },
   { pattern: /\bvom Default ohne Strategie\b/ },
-  { pattern: /\b(?:im|der) Default\b.*\b(?:entfernt|evakuiert)\b.*\b(?:nichts|niemanden)\b/ },
+  { pattern: /\b(?:im|der|dem) Default\b(?:(?!Opt-out|auto-down`?\s*=\s*`?off|Strategie)[\s\S])*?\b(?:entfernt|evakuiert)\b(?:(?!Opt-out|auto-down`?\s*=\s*`?off|Strategie)[\s\S])*?\b(?:nichts|niemanden)\b/ },
   { pattern: /\bStandard\b.*\bentfernt niemanden\b/ },
   { pattern: /\bStandard ist also manuell\b/ },
   { pattern: /\bOpt-in\b/, alongside: ABOUT_AUTO_DOWN },
@@ -155,6 +157,7 @@ const GUARDED_FILES: readonly string[] = [
   ...LANGUAGES.flatMap((language) => [
     page(language, 'cluster/failure-detector.mdx'),
     page(language, 'cluster/downing-strategies.mdx'),
+    page(language, 'operations/security/cluster-security.mdx'),
   ]),
 ];
 
