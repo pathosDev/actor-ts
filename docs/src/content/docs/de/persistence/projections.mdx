@@ -110,7 +110,11 @@ const byTagProjectionOptions = ByTagProjectionOptions.create<AccountEvent>()
 ```
 
 Jeder Operator ist optional, verknüpft werden sie mit UND.  Ein leeres
-`{}` matcht jedes Event.
+`{}` matcht jedes Event.  Einen Filter, den die Query-Schicht ablehnt —
+ein Tag mit mehr als 255 Zeichen, ein Operator, der keine Liste von
+Strings ist —, lehnt `ProjectionActor.byTag` mit einem `OptionsError`
+ab, der `tag` nennt, statt eine Projektion zu starten, deren Polls
+allesamt fehlschlagen.
 
 **Der Filter gehört zur Cursor-Identität.**  Ein blanker String behält
 den Cursor, den er schon hat, aber die beiden Schreibweisen teilen sich

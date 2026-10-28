@@ -3,7 +3,12 @@ import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { PersistentEvent } from '../JournalTypes.js';
-import type { LiveQueryOptions, PersistenceQuery, TagFilter } from '../query/PersistenceQuery.js';
+import {
+  type LiveQueryOptions,
+  type PersistenceQuery,
+  type TagFilter,
+  normalizeTagFilter,
+} from '../query/PersistenceQuery.js';
 import type { OffsetStore } from './OffsetStore.js';
 
 /* ---------------------- handler-failure recovery ---------------------- */
@@ -600,9 +605,17 @@ export class ProjectionOptionsValidator<E> extends OptionsValidator<ProjectionOp
    * one projection exactly as its name is: a shared base validated on its own
    * has none, and refusing it for that would refuse every such base.
    *
-   * The tag is only required to be there.  What a {@link TagFilter} may
-   * contain is the query layer's rule, checked where every backend's tag
-   * query starts (`normalizeTagFilter`).
+   * Present is not enough for the two fields a poll uses, because a value
+   * every poll fails on spawns a projection that retries for good, exactly
+   * as a missing one did.  A query must have the method this projection's
+   * polls call — checked by method, not by class, so any implementation of
+   * {@link PersistenceQuery} passes, and not rendered into the message,
+   * because a query can hold a connection and its credentials.  A tag is held
+   * to the query layer's own rule, `normalizeTagFilter`, which every
+   * backend's tag query starts with: one definition, so an empty tag and `{}`
+   * pass here as they do there, and a refusal carries the query layer's
+   * reason.  Whether the query *works* — a reachable backend, rows of the
+   * right shape — only a poll can tell.
    */
   private spawnRules(s: Partial<ProjectionOptionsType<E>>, cursorField: 'persistenceId' | 'tag'): void {
     if (typeof s.name !== 'string' || s.name.length === 0) {
@@ -610,6 +623,10 @@ export class ProjectionOptionsValidator<E> extends OptionsValidator<ProjectionOp
     }
     if (s.query === undefined || s.query === null) {
       this.fail('query', 'must be set — without one every poll fails, retried forever', s.query);
+    }
+    const pollMethod = cursorField === 'persistenceId' ? 'currentEventsByPersistenceId' : 'currentEventsByTag';
+    if (typeof (s.query as Partial<PersistenceQuery>)[pollMethod] !== 'function') {
+      this.fail('query', `must be a PersistenceQuery — it has no ${pollMethod}, which every poll calls`);
     }
     // Both options shapes are `Partial`, so nothing in the type system keeps
     // a projection from omitting its handler.  Without this the projection
@@ -629,6 +646,18 @@ export class ProjectionOptionsValidator<E> extends OptionsValidator<ProjectionOp
     if (tag === undefined || tag === null) {
       this.fail('tag', 'must be set — a tag, or a TagFilter, to follow across the journal', tag);
     }
+    const refusal = tagFilterRefusal(tag);
+    if (refusal !== undefined) this.fail('tag', `is one every poll would refuse — ${refusal}`);
+  }
+}
+
+/** The query layer's reason for refusing `tag` at every poll, or `undefined` when it accepts it. */
+function tagFilterRefusal(tag: TagFilter): string | undefined {
+  try {
+    normalizeTagFilter(tag);
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
   }
 }
 

@@ -108,7 +108,10 @@ const byTagProjectionOptions = ByTagProjectionOptions.create<AccountEvent>()
 ```
 
 Each operator is optional and they combine with AND.  An empty `{}`
-matches every event.
+matches every event.  A filter the query layer refuses — a tag longer
+than 255 characters, an operator that is not a list of strings — is
+refused by `ProjectionActor.byTag` with an `OptionsError` naming `tag`,
+instead of spawning a projection whose every poll fails.
 
 **The filter is part of the cursor identity.**  A bare string keeps the
 cursor it already has, but the two spellings do not share one:
