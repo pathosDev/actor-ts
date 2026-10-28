@@ -172,6 +172,53 @@ for (const factory of factories) {
   });
 }
 
+/* ---------------------- the arms beyond "absent" ---------------------- */
+
+/**
+ * The cases above take a field away.  Each case here is a value that is
+ * present and still names nothing — and each spawned, or failed with a
+ * `TypeError`, before the refusal existed.  None of them is implied by an
+ * "absent" case: a rule narrowed to `=== undefined`, or to a presence check,
+ * passes every case above and lets these through.
+ */
+const byPersistenceIdFactory = factories.find((factory) => factory.cursorField === 'persistenceId')!;
+const byTagFactory = factories.find((factory) => factory.cursorField === 'tag')!;
+
+describe('the factories refuse a present value that names nothing', () => {
+  for (const factory of factories) {
+    test(`${factory.name}: a null query — it spawned, and every poll failed`, async () => {
+      const fixture = newFixture(`proj-required-null-query-${factory.name}`);
+      const options = { ...factory.complete(fixture), query: null as never };
+      expect(refusedField(() => factory.spawn(fixture, options))).toBe('query');
+      expect(() => factory.spawn(fixture, options)).toThrow(/query must be set/);
+      await fixture.system.terminate();
+    });
+  }
+
+  test('byPersistenceId: an empty persistenceId — it spawned as `<name>-`, its cursor keyed `<name>|seq|`', async () => {
+    const fixture = newFixture('proj-required-empty-pid');
+    const options = { ...byPersistenceIdFactory.complete(fixture), persistenceId: '' };
+    expect(refusedField(() => byPersistenceIdFactory.spawn(fixture, options))).toBe('persistenceId');
+    await fixture.system.terminate();
+  });
+
+  test('byPersistenceId: a persistenceId that is not a string — it threw a TypeError naming no field', async () => {
+    const fixture = newFixture('proj-required-number-pid');
+    const options = { ...byPersistenceIdFactory.complete(fixture), persistenceId: 42 as never };
+    expect(refusedField(() => byPersistenceIdFactory.spawn(fixture, options))).toBe('persistenceId');
+    expect(() => byPersistenceIdFactory.spawn(fixture, options)).toThrow(/persistenceId must be a non-empty string/);
+    await fixture.system.terminate();
+  });
+
+  test('byTag: a null tag — it threw a TypeError naming no field', async () => {
+    const fixture = newFixture('proj-required-null-tag');
+    const options = { ...byTagFactory.complete(fixture), tag: null as never };
+    expect(refusedField(() => byTagFactory.spawn(fixture, options))).toBe('tag');
+    expect(() => byTagFactory.spawn(fixture, options)).toThrow(/tag must be set/);
+    await fixture.system.terminate();
+  });
+});
+
 /* ------------------------------ the validator ------------------------------ */
 
 describe('ProjectionOptionsValidator', () => {
