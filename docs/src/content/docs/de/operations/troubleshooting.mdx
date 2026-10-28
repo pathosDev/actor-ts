@@ -562,6 +562,7 @@ aktivem `production`:
 ```text
   actor-ts.diagnostics.log-config-on-start = "on"  [application, overrides a lower layer]
   actor-ts.diagnostics.log-dead-letters = 10  [reference]
+  my-app.auth-header = <redacted>  [application]
   my-app.db.host = "db.internal"  [profile, overrides a lower layer]
   my-app.db.password = <redacted>  [secrets]
   my-app.db.user = <redacted>  [override, overrides a lower layer]
@@ -576,7 +577,7 @@ wird zurückgehalten, wenn irgendein ganzes Wort seines *Key-Namens* — des Key
 selbst oder eines Zweigs darüber, egal an welcher Stelle im Namen das Wort
 steht — `password`, `passphrase`, `passwd`, `secret`, `token`, `key`,
 `credential` oder `auth` lautet, im Singular wie im Plural, und der Wert kein
-Boolean ist: der `api-key` oben, und ebenso ein `auth-header`.  Ein Name wird
+Boolean ist: der `auth-header` und der `api-key` oben.  Ein Name wird
 an jedem Zeichen, das weder Buchstabe noch Ziffer ist, und an jedem
 camelCase-Höcker in Wörter zerlegt, also enthält `apiKey` das Wort `key` und
 `passivation-idle` kein `pass`.  Jeder Wert, den die Secrets-Datei setzt, wird

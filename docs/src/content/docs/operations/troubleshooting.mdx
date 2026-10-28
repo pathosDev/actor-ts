@@ -534,6 +534,7 @@ active:
 ```text
   actor-ts.diagnostics.log-config-on-start = "on"  [application, overrides a lower layer]
   actor-ts.diagnostics.log-dead-letters = 10  [reference]
+  my-app.auth-header = <redacted>  [application]
   my-app.db.host = "db.internal"  [profile, overrides a lower layer]
   my-app.db.password = <redacted>  [secrets]
   my-app.db.user = <redacted>  [override, overrides a lower layer]
@@ -547,8 +548,8 @@ configuration**, and three rules decide what it withholds.  A value is
 withheld when any whole word of its *key name* — of the key itself or of a
 branch above it, wherever in the name the word stands — is `password`,
 `passphrase`, `passwd`, `secret`, `token`, `key`, `credential` or `auth`,
-singular or plural, and the value is not a boolean: the `api-key` above, and
-an `auth-header` just as well.  A name is cut into words at every character
+singular or plural, and the value is not a boolean: the `auth-header` and the
+`api-key` above.  A name is cut into words at every character
 that is not a letter or a digit and at each camelCase hump, so `apiKey` holds
 `key` and `passivation-idle` holds no `pass`.  Every value the secrets file
 sets is withheld whatever its key is called — even after a higher layer

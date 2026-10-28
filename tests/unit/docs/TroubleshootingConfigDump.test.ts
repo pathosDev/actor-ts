@@ -24,10 +24,15 @@ import { CONFIG_SECRET_PATTERN } from '../../../src/util/Constants.js';
  * - the layer names it lists are the names the dump prints for a load that
  *   fills every layer `Config.load` merges;
  * - the words it lists are the words `CONFIG_SECRET_PATTERN` accepts;
- * - its sample is lines the dump prints, in the dump's order, for the fixture
- *   below — and it shows every layer and each of the three rules that withhold
- *   a value: by key name, by the secrets file, and by field name inside a
- *   list.
+ * - **every** code fence in the section is bound, not only the first: an
+ *   excerpt (a `text` fence) is lines the dump prints, in the dump's order, for
+ *   the fixture below, and a `hocon` fence parses and names only keys
+ *   `reference.conf` ships.  A fence of any other kind fails, and so does a
+ *   `<pre>` or `<Code>` block, so a second excerpt has nowhere to sit unbound
+ *   — one that contradicted the rules used to pass beside the bound one;
+ * - together the excerpts show every layer and each of the three rules that
+ *   withhold a value: by key name — from a word that is not the last of the
+ *   name too — by the secrets file, and by field name inside a list.
  *
  * What this cannot see is the prose around those spans: a sentence asserting
  * the opposite of a rule keeps every check here green.  Nor can it see a layer
@@ -58,10 +63,12 @@ const PAGES = [
  * root and its `production` profile, and the code's overrides above them all
  * — which replace a key the secrets file set, the case where withholding by
  * the winning layer would print it.  `reference.conf` is there on its own.
+ * `auth-header` is withheld by a word of its name that is not the last one.
  */
 const APPLICATION_CONF = [
   'actor-ts.diagnostics.log-config-on-start = on',
   'my-app {',
+  '  auth-header = "Bearer eyJhbGciOiJIUzI1NiJ9.e30.sig"',
   '  db.host = "localhost"',
   '  payments.api-key = "pk_live_123"',
   '  upstreams = [ { host = "db-1", password = "hunter2" } ]',
@@ -152,12 +159,62 @@ function listNaming(prose: string, member: string): string[] {
   return lists[0]!;
 }
 
-/** The first `text` fence of the section, line by line. */
-function sampleOf(section: string[]): string[] {
-  const open = section.findIndex((line) => /^```text\s*$/.test(line));
-  expect(open, 'the section has a text fence').toBeGreaterThan(-1);
-  const close = section.findIndex((line, index) => index > open && line.startsWith('```'));
-  return section.slice(open + 1, close).map((line) => line.trimEnd()).filter((line) => line !== '');
+/** One code fence of a section: the word its info string starts with, and its lines. */
+type Fence = {
+  readonly language: string;
+  readonly lines: readonly string[];
+};
+
+/**
+ * Every code fence of the section, in order — backticks or tildes, three or
+ * more, at any indentation and behind a blockquote's `>`, the way a fence
+ * still renders as a code block inside a list item or a quote.
+ *
+ * Generous on purpose: a fence this reads that does not render is a false
+ * alarm, while one it misses is an excerpt nothing binds.  A fence runs to a
+ * closing run of the same character at least as long, or to the end of the
+ * section.  Lines come back trimmed, empty ones dropped.
+ */
+function fencesOf(section: readonly string[]): Fence[] {
+  const fences: Fence[] = [];
+  let open: { readonly marker: string; readonly language: string; readonly lines: string[] } | null = null;
+  for (const line of section) {
+    const content = line.replace(/^[\s>]*/, '');
+    if (open !== null) {
+      const close = /^(`{3,}|~{3,})\s*$/.exec(content);
+      if (close !== null && close[1]![0] === open.marker[0] && close[1]!.length >= open.marker.length) {
+        fences.push({ language: open.language, lines: open.lines });
+        open = null;
+      } else if (line.trim() !== '') {
+        open.lines.push(content.trim());
+      }
+      continue;
+    }
+    const opening = /^(`{3,}|~{3,})(.*)$/.exec(content);
+    if (opening === null) continue;
+    // A backtick run with a backtick in its info string is inline code, not a fence.
+    if (opening[1]![0] === '`' && opening[2]!.includes('`')) continue;
+    open = { marker: opening[1]!, language: opening[2]!.trim().split(/\s+/)[0]!, lines: [] };
+  }
+  if (open !== null) fences.push({ language: open.language, lines: open.lines });
+  return fences;
+}
+
+/** The section's `text` fences — the excerpts of the dump — each line by line. */
+const excerptsOf = (section: readonly string[]): (readonly string[])[] =>
+  fencesOf(section).filter((fence) => fence.language === 'text').map((fence) => fence.lines);
+
+/** The kinds of fence this file binds; any other in the section is a failure. */
+const BOUND_FENCE_LANGUAGES: ReadonlySet<string> = new Set(['hocon', 'text']);
+
+/** Every leaf path of a parsed tree, as dotted keys. */
+function leafPathsOf(tree: Record<string, unknown>, prefix = ''): string[] {
+  return Object.entries(tree).flatMap(([key, value]) => {
+    const path = prefix === '' ? key : `${prefix}.${key}`;
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? leafPathsOf(value as Record<string, unknown>, path)
+      : [path];
+  });
 }
 
 /**
@@ -195,6 +252,12 @@ const pathOf = (line: string): string => line.trim().split(' ')[0]!;
 const namesNoCredential = (path: string): boolean =>
   path.split(/[^A-Za-z0-9]+/).every((word) => !CONFIG_SECRET_PATTERN.test(word));
 
+/** The last word of a dotted path — `header` of `my-app.auth-header`. */
+const lastWordOf = (path: string): string => {
+  const words = path.split(/[^A-Za-z0-9]+/).filter((word) => word !== '');
+  return words[words.length - 1] ?? '';
+};
+
 describe('the troubleshooting page describes the config dump the code prints — #1546', () => {
   test('the fixture fills every layer the dump can name', () => {
     expect([...new Set(dumpBody.map(layerOf))].sort())
@@ -212,17 +275,45 @@ describe('the troubleshooting page describes the config dump the code prints —
       expect([...listed].sort()).toEqual(wordsThePatternAccepts());
     });
 
-    test(`its sample is lines the dump prints, in order (${language})`, () => {
-      const positions = sampleOf(sectionOf(page, heading)).map((line) => {
-        const position = dumpBody.findIndex((printed) => printed.trimEnd() === line);
-        expect(position, `the dump does not print: ${line}`).toBeGreaterThan(-1);
-        return position;
-      });
-      expect(positions).toEqual([...positions].sort((left, right) => left - right));
+    test(`every code block in it is a fence this file binds (${language})`, () => {
+      const section = sectionOf(page, heading);
+      const fences = fencesOf(section);
+      // Vacuity guard: the switches and the excerpt are there to be bound.
+      expect(fences.map((fence) => fence.language)).toEqual(expect.arrayContaining(['hocon', 'text']));
+      for (const fence of fences) {
+        expect(BOUND_FENCE_LANGUAGES.has(fence.language), `a fence this file does not bind: \`\`\`${fence.language}`)
+          .toBe(true);
+      }
+      // Markup that renders as a code block without being a fence.
+      expect(proseOf(section)).not.toMatch(/<pre\b|<Code\b/i);
     });
 
-    test(`its sample shows every layer and each rule that withholds a value (${language})`, () => {
-      const sample = sampleOf(sectionOf(page, heading));
+    test(`every excerpt in it is lines the dump prints, in order (${language})`, () => {
+      const excerpts = excerptsOf(sectionOf(page, heading));
+      expect(excerpts.length).toBeGreaterThan(0);
+      for (const excerpt of excerpts) {
+        expect(excerpt.length).toBeGreaterThan(0);
+        const positions = excerpt.map((line) => {
+          const position = dumpBody.findIndex((printed) => printed.trim() === line);
+          expect(position, `the dump does not print: ${line}`).toBeGreaterThan(-1);
+          return position;
+        });
+        expect(positions).toEqual([...positions].sort((left, right) => left - right));
+      }
+    });
+
+    test(`every hocon fence in it names only keys reference.conf ships (${language})`, () => {
+      const reference = Config.loadReference();
+      const hocon = fencesOf(sectionOf(page, heading)).filter((fence) => fence.language === 'hocon');
+      for (const fence of hocon) {
+        const keys = leafPathsOf(Config.parseString(fence.lines.join('\n')).toJSON());
+        expect(keys.length).toBeGreaterThan(0);
+        for (const key of keys) expect(reference.hasPath(key), `not a shipped key: ${key}`).toBe(true);
+      }
+    });
+
+    test(`its excerpts show every layer and each rule that withholds a value (${language})`, () => {
+      const sample = excerptsOf(sectionOf(page, heading)).flat();
       expect([...new Set(sample.map(layerOf))].sort()).toEqual([...new Set(dumpBody.map(layerOf))].sort());
       const withheld = sample.filter((line) => / = <redacted> {2}\[/.test(line));
       // By the secrets file: a key whose name says nothing about a credential,
@@ -232,6 +323,11 @@ describe('the troubleshooting page describes the config dump the code prints —
         .toBe(true);
       // By key name: a credential-named key from a layer other than the secrets file.
       expect(withheld.some((line) => layerOf(line) !== 'secrets' && !namesNoCredential(pathOf(line))))
+        .toBe(true);
+      // By key name, from a word that is not the last one of the name — the
+      // line a rule reading only the last word would print in full.
+      expect(withheld.some((line) => layerOf(line) !== 'secrets'
+        && !namesNoCredential(pathOf(line)) && namesNoCredential(lastWordOf(pathOf(line)))))
         .toBe(true);
       // By field name inside a list: the list prints, its credential field does not.
       expect(sample.some((line) => / = \[.*"<redacted>".*\] {2}\[/.test(line))).toBe(true);
