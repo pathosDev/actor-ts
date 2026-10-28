@@ -66,6 +66,7 @@ import {
   StartShardingOptionsValidator,
 } from '../../../../src/cluster/sharding/StartShardingOptions.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
+import { Scheduler, type Cancellable } from '../../../../src/Scheduler.js';
 import { stoppingStrategy } from '../../../../src/Supervision.js';
 import { DeadLetter, Terminated } from '../../../../src/SystemMessages.js';
 import { ManualScheduler } from '../../../../src/testkit/ManualScheduler.js';
@@ -807,6 +808,69 @@ describe('Shard — asked to passivate by its region (#1441)', () => {
     expect(started).toEqual(['e-1']);
     expect(shardTerminated).toBe(false);
   });
+
+  // An entity backing off is not running, and its region's index has had the
+  // `EntityStopped` — so nothing the region sees keeps such a shard, and it is
+  // the shard that has to (#1437).
+
+  test('a shard holding a message for an entity in its wait declines, and hands it over when the wait ends', async () => {
+    const harness = await startShard(backoffConfig());
+    harness.send(work('e-1', 1), harness.collector);
+    await replied('e-1#1');
+    harness.send(fail('e-1'));
+    await harness.stopped('e-1');
+    harness.send(work('e-1', 2), harness.collector);
+    harness.shard.tell(new ShardPassivationRequest(0) as ShardInbox);
+
+    await awaitCondition(() => declines === 1, { timeoutMs: WAIT_MS, label: 'the shard declined the request' });
+    expect(await harness.live()).toEqual([]);
+    harness.scheduler.advance(MIN_MS);
+    await replied('e-1#2');
+    expect(shardTerminated).toBe(false);
+    expect(deadWork()).toEqual([]);
+  });
+
+  test('a shard whose entity a start is waiting to bring back declines, and the entity comes back when the wait ends', async () => {
+    const harness = await startShard(backoffConfig());
+    harness.send(work('e-1', 1), harness.collector);
+    await replied('e-1#1');
+    harness.send(fail('e-1'));
+    await harness.stopped('e-1');
+    const start: StartEntity = { kind: 'sharding.StartEntity', entityId: 'e-1' };
+    harness.shard.tell(start as ShardInbox);
+    harness.shard.tell(new ShardPassivationRequest(0) as ShardInbox);
+
+    await awaitCondition(() => declines === 1, { timeoutMs: WAIT_MS, label: 'the shard declined the request' });
+    harness.scheduler.advance(MIN_MS);
+    expect(await harness.live()).toEqual(['e-1']);
+    expect(started).toEqual(['e-1', 'e-1']);
+  });
+
+  test('a shard whose entity is inside its wait with nothing held declines and keeps the wait; once the wait is over it stops', async () => {
+    const harness = await startShard(backoffConfig());
+    harness.send(work('e-1', 1), harness.collector);
+    await replied('e-1#1');
+    harness.send(fail('e-1'));
+    await harness.stopped('e-1');
+    harness.shard.tell(new ShardPassivationRequest(0) as ShardInbox);
+    await awaitCondition(() => declines === 1, { timeoutMs: WAIT_MS, label: 'the shard declined the request' });
+
+    // The record went nowhere: a message inside the wait is still held, not
+    // handed to an entity created at once.
+    harness.send(work('e-1', 2), harness.collector);
+    expect(await harness.live()).toEqual([]);
+    harness.scheduler.advance(MIN_MS);
+    await replied('e-1#2');
+
+    // Stopped again, and this time the wait runs out with nothing held: a
+    // record that decides nothing any more does not keep the shard.
+    harness.send(fail('e-1'));
+    await harness.stopped('e-1');
+    harness.scheduler.advance(MIN_MS * 2);
+    harness.shard.tell(new ShardPassivationRequest(0) as ShardInbox);
+    await awaitCondition(() => shardTerminated, { timeoutMs: WAIT_MS, label: 'the shard stopped' });
+    expect(declines).toBe(1);
+  });
 });
 
 /* -------------------- end to end, under the default supervision -------------------- */
@@ -911,5 +975,115 @@ describe('ClusterSharding — an entity failing on every message, under the defa
     expect(poisonInstances).toBeLessThanOrEqual(bound);
     // At least one re-creation: what waited for the entity was handed to it.
     expect(poisonInstances).toBeGreaterThanOrEqual(1 + SHARD_RESTART_BUDGET + 1);
+  }, 15_000);
+});
+
+/* ------------- end to end: the empty-shard sweep and a backing-off entity ------------- */
+
+/**
+ * The empty-shard window of the case below, and with it the sweep timer's
+ * interval — odd, so {@link SweepCapturingScheduler} holds back exactly the
+ * sweep and schedules everything else for real.
+ */
+const SWEEP_WINDOW_MS = 53;
+
+/** The case's restart wait, `min` = `max` at random-factor 0 — far longer than the shard's window. */
+const LONG_WAIT_MS = 701;
+
+/** When each reply arrived at its collector, by `id#sequence`. */
+const replyTimes = new Map<string, number>();
+
+class TimedReplyCollector extends Actor<WorkDoneReply> {
+  override onReceive(reply: WorkDoneReply): void {
+    replyTimes.set(`${reply.id}#${reply.sequence}`, performance.now());
+  }
+}
+
+/** Holds back the region's sweep timer, so the case fires the sweep itself. */
+class SweepCapturingScheduler extends Scheduler {
+  private readonly sweeps: Array<() => void> = [];
+
+  override scheduleAtFixedRateFunction(initialDelayMs: number, intervalMs: number, task: () => void): Cancellable {
+    if (intervalMs !== SWEEP_WINDOW_MS) return super.scheduleAtFixedRateFunction(initialDelayMs, intervalMs, task);
+    this.sweeps.push(task);
+    return { cancel: (): boolean => false, get isCancelled(): boolean { return false; } };
+  }
+
+  /** Fire the region's sweep timer, exactly as it would have fired itself. */
+  fireSweep(): void {
+    if (this.sweeps.length !== 1) throw new Error(`expected one captured sweep timer, found ${this.sweeps.length}`);
+    this.sweeps[0]!();
+  }
+}
+
+describe('ClusterSharding — the empty-shard sweep and an entity backing off (#1437)', () => {
+  test('a shard holding messages for an entity in its wait outlives a shorter shard window, and hands them over when the wait ends', async () => {
+    replyTimes.clear();
+    const systemName = 'entity-restart-sweep';
+    const port = 53_418;
+    const scheduler = new SweepCapturingScheduler();
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withScheduler(scheduler);
+    const system = ActorSystem.create(systemName, systemOptions);
+    const clusterOptions = ClusterOptions.create()
+      .withHost('h')
+      .withPort(port)
+      .withSeeds([])
+      .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
+      .withGossipIntervalMs(30);
+    const cluster = await Cluster.join(system, clusterOptions);
+    runningCluster = { system, cluster };
+    system.spawn(DeadLetterListener, 'dead-letter-listener');
+    await awaitCondition(() => subscribed, { timeoutMs: WAIT_MS, label: 'the dead-letter listener subscribed' });
+    const collector = system.spawn(TimedReplyCollector, 'timed-reply-collector') as ActorRef<unknown>;
+
+    const shardingOptions = StartShardingOptions.create<Command>()
+      .withTypeName(TYPE_NAME)
+      .withEntityActor(Entity)
+      .withEntityOptions(stopOnFailure as ActorOptions<Command>)
+      .withExtractEntityId((command) => command.id)
+      .withPassivationIdleMs(0)
+      .withShardPassivationIdleMs(SWEEP_WINDOW_MS)
+      .withEntityRestartBackoffMinMs(LONG_WAIT_MS)
+      .withEntityRestartBackoffMaxMs(LONG_WAIT_MS)
+      .withEntityRestartBackoffRandomFactor(0);
+    const region = cluster.sharding.start(shardingOptions);
+    const entityCount = async (): Promise<number> =>
+      (await cluster.sharding.shards(TYPE_NAME)).reduce((sum, shard) => sum + shard.entityCount, 0);
+
+    region.tell(work('e-1', 1), collector);
+    await awaitCondition(() => replyTimes.has('e-1#1'), { timeoutMs: WAIT_MS, label: 'the entity answered its first message' });
+    // The shard's only entity stops unasked, so the shard is empty in its
+    // region's index from the report on — and that is where its window starts.
+    const stoppedAt = performance.now();
+    region.tell(fail('e-1'));
+    await awaitCondition(async () => (await entityCount()) === 0, {
+      timeoutMs: WAIT_MS,
+      label: "the region saw the shard's only entity stop",
+    });
+    region.tell(work('e-1', 2), collector);
+    const from = Date.now();
+    await awaitCondition(() => Date.now() - from > SWEEP_WINDOW_MS, {
+      timeoutMs: WAIT_MS,
+      intervalMs: 5,
+      label: 'one shard window passed on the wall clock',
+    });
+
+    scheduler.fireSweep();
+    // A message sent after the sweep meets the same wait, not a fresh shard
+    // that has forgotten it.
+    region.tell(work('e-1', 3), collector);
+    const isWork = (letter: DeadLetter): boolean => (letter.message as { kind?: unknown }).kind === 'work';
+    await awaitCondition(() => (replyTimes.has('e-1#2') && replyTimes.has('e-1#3')) || letters.some(isWork), {
+      timeoutMs: WAIT_MS,
+      label: 'the held messages were handed over, or dead-lettered',
+    });
+
+    expect(deadWork()).toEqual([]);
+    // Both waited out the wait the entity's stop began.
+    expect(replyTimes.get('e-1#2')! - stoppedAt).toBeGreaterThanOrEqual(LONG_WAIT_MS - 20);
+    expect(replyTimes.get('e-1#3')! - stoppedAt).toBeGreaterThanOrEqual(LONG_WAIT_MS - 20);
   }, 15_000);
 });

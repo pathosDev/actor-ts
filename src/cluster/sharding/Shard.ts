@@ -118,12 +118,13 @@ export class EntityRestartTick {
  *
  * The region judges a shard empty by its own index, and that index lags the
  * shard: an entity that a routed message or a recovery start has just created
- * is reported only once the shard has run, behind the sweep's tick.  A stop
- * sent on that view alone went in behind the very work the region had just
- * handed over, and took it down with the shard.  So the shard has the last
- * word: it reads the request behind everything it was sent first and stops
- * only if it has nothing to lose; otherwise it answers
- * {@link ShardPassivationDeclined} and goes on.
+ * is reported only once the shard has run, behind the sweep's tick, and what a
+ * shard holds for an entity backing off is not reported at all.  A stop sent
+ * on that view alone went in behind the very work the region had just handed
+ * over, and took it down with the shard.  So the shard has the last word: it
+ * reads the request behind everything it was sent first and stops only if it
+ * has nothing to lose; otherwise it answers {@link ShardPassivationDeclined}
+ * and goes on.
  *
  * A class rather than a `sharding.`-kinded object, for the reason
  * {@link EntityStopTimeout} is one: nothing off the wire can be `instanceof`
@@ -432,10 +433,26 @@ export class Shard extends Actor<ShardInbox> {
   /**
    * Whether stopping this shard would lose nothing: no entity, running or
    * passivating — the one created by the routed message or the recovery start
-   * just ahead of the request included.
+   * just ahead of the request included — and no entity backing off: none
+   * holding messages, none whose return a start has armed, none still inside
+   * its wait (#1437).
+   *
+   * Those last three are why the region cannot judge this alone: an entity
+   * backing off has reported its stop, so the region's index already counts
+   * the shard empty, while the shard holds the messages that arrived for it
+   * and the record that makes the wait a wait.  Stopped then, the shard took
+   * both along — the messages to dead letters, the record so that the next
+   * message created the entity at once, its backoff started over at `min`.
+   * The wait counts with nothing held for that reason.  A record whose wait is
+   * over decides nothing a missing one would not, apart from how long the next
+   * wait is, so it does not keep the shard.
    */
   private isIdle(): boolean {
-    return this.entities.size === 0;
+    if (this.entities.size > 0) return false;
+    for (const record of this.restarts.values()) {
+      if (record.timer !== null || this.isHeldDown(record)) return false;
+    }
+    return true;
   }
 
   /**

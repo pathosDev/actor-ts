@@ -2678,9 +2678,10 @@ export class ShardRegion<TMessage = unknown>
    * ahead of the sweep's tick has created its entity there by the time the
    * shard reads the request, while the region learns of it only from the
    * spawn report behind the tick; the same goes for a remembered entity a
-   * recovery batch has just started.  A `PoisonPill` went in behind that work
-   * and took it down with the shard.  The shard stops only if it has nothing to
-   * lose, and otherwise declines — {@link onShardPassivationDeclined}.
+   * recovery batch has just started, and nothing at all reports what a shard
+   * holds for an entity backing off (#1437).  A `PoisonPill` went in behind
+   * that work and took it down with the shard.  The shard stops only if it has
+   * nothing to lose, and otherwise declines — {@link onShardPassivationDeclined}.
    */
   private passivateShard(shardId: number): void {
     const shard = this.shards.get(shardId);
@@ -2698,10 +2699,12 @@ export class ShardRegion<TMessage = unknown>
    * again, hand it what arrived meanwhile, and leave it to a later sweep
    * (#1441).
    *
-   * Its empty clock needs nothing from here.  The shard declined because it
-   * runs an entity, and that entity's spawn report reached this region ahead
-   * of the answer — the shard sent both, in that order — and took the clock
-   * away; the entity's stop starts it again.
+   * Its empty clock is left alone.  A shard that declined because it runs an
+   * entity sent that entity's spawn report ahead of the answer, and the report
+   * took the clock away; the entity's stop starts it again.  One that declined
+   * because an entity of it is backing off (#1437) stays empty in this index,
+   * so each sweep asks again until that entity's wait is over: one round trip
+   * per sweep interval, for no longer than the wait.
    *
    * At most one request per shard is ever out — the sweep skips a passivating
    * shard — so the answer belongs to the request still standing, if any.  A
