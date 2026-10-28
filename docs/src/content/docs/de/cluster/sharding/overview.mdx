@@ -646,16 +646,15 @@ weiterhin hier. Nachrichten für ihn warten im Region-Puffer gegen
 die Dead Letters — und werden mit ihren Sendern zugestellt, sobald der
 Shard zurück ist. Das betrifft, was die Region *nach* dem Tod des Shards
 routet. Was sie schon in einen Shard geroutet hatte, der ausfällt — Fall 2
-oben —, geht mit dem Shard verloren: Die Region erfährt vom Ausfall erst
-durch den Tod des Shards, und ein stoppender Shard gibt alles, was seine
-Entities noch nicht erreicht hatten, an die Dead Letters, jede Nachricht
-mit ihrem Sender. Gemessen mit vierzig Nachrichten an eine gesunde
-Entity, im selben Schritt geschickt wie der eskalierende Fehler ihrer
-Geschwister-Entity, gingen fünf so verloren, fünfunddreißig wurden
-zugestellt. Der Neustart an Ort und Stelle, den das Stoppen ersetzt hat,
-behielt die Mailbox des Shards, riss aber jede Entity unter dem Shard
-mit, ohne dass die Region davon erfuhr. Nichts anderes holt den Shard
-früher zurück: keine
+oben —, und was seine Entity noch nicht erreicht hat, geht mit dem Shard
+verloren: Die Region erfährt vom Ausfall erst durch den Tod des Shards,
+und was in einem stoppenden Shard oder seinen Entities noch wartet, geht
+an die Dead Letters, jede Nachricht mit ihrem Sender. Eine Nachricht an
+eine gesunde Entity, die genau dann geschickt wird, wenn der Fehler ihrer
+Geschwister-Entity eskaliert, kann also verloren gehen. Der Neustart an
+Ort und Stelle, den das Stoppen ersetzt hat, behielt die Mailbox des
+Shards, riss aber jede Entity unter dem Shard mit, ohne dass die Region
+davon erfuhr. Nichts anderes holt den Shard früher zurück: keine
 Nachricht, keine Shard-Ref aus `shardRefFor()` (die bis dahin über die
 Region weiterleitet), keine wiederholte Platzierung und keine erneut
 geschickte Registry. Eine Nachricht an eine Shard-Ref, die nicht für

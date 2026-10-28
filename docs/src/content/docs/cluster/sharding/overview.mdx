@@ -616,15 +616,14 @@ it wait in the region buffer against `buffer-size` — past the cap the
 newest is dead-lettered with its sender — and are delivered, with their
 senders, once the shard is back.  That covers what the region routes
 *after* the shard has died.  What it had already routed into a shard that
-fails — case 2 above — is lost with the shard: the region learns of the
-failure only from the shard's death, and a stopping shard hands whatever
-its entities had not yet reached to dead letters, each message with its
-sender.  Measured with forty messages sent to a healthy entity in the
-same step as its sibling's escalating failure, five were lost this way
-and thirty-five delivered.  The restart in place that stopping replaced
-kept the shard's mailbox, but tore down every entity under the shard
-without the region hearing of it.  Nothing else brings the shard back
-early: not
+fails — case 2 above — and that has not reached its entity yet is lost
+with the shard: the region learns of the failure only from the shard's
+death, and what is still queued in a stopping shard or its entities goes
+to dead letters, each message with its sender.  So a message sent to a
+healthy entity just as its sibling's failure escalates can be lost.  The
+restart in place that stopping replaced kept the shard's mailbox, but
+tore down every entity under the shard without the region hearing of
+it.  Nothing else brings the shard back early: not
 a message, not a shard ref from `shardRefFor()` (it relays through the
 region until then), not a repeated placement or a re-shipped registry.
 A message told to a shard ref that is not for an entity —

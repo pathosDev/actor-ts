@@ -1002,23 +1002,26 @@ describe('a shard that stops unexpectedly is backed off (#1437)', () => {
       .filter((entry) => entry.startsWith(`${ID}#`))
       .map((entry) => Number(entry.slice(ID.length + 1)))
       .filter((sequence) => sequence >= from && sequence <= to);
-    const lost = (): DeadLetter[] => letters.filter((letter) => {
-      const envelope = letter.message as { kind?: unknown; message?: { kind?: unknown } };
-      return envelope.kind === 'sharding.EntityEnvelope' && envelope.message?.kind === 'work';
-    });
+    // Lost in the shard's mailbox, a message is dead-lettered as the envelope
+    // the region sent; lost in the entity's, as the command itself.
+    const workOf = (letter: DeadLetter): WorkCommand | null => {
+      const message = letter.message as Partial<EntityEnvelope<WorkCommand>> & Partial<WorkCommand>;
+      if (message.kind === 'sharding.EntityEnvelope') return message.message?.kind === 'work' ? message.message : null;
+      return message.kind === 'work' ? message as WorkCommand : null;
+    };
+    const lost = (): DeadLetter[] => letters.filter((letter) => workOf(letter) !== null);
     await awaitCondition(() => deliveredOf(1, 40).length + lost().length === 40, {
       timeoutMs: ASK_TIMEOUT_MS,
       label: 'every message of the first forty was delivered or dead-lettered',
     });
 
     // What the healthy entity had not reached when its shard failed is lost —
-    // each message from the stopping shard, with the sender it was sent with —
-    // and nothing else is.
-    const lostSequences = lost().map((letter) =>
-      ((letter.message as EntityEnvelope<WorkCommand>).message).sequence);
+    // each message from the stopping shard or its entity, with the sender it
+    // was sent with — and nothing else is.
+    const lostSequences = lost().map((letter) => workOf(letter)!.sequence);
     expect(lostSequences.length).toBeGreaterThan(0);
     for (const letter of lost()) {
-      expect(letter.recipient.path.toString()).toBe(harness.shardPath(SHARD));
+      expect(letter.recipient.path.toString().startsWith(harness.shardPath(SHARD))).toBe(true);
       expect(letter.sender?.path.toString()).toBe(harness.collector.path.toString());
     }
     expect([...deliveredOf(1, 40), ...lostSequences].sort((a, b) => a - b))
