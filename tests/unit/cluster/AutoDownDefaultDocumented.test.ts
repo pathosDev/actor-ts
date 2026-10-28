@@ -25,11 +25,16 @@
  *   conflict by taking the old side is the likeliest way they would, and it
  *   brings the old sentence back verbatim.  This half is a list of phrasings,
  *   not an understanding of them: a paraphrase gets past it.
+ *
+ * The shipped value is read from the bundled `reference.conf`, so the
+ * structured half follows it wherever it moves; the phrase list is written for
+ * the removal default and says so when it stops being the one that ships.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { Config } from '../../../src/config/Config.js';
+import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 
 const REPOSITORY_ROOT = join(import.meta.dir, '..', '..', '..');
 const DOCUMENTATION = 'docs/src/content/docs';
@@ -38,12 +43,17 @@ const AUTO_DOWN = 'actor-ts.cluster.failure-detector.auto-down';
 const read = (path: string): string => readFileSync(join(REPOSITORY_ROOT, path), 'utf8');
 
 /**
- * `failure-detector.auto-down` as it ships (#1426).  Spelled out rather than
- * read from `REFERENCE_CONF`, so this file states what the pages have to say
- * on its own; `DocumentedDefaults` is what holds the bundled file and
+ * `failure-detector.auto-down` as the bundled `reference.conf` ships it
+ * (#1426), read through the parser an `application.conf` goes through, so the
+ * configuration reference's sample and key table follow the shipped value
+ * rather than a copy of it.  `DocumentedDefaults` holds the bundled file and
  * `DEFAULT_FAILURE_DETECTOR_AUTO_DOWN` to each other.
  */
-const SHIPPED_AUTO_DOWN = true;
+const SHIPPED_AUTO_DOWN = Config.parseString(REFERENCE_CONF).getBoolean(AUTO_DOWN);
+
+/** How the pages spell the shipped value of the switch, and the opt-out's. */
+const SHIPPED_SPELLING = SHIPPED_AUTO_DOWN ? 'auto-down = on' : 'auto-down = off';
+const OPT_OUT_SPELLING = SHIPPED_AUTO_DOWN ? 'auto-down = off' : 'auto-down = on';
 
 type Language = {
   readonly name: string;
@@ -122,30 +132,31 @@ describe('#1426 — the pages state the shipped auto-down default', () => {
         .toBe(SHIPPED_AUTO_DOWN ? '`on`' : '`off`');
     });
 
-    test(`${language.name}: the failure-detector decision table marks the removal row as the default`, () => {
+    test(`${language.name}: the failure-detector decision table marks the shipped row as the default`, () => {
       const path = page(language, 'cluster/failure-detector.mdx');
       const rows = rowsWhere(read(path), /^`down`/);
       const defaults = rows.filter((cells) => language.defaultMarker.test(cells[0]!));
       expect(
         defaults.map((cells) => cells[0]),
         `${path}: the decision table has to mark exactly one \`down\` row as the default, and it is the `
-        + 'row where the detector removes the peer (`auto-down = on`).',
-      ).toEqual([expect.stringMatching(/`auto-down = on`/)]);
-      for (const cells of rows.filter((row) => /`auto-down = off`/.test(row[0]!))) {
-        expect(cells[0], `${path}: the parking row is the opt-out, not the default.`).toMatch(language.optOutMarker);
+        + `row for the shipped \`${SHIPPED_SPELLING}\`.`,
+      ).toEqual([expect.stringContaining(`\`${SHIPPED_SPELLING}\``)]);
+      for (const cells of rows.filter((row) => row[0]!.includes(`\`${OPT_OUT_SPELLING}\``))) {
+        expect(cells[0], `${path}: the \`${OPT_OUT_SPELLING}\` row is the opt-out, not the default.`)
+          .toMatch(language.optOutMarker);
       }
     });
 
-    test(`${language.name}: the downing page's removal table marks the detector's route as the default`, () => {
+    test(`${language.name}: the downing page's removal table marks the shipped route as the default`, () => {
       const path = page(language, 'cluster/downing-strategies.mdx');
       const rows = rowsWhere(read(path), /auto-down/);
-      const removal = rows.filter((cells) => /auto-down = on/.test(cells[0]!));
-      const parking = rows.filter((cells) => /auto-down = off/.test(cells[0]!));
-      expect(removal.length, `${path}: no removal-table row for the detector's own route.`).toBe(1);
-      expect(parking.length, `${path}: no removal-table row for the opt-out.`).toBe(1);
-      expect(removal[0]![0], `${path}: the detector's own route is the default.`).toMatch(language.defaultMarker);
-      expect(parking[0]![0], `${path}: parking is the opt-out.`).toMatch(language.optOutMarker);
-      expect(parking[0]![0], `${path}: parking is not the default.`).not.toMatch(language.defaultMarker);
+      const shipped = rows.filter((cells) => cells[0]!.includes(SHIPPED_SPELLING));
+      const optOut = rows.filter((cells) => cells[0]!.includes(OPT_OUT_SPELLING));
+      expect(shipped.length, `${path}: no removal-table row for the shipped \`${SHIPPED_SPELLING}\`.`).toBe(1);
+      expect(optOut.length, `${path}: no removal-table row for the opt-out \`${OPT_OUT_SPELLING}\`.`).toBe(1);
+      expect(shipped[0]![0], `${path}: the shipped route is the default.`).toMatch(language.defaultMarker);
+      expect(optOut[0]![0], `${path}: the other route is the opt-out.`).toMatch(language.optOutMarker);
+      expect(optOut[0]![0], `${path}: the opt-out is not the default.`).not.toMatch(language.defaultMarker);
     });
   }
 });
@@ -331,6 +342,14 @@ function unitsOf(path: string, text: string): string[] {
 
 describe('#1426 — no page or example says the detector parks by default', () => {
   test('none of the phrasings the parking default was written in is back', () => {
+    // The list below is written for the removal default.  If the bundled file
+    // ships `auto-down = off` again, the sentences it refuses are the right
+    // ones, and it is the list that has to be rewritten, not the pages.
+    expect(
+      SHIPPED_AUTO_DOWN,
+      `reference.conf ships ${AUTO_DOWN} = off, and this phrase list refuses exactly the sentences `
+      + 'that describe that default.  Rewrite the list for the shipped value before trusting it.',
+    ).toBe(true);
     const found: string[] = [];
     for (const path of GUARDED_FILES) {
       for (const sentence of unitsOf(path, read(path))) {
