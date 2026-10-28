@@ -10,6 +10,7 @@ import {
   verifySignature,
   type JwksDocumentFetcher,
   type JwksKeySetSettings,
+  type VerificationKey,
 } from '../../../../src/http/middleware/Jwks.js';
 import type { JwtAlgorithm } from '../../../../src/http/middleware/JwtAuthOptions.js';
 import type { Clock } from '../../../../src/Clock.js';
@@ -511,5 +512,17 @@ describe('static keys and the one-algorithm-per-key binding', () => {
     expect(key.signatureBytes).toBe(32);
     expect(await verifySignature(key, await hmacWith(encoder.encode(secret), signingInput), signingInput)).toBe(true);
     expect(await verifySignature(key, await hmacWith(encoder.encode('t'.repeat(32)), signingInput), signingInput)).toBe(false);
+  });
+
+  test('a WebCrypto refusal inside verify is a failed verification — never a pass, never a thrown error', async () => {
+    // A key whose WebCrypto algorithm is not the one its binding verifies
+    // with: verify throws on every runtime (InvalidAccessError), which is the
+    // shape a runtime's own refusal of a key takes — Deno refuses a public
+    // exponent of 1 there rather than at import.
+    const hmac = await subtle.importKey('raw', encoder.encode('s'.repeat(32)), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
+    const mismatched: VerificationKey = { keyId: undefined, algorithm: 'RS256', key: hmac, signatureBytes: 256 };
+    const signature = new Uint8Array(256);
+    expect(await rejection(subtle.verify({ name: 'RSASSA-PKCS1-v1_5' }, hmac, signature, signingInput))).toBeDefined();
+    expect(await verifySignature(mismatched, signature, signingInput)).toBe(false);
   });
 });
