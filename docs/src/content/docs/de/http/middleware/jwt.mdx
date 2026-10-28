@@ -82,12 +82,22 @@ Schlüsselset des Ausstellers:
   abgelehnt statt verfolgt.
 - **Nur `https:`** — einfaches `http:` wird für einen Loopback-Host
   akzeptiert, für einen lokalen Aussteller in der Entwicklung.
+- **Einmal laut je Ausfall**: Ein Abruf, der scheitert, wird auf warn
+  geloggt, mit der URL des Sets und der Ursache — Zugangsdaten in beiden
+  maskiert, und eine abgelaufene Frist als solche benannt —, einmal je
+  Ausfall, nicht einmal je abgelehnter Anfrage.  Weitere gescheiterte
+  Versuche desselben Ausfalls gehen auf debug, und der Abruf, der wieder
+  gelingt, wird auf info geloggt.
 
 Ein Eintrag wird übersprungen, wenn er kein RSA- oder P-256-Schlüssel ist
 — vor allem ein `oct`-Schlüssel (HMAC) —, wenn sein eigenes `alg`, `use`
 oder `key_ops` sagt, dass er kein RS256- oder ES256-Signaturschlüssel ist,
 wenn er private Bestandteile trägt oder wenn er ein RSA-Schlüssel unter
-2048 Bit ist.
+2048 Bit oder mit einem öffentlichen Exponenten kleiner als 3 oder gerade
+ist (RFC 8017 §3.1).  Jeder übersprungene Eintrag wird auf debug geloggt, mit
+seiner Position, seiner `kid` und dem Grund — so lässt sich ein
+veröffentlichter Schlüssel, der nie etwas verifiziert, ohne Debugger
+erklären.
 
 ### Konfigurierte Schlüssel
 
@@ -100,7 +110,12 @@ const jwtOptions = JwtAuthOptions.create()
 
 - `publicKeys` nehmen einen JWK (`kty` RSA oder EC auf `P-256`) oder einen
   PEM-Block `-----BEGIN PUBLIC KEY-----`, jeweils an RS256 oder ES256
-  gebunden.
+  gebunden.  Ein RSA-Schlüssel braucht mindestens 2048 Bit und einen
+  ungeraden öffentlichen Exponenten von mindestens 3: Ein JWK, dessen `e`
+  etwas anderes ist, wird beim Aufruf von `JwtAuth(...)` abgelehnt, mit
+  seinem Feld, und ein PEM-Schlüssel, der das nicht erfüllt, lässt jede
+  Anfrage als Serverfehler scheitern, wie jeder Schlüssel, der sich nicht
+  importieren lässt.
 - `secrets` sind nur HS256, mindestens 32 Byte.  Sie sind die einzige
   Quelle für HMAC-Schlüssel: Ein JWK-Set wird nie nach einem gelesen.
 - Statische Schlüssel und ein JWK-Set lassen sich kombinieren.  Ein
@@ -133,7 +148,7 @@ gefälschtes Token eine Prüfung pro Schlüssel kosten lassen.
 | --- | --- | --- |
 | kein `Authorization`-Header oder ein anderes Schema | `401` | `Bearer realm="actor-ts"` |
 | ein Token, das eine Prüfung nicht besteht | `401` | `Bearer realm="actor-ts", error="invalid_token"` |
-| ein Token braucht das JWK-Set, und das lässt sich nicht abrufen | `503` | — |
+| ein Token braucht das JWK-Set, und das lässt sich nicht abrufen | `503`, einmal je Ausfall auf warn geloggt | — |
 | ein konfigurierter Schlüssel lässt sich nicht importieren | `500`, geloggt | — |
 
 Die `401`-Bodies nennen die Prüfung, die fehlgeschlagen ist —
@@ -164,13 +179,15 @@ auf einen Abruf, und der Ausfall des Sets erreicht es nie.
 | `withMaxTokenBytes(n)` | `maxTokenBytes` | Größtes akzeptiertes Token.  Default 8 KiB. |
 | `withRealm(name)` | `realm` | Realm im `WWW-Authenticate`.  Default `'actor-ts'`. |
 | `withClock(clock)` | `clock` | Woher die Zeit gelesen wird — mit `system.clock` steuert ein `ManualScheduler` sie. |
+| `withLogger(logger)` | `logger` | Wohin die Middleware meldet, was keine Antwort zeigt — einen Ausfall des JWK-Sets auf warn, einen übersprungenen Eintrag auf debug.  Default: die Konsole, ab warn; mit `system.log` landet es beim Logging der Anwendung. |
 
 Die Optionen werden geprüft, wenn `JwtAuth(...)` aufgerufen wird, und eine
 Konfiguration, die nie ein Token verifizieren könnte, scheitert dort, mit
 Namen: ein erlaubter Algorithmus ohne Schlüssel, der ihn prüft, ein
-Schlüssel, den kein erlaubter Algorithmus nutzt, ein kurzes oder wie PEM
-aussehendes Secret, eine `http:`-URL für das JWK-Set.  Einen HOCON-Block
-gibt es noch nicht: Alles kommt aus diesen Optionen.
+Schlüssel, den kein erlaubter Algorithmus nutzt, ein RSA-JWK, dessen
+öffentlicher Exponent kleiner als 3 oder gerade ist, ein kurzes oder wie
+PEM aussehendes Secret, eine `http:`-URL für das JWK-Set.  Einen
+HOCON-Block gibt es noch nicht: Alles kommt aus diesen Optionen.
 
 ## Fallstricke
 
@@ -203,6 +220,14 @@ geschlossen, und jeder hat einen Test.
 - **DER-kodierte ES256-Signaturen.**  JWS will das rohe 64-Byte-Paar
   `r || s`; die DER-Form, die manche Werkzeuge erzeugen, wird als
   fehlerhaft abgelehnt.
+- **Ein öffentlicher RSA-Exponent von 1.**  Die Prüfung potenziert die
+  Signatur mit dem öffentlichen Exponenten, also ist bei einem Exponenten
+  von 1 die „Signatur“, die ein Schlüssel annimmt, der kodierte Hash des
+  Tokens selbst — kein privater Schlüssel nötig, und das WebCrypto
+  mindestens einer Runtime verifiziert mit so einem Schlüssel.  Ein Exponent
+  kleiner als 3 oder gerade (RFC 8017 §3.1) wird auf jedem Weg abgelehnt:
+  ein konfigurierter JWK, wenn die Middleware gebaut wird, jeder
+  RSA-Schlüssel, wenn er importiert wird.
 - **Schwache HMAC-Secrets.**  HS256 braucht ein Secret, das mindestens so
   lang ist wie sein Hash, 32 Byte.  Nimm lieber RS256 oder ES256, wenn mehr
   als eine Partei prüft: Wer ein HS256-Token prüfen kann, kann auch eines

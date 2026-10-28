@@ -20,10 +20,11 @@
  * algorithm a set can serve ever asks it ({@link keySetServes}).
  */
 import type { Clock } from '../../Clock.js';
+import type { Logger } from '../../Logger.js';
 import { redactUrlCredentials } from '../../util/RedactUrlCredentials.js';
-import { HttpClient } from '../HttpClient.js';
+import { HttpClient, type HttpClientResponse } from '../HttpClient.js';
 import type { HttpClientOptionsType } from '../HttpClientOptions.js';
-import { PRIVATE_JWK_MEMBERS } from './JwtAuthOptions.js';
+import { MIN_RSA_PUBLIC_EXPONENT, PRIVATE_JWK_MEMBERS, isAcceptedRsaPublicExponent } from './JwtAuthOptions.js';
 import type { JwtAlgorithm, JwtPublicJwk, JwtPublicKey, JwtSecret } from './JwtAuthOptions.js';
 
 /** A key bound to the one algorithm it verifies. */
@@ -93,14 +94,33 @@ function publicMembers(jwk: Record<string, unknown>): JsonWebKey {
     : { kty: 'EC', crv: jwk['crv'] as string, x: jwk['x'] as string, y: jwk['y'] as string };
 }
 
-/** `key` as a {@link VerificationKey}, after the checks an import alone does not make. */
+/** An RSA public exponent as a refusal names it: its value while a number holds it exactly (six bytes), else its length. */
+function exponentText(exponent: unknown): string {
+  if (!(exponent instanceof Uint8Array)) return 'not reported by this runtime';
+  return exponent.length <= 6 ? String(exponent.reduce((value, byte) => value * 256 + byte, 0)) : `${exponent.length} bytes long`;
+}
+
+/**
+ * `key` as a {@link VerificationKey}, after the checks an import alone does
+ * not make.  The RSA ones are made here, on what WebCrypto itself parsed,
+ * because this is the one step every route shares — a PEM key, whose
+ * exponent the options validator never sees, and a JWK-set entry, which
+ * never meets the validator at all.
+ */
 function bound(keyId: string | undefined, algorithm: JwtAlgorithm, key: CryptoKey): VerificationKey {
   if (algorithm === 'RS256') {
-    const modulusBits = (key.algorithm as RsaHashedKeyAlgorithm).modulusLength;
-    if (modulusBits < MIN_RSA_MODULUS_BITS) {
-      throw new Error(`an RS256 key must be at least ${MIN_RSA_MODULUS_BITS} bits (RFC 7518 §3.3), this one has ${modulusBits}`);
+    const { modulusLength, publicExponent } = key.algorithm as RsaHashedKeyAlgorithm;
+    if (modulusLength < MIN_RSA_MODULUS_BITS) {
+      throw new Error(`an RS256 key must be at least ${MIN_RSA_MODULUS_BITS} bits (RFC 7518 §3.3), this one has ${modulusLength}`);
     }
-    return { keyId, algorithm, key, signatureBytes: Math.ceil(modulusBits / 8) };
+    // Not left to WebCrypto: Bun and Deno refuse an exponent of 1 one way or
+    // another, but Node imports the key and verifies with it.
+    if (!(publicExponent instanceof Uint8Array) || !isAcceptedRsaPublicExponent(publicExponent)) {
+      throw new Error(
+        `an RS256 key's public exponent must be odd and at least ${MIN_RSA_PUBLIC_EXPONENT} (RFC 8017 §3.1), this one is ${exponentText(publicExponent)}`,
+      );
+    }
+    return { keyId, algorithm, key, signatureBytes: Math.ceil(modulusLength / 8) };
   }
   return { keyId, algorithm, key, signatureBytes: algorithm === 'ES256' ? ES256_SIGNATURE_BYTES : HS256_SIGNATURE_BYTES };
 }
@@ -174,46 +194,90 @@ export function keySetServes(algorithm: JwtAlgorithm): boolean {
 }
 
 /**
- * The algorithm a JWK-set entry can be bound to, or `undefined` for anything
- * that is not an RSA or P-256 key — an `oct` (HMAC) key above all.  An entry
- * whose own `alg`, `use` or `key_ops` says it is not an RS256 / ES256
- * signature key, or which carries private members, is skipped too.
+ * The algorithm a JWK-set entry's key type binds it to — RS256 for an RSA
+ * key, ES256 for a P-256 one — or `undefined` for anything else, an `oct`
+ * (HMAC) key above all.
  */
 function setEntryAlgorithm(entry: Record<string, unknown>): JwtAlgorithm | undefined {
-  const algorithm = SET_KEY_TYPES.find((type) =>
+  return SET_KEY_TYPES.find((type) =>
     entry['kty'] === type.kty && (type.crv === undefined || entry['crv'] === type.crv))?.algorithm;
-  if (algorithm === undefined) return undefined;
-  if (entry['alg'] !== undefined && entry['alg'] !== algorithm) return undefined;
-  if (entry['use'] !== undefined && entry['use'] !== 'sig') return undefined;
-  const operations = entry['key_ops'];
-  if (operations !== undefined && !(Array.isArray(operations) && operations.includes('verify'))) return undefined;
-  if (entry['kid'] !== undefined && (typeof entry['kid'] !== 'string' || entry['kid'].length === 0)) return undefined;
-  if (PRIVATE_JWK_MEMBERS.some((member) => entry[member] !== undefined)) return undefined;
-  return algorithm;
 }
 
-/** One JWK-set entry as a verification key, or `undefined` when it cannot be one here. */
-async function importSetEntry(entry: unknown, allowed: ReadonlySet<JwtAlgorithm>): Promise<VerificationKey | undefined> {
-  if (!isRecord(entry)) return undefined;
+/**
+ * Why an entry of `algorithm`'s key type cannot be bound to it, or
+ * `undefined` when it can: it carries private members, or its own `alg`,
+ * `use` or `key_ops` says it is not an RS256 / ES256 signature key, or its
+ * `kid` is unusable.  Private members are asked about first — an issuer that
+ * publishes a private key has made the one mistake worth naming as such,
+ * whatever else the entry says.
+ */
+function setEntryRefusal(entry: Record<string, unknown>, algorithm: JwtAlgorithm): string | undefined {
+  const privateMember = PRIVATE_JWK_MEMBERS.find((member) => entry[member] !== undefined);
+  if (privateMember !== undefined) return `it carries private key material (${privateMember})`;
+  if (entry['alg'] !== undefined && entry['alg'] !== algorithm) return `its alg names another algorithm than ${algorithm}`;
+  if (entry['use'] !== undefined && entry['use'] !== 'sig') return "its use is not 'sig'";
+  const operations = entry['key_ops'];
+  if (operations !== undefined && !(Array.isArray(operations) && operations.includes('verify'))) {
+    return "its key_ops do not include 'verify'";
+  }
+  if (entry['kid'] !== undefined && (typeof entry['kid'] !== 'string' || entry['kid'].length === 0)) {
+    return 'its kid is not a non-empty string';
+  }
+  return undefined;
+}
+
+/**
+ * One JWK-set entry as a verification key, or the reason it cannot be one
+ * here.  A skipped entry costs the issuer's other keys nothing.
+ */
+async function importSetEntry(entry: unknown, allowed: ReadonlySet<JwtAlgorithm>): Promise<VerificationKey | string> {
+  if (!isRecord(entry)) return 'it is not a JSON object';
   const algorithm = setEntryAlgorithm(entry);
-  if (algorithm === undefined || !allowed.has(algorithm)) return undefined;
+  if (algorithm === undefined) return 'it is not an RSA or P-256 key';
+  if (!allowed.has(algorithm)) return `its key type verifies ${algorithm}, which algorithms does not allow`;
+  const refusal = setEntryRefusal(entry, algorithm);
+  if (refusal !== undefined) return refusal;
   try {
     const key = await subtleCrypto().importKey('jwk', publicMembers(entry), BINDINGS[algorithm].importParameters, false, ['verify']);
     return bound(entry['kid'] as string | undefined, algorithm, key);
-  } catch {
-    // A malformed or undersized key is skipped, not trusted, and does not
-    // cost the issuer's other keys.
-    return undefined;
+  } catch (error) {
+    // A malformed or undersized key is skipped, never trusted.
+    return `it could not be imported: ${error instanceof Error ? error.message : String(error)}`;
   }
 }
 
+/**
+ * How a skipped entry is named in a log line: its position, and its `kid`
+ * when it has one — JSON-quoted, so a line break in it cannot start a
+ * forged line of its own.  How long it can be is bounded by the document's
+ * size cap.
+ */
+function entryLabel(entry: unknown, index: number): string {
+  const keyId = isRecord(entry) ? entry['kid'] : undefined;
+  return typeof keyId === 'string' && keyId.length > 0 ? `entry ${index} (kid ${JSON.stringify(keyId)})` : `entry ${index}`;
+}
+
+/** What a JWK-set document yielded: the keys, and a line for every entry that was not one. */
+type ImportedKeySet = {
+  readonly keys: readonly VerificationKey[];
+  /** `entry <index> (kid "…"): <reason>`, one per skipped entry. */
+  readonly skipped: readonly string[];
+};
+
 /** Every usable key of a JWK-set document (RFC 7517 §5); throws when the document is not one. */
-async function importKeySet(document: unknown, allowed: ReadonlySet<JwtAlgorithm>): Promise<readonly VerificationKey[]> {
+async function importKeySet(document: unknown, allowed: ReadonlySet<JwtAlgorithm>): Promise<ImportedKeySet> {
   if (!isRecord(document) || !Array.isArray(document['keys'])) {
     throw new Error('the response is not a JWK set (no "keys" array)');
   }
-  const imported = await Promise.all(document['keys'].map((entry) => importSetEntry(entry, allowed)));
-  return imported.filter((key): key is VerificationKey => key !== undefined);
+  const entries: readonly unknown[] = document['keys'];
+  const imported = await Promise.all(entries.map((entry) => importSetEntry(entry, allowed)));
+  const keys: VerificationKey[] = [];
+  const skipped: string[] = [];
+  imported.forEach((result, index) => {
+    if (typeof result === 'string') skipped.push(`${entryLabel(entries[index], index)}: ${result}`);
+    else keys.push(result);
+  });
+  return { keys, skipped };
 }
 
 /** The issuer's key set could not be obtained — refused as 503, never let through. */
@@ -236,6 +300,8 @@ export type JwksKeySetSettings = {
   readonly maxResponseBytes: number;
   readonly cacheTtlMs: number;
   readonly minRefreshIntervalMs: number;
+  /** Where an outage (warn, once per outage) and a skipped entry (debug) are reported. */
+  readonly logger: Logger;
 };
 
 /**
@@ -246,6 +312,9 @@ export type JwksKeySetSettings = {
  *
  * A redirect is refused rather than followed: the operator named the URL the
  * keys come from, and a hop would let the answering host nominate another.
+ *
+ * The deadline is the one thing that aborts the request, and an abort says
+ * nothing about which deadline ran out — so it is reported as what it was.
  */
 function httpDocumentFetcher(settings: JwksKeySetSettings): JwksDocumentFetcher {
   const limits = {
@@ -260,10 +329,16 @@ function httpDocumentFetcher(settings: JwksKeySetSettings): JwksDocumentFetcher 
   };
   const client = new HttpClient(clientOptions);
   return async (url) => {
-    const response = await client.get(url, {
-      ...limits,
-      headers: { accept: 'application/jwk-set+json, application/json' },
-    });
+    let response: HttpClientResponse;
+    try {
+      response = await client.get(url, {
+        ...limits,
+        headers: { accept: 'application/jwk-set+json, application/json' },
+      });
+    } catch (error) {
+      if ((error as { name?: unknown } | null)?.name !== 'AbortError') throw error;
+      throw new Error(`no answer within ${settings.timeoutMs} ms`, { cause: error });
+    }
     if (response.status !== 200) throw new Error(`the key set answered ${response.status}`);
     return response.json();
   };
@@ -284,6 +359,14 @@ function httpDocumentFetcher(settings: JwksKeySetSettings): JwksDocumentFetcher 
  *   answer, {@link JwksUnavailableError}; after a failed attempt the next is
  *   again at most once per `minRefreshIntervalMs`, so an unreachable issuer
  *   is not hammered by every request either.
+ * - **Loud once per outage**: the first failed fetch after a good one — or
+ *   the first fetch of all — is logged at warn, with the URL and the cause,
+ *   credentials masked in both; every further failure of the same outage at
+ *   debug, and the fetch that ends it at info.  A request refused meanwhile
+ *   logs nothing: the outage, not each of its 503s, is the event.
+ * - **Says what it skipped**: every entry a fetch yields no key for is
+ *   logged at debug with the reason, so an operator asking why a published
+ *   key never verifies anything has an answer that a request cannot give.
  */
 export class JwksKeySet {
   private keys: readonly VerificationKey[] = [];
@@ -372,19 +455,46 @@ export class JwksKeySet {
     // Set before the first await, so a request arriving in the same tick
     // already counts this attempt against the refresh floor.
     this.lastAttemptAt = this.clock.now();
+    let imported: ImportedKeySet;
     try {
-      const document = await this.fetchDocument(this.settings.url);
-      this.keys = await importKeySet(document, this.settings.algorithms);
-      this.loadedAt = this.clock.now();
-      this.lastAttemptFailed = false;
+      imported = await importKeySet(await this.fetchDocument(this.settings.url), this.settings.algorithms);
     } catch (cause) {
-      this.lastAttemptFailed = true;
-      throw this.unavailable(cause);
+      throw this.failed(cause);
     }
+    for (const skipped of imported.skipped) {
+      this.settings.logger.debug(`JwtAuth: the JWK set at ${this.displayUrl} yields no key for ${skipped}`);
+    }
+    if (this.lastAttemptFailed) this.settings.logger.info(`JwtAuth: the JWK set at ${this.displayUrl} is reachable again`);
+    this.keys = imported.keys;
+    this.loadedAt = this.clock.now();
+    this.lastAttemptFailed = false;
   }
 
+  /**
+   * A fetch that failed, reported once per outage.  Its 503s are all a
+   * client sees, and none of them carries the cause; the server has no
+   * other trace unless this line is one an operator reads.
+   */
+  private failed(cause: unknown): JwksUnavailableError {
+    const error = this.unavailable(cause);
+    if (this.lastAttemptFailed) {
+      this.settings.logger.debug(`JwtAuth: ${error.message} (still unavailable)`);
+    } else {
+      this.settings.logger.warn(`JwtAuth: ${error.message} — an RS256 or ES256 token that needs it is answered 503 until a fetch succeeds`);
+    }
+    this.lastAttemptFailed = true;
+    return error;
+  }
+
+  /**
+   * The error a request that needs the set is refused with.  The cause's own
+   * words are masked like the URL: they routinely repeat it — Node's fetch
+   * refuses a URL with credentials by quoting it whole.
+   */
   private unavailable(cause?: unknown): JwksUnavailableError {
-    const reason = cause instanceof Error ? `: ${cause.message}` : cause === undefined ? ' (the last attempt failed)' : '';
+    const reason = cause instanceof Error
+      ? `: ${redactUrlCredentials(cause.message)}`
+      : cause === undefined ? ' (the last attempt failed)' : '';
     return new JwksUnavailableError(`the JWK set at ${this.displayUrl} could not be fetched${reason}`, { cause });
   }
 }
