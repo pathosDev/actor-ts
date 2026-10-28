@@ -57,15 +57,14 @@
  *
  * {@link isSchemeStart} and {@link isSchemeCharacter} are that character
  * class, unchanged.  The userinfo is not: #1458 let it run past a `/`, `?` or
- * `#` to the last `@` before the next `://`, on its own line or past a line
- * break that no space or tab follows —
- * `(?:(?!://)[^\r\n])*(?:[\r\n](?:(?!://)[^ \t])*)?@` with its backtracking
- * written out, in {@link lastAtBeforeNextUrl} — because ending it at the first
- * of the three printed every password that contained one.
- * `tests/unit/util/RedactUrlCredentials.test.ts` keeps that pattern as an
- * oracle and compares the two over generated input, because what this
- * function redacts is public API (`src/index.ts`) — and keeps the original
- * one too, to show the move only ever masks further on a line of its own.
+ * `#` to the last `@` before the next `://`, within the line-break bounds
+ * {@link lastAtBeforeNextUrl} sets, because ending it at the first of the
+ * three printed every password that contained one.
+ * `tests/unit/util/RedactUrlCredentials.test.ts` keeps that grammar written
+ * as a regex as an oracle and compares the two over generated input, because
+ * what this function redacts is public API (`src/index.ts`) — and keeps the
+ * original one too, to show the move only ever masks further wherever no line
+ * break ends a line inside the userinfo.
  *
  * This is deliberately **not** wired into a logger.  `MultiSinkLogger`'s
  * `transform` hook is the right seam for a record whose MDC already holds a
@@ -232,8 +231,8 @@ function schemeBefore(value: string, separator: number): string {
 
 /**
  * Index of the last `@` between `from` and the next `://` (or the end of
- * `value`, or the first space or tab after a line break), or `-1`: where a
- * userinfo that begins at `from` ends.
+ * `value`, or the end of the line — see below), or `-1`: where a userinfo
+ * that begins at `from` ends.
  *
  * Not at the first `/`, `?` or `#`, where RFC 3986 ends an authority and
  * where this scan stopped until #1458.  None of the three is legal inside a
@@ -265,31 +264,61 @@ function schemeBefore(value: string, separator: number): string {
  * read both as one userinfo, as WHATWG does, and ending the userinfo at a
  * comma once an `@` had been seen printed `b` (#1458).
  *
- * **A line break bounds it, once text follows.**  Run on to the next `://`,
- * the scan crossed into the next line of an error's stack, and every frame of
- * a driver from a scoped package (`/app/node_modules/@nats-io/…`) carries an
- * `@`: a credential-free stack came back with its target and its first frame
- * folded into one `***`, where the first frame's `/` used to end the scan.  A
- * line break is no part of a URL — RFC 3986 forbids one and WHATWG drops it
- * before parsing — but it is part of a secret read from a file, whose
- * trailing newline lands in front of the `@` (`user:s3cr3t\n@host`).  So the
- * scan goes on past a line break and stops at the first space or tab after
- * it, which is where a stack frame and a line of prose begin and where a
- * pasted secret does not.  A credential that holds a line break *and* a later
- * space or tab is the one shape this gives up, and the one v0.17.0 masked —
- * where no `/`, `?` or `#` came first — that this does not.
+ * **A userinfo ends on its own line.**  Run on to the next `://`, the scan
+ * crossed into the next line of an error's stack, and every frame of a driver
+ * from a scoped package (`/app/node_modules/@nats-io/…`) carries an `@`: a
+ * credential-free stack came back with its target and its first frame folded
+ * into one `***`, where the first frame's `/` used to end the scan.  A line
+ * break is no part of a URL — RFC 3986 forbids one and WHATWG drops it before
+ * parsing — but it is part of a secret read from a file, whose trailing
+ * newline lands in front of the `@` (`user:s3cr3t\n@host`), and of one that
+ * `openssl base64` wrapped at 64 columns.  So a line break is read by what
+ * stands around it:
+ *
+ *   - one that an `@` follows is inside a userinfo — the end of a value read
+ *     from a file, never the start of a line of text;
+ *   - otherwise, once an `@` has been seen, the userinfo already has an end
+ *     on its own line, and the break ends the scan: the next line is not
+ *     read, whatever it starts with;
+ *   - otherwise the scan goes on, through a secret wrapped over lines, and
+ *     stops at the first space or tab — where a stack frame and a line of
+ *     prose begin and where a pasted secret does not.
+ *
+ * What this gives up are two shapes v0.17.0 masked where no `/`, `?` or `#`
+ * came first: a credential that holds a line break and a later space or tab
+ * (`user:pa\n ss@host`), and one that holds an `@` in front of a line break
+ * with more of it behind (`user:p@ss\nword@host`, which keeps `ss` and `word`).
+ * Neither is a shape a file, a generator or a paste produces; the two that do
+ * — a trailing newline, a wrapped encoding — are masked whole.
  */
 function lastAtBeforeNextUrl(value: string, from: number): number {
   let found = -1;
   let pastLineBreak = false;
   for (let index = from; index < value.length; index++) {
     const code = value.charCodeAt(index);
-    if (code === AT_SIGN) found = index;
-    else if (code === LINE_FEED || code === CARRIAGE_RETURN) pastLineBreak = true;
-    else if (pastLineBreak && (code === SPACE || code === TAB)) break;
-    else if (code === COLON && value.startsWith(SCHEME_SEPARATOR, index)) break;
+    if (code === AT_SIGN) {
+      found = index;
+    } else if (code === LINE_FEED || code === CARRIAGE_RETURN) {
+      // The run of breaks is one break: CRLF, or blank lines.
+      let after = index + 1;
+      while (after < value.length && isLineBreak(value.charCodeAt(after))) after++;
+      if (value.charCodeAt(after) !== AT_SIGN) {
+        if (found !== -1) break;
+        pastLineBreak = true;
+      }
+      index = after - 1;
+    } else if (pastLineBreak && (code === SPACE || code === TAB)) {
+      break;
+    } else if (code === COLON && value.startsWith(SCHEME_SEPARATOR, index)) {
+      break;
+    }
   }
   return found;
+}
+
+/** A line feed or a carriage return. */
+function isLineBreak(code: number): boolean {
+  return code === LINE_FEED || code === CARRIAGE_RETURN;
 }
 
 /**

@@ -474,11 +474,13 @@ userinfo runs to the last `@` before the next `://`. The price is paid by an
 `@` further on in a path or a query, which reads the same way:
 `https://host/a@b` comes back as `https://***@b` — the `***` says that what
 follows it is what followed the last `@`, not necessarily the host. The
-userinfo stays on its own line: past a line break the scan stops at the first
-space or tab, so the next frame of a stack trace — every frame of a scoped
-package carries an `@` — is never taken for a password, while a secret read
-from a file, whose trailing newline lands in front of the `@`, is still masked
-whole.
+userinfo stays on its own line: once an `@` has been seen, a line break ends
+it, and before the first `@` the scan goes on past a line break only up to the
+first space or tab. So the next frame of a stack trace — every frame of a
+scoped package carries an `@` — or the next line of a log is never taken for a
+password, while a secret read from a file is still masked whole: a line break
+that an `@` follows, such as a trailing newline in front of the `@`, is part
+of the userinfo, and so is a secret wrapped over several lines.
 
 A URL the runtime has already parsed needs no such guess. For the one a
 request went to, or a redirect target resolved against it,

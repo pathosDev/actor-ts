@@ -151,19 +151,34 @@ describe('redactUrlCredentials', () => {
    * pattern stays as well, as the statement of what that move may do: mask
    * further, and nothing else.  Wherever the original masked, the grammar
    * masks at least as far, which is `grammar(original(x)) === grammar(x)` —
-   * except where the original's userinfo holds a line break and, after it, a
-   * space or a tab: a userinfo ends on its own line since #1458 moved it past
-   * the `/`, and those are the inputs that move gave up, counted below.  The
-   * generator is seeded, so a failure names a reproducible input rather than a
-   * number that never comes back.
+   * except where the original's userinfo holds a line break the line rule
+   * reads as the end of a line: one no `@` follows, with an `@` in front of
+   * it or a space or a tab behind it.  A userinfo ends on its own line since
+   * #1458 moved it past the `/`, and those are the inputs that move gave up,
+   * counted below.  The generator is seeded, so a failure names a
+   * reproducible input rather than a number that never comes back.
    */
   describe('behaviour is byte-identical to the grammar written as a regex (#1198, #1458)', () => {
     /**
      * A scheme, `://`, then everything up to the last `@` before the next
-     * `://` — on the scheme's own line, or past a line break as long as no
-     * space or tab follows it.
+     * `://`, read across line breaks the way the scan reads them.  A run of
+     * breaks that an `@` follows is part of the userinfo; one that does not
+     * is too, but only in front of the first `@` — and from there on no space
+     * or tab may follow.  Hence two shapes: no such run at all, or one ahead
+     * of every `@` with no space or tab behind it.  A run is matched whole,
+     * which is what `(?![\r\n@])` and `(?=@)` behind `[\r\n]+` make sure of.
      */
-    const URL_USERINFO = /([A-Za-z][A-Za-z0-9+.-]*:\/\/)(?:(?!:\/\/)[^\r\n])*(?:[\r\n](?:(?!:\/\/)[^ \t])*)?@/g;
+    const URL_USERINFO = new RegExp(
+      '([A-Za-z][A-Za-z0-9+.-]*:\\/\\/)'
+      + '(?:'
+      + '(?:(?!:\\/\\/)[^\\r\\n@])*[\\r\\n]+(?![\\r\\n@])'
+      + '(?:(?!:\\/\\/)[^\\r\\n@ \\t]|[\\r\\n]+(?![\\r\\n@]))*'
+      + '(?:(?!:\\/\\/)[^\\r\\n \\t]|[\\r\\n]+(?=@))*'
+      + '|'
+      + '(?:(?!:\\/\\/)[^\\r\\n]|[\\r\\n]+(?=@))*'
+      + ')@',
+      'g',
+    );
 
     /** #1198's oracle: the authority ended at the first `/`, `?` or `#`. */
     const BEFORE_1458_URL_USERINFO = /([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/?#]*@/g;
@@ -176,9 +191,16 @@ describe('redactUrlCredentials', () => {
       return value.replace(BEFORE_1458_URL_USERINFO, '$1***@');
     }
 
-    /** Whether a userinfo the original pattern masked holds a line break with a space or a tab after it. */
-    function originalUserinfoCrossesAnIndentedLine(value: string): boolean {
-      return [...value.matchAll(BEFORE_1458_URL_USERINFO)].some((match) => /[\r\n][\s\S]*[ \t]/.test(match[0]));
+    /**
+     * Whether a userinfo the original pattern masked holds a run of line
+     * breaks the line rule reads as the end of a line: one no `@` follows,
+     * with an `@` in front of it or a space or a tab behind it.
+     */
+    function originalUserinfoCrossesALine(value: string): boolean {
+      return [...value.matchAll(BEFORE_1458_URL_USERINFO)].some((match) => {
+        const userinfo = match[0].slice(match[1]!.length, -1);
+        return /@[^\r\n]*[\r\n]+[^\r\n@]|[\r\n]+(?=[^\r\n@])[\s\S]*[ \t]/.test(userinfo);
+      });
     }
 
     /**
@@ -256,7 +278,7 @@ describe('redactUrlCredentials', () => {
         if (/[\r\n]/.test(input) && expected !== input) lineBreaks++;
         if (actual !== expected) disagreements.push(input);
         if (redactUrlCredentials(before1458Redaction(input)) !== actual) {
-          if (originalUserinfoCrossesAnIndentedLine(input)) givenUp++;
+          if (originalUserinfoCrossesALine(input)) givenUp++;
           else maskedLessThanTheOriginal.push(input);
         }
       }
@@ -1164,6 +1186,32 @@ describe('a userinfo ends on its own line (#1458)', () => {
     for (const indent of [' ', '\t']) {
       const stack = `Error: connect nats://h1:4222\n${indent}at dial (/app/node_modules/@nats-io/x.js:1:2)`;
       expect(redactUrlCredentials(stack)).toBe(stack);
+    }
+  });
+
+  test('a masked line keeps the next line whole, whatever that line starts with', () => {
+    // Once an `@` has been seen the userinfo already has an end on its own
+    // line, so a line break behind it ends the scan — an unindented line of
+    // prose or a second JSON record with an `@` in it is no part of it.
+    for (const lineBreak of ['\n', '\r\n']) {
+      expect(redactUrlCredentials(`amqp://svc:hunter2@rabbit:5672${lineBreak}ops@example.com is not authorized`))
+        .toBe(`amqp://***@rabbit:5672${lineBreak}ops@example.com is not authorized`);
+      expect(redactUrlCredentials(`{"url":"amqp://u:hunter2@h"}${lineBreak}{"email":"ops@x"}`))
+        .toBe(`{"url":"amqp://***@h"}${lineBreak}{"email":"ops@x"}`);
+    }
+  });
+
+  test('a secret that a line break runs through is still masked whole', () => {
+    // `openssl base64` wraps at 64 columns, and a file can hold the secret on
+    // more than one line; a line break that an `@` or `:` follows is the end
+    // of a value read from a file, never the start of a line of prose.
+    for (const [input, expected] of [
+      ['amqp://user:QUJDREVG\nR0hJSktM\n@rabbit:5672/vhost', 'amqp://***@rabbit:5672/vhost'],
+      ['amqp://user:QUJDREVG\nR0hJSktM@rabbit:5672/vhost', 'amqp://***@rabbit:5672/vhost'],
+      ['amqp://user:p@ss\n@rabbit:5672/vhost', 'amqp://***@rabbit:5672/vhost'],
+      ['amqp://user:p@ss\r\n@rabbit:5672/vhost', 'amqp://***@rabbit:5672/vhost'],
+    ] as const) {
+      expect(redactUrlCredentials(input)).toBe(expected);
     }
   });
 });

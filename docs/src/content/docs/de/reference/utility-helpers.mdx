@@ -495,11 +495,14 @@ enthält sie so, wie es getippt wurde, also reicht die Userinfo bis zum letzten
 oder einer Query, das genauso gelesen wird: `https://host/a@b` kommt als
 `https://***@b` zurück — das `***` sagt, dass das Folgende auf das letzte `@`
 folgte, nicht unbedingt der Host ist. Die Userinfo bleibt auf ihrer eigenen
-Zeile: Hinter einem Zeilenumbruch hält der Scan beim ersten Leerzeichen oder
-Tab an, sodass der nächste Frame eines Stack-Traces — jeder Frame eines Scoped
-Package trägt ein `@` — nie für ein Passwort gehalten wird, während ein aus
-einer Datei gelesenes Secret, dessen abschließender Zeilenumbruch vor dem `@`
-landet, weiterhin vollständig maskiert wird.
+Zeile: Sobald ein `@` gesehen wurde, beendet ein Zeilenumbruch sie, und vor
+dem ersten `@` liest der Scan über einen Zeilenumbruch hinaus nur bis zum
+ersten Leerzeichen oder Tab. So wird der nächste Frame eines Stack-Traces —
+jeder Frame eines Scoped Package trägt ein `@` — oder die nächste Logzeile nie
+für ein Passwort gehalten, während ein aus einer Datei gelesenes Secret
+weiterhin vollständig maskiert wird: Ein Zeilenumbruch, auf den ein `@` folgt,
+etwa ein abschließender Zeilenumbruch vor dem `@`, gehört zur Userinfo, und
+ebenso ein Secret, das über mehrere Zeilen umbrochen ist.
 
 Eine URL, die die Laufzeit bereits geparst hat, braucht diese Vermutung nicht.
 Für die URL, an die eine Anfrage ging, oder ein dagegen aufgelöstes
