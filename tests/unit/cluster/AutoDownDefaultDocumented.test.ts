@@ -199,6 +199,7 @@ const OLD_PHRASINGS: readonly OldPhrasing[] = [
   { pattern: /\bnothing removes (?:an? )(?:unreachable |crashed |silent )?(?:peer|member|node)\b/i },
   { pattern: /\bthe way out of the default\b/i },
   { pattern: /`off` is the default\b/i },
+  { pattern: /\bdefaults? to `?(?:off|false)`?/i, alongside: ABOUT_AUTO_DOWN },
   { pattern: /\bby default\b[^.]{0,80}?\bis parked\b/i },
   { pattern: /\bby default\b[\s\S]{0,80}?auto-down`?\s*=\s*`?off\b/i, unless: /\bopt-out\b/i },
   // The startup refusal of `auto-down` beside a strategy is gone: a configured
@@ -246,6 +247,7 @@ const OLD_PHRASINGS: readonly OldPhrasing[] = [
     unless: QUALIFIED,
   },
   { pattern: /`off` ist der Default\b/ },
+  { pattern: /\bstandardmäßig (?:aus|`?off`?|`?false`?)\b/i, alongside: ABOUT_AUTO_DOWN },
   { pattern: /\bPer Default wird\b[^.]{0,80}?\bgeparkt\b/ },
   { pattern: /\bPer Default\b[\s\S]{0,80}?auto-down`?\s*=\s*`?off\b/, unless: /\bOpt-out\b/ },
   { pattern: /\b[Nn]eben einer (?:konfigurierten )?Strategie\b[^.]{0,40}\babgelehnt\b/ },
