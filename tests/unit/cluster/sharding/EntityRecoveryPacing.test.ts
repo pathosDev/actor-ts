@@ -1046,4 +1046,28 @@ describe('constant-rate entity recovery (#851)', () => {
     expect(await harness.entitiesOn(SHARD_B)).toEqual([onB, laterOnB].sort());
     expect(started.filter((id) => id === onB)).toHaveLength(1);
   });
+
+  test('unpaced, a registry handed to a shard that has stood empty is started and kept with a sweep tick right behind it', async () => {
+    // `strategy = all`, the shipped default: the region tells the shard the
+    // whole registry at once, and learns of the entities only from the spawn
+    // reports — behind a sweep tick that was already queued.
+    const harness = await startRegion('851-all-swept', 45_582, {
+      entityRecoveryStrategy: 'all',
+      entityRecoveryConstantRateFrequencyMs: CAPTURED_FREQUENCY_MS,
+      entityRecoveryConstantRateNumberOfEntities: 2,
+      passivationIdleMs: 0,
+      shardPassivationIdleMs: CAPTURED_SWEEP_MS,
+    });
+    const remembered = idsOnShard(SHARD_A, 3);
+    harness.place(SHARD_A);
+    expect(await harness.entitiesOn(SHARD_A)).toEqual([]);
+    await waitOutSweepWindow();
+
+    harness.remember(SHARD_A, remembered);
+    harness.scheduler.fireSweep();
+    await awaitCondition(() => started.length === 3, { timeoutMs: 4_000, label: 'the registry was started' });
+
+    expect(await harness.entitiesOn(SHARD_A)).toEqual([...remembered].sort());
+    expect([...started].sort()).toEqual([...remembered].sort());
+  });
 });
