@@ -21,9 +21,11 @@ import {
   MONGO_JOURNAL_PLUGIN_ID,
   MONGO_SNAPSHOT_PLUGIN_ID,
   MongoDurableStateStore,
+  MongoDurableStateStoreOptions,
   MongoJournal,
   MongoJournalOptions,
   MongoSnapshotStore,
+  MongoSnapshotStoreOptions,
   PersistenceExtensionId,
   RegisterDynamoDbPluginsOptions,
   RegisterMongoPluginsOptions,
@@ -320,6 +322,63 @@ describe('MongoDB: the typed client fields reach MongoClient under its own names
       { url: MONGO_URL, options: { maxPoolSize: 20 } },
       { url: MONGO_URL, options: { connectTimeoutMS: 3_000 } },
     ]);
+  });
+
+  test.each([
+    {
+      name: 'MongoJournalOptions',
+      build: (): StartableStore => {
+        const journalOptions = MongoJournalOptions.create()
+          .withUrl(MONGO_URL)
+          .withMaxPoolSize(20)
+          .withMinPoolSize(2)
+          .withServerSelectionTimeoutMs(5_000)
+          .withConnectTimeoutMs(3_000)
+          .withCaFile(caPath);
+        return new MongoJournal(journalOptions);
+      },
+    },
+    {
+      name: 'MongoSnapshotStoreOptions',
+      build: (): StartableStore => {
+        const snapshotStoreOptions = MongoSnapshotStoreOptions.create()
+          .withUrl(MONGO_URL)
+          .withMaxPoolSize(20)
+          .withMinPoolSize(2)
+          .withServerSelectionTimeoutMs(5_000)
+          .withConnectTimeoutMs(3_000)
+          .withCaFile(caPath);
+        return new MongoSnapshotStore(snapshotStoreOptions);
+      },
+    },
+    {
+      name: 'MongoDurableStateStoreOptions',
+      build: (): StartableStore => {
+        const durableStateStoreOptions = MongoDurableStateStoreOptions.create()
+          .withUrl(MONGO_URL)
+          .withMaxPoolSize(20)
+          .withMinPoolSize(2)
+          .withServerSelectionTimeoutMs(5_000)
+          .withConnectTimeoutMs(3_000)
+          .withCaFile(caPath);
+        return new MongoDurableStateStore(durableStateStoreOptions);
+      },
+    },
+  ])('$name: each typed setter reaches the client as the option the driver reads', async ({ build }) => {
+    // Five distinct values, so a setter that writes a neighbour's field shows.
+    await build().start();
+
+    expect(mongoClientArguments).toStrictEqual([{
+      url: MONGO_URL,
+      options: {
+        maxPoolSize: 20,
+        minPoolSize: 2,
+        serverSelectionTimeoutMS: 5_000,
+        connectTimeoutMS: 3_000,
+        tls: true,
+        ca: CA_PEM,
+      },
+    }]);
   });
 
   test('tls: true in clientOptions stays, and the CA joins it', async () => {
@@ -636,6 +695,42 @@ describe('MongoDB: registerMongoPlugins carries the typed fields to every store'
     }
   });
 
+  test('every shared typed field reaches each of the three stores', async () => {
+    const system = systemSelectingMongo('mongo-every-shared-typed-field');
+    try {
+      const persistence = system.extension(PersistenceExtensionId);
+      const pluginOptions = RegisterMongoPluginsOptions.create()
+        .withUrl(MONGO_URL)
+        .withMaxPoolSize(20)
+        .withMinPoolSize(2)
+        .withServerSelectionTimeoutMs(5_000)
+        .withConnectTimeoutMs(3_000)
+        .withCaFile(caPath);
+      registerMongoPlugins(persistence, pluginOptions);
+
+      await (persistence.journal as unknown as StartableStore).start();
+      await (persistence.snapshotStore as unknown as StartableStore).start();
+      await (persistence.durableStateStore as unknown as StartableStore).start();
+
+      // One client per store, each built with every shared field — five
+      // distinct values, so a field the merge drops or swaps shows.
+      const handed = {
+        url: MONGO_URL,
+        options: {
+          maxPoolSize: 20,
+          minPoolSize: 2,
+          serverSelectionTimeoutMS: 5_000,
+          connectTimeoutMS: 3_000,
+          tls: true,
+          ca: CA_PEM,
+        },
+      };
+      expect(mongoClientArguments).toStrictEqual([handed, handed, handed]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
   test('a store\'s own typed field wins over the shared one', async () => {
     const system = systemSelectingMongo('mongo-own-typed-field');
     try {
@@ -926,6 +1021,35 @@ describe('DynamoDB: registerDynamoDbPlugins carries the typed fields to every st
       expect(dynamoDbClientConfigs).toStrictEqual([{ region: REGION, maxAttempts: 6 }]);
       // Its open went through the client it built, to its own table (#1473).
       expect(dynamoDbDescribedTables).toEqual(['actor_ts_durable_state']);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('every shared typed field reaches each of the three stores', async () => {
+    const system = systemSelectingDynamoDb('dynamodb-every-shared-typed-field');
+    try {
+      const persistence = system.extension(PersistenceExtensionId);
+      const pluginOptions = RegisterDynamoDbPluginsOptions.create()
+        .withRegion(REGION)
+        .withMaxAttempts(6)
+        .withRetryMode('adaptive')
+        .withRequestTimeoutMs(9_000)
+        .withConnectionTimeoutMs(2_000);
+      registerDynamoDbPlugins(persistence, pluginOptions);
+
+      await (persistence.journal as unknown as StartableStore).start();
+      await (persistence.snapshotStore as unknown as StartableStore).start();
+      await (persistence.durableStateStore as unknown as StartableStore).start();
+
+      // One client per store, each built with every shared field.
+      const handed = {
+        region: REGION,
+        maxAttempts: 6,
+        retryMode: 'adaptive',
+        requestHandler: { requestTimeout: 9_000, throwOnRequestTimeout: true, connectionTimeout: 2_000 },
+      };
+      expect(dynamoDbClientConfigs).toStrictEqual([handed, handed, handed]);
     } finally {
       await system.terminate();
     }
