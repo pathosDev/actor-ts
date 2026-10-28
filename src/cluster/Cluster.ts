@@ -2084,11 +2084,12 @@ export class Cluster {
    * behind both the cold-start stall warning and the join give-up (#1351,
    * #1500).
    *
-   * The condition is exact rather than a heuristic. Moving a node to `up` —
-   * out of `joining` or out of `weakly-up` alike — is the leader's decision,
-   * `leader()` is the first of {@link upMembers}, and the only way a node
-   * reaches `up` without one is self-election.  So the node can still be
-   * promoted while:
+   * The verdict is a reading of this node's member map at the moment it is
+   * asked, and so of the failure detector's verdicts at that moment — not a
+   * prediction.  Moving a node to `up` — out of `joining` or out of
+   * `weakly-up` alike — is the leader's decision, `leader()` is the first of
+   * {@link upMembers}, and the only way a node reaches `up` without one is
+   * self-election.  So the node can still be promoted while:
    *
    * - **a member is `up`** — a leader exists, and promotion is its job;
    * - **a self-election of its own is pending** — `selfElectionTimer` is what
@@ -2106,10 +2107,23 @@ export class Cluster {
    * were simply wrong was told to wait for members, and a give-up keyed on
    * the verdict would never have fired for it (#1500).  A `removed` tombstone
    * and a `down` record are not live peers — neither can promote this node or
-   * count toward the threshold.
+   * count toward the threshold — and neither is a peer parked past
+   * `down-after` under `auto-down = off`, for the same reason (#1426); see
+   * {@link livePeerCount}.
    *
    * Otherwise no leader exists to promote the node, and none can come into
    * being through it.  The cluster is not slow, it is finished.
+   *
+   * **What the reading depends on.**  Reachability moves the answer both ways
+   * before `down-after`.  A leader that is `unreachable` at the moment of
+   * asking is not among {@link upMembers}, so a node whose only `up` peer is
+   * briefly silent reads as unpromotable — and gives up, if its deadline falls
+   * in that window — although one heartbeat would have made the leader `up`
+   * again.  The same `unreachable` record counts as a live peer while not
+   * toward the threshold, so under a threshold it reads as "wait for the
+   * missing members" instead.  Past `down-after` the reading settles: the
+   * shipped auto-down removes the peer, and the opt-out parks it, which this
+   * verdict treats as gone.
    */
   private nothingCanPromoteThisNode(): boolean {
     if (this.upMembers().length > 0) return false;
@@ -2123,12 +2137,22 @@ export class Cluster {
    * heard from, which is the half of the stall diagnosis it cannot state from
    * configuration.  A `removed` tombstone and a `down` record do not count:
    * the first is a peer that is gone, the second one on its way there.
+   *
+   * Nor does a peer parked past `down-after` under `auto-down = off`
+   * ({@link parkedWithoutResolver}, #1426).  Its record stays `unreachable` for
+   * good, which the membership threshold does not count as present, so
+   * counting it here made {@link nothingCanPromoteThisNode} ask the threshold
+   * for as long as the dead peer was parked — "the missing members may still
+   * join" — and a node whose only answering peer had died never gave up.  A
+   * peer that is `unreachable` short of `down-after` still counts, unchanged:
+   * one heartbeat makes it `up` again.
    */
   private livePeerCount(): number {
     let count = 0;
     for (const member of this.members.values()) {
       if (member.address.equals(this.selfAddress)) continue;
       if (member.status === 'removed' || member.status === 'down') continue;
+      if (this.parkedWithoutResolver.has(member.address.toString())) continue;
       count += 1;
     }
     return count;
