@@ -66,11 +66,23 @@ function proseOf(lines: readonly string[]): string {
   return prose.join(' ').replace(/\{\/\*[\s\S]*?\*\/\}/g, ' ').replace(/\s+/g, ' ');
 }
 
-/** Every run of code spans reading "`a`, `b` or `c`" (or `oder`), as its spans. */
+/**
+ * Every run of two or more code spans that reads as a list, as its spans —
+ * joined by commas, by a conjunction, by both, or by slashes.
+ *
+ * Any conjunction, not one: a census that knew only "`a`, `b` or `c`" let a
+ * stale list written "`a`, `b` and `c`" stand beside the corrected one, and on
+ * a page nobody pins, without a word.  So `and`, `nor`, `plus` and the German
+ * `und`, `sowie` join a list as `or` and `oder` do, and so does a comma alone.
+ */
 function codeSpanLists(prose: string): string[][] {
-  return [...prose.matchAll(/`[^`]+`(?:,\s*`[^`]+`)*,?\s+(?:or|oder)\s+`[^`]+`/g)]
+  return [...prose.matchAll(CODE_SPAN_LIST)]
     .map((match) => [...match[0].matchAll(/`([^`]+)`/g)].map((span) => span[1]!));
 }
+
+/** A run of code spans joined the ways {@link codeSpanLists} reads as a list. */
+const CODE_SPAN_LIST =
+  /`[^`]+`(?:(?:\s*,\s*(?:(?:or|and|nor|plus|oder|und|sowie)\s+)?|\s+(?:or|and|nor|plus|oder|und|sowie)\s+|\s*\/\s*)`[^`]+`)+/g;
 
 /** A list naming both of these is a list of the words, not a list that mentions one. */
 const isSecretWordList = (spans: readonly string[]): boolean =>

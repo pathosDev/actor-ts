@@ -146,18 +146,25 @@ function proseOf(section: string[]): string {
 }
 
 /**
- * The run of code spans that reads "`a`, `b` or `c`" and names `member`.
+ * The run of code spans that reads as a list and names `member`.
  *
  * Exactly one, so a second list naming the same thing — a stale one left
- * beside the corrected one — fails rather than letting either pass.
+ * beside the corrected one — fails rather than letting either pass.  A list is
+ * read the way `ConfigSecretWordLists.test.ts` reads one: spans joined by
+ * commas, by any conjunction, by both, or by slashes — a stale list written
+ * with `and` used to pass beside one written with `or`.
  */
 function listNaming(prose: string, member: string): string[] {
-  const lists = [...prose.matchAll(/`[^`]+`(?:,\s*`[^`]+`)*,?\s+(?:or|oder)\s+`[^`]+`/g)]
+  const lists = [...prose.matchAll(CODE_SPAN_LIST)]
     .map((match) => [...match[0].matchAll(/`([^`]+)`/g)].map((span) => span[1]!))
     .filter((spans) => spans.includes(member));
   expect(lists, `one list of code spans naming \`${member}\``).toHaveLength(1);
   return lists[0]!;
 }
+
+/** A run of code spans joined the ways {@link listNaming} reads as a list. */
+const CODE_SPAN_LIST =
+  /`[^`]+`(?:(?:\s*,\s*(?:(?:or|and|nor|plus|oder|und|sowie)\s+)?|\s+(?:or|and|nor|plus|oder|und|sowie)\s+|\s*\/\s*)`[^`]+`)+/g;
 
 /** One code fence of a section: the word its info string starts with, and its lines. */
 type Fence = {
