@@ -335,12 +335,13 @@ actor-ts.circuit-breaker.persistence-journal {
 **The journal breaker wraps `persist`, recovery and
 `deleteHistory`; the snapshot breaker wraps snapshot saves, the
 snapshot load a recovery starts with, and the snapshot half of
-`deleteHistory`.**  Once `max-failures` appends have failed in a row
-the journal breaker opens, and every `persist` for `reset-timeout`
-throws `CircuitBreakerOpenError` out of your own handler — where
-supervision sees it like any other failure from `onCommand`.  That is
-the point: a node whose journal has gone away fails fast and visibly
-instead of holding thousands of actors half-way through a write.
+`deleteHistory`.**  Once `max-failures` appends or recoveries have
+failed in a row the journal breaker opens, and every `persist` for
+`reset-timeout` throws `CircuitBreakerOpenError` out of your own
+handler — where supervision sees it like any other failure from
+`onCommand`.  That is the point: a node whose journal has gone away
+fails fast and visibly instead of holding thousands of actors half-way
+through a write.
 
 Each store's failures count against its own breaker and no other.
 Ten entities restarting into a dead snapshot store open the snapshot
@@ -350,6 +351,17 @@ fails that entity's recovery without counting against either breaker:
 the fold runs after the journal call, not inside it, and a history
 this code cannot fold is a verdict on one entity rather than an
 outage.
+
+**A breaker counts only the calls it guards.**  The journal breaker
+counts failed appends and failed recoveries, the snapshot breaker
+failed snapshot loads.  A refused delete or snapshot save — append-only
+grants, a retention policy, a full disk, a missing write grant — fails
+that `deleteHistory` or `saveSnapshot` and nothing else: ten of them in
+a row leave both breakers closed, so every `persist` and every
+recovery on the node goes on working, an entity with `integrity()`
+under `snapshot-is-optional` included.  Those calls still run
+*through* the breaker: `call-timeout` cuts one that never answers, and
+an open breaker refuses one.
 
 **`call-timeout` ships unset, and it is the one you will want.**  A
 backend that refuses connections fails fast on its own; a backend that
@@ -403,14 +415,24 @@ is counted into `persistence_journal_failures_total` and
 `persistence_breaker_state` follows each breaker; see [Persistence
 metrics](/observability/metrics/stock-metrics/#persistence-metrics).
 The latency is the only early warning a slow store gives: with no
-`call-timeout`, a slow success is a success to the breaker.
+`call-timeout`, a slow success is a success to the breaker.  The
+metrics never decide a call: a registry that refuses a write — an
+application family already registered under one of these names, say
+— is reported once in the log, and the call still returns, or fails
+with, what the store said.
 
-Three callers reach a store without going through these breakers, so
-none of the above sees them: a `ReplicatedEventSourcedActor`'s append
-of an event it received from a peer (#958), the journal-backed
-remember-entities store `JournalRememberEntitiesStore` (#852), and
+Several callers reach a store without going through these breakers,
+so none of the above sees them: a `ReplicatedEventSourcedActor`'s
+append of an event it received from a peer (#958); the journal-backed
+remember-entities store `JournalRememberEntitiesStore` (#852);
 `readEvents`, the protected helper for reading an actor's own events
-back.
+back; the durable [dead-letter queue](/operations/dead-letters/),
+which appends to, deletes from and reads the system journal directly;
+the [persistence query](/persistence/persistence-query/) read side;
+DevTools [time travel](/observability/devtools/time-travel/), which
+replays a stream behind no guard at all; and the migration helpers
+such as `migrateBetweenJournals`, which work on the stores they are
+handed.
 
 [`ReplicatedEventSourcedActor`](/persistence/replicated-event-sourcing/overview/#when-the-stores-are-down)
 follows all five settings for its local `persist`, its recovery and

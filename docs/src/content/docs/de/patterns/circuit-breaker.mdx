@@ -301,6 +301,18 @@ veröffentlicht ist — genau das tut das Framework für
 `actor-ts.persistence.journal-breaker`, dessen Id ein dokumentierter
 Config-Pfad ist, den jeder auflösen darf.
 
+Die Persistenz-Breaker wählen den Klassifikator außerdem pro Aufruf,
+weil nicht jeder Aufruf durch sie einer ist, den sie schützen.  Ein
+Append, eine Recovery und das Laden eines Snapshots werden wie oben
+klassifiziert; das Löschen im Journal und das Speichern oder Löschen
+eines Snapshots laufen weiterhin durch den Breaker — `call-timeout`
+begrenzt sie also, und ein offener Breaker weist sie ab —, aber mit
+einem Klassifikator, der nichts zählt.  Ein Store, der Löschen oder
+Snapshot-Schreibvorgänge verweigert, alles andere aber bedient, kann
+deshalb nicht den Breaker vor jedem Append und jeder Recovery auf dem
+Knoten öffnen; siehe [Wenn die Stores
+ausfallen](/de/persistence/persistent-actor/#wenn-die-stores-ausfallen).
+
 `ignoredErrorNames` kommt in beiden Fällen zuerst, und ein
 entschuldigter Fehler ist weiterhin weder Fehler noch Erfolg: der
 Zähler aufeinanderfolgender Fehler überlebt ihn unverändert, ein
