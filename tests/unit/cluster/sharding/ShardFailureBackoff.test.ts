@@ -1058,8 +1058,9 @@ describe('a shard that stops unexpectedly is backed off (#1437)', () => {
  * The empty-shard sweep asks a shard to stop, and a shard handed work just
  * ahead of the request declines (#1441).  What else can happen to the shard
  * while that answer is on its way is what these cases fix: a hand-off keeps
- * its own stop and its buffer, and a shard the coordinator moved elsewhere in
- * the meantime keeps the entity the request found busy.
+ * its own stop and its buffer, a shard the coordinator moved elsewhere in the
+ * meantime keeps the entity the request found busy, and a placement the
+ * coordinator repeats does not reopen a shard that is on its way out.
  */
 describe('the empty-shard sweep\'s request, overtaken while the shard declines it (#1441)', () => {
   /** The empty-shard window runs on the wall clock, so it is waited out there. */
@@ -1130,5 +1131,44 @@ describe('the empty-shard sweep\'s request, overtaken while the shard declines i
     expect(delivered).toEqual([`${ID}#1`]);
     expect(deadWorkFor(1)).toEqual([]);
     expect(harness.scheduler.armed).toHaveLength(0);
+  }, 15_000);
+
+  test('a placement repeated while the request is out does not reopen the shard: the next message waits for the shard that replaces it', async () => {
+    const harness = await startRegion('sweep-request-placed-again', 47_458, sweepOnly);
+    await placed(harness);
+    await waitOutShardWindow();
+
+    // One synchronous step: the sweep tick, the coordinator repeating the
+    // shard's placement here — every region re-registers after a leader
+    // change — and a message.  The shard is idle and goes; the message must
+    // not follow it into the stopping actor.
+    harness.scheduler.fireSweep();
+    harness.place(SHARD);
+    harness.send(ID, 1);
+    await awaitCondition(() => delivered.includes(`${ID}#1`) || deadWorkFor(1).length > 0, {
+      timeoutMs: ASK_TIMEOUT_MS,
+      label: 'the message was handled, or dead-lettered',
+    });
+    expect(deadWorkFor(1)).toEqual([]);
+    expect(delivered).toEqual([`${ID}#1`]);
+  }, 15_000);
+
+  test('so does a move away and back while the request is out', async () => {
+    const harness = await startRegion('sweep-request-moved-back', 47_459, sweepOnly);
+    await placed(harness);
+    await waitOutShardWindow();
+
+    // The move away clears the shard's state with its ownership; the placement
+    // back must still find the request out.
+    harness.scheduler.fireSweep();
+    harness.placeElsewhere(SHARD);
+    harness.place(SHARD);
+    harness.send(ID, 1);
+    await awaitCondition(() => delivered.includes(`${ID}#1`) || deadWorkFor(1).length > 0, {
+      timeoutMs: ASK_TIMEOUT_MS,
+      label: 'the message was handled, or dead-lettered',
+    });
+    expect(deadWorkFor(1)).toEqual([]);
+    expect(delivered).toEqual([`${ID}#1`]);
   }, 15_000);
 });

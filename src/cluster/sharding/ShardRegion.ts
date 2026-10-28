@@ -1868,6 +1868,17 @@ export class ShardRegion<TMessage = unknown>
         this.flushLocationAsks(message.shardId);
         return;
       }
+      // A shard asked to passivate stays marked until its answer — the stop or
+      // the decline — settles it (#1441).  A repeated placement used to mark it
+      // owned, and the next message went into an actor on its way out.  Its
+      // traffic waits in the buffer meanwhile, as it has since the request; the
+      // set is read rather than the state so that a move away and back inside
+      // the request finds the mark again.
+      if (this.passivatingShards.has(message.shardId)) {
+        this.shardState.set(message.shardId, 'passivating');
+        this.flushLocationAsks(message.shardId);
+        return;
+      }
       this.shardState.set(message.shardId, 'owned');
       if (!this.config.proxy) this.ensureShard(message.shardId);
     } else {
