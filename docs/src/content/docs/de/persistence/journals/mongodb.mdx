@@ -94,7 +94,13 @@ der Schlüssel `durable-state.plugin` jetzt genauso auswählt wie die beiden
 anderen —, also öffnen die, die die Konfiguration auswählt, als Teil des Starts:
 Ein Deployment, das der Knoten nicht erreicht, lässt den Start scheitern statt
 erst die erste persistierte Nachricht — siehe [Stores beim Start
-öffnen](/de/persistence/overview/#stores-beim-start-öffnen).  Das
+öffnen](/de/persistence/overview/#stores-beim-start-öffnen).  Das gilt, wie
+auch immer ein Store eingerichtet ist.  Jedes Öffnen schickt ein `{ ping: 1 }`,
+bevor es einen Index anlegt — auch mit abgeschaltetem `auto-create-indexes`,
+über einen übergebenen Client und für den Durable-State-Store, der gar keinen
+Index anlegt —, und ein abgelehnter Ping lässt das Öffnen mit einem Fehler
+scheitern, der den Store nennt.  Der Ping braucht kein Recht, liest nichts und
+legt nichts an.  Das
 zurückgegebene `durableStateStore` funktioniert weiterhin und liefert dieselbe
 Instanz; sie wird nur gebaut, wenn sie zum ersten Mal angefragt wird, statt bei
 der Registrierung, wer sie also lieber im Code an einen `DurableStateActor`
@@ -195,8 +201,19 @@ selbst liest.  Das eine oder das andere: Der Treiber liest `tlsCAFile` nur, wenn
 keine CA übergeben wurde, also wird `ca-file` daneben abgelehnt, statt eines von
 beiden stillschweigend fallen zu lassen.  `tls=false` ist Klartext statt
 unverifiziertem TLS und bleibt erlaubt — nur nicht neben `ca-file`, das es
-ungenutzt ließe.  Die Begründung steht unter
-[TLS everywhere](/de/operations/security/tls-everywhere/#mongodb).
+ungenutzt ließe.
+
+Ist `ca-file` gesetzt, wird auch der Code daran gehalten.  Der Store lehnt das
+Blatt beim Bauen mit einem `OptionsError` ab, der beide Seiten nennt: neben
+einem `ca` oder einem `tlsCAFile` in `clientOptions`; neben einem `tls`, `ssl`,
+`tlsInsecure` oder `tlsAllowInvalidCertificates` dort, das die CA ungenutzt
+ließe; neben einem `rejectUnauthorized` mit `false`, in jeder Schreibweise des
+Schlüssels, also dem Schalter, den `tlsInsecure` setzt; und neben einem
+`secureContext`, das einen eigenen Trust-Store mitbringt, der statt der CA
+benutzt wird.  Auch ein vorgebauter `client` neben `ca-file` wird abgelehnt: Er
+wurde dort konfiguriert, wo er gebaut wurde, und liest das Blatt nie — gib
+diesem Client seine CA, oder übergib stattdessen `url`.  Die Begründung steht
+unter [TLS everywhere](/de/operations/security/tls-everywhere/#mongodb).
 
 ### Einen Client teilen
 
@@ -219,7 +236,10 @@ const systemOptions = ActorSystemOptions.create().withPersistence({
 
 Ein geteilter Client gehört dem **Caller**: kein Store schließt ihn, du schließt
 ihn also selbst beim Shutdown.  Übergib stattdessen `url`, dann baut jeder Store
-seinen eigenen Client und schließt ihn bei `close()`.
+seinen eigenen Client und schließt ihn bei `close()`.  Jeder Store erreicht das
+Deployment beim Öffnen trotzdem, über den geteilten Client — sein Ping nimmt
+diesen Weg —, und keiner von ihnen nimmt `ca-file` daneben an: Konfiguriere
+das TLS des Clients dort, wo du ihn baust.
 
 ## Wann du es einsetzt
 

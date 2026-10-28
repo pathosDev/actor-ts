@@ -551,11 +551,22 @@ actor-ts.persistence.journal.mongodb {
 }
 ```
 
-One or the other, never both.  The driver reads `tlsCAFile` only when it
-was handed no `ca`, so the store refuses `ca-file` beside a url
-`tlsCAFile` when it is built, rather than let one of the two be dropped
-— and beside a `tls` or `ssl` set to `false`, which would leave the CA
-unused.
+One or the other, never both, and nothing beside it that sets the CA
+aside.  The store refuses `ca-file` when it is built, with an
+`OptionsError` naming both sides, beside:
+
+- a `tlsCAFile` in the url or in `clientOptions`, or a `ca` in
+  `clientOptions` — the driver reads `tlsCAFile` only when it was
+  handed no `ca`, so one of the two would be dropped;
+- a `tls` or `ssl` set to `false` in either, which leaves the CA unused;
+- a `tlsInsecure` or `tlsAllowInvalidCertificates` in either that
+  switches certificate verification off, and a `rejectUnauthorized` of
+  `false` in `clientOptions`, in any letter case of the key — the
+  switch `tlsInsecure` sets, handed to `node:tls` as it stands;
+- a `secureContext` in `clientOptions`, which brings a trust store of
+  its own that `node:tls` uses in place of the CA;
+- a pre-built `client`, which was configured where it was built and
+  never reads `ca-file` — give that client its CA where you build it.
 
 The driver's three ways out of verification are `tlsInsecure`,
 `tlsAllowInvalidCertificates` — both stop checking the certificate —
@@ -564,7 +575,8 @@ name.  They are the switch the caution below marks with a cross, under
 other names.  A `url` read from HOCON that sets any of them to anything
 but `false`, in any letter case of the key, is refused with a
 `ConfigError`; set in code, with `withUrl(...)` or `clientOptions`,
-they are not inspected.  `tls=false` is plaintext and stays allowed.
+they are not inspected unless `ca-file` is set beside them, when the
+list above applies.  `tls=false` is plaintext and stays allowed.
 
 ### Cassandra
 

@@ -94,6 +94,11 @@ the `durable-state.plugin` key now selects like the other two — so the ones th
 configuration selects open as part of the startup: a deployment the node cannot
 reach fails the startup rather than the first persisted message — see [opening
 the stores at startup](/persistence/overview/#opening-the-stores-at-startup).
+That holds however a store is set up.  Each open sends one `{ ping: 1 }` before
+it creates any index — with `auto-create-indexes` off as well, over a client you
+handed over, and for the durable-state store, which creates no index at all —
+and a refused ping fails the open with an error naming the store.  The ping
+needs no privilege, reads nothing and creates nothing.
 The returned `durableStateStore` still works and still yields the same instance;
 it is simply built when it is first asked for rather than at registration, so a
 caller who prefers to hand it to `DurableStateActor` in code can carry on doing
@@ -186,6 +191,16 @@ the driver reads itself.  One or the other: the driver reads `tlsCAFile` only
 when no CA was handed over, so `ca-file` beside it is refused rather than one of
 the two quietly dropped.  `tls=false` is plaintext rather than unverified TLS
 and stays allowed — though not beside `ca-file`, which it would leave unused.
+
+With `ca-file` set, code is held to it as well.  The store refuses the leaf when
+it is built, with an `OptionsError` naming both sides, beside a `ca` or a
+`tlsCAFile` in `clientOptions`; beside a `tls`, `ssl`, `tlsInsecure` or
+`tlsAllowInvalidCertificates` there that would leave the CA unused; beside a
+`rejectUnauthorized` of `false`, in any letter case of the key, which is the
+switch `tlsInsecure` sets; and beside a `secureContext`, which brings a trust
+store of its own that is used in place of the CA.  A pre-built `client` beside
+`ca-file` is refused too: it was configured where it was built and never reads
+the leaf, so give that client its CA, or pass `url` instead.
 The reasoning is on [TLS everywhere](/operations/security/tls-everywhere/#mongodb).
 
 ### Sharing one client
@@ -208,7 +223,9 @@ const systemOptions = ActorSystemOptions.create().withPersistence({
 
 A shared client is **caller-owned**: no store closes it, so close it yourself
 during shutdown.  Pass `url` instead and each store builds its own client and
-closes it on `close()`.
+closes it on `close()`.  Each store still reaches the deployment when it opens,
+through the shared client — its ping goes that way — and none of them takes
+`ca-file` beside it: configure the client's TLS where you build it.
 
 ## When to use it
 

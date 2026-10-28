@@ -571,11 +571,25 @@ actor-ts.persistence.journal.mongodb {
 }
 ```
 
-Das eine oder das andere, nie beides. Der Treiber liest `tlsCAFile` nur,
-wenn er kein `ca` bekommen hat, also lehnt der Store `ca-file` neben
-einem `tlsCAFile` in der URL beim Bauen ab, statt eines von beiden
-fallen zu lassen — und neben einem `tls` oder `ssl` mit `false`, das die
-CA ungenutzt ließe.
+Das eine oder das andere, nie beides, und nichts daneben, das die CA
+beiseiteschiebt. Der Store lehnt `ca-file` beim Bauen mit einem
+`OptionsError` ab, der beide Seiten nennt, und zwar neben:
+
+- einem `tlsCAFile` in der URL oder in `clientOptions` oder einem `ca` in
+  `clientOptions` — der Treiber liest `tlsCAFile` nur, wenn er kein `ca`
+  bekommen hat, eines von beiden fiele also weg;
+- einem `tls` oder `ssl` mit `false` in einem von beiden, das die CA
+  ungenutzt ließe;
+- einem `tlsInsecure` oder `tlsAllowInvalidCertificates` in einem von
+  beiden, das die Zertifikatsprüfung abschaltet, und einem
+  `rejectUnauthorized` mit `false` in `clientOptions`, in jeder Groß- und
+  Kleinschreibung des Schlüssels — dem Schalter, den `tlsInsecure` setzt
+  und der unverändert an `node:tls` geht;
+- einem `secureContext` in `clientOptions`, das einen eigenen Trust-Store
+  mitbringt, den `node:tls` statt der CA benutzt;
+- einem vorgebauten `client`, der dort konfiguriert wurde, wo er gebaut
+  wurde, und `ca-file` nie liest — gib diesem Client seine CA dort, wo du
+  ihn baust.
 
 Die drei Auswege des Treibers aus der Verifizierung sind `tlsInsecure`,
 `tlsAllowInvalidCertificates` — beide prüfen das Zertifikat nicht mehr —
@@ -585,8 +599,8 @@ Kreuz markiert, nur unter anderen Namen. Eine aus HOCON gelesene `url`,
 die einen davon auf irgendetwas außer `false` setzt, wird in jeder
 Groß- und Kleinschreibung des Schlüssels mit einem `ConfigError`
 abgelehnt; im Code gesetzt, mit `withUrl(...)` oder `clientOptions`,
-werden sie nicht inspiziert. `tls=false` ist Klartext und bleibt
-erlaubt.
+werden sie nicht inspiziert, solange kein `ca-file` danebensteht — dann
+gilt die Liste oben. `tls=false` ist Klartext und bleibt erlaubt.
 
 ### Cassandra
 
