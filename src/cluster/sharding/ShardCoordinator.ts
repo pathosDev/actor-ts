@@ -342,6 +342,13 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private noEligibleRegionWarned = false;
 
   /**
+   * Latch for {@link warnOffCandidatePick} — the shards whose ask got a pick
+   * outside the candidates the strategy was handed, one line each until that
+   * shard is placed (#1467).  At most `numShards` entries.
+   */
+  private readonly offCandidatePickWarned = new Set<number>();
+
+  /**
    * How long the eligible set has to hold still before it counts as settled:
    * the cluster's derived membership settle window, read once in
    * {@link preStart} (#1467).
@@ -1300,7 +1307,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    *
    * A pick is placed only on a region of the set it was asked over, so an
    * address outside it — which a custom strategy is free to return — is never
-   * placed, and the shard waits for its next ask.
+   * placed, and the shard waits for its next ask; {@link warnOffCandidatePick}
+   * says so, once per shard.
    *
    * No candidate at all is {@link warnRoleMatchesNoRegion}'s case; candidates of
    * which none is on an up member are {@link warnNoEligibleRegion}'s.  Either
@@ -1324,6 +1332,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     const key = this.placementFor(shardId, candidates, eligible);
     if (key === null) return;
     this.noEligibleRegionWarned = false;
+    this.offCandidatePickWarned.delete(shardId);
     this.shardHome.set(shardId, key);
     const info = this.regions.get(key)!;
     info.shards.add(shardId);
@@ -1357,9 +1366,45 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       const pick = strategy.allocate(shardId, nodesOf(candidates), this.currentShardCounts());
       const kept = regionKeyOn(pick, eligible);
       if (kept !== null) return kept;
+      // A candidate whose member is not up is no stray pick: asking again over
+      // the eligible regions below is the protocol for it.
+      if (regionKeyOn(pick, candidates) === null) this.warnOffCandidatePick(shardId, pick, candidates);
     }
     const pick = strategy.allocate(shardId, nodesOf(eligible), shardCountsOf(eligible.map(([, info]) => info)));
-    return regionKeyOn(pick, eligible);
+    const placed = regionKeyOn(pick, eligible);
+    if (placed === null) this.warnOffCandidatePick(shardId, pick, eligible);
+    return placed;
+  }
+
+  /**
+   * Say that the strategy answered an ask for `shardId` with an address outside
+   * the candidates it was handed, so the answer is not placed (#1467).
+   *
+   * A pick is turned back into a region only within the set the strategy was
+   * asked over, and a custom strategy is free to answer with anything — a node
+   * it pins shards to that is not up, or that carries no region the coordinator
+   * offers.  Such an answer is dropped.  When it was the last ask, the shard
+   * stays unallocated with its messages buffering in the region that asked;
+   * without this line that is a type that stopped serving and nothing anywhere
+   * naming the cause.  A first ask's stray answer that the second ask makes up
+   * for is reported all the same: the strategy gave it.  A pick on a candidate
+   * whose member is not up, in the first ask while the set settles, is not
+   * one — that address was handed, and the second ask is the protocol.
+   *
+   * One line per shard, until the shard is placed — every renewed ask would
+   * otherwise repeat it — and the latch goes with the rest of a term's state
+   * when the leadership is lost.
+   */
+  private warnOffCandidatePick(shardId: number, pick: NodeAddress, asked: ReadonlyArray<RegionEntry>): void {
+    if (this.offCandidatePickWarned.has(shardId)) return;
+    this.offCandidatePickWarned.add(shardId);
+    this.log.warn(
+      `[sharding] the allocation strategy of type "${this.options.typeName}" picked ${pick} for shard `
+      + `${shardId}, which is not one of the ${asked.length} candidate(s) it was handed `
+      + `(${nodesOf(asked).join(', ')}); the pick is dropped, since a shard is only placed on a candidate `
+      + 'the strategy was asked over, and the shard waits, its messages buffering, until an ask for it is '
+      + 'answered with one',
+    );
   }
 
   private onHandOffComplete(message: HandOffComplete): void {
@@ -1595,6 +1640,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       // So is the eligible set's history: a term that starts again settles
       // from its own first observation (#1467).
       this.eligibleSetRecord = null;
+      // And which shards a stray pick was reported for: the next term reports
+      // its own.
+      this.offCandidatePickWarned.clear();
       this.acquireBuffer = [];
       for (const rebalance of this.rebalanceInProgress.values()) rebalance.timer.cancel();
       this.rebalanceInProgress.clear();

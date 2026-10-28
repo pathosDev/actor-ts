@@ -178,9 +178,11 @@ That decides how your strategy is called:
   them where they are.
 
 Either way a pick that is not among the candidates the call was given is
-never placed, and a `rebalance` proposal for a shard whose current owner
-is not up is dropped.  So an `allocate` call is a question, not a
-placement: a strategy that keeps state — a round-robin cursor, a
+never placed — the coordinator logs it at `WARN`, naming the pick and the
+candidates, once per shard until that shard is placed — and a `rebalance`
+proposal for a shard whose current owner is not up is dropped.  So an
+`allocate` call is a question, not a placement: a strategy that keeps
+state — a round-robin cursor, a
 "last owner" — must not count one as a shard having landed anywhere.
 
 Useful for app-specific rules:

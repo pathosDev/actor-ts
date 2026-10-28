@@ -189,8 +189,10 @@ Davon hängt ab, wie deine Strategie aufgerufen wird:
   und lässt sie, wo sie sind.
 
 In beiden Fällen wird eine Wahl, die nicht unter den übergebenen
-Kandidaten ist, nie zugewiesen, und ein `rebalance`-Vorschlag für einen
-Shard, dessen aktueller Besitzer nicht `up` ist, wird verworfen. Ein
+Kandidaten ist, nie zugewiesen — der Koordinator meldet sie auf `WARN`,
+mit der Wahl und den Kandidaten, einmal je Shard, bis dieser Shard
+zugewiesen ist —, und ein `rebalance`-Vorschlag für einen Shard, dessen
+aktueller Besitzer nicht `up` ist, wird verworfen. Ein
 `allocate`-Aufruf ist also eine Frage, keine Zuweisung: Eine Strategie
 mit Zustand — ein Round-Robin-Zeiger, ein „letzter Besitzer" — darf
 einen Aufruf nicht als gelandeten Shard zählen.

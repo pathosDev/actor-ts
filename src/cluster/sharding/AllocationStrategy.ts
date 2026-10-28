@@ -26,7 +26,8 @@ import { NodeAddress } from '../NodeAddress.js';
  *   without the type's role — so that its shards can be proposed for a move
  *   onto a candidate.
  *
- * Either way a pick outside the candidates a call was given is not placed, and
+ * Either way a pick outside the candidates a call was given is not placed — the
+ * coordinator logs it at warn, once per shard until that shard is placed — and
  * a `rebalance` proposal for a shard whose current owner's member is not up is
  * dropped.  So an `allocate` call is a question, not a placement: a strategy
  * that keeps state must not count one as a shard having landed anywhere.
