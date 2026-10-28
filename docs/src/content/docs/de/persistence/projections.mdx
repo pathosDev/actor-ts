@@ -110,7 +110,11 @@ const byTagProjectionOptions = ByTagProjectionOptions.create<AccountEvent>()
 ```
 
 Jeder Operator ist optional, verknüpft werden sie mit UND.  Ein leeres
-`{}` matcht jedes Event.
+`{}` matcht jedes Event.  Einen Filter, den die Query-Schicht ablehnt —
+ein Tag mit mehr als 255 Zeichen, ein Operator, der keine Liste von
+Strings ist —, lehnt `ProjectionActor.byTag` mit einem `OptionsError`
+ab, der `tag` nennt, statt eine Projektion zu starten, deren Polls
+allesamt fehlschlagen.
 
 **Der Filter gehört zur Cursor-Identität.**  Ein blanker String behält
 den Cursor, den er schon hat, aber die beiden Schreibweisen teilen sich
@@ -321,10 +325,12 @@ const projection = ProjectionActor.byTag<AccountEvent>(system, byTagProjectionOp
   zurückgegeben hat, in Gruppen von höchstens `groupAfterEnvelopes`
   Events — Default 20 — und liefert jede davon in diesem Tick aus, in
   Journal-Reihenfolge.  Nichts wird zurückgehalten, um eine Gruppe zu
-  füllen: ein stark beschriebenes Journal ergibt volle Gruppen, ein
-  ruhiges eine kurze Gruppe pro Poll, und kein Event wartet länger als mit
-  `handle`.  Für größere Gruppen bei geringerer Rate verlängere das
-  Poll-Intervall.
+  füllen: ein stark beschriebenes Journal ergibt volle Gruppen und ein
+  ruhiges eine kurze Gruppe pro Poll, sodass, solange keine Gruppe
+  fehlschlägt, kein Event länger wartet als mit `handle`.  Eine
+  fehlschlagende Gruppe hält ihre guten Events mit zurück — siehe
+  [Wenn eine Gruppe fehlschlägt](#wenn-eine-gruppe-fehlschlägt).  Für
+  größere Gruppen bei geringerer Rate verlängere das Poll-Intervall.
 - **Ein Commit pro Gruppe**, auf ihr letztes Event.  Weniger
   Offset-Writes sind Teil dessen, was das Gruppieren bringt, und sie
   machen die Gruppe zur Einheit der Wiederholung — siehe
@@ -333,10 +339,13 @@ const projection = ProjectionActor.byTag<AccountEvent>(system, byTagProjectionOp
 ### Wenn eine Gruppe fehlschlägt
 
 Die Recovery-Strategie gilt zuerst für die Gruppe, mit dem Budget,
-das ein Event bekäme.  Ein Retry schickt dieselbe Gruppe nach dem
-Backoff erneut; `fail` und `retry-and-fail` stoppen vor dem ersten
-Event der Gruppe — der Cursor bleibt stehen, und ein Neustart schickt
-die ganze Gruppe noch einmal.
+das ein Event bekäme.  Ein Retry bildet die Gruppe nach dem Backoff
+neu, ab demselben ersten Event, weil sich der Cursor nicht bewegt hat:
+dieselben Events, sofern inzwischen keine weiteren ins Journal kamen —
+sonst füllt sich die Gruppe wieder bis `groupAfterEnvelopes`, und die
+Zählung der Versuche läuft für die größere Gruppe weiter.  `fail` und
+`retry-and-fail` stoppen vor dem ersten Event der Gruppe — der Cursor
+bleibt stehen, und ein Neustart liefert wieder ab diesem Event aus.
 
 Eine Gruppe wird nie übersprungen, denn das würfe ihre guten Events
 mit dem schlechten weg.  Wo die Strategie überspringen würde — `skip`
@@ -351,6 +360,12 @@ aufgeteilte Bereich durch ist, wird wieder gruppiert ausgeliefert.
 Eine Gruppe aus einem einzigen Event, etwa der kurze Rest eines
 Polls, ist schon ein Event pro Aufruf und schlägt von Anfang an auf
 die Per-Event-Art fehl.
+
+Aufgeteilt wird erst, wenn die Versuche der Gruppe verbraucht sind,
+und das kostet Zeit, die `handle` nicht braucht: unter
+`retry-and-skip` warten die guten Events der Gruppe zuerst deren
+ganzes Retry-Budget ab, und das schlechte Event verbraucht danach
+allein ein zweites, das jedes Event dahinter ebenfalls abwartet.
 
 `onFailure` unterscheidet die beiden Arten von Versuch.  Ein
 Gruppen-Versuch trägt `group` — jedes Event des fehlgeschlagenen

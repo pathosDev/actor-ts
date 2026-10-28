@@ -108,7 +108,10 @@ const byTagProjectionOptions = ByTagProjectionOptions.create<AccountEvent>()
 ```
 
 Each operator is optional and they combine with AND.  An empty `{}`
-matches every event.
+matches every event.  A filter the query layer refuses — a tag longer
+than 255 characters, an operator that is not a list of strings — is
+refused by `ProjectionActor.byTag` with an `OptionsError` naming `tag`,
+instead of spawning a projection whose every poll fails.
 
 **The filter is part of the cursor identity.**  A bare string keeps the
 cursor it already has, but the two spellings do not share one:
@@ -306,9 +309,11 @@ const projection = ProjectionActor.byTag<AccountEvent>(system, byTagProjectionOp
   into groups of at most `groupAfterEnvelopes` events — 20 by
   default — and delivers every one of them in that tick, in journal
   order.  Nothing is held back to fill a group: a busy journal yields
-  full groups, a quiet one a short group per poll, and no event waits
-  longer than it would with `handle`.  For larger groups at a lower
-  rate, lengthen the poll interval.
+  full groups and a quiet one a short group per poll, so while no
+  group fails, no event waits longer than it would with `handle`.  A
+  failing group holds its good events back with it — see
+  [When a group fails](#when-a-group-fails).  For larger groups at a
+  lower rate, lengthen the poll interval.
 - **One commit per group**, to its last event.  Fewer offset writes
   are part of what grouping buys, and they make the group the unit
   of replay — see [At-least-once delivery](#at-least-once-delivery).
@@ -316,10 +321,13 @@ const projection = ProjectionActor.byTag<AccountEvent>(system, byTagProjectionOp
 ### When a group fails
 
 The recovery strategy applies to the group first, with the budget an
-event would get.  A retry sends the same group again after the
-backoff; `fail` and `retry-and-fail` stop before the group's first
-event, so the cursor stays put and a restart sends the whole group
-again.
+event would get.  A retry forms the group again after the backoff,
+from the same first event, because the cursor has not moved: the same
+events, unless more were journaled in the meantime — then the group
+fills up to `groupAfterEnvelopes` again, and the attempt count carries
+over to the larger group.  `fail` and `retry-and-fail` stop before
+the group's first event, so the cursor stays put and a restart
+delivers from that event again.
 
 A group is never skipped, because that would throw its good events
 away with the bad one.  Where the strategy would skip — `skip` at
@@ -333,6 +341,12 @@ before it are committed and the ones after it follow.  Once the split
 range is through, delivery is grouped again.  A group of one, such as
 the short tail of a poll, already is one event per call and fails the
 per-event way from the start.
+
+A split comes only once the group's own attempts are spent, so it
+costs time that `handle` would not: under `retry-and-skip`, the good
+events of the group wait out the group's whole retry budget first, and
+the bad event then spends a second budget on its own, which every
+event after it waits out as well.
 
 `onFailure` tells the two kinds of attempt apart.  A group attempt
 carries `group` — every event of the failed call — with `event` set
