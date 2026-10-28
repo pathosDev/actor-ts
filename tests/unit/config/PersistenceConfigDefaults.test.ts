@@ -1572,4 +1572,30 @@ describe('readPersistencePluginIdsFromConfig', () => {
       expect(() => readPersistencePluginIdsFromConfig(config)).toThrow(selector);
     },
   );
+
+  // Null is one way to hold no id; a block and a list are the other two, and a
+  // reader that took a list's first entry, or a block's first value, as the id
+  // would still refuse null.  The exact refusal, so that no other error that
+  // happens to name the key — an unknown plug-in's — can stand in for it.
+  test.each(PLUGIN_SELECTORS.flatMap(({ selector }) => [
+    { selector, shape: 'a block', written: '{ a = 1 }', got: 'object' },
+    { selector, shape: 'a list', written: '[a, b]', got: 'list' },
+  ]))('$selector holding $shape is refused, naming it', ({ selector, written, got }) => {
+    const config = Config.parseString(`${selector} = ${written}`);
+
+    expect(() => readPersistencePluginIdsFromConfig(config)).toThrow(ConfigError);
+    expect(() => readPersistencePluginIdsFromConfig(config)).toThrow(`Config at "${selector}" is not a string (got ${got})`);
+  });
+
+  // The id reaches the lookup as written.  Trimmed, a padded id naming a
+  // registered plug-in would be selected rather than refused as unknown;
+  // case-folded, a plug-in registered under a mixed-case id could never be.
+  test.each(PLUGIN_SELECTORS.flatMap(({ field, selector }) => [
+    { field, selector, id: 'Acme.Persistence.Custom' },
+    { field, selector, id: '  actor-ts.persistence.custom  ' },
+  ]))('$selector passes "$id" through verbatim', ({ field, selector, id }) => {
+    const options = readPersistencePluginIdsFromConfig(Config.parseString(`${selector} = ${JSON.stringify(id)}`));
+
+    expectExactOptions(options, { ...IN_MEMORY_PLUGIN_IDS, [field]: id });
+  });
 });

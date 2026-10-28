@@ -1112,6 +1112,11 @@ export type PersistencePluginIds = {
  * `""`, kept as a value rather than read as unset, because reading it as the
  * in-memory default would quietly keep a journal in memory.
  *
+ * The id is handed on as written — not trimmed, not case-folded.  A plug-in
+ * registered under a mixed-case id is selected by exactly that id, and
+ * `" actor-ts.persistence.journal.postgres "` is an unknown id the lookup
+ * refuses, not a near miss quietly corrected into a selection.
+ *
  * The three are read together, so a selector holding no id at all — `null`, a
  * block, a list — is refused by whichever axis resolves first rather than only
  * by its own: it is a mistake in the file whichever store the application uses.
