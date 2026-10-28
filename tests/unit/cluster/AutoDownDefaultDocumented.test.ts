@@ -28,7 +28,9 @@
  *
  * The shipped value is read from the bundled `reference.conf`, so the
  * structured half follows it wherever it moves; the phrase list is written for
- * the removal default and says so when it stops being the one that ships.
+ * the removal default and says so when it stops being the one that ships.  A
+ * third, smaller part holds the readiness page to what the `cluster-transport`
+ * check expects of a peer parked under the opt-out.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -290,6 +292,7 @@ const GUARDED_FILES: readonly string[] = [
     page(language, 'testing/parallel-multi-node.mdx'),
     page(language, 'cluster/joining-and-seeds.mdx'),
     page(language, 'cluster/cluster-bootstrap.mdx'),
+    page(language, 'observability/management/health-checks.mdx'),
   ]),
   // The examples that configure keep-majority say why in a comment, and the
   // reason they gave was the parking default.
@@ -369,4 +372,98 @@ describe('#1426 — no page or example says the detector parks by default', () =
       + '`failure-detector.auto-down = on` is the default, and `off` is the opt-out that parks it.',
     ).toEqual([]);
   });
+});
+
+/**
+ * The readiness page says which peers `cluster-transport` still expects.
+ *
+ * A peer parked past `down-after` under `auto-down = off` with no downing
+ * strategy is not one of them (`expectedPeers` in
+ * `src/cluster/ClusterHealthChecks.ts`), so the survivor of a crash is ready
+ * again at `down-after` under the opt-out exactly as under the default.  A
+ * reader who believed the opposite would hold a parked survivor out of the
+ * load balancer for good, or keep it there with a probe of their own.
+ *
+ * The exception is narrow, and the page has to keep it narrow: a peer that is
+ * only `unreachable`, short of `down-after`, still counts, and so does a peer
+ * a configured downing provider is holding — only the no-provider opt-out
+ * parks into the set `expectedPeers` subtracts.  Keyed on markers within one
+ * sentence each, like the rest of this file: a sentence that defines the
+ * expected peers *and* excepts the parked one; one that says the survivor is
+ * ready again at `down-after` — not "not ready again"; one that keeps a peer
+ * short of `down-after` counted; and no sentence that claims the opposite of
+ * the code for a parked peer or for one a strategy holds.
+ */
+type ExpectedPeersText = {
+  readonly path: string;
+  readonly section: string;
+  readonly definition: readonly RegExp[];
+  readonly readyAgain: RegExp;
+  readonly stillCounts: readonly RegExp[];
+  readonly contradictions: readonly RegExp[];
+};
+
+const EXPECTED_PEERS_TEXTS: readonly ExpectedPeersText[] = [
+  {
+    path: page(LANGUAGES[0]!, 'observability/management/health-checks.mdx'),
+    section: '## The built-in checks',
+    definition: [/\bexpects?\b/i, /\bexcept\b/i, /\bparked\b/i, /`down-after`/, /auto-down/],
+    readyAgain: /(?<!\b(?:not|never|no longer) )\bready again at `down-after`/i,
+    stillCounts: [/\bnot yet past `down-after`/i, /\bstill counts\b/i],
+    contradictions: [
+      /\bparked\b[^.]*?\b(?:stays|remains|is still|still) (?:expected|counted)\b/i,
+      /\bstrateg\w*\b[^.]*?\b(?:is |are )?(?:not|no longer) (?:expected|counted)\b/i,
+    ],
+  },
+  {
+    path: page(LANGUAGES[1]!, 'observability/management/health-checks.mdx'),
+    section: '## Die eingebauten Checks',
+    definition: [/\berwartet\b/, /\bAusnahme\b/, /\bgeparkt\b/, /`down-after`/, /auto-down/],
+    readyAgain: /\bbei `down-after` wieder bereit\b/,
+    stillCounts: [/`down-after`\s+noch nicht erreicht/, /\bzählt weiterhin\b/],
+    contradictions: [
+      /\bgeparkt\w*\b[^.]*?\b(?:bleibt|wird weiterhin|weiterhin) (?:erwartet|gezählt)\b/,
+      /\bStrategie\b[^.]*?\b(?:nicht|nicht mehr) (?:erwartet|gezählt)\b/,
+    ],
+  },
+];
+
+/** The prose of the `## ` section headed exactly `heading`, as sentences. */
+function sectionSentences(path: string, heading: string): string[] {
+  const lines = read(path).split(/\r?\n/);
+  const start = lines.indexOf(heading);
+  if (start < 0) throw new Error(`${path}: the heading "${heading}" is gone — re-point this guard.`);
+  const next = lines.findIndex((line, index) => index > start && line.startsWith('## '));
+  return unitsOf(path, lines.slice(start + 1, next < 0 ? undefined : next).join('\n'));
+}
+
+describe('#1426 — the readiness page says a parked peer is not an expected peer', () => {
+  for (const text of EXPECTED_PEERS_TEXTS) {
+    test(`${text.path}: cluster-transport does not wait for a peer parked past down-after`, () => {
+      const sentences = sectionSentences(text.path, text.section);
+      expect(
+        sentences.some((sentence) => text.definition.every((marker) => marker.test(sentence))),
+        `${text.path}: no sentence in "${text.section}" defines the peers cluster-transport still expects `
+        + 'and excepts one parked past down-after under failure-detector.auto-down = off with no strategy. '
+        + 'expectedPeers in src/cluster/ClusterHealthChecks.ts leaves such a peer out.',
+      ).toBe(true);
+      expect(
+        sentences.some((sentence) => text.readyAgain.test(sentence)),
+        `${text.path}: no sentence in "${text.section}" says the survivor of a crash is ready again at `
+        + 'down-after — under the opt-out it parks the dead peer then and stops expecting it.',
+      ).toBe(true);
+      expect(
+        sentences.some((sentence) => text.stillCounts.every((marker) => marker.test(sentence))),
+        `${text.path}: no sentence in "${text.section}" says that a peer unreachable short of down-after `
+        + 'still counts — the exception is the parked peer only, and a short blip still takes a lone '
+        + 'survivor out of rotation.',
+      ).toBe(true);
+      const contradicting = sentences.filter((sentence) => text.contradictions.some((pattern) => pattern.test(sentence)));
+      expect(
+        contradicting,
+        `${text.path}: ${contradicting.length} sentence(s) in "${text.section}" contradict expectedPeers: a `
+        + 'parked peer is not expected, and a peer a configured strategy is holding still is.',
+      ).toEqual([]);
+    });
+  }
 });
