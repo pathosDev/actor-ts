@@ -167,11 +167,35 @@ describe('ConfigMethods', () => {
     new ConfigMethods(system).install(server);
 
     const result = await invoke();
+    // Any whole word of a field's name counts, `key` in `key-prefix` too; a
+    // boolean is never withheld.
     expect(resolve(result, 'my-app.upstreams').value).toEqual([
       { host: 'db-1', password: CONFIG_REDACTED, url: 'redis://***@r1:6379' },
-      { host: 'db-2', 'key-prefix': 'orders:', auth: true },
+      { host: 'db-2', 'key-prefix': CONFIG_REDACTED, auth: true },
     ]);
     expect(JSON.stringify(result)).not.toContain('hunter');
+  });
+
+  test('withholds a value when any whole word of its key names a secret, not only the last (#867)', async () => {
+    const system = newSystem('cfg-any-word', {
+      'my-app': {
+        'auth-header': 'Bearer eyJhbGciOiJIUzI1NiJ9.e30.sig',
+        'secret-value': 'hunter4',
+        'api-key-id': 'AKIA0000EXAMPLE',
+        'token-bucket-size': 64,
+        'auth-enabled': true,
+        endpoint: 'https://api.example',
+      },
+    });
+    const { server, invoke } = fakeServer();
+    new ConfigMethods(system).install(server);
+
+    const result = await invoke();
+    for (const name of ['auth-header', 'secret-value', 'api-key-id', 'token-bucket-size']) {
+      expect(resolve(result, `my-app.${name}`).value, name).toBe(CONFIG_REDACTED);
+    }
+    expect(resolve(result, 'my-app.auth-enabled').value).toBe(true);
+    expect(resolve(result, 'my-app.endpoint').value).toBe('https://api.example');
   });
 
   test('masks before the wire cut, so a truncation cannot leave part of a password (#1458)', async () => {
@@ -256,8 +280,8 @@ describe('ConfigMethods', () => {
       'profiles.production.my-app.set-by-profile = "b"',
     ].join('\n'), 'utf8');
     writeFileSync(secretsPath, [
-      'my-app { endpoint-value = "s3cr3t-root", set-by-secrets-profile = "c" }',
-      'profiles.production.my-app.set-by-secrets-profile = "s3cr3t-profile"',
+      'my-app { endpoint-value = "s3cr3t-root", set-by-sealed-profile = "c" }',
+      'profiles.production.my-app.set-by-sealed-profile = "s3cr3t-profile"',
     ].join('\n'), 'utf8');
     const systemOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
@@ -279,11 +303,11 @@ describe('ConfigMethods', () => {
       expect(resolve(result, 'my-app.set-by-profile').source).toBe('profile');
       expect(resolve(result, 'my-app.endpoint-value').source).toBe('secrets');
       // Six layers, five names: the secrets file's profile reports as secrets.
-      expect(resolve(result, 'my-app.set-by-secrets-profile').source).toBe('secrets');
-      expect(resolve(result, 'my-app.set-by-secrets-profile').overridden).toBe(true);
+      expect(resolve(result, 'my-app.set-by-sealed-profile').source).toBe('secrets');
+      expect(resolve(result, 'my-app.set-by-sealed-profile').overridden).toBe(true);
       expect(resolve(result, 'my-app.set-by-code').source).toBe('override');
       expect(resolve(result, 'my-app.endpoint-value').value).toBe(CONFIG_REDACTED);
-      expect(resolve(result, 'my-app.set-by-secrets-profile').value).toBe(CONFIG_REDACTED);
+      expect(resolve(result, 'my-app.set-by-sealed-profile').value).toBe(CONFIG_REDACTED);
       expect(JSON.stringify(result)).not.toContain('s3cr3t');
       expect(result.profile).toBe('production');
       expect(result.secretsPath).toBe(secretsPath);

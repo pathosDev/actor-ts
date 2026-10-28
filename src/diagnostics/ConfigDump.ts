@@ -23,20 +23,6 @@ const HOCON_BOOLEAN_WORDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Words after which the head of a config key's name moves in front of them.
- *
- * An English compound is head-final — `api-key` is a key — but a preposition
- * inverts that: `max-subscribers-per-key` is a count of *subscribers*, and the
- * `key` is only what they are counted per.  Reading it the other way is how a
- * tuning number came to print as `<redacted>` (#867).
- *
- * The particles of a phrasal verb are deliberately absent.  `in` would make
- * `sign-in-key` a `sign`, and a redaction with that hole in it is worse than
- * the false positive it removes.
- */
-const NAME_PREPOSITIONS: ReadonlySet<string> = new Set(['per', 'of', 'by', 'for']);
-
-/**
  * Which layer's value survived the merge for one key.
  *
  * Five names for the six layers `Config.load` merges (#1546) — see
@@ -277,7 +263,7 @@ export function withUrlCredentialsMasked(value: ConfigValue): ConfigValue {
  * the list and stops: `my-app.upstreams = [ { host = "db-1", password =
  * "hunter2" } ]` names no secret in its path, and both renderers printed the
  * password in full.  An object inside a list is read the way the tree above it
- * is — each field name by its head word, a field that names a credential
+ * is — each field name by every word of it, a field that names a credential
  * withholding everything beneath it, a boolean never withheld — so a list and
  * the same settings written as paths withhold the same values.  Whatever a
  * credential-named field holds goes as one value, a list included, the way a
@@ -327,12 +313,10 @@ function fieldsWithheldBelow(value: ConfigValue, underCredential: boolean): Conf
  * 2. A value that is a boolean carries nothing — see
  *    {@link HOCON_BOOLEAN_WORDS}.  This is the only say the value has in
  *    whether a key is withheld; everything else is decided by the name.
- * 3. **Every segment** of the path is read, not just the leaf, and each is
- *    reduced to its head word.  Every segment because a branch named
+ * 3. **Every word of every segment** of the path is read — see
+ *    {@link namesCredential}.  Every segment because a branch named
  *    `credentials` or `secrets` declares its whole subtree — dropping to the
- *    leaf alone would print `my-app.secrets.stripe` in full.  The head word
- *    because `passivation` is not `pass` and `key-prefix` is a prefix, which
- *    is what a bare substring test could not tell apart (#867).
+ *    leaf alone would print `my-app.secrets.stripe` in full.
  */
 function namesSecretConfigValue(segments: readonly string[], path: string, value: ConfigValue): boolean {
   if (CONFIG_NEVER_REDACTED_PATHS.has(path)) return false;
@@ -341,35 +325,30 @@ function namesSecretConfigValue(segments: readonly string[], path: string, value
 }
 
 /**
- * Whether one key names a credential by its head word — a segment of a path,
- * or the name of a field in an object inside a list.  One function for both,
- * so the two places a key name is read cannot come to read it differently.
+ * Whether one key names a credential — a segment of a path, or the name of a
+ * field in an object inside a list.  One function for both, so the two places
+ * a key name is read cannot come to read it differently.
+ *
+ * **Any** whole word of the name, wherever it stands (#867).  Reading only
+ * the word a name ends on looked like grammar — `api-key` is a key,
+ * `key-prefix` a prefix — and printed `auth-header`, `secret-value`,
+ * `password-plain` and `token-string` in full: the order of the words in a
+ * name says nothing about which of them names the value.  What this rule
+ * costs is a tuning value with a credential word in its name, a
+ * `token-bucket-size`, read back as `<redacted>`; an unreadable number costs
+ * less than a printed password, and the keys `reference.conf` ships that read
+ * that way are named in {@link CONFIG_NEVER_REDACTED_PATHS}.  *Whole* words
+ * still, so `passivation` is not `pass` and `keyspace` is not `key` — what a
+ * substring test could not tell apart.
  */
 function namesCredential(name: string): boolean {
-  return CONFIG_SECRET_PATTERN.test(headWordOf(name));
+  return wordsOf(name).some((word) => CONFIG_SECRET_PATTERN.test(word));
 }
 
 /** True when `value` can only be one of HOCON's two boolean states. */
 function statesOnlyABoolean(value: ConfigValue): boolean {
   if (typeof value === 'boolean') return true;
   return typeof value === 'string' && HOCON_BOOLEAN_WORDS.has(value.toLowerCase());
-}
-
-/**
- * The word in one path segment that says what the value **is**.
- *
- * Head-final, unless a {@link NAME_PREPOSITIONS} entry intervenes, in which
- * case the head is the word in front of it.  Taking the *first* preposition
- * and not the last is what keeps `max-requests-per-token-per-tenant` a count
- * of requests, and it errs the safe way besides: in `secret-per-tenant` the
- * word in front is the one that names a credential.
- */
-function headWordOf(segment: string): string {
-  const words = wordsOf(segment);
-  if (words.length === 0) return '';
-  const preposition = words.findIndex((word) => NAME_PREPOSITIONS.has(word));
-  if (preposition > 0) return words[preposition - 1]!;
-  return words[words.length - 1]!;
 }
 
 /**

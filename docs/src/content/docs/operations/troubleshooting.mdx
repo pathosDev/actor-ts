@@ -544,15 +544,19 @@ active:
 Two things to know before you paste that record into a ticket.  It is an
 `info` record, so it needs no second switch — but it **prints your
 configuration**, and three rules decide what it withholds.  A value is
-withheld when a whole word of its *key name* is `password`, `passphrase`,
-`passwd`, `secret`, `token`, `key`, `credential` or `auth`, singular or
-plural — the `api-key` above.  Every value the secrets file sets is withheld
-whatever its key is called — even after a higher layer overrides the key,
-like the `user` above, and in a `WorkerMesh` worker's dump.  And a list is
-one key, so the objects inside it are read field by field by the first rule:
-their `password` prints as `"<redacted>"`, the rest of the list as written.
-The one thing masked by value is the userinfo of a URL:
-`redis://default:s3cret@redis.example:6379` prints as
+withheld when any whole word of its *key name* — of the key itself or of a
+branch above it, wherever in the name the word stands — is `password`,
+`passphrase`, `passwd`, `secret`, `token`, `key`, `credential` or `auth`,
+singular or plural, and the value is not a boolean: the `api-key` above, and
+an `auth-header` just as well.  A name is cut into words at every character
+that is not a letter or a digit and at each camelCase hump, so `apiKey` holds
+`key` and `passivation-idle` holds no `pass`.  Every value the secrets file
+sets is withheld whatever its key is called — even after a higher layer
+overrides the key, like the `user` above, and in a `WorkerMesh` worker's
+dump.  And a list is one key, so the objects inside it are read field by
+field by the first rule: their `password` prints as `"<redacted>"`, the rest
+of the list as written.  The one thing masked by value is the userinfo of a
+URL: `redis://default:s3cret@redis.example:6379` prints as
 `redis://***@redis.example:6379` under any key, `dsn` and `connection-string`
 included.  Every other secret outside the secrets file, under a key that does
 not name one, is printed in full — a bare password in a `dsn` (by the time the
@@ -561,7 +565,10 @@ tree is merged, a `${?DATABASE_PASSWORD}` is an ordinary string), a
 `Server=…;Password=…` form, and memcached's scheme-less `user:password@host`
 server list.  Ordinary tuning values are *not* withheld just for spelling one
 of those words inside a longer one — `passivation-idle` and `keyspace` print,
-as they must for the dump to be worth reading.
+as they must for the dump to be worth reading.  One that holds such a word
+whole is withheld with it: a `token-bucket-size` of your own prints as
+`<redacted>`, and only the keys `reference.conf` ships, such as
+`cache.redis.key-prefix`, are exempted by name.
 [Configuration](/reference/configuration/) states the limits in full.
 
 The three `debug.*` switches need **two** switches, and this is the usual

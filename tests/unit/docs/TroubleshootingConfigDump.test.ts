@@ -187,9 +187,10 @@ function wordsThePatternAccepts(): string[] {
 const pathOf = (line: string): string => line.trim().split(' ')[0]!;
 
 /**
- * True when no word of a dotted path is one the pattern accepts — stricter
- * than the dump's own reading, which looks only at the head word of each
- * segment, so a path that passes here names no credential by any reading.
+ * True when no word of a dotted path is one the pattern accepts — the dump's
+ * own reading, which takes every word of every segment (#867), short of its
+ * camelCase split: the page's sample is kebab-case, so a path that passes
+ * here names no credential.
  */
 const namesNoCredential = (path: string): boolean =>
   path.split(/[^A-Za-z0-9]+/).every((word) => !CONFIG_SECRET_PATTERN.test(word));

@@ -200,21 +200,21 @@ describe('configDumpLines — the text the dump writes', () => {
     expect(text).not.toContain('hunter2');
   });
 
-  test('a field inside a list is read by its head word, and a boolean is never withheld', () => {
-    // The same three properties the path rule has: the head word decides,
+  test('a field inside a list is read by every word of its name, and a boolean is never withheld', () => {
+    // The same three properties the path rule has: any whole word decides,
     // camel humps split, and a boolean carries nothing whatever it is called.
     const text = configDumpLines(layered({
       'my-app': {
         upstreams: [
-          { host: 'db-2', 'api-key': 'sk-live-3', 'key-prefix': 'orders:', passivation: 'idle' },
-          { host: 'db-3', clientSecret: 'hunter3', auth: false },
+          { host: 'db-2', 'api-key': 'sk-live-3', 'auth-header': 'Bearer y', passivation: 'idle' },
+          { host: 'db-3', clientSecret: 'hunter3', 'key-prefix': 'orders:', auth: false },
         ],
       },
     }));
 
     expect(printed(text, 'my-app.upstreams')).toBe(
-      '[{"host":"db-2","api-key":"<redacted>","key-prefix":"orders:","passivation":"idle"},'
-      + '{"host":"db-3","clientSecret":"<redacted>","auth":false}]',
+      '[{"host":"db-2","api-key":"<redacted>","auth-header":"<redacted>","passivation":"idle"},'
+      + '{"host":"db-3","clientSecret":"<redacted>","key-prefix":"<redacted>","auth":false}]',
     );
   });
 
@@ -376,20 +376,21 @@ describe('six layers, five names, and the secrets file (#1546)', () => {
   /**
    * An application file and a secrets file, each with a production profile.
    *
-   * Every key is named like nothing in particular — `set-by-secrets` reads as
-   * a `set` to the name rule, the preposition moving the head in front of it
-   * — so a key withheld here was withheld because of the file it is in.
+   * Every key is named like nothing in particular — no word of any of them is
+   * one the name rule reads, which is why the secrets file appears in them as
+   * `sealed` — so a key withheld here was withheld because of the file it is
+   * in.
    */
   const PROFILED = {
     'application.conf': [
-      'my-app { set-by-application = "a", set-by-profile = "a", set-by-secrets = "a",'
-        + ' set-by-secrets-profile = "a" }',
-      'profiles.production.my-app { set-by-profile = "b", set-by-secrets = "b", set-by-secrets-profile = "b" }',
+      'my-app { set-by-application = "a", set-by-profile = "a", set-by-sealed = "a",'
+        + ' set-by-sealed-profile = "a" }',
+      'profiles.production.my-app { set-by-profile = "b", set-by-sealed = "b", set-by-sealed-profile = "b" }',
     ].join('\n'),
     'secrets.conf': [
-      'my-app { set-by-secrets = "s3cr3t-root", endpoint-value = "s3cr3t-1", set-by-secrets-profile = "c",'
-        + ' set-by-secrets-only = "c" }',
-      'profiles.production.my-app { set-by-secrets-profile = "s3cr3t-profile", set-by-secrets-only = "s3cr3t-2" }',
+      'my-app { set-by-sealed = "s3cr3t-root", endpoint-value = "s3cr3t-1", set-by-sealed-profile = "c",'
+        + ' set-by-sealed-only = "c" }',
+      'profiles.production.my-app { set-by-sealed-profile = "s3cr3t-profile", set-by-sealed-only = "s3cr3t-2" }',
     ].join('\n'),
   } as const;
 
@@ -425,11 +426,11 @@ describe('six layers, five names, and the secrets file (#1546)', () => {
     expect(originOf(text, 'actor-ts.dispatcher.throughput')).toBe('reference');
     expect(originOf(text, 'my-app.set-by-application')).toBe('application');
     expect(originOf(text, 'my-app.set-by-profile')).toBe('profile, overrides a lower layer');
-    expect(originOf(text, 'my-app.set-by-secrets')).toBe('secrets, overrides a lower layer');
-    expect(originOf(text, 'my-app.set-by-secrets-profile')).toBe('secrets, overrides a lower layer');
+    expect(originOf(text, 'my-app.set-by-sealed')).toBe('secrets, overrides a lower layer');
+    expect(originOf(text, 'my-app.set-by-sealed-profile')).toBe('secrets, overrides a lower layer');
     // Displaced is counted in layers, not names: the profile's value of a key
     // only the secrets file sets still overrides the root's.
-    expect(originOf(text, 'my-app.set-by-secrets-only')).toBe('secrets, overrides a lower layer');
+    expect(originOf(text, 'my-app.set-by-sealed-only')).toBe('secrets, overrides a lower layer');
     expect(originOf(text, 'my-app.from-code')).toBe('override');
   });
 
@@ -437,8 +438,8 @@ describe('six layers, five names, and the secrets file (#1546)', () => {
     const text = profiledDump();
 
     expect(printed(text, 'my-app.endpoint-value')).toBe(CONFIG_REDACTED);
-    expect(printed(text, 'my-app.set-by-secrets')).toBe(CONFIG_REDACTED);
-    expect(printed(text, 'my-app.set-by-secrets-profile')).toBe(CONFIG_REDACTED);
+    expect(printed(text, 'my-app.set-by-sealed')).toBe(CONFIG_REDACTED);
+    expect(printed(text, 'my-app.set-by-sealed-profile')).toBe(CONFIG_REDACTED);
     expect(text).not.toContain('s3cr3t');
     // The application file's keys of the same shape print: the file decides.
     expect(printed(text, 'my-app.set-by-profile')).toBe('"b"');
@@ -458,7 +459,7 @@ describe('six layers, five names, and the secrets file (#1546)', () => {
   test('the header counts the secrets-file values apart from the keys withheld by name', () => {
     const head = profiledDump().split('\n')[0]!;
 
-    // set-by-secrets, endpoint-value, set-by-secrets-profile and set-by-secrets-only.
+    // set-by-sealed, endpoint-value, set-by-sealed-profile and set-by-sealed-only.
     expect(head).toContain(`, ${STOCK_WITHHELD.length} redacted by key name, 4 redacted from a secrets file,`);
   });
 
@@ -622,7 +623,10 @@ const STOCK_WITHHELD: readonly string[] = [
  * `keyspace` contains `key`, and `token-reload-interval` is a duration.  A
  * dump that hides these is worse than useless — it hides exactly the tuning an
  * operator turned the dump on to check, and teaches them the output cannot be
- * trusted.
+ * trusted.  Six of them hold a credential word whole — `per-key`, both
+ * `key-prefix`es, `token-path`, `token-reload-interval`, `kms-key-id` — and
+ * since every word of a name is read (#867) they print only because
+ * `CONFIG_NEVER_REDACTED_PATHS` names them, which these rows pin.
  */
 const STOCK_PRINTED: readonly (readonly [string, string])[] = [
   ['actor-ts.sharding.passivation-idle', '"5m"'],
@@ -761,41 +765,57 @@ describe('which key names count as naming a secret', () => {
     expect(printed(text, 'my-app.authority')).toBe('"eu-west"');
   });
 
-  test('the last word of the name says what the value is', () => {
-    // `api-key` is a key; `key-prefix` is a prefix that happens to be about
-    // keys.  Head-final is what separates the credential from the setting
-    // named after one.
-    const text = configDumpLines(layered({
-      'my-app': { 'api-key': 'sk-live-1', 'key-prefix': 'orders:', 'token-path': '/run/tok' },
-    }));
+  /**
+   * Names with a credential word that is not the last one, each with a value
+   * that would be worth having: the cases a rule reading only the last word
+   * of a name printed in full (#867).
+   */
+  const CREDENTIAL_WORD_NOT_LAST: Readonly<Record<string, string | number>> = {
+    'auth-header': 'Bearer eyJhbGciOiJIUzI1NiJ9.e30.sig',
+    'secret-value': 'hunter2',
+    'password-plain': 'correct horse',
+    'token-string': 'tk-live-1',
+    'api-key-id': 'AKIA0000EXAMPLE',
+    'token-bucket-size': 64,
+    'key-prefix': 'orders:',
+    'max-requests-per-token': 50,
+    'secret-per-tenant': 'hunter3',
+  };
 
-    expect(printed(text, 'my-app.api-key')).toBe(CONFIG_REDACTED);
-    expect(printed(text, 'my-app.key-prefix')).toBe('"orders:"');
-    expect(printed(text, 'my-app.token-path')).toBe('"/run/tok"');
+  test('any whole word of a name can name the credential, wherever it stands', () => {
+    // `auth-header` carries a bearer token, and nothing about the order of
+    // words in a name says which one names the value.  So every word is read,
+    // and a tuning value with a credential word in its name — a token bucket's
+    // size — is withheld with it: an unreadable number costs less than a
+    // printed password.
+    const text = configDumpLines(layered({ 'my-app': CREDENTIAL_WORD_NOT_LAST }));
+
+    for (const name of Object.keys(CREDENTIAL_WORD_NOT_LAST)) {
+      expect(printed(text, `my-app.${name}`), name).toBe(CONFIG_REDACTED);
+    }
   });
 
-  test('a preposition moves the head in front of it', () => {
-    // `subscribers-per-key` is a count of subscribers.  `secret-per-tenant`
-    // is still a secret — the rule takes what precedes the preposition, so it
-    // reads the qualified side, not the object.
-    const text = configDumpLines(layered({
-      'my-app': { 'max-requests-per-token': 50, 'secret-per-tenant': 'hunter2' },
-    }));
+  test('a boolean under any of those names is still never withheld', () => {
+    const booleans = Object.fromEntries(Object.keys(CREDENTIAL_WORD_NOT_LAST).map((name, index) =>
+      [name, [true, 'off', 'yes'][index % 3]!]));
+    const text = configDumpLines(layered({ 'my-app': booleans }));
 
-    expect(printed(text, 'my-app.max-requests-per-token')).toBe('50');
-    expect(printed(text, 'my-app.secret-per-tenant')).toBe(CONFIG_REDACTED);
+    for (const [name, value] of Object.entries(booleans)) {
+      expect(printed(text, `my-app.${name}`), name).toBe(JSON.stringify(value));
+    }
   });
 
   test('a camelCase key is read as words too, so it cannot slip through', () => {
     // Nothing forces an application subtree into kebab-case, and a redaction
     // that only understands one spelling is a redaction with a hole in it.
     const text = configDumpLines(layered({
-      'my-app': { apiKey: 'sk-live-2', clientSecret: 'hunter2', keyPrefix: 'orders:' },
+      'my-app': { apiKey: 'sk-live-2', clientSecret: 'hunter2', keyPrefix: 'orders:', authHeader: 'Bearer x' },
     }));
 
     expect(printed(text, 'my-app.apiKey')).toBe(CONFIG_REDACTED);
     expect(printed(text, 'my-app.clientSecret')).toBe(CONFIG_REDACTED);
-    expect(printed(text, 'my-app.keyPrefix')).toBe('"orders:"');
+    expect(printed(text, 'my-app.keyPrefix')).toBe(CONFIG_REDACTED);
+    expect(printed(text, 'my-app.authHeader')).toBe(CONFIG_REDACTED);
   });
 
   test('a value from HOCON’s boolean vocabulary is never withheld', () => {
