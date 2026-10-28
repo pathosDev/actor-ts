@@ -419,12 +419,12 @@ starts with.  Both histograms use the default seconds-scale buckets.
 `reason` takes five values and no others:
 
 - `outage` — the store threw something that is none of the below.
-  On an append, a replay or a load this is what the breaker counts
-  towards `max-failures`; a journal delete or a snapshot save or
-  delete that fails is counted here and never by the breaker, a
-  `timeout` included.
-- `timeout` — the breaker's own `call-timeout` cut the call; the
-  breaker counts it too.
+  The breaker counts it towards `max-failures` on an append, a replay
+  or a load, and never on a journal delete or a snapshot save or
+  delete.
+- `timeout` — the breaker's own `call-timeout` cut the call.  The
+  breaker counts it on an append, a replay or a load, and not on a
+  delete or a save.
 - `breaker-open` — the breaker was open and refused the call, so the
   store was never asked.
 - `ownership` — a conditional append lost to a second writer
