@@ -46,7 +46,7 @@ import { ClusterOptions } from '../../../../src/cluster/ClusterOptions.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
 import { Passivate } from '../../../../src/cluster/sharding/Passivate.js';
-import { Shard } from '../../../../src/cluster/sharding/Shard.js';
+import { Shard, ShardPassivationDeclined, ShardPassivationRequest } from '../../../../src/cluster/sharding/Shard.js';
 import type { ShardConfig, ShardInbox } from '../../../../src/cluster/sharding/Shard.js';
 import { ShardingOptionsValidator } from '../../../../src/cluster/sharding/ShardingOptions.js';
 import type { ShardingOptionsType } from '../../../../src/cluster/sharding/ShardingOptions.js';
@@ -66,8 +66,9 @@ import {
   StartShardingOptionsValidator,
 } from '../../../../src/cluster/sharding/StartShardingOptions.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
+import { Scheduler, type Cancellable } from '../../../../src/Scheduler.js';
 import { stoppingStrategy } from '../../../../src/Supervision.js';
-import { DeadLetter } from '../../../../src/SystemMessages.js';
+import { DeadLetter, Terminated } from '../../../../src/SystemMessages.js';
 import { ManualScheduler } from '../../../../src/testkit/ManualScheduler.js';
 import { mergeOptions } from '../../../../src/util/OptionsMerge.js';
 import { OptionsError } from '../../../../src/util/OptionsValidator.js';
@@ -220,6 +221,12 @@ let delivered: string[] = [];
 let replies: string[] = [];
 /** Every lifecycle report the shard sent its parent. */
 let reports: Array<EntityStarted | EntityStopped> = [];
+/** How many passivation requests the shard declined. */
+let declines = 0;
+/** How many stats replies reached the stand-in region — see `ShardHarness.reported`. */
+let reportFences = 0;
+/** Whether the shard actor has stopped. */
+let shardTerminated = false;
 let statsReplies: ShardStats[] = [];
 let letters: DeadLetter[] = [];
 let subscribed = false;
@@ -244,6 +251,9 @@ afterEach(async () => {
   delivered = [];
   replies = [];
   reports = [];
+  declines = 0;
+  reportFences = 0;
+  shardTerminated = false;
   statsReplies = [];
   letters = [];
   subscribed = false;
@@ -318,9 +328,11 @@ class DeadLetterListener extends Actor<DeadLetter> {
 
 /**
  * Stands where a region would: the shard's parent, so every `EntityStarted`
- * and `EntityStopped` the shard reports up lands here.
+ * and `EntityStopped` the shard reports up lands here — and so does the answer
+ * to a passivation request it declines.  It watches the shard, which is how a
+ * case sees one it asked to passivate go.
  */
-class RegionStandIn extends Actor<EntityStarted | EntityStopped> {
+class RegionStandIn extends Actor<EntityStarted | EntityStopped | ShardStats | ShardPassivationDeclined | Terminated> {
   constructor(private readonly shardConfig: ShardConfig) { super(); }
 
   override preStart(): void {
@@ -328,9 +340,24 @@ class RegionStandIn extends Actor<EntityStarted | EntityStopped> {
       () => (shardInstance = new Shard(this.shardConfig)),
       'shard-0',
     );
+    this.context.watch(shardRef);
   }
 
-  override onReceive(report: EntityStarted | EntityStopped): void { reports.push(report); }
+  override onReceive(report: EntityStarted | EntityStopped | ShardStats | ShardPassivationDeclined | Terminated): void {
+    if (report instanceof ShardPassivationDeclined) {
+      declines++;
+      return;
+    }
+    if (report instanceof Terminated) {
+      shardTerminated = true;
+      return;
+    }
+    if (report.kind === 'sharding.ShardStats') {
+      reportFences++;
+      return;
+    }
+    reports.push(report);
+  }
 }
 
 /**
@@ -367,6 +394,13 @@ type ShardHarness = {
   readonly live: () => Promise<readonly string[]>;
   /** Resolve once the shard has seen `entityId` stop. */
   readonly stopped: (entityId: string) => Promise<void>;
+  /**
+   * Resolve once the stand-in region has every report the shard sent it before
+   * now — a stats reply addressed to the stand-in, which arrives behind them.
+   * The fence a "nothing was reported" assertion needs: a reply to anybody
+   * else can overtake a report still in the stand-in's mailbox.
+   */
+  readonly reported: () => Promise<void>;
 };
 
 async function startShard(config: ShardConfig): Promise<ShardHarness> {
@@ -381,7 +415,7 @@ async function startShard(config: ShardConfig): Promise<ShardHarness> {
   await awaitCondition(() => subscribed, { timeoutMs: WAIT_MS, label: 'the dead-letter listener subscribed' });
   const collector = system.spawn(ReplyCollector, 'reply-collector') as ActorRef<unknown>;
   const statsCollector = system.spawn(StatsCollector, 'stats-collector');
-  system.spawn(() => new RegionStandIn(config), 'region');
+  const standIn = system.spawn(() => new RegionStandIn(config), 'region') as ActorRef<unknown>;
   await awaitCondition(() => shardRef !== null && shardInstance !== null, {
     timeoutMs: WAIT_MS,
     label: 'the shard is up under its stand-in region',
@@ -405,8 +439,14 @@ async function startShard(config: ShardConfig): Promise<ShardHarness> {
       label: `the shard saw '${entityId}' stop`,
     });
   };
+  const reported = async (): Promise<void> => {
+    const asked = reportFences;
+    const query: GetShardStats = { kind: 'sharding.GetShardStats', replyTo: standIn };
+    shard.tell(query as ShardInbox);
+    await awaitCondition(() => reportFences > asked, { timeoutMs: WAIT_MS, label: 'the shard answered its stand-in region' });
+  };
 
-  return { scheduler, log, shard, instance: shardInstance!, collector, send, live, stopped };
+  return { scheduler, log, shard, instance: shardInstance!, collector, send, live, stopped, reported };
 }
 
 const work = (id: string, sequence: number): WorkCommand => ({ kind: 'work', id, sequence });
@@ -610,6 +650,95 @@ describe('Shard — an entity that stopped without being passivated (#1437)', ()
     await replied('e-1#2');
   });
 
+  // One stop is reported once (#1437).  The region sends a `PassivateEntity`
+  // for an entity it counts resident, so one can be on its way while the
+  // entity stops by itself — and the stop has been reported by then.  An
+  // answer is owed only when the region has counted the entity resident again
+  // since, which it does on routing it a message.
+
+  const passivateEntity = (entityId: string): PassivateEntity => ({ kind: 'sharding.PassivateEntity', entityId });
+
+  test.each([
+    { when: 'after the stop and its wait', advanceMs: MIN_MS },
+    { when: 'inside the wait', advanceMs: 0 },
+  ])('a PassivateEntity reaching the shard $when, with no message for the entity since, is not answered: one stop, one EntityStopped', async ({ advanceMs }) => {
+    const harness = await startShard(backoffConfig());
+    harness.send(work('e-1', 1), harness.collector);
+    await replied('e-1#1');
+    harness.send(fail('e-1'));
+    await harness.stopped('e-1');
+    harness.scheduler.advance(advanceMs);
+
+    harness.shard.tell(passivateEntity('e-1') as ShardInbox);
+    await harness.reported();
+    expect(stoppedReports('e-1')).toBe(1);
+    expect(await harness.live()).toEqual([]);
+  });
+
+  test('a release is answered once: a second PassivateEntity for the same residency gets nothing', async () => {
+    const harness = await startShard(backoffConfig());
+    harness.send(work('e-1', 1), harness.collector);
+    await replied('e-1#1');
+    harness.send(fail('e-1'));
+    await harness.stopped('e-1');
+    harness.send(work('e-1', 2), harness.collector);
+    harness.shard.tell(passivateEntity('e-1') as ShardInbox);
+    await awaitCondition(() => stoppedReports('e-1') === 2, { timeoutMs: WAIT_MS, label: 'the PassivateEntity was answered' });
+
+    harness.shard.tell(passivateEntity('e-1') as ShardInbox);
+    await harness.reported();
+    expect(stoppedReports('e-1')).toBe(2);
+
+    // A message after the answer counts the entity resident again, and so
+    // makes the next one owed.
+    harness.send(work('e-1', 3), harness.collector);
+    harness.shard.tell(passivateEntity('e-1') as ShardInbox);
+    await awaitCondition(() => stoppedReports('e-1') === 3, { timeoutMs: WAIT_MS, label: 'the next PassivateEntity was answered' });
+    harness.scheduler.advance(MIN_MS);
+    await replied('e-1#2');
+    await replied('e-1#3');
+  });
+
+  test('a message past buffer-size still counts the entity resident, so the release is answered', async () => {
+    const harness = await startShard(backoffConfig({ bufferSize: 1 }));
+    for (const id of ['e-1', 'e-2']) {
+      harness.send(work(id, 1), harness.collector);
+      await replied(`${id}#1`);
+      harness.send(fail(id));
+      await harness.stopped(id);
+    }
+    // e-1's message fills the cap, so e-2's goes to dead letters — after the
+    // region had counted e-2 resident to route it.
+    harness.send(work('e-1', 2), harness.collector);
+    harness.send(work('e-2', 2), harness.collector);
+    await awaitCondition(() => deadWork().includes('e-2#2'), { timeoutMs: WAIT_MS, label: "e-2's message went over the cap" });
+
+    harness.shard.tell(passivateEntity('e-2') as ShardInbox);
+    await awaitCondition(() => stoppedReports('e-2') === 2, { timeoutMs: WAIT_MS, label: 'the PassivateEntity for e-2 was answered' });
+  });
+
+  test('an entity created since its last message is reported by its own stop, so a stale PassivateEntity after it gets nothing', async () => {
+    const harness = await startShard(backoffConfig());
+    harness.send(work('e-1', 1), harness.collector);
+    await replied('e-1#1');
+    harness.send(fail('e-1'));
+    await harness.stopped('e-1');
+    // Held inside the wait — the shard has it before the clock moves on — and
+    // handed over by the incarnation the end of the wait creates.
+    harness.send(work('e-1', 2), harness.collector);
+    expect(await harness.live()).toEqual([]);
+    harness.scheduler.advance(MIN_MS);
+    await replied('e-1#2');
+
+    // Back, then passivated on its own request: that stop is reported, and
+    // nothing has reached the entity since.
+    harness.send({ kind: 'checkout', id: 'e-1' });
+    await awaitCondition(() => stoppedReports('e-1') === 2, { timeoutMs: WAIT_MS, label: 'the passivation was reported' });
+    harness.shard.tell(passivateEntity('e-1') as ShardInbox);
+    await harness.reported();
+    expect(stoppedReports('e-1')).toBe(2);
+  });
+
   test('past buffer-size the newest held message is dead-lettered with its sender, counted across the shard\'s entities', async () => {
     const harness = await startShard(backoffConfig({ bufferSize: 2 }));
     const warnings = (): number =>
@@ -736,6 +865,146 @@ describe('Shard — an entity that stopped without being passivated (#1437)', ()
   });
 });
 
+/**
+ * The region's empty-shard sweep only asks; the shard decides (#1441).  The
+ * region judges "empty" by its own index, which learns of an entity from the
+ * shard's spawn report — so the shard reads the request behind whatever it
+ * was handed first, and that order is what these cases fix.
+ */
+describe('Shard — asked to passivate by its region (#1441)', () => {
+  test('an empty shard stops, and a message queued behind the request starts nothing and is a dead letter', async () => {
+    const harness = await startShard(backoffConfig());
+    // One synchronous step: the request, and a message told straight to the
+    // shard's ref behind it — the region buffers its own traffic from the
+    // moment it asks, so only a ref holder can put anything there.
+    harness.shard.tell(new ShardPassivationRequest(0) as ShardInbox);
+    harness.send(work('e-1', 1), harness.collector);
+
+    await awaitCondition(() => shardTerminated, { timeoutMs: WAIT_MS, label: 'the empty shard stopped' });
+    const isTheEnvelope = (letter: DeadLetter): boolean => {
+      const envelope = letter.message as Partial<EntityEnvelope<Command>>;
+      return envelope.kind === 'sharding.EntityEnvelope' && envelope.entityId === 'e-1';
+    };
+    await awaitCondition(() => letters.some(isTheEnvelope), {
+      timeoutMs: WAIT_MS,
+      label: 'the message behind the request was dead-lettered',
+    });
+    // Dead-lettered by the shard as it stopped, never handed to an entity.
+    expect(letters.find(isTheEnvelope)?.recipient.path.toString()).toBe(harness.shard.path.toString());
+    expect(started).toEqual([]);
+    expect(declines).toBe(0);
+  });
+
+  test('a shard asked right behind the message that creates its first entity declines, and the entity takes it', async () => {
+    const harness = await startShard(backoffConfig());
+    harness.send(work('e-1', 1), harness.collector);
+    harness.shard.tell(new ShardPassivationRequest(0) as ShardInbox);
+
+    await awaitCondition(() => declines === 1, { timeoutMs: WAIT_MS, label: 'the shard declined the request' });
+    await replied('e-1#1');
+    expect(await harness.live()).toEqual(['e-1']);
+    expect(shardTerminated).toBe(false);
+  });
+
+  test('a shard asked right behind a start declines, and the started entity keeps running', async () => {
+    const harness = await startShard(backoffConfig());
+    const start: StartEntity = { kind: 'sharding.StartEntity', entityId: 'e-1' };
+    harness.shard.tell(start as ShardInbox);
+    harness.shard.tell(new ShardPassivationRequest(0) as ShardInbox);
+
+    await awaitCondition(() => declines === 1, { timeoutMs: WAIT_MS, label: 'the shard declined the request' });
+    expect(await harness.live()).toEqual(['e-1']);
+    expect(started).toEqual(['e-1']);
+    expect(shardTerminated).toBe(false);
+  });
+
+  // An entity backing off is not running, and its region's index has had the
+  // `EntityStopped` — so nothing the region sees keeps such a shard, and it is
+  // the shard that has to (#1437).
+
+  test('a shard holding a message for an entity in its wait declines, and hands it over when the wait ends', async () => {
+    const harness = await startShard(backoffConfig());
+    harness.send(work('e-1', 1), harness.collector);
+    await replied('e-1#1');
+    harness.send(fail('e-1'));
+    await harness.stopped('e-1');
+    harness.send(work('e-1', 2), harness.collector);
+    harness.shard.tell(new ShardPassivationRequest(0) as ShardInbox);
+
+    await awaitCondition(() => declines === 1, { timeoutMs: WAIT_MS, label: 'the shard declined the request' });
+    expect(await harness.live()).toEqual([]);
+    harness.scheduler.advance(MIN_MS);
+    await replied('e-1#2');
+    expect(shardTerminated).toBe(false);
+    expect(deadWork()).toEqual([]);
+  });
+
+  test('a shard whose entity a start is waiting to bring back declines, and the entity comes back when the wait ends', async () => {
+    const harness = await startShard(backoffConfig());
+    harness.send(work('e-1', 1), harness.collector);
+    await replied('e-1#1');
+    harness.send(fail('e-1'));
+    await harness.stopped('e-1');
+    const start: StartEntity = { kind: 'sharding.StartEntity', entityId: 'e-1' };
+    harness.shard.tell(start as ShardInbox);
+    harness.shard.tell(new ShardPassivationRequest(0) as ShardInbox);
+
+    await awaitCondition(() => declines === 1, { timeoutMs: WAIT_MS, label: 'the shard declined the request' });
+    harness.scheduler.advance(MIN_MS);
+    expect(await harness.live()).toEqual(['e-1']);
+    expect(started).toEqual(['e-1', 'e-1']);
+  });
+
+  test('a shard whose entity\'s armed return is due, its tick not yet read, declines, and the entity comes back', async () => {
+    const harness = await startShard(backoffConfig());
+    harness.send(work('e-1', 1), harness.collector);
+    await replied('e-1#1');
+    harness.send(fail('e-1'));
+    await harness.stopped('e-1');
+    const start: StartEntity = { kind: 'sharding.StartEntity', entityId: 'e-1' };
+    harness.shard.tell(start as ShardInbox);
+    expect(await harness.live()).toEqual([]);
+
+    // One synchronous step: the request, then the clock past the wait — whose
+    // tick goes in behind the request.  The wait is over and nothing is held
+    // when the shard reads the request, but the start it armed is still owed.
+    harness.shard.tell(new ShardPassivationRequest(0) as ShardInbox);
+    harness.scheduler.advance(MIN_MS);
+    await awaitCondition(() => declines === 1 || shardTerminated, {
+      timeoutMs: WAIT_MS,
+      label: 'the shard answered the request',
+    });
+    expect(declines).toBe(1);
+    expect(await harness.live()).toEqual(['e-1']);
+  });
+
+  test('a shard whose entity is inside its wait with nothing held declines and keeps the wait; once the wait is over it stops', async () => {
+    const harness = await startShard(backoffConfig());
+    harness.send(work('e-1', 1), harness.collector);
+    await replied('e-1#1');
+    harness.send(fail('e-1'));
+    await harness.stopped('e-1');
+    harness.shard.tell(new ShardPassivationRequest(0) as ShardInbox);
+    await awaitCondition(() => declines === 1, { timeoutMs: WAIT_MS, label: 'the shard declined the request' });
+
+    // The record went nowhere: a message inside the wait is still held, not
+    // handed to an entity created at once.
+    harness.send(work('e-1', 2), harness.collector);
+    expect(await harness.live()).toEqual([]);
+    harness.scheduler.advance(MIN_MS);
+    await replied('e-1#2');
+
+    // Stopped again, and this time the wait runs out with nothing held: a
+    // record that decides nothing any more does not keep the shard.
+    harness.send(fail('e-1'));
+    await harness.stopped('e-1');
+    harness.scheduler.advance(MIN_MS * 2);
+    harness.shard.tell(new ShardPassivationRequest(0) as ShardInbox);
+    await awaitCondition(() => shardTerminated, { timeoutMs: WAIT_MS, label: 'the shard stopped' });
+    expect(declines).toBe(1);
+  });
+});
+
 /* -------------------- end to end, under the default supervision -------------------- */
 
 type PoisonCommand = { readonly kind: 'poison'; readonly id: string; readonly sequence: number };
@@ -838,5 +1107,115 @@ describe('ClusterSharding — an entity failing on every message, under the defa
     expect(poisonInstances).toBeLessThanOrEqual(bound);
     // At least one re-creation: what waited for the entity was handed to it.
     expect(poisonInstances).toBeGreaterThanOrEqual(1 + SHARD_RESTART_BUDGET + 1);
+  }, 15_000);
+});
+
+/* ------------- end to end: the empty-shard sweep and a backing-off entity ------------- */
+
+/**
+ * The empty-shard window of the case below, and with it the sweep timer's
+ * interval — odd, so {@link SweepCapturingScheduler} holds back exactly the
+ * sweep and schedules everything else for real.
+ */
+const SWEEP_WINDOW_MS = 53;
+
+/** The case's restart wait, `min` = `max` at random-factor 0 — far longer than the shard's window. */
+const LONG_WAIT_MS = 701;
+
+/** When each reply arrived at its collector, by `id#sequence`. */
+const replyTimes = new Map<string, number>();
+
+class TimedReplyCollector extends Actor<WorkDoneReply> {
+  override onReceive(reply: WorkDoneReply): void {
+    replyTimes.set(`${reply.id}#${reply.sequence}`, performance.now());
+  }
+}
+
+/** Holds back the region's sweep timer, so the case fires the sweep itself. */
+class SweepCapturingScheduler extends Scheduler {
+  private readonly sweeps: Array<() => void> = [];
+
+  override scheduleAtFixedRateFunction(initialDelayMs: number, intervalMs: number, task: () => void): Cancellable {
+    if (intervalMs !== SWEEP_WINDOW_MS) return super.scheduleAtFixedRateFunction(initialDelayMs, intervalMs, task);
+    this.sweeps.push(task);
+    return { cancel: (): boolean => false, get isCancelled(): boolean { return false; } };
+  }
+
+  /** Fire the region's sweep timer, exactly as it would have fired itself. */
+  fireSweep(): void {
+    if (this.sweeps.length !== 1) throw new Error(`expected one captured sweep timer, found ${this.sweeps.length}`);
+    this.sweeps[0]!();
+  }
+}
+
+describe('ClusterSharding — the empty-shard sweep and an entity backing off (#1437)', () => {
+  test('a shard holding messages for an entity in its wait outlives a shorter shard window, and hands them over when the wait ends', async () => {
+    replyTimes.clear();
+    const systemName = 'entity-restart-sweep';
+    const port = 53_418;
+    const scheduler = new SweepCapturingScheduler();
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withScheduler(scheduler);
+    const system = ActorSystem.create(systemName, systemOptions);
+    const clusterOptions = ClusterOptions.create()
+      .withHost('h')
+      .withPort(port)
+      .withSeeds([])
+      .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
+      .withGossipIntervalMs(30);
+    const cluster = await Cluster.join(system, clusterOptions);
+    runningCluster = { system, cluster };
+    system.spawn(DeadLetterListener, 'dead-letter-listener');
+    await awaitCondition(() => subscribed, { timeoutMs: WAIT_MS, label: 'the dead-letter listener subscribed' });
+    const collector = system.spawn(TimedReplyCollector, 'timed-reply-collector') as ActorRef<unknown>;
+
+    const shardingOptions = StartShardingOptions.create<Command>()
+      .withTypeName(TYPE_NAME)
+      .withEntityActor(Entity)
+      .withEntityOptions(stopOnFailure as ActorOptions<Command>)
+      .withExtractEntityId((command) => command.id)
+      .withPassivationIdleMs(0)
+      .withShardPassivationIdleMs(SWEEP_WINDOW_MS)
+      .withEntityRestartBackoffMinMs(LONG_WAIT_MS)
+      .withEntityRestartBackoffMaxMs(LONG_WAIT_MS)
+      .withEntityRestartBackoffRandomFactor(0);
+    const region = cluster.sharding.start(shardingOptions);
+    const entityCount = async (): Promise<number> =>
+      (await cluster.sharding.shards(TYPE_NAME)).reduce((sum, shard) => sum + shard.entityCount, 0);
+
+    region.tell(work('e-1', 1), collector);
+    await awaitCondition(() => replyTimes.has('e-1#1'), { timeoutMs: WAIT_MS, label: 'the entity answered its first message' });
+    // The shard's only entity stops unasked, so the shard is empty in its
+    // region's index from the report on — and that is where its window starts.
+    const stoppedAt = performance.now();
+    region.tell(fail('e-1'));
+    await awaitCondition(async () => (await entityCount()) === 0, {
+      timeoutMs: WAIT_MS,
+      label: "the region saw the shard's only entity stop",
+    });
+    region.tell(work('e-1', 2), collector);
+    const from = Date.now();
+    await awaitCondition(() => Date.now() - from > SWEEP_WINDOW_MS, {
+      timeoutMs: WAIT_MS,
+      intervalMs: 5,
+      label: 'one shard window passed on the wall clock',
+    });
+
+    scheduler.fireSweep();
+    // A message sent after the sweep meets the same wait, not a fresh shard
+    // that has forgotten it.
+    region.tell(work('e-1', 3), collector);
+    const isWork = (letter: DeadLetter): boolean => (letter.message as { kind?: unknown }).kind === 'work';
+    await awaitCondition(() => (replyTimes.has('e-1#2') && replyTimes.has('e-1#3')) || letters.some(isWork), {
+      timeoutMs: WAIT_MS,
+      label: 'the held messages were handed over, or dead-lettered',
+    });
+
+    expect(deadWork()).toEqual([]);
+    // Both waited out the wait the entity's stop began.
+    expect(replyTimes.get('e-1#2')! - stoppedAt).toBeGreaterThanOrEqual(LONG_WAIT_MS - 20);
+    expect(replyTimes.get('e-1#3')! - stoppedAt).toBeGreaterThanOrEqual(LONG_WAIT_MS - 20);
   }, 15_000);
 });

@@ -2,7 +2,7 @@ import type { ActorClassOrFactory } from '../../Actor.js';
 import type { ActorOptions, ActorOptionsType } from '../../ActorOptions.js';
 import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
-import { ActorRef } from '../../ActorRef.js';
+import type { ActorRef } from '../../ActorRef.js';
 import { exponentialBackoff, type BackoffPolicy } from '../../pattern/BackoffPolicy.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { DeadLetter, Terminated } from '../../SystemMessages.js';
@@ -112,8 +112,46 @@ export class EntityRestartTick {
   constructor(readonly entityId: string) {}
 }
 
+/**
+ * "Stop, unless you still have work" — the region's empty-shard sweep asking
+ * a shard to go away (#1441).
+ *
+ * The region judges a shard empty by its own index, and that index lags the
+ * shard: an entity that a routed message or a recovery start has just created
+ * is reported only once the shard has run, behind the sweep's tick, and what a
+ * shard holds for an entity backing off is not reported at all.  A stop sent
+ * on that view alone went in behind the very work the region had just handed
+ * over, and took it down with the shard.  So the shard has the last word: it
+ * reads the request behind everything it was sent first and stops only if it
+ * has nothing to lose; otherwise it answers {@link ShardPassivationDeclined}
+ * and goes on.
+ *
+ * A class rather than a `sharding.`-kinded object, for the reason
+ * {@link EntityStopTimeout} is one: nothing off the wire can be `instanceof`
+ * it, so no peer can stop another node's shard.  It names the shard it was
+ * meant for, which is what a dead letter shows when the shard was already gone.
+ */
+export class ShardPassivationRequest {
+  constructor(readonly shardId: number) {}
+}
+
+/**
+ * A shard's answer to a {@link ShardPassivationRequest} it did not honour: it
+ * still had work, so it keeps running and its region routes to it again
+ * (#1441).  A class for the request's reason.
+ */
+export class ShardPassivationDeclined {
+  constructor(readonly shardId: number) {}
+}
+
 /** Everything a shard can find in its mailbox, including system traffic. */
-export type ShardInbox = ShardMessage | Terminated | Passivate | EntityStopTimeout | EntityRestartTick;
+export type ShardInbox =
+  | ShardMessage
+  | Terminated
+  | Passivate
+  | EntityStopTimeout
+  | EntityRestartTick
+  | ShardPassivationRequest;
 
 /**
  * One message held for a passivating entity, with the sender it arrived with.
@@ -171,6 +209,15 @@ type EntityRestartRecord = {
   readonly held: BufferedMessage[];
   /** The one-shot that ends the wait, armed by the first hold or a start; `null` otherwise. */
   timer: Cancellable | null;
+  /**
+   * Whether a message for the entity has reached this shard since the entity
+   * was last reported stopped and not created since — held, or past the cap
+   * and dead-lettered.  The region counts an entity resident from the moment
+   * it routes it a message, so this is when it counts the entity resident with
+   * no incarnation behind it, and when a `PassivateEntity` is owed an
+   * `EntityStopped` to release the slot (#1437).
+   */
+  messageSinceStop: boolean;
 };
 
 /**
@@ -264,6 +311,10 @@ export class Shard extends Actor<ShardInbox> {
       .with({ kind: 'sharding.GetShardStats' }, (m) => this.onGetShardStats(m))
       .with(P.instanceOf(Terminated), (m) => this.onEntityTerminated(m))
       .with(P.instanceOf(Passivate), (m) => this.onPassivate(m))
+      // Ahead of the two timer messages, whose classes have the same shape:
+      // the matcher's types tell classes apart by shape alone, so the arm
+      // after `EntityStopTimeout` is typed with whatever shape is left.
+      .with(P.instanceOf(ShardPassivationRequest), () => this.onShardPassivationRequest())
       .with(P.instanceOf(EntityStopTimeout), (m) => this.onEntityStopTimeout(m))
       .with(P.instanceOf(EntityRestartTick), (m) => this.onEntityRestartTick(m))
       .otherwise((m) => this.onUnhandled(m));
@@ -313,17 +364,25 @@ export class Shard extends Actor<ShardInbox> {
   /**
    * The region's passivation of one entity — idle, or evicted for a newcomer.
    *
-   * An entity backing off has no incarnation to stop, but the region still
-   * counts it resident: it was routed a message, which is what admits an
-   * entity there.  Only an `EntityStopped` releases that slot, so the request
-   * is answered with one.  What the entity holds keeps waiting, and its wait
-   * keeps running: the passivation is the region's bookkeeping, not a reason
-   * to drop what callers sent (#1437).
+   * An entity backing off has no incarnation to stop, but the region may still
+   * count it resident: it was routed a message since its stop was reported,
+   * which is what admits an entity there.  Only an `EntityStopped` releases
+   * that slot, so then the request is answered with one.  What the entity holds
+   * keeps waiting, and its wait keeps running: the passivation is the region's
+   * bookkeeping, not a reason to drop what callers sent (#1437).
+   *
+   * Otherwise it is answered with nothing.  A request can be on its way while
+   * the entity stops by itself, and arrive once that stop has been reported;
+   * answering it reported the one stop twice, and under `rememberEntities` the
+   * coordinator persisted a second `stopped`.  So is a second request for the
+   * residency one answer has already released.
    */
   private onPassivateEntity(message: PassivateEntity): void {
     const state = this.entities.get(message.entityId);
     if (!state) {
-      if (this.restarts.has(message.entityId)) {
+      const record = this.restarts.get(message.entityId);
+      if (record?.messageSinceStop === true) {
+        record.messageSinceStop = false;
         this.notifyRegion({ kind: 'sharding.EntityStopped', shardId: this.config.shardId, entityId: message.entityId });
       }
       return;
@@ -368,6 +427,52 @@ export class Shard extends Actor<ShardInbox> {
   }
 
   /**
+   * The region's empty-shard sweep asking this shard to go away (#1441) — see
+   * {@link ShardPassivationRequest} for why the shard is the one to decide.
+   *
+   * Read behind everything the region sent before it, so whatever it handed
+   * over has been applied by now: a routed message has created its entity, a
+   * recovery start its remembered one.  An idle shard stops through the system
+   * lane, as the `PoisonPill` it replaces did, so nothing queued behind the
+   * request runs first — the region buffers what it routes from the moment it
+   * asked, so none of its own traffic is there.  A busy one says so and goes
+   * on, and the region routes to it again.
+   */
+  private onShardPassivationRequest(): void {
+    if (this.isIdle()) {
+      this.context.stopSelf();
+      return;
+    }
+    const declined = new ShardPassivationDeclined(this.config.shardId);
+    this.context.parent.toNullable()?.tell(declined as never);
+  }
+
+  /**
+   * Whether stopping this shard would lose nothing: no entity, running or
+   * passivating — the one created by the routed message or the recovery start
+   * just ahead of the request included — and no entity backing off: none
+   * holding messages, none whose return a start has armed, none still inside
+   * its wait (#1437).
+   *
+   * Those last three are why the region cannot judge this alone: an entity
+   * backing off has reported its stop, so the region's index already counts
+   * the shard empty, while the shard holds the messages that arrived for it
+   * and the record that makes the wait a wait.  Stopped then, the shard took
+   * both along — the messages to dead letters, the record so that the next
+   * message created the entity at once, its backoff started over at `min`.
+   * The wait counts with nothing held for that reason.  A record whose wait is
+   * over decides nothing a missing one would not, apart from how long the next
+   * wait is, so it does not keep the shard.
+   */
+  private isIdle(): boolean {
+    if (this.entities.size > 0) return false;
+    for (const record of this.restarts.values()) {
+      if (record.timer !== null || this.isHeldDown(record)) return false;
+    }
+    return true;
+  }
+
+  /**
    * Answer a stats query — or decline one that names nowhere to answer.
    *
    * `replyTo` is typed as a ref, and an `ask` always supplies one, but the
@@ -377,9 +482,12 @@ export class Shard extends Actor<ShardInbox> {
    * supervisor restarted it, and the restart took every entity of the shard
    * down with it while the region went on counting them.  A query with no ref
    * to answer is declined like any other message the shard cannot act on.
+   *
+   * What counts as a ref is asked by shape — see {@link isReplyRef} — so a ref
+   * minted by another copy of this module is answered (#1441).
    */
   private onGetShardStats(message: GetShardStats): void {
-    if (!(message.replyTo instanceof ActorRef)) {
+    if (!isReplyRef(message.replyTo)) {
       this.unhandled(message);
       return;
     }
@@ -511,6 +619,8 @@ export class Shard extends Actor<ShardInbox> {
     if (existing === undefined) {
       const record = this.restarts.get(entityId);
       if (record !== undefined && this.isHeldDown(record)) {
+        // Held or over the cap, the region counted the entity resident to route it.
+        record.messageSinceStop = true;
         this.hold(entityId, record, message, sender);
         return;
       }
@@ -593,7 +703,7 @@ export class Shard extends Actor<ShardInbox> {
     const now = this.system.clock.now();
     let record = this.restarts.get(entityId);
     if (record === undefined) {
-      record = { attempts: 0, blockedUntil: now, held: [], timer: null };
+      record = { attempts: 0, blockedUntil: now, held: [], timer: null, messageSinceStop: false };
     } else {
       this.restarts.delete(entityId);
       if (now - record.blockedUntil >= this.restartResetAfterMs) record.attempts = 0;
@@ -668,6 +778,8 @@ export class Shard extends Actor<ShardInbox> {
       record.timer.cancel();
       record.timer = null;
     }
+    // From here the incarnation's own stop is what reports the entity stopped.
+    if (record !== undefined) record.messageSinceStop = false;
     this.log.debug(
       `[sharding] spawning entity '${entityId}' in shard ${this.config.shardId} of '${this.config.typeName}'`,
     );
@@ -702,6 +814,26 @@ export class Shard extends Actor<ShardInbox> {
   private notifyRegion(message: EntityStarted | EntityStopped): void {
     this.context.parent.toNullable()?.tell(message as never);
   }
+}
+
+/**
+ * Whether a stats query's `replyTo` is something the shard can answer: a
+ * callable `tell` and `equals` and a `path`, the members a ref offers.
+ *
+ * Asked by shape rather than by class, as `EventStream` asks of a subscriber
+ * (#1433): a ref minted by another copy of this module — a second install of
+ * the package, or one file loaded under two specifiers — fails `instanceof`
+ * and works everywhere else (#1441).  Anything without those members, absent
+ * or not an object at all, is declined.
+ */
+function isReplyRef(value: unknown): value is ActorRef {
+  if (value === null || value === undefined) return false;
+  if (typeof value !== 'object' && typeof value !== 'function') return false;
+  const candidate = value as { tell?: unknown; equals?: unknown; path?: unknown };
+  return typeof candidate.tell === 'function'
+    && typeof candidate.equals === 'function'
+    && candidate.path !== null
+    && candidate.path !== undefined;
 }
 
 /**
