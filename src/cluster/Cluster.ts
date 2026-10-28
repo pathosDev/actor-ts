@@ -3651,7 +3651,12 @@ export class Cluster {
    *
    * A terminal incoming record is not a restart either.  `down` or `removed`
    * about the address already announces the end through the ordinary
-   * transition, whichever run it names.
+   * transition, whichever run it names — one `MemberDown` or `MemberRemoved`,
+   * which also reaches the stored run's watchers, since death watch is keyed
+   * on the slot.  Taken as a restart, the same record would be announced as
+   * the stored run's removal, then a `MemberJoined` for a member that arrives
+   * already gone, then the end a second time, and the slot's replay mark
+   * would go at once instead of with its entry (#112).
    */
   private isRestartOf(existing: Member, incoming: Member): boolean {
     if (incoming.status === 'down' || incoming.status === 'removed') return false;

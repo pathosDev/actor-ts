@@ -283,6 +283,7 @@ interface ClusterInternals {
   failureDetectionTick(): void;
   readonly failureDetector: FailureDetectorLike;
   readonly members: Map<string, Member>;
+  readonly acceptedGossipSequences: Map<string, number>;
 }
 
 const internals = (cluster: Cluster): ClusterInternals => cluster as unknown as ClusterInternals;
@@ -473,5 +474,69 @@ describe('what the merge announces when a record replaces one of the same addres
 
     expect(about.map((entry) => entry.event)).toEqual([]);
     expect(internals(node.cluster).members.get(run.toString())?.status).toBe('up');
+  });
+});
+
+/**
+ * A record that *ends* the slot — `down` or `removed` — is not a restart, and
+ * merges the same way whichever run it names (#1426).  Typical source: the
+ * restarted run left, or was downed by a strategy or an operator, on a node
+ * that knew it, and that node gossips its tombstone to one that still holds
+ * the previous run.
+ *
+ * The slot's end is announced once, through the ordinary transition — one
+ * `MemberDown` or `MemberRemoved` — and that one event also tells the stored
+ * run's watchers, because death watch is keyed on the slot.  Taken as a
+ * restart, the same record would be announced as the stored run's removal, a
+ * `MemberJoined` for a member that arrives already gone, and the end a second
+ * time; and the slot would lose its replay mark at once, where every other
+ * record keeps it until its entry leaves the map (#112,
+ * `DowningRouteRefusal.test.ts`).  The rows naming the stored run are the
+ * control: no incarnation differs there, so they hold either way.
+ */
+describe('a terminal record ends the slot the same way whichever run it names (#1426)', () => {
+  type TerminalRecord = {
+    readonly status: 'down' | 'removed';
+    readonly event: 'MemberDown' | 'MemberRemoved';
+    readonly run: 'run-1' | 'run-2';
+  };
+
+  const TERMINAL_RECORDS: ReadonlyArray<TerminalRecord> = [
+    { status: 'removed', event: 'MemberRemoved', run: 'run-1' },
+    { status: 'removed', event: 'MemberRemoved', run: 'run-2' },
+    { status: 'down', event: 'MemberDown', run: 'run-1' },
+    { status: 'down', event: 'MemberDown', run: 'run-2' },
+  ];
+
+  TERMINAL_RECORDS.forEach((terminal, index) => {
+    const named = terminal.run === 'run-1' ? 'the stored run' : 'a new incarnation';
+    test(`${terminal.status}, naming ${named}: one ${terminal.event}, the watcher told, the replay mark kept`, async () => {
+      const systemName = `replace-terminal-${index}`;
+      const node = await startFedNode(systemName, 9_620 + index);
+      const standing = new NodeAddress(systemName, STANDING_PEER_HOST, 9_820 + index, 'standing');
+      announce(node.cluster, standing, 'up', Date.now() - 60_000);
+      // The stored run speaks for itself once, so the slot holds a replay mark.
+      const storedRun = peerRun(systemName, 9_720 + index, 'run-1');
+      announce(node.cluster, storedRun, 'up', Date.now() - 60_000);
+      const markBefore = internals(node.cluster).acceptedGossipSequences.get(storedRun.toString());
+      expect(markBefore).toBeDefined();
+      const terminations = await watchActorOn(node, storedRun, `watcher-terminal-${index}`);
+      const about = announcementsAbout(node.cluster, storedRun);
+      about.length = 0;
+
+      const subject = peerRun(systemName, 9_720 + index, terminal.run);
+      const record: MemberData = { address: subject.toJSON(), status: terminal.status, version: Date.now(), roles: [] };
+      gossip(node.cluster, standing, [terminal.status === 'removed' ? { ...record, removedAt: Date.now() } : record]);
+
+      expect(about).toEqual([{ event: terminal.event, status: terminal.status, incarnation: terminal.run }]);
+      const entry = internals(node.cluster).members.get(storedRun.toString());
+      expect(entry?.status).toBe(terminal.status);
+      expect(entry?.address.incarnation).toBe(terminal.run);
+      expect(internals(node.cluster).acceptedGossipSequences.get(storedRun.toString())).toBe(markBefore);
+      await awaitCondition(() => terminations.length === 1, {
+        timeoutMs: 2_000, label: 'the watcher of the stored run was told the slot is gone',
+      });
+      expect(terminations[0]!.addressTerminated).toBe(true);
+    });
   });
 });
