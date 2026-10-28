@@ -1576,6 +1576,19 @@ export class Cluster {
   }
 
   /**
+   * @internal The peers this node has parked past `down-after` because no
+   * downing provider is configured and `failure-detector.auto-down` is off,
+   * keyed like the member map (#1426).  Read live by the `cluster-transport`
+   * readiness check, which expects none of them: nothing will remove a parked
+   * peer, so a survivor that waited for it would stay out of rotation for
+   * good.  A key leaves when the peer is heard from again or leaves the map —
+   * see {@link parkedWithoutResolver}.
+   */
+  _parkedPeers(): ReadonlySet<string> {
+    return this.parkedWithoutResolver;
+  }
+
+  /**
    * Operator-initiated force-down of a remote peer (#56).  Mirrors the
    * private `evaluateDowning` path: marks the peer `down`, emits the
    * lifecycle events, tombstones with `removedAt` so stale gossip
