@@ -776,10 +776,10 @@ import type { ActorSystem } from '../../ActorSystem.js';
  *   - `fail` / `skip` — do that immediately, without retrying.
  *
  * A failed group goes through the same strategy as a group — retried
- * whole, or stopped before its first event — except that it is never
- * skipped: where the strategy would skip, the group is split, and its
- * events are delivered again one per call through the per-event path,
- * which skips exactly the event that fails.
+ * as a group formed again from its first event, or stopped before that
+ * event — except that it is never skipped: where the strategy would skip,
+ * the group is split, and its events are delivered again one per call
+ * through the per-event path, which skips exactly the event that fails.
  *
  * Those four, the poll cadence and — for a `handleGroup` projection only —
  * the group size also have process-wide defaults under

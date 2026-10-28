@@ -28,11 +28,15 @@ import type { OffsetStore } from './OffsetStore.js';
  *   - `retry-and-skip` — retry with exponential backoff, then `skip`.
  *
  * A `handleGroup` projection applies the strategy to the failed group first:
- * a retry sends the same group again and a stop stops before its first event.
- * A group is never skipped, though, because that would drop the good events
- * in it along with the bad one.  Where the strategy would skip, the group is
- * split instead — its events are delivered again one per call, each with its
- * own retry budget — so the strategy skips exactly the event that fails.
+ * a retry forms the group again from the same first event — larger, if more
+ * events were journaled during the backoff, with the attempt count carried
+ * over — and a stop stops before its first event.  A group is never skipped,
+ * though, because that would drop the good events in it along with the bad
+ * one.  Where the strategy would skip, the group is split instead — its
+ * events are delivered again one per call, each with its own retry budget —
+ * so the strategy skips exactly the event that fails.  Under
+ * `retry-and-skip` that costs two budgets: the group's, which its good
+ * events wait out before the split, then the bad event's own.
  */
 export type ProjectionRecoveryStrategy =
   | 'fail'

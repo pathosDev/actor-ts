@@ -1033,6 +1033,54 @@ describe('grouped handler — a failing group (#1448)', () => {
     await fixture.system.terminate();
   });
 
+  test('a retry forms the group again from its first event — events journaled meanwhile join it', async () => {
+    // A retry is not a resend of the group that failed: the cursor is still
+    // before that group's first event, so the next poll cuts a group from
+    // there, and an event appended during the backoff makes it larger.  The
+    // attempt count belongs to whatever the cursor waits on, so it carries
+    // over to the larger group rather than starting again at 1.
+    const fixture = newFixture('proj-group-retry-grows');
+    await fixture.journal.append('poison', [{ event: { n: 1 } }, { event: { n: 2 } }], 0);
+    const offsetStore = new RecordingOffsetStore();
+
+    const calls: number[][] = [];
+    const failures: ProjectionFailure<CountedEvent>[] = [];
+    const projectionOptions = ByPersistenceIdProjectionOptions.create<CountedEvent>()
+      .withName('group-retry-grows')
+      .withQuery(fixture.query)
+      .withOffsetStore(offsetStore)
+      .withPersistenceId('poison')
+      .withRecoveryStrategy('retry-and-fail')
+      .withMaxRetries(2)
+      .withRetryBackoffMs(100)
+      .withMaxRetryBackoffMs(1_000)
+      .withOnFailure((failure) => { failures.push(failure); })
+      .withGroupAfterEnvelopes(3)
+      .withHandleGroup((events) => {
+        calls.push(numbersOf(events));
+        if (calls.length <= 2) throw new Error('transient');
+      })
+      .withLiveOptions({ pollIntervalMs: 10 });
+    const ref = ProjectionActor.byPersistenceId<CountedEvent>(fixture.system, projectionOptions);
+
+    await waitFor(() => calls.length === 1);
+    await fixture.journal.append('poison', [{ event: { n: 3 } }], 2);
+    fixture.scheduler.advance(100);
+    await waitFor(() => calls.length === 2);
+    fixture.scheduler.advance(200);
+    await waitFor(() => offsetStore.saves.includes(3));
+
+    expect(calls).toEqual([[1, 2], [1, 2, 3], [1, 2, 3]]);
+    expect(offsetStore.saves).toEqual([3]);
+    expect(failures.map(reported)).toEqual([
+      { event: 1, group: [1, 2], attempt: 1, action: 'retry' },
+      { event: 1, group: [1, 2, 3], attempt: 2, action: 'retry' },
+    ]);
+
+    ref.stop();
+    await fixture.system.terminate();
+  });
+
   test('by tag: a split range across two streams outlives the tick, in offset order', async () => {
     const fixture = newFixture('proj-group-tag-split');
     // One append per stream, `a` before `b`: should both land on one
