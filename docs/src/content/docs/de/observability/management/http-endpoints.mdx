@@ -314,19 +314,29 @@ des Mitglieds neu und gibt seinen entfernten Watchern ihr
 läuft weiter, samt seinen Actors — stoppe es also zuerst oder stell
 sicher, dass es weg ist, bevor du es downst.
 
-**Das ist der Weg aus dem Default.** Ohne konfigurierte
-Downing-Strategie und mit `actor-ts.cluster.failure-detector.auto-down`
-aus parkt der Failure Detector ein stilles Mitglied auf
-`unreachable`, und nichts anderes entfernt es; der Node loggt eine
-Warnung, die das Mitglied und diesen Endpunkt nennt. Unter
-`auto-down = on` löscht der Detector das Mitglied selbst, sobald er
-es für `down` erklärt, danach antwortet der Endpunkt dafür mit `404`.
+**Das ist der Weg aus dem Opt-out.** Unter dem Default — keine
+Downing-Strategie, `actor-ts.cluster.failure-detector.auto-down = on`
+— löscht der Failure Detector ein stilles Mitglied selbst, sobald er
+es für `down` erklärt, und der Endpunkt antwortet danach meist mit
+`404` dafür. Mit zwei oder mehr Überlebenden kann der Gossip eines
+anderen Überlebenden das gelöschte Mitglied allerdings als
+`unreachable` zurückbringen, bis der Detector es erneut entfernt,
+und ein Aufruf in diesem Fenster findet es und antwortet mit `202`.
+Unter `auto-down = off` parkt der Failure Detector ein stilles
+Mitglied auf `unreachable`, und der Node loggt eine Warnung, die das
+Mitglied und diesen Endpunkt nennt; nur ein Operator, eine Strategie
+oder der eigene Neustart des Nodes auf derselben Adresse entfernt es.
 
 Nutze für:
 
 - **Entfernen eines abgestürzten Mitglieds**, das der Failure
-  Detector geparkt hat, wenn keine Downing-Strategie konfiguriert
-  ist — sonst entfernt es nichts.
+  Detector unter `auto-down = off` geparkt hat, ohne konfigurierte
+  Downing-Strategie. Wurde der Node seitdem auf derselben Adresse
+  neu gestartet, hat der Cluster den geparkten Lauf schon beendet,
+  und der Eintrag unter dieser Adresse ist der neue Prozess:
+  `GET /cluster/members` zeigt ihn wieder auf `up` mit neuerer
+  `version`. Ihn dann zu downen entfernt den gesunden Lauf, der nicht
+  benachrichtigt wird und außerhalb des Clusters weiterläuft.
 - **Eine Partition von Hand auflösen** ohne Strategie: Downe die
   Mitglieder der anderen Seite von der Seite aus, die du behältst,
   und stoppe die Prozesse auf der Seite, die du aufgibst, denn sie

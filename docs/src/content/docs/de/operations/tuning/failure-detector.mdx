@@ -66,18 +66,24 @@ Ein Node stirbt, aber der Cluster reagiert erst nach 10+ Sekunden.
 Singletons / sharded Entities ziehen lange nicht um.
 ```
 
-**Ursache**: Entweder entfernt nichts einen abgestürzten Node,
-oder `unreachableAfterMs` + die Verzögerung der Downing-Strategy
-ist zu lang. Ohne Downing-Strategy und mit
-`failure-detector.auto-down` auf dem Default `off` parkt der
-Detector ein stummes Mitglied nur auf `unreachable`, und nichts
-bewegt sich, bis es zurückkommt oder jemand es downt.
+**Ursache**: Entweder wird der abgestürzte Node nie entfernt, oder
+sein Entfernen kommt spät. Ohne Downing-Strategy entfernt der
+Detector ein stummes Mitglied bei `downAfterMs` —
+`failure-detector.auto-down` ist per Default an —, das Failover
+dauert also `downAfterMs` plus die Übergabe; mit einer Strategy
+`unreachableAfterMs` plus deren `stable-after`. Unter dem Opt-out
+`auto-down = off` ohne Strategy parkt der Detector das Mitglied nur
+auf `unreachable`, und nichts bewegt sich, bis es zurückkommt oder
+jemand es downt.
 
-**Fix**: Zuerst sicherstellen, dass etwas den Node entfernt: eine
-Downing-Strategy (`split-brain-resolver.active-strategy`) oder
-`failure-detector.auto-down = on`. Dann `unreachableAfterMs` und
-`downAfterMs` proportional senken, mit einer Strategy auch deren
-`stable-after`.
+**Fix**: Zuerst sicherstellen, dass etwas den Node entfernt: der
+Default `failure-detector.auto-down = on` oder — für Produktion die
+richtige Wahl, weil der Default den Cluster bei einer echten
+Partition spaltet — eine Downing-Strategy wie `lease-majority`
+(`split-brain-resolver.active-strategy`, siehe
+[Downing-Strategien](/de/cluster/downing-strategies/)). Dann
+`unreachableAfterMs` und `downAfterMs` proportional senken, mit einer
+Strategy auch deren `stable-after`.
 
 ```ts
 failureDetector: {

@@ -120,10 +120,12 @@ node.  Check role tags in `Cluster.join`.
 If the coordinator warns that none of the registered regions that can
 host the type "is on a member that is up", the role is fine and the
 hosting nodes are not.  It says so once per episode, and the request
-stays pending until a member comes back.  A member parked at
-`unreachable` stays there until it recovers or something downs it — a
-split-brain strategy, `failure-detector.auto-down = on`, or an
-operator — so check the member list before the sharding settings.
+stays pending until a member comes back.  Under the default a member
+that stops answering is removed at `down-after` and its shards move to
+the survivors; one parked at `unreachable` — by a split-brain strategy
+that has not decided, or under `failure-detector.auto-down = off` —
+stays there until it recovers or something downs it, so check the
+member list before the sharding settings.
 
 ### Symptom: rebalance storm
 
@@ -139,8 +141,12 @@ Causes:
    triggering it.  The coordinator rebalances only once the set of `up`
    members has held still for the settle window (`down-after`, or
    `stable-after` with a split-brain strategy), so a flap shorter than
-   that moves nothing; a storm here comes from membership that changes
-   more slowly than the window — real joins and removals, not blips.
+   that moves no shard placed before it.  Shards first asked for during
+   the flap land on the members that are up, and those can be handed
+   off once the member is back and the window has run out — see
+   [rebalance](/cluster/sharding/rebalance/).  A storm here comes from
+   membership that changes more slowly than the window — real joins and
+   removals, not blips.
 
 Fix:
 

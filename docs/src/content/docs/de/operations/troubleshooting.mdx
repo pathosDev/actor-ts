@@ -125,11 +125,13 @@ Warnt der Koordinator, dass keine der registrierten Regionen, die den
 Typ hosten können, "is on a member that is up", dann stimmt die Rolle,
 und die hostenden Nodes sind das Problem. Er sagt es einmal pro
 Episode, und die Anfrage bleibt offen, bis ein Mitglied zurückkommt.
-Ein Mitglied, das als `unreachable` geparkt ist, bleibt dort, bis es
-sich erholt oder etwas es auf `down` setzt: eine
-Split-Brain-Strategie, `failure-detector.auto-down = on` oder ein
-Operator. Prüfe also die Mitgliederliste vor den
-Sharding-Einstellungen.
+Unter dem Default wird ein Mitglied, das nicht mehr antwortet, bei
+`down-after` entfernt, und seine Shards ziehen zu den Überlebenden
+um; eines, das als `unreachable` geparkt ist — von einer
+Split-Brain-Strategie, die noch nicht entschieden hat, oder unter
+`failure-detector.auto-down = off` —, bleibt dort, bis es sich erholt
+oder etwas es auf `down` setzt. Prüfe also die Mitgliederliste vor
+den Sharding-Einstellungen.
 
 ### Symptom: Rebalance-Storm
 
@@ -146,8 +148,13 @@ Ursachen:
    auf, statt es auszulösen. Der Koordinator verteilt erst um, wenn die
    Menge der `up`-Mitglieder für das Beruhigungsfenster stillgehalten
    hat (`down-after`, mit einer Split-Brain-Strategie `stable-after`);
-   ein kürzeres Flappen verschiebt also nichts. Ein Sturm kommt hier von
-   einer Mitgliedschaft, die sich langsamer als das Fenster ändert —
+   ein kürzeres Flappen verschiebt also keinen Shard, der vorher
+   platziert war. Shards, die während des Flappens zum ersten Mal
+   angefragt werden, landen auf den Mitgliedern, die `up` sind, und
+   die können übergeben werden, sobald das Mitglied zurück und das
+   Fenster abgelaufen ist — siehe
+   [Rebalance](/de/cluster/sharding/rebalance/). Ein Sturm kommt hier
+   von einer Mitgliedschaft, die sich langsamer als das Fenster ändert —
    echte Beitritte und Entfernungen, keine kurzen Aussetzer.
 
 Fix:

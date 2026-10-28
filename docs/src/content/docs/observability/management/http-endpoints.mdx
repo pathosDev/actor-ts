@@ -300,18 +300,27 @@ remote watchers their `Terminated`.  The target itself is not told
 (#940): it keeps running, actors and all, so stop it first, or make
 sure it is gone, before you down it.
 
-**This is the way out of the default.**  With no downing strategy
-configured and `actor-ts.cluster.failure-detector.auto-down` off,
-the failure detector parks a silent member at `unreachable` and
-nothing else removes it; the node logs one warning that names the
-member and this endpoint.  Under `auto-down = on` the detector
-deletes the member itself once it declares it `down`, so the
-endpoint answers `404` for it afterwards.
+**This is the way out of the opt-out.**  Under the default — no
+downing strategy, `actor-ts.cluster.failure-detector.auto-down = on`
+— the failure detector deletes a silent member itself once it
+declares it `down`, and the endpoint usually answers `404` for it
+afterwards.  With two or more survivors, though, another survivor's
+gossip can bring the deleted member back as `unreachable` until the
+detector removes it again, and a call in that window finds it and
+answers `202`.  Under `auto-down = off` the failure detector parks a
+silent member at `unreachable`, and the node logs one warning that
+names the member and this endpoint; only an operator, a strategy or
+the node's own restart on the same address removes it.
 
 Use for:
 
-- **Removing a crashed member** the failure detector has parked,
-  when no downing strategy is configured — nothing else will.
+- **Removing a crashed member** the failure detector has parked under
+  `auto-down = off`, with no downing strategy configured.  If the node
+  has been restarted on the same address since, the cluster has ended
+  the parked run already, and the record at that address is the new
+  process: `GET /cluster/members` shows it back at `up` with a newer
+  `version`.  Downing it then removes the healthy run, which is not
+  told and keeps running outside the cluster.
 - **Settling a partition by hand** without a strategy: down the
   other side's members from the side you keep, and stop the
   processes on the side you drop, since they are not told.

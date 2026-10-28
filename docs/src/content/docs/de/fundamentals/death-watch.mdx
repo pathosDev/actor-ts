@@ -434,13 +434,21 @@ Fall:
   `addressTerminated = true`.  Ein Node, der nur *unreachable* ist,
   löst es nicht aus — er kann zurückkommen.  Zuerst muss ihn etwas
   entfernen: eine [Downing-Strategie](/de/cluster/downing-strategies/),
-  ein `Cluster.down` eines Operators oder der Failure Detector unter
-  `failure-detector.auto-down = on`.  Ohne eines davon — der Default —
-  bekommen die Watcher eines abgestürzten Nodes kein `Terminated`, bis
-  jemand ihn downt.  Und unter `auto-down` ist das Entfernen eine
-  Vermutung: Ein Node, der nur langsam war, wird trotzdem entfernt,
-  seine Watcher erfahren `addressTerminated`, und derselbe Lauf kann
-  danach zurückkommen, während ihr `Terminated` bestehen bleibt.
+  ein `Cluster.down` eines Operators oder — ohne konfigurierte
+  Strategie, der Default — der Failure Detector selbst bei
+  `down-after` (`failure-detector.auto-down = on`).  Per Default
+  bekommen die Watcher eines abgestürzten Nodes ihr `Terminated` also
+  etwa fünf Sekunden, nachdem er verstummt ist.  Dieses Entfernen ist
+  allerdings eine Vermutung: Ein Node, der nur langsam war, wird
+  trotzdem entfernt, seine Watcher erfahren `addressTerminated`, und
+  derselbe Lauf kann danach zurückkommen, während ihr `Terminated`
+  bestehen bleibt.  Unter dem Opt-out `auto-down = off` ohne
+  Strategie bekommen die Watcher eines abgestürzten Nodes kein
+  `Terminated`, bis jemand ihn downt — oder bis der Node auf derselben
+  Adresse neu startet, was den alten Lauf beendet, sein Entfernen
+  verkündet und das `Terminated` zustellt, bevor der neue Lauf
+  beitritt
+  ([ein Neustart beendet den vorherigen Lauf](/de/cluster/failure-detector/#ein-neustart-beendet-den-vorherigen-lauf)).
 
 Ein beobachtender Actor, der stoppt, zieht seine Remote-Watches
 zurück, und ein Node, der den Cluster verlässt, zieht jeden

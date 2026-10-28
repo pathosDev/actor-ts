@@ -135,13 +135,23 @@ const OLD_PHRASINGS: readonly OldPhrasing[] = [
   { pattern: /\bopt(?:s|ed)?[- ]in(?:to)?\b/i, alongside: ABOUT_AUTO_DOWN },
   { pattern: /auto-down = on`? (?:opts|restores)\b/i },
   {
-    pattern:
-      /\bwith(?:out)? (?:no |a )?(?:downing )?strategy\b(?:(?!opt-out|auto-down`?\s*=\s*`?off)[\s\S])*?\b(?:would )?only parks?\b/i,
+    pattern: /\bwith(?:out)? (?:no |a )?(?:downing )?strategy\b[\s\S]*?\b(?:would )?only parks?\b/i,
+    unless: QUALIFIED,
   },
-  { pattern: /\bwithout (?:a )?downing\b(?:(?!opt-out|auto-down`?\s*=\s*`?off)[\s\S])*?\bparks?\b/i },
+  { pattern: /\bwithout (?:a )?downing\b[\s\S]*?\bparks?\b/i, unless: QUALIFIED },
   { pattern: /\bdetector only parks\b/i, unless: QUALIFIED },
   { pattern: /\bnothing removes (?:an? )(?:unreachable |crashed |silent )?(?:peer|member|node)\b/i },
   { pattern: /\bthe way out of the default\b/i },
+  // About a crashed *node*: the same words about a restarting actor and the
+  // default supervisor strategy are true and stay.
+  {
+    pattern: /\bthe default\b[^.]*?\bno (?:node-loss )?`?Terminated\b/i,
+    alongside: /\bnode(?:'s|s)?\b/i,
+    unless: QUALIFIED,
+  },
+  // `auto-down = on` listed beside a strategy and an operator as one more way to
+  // remove a parked member — the removers of a member the default never parks.
+  { pattern: /\bstrateg\w*\b[^.]{0,40}`(?:failure-detector\.)?auto-down = on`[^.]{0,20}\b(?:or|oder) (?:an? |ein )?operator\b/i },
   // A heartbeat offered as the way back without the partition caveat: after a
   // symmetric partition heals, neither side heartbeats the other (#930).
   { pattern: /\buntil it heartbeats again\b/i },
@@ -165,9 +175,14 @@ const OLD_PHRASINGS: readonly OldPhrasing[] = [
   { pattern: /\bOpt-in\b/, alongside: ABOUT_AUTO_DOWN },
   { pattern: /auto-down = on`? (?:wählt|stellt)\b/ },
   { pattern: /\bentfernt nichts (?:ein|einen)\b/ },
-  { pattern: /\bOhne (?:Downing|Strategie)\w*\b(?:(?!Opt-out|auto-down`?\s*=\s*`?off)[\s\S])*?\bparkt\b/ },
+  { pattern: /\bOhne (?:Downing|Strategie)\w*\b[\s\S]*?\bparkt\b/, unless: QUALIFIED },
   { pattern: /\bDetector\b.{0,20}?\bparkt\b.{0,40}?\bnur\b/, unless: QUALIFIED },
   { pattern: /\bWeg aus dem Default\b/ },
+  {
+    pattern: /\b(?:der|dem|im) Default\b[^.]*?\bkein (?:Knotenverlust-)?`?Terminated\b/,
+    alongside: /\bNodes?\b/,
+    unless: QUALIFIED,
+  },
   { pattern: /\bbis es wieder Heartbeats\s+schickt\b/ },
   { pattern: /\bwenn Heartbeats\s+wieder ankommen\b/ },
 ];
@@ -187,6 +202,10 @@ const GUARDED_FILES: readonly string[] = [
     page(language, 'reference/faq.mdx'),
     page(language, 'cluster/weakly-up.mdx'),
     page(language, 'coordination/overview.mdx'),
+    page(language, 'fundamentals/death-watch.mdx'),
+    page(language, 'observability/management/http-endpoints.mdx'),
+    page(language, 'operations/troubleshooting.mdx'),
+    page(language, 'operations/tuning/failure-detector.mdx'),
   ]),
 ];
 
