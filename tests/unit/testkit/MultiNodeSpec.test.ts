@@ -21,6 +21,7 @@ import { MultiNodeSpecOptions } from '../../../src/testkit/MultiNodeSpecOptions.
 import { MultiNodeTransport } from '../../../src/testkit/internal/MultiNodeTransport.js';
 import { DEFAULT_STABLE_AFTER_MS } from '../../../src/cluster/downing/index.js';
 import type { DowningProvider } from '../../../src/cluster/downing/index.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
 
 const TIGHT_FD = {
@@ -187,6 +188,45 @@ describe('MultiNodeSpec — failure simulation', () => {
       MultiNodeTransport._resetRegistryForTest();
     }
   }, 15_000);
+});
+
+describe('MultiNodeSpec — a refused join', () => {
+  // A role's system is built before its `Cluster.join`, and the spec records
+  // the node only after the join succeeded — so a refused join that did not
+  // end the system would leave it running behind a node `stop()` cannot see.
+  // Observed through the scheduler the spec hands every role: a system that
+  // borrows one installs its error sink there while it runs and takes it back
+  // when it terminates.
+  test('ends the refused role\'s system before rethrowing', async () => {
+    const scheduler = new ManualScheduler();
+    const spec = new MultiNodeSpec({ roles: ['a'], gossipIntervalMs: 0, scheduler });
+    try {
+      let caught: unknown;
+      try { await spec.start(); } catch (error) { caught = error; }
+
+      expect(caught).toBeInstanceOf(OptionsError);
+      expect((caught as OptionsError).field).toBe('gossipIntervalMs');
+      expect(scheduler.onError).toBeUndefined();
+    } finally {
+      await spec.stop();
+      MultiNodeTransport._resetRegistryForTest();
+    }
+  }, 10_000);
+
+  test('the control: a role that joined holds the borrowed scheduler\'s sink until it stops', async () => {
+    // Without it the case above would pass for a scheduler no system ever
+    // installed a sink on.
+    const scheduler = new ManualScheduler();
+    const spec = new MultiNodeSpec({ roles: ['a'], scheduler });
+    try {
+      await spec.start();
+      expect(scheduler.onError).toBeDefined();
+    } finally {
+      await spec.stop();
+      MultiNodeTransport._resetRegistryForTest();
+    }
+    expect(scheduler.onError).toBeUndefined();
+  }, 10_000);
 });
 
 describe('MultiNodeSpec — await timeouts', () => {
