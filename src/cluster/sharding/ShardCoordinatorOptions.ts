@@ -36,7 +36,8 @@ export const DEFAULT_REBALANCE_ABSOLUTE_LIMIT = 0;
  *
  * `0.1` is borrowed from Akka's key of the same name rather than measured here,
  * and it is a real behaviour change: at the shipped `number-of-shards = 64` a
- * 2 → 3 node join moved 42 shards in one 2 s tick and now moves 6 at a time.
+ * 2 → 3 node join moved 42 to 44 shards in one 2 s tick, depending on where
+ * the new node sorts in address order, and now moves 6 at a time.
  * The quantity that should actually set it is what a journal absorbs per
  * rebalance round — that needs a run against a real backend, and until one
  * exists a borrowed bound beats no bound.  Set the leaf to `0` to restore the

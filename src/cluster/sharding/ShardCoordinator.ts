@@ -795,10 +795,15 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * Settling is not a failure state.  Shards are still placed, only never on a
    * member that is not up, and rebalancing simply waits.  What the window buys
    * is that a member which goes `unreachable` and comes back before anything
-   * decides about it moves no shard at all, and that a member which stays
-   * parked costs one round of moves rather than one every tick.  It cannot
-   * stall rebalancing for good: the window is finite, and a parked member is
-   * simply not part of the set that has to hold still.
+   * decides about it moves no shard that was placed before it — a shard first
+   * asked for meanwhile lands on a member that is up, and may move once the
+   * window has run out on the restored set — and that a member which stays
+   * parked costs one round of moves rather than one every tick.  A parked
+   * member does not hold the window open: it is simply not part of the set
+   * that has to hold still.  A member that flaps does.  Every time it leaves
+   * or rejoins the set the window starts again, so one that flips faster than
+   * the window stalls rebalancing — onto a newly joined region too — for as
+   * long as it flaps.
    */
   private isEligibleSetSettled(): boolean {
     const record = this.eligibleSetRecord;
@@ -850,15 +855,18 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * Not {@link warnRoleMatchesNoRegion}'s case, and deliberately not its line:
    * the role, if there is one, does match, and the remedy is not a
    * configuration change but a member coming back or being decided about.
-   * What decides about a member that stopped answering depends on the downing
-   * configuration, so the line names each route by its key: with a split-brain
-   * strategy, the strategy's verdict; without one, the failure detector itself
-   * at `down-after` while `failure-detector.auto-down` is on, and only an
-   * operator's `down` while it is off — the member stays parked at
-   * `unreachable` until then.  The keys come from {@link ConfigKeys}, the one
-   * place a renamed key changes; a literal here once named a key that did not
-   * exist (#633).  One line per episode, cleared by the next allocation that
-   * succeeds — the latch {@link roleMismatchWarned} uses.
+   * While #930 is open, a member cut off by a symmetric partition is not heard
+   * from again after the network heals, so it does not come back on its own
+   * and only the decision ends the wait.  What decides about a member that
+   * stopped answering depends on the downing configuration, so the line names
+   * each route by its key: with a split-brain strategy, the strategy's
+   * verdict; without one, the failure detector itself at `down-after` while
+   * `failure-detector.auto-down` is on, and only an operator's `down` while it
+   * is off — the member stays parked at `unreachable` until then.  The keys
+   * come from {@link ConfigKeys}, the one place a renamed key changes; a
+   * literal here once named a key that did not exist (#633).  One line per
+   * episode, cleared by the next allocation that succeeds — the latch
+   * {@link roleMismatchWarned} uses.
    */
   private warnNoEligibleRegion(candidateCount: number): void {
     if (this.noEligibleRegionWarned) return;
@@ -1319,10 +1327,15 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    *
    * No candidate at all is {@link warnRoleMatchesNoRegion}'s case; candidates of
    * which none is on an up member are {@link warnNoEligibleRegion}'s.  Either
-   * way the request stays pending.  A member that comes back re-emits
-   * `MemberUp`, on which every region registers again and re-asks for the
-   * shards it buffered, so the shard is allocated then without the coordinator
-   * watching reachability itself.
+   * way the request stays pending until the membership decides.  A member that
+   * comes back re-emits `MemberUp`, on which every region registers again and
+   * re-asks for the shards it buffered, so the shard is allocated then without
+   * the coordinator watching reachability itself; a member that is removed
+   * takes its regions with it, and the request waits for a region that can
+   * host the type.  While #930 is open, a member cut off by a symmetric
+   * partition is not heard from again after the network heals, so it does not
+   * come back on its own: there the request waits until auto-down, a strategy
+   * or an operator removes the member.
    */
   private tryAllocate(shardId: number): void {
     const candidates = this.candidateRegions();
@@ -1917,9 +1930,10 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * because only one strategy in the tree caps itself, and it is not the default
    * one: `ClusterSharding.ensureCoordinator` wires
    * {@link HashAllocationStrategy}, which returns *every* shard whose
-   * `shardId % candidates.length` no longer matches its owner — 42 of the
-   * shipped 64 when a third node joins.  A cap inside a strategy would also say
-   * nothing about a user-supplied one.  The budget subtracts what is already in
+   * `shardId % candidates.length` no longer matches its owner — 42 to 44 of the
+   * shipped 64 when a third node joins, depending on where it sorts in address
+   * order.  A cap inside a strategy would also say nothing about a
+   * user-supplied one.  The budget subtracts what is already in
    * flight, which is what makes it a bound on *concurrency* rather than on
    * batch size: both shipped strategies skip shards in `rebalanceInProgress`,
    * so a per-tick-only cap would simply stack — the tick fires every

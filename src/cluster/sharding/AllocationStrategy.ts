@@ -56,9 +56,11 @@ export interface AllocationStrategy {
  * Hash-based: allocate by modulo on the sorted candidate list.  Simple and
  * deterministic, but **not** minimal: a shard's owner is its id modulo the
  * number of candidates, so a candidate set that changes size moves most shards
- * at once — 16 of 24 when three candidates become two, 42 of 64 when two
- * become three.  The coordinator's rebalance ceiling bounds how many of them
- * move concurrently, not how many move in total.
+ * at once — 16 of 24 when three candidates become two, whichever one leaves,
+ * and 42 to 44 of 64 when two become three: the candidates are sorted by
+ * address, so how many move depends on where the new one sorts (42 when it
+ * sorts last, 44 when it sorts first).  The coordinator's rebalance ceiling
+ * bounds how many of them move concurrently, not how many move in total.
  */
 export class HashAllocationStrategy implements AllocationStrategy {
   /**

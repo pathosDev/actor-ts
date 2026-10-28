@@ -5,8 +5,9 @@
  * blamed.  `LeastShardAllocationStrategy` caps itself at `maxSimultaneousRebalance`
  * and is reached from exactly one place in `src/`; every user-started sharded
  * type gets `HashAllocationStrategy`, which returns *every* shard whose
- * `shardId % candidates.length` no longer matches its owner — 42 of the shipped
- * 64 when a third node joins.  So the ceiling sits at
+ * `shardId % candidates.length` no longer matches its owner — 42 to 44 of the
+ * shipped 64 when a third node joins, depending on where it sorts in address
+ * order.  So the ceiling sits at
  * `ShardCoordinator.rebalanceTick`, where it bounds that strategy, the other
  * one, and anything a user hands in.
  *

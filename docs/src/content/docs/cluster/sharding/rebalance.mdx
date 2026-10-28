@@ -150,9 +150,12 @@ The window is derived from the downing timings rather than configured:
 `failure-detector.down-after` with no split-brain strategy, and the
 larger of that and `split-brain-resolver.stable-after` with one.  At the
 shipped defaults that is **5 s** without a strategy and **20 s** with
-one, plus up to one rebalance tick (2 s) before the first rebalance
-runs.  A new leader starts its own window, so it settles before it
-rebalances, too.
+one.  It runs from the coordinator's first look at the changed set —
+its next allocation or rebalance tick, which can be up to one tick
+(2 s) after the change — and the first rebalance runs at the first tick
+after it has run out, so the first move can come up to two ticks (4 s)
+later than the window alone would say.  A new leader starts its own
+window, so it settles before it rebalances, too.
 
 What follows from it:
 
@@ -174,15 +177,26 @@ What follows from it:
   has run out with a member still parked, the default
   `HashAllocationStrategy` balances the shards of the *healthy* members
   over a set that is one smaller, which moves those whose slot changed
-  with its size — 21 of the shipped 64 with one of three nodes parked —
-  once.  Allocation then asks over the same set, so the next tick finds
-  nothing to do.
+  with its size once — 21 or 22 of the shipped 64 with one of three
+  nodes parked, since the slots follow address order: 21 when the parked
+  node sorts last, 22 otherwise.  Allocation then asks over the same set,
+  so the next tick finds nothing to do.
 - **A new shard with nowhere to go waits.**  When every region that
   could host the type is on a member that is not up, a request for a new
-  shard stays pending and the coordinator logs one warning per episode.
-  A member that comes back re-emits `MemberUp`, every region registers
-  again and re-asks for the shards it buffered, and the request is
-  answered then.
+  shard stays pending until the membership decides, and the coordinator
+  logs one warning per episode.  A member that comes back re-emits
+  `MemberUp`, every region registers again and re-asks for the shards it
+  buffered, and the request is answered then; a member that is removed
+  takes its regions with it, and the request waits for a region that can
+  host the type.  While #930 is open, a member cut off by a symmetric
+  partition is not heard from again after the network heals, so it does
+  not come back on its own: the request stays pending until auto-down, a
+  split-brain strategy or an operator removes the member.
+- **A flapping member stalls rebalancing.**  Every time a member leaves
+  or rejoins the set of members that are up, the window starts again, so
+  one that flips faster than the window keeps the coordinator from
+  rebalancing at all — onto a newly joined region too — for as long as
+  it flaps.  Allocation goes on meanwhile, on members that are up.
 
 The rule holds **per coordinator**.  Under a partition the cut-off side
 elects a leader of its own, and with it a coordinator of its own, which
@@ -329,12 +343,13 @@ the configured ceiling **at once**.  The default
 [`HashAllocationStrategy`](/cluster/sharding/allocation-strategy/)
 places a shard by `shardId % candidates.length`, so a node joining
 changes the answer for most shards simultaneously: at the shipped
-`numShards = 64` a 2 → 3 node join re-homes **42 shards**, each one a
-stop, a re-allocation, a re-creation and — for a persistent or
-remembered entity — a journal replay.  All of it in the same tick: a
-`MemberUp` moves nothing by itself, and the first tick after the set of
-`up` members has held still for the settle window proposes every one
-of them at once.
+`numShards = 64` a 2 → 3 node join re-homes **42 to 44 shards** (42
+when the new node sorts last in address order, 44 when it sorts
+first), each one a stop, a re-allocation, a re-creation and — for a
+persistent or remembered entity — a journal replay.  All of it in the
+same tick: a `MemberUp` moves nothing by itself, and the first tick
+after the set of `up` members has held still for the settle window
+proposes every one of them at once.
 
 Three properties of the bound are worth knowing:
 

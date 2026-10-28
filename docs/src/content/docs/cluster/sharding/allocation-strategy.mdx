@@ -49,7 +49,10 @@ return sorted[shardId % sorted.length];
   need to move (when nodes join or leave).  "Minimal" is relative to
   *doing it at all*, not to how much moves: the modulus changes for
   most shards when the candidate count does, so at `numShards = 64` a
-  1 → 2 join re-homes 32 shards, a 2 → 3 join **42**, a 3 → 4 join 46.
+  1 → 2 join re-homes 32 shards, a 2 → 3 join **42 to 44** and a 3 → 4
+  join 46 to 49.  The range is address order at work: the candidates are
+  sorted, so the figure depends on where the new node sorts — the low
+  end when it sorts last, the high end when it sorts first.
   The strategy proposes all of them in one pass; what keeps that from
   arriving as one burst is the coordinator's own ceiling — see
   [the ceiling on churn](/cluster/sharding/rebalance/#the-ceiling-on-churn).

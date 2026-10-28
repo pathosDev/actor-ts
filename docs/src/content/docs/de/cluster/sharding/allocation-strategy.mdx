@@ -51,8 +51,11 @@ return sorted[shardId % sorted.length];
   „Minimal" bezieht sich darauf, *ob überhaupt* verschoben wird,
   nicht darauf, wie viel: der Modulus ändert sich für die meisten
   Shards, sobald sich die Kandidatenzahl ändert. Bei `numShards = 64`
-  verschiebt ein Beitritt 1 → 2 also 32 Shards, 2 → 3 **42** und
-  3 → 4 dann 46. Die Strategie schlägt alle in einem Durchgang vor;
+  verschiebt ein Beitritt 1 → 2 also 32 Shards, 2 → 3 **42 bis 44** und
+  3 → 4 dann 46 bis 49. Die Spanne kommt aus der Adressreihenfolge: Die
+  Kandidaten werden sortiert, also hängt die Zahl davon ab, wo der neue
+  Node einsortiert wird — das untere Ende, wenn er zuletzt kommt, das
+  obere, wenn er zuerst kommt. Die Strategie schlägt alle in einem Durchgang vor;
   dass das nicht als ein Schwall ankommt, verhindert die Obergrenze
   des Koordinators — siehe
   [Die Obergrenze für Churn](/de/cluster/sharding/rebalance/#die-obergrenze-für-churn).
