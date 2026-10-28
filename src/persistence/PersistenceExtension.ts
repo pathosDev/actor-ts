@@ -1062,16 +1062,24 @@ export class PersistenceExtension implements Extension {
    * later write under that name the same way, so a line per call would be a
    * flood with one fact in it; once per registry, because the next registry
    * installed — DevTools mints one per panel — has to earn its own line.
+   *
+   * The report is contained as well: a `Logger` is the caller's to supply,
+   * and one that throws here would carry the throw back into the outcome this
+   * method exists to keep it out of.
    */
   private onRegistryRefusal(metrics: MetricsRegistry, error: unknown): void {
     if (this.registriesReportedRefusing.has(metrics)) return;
     this.registriesReportedRefusing.add(metrics);
-    this.log.warn(
-      `[persistence] the metrics registry refused a persistence metric (${messageOf(error)}) — `
-        + 'store calls are unaffected, and go unmeasured wherever the registry refuses; '
-        + 'reported once for this registry',
-      error,
-    );
+    try {
+      this.log.warn(
+        `[persistence] the metrics registry refused a persistence metric (${messageOf(error)}) — `
+          + 'store calls are unaffected, and go unmeasured wherever the registry refuses; '
+          + 'reported once for this registry',
+        error,
+      );
+    } catch {
+      // A sink that cannot take the line either: the outcome still stands.
+    }
   }
 
   private currentJournalPluginId(): string {

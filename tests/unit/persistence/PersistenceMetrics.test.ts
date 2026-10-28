@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { match } from 'ts-pattern';
-import { LogLevel } from '../../../src/Logger.js';
+import { LogLevel, type Logger } from '../../../src/Logger.js';
 import { DefaultMetricsRegistry, type MetricSample, type MetricsRegistry } from '../../../src/metrics/Metrics.js';
 import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
 import { CircuitBreakerOpenError, CircuitBreakerTimeoutError } from '../../../src/pattern/CircuitBreaker.js';
@@ -678,6 +678,46 @@ describe('A registry that refuses a write never changes a store call\'s outcome 
       await awaitCondition(() => observations.steps.length === 2, { label: 'both persists settled' });
       expect(observations.steps).toEqual(['done', 'done']);
       expect(await journal.highestSeq('ledger-refused')).toBe(3);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  /**
+   * A log sink that takes every line but the refusal report, which it throws
+   * on — a caller-supplied `Logger` that has lost its transport.  Its children
+   * are itself, so the extension's `withSource` logger throws as well.
+   */
+  class ReportRefusingLogger implements Logger {
+    readonly level = LogLevel.Debug;
+    refusedReports = 0;
+
+    debug(): void {}
+    info(): void {}
+    error(): void {}
+
+    warn(message: string): void {
+      if (!message.includes(REFUSAL_NEEDLE)) return;
+      this.refusedReports++;
+      throw new Error('the log sink is down');
+    }
+
+    withSource(): Logger { return this; }
+    withFields(): Logger { return this; }
+  }
+
+  test('a log sink that throws on the report cannot change the outcome either', async () => {
+    const log = new ReportRefusingLogger();
+    const system = createTestActorSystem({ name: 'persistence-metrics-refusing-sink', logger: log, logLevel: LogLevel.Debug });
+    const registry = system.extension(MetricsExtensionId).enable();
+    latencyTakenAsCounter(registry);
+    const extension = system.extension(PersistenceExtensionId);
+    try {
+      await expect(extension.callThroughJournalBreaker('append', async () => 'appended')).resolves.toBe('appended');
+      const outage = new JournalUnavailableError('append');
+      await expect(extension.callThroughJournalBreaker('append', async () => { throw outage; })).rejects.toBe(outage);
+      // The report was made, and refused, rather than never attempted.
+      expect(log.refusedReports).toBe(1);
     } finally {
       await system.terminate();
     }
