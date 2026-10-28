@@ -355,8 +355,10 @@ export class PersistenceExtension implements Extension {
   private _journalBreaker: CircuitBreaker | null | undefined;
   private _snapshotBreaker: CircuitBreaker | null | undefined;
   /**
-   * The registry `persistence_breaker_state` was last brought up to date in —
-   * see {@link publishBreakerStates}.  `null` until metrics are first seen on.
+   * The registry whose `persistence_breaker_state` holds every resolved
+   * breaker's current state — see {@link publishBreakerStates}.  `null` when no
+   * registry is known to: until metrics are first seen on, and after a change
+   * the one named here missed ({@link publishBreakerChange}).
    */
   private breakerStatesPublishedTo: MetricsRegistry | null = null;
   /** The registries {@link onRegistryRefusal} has reported, so each is reported once. */
@@ -983,8 +985,7 @@ export class PersistenceExtension implements Extension {
     if (id === '') return null;
     const breaker = this.system.extension(CircuitBreakerExtensionId).breaker(id);
     breaker.onStateChange((state) => this.onBreakerStateChange(role, state));
-    const metrics = this.system._metricsRegistry;
-    if (metrics !== null) this.publishBreakerState(metrics, role, breaker.state);
+    this.publishBreakerChange(role, breaker.state);
     return breaker;
   }
 
@@ -994,13 +995,34 @@ export class PersistenceExtension implements Extension {
    * may have been switched on or off since.
    */
   private onBreakerStateChange(role: PersistenceBreakerRole, state: CircuitState): void {
-    const metrics = this.system._metricsRegistry;
-    if (metrics !== null) this.publishBreakerState(metrics, role, state);
+    this.publishBreakerChange(role, state);
   }
 
   /**
-   * Bring `metrics` up to date with every breaker resolved so far — once per
-   * registry, from the first call through a seam that sees it.
+   * A breaker was resolved or moved: tell the registry installed now, and stop
+   * vouching for any other (#1496).
+   *
+   * {@link breakerStatesPublishedTo} names the registry known to hold every
+   * resolved breaker's current state.  A change made while a different one is
+   * installed — or none, metrics off — never reaches it, and the same instance
+   * can be installed again: an application that switches its own registry off
+   * and on.  Vouched for by identity alone, it went on reading the state from
+   * before the change, `0` for an open breaker, or had no series for a breaker
+   * resolved in between, until that breaker next moved.  Forgotten instead, it
+   * is brought up to date by the next call through either seam, which is how
+   * any registry installed late is.
+   */
+  private publishBreakerChange(role: PersistenceBreakerRole, state: CircuitState): void {
+    const metrics = this.system._metricsRegistry;
+    if (metrics !== null) this.publishBreakerState(metrics, role, state);
+    if (metrics !== this.breakerStatesPublishedTo) this.breakerStatesPublishedTo = null;
+  }
+
+  /**
+   * Bring `metrics` up to date with every breaker resolved so far, from the
+   * first call through a seam that finds it is not the registry already up to
+   * date — a new one, or one that missed a change (see
+   * {@link publishBreakerChange}).
    *
    * The listeners keep the gauge current from there; this covers the registry
    * installed *after* the breakers were resolved — `enable()` late, or DevTools

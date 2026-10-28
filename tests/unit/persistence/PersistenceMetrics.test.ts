@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { match } from 'ts-pattern';
 import { LogLevel } from '../../../src/Logger.js';
-import type { MetricSample, MetricsRegistry } from '../../../src/metrics/Metrics.js';
+import { DefaultMetricsRegistry, type MetricSample, type MetricsRegistry } from '../../../src/metrics/Metrics.js';
 import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
 import { CircuitBreakerOpenError, CircuitBreakerTimeoutError } from '../../../src/pattern/CircuitBreaker.js';
 import { InMemoryJournal } from '../../../src/persistence/journals/InMemoryJournal.js';
@@ -462,6 +462,78 @@ describe('Persistence breaker-state gauge (#1496)', () => {
       await expect(extension.callThroughSnapshotBreaker('save', async () => 'saved')).resolves.toBe('saved');
       expect(breakerStateOf(registry, 'journal')).toBe(2);
       expect(breakerStateOf(registry, 'snapshot')).toBe(0);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  // A registry an application installs, takes out and installs again is not a
+  // new one, and was brought up to date once per instance: a breaker that moved
+  // or was resolved in between kept its stale series — or none — until the
+  // breaker next moved, which for an open breaker is the reset window away.
+  test('a registry re-installed after metrics were off is given a transition it missed, on the next call', async () => {
+    const system = createTestActorSystem({ name: 'persistence-metrics-reinstalled' });
+    const metrics = system.extension(MetricsExtensionId);
+    const extension = system.extension(PersistenceExtensionId);
+    const registry = new DefaultMetricsRegistry();
+    try {
+      metrics.useRegistry(registry);
+      await expect(extension.callThroughJournalBreaker('append', async () => 'appended')).resolves.toBe('appended');
+      expect(breakerStateOf(registry, 'journal')).toBe(0);
+
+      metrics.disable();
+      extension.journalBreaker!.setState('open');
+      metrics.useRegistry(registry);
+      await expect(extension.callThroughSnapshotBreaker('load', async () => 'loaded')).resolves.toBe('loaded');
+
+      expect(breakerStateOf(registry, 'journal')).toBe(2);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a registry re-installed after metrics were off is given a breaker resolved in between, on the next call', async () => {
+    const system = createTestActorSystem({ name: 'persistence-metrics-reinstalled-resolution' });
+    const metrics = system.extension(MetricsExtensionId);
+    const extension = system.extension(PersistenceExtensionId);
+    const registry = new DefaultMetricsRegistry();
+    try {
+      metrics.useRegistry(registry);
+      // A journal call resolves the journal breaker only.
+      await expect(extension.callThroughJournalBreaker('append', async () => 'appended')).resolves.toBe('appended');
+      expect(breakerStateOf(registry, 'snapshot')).toBeUndefined();
+
+      metrics.disable();
+      expect(extension.snapshotBreaker).not.toBeNull();
+      metrics.useRegistry(registry);
+      await expect(extension.callThroughJournalBreaker('append', async () => 'appended')).resolves.toBe('appended');
+
+      expect(breakerStateOf(registry, 'snapshot')).toBe(0);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a registry re-installed after another one held the place is given what moved meanwhile, on the next call', async () => {
+    const system = createTestActorSystem({ name: 'persistence-metrics-registry-swapped-back' });
+    const metrics = system.extension(MetricsExtensionId);
+    const extension = system.extension(PersistenceExtensionId);
+    const first = new DefaultMetricsRegistry();
+    const second = new DefaultMetricsRegistry();
+    try {
+      metrics.useRegistry(first);
+      await expect(extension.callThroughJournalBreaker('append', async () => 'appended')).resolves.toBe('appended');
+      expect(breakerStateOf(first, 'journal')).toBe(0);
+
+      metrics.useRegistry(second);
+      extension.journalBreaker!.setState('open');
+      // The registry installed when the breaker moved is told at once.
+      expect(breakerStateOf(second, 'journal')).toBe(2);
+
+      metrics.useRegistry(first);
+      await expect(extension.callThroughSnapshotBreaker('load', async () => 'loaded')).resolves.toBe('loaded');
+
+      expect(breakerStateOf(first, 'journal')).toBe(2);
     } finally {
       await system.terminate();
     }
