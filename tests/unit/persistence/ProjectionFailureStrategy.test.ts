@@ -871,6 +871,43 @@ describe('grouped handler — a failing group (#1448)', () => {
     await fixture.system.terminate();
   });
 
+  test('past the split range, delivery is grouped again — one call and one save per group', async () => {
+    // Every other split case here ends in a group of one, which is one event
+    // per call either way — so a range that never closed, and left the
+    // projection at one call and one cursor save per event for good, passed
+    // them all.  Two full groups after the range are what tell the two apart.
+    const fixture = newFixture('proj-group-regroup');
+    const entries = [];
+    for (let n = 1; n <= 10; n++) entries.push({ event: { n } });
+    await fixture.journal.append('poison', entries, 0);
+    const offsetStore = new RecordingOffsetStore();
+
+    const calls: number[][] = [];
+    const projectionOptions = ByPersistenceIdProjectionOptions.create<CountedEvent>()
+      .withName('group-regroup')
+      .withQuery(fixture.query)
+      .withOffsetStore(offsetStore)
+      .withPersistenceId('poison')
+      .withRecoveryStrategy('skip')
+      .withGroupAfterEnvelopes(3)
+      .withHandleGroup((events) => {
+        calls.push(numbersOf(events));
+        if (events.some((event) => event.event.n === 2)) throw new Error('poison');
+      })
+      .withLiveOptions({ pollIntervalMs: 10 });
+    const ref = ProjectionActor.byPersistenceId<CountedEvent>(fixture.system, projectionOptions);
+
+    await waitFor(() => offsetStore.saves.includes(10));
+
+    expect(calls).toEqual([[1, 2, 3], [1], [2], [3], [4, 5, 6], [7, 8, 9], [10]]);
+    expect(offsetStore.saves).toEqual([1, 2, 3, 6, 9, 10]);
+    expect(deadLetterNumbers(fixture)).toEqual([2]);
+    expect(skippedCount(fixture.system, 'group-regroup')).toBe(1);
+
+    ref.stop();
+    await fixture.system.terminate();
+  });
+
   test('a group that fails only as a group goes out one event at a time and nothing is skipped', async () => {
     const fixture = newFixture('proj-group-batch-refused');
     await seedSevenEvents(fixture.journal);
