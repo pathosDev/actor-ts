@@ -72,12 +72,13 @@ export const DEFAULT_ACQUIRE_RETRY_INTERVAL_MS = 5_000;
  * one.  It is not a *node*-liveness figure and should not be compared with
  * `actor-ts.cluster.failure-detector.down-after`.  A node that stops answering
  * is the failure detector's to notice: it is marked `unreachable` and stays a
- * member until a split-brain strategy,
- * `actor-ts.cluster.failure-detector.auto-down = on` or an operator removes
- * it, and the sweep leaves its regions to that decision.  This covers only
- * what the detector cannot see — a region gone or wedged on a node that is
- * still up, where the placement candidates, derived from the registry, never
- * check whether the region itself is alive.
+ * member until it is removed — by the split-brain strategy's verdict when one
+ * is configured, and otherwise by the detector itself at `down-after` while
+ * `actor-ts.cluster.failure-detector.auto-down` is on, or by an operator while
+ * it is off — and the sweep leaves its regions to that decision.  This covers
+ * only what the detector cannot see — a region gone or wedged on a node that
+ * is still up, where the placement candidates, derived from the registry,
+ * never check whether the region itself is alive.
  *
  * The sweep rides the existing rebalance tick (2 s), so the effective latency
  * is this plus at most one tick.  There is deliberately no `check-interval`

@@ -164,11 +164,12 @@ What follows from it:
   cannot answer can only time out into a forced reallocation — a second
   live home for the shard while the cut-off node keeps running it — so
   the coordinator never starts one.
-- **A parked node's shards wait for the downing decision.**  Under the
-  default configuration (no strategy, `failure-detector.auto-down = off`)
-  that means until an operator downs the node; with auto-down on, until
-  `down-after`; with a strategy, until its verdict.  They are re-homed
-  from the `MemberRemoved` that follows, and not before.
+- **A parked node's shards wait for the downing decision.**  With a
+  split-brain strategy that is its verdict.  Without one it depends on
+  `failure-detector.auto-down`: on, the detector removes the node at
+  `down-after`; off, the node stays parked until an operator downs it
+  (`Cluster.down` or `POST /cluster/down`).  The shards are re-homed from
+  the `MemberRemoved` that follows, and not before.
 - **One round of moves when a member stays parked.**  Once the window
   has run out with a member still parked, the default
   `HashAllocationStrategy` balances the shards of the *healthy* members

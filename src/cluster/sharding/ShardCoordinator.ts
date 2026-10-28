@@ -2,6 +2,7 @@ import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { SHARD_MAP_PUBLISH_DELAY_MS } from '../Constants.js';
 import {
   DEFAULT_ACQUIRE_RETRY_INTERVAL_MS,
@@ -848,23 +849,29 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    *
    * Not {@link warnRoleMatchesNoRegion}'s case, and deliberately not its line:
    * the role, if there is one, does match, and the remedy is not a
-   * configuration change but a member coming back or being decided about.  A
-   * member that stopped answering stays parked at `unreachable` until it
-   * recovers, a split-brain strategy or `failure-detector.auto-down` removes it,
-   * or an operator downs it, so the line names the first two by their keys.
-   * One line per episode, cleared by the next allocation that succeeds — the
-   * latch {@link roleMismatchWarned} uses.
+   * configuration change but a member coming back or being decided about.
+   * What decides about a member that stopped answering depends on the downing
+   * configuration, so the line names each route by its key: with a split-brain
+   * strategy, the strategy's verdict; without one, the failure detector itself
+   * at `down-after` while `failure-detector.auto-down` is on, and only an
+   * operator's `down` while it is off — the member stays parked at
+   * `unreachable` until then.  The keys come from {@link ConfigKeys}, the one
+   * place a renamed key changes; a literal here once named a key that did not
+   * exist (#633).  One line per episode, cleared by the next allocation that
+   * succeeds — the latch {@link roleMismatchWarned} uses.
    */
   private warnNoEligibleRegion(candidateCount: number): void {
     if (this.noEligibleRegionWarned) return;
     this.noEligibleRegionWarned = true;
+    const failureDetectorKeys = ConfigKeys.cluster.failureDetector;
     this.log.warn(
       `[sharding] none of the ${candidateCount} registered region(s) that can host type `
       + `"${this.options.typeName}" is on a member that is up, so no new shard of the type can be `
-      + 'allocated and its messages buffer until one is. A member that stopped answering stays '
-      + 'unreachable until it recovers or is downed: by a split-brain strategy '
-      + '(actor-ts.cluster.split-brain-resolver.active-strategy), by failure-detector auto-down '
-      + '(actor-ts.cluster.failure-detector.auto-down) or by an operator',
+      + 'allocated and its messages buffer until one is. A member that stopped answering is back once '
+      + 'it is heard from again, or is removed: by the split-brain strategy when one is configured '
+      + `(${ConfigKeys.cluster.splitBrainResolver.activeStrategy}), and otherwise by the failure detector `
+      + `at ${failureDetectorKeys.downAfter} when ${failureDetectorKeys.autoDown} is on, or by an `
+      + 'operator (Cluster.down, POST /cluster/down) when it is off',
     );
   }
 
@@ -1967,10 +1974,11 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * event was ever going to say otherwise.
    *
    * A node that stops answering is a different case, and deliberately not this
-   * sweep's.  The failure detector marks it `unreachable` and removes nothing on
-   * its own word: the member stays until something decides — a split-brain
-   * strategy's verdict, `actor-ts.cluster.failure-detector.auto-down = on`, or
-   * an operator's `down` — and the `MemberRemoved` that follows evicts its
+   * sweep's.  The failure detector marks it `unreachable`, and it stays a
+   * member until something decides about it: with a split-brain strategy, the
+   * strategy's verdict; without one, the detector itself at `down-after` while
+   * `actor-ts.cluster.failure-detector.auto-down` is on, and an operator's
+   * `down` while it is off.  The `MemberRemoved` that follows evicts its
    * regions through {@link onMemberRemoved}.  Until then the node may well be
    * running, and its shards with it, so evicting its region here would re-home
    * them across what may be a partition and give each a second live home: two
@@ -2060,9 +2068,10 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * The same question {@link loadCoordinatorState} asks of a snapshot's regions
    * through `upMembers()`, answered per node.  `up` and nothing wider, because
    * every other status is one the cluster has not decided about yet: `joining`
-   * and `weakly-up` have not been admitted, `unreachable` is parked until a
-   * strategy, auto-down or an operator decides, and `leaving` and `down` are on
-   * their way to a `MemberRemoved`.  Read from the view rather than from
+   * and `weakly-up` have not been admitted, `unreachable` waits for a
+   * strategy's verdict — or, with none, for `down-after` while auto-down is on
+   * and for an operator's `down` while it is off — and `leaving` and `down` are
+   * on their way to a `MemberRemoved`.  Read from the view rather than from
    * `Cluster.placementCandidates`: that configuration filter is a local send
    * decision, and a shard's home is elected.
    */

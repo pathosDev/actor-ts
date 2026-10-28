@@ -186,11 +186,12 @@ Was daraus folgt:
   den Shard, während der abgeschnittene Node ihn weiter ausführt —, also
   startet der Koordinator keinen.
 - **Die Shards eines geparkten Nodes warten auf die
-  Downing-Entscheidung.** In der Default-Konfiguration (keine Strategie,
-  `failure-detector.auto-down = off`) heißt das: bis ein Operator den
-  Node auf `down` setzt; mit Auto-Down bis `down-after`; mit einer
-  Strategie bis zu deren Urteil. Neu verteilt werden sie aus dem
-  folgenden `MemberRemoved`, nicht früher.
+  Downing-Entscheidung.** Mit einer Split-Brain-Strategie ist das deren
+  Urteil. Ohne eine hängt es an `failure-detector.auto-down`: an, entfernt
+  der Failure-Detector den Node bei `down-after`; aus, bleibt der Node
+  geparkt, bis ein Operator ihn auf `down` setzt (`Cluster.down` oder
+  `POST /cluster/down`). Neu verteilt werden die Shards aus dem folgenden
+  `MemberRemoved`, nicht früher.
 - **Eine Runde Umzüge, wenn ein Mitglied geparkt bleibt.** Läuft das
   Fenster ab, während ein Mitglied noch geparkt ist, verteilt die
   Default-Strategie `HashAllocationStrategy` die Shards der *gesunden*

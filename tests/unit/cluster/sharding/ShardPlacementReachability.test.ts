@@ -2,12 +2,12 @@
  * Shard placement against the membership view (#1467).
  *
  * A node that stops answering is marked `unreachable` and stays a member until
- * something decides about it — a split-brain strategy, the failure detector's
- * opt-in auto-down, or an operator.  The coordinator's candidate set used to be
- * the region registry and nothing else, so for that whole stretch the parked
- * node kept being handed newly allocated shards, whose first messages then
- * waited on a home that could not answer: 8 of 24 under the default strategy
- * with one of three nodes parked.
+ * something decides about it — a split-brain strategy, the failure detector at
+ * `down-after` while auto-down is on, or an operator while it is off.  The
+ * coordinator's candidate set used to be the region registry and nothing else,
+ * so for that whole stretch the parked node kept being handed newly allocated
+ * shards, whose first messages then waited on a home that could not answer: 8
+ * of 24 under the default strategy with one of three nodes parked.
  *
  * Filtering placement alone is not the fix, and the obvious shapes of it loop.
  * Allocate over the filtered set while rebalancing over the full registry, and
@@ -61,6 +61,7 @@ import type {
 } from '../../../../src/cluster/sharding/ShardingProtocol.js';
 import { StartShardingOptions } from '../../../../src/cluster/sharding/StartShardingOptions.js';
 import { Config } from '../../../../src/config/Config.js';
+import { ConfigKeys } from '../../../../src/config/ConfigKeys.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import type { Cancellable } from '../../../../src/Scheduler.js';
 import { coordinatorSegments } from '../../../util/SystemPaths.js';
@@ -1045,6 +1046,13 @@ describe('a shard nobody can take waits for a member to come back (#1467)', () =
     const noEligible = warnings('is on a member that is up');
     expect(noEligible).toHaveLength(1);
     expect(noEligible[0]).toContain(`"${TYPE_NAME}"`);
+    // What removes a member that stopped answering depends on the downing
+    // configuration, so the line names both routes by their real keys — as
+    // ConfigKeys spells them, the one place a renamed key changes.
+    const failureDetectorKeys = ConfigKeys.cluster.failureDetector;
+    expect(noEligible[0]).toContain(`(${ConfigKeys.cluster.splitBrainResolver.activeStrategy})`);
+    expect(noEligible[0]).toContain(`${failureDetectorKeys.downAfter} when ${failureDetectorKeys.autoDown} is on`);
+    expect(noEligible[0]).toContain('when it is off');
 
     // The member is back: in production it re-emits `MemberUp`, on which every
     // region re-registers and re-asks its buffered shards, so the renewed ask
