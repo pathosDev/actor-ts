@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteDurableStateStore } from '../../../src/persistence/durable-state-stores/SqliteDurableStateStore.js';
+import type { SqliteDurableStateStoreOptionsType } from '../../../src/persistence/durable-state-stores/SqliteDurableStateStoreOptions.js';
 import { SqliteJournal } from '../../../src/persistence/journals/SqliteJournal.js';
 import { SqliteJournalOptions, type SqliteJournalOptionsType } from '../../../src/persistence/journals/SqliteJournalOptions.js';
 import { SqliteSnapshotStore } from '../../../src/persistence/snapshot-stores/SqliteSnapshotStore.js';
@@ -242,4 +243,34 @@ describe('registerSqlitePlugins keeps a query-string token out of its refusal (#
       expect(String(refusal.value)).not.toContain('QUERY-SECRET');
     });
   }
+});
+
+/**
+ * An untyped `database: null`, the value a caller without the declared types
+ * passes for "no handle" (#1492).  The durable-state store took any value
+ * other than `undefined` for a handle: beside a valid path it opened nothing,
+ * handed `null` to the relational base and failed its first operation with a
+ * `TypeError`, where before the path rule it opened the path.  `null` is no
+ * handle, so the rule reads it as absent.
+ */
+describe('SqliteDurableStateStore reads an untyped database: null as no handle (#1492)', () => {
+  const nullDatabase = (settings: { readonly path?: string }): SqliteDurableStateStoreOptionsType =>
+    ({ ...settings, database: null }) as unknown as SqliteDurableStateStoreOptionsType;
+
+  test('beside a valid path, it opens the path and serves operations', async () => {
+    const store = new SqliteDurableStateStore(nullDatabase({ path: ':memory:' }));
+    try {
+      const written = await store.upsert('null-handle', 0, { value: 1 });
+      expect(written.revision).toBe(1);
+      const loaded = await store.load<{ value: number }>('null-handle');
+      expect(loaded.isSome() ? loaded.value.state : undefined).toEqual({ value: 1 });
+    } finally {
+      await store.close();
+    }
+  });
+
+  test('without a path, it is refused as a store given neither', () => {
+    const refusal = refusalOf(() => new SqliteDurableStateStore(nullDatabase({})));
+    expect(refusal.message).toContain('path is required unless `database` is supplied');
+  });
 });
