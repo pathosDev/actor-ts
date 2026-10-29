@@ -543,6 +543,9 @@ describe('EventStream refuses a subscriber that is not an ActorRef', () => {
     ['an object that can tell but not compare', { tell: () => {} }],
     // `ActorRef.equals` compares paths, so every ref on the bus reads this one's.
     ['an object without a path', { tell: () => {}, equals: () => false }],
+    // A primitive takes its own branch of the check: the path of an actor,
+    // passed where its ref belongs.
+    ['an actor path string', 'user/foo'],
   ];
 
   test.each(notActorRefs)('subscribe refuses %s with a TypeError', (_label, candidate) => {
@@ -551,6 +554,27 @@ describe('EventStream refuses a subscriber that is not an ActorRef', () => {
     expect(() => bus.subscribe(candidate as never, EventA))
       .toThrow(/^EventStream\.subscribe: subscriber must be an ActorRef/);
   });
+
+  test.each(notActorRefs)(
+    'subscribe refuses %s with a predicate as well, on a bus that already holds a ref',
+    (_label, candidate) => {
+      // The predicate form skips the dedup check, so on this route the refusal
+      // is all that stands between the value and the list.  It is also the
+      // route the original stall took on a bus that was not empty: without a
+      // predicate, a stored ref's `equals` read the newcomer's missing path
+      // and threw by accident, while with one the function went straight in.
+      const bus = new EventStream();
+      const healthy = new RecordingRef('healthy');
+      bus.subscribe(healthy, EventA);
+      expect(() => bus.subscribe(candidate as never, EventA, () => true))
+        .toThrow(/^EventStream\.subscribe: subscriber must be an ActorRef/);
+
+      bus.publish(new EventA('x'));
+      expect(healthy.received).toHaveLength(1);
+      expect(bus.unsubscribe(healthy)).toBe(true);
+      expect(bus.hasSubscribers).toBe(false);
+    },
+  );
 
   test.each(notActorRefs)(
     'unsubscribe refuses %s with a TypeError, even on an empty stream',
