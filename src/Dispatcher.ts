@@ -1,4 +1,5 @@
 import { DEFAULT_DISPATCHER_THROUGHPUT, DEFAULT_HYBRID_DISPATCHER_YIELD_UNITS } from './Constants.js';
+import { OptionsError } from './util/OptionsValidator.js';
 import { RingBuffer } from './util/RingBuffer.js';
 
 /**
@@ -75,6 +76,39 @@ function reportDispatcherError(dispatcher: Dispatcher, error: unknown): void {
   } catch (sinkFailure) {
     console.error('[actor-ts] unhandled dispatcher error:', error);
     console.error('[actor-ts] the dispatcher error sink failed too:', sinkFailure);
+  }
+}
+
+/**
+ * Refuse a budget of turns that is not an integer from 1 up.
+ *
+ * Both budgets here count turns, and every value outside that domain used to
+ * be accepted and then misbehave rather than fail.  Below 1 nothing ever runs:
+ * the hybrid's `microtaskBurst >= yieldEvery` already holds at a burst of 0,
+ * so each flush defers its unit behind another `setImmediate`, and the drain's
+ * `processed < throughput` fails before the first unit and re-arms the drain —
+ * a system built on either never answered an `ask`, and `terminate()` never
+ * returned.  `Infinity` never yields to the event loop at all, the starvation
+ * `MicrotaskDispatcher` is documented for; `NaN` stalls the drain and never
+ * yields on the hybrid.  A fraction ran as the next integer up, a budget
+ * nobody wrote.
+ *
+ * Refused at construction rather than clamped, as the per-actor
+ * `throughput` is, because no reading of these values is the one the caller
+ * meant: a dispatcher that never runs a turn is never what was asked for.
+ */
+function assertTurnBudget(budget: number, dispatcher: string, argument: string, consequence: string): void {
+  // `Number.isInteger` does not coerce, so it also refuses a non-number from
+  // untyped JavaScript, and `NaN` and `Infinity` without a comparison of
+  // their own.
+  if (!Number.isInteger(budget) || budget < 1) {
+    throw new OptionsError(
+      `${dispatcher}: ${argument} must be an integer >= 1 (got ${OptionsError.renderValue(budget)})`
+      + ` — ${consequence}`,
+      dispatcher,
+      argument,
+      budget,
+    );
   }
 }
 
@@ -166,7 +200,19 @@ export class HybridDispatcher implements Dispatcher {
   private pending: Array<() => void | Promise<void>> = [];
   private yielding = false;
 
-  constructor(public readonly yieldEvery: number = DEFAULT_HYBRID_DISPATCHER_YIELD_UNITS) {}
+  /**
+   * @param yieldEvery How many turns run on the microtask queue before one
+   *   yields to the event loop: an integer from 1 up, refused otherwise (see
+   *   {@link assertTurnBudget}).
+   */
+  constructor(public readonly yieldEvery: number = DEFAULT_HYBRID_DISPATCHER_YIELD_UNITS) {
+    assertTurnBudget(
+      yieldEvery,
+      'HybridDispatcher',
+      'yieldEvery',
+      'below 1 no turn ever runs, and a budget that never runs out never yields — that is MicrotaskDispatcher',
+    );
+  }
 
   execute(task: () => void | Promise<void>): void {
     // A yield is already in flight: queue behind it rather than jumping it.
@@ -231,10 +277,21 @@ export class ThroughputDispatcher implements Dispatcher {
   private readonly queue = new RingBuffer<() => void | Promise<void>>();
   private scheduled = false;
 
+  /**
+   * @param throughput How many queued turns one tick drains: an integer from 1
+   *   up, refused otherwise (see {@link assertTurnBudget}).
+   * @param id The dispatcher's id in error reports and metrics.
+   */
   constructor(
     public readonly throughput: number = DEFAULT_DISPATCHER_THROUGHPUT,
     id: string = 'throughput-dispatcher',
   ) {
+    assertTurnBudget(
+      throughput,
+      'ThroughputDispatcher',
+      'throughput',
+      'below 1 no turn is ever drained, and a drain without a bound never yields to the event loop',
+    );
     this.id = id;
   }
 

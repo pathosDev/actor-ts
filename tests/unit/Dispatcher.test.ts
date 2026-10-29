@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { ActorSystem } from '../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
+import { Config } from '../../src/config/Config.js';
 import {
   type Dispatcher,
   Dispatchers,
@@ -7,6 +10,8 @@ import {
   MicrotaskDispatcher,
   ThroughputDispatcher,
 } from '../../src/Dispatcher.js';
+import { LogLevel, NoopLogger } from '../../src/Logger.js';
+import { OptionsError } from '../../src/util/OptionsValidator.js';
 import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 
 describe('MicrotaskDispatcher', () => {
@@ -375,5 +380,70 @@ describe('Dispatchers factory', () => {
     const dispatcher = Dispatchers.Throughput(42) as ThroughputDispatcher;
     expect(dispatcher).toBeInstanceOf(ThroughputDispatcher);
     expect(dispatcher.throughput).toBe(42);
+  });
+});
+
+/** What `build` threw, or `undefined` when it returned a dispatcher. */
+function refusalOf(build: () => Dispatcher): unknown {
+  try {
+    build();
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+}
+
+/**
+ * A budget is a count of turns, so its domain is the integers from 1 up, and
+ * everything outside it used to be accepted and then misbehave.
+ *
+ * Below 1 nothing ever runs.  The hybrid's `microtaskBurst >= yieldEvery` holds
+ * at a burst of 0, so every flush defers its unit behind another
+ * `setImmediate`; the throughput drain's `processed < throughput` fails before
+ * the first unit and re-arms itself.  An `ask` on a system built with either
+ * timed out and `terminate()` never returned.  `NaN` stalls the throughput
+ * dispatcher the same way and never yields on the hybrid, as `Infinity` never
+ * yields on either — the starvation `MicrotaskDispatcher` is documented for.
+ * A fraction ran as the next integer up, which is a budget nobody wrote.
+ */
+describe('the budget a dispatcher is built with', () => {
+  const OUTSIDE_THE_DOMAIN = [0, 0.5, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY];
+
+  test.each(OUTSIDE_THE_DOMAIN)('Hybrid(%p) is refused, naming the argument', (yieldEvery) => {
+    for (const build of [() => Dispatchers.Hybrid(yieldEvery), () => new HybridDispatcher(yieldEvery)]) {
+      const refusal = refusalOf(build);
+      expect(refusal).toBeInstanceOf(OptionsError);
+      expect((refusal as OptionsError).options).toBe('HybridDispatcher');
+      expect((refusal as OptionsError).field).toBe('yieldEvery');
+      expect((refusal as OptionsError).message).toContain('HybridDispatcher: yieldEvery must be an integer >= 1');
+    }
+  });
+
+  test.each(OUTSIDE_THE_DOMAIN)('Throughput(%p) is refused, naming the argument', (throughput) => {
+    for (const build of [() => Dispatchers.Throughput(throughput), () => new ThroughputDispatcher(throughput)]) {
+      const refusal = refusalOf(build);
+      expect(refusal).toBeInstanceOf(OptionsError);
+      expect((refusal as OptionsError).options).toBe('ThroughputDispatcher');
+      expect((refusal as OptionsError).field).toBe('throughput');
+      expect((refusal as OptionsError).message).toContain('ThroughputDispatcher: throughput must be an integer >= 1');
+    }
+  });
+
+  test('a budget of 1, the smallest there is, still runs every unit', async () => {
+    for (const dispatcher of [Dispatchers.Hybrid(1), Dispatchers.Throughput(1)]) {
+      const ran: number[] = [];
+      for (let unit = 0; unit < 5; unit++) dispatcher.execute(() => { ran.push(unit); });
+      await awaitCondition(() => ran.length === 5, { timeoutMs: 4_000, label: `${dispatcher.id} ran every unit` });
+      expect(ran).toEqual([0, 1, 2, 3, 4]);
+    }
+  });
+
+  test('a system configured with a throughput of 0 is refused at startup instead of never answering', () => {
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig(Config.parseString('actor-ts.dispatcher { default = throughput, throughput = 0 }'));
+    expect(() => ActorSystem.create('throughput-zero', systemOptions))
+      .toThrow(/ThroughputDispatcher: throughput must be an integer >= 1 \(got 0\)/);
   });
 });
