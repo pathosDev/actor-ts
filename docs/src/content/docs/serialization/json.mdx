@@ -108,7 +108,11 @@ fast enough that JSON serialization is rarely the bottleneck.
 `SerializationError` naming the parse failure, and a malformed type tag inside
 well-formed JSON with one naming the tag, so the two faults stay apart in a log;
 the persistence payload codec reports a stored row that does not parse the same
-way.
+way.  An `__error__` whose `name` or `message` is not a string is such a
+malformed tag.  A `name` with no built-in error class behind it is not: that
+error decodes to a plain `Error` that keeps the name, which is how every custom
+error class crosses the wire, and a member of `Object.prototype` such as
+`toString` or `constructor` is no exception.
 
 Decoding is where the bytes are somebody else's, so the JSON decoder applies
 the ceilings in

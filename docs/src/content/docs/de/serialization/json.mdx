@@ -113,6 +113,11 @@ schnell genug, dass JSON-Serialisierung selten zum Bottleneck wird.
 Type-Tag in wohlgeformtem JSON mit einem, der den Tag benennt, sodass sich die
 beiden Fehler im Log auseinanderhalten lassen; der Persistenz-Payload-Codec
 meldet eine gespeicherte Zeile, die sich nicht parsen lässt, auf dieselbe Weise.
+Ein `__error__`, dessen `name` oder `message` kein String ist, ist ein solcher
+fehlerhafter Tag.  Ein `name` ohne eingebaute Fehlerklasse dahinter ist es
+nicht: Dieser Fehler kommt als einfacher `Error` an, der den Namen behält — so
+kommt jede eigene Fehlerklasse über das Wire —, und ein Member von
+`Object.prototype` wie `toString` oder `constructor` ist keine Ausnahme.
 
 Beim Dekodieren gehören die Bytes jemand anderem, deshalb wendet der
 JSON-Decoder die Obergrenzen aus
