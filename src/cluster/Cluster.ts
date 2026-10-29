@@ -2313,6 +2313,7 @@ export class Cluster {
    */
   private coldStartStallRemedy(peers: number): string {
     if (peers === 0) {
+      if (this.seedAddrs.length === 0) return this.noSeedRemedy();
       // Records with no live peer behind them — a tombstone, a `down` record —
       // mean something did answer and has gone again, and "nobody answered"
       // would send the operator to check an address that demonstrably worked.
@@ -2341,6 +2342,32 @@ export class Cluster {
         `${peers} peer(s) are known but none is "up", and this node's ${afterMs} ms `
         + 'self-election grace elapsed without forming one')
       .exhaustive();
+  }
+
+  /**
+   * The remedy for a node that has nobody to ask (#1500): an empty seed list,
+   * or one naming only this node, which `_start` drops.
+   *
+   * The unanswered-seeds remedy is wrong here word for word — nobody was
+   * asked, and its checklist points at addresses that do not exist.  Only the
+   * give-up reaches this: the stall report runs from the seed loop, which such
+   * a list never starts.  What is true instead depends on the policy.
+   * `'never'` may not found a cluster and has nobody to join.  Any other policy
+   * founds one — `'immediate'` at once on an empty list, a deferred election
+   * once it fires — and since the give-up's verdict holds, with nothing up and
+   * no election pending, the membership threshold is what holds that
+   * self-election.
+   */
+  private noSeedRemedy(): string {
+    const opening = 'this node has no seed to contact — its seed list is empty, or names only itself';
+    if (this.selfElection === 'never') {
+      return `${opening} — and selfElection: 'never' keeps it from forming a cluster of its own, so only a `
+        + 'peer that lists it as a seed can bring it in, and none has. Give it the seeds of the cluster it '
+        + "belongs to, or let it found one with a selfElection other than 'never'";
+    }
+    return `${opening}, so it founded the cluster itself — and ${ConfigKeys.cluster.minimumMembersBeforeUp} `
+      + `has held that self-election since, until enough members are present (${this.upThresholdShortfall()}); `
+      + 'no member has joined it. Give the other nodes this address as a seed, or lower the threshold';
   }
 
   private handleWire(from: NodeAddress, message: WireMessage): void {
