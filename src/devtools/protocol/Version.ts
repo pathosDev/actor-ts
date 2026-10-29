@@ -27,5 +27,11 @@
  * is a type change by the rule above: a version-1 UI maps a source through
  * a table keyed by the three names it knows, and would render the two new
  * ones as nothing.
+ *
+ * **Pinned** as a literal by `tests/unit/config/DevToolsProtocolVersion.test.ts`,
+ * which also checks that the embedded UI bundle says hello with this number —
+ * `bun run check:ui` hashes the UI sources, not this file.  A bump is a
+ * deliberate protocol change: the commit that makes it runs `bun run build:ui`
+ * and edits that test.
  */
 export const DEVTOOLS_PROTOCOL_VERSION = 2;
