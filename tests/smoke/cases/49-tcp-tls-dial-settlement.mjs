@@ -17,7 +17,12 @@
  * which must resolve with `onOpen` run and have its first write answered; one
  * that trusts an unrelated CA, which must reject with no handler run; and one
  * into a listener that never speaks TLS, aborted while its handshake waits,
- * which must reject with the abort's reason and close its connection.
+ * which must reject with the abort's reason and close its connection.  Then the
+ * same two failures through a TLS `TcpTransport`, for the lines the transports
+ * page promises: a certificate the CA does not sign and a stalled handshake
+ * both log `could not connect`, within the connect deadline — not
+ * `outbound error` and not `connected …, but no hello-ack`, which is what Deno
+ * logged while its dial opened at the TCP connect.
  *
  * The certificates are minted here, per run, and kept nowhere: a CA, a leaf it
  * signed for `127.0.0.1`, and a second CA that signed nothing in this case.
@@ -36,7 +41,11 @@ export const description =
 const SETTLE_WITHIN_MS = 3_000;
 const POLL_EVERY_MS = 10;
 
-export async function run() {
+/** The two deadlines of the transport-level dials: far enough apart that the line says which one fired. */
+const CONNECT_DEADLINE_MS = 200;
+const HANDSHAKE_DEADLINE_MS = 1_500;
+
+export async function run({ actorTs, loadEntry }) {
   // The TCP backend is runtime plumbing, not public API, so it is not on the
   // harness's root barrel — reach it the way the peer-certificate case does.
   const fromBuild = globalThis.process?.env?.ACTOR_TS_SMOKE_USE_DIST === '1'
@@ -44,12 +53,14 @@ export async function run() {
   const tcpPath = fromBuild ? '../../../dist/runtime/tcp/index.js' : '../../../src/runtime/tcp/index.ts';
   const { getTcpBackend } = await import(new URL(tcpPath, import.meta.url).href);
   const backend = await getTcpBackend();
+  const { NodeAddress, TcpTransport } = await loadEntry('cluster');
 
   const material = mintTlsMaterial();
   const stranger = mintTlsMaterial();
 
   const listeners = [];
   const sockets = [];
+  const transports = [];
   let released = false;
   // A socket that turns up after `finally` has run is released on arrival.
   const keep = (socket) => {
@@ -145,11 +156,56 @@ export async function run() {
     if (stalled.calls.length > 0) {
       throw new Error(`an abandoned TLS dial ran [${stalled.calls}]; a dial that is given up runs no handler`);
     }
+
+    // 4 and 5. The same two failures through a TLS transport, read off its WARN.
+    const self = new NodeAddress('smoke-tls', '127.0.0.1', 1);
+    const firstWarning = async (trust, port, label) => {
+      const log = capturingLogger(actorTs.LogLevel.Warn);
+      const transport = new TcpTransport(self, log.logger, {
+        tls: { ca: trust },
+        connectTimeoutMs: CONNECT_DEADLINE_MS,
+        handshakeTimeoutMs: HANDSHAKE_DEADLINE_MS,
+      });
+      transports.push(transport);
+      const peer = new NodeAddress('smoke-tls', '127.0.0.1', port);
+      transport.send(peer, { kind: 'heartbeat', from: self.toJSON(), seq: 1, ts: 1 });
+      await until(() => log.warnings.length > 0, label);
+      return { peer, warning: log.warnings[0] };
+    };
+
+    const rejected = await firstWarning(stranger.ca, tlsListener.port, 'the transport reported the untrusted peer');
+    if (!rejected.warning.startsWith(`could not connect to ${rejected.peer} within ${CONNECT_DEADLINE_MS} ms`)) {
+      throw new Error(`a TLS transport dialling a peer the CA does not sign logged "${rejected.warning}", not "could not connect"`);
+    }
+
+    const stalledPeer = await firstWarning(material.ca, silentListener.port, 'the transport reported the stalled handshake');
+    if (!stalledPeer.warning.startsWith(`could not connect to ${stalledPeer.peer} within ${CONNECT_DEADLINE_MS} ms`)) {
+      throw new Error(
+        `a TLS transport whose peer stalled the handshake logged "${stalledPeer.warning}"; `
+        + `the connect deadline of ${CONNECT_DEADLINE_MS} ms should have given the dial up`,
+      );
+    }
   } finally {
     released = true;
+    for (const transport of transports.splice(0)) await transport.shutdown();
     for (const socket of sockets.splice(0)) release(socket);
     for (const listener of listeners.splice(0)) await listener.close();
   }
+}
+
+/** A logger that keeps the WARN lines, the only level these checks read. */
+function capturingLogger(level) {
+  const warnings = [];
+  const logger = {
+    level,
+    debug() {},
+    info() {},
+    warn(message) { warnings.push(message); },
+    error() {},
+    withSource() { return logger; },
+    withFields() { return logger; },
+  };
+  return { logger, warnings };
 }
 
 function release(socket) {
