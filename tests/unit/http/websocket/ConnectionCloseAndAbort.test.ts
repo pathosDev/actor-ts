@@ -144,6 +144,18 @@ class HandshakeSocket implements WebsocketSocketAdapter {
     this.raiseClose(code, reason);
   }
 
+  /**
+   * The peer's close frame has arrived, and the transport's close event has
+   * not fired yet.  `ws` answers the frame and moves the socket to CLOSING,
+   * then raises the event only once the TCP connection has gone — up to its
+   * 30 s close timer later.  The answer is the transport's own, so it is not
+   * one of {@link calls}; {@link peerClosed} raises the event.
+   */
+  closeFrameReceived(): void {
+    if (this.state !== WebsocketReadyState.OPEN) return;
+    this.state = WebsocketReadyState.CLOSING;
+  }
+
   /** The transport reports the socket closed — which it does exactly once. */
   protected raiseClose(code: number, reason: string): void {
     if (this.state === WebsocketReadyState.CLOSED) return;
@@ -189,6 +201,17 @@ class StaleStateSocket extends TerminableSocket {
   }
 }
 
+/**
+ * A socket whose `bufferedAmount` throws, so the connection actor's next write
+ * crashes it: the hub's stopping strategy then ends the actor with no close
+ * recorded, and `postStop` is the one that shuts the socket.
+ */
+class FailingBufferSocket extends HandshakeSocket {
+  bufferedAmount(): number {
+    throw new Error('the send buffer could not be read');
+  }
+}
+
 /** What the test reads back out of the hub. */
 type HubState = {
   /** Every hook the hub ran, in the order it ran them. */
@@ -230,6 +253,11 @@ class RecordingHub extends WebsocketServerActor<ServerMessage, ClientMessage, Hu
 
   protected override onClientDisconnected(client: WebsocketConnection<ServerMessage>, info: WebsocketCloseInfo): void {
     this.state.events.push(`disconnected:${client.id}:${info.code}:${info.reason}:${info.initiatedBy}`);
+  }
+
+  /** Reached only on a route whose policy says `onInvalidMessage: 'hook'`. */
+  protected override onInvalidMessage(client: WebsocketConnection<ServerMessage>): void {
+    this.state.events.push(`invalid:${client.id}`);
   }
 
   protected override onSelfMessage(command: HubCommand): void {
@@ -441,6 +469,100 @@ describe('inbound frames once this side has closed (#1431)', () => {
       'sentinel:after-the-late-frame',
     ]);
   });
+
+  test('a frame pipelined behind an oversize frame never reaches onMessage', async () => {
+    const h = harness('ws-pipelined-after-oversize');
+    const { connection, socket } = await h.connect(new HandshakeSocket(), { ...cappedPolicy, maxFrameBytes: 64 });
+
+    // One read's worth again: the first frame is over the route's cap and
+    // closes the connection (1009 under the default policy), the second is a
+    // ping that would decode.
+    socket.deliverRaw(JSON.stringify({ kind: 'ping', n: 1, padding: 'x'.repeat(100) }));
+    socket.deliver({ kind: 'ping', n: 2 });
+
+    const disconnected = `disconnected:${connection.id}:1009:message too big:server`;
+    await awaitCondition(() => h.events.includes(disconnected), {
+      timeoutMs: 4_000,
+      label: 'the hub heard the 1009 close',
+    });
+    expect(h.events).toEqual([`connected:${connection.id}`, disconnected]);
+    expect(socket.calls).toEqual(['close:1009:message too big']);
+  });
+
+  /*
+   * The two stops below record no close of their own: the actor is ended from
+   * outside, and `postStop` is what marks it closed and shuts the socket.  The
+   * guard has to read that mark too — the close it reports carries no record
+   * of a decision this side made, only a synthetic 1011.
+   */
+
+  test('a frame the transport delivers after the connection actor was stopped from outside never reaches onMessage', async () => {
+    const h = harness('ws-late-frame-after-external-stop');
+    const { connection, socket } = await h.connect(new HandshakeSocket());
+    await h.watchStop(connection);
+
+    await h.stopConnectionActor(connection);
+    const disconnected = `disconnected:${connection.id}:1011::error`;
+    await awaitCondition(() => h.stopped.includes(connection.id) && h.events.includes(disconnected), {
+      timeoutMs: 4_000,
+      label: 'the connection actor stopped and the hub heard it',
+    });
+    // postStop shut the socket, which is mid-handshake now — the state in
+    // which `ws` still hands over a frame.
+    expect(socket.readyState).toBe(WebsocketReadyState.CLOSING);
+
+    socket.deliver({ kind: 'ping', n: 5 });
+    await h.sentinel('after-the-late-frame');
+    expect(h.events).toEqual([`connected:${connection.id}`, disconnected, 'sentinel:after-the-late-frame']);
+  });
+
+  test('a frame the transport delivers after the connection actor crashed never reaches onMessage', async () => {
+    const h = harness('ws-late-frame-after-crash');
+    const { connection, socket } = await h.connect(new FailingBufferSocket());
+    await h.watchStop(connection);
+
+    // The write reads the send buffer first, and that read throws on the
+    // actor's turn: the hub's stopping strategy ends the actor.
+    connection.tell({ kind: 'pong', n: 1 });
+    const disconnected = `disconnected:${connection.id}:1011::error`;
+    await awaitCondition(() => h.stopped.includes(connection.id) && h.events.includes(disconnected), {
+      timeoutMs: 4_000,
+      label: 'the crashed connection actor stopped and the hub heard it',
+    });
+
+    socket.deliver({ kind: 'ping', n: 6 });
+    await h.sentinel('after-the-late-frame');
+    expect(h.events).toEqual([`connected:${connection.id}`, disconnected, 'sentinel:after-the-late-frame']);
+  });
+
+  test('under onInvalidMessage: \'hook\', an undecodable frame delivered after the server closed never reaches onInvalidMessage', async () => {
+    const h = harness('ws-late-invalid-frame-hook');
+    const { connection, socket } = await h.connect(new HandshakeSocket(), { ...cappedPolicy, onInvalidMessage: 'hook' });
+
+    connection.close(1008, 'policy');
+    const disconnected = `disconnected:${connection.id}:1008:policy:server`;
+    await awaitCondition(() => h.events.includes(disconnected), {
+      timeoutMs: 4_000,
+      label: 'the hub heard the server-side close',
+    });
+    expect(socket.readyState).toBe(WebsocketReadyState.CLOSING);
+
+    // Undecodable, so the hook policy would hand it to onInvalidMessage — and
+    // a hook reached after onClientDisconnected breaks the order as surely as
+    // an onMessage does.
+    socket.deliverRaw('not json {');
+    await h.sentinel('after-the-late-frame');
+    expect(h.events).toEqual([`connected:${connection.id}`, disconnected, 'sentinel:after-the-late-frame']);
+  });
+
+  test('under onInvalidMessage: \'hook\', an undecodable frame still reaches onInvalidMessage while the connection is open', async () => {
+    const h = harness('ws-invalid-frame-hook-open');
+    const { connection, socket } = await h.connect(new HandshakeSocket(), { ...cappedPolicy, onInvalidMessage: 'hook' });
+
+    socket.deliverRaw('not json {');
+    await h.sentinel('after-the-frame');
+    expect(h.events).toEqual([`connected:${connection.id}`, `invalid:${connection.id}`, 'sentinel:after-the-frame']);
+  });
 });
 
 describe('close() keeps its place behind what was already sent (#1431)', () => {
@@ -616,6 +738,42 @@ describe('abort() keeps the hub\'s per-connection order (#1431)', () => {
 });
 
 describe('abort() on a connection that is no longer open does nothing (#1431)', () => {
+  /*
+   * The one case the gate's readyState half decides alone.  The actor has made
+   * no decision — nothing has closed the socket from this side — so a gate on
+   * the connection's own latch would let the abort through, terminate a socket
+   * the client is already closing, and report the server's 1008 in place of
+   * the client's own close.
+   */
+  test('between the peer\'s close frame and the transport\'s close event: the client\'s close stands, and the socket is not terminated', async () => {
+    const h = harness('ws-abort-while-peer-closing');
+    const { connection, socket } = await h.connect(new TerminableSocket());
+
+    socket.closeFrameReceived();
+    expect(connection.isOpen).toBe(false);
+    let callsAtReturn: readonly string[] = ['not read'];
+    await h.runOnHubTurn('abort-while-peer-closing', () => {
+      connection.abort(1008, 'rate limited');
+      callsAtReturn = [...socket.calls];
+    });
+    expect(callsAtReturn).toEqual([]);
+
+    socket.peerClosed(1000, 'bye');
+    const disconnected = `disconnected:${connection.id}:1000:bye:client`;
+    await awaitCondition(() => h.events.includes(disconnected), {
+      timeoutMs: 4_000,
+      label: 'the hub heard the client\'s close',
+    });
+    await h.sentinel('after-the-close');
+    expect(h.events).toEqual([
+      `connected:${connection.id}`,
+      'ran:abort-while-peer-closing',
+      disconnected,
+      'sentinel:after-the-close',
+    ]);
+    expect(socket.calls).toEqual([]);
+  });
+
   test('after close(): the ordered close stands, and the frame queued ahead of it is still written', async () => {
     const h = harness('ws-abort-after-close');
     const { connection, socket } = await h.connect(new TerminableSocket());
