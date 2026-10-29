@@ -120,6 +120,16 @@ both the worker cluster and the broker it builds, so every line listed
 under [What the mesh reports](#what-the-mesh-reports) reaches the sinks
 your system already logs to.
 
+A worker applies no [profile](/reference/configuration/#profiles) of its
+own.  The main system applied one when it loaded its configuration, and the
+values it selected are in the tree the workers run with, so
+`ACTOR_TS_PROFILE` is not applied a second time — to a file a worker could
+find, which need not be the one the main thread was given in code.  The
+application file a worker's own load reads is its main thread's, whether
+named with `withConfigFile` or found through `ACTOR_TS_CONFIG` or
+`./application.conf`: the tree overrides every key that file sets, and
+another file could add keys the main thread never saw.
+
 | Option | What |
 | --- | --- |
 | `withModule(url \| url[])` | The actor module(s) every worker imports.  **Required**, and code-only — deliberately not a config key, see below.  Held to the same spelling rule as `WorkerCluster`'s `withBootstrap`, because it is the same kind of thing: code a worker will execute. |
@@ -352,11 +362,15 @@ objects a file cannot express.  `bootstrap` is held back deliberately: it names
 a module the runtime will *execute*, and `ACTOR_TS_CONFIG` or a dropped-in
 `application.conf` is a wider surface than the call site.
 
-`spawn` is a static with no `ActorSystem` in scope, so it loads the config
-chain itself: the same one `ActorSystem.create` uses, honouring
-`ACTOR_TS_CONFIG` and `./application.conf`.  A value from the file is validated
-against the merged settings, so a bad one throws `OptionsError` at `spawn`
-exactly as a bad one in code does.
+`spawn` is a static with no `ActorSystem` in scope, so unless it is handed a
+`Config` it loads the config chain itself: the same one `ActorSystem.create`
+uses, honouring `ACTOR_TS_CONFIG`, `./application.conf` and the profile
+`ACTOR_TS_PROFILE` names.  That load cannot see a file or a profile a system
+was given in code, and refuses a profile defined only there — so when a
+system is in scope, pass its configuration as the second argument,
+`WorkerCluster.spawn(workerOptions, system.config)`, as `WorkerMesh` does.  A
+value from the config is validated against the merged settings, so a bad one
+throws `OptionsError` at `spawn` exactly as a bad one in code does.
 
 ## Under the hood: manual wiring
 

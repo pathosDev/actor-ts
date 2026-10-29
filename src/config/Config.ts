@@ -421,7 +421,9 @@ export class Config {
    * The layers this config was merged from, or `null`.
    *
    * @internal  DevTools' resolved-config panel (#553) — it is what lets
-   * a key say which file it came from rather than only what it is now.
+   * a key say which file it came from rather than only what it is now.  Also
+   * read by `WorkerMesh`, which hands its workers the application path, so
+   * a worker reads the file its main thread read (#1546).
    */
   _sources(): ConfigLayers | null { return this.layers; }
 

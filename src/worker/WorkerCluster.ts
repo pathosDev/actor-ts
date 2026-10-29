@@ -4,6 +4,7 @@ import type {
   BrokeredMessage,
   PortLike,
 } from '../cluster/transports/MessageChannelTransport.js';
+import type { Config } from '../config/Config.js';
 import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
 import { exponentialBackoff, type BackoffPolicy } from '../pattern/BackoffPolicy.js';
 import { availableParallelism } from '../runtime/Parallelism.js';
@@ -200,10 +201,24 @@ export class WorkerCluster {
     });
   }
 
+  /**
+   * @param options  Explicit options — the highest-precedence layer.
+   * @param config   The configuration `actor-ts.worker-cluster` is read from.
+   *   Defaults to {@link Config.load}, the chain `ActorSystem.create` uses,
+   *   because `spawn` is a static with no system in scope to borrow one from.
+   *
+   *   Hand it `system.config` whenever a system is in scope.  A load of its
+   *   own sees only what the environment says — `ACTOR_TS_CONFIG` or
+   *   `./application.conf`, and the profile `ACTOR_TS_PROFILE` names — so a
+   *   file or a profile the system was given in code is invisible to it, and
+   *   a profile defined only in that file is refused (#1546).  `WorkerMesh`
+   *   hands in its main system's config for exactly that reason.
+   */
   static async spawn(
     options: WorkerClusterOptions,
+    config?: Config,
   ): Promise<WorkerCluster> {
-    const resolvedOptions = withWorkerClusterConfigDefaults(options as WorkerClusterOptionsType);
+    const resolvedOptions = withWorkerClusterConfigDefaults(options as WorkerClusterOptionsType, config);
     new WorkerClusterOptionsValidator().validate(resolvedOptions);
     const workers = await resolveWorkerCount(resolvedOptions.workers ?? DEFAULT_WORKER_COUNT);
     // A `ConsoleLogger` at `Info` when nothing is given — the same default an
