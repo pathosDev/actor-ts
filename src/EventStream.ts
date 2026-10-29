@@ -124,6 +124,18 @@ export class EventStream {
   private callbackDepth = 0;
 
   /**
+   * Whether the cascade running now has reached the depth bound.
+   *
+   * A cascade is one call the outermost `publish` makes to a callback, and
+   * everything that call publishes, directly or through other callbacks.  Once
+   * the bound is reached in it, no publish the cascade makes reaches a callback
+   * again — see {@link callCallbacks} for why depth alone bounded nothing.  Set
+   * at the bound, and cleared as the outermost delivery moves to its next
+   * callback, which starts a cascade of its own.
+   */
+  private cascadeCut = false;
+
+  /**
    * Whether the system this bus belongs to has ended every callback
    * subscription — set once, by {@link _endCallbackSubscriptions}, and what
    * makes {@link subscribeFunction} refuse from then on.
@@ -404,7 +416,12 @@ export class EventStream {
    * another callback: the nested `publish` calls it again before its first call
    * has returned, and so on down the stack.  Publishing on another channel is
    * fine.  Past {@link MAX_EVENT_STREAM_CALLBACK_DEPTH} nested levels the bus
-   * calls no callback for the nested event and warns once.
+   * calls no callback for the nested event, nor for anything else published in
+   * the same cascade — everything one call of the outermost `publish` set off —
+   * and warns once for it.  The deliveries already under way finish, and the
+   * cascades of the outermost event's other callbacks are their own, so what a
+   * loop costs is the bound plus, at each of its levels, one call for every
+   * other callback its events reach — not one more path for each of them.
    *
    * @throws TypeError when `channel` is unusable, as {@link subscribe} does,
    * or when `callback` is not a function — or is a class, an {@link EventKey}
@@ -594,18 +611,42 @@ export class EventStream {
    * ceremony — the warning a throwing callback produces runs outside any guard,
    * so a logger that throws leaves through here, and a depth left raised would
    * have every later publish find the bound already reached.
+   *
+   * **Reaching it cuts the cascade, not only the event** (#1433).  Depth alone
+   * bounds one path through a loop, and a loop has as many paths as callbacks
+   * and publishes per call allow: every level the stack unwinds through calls
+   * the callbacks after the looping one, and each of them descends to the bound
+   * again.  Two callbacks publishing on their own channel made 131 070 calls and
+   * 65 536 warnings of a single publish, three made 64 570 080 calls — seconds
+   * on the publisher's stack, which for the framework's own events is an actor
+   * start or stop.  So once the bound is reached, nothing the cascade publishes
+   * from then on reaches a callback, while every delivery already under way
+   * finishes: an event published below the bound still reaches every callback
+   * that wants it, which is the recipient rule above, and the work of a loop is
+   * at most the bound once more for every other callback on each level of the
+   * one path, one warning for the cascade.  The outermost publish starts a
+   * cascade per callback, so a loop in one callback's cascade costs the
+   * others nothing — not even the event the publisher published.
    */
   private callCallbacks(event: object): void {
+    const outermost = this.callbackDepth === 0;
+    if (!outermost && this.cascadeCut) return;
     const tooDeep = this.callbackDepth >= MAX_EVENT_STREAM_CALLBACK_DEPTH;
     const recipients = [...this.callbacks];
     this.callbackDepth++;
     try {
       for (const subscription of recipients) {
+        // Each call the outermost publish makes starts a cascade of its own —
+        // cleared before the channel is even matched, because a match can run
+        // code that publishes too.
+        if (outermost) this.cascadeCut = false;
         if (!subscription.subscribed || !this.wants(subscription, event)) continue;
         if (tooDeep) {
+          this.cascadeCut = true;
           this.log?.warn(
             `EventStream: callback deliveries are nested ${MAX_EVENT_STREAM_CALLBACK_DEPTH} deep`
-            + ` — calling no callback for this event on ${subscription.label};`
+            + ` — calling no callback for this event on ${subscription.label},`
+            + ' nor for anything else this cascade publishes;'
             + ' a callback that publishes on its own channel calls itself',
           );
           return;

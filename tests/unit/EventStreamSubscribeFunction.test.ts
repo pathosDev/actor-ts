@@ -516,6 +516,95 @@ describe('EventStream.subscribeFunction bounds a callback that publishes', () =>
     expect(listener.received).toHaveLength(MAX_EVENT_STREAM_CALLBACK_DEPTH + 1);
   });
 
+  /**
+   * `callbackCount` callbacks on one channel, each publishing on it
+   * `publishesPerCall` times per call, plus an actor subscriber counting what
+   * reaches it.  The fixture stops publishing after `CALL_CAP` calls: the loop
+   * is synchronous, so a bus that does not bound it would hold the runner far
+   * past any per-test timeout, which cannot interrupt it — capped, it fails on
+   * the count instead.
+   */
+  function loopOf(callbackCount: number, publishesPerCall: number): {
+    calls: number; warnings: number; actorReceived: number;
+  } {
+    const CALL_CAP = 10_000;
+    const bus = new EventStream();
+    const { warnings } = recordLog(bus);
+    const listener = new RecordingRef('listener');
+    bus.subscribe(listener, EventA);
+    let calls = 0;
+    for (let callback = 0; callback < callbackCount; callback++) {
+      bus.subscribeFunction(EventA, (event) => {
+        calls++;
+        if (calls >= CALL_CAP) return;
+        for (let publish = 0; publish < publishesPerCall; publish++) bus.publish(new EventA(event.payload));
+      });
+    }
+    bus.publish(new EventA('loop'));
+    return { calls, warnings: warnings.length, actorReceived: listener.received.length };
+  }
+
+  // A bound on depth alone is a bound on one path through the loop, and the
+  // loop has as many paths as callbacks or publishes per call allow: two
+  // callbacks made 131 070 calls and 65 536 warnings of one publish, three made
+  // 64 570 080 calls.  The bound now cuts the cascade it is reached in, so the
+  // count follows from two rules.  Everything published below the bound
+  // reaches every callback that wants it: the first descent is sixteen calls,
+  // and on the way back up each of the 15 nested levels calls the other
+  // k - 1 callbacks once.  Nothing the cascade publishes after the cut reaches
+  // a callback, which is why the publishes per call stop mattering.  The
+  // outermost publish gives each of its k callbacks a cascade of its own:
+  // k * (16 + 15 * (k - 1)) calls and k warnings.  The actor subscriber still
+  // receives everything — the outermost event, and every publish of every call.
+  const loopShapes: ReadonlyArray<readonly [string, number, number, { calls: number; warnings: number; actorReceived: number }]> = [
+    ['one callback publishing twice per call', 1, 2, { calls: 16, warnings: 1, actorReceived: 33 }],
+    ['two callbacks publishing once per call', 2, 1, { calls: 62, warnings: 2, actorReceived: 63 }],
+    ['three callbacks publishing once per call', 3, 1, { calls: 138, warnings: 3, actorReceived: 139 }],
+  ];
+
+  test.each(loopShapes)('the bound limits the work of %s, not only its depth', (_label, callbackCount, publishesPerCall, expected) => {
+    expect(loopOf(callbackCount, publishesPerCall)).toEqual(expected);
+  });
+
+  test('a cut cascade leaves the cascades of the other callbacks alone', () => {
+    // The outermost event reaches every callback, and what each of them
+    // publishes in turn is its own cascade.  The looping callback's cut ends
+    // its own cascade only: the callback behind it still publishes for the
+    // outermost event, and that publish still reaches its callback.  What it
+    // published for the looping cascade's echoes did not.
+    const bus = new EventStream();
+    const { warnings } = recordLog(bus);
+    bus.subscribeFunction(EventA, () => { bus.publish(new EventA('echo')); });
+    bus.subscribeFunction(EventA, (event) => { bus.publish(new EventB(event.payload.length)); });
+    const forwarded: number[] = [];
+    bus.subscribeFunction(EventB, (event) => { forwarded.push(event.payload); });
+
+    bus.publish(new EventA('outermost'));
+    expect(forwarded).toEqual(['outermost'.length]);
+    expect(warnings).toHaveLength(1);
+  });
+
+  test('a cut does not carry over into the next cascade, not even into its channel match', () => {
+    // Matching runs the channel's own code, before the callback is called, and
+    // that code can publish.  It runs for the next callback of the outermost
+    // publish, so it belongs to that callback's cascade, not to the cut one.
+    const bus = new EventStream();
+    recordLog(bus);
+    bus.subscribeFunction(EventA, () => { bus.publish(new EventA('echo')); });
+    const publishingChannel = {
+      [Symbol.hasInstance](candidate: unknown): boolean {
+        if (candidate instanceof EventA && candidate.payload === 'outermost') bus.publish(new EventB(1));
+        return false;
+      },
+    };
+    bus.subscribeFunction(publishingChannel as never, () => {});
+    const announced: number[] = [];
+    bus.subscribeFunction(EventB, (event) => { announced.push(event.payload); });
+
+    bus.publish(new EventA('outermost'));
+    expect(announced).toEqual([1]);
+  });
+
   test('the bound starts again with every outermost publish', () => {
     const bus = new EventStream();
     const { warnings } = recordLog(bus);

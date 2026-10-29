@@ -275,12 +275,21 @@ callback's parameter.  The rest follows from having no mailbox:
   callback that one reaches, before its own call returns.  Publishing
   on another channel is fine.  Publishing on its own channel, directly
   or through another callback, makes it call itself, level after
-  level.  Past 16 nested levels the bus calls no callback: it logs one
-  warning instead, and still delivers that event to every actor
-  subscriber.  The bound contains the loop; it does not make it
-  correct.  An actor subscriber cannot loop like this, because its
-  mailbox takes the delivery off the stack — when a reaction has to
-  publish on its own channel, that is the subscriber to use.
+  level.  Past 16 nested levels the bus cuts the cascade — everything
+  one callback's call on the published event set off: from then on,
+  nothing the cascade publishes reaches a callback, and the bus logs
+  one warning for it.  The actor subscribers still receive every
+  event, and the deliveries already under way finish, so every event
+  published below the bound reaches every callback that wants it.
+  Each callback the published event reaches has a cascade of its own,
+  so a loop in one cascade never cuts another, and with several
+  callbacks publishing on their own channel the bus warns once per
+  cascade — a sixteen-level loop through two callbacks costs 62 calls
+  and two warnings, not the 131 070 calls of every path through it.
+  The bound contains the loop; it does not make it correct.  An actor
+  subscriber cannot loop like this, because its mailbox takes the
+  delivery off the stack — when a reaction has to publish on its own
+  channel, that is the subscriber to use.
 </Aside>
 
 ## Watching it live
