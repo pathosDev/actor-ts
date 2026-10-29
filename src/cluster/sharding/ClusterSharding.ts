@@ -144,18 +144,43 @@ export class ClusterSharding {
     // between construction and the first region: a type started later still
     // sees its own first broadcast.  `snapshot` replay because this listener
     // discards membership anyway — one event to ignore instead of N.  Never
-    // unsubscribed: the instance is memoised per ActorSystem and both it and
-    // the listener die with the Cluster that holds them.
+    // unsubscribed: the instance is memoised per cluster (see `get`) and both
+    // it and the listener die with the Cluster that holds them.
     cluster.subscribe((event) => this.onClusterEvent(event), { replayMode: 'snapshot' });
   }
 
-  private static instances = new WeakMap<ActorSystem, ClusterSharding>();
+  private static instances = new WeakMap<ActorSystem, WeakMap<Cluster, ClusterSharding>>();
 
+  /**
+   * The facade for `cluster` on `system`, built on first use and memoised per
+   * system **and per cluster** (#1465).
+   *
+   * Everything a facade does goes through the cluster it was built with: its
+   * regions register and route over that cluster, and it subscribes to that
+   * cluster's events.  It used to be memoised per `ActorSystem` alone and
+   * ignore the cluster it was asked for, so after a `leave()` and a new
+   * `Cluster.join` on the same system the new cluster was handed the facade of
+   * the one that had left — a region started through it never registered, and
+   * a `shard-region:<type>` readiness check stayed red for good.  Any first
+   * touch pinned it, including the one `Cluster.join` makes itself when
+   * `actor-ts.sharding.healthcheck.names` is set.
+   *
+   * So each incarnation of a system's cluster gets a facade of its own, and
+   * repeated reads through one cluster still return one instance.  Keyed
+   * weakly at both levels, so a facade goes with the cluster it belongs to.
+   * Regions a left cluster's facade started are not carried over: they belong
+   * to that cluster and stay bound to it.
+   */
   static get(system: ActorSystem, cluster: Cluster): ClusterSharding {
-    const existing = ClusterSharding.instances.get(system);
+    let byCluster = ClusterSharding.instances.get(system);
+    if (byCluster === undefined) {
+      byCluster = new WeakMap<Cluster, ClusterSharding>();
+      ClusterSharding.instances.set(system, byCluster);
+    }
+    const existing = byCluster.get(cluster);
     if (existing) return existing;
     const created = new ClusterSharding(system, cluster);
-    ClusterSharding.instances.set(system, created);
+    byCluster.set(cluster, created);
     return created;
   }
 
