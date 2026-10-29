@@ -141,3 +141,28 @@ describe('JsonSerializer — a document that is not JSON (#1449)', () => {
     expect(error.message).toBe('JSON nesting deeper than 4');
   });
 });
+
+describe('JsonSerializer — an __error__ named after an Object.prototype member (#1449)', () => {
+  const encoder = new TextEncoder();
+
+  // Written by hand rather than encoded, because these are the bytes a peer can
+  // send.  Each one escaped fromBinary as a raw TypeError, and `constructor`
+  // decoded to a String wrapper; the names are the runtime's own, so a member
+  // a future engine adds is covered without editing this list.
+  for (const name of Object.getOwnPropertyNames(Object.prototype)) {
+    test(`{"__error__":{"name":"${name}",…}} decodes to a plain Error that keeps the name`, () => {
+      const document = JSON.stringify({ __error__: { name, message: 'x' } });
+      const decoded = json.fromBinary(encoder.encode(document), '') as Error;
+      expect(decoded).toBeInstanceOf(Error);
+      expect(Object.getPrototypeOf(decoded)).toBe(Error.prototype);
+      expect(decoded.name).toBe(name);
+      expect(decoded.message).toBe('x');
+    });
+  }
+
+  test('a name that is not a string is still a malformed tag', () => {
+    const error = errorThrownBy(() => json.fromBinary(encoder.encode('{"__error__":{"name":42,"message":"x"}}'), ''));
+    expect(error).toBeInstanceOf(SerializationError);
+    expect(error.message).toBe('Malformed __error__ tag: expected a { name, message } object');
+  });
+});

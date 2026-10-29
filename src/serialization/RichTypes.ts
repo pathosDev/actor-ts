@@ -107,7 +107,15 @@ export function rebuildBinaryView(kind: string, bytes: Uint8Array): ArrayBufferV
   return undefined;
 }
 
-/** The error constructors a decoder may reconstruct; unknown names fall back to `Error` + `name`. */
+/**
+ * The error constructors a decoder may reconstruct; unknown names fall back to `Error` + `name`.
+ *
+ * Ask it with `Object.hasOwn`, never a bare index.  The name comes off the
+ * wire, and on an object literal an index also answers for every member of
+ * `Object.prototype` — `toString` is no constructor and `constructor` is
+ * `Object` — so those names have to land in the fallback like any other the
+ * table does not hold (#1449).
+ */
 export const ERROR_CONSTRUCTORS: Readonly<Record<string, new (message?: string) => Error>> = {
   Error, TypeError, RangeError, SyntaxError, ReferenceError, EvalError, URIError,
 };
@@ -125,7 +133,10 @@ export function rebuildError(name: string, message: string, errors: readonly unk
   if (name === 'AggregateError' && errors !== undefined) {
     return new AggregateError(errors, message);
   }
-  const constructor = ERROR_CONSTRUCTORS[name] ?? Error;
+  // An error that someone named `valueOf` encodes like any other, so it has
+  // to decode like any other too: refusing it would leave a journal that
+  // stored one unable to replay past it.
+  const constructor = Object.hasOwn(ERROR_CONSTRUCTORS, name) ? ERROR_CONSTRUCTORS[name] : Error;
   const out = new constructor(message);
   if (out.name !== name) out.name = name;
   return out;
