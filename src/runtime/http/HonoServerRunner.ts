@@ -59,12 +59,13 @@ export type HonoServeOptions = {
    * and `http2` alone, set or unset, so whatever in the bag would decide them
    * is dropped: on Bun its `tls`, every TLS option `Bun.serve` also reads from
    * the top level, and `http1`/`http2`/`http3`; on Deno its `cert`/`key`; on
-   * Node its `createServer`.  HTTP/1.1 therefore stays beside h2 on every
-   * runtime.  Bun's `idleTimeout` is dropped too, being `idleTimeoutMs` and
-   * `requestDeadlineMs`'s to decide: a bag value would pass the ceiling and
-   * the unit conversion by.  Node's `serverOptions` is the one member merged
-   * rather than outranked: the caller's keys stay, and the TLS material wins a
-   * collision.
+   * Node its `createServer`, and every `node:tls` option and `allowHTTP1` in
+   * its `serverOptions`.  HTTP/1.1 therefore stays beside h2 on every runtime,
+   * and the typed `tls` is the whole TLS configuration.  Bun's `idleTimeout` is
+   * dropped too, being `idleTimeoutMs` and `requestDeadlineMs`'s to decide: a
+   * bag value would pass the ceiling and the unit conversion by.  Node's
+   * `serverOptions` is the one member merged rather than outranked: the
+   * caller's other keys stay, beneath the TLS material.
    */
   readonly serveOptions?: object;
   /** Terminate TLS on the socket; unset serves plain HTTP. */

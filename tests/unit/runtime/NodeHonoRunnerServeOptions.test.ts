@@ -188,6 +188,47 @@ describe('NodeHonoRunner — serveOptions reach @hono/node-server (#1486)', () =
   });
 });
 
+describe('NodeHonoRunner — no node:tls option of the caller\'s reaches the listener (#1486)', () => {
+  // Every option `node:tls` reads when it builds a server — `@types/node`'s
+  // `TlsOptions` with the `SecureContextOptions` and `CommonConnectionOptions`
+  // it extends — and `allowHTTP1`, which keeps HTTP/1.1 beside h2.  A name the
+  // typed `tls` leaves unset used to reach the listener from the bag; what that
+  // did to a live one is in `NodeHonoRunnerTlsBag.test.ts`.  One case per name,
+  // so a name missing from the runner's list is named by the case that fails.
+  const tlsOptionNames = [
+    'pfx', 'key', 'cert', 'passphrase', 'secureContext', 'SNICallback', 'privateKeyEngine', 'privateKeyIdentifier',
+    'ca', 'crl', 'requestCert', 'rejectUnauthorized', 'clientCertEngine', 'allowPartialTrustChain',
+    'pskCallback', 'pskIdentityHint',
+    'ALPNProtocols', 'ALPNCallback', 'minVersion', 'maxVersion', 'secureProtocol', 'secureOptions', 'ciphers',
+    'sigalgs', 'ecdhCurve', 'dhparam', 'honorCipherOrder', 'sessionIdContext', 'sessionTimeout', 'ticketKeys',
+    'enableTrace', 'handshakeTimeout', 'requestOCSP',
+    'allowHTTP1',
+  ] as const;
+  for (const name of tlsOptionNames) {
+    test(`serverOptions.${name}: with tls only the configured material arrives beside the caller's tuning, without tls only the tuning`, async () => {
+      const callerServerOptions = { maxHeaderSize: 1024, [name]: `the caller's ${name}` };
+
+      const withTls = await bagFor({ tls: TLS, serveOptions: { serverOptions: callerServerOptions } });
+      expect(withTls.serverOptions).toEqual({ maxHeaderSize: 1024, cert: TLS.cert, key: TLS.key });
+
+      const withoutTls = await bagFor({ serveOptions: { serverOptions: callerServerOptions } });
+      expect(withoutTls.serverOptions).toEqual({ maxHeaderSize: 1024 });
+    });
+  }
+
+  test('a configured client-certificate demand is the whole of it: the caller\'s rejectUnauthorized does not loosen it', async () => {
+    // Merged beneath the typed fields, `rejectUnauthorized: false` survived
+    // wherever the typed `tls` left the field unset — and a demand with it off
+    // admits a client that presents nothing.
+    const bag = await bagFor({
+      tls: { ...TLS, ca: 'the configured authority', requestClientCert: true },
+      serveOptions: { serverOptions: { rejectUnauthorized: false } },
+    });
+
+    expect(bag.serverOptions).toEqual({ cert: TLS.cert, key: TLS.key, ca: 'the configured authority', requestCert: true });
+  });
+});
+
 describe('NodeHonoRunner — the typed maxHeaderBytes reaches @hono/node-server as maxHeaderSize (#1488)', () => {
   test('without tls, it lands in serverOptions beside the caller\'s keys, and the module builds the listener', async () => {
     const bag = await bagFor({ maxHeaderBytes: 1024, serveOptions: { serverOptions: { keepAliveTimeout: 7_000 } } });

@@ -15,7 +15,8 @@ import type {
  * `closeAllConnections()` forces the kill.
  *
  * `serveOptions` reaches `serve()` beneath the runner's own fields, with its
- * `serverOptions` merged under the TLS material — see `nodeServeOptions`.
+ * `serverOptions` merged under the TLS material and stripped of every
+ * `node:tls` option — see `nodeServeOptions`.
  * The typed `maxHeaderBytes` is the one tuning member this runtime can take:
  * it goes into `serverOptions` as `node:http`'s `maxHeaderSize`, and the
  * handle reports it applied only once the server reads it back.
@@ -308,7 +309,10 @@ type CallerServeOptions = {
  * too, spread last so the configured material wins a collision.  Spreading
  * either bag over the other loses a side: the caller's tuning, or the
  * certificate — and a listener that no longer terminates TLS with the
- * material it was configured with is what #1522 rules out.
+ * material it was configured with is what #1522 rules out.  Winning a
+ * collision is not enough on its own, though, since the typed `tls` leaves
+ * most `node:tls` options unset: the caller's never reach the listener at
+ * all — see {@link LISTENER_SHAPE_SERVER_OPTIONS}.
  *
  * The typed `maxHeaderBytes` goes in between, as `maxHeaderSize`: over the
  * caller's bag, because the bag sits beneath everything the runner writes,
@@ -324,9 +328,49 @@ function nodeServeOptions(options: HonoServeOptions, secure: NodeServerFactory |
     hostname: options.host,
     port: options.port,
     fetch: options.fetch,
-    serverOptions: { ...serverOptions, ...headerCap, ...secure?.serverOptions },
+    serverOptions: { ...withoutListenerShape(serverOptions), ...headerCap, ...secure?.serverOptions },
     ...(secure ? { createServer: secure.createServer } : {}),
   };
+}
+
+/**
+ * The `serverOptions` names a caller's bag may not set, because the typed
+ * `tls` and `http2` decide them, set or unset (#1486): every option `node:tls`
+ * reads when it builds a server — `@types/node`'s `TlsOptions` with the
+ * `SecureContextOptions` and `CommonConnectionOptions` it extends — and
+ * `allowHTTP1`, which keeps HTTP/1.1 beside h2 on every runtime.
+ *
+ * Merged beneath the TLS material, a name the typed `tls` leaves unset reached
+ * the listener from the bag.  Measured on node v26.10.0: a bag `pfx` or
+ * `SNICallback` presented another certificate in place of the configured one,
+ * `requestCert: true` made a one-way listener demand a client certificate with
+ * no `ca` to verify it against, and a bag that switched `rejectUnauthorized`
+ * off admitted a client without one past a configured demand.  So the typed
+ * `tls` is the whole TLS configuration: what the listener presents, whom it
+ * admits and which TLS it speaks.  A bound such as `handshakeTimeout` that a deployment
+ * should be able to tune belongs in the server policy beside `header-timeout`,
+ * not in a bag.
+ *
+ * Without TLS the listener is `node:http`, which reads none of these, so they
+ * are dropped there too and the rule needs no condition.
+ */
+const LISTENER_SHAPE_SERVER_OPTIONS: ReadonlySet<string> = new Set([
+  // What the listener presents.
+  'pfx', 'key', 'cert', 'passphrase', 'secureContext', 'SNICallback', 'privateKeyEngine', 'privateKeyIdentifier',
+  // Whom it admits.
+  'ca', 'crl', 'requestCert', 'rejectUnauthorized', 'clientCertEngine', 'allowPartialTrustChain',
+  'pskCallback', 'pskIdentityHint',
+  // Which TLS it speaks.
+  'ALPNProtocols', 'ALPNCallback', 'minVersion', 'maxVersion', 'secureProtocol', 'secureOptions', 'ciphers',
+  'sigalgs', 'ecdhCurve', 'dhparam', 'honorCipherOrder', 'sessionIdContext', 'sessionTimeout', 'ticketKeys',
+  'enableTrace', 'handshakeTimeout', 'requestOCSP',
+  // Whether HTTP/1.1 stays beside h2.
+  'allowHTTP1',
+]);
+
+/** A caller's `serverOptions` without the names {@link LISTENER_SHAPE_SERVER_OPTIONS} reserves. */
+function withoutListenerShape(serverOptions: object | undefined): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(serverOptions ?? {}).filter(([name]) => !LISTENER_SHAPE_SERVER_OPTIONS.has(name)));
 }
 
 interface HonoNodeServerModule {
