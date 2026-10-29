@@ -358,7 +358,7 @@ export type ServerSocketLike = {
  *
  * `true` means in effect, and for the two bounds actor-ts holds itself it
  * means the guard was installed, not merely the property written:
- * `headerTimeoutMs` is the boolean {@link enforceHeaderTimeout} returns, and
+ * `headerTimeoutMs` is the `installed` flag of {@link enforceHeaderTimeout}, and
  * `maxConnections` the `installed` flag of {@link enforceMaxConnections}.  A
  * property alone does not count there, since it is exactly what Bun accepts
  * and ignores.  `idleTimeoutMs` and `requestTimeoutMs` count where the property
@@ -624,7 +624,7 @@ export function applyServerOptions(
     // it is in effect wherever the policy reached a server at all; reported
     // otherwise, the opt-out would be warned about on every backend that
     // honours it.
-    report.headerTimeoutMs = headerDeadlineMs > 0 ? enforceHeaderTimeout(server, headerDeadlineMs) : true;
+    report.headerTimeoutMs = headerDeadlineMs > 0 ? enforceHeaderTimeout(server, headerDeadlineMs)().installed : true;
   }
   if (options.requestTimeoutMs !== undefined) {
     server.requestTimeout = options.requestTimeoutMs;
@@ -815,16 +815,21 @@ export function enforceSessionIdleTimeout(server: NodeHttpServerLike, idleTimeou
  * price of not delegating; the runtime's sweep is cheaper and, on two runtimes
  * out of three, imaginary.
  *
- * Returns whether the guard was installed — whether the server offers `on`, on
- * a runtime that emits the events it rests on — so a server that cannot host
- * it reports itself rather than pretending.  It is what
- * {@link ServerOptionsReport.headerTimeoutMs} counts.
+ * Returns a live {@link HeaderDeadlineReport} reader rather than a boolean, the
+ * shape {@link enforceMaxConnections} has: whether the guard was installed —
+ * whether the server offers `on`, on a runtime that emits the events it rests
+ * on — so a server that cannot host it reports itself rather than pretending,
+ * which is what {@link ServerOptionsReport.headerTimeoutMs} counts; and how
+ * many deadlines the endpoint map holds, which is the one way to see that it
+ * empties.  Nothing else does: an entry `settle` failed to drop holds its
+ * socket for the life of the server and changes no answer the guard gives, so
+ * a leak there is invisible to every behaviour a test can observe.
  */
-export function enforceHeaderTimeout(server: NodeHttpServerLike, deadlineMs: number): boolean {
-  if (typeof server.on !== 'function') return false;
+export function enforceHeaderTimeout(server: NodeHttpServerLike, deadlineMs: number): () => HeaderDeadlineReport {
+  if (typeof server.on !== 'function') return HEADER_DEADLINE_NOT_INSTALLED;
   // Deno emits neither 'connection' nor 'secureConnection', so a deadline
   // installed there would never be armed (see above).
-  if (detectRuntime() === 'deno') return false;
+  if (detectRuntime() === 'deno') return HEADER_DEADLINE_NOT_INSTALLED;
   const secureListener = typeof server.setSecureContext === 'function';
   // Weak because a socket that closes before its headers complete must not be
   // held alive by the bookkeeping meant to hang up on it.  A settled deadline
@@ -927,8 +932,26 @@ export function enforceHeaderTimeout(server: NodeHttpServerLike, deadlineMs: num
   server.on('request', onHeadersComplete);
   server.on('upgrade', onHeadersComplete);
   server.on('stream', onHeadersComplete);
-  return true;
+  return () => ({ installed: true, endpointEntries: byEndpoint.size });
 }
+
+/**
+ * What {@link enforceHeaderTimeout} holds, read when asked rather than copied
+ * at install time.
+ */
+export type HeaderDeadlineReport = {
+  /** `false` when the server offers no `on`, or the runtime emits none of the events the guard rests on. */
+  readonly installed: boolean;
+  /**
+   * Deadlines filed under their connection's endpoint pair right now — one per
+   * accepted connection that has neither completed a header block, closed,
+   * nor expired, so it is back at zero once every connection has settled.
+   */
+  readonly endpointEntries: number;
+};
+
+/** The reader a server that cannot host the guard gets: installed nowhere, holding nothing. */
+const HEADER_DEADLINE_NOT_INSTALLED = (): HeaderDeadlineReport => ({ installed: false, endpointEntries: 0 });
 
 /**
  * One armed header deadline, and what it has learned about its connection

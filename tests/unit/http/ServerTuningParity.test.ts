@@ -567,7 +567,7 @@ describe('the header deadline is enforced here, not delegated', () => {
     const server: NodeHttpServerLike = {};
     expect(() => applyServerOptions(server, { headerTimeoutMs: 1_000 })).not.toThrow();
     expect(server.headersTimeout).toBe(1_000);
-    expect(enforceHeaderTimeout(server, 1_000)).toBe(false);
+    expect(enforceHeaderTimeout(server, 1_000)()).toEqual({ installed: false, endpointEntries: 0 });
   });
 });
 
