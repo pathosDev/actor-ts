@@ -218,7 +218,7 @@ Built-in `Reason` classes:
 | `ActorSystemTerminateReason` | What `system.terminate()` passes when it runs the pipeline — asked for with `runCoordinatedShutdown: true`, or by default with `actor-ts.coordinated-shutdown.run-by-actor-system-terminate` on.  An ordinary shutdown your program decides on is that call, rather than a `run()` you hand this reason: the call also tears the system down when the run does not. |
 | `ClusterLeavingReason` | What `Cluster.bootstrap`'s `shutdown()` passes — a member leaving on purpose. |
 | `ClusterDowningReason` | What a node passes when its own downing decision removes it and `actor-ts.cluster.run-coordinated-shutdown-when-down` is on — see [when the cluster downs this node](#when-the-cluster-downs-this-node). |
-| `ClusterJoinUnsuccessfulReason` | What a node passes when it gives its join up — `actor-ts.cluster.shutdown-after-unsuccessful-join` passed with nothing able to promote it — and what `Cluster.bootstrap` passes when its readiness wait fails; see [when no seed ever answers](/cluster/joining-and-seeds/#when-no-seed-ever-answers). |
+| `ClusterJoinUnsuccessfulReason` | What a node passes when it gives its join up — `actor-ts.cluster.shutdown-after-unsuccessful-join` passed with nothing able to promote it — and what `Cluster.bootstrap` passes when its readiness wait fails, or when it refuses to go on after building its system; see [when no seed ever answers](/cluster/joining-and-seeds/#when-no-seed-ever-answers).  A run with it never exits `0`. |
 | `StartupFailedReason(phase, task, cause)` | What the system passes when a [startup](/fundamentals/actor-system/#starting-up) task failed or outlived its phase's budget — it names the phase and the task and carries the cause. |
 | `UnknownReason` | The default when `run()` is called with no argument. |
 
@@ -233,12 +233,17 @@ run that [halts](#timeouts) exits by too.  Left at the default
 error instead, and a `main` that awaits it exits non-zero by itself.
 
 A node that could not join runs it as well, and its reason says so.
-`ClusterJoinUnsuccessfulReason` arrives both when the join gives up and
-when a `Cluster.bootstrap` readiness wait fails — which used to pass
+`ClusterJoinUnsuccessfulReason` arrives when the join gives up, when a
+`Cluster.bootstrap` readiness wait fails — which used to pass
 `ClusterLeavingReason`, so a task that told a failed start by that reason
-now sees this one.  Neither ends the process on its own: the built-in
+now sees this one — and when the bootstrap refuses to go on after it has
+built its system, where `run-by-actor-system-terminate` makes that
+teardown a run.  None of them ends the process on its own: the built-in
 terminator ends the actor system, and the process exits only with
-`actor-ts.coordinated-shutdown.exit-process = on`.
+`actor-ts.coordinated-shutdown.exit-process = on`, and then by the rule
+above: a node that could not join did not stop cleanly either, and a
+failure never exits `0`.  The bootstrap says why at ERROR before the run
+starts, because the exit comes before its error could reach your `main`.
 
 You can subclass `Reason` for app-specific triggers
 (`AdminEndpointReason`, `HotReloadReason`, etc.).
@@ -262,10 +267,13 @@ either:
   *not* run; shutdown stops mid-flight.  A run that
   `terminate({ runCoordinatedShutdown: true })` started still ends in
   the teardown, because that call asked for a terminated system; so
-  does a run a signal started, unless `terminate-actor-system = false`
-  says the pipeline never takes the system down.  Either way the halt
-  is logged as an ERROR.  A `run()` you call yourself rejects with the
-  task's error and leaves the system as the halt found it.
+  does a run that a signal, this node's own downing decision or a join
+  that could not complete started — nobody awaits those, so the run
+  answers its own halt — unless `terminate-actor-system = false` says
+  the pipeline never takes the system down.  Either way the halt is
+  logged as an ERROR.  A `run()` you call yourself, with any other
+  reason, rejects with the task's error and leaves the system as the
+  halt found it.
 
   With `exit-process = on` the process exits at the halt instead,
   whichever trigger started the run — a signal, `terminate()`, your own
@@ -278,7 +286,8 @@ either:
   logged just before, reaches a buffering sink too.  A completed run that
   left the system up (`terminate-actor-system = false`) is flushed the
   same way before its exit; one whose terminator tore the system down was
-  flushed by that teardown already.
+  flushed by that teardown already.  The run is in flight until its exit,
+  so a `terminate()` that arrives while those flushes run starts nothing.
 
 Override per phase:
 
@@ -471,10 +480,14 @@ With it on, the node leaves first and then runs this pipeline with
 `ClusterDowningReason`, even when the leave fails: its services unbind, and
 the built-in terminator ends the actor system and with it every entity and
 singleton the node hosted.  `terminate-actor-system` and `exit-process` decide
-what the run ends in, as they do for a signal, and `auto-register-tasks = off`
-does not suppress it — that switch withholds the framework's own tasks and
-decides nothing about when the pipeline runs.  The node says so at `warn`
-before the run starts.
+what the run ends in, as they do for a signal — a run that a phase
+[halts](#timeouts) still ends in the teardown, because a downed node must not
+keep its actors running beside the side that won — and
+`auto-register-tasks = off` does not suppress it: that switch withholds the
+framework's own tasks and decides nothing about when the pipeline runs.  The
+node says so at `warn` before the run starts.  A decision that downs only
+peers changes nothing on this node: the switch answers its own removal, not a
+downing it decides.
 
 It ships **off**, and neither value is safe on its own terms:
 
@@ -590,8 +603,14 @@ process exits because nothing is keeping the loop alive.
   while a run is in flight — `terminate()` starts nothing and resolves at
   once, whichever form you call.  The run already ends in the teardown,
   and a task that waited for it would hold its own phase until the
-  phase's timeout gave up on it.  Await `system.whenTerminated()` when you
-  need the system down.
+  phase's timeout gave up on it.  Outside the pipeline — beside a
+  signal-triggered shutdown, say — await `system.whenTerminated()` when
+  you need the system down.  Not from a task: the teardown it would wait
+  for runs in the last phase, which cannot start before the task's own
+  phase has ended, so the wait holds that phase for its whole budget and
+  is logged as `timed out` — the same stall.  Only a task of
+  `actor-system-terminate` runs beside the terminator; work that needs
+  the system down belongs after the run, not in it.
 </Aside>
 
 <Aside type="caution" title="Tasks with side effects on the actor system">

@@ -997,11 +997,15 @@ export class ActorSystem {
    * `terminate()` waits on its own run, and holds its phase until the phase's
    * budget abandons it.  Tearing down on the spot would stop the actors in
    * the middle of the pipeline and run every later phase on a dead system.
-   * The run ends in the teardown anyway; a caller that needs the system down
-   * awaits {@link whenTerminated}.  Nor is the request dropped: a run that
-   * does not end in the teardown — no terminator in its last phase, or a
-   * halt before it — is followed by one, unless `exit-process` ends the
-   * process at the end of that run, which nothing follows.
+   * The run ends in the teardown anyway; a caller outside the pipeline that
+   * needs the system down awaits {@link whenTerminated}.  A task of the run
+   * must not: the teardown it would wait for is in the last phase, which
+   * cannot start before the task's own phase ends, so the wait is the same
+   * stall — only a task of `actor-system-terminate` runs beside the
+   * terminator.  Nor is the request dropped: a run that does not end in the
+   * teardown — no terminator in its last phase, or a halt before it — is
+   * followed by one, unless `exit-process` ends the process at the end of
+   * that run, which nothing follows.
    *
    * **A startup still running is abandoned, in either form** (#1473): the
    * running tasks' signals abort, no further phase starts, and
