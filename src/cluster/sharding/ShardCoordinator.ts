@@ -288,9 +288,13 @@ function shardCountsOf(regions: Iterable<RegionInfo>): Map<string, Set<number>> 
  *
  * State is reconstructed from Register messages: each region reports the
  * shards it currently hosts, and the coordinator merges that with any new
- * allocation requests.  This is deliberately lightweight — a production
- * upgrade would snapshot state to a journal so the coordinator can recover
- * across restarts without re-allocating every shard from scratch.
+ * allocation requests.  A coordinator that starts without a leader change —
+ * rebuilt by its supervisor after one of its handlers threw — would never hear
+ * those again, so it asks every region the instance before it knew to
+ * register (see {@link ShardCoordinator.preRestart} and `RegistrationRequest`), and the map comes
+ * back from the regions' own claims rather than from a fresh allocation.  A
+ * `coordinatorStateStore` additionally seeds the map from the last snapshot
+ * on every promotion, and each region it seeds is asked the same way.
  */
 export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private readonly regions = new Map<string, RegionInfo>();
