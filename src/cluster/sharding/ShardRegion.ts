@@ -394,11 +394,16 @@ export class ShardRegion<TMessage = unknown>
    * registration away — a `numShards` refusal (#633) or a staleness eviction
    * (#853).  A third kind of expected stop, and deliberately not either of the
    * other two: a handoff has a coordinator waiting for `HandOffComplete` and a
-   * passivation keeps ownership, while a release has neither — the coordinator
-   * does not have this region in `regions`, so there is nobody to answer and no
-   * ownership to come back to.
+   * passivation keeps ownership, while a release has neither — nobody asked
+   * for it, so there is nobody to answer and no ownership to come back to.
    */
   private readonly releasingShards = new Set<number>();
+  /**
+   * Shards a coordinator asked this *refused* region to hand off while they
+   * were still in {@link releasingShards} — answered once the release
+   * completes, because only then is nothing of the shard running here (#1467).
+   */
+  private readonly handOffsAwaitingRelease = new Set<number>();
   /**
    * Shards that stopped without being asked to, and the backoff each is in —
    * see {@link ShardFailureRecord} (#1437).  The fourth kind of stop, and the
@@ -1857,7 +1862,9 @@ export class ShardRegion<TMessage = unknown>
    * sends `HandOff` to the region its own `shardHome` names, so a refusal means
    * the two disagree about ownership — and the `handOffTimeoutMs` fallback
    * (`ShardCoordinator.beginHandOff`) exists for exactly that, force-reallocating
-   * the shard instead of waiting forever.
+   * the shard instead of waiting forever.  A region whose registration stands
+   * refused never gets here: it holds nothing by construction, so it answers
+   * instead of refusing — see {@link answerHandOffWhileRefused}.
    */
   private ownsShardToHandOff(shardId: number): boolean {
     if (this.handingOff.has(shardId)) {
@@ -2161,6 +2168,12 @@ export class ShardRegion<TMessage = unknown>
    */
   private onHandOff(message: HandOff, peer: NodeAddress | null): void {
     if (!this.fromCoordinator(message, peer)) return;
+    // Ahead of the range check: a refused region's shard ids are the
+    // coordinator's, hashed under a count this region does not share.
+    if (this.registerRefused) {
+      this.answerHandOffWhileRefused(message.shardId);
+      return;
+    }
     // `onShardHome` has had the #569 range check since it was added; this arm
     // never got it, so an out-of-range id still walked into `completeHandOff`
     // and deleted cache entries under a shard that cannot exist.
@@ -2208,13 +2221,7 @@ export class ShardRegion<TMessage = unknown>
     this.shardHomeNodes.delete(shardId);
     this.shardState.delete(shardId);
 
-    const complete: HandOffComplete = {
-      kind: 'sharding.HandOffComplete',
-      shardId,
-      region: this.self.path.toString(),
-      node: this.config.cluster.selfAddress.toJSON(),
-    };
-    this.tellCoordinator(complete);
+    this.tellHandOffComplete(shardId);
 
     // Anything that arrived while the shard was handing off is still queued,
     // and clearing `shardHomes` above means nothing will replay it: the
@@ -2224,6 +2231,45 @@ export class ShardRegion<TMessage = unknown>
     // Either ordering works — arriving before the `HandOffComplete` just
     // parks us in the coordinator's `pending` until it reallocates.
     if (this.buffer.has(shardId)) this.askCoordinator(shardId);
+  }
+
+  private tellHandOffComplete(shardId: number): void {
+    const complete: HandOffComplete = {
+      kind: 'sharding.HandOffComplete',
+      shardId,
+      region: this.self.path.toString(),
+      node: this.config.cluster.selfAddress.toJSON(),
+    };
+    this.tellCoordinator(complete);
+  }
+
+  /**
+   * The coordinator asks this region, refused over its shard count, to hand
+   * off a shard (#1467, #633).
+   *
+   * It does so for the shards a coordinator-state snapshot seeded the region
+   * with before its refused `Register` arrived: the coordinator's registry
+   * still lists them under this region, so rebalancing moves them off it.  The
+   * region has nothing to hand off — it gave up everything it hosted the moment
+   * the refusal reached it — so {@link ownsShardToHandOff} found no ownership,
+   * the directive was dropped, and every such move sat out `handOffTimeoutMs`,
+   * ten seconds at the default, before the coordinator forced it.
+   *
+   * Being refused is what makes answering safe: a refused region asks the
+   * coordinator for no shard home and is placed nothing, so whatever the
+   * coordinator believes it holds, nothing of it runs here once the release is
+   * through.  The answer is the plain `HandOffComplete` the coordinator is
+   * waiting for — sent at once, or, for a shard whose release is still
+   * stopping its entities, as soon as that finishes.  It touches no local
+   * state, and the coordinator honours it only for a hand-off it sent this very
+   * region, so a stale or duplicated directive answered this way ends nothing.
+   */
+  private answerHandOffWhileRefused(shardId: number): void {
+    if (this.releasingShards.has(shardId)) {
+      this.handOffsAwaitingRelease.add(shardId);
+      return;
+    }
+    this.tellHandOffComplete(shardId);
   }
 
   /**
@@ -2262,6 +2308,9 @@ export class ShardRegion<TMessage = unknown>
     this.releasingShards.delete(shardId);
     this.shards.delete(shardId);
     this.shardEmptySince.delete(shardId);
+    // A hand-off asked for while the release was stopping the shard — answered
+    // now, and only while the refusal that made it answerable still stands.
+    if (this.handOffsAwaitingRelease.delete(shardId) && this.registerRefused) this.tellHandOffComplete(shardId);
   }
 
   /**

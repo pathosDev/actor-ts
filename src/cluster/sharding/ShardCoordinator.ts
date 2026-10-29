@@ -1533,11 +1533,25 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     );
   }
 
+  /**
+   * A region reports that nothing of `shardId` runs on it any more.
+   *
+   * It ends a hand-off only when it comes from the region that hand-off was
+   * sent to (#1467).  The authority gate already holds a region to speaking for
+   * itself, but not to speaking about *this* hand-off, and a completion from
+   * elsewhere is not hypothetical: a region refused over its shard count
+   * answers every `HandOff` it is sent (`ShardRegion.answerHandOffWhileRefused`),
+   * and a stale copy told to stand down by `releaseConflictingShards` reports
+   * the same way.  Taken from any region, a late or duplicated one of those
+   * ended whichever hand-off of the shard happened to be in flight — and
+   * re-homed the shard while its real owner was still stopping it.
+   */
   private onHandOffComplete(message: HandOffComplete): void {
     this.markRegionSeen(message.region, message.node);
     const shardId = message.shardId;
     const inProgress = this.rebalanceInProgress.get(shardId);
     if (!inProgress) return;
+    if (inProgress.from !== regionKey(NodeAddress.fromJSON(message.node), message.region)) return;
     inProgress.timer.cancel();
     this.rebalanceInProgress.delete(shardId);
     this.releaseFromPreviousOwner(shardId, inProgress.from);

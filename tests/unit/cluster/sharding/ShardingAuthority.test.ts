@@ -57,11 +57,22 @@ const ENTITY_ID = 'user-1';
 
 let delivered = 0;
 
+/**
+ * While set, every entity's `postStop` waits on it — how a case holds a
+ * shard's stop open.  Opened and cleared after every case.
+ */
+let entityStopGate: Promise<void> | null = null;
+let openEntityStops: () => void = () => { /* nothing is held */ };
+
 class Entity extends Actor<Command> {
   override onReceive(message: Command): void {
     match(message)
       .with({ kind: 'work' }, () => this.onWork())
       .exhaustive();
+  }
+
+  override async postStop(): Promise<void> {
+    if (entityStopGate !== null) await entityStopGate;
   }
 
   private onWork(): void { delivered++; }
@@ -80,6 +91,8 @@ let running: Victim | null = null;
 const transports: InMemoryTransport[] = [];
 
 afterEach(async () => {
+  openEntityStops();
+  entityStopGate = null;
   await Promise.all(transports.splice(0).map((t) => t.shutdown().catch(() => { /* best-effort */ })));
   if (running) {
     await running.cluster.leave().catch(() => { /* best-effort */ });
@@ -422,6 +435,7 @@ describe('ShardRegion handoff ownership (#584)', () => {
       { timeoutMs: 4_000, label: 'the region cached the remote home' },
     );
     expect(regionState(victim).localShards.has(remoteShardId)).toBe(false);
+    const heardBefore = coordinatorEntry(victim)?.lastSeenAtMs;
 
     tellAsCoordinator(victim, { kind: 'sharding.HandOff', shardId: remoteShardId });
     // The assertion is an absence: give the region a turn to act on the
@@ -434,6 +448,47 @@ describe('ShardRegion handoff ownership (#584)', () => {
     expect(state.shardHomeNodes.get(remoteShardId)?.toString()).toBe(elsewhere.toString());
     // And the shard the region really does own is untouched by the refusal.
     expect(entityIsUp(victim)).toBe(true);
+    // Nor did it answer: a registered region that does not own the shard may
+    // be mid-way through handing it off, and only a refused one holds nothing
+    // by construction (#1467).  An answer would have stamped its entry.
+    expect(coordinatorEntry(victim)?.lastSeenAtMs).toBe(heardBefore);
+  });
+
+  test('a refused region answers a HandOff once the shard it is releasing has stopped', async () => {
+    // A refused region holds nothing once its release is through, so it answers
+    // every `HandOff` with `HandOffComplete` (#1467).  But a shard it was hosting
+    // when the refusal came is stopped asynchronously, each entity's `postStop`
+    // included, and until that finishes the shard still runs here: an answer
+    // then would let the coordinator start the shard elsewhere while its
+    // entities here are still flushing.  The stop is held open below, and the
+    // coordinator's stamp on this region's entry is the witness that an answer
+    // went out — nothing else in this idle fixture touches it.
+    const victim = await startVictim('authority-refused-hand-off', 62_162);
+    const heardBefore = coordinatorEntry(victim)?.lastSeenAtMs;
+    entityStopGate = new Promise<void>((resolve) => { openEntityStops = resolve; });
+
+    tellAsCoordinator(victim, {
+      kind: 'sharding.RegisterRefused',
+      coordinator: '/system/cluster/sharding/coordinator-entity',
+      numShards: NUM_SHARDS * 2,
+      regionNumShards: NUM_SHARDS,
+    });
+    tellAsCoordinator(victim, { kind: 'sharding.HandOff', shardId: victim.shardId });
+    await awaitCondition(() => coordinatorEntry(victim)?.lastSeenAtMs !== heardBefore, {
+      timeoutMs: 300,
+      intervalMs: 10,
+      label: 'an answer while the shard was still stopping (not expected)',
+    }).then(
+      () => { throw new Error('the refused region answered before its shard had stopped'); },
+      () => { /* the window ran out with no answer */ },
+    );
+
+    openEntityStops();
+    await awaitCondition(() => coordinatorEntry(victim)?.lastSeenAtMs !== heardBefore, {
+      timeoutMs: 4_000,
+      label: 'the refused region answered once the shard had stopped',
+    });
+    expect(entityIsUp(victim)).toBe(false);
   });
 
   test('an authentic HandOff for the shard this region owns still hands it off', async () => {
