@@ -443,11 +443,20 @@ What it does to the connect cycle:
   it, and a warning says so.
 
 Actors that name the same id **share one breaker**, and so one verdict: once
-it opens, an actor that never tried is refused too, and one probe after the
-window answers for all of them.  For a fleet of actors on one broker cluster
-that is the point — one probe per window instead of a reconnect burst from
-each.  It is also why two unrelated brokers get two ids: a breaker shared by
-both opens on either's failures and holds both off.
+it opens, an actor that never tried is refused too, and each actor makes at
+most one connect per window.  For a fleet of actors on one broker cluster that
+is the point — one attempt each per window instead of a reconnect burst from
+each.  Whether a single probe answers for all of them depends on how long a
+failing connect takes.  Each actor's wake-up is spread forwards by its
+`randomFactor`, and the half-open breaker admits every attempt that arrives
+before the probe settles.  A connect that fails fast reopens the breaker
+before the next actor wakes, so the rest are refused and one probe decided for
+the fleet; a connect that hangs — a broker that black-holes its traffic — is
+still in flight when the others wake, and each of them probes too.  A
+`call-timeout` bounds how long a hanging probe holds the breaker half-open.
+It is also why two
+unrelated brokers get two ids: a breaker shared by both opens on either's
+failures and holds both off.
 
 Every transition is published as `BrokerCircuitBreakerStateChanged` — actor
 path, endpoint, breaker id and state — by each actor that names the breaker.

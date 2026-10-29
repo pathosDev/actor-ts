@@ -76,10 +76,13 @@ export type BrokerCommonOptionsType = {
    * growth, jitter, `ignored-error-names` and `onStateChange`.
    *
    * Actors that name the same id share one breaker, and so one verdict: once
-   * it opens, every one of them waits for the same window, and one probe
-   * after it answers for all.  Name one id per broker *cluster*, not per
-   * actor and not one for everything — a breaker shared by two unrelated
-   * brokers opens on either's failures and holds both off.
+   * it opens, every one of them waits for the same window and makes at most
+   * one attempt in it.  One probe answers for all of them only while a failing
+   * connect settles before the next actor wakes; a hanging one is still in
+   * flight, the half-open breaker admits the others too, and each probes.
+   * Name one id per broker *cluster*, not per actor and not one for everything
+   * — a breaker shared by two unrelated brokers opens on either's failures and
+   * holds both off.
    */
   readonly circuitBreaker?: string;
 

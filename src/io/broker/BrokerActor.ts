@@ -1308,7 +1308,12 @@ export abstract class BrokerActor<
    * by an id has one window, and every actor naming it would wake at its end
    * together and probe together, since half-open admits every concurrent call
    * (#457).  This one spreads each actor's wake-up within that one window, so
-   * the first to wake probes and the rest meet the verdict (#1478).
+   * the first to wake probes, and the rest meet its verdict when it settles
+   * before they wake (#1478).  A probe that is still in flight when the next
+   * actor wakes — a connect that hangs rather than fails — does not hold that
+   * one off: it is admitted too.  What the spread bounds is one attempt per
+   * actor per window, and a single probe for all of them only while a failing
+   * connect is short against the spread.
    */
   private _spreadBreakerWait(remainingMs: number): number {
     const { randomFactor, random } = this._reconnectRandomness();

@@ -648,6 +648,15 @@ class RecordingScheduler extends Scheduler {
   }
 }
 
+/** {@link RecordingScheduler} on virtual time: every requested delay, and a clock that moves on `advance`. */
+class RecordingManualScheduler extends ManualScheduler {
+  readonly delays: number[] = [];
+  override scheduleOnceFunction(delayMs: number, task: () => void): Cancellable {
+    this.delays.push(delayMs);
+    return super.scheduleOnceFunction(delayMs, task);
+  }
+}
+
 /**
  * Subscribe a probe that records the first `BrokerReconnectAttempt` delay
  * per endpoint.  Keying on the endpoint (rather than the actor path) is
@@ -1016,6 +1025,98 @@ describe('BrokerActor — circuit breaker', () => {
       timeoutMs: 4_000, label: 'the latecomer probed at t = 1000 and connected',
     });
     expect(latecomer.connectAttempts).toBe(1);
+    await sys.terminate();
+  });
+
+  /**
+   * A fleet of three actors sharing a breaker that opened at t = 0 on
+   * another actor's failure (stopped since), each refused once and woken at
+   * the window's end spread forwards by a draw of its own: 1000, 1200 and
+   * 1400 ms.  Virtual time, so every wake-up is exact.
+   */
+  async function fleetAfterAnOpen(name: string, hang: boolean): Promise<{
+    readonly scheduler: RecordingManualScheduler;
+    readonly sys: ActorSystem;
+    readonly sharers: readonly FakeBroker[];
+  }> {
+    const scheduler = new RecordingManualScheduler();
+    const sys = systemWithBreakers(name, scheduler, { fleet: { 'max-failures': 1, 'reset-timeout': 1_000 } });
+    const opener = spawnFake(
+      sys,
+      { endpoint: 'opener', circuitBreaker: 'fleet', reconnect: FLAT_BACKOFF },
+      (b) => { b.failNextConnects = 1_000; },
+    );
+    const openerBroker = await opener.brokerReady;
+    const breaker = sys.extension(CircuitBreakerExtensionId).breaker('fleet');
+    await awaitCondition(() => breaker.state === 'open', { timeoutMs: 4_000, label: 'the opener opened the breaker' });
+    sys.stop(opener.ref);
+    await awaitStopped(openerBroker);
+    const sharers: FakeBroker[] = [];
+    for (const [index, draw] of [0, 0.4, 0.8].entries()) {
+      const { brokerReady } = spawnFake(sys, {
+        endpoint: `sharer-${index}`,
+        circuitBreaker: 'fleet',
+        reconnect: { initialDelayMs: 5, maxDelayMs: 5, factor: 1, randomFactor: 0.5, random: () => draw },
+      }, (b) => {
+        b.failNextConnects = 1_000;
+        b.hangNextConnect = hang;
+      });
+      const sharer = await brokerReady;
+      await awaitFirstConnect(sharer);
+      sharers.push(sharer);
+    }
+    expect(sharers.map((sharer) => sharer.connectAttempts)).toEqual([0, 0, 0]);
+    expect(scheduler.delays.slice(-3)).toEqual([1_000, 1_200, 1_400]);
+    return { scheduler, sys, sharers };
+  }
+
+  test('sharers whose failing connect settles before the next wakes: one probe, and the rest meet its verdict', async () => {
+    const { scheduler, sys, sharers } = await fleetAfterAnOpen('cb-14', false);
+    const breaker = sys.extension(CircuitBreakerExtensionId).breaker('fleet');
+    scheduler.advance(1_000);
+    await awaitCondition(() => sharers[0]!.connectAttempts === 1 && breaker.state === 'open', {
+      timeoutMs: 4_000, label: 'the first sharer probed, failed, and reopened the breaker',
+    });
+    // The other two wake into the reopened window and are refused — each
+    // waits out what is left of it, spread forwards again (800 × 1.2, 600 × 1.4).
+    scheduler.advance(200);
+    await awaitCondition(() => scheduler.delays.includes(960), { timeoutMs: 4_000, label: 'the second sharer was refused' });
+    scheduler.advance(200);
+    await awaitCondition(() => scheduler.delays.includes(840), { timeoutMs: 4_000, label: 'the third sharer was refused' });
+    expect(sharers.map((sharer) => sharer.connectAttempts)).toEqual([1, 0, 0]);
+    await sys.terminate();
+  });
+
+  test('sharers whose connect hangs past the spread: each probes once in the window, never more', async () => {
+    // Half-open admits every call that arrives before the probe settles
+    // (#457), so a connect that hangs — a broker that black-holes its
+    // traffic — is still in flight when the next sharer wakes, and that one
+    // probes as well.  What the shared breaker bounds is one attempt per
+    // actor per window, not one for the fleet.
+    const { scheduler, sys, sharers } = await fleetAfterAnOpen('cb-15', true);
+    const breaker = sys.extension(CircuitBreakerExtensionId).breaker('fleet');
+    for (const [index, step] of [1_000, 200, 200].entries()) {
+      scheduler.advance(step);
+      await awaitCondition(() => sharers[index]!.connectIsHanging, {
+        timeoutMs: 4_000, label: `sharer ${index} is probing`,
+      });
+    }
+    expect(sharers.map((sharer) => sharer.connectAttempts)).toEqual([1, 1, 1]);
+    expect(breaker.state).toBe('half-open');
+    // The probes fail and the breaker opens.  Each failed probe schedules a
+    // retry on its backoff (2.5, 4.5 and 6.5 ms) …
+    const base = scheduler.delays.length;
+    for (const sharer of sharers) sharer.failHungConnect(new Error('no route to host'));
+    await awaitCondition(() => scheduler.delays.length >= base + 3, {
+      timeoutMs: 4_000, label: 'every failed probe scheduled its retry',
+    });
+    expect(breaker.state).toBe('open');
+    // … which lands inside the reopened window and is refused rather than made.
+    scheduler.advance(10);
+    await awaitCondition(() => scheduler.delays.length >= base + 6, {
+      timeoutMs: 4_000, label: 'every retry was refused and waits for the window',
+    });
+    expect(sharers.map((sharer) => sharer.connectAttempts)).toEqual([1, 1, 1]);
     await sys.terminate();
   });
 

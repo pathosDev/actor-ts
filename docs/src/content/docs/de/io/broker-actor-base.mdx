@@ -461,9 +461,19 @@ Was er am Connect-Zyklus ändert:
 
 Actors, die dieselbe Id nennen, **teilen sich einen Breaker** und damit ein
 Urteil: Ist er offen, wird auch ein Actor abgelehnt, der es nie versucht hat,
-und eine Probe nach dem Fenster antwortet für alle.  Für eine Flotte von
-Actors an einem Broker-Cluster ist genau das der Zweck — eine Probe pro
-Fenster statt eines Reconnect-Schwalls von jedem.  Deshalb bekommen auch zwei
+und jeder Actor macht höchstens einen Connect pro Fenster.  Für eine Flotte von
+Actors an einem Broker-Cluster ist genau das der Zweck — ein Versuch je Actor
+und Fenster statt eines Reconnect-Schwalls von jedem.  Ob eine einzige Probe
+für alle antwortet, hängt davon ab, wie lange ein fehlschlagender Connect
+dauert.  Das Aufwachen jedes Actors wird um sein `randomFactor` nach vorn
+gestreut, und der halboffene Breaker lässt jeden Versuch durch, der kommt,
+bevor die Probe entschieden ist.  Ein Connect, der schnell fehlschlägt, öffnet
+den Breaker wieder, bevor der nächste Actor aufwacht, die übrigen werden also
+abgelehnt, und eine Probe hat für die Flotte entschieden; ein Connect, der
+hängt — ein Broker, der seinen Verkehr verschluckt —, läuft noch, wenn die
+anderen aufwachen, und jeder von ihnen probt ebenfalls.  Ein `call-timeout`
+begrenzt, wie lange eine hängende Probe den Breaker halboffen hält.  Deshalb
+bekommen auch zwei
 voneinander unabhängige Broker zwei Ids: Ein Breaker, den beide teilen, öffnet
 auf die Fehlschläge des einen und hält beide fern.
 
