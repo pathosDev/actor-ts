@@ -45,6 +45,7 @@
 import { getTcpBackend, type TcpSocketLike, type TlsTransportOptionsType } from '../runtime/tcp/index.js';
 import type { Config } from '../config/Config.js';
 import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
+import { armChainedTimeout, type Cancellable } from '../Scheduler.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
 import { randomUuid } from '../util/RandomString.js';
 import { safeStringify } from '../util/SafeStringify.js';
@@ -66,7 +67,8 @@ import type { ClusterClientOptions, ClusterClientOptionsType } from './ClusterCl
 type PendingAsk = {
   readonly resolve: (value: unknown) => void;
   readonly reject: (err: Error) => void;
-  readonly timer: ReturnType<typeof setTimeout>;
+  /** The ask's deadline; cancelled by whatever settles the ask first. */
+  readonly timer: Cancellable;
 };
 
 /**
@@ -206,6 +208,9 @@ export class ClusterClient {
    * Send a message and wait for a reply.  Resolves with the reply body
    * on success, rejects with an Error on path-not-found / timeout /
    * cluster-side ask failure.
+   *
+   * A deadline of any length is waited out in full, one past the host timer
+   * ceiling (~24.9 days) included — see {@link armChainedTimeout}.
    */
   async ask<R = unknown>(
     targetPath: string,
@@ -228,7 +233,14 @@ export class ClusterClient {
     };
     return new Promise<R>((resolve, reject) => {
       const ms = timeoutMs ?? this.askTimeoutMs;
-      const timer = setTimeout(() => {
+      // Chained rather than one `setTimeout`: a host timer fires a delay past
+      // its ceiling (~24.9 days) at once — after 1 ms on Bun and Node — and
+      // `ask-timeout` is refused only when it is not positive, so a 30-day
+      // deadline used to reject the ask almost as soon as it was sent.  The
+      // chain arms one host timer for anything shorter, so the common case
+      // keeps the timer it had; a network round trip dwarfs the one object
+      // more it allocates.
+      const timer = armChainedTimeout(() => {
         this.pending.delete(askId);
         reject(new Error(`ClusterClient.ask timed out after ${ms}ms (path=${targetPath})`));
       }, ms);
@@ -244,7 +256,7 @@ export class ClusterClient {
   async close(): Promise<void> {
     this.stopped = true;
     for (const [, p] of this.pending) {
-      clearTimeout(p.timer);
+      p.timer.cancel();
       p.reject(new Error('ClusterClient closed'));
     }
     this.pending.clear();
@@ -279,7 +291,10 @@ export class ClusterClient {
       ]!;
       try {
         const sock = await new Promise<TcpSocketLike>((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error(
+          // Chained for the reason `ask` gives: `connect-timeout` is refused
+          // only when it is not positive, and one host timer would give up on
+          // a contact point a millisecond into a 30-day wait.
+          const timer = armChainedTimeout(() => reject(new Error(
             `ClusterClient connect to ${target} timed out after ${this.connectTimeoutMs}ms`,
           )), this.connectTimeoutMs);
 
@@ -294,7 +309,7 @@ export class ClusterClient {
                 // Send hello.
                 const hello: HelloMessage = { kind: 'hello', self: this.identity.toJSON() };
                 try { s.write(encodeFrame(hello)); } catch (e) {
-                  clearTimeout(timer);
+                  timer.cancel();
                   reject(e as Error);
                 }
               },
@@ -302,19 +317,19 @@ export class ClusterClient {
                 this.onData(s, chunk, (peer) => {
                   this.contactPointPeer = peer;
                   this.socket = s;
-                  clearTimeout(timer);
+                  timer.cancel();
                   resolve(s);
                 });
               },
               onClose: (_s) => this.onSocketClose(),
               onError: (_s, err) => {
-                clearTimeout(timer);
+                timer.cancel();
                 if (openSock === null) reject(err);
                 else this.log.warn(`ClusterClient socket error`, err);
               },
             },
           }).catch((err) => {
-            clearTimeout(timer);
+            timer.cancel();
             reject(err as Error);
           });
         });
@@ -390,7 +405,7 @@ export class ClusterClient {
     const pending = this.pending.get(reply.askId);
     if (!pending) return;
     this.pending.delete(reply.askId);
-    clearTimeout(pending.timer);
+    pending.timer.cancel();
     if (reply.ok) {
       pending.resolve(reply.body);
     } else {
@@ -413,7 +428,7 @@ export class ClusterClient {
     this.decoder = new FrameDecoder();
     // Pending asks fail — the user can retry, which will reconnect.
     for (const [id, p] of this.pending) {
-      clearTimeout(p.timer);
+      p.timer.cancel();
       p.reject(new Error('ClusterClient: connection closed before reply arrived'));
       void id;
     }
