@@ -13,7 +13,7 @@ import {
   type StartupTask,
 } from './CoordinatedStartupOptions.js';
 import { extensionId, type Extension, type ExtensionId } from './Extension.js';
-import { armChainedTimeout, unreferencedHostTimers, type Cancellable } from './Scheduler.js';
+import { armChainedTimeout, type Cancellable } from './Scheduler.js';
 import { mergeOptions } from './util/OptionsMerge.js';
 import { OptionsError } from './util/OptionsValidator.js';
 
@@ -340,11 +340,20 @@ export class CoordinatedStartup implements Extension {
   /**
    * Start one task under its phase's budget.
    *
-   * The budget is an unreferenced host timer, armed through the scheduler's
-   * chain so a budget past the ~24.9-day ceiling of one `setTimeout` waits as
-   * long as it says instead of firing at once; it is cleared on every way out.
-   * Not the system's scheduler: a `ManualScheduler` in a test would freeze
-   * every startup budget until somebody advanced it.
+   * The budget is a host timer armed through the scheduler's chain, so a
+   * budget past the ~24.9-day ceiling of one `setTimeout` waits as long as it
+   * says instead of firing at once.  Not the system's scheduler: a
+   * `ManualScheduler` in a test would freeze every startup budget until
+   * somebody advanced it.
+   *
+   * **Referenced.**  The budget is what ends a task that waits on something
+   * holding no handle of its own, and the documented `main` — `await
+   * system.whenReady()` straight after `create` — has nothing else keeping
+   * the process alive: Node ends such a program with "unsettled top-level
+   * await" (status 13) once its loop is empty, so an unreferenced budget never
+   * fired there and the task's failure was never reported (#1473).  It holds
+   * the process for no longer than its task runs: cleared on every way out,
+   * and bounded by the budget itself.
    */
   private launch(entry: RegisteredStartupTask, definition: PhaseDefinition): LaunchedStartupTask {
     const controller = new AbortController();
@@ -353,7 +362,6 @@ export class CoordinatedStartup implements Extension {
       budget: armChainedTimeout(
         () => { controller.abort(new Error(`the phase's ${definition.timeoutMs} ms budget ran out`)); },
         definition.timeoutMs,
-        unreferencedHostTimers,
       ),
     };
     this.inFlight.add(flight);
