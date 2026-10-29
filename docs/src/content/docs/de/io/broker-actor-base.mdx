@@ -450,9 +450,14 @@ Was er am Connect-Zyklus ändert:
   wachsen lässt, bis `max-reset-timeout`.
 - **`ignored-error-names`** listet `Error.name`-Werte, die nie zählen — etwa
   den vorübergehenden Resolver-Fehler eines Treibers.
-- **`call-timeout`** ist, wenn gesetzt, eine Deadline für jeden Connect: Der
-  Versuch wird über `abortConnectAttempt` abgebrochen, wie ihn die
-  Connect-Deadline unten abbricht, und als Fehlschlag gezählt.
+- **`call-timeout`** ist, wenn gesetzt, eine Deadline für jeden Connect, und
+  ein Versuch, der sie überschreitet, zählt als Fehlschlag.  Der
+  WebSocket-Client, `SseActor` und `TcpSocketActor` brechen diesen Versuch über
+  `abortConnectAttempt` ab, wie ihn die Connect-Deadline unten abbricht.  Kein
+  anderer eingebauter Broker kann einen laufenden Connect abbrechen: Dort zählt
+  das Timeout trotzdem und kann den Breaker öffnen, aber der Connect läuft
+  weiter, bis er von selbst endet, der nächste Versuch wartet auf ihn, und eine
+  Warnung sagt das.
 
 Actors, die dieselbe Id nennen, **teilen sich einen Breaker** und damit ein
 Urteil: Ist er offen, wird auch ein Actor abgelehnt, der es nie versucht hat,

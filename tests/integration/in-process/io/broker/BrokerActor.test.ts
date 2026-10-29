@@ -1158,7 +1158,59 @@ describe('BrokerActor — circuit breaker', () => {
     expect(sys.extension(CircuitBreakerExtensionId).breaker('cb-11').state).toBe('open');
     await sys.terminate();
   });
+
+  test('on a broker that cannot abort, a call-timeout counts and opens while the connect runs on, and the warning names the breaker', async () => {
+    // Every built-in broker but three keeps the base class's abortConnectAttempt,
+    // which can only warn.  So the timeout opens the breaker, the connect is
+    // not cut short, and the cycle waits for it — and the warning says the
+    // breaker's call-timeout elapsed, not a connect deadline that broker has not got.
+    const scheduler = new RecordingScheduler();
+    const logger = new CapturingLogger();
+    const sys = createTestActorSystem({
+      name: 'cb-13',
+      scheduler,
+      logger,
+      logLevel: LogLevel.Warn,
+      config: { 'actor-ts': { 'circuit-breaker': {
+        'cb-13': { 'max-failures': 1, 'reset-timeout': '60s', 'call-timeout': '50ms' },
+      } } },
+    });
+    let broker: UnabortableFakeBroker | null = null;
+    sys.spawnAnonymous(() => {
+      const created = new UnabortableFakeBroker({ endpoint: 'host:1', circuitBreaker: 'cb-13', reconnect: FLAT_BACKOFF });
+      created.hangNextConnect = true;
+      broker = created;
+      return created as unknown as Actor<FakeCommand>;
+    });
+    const breaker = sys.extension(CircuitBreakerExtensionId).breaker('cb-13');
+    await awaitCondition(() => breaker.state === 'open', { timeoutMs: 4_000, label: 'the call-timeout opened the breaker' });
+    await awaitCondition(
+      () => logger.warnings.some((warning) => warning.includes('cannot abort an in-flight connect')),
+      { timeoutMs: 4_000, label: 'the unabortable call-timeout was reported' },
+    );
+    const hanging = broker as unknown as UnabortableFakeBroker;
+    expect(hanging.connectIsHanging).toBe(true);
+    const warning = logger.warnings.find((line) => line.includes('cannot abort an in-flight connect'))!;
+    expect(warning).toContain('call-timeout');
+    expect(warning).not.toContain('connect deadline');
+    // Release it before terminating, as a driver's own timeout eventually would.
+    hanging.failHungConnect(new Error('the driver gave up on its own'));
+    await sys.terminate();
+  });
 });
+
+/**
+ * The fake broker on the base class's `abortConnectAttempt` — the hook every
+ * built-in broker keeps but the WebSocket client, `SseActor` and
+ * `TcpSocketActor`, so a hanging connect is not cut short by it.
+ */
+class UnabortableFakeBroker extends FakeBroker {
+  protected override abortConnectAttempt(cause: Error): void {
+    const baseHook = (BrokerActor.prototype as unknown as { abortConnectAttempt: (cause: Error) => void })
+      .abortConnectAttempt;
+    baseHook.call(this, cause);
+  }
+}
 
 /* ------------------------ Teardown before reconnect --------------------- */
 

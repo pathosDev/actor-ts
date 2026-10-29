@@ -434,9 +434,13 @@ What it does to the connect cycle:
   `max-reset-timeout`.
 - **`ignored-error-names`** lists `Error.name` values that never count — a
   driver's transient resolver error, say.
-- **`call-timeout`**, when set, is a deadline on each connect: the attempt is
-  aborted through `abortConnectAttempt`, as the connect deadline below aborts
-  one, and counted as a failure.
+- **`call-timeout`**, when set, is a deadline on each connect, and an attempt
+  that outlasts it counts as a failure.  The WebSocket client, `SseActor` and
+  `TcpSocketActor` abort that attempt through `abortConnectAttempt`, as the
+  connect deadline below aborts one.  No other built-in broker can abort a
+  connect in flight: there the timeout still counts and can open the breaker,
+  but the connect runs until it settles on its own, the next attempt waits for
+  it, and a warning says so.
 
 Actors that name the same id **share one breaker**, and so one verdict: once
 it opens, an actor that never tried is refused too, and one probe after the
