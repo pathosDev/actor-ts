@@ -401,6 +401,49 @@ describe('EventStream.subscribeFunction contains a failing callback', () => {
     });
     expect(warnings[0]).toContain('callback storing');
   });
+
+  test('a channel whose instanceof throws at delivery reaches no spawn, stop or terminate()', async () => {
+    // Subscribing checks a channel's shape, not its behaviour: `instanceof`
+    // runs the channel's own `Symbol.hasInstance`, so this one passes the
+    // subscribe and throws on every event after it.  On a running system the
+    // first such event is an actor start, and the hardest one is the stop,
+    // published from inside the actor's termination.  Contained, each throw is
+    // one skipped callback and one warning.  Uncontained, it left `publish` out
+    // of that termination — `terminate()` never settled — and the callbacks
+    // behind this one in the list missed the event.
+    const system = ActorSystem.create('es-callback-throwing-channel', quietSystemOptions());
+    const { warnings } = recordLog(system.eventStream);
+    const throwingChannel = {
+      [Symbol.hasInstance](_candidate: unknown): boolean { throw new Error('hasInstance boom'); },
+    };
+    let throwingChannelCalls = 0;
+    system.eventStream.subscribeFunction(throwingChannel as never, () => { throwingChannelCalls++; });
+    // Subscribed second, so it is reached only if the throw stayed contained.
+    const started: ActorStarted[] = [];
+    system.eventStream.subscribeFunction(ActorStarted, (event) => { started.push(event); });
+
+    class Quiet extends Actor<string> {
+      override onReceive(): void {}
+    }
+    const first = system.spawn(Quiet, 'first');
+    await awaitCondition(() => started.some((event) => event.actor.equals(first)), {
+      timeoutMs: 2_000,
+      label: 'the start reached the callback behind the throwing channel',
+    });
+    expect(await gracefulStop(first, 1_000)).toBe(true);
+    const second = system.spawn(Quiet, 'second');
+    await awaitCondition(() => started.some((event) => event.actor.equals(second)), {
+      timeoutMs: 2_000,
+      label: 'a start after the stop still reached it',
+    });
+    expect(() => system.eventStream.publish(new EventA('direct'))).not.toThrow();
+    await assertCompletesWithin(system.terminate(), 2_000, 'terminate() with a channel whose instanceof throws');
+
+    expect(throwingChannelCalls).toBe(0);
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(warnings.filter((warning) => !warning.includes('matching an event against an unnamed channel threw')))
+      .toEqual([]);
+  });
 });
 
 describe('EventStream.subscribeFunction bounds a callback that publishes', () => {
