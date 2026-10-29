@@ -237,12 +237,19 @@ live subscriber is never retransmitted — and handing the number back
 would mint it twice once a timed-out append landed after all.
 
 **A timed-out append may still land.**  The `call-timeout` gives up;
-it does not cancel.  If the write reaches the journal anyway, this
-replica folds the event at its next restart while no peer ever
-receives it, because only a successful `persist` broadcasts.  A store
-that commits and loses the answer on the way back does the same
-without any breaker involved, and nothing repairs that divergence
-yet.
+it does not cancel.  If the write reaches the journal anyway, nothing
+folds or broadcasts the event — only a successful `persist` does
+either — so no peer ever receives it, and this replica's journal holds
+an event its state does not show.  Whether a later recovery folds it
+depends on where that recovery starts.  The landing moves the journal
+position a snapshot records past the event, so a snapshot taken after
+it counts the event as covered, and a recovery from that snapshot
+never folds it.  A full replay does — with no snapshot, or with
+`snapshot-is-optional` falling back to the journal because the
+snapshot store did not answer — so the replica's recovered state
+depends on whether that snapshot was read.  A store that commits and
+loses the answer on the way back takes the same route without any
+breaker involved, and nothing repairs that divergence yet.
 
 **Recovery is guarded like a `PersistentActor`'s.**  It waits for one
 of `max-concurrent-recoveries` permits, reads the snapshot through the
