@@ -370,13 +370,36 @@ export interface TcpBackend {
    * Dial `host:port`, over TLS when `tls` is given.
    *
    * **The promise settles when the dial is decided, and only then.**  It
-   * resolves with the socket once the socket is open — `onOpen` has fired,
-   * exactly once, by the time the caller resumes — and it rejects when the
-   * connection cannot be established.  A dial that fails fires no handler: the
-   * rejection is the whole report, on every runtime.  Node's adapter used to
-   * resolve before the TCP connect had even started and report a refusal
-   * through `onError` instead, so one refused peer was a failed connect on Bun
-   * and Deno and a dead established socket on Node (#1475).
+   * resolves with the socket once the socket is open — over TLS, once the
+   * handshake is done — with `onOpen` fired, exactly once, by the time the
+   * caller resumes; and it rejects when the connection cannot be established.
+   * A dial that fails fires no handler: the rejection is the whole report.  So
+   * a refused or unresolvable peer, a certificate the CA does not sign and a
+   * close before the open are all rejections, and a caller may write the moment
+   * it has the socket.  Node's adapter used to resolve before the TCP connect
+   * had even started and report a refusal through `onError` instead, so one
+   * refused peer was a failed connect on Bun and Deno and a dead established
+   * socket on Node (#1475).
+   *
+   * Each runtime's own notion of "open" stops short of that over TLS, so each
+   * adapter supplies the rest.  `tls.connect` reports `connect` at the TCP
+   * connect and `secureConnect` at the handshake, on Node and in Bun's
+   * `node:tls`, and the adapter opens on the second.  Native `Bun.connect`
+   * resolves at the TCP connect, and a write made before the handshake is
+   * dropped — the first batch of the GELF and syslog sinks was, on every fresh
+   * connection — so a native Bun dial opens on Bun's handshake report.
+   * `Deno.connectTls` resolves at the TCP connect and leaves the handshake to
+   * the first read or write, so the Deno adapter runs it before it attaches the
+   * connection.
+   *
+   * **What a write does under back-pressure differs, and nothing reports it.**
+   * `TcpSocketLike.write` returns nothing (#931).  A Node socket, Bun's
+   * `node:net` and `node:tls` — every Bun dial that carries a `signal` — and a
+   * Deno connection keep what the peer cannot take yet in memory, without
+   * bound; a native Bun socket, which is every socket `Bun.listen` accepts and
+   * every Bun dial without a `signal`, drops what the kernel will not take.
+   * Whether the bound belongs in the backends or in the transport above them is
+   * #931's question; nothing here applies one.
    *
    * **`signal` gives a dial up.**  Aborting it before the promise settles
    * rejects the promise with the signal's reason, no handler fires afterwards,
@@ -392,11 +415,14 @@ export interface TcpBackend {
    * Bun's adapter dials through Bun's `node:net` / `node:tls` whenever a signal
    * is given, because native `Bun.connect` takes none and cannot be cancelled.
    * Deno cancels a plaintext dial through `Deno.connect({ signal })` and cannot
-   * cancel a TLS one: `Deno.connectTls` takes no signal and `Deno.startTls` no
-   * client certificate, so the promise rejects at once and the connection is
-   * closed the moment it appears, but the connect underneath runs on until it
-   * completes or the OS gives up on it — the one combination in which a dial
-   * outlives the deadline that gave it up.
+   * cancel the TCP connect of a TLS one: `Deno.connectTls` takes no signal and
+   * `Deno.startTls` no client certificate, so the promise rejects at once and
+   * the connection is closed the moment it appears, but the connect underneath
+   * runs on until it completes or the OS gives up on it — the one combination
+   * in which a dial outlives the deadline that gave it up.  The handshake after
+   * that connect does stop when the connection is closed, but Deno 2.6.8 does
+   * not end the TCP connection under it: the far side keeps its socket until it
+   * closes it itself.
    */
   connect(options: {
     host: string;

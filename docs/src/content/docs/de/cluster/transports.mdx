@@ -106,6 +106,17 @@ Runtime. Auf Bun nutzen die Dials des Transports allerdings nicht
 `Bun.connect` lässt sich nicht abbrechen — sie laufen deshalb über Buns eigenes
 `node:net` / `node:tls`, das es kann. Der Listener bleibt bei `Bun.listen`.
 
+Auf Bun puffern die beiden Enden einer Verbindung deshalb nicht gleich — die
+Hälfte von #931, die auf die wählende Seite fällt. Die Seite, die gewählt hat,
+schreibt über `node:net`, das alles im Speicher hält, was der Peer gerade nicht
+abnehmen kann, ohne Grenze; ein Socket, den `Bun.listen` angenommen hat,
+schreibt nativ, und natives Bun verwirft, was der Kernel nicht annimmt — der
+Decoder des Empfängers liest den Rest des Streams dann ab der Mitte eines
+Frames. Auf Node und Deno puffern beide Enden. Keine Runtime bremst den
+Sender — `TcpSocketLike.write` meldet nichts —, ein Peer, der nicht mehr liest,
+lässt also an einem Ende den Heap wachsen und bricht am anderen den Stream,
+und die Grenze, die beides stoppt, ist Sache von #931.
+
 ### Optionales TLS
 
 ```ts
@@ -223,11 +234,22 @@ Connect-Frist scheitert — abgelehnt, nicht auflösbar, ein Zertifikat, das die
 nicht signiert —, meldet ebenfalls die `could not connect`-Zeile, mit dem Fehler
 der Runtime als Anhang statt zitiert, weil der Fehlercode einer Runtime die
 Ursache falsch benennen kann: Bun meldet unter Windows einen unbeantworteten
-Connect als `ECONNREFUSED`. Eine Kombination lässt
-sich nicht abbrechen. Deno hat keinen Weg, einen TLS-Connect abzubrechen
-(`Deno.connectTls` nimmt kein Signal), dort wird der Dial deshalb verworfen und
+Connect als `ECONNREFUSED`. Das gilt auf jeder Runtime, weil jedes Backend einen
+TLS-Dial erst dann als aufgegangen meldet, wenn sein Handshake abgeschlossen
+ist, Deno eingeschlossen: `Deno.connectTls` löst schon beim TCP-Connect auf,
+also führt das Deno-Backend den Handshake selbst aus, bevor es die Verbindung
+herausgibt. Ein Zertifikat, das die CA nicht signiert, ist deshalb auch dort ein
+Dial, der nicht verbinden konnte, und ein Peer, der den Connect annimmt und den
+Handshake verschleppt, fällt der Connect-Frist zu.
+
+Ein Teil einer Kombination lässt sich nicht abbrechen. Deno hat keinen Weg, den
+TCP-Connect eines TLS-Dials abzubrechen (`Deno.connectTls` nimmt kein Signal);
+ein Dial, der noch beim Verbinden aufgegeben wird, wird deshalb verworfen und
 seine Verbindung geschlossen, sobald sie auftaucht, während der Connect selbst
-weiterläuft, bis er gelingt oder das OS aufgibt.
+weiterläuft, bis er gelingt oder das OS aufgibt. Ein Dial, der während seines
+Handshakes aufgegeben wird, wird sofort verworfen, doch Deno beendet die
+TCP-Verbindung darunter nicht: Unter Deno 2.6.8 behält die Gegenseite diesen
+Socket, bis sie ihn selbst schließt.
 
 Ein selbst gebauter Transport trägt seine eigenen Werte. Der Cluster reicht die
 des Config-Blocks nur an einen Transport weiter, den *er* konstruiert hat, nie

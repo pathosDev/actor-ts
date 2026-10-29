@@ -272,7 +272,10 @@ function abandonable<Connection extends DenoConnection>(
  * A failed handshake rejects the dial with Deno's error and closes the
  * connection.  The handshake is also the part of a TLS dial on Deno that can
  * be given up: closing the connection fails a pending handshake at once, so an
- * abort closes it and the dial rejects with the signal's reason.
+ * abort closes it and the dial rejects with the signal's reason.  Only as far
+ * as Deno goes, though — on Deno 2.6.8 a connection closed while its handshake
+ * waits never ends the TCP connection under it, and the far side saw no end of
+ * it within 20 s, where closing a plaintext one ends it at once.
  */
 async function completeHandshake(
   connection: DenoTlsConnection,
