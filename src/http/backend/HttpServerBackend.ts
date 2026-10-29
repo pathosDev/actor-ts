@@ -1,6 +1,6 @@
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { detectRuntime } from '../../runtime/Detect.js';
-import { armChainedTimeout, type HostTimers, unreferencedHostTimers } from '../../Scheduler.js';
+import { armChainedTimeout, type Cancellable, type HostTimers, unreferencedHostTimers } from '../../Scheduler.js';
 import { DEFAULT_HTTP_MAX_BODY_BYTES, DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
 import type { HttpServerOptionsType } from '../HttpServerOptions.js';
 import type { HttpMethod, HttpRequest, HttpResponse } from '../Types.js';
@@ -284,17 +284,26 @@ export type Http2SessionLike = {
    */
   readonly socket?: unknown;
   /**
-   * Arm the session's idle timer, or clear it with `0`.  It counts quiet time
-   * on the whole connection, an open stream that is merely waiting included.
-   * A later call replaces whatever timer an earlier one armed, while every
-   * callback handed to it stays attached until the timer fires — measured on
-   * node v26.10.0 and bun 1.4.2.
+   * Arm the runtime's own idle timer for the session, or clear it with `0`.
+   * It counts quiet time on the whole connection, an open stream that is
+   * merely waiting included — and on Bun a PING frame as activity, at twice
+   * the value.  A later call replaces whatever timer an earlier one armed —
+   * measured on node v26.10.0 and bun 1.4.2.  {@link enforceSessionIdleTimeout}
+   * only ever clears it.
    */
   setTimeout: (milliseconds: number, callback?: () => void) => unknown;
   /** The graceful end: a GOAWAY, then the open streams finish and no new one starts. */
   close: () => void;
   /** The abrupt end: every open stream is cut. */
   destroy: () => void;
+  /**
+   * The session's own `'stream'` event, one per request opened on it, with
+   * the stream first — how {@link enforceSessionIdleTimeout} counts what is
+   * open.  Optional because the header deadline needs none of it.
+   */
+  on?: (event: 'stream', listener: (...args: ReadonlyArray<unknown>) => void) => unknown;
+  /** `'close'`: the session is gone, from whichever end. */
+  once?: (event: 'close', listener: () => void) => unknown;
 };
 
 /**
@@ -679,48 +688,77 @@ function headerDeadlineOf(headerTimeoutMs: number, requestTimeoutMs: number | un
 }
 
 /**
- * Bound an idle HTTP/2 session by `idleTimeoutMs`, through the session's own
- * timer — the HTTP/2 half of `idle-timeout`, whose HTTP/1.1 half is
- * `keepAliveTimeout`.
+ * Bound an idle HTTP/2 session by `idleTimeoutMs` — the HTTP/2 half of
+ * `idle-timeout`, whose HTTP/1.1 half is `keepAliveTimeout`.  Idle means no
+ * stream open: the timer is armed when the session starts and whenever its
+ * last open stream closes, disarmed while any is open, and `close()`s the
+ * session when it fires — a GOAWAY on a session with nothing left to finish.
  *
- * **Why a second mechanism.**  `keepAliveTimeout` is read by the HTTP/1.1
- * connection handling only.  Measured on node v26.10.0 and bun 1.4.2, an h2
+ * **Why a mechanism of its own.**  `keepAliveTimeout` is read by the HTTP/1.1
+ * connection handling only: measured on node v26.10.0 and bun 1.4.2, an h2
  * session that completed one request under `keepAliveTimeout = 800` was still
  * open past 5 s, on Fastify and on a bare `http2.createSecureServer({
- * allowHTTP1 })` alike — so an idle HTTP/2 client was held by Fastify's own
- * 72 s `http2SessionTimeout`, and on Hono over Node by nothing at all, whatever
- * `idle-timeout` said.  A bound that holds on one protocol of the two a TLS
- * listener speaks is the half-guarantee this module refuses elsewhere.
+ * allowHTTP1 })` alike.  The runtime's own session timer — what this used to
+ * arm — is three bounds rather than one.  It counts quiet time on the whole
+ * connection, so it fired under a handler still working and sent the GOAWAY
+ * mid-request.  Bun fires it at twice its value: 1.60 s for 800 ms where node
+ * took 0.80 s.  And Bun counts a PING frame as activity, so a client pinging
+ * every 300 ms held an idle session open indefinitely — 19 pings and still open
+ * at 6 s, where node closed at 0.81 s.  A timer of the framework's own,
+ * counting open streams, is the same bound on both runtimes, ignores every
+ * frame that is not a request, and is `keepAliveTimeout`'s rule exactly: a
+ * slow handler, a long poll or an SSE stream holds its session as it holds an
+ * HTTP/1.1 connection, and the bound starts when it ends.  A request whose
+ * body never finishes is `request-timeout`'s to cut — see
+ * {@link enforceStreamRequestTimeout} — after which the session is idle here.
  *
- * **What it measures, per runtime.**  From the end of the response: node
- * closed the session 0.80 s and 2.00 s later for 800 and 2000 ms, bun 1.60 s
- * and 4.00 s later — Bun fires a session timer at twice its value.  That is
- * not compensated here: halving the number on one runtime would encode an
- * implementation detail as a contract, and the documentation states both.
+ * **The runtime's timer is cleared** with `setTimeout(0)`, so the configured
+ * value is the one that governs: Fastify arms one from a `'session'` listener
+ * of its own, registered at construction and so ahead of this one — 72 s,
+ * which Bun's doubling makes 144 s — and a longer `idle-timeout` would
+ * otherwise be cut short by it.  `0` stops there, which is the documented "0
+ * disables it" on HTTP/2 too: no idle bound at all.
  *
- * **`close`, not `destroy`.**  The timer counts quiet time on the whole
- * connection, and a stream whose handler has not answered yet is quiet: on
- * both runtimes it fired mid-request.  `close` sends the GOAWAY then and lets
- * the open stream finish — a handler answering after 2.5 s under an 800 ms
- * bound was delivered whole — where `destroy` cut it.  So a slow handler, a long
- * poll and an SSE stream outlive the bound exactly as they do on HTTP/1.1,
- * where `keepAliveTimeout` only counts between requests.
- *
- * **`0` clears the timer**, which is the documented "0 disables it" on HTTP/2
- * too — and it clears Fastify's 72 s with it.  Fastify arms that from a
- * `'session'` listener of its own, registered at construction and so ahead
- * of this one; a later `setTimeout` replaces the earlier timer, measured on both
- * runtimes against a 1 s timer armed first.  For a non-zero value the same
- * rule makes this one the timer that governs, and Fastify's callback merely
- * closes the session a second time when it fires.
- *
- * A server that emits no `'session'` — every HTTP/1.1-only listener — is
- * subscribed and never called, which costs one listener.
+ * A session that cannot report its streams falls back to the runtime's timer,
+ * the one shape that still bounds it.  A stream that cannot report its close
+ * is not counted, so it cannot hold the session open for ever.  Unreferenced,
+ * so an idle session never holds the process up on its own.  A server that
+ * emits no `'session'` — every HTTP/1.1-only listener — is subscribed and
+ * never called, which costs one listener.  `hostTimers` is the seam a test
+ * fires the timer through.
  */
-export function enforceSessionIdleTimeout(server: NodeHttpServerLike, idleTimeoutMs: number): void {
+export function enforceSessionIdleTimeout(
+  server: NodeHttpServerLike,
+  idleTimeoutMs: number,
+  hostTimers: HostTimers = unreferencedHostTimers,
+): void {
   if (typeof server.on !== 'function') return;
   server.on('session', (session) => {
-    session.setTimeout(idleTimeoutMs, () => { session.close(); });
+    session.setTimeout(0);
+    if (idleTimeoutMs === 0) return;
+    if (typeof session.on !== 'function') {
+      session.setTimeout(idleTimeoutMs, () => { session.close(); });
+      return;
+    }
+    let openStreams = 0;
+    let idle: Cancellable | undefined;
+    const arm = (): void => { idle = armChainedTimeout(() => { session.close(); }, idleTimeoutMs, hostTimers); };
+    const disarm = (): void => {
+      idle?.cancel();
+      idle = undefined;
+    };
+    arm();
+    session.on('stream', (...args) => {
+      const stream = args[0] as { once?: (event: 'close', listener: () => void) => unknown } | null | undefined;
+      if (typeof stream?.once !== 'function') return;
+      openStreams++;
+      disarm();
+      stream.once('close', () => {
+        openStreams--;
+        if (openStreams === 0) arm();
+      });
+    });
+    session.once?.('close', disarm);
   });
 }
 

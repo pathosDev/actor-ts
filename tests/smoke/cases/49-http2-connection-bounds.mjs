@@ -13,6 +13,10 @@
  *     deadline, and a request received in full is left to a handler slower
  *     than the deadline.  Measured before the stream deadline existed, the
  *     stalled stream was still open 12 s later on both runtimes.
+ *   - **idle-timeout bounds a session with no stream open**, at the same
+ *     value on every runtime: a session pinged every 250 ms is closed about
+ *     800 ms after its response, and a handler slower than the bound is
+ *     answered with no GOAWAY under it.
  *
  * Skipped where the runtime cannot build `node:http2`'s `createSecureServer`,
  * which Fastify serves HTTP/2 from — Deno 2.6.8 answers `ERR_NOT_IMPLEMENTED`,
@@ -24,7 +28,7 @@ import { readFile } from 'node:fs/promises';
 import { connect as http2Connect } from 'node:http2';
 
 export const name = 'http2 connection bounds';
-export const description = 'request-timeout answers a stalled HTTP/2 stream 408 at the deadline and leaves a request received in full to its handler, on Fastify\'s HTTP/2 listener';
+export const description = 'request-timeout answers a stalled HTTP/2 stream 408 at the deadline and leaves a request received in full to its handler, and idle-timeout closes a session with no stream open at the same value on every runtime, PINGs or not, on the Fastify HTTP/2 listener';
 
 const FIXTURES = new URL('../../fixtures/tls/', import.meta.url);
 /** The request deadline the listener is bound with. */
@@ -37,6 +41,14 @@ const CUT_NOT_BEFORE_MS = REQUEST_TIMEOUT_MS / 2;
 const SLOW_HANDLER_MS = REQUEST_TIMEOUT_MS + 800;
 /** How long a stream is watched before it counts as never answered. */
 const WATCH_MS = 4_000;
+/** The idle bound the idle legs bind with. */
+const IDLE_TIMEOUT_MS = 800;
+/** The latest an idle session may close — the value plus slack, and short of the doubled runtime timer Bun fires. */
+const IDLE_CLOSE_WITHIN_MS = IDLE_TIMEOUT_MS + 700;
+/** A client that pings well inside the idle bound. */
+const PING_INTERVAL_MS = 250;
+/** A handler that outlasts the idle bound, and the doubled runtime timer, by a margin jitter does not close. */
+const SLOW_IDLE_HANDLER_MS = 2 * IDLE_TIMEOUT_MS + 600;
 
 /**
  * Open a stream with `headers`, let `feed` write to it, and resolve with the
@@ -79,6 +91,68 @@ async function withListener({ system, HttpExtensionId, HttpServerOptions, routes
     session?.destroy();
     await binding.unbind().catch(() => {});
   }
+}
+
+/** One request on `session`; resolves with the status and when the response ended, rejects after the watch. */
+function requestOnce(session, requestPath) {
+  return new Promise((resolve, reject) => {
+    const stream = session.request({ ':path': requestPath });
+    let status;
+    const watch = setTimeout(() => { stream.destroy(); reject(new Error(`no answer on ${requestPath} within ${WATCH_MS}ms`)); }, WATCH_MS);
+    stream.on('response', (response) => { status = Number(response[':status']); });
+    stream.on('data', () => { /* drained so the stream can end */ });
+    stream.on('error', (e) => { clearTimeout(watch); reject(e); });
+    stream.on('end', () => { clearTimeout(watch); resolve({ status, endedAt: performance.now() }); });
+    stream.end();
+  });
+}
+
+/** How long after `since` the server closed `session`, or `null` while it is still open after the watch. */
+function sessionClosedAfter(session, since) {
+  return new Promise((resolve) => {
+    if (session.closed || session.destroyed) { resolve(performance.now() - since); return; }
+    const watch = setTimeout(() => resolve(null), WATCH_MS);
+    session.once('close', () => { clearTimeout(watch); resolve(performance.now() - since); });
+  });
+}
+
+/**
+ * idle-timeout bounds a session with no stream open — the same value on every
+ * runtime, PINGs or not — and never sends a GOAWAY under a request in flight.
+ * Before the bound counted streams it was the runtime's own session timer:
+ * Bun fired it at twice the value, a PING every 300 ms kept a Bun session open
+ * indefinitely, and on both runtimes it fired under a handler still working.
+ */
+async function idleTimeoutLeg(context, runtime) {
+  await withListener(context, (options) => options.withIdleTimeoutMs(IDLE_TIMEOUT_MS), async (session) => {
+    const answered = await requestOnce(session, '/');
+    const pinger = setInterval(() => {
+      if (!session.closed && !session.destroyed) session.ping(() => { /* the answer is not the point */ });
+    }, PING_INTERVAL_MS);
+    let closedAfterMs;
+    try {
+      closedAfterMs = await sessionClosedAfter(session, answered.endedAt);
+    } finally {
+      clearInterval(pinger);
+    }
+    if (closedAfterMs === null) {
+      throw new Error(`an idle HTTP/2 session pinged every ${PING_INTERVAL_MS}ms was still open ${WATCH_MS}ms after its response under a ${IDLE_TIMEOUT_MS}ms idle-timeout on ${runtime}`);
+    }
+    if (closedAfterMs > IDLE_CLOSE_WITHIN_MS || closedAfterMs < IDLE_TIMEOUT_MS / 2) {
+      throw new Error(`an idle HTTP/2 session closed ${Math.round(closedAfterMs)}ms after its response, outside ${IDLE_TIMEOUT_MS / 2}–${IDLE_CLOSE_WITHIN_MS}ms for a ${IDLE_TIMEOUT_MS}ms idle-timeout on ${runtime}`);
+    }
+  });
+  await withListener(context, (options) => options.withIdleTimeoutMs(IDLE_TIMEOUT_MS), async (session) => {
+    let goawayAt = null;
+    session.on('goaway', () => { goawayAt ??= performance.now(); });
+    const answered = await requestOnce(session, '/slow-get');
+    if (answered.status !== 200) {
+      throw new Error(`a handler that outlasted idle-timeout was answered ${answered.status} on ${runtime}`);
+    }
+    if (goawayAt !== null && goawayAt < answered.endedAt) {
+      throw new Error(`a GOAWAY arrived ${Math.round(answered.endedAt - goawayAt)}ms before the response of a handler still working on ${runtime} — idle-timeout fired under a request in flight`);
+    }
+  });
 }
 
 async function requestTimeoutLeg(context, runtime) {
@@ -141,11 +215,16 @@ export async function run({ actorTs, runtime, loadEntry }) {
     return;
   }
   const { ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } = actorTs;
-  const { HttpExtensionId, HttpServerOptions, completeText, concat, path, post } = await loadEntry('http');
+  const { HttpExtensionId, HttpServerOptions, completeText, concat, get, path, post } = await loadEntry('http');
   const routes = concat(
+    path('', get(() => completeText(200, 'ok'))),
     path('upload', post(() => completeText(200, 'uploaded'))),
     path('slow', post(async () => {
       await new Promise((resolve) => { setTimeout(resolve, SLOW_HANDLER_MS); }); // the handler's own work, which the deadline must not cut
+      return completeText(200, 'slow');
+    })),
+    path('slow-get', get(async () => {
+      await new Promise((resolve) => { setTimeout(resolve, SLOW_IDLE_HANDLER_MS); }); // a request in flight, which idle-timeout must not interrupt
       return completeText(200, 'slow');
     })),
   );
@@ -157,6 +236,7 @@ export async function run({ actorTs, runtime, loadEntry }) {
   try {
     const context = { system, HttpExtensionId, HttpServerOptions, routes, cert, key, ca };
     await requestTimeoutLeg(context, runtime);
+    await idleTimeoutLeg(context, runtime);
   } finally {
     await system.terminate();
   }

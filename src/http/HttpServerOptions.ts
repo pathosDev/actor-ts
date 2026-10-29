@@ -141,22 +141,27 @@ export type HttpServerOptionsType = {
   /**
    * How long an idle connection is held before it is closed: a keep-alive
    * HTTP/1.1 connection between requests (`server.keepAliveTimeout`), and an
-   * HTTP/2 session with nothing moving on it (the session's own timer, which
-   * no HTTP/2 session reads `keepAliveTimeout` for).  An HTTP/2 session is
-   * closed gracefully, so a stream still in flight finishes.
+   * HTTP/2 session with no stream open (a timer of the framework's own, since
+   * no HTTP/2 session reads `keepAliveTimeout`).  Both count only between
+   * requests — a slow handler, a long poll or an SSE stream holds its
+   * connection, and the bound starts when it ends — and on HTTP/2 it is the
+   * same value on every runtime, reset by nothing but a request: a PING keeps
+   * no session open.
    *
    * **No built-in default** — unset leaves the backend's own, and the backends
-   * deliberately disagree: 72 s on Fastify, for an HTTP/2 session too, and 5 s
-   * on Express and on Hono-over-Node (measured).  On Hono-over-Node an HTTP/2
-   * session is then not bounded at all; Express serves no HTTP/2, so there the
-   * question does not arise.  Fastify's is high on purpose, so the server
-   * outlives a load balancer's idle window and the balancer never posts a
-   * request onto a socket the server is closing; five seconds is
-   * `node:http`'s own.  Neither is wrong, so this ships no value rather than
-   * picking a winner.  `0` disables the timeout, on both protocols.
-   *
-   * Bun fires an HTTP/2 session's timer at **twice** the value — measured on
-   * bun 1.4.2, 1.6 s for 800 ms, where node v26.10.0 took 0.8 s.
+   * deliberately disagree: 72 s on Fastify, and 5 s on Express and on
+   * Hono-over-Node (measured).  Fastify's reaches an HTTP/2 session as
+   * Fastify's own session timer, which counts quiet time on the connection: 72 s
+   * on Node, but 144 s on Bun, which fires it at twice the value and lets a
+   * PING reset it — measured on bun 1.4.2, a client pinging once a second held
+   * a session open past 170 s.  On Hono-over-Node an HTTP/2 session is then not
+   * bounded at all; Express serves no HTTP/2, so there the question does not
+   * arise.  Fastify's is high on purpose, so the server outlives a load
+   * balancer's idle window and the balancer never posts a request onto a socket
+   * the server is closing; five seconds is `node:http`'s own.  Neither is
+   * wrong, so this ships no value rather than picking a winner — and setting
+   * it is what bounds an HTTP/2 session alike everywhere.  `0` disables the
+   * timeout, on both protocols.
    *
    * **On the Hono backend under Bun it is `Bun.serve`'s `idleTimeout`**, which
    * is a wider bound: whole-connection inactivity, so a handler that writes
