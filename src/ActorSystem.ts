@@ -22,6 +22,7 @@ import {
   Phases,
   readCoordinatedShutdownOptionsFromConfig,
   type CoordinatedShutdown,
+  type Reason,
 } from './CoordinatedShutdown.js';
 import { CoordinatedStartup, CoordinatedStartupId, type StartupFailedReason } from './CoordinatedStartup.js';
 import type { ProcessSignal } from './util/ProcessSignal.js';
@@ -1009,6 +1010,30 @@ export class ActorSystem {
    * shutdown of its own and `runUntilTerminated()` resolves as usual.
    */
   terminate(options?: TerminateOptions): Promise<void> {
+    return this.terminateWith(options?.runCoordinatedShutdown, ActorSystemTerminateReason.instance);
+  }
+
+  /**
+   * @internal {@link terminate} for a system whose start failed outside its
+   * startup graph — a `Cluster.bootstrap` that refused to go on after it had
+   * built the system, today — with `reason` for the run it starts.
+   *
+   * The same choices a plain `terminate()` makes: a run in flight or a
+   * teardown under way is joined, and
+   * `actor-ts.coordinated-shutdown.run-by-actor-system-terminate` decides
+   * whether the pipeline runs first.  Only the reason differs, and the reason
+   * is the point.  `ActorSystemTerminateReason` says a program decided to stop,
+   * a clean stop, which `exit-process` exits with `exit-code` — `0` by default
+   * — so a refused start used to end the process with that status, from inside
+   * the bootstrap and before the refusal could reach its caller (#1475).  A
+   * reason that reports a failure makes the exit a failed one.
+   */
+  _terminateFor(reason: Reason): Promise<void> {
+    return this.terminateWith(undefined, reason);
+  }
+
+  /** {@link terminate}'s body: the call's own `runCoordinatedShutdown`, and the reason a run it starts passes. */
+  private terminateWith(runCoordinatedShutdownChoice: boolean | undefined, reason: Reason): Promise<void> {
     if (this._terminated) return Promise.resolve();
     this.coordinatedStartup._abandon();
     const runInProgress = this.coordinatedShutdownRunInProgress();
@@ -1019,9 +1044,9 @@ export class ActorSystem {
     }
     // The call's own choice, else the config's — where the default is chosen,
     // so an explicit `false` still beats a configured `true` (#1455).
-    const runCoordinatedShutdown = options?.runCoordinatedShutdown ?? this.runCoordinatedShutdownByDefault;
+    const runCoordinatedShutdown = runCoordinatedShutdownChoice ?? this.runCoordinatedShutdownByDefault;
     if (!runCoordinatedShutdown || this._terminating) return this._teardown();
-    return this.runCoordinatedShutdownThenTeardown();
+    return this.runCoordinatedShutdownThenTeardown((coordinatedShutdown) => coordinatedShutdown.run(reason));
   }
 
   /**
@@ -1038,8 +1063,9 @@ export class ActorSystem {
 
   /**
    * Start the run `startRun` asks for — every phase with
-   * {@link ActorSystemTerminateReason} for a `terminate()`, the failure form
-   * with a `StartupFailedReason` for a failed startup — then the teardown:
+   * {@link ActorSystemTerminateReason} for a `terminate()`, with the bootstrap's
+   * reason for {@link _terminateFor}, the failure form with a
+   * `StartupFailedReason` for a failed startup — then the teardown:
    * after a run that completed, after one that halted, and in place of one
    * the extension could not even be built for.  Unless `exit-process` ends
    * the process at the end of the run, at a halt as after a last phase: then
@@ -1052,8 +1078,7 @@ export class ActorSystem {
    * failed has already logged its own WARN.
    */
   private runCoordinatedShutdownThenTeardown(
-    startRun: (coordinatedShutdown: CoordinatedShutdown) => Promise<void> =
-      (coordinatedShutdown) => coordinatedShutdown.run(ActorSystemTerminateReason.instance),
+    startRun: (coordinatedShutdown: CoordinatedShutdown) => Promise<void>,
   ): Promise<void> {
     let run: Promise<void>;
     try {

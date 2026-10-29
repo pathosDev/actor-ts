@@ -124,8 +124,16 @@ export async function bootstrapCluster(
   // refuses what its validator refuses — a wildcard `advertised-host` from
   // the file among them — and a refusal there leaked the system exactly as
   // one here would have.  A join that throws has registered nothing yet (its
-  // leave task is added after a successful start), so a bare `terminate()`
-  // is the whole teardown.
+  // leave task is added after a successful start), so the teardown a plain
+  // `terminate()` performs is the whole of it; the pipeline runs first only
+  // where `run-by-actor-system-terminate` asks that of every `terminate()`.
+  //
+  // A refusal is a failed start, though, and ends as one (#1475): said at
+  // ERROR first, then the system ended with the reason of a node that could
+  // not join.  Under `exit-process` that pipeline run is where the process
+  // exits — inside this guard, before the refusal can reach the caller — so
+  // the line is the only word on why, and the reason is what keeps the exit
+  // from reading `0`, the status of a clean stop.
   let joinPlan: JoinPlan;
   let cluster: Cluster;
   try {
@@ -183,7 +191,8 @@ export async function bootstrapCluster(
     );
     cluster = await Cluster.join(system, joinOptionsFor(resolvedOptions, address, joinPlan));
   } catch (err) {
-    await system.terminate();
+    reportFailedStart(system, err, 'shutting the system down');
+    await system._terminateFor(ClusterJoinUnsuccessfulReason.instance);
     throw err;
   }
 
@@ -224,6 +233,11 @@ export async function bootstrapCluster(
       // wait answers to as well — present that one reason (#1500).  When the
       // give-up ended the wait, its run is already under way and `run()` hands
       // back that same promise, so this awaits it rather than starting one.
+      //
+      // Said at ERROR first, for the guard's reason: under `exit-process` the
+      // run exits the process — never with `0`, the reason sees to that —
+      // before the error below can reach the caller.
+      reportFailedStart(system, err, 'running the coordinated-shutdown pipeline with ClusterJoinUnsuccessfulReason');
       await coordinatedShutdown.run(ClusterJoinUnsuccessfulReason.instance).catch(() => {});
       throw err;
     }
@@ -738,6 +752,27 @@ function buildSeedProvider(
   });
   if (spec === 'auto') return autoDiscovery(discoveryOptions);
   return singleProviderDiscovery(spec, discoveryOptions);
+}
+
+/**
+ * Say at ERROR why this start failed, before the system goes down with it.
+ *
+ * The caller gets the error too — but with `exit-process` on, the run that
+ * ends the system can end the process first, and then this line is all that
+ * says why the node stopped.  Where the system logger is the very thing that
+ * failed — an `otelLogs` exporter whose `emit` throws on the bootstrap's first
+ * line — it goes to the console instead, as `ActorSystem._reportDispatcherError`
+ * does: the report must not be lost with the logger, and a logger that throws
+ * must not keep the system from going down.
+ */
+function reportFailedStart(system: ActorSystem, error: unknown, consequence: string): void {
+  const line = `Cluster.bootstrap failed: ${error instanceof Error ? error.message : String(error)} — ${consequence}`;
+  try {
+    system.log.error(line, error);
+  } catch (loggerFailure) {
+    console.error(`[actor-ts] ${line}`, error);
+    console.error('[actor-ts] the configured logger failed to report it:', loggerFailure);
+  }
 }
 
 /**

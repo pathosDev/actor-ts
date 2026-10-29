@@ -39,6 +39,8 @@ export class ClusterDowningReason extends Reason {
  * `actor-ts.cluster.shutdown-after-unsuccessful-join` passing with nothing
  * able to promote the node, and a `Cluster.bootstrap` readiness wait
  * expiring — so a task tells "could not join" by one reason whichever fired.
+ * A `Cluster.bootstrap` refused after it built its system ends with it too,
+ * where `run-by-actor-system-terminate` makes that end a run (#1475).
  *
  * Its own reason rather than {@link ClusterLeavingReason}, which keeps meaning
  * that a member is leaving: a task that hands work over before a node leaves
