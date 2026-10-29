@@ -234,11 +234,13 @@ describe('the stale-region sweep leaves a node that is not up to the membership 
     stageMember(harness, address, 'unreachable');
     const key = staleArmedRegion(harness, address, [5]);
 
-    // While the node is parked the sweep restarts the region's silence clock —
-    // the coordinator's own stamp, read back rather than assumed.
+    // While the node is parked the sweep restarts the region's silence clock.
+    // The window is measured from the test's own clock, read just before that
+    // sweep: a stamp read back from the coordinator would carry whatever offset
+    // the re-arm applied, and a re-arm to half a window ago passed that way.
+    const parkedSweepAt = Date.now();
     harness.coordinator.sweepStaleRegions();
-    const rearmedAt = harness.coordinator.regions.get(key)?.lastSeenAtMs ?? 0;
-    expect(rearmedAt).toBeGreaterThan(Date.now() - STALE_AFTER_MS);
+    expect(harness.coordinator.regions.get(key)!.lastSeenAtMs).toBeGreaterThanOrEqual(parkedSweepAt);
 
     stageMember(harness, address, 'up');
 
@@ -249,16 +251,20 @@ describe('the stale-region sweep leaves a node that is not up to the membership 
     expect(harness.coordinator.regions.has(key)).toBe(true);
 
     // And the grace ends: with no frame from the region, the first sweep a
-    // full window after the re-arm evicts it.
+    // full window after the re-arm evicts it — not sooner, and not much later.
+    const eviction: { at: number | null } = { at: null };
     await awaitCondition(() => {
       harness.coordinator.sweepStaleRegions();
-      return !harness.coordinator.regions.has(key);
+      if (harness.coordinator.regions.has(key)) return false;
+      eviction.at = Date.now();
+      return true;
     }, {
       timeoutMs: 3_000,
-      intervalMs: 20,
+      intervalMs: 10,
       label: 'the recovered member\'s silent region was evicted once a full window had passed',
     });
-    expect(Date.now() - rearmedAt).toBeGreaterThanOrEqual(STALE_AFTER_MS);
+    expect(eviction.at! - parkedSweepAt).toBeGreaterThanOrEqual(STALE_AFTER_MS);
+    expect(eviction.at! - parkedSweepAt).toBeLessThan(STALE_AFTER_MS * 3);
     expect(harness.coordinator.shardHome.get(5)).not.toBe(key);
   }, 10_000);
 

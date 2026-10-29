@@ -253,19 +253,40 @@ and **membership convergence is not a proxy for it**: a fully converged
 cluster can still hold a region that has not registered.
 
 ```ts
-if (cluster.sharding.isRegistered('cart')) { /* the coordinator knows this region */ }
+if (cluster.sharding.isRegistered('cart')) { /* the coordinator acknowledged this node's region */ }
 ```
 
 Synchronous and free, like [`shardMap`](#following-the-map), and fed the
 same way — from a `ShardRegionRegistered` event this node's region
 publishes once the coordinator acknowledges it. `false` for a type this
 node never started; for one whose registration was refused over a
-`numShards` mismatch; for one whose region the coordinator [evicted for
+`numShards` mismatch; for one whose region was told it had been [evicted for
 going silent](/reference/configuration/#detecting-a-region-that-went-silent),
 until its new registration is acknowledged; and for one whose region has
 stopped. In each of those the coordinator places no shard of the type on
 this node, so a readiness probe built on this signal takes the node out of
 rotation rather than reporting it ready.
+
+It is this node's account of its registration, built from what its region
+was told, and two situations are worth knowing exactly:
+
+- **A leader change does not turn it `false`.** Every region registers again
+  with the new leader's coordinator, and the node keeps reading as
+  registered while it does, so an election does not take every node out of
+  rotation at once. That holds even when the new leader runs no coordinator
+  for the type at all: the reading cannot tell that apart from a
+  re-registration still in flight. A refusal the old leader issued lapses
+  with it — from the leader change until the new coordinator answers,
+  `registrationRefusal` is `null` and the type reads as not registered:
+  waiting, not refused.
+- **An eviction is learnt from the coordinator's notice**, a single,
+  unacknowledged frame. If it is lost, the region keeps its shards and this
+  keeps reading `true` while the coordinator holds no entry for the region —
+  until the region's next beat reaches the coordinator, which answers a beat
+  from a region it does not know with a request to register. The window is
+  one `heartbeat-interval` and a round trip, and registering again takes the
+  region's stale copies of the re-homed shards down. Without stale-region
+  detection nothing is evicted, so there is no such window.
 
 That probe ships with the framework. Name the type, and `Cluster.join`
 installs a `shard-region:cart` readiness check for it, whose `detail` says
@@ -329,9 +350,11 @@ if (refusal) {
 ```
 
 `null` when there is no refusal, and cleared once a later registration is
-accepted — so a deploy that fixes the mismatch stops reporting one. The same
-refusal is published as a `ShardRegionRegistrationRefused` cluster event, for
-code that wants to react rather than poll.
+accepted — so a deploy that fixes the mismatch stops reporting one — and
+when the leader moves: a refusal is the verdict of the coordinator that
+issued it, and until the new leader's coordinator answers there is none to
+report. The same refusal is published as a `ShardRegionRegistrationRefused`
+cluster event, for code that wants to react rather than poll.
 
 **The thing to alert on** is the counter, which needs no code of yours:
 

@@ -116,6 +116,30 @@ const PARTITION_FAILURE_DETECTOR: Partial<FailureDetectorOptionsType> = {
   unreachableAfterMs: 300,
   downAfterMs: 600,
 };
+/**
+ * The healing partition case's window: the cut-off node is `unreachable`, at
+ * {@link PARTITION_FAILURE_DETECTOR}'s 300 ms, well inside it, and the case can
+ * still wait it out twice.
+ */
+const HEAL_STALE_AFTER_MS = 1_200;
+/**
+ * How long after the node is back the case holds its region's beats and
+ * watches for an eviction: half a window, so a sweep judging the region on the
+ * silence of the cut has had several ticks to act, and one judging it from the
+ * re-arm has a margin left before its own window ends.
+ */
+const HEAL_WATCH_MS = 600;
+/**
+ * The cut-off side of the healing case.  It never marks the seed `unreachable`
+ * within the case, so it keeps sending to it and the cut can heal: gossip and
+ * heartbeats go only to members a node holds reachable, so a cut both sides
+ * have noticed stays cut (#930).
+ */
+const NEVER_PARKS_FAILURE_DETECTOR: Partial<FailureDetectorOptionsType> = {
+  heartbeatIntervalMs: 100,
+  unreachableAfterMs: 20_000,
+  downAfterMs: 30_000,
+};
 
 /**
  * The registers-again case's membership, with a down-after short enough that
@@ -215,6 +239,12 @@ class FaultInjectingTransport extends InMemoryTransport {
    */
   dropRegisters = false;
   /**
+   * Drop the eviction notices this node's coordinator sends — after recording
+   * them in {@link evictionNotices} — so the evicted region never learns it
+   * was evicted: the single-shot, unacknowledged frame lost on the way.
+   */
+  dropEvictions = false;
+  /**
    * Peers this node sends nothing to — cluster heartbeats and gossip included.
    * Listing each side in the other's set is a full partition between the two.
    */
@@ -236,6 +266,7 @@ class FaultInjectingTransport extends InMemoryTransport {
     if (this.cutOffFrom.has(to.toString())) return;
     if (kind === 'sharding.RegionHeartbeat' && this.dropBeats) return;
     if (kind === 'sharding.Register' && this.dropRegisters) return;
+    if (kind === 'sharding.RegionEvicted' && this.dropEvictions) return;
     super.send(to, message);
   }
 
@@ -779,6 +810,94 @@ describe('ClusterSharding — a region on a node that is cut off (#853, #1467)',
     // Still undecided at the end: the case is the parked node, not a removal.
     expect(statusOn(seed, otherAddress)).toBe('unreachable');
   }, 30_000);
+
+  test('a node that comes back is judged afresh, not on the silence of the cut', async () => {
+    // The other half of the parking rule: every tick that finds the node
+    // undecided re-arms its region's silence clock, so a node that comes back
+    // is not evicted for the silence it piled up while it could not be heard.
+    // The cut here is one-way and heals — the cut-off side never parks the
+    // seed, so it keeps sending, and the seed's view has the node `up` again
+    // the moment its heartbeats get through.  The region's own beats stay
+    // dropped a while longer, so the first sweeps after the return judge a
+    // region that still says nothing: exactly the moment the re-arm is for.
+    const name = 'stale-region-partition-heals';
+    const seed = await startNode(name, 62_320, {
+      detect: true,
+      downing: new NeverDecides(),
+      failureDetector: PARTITION_FAILURE_DETECTOR,
+      staleAfterMs: HEAL_STALE_AFTER_MS,
+    });
+    const other = await startNode(name, 62_321, {
+      seeds: [`${name}@h:62320`],
+      detect: true,
+      downing: new NeverDecides(),
+      failureDetector: NEVER_PARKS_FAILURE_DETECTOR,
+      staleAfterMs: HEAL_STALE_AFTER_MS,
+    });
+    await converge([seed, other]);
+    await awaitCondition(
+      () => seed.cluster.sharding.isRegistered(TYPE_NAME) && other.cluster.sharding.isRegistered(TYPE_NAME),
+      { timeoutMs: 4_000, label: 'both regions registered' },
+    );
+    // An odd shard: `HashAllocationStrategy` puts it on the second of two nodes.
+    const entityId = ['user-1', 'user-2', 'user-3', 'user-4', 'user-5', 'user-6']
+      .find((id) => hashShardId(id, NUM_SHARDS) % 2 === 1)!;
+    const shardId = hashShardId(entityId, NUM_SHARDS);
+    seed.region.tell({ id: entityId, kind: 'work' });
+    await awaitCondition(() => hostsShard(other, shardId), {
+      timeoutMs: 4_000,
+      label: 'the shard came up on the node about to be cut off',
+    });
+    await awaitFirstBeat(seed, other);
+    const otherAddress = other.cluster.selfAddress;
+    const homeKey = regionKeyOn(seed, otherAddress)!;
+
+    other.transport.cutOffFrom.add(seed.cluster.selfAddress.toString());
+    const cutAt = Date.now();
+    await awaitCondition(() => statusOn(seed, otherAddress) === 'unreachable', {
+      timeoutMs: 4_000,
+      label: "the seed's view parked the cut-off node",
+    });
+    // Silent well past a window while parked: judged on that silence, the
+    // region would be evicted the moment its node is back.
+    await awaitCondition(
+      () => Date.now() - cutAt >= HEAL_STALE_AFTER_MS + 400 || seed.transport.evictionNotices.length > 0,
+      { timeoutMs: 4_000, intervalMs: 20, label: 'the cut outlasted a window' },
+    );
+    expect(seed.transport.evictionNotices).toEqual([]);
+    expect(statusOn(seed, otherAddress)).toBe('unreachable');
+
+    other.transport.dropBeats = true;
+    other.transport.cutOffFrom.clear();
+    await awaitCondition(() => statusOn(seed, otherAddress) === 'up', {
+      timeoutMs: 4_000,
+      intervalMs: 5,
+      label: "the seed's view has the node up again",
+    });
+
+    await awaitCondition(() => seed.transport.evictionNotices.length > 0, {
+      timeoutMs: HEAL_WATCH_MS,
+      intervalMs: 10,
+      label: 'an eviction right after the node came back (not expected)',
+    }).then(
+      () => { throw new Error('the region was evicted on the silence of the cut, right after its node came back'); },
+      () => { /* the window ran out with the region still registered */ },
+    );
+    expect(coordinatorState(seed).shardHome.get(shardId)).toBe(homeKey);
+
+    // Then it speaks again, and stays.
+    other.transport.dropBeats = false;
+    await awaitCondition(() => seed.transport.evictionNotices.length > 0, {
+      timeoutMs: HEAL_STALE_AFTER_MS,
+      intervalMs: 20,
+      label: 'an eviction once the region beats again (not expected)',
+    }).then(
+      () => { throw new Error('the region was evicted although it beats again'); },
+      () => { /* a full window with the region beating */ },
+    );
+    expect(regionOn(seed, otherAddress)).toBeDefined();
+    expect(hostsShard(other, shardId)).toBe(true);
+  }, 30_000);
 });
 
 describe('ClusterSharding — a region seeded from a coordinator-state snapshot (#853)', () => {
@@ -822,23 +941,33 @@ describe('ClusterSharding — a region seeded from a coordinator-state snapshot 
 
     await awaitCondition(() => coordinatorStateOnceLive(seed)?.regions.has(ghostKey) === true, {
       timeoutMs: 5_000,
+      intervalMs: 5,
       label: "the coordinator seeded the snapshot's region",
     });
+    const seededSeenAt = Date.now();
     expect(oddShards.every((shardId) => coordinatorState(seed).shardHome.get(shardId) === ghostKey)).toBe(true);
 
-    await awaitCondition(
-      () => oddShards.every((shardId) => coordinatorState(seed).shardHome.get(shardId) !== ghostKey),
-      { timeoutMs: 4_000, label: "the seeded region's shards were re-homed" },
-    );
+    const eviction: { at: number | null } = { at: null };
+    await awaitCondition(() => {
+      if (oddShards.some((shardId) => coordinatorState(seed).shardHome.get(shardId) === ghostKey)) return false;
+      eviction.at = Date.now();
+      return true;
+    }, { timeoutMs: 4_000, intervalMs: 5, label: "the seeded region's shards were re-homed" });
     expect(coordinatorState(seed).regions.has(ghostKey)).toBe(false);
     // Re-homed, not merely unhomed: the one region that is there took them.
     const seedKey = regionKeyOn(seed, seed.cluster.selfAddress);
     expect(oddShards.every((shardId) => coordinatorState(seed).shardHome.get(shardId) === seedKey)).toBe(true);
-    // And not before the grace: the sweep stamps the eviction with how long the
-    // entry had been silent, counted from its seeding.
     expect(seed.transport.evictionNotices).toHaveLength(1);
     expect(seed.transport.evictionNotices[0]!.to).toBe(ghostAddress.toString());
     expect(seed.transport.evictionNotices[0]!.silentForMs).toBeGreaterThanOrEqual(STALE_AFTER_MS);
+    // And not before the grace — one full window from the moment the entry was
+    // seeded, measured here on the test's own clock.  The notice's `silentForMs`
+    // above cannot say so on its own: it is computed from the very stamp a
+    // back-dated seeding moves, so a grace counted from the snapshot's
+    // `takenAt` (zero here) or from no stamp at all still reports a silence
+    // past the window while the eviction lands on the first tick (#853).  The
+    // margin is the poll that observed the seeding late.
+    expect(eviction.at! - seededSeenAt).toBeGreaterThanOrEqual(STALE_AFTER_MS * 0.8);
   }, 30_000);
 
   test('a seeded entry whose region registers is judged like any registered one', async () => {
@@ -1039,5 +1168,53 @@ describe('ClusterSharding.isRegistered across an eviction (#853, #1465)', () => 
       label: 'isRegistered read true again once the new registration was acknowledged',
     });
     expect(regionOn(seed, otherAddress)).toBeDefined();
+  }, 30_000);
+
+  test('a region whose eviction notice was lost registers again on its next beat', async () => {
+    // The notice is single-shot and unacknowledged.  Lost, it leaves the region
+    // believing it is registered — `isRegistered` true, its shard and that
+    // shard's entities still running — while the coordinator holds no entry for
+    // it and has already given the shard to somebody else.  Nothing on the
+    // region side will ever notice: the node is up and the leader has not
+    // moved.  A beat from a region it does not know is how the coordinator
+    // can, and it answers one with a request to register.
+    const { seed, other, shardId, entityId } = await twoNodesHostingOneShard(
+      'stale-region-lost-notice', 62_300, true, true,
+    );
+    await awaitFirstBeat(seed, other);
+    const otherAddress = other.cluster.selfAddress;
+
+    seed.transport.dropEvictions = true;
+    other.transport.dropBeats = true;
+    await awaitCondition(() => regionOn(seed, otherAddress) === undefined, {
+      timeoutMs: 4_000,
+      label: 'the coordinator evicted the mute region',
+    });
+    expect(seed.transport.evictionNotices.map((notice) => notice.to)).toEqual([otherAddress.toString()]);
+    // Nothing reached the region: it still claims the registration, and still
+    // serves the shard the coordinator has re-homed.
+    expect(other.cluster.sharding.isRegistered(TYPE_NAME)).toBe(true);
+    expect(hostsEntity(other, shardId, entityId)).toBe(true);
+    expect(coordinatorState(seed).shardHome.get(shardId)).toBe(regionKeyOn(seed, seed.cluster.selfAddress));
+
+    other.transport.dropBeats = false;
+    const resumedAt = Date.now();
+    await awaitCondition(() => regionOn(seed, otherAddress) !== undefined, {
+      timeoutMs: 4_000,
+      label: 'the region registered again once one of its beats reached the coordinator',
+    });
+    // One beat interval and a round trip — not a membership event, which never
+    // comes for a node that stayed up.
+    expect(Date.now() - resumedAt).toBeLessThan(HEARTBEAT_INTERVAL_MS * 10);
+    expect(other.cluster.sharding.isRegistered(TYPE_NAME)).toBe(true);
+
+    // And the second home ends: the registration still claimed the shard, the
+    // coordinator kept it where it had put it, and the stale copy was handed off.
+    await awaitCondition(() => !hostsShard(other, shardId), {
+      timeoutMs: 4_000,
+      label: 'the re-registered region gave up its stale copy of the re-homed shard',
+    });
+    expect(ownedShards(other).has(shardId)).toBe(false);
+    expect(coordinatorState(seed).shardHome.get(shardId)).toBe(regionKeyOn(seed, seed.cluster.selfAddress));
   }, 30_000);
 });
