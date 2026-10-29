@@ -1314,3 +1314,95 @@ describe('with exit-process on, a run is in flight until it has exited', () => {
     expect(system.isTerminated).toBe(true);
   });
 });
+
+// The pre-exit flush's first step: the dead-letter queue's writes, each step
+// bounded by `actor-ts.logger.close-timeout` and never rejecting.  A store
+// that never answers must not hold the exit open, which is the hang
+// `exit-process` exists to end, and one that fails must not skip the exit or
+// put its own error in place of the task's (#1455).
+describe('with exit-process on, the dead-letter flush before the exit is bounded', () => {
+  /**
+   * A halting run with a dead-letter store, a 50 ms flush budget, and the
+   * queue's `flush` replaced by `flush` — put back before the case tears the
+   * system down, so the teardown's own flush is the queue's again.
+   */
+  function haltingWithDeadLetterFlush(
+    name: string,
+    flush: () => Promise<void>,
+  ): { system: ActorSystem; restoreFlush: () => void } {
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withConfig({
+        'actor-ts': {
+          logger: { 'close-timeout': '50ms' },
+          'dead-letters': { store: 'memory' },
+          'coordinated-shutdown': { phases: { 'service-stop': { recover: false } }, 'exit-process': true },
+        },
+      });
+    const system = ActorSystem.create(name, systemOptions);
+    system.extension(CoordinatedShutdownId).addTask(Phases.ServiceStop, 'close-the-broker', () => {
+      throw new Error('the broker would not close');
+    });
+    const spy = spyOn(system.deadLetterQueue, 'flush').mockImplementation(flush);
+    return { system, restoreFlush: () => { spy.mockRestore(); } };
+  }
+
+  /**
+   * Run the pipeline with `process.exit` and `console.error` replaced — the
+   * budget reports a flush that timed out or failed on the console — until
+   * the exit has been called or `timeoutMs` has passed.
+   */
+  async function exitOf(system: ActorSystem): Promise<{ atExit: string; outcome: Promise<string>; console: string[] }> {
+    const consoleLines: string[] = [];
+    const consoleError = spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      consoleLines.push(args.map((arg) => (arg instanceof Error ? arg.message : String(arg))).join(' '));
+    });
+    const realExit = process.exit;
+    let atExit = 'not called';
+    process.exit = ((code?: number): never => {
+      atExit = `exit ${code}`;
+      return undefined as never;
+    }) as typeof process.exit;
+    let outcome: Promise<string> = Promise.resolve('not started');
+    try {
+      outcome = settled(system.extension(CoordinatedShutdownId).run());
+      await awaitCondition(() => atExit !== 'not called', {
+        label: 'the halted run called process.exit past the dead-letter flush',
+        timeoutMs: 3_000,
+      });
+    } finally {
+      process.exit = realExit;
+      consoleError.mockRestore();
+    }
+    return { atExit, outcome, console: consoleLines };
+  }
+
+  test('a dead-letter flush that never settles cannot hold the exit open', async () => {
+    const { system, restoreFlush } = haltingWithDeadLetterFlush(
+      'dead-letter-flush-hangs',
+      () => new Promise<void>(() => {}),
+    );
+
+    const { atExit, console: consoleLines } = await exitOf(system);
+
+    expect(atExit).toBe('exit 1');
+    expect(consoleLines.some((line) => line.includes('dead-letter flush timed out'))).toBe(true);
+    restoreFlush();
+    await system.terminate();
+  });
+
+  test('a dead-letter flush that rejects neither skips the exit nor replaces the task\'s error', async () => {
+    const { system, restoreFlush } = haltingWithDeadLetterFlush(
+      'dead-letter-flush-fails',
+      () => Promise.reject(new Error('the dead-letter store is gone')),
+    );
+
+    const { atExit, outcome, console: consoleLines } = await exitOf(system);
+
+    expect(atExit).toBe('exit 1');
+    expect(await outcome).toBe('rejected: the broker would not close');
+    expect(consoleLines.some((line) => line.includes('dead-letter flush failed'))).toBe(true);
+    restoreFlush();
+    await system.terminate();
+  });
+});
