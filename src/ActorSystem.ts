@@ -102,7 +102,10 @@ import {
 } from './diagnostics/MessageBoundaryOptions.js';
 import { SerializationExtensionId } from './serialization/SerializationExtension.js';
 import type { ParallelismOptionsType } from './parallelism/ParallelismOptions.js';
-import type { PersistenceBehaviorOptions } from './persistence/PersistenceBehaviorOptions.js';
+import type {
+  PersistenceBehaviorOptions,
+  PersistenceBehaviorOptionsType,
+} from './persistence/PersistenceBehaviorOptions.js';
 import { PersistenceExtensionId, selectsPersistencePlugin } from './persistence/PersistenceExtension.js';
 import type { HttpServerBackend } from './http/backend/HttpServerBackend.js';
 import { DEFAULT_HTTP_BIND_HOST } from './http/Constants.js';
@@ -607,14 +610,31 @@ export class ActorSystem {
     // All before the mesh start and the graph's own start, the two steps
     // below that arm handles, so a plug-in that throws fails `create` before
     // either exists.  A system with neither stays lazy, as it always was.
+    //
+    // `autoStart: false` set in code opts out of the warm-up whatever the file
+    // says, so it is answered here without reading the behaviour block — and
+    // so without validating it, which the warm-up does before it looks at
+    // `autoStart`.  On its own it gives `create` nothing to do: that is the
+    // whole of a WorkerMesh worker's `withPersistence`, and building the
+    // extension for it failed every worker on an invalid block its main
+    // thread never read.  The block is still read, and refused, on first use;
+    // the extension built then still finds the opt-out through
+    // `_explicitPersistenceBehavior`.
     const persistenceOptions = options.persistence;
-    if (persistenceOptions !== undefined || selectsPersistencePlugin(this.config)) {
+    const warmUpOptedOut =
+      (persistenceOptions?.behavior as Partial<PersistenceBehaviorOptionsType> | undefined)?.autoStart === false;
+    const persistenceWorkInCreate = (persistenceOptions?.plugins?.length ?? 0) > 0
+      || persistenceOptions?.journal !== undefined
+      || persistenceOptions?.snapshotStore !== undefined
+      || persistenceOptions?.durableStateStore !== undefined
+      || (!warmUpOptedOut && (persistenceOptions !== undefined || selectsPersistencePlugin(this.config)));
+    if (persistenceWorkInCreate) {
       const persistence = this.extensions.get(PersistenceExtensionId);
       persistence._runPlugins(persistenceOptions?.plugins ?? []);
       if (persistenceOptions?.journal) persistence.setJournal(persistenceOptions.journal);
       if (persistenceOptions?.snapshotStore) persistence.setSnapshotStore(persistenceOptions.snapshotStore);
       if (persistenceOptions?.durableStateStore) persistence.setDurableStateStore(persistenceOptions.durableStateStore);
-      persistence._prepareWarmUp();
+      if (!warmUpOptedOut) persistence._prepareWarmUp();
     }
 
     // Only when the operator asked for a queue.  Off — the default — this

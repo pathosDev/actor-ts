@@ -103,7 +103,13 @@ Task — siehe [Stores beim Start
 öffnen](/de/persistence/overview/#stores-beim-start-öffnen).
 Schaltest du `autoStart` im Persistence-Verhalten ab — oder setzt
 `actor-ts.persistence.auto-start = off` in der Konfiguration —, bleiben
-sie bis zu ihrer ersten Operation geschlossen.
+sie bis zu ihrer ersten Operation geschlossen.  Im Code abgeschaltet,
+bleibt auch der übrige Behaviour-Block unter `actor-ts.persistence`
+ungelesen, bis etwas ihn liest: `create` braucht ihn nicht, also wird
+ein Fehler darin dort abgelehnt, wo Persistence ihn zuerst liest, und
+nicht von `create`.  Genau das
+setzt ein WorkerMesh-Worker, also startet ein Worker mit der
+Konfiguration des Main-Threads, ob er je etwas persistiert oder nicht.
 
 `system.whenReady()` resolved, sobald die letzte Phase gelaufen ist.
 Es ist bei jedem Aufruf dasselbe Promise und für ein System ohne

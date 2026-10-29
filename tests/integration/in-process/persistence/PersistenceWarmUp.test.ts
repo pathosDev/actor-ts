@@ -33,6 +33,11 @@ import {
   type PersistencePlugin,
 } from '../../../../src/persistence/index.js';
 import type { PgClientLike, PgQueryResult } from '../../../../src/persistence/journals/PostgresClient.js';
+import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
+import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
+import { OptionsError } from '../../../../src/util/OptionsValidator.js';
+import { runWorkerMeshNode, type WorkerMeshInitData } from '../../../../src/worker/WorkerMeshBootstrap.js';
+import type { WorkerNodeContext } from '../../../../src/worker/WorkerNode.js';
 import { FakeCassandraClient } from './FakeCassandraClient.js';
 import { FakePgPool } from './FakePgPool.js';
 
@@ -537,6 +542,80 @@ describe('behavior autoStart false', () => {
       await system.whenReady();
       expect(persistence.journal).toBe(journal);
       expect(journal.starts).toBe(0);
+    } finally {
+      await system.terminate();
+    }
+  });
+});
+
+/**
+ * `autoStart: false` set in code is the whole of what a WorkerMesh worker
+ * passes to `withPersistence` — its opt-out from opening the main thread's
+ * selection, which it inherits without the code that registered it.  Being a
+ * `withPersistence` option, it used to build the extension inside `create` all
+ * by itself, and the warm-up read and validated the whole behaviour block
+ * before it looked at `autoStart`: one invalid `actor-ts.persistence` value in
+ * the shared configuration failed every worker's bootstrap, while the main
+ * thread, which never touched persistence, was created without a word.
+ */
+describe('autoStart false set in code asks nothing of the behaviour block inside create', () => {
+  /** The configuration the main thread and its workers share: one invalid behaviour value. */
+  const INVALID_BEHAVIOR: ConfigObject = { 'actor-ts': { persistence: { 'max-concurrent-recoveries': -1 } } };
+
+  test('a mesh worker boots on a configuration whose behaviour block is invalid, as its main thread does', async () => {
+    const main = ActorSystem.create('warm-up-invalid-behavior-main', quietOptions(INVALID_BEHAVIOR));
+    const address = new NodeAddress('warm-up-invalid-behavior-worker', '127.0.0.1', 2552);
+    const init: WorkerMeshInitData = {
+      kind: 'worker-mesh-init',
+      config: INVALID_BEHAVIOR,
+      secretPaths: [],
+      seeds: [],
+      roles: [],
+      modules: [],
+    };
+    const context = {
+      self: address,
+      systemName: 'warm-up-invalid-behavior-worker',
+      transport: new InMemoryTransport(address),
+      initData: init,
+      ready: () => {},
+    } as unknown as WorkerNodeContext<WorkerMeshInitData>;
+    try {
+      expect(main.extensions.has(PersistenceExtensionId)).toBe(false);
+      const { system: worker } = await runWorkerMeshNode(context, async () => ({}));
+      try {
+        await worker.whenReady();
+        expect(worker.extensions.has(PersistenceExtensionId)).toBe(false);
+        // Not dropped, only not asked for: the first use reads the block, as
+        // it would on the main thread.
+        expect(() => worker.extension(PersistenceExtensionId).behavior).toThrow(OptionsError);
+      } finally {
+        await worker.terminate();
+      }
+    } finally {
+      await main.terminate();
+    }
+  }, 20_000);
+
+  test('plug-ins passed beside it still run inside create, and the block is still read only on first use', async () => {
+    const registeredJournalId = 'test.journal.registered-in-create';
+    const journal = new StartCountingJournal();
+    const behavior = PersistenceBehaviorOptions.create().withAutoStart(false);
+    const plugin: PersistencePlugin = (persistence) => { persistence.registerJournal(registeredJournalId, () => journal); };
+    const configuration: ConfigObject = {
+      'actor-ts': {
+        persistence: { 'max-concurrent-recoveries': -1, journal: { plugin: registeredJournalId } },
+      },
+    };
+    const systemOptions = quietOptions(configuration).withPersistence({ plugins: [plugin], behavior });
+    const system = ActorSystem.create('warm-up-off-with-plugins', systemOptions);
+    try {
+      await system.whenReady();
+      expect(system.extensions.has(PersistenceExtensionId)).toBe(true);
+      expect(system.extension(CoordinatedStartupId).hasTasks).toBe(false);
+      expect(system.extension(PersistenceExtensionId).journal).toBe(journal);
+      expect(journal.starts).toBe(0);
+      expect(() => system.extension(PersistenceExtensionId).behavior).toThrow(OptionsError);
     } finally {
       await system.terminate();
     }

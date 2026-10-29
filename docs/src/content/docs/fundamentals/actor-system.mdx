@@ -99,7 +99,13 @@ startup like any task — see [opening the stores at
 startup](/persistence/overview/#opening-the-stores-at-startup).
 Turning `autoStart` off in the persistence behaviour — or
 `actor-ts.persistence.auto-start = off` in the configuration — leaves
-them closed until their first operation instead.
+them closed until their first operation instead.  Off in code, it also
+leaves the rest of the `actor-ts.persistence` behaviour block unread
+until something reads it: `create` does not need it, so a mistake in it
+is refused where persistence first reads it rather than by `create`.
+That is what a WorkerMesh worker
+sets, so a worker boots on the main thread's configuration whether or
+not it ever persists.
 
 `system.whenReady()` resolves once the last phase has run.  It is the
 same promise on every call, and already resolved for a system with no
