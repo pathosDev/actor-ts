@@ -180,6 +180,22 @@ const gelfSinkOptions = GelfSinkOptions.create()
   .withTls({ ca: process.env['GRAYLOG_CA']! });
 ```
 
+### Wenn Graylog nicht antwortet
+
+Über `tcp` wird ein Batch geschrieben, sobald die Verbindung offen ist — über
+TLS, sobald der Handshake abgeschlossen ist —, der erste Batch auf einer
+frischen Verbindung kommt also an wie jeder andere. Ein Graylog, das die
+Verbindung ablehnt, lässt den Batch sofort scheitern, und zwar wiederholbar:
+Er wird nach dem
+[`delivery`](/de/observability/logging/multi-sink/#gebündelte-zustellung)-Plan
+des Sinks erneut versucht und erst verworfen und gemeldet, wenn der
+ausgeschöpft ist. Eines, das gar nicht antwortet — ein verworfenes SYN, eine
+Firewall, die verwirft —, wird nach **10 s** für TCP-Connect und TLS-Handshake
+zusammen aufgegeben und lässt den Batch genauso scheitern. Ohne diese Grenze
+wartete ein Versuch auf das Connect-Timeout des Betriebssystems, 21 s unter
+Windows und etwa zwei Minuten unter Linux, und jeder Record dahinter wartete
+mit. Die 10 s sind fest; noch setzt keine Option sie.
+
 ## Parseable
 
 ```ts
@@ -480,6 +496,15 @@ Empfänger also nicht dazu bringen, den Rahmen zu früh abzuschneiden.
 
 TLS-Material gibt es nur im Code, ohne HOCON-Leaf: Diese Felder tragen
 Zertifikat und Schlüssel selbst.
+
+### Wenn der Collector nicht antwortet
+
+`tcp` und `tls` verhalten sich wie GELF über TCP
+([oben](#wenn-graylog-nicht-antwortet)): Ein Batch wird geschrieben, sobald die
+Verbindung offen ist — über `tls`, sobald der Handshake abgeschlossen ist —,
+eine abgelehnte Verbindung lässt den Batch sofort und wiederholbar scheitern,
+und ein Collector, der gar nicht antwortet, wird nach festen **10 s** für
+Connect und Handshake zusammen aufgegeben.
 
 ## Verwandt
 
