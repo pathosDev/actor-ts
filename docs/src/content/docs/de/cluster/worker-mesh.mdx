@@ -126,6 +126,22 @@ auch an den Broker weiter, den es baut — jede unter [Was das Mesh
 meldet](#was-das-mesh-meldet) aufgeführte Zeile erreicht also die Sinks,
 in die dein System ohnehin loggt.
 
+Ein Worker wendet kein eigenes [Profil](/de/reference/configuration/#profile)
+an.  Das Main-System hat eines angewendet, als es seine Konfiguration lud,
+und die Werte, die es gewählt hat, stehen im Baum, mit dem die Worker
+laufen — `ACTOR_TS_PROFILE` wird also kein zweites Mal angewendet, auf eine
+Datei, die ein Worker finden könnte und die nicht die sein muss, die der
+Main-Thread im Code bekommen hat.  Die Anwendungsdatei, die der eigene Load
+eines Workers liest, ist die seines Main-Threads, ob mit `withConfigFile`
+benannt oder über `ACTOR_TS_CONFIG` bzw. `./application.conf` gefunden: Der
+Baum überschreibt jeden Key, den diese Datei setzt, und eine andere Datei
+könnte Keys hinzufügen, die der Main-Thread nie gesehen hat.  Er liest auch
+die [Secrets-Datei](/de/reference/configuration/#secrets-datei), die der Load
+des Main-Systems gelesen hat — `ACTOR_TS_SECRETS_CONF` oder `./secrets.conf` im
+Arbeitsverzeichnis —, eine Datei dort, die sich nicht laden lässt, hält also
+schon das Main-System an, bevor ein Worker startet, mit einem Fehler, der die
+Datei nennt und den Grund, aus dem sie gelesen wurde.
+
 | Option | Was |
 | --- | --- |
 | `withModule(url \| url[])` | Die Actor-Module, die jeder Worker importiert.  **Pflicht**, und nur im Code — bewusst kein Config-Key, siehe unten.  Es gilt dieselbe Schreibweisen-Regel wie für `withBootstrap` bei `WorkerCluster`, denn es ist dieselbe Art von Sache: Code, den ein Worker ausführt. |
@@ -367,10 +383,16 @@ Modul, das die Runtime *ausführt*, und `ACTOR_TS_CONFIG` oder eine abgelegte
 `application.conf` sind eine breitere Angriffsfläche als die Aufrufstelle.
 
 `spawn` ist ein Static ohne `ActorSystem` im Scope und lädt die Config-Kette
-daher selbst: dieselbe, die `ActorSystem.create` verwendet, inklusive
-`ACTOR_TS_CONFIG` und `./application.conf`.  Ein Wert aus der Datei wird gegen
-die gemergten Settings validiert, ein falscher wirft also bei `spawn` genauso
-`OptionsError` wie ein falscher im Code.
+daher selbst, sofern ihm keine `Config` übergeben wird: dieselbe, die
+`ActorSystem.create` verwendet, inklusive `ACTOR_TS_CONFIG`,
+`./application.conf` und des Profils, das `ACTOR_TS_PROFILE` nennt.  Dieser
+Load sieht keine Datei und kein Profil, die ein System im Code bekommen hat,
+und lehnt ein Profil ab, das nur dort definiert ist — ist ein System im Scope,
+übergib deshalb seine Konfiguration als zweites Argument,
+`WorkerCluster.spawn(workerOptions, system.config)`, wie `WorkerMesh` es tut.
+Ein Wert aus der Config wird gegen die gemergten Settings validiert, ein
+falscher wirft also bei `spawn` genauso `OptionsError` wie ein falscher im
+Code.
 
 ## Unter der Haube: manuelle Verdrahtung
 

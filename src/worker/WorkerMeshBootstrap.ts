@@ -36,6 +36,14 @@ export type WorkerMeshInitData = {
    * no environment variable carries here.
    */
   readonly secretPaths: ReadonlyArray<string>;
+  /**
+   * Where the main thread looked for its application file — named in code,
+   * by `ACTOR_TS_CONFIG` or `./application.conf` — found there or not, and
+   * absent when it looked nowhere (#1546).  The worker's own load reads that
+   * path, so a key only another file sets cannot reach a worker and not its
+   * main thread.
+   */
+  readonly configFile?: string;
   /** The main thread's address — the one seed every worker dials. */
   readonly seeds: ReadonlyArray<string>;
   readonly roles: ReadonlyArray<string>;
@@ -110,10 +118,19 @@ export async function runWorkerMeshNode(
   // startup with an unknown plug-in (#1473).  Explicit, so it outranks
   // whatever the file says about opening at startup.
   const workerPersistenceBehavior = PersistenceBehaviorOptions.create().withAutoStart(false);
+  // The main thread applied its profile once, and the tree is what that
+  // produced — so the worker selects none (#1546).  Left to the environment,
+  // its load would apply `ACTOR_TS_PROFILE` a second time, to whichever file
+  // it found, and refuse a profile defined only in a file the main thread was
+  // given in code.  The file it reads is the main thread's too: the tree
+  // overrides every key that file sets, and a different file could add keys
+  // the main thread never saw.
   const systemOptions = ActorSystemOptions.create()
     .withConfig(Config._withSecretPaths(init.config, init.secretPaths))
+    .withProfile('')
     .withParallelism(workerParallelism)
     .withPersistence({ behavior: workerPersistenceBehavior });
+  if (init.configFile !== undefined) systemOptions.withConfigFile(init.configFile);
   const system = ActorSystem.create(context.systemName, systemOptions);
   const clusterOptions = ClusterOptions.create()
     .withHost(context.self.host)
