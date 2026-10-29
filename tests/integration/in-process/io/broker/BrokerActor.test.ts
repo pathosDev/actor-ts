@@ -541,6 +541,45 @@ describe('BrokerActor — reconnect', () => {
     await sys.terminate();
   });
 
+  test.each([
+    { maxAttempts: 1, connects: 2 },
+    { maxAttempts: 2, connects: 3 },
+  ])('reconnect.max-attempts = $maxAttempts counts reconnects: $connects connects in all, then BrokerReconnectFailed', async ({
+    maxAttempts, connects,
+  }) => {
+    // The count is of *re*connects — the first connect is not one — so the
+    // smallest value HOCON accepts still retries once.  Only the constructor's
+    // `reconnect: false` makes no second attempt (the case below).
+    const sys = makeSystem(`rc-max-${maxAttempts}`, { 'actor-ts': { io: { broker: { fake: {
+      endpoint: 'host:1',
+      reconnect: { 'initial-delay': 5, 'max-delay': 5, 'random-factor': 0, 'max-attempts': maxAttempts },
+    } } } } });
+    const attempts: number[] = [];
+    const failures: BrokerReconnectFailed[] = [];
+    sys.eventStream.subscribe(
+      sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+        override onReceive(event: unknown): void { attempts.push((event as BrokerReconnectAttempt).attempt); }
+      })()),
+      BrokerReconnectAttempt,
+    );
+    sys.eventStream.subscribe(
+      sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+        override onReceive(event: unknown): void { failures.push(event as BrokerReconnectFailed); }
+      })()),
+      BrokerReconnectFailed,
+    );
+    const { brokerReady } = spawnFake(sys, {}, (broker) => { broker.failNextConnects = 1_000; });
+    const broker = await brokerReady;
+    await awaitCondition(() => failures.length >= 1, { timeoutMs: 4_000, label: 'BrokerReconnectFailed' });
+    // Exact without a settle window: giving up schedules nothing, so no
+    // further connect is reachable once the failure is published.
+    expect(broker.connectAttempts).toBe(connects);
+    expect(attempts).toEqual(Array.from({ length: maxAttempts }, (_, index) => index + 1));
+    expect(failures[0]!.attempts).toBe(maxAttempts);
+    expect(broker.publicConnectionState()).toBe('disconnected');
+    await sys.terminate();
+  });
+
   test('reconnect: false disables reconnect after a connect failure', async () => {
     const sys = makeSystem('rc-2');
     const { brokerReady } = spawnFake(sys, {

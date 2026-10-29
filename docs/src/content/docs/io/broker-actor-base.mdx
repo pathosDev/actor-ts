@@ -345,7 +345,7 @@ actor-ts.io.broker.kafka {
     max-delay     = 30s
     factor        = 2
     random-factor = 0.2    # ±20 % jitter; 0 for a deterministic schedule
-    # max-attempts omitted = unlimited (the default); 1 = one attempt, no retry
+    # max-attempts omitted = unlimited (the default); 1 = one reconnect, two connects in all
   }
   circuit-breaker = "kafka"   # a breaker id; none when unset or ""
   outbound-buffer = 1000   # messages held while disconnected; 0 = fail-fast
@@ -362,8 +362,10 @@ Each leaf is the kebab-case of its field with the unit suffix dropped, so a
 duration takes `30s` as readily as a bare millisecond count.  There is no
 HOCON spelling of `reconnect: false`: switching auto-reconnect off entirely
 takes the constructor, and `max-attempts = 1` is the nearest a config file
-gets.  The camelCase spellings these leaves used to have — `initialDelayMs`,
-`outboundBuffer` and the rest — and every block the breaker had before it
+gets.  It still retries once: the count is of reconnects, the first connect is
+not one, and `0` is refused.  The camelCase spellings these leaves used to
+have — `initialDelayMs`, `outboundBuffer` and the rest — and every block the
+breaker had before it
 became an id — `circuitBreaker { … }` and
 `circuit-breaker { failure-threshold, reset }` — are refused with a
 `ConfigError` that names the new key, rather than ignored.  The refusal comes

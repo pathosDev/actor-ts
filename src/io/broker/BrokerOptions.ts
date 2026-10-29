@@ -242,9 +242,11 @@ type ReconnectPolicy = Exclude<NonNullable<BrokerCommonOptionsType['reconnect']>
  * `actor-ts.circuit-breaker.<id>`, so a block in its place is refused rather
  * than read.  `random` has no leaf: a function cannot come from HOCON.
  *
- * Note: to *disable* reconnect via HOCON, set the leaf
- * `reconnect.max-attempts = 1` (one connect attempt, no retry).  The
- * boolean `false` form is only supported via the constructor argument.
+ * Note: HOCON cannot *disable* reconnect — the boolean `false` form is only
+ * supported via the constructor argument, and the validator refuses `0`.  The
+ * nearest a config file gets is `reconnect.max-attempts = 1`, which still
+ * retries once: the leaf counts reconnects, and the first connect is not one,
+ * so a connect that keeps failing is tried twice before `BrokerReconnectFailed`.
  */
 export function readBrokerCommonOptionsFromConfig(config: Config, keys: BrokerCommonKeys): BrokerCommonOptionsType {
   const out: { -readonly [K in keyof BrokerCommonOptionsType]: BrokerCommonOptionsType[K] } = {};
