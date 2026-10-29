@@ -430,4 +430,37 @@ describe('RefCodec — round-trip through JSON.stringify', () => {
       await system.terminate();
     }
   });
+
+  test('a body field named __proto__ is copied as data on the way out, refs inside it included', async () => {
+    // Any body built by `JSON.parse` can carry an own `__proto__` key.  The
+    // decode side already keeps it as data; the encode side's copy has to as
+    // well, or the field never reaches the frame.
+    const { system, cluster } = await buildCluster('rt-proto-test', 51_310);
+    try {
+      const local = system.spawn(Noop, 'rt-proto-actor');
+      const message: Record<string, unknown> = { kind: 'ping' };
+      Object.defineProperty(message, '__proto__', {
+        value: { note: 'data', replyTo: local }, enumerable: true, writable: true, configurable: true,
+      });
+      message.after = 1;
+
+      const encoded = encodeRefs(message, cluster) as Record<string, unknown>;
+      expect(Object.keys(encoded)).toEqual(['kind', '__proto__', 'after']);
+      expect(Object.getPrototypeOf(encoded)).toBe(Object.prototype);
+      expect(encoded.note).toBeUndefined();
+      const field = Object.getOwnPropertyDescriptor(encoded, '__proto__')?.value as Record<string, unknown>;
+      expect(field.note).toBe('data');
+      expect(isWireActorRef(field.replyTo)).toBe(true);
+
+      const decoded = decodeRefs(JSON.parse(JSON.stringify(encoded)), cluster) as Record<string, unknown>;
+      expect(Object.keys(decoded)).toEqual(['kind', '__proto__', 'after']);
+      expect(Object.getPrototypeOf(decoded)).toBe(Object.prototype);
+      const decodedField = Object.getOwnPropertyDescriptor(decoded, '__proto__')?.value as Record<string, unknown>;
+      expect(decodedField.note).toBe('data');
+      expect(decodedField.replyTo).toBe(local);
+    } finally {
+      await cluster.leave();
+      await system.terminate();
+    }
+  });
 });
