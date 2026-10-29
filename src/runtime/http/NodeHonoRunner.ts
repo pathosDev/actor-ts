@@ -347,9 +347,9 @@ function nodeServeOptions(options: HonoServeOptions, secure: NodeServerFactory |
  * no `ca` to verify it against, and a bag that switched `rejectUnauthorized`
  * off admitted a client without one past a configured demand.  So the typed
  * `tls` is the whole TLS configuration: what the listener presents, whom it
- * admits and which TLS it speaks.  A bound such as `handshakeTimeout` that a deployment
- * should be able to tune belongs in the server policy beside `header-timeout`,
- * not in a bag.
+ * admits and which TLS it speaks.  A bound such as `handshakeTimeout` that a
+ * deployment should be able to tune belongs in the server policy beside
+ * `header-timeout`, not in a bag.
  *
  * Without TLS the listener is `node:http`, which reads none of these, so they
  * are dropped there too and the rule needs no condition.
