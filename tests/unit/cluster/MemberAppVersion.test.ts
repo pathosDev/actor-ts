@@ -559,6 +559,28 @@ describe('a peer\'s label survives the release that introduces the field (#843)'
     expect(labelHeldBy(node, subject)).toBe('2.4.0');
   });
 
+  test('a third party naming the subject\'s own run cannot overwrite its label either', async () => {
+    // The relay above names no run, so it is refused by the run rule before
+    // the restate rule is ever asked.  Here every record names the subject's
+    // run, and the only thing between a relay's copy and the held label is
+    // the rule itself: a relay may fill an empty slot, never restate a held
+    // one — at the same version or from an older copy alike.
+    const node = await startNode({ port: 59_591 });
+    const subject = new NodeAddress(SYSTEM, HOST, 59_592, 'subject-run');
+    const relay = new NodeAddress(SYSTEM, HOST, 59_593, 'relay-run');
+    const version = Date.now();
+
+    gossipClaim({ node, sender: relay, subject: relay, version, sequence: version });
+    gossipClaim({ node, sender: subject, subject, version, sequence: version, appVersion: '2.4.0' });
+
+    gossipClaim({ node, sender: relay, subject, version, sequence: version + 1, appVersion: '6.6.6' });
+    expect(labelHeldBy(node, subject)).toBe('2.4.0');
+
+    gossipClaim({ node, sender: relay, subject, version: version - 1, sequence: version + 2, appVersion: '6.6.5' });
+    expect(labelHeldBy(node, subject)).toBe('2.4.0');
+    expect(heldRunOf(node, subject)).toBe('subject-run');
+  });
+
   test('a label a third party put in an empty slot is corrected by the subject\'s own frame', async () => {
     // What separates "only the subject may restate" from fill-only: the label
     // never changes within one incarnation, but the first copy to fill a slot
