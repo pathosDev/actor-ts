@@ -192,7 +192,10 @@ export type RegionEvicted = {
   readonly kind: 'sharding.RegionEvicted';
   readonly coordinator: string;
   /**
-   * How long the coordinator had heard nothing when it decided, in ms.
+   * How long the coordinator had heard nothing when it decided, in ms —
+   * counted, for a region whose node was unreachable meanwhile, from the last
+   * sweep that found the node parked rather than from the region's last frame
+   * (`ShardCoordinator`'s `RegionInfo.lastSeenAtMs`).
    *
    * For the region's log line only, and deliberately: an operator reading
    * "evicted" on a node that is plainly healthy needs the number that

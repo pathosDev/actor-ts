@@ -139,12 +139,21 @@ type RegionInfo = {
   readonly proxy: boolean;
   readonly shards: Set<number>;
   /**
-   * When this region was last heard from at all — its registration, its beat,
-   * or any other frame that names it (#853).  Not `readonly`: it is the one
-   * field of a `RegionInfo` that moves without the entry being replaced.
+   * When this region's silence clock was last restarted (#853): when it was
+   * last heard from — its registration, its beat, or any other frame that
+   * names it — or, while its node is a member the cluster has not decided
+   * about, the last sweep that found it parked there.  Not `readonly`: it is
+   * the one field of a `RegionInfo` that moves without the entry being
+   * replaced.
    *
    * Refreshed by ordinary traffic as well as by the beat, so a busy region is
-   * never swept for having had nothing to say.
+   * never swept for having had nothing to say.  The parked sweep writes its own
+   * tick's time, which is what judges a region whose node comes back from that
+   * tick rather than from the silence it piled up while cut off — and which
+   * means that, after such a return, the silence an eviction reports (the
+   * warning, and `RegionEvicted.silentForMs`) counts from the last parked tick,
+   * not from the region's last frame.  An entry seeded from a snapshot starts
+   * at its seeding time; see {@link seededFromSnapshot}.
    */
   lastSeenAtMs: number;
   /**
