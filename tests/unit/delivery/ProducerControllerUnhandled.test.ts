@@ -173,6 +173,64 @@ describe('ProducerController — a message it has no arm for (#1470)', () => {
     await kit.system.terminate();
   });
 
+  test('a send whose confirm is not a function is declined while the window is full too', async () => {
+    // The check runs before the window is consulted, and that order is the
+    // decline: a queued send is dispatched later straight from the queue, with
+    // nothing on the way checking it again.  Behind the window-full return, a
+    // malformed send would be queued unchecked, take the next seq when a slot
+    // freed and be delivered with an outcome nobody can be told — the case
+    // above has room in its window, so it could not tell the two orders apart.
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create('producer-unhandled-confirm-shape-full', kitOptions);
+    const deadLetters = kit.createTestProbe();
+    kit.system.eventStream.subscribe(deadLetters, DeadLetter);
+    const settled: Array<readonly [string, string | null]> = [];
+    const neverAcknowledges = kit.createTestProbe();
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(neverAcknowledges as never)
+      .withResendTimeout(10_000)
+      .withWindowSize(1);
+    const producer = ReliableDelivery.producer<string>(kit.system, producerOptions);
+    const stringConfirm = { kind: 'reliable-delivery.send', body: 'string-confirm', confirm: 'not-a-function' };
+
+    producer.tell('first', (err) => { settled.push(['first', err === null ? null : err.message]); });
+    const first = await neverAcknowledges.receiveOne(4_000) as Delivery<string>;
+    // The window of one is full from here: the malformed send arrives to no
+    // room, and a well-formed one is queued behind it.
+    producer.ref.tell(stringConfirm as never);
+    producer.tell('queued', (err) => { settled.push(['queued', err === null ? null : err.message]); });
+
+    const letter = await letterCarrying(deadLetters, stringConfirm);
+    expect(letter.recipient.path.toString()).toBe(producer.ref.path.toString());
+
+    // The slot `first` frees goes to the well-formed send, as seq 2.
+    first.replyTo.tell({
+      kind: 'reliable-delivery.ack',
+      producerId: first.producerId,
+      incarnation: first.incarnation,
+      seq: first.seq,
+    });
+    const second = await neverAcknowledges.receiveOne(4_000) as Delivery<string>;
+    expect([second.body, second.seq]).toEqual(['queued', 2]);
+    second.replyTo.tell({
+      kind: 'reliable-delivery.ack',
+      producerId: second.producerId,
+      incarnation: second.incarnation,
+      seq: second.seq,
+    });
+    await awaitCondition(() => settled.length === 2, {
+      timeoutMs: 4_000,
+      label: 'both well-formed sends were settled',
+    });
+    expect(settled).toEqual([['first', null], ['queued', null]]);
+    await neverAcknowledges.expectNoMessage(200);
+
+    producer.stop();
+    await kit.system.terminate();
+  });
+
   test('the declined message becomes a dead letter naming the producer, and a warning says so', async () => {
     const logger = new RecordingLogger();
     const kit = TestKit.create('producer-unhandled-letter', TestKitOptions.create().withLogger(logger));
