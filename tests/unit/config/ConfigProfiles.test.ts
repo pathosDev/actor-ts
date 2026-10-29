@@ -351,6 +351,14 @@ describe('Config.load — how a file with a profile resolves its substitutions',
       .toThrow('Unresolved substitution: ${actor-ts.system.name}');
   });
 
+  /**
+   * The refusal's own words for `reference` in `file` — asserted whole,
+   * because the reference alone is in the generic "Unresolved substitution"
+   * message too, so a pin on it holds with the refusal gone.
+   */
+  const profilesReferenceRefusal = (reference: string, file: string): string =>
+    `\${${reference}} in ${file} reads the profiles block, which Config.load strips before it resolves the file.`;
+
   test('a substitution that reads the profiles block is refused by name', () => {
     // The block is stripped before the file resolves, so such a reference
     // could only ever fail — said here instead of as an unresolved one.
@@ -361,7 +369,37 @@ describe('Config.load — how a file with a profile resolves its substitutions',
       ].join('\n'),
     });
 
-    expect(() => load(filesOf(directory))).toThrow('${profiles.production.my-app.x}');
+    expect(() => load(filesOf(directory))).toThrow(
+      profilesReferenceRefusal('profiles.production.my-app.x', join(directory, 'application.conf')),
+    );
+  });
+
+  test('so is one naming the tree load resolves the file in, or the bare block', () => {
+    // `load` resolves a file's root and its active profile inside one tree,
+    // under the reserved key.  Unrefused, the first reads the root's own value
+    // out of it and the second splices that whole tree into itself.
+    for (const reference of ['profiles.root.my-app.x', 'profiles']) {
+      const directory = directoryWith({
+        'application.conf': ['my-app.x = 1', `my-app.y = \${${reference}}`].join('\n'),
+      });
+
+      expect(() => load(filesOf(directory))).toThrow(
+        profilesReferenceRefusal(reference, join(directory, 'application.conf')),
+      );
+    }
+  });
+
+  test('and so is one in the active profile', () => {
+    const directory = directoryWith({
+      'application.conf': [
+        'my-app.x = 1',
+        'profiles.production.my-app.y = ${profiles.root.my-app.x}',
+      ].join('\n'),
+    });
+
+    expect(() => load({ ...filesOf(directory), profile: 'production' })).toThrow(
+      profilesReferenceRefusal('profiles.root.my-app.x', join(directory, 'application.conf')),
+    );
   });
 });
 
