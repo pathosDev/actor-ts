@@ -381,11 +381,16 @@ export abstract class PersistentFSM<
    * as `toString` or `constructor` found an inherited function where a
    * transition belonged: `onInvalidTransition` never ran, and the command
    * failed in the persist instead, on a batch of one `undefined` event.
+   *
+   * {@link FSM_TIMEOUT_KEY} is an own key of a state's entry but holds the
+   * state timeout, not a transition, so it is no command's transition either:
+   * taken for one, a command of that kind ran the timeout's event at once.
    */
   private transitionFor(
     state: SName,
     kind: Command['kind'],
   ): FsmTransition<SName, Command, Event, Data> | undefined {
+    if (kind === FSM_TIMEOUT_KEY) return undefined;
     const transitions = this.transitions;
     if (!Object.hasOwn(transitions, state)) return undefined;
     const stateEntry = transitions[state];
