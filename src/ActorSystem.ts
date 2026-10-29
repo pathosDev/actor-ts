@@ -642,7 +642,10 @@ export class ActorSystem {
     // The very last step: the startup graph is sealed here, synchronously, so
     // nothing registered after `create` returns is ever part of it — and its
     // first task runs a microtask later, never inside `create` itself.
-    this.coordinatedStartup._start((reason, error) => this.onStartupFailed(reason, error));
+    this.coordinatedStartup._start(
+      (reason, error) => this.onStartupFailed(reason, error),
+      () => this.coordinatedShutdownHasBegun(),
+    );
   }
 
   /**
@@ -1066,6 +1069,19 @@ export class ActorSystem {
   }
 
   /**
+   * Whether a coordinated-shutdown run has ever begun — asked by the startup
+   * graph at each of its steps, and without building the extension, for the
+   * reason {@link coordinatedShutdownRunInProgress} gives.  "Ever", not "in
+   * flight": a run that ended and left the system up — no terminator in its
+   * last phase — still unbound and left, and a startup that finished after
+   * it would report ready a node that is on its way out.
+   */
+  private coordinatedShutdownHasBegun(): boolean {
+    return this.extensions.has(CoordinatedShutdownId)
+      && this.extensions.get(CoordinatedShutdownId).isRunning;
+  }
+
+  /**
    * Start the run `startRun` asks for — every phase with
    * {@link ActorSystemTerminateReason} for a `terminate()`, with the bootstrap's
    * reason for {@link _terminateFor}, the failure form with a
@@ -1108,8 +1124,11 @@ export class ActorSystem {
    * runs inside a coordinated-shutdown run, where `terminate()` deliberately
    * starts nothing, so it needs a way in that is not `terminate()`.
    *
-   * It abandons a startup still running, as `terminate()` does: a pipeline
-   * started by a signal reaches the system through here and nowhere else.
+   * It abandons a startup still running, as `terminate()` does.  A pipeline
+   * started by a signal never calls `terminate()`; the startup meets such a
+   * run at its own next step ({@link coordinatedShutdownHasBegun}), and this
+   * is where a task that takes no further step — one still waiting inside
+   * its budget — is aborted.
    */
   _teardown(): Promise<void> {
     if (this._terminated) return Promise.resolve();

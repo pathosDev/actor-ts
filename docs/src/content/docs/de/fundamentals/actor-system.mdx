@@ -122,10 +122,21 @@ Shutdown](/de/fundamentals/coordinated-shutdown/) mit einem
 `StartupFailedReason` aus, und `runUntilTerminated()` rejected danach
 mit demselben Fehler — eine `main`, die darauf wartet, endet also von
 selbst mit einem Status ungleich null, und der Orchestrator startet
-einen neuen Prozess.  Ein `terminate()`, während der Start noch läuft,
-bricht ihn dagegen ab: die Signale der laufenden Tasks brechen ab und
-`whenReady()` rejected, aber nichts ist fehlgeschlagen, also läuft kein
-eigener Shutdown.
+einen neuen Prozess.
+
+**Ein Shutdown während des Starts bricht ihn dagegen ab**, denn nichts
+ist fehlgeschlagen: `whenReady()` rejected mit einem Abbruchfehler, die
+späteren Phasen laufen nicht, nichts wird oberhalb von debug geloggt,
+und es läuft kein eigener Shutdown — ein SIGTERM, während das System
+startet, beendet den Prozess also als Shutdown und nicht als
+gescheiterten Start.  `terminate()` bricht sofort ab: die Signale der
+laufenden Tasks brechen ab, bevor seine Pipeline beginnt.  Einen Lauf
+des Coordinated Shutdown, den etwas anderes gestartet hat — ein Signal,
+ein expliziter `run()`-Aufruf —, bemerkt der Start bei seinem nächsten
+Schritt: Schlägt dann ein Task fehl, überschreitet er sein Budget oder
+wird eine Phase fertig, wird der Start abgebrochen, statt zu scheitern
+oder weiterzulaufen, und das Teardown der Pipeline bricht ab, was dann
+noch läuft.
 
 Der Graph ist versiegelt, sobald `create` zurückkehrt.
 `system.extension(CoordinatedStartupId).addTask(...)` wirft danach und
