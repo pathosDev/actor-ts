@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { DEFAULT_MAX_FRAME_BYTES, extractFrames } from '../../../../src/io/broker/TcpFraming.js';
 import { TcpSocketActor } from '../../../../src/io/broker/TcpSocketActor.js';
 import { TcpSocketOptions } from '../../../../src/io/broker/TcpSocketOptions.js';
 import type { TcpSocketOptionsType } from '../../../../src/io/broker/TcpSocketOptions.js';
@@ -189,5 +190,43 @@ describe('TcpSocketActor — lines framing across chunks (#610)', () => {
     harness.feedChunk(encoder.encode('\n'));
     expect(harness.delivered).toEqual(['abcdefgh']);
     expect(harness.pendingBytes()).toBe(0);
+  });
+});
+
+/** A `length-prefixed` header announcing `length` payload bytes, and no payload. */
+function lengthHeader(length: number): Uint8Array {
+  const header = new Uint8Array(4);
+  new DataView(header.buffer).setUint32(0, length, false);
+  return header;
+}
+
+// The dispatch every TCP actor and `TcpInboundBuffer` go through.  The cap is
+// checked against the declared length, so a header past it is refused before
+// any payload is waited for — but only if the cap handed to the extractor is
+// the configured one.  Read off a field that no longer exists, or not read at
+// all, it is the 16 MiB default, and every frame below that is taken.
+describe('extractFrames — a length-prefixed framing applies its own maxFrameBytes', () => {
+  test('a declared length past the configured cap is refused, though the default would take it', () => {
+    const extraction = extractFrames(lengthHeader(100), { kind: 'length-prefixed', maxFrameBytes: 64 });
+    expect(extraction.overflow).toBe('frame exceeds maxFrameBytes=64');
+    expect(extraction.frames).toEqual([]);
+    expect(extraction.consumed).toBe(0);
+    expect(100).toBeLessThan(DEFAULT_MAX_FRAME_BYTES);
+  });
+
+  test('a frame at the configured cap is taken', () => {
+    const frame = new Uint8Array(4 + 64);
+    frame.set(lengthHeader(64));
+    const extraction = extractFrames(frame, { kind: 'length-prefixed', maxFrameBytes: 64 });
+    expect(extraction.overflow).toBeUndefined();
+    expect(extraction.frames).toHaveLength(1);
+    expect(extraction.consumed).toBe(68);
+  });
+
+  test('an unset cap is the shipped default', () => {
+    const atDefault = extractFrames(lengthHeader(DEFAULT_MAX_FRAME_BYTES), { kind: 'length-prefixed' });
+    expect(atDefault.overflow).toBeUndefined();
+    const pastDefault = extractFrames(lengthHeader(DEFAULT_MAX_FRAME_BYTES + 1), { kind: 'length-prefixed' });
+    expect(pastDefault.overflow).toBe(`frame exceeds maxFrameBytes=${DEFAULT_MAX_FRAME_BYTES}`);
   });
 });
