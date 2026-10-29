@@ -1294,6 +1294,63 @@ describe('with exit-process on, a run for a node that could not join never exits
   });
 });
 
+// A run whose reason says this node was told to go — its own downing
+// decision, a join that could not complete, a signal — is one nobody answers:
+// the trigger fires it and moves on.  So when a phase with `recover = false`
+// halts it short of the terminator, the run answers the halt itself, the way
+// the signal path always has: an ERROR line, then the teardown the run never
+// reached.  Left up, a node its own downing decision removed keeps its
+// entities and singletons running beside the side that won (#1456).
+describe('a halted run for a node that was told to go still ends in the teardown', () => {
+  const halting = { phases: { 'service-stop': { recover: false } } };
+
+  test.each([
+    ['its own downing decision', ClusterDowningReason.instance],
+    ['a join that could not complete', ClusterJoinUnsuccessfulReason.instance],
+  ] as const)('%s: the halt is reported, and the system is torn down', async (_trigger, reason) => {
+    const { system, log } = withRecordedLog(`halted-${reason.name}`, halting);
+    const shutdown = system.extension(CoordinatedShutdownId);
+    shutdown.addTask(Phases.ServiceStop, 'throws', () => { throw new Error('boom'); });
+
+    expect(await settled(shutdown.run(reason))).toBe('rejected: boom');
+
+    await awaitCondition(() => system.isTerminated, {
+      label: 'the halted run stood in for the terminator',
+      timeoutMs: 3_000,
+    });
+    expect(reportsHalt(log)).toBe(true);
+  });
+
+  test('with terminate-actor-system = false the system stays up, and the halt is still reported', async () => {
+    // The rule the signal path keeps: off, the pipeline never takes the system
+    // down, and a halt on the way changes nothing about whose system it is.
+    const { system, log } = withRecordedLog('halted-downing-no-terminator', {
+      ...halting,
+      'terminate-actor-system': false,
+    });
+    const shutdown = system.extension(CoordinatedShutdownId);
+    shutdown.addTask(Phases.ServiceStop, 'throws', () => { throw new Error('boom'); });
+
+    expect(await settled(shutdown.run(ClusterDowningReason.instance))).toBe('rejected: boom');
+
+    expect(reportsHalt(log)).toBe(true);
+    expect(acceptsSpawns(system)).toBe(true);
+    await system.terminate();
+  });
+
+  test('a run() of your own, with any other reason, leaves the system as the halt found it', async () => {
+    const { system } = withRecordedLog('halted-own-run', halting);
+    const shutdown = system.extension(CoordinatedShutdownId);
+    shutdown.addTask(Phases.ServiceStop, 'throws', () => { throw new Error('boom'); });
+
+    expect(await settled(shutdown.run(UnknownReason.instance))).toBe('rejected: boom');
+
+    expect(acceptsSpawns(system)).toBe(true);
+    expect(system.isTerminated).toBe(false);
+    await system.terminate();
+  });
+});
+
 // The run stays in flight until its exit has happened — or will not happen.
 // The exit flushes the dead-letter queue and the log sinks first, and a
 // `terminate()` arriving during that flush must find the run in flight and
