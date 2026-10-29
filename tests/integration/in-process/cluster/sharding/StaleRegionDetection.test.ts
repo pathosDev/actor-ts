@@ -215,6 +215,12 @@ class FaultInjectingTransport extends InMemoryTransport {
    */
   dropRegisters = false;
   /**
+   * Drop the eviction notices this node's coordinator sends — after recording
+   * them in {@link evictionNotices} — so the evicted region never learns it
+   * was evicted: the single-shot, unacknowledged frame lost on the way.
+   */
+  dropEvictions = false;
+  /**
    * Peers this node sends nothing to — cluster heartbeats and gossip included.
    * Listing each side in the other's set is a full partition between the two.
    */
@@ -236,6 +242,7 @@ class FaultInjectingTransport extends InMemoryTransport {
     if (this.cutOffFrom.has(to.toString())) return;
     if (kind === 'sharding.RegionHeartbeat' && this.dropBeats) return;
     if (kind === 'sharding.Register' && this.dropRegisters) return;
+    if (kind === 'sharding.RegionEvicted' && this.dropEvictions) return;
     super.send(to, message);
   }
 
@@ -1039,5 +1046,53 @@ describe('ClusterSharding.isRegistered across an eviction (#853, #1465)', () => 
       label: 'isRegistered read true again once the new registration was acknowledged',
     });
     expect(regionOn(seed, otherAddress)).toBeDefined();
+  }, 30_000);
+
+  test('a region whose eviction notice was lost registers again on its next beat', async () => {
+    // The notice is single-shot and unacknowledged.  Lost, it leaves the region
+    // believing it is registered — `isRegistered` true, its shard and that
+    // shard's entities still running — while the coordinator holds no entry for
+    // it and has already given the shard to somebody else.  Nothing on the
+    // region side will ever notice: the node is up and the leader has not
+    // moved.  A beat from a region it does not know is how the coordinator
+    // can, and it answers one with a request to register.
+    const { seed, other, shardId, entityId } = await twoNodesHostingOneShard(
+      'stale-region-lost-notice', 62_300, true, true,
+    );
+    await awaitFirstBeat(seed, other);
+    const otherAddress = other.cluster.selfAddress;
+
+    seed.transport.dropEvictions = true;
+    other.transport.dropBeats = true;
+    await awaitCondition(() => regionOn(seed, otherAddress) === undefined, {
+      timeoutMs: 4_000,
+      label: 'the coordinator evicted the mute region',
+    });
+    expect(seed.transport.evictionNotices.map((notice) => notice.to)).toEqual([otherAddress.toString()]);
+    // Nothing reached the region: it still claims the registration, and still
+    // serves the shard the coordinator has re-homed.
+    expect(other.cluster.sharding.isRegistered(TYPE_NAME)).toBe(true);
+    expect(hostsEntity(other, shardId, entityId)).toBe(true);
+    expect(coordinatorState(seed).shardHome.get(shardId)).toBe(regionKeyOn(seed, seed.cluster.selfAddress));
+
+    other.transport.dropBeats = false;
+    const resumedAt = Date.now();
+    await awaitCondition(() => regionOn(seed, otherAddress) !== undefined, {
+      timeoutMs: 4_000,
+      label: 'the region registered again once one of its beats reached the coordinator',
+    });
+    // One beat interval and a round trip — not a membership event, which never
+    // comes for a node that stayed up.
+    expect(Date.now() - resumedAt).toBeLessThan(HEARTBEAT_INTERVAL_MS * 10);
+    expect(other.cluster.sharding.isRegistered(TYPE_NAME)).toBe(true);
+
+    // And the second home ends: the registration still claimed the shard, the
+    // coordinator kept it where it had put it, and the stale copy was handed off.
+    await awaitCondition(() => !hostsShard(other, shardId), {
+      timeoutMs: 4_000,
+      label: 'the re-registered region gave up its stale copy of the re-homed shard',
+    });
+    expect(ownedShards(other).has(shardId)).toBe(false);
+    expect(coordinatorState(seed).shardHome.get(shardId)).toBe(regionKeyOn(seed, seed.cluster.selfAddress));
   }, 30_000);
 });

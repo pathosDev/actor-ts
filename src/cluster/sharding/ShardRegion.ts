@@ -71,6 +71,7 @@ import {
   isShardingMessage,
   type RegisterRegion,
   type RegisterRefused,
+  type RegistrationRequest,
   type RegionEvicted,
   type RegionHeartbeat,
   type RegionTerminated,
@@ -1374,6 +1375,7 @@ export class ShardRegion<TMessage = unknown>
     match(message)
       .with({ kind: 'sharding.RegisterAcknowledgment' }, (m) => this.onRegisterAcknowledgment(m, peer))
       .with({ kind: 'sharding.RegisterRefused' }, (m) => this.onRegisterRefused(m, peer))
+      .with({ kind: 'sharding.RegistrationRequest' }, (m) => this.onRegistrationRequest(m, peer))
       .with({ kind: 'sharding.RegionEvicted' }, (m) => this.onRegionEvicted(m, peer))
       .with({ kind: 'sharding.ShardHome' }, (m) => this.onShardHome(m, peer))
       .with({ kind: 'sharding.HandOff' }, (m) => this.onHandOff(m, peer))
@@ -1678,6 +1680,28 @@ export class ShardRegion<TMessage = unknown>
       + `region was still hosting; their entities stop here and stay stopped until the configured `
       + `numShards agrees with the coordinator's`,
     );
+  }
+
+  /**
+   * The coordinator holds no registration for this region and asks for one
+   * (#853, #849) — after a restart that kept the leader where it was, after
+   * seeding it from a snapshot, or on a beat from a region it had evicted
+   * without the region ever hearing so.  None of those is an event this side
+   * observes, so without the request the region would never register again.
+   *
+   * Answered by {@link ensureRegistered}, which is what every cluster event
+   * already runs: it re-targets the coordinator from the leader this node sees
+   * and sends the ordinary `Register`, buffered shards re-asked and the retry
+   * armed, so a request that finds the region registered costs one harmless
+   * round trip.  A refused region stays silent, exactly as its own register loop
+   * does — only a leader change lifts a refusal.  Gated like every other
+   * directive, on the coordinator's node: the answer is addressed to this
+   * node's own coordinator, so a request from anybody else could only make the
+   * region repeat itself, and it is refused rather than obeyed.
+   */
+  private onRegistrationRequest(message: RegistrationRequest, peer: NodeAddress | null): void {
+    if (!this.fromCoordinator(message, peer)) return;
+    this.ensureRegistered();
   }
 
   /**

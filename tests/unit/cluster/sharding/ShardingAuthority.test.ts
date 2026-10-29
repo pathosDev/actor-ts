@@ -44,7 +44,7 @@ import { SystemGroups, shardRegionName, systemActorPath } from '../../../../src/
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import type { ActorRef } from '../../../../src/ActorRef.js';
 import type { WireMessage } from '../../../../src/cluster/Protocol.js';
-import { regionSegments } from '../../../util/SystemPaths.js';
+import { coordinatorSegments, regionSegments } from '../../../util/SystemPaths.js';
 import { awaitCondition, sleep } from '../../../util/AwaitCondition.js';
 
 type WorkCommand = { id: string; kind: 'work' };
@@ -350,7 +350,49 @@ describe('ShardRegion coordinator authority (#584)', () => {
       label: 'the region still owns its shard and routes to it',
     });
   });
+
+  test('a forged RegistrationRequest does not make the region register again', async () => {
+    // The mildest kind on the list (#853): honoured, it only makes the region
+    // repeat its registration to its own coordinator.  Still a directive, and
+    // still the coordinator's alone — anybody else could make every region of
+    // a type re-register on demand.  The coordinator stamps an entry each time
+    // its region registers, and nothing else in this idle fixture touches it,
+    // so an unchanged stamp is a registration that did not happen.
+    const victim = await startVictim('authority-registration-request', 62_160);
+    const evil = await attacker('evil-registration-request', 62_161);
+    const registeredAt = (): number | undefined => coordinatorEntry(victim)?.lastSeenAtMs;
+    const before = registeredAt();
+    expect(before).toBeDefined();
+    const request = { kind: 'sharding.RegistrationRequest', coordinator: '/system/cluster/sharding/coordinator-entity' };
+
+    forge(evil, victim, victim.regionPath, request);
+    await awaitCondition(() => registeredAt() !== before, {
+      timeoutMs: 300,
+      intervalMs: 10,
+      label: 'a registration answering the forged request (not expected)',
+    }).then(
+      () => { throw new Error('the region registered again on a forged request'); },
+      () => { /* the window ran out with nothing registered */ },
+    );
+
+    // The positive control, so the stamp is known to move: the same request
+    // from the coordinator's own node is answered.
+    tellAsCoordinator(victim, request as ShardingMessage);
+    await awaitCondition(() => registeredAt() !== before, {
+      timeoutMs: 4_000,
+      label: 'the region registered again when its own coordinator asked',
+    });
+  });
 });
+
+/** The coordinator's registry entry for the victim's own region. */
+function coordinatorEntry(victim: Victim): { readonly lastSeenAtMs: number } | undefined {
+  const resolved = victim.system._resolvePath(coordinatorSegments(victim.system.name, TYPE_NAME));
+  if (resolved.isNone()) return undefined;
+  const cell = (resolved.value as unknown as { getCell?: () => { actor?: unknown } }).getCell?.();
+  const regions = (cell?.actor as { regions?: Map<string, { lastSeenAtMs: number }> } | undefined)?.regions;
+  return regions === undefined ? undefined : Array.from(regions.values())[0];
+}
 
 describe('ShardRegion handoff ownership (#584)', () => {
   test('an authentic HandOff for a shard this region does not own changes nothing', async () => {
