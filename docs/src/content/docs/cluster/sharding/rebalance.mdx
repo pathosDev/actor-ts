@@ -115,6 +115,16 @@ the node is healthy, so it should be hosting shards.  A region that is
 really gone, or wedged, never processes the notice, and the eviction
 stands exactly as before.
 
+The notice itself can be lost, and a live region that never receives it
+believes it is still registered — it keeps the shards that were just
+re-homed, and `isRegistered` keeps reading `true` on its node.  Its beat
+is what gives it away: the next one names a region the coordinator no
+longer holds, and the coordinator answers a beat like that with a
+`RegistrationRequest`.  The region registers again, still claiming the
+shards it kept; the coordinator leaves them where it put them and hands
+the stale copies off.  So a lost notice costs one `heartbeat-interval`,
+not an exile.
+
 The notice cannot start a loop.  A re-registered region is a **new**
 registry entry, one that has beaten to this coordinator zero times, and
 a registered region that has never beaten is never swept — so a region
@@ -122,6 +132,21 @@ whose beats are being lost wholesale is evicted once, not once every
 `stale-after`.  Only an entry seeded from a coordinator-state snapshot
 that never registers in the new term is swept without a beat, once it
 has been silent for `stale-after` from its seeding.
+
+A seeded entry whose region *is* there leaves that state one round trip
+in, because the coordinator does not wait for the region to register of
+its own accord: every entry it seeds is sent a `RegistrationRequest`, and
+the region answers with its ordinary `Register`.  That matters most after
+a **coordinator restart** — its supervisor rebuilds it after one of its
+handlers throws, a user `AllocationStrategy` throwing out of `allocate`
+included — which moves no leader and so gives no region a reason of its
+own to register.  The restarted coordinator also asks every region the
+instance before it knew, so the same holds without a coordinator-state
+store, where a restart used to leave the type headless: no region known,
+no shard placeable, nothing delivered that needed the coordinator.  The
+request goes only to regions the coordinator has a reason to believe in,
+never to every member — a node that runs nothing for the type would count
+it as a refused envelope.
 
 ## Members that are not up
 
@@ -271,8 +296,8 @@ election.
 A `HandOff` stops every entity in a shard, so the region checks
 **where it came from** before acting on it — not just what it says.
 The rule covers every directive only the coordinator may issue:
-`HandOff`, `ShardHome`, `RememberedEntities`, `ShardMapUpdate` and
-`RegisterAcknowledgment`.
+`HandOff`, `ShardHome`, `RememberedEntities`, `ShardMapUpdate`,
+`RegionEvicted`, `RegistrationRequest` and `RegisterAcknowledgment`.
 
 Two conditions have to hold:
 
@@ -310,6 +335,18 @@ The coordinator does not stall on the refusal. It only ever sends
 means the two disagree about ownership — and `handOffTimeoutMs`
 below is exactly the fallback for that, force-reallocating the shard
 instead of waiting forever.
+
+One region answers instead of refusing: one whose registration the
+coordinator refused over its shard count. It gave up everything it
+hosted when the refusal reached it and is placed nothing afterwards,
+so whatever the coordinator still lists under it — the shards a
+coordinator-state snapshot seeded it with before its `Register` was
+refused — nothing of it runs there. It answers such a `HandOff` with
+`HandOffComplete` at once, or, for a shard its release is still
+stopping, as soon as that stop has finished, so those shards move
+without sitting out `handOffTimeoutMs`. The coordinator, for its part,
+ends a hand-off only on the word of the region it sent it to: a
+`HandOffComplete` from any other region ends nothing.
 
 :::note[This is authorization, not authentication]
 The check says *"only the coordinator's node"*, and on a cluster
@@ -458,9 +495,11 @@ in `LeastShardAllocationStrategy`'s view receives new shards as
 they're allocated, but doesn't get existing shards moved *into* it
 just because it's quiet.
 
-For an "always-balanced" effect, restart the coordinator
-periodically (which re-runs allocation from scratch) — or
-configure `rebalanceThreshold: 1` to react to any imbalance.
+For an "always-balanced" effect, configure `rebalanceThreshold: 1`
+to react to any imbalance.  Restarting the coordinator does not
+re-run allocation from scratch: the restarted coordinator asks its
+regions to register again, each claims the shards it hosts, and the
+map comes back as it was.
 
 import { Aside } from '@astrojs/starlight/components';
 

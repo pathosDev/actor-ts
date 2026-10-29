@@ -264,7 +264,7 @@ vollständig konvergierter Cluster kann sehr wohl eine Region halten, die
 sich noch nicht registriert hat.
 
 ```ts
-if (cluster.sharding.isRegistered('cart')) { /* the coordinator knows this region */ }
+if (cluster.sharding.isRegistered('cart')) { /* der Coordinator hat die Region dieser Node bestätigt */ }
 ```
 
 Synchron und gratis, wie [`shardMap`](#der-karte-folgen), und auf demselben
@@ -272,13 +272,37 @@ Weg gespeist — aus einem `ShardRegionRegistered`-Event, das die Region
 dieser Node publisht, sobald der Coordinator sie bestätigt. `false` für
 einen Typ, den diese Node nie gestartet hat; für einen, dessen
 Registrierung wegen eines `numShards`-Mismatch abgelehnt wurde; für
-einen, dessen Region der Coordinator [wegen Verstummens
-entfernt](/de/reference/configuration/#eine-verstummte-region-erkennen) hat,
-bis ihre neue Registrierung bestätigt ist; und für einen, dessen Region
-gestoppt wurde. In jedem dieser Fälle platziert der Coordinator keinen
-Shard des Typs auf dieser Node — eine Readiness-Probe, die auf diesem
-Signal aufbaut, nimmt die Node also aus der Rotation, statt sie als bereit
-zu melden.
+einen, dessen Region mitgeteilt bekam, dass sie [wegen Verstummens
+entfernt](/de/reference/configuration/#eine-verstummte-region-erkennen)
+wurde, bis ihre neue Registrierung bestätigt ist; und für einen, dessen
+Region gestoppt wurde. In jedem dieser Fälle platziert der Coordinator
+keinen Shard des Typs auf dieser Node — eine Readiness-Probe, die auf
+diesem Signal aufbaut, nimmt die Node also aus der Rotation, statt sie als
+bereit zu melden.
+
+Es ist die Sicht dieser Node auf ihre Registrierung, gebaut aus dem, was
+ihrer Region mitgeteilt wurde, und zwei Situationen sollte man genau
+kennen:
+
+- **Ein Leader-Wechsel macht es nicht `false`.** Jede Region registriert
+  sich beim Coordinator des neuen Leaders erneut, und die Node gilt
+  währenddessen weiter als registriert — eine Wahl nimmt also nicht alle
+  Nodes gleichzeitig aus der Rotation. Das gilt auch dann, wenn der neue
+  Leader für den Typ gar keinen Coordinator betreibt: Der Wert kann das
+  nicht von einer Neuregistrierung unterscheiden, die noch unterwegs ist.
+  Eine Ablehnung des alten Leaders verfällt mit ihm — vom Leader-Wechsel
+  an, bis der neue Coordinator antwortet, ist `registrationRefusal` `null`
+  und der Typ gilt als nicht registriert: wartend, nicht abgelehnt.
+- **Von einer Entfernung erfährt die Region durch die Mitteilung des
+  Coordinators**, einen einzelnen, unbestätigten Frame. Geht er verloren,
+  behält die Region ihre Shards, und der Wert bleibt `true`, während der
+  Coordinator keinen Eintrag für die Region mehr hält — bis ihr nächster
+  Beat den Coordinator erreicht, der einen Beat von einer Region, die er
+  nicht kennt, mit der Aufforderung beantwortet, sich zu registrieren. Das
+  Fenster ist ein `heartbeat-interval` plus ein Round-Trip, und die erneute
+  Registrierung nimmt die veralteten Kopien der umverteilten Shards auf der
+  Region herunter. Ohne Stale-Region-Erkennung wird nichts entfernt, ein
+  solches Fenster gibt es dann nicht.
 
 Diese Probe liefert das Framework mit. Nenne den Typ, und `Cluster.join`
 installiert für ihn einen Readiness-Check `shard-region:cart`, dessen
@@ -345,9 +369,11 @@ if (refusal) {
 
 `null`, wenn es keine Ablehnung gibt, und geleert, sobald eine spätere
 Registrierung angenommen wird — ein Deployment, das den Mismatch behebt,
-meldet also keinen mehr. Dieselbe Ablehnung wird als Cluster-Event
-`ShardRegionRegistrationRefused` publisht, für Code, der reagieren statt
-pollen will.
+meldet also keinen mehr — und wenn der Leader wechselt: Eine Ablehnung ist
+das Urteil des Coordinators, der sie ausgesprochen hat, und bis der
+Coordinator des neuen Leaders antwortet, gibt es keine zu melden. Dieselbe
+Ablehnung wird als Cluster-Event `ShardRegionRegistrationRefused` publisht,
+für Code, der reagieren statt pollen will.
 
 **Alarmieren sollte man auf den Zähler**, der ohne eigenen Code auskommt:
 

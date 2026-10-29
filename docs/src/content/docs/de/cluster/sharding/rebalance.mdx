@@ -129,6 +129,17 @@ Reparatur: Der Node ist gesund, also soll er Shards hosten. Eine
 Region, die wirklich weg oder verklemmt ist, verarbeitet die Meldung
 nie, und die Entfernung bleibt genau wie bisher bestehen.
 
+Die Meldung selbst kann verloren gehen, und eine lebende Region, die sie
+nie erhält, hält sich weiter für registriert — sie behält die Shards, die
+gerade umverteilt wurden, und `isRegistered` liefert auf ihrem Node
+weiter `true`. Verraten wird sie durch ihren Schlag: Der nächste nennt
+eine Region, die der Koordinator nicht mehr führt, und einen solchen
+Schlag beantwortet der Koordinator mit einem `RegistrationRequest`. Die
+Region registriert sich neu und beansprucht dabei weiter die Shards, die
+sie behalten hat; der Koordinator lässt sie, wo er sie hingelegt hat, und
+lässt die veralteten Kopien per Hand-off abgeben. Eine verlorene Meldung
+kostet also ein `heartbeat-interval`, kein Exil.
+
 Die Meldung kann keine Schleife auslösen. Eine neu registrierte Region
 ist ein **neuer** Registry-Eintrag, der zu diesem Koordinator null Mal
 geschlagen hat, und eine registrierte Region, die nie geschlagen hat,
@@ -137,6 +148,24 @@ gehen, wird also einmal entfernt und nicht alle `stale-after` erneut.
 Nur ein aus einem Koordinator-Snapshot übernommener Eintrag, der sich im
 neuen Term nie registriert, wird ohne Schlag entfernt, sobald er seit
 seiner Übernahme `stale-after` lang still war.
+
+Ein übernommener Eintrag, dessen Region *da* ist, verlässt diesen
+Zustand nach einem Round-Trip, denn der Koordinator wartet nicht darauf,
+dass sich die Region von selbst registriert: Jeder Eintrag, den er aus
+dem Snapshot übernimmt, bekommt einen `RegistrationRequest`, und die
+Region antwortet mit ihrem gewöhnlichen `Register`. Am meisten zählt das
+nach einem **Neustart des Koordinators** — sein Supervisor baut ihn neu
+auf, wenn einer seiner Handler wirft, eine eigene `AllocationStrategy`,
+die aus `allocate` wirft, eingeschlossen —, denn der bewegt keinen
+Leader und gibt damit keiner Region einen eigenen Grund, sich zu
+registrieren. Der neu gestartete Koordinator fragt außerdem jede Region,
+die die Instanz vor ihm kannte; dasselbe gilt also auch ohne
+Koordinator-State-Store, wo ein Neustart den Typ früher kopflos
+zurückließ: keine Region bekannt, kein Shard platzierbar, nichts
+zugestellt, das den Koordinator brauchte. Die Anfrage geht nur an
+Regionen, an die der Koordinator einen Grund hat zu glauben, nie an jedes
+Mitglied — ein Node, der für den Typ nichts betreibt, würde sie als
+abgewiesenes Envelope zählen.
 
 ## Mitglieder, die nicht up sind
 
@@ -309,8 +338,8 @@ Ein `HandOff` stoppt jede Entity eines Shards, deshalb prüft die
 Region **woher er kam**, bevor sie ihn ausführt — nicht nur, was
 darin steht. Die Regel gilt für jede Direktive, die ausschließlich
 der Koordinator aussprechen darf: `HandOff`, `ShardHome`,
-`RememberedEntities`, `ShardMapUpdate` und
-`RegisterAcknowledgment`.
+`RememberedEntities`, `ShardMapUpdate`, `RegionEvicted`,
+`RegistrationRequest` und `RegisterAcknowledgment`.
 
 Zwei Bedingungen müssen erfüllt sein:
 
@@ -352,6 +381,19 @@ nennt — eine Verweigerung heißt also, dass die beiden sich über den
 Besitz uneins sind, und genau dafür ist `handOffTimeoutMs` weiter
 unten der Rückfallpfad: Der Shard wird zwangsweise neu allokiert,
 statt endlos zu warten.
+
+Eine Region antwortet, statt zu verweigern: eine, deren Registrierung
+der Koordinator wegen ihrer Shard-Anzahl abgelehnt hat. Sie hat alles,
+was sie hostete, aufgegeben, als die Ablehnung sie erreichte, und
+bekommt danach nichts mehr zugewiesen — was immer der Koordinator noch
+unter ihr führt, die Shards, die ein Koordinator-Snapshot ihr vor der
+Ablehnung ihres `Register` zugewiesen hat, läuft dort also nicht. Einen
+solchen `HandOff` beantwortet sie sofort mit `HandOffComplete`, oder,
+für einen Shard, den ihre Freigabe noch stoppt, sobald dieser Stopp
+abgeschlossen ist — diese Shards ziehen also um, ohne
+`handOffTimeoutMs` abzusitzen. Der Koordinator seinerseits beendet einen
+Hand-off nur auf das Wort der Region, an die er ihn geschickt hat: Ein
+`HandOffComplete` von irgendeiner anderen Region beendet nichts.
 
 :::note[Das ist Autorisierung, keine Authentifizierung]
 Die Prüfung sagt *„nur der Node des Koordinators"*, und in einem
@@ -512,10 +554,12 @@ leerlaufender Node bekommt aus Sicht von
 werden, aber er bekommt keine existierenden Shards in sich
 *verschoben*, nur weil er ruhig ist.
 
-Für einen "immer-balanciert"-Effekt starte den Koordinator
-periodisch neu (was Allokation von Null neu laufen lässt) — oder
-konfiguriere `rebalanceThreshold: 1`, um auf jedes Ungleichgewicht
-zu reagieren.
+Für einen "immer-balanciert"-Effekt konfiguriere
+`rebalanceThreshold: 1`, um auf jedes Ungleichgewicht zu reagieren.
+Ein Neustart des Koordinators lässt die Allokation nicht von Null
+neu laufen: Der neu gestartete Koordinator bittet seine Regionen, sich
+erneut zu registrieren, jede beansprucht die Shards, die sie hostet,
+und die Karte kommt so zurück, wie sie war.
 
 import { Aside } from '@astrojs/starlight/components';
 
