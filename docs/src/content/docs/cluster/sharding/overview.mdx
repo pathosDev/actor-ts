@@ -767,6 +767,46 @@ owner.  This avoids messages racing past a half-moved entity.
 See [Rebalance](/cluster/sharding/rebalance/) for the
 full protocol.
 
+## Leaving the cluster
+
+`cluster.leave()` hands this node's shards off before it tells
+anyone it is going, and waits for that:
+
+1. Every region the node started stops its shards and their
+   entities.  Each entity finishes the message it is handling — a
+   persistent entity's write lands — and runs `postStop`; then the
+   region tells the coordinator it is gone, which re-homes its
+   shards.
+2. The node's coordinators stop after its regions, so a coordinator
+   still active on a leaving leader hears its own regions go and
+   re-homes their shards at once — remembered entities restart on
+   their new home without being sent anything.
+3. Only then does the node move to `leaving` and tell its peers.
+
+So no peer re-homes a shard while it still runs here: a shard never
+has two live homes, and a persistent entity never a second writer.
+The wait is bounded by each type's `hand-off-timeout`.  A region that
+has not stopped by then — an entity stuck in its handler holds it
+up — is told to stop at once, a warning names it, and the leave goes
+on without it; until it has gone, that one entity may still run when
+its new home starts it.
+
+The coordinated-shutdown pipeline does the same in its
+`cluster-sharding-shutdown-region` phase, ahead of `cluster-leave`.
+A node its own downing decision took out, or one that gave its join
+up, leaves at once instead and stops its sharding beside the
+departure: the peers that downed it do not wait for a hand-off.
+
+Once `leave()` resolves, the regions' and coordinators' names are
+free again, so a re-join on the same `ActorSystem` starts the same
+types through the new cluster's `sharding`.  The left cluster's
+facade refuses to start anything: actors started through it would be
+bound to a cluster that is gone.
+
+A message on its way to the leaving node while the hand-off runs is
+not carried over to the new home — it is lost, as it is to any region
+that stops.  The hand-off moves shards, not messages in flight.
+
 ## State across failover
 
 Sharded entities are subject to the same restart semantics as
