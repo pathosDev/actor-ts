@@ -168,8 +168,12 @@ export class ClusterSharding {
    * So each incarnation of a system's cluster gets a facade of its own, and
    * repeated reads through one cluster still return one instance.  Keyed
    * weakly at both levels, so a facade goes with the cluster it belongs to.
-   * Regions a left cluster's facade started are not carried over: they belong
-   * to that cluster and stay bound to it.
+   * The regions and coordinators a left cluster's facade started are not
+   * carried over: they belong to that cluster, stay bound to it, and keep
+   * their well-known names — so starting the same type again through the new
+   * cluster's facade fails on the name, where it used to hand back the left
+   * incarnation's region, which delivered nothing while `isRegistered` still
+   * read `true`.
    */
   static get(system: ActorSystem, cluster: Cluster): ClusterSharding {
     let byCluster = ClusterSharding.instances.get(system);
