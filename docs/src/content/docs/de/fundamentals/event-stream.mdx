@@ -276,7 +276,10 @@ keine Mailbox gibt:
   dieses Event; er bleibt abonniert, und alle anderen erhalten das
   Event trotzdem.  Ein zurückgegebenes Promise wird nicht abgewartet,
   und seine Rejection wird genauso geloggt, statt als Unhandled
-  Rejection aufzuschlagen.
+  Rejection aufzuschlagen.  Das gilt für alles, was geworfen wird, wie
+  für jeden Fehler, den der Bus abfängt: Kann der Logger den Wert nicht
+  darstellen — etwa einen Error, dessen `message`-Getter wirft —, wird
+  die Warnung ohne ihn geschrieben.
 - **Kein Actor-Stopp beendet ein Callback-Abo; das Ende des Systems
   schon.**  Der Callback sieht den ganzen Shutdown, jedes
   `ActorStopped` eingeschlossen, und wird nicht mehr aufgerufen, sobald

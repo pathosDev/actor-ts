@@ -262,7 +262,10 @@ callback's parameter.  The rest follows from having no mailbox:
   `warn` and skips that callback for that event; it stays subscribed,
   and everyone else still receives the event.  A returned promise is
   not awaited, and its rejection is logged the same way instead of
-  surfacing as an unhandled rejection.
+  surfacing as an unhandled rejection.  That holds whatever was
+  thrown, as it does for every failure the bus contains: a value the
+  logger cannot render — an error whose `message` getter throws, say —
+  is left out of the warning, which is written without it.
 - **No actor stop ends a callback subscription; the system's end
   does.**  The callback sees the whole shutdown, every `ActorStopped`
   included, and is not called again once the system has terminated.

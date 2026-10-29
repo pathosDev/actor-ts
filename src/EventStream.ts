@@ -338,7 +338,7 @@ export class EventStream {
     try {
       return subscription.subscriber.equals(candidate);
     } catch (error) {
-      this.log?.warn(
+      this.warnContained(
         `EventStream.${operation}: comparing against a subscriber of ${subscription.label} threw`
         + ' — treating the two as different subscribers',
         error,
@@ -549,7 +549,9 @@ export class EventStream {
    * registered *after* it silently stopped receiving anything, in an order no
    * caller controls.  That reached far: `publish` runs on every actor start,
    * every actor stop and every dead-lettered `tell`, so it turned `ref.tell`,
-   * an API that does not throw by contract, into one that did.
+   * an API that does not throw by contract, into one that did.  The warning
+   * each guard ends in is guarded as well ({@link warnContained}): it renders
+   * the thrown value, which can throw too.
    *
    * **Callbacks come last (#1433)**, under a guard of their own — see
    * {@link callCallbacks} for their order, their recipient rule and the depth
@@ -576,7 +578,7 @@ export class EventStream {
           if (!this.accepts(subscription, event)) continue;
           subscription.subscriber.tell(event as never);
         } catch (err) {
-          this.log?.warn(
+          this.warnContained(
             `EventStream: delivering to ${subscription.label} failed`
             + ' — skipping this subscriber',
             err,
@@ -607,10 +609,11 @@ export class EventStream {
    *
    * **The depth bound** counts callback deliveries on the stack, and is checked
    * against the first callback that actually wants the event: a nested publish
-   * no callback wants costs nothing and says nothing.  The `finally` is not
-   * ceremony — the warning a throwing callback produces runs outside any guard,
-   * so a logger that throws leaves through here, and a depth left raised would
-   * have every later publish find the bound already reached.
+   * no callback wants costs nothing and says nothing.  Nothing in the loop is
+   * meant to throw — every call into a subscriber's code is guarded, and so is
+   * every warning, logger included — and the `finally` unwinds the depth all
+   * the same: a depth left raised would have every later publish find the
+   * bound already reached, which is too costly a way to learn a guard missed.
    *
    * **Reaching it cuts the cascade, not only the event** (#1433).  Depth alone
    * bounds one path through a loop, and a loop has as many paths as callbacks
@@ -643,7 +646,7 @@ export class EventStream {
         if (!subscription.subscribed || !this.wants(subscription, event)) continue;
         if (tooDeep) {
           this.cascadeCut = true;
-          this.log?.warn(
+          this.warnContained(
             `EventStream: callback deliveries are nested ${MAX_EVENT_STREAM_CALLBACK_DEPTH} deep`
             + ` — calling no callback for this event on ${subscription.label},`
             + ' nor for anything else this cascade publishes;'
@@ -667,7 +670,7 @@ export class EventStream {
     try {
       return subscription.matches(event);
     } catch (error) {
-      this.log?.warn(
+      this.warnContained(
         `EventStream: matching an event against ${subscription.label} threw`
         + ` — skipping ${subscription.callbackLabel} for it`,
         error,
@@ -682,7 +685,7 @@ export class EventStream {
       const returned = subscription.callback(event);
       if (isThenable(returned)) {
         returned.then(undefined, (error: unknown) => {
-          this.log?.warn(
+          this.warnContained(
             `EventStream: ${subscription.callbackLabel} on ${subscription.label}`
             + ' returned a promise that rejected',
             error,
@@ -690,7 +693,7 @@ export class EventStream {
         });
       }
     } catch (error) {
-      this.log?.warn(
+      this.warnContained(
         `EventStream: ${subscription.callbackLabel} on ${subscription.label} threw`
         + ' — skipping it for this event',
         error,
@@ -715,12 +718,47 @@ export class EventStream {
     } catch (err) {
       // A throwing predicate must NOT break the bus for other
       // subscribers — treat as "no match" and keep going.
-      this.log?.warn(
+      this.warnContained(
         `EventStream: predicate threw on ${subscription.label} delivery`
         + ' — treating as no-match',
         err,
       );
       return false;
+    }
+  }
+
+  /**
+   * Report a failure this bus contained, at warn, with what was thrown as the
+   * line's argument — and never throw doing it.
+   *
+   * Every guard here ends in such a line, and rendering the thrown value runs
+   * code the subscriber chose: `JsonLogger` reads `message` and `stack` off an
+   * `Error` and asks `instanceof` of anything, `ConsoleLogger` runs a custom
+   * inspect, and an error whose `message` getter throws, or a revoked proxy,
+   * defeats either.  Unguarded, the report was the way out of the guard it
+   * reports: the throw left `publish`, every subscription after the faulty one
+   * missed the event, and on a running system the warning for a callback that
+   * threw on an actor start failed the system's own guardians — the hole the
+   * producer's confirm report had as well (#1230).
+   *
+   * A value the logger cannot render is left out, and the line is written
+   * without it.  A logger that cannot write even that has nothing left to
+   * report with, and `publish` — whose `ref.tell` callers rely on it not
+   * throwing — is not the place to find out.
+   */
+  private warnContained(message: string, ...thrown: unknown[]): void {
+    const log = this.log;
+    if (log === undefined) return;
+    try {
+      log.warn(message, ...thrown);
+      return;
+    } catch {
+      if (thrown.length === 0) return;
+    }
+    try {
+      log.warn(`${message} — what was thrown could not be rendered by the logger, so it is left out`);
+    } catch {
+      /* a logger that cannot write a plain line leaves nothing to report with */
     }
   }
 }

@@ -621,18 +621,15 @@ describe('EventStream.subscribeFunction bounds a callback that publishes', () =>
   });
 
   test('a logger that throws does not leave the depth raised', () => {
-    // The warning for a throwing callback is the one call in the delivery loop
-    // that runs outside a guard.  Whatever escapes through it, the depth has to
-    // unwind, or every later publish would find the bound already reached.
+    // The warning for a throwing callback used to run outside any guard, so a
+    // logger that threw left the delivery loop through it.  The warning is
+    // guarded now and nothing escapes, but the depth is the thing that must
+    // never stay raised: every later publish would find the bound reached.
     const bus = new EventStream();
     bus.log = { warn: () => { throw new Error('logger boom'); } };
     const remove = bus.subscribeFunction(EventA, () => { throw new Error('callback boom'); });
     for (let attempt = 0; attempt < MAX_EVENT_STREAM_CALLBACK_DEPTH; attempt++) {
-      try {
-        bus.publish(new EventA('x'));
-      } catch {
-        /* the logger's own failure; not what this test is about */
-      }
+      expect(() => bus.publish(new EventA('x'))).not.toThrow();
     }
     remove();
 
