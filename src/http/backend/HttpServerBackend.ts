@@ -1,5 +1,6 @@
 import { ConfigKeys } from '../../config/ConfigKeys.js';
-import { detectRuntime } from '../../runtime/Detect.js';
+import { detectRuntime, type RuntimeKind } from '../../runtime/Detect.js';
+import { armChainedTimeout, type Cancellable, type HostTimers, unreferencedHostTimers } from '../../Scheduler.js';
 import { DEFAULT_HTTP_MAX_BODY_BYTES, DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
 import type { HttpServerOptionsType } from '../HttpServerOptions.js';
 import type { HttpMethod, HttpRequest, HttpResponse } from '../Types.js';
@@ -251,6 +252,14 @@ export type NodeHttpServerLike = {
    */
   setSecureContext?: unknown;
   /**
+   * Present on an HTTP/2 listener — `http2.Http2SecureServer` on Node and on
+   * Bun, measured on node v26.10.0 and bun 1.4.2, and on no `node:http` or
+   * `node:https` server — and read only for its presence: it is how
+   * {@link applyServerOptions} knows the listener also takes HTTP/1.1
+   * connections its HTTP/2 bounds do not cover.
+   */
+  updateSettings?: unknown;
+  /**
    * The server events the two guards below subscribe to, so the cap and the
    * header deadline are held in this repository rather than delegated — see
    * {@link enforceMaxConnections} and {@link enforceHeaderTimeout} for why.
@@ -283,17 +292,26 @@ export type Http2SessionLike = {
    */
   readonly socket?: unknown;
   /**
-   * Arm the session's idle timer, or clear it with `0`.  It counts quiet time
-   * on the whole connection, an open stream that is merely waiting included.
-   * A later call replaces whatever timer an earlier one armed, while every
-   * callback handed to it stays attached until the timer fires — measured on
-   * node v26.10.0 and bun 1.4.2.
+   * Arm the runtime's own idle timer for the session, or clear it with `0`.
+   * It counts quiet time on the whole connection, an open stream that is
+   * merely waiting included — and on Bun a PING frame as activity, at twice
+   * the value.  A later call replaces whatever timer an earlier one armed —
+   * measured on node v26.10.0 and bun 1.4.2.  {@link enforceSessionIdleTimeout}
+   * only ever clears it.
    */
   setTimeout: (milliseconds: number, callback?: () => void) => unknown;
   /** The graceful end: a GOAWAY, then the open streams finish and no new one starts. */
   close: () => void;
   /** The abrupt end: every open stream is cut. */
   destroy: () => void;
+  /**
+   * The session's own `'stream'` event, one per request opened on it, with
+   * the stream first — how {@link enforceSessionIdleTimeout} counts what is
+   * open.  Optional because the header deadline needs none of it.
+   */
+  on?: (event: 'stream', listener: (...eventArguments: ReadonlyArray<unknown>) => void) => unknown;
+  /** `'close'`: the session is gone, from whichever end. */
+  once?: (event: 'close', listener: () => void) => unknown;
 };
 
 /**
@@ -343,6 +361,12 @@ export type ServerSocketLike = {
   readonly remotePort?: number;
 };
 
+/** One of the two protocols an HTTP/2 listener speaks: HTTP/1.1 stays available on the same port. */
+export type ListenerProtocol = 'HTTP/1.1' | 'HTTP/2';
+
+/** The bounds that can hold for one protocol of an HTTP/2 listener and not the other. */
+export type ProtocolHeldBound = 'idleTimeoutMs' | 'requestTimeoutMs' | 'maxHeaderBytes';
+
 /**
  * Which connection-level fields of a resolved `actor-ts.http.server` policy a
  * backend put into effect on the server it bound — the four written after
@@ -356,20 +380,27 @@ export type ServerSocketLike = {
  * where `Bun.serve` hands back no server to install it on — produced a server
  * that took every connection and a log with nothing to say about it.
  *
- * `true` means in effect, and for the two bounds actor-ts holds itself it
- * means the guard was installed, not merely the property written:
- * `headerTimeoutMs` is the boolean {@link enforceHeaderTimeout} returns, and
- * `maxConnections` the `installed` flag of {@link enforceMaxConnections}.  A
- * property alone does not count there, since it is exactly what Bun accepts
- * and ignores.  `idleTimeoutMs` and `requestTimeoutMs` count where the property
- * was written, which is where the runtime reads it — and `idleTimeoutMs` also
- * where `Bun.serve` took it as `idleTimeout`, which it validates, so it is read
- * there too (#1487).
+ * `true` means in effect **on every connection the listener accepts**, and for
+ * the two bounds actor-ts holds itself it means the guard was installed, not
+ * merely the property written: `headerTimeoutMs` is the `installed` flag of
+ * {@link enforceHeaderTimeout}, and `maxConnections` the `installed` flag of
+ * {@link enforceMaxConnections}.  A property alone does not count there, since
+ * it is exactly what Bun accepts and ignores.  `idleTimeoutMs` and
+ * `requestTimeoutMs` count where the property was written, which is where the
+ * runtime reads it, together with the framework's own HTTP/2 halves —
+ * {@link enforceSessionIdleTimeout} and {@link enforceStreamRequestTimeout} —
+ * and `idleTimeoutMs` also where `Bun.serve` took it as `idleTimeout`, which it
+ * validates, so it is read there too (#1487).
  *
- * `false` means not in effect, for one of two reasons the report does not
- * tell apart: the field was not set, or this backend and runtime have nowhere
- * to put it.  `HttpExtension.bind` knows which fields were set, so it only
- * ever reads the second.
+ * `false` means not in effect, for one of three reasons the booleans do not
+ * tell apart: the field was not set, this backend and runtime have nowhere to
+ * put it, or it holds for only one of the two protocols an HTTP/2 listener
+ * speaks — which {@link ServerOptionsReport.heldForOneProtocol} then names.
+ * `HttpExtension.bind` knows which fields were set, so it only ever reads the
+ * last two, and words its warning by which one it is.  A bound that holds for
+ * HTTP/2 and not for the HTTP/1.1 connections on the same port is a bound a
+ * client can step around by offering HTTP/1.1, so it is not reported as held:
+ * that is the half-guarantee this report exists to say out loud.
  *
  * The report is as good as the event the guards rest on.  Deno's `node:http`
  * shim offers `on` but never emits `'connection'` (measured on deno 2.6.8), so
@@ -403,12 +434,35 @@ export type ServerOptionsReport = {
    * builds) and Hono on Node (`@hono/node-server`'s `serverOptions`).  `false`
    * on Hono under Bun or Deno, whose `serve()` has no per-server header cap.
    *
-   * It speaks for HTTP/1.1.  On an HTTP/2 listener under Node the cap binds
-   * the HTTP/1.1 requests sharing the port and not an HTTP/2 stream's header
-   * list — measured on node v26.10.0, a 4 KiB header list reached the handler
-   * through a 1 KiB cap — so `true` there is not a claim about h2 streams.
+   * On an HTTP/2 listener it is `true` only where the cap reaches an HTTP/2
+   * stream's header list too — see {@link headerCapReachesHttp2Streams}.  Under
+   * Node it does not: the cap binds the HTTP/1.1 requests sharing the port, and
+   * an HTTP/2 stream is bounded only by Node's own 64 KiB header-list limit —
+   * measured on node v26.10.0, a 60 KiB header list reached the handler
+   * through a 1 KiB cap — so Fastify reports it `false` there, held for
+   * HTTP/1.1 only.
    */
   readonly maxHeaderBytes?: boolean;
+  /**
+   * The fields above reported `false` that do hold for one of the two
+   * protocols an HTTP/2 listener speaks, each with the protocol it holds for,
+   * so the warning `bind()` logs can say what is bounded rather than claim
+   * nothing is.  Present only on an HTTP/2 listener where such a field was set.
+   *
+   *   - **`idleTimeoutMs` and `requestTimeoutMs` under Bun** hold for HTTP/2,
+   *     through {@link enforceSessionIdleTimeout} and
+   *     {@link enforceStreamRequestTimeout}, and not for a connection that
+   *     negotiates HTTP/1.1 on the same port: Bun's HTTP/2 server reads neither
+   *     `keepAliveTimeout` nor `requestTimeout` for one.  Measured on bun 1.4.2
+   *     with Fastify over TLS + HTTP/2, a keep-alive HTTP/1.1 connection was
+   *     still open 8 s after its response under an 800 ms idle-timeout, and a
+   *     stalled HTTP/1.1 body 40 s in under a 2 s request-timeout, where node
+   *     closed the first at 1.8 s and answered the second `408` at 30.0 s.
+   *   - **`maxHeaderBytes` under Node** holds for HTTP/1.1 — see the field.
+   */
+  readonly heldForOneProtocol?: {
+    readonly [Field in ProtocolHeldBound]?: ListenerProtocol;
+  };
   /**
    * Present only where the backend chose the idle timeout itself and the
    * runtime would not let it choose one long enough: what it installed, in
@@ -456,7 +510,7 @@ export type ServerListenOptions = Partial<HttpServerOptionsType> & {
  */
 export type ListenServerOptionsReport = Pick<
   ServerOptionsReport,
-  'idleTimeoutMs' | 'headerTimeoutMs' | 'requestTimeoutMs' | 'maxConnections'
+  'idleTimeoutMs' | 'headerTimeoutMs' | 'requestTimeoutMs' | 'maxConnections' | 'heldForOneProtocol'
 >;
 
 /**
@@ -473,6 +527,12 @@ export type BuiltInServerOptions = {
   readonly idleTimeoutMs?: boolean;
   /** See {@link ServerOptionsReport.idleTimeoutHeldAtCeilingMs}. */
   readonly idleTimeoutHeldAtCeilingMs?: number;
+  /**
+   * The built-in fields reported `false` above that hold for one protocol of
+   * an HTTP/2 listener — Fastify's header cap under Node, held for HTTP/1.1.
+   * See {@link ServerOptionsReport.heldForOneProtocol}.
+   */
+  readonly heldForOneProtocol?: ServerOptionsReport['heldForOneProtocol'];
 };
 
 /**
@@ -487,8 +547,14 @@ export function serverOptionsReportOf(
   options: Partial<HttpServerOptionsType> | undefined,
   builtIn: BuiltInServerOptions,
 ): ServerOptionsReport {
+  const { heldForOneProtocol: heldAfterListen, ...installed } = installedAfterListen;
+  const heldForOneProtocol = {
+    ...heldAfterListen,
+    // Only for a header cap the policy set: an unset one left nothing to hold.
+    ...(options?.maxHeaderBytes !== undefined ? builtIn.heldForOneProtocol : undefined),
+  };
   return {
-    ...installedAfterListen,
+    ...installed,
     // An idle timeout the runtime took at construction holds as surely as one
     // written after `listen()` — `Bun.serve`'s, on the Hono backend (#1487).
     ...(builtIn.idleTimeoutMs === true ? { idleTimeoutMs: true } : {}),
@@ -497,7 +563,31 @@ export function serverOptionsReportOf(
     // and one built with a different cap was refused before it bound.
     ...(options?.maxContentLength !== undefined ? { maxContentLength: true } : {}),
     ...(options?.maxHeaderBytes !== undefined ? { maxHeaderBytes: builtIn.maxHeaderBytes } : {}),
+    ...(Object.keys(heldForOneProtocol).length > 0 ? { heldForOneProtocol } : {}),
   };
+}
+
+/**
+ * Whether a `maxHeaderSize` an HTTP/2 server was built with also caps an
+ * HTTP/2 stream's header list on `runtime`, rather than only the HTTP/1.1
+ * requests sharing its port.
+ *
+ * Measured with Fastify over TLS + HTTP/2 under a 1 KiB cap.  **Bun**: yes —
+ * a 4 KiB header list was reset over HTTP/2 and answered `431` over HTTP/1.1,
+ * where with no cap 60 KiB went through.  It counts the HTTP/2 way, each field
+ * plus 32 bytes with the pseudo-headers included, so a block near the cap
+ * that HTTP/1.1 admits can be refused over HTTP/2: a 900-byte header passed
+ * HTTP/1.1 and was reset over HTTP/2.  **Node**: no — 900 bytes, 4 KiB and
+ * 60 KiB all reached the handler over HTTP/2 while HTTP/1.1 got `431` at
+ * 4 KiB.  An HTTP/2 stream there is bounded only by Node's own header-list
+ * limit, 63 KiB through and 64 KiB refused, and `settings.maxHeaderListSize =
+ * 1024` on the server did not lower it either — so there is no setting to
+ * reach for, and the cap is reported held for HTTP/1.1 only.  **Deno** builds
+ * no HTTP/2 server for Fastify at all (`createSecureServer` is not
+ * implemented in deno 2.6.8), so it answers no.
+ */
+export function headerCapReachesHttp2Streams(runtime: RuntimeKind = detectRuntime()): boolean {
+  return runtime === 'bun';
 }
 
 const NOTHING_IN_EFFECT: ListenServerOptionsReport = Object.freeze({
@@ -535,16 +625,21 @@ const NOTHING_IN_EFFECT: ListenServerOptionsReport = Object.freeze({
  * survives, and writing `undefined` onto `keepAliveTimeout` would replace
  * Fastify's deliberate 72 s with `NaN` semantics rather than with nothing.
  *
- * **`idleTimeoutMs` is two writes, because HTTP/2 does not read the first.**
- * `keepAliveTimeout` bounds an idle HTTP/1.1 connection; an HTTP/2 session
- * never consults it, so on an HTTP/2 listener the setting reaches the session
- * through the session's own timer instead — see
- * {@link enforceSessionIdleTimeout}.
+ * **`idleTimeoutMs` and `requestTimeoutMs` are two writes each, because
+ * HTTP/2 reads neither property.**  `keepAliveTimeout` bounds an idle HTTP/1.1
+ * connection and `requestTimeout` an HTTP/1.1 request's receive; an HTTP/2
+ * session and stream consult neither, so on an HTTP/2 listener the settings
+ * also reach them through timers of the framework's own — see
+ * {@link enforceSessionIdleTimeout} and {@link enforceStreamRequestTimeout}.
  *
  * **Where it does and does not reach** — the honest half, in the shape
  * {@link transportFrameCapOf} uses for the `ws` shim:
  *
- *   - **Fastify** — `this.app.server`.  All four.
+ *   - **Fastify** — `this.app.server`.  All four — except on its HTTP/2
+ *     listener under Bun, where a connection that negotiates HTTP/1.1 reads
+ *     neither `keepAliveTimeout` nor `requestTimeout`: there `idleTimeoutMs`
+ *     and `requestTimeoutMs` hold for HTTP/2 only and are reported so, in
+ *     {@link ServerOptionsReport.heldForOneProtocol}.
  *   - **Express** — the server the backend builds and listens on: `node:http`,
  *     or `node:https` under `tls`, which carries the same four properties and
  *     events.  All four, on either.
@@ -610,10 +705,18 @@ export function applyServerOptions(
     requestTimeoutMs: false,
     maxConnections: false,
   };
+  // Bun's HTTP/2 listener hands a connection that negotiated HTTP/1.1 to
+  // handling that reads neither `keepAliveTimeout` nor `requestTimeout`, so
+  // there the two bounds hold for HTTP/2 alone — through the framework's own
+  // halves — and are reported as such rather than as in effect.  A set `0`
+  // asks for no bound, which every protocol honours.
+  const http1Unbounded = typeof server.updateSettings === 'function' && detectRuntime() === 'bun';
+  const heldForOneProtocol: { -readonly [Field in ProtocolHeldBound]?: ListenerProtocol } = {};
   if (options.idleTimeoutMs !== undefined) {
     server.keepAliveTimeout = options.idleTimeoutMs;
     enforceSessionIdleTimeout(server, options.idleTimeoutMs);
-    report.idleTimeoutMs = true;
+    if (http1Unbounded && options.idleTimeoutMs > 0) heldForOneProtocol.idleTimeoutMs = 'HTTP/2';
+    else report.idleTimeoutMs = true;
   }
   if (options.headerTimeoutMs !== undefined) {
     const headerDeadlineMs = headerDeadlineOf(options.headerTimeoutMs, options.requestTimeoutMs);
@@ -624,11 +727,14 @@ export function applyServerOptions(
     // it is in effect wherever the policy reached a server at all; reported
     // otherwise, the opt-out would be warned about on every backend that
     // honours it.
-    report.headerTimeoutMs = headerDeadlineMs > 0 ? enforceHeaderTimeout(server, headerDeadlineMs) : true;
+    report.headerTimeoutMs = headerDeadlineMs > 0 ? enforceHeaderTimeout(server, headerDeadlineMs)().installed : true;
   }
   if (options.requestTimeoutMs !== undefined) {
     server.requestTimeout = options.requestTimeoutMs;
-    report.requestTimeoutMs = true;
+    // `0` is "no bound" on HTTP/2 as it is on HTTP/1.1, so it arms nothing.
+    if (options.requestTimeoutMs > 0) enforceStreamRequestTimeout(server, options.requestTimeoutMs);
+    if (http1Unbounded && options.requestTimeoutMs > 0) heldForOneProtocol.requestTimeoutMs = 'HTTP/2';
+    else report.requestTimeoutMs = true;
   }
   if (options.maxConnections !== undefined && options.maxConnections !== Infinity) {
     server.maxConnections = options.maxConnections;
@@ -637,7 +743,7 @@ export function applyServerOptions(
     // that alone would be the silent failure the report exists to end.
     report.maxConnections = enforceMaxConnections(server, options.maxConnections)().installed;
   }
-  return report;
+  return Object.keys(heldForOneProtocol).length > 0 ? { ...report, heldForOneProtocol } : report;
 }
 
 /**
@@ -676,49 +782,204 @@ function headerDeadlineOf(headerTimeoutMs: number, requestTimeoutMs: number | un
 }
 
 /**
- * Bound an idle HTTP/2 session by `idleTimeoutMs`, through the session's own
- * timer — the HTTP/2 half of `idle-timeout`, whose HTTP/1.1 half is
- * `keepAliveTimeout`.
+ * Bound an idle HTTP/2 session by `idleTimeoutMs` — the HTTP/2 half of
+ * `idle-timeout`, whose HTTP/1.1 half is `keepAliveTimeout`.  Idle means no
+ * stream open: the timer is armed when the session starts and whenever its
+ * last open stream closes, disarmed while any is open, and `close()`s the
+ * session when it fires — a GOAWAY on a session with nothing left to finish.
  *
- * **Why a second mechanism.**  `keepAliveTimeout` is read by the HTTP/1.1
- * connection handling only.  Measured on node v26.10.0 and bun 1.4.2, an h2
+ * **Why a mechanism of its own.**  `keepAliveTimeout` is read by the HTTP/1.1
+ * connection handling only: measured on node v26.10.0 and bun 1.4.2, an h2
  * session that completed one request under `keepAliveTimeout = 800` was still
  * open past 5 s, on Fastify and on a bare `http2.createSecureServer({
- * allowHTTP1 })` alike — so an idle HTTP/2 client was held by Fastify's own
- * 72 s `http2SessionTimeout`, and on Hono over Node by nothing at all, whatever
- * `idle-timeout` said.  A bound that holds on one protocol of the two a TLS
- * listener speaks is the half-guarantee this module refuses elsewhere.
+ * allowHTTP1 })` alike.  The runtime's own session timer — what this used to
+ * arm — is three bounds rather than one.  It counts quiet time on the whole
+ * connection, so it fired under a handler still working and sent the GOAWAY
+ * mid-request.  Bun fires it at twice its value: 1.60 s for 800 ms where node
+ * took 0.80 s.  And Bun counts a PING frame as activity, so a client pinging
+ * every 300 ms held an idle session open indefinitely — 19 pings and still open
+ * at 6 s, where node closed at 0.81 s.  A timer of the framework's own,
+ * counting open streams, is the same bound on both runtimes, ignores every
+ * frame that is not a request, and is `keepAliveTimeout`'s rule exactly: a
+ * slow handler, a long poll or an SSE stream holds its session as it holds an
+ * HTTP/1.1 connection, and the bound starts when it ends.  A request whose
+ * body never finishes is `request-timeout`'s to cut — see
+ * {@link enforceStreamRequestTimeout} — after which the session is idle here.
  *
- * **What it measures, per runtime.**  From the end of the response: node
- * closed the session 0.80 s and 2.00 s later for 800 and 2000 ms, bun 1.60 s
- * and 4.00 s later — Bun fires a session timer at twice its value.  That is
- * not compensated here: halving the number on one runtime would encode an
- * implementation detail as a contract, and the documentation states both.
+ * **The runtime's timer is cleared** with `setTimeout(0)`, so the configured
+ * value is the one that governs: Fastify arms one from a `'session'` listener
+ * of its own, registered at construction and so ahead of this one — 72 s,
+ * which Bun's doubling makes 144 s — and a longer `idle-timeout` would
+ * otherwise be cut short by it.  `0` stops there, which is the documented "0
+ * disables it" on HTTP/2 too: no idle bound at all.
  *
- * **`close`, not `destroy`.**  The timer counts quiet time on the whole
- * connection, and a stream whose handler has not answered yet is quiet: on
- * both runtimes it fired mid-request.  `close` sends the GOAWAY then and lets
- * the open stream finish — a handler answering after 2.5 s under an 800 ms
- * bound was delivered whole — where `destroy` cut it.  So a slow handler, a long
- * poll and an SSE stream outlive the bound exactly as they do on HTTP/1.1,
- * where `keepAliveTimeout` only counts between requests.
- *
- * **`0` clears the timer**, which is the documented "0 disables it" on HTTP/2
- * too — and it clears Fastify's 72 s with it.  Fastify arms that from a
- * `'session'` listener of its own, registered at construction and so ahead
- * of this one; a later `setTimeout` replaces the earlier timer, measured on both
- * runtimes against a 1 s timer armed first.  For a non-zero value the same
- * rule makes this one the timer that governs, and Fastify's callback merely
- * closes the session a second time when it fires.
- *
- * A server that emits no `'session'` — every HTTP/1.1-only listener — is
- * subscribed and never called, which costs one listener.
+ * A session that cannot report its streams falls back to the runtime's timer,
+ * the one shape that still bounds it.  A stream that cannot report its close
+ * is not counted, so it cannot hold the session open for ever.  Unreferenced,
+ * so an idle session never holds the process up on its own.  A server that
+ * emits no `'session'` — every HTTP/1.1-only listener — is subscribed and
+ * never called, which costs one listener.  `hostTimers` is the seam a test
+ * fires the timer through.
  */
-export function enforceSessionIdleTimeout(server: NodeHttpServerLike, idleTimeoutMs: number): void {
+export function enforceSessionIdleTimeout(
+  server: NodeHttpServerLike,
+  idleTimeoutMs: number,
+  hostTimers: HostTimers = unreferencedHostTimers,
+): void {
   if (typeof server.on !== 'function') return;
   server.on('session', (session) => {
-    session.setTimeout(idleTimeoutMs, () => { session.close(); });
+    session.setTimeout(0);
+    if (idleTimeoutMs === 0) return;
+    if (typeof session.on !== 'function') {
+      session.setTimeout(idleTimeoutMs, () => { session.close(); });
+      return;
+    }
+    let openStreams = 0;
+    let idle: Cancellable | undefined;
+    const arm = (): void => { idle = armChainedTimeout(() => { session.close(); }, idleTimeoutMs, hostTimers); };
+    const disarm = (): void => {
+      idle?.cancel();
+      idle = undefined;
+    };
+    arm();
+    session.on('stream', (opened: unknown) => {
+      const stream = opened as { once?: (event: 'close', listener: () => void) => unknown } | null | undefined;
+      if (typeof stream?.once !== 'function') return;
+      openStreams++;
+      disarm();
+      stream.once('close', () => {
+        openStreams--;
+        if (openStreams === 0) arm();
+      });
+    });
+    session.once?.('close', disarm);
   });
+}
+
+/**
+ * The slice of a server-side HTTP/2 stream {@link enforceStreamRequestTimeout}
+ * reads and ends — `node:http2`'s `ServerHttp2Stream` on Node, Bun's own on
+ * Bun, which carry every member alike (measured on node v26.10.0 and bun
+ * 1.4.2).
+ */
+export type Http2StreamLike = {
+  /** True when the request's HEADERS frame ended the stream: a request with no body. */
+  readonly endAfterHeaders?: boolean;
+  /**
+   * The protocol state of the stream.  `remoteClose` is `1` once the client
+   * has sent END_STREAM — whether or not anything has read the body, which is
+   * why it is asked rather than the readable side's `'end'`.
+   */
+  readonly state?: { readonly remoteClose?: number };
+  readonly headersSent?: boolean;
+  /** Whether the response has been ended — its last frame written or queued. */
+  readonly writableEnded?: boolean;
+  readonly closed?: boolean;
+  readonly destroyed?: boolean;
+  respond: (headers: Readonly<Record<string, string | number>>, options?: { readonly endStream?: boolean }) => void;
+  /** Send RST_STREAM with `code`, once what is queued has gone when that is `NO_ERROR`. */
+  close: (code?: number) => void;
+  once: (event: 'close', listener: () => void) => unknown;
+};
+
+/**
+ * RST_STREAM error codes, RFC 9113 §7: `NO_ERROR` asks a client to stop
+ * sending a request that has been answered in full; `CANCEL` says the stream
+ * is no longer wanted.
+ */
+const HTTP2_NO_ERROR = 0x0;
+const HTTP2_CANCEL = 0x8;
+
+/**
+ * Bound the receive of each HTTP/2 stream by `requestTimeoutMs` — the HTTP/2
+ * half of `request-timeout`, whose HTTP/1.1 half is the runtime's
+ * `requestTimeout` sweep.
+ *
+ * **Why a mechanism of its own.**  `requestTimeout` is read by the HTTP/1.1
+ * connection handling only, and nothing at the session level can stand in for
+ * it.  Measured on node v26.10.0 and bun 1.4.2 with the framework-built
+ * Fastify over TLS + HTTP/2, `request-timeout = 2s` and `idle-timeout =
+ * 800ms`: a POST that announced 1000 bytes and sent 10 was still open 12 s
+ * later on both, as was a body trickled every 500 ms.  The session's idle
+ * timer sent its GOAWAY for the stalled one and then, by design, let the open
+ * stream finish; the trickled one never let the timer fire.  Cutting the
+ * session some grace period after its GOAWAY was the other shape on the
+ * table, and it bounds neither a trickle nor anything when the idle timeout
+ * is unset — and it would cut a long poll the HTTP/1.1 rules leave alone.
+ *
+ * **What it bounds is the request, never the response.**  The deadline is
+ * armed when a stream opens and spent once the client has finished sending:
+ * a request with no body never arms one, and one whose client has sent
+ * END_STREAM by the deadline is left to its handler however long that takes
+ * — the HTTP/1.1 rule, where `requestTimeout` bounds the receive.  Finished
+ * sending is the protocol's answer, not a reader's: a five-byte body nothing
+ * read never emits `'end'`, and was rightly left alone on both runtimes.
+ *
+ * **At the deadline**, a stream still receiving is answered `408` and reset
+ * with `NO_ERROR`, the RFC's way to stop a client sending a request that has
+ * been answered (§8.1).  One the handler already answered in full keeps that
+ * answer and is reset the same way; one whose answer is still being written is
+ * reset with `CANCEL`, so a half-written answer is not presented as complete.
+ * The stream goes and the session stays: other streams on it are someone
+ * else's requests, and a session with nothing open is `idle-timeout`'s to
+ * close.
+ *
+ * Armed through {@link armChainedTimeout}, because `request-timeout` may be
+ * as long as 2^32 - 1 ms and a host timer armed with more than 2^31 - 1 fires
+ * after 1 ms on Bun and Node.  Unreferenced, as the header deadline is, so an
+ * open stream never holds the process up on its own.
+ *
+ * A server that emits no `'stream'` — every HTTP/1.1-only listener — is
+ * subscribed and never called, which costs one listener.  `hostTimers` is the
+ * seam a test fires the deadline through.
+ */
+export function enforceStreamRequestTimeout(
+  server: NodeHttpServerLike,
+  requestTimeoutMs: number,
+  hostTimers: HostTimers = unreferencedHostTimers,
+): void {
+  if (typeof server.on !== 'function') return;
+  server.on('stream', (stream: unknown) => {
+    if (!isHttp2Stream(stream) || requestReceivedInFull(stream)) return;
+    const deadline = armChainedTimeout(() => { expireStreamRequest(stream); }, requestTimeoutMs, hostTimers);
+    stream.once('close', () => { deadline.cancel(); });
+  });
+}
+
+/** Whether `candidate` offers what {@link enforceStreamRequestTimeout} calls; anything else is not its to bound. */
+function isHttp2Stream(candidate: unknown): candidate is Http2StreamLike {
+  if (typeof candidate !== 'object' || candidate === null) return false;
+  const { respond, close, once } = candidate as Partial<Http2StreamLike>;
+  return typeof respond === 'function' && typeof close === 'function' && typeof once === 'function';
+}
+
+/**
+ * Whether the client has finished sending.  A state that cannot be read
+ * counts as unfinished: the deadline then holds rather than lapses.
+ */
+function requestReceivedInFull(stream: Http2StreamLike): boolean {
+  if (stream.endAfterHeaders === true) return true;
+  try {
+    return stream.state?.remoteClose === 1;
+  } catch {
+    return false;
+  }
+}
+
+function expireStreamRequest(stream: Http2StreamLike): void {
+  if (stream.closed === true || stream.destroyed === true || requestReceivedInFull(stream)) return;
+  try {
+    if (stream.headersSent !== true) {
+      stream.respond({ ':status': 408 }, { endStream: true });
+      stream.close(HTTP2_NO_ERROR);
+      return;
+    }
+    stream.close(stream.writableEnded === true ? HTTP2_NO_ERROR : HTTP2_CANCEL);
+  } catch {
+    // A stream that went away between the checks above and the write: the
+    // cut is what was wanted, so make sure of it and say nothing.
+    try { stream.close(HTTP2_CANCEL); } catch { /* already gone */ }
+  }
 }
 
 /**
@@ -815,16 +1076,21 @@ export function enforceSessionIdleTimeout(server: NodeHttpServerLike, idleTimeou
  * price of not delegating; the runtime's sweep is cheaper and, on two runtimes
  * out of three, imaginary.
  *
- * Returns whether the guard was installed — whether the server offers `on`, on
- * a runtime that emits the events it rests on — so a server that cannot host
- * it reports itself rather than pretending.  It is what
- * {@link ServerOptionsReport.headerTimeoutMs} counts.
+ * Returns a live {@link HeaderDeadlineReport} reader rather than a boolean, the
+ * shape {@link enforceMaxConnections} has: whether the guard was installed —
+ * whether the server offers `on`, on a runtime that emits the events it rests
+ * on — so a server that cannot host it reports itself rather than pretending,
+ * which is what {@link ServerOptionsReport.headerTimeoutMs} counts; and how
+ * many deadlines the endpoint map holds, which is the one way to see that it
+ * empties.  Nothing else does: an entry `settle` failed to drop holds its
+ * socket for the life of the server and changes no answer the guard gives, so
+ * a leak there is invisible to every behaviour a test can observe.
  */
-export function enforceHeaderTimeout(server: NodeHttpServerLike, deadlineMs: number): boolean {
-  if (typeof server.on !== 'function') return false;
+export function enforceHeaderTimeout(server: NodeHttpServerLike, deadlineMs: number): () => HeaderDeadlineReport {
+  if (typeof server.on !== 'function') return HEADER_DEADLINE_NOT_INSTALLED;
   // Deno emits neither 'connection' nor 'secureConnection', so a deadline
   // installed there would never be armed (see above).
-  if (detectRuntime() === 'deno') return false;
+  if (detectRuntime() === 'deno') return HEADER_DEADLINE_NOT_INSTALLED;
   const secureListener = typeof server.setSecureContext === 'function';
   // Weak because a socket that closes before its headers complete must not be
   // held alive by the bookkeeping meant to hang up on it.  A settled deadline
@@ -927,8 +1193,26 @@ export function enforceHeaderTimeout(server: NodeHttpServerLike, deadlineMs: num
   server.on('request', onHeadersComplete);
   server.on('upgrade', onHeadersComplete);
   server.on('stream', onHeadersComplete);
-  return true;
+  return () => ({ installed: true, endpointEntries: byEndpoint.size });
 }
+
+/**
+ * What {@link enforceHeaderTimeout} holds, read when asked rather than copied
+ * at install time.
+ */
+export type HeaderDeadlineReport = {
+  /** `false` when the server offers no `on`, or the runtime emits none of the events the guard rests on. */
+  readonly installed: boolean;
+  /**
+   * Deadlines filed under their connection's endpoint pair right now — one per
+   * accepted connection that has neither completed a header block, closed,
+   * nor expired, so it is back at zero once every connection has settled.
+   */
+  readonly endpointEntries: number;
+};
+
+/** The reader a server that cannot host the guard gets: installed nowhere, holding nothing. */
+const HEADER_DEADLINE_NOT_INSTALLED = (): HeaderDeadlineReport => ({ installed: false, endpointEntries: 0 });
 
 /**
  * One armed header deadline, and what it has learned about its connection

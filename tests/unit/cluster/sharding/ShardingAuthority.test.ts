@@ -44,7 +44,7 @@ import { SystemGroups, shardRegionName, systemActorPath } from '../../../../src/
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import type { ActorRef } from '../../../../src/ActorRef.js';
 import type { WireMessage } from '../../../../src/cluster/Protocol.js';
-import { regionSegments } from '../../../util/SystemPaths.js';
+import { coordinatorSegments, regionSegments } from '../../../util/SystemPaths.js';
 import { awaitCondition, sleep } from '../../../util/AwaitCondition.js';
 
 type WorkCommand = { id: string; kind: 'work' };
@@ -57,11 +57,22 @@ const ENTITY_ID = 'user-1';
 
 let delivered = 0;
 
+/**
+ * While set, every entity's `postStop` waits on it — how a case holds a
+ * shard's stop open.  Opened and cleared after every case.
+ */
+let entityStopGate: Promise<void> | null = null;
+let openEntityStops: () => void = () => { /* nothing is held */ };
+
 class Entity extends Actor<Command> {
   override onReceive(message: Command): void {
     match(message)
       .with({ kind: 'work' }, () => this.onWork())
       .exhaustive();
+  }
+
+  override async postStop(): Promise<void> {
+    if (entityStopGate !== null) await entityStopGate;
   }
 
   private onWork(): void { delivered++; }
@@ -80,6 +91,8 @@ let running: Victim | null = null;
 const transports: InMemoryTransport[] = [];
 
 afterEach(async () => {
+  openEntityStops();
+  entityStopGate = null;
   await Promise.all(transports.splice(0).map((t) => t.shutdown().catch(() => { /* best-effort */ })));
   if (running) {
     await running.cluster.leave().catch(() => { /* best-effort */ });
@@ -350,7 +363,49 @@ describe('ShardRegion coordinator authority (#584)', () => {
       label: 'the region still owns its shard and routes to it',
     });
   });
+
+  test('a forged RegistrationRequest does not make the region register again', async () => {
+    // The mildest kind on the list (#853): honoured, it only makes the region
+    // repeat its registration to its own coordinator.  Still a directive, and
+    // still the coordinator's alone — anybody else could make every region of
+    // a type re-register on demand.  The coordinator stamps an entry each time
+    // its region registers, and nothing else in this idle fixture touches it,
+    // so an unchanged stamp is a registration that did not happen.
+    const victim = await startVictim('authority-registration-request', 62_160);
+    const evil = await attacker('evil-registration-request', 62_161);
+    const registeredAt = (): number | undefined => coordinatorEntry(victim)?.lastSeenAtMs;
+    const before = registeredAt();
+    expect(before).toBeDefined();
+    const request = { kind: 'sharding.RegistrationRequest', coordinator: '/system/cluster/sharding/coordinator-entity' };
+
+    forge(evil, victim, victim.regionPath, request);
+    await awaitCondition(() => registeredAt() !== before, {
+      timeoutMs: 300,
+      intervalMs: 10,
+      label: 'a registration answering the forged request (not expected)',
+    }).then(
+      () => { throw new Error('the region registered again on a forged request'); },
+      () => { /* the window ran out with nothing registered */ },
+    );
+
+    // The positive control, so the stamp is known to move: the same request
+    // from the coordinator's own node is answered.
+    tellAsCoordinator(victim, request as ShardingMessage);
+    await awaitCondition(() => registeredAt() !== before, {
+      timeoutMs: 4_000,
+      label: 'the region registered again when its own coordinator asked',
+    });
+  });
 });
+
+/** The coordinator's registry entry for the victim's own region. */
+function coordinatorEntry(victim: Victim): { readonly lastSeenAtMs: number } | undefined {
+  const resolved = victim.system._resolvePath(coordinatorSegments(victim.system.name, TYPE_NAME));
+  if (resolved.isNone()) return undefined;
+  const cell = (resolved.value as unknown as { getCell?: () => { actor?: unknown } }).getCell?.();
+  const regions = (cell?.actor as { regions?: Map<string, { lastSeenAtMs: number }> } | undefined)?.regions;
+  return regions === undefined ? undefined : Array.from(regions.values())[0];
+}
 
 describe('ShardRegion handoff ownership (#584)', () => {
   test('an authentic HandOff for a shard this region does not own changes nothing', async () => {
@@ -380,6 +435,7 @@ describe('ShardRegion handoff ownership (#584)', () => {
       { timeoutMs: 4_000, label: 'the region cached the remote home' },
     );
     expect(regionState(victim).localShards.has(remoteShardId)).toBe(false);
+    const heardBefore = coordinatorEntry(victim)?.lastSeenAtMs;
 
     tellAsCoordinator(victim, { kind: 'sharding.HandOff', shardId: remoteShardId });
     // The assertion is an absence: give the region a turn to act on the
@@ -392,6 +448,47 @@ describe('ShardRegion handoff ownership (#584)', () => {
     expect(state.shardHomeNodes.get(remoteShardId)?.toString()).toBe(elsewhere.toString());
     // And the shard the region really does own is untouched by the refusal.
     expect(entityIsUp(victim)).toBe(true);
+    // Nor did it answer: a registered region that does not own the shard may
+    // be mid-way through handing it off, and only a refused one holds nothing
+    // by construction (#1467).  An answer would have stamped its entry.
+    expect(coordinatorEntry(victim)?.lastSeenAtMs).toBe(heardBefore);
+  });
+
+  test('a refused region answers a HandOff once the shard it is releasing has stopped', async () => {
+    // A refused region holds nothing once its release is through, so it answers
+    // every `HandOff` with `HandOffComplete` (#1467).  But a shard it was hosting
+    // when the refusal came is stopped asynchronously, each entity's `postStop`
+    // included, and until that finishes the shard still runs here: an answer
+    // then would let the coordinator start the shard elsewhere while its
+    // entities here are still flushing.  The stop is held open below, and the
+    // coordinator's stamp on this region's entry is the witness that an answer
+    // went out — nothing else in this idle fixture touches it.
+    const victim = await startVictim('authority-refused-hand-off', 62_162);
+    const heardBefore = coordinatorEntry(victim)?.lastSeenAtMs;
+    entityStopGate = new Promise<void>((resolve) => { openEntityStops = resolve; });
+
+    tellAsCoordinator(victim, {
+      kind: 'sharding.RegisterRefused',
+      coordinator: '/system/cluster/sharding/coordinator-entity',
+      numShards: NUM_SHARDS * 2,
+      regionNumShards: NUM_SHARDS,
+    });
+    tellAsCoordinator(victim, { kind: 'sharding.HandOff', shardId: victim.shardId });
+    await awaitCondition(() => coordinatorEntry(victim)?.lastSeenAtMs !== heardBefore, {
+      timeoutMs: 300,
+      intervalMs: 10,
+      label: 'an answer while the shard was still stopping (not expected)',
+    }).then(
+      () => { throw new Error('the refused region answered before its shard had stopped'); },
+      () => { /* the window ran out with no answer */ },
+    );
+
+    openEntityStops();
+    await awaitCondition(() => coordinatorEntry(victim)?.lastSeenAtMs !== heardBefore, {
+      timeoutMs: 4_000,
+      label: 'the refused region answered once the shard had stopped',
+    });
+    expect(entityIsUp(victim)).toBe(false);
   });
 
   test('an authentic HandOff for the shard this region owns still hands it off', async () => {

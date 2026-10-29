@@ -37,6 +37,7 @@ import {
   type SeedProvider,
 } from '../src/discovery/index.js';
 import { awaitCondition } from './util/AwaitCondition.js';
+import { RecordingLogger } from './util/RecordingLogger.js';
 
 /**
  * Delegating transport that counts `shutdown()` calls — the observable that
@@ -593,6 +594,94 @@ describe('Cluster.bootstrap', () => {
       await nodeB.shutdown();
     }
   });
+});
+
+/**
+ * A start whose readiness wait failed, under `exit-process` (D-M5 1): a
+ * failure never exits 0, and it is logged first.  Both deadlines the wait
+ * answers to — its own, and the join give-up's — end in a run with
+ * `ClusterJoinUnsuccessfulReason`, and that run used to exit with `exit-code`,
+ * `0` by default, before the readiness error could reach `main`, which then
+ * never saw it.  `process.exit` is replaced; the replacement returns, so the
+ * rejection still follows, and the case can tell the line it found names it.
+ */
+describe('Cluster.bootstrap — a failed readiness wait under exit-process', () => {
+  type ReadinessExit = { readonly status: number; readonly errors: string[]; readonly warnings: string[] };
+
+  const messagesAt = (log: RecordingLogger, level: string): string[] =>
+    log.records.filter((record) => record.level === level).map((record) => record.message);
+
+  /**
+   * Bootstrap `options` with `process.exit` replaced, recording what had been
+   * logged when it was called.  A system the bootstrap left up is torn down
+   * bare before the real `process.exit` is put back.
+   */
+  async function failedStart(
+    options: ClusterBootstrapOptionsBuilder,
+    log: RecordingLogger,
+  ): Promise<{ caught: unknown; exits: ReadinessExit[] }> {
+    const exits: ReadinessExit[] = [];
+    const realExit = process.exit;
+    process.exit = ((code?: number): never => {
+      exits.push({ status: code ?? Number.NaN, errors: messagesAt(log, 'error'), warnings: messagesAt(log, 'warn') });
+      return undefined as never;
+    }) as typeof process.exit;
+    try {
+      return await recordingShutdownReasons(async (observed) => {
+        try {
+          return { caught: await rejectionOf(Cluster.bootstrap(options)), exits };
+        } finally {
+          for (const system of observed.systems) {
+            if (!system.isTerminated) await system.terminate({ runCoordinatedShutdown: false }).catch(() => {});
+          }
+        }
+      });
+    } finally {
+      process.exit = realExit;
+    }
+  }
+
+  /** A node whose one seed nobody answers, so neither deadline can be met. */
+  function unanswered(name: string, port: number, awaitReadyMs: number, hocon: string, log: RecordingLogger) {
+    const address = new NodeAddress(name, '127.0.0.1', port);
+    return ClusterBootstrapOptions.create(name)
+      .withHost('127.0.0.1')
+      .withPort(port)
+      .withTransport(new InMemoryTransport(address))
+      .withSeeds([`127.0.0.1:${port + 9_000}`])
+      .withReceptionist(false)
+      .withAwaitReady(awaitReadyMs)
+      .withConfig(Config.parseString(`actor-ts.coordinated-shutdown.exit-process = on\n${hocon}`))
+      .withLogger(log)
+      .withShutdownOnSignals(false);
+  }
+
+  test('the wait\'s own deadline: the readiness error is logged at error, then the exit status is 1', async () => {
+    const log = new RecordingLogger();
+
+    const { caught, exits } = await failedStart(unanswered('readiness-exit-own', 50_131, 300, '', log), log);
+
+    expect(caught).toBeInstanceOf(ClusterReadyTimeoutError);
+    expect(exits.map((exit) => exit.status)).toEqual([1]);
+    expect(exits[0]!.errors.some((line) => line.includes((caught as Error).message))).toBe(true);
+  });
+
+  test('the join give-up\'s deadline: both lines are on record, then the exit status is 1', async () => {
+    const log = new RecordingLogger();
+    const giveUp = `actor-ts.cluster {
+      seed-retry-interval = 50ms
+      shutdown-after-unsuccessful-join = ${GIVE_UP_MS}ms
+    }`;
+
+    const { caught, exits } = await failedStart(unanswered('readiness-exit-give-up', 50_133, 3_000, giveUp, log), log);
+
+    expect(caught).toBeInstanceOf(ClusterReadyTimeoutError);
+    expect((caught as Error).message).toContain(GIVE_UP_KEY);
+    expect(exits.map((exit) => exit.status)).toEqual([1]);
+    // The join's own WARN says why it gave up; the bootstrap's ERROR says the start failed.
+    expect(exits[0]!.warnings.some((line) => line.includes('giving up the join'))).toBe(true);
+    expect(exits[0]!.errors.some((line) => line.includes((caught as Error).message))).toBe(true);
+  }, 10_000);
 });
 
 /* -------------------------------------------------------------------------- */

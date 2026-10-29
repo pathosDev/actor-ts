@@ -99,6 +99,7 @@ interface CoordinatorInternals {
   candidates(): NodeAddress[];
   currentShardCounts(): Map<string, Set<number>>;
   onRegionTerminated(message: { kind: string; region: string; node: unknown }): void;
+  onHandOffComplete(message: { kind: 'sharding.HandOffComplete'; shardId: number; region: string; node: unknown }): void;
 }
 
 /** The cluster's membership map, written directly to stage the fabricated regions' nodes as members. */
@@ -350,5 +351,40 @@ describe('a hand-off that times out releases the shard from the region it timed 
     // cluster is never told and keeps hosting it.
     expect(nameOf(coordinator.shardHome.get(SHARD))).toBe('b');
     expect(listing(coordinator)).toEqual({ b: [SHARD], c: [] });
+  });
+});
+
+describe('a hand-off ends only on its own region\'s word (#1467)', () => {
+  test('a completion from a region the hand-off was not sent to ends nothing', async () => {
+    // A region refused over its shard count answers every `HandOff` it is sent,
+    // and a stale copy told to stand down reports its hand-off too — so a
+    // `HandOffComplete` naming the shard can come from a region this hand-off
+    // never asked.  Honoured, it would re-home the shard while `a`, the region
+    // really giving it up, is still stopping it.
+    const harness = await startCoordinator('hand-off-completion-origin');
+    const { coordinator } = harness;
+    fabricateShardOnA(harness);
+    coordinator.rebalanceTick();
+    expect(inFlight(coordinator)).toEqual([[SHARD, 'a']]);
+
+    // Synchronous from here: the hand-off timer is short, and nothing below may
+    // give it a turn.
+    coordinator.onHandOffComplete({
+      kind: 'sharding.HandOffComplete',
+      shardId: SHARD,
+      region: regionB.path,
+      node: regionB.node.toJSON(),
+    });
+    expect(inFlight(coordinator)).toEqual([[SHARD, 'a']]);
+    expect(nameOf(coordinator.shardHome.get(SHARD))).toBe('a');
+
+    coordinator.onHandOffComplete({
+      kind: 'sharding.HandOffComplete',
+      shardId: SHARD,
+      region: regionA.path,
+      node: regionA.node.toJSON(),
+    });
+    expect(inFlight(coordinator)).toEqual([]);
+    expect(nameOf(coordinator.shardHome.get(SHARD))).toBe('b');
   });
 });

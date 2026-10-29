@@ -524,6 +524,13 @@ const LEVEL_NAMES: ReadonlyArray<readonly [name: string, level: LogLevel]> = [
   ['off', LogLevel.Off],
 ];
 
+/**
+ * Names a plain object answers for without holding them.  A level name is
+ * looked up in a table, so every one of these has to read as unknown — the
+ * runtime's own list, so a member a future engine adds is covered too.
+ */
+const OBJECT_PROTOTYPE_NAMES: readonly string[] = Object.getOwnPropertyNames(Object.prototype);
+
 for (const sink of SINKS) {
   describe(`${sink.root}: ${sink.read.name} and ${sink.isEnabled.name}`, () => {
     test('the bundled reference resolves to exactly the shipped values, with the sink switched off', () => {
@@ -558,10 +565,14 @@ for (const sink of SINKS) {
       }
       // Not defaulted: the sink's validator then refuses it naming the field,
       // which says more than records quietly arriving at the wrong level.
-      expectExactOptions(
-        sink.read(Config.parseString(`${sink.root}.min-level = "warning"`)),
-        { minLevel: 'warning' },
-      );
+      // An Object.prototype member is handed on as the string it was too,
+      // not as whatever the prototype holds under that name.
+      for (const unknown of ['warning', ...OBJECT_PROTOTYPE_NAMES, 'Constructor']) {
+        expectExactOptions(
+          sink.read(Config.parseString(`${sink.root}.min-level = "${unknown}"`)),
+          { minLevel: unknown },
+        );
+      }
     });
   });
 }
@@ -698,8 +709,10 @@ describe('readLoggerLevelFromConfig', () => {
   test('an unknown name falls back to info instead of refusing to start', () => {
     // Lenient where a sink's min-level is strict: refusing to start a system
     // over a mistyped level of its own logger would trade a cosmetic mistake
-    // for an outage.
-    for (const unknown of ['warning', 'verbose', '']) {
+    // for an outage.  `constructor` and `__proto__` are the two
+    // Object.prototype members that survive the lower-casing; they came back
+    // as a function and an object, a level nothing compares above.
+    for (const unknown of ['warning', 'verbose', '', ...OBJECT_PROTOTYPE_NAMES, 'Constructor', ' __PROTO__ ']) {
       expectExactOptions(
         readLoggerLevelFromConfig(Config.parseString(`actor-ts.logger.level = "${unknown}"`)),
         LogLevel.Info,

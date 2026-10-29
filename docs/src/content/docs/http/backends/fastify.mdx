@@ -90,6 +90,21 @@ built this backend or you did. Two of Fastify's own defaults differ from
 there previously was none. Set it back to `0` in your config to restore the old
 behaviour; `idle-timeout` ships no value, so Fastify's 72 s is untouched.
 
+On the HTTP/2 listener (`withHttp2()`) Fastify's 72 s reaches an idle session
+as Fastify's own session timer, which counts quiet time on the connection: it
+closes an idle session at **72 s on Node but 144 s on Bun**, which fires it at
+twice its value, and on Bun a PING frame resets it, so a client pinging once a
+second keeps a session with no request on it open indefinitely (still open at
+170 s, bun 1.4.2). Setting `idle-timeout` replaces that timer with
+actor-ts's own, which closes a session that has had no stream open for the
+value — the same on both runtimes, PINGs or not — and `request-timeout` gives
+every HTTP/2 stream its own receive deadline. Two bounds hold for one protocol
+only on that listener, and `bind()` warns about each one you set: on **Bun**,
+`idle-timeout` and `request-timeout` bound HTTP/2 but not a connection that
+negotiates HTTP/1.1 on the same port; on **Node**, `max-header-bytes` caps the
+HTTP/1.1 requests but not an HTTP/2 stream's header list, which only Node's own
+64 KiB limit bounds. The [security page](/http/security/) has the numbers.
+
 ## Behind a reverse proxy
 
 `HttpRequest.remoteAddress` comes from Fastify's `req.ip`, which without

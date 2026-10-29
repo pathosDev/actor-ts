@@ -333,7 +333,11 @@ describe('applyServerOptions', () => {
    * it.  Measured on node v26.10.0 and bun 1.4.2, an h2 session that completed
    * one request under `keepAliveTimeout = 800` was still open past 5 s, on
    * Fastify and on a bare `http2.createSecureServer` alike.  So `idle-timeout`
-   * reaches a session through the session's own timer, armed from `'session'`.
+   * reaches each session from `'session'`: the runtime's own session timer is
+   * cleared and a timer of the framework's own, counting open streams, bounds
+   * it — or, for a session that cannot report its streams, the runtime's timer
+   * is armed with the value instead.  `Http2SessionIdle.test.ts` pins the
+   * stream counting itself.
    */
   type RecordedTimeout = { readonly milliseconds: number; readonly callback: (() => void) | undefined };
 
@@ -345,34 +349,57 @@ describe('applyServerOptions', () => {
         return server;
       }) as NodeHttpServerLike['on'],
     };
-    const openSession = () => {
+    const openSession = ({ reportsStreams = false }: { readonly reportsStreams?: boolean } = {}) => {
       const timeouts: RecordedTimeout[] = [];
       let closed = 0;
       let destroyed = false;
+      let subscribedToStreams = false;
       const session: Http2SessionLike = {
         setTimeout: (milliseconds, callback) => { timeouts.push({ milliseconds, callback }); return session; },
         close: () => { closed++; },
         destroy: () => { destroyed = true; },
+        ...(reportsStreams
+          ? {
+            on: () => { subscribedToStreams = true; return session; },
+            once: () => session,
+          }
+          : {}),
       };
       for (const listener of listeners.get('session') ?? []) listener(session);
-      return { timeouts, get closed() { return closed; }, get destroyed() { return destroyed; } };
+      return {
+        timeouts,
+        get closed() { return closed; },
+        get destroyed() { return destroyed; },
+        get subscribedToStreams() { return subscribedToStreams; },
+      };
     };
     return { server, openSession, subscribed: (event: string): number => listeners.get(event)?.length ?? 0 };
   }
 
-  test('idle-timeout arms each HTTP/2 session\'s own timer, and its expiry closes the session', () => {
+  test('idle-timeout reaches a session that cannot report its streams through the runtime\'s timer, and its expiry closes the session', () => {
     const { server, openSession } = sessionServer();
     applyServerOptions(server, { idleTimeoutMs: 800 });
 
     const opened = openSession();
 
-    expect(opened.timeouts.map((t) => t.milliseconds), 'idle-timeout never reached the HTTP/2 session').toEqual([800]);
+    // Cleared first — whatever a backend armed — then armed with the value.
+    expect(opened.timeouts.map((t) => t.milliseconds), 'idle-timeout never reached the HTTP/2 session').toEqual([0, 800]);
     expect(opened.closed, 'the session was closed before its timer fired').toBe(0);
-    opened.timeouts[0]!.callback?.();
-    // `close`, not `destroy`: a stream still open when the session goes quiet
-    // finishes, and the client learns why through a GOAWAY.
+    opened.timeouts[1]!.callback?.();
+    // `close`, not `destroy`: whatever is still open finishes, and the client
+    // learns why through a GOAWAY.
     expect(opened.closed, 'the timer fired and nothing closed the session').toBe(1);
     expect(opened.destroyed, 'an idle session was torn down rather than closed').toBe(false);
+  });
+
+  test('a session that reports its streams has the runtime\'s timer cleared and not re-armed — the framework\'s own governs it', () => {
+    const { server, openSession } = sessionServer();
+    applyServerOptions(server, { idleTimeoutMs: 800 });
+
+    const opened = openSession({ reportsStreams: true });
+
+    expect(opened.timeouts.map((t) => t.milliseconds)).toEqual([0]);
+    expect(opened.subscribedToStreams, 'the idle timer never learned of the session\'s streams').toBe(true);
   });
 
   test('every session gets its own timer, not only the first', () => {
@@ -382,8 +409,8 @@ describe('applyServerOptions', () => {
     const first = openSession();
     const second = openSession();
 
-    expect(first.timeouts.map((t) => t.milliseconds)).toEqual([1_500]);
-    expect(second.timeouts.map((t) => t.milliseconds)).toEqual([1_500]);
+    expect(first.timeouts.map((t) => t.milliseconds)).toEqual([0, 1_500]);
+    expect(second.timeouts.map((t) => t.milliseconds)).toEqual([0, 1_500]);
   });
 
   test('idle-timeout 0 disarms the session timer — the documented "0 disables it" on HTTP/2 too', () => {
@@ -400,8 +427,8 @@ describe('applyServerOptions', () => {
   });
 
   test('an unset idle-timeout leaves a session\'s timer to the backend', () => {
-    // The negative control: unset keeps the backend's own, which is Fastify's
-    // 72 s on an HTTP/2 session exactly as it is on an HTTP/1.1 socket.
+    // The negative control: unset keeps the backend's own — on an HTTP/2
+    // session Fastify's own session timer, 72 s on Node and 144 s on Bun.
     const { server, openSession, subscribed } = sessionServer();
     applyServerOptions(server, { requestTimeoutMs: 3_000, maxConnections: 10 });
 
@@ -567,7 +594,7 @@ describe('the header deadline is enforced here, not delegated', () => {
     const server: NodeHttpServerLike = {};
     expect(() => applyServerOptions(server, { headerTimeoutMs: 1_000 })).not.toThrow();
     expect(server.headersTimeout).toBe(1_000);
-    expect(enforceHeaderTimeout(server, 1_000)).toBe(false);
+    expect(enforceHeaderTimeout(server, 1_000)()).toEqual({ installed: false, endpointEntries: 0 });
   });
 });
 

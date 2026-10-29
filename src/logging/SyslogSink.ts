@@ -1,5 +1,6 @@
 import { getTcpBackend } from '../runtime/tcp/index.js';
-import type { TcpSocketLike, TlsTransportOptionsType } from '../runtime/tcp/TcpBackend.js';
+import { connectWithin } from '../runtime/tcp/TcpBackend.js';
+import type { TcpBackend, TcpSocketLike, TlsTransportOptionsType } from '../runtime/tcp/TcpBackend.js';
 import { Lazy } from '../util/Lazy.js';
 import { BatchingSink, SinkDeliveryError } from './BatchingSink.js';
 import type { DgramSocketLike } from './GelfSink.js';
@@ -114,7 +115,19 @@ export class SyslogSink extends BatchingSink {
       this.port,
       this.framing,
       this.transport === 'tls' ? (this.tls ?? {}) : undefined,
+      () => this.tcpBackend(),
     );
+  }
+
+  /**
+   * What `tcp` and `tls` dial through — the runtime's own backend.
+   *
+   * `protected` for the reason {@link createWire} is: a collector that never
+   * answers is the case the dial's bound exists for, and no test can have a
+   * network blackhole a SYN on cue.
+   */
+  protected tcpBackend(): Promise<TcpBackend> {
+    return getTcpBackend();
   }
 }
 
@@ -177,6 +190,17 @@ class UdpSyslogWire implements SyslogWire {
 /* --------------------------- TCP and TLS -------------------------------- */
 
 /**
+ * How long a dial to the collector may take — the TCP connect and, over TLS,
+ * the handshake — before the batch counts as failed, retryably (#1475).
+ *
+ * The dial had no bound but the operating system's: a collector that drops
+ * SYNs held `emitBatch` for 21 s on Windows and about two minutes on Linux,
+ * per attempt, with every record behind it waiting.  Ten seconds, the same
+ * as the GELF sink's TCP dial.
+ */
+const SYSLOG_CONNECT_TIMEOUT_MS = 10_000;
+
+/**
  * One long-lived connection carrying framed messages.
  *
  * TLS is the same code path with credentials attached — `getTcpBackend`
@@ -191,6 +215,7 @@ class StreamSyslogWire implements SyslogWire {
     private readonly port: number,
     private readonly framing: SyslogFraming,
     private readonly tls: TlsTransportOptionsType | undefined,
+    private readonly backend: () => Promise<TcpBackend>,
   ) {}
 
   async send(message: string): Promise<void> {
@@ -219,8 +244,7 @@ class StreamSyslogWire implements SyslogWire {
   }
 
   private async connect(): Promise<TcpSocketLike> {
-    const backend = await getTcpBackend();
-    const socket = await backend.connect({
+    const socket = await connectWithin(await this.backend(), {
       host: this.host,
       port: this.port,
       ...(this.tls !== undefined ? { tls: this.tls } : {}),
@@ -231,7 +255,7 @@ class StreamSyslogWire implements SyslogWire {
         onClose: () => { this.forget(socket); },
         onError: () => { this.forget(socket); },
       },
-    });
+    }, SYSLOG_CONNECT_TIMEOUT_MS);
     this.socket = socket;
     this.connecting = undefined;
     return socket;

@@ -50,6 +50,43 @@ export type RegisterRefused = {
   readonly regionNumShards: number;
 };
 
+/**
+ * Coordinator → region: this coordinator holds no registration of yours —
+ * register (#853, #849).
+ *
+ * A region registers off cluster events: its own start and every `MemberUp`,
+ * `MemberRemoved` and `LeaderChanged`, plus a retry until it gets an answer.
+ * A coordinator that loses its registry without any of those firing is left
+ * with nobody to tell it what is there.  Three things do exactly that:
+ *
+ * - **a restart** — the coordinator's supervisor rebuilds it after one of its
+ *   handlers throws, a user `AllocationStrategy` included, and the leader does
+ *   not move, so no region sees a reason to register again.  Without a
+ *   coordinator-state store the replacement knows no region at all and the
+ *   type is headless; with one it re-seeds every region from the snapshot, and
+ *   a seeded entry that never registers is swept once `stale-after` runs out —
+ *   which evicted live regions that simply do not beat;
+ * - **a snapshot load** on a new leader, which seeds entries the same way;
+ * - **a lost {@link RegionEvicted}**, which leaves a live region believing it is
+ *   registered while the coordinator holds no entry for it; its next beat
+ *   names a region the coordinator does not know.
+ *
+ * So the coordinator asks, and the region answers with its ordinary
+ * {@link RegisterRegion} — `hostedShards` and all, so the claim is adjudicated
+ * like any other.  It is sent only to regions the coordinator has a concrete
+ * reason to believe in — its predecessor's registry, a snapshot's entries, a
+ * beat it just received — never to every member: a node that runs nothing for
+ * the type would count the frame as a refused envelope.
+ *
+ * The answer is idempotent.  A region that is already registered re-registers
+ * harmlessly, and one whose registration stands refused stays silent, as it
+ * does for its own register loop, until the leader moves.
+ */
+export type RegistrationRequest = {
+  readonly kind: 'sharding.RegistrationRequest';
+  readonly coordinator: string;
+};
+
 export type GetShardHome = {
   readonly kind: 'sharding.GetShardHome';
   readonly shardId: number;
@@ -155,7 +192,10 @@ export type RegionEvicted = {
   readonly kind: 'sharding.RegionEvicted';
   readonly coordinator: string;
   /**
-   * How long the coordinator had heard nothing when it decided, in ms.
+   * How long the coordinator had heard nothing when it decided, in ms —
+   * counted, for a region whose node was unreachable meanwhile, from the last
+   * sweep that found the node parked rather than from the region's last frame
+   * (`ShardCoordinator`'s `RegionInfo.lastSeenAtMs`).
    *
    * For the region's log line only, and deliberately: an operator reading
    * "evicted" on a node that is plainly healthy needs the number that
@@ -408,6 +448,7 @@ export type ShardingMessage =
   | RegisterRegion
   | RegisterAcknowledgment
   | RegisterRefused
+  | RegistrationRequest
   | GetShardHome
   | ShardHome
   | BeginHandOffAcknowledgment

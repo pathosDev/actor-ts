@@ -582,3 +582,42 @@ describe('a readiness wait answers to the join deadline too', () => {
     expect(internals(node.cluster).joinGiveUpListeners.size).toBe(0);
   });
 });
+
+// A failure never exits 0, and it is logged first (D-M5 1).  The give-up runs
+// the pipeline with `ClusterJoinUnsuccessfulReason` from inside the cluster,
+// and under `exit-process` that run used to exit with `exit-code` — `0` by
+// default, the status a supervisor reads as a clean stop — although the node
+// never joined.  `Cluster.bootstrap`'s readiness wait, the other deadline, is
+// pinned beside it in `tests/ClusterBootstrap.test.ts`.
+describe('a give-up under exit-process exits non-zero, after its warning', () => {
+  test.each([
+    ['exit-code at its shipped 0 becomes 1', 9_830, '', 'exit 1 after 1 give-up warning(s)'],
+    ['an exit-code that already says "failed" is kept', 9_831, 'exit-code = 23', 'exit 23 after 1 give-up warning(s)'],
+  ] as const)('%s', async (_case, port, exitCode, expected) => {
+    const seen: string[] = [];
+    let node: NodeHandle | undefined;
+    const realExit = process.exit;
+    process.exit = ((code?: number): never => {
+      seen.push(`exit ${code} after ${node === undefined ? '?' : giveUpWarnings(node).length} give-up warning(s)`);
+      return undefined as never;
+    }) as typeof process.exit;
+    try {
+      node = await startNode(`give-up-exits-${port}`, port, {
+        giveUpMs: DEADLINE_MS,
+        hocon: `actor-ts.coordinated-shutdown { exit-process = on\n${exitCode} }`,
+      });
+      node.scheduler.advance(DEADLINE_MS);
+      expectGaveUp(node);
+      await awaitTerminated(node);
+      await awaitCondition(() => seen.length > 0, {
+        timeoutMs: 2_000,
+        intervalMs: 5,
+        label: 'the give-up run called process.exit',
+      });
+    } finally {
+      process.exit = realExit;
+    }
+
+    expect(seen).toEqual([expected]);
+  });
+});

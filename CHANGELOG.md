@@ -30,6 +30,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the counter-node sample sets its keep-majority timing through the builder
   instead of a HOCON block.
 
+  A forwarded value refused once the system exists (an empty or spaced app
+  version, a split-brain-resolver `stableAfterMs` of 0, a give-up shorter
+  than one seed round or inside the election budget, an `otelLogs` logger
+  that throws on the first line) is logged at error first, on the console
+  where the logger itself is what threw, and the system ends as a node that
+  could not join.
+
 - **Request attributes: `HttpRequest.attributes`, read and written through
   `RequestAttributeKey.of<T>(name)`, `attribute(request, key)` and
   `withAttribute(request, key, value)` from `actor-ts/http`** (#810). A
@@ -117,6 +124,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `Cluster.bootstrap`'s stable observation so is one that does not exceed
   `self-election-grace` + 5 s, before the join.
 
+  Under `exit-process` the give-up's run never exits 0, and a
+  `Cluster.bootstrap` readiness wait that fails, on its own deadline or on
+  the give-up's, logs the error at error before its run. A give-up run that
+  a `recover = false` phase halts still ends in the teardown unless
+  `terminate-actor-system` is off.
+
+  A node with no seed to contact gives up naming that fault: a 'never' node
+  with an empty seed list, or one naming only itself, is told that only a
+  peer listing it as a seed can bring it in, and a founder that
+  minimum-members-before-up holds is told the threshold and the shortfall,
+  instead of being told that no seed answered and to check addresses that do
+  not exist.
+
 - **A downed peer gets no quarantine of its own: what refuses it is its
   tombstone, and the downing-strategies page now says, per downing route,
   what a downed address may do next** (#1477). `Cluster.down()`, a
@@ -158,6 +178,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   recipe that could never fire, and the downing-strategies page no longer
   claims that the losing nodes' actors stop.
 
+  A run the switch started that a `recover = false` phase halts still ends
+  in the teardown, as a signal-started run does, unless
+  `terminate-actor-system` is off; the halt is logged at error. A decision
+  that downs only peers leaves the node running.
+
 - **The startup graph's budgets and the boot-time open of the persistence
   stores can be set from configuration** (#1473).
   `actor-ts.coordinated-startup` carries `default-phase-timeout` (30s, the
@@ -184,13 +209,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   that is not running (never started here, or stopped), one the coordinator
   refused over `number-of-shards` (with both counts), and one that is
   running and not acknowledged yet; a refused node stays out of rotation
-  until the counts agree or a leader change reaches a coordinator that
-  accepts it. The default `[]` installs nothing, and a list that cannot be
-  read fails `Cluster.join` before the transport starts.
-  `shardRegionRegistered(cluster, typeName)` in `actor-ts/management`
-  (#1541) builds the same readiness check for a type only the code knows
-  about: `shardRegionRegistered(cluster, 'orders')`, handed to
-  `healthChecksOf(system).addReadiness(...)`, reports
+  until the counts agree, and a leader change lifts the refusal on record. A
+  refusal on record lapses with the leader term that issued it: from a
+  leader change until the new coordinator answers, `registrationRefusal` is
+  null and the type reads as not registered, instead of naming a coordinator
+  that no longer governs it. `isRegistered` is this node's account of what
+  its region was told: a leader change does not turn it false, also when the
+  new leader runs no coordinator for the type, a lost eviction notice leaves
+  it true until the region's next beat is answered with a registration
+  request, and a stop or an eviction leaves a refusal on record. The default
+  `[]` installs nothing, and a list that cannot be read fails `Cluster.join`
+  before the transport starts. `shardRegionRegistered(cluster, typeName)` in
+  `actor-ts/management` (#1541) builds the same readiness check for a type
+  only the code knows about: `shardRegionRegistered(cluster, 'orders')`,
+  handed to `healthChecksOf(system).addReadiness(...)`, reports
   `ClusterSharding.isRegistered('orders')` under
   `shardRegionCheckName('orders')`, synchronously, and stays registered
   while it fails.
@@ -245,11 +277,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   downs on it. It rides the gossip overlay lane, so a member first learned
   through, or promoted by, a node running an older actor-ts regains its
   label from its own next gossip, and a node's own label survives a
-  promotion from such a leader. A label is 1 to 64 visible ASCII characters:
-  `Cluster.join` refuses one that is not, and a peer's label that is not is
-  dropped while the member is kept. `/cluster/members` answers anonymous
-  callers unless `auth` is configured (#971), so the label adds each node's
-  release to what that endpoint discloses.
+  promotion from such a leader. A label belongs to the run that states it: a
+  member restarted without one, on a release that sets none or a deployment
+  without `APP_VERSION`, is shown without one cluster-wide, never with its
+  previous run's label, and a label a peer relayed into the slot of a member
+  that states none is taken back by that member's own next gossip. A label
+  is 1 to 64 visible ASCII characters: `Cluster.join` refuses one that is
+  not, and a peer's label that is not is dropped while the member is kept.
+  `/cluster/members` answers anonymous callers unless `auth` is configured
+  (#971), so the label adds each node's release to what that endpoint
+  discloses.
 
   Quote a literal version: HOCON reads an unquoted `1.0` as a number, and
   the peers are told `"1"`.
@@ -533,13 +570,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   inside `publish`, after every actor subscriber, for the subscriptions that
   existed when the event was published; a throw or a rejected promise is
   logged at warn and skips that callback for that event, and callback
-  deliveries nest at most 16 levels deep, so a callback that publishes on
-  its own channel is cut off with one warning instead of recursing until the
-  stack overflows. `hasSubscribers` counts callbacks, so a callback alone
-  receives `ActorStarted` and `ActorStopped`. Callback subscriptions end
-  when the system terminates, after the shutdown's own events and before
-  `terminate()` resolves, and a terminated system refuses new ones.
-  `subscribe(ref, channel)` is unchanged.
+  deliveries nest at most 16 levels deep, and reaching that depth cuts the
+  cascade it is reached in: from then on nothing that one call of the
+  outermost publish set off reaches a callback, with one warning per cut
+  cascade, while the deliveries already under way finish and actor
+  subscribers still receive every event. A loop through several callbacks
+  therefore costs a bounded number of calls - two callbacks publishing on
+  their own channel make 62 calls and two warnings, where the depth bound
+  alone made 131 070 calls and 65 536 warnings - and a loop in one
+  callback's cascade never cuts another's. A class, an `EventKey` or a
+  string in the callback slot, which is the call written in the other order,
+  is refused with a `TypeError` naming
+  `subscribeFunction(channel, callback)`. A failing callback stays contained
+  whatever it throws: a value the logger cannot render is left out of the
+  warning instead of escaping through it. `hasSubscribers` counts callbacks,
+  so a callback alone receives `ActorStarted` and `ActorStopped`. Callback
+  subscriptions end when the system terminates, after the shutdown's own
+  events and before `terminate()` resolves, and a terminated system refuses
+  new ones. `subscribe(ref, channel)` is unchanged.
 
   A callback that tells an actor from inside that actor's termination no
   longer loses the message. The dead letters of its last queued messages are
@@ -560,9 +608,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   factory options, Express through the `node:http` server the backend now
   builds itself, Hono on Node through `@hono/node-server`'s `serverOptions`
   — and is reported not in effect, with a bind-time warning, on Hono under
-  Bun or Deno; on an HTTP/2 listener under Node it caps the HTTP/1.1
-  requests but not an HTTP/2 stream's header list. A backend built with a
-  cap of its own that differs from a set key is refused at `bind()` rather
+  Bun or Deno; on an HTTP/2 listener under Node `max-header-bytes` caps the
+  HTTP/1.1 requests but not an HTTP/2 stream's header list, which only
+  Node's own 64 KiB limit bounds, so there it is reported held for HTTP/1.1
+  only and `bind()` warns; Bun caps the stream as well. A backend built with
+  a cap of its own that differs from a set key is refused at `bind()` rather
   than left to pick one: `withMaxBodyBytes` on Express and Hono, and a
   hand-built `FastifyBackend`, which adopts both keys through
   `fastifyFactoryOptions(serverOptions)`.
@@ -611,6 +661,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   neither guard ever fired — measured on deno 2.6.8, a slow-loris was still
   open 3 s after an 800 ms header deadline and a second connection under a
   cap of one was answered, while the report said both were in effect.
+
+  A bound that holds for only one of the two protocols an HTTP/2 listener
+  speaks is reported not in effect, with the protocol it does hold for in
+  `heldForOneProtocol`, and the warning names it that way rather than as
+  holding nothing: on Bun's HTTP/2 listener `idle-timeout` and
+  `request-timeout` bound HTTP/2 but not a connection that negotiates
+  HTTP/1.1 on the same port, and on Node's `max-header-bytes` caps the
+  HTTP/1.1 requests but not an HTTP/2 stream's header list.
 
 - **BREAKING — `requestTimeout()` takes its deadline from the new
   `actor-ts.http.request-timeout` block** (#1463). Its one leaf,
@@ -791,6 +849,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   worker thread's system inherits the config and still terminates without
   the pipeline: the main thread runs it.
 
+  With `run-by-actor-system-terminate` on, a `Cluster.bootstrap` refused
+  after it built its system logs the refusal at error and ends the system
+  through the pipeline with `ClusterJoinUnsuccessfulReason` rather than
+  `ActorSystemTerminateReason`, so under `exit-process` it no longer exits 0
+  before the refusal can reach main.
+
 - **Journal, SnapshotStore and DurableStateStore declare an optional
   `start()`, and every external store implements it: it opens the store now
   instead of on its first operation, so a boot-time warm-up can make a wrong
@@ -807,7 +871,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   before any table is created.
 
 - **Config profiles and a secrets file** (#1546). A root `profiles.<name>`
-  block of application.conf is laid over the root of the same file when
+  block of `application.conf` is laid over the root of the same file when
   `<name>` is the active profile, chosen by
   `ActorSystemOptions.withProfile(name)` or `LoadOptions.profile`, then the
   `ACTOR_TS_PROFILE` environment variable, then none; a name no file defines
@@ -820,10 +884,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   profile is never resolved. The boot config dump and the DevTools
   configuration panel attribute every key to one of five layers (reference,
   application, profile, secrets, override) and name the active profile and
-  the files read. `withProfile` reaches `system.config` only: ClusterClient,
-  InMemoryLease, KubernetesLease, WorkerCluster and the
-  read…OptionsFromConfig helpers called without a Config load their own
-  configuration and see `ACTOR_TS_PROFILE` alone.
+  the files read. `withProfile` reaches `system.config` only:
+  `ClusterClient`, `InMemoryLease`, `KubernetesLease`, `WorkerCluster.spawn`
+  and the read…OptionsFromConfig helpers called without a Config load their
+  own configuration and see `ACTOR_TS_PROFILE` alone. A `WorkerMesh` runs
+  its workers on the profile its main system selected. The worker pool reads
+  `actor-ts.worker-cluster` from the main system's configuration instead of
+  loading its own, and each worker selects no profile of its own and reads
+  the application file its main thread read, so a profile defined only in a
+  file named with `withConfigFile` no longer stops `WorkerMesh.start`, and a
+  main system that opted out with `withProfile('')` has workers that run
+  without the profile too. A secrets file that is there but cannot be read
+  or parsed, `./secrets.conf` in the working directory included, is refused
+  with a `ConfigError` that names the file and what made `Config.load` read
+  it.
 
   The configuration reference and the DevTools configuration page count the
   secrets file among the three rules that withhold a value — beside a key's
@@ -2489,15 +2563,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
   `idle-timeout` bounds an idle HTTP/2 session too, not only an idle
   HTTP/1.1 keep-alive connection. It reaches an HTTP/1.1 server as
-  `keepAliveTimeout`, a property no HTTP/2 session reads, so an idle HTTP/2
-  client would stay connected for Fastify's own 72 s on the default backend
-  and indefinitely on Hono over Node, whatever the setting said. The server
-  arms each session's own idle timer with the value instead and closes the
-  session gracefully when it fires: a GOAWAY, with a stream still in flight
-  allowed to finish, so a slow handler or a long poll is not cut. `0` clears
-  the timer, Fastify's included. Bun fires that timer at twice the value —
-  measured on bun 1.4.2, 1.6 s for 800 ms, where node v26.10.0 took 0.8 s;
-  the documentation states both.
+  `keepAliveTimeout`, a property no HTTP/2 session reads, so the server runs
+  a timer of its own per session: armed while the session has no stream
+  open, it closes the session with a GOAWAY when it fires. A stream in
+  flight holds the session, as a request holds an HTTP/1.1 keep-alive
+  connection, so a slow handler, a long poll or an SSE stream is never
+  interrupted by it; the value is the same on Bun and Node, and no frame but
+  a request resets it. The runtime's own session timer is cleared, Fastify's
+  included, so the configured value governs, and `0` disables the bound.
+  Unset, an idle HTTP/2 session is left to Fastify's own timer: 72 s on
+  Node, and 144 s on Bun, which fires it at twice the value and lets a PING
+  reset it.
 
   *Migration:* A server on the Fastify backend now applies a 300 s
   `requestTimeout` where Fastify sets that property to 0 — no bound at all.
@@ -3176,6 +3252,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   nobody for the rest of the term; one that registers is judged like any
   other registered region, so a registered region that has never beaten is
   still never swept.
+
+  A coordinator that lacks a registration it should have now asks for it
+  with a `sharding.RegistrationRequest`: a coordinator rebuilt by its
+  supervisor asks every region the instance before it knew, a
+  coordinator-state snapshot load asks every entry it seeds, and a beat from
+  a region the coordinator does not hold is answered the same way. A
+  coordinator restart therefore no longer evicts a live region that does not
+  beat once its seeded grace runs out, and a region whose eviction notice
+  was lost registers again on its next beat instead of staying out while
+  `isRegistered` reads true on its node. The request goes only to regions
+  the coordinator has a reason to believe in, never to every member, and a
+  region answers it with its ordinary `Register`.
 
 - **`actor-ts.distributed-data` gains two keys, `log-data-size-exceeding`
   and `durable-keys`, both wired to mechanisms that already existed**
@@ -4041,9 +4129,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   deadline runs while the message waits in that buffer.  Documented that way
   under `cluster/sharding/introspection` (EN + DE).
 
-  `cluster.sharding.isRegistered(typeName)` also reads `false` while the
-  coordinator has evicted this node's region for going silent, until the
-  region's new registration is acknowledged, and once the region has
+  `cluster.sharding.isRegistered(typeName)` also reads `false` once the
+  region has been told the coordinator evicted it for going silent, until
+  the region's new registration is acknowledged, and once the region has
   stopped, so a readiness check built on it no longer keeps a node that
   hosts nothing for the type in rotation. The region reports both to
   `ClusterSharding` directly; `ShardRegionRegistered` still marks every
@@ -4101,6 +4189,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `ParallelMultiNodeSpec` and `ClusterBootstrap` take
   `failureDetectorAutoDown`.
 
+- **`WorkerCluster.spawn` takes the configuration it reads
+  `actor-ts.worker-cluster` from as an optional second argument, as
+  `ClusterClient` and the leases already do** (#1546). Without one it still
+  loads the chain itself, which sees only `ACTOR_TS_CONFIG`,
+  ./`application.conf` and the profile `ACTOR_TS_PROFILE` names, so hand it
+  `system.config` whenever a system is in scope.
+
 ### Changed
 
 - **BREAKING — With `actor-ts.coordinated-shutdown.exit-process` on, a run
@@ -4122,7 +4217,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   with `terminate-actor-system = false` is flushed the same way before its
   exit, where it used to exit with the last records still buffered; a run
   whose terminator tore the system down was already flushed by that
-  teardown. With `exit-process` off nothing changes.
+  teardown. A failure never exits 0: a run for a node that could not join
+  exits by the same rule, whether its join gave up, a `Cluster.bootstrap`
+  readiness wait failed or a bootstrap refused after building its system
+  ended through the pipeline, because the reason of all three,
+  `ClusterJoinUnsuccessfulReason`, makes the run one for a failure. The run
+  is in flight until its exit, so a `terminate()` that arrives while the
+  dead-letter queue and the log sinks are flushed for that exit starts
+  nothing, and the exit takes the place of the teardown as described. With
+  `exit-process` off nothing changes.
 
   **Migration.** With `exit-process` on, a halted run now ends the process
   at the halt instead of rejecting to its caller; cleanup that ran in a
@@ -4615,13 +4718,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   pipeline inside the first — because `run()` stored its promise only after
   the first phase's tasks had started.
 
-  **Migration.** Where an awaited `terminate()` can race a
-  coordinated-shutdown run (from a phase task, or beside a signal-triggered
-  shutdown) and the code relies on the system being down afterwards, await
-  `system.whenTerminated()` instead.
+  From a task of the pipeline, awaiting `whenTerminated()` is the same
+  stall: the teardown it waits for runs in the last phase, which cannot
+  start before the task's own phase ends, so the phase is held for its whole
+  budget and logged as timed out. Only a task of `actor-system-terminate`
+  runs beside the terminator. **Migration.** Where an awaited `terminate()`
+  beside a coordinated-shutdown run, outside the pipeline (code beside a
+  signal-triggered shutdown, say), relies on the system being down
+  afterwards, await `system.whenTerminated()` instead; a phase task should
+  not wait for the system to go down at all, so move work that needs it down
+  after the run, or into a task of `actor-system-terminate`.
 
 - **BREAKING — The root config key `profiles` is reserved** (#1546). In
-  application.conf and the secrets file it is read as profile blocks and
+  `application.conf` and the secrets file it is read as profile blocks and
   stripped from the effective tree, a substitution that reads it is refused,
   and a root profiles key in the config passed in code
   (`ActorSystemOptions.withConfig`, `LoadOptions.overrides`) is refused at
@@ -4629,7 +4738,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   because the source of a `config.resolved` entry widened from three layer
   names to five, so a DevTools client and server one version apart refuse
   each other at the handshake. `WorkerMeshInitData`, exported from
-  `actor-ts/worker`, gains the required `secretPaths` field.
+  `actor-ts/worker`, gains the required `secretPaths` field and an optional
+  `configFile`.
 
   **Migration.** Rename a root profiles key of your own (keys below the root
   such as `my-app.profiles` are unaffected), move profile blocks out of
@@ -5651,7 +5761,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `error` level with the producer id, the seq (or that the send was still
   queued) and the thrown value. An `async` callback whose promise rejects is
   logged the same way instead of surfacing as an unhandled rejection, which
-  ended the process on Bun and Node.
+  ended the process on Bun and Node. The report itself can no longer fault
+  the producer: a thrown or rejected value the logger cannot render - an
+  error whose `message` getter throws, or a revoked proxy, either of which
+  made the stock `JsonLogger` or `ConsoleLogger` throw - is left out of the
+  line, which is written without it. Unguarded, that failed render restarted
+  the producer on an acknowledgment, abandoned the settlement loop in
+  `postStop`, and turned an `async` callback's rejection into an unhandled
+  one.
 
 - **A coordinated-shutdown phase budget longer than one host timer holds —
   about 24.9 days, as with
@@ -5726,6 +5843,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (down-after, or stable-after with a split-brain strategy), with the
   eligible regions as candidates and the shards of every region on an up
   member, a non-candidate's included.
+
+  A region refused over its shard count now answers the hand-offs of the
+  shards a coordinator-state snapshot seeded it with, so they move at once
+  instead of after `handOffTimeoutMs`, ten seconds by default; a shard it is
+  still releasing is answered once its stop has finished. A coordinator ends
+  a hand-off only on a `HandOffComplete` from the region it sent the
+  hand-off to, so a late or duplicated completion from any other region ends
+  nothing.
 
 - **The cold-start stall warning no longer counts a peer's `removed`
   tombstone or `down` record as a peer it can see** (#1500). A node whose
@@ -6129,6 +6254,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   checks identity first, so the object that subscribed such a ref can still
   remove it.
 
+  The warning the comparison guard writes can no longer throw: when the
+  logger cannot render what `equals` threw - an error whose `message` getter
+  throws, a revoked proxy - the line is written without it, where it used to
+  throw out of `unsubscribe` and so out of every actor stop.
+
 - **`MockCluster` (the testkit) delivers a cluster event by the same rule as
   `Cluster.subscribe`: a listener that another listener unsubscribes during
   dispatch is not called with the event in flight** (#1294). The mock walked
@@ -6215,6 +6345,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   their turn comes: one subscribed mid-dispatch starts with the next event,
   and one whose unsubscribe has run is not called again.
 
+  Each `Cluster.subscribe` call is its own subscription: subscribing one
+  function twice and calling the second unsubscribe ends only that
+  subscription, and calling it again ends nothing, where it used to remove
+  the first registration holding the function and then the other.
+
 - **A cluster dial that misses its handshake deadline is now aborted instead
   of being left to connect on, and its WARN says how far it got** (#1475).
   The deadline used to drop only the transport's own bookkeeping: a
@@ -6224,11 +6359,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   connection is retired, and the adapters destroy a socket that is still
   connecting - natively on Node, through Bun's own `node:net` and `node:tls`
   on Bun (native `Bun.connect` cannot be cancelled), and through
-  `Deno.connect`'s signal on Deno over plaintext. Deno over TLS is the one
-  exception: `Deno.connectTls` takes no signal, so the dial is dropped and
-  its connection closed the moment it appears while the connect itself runs
-  on. The WARN that used to read the same for a blackholed connect and for a
-  peer that accepts and never answers now says
+  `Deno.connect`'s signal on Deno over plaintext. A TLS dial now counts as
+  open only once its handshake is done on every backend, so on Deno too a
+  certificate the CA does not sign and a peer that stalls the handshake are
+  a dial that could not connect: `Deno.connectTls` resolves at the TCP
+  connect, and Deno logged `outbound error -> X` for the first and left the
+  second to the handshake deadline. Over TLS on Deno only the TCP connect
+  still cannot be cancelled; a dial given up during its handshake is dropped
+  at once, although Deno does not end the TCP connection under it. Every
+  cluster dial on Bun now writes through `node:net`, which keeps what the
+  peer cannot take yet in memory without bound, where native Bun dropped it
+  (#931). The WARN that used to read the same for a blackholed connect and
+  for a peer that accepts and never answers now says
   `could not connect to X within N ms` or
   `connected to X, but no hello-ack came within N ms`; a dial refused before
   its deadline logs the first line, once, on every runtime, with the
@@ -6359,6 +6501,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   is now a malformed-tag `SerializationError` that does not echo the digits.
   `SerializationError` accepts an optional `ErrorOptions` argument so a
   wrapped error travels as its cause.
+
+  An `__error__` named after an `Object.prototype` member — `toString`,
+  `valueOf`, `constructor` and the rest — no longer throws a raw `TypeError`
+  out of the decoder or, for `constructor`, decodes to a `String` wrapper:
+  it decodes to a plain `Error` that keeps the name, like every other name
+  with no built-in error class behind it. The CBOR codec and the
+  stored-payload codec share that lookup and are fixed with it, so an error
+  stored under such a name can be read back.
 
 - **`CassandraRememberEntitiesStore` now sends the consistency level it is
   configured with** (#1491). `withConsistency()` and a plain `consistency`
@@ -8214,6 +8364,84 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   unless the shard moved away in the meantime, and one for a shard handing
   off is left to the new owner the coordinator ships it to — the two rules
   the paced drain follows.
+
+- **`parseLogLevel` reads `constructor` and `__proto__` as the unknown level
+  names they are** (#1425). Its name table was indexed through the prototype
+  chain, so either word, in any case, came back as a function or an object
+  instead of `undefined`. As `actor-ts.logger.level` it left the default
+  console logger printing nothing, `error()` included, and made
+  `ActorSystem.create` throw once any sink was configured; as a sink's
+  `min-level` it reached the sink's validator as that value instead of the
+  word that was written. Both now take the documented path: the system level
+  falls back to `info`, and a sink refuses the name.
+
+- **A subscriber whose `tell`, or whose channel's `instanceof`, throws a
+  value the logger cannot render no longer makes `EventStream.publish`
+  throw** (#1010), and a predicate that throws one is reported as a
+  predicate failure again. The bus contains each of these and warns with
+  what was thrown, and that warning itself threw when the stock `JsonLogger`
+  or `ConsoleLogger` could not render the value - an error whose `message`
+  getter throws, a revoked proxy, a throwing custom inspect. From the
+  delivery guard the throw left `publish`, so every subscription after the
+  faulty one missed the event; from the predicate guard the delivery guard
+  caught it and logged a delivery failure carrying the logger's own error.
+  The warning is now written without a value the logger cannot render, and a
+  logger that cannot write a line at all no longer makes `publish` throw.
+
+- **A shard coordinator restarted by its supervisor no longer leaves its
+  type headless** (#849). The supervisor restarts it after a user
+  `AllocationStrategy` throws out of `allocate`, for instance. A restart
+  moves no leader, so no region registered again: the replacement knew no
+  region, could place no shard and delivered nothing that needed the
+  coordinator. It now asks every region the instance before it knew to
+  register, so the map comes back from the regions' own claims and messages
+  are delivered again one round trip after the restart.
+
+- **`cluster.sharding` after `leave()` and a new `Cluster.join` on the same
+  `ActorSystem` now returns a facade bound to the new cluster** (#1465). The
+  facade was memoised per system and ignored the cluster it was asked for,
+  so the first incarnation to touch it kept it: a region started on the new
+  incarnation never registered, and with
+  `actor-ts.sharding.healthcheck.names` set its shard-region readiness check
+  stayed red for good. Each cluster incarnation now gets a facade of its
+  own, and repeated reads through one cluster still return one instance. A
+  type the left incarnation had started cannot be started again yet: its
+  region keeps its name, so the new start fails on it instead of handing
+  back the left region, which delivered nothing.
+
+- **`Config.load` names an application file it cannot read or parse**
+  (#1546). It refuses such a file with a `ConfigError` that names the file
+  and what selected it: `withConfigFile` or `LoadOptions.appConfPath`,
+  `ACTOR_TS_CONFIG`, or `application.conf` in the working directory. The
+  parser's error stays reachable as the cause, which `ConfigError` now
+  accepts as `ErrorOptions`. Before, the parser's error arrived alone and
+  said where in the text it stopped, not in which file.
+
+- **GELF over TCP with TLS and syslog over TLS no longer lose the first
+  batch on a fresh connection on Bun** (#1475). Bun's native dial resolved
+  at the TCP connect, before the TLS handshake, and what was written in
+  between was dropped, so every time a sink connected its first batch never
+  reached the collector. A native Bun TLS dial now resolves only once its
+  handshake is done, and one to a peer whose certificate the CA does not
+  sign is a failed dial instead of a connection that opens and closes again.
+
+- **The GELF and syslog TCP sinks give a collector that does not answer 10
+  s, then fail the batch retryably** (#1475). The 10 s cover the TCP connect
+  and the TLS handshake together. The dial had no bound but the operating
+  system's, so a collector that drops SYNs held each delivery attempt for 21
+  s on Windows and about two minutes on Linux, with every record behind it
+  waiting. A collector that refuses the connection fails the batch at once
+  and retryably on every runtime. The bound is fixed for now.
+
+- **A node that `weaklyUpAfterMs` moved to `weakly-up` before the leader
+  promoted it no longer stays `weakly-up` for good** (#935). The leader
+  promoted the joining record to up at the same version the node's own timer
+  had given weakly-up, the merge ignored the record as not newer, and the
+  node never emitted `SelfUp` or became ready while every peer counted it
+  up; on Deno a seed starting 150 to 170 ms after the timer fired hit this
+  on every run (#1493). An up record now wins over a weakly-up one at the
+  same version, on every node. Other equal-version disagreements are still
+  ignored, and #935 stays open for them.
 
 ### Removed
 
@@ -10335,6 +10563,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   anything reachable only through a getter is deliberately dropped, since a
   getter can recompute the secret.  `BrokerNotConnected` needed nothing: it
   carries no cause.
+
+- **An HTTP/2 request whose body is still arriving when
+  `actor-ts.http.server.request-timeout` passes is answered `408` and its
+  stream reset** (#870). The key reached a server only as the HTTP/1.1
+  `requestTimeout` property, which no HTTP/2 stream reads, so on an HTTP/2
+  listener a request that never finished sending held its stream, and the
+  connection with it, open indefinitely while the binding reported the bound
+  in effect. Each stream now carries a receive deadline of its own, spent
+  once the client has finished sending, so a request received in full is
+  still never cut, however long its handler takes.
 
 ## [0.17.0] — 2026-08-29
 

@@ -538,4 +538,56 @@ describe('a crossing dial is not reported as a hijack', () => {
       `hello hijack rejected: peer ${nodeB} already has an active connection; closing the new socket`,
     ]);
   });
+
+  /**
+   * A claim on a peer this node *dialled*, after that peer acked the dial.
+   *
+   * The established peer above was accepted, so it is not outbound, and a
+   * crossing-dial rule that asked "is it outbound?" instead of "is it an
+   * outbound nobody has acked yet?" passed it.  An acked dial is outbound too:
+   * under that rule a second `hello` naming the peer was either let through as
+   * the winning half of a crossing dial — retiring the real connection and
+   * handing the slot to the newcomer — or logged at debug as the losing half,
+   * depending only on which address sorts first.  Both orders are run, because
+   * they fail differently under that rule: one keeps the connection and only
+   * loses the WARN, the other gives the connection away as well.
+   */
+  for (const [order, peer] of [
+    ['after', nodeB],
+    ['before', new NodeAddress('dialler', '10.0.0.9', 2_552)],
+  ] as const) {
+    test(`a second claim on a peer whose dial was acked is a hijack, when the peer sorts ${order} this node`, async () => {
+      expect(peer.toString() > self.toString()).toBe(order === 'after');
+      const log = new CapturingLogger();
+      const transport = new TcpTransport(self, log);
+      transports.push(transport);
+      const dials = heldDialer(transport);
+      transport.send(peer, heartbeat(1));
+      await dials[0]!.open();
+      const dialled = dials[0]!.socket;
+      internals(transport).onData(dialled, encodeFrame({ kind: 'hello-ack', self: peer.toJSON() }));
+      const established = internals(transport).byPeer.get(peer.toString());
+      expect(established).toBeDefined();
+
+      const intruder = recordingSocket();
+      internals(transport).attachInbound(intruder);
+      internals(transport).onData(intruder, encodeFrame({ kind: 'hello', self: peer.toJSON() }));
+
+      expect(internals(transport).byPeer.get(peer.toString())).toBe(established);
+      expect({ destroyed: dialled.destroyed, ended: dialled.ended }).toEqual({ destroyed: false, ended: false });
+      expect(intruder.destroyed).toBe(true);
+      expect(intruder.writes).toEqual([]);                                     // no hello-ack for the newcomer
+
+      // The peer's traffic still goes where it went before the claim.
+      const written = dialled.writes.length;
+      transport.send(peer, heartbeat(2));
+      expect(dialled.writes).toHaveLength(written + 1);
+      expect(new FrameDecoder().push(dialled.writes.at(-1)!)).toEqual([heartbeat(2)]);
+
+      // Last, so that the order which keeps the connection still fails here.
+      expect(log.warnings.map((warning) => warning.message)).toEqual([
+        `hello hijack rejected: peer ${peer} already has an active connection; closing the new socket`,
+      ]);
+    });
+  }
 });

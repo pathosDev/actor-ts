@@ -104,8 +104,8 @@ function countingHandlers(): {
   };
 }
 
-/** A dial being watched; `wait()` yields what it settled with. */
-type Settlement = { wait(): Promise<unknown> };
+/** A dial being watched; `wait()` yields what it settled with, `settled` says whether it has yet. */
+type Settlement = { wait(): Promise<unknown>; readonly settled: boolean };
 
 /**
  * Watch a dial from the moment it starts, so a rejection is never unhandled,
@@ -127,6 +127,7 @@ function settlement(dial: Promise<TcpSocketLike>): Settlement {
       await awaitCondition(() => seen.outcome !== null, { label: 'the dial settled' });
       return seen.outcome?.value;
     },
+    get settled(): boolean { return seen.outcome !== null; },
   };
 }
 
@@ -417,6 +418,41 @@ class FakeDenoConnection {
   }
 }
 
+/**
+ * A `Deno.TlsConn` stand-in whose handshake settles when the test says so.
+ *
+ * Closing it fails a handshake still pending, as closing a real one does —
+ * Deno 2.6.8 rejects it with `Interrupted: operation canceled` within a
+ * millisecond.
+ */
+class FakeDenoTlsConnection extends FakeDenoConnection {
+  handshakes = 0;
+  private settle!: { resolve(): void; reject(error: Error): void };
+  private readonly handshaken = new Promise<{ alpnProtocol: string | null }>((resolve, reject) => {
+    this.settle = { resolve: () => resolve({ alpnProtocol: null }), reject };
+  });
+
+  constructor() {
+    super();
+    // Settled either way whether or not anyone asked for it.
+    this.handshaken.catch(() => {});
+  }
+
+  handshake(): Promise<{ alpnProtocol: string | null }> {
+    this.handshakes += 1;
+    return this.handshaken;
+  }
+
+  completeHandshake(): void { this.settle.resolve(); }
+
+  failHandshake(error: Error): void { this.settle.reject(error); }
+
+  override close(): void {
+    super.close();
+    this.settle.reject(Object.assign(new Error('operation canceled'), { name: 'Interrupted' }));
+  }
+}
+
 /** A dial the stubbed `Deno` received, settled when the test says so. */
 type HeldDenoDial = {
   readonly options: { readonly signal?: AbortSignal } & Record<string, unknown>;
@@ -544,6 +580,77 @@ describe('DenoTcpBackend honours the signal', () => {
     } finally {
       process.off('unhandledRejection', onUnhandled);
     }
+  });
+
+  /*
+   * `Deno.connectTls` resolves once the TCP connect has landed; the handshake
+   * runs on the first read or write unless `handshake()` asks for it.  Taken
+   * at its word, a TLS dial on Deno was "open" before any certificate had been
+   * looked at: on Deno 2.6.8 a peer the CA does not sign resolved the dial and
+   * then ran `onOpen`, `onError` (`InvalidData: invalid peer certificate`) and
+   * `onClose`, and a peer that stalled the handshake held a dial whose connect
+   * deadline had nothing left to bound.  These run the TLS dials to the end of
+   * the handshake.
+   */
+
+  test('a TLS dial opens when its handshake completes, not when connectTls resolves', async () => {
+    const { tlsDials } = stubDeno();
+    const { calls, handlers } = countingHandlers();
+    const outcome = settlement(new DenoTcpBackend().connect({
+      host: NOWHERE, port: 2_552, tls: { ca: CA }, handlers,
+    }));
+    await awaitCondition(() => tlsDials.length === 1, { label: 'Deno.connectTls was called' });
+    const connection = new FakeDenoTlsConnection();
+    tlsDials[0]!.open(connection);
+
+    await awaitCondition(() => connection.handshakes === 1, { label: 'the adapter asked for the handshake' });
+    expect(outcome.settled).toBe(false);
+    expect(calls).toEqual([]);
+
+    connection.completeHandshake();
+    expect(await outcome.wait()).toBeNull();
+    expect(calls).toEqual(['open']);
+    expect(connection.closed).toBe(false);
+  });
+
+  test('a TLS dial whose handshake fails rejects with that failure, fires no handler, and closes its connection', async () => {
+    const { tlsDials } = stubDeno();
+    const { calls, handlers } = countingHandlers();
+    const outcome = settlement(new DenoTcpBackend().connect({
+      host: NOWHERE, port: 2_552, tls: { ca: CA }, handlers,
+    }));
+    await awaitCondition(() => tlsDials.length === 1, { label: 'Deno.connectTls was called' });
+    const connection = new FakeDenoTlsConnection();
+    tlsDials[0]!.open(connection);
+    await awaitCondition(() => connection.handshakes === 1, { label: 'the adapter asked for the handshake' });
+
+    const untrusted = Object.assign(new Error('invalid peer certificate: UnknownIssuer'), { name: 'InvalidData' });
+    connection.failHandshake(untrusted);
+
+    expect(await outcome.wait()).toBe(untrusted);
+    expect(connection.closed).toBe(true);
+    expect(calls).toEqual([]);
+  });
+
+  test('aborting a TLS dial during its handshake rejects it and closes the connection at once', async () => {
+    // The handshake is the half of a Deno TLS dial that *can* be given up:
+    // closing the connection fails it.  Only the TCP connect before it runs on.
+    const { tlsDials } = stubDeno();
+    const controller = new AbortController();
+    const { calls, handlers } = countingHandlers();
+    const outcome = settlement(new DenoTcpBackend().connect({
+      host: NOWHERE, port: 2_552, tls: { ca: CA }, handlers, signal: controller.signal,
+    }));
+    await awaitCondition(() => tlsDials.length === 1, { label: 'Deno.connectTls was called' });
+    const connection = new FakeDenoTlsConnection();
+    tlsDials[0]!.open(connection);
+    await awaitCondition(() => connection.handshakes === 1, { label: 'the adapter asked for the handshake' });
+
+    controller.abort();
+
+    expect(connection.closed).toBe(true);
+    expect(await outcome.wait()).toBe(controller.signal.reason);
+    expect(calls).toEqual([]);
   });
 
   test('a signal already aborted dials nothing, over plaintext or TLS', async () => {

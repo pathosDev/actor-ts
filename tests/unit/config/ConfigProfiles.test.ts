@@ -7,9 +7,11 @@
  * a stray `application.conf` or `secrets.conf` beside the test runner nor a
  * profile exported in the shell running it can decide what a case sees.
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
@@ -292,6 +294,95 @@ describe('Config.load — the secrets file', () => {
   });
 });
 
+/** What `body` threw, or `null` — so a case can restore the working directory before it asserts. */
+function thrownBy(body: () => unknown): unknown {
+  try {
+    body();
+  } catch (error) {
+    return error;
+  }
+  return null;
+}
+
+/** `body` run with `directory` as the working directory, synchronously, and what it threw. */
+function thrownInWorkingDirectory(directory: string, body: () => unknown): unknown {
+  const previous = process.cwd();
+  // Synchronous from chdir to restore, so nothing else in this file can run
+  // with the working directory moved.
+  process.chdir(directory);
+  try {
+    return thrownBy(body);
+  } finally {
+    process.chdir(previous);
+  }
+}
+
+/** Another tool's file of the same name: nginx syntax, which is not HOCON. */
+const NOT_HOCON = 'server {\n  listen 80;\n}\n';
+
+describe('Config.load — a file that cannot be loaded names itself and why it was read', () => {
+  test('a ./secrets.conf nothing named says it was read from the working directory', () => {
+    // Read on every start from wherever the process starts, so a file of that
+    // name may well belong to something else.
+    const directory = directoryWith({ 'secrets.conf': NOT_HOCON });
+    const thrown = thrownInWorkingDirectory(directory, () => load({ appConfPath: 'no-such-application.conf' }));
+
+    expect(thrown).toBeInstanceOf(ConfigError);
+    expect((thrown as ConfigError).message).toBe(
+      `The secrets file ${resolve(directory, 'secrets.conf')} could not be loaded: HOCON parse error at line 2, `
+      + 'col 10: Expected \'=\' or \':\' after key "listen".  Config.load read it because it is secrets.conf in the '
+      + 'working directory, which is read whenever neither LoadOptions.secretsConfPath nor ACTOR_TS_SECRETS_CONF '
+      + 'names another file — if that one is not this application\'s, move it, or name the right one.',
+    );
+    // The parser's own error stays reachable.
+    expect(((thrown as ConfigError).cause as Error).message).toStartWith('HOCON parse error at line 2, col 10');
+  });
+
+  test('a secrets file a variable or the option named says which', () => {
+    const directory = directoryWith({ 'secrets.conf': NOT_HOCON });
+    const path = join(directory, 'secrets.conf');
+    const base = { appConfPath: 'no-such-application.conf' };
+
+    const fromVariable = withEnvironment({ ACTOR_TS_SECRETS_CONF: path }, () => thrownBy(() => Config.load(base)));
+    expect((fromVariable as ConfigError).message).toStartWith(`The secrets file ${path} could not be loaded: `);
+    expect((fromVariable as ConfigError).message).toEndWith('Config.load read it because ACTOR_TS_SECRETS_CONF names it.');
+
+    const fromOption = thrownBy(() => load({ ...base, secretsConfPath: path }));
+    expect((fromOption as ConfigError).message).toEndWith('Config.load read it because LoadOptions.secretsConfPath names it.');
+  });
+
+  test('so does the application file, found in the working directory or named', () => {
+    const directory = directoryWith({ 'application.conf': NOT_HOCON });
+    const path = resolve(directory, 'application.conf');
+
+    const fromWorkingDirectory = thrownInWorkingDirectory(directory, () => load({}));
+    expect((fromWorkingDirectory as ConfigError).message).toStartWith(`The application file ${path} could not be loaded: `);
+    expect((fromWorkingDirectory as ConfigError).message).toContain(
+      'because it is application.conf in the working directory, which is read whenever neither '
+      + 'withConfigFile / LoadOptions.appConfPath nor ACTOR_TS_CONFIG names another file',
+    );
+
+    const fromOption = thrownBy(() => load({ appConfPath: path }));
+    expect((fromOption as ConfigError).message)
+      .toEndWith('Config.load read it because withConfigFile / LoadOptions.appConfPath names it.');
+    const fromVariable = withEnvironment({ ACTOR_TS_CONFIG: path }, () => thrownBy(() => Config.load({})));
+    expect((fromVariable as ConfigError).message).toEndWith('Config.load read it because ACTOR_TS_CONFIG names it.');
+  });
+
+  test('a path that is there but cannot be read is refused the same way', () => {
+    // A directory called secrets.conf: it exists, so it is no empty layer.
+    const directory = directoryWith({});
+    mkdirSync(join(directory, 'secrets.conf'));
+    const thrown = thrownInWorkingDirectory(directory, () => load({ appConfPath: 'no-such-application.conf' }));
+
+    expect(thrown).toBeInstanceOf(ConfigError);
+    expect((thrown as ConfigError).message).toStartWith(
+      `The secrets file ${resolve(directory, 'secrets.conf')} could not be loaded: `,
+    );
+    expect((thrown as ConfigError).message).toContain('because it is secrets.conf in the working directory');
+  });
+});
+
 describe('Config.load — how a file with a profile resolves its substitutions', () => {
   const ALIASED = [
     'my-app.host = "localhost"',
@@ -349,6 +440,14 @@ describe('Config.load — how a file with a profile resolves its substitutions',
       .toThrow('Unresolved substitution: ${actor-ts.system.name}');
   });
 
+  /**
+   * The refusal's own words for `reference` in `file` — asserted whole,
+   * because the reference alone is in the generic "Unresolved substitution"
+   * message too, so a pin on it holds with the refusal gone.
+   */
+  const profilesReferenceRefusal = (reference: string, file: string): string =>
+    `\${${reference}} in ${file} reads the profiles block, which Config.load strips before it resolves the file.`;
+
   test('a substitution that reads the profiles block is refused by name', () => {
     // The block is stripped before the file resolves, so such a reference
     // could only ever fail — said here instead of as an unresolved one.
@@ -359,7 +458,37 @@ describe('Config.load — how a file with a profile resolves its substitutions',
       ].join('\n'),
     });
 
-    expect(() => load(filesOf(directory))).toThrow('${profiles.production.my-app.x}');
+    expect(() => load(filesOf(directory))).toThrow(
+      profilesReferenceRefusal('profiles.production.my-app.x', join(directory, 'application.conf')),
+    );
+  });
+
+  test('so is one naming the tree load resolves the file in, or the bare block', () => {
+    // `load` resolves a file's root and its active profile inside one tree,
+    // under the reserved key.  Unrefused, the first reads the root's own value
+    // out of it and the second splices that whole tree into itself.
+    for (const reference of ['profiles.root.my-app.x', 'profiles']) {
+      const directory = directoryWith({
+        'application.conf': ['my-app.x = 1', `my-app.y = \${${reference}}`].join('\n'),
+      });
+
+      expect(() => load(filesOf(directory))).toThrow(
+        profilesReferenceRefusal(reference, join(directory, 'application.conf')),
+      );
+    }
+  });
+
+  test('and so is one in the active profile', () => {
+    const directory = directoryWith({
+      'application.conf': [
+        'my-app.x = 1',
+        'profiles.production.my-app.y = ${profiles.root.my-app.x}',
+      ].join('\n'),
+    });
+
+    expect(() => load({ ...filesOf(directory), profile: 'production' })).toThrow(
+      profilesReferenceRefusal('profiles.root.my-app.x', join(directory, 'application.conf')),
+    );
   });
 });
 
@@ -400,6 +529,123 @@ describe('Config.load — copying one profile into another', () => {
 
     expect(() => load(filesOf(directory))).toThrow('profiles.staging');
   });
+});
+
+/** How long a load may take once the child has started it — see {@link loadInChild}. */
+const CHILD_LOAD_CAP_MS = 1_000;
+/** How long the child may take to get that far: starting a runtime and importing the loader. */
+const CHILD_STARTUP_CAP_MS = 20_000;
+
+/**
+ * What the child runs: one `Config.load` of the files its environment names,
+ * reported as `name: message`, or `loaded`.  The line before the load is
+ * written synchronously, so it has left the process before the load starts.
+ */
+const CHILD_SCRIPT = [
+  "import { writeSync } from 'node:fs';",
+  'const { Config } = await import(process.env.CHILD_CONFIG_MODULE);',
+  "writeSync(1, 'loading\\n');",
+  'let outcome;',
+  'try {',
+  '  Config.load({',
+  '    appConfPath: process.env.CHILD_APPLICATION_CONF,',
+  '    secretsConfPath: process.env.CHILD_SECRETS_CONF,',
+  '  });',
+  "  outcome = 'loaded';",
+  '} catch (error) {',
+  "  outcome = String(error && error.name) + ': ' + String(error && error.message);",
+  '}',
+  "writeSync(1, JSON.stringify({ outcome }) + '\\n');",
+].join('\n');
+
+/**
+ * `Config.load` of the files in `directory`, run in a child process: the
+ * refusal as `name: message`, `loaded`, or what stopped the child.
+ *
+ * In a child, and capped there, because a copy cycle nobody refuses is a loop
+ * inside one synchronous call — this runner's per-test timeout cannot
+ * interrupt it, and it allocates as fast as it loops, hundreds of megabytes a
+ * second.  So the cap starts only once the child says it is about to load, a
+ * slow start does not count against it, and it is short: a refusal takes a
+ * millisecond.
+ */
+function loadInChild(directory: string): Promise<string> {
+  const script = join(directory, 'load-in-child.mjs');
+  writeFileSync(script, CHILD_SCRIPT, 'utf8');
+  const environment: Record<string, string | undefined> = {
+    ...process.env,
+    CHILD_CONFIG_MODULE: pathToFileURL(resolve(import.meta.dir, '../../../src/config/Config.ts')).href,
+    CHILD_APPLICATION_CONF: join(directory, 'application.conf'),
+    CHILD_SECRETS_CONF: join(directory, 'secrets.conf'),
+  };
+  for (const name of LOAD_VARIABLES) delete environment[name];
+  return new Promise((resolveOutcome) => {
+    const child = spawn(process.execPath, [script], { cwd: directory, env: environment, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    let outcome: string | null = null;
+    let loadCap: ReturnType<typeof setTimeout> | undefined;
+    const decide = (decided: string): void => {
+      if (outcome !== null) return;
+      outcome = decided;
+      clearTimeout(startupCap);
+      clearTimeout(loadCap);
+      child.kill();
+    };
+    const startupCap = setTimeout(
+      () => decide(`the child did not start loading within ${CHILD_STARTUP_CAP_MS} ms: ${stderr}`),
+      CHILD_STARTUP_CAP_MS,
+    );
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString('utf8');
+      if (loadCap === undefined && stdout.includes('loading\n')) {
+        loadCap = setTimeout(
+          () => decide(`Config.load did not return within ${CHILD_LOAD_CAP_MS} ms`),
+          CHILD_LOAD_CAP_MS,
+        );
+      }
+      const report = stdout.split('\n').find((line) => line.startsWith('{'));
+      if (report !== undefined) decide((JSON.parse(report) as { readonly outcome: string }).outcome);
+    });
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
+    // `close`, not `exit`: it comes after the last of the output, and once the
+    // process is gone, so the directory can be removed.
+    child.on('close', (code, signal) => {
+      decide(`the child ended (${code ?? signal}) without an outcome: ${stderr}`);
+      resolveOutcome(outcome!);
+    });
+  });
+}
+
+describe('Config.load — a profile copy that comes back round', () => {
+  // Every profile is followed when the file is read, active or not, so no
+  // profile is selected here.  Without the refusal the walk never ends.
+  test('a cycle of two is refused by name', async () => {
+    const directory = directoryWith({
+      'application.conf': [
+        'profiles.a = ${profiles.b}',
+        'profiles.b = ${profiles.a}',
+      ].join('\n'),
+    });
+
+    expect(await loadInChild(directory)).toBe(
+      `ConfigError: profiles.a in ${join(directory, 'application.conf')} copies itself through \${profiles.b}`,
+    );
+  }, 30_000);
+
+  test('so is a cycle of three', async () => {
+    const directory = directoryWith({
+      'application.conf': [
+        'profiles.a = ${profiles.b}',
+        'profiles.b = ${profiles.c}',
+        'profiles.c = ${profiles.a}',
+      ].join('\n'),
+    });
+
+    expect(await loadInChild(directory)).toBe(
+      `ConfigError: profiles.a in ${join(directory, 'application.conf')} copies itself through \${profiles.b}`,
+    );
+  }, 30_000);
 });
 
 describe('the secrets file in the config dump', () => {

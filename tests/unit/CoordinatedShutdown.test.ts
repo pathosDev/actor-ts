@@ -4,6 +4,9 @@ import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import {
   ActorSystemTerminateReason,
+  ClusterDowningReason,
+  ClusterJoinUnsuccessfulReason,
+  ClusterLeavingReason,
   CoordinatedShutdown,
   CoordinatedShutdownId,
   Phases,
@@ -1205,5 +1208,332 @@ describe('a phase budget longer than one host timer holds', () => {
     await run;
 
     expect(timeoutWarnings(log)).toEqual([]);
+  });
+});
+
+/** How `promise` settled: `resolved`, or `rejected: <message>`. */
+async function settled(promise: Promise<unknown>): Promise<string> {
+  try {
+    await promise;
+    return 'resolved';
+  } catch (error) {
+    return `rejected: ${(error as Error).message}`;
+  }
+}
+
+/** Replace `process.exit` until `body` is done, and hand back every status it was called with. */
+async function exitStatusesDuring(body: () => Promise<unknown>): Promise<number[]> {
+  const statuses: number[] = [];
+  const realExit = process.exit;
+  process.exit = ((code?: number): never => {
+    statuses.push(code ?? Number.NaN);
+    return undefined as never;
+  }) as typeof process.exit;
+  try {
+    await body();
+  } finally {
+    process.exit = realExit;
+  }
+  return statuses;
+}
+
+// A failure never exits 0 (D-M5 1).  A node that could not join — its join
+// gave up, a `Cluster.bootstrap` readiness wait failed, or the bootstrap
+// refused to start it — runs with `ClusterJoinUnsuccessfulReason`, and the
+// reason is what makes the run one for a failure: the join give-up starts it
+// from inside the cluster, where nothing else could say so.
+describe('with exit-process on, a run for a node that could not join never exits 0', () => {
+  test('a completed run exits 1 where exit-code is 0', async () => {
+    const { system } = withRecordedLog('join-unsuccessful-exits-1', { 'exit-process': true });
+
+    const statuses = await exitStatusesDuring(() =>
+      system.extension(CoordinatedShutdownId).run(ClusterJoinUnsuccessfulReason.instance));
+
+    expect(statuses).toEqual([1]);
+    expect(system.isTerminated).toBe(true);
+  });
+
+  test('an exit-code that already says "failed" is kept', async () => {
+    const { system } = withRecordedLog('join-unsuccessful-keeps-its-code', { 'exit-process': true, 'exit-code': 17 });
+
+    const statuses = await exitStatusesDuring(() =>
+      system.extension(CoordinatedShutdownId).run(ClusterJoinUnsuccessfulReason.instance));
+
+    expect(statuses).toEqual([17]);
+  });
+
+  test.each([
+    ['ActorSystemTerminateReason', ActorSystemTerminateReason.instance],
+    ['ClusterLeavingReason', ClusterLeavingReason.instance],
+    ['ProcessTerminateReason', new ProcessTerminateReason('SIGTERM')],
+    ['UnknownReason', UnknownReason.instance],
+  ] as const)('a run for a clean stop (%s) still exits with exit-code', async (name, reason) => {
+    // The other half of the rule: the reason decides, not exit-process alone.
+    const { system } = withRecordedLog(`clean-stop-exits-0-${name}`, { 'exit-process': true });
+
+    const statuses = await exitStatusesDuring(() => system.extension(CoordinatedShutdownId).run(reason));
+
+    expect(statuses).toEqual([0]);
+  });
+
+  test('the reason marks a run already in flight as failed, as a failed startup does', async () => {
+    const { system } = withRecordedLog('join-unsuccessful-joins-a-run', { 'exit-process': true });
+    const shutdown = system.extension(CoordinatedShutdownId);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    shutdown.addTask(Phases.ServiceUnbind, 'held-open', () => held);
+
+    const statuses = await exitStatusesDuring(async () => {
+      const first = shutdown.run(UnknownReason.instance);
+      expect(shutdown.run(ClusterJoinUnsuccessfulReason.instance)).toBe(first);
+      release();
+      await first;
+    });
+
+    expect(statuses).toEqual([1]);
+  });
+});
+
+// A run whose reason says this node was told to go — its own downing
+// decision, a join that could not complete, a signal — is one nobody answers:
+// the trigger fires it and moves on.  So when a phase with `recover = false`
+// halts it short of the terminator, the run answers the halt itself, the way
+// the signal path always has: an ERROR line, then the teardown the run never
+// reached.  Left up, a node its own downing decision removed keeps its
+// entities and singletons running beside the side that won (#1456).
+describe('a halted run for a node that was told to go still ends in the teardown', () => {
+  const halting = { phases: { 'service-stop': { recover: false } } };
+
+  test.each([
+    ['its own downing decision', ClusterDowningReason.instance],
+    ['a join that could not complete', ClusterJoinUnsuccessfulReason.instance],
+  ] as const)('%s: the halt is reported, and the system is torn down', async (_trigger, reason) => {
+    const { system, log } = withRecordedLog(`halted-${reason.name}`, halting);
+    const shutdown = system.extension(CoordinatedShutdownId);
+    shutdown.addTask(Phases.ServiceStop, 'throws', () => { throw new Error('boom'); });
+
+    expect(await settled(shutdown.run(reason))).toBe('rejected: boom');
+
+    await awaitCondition(() => system.isTerminated, {
+      label: 'the halted run stood in for the terminator',
+      timeoutMs: 3_000,
+    });
+    expect(reportsHalt(log)).toBe(true);
+  });
+
+  test('with terminate-actor-system = false the system stays up, and the halt is still reported', async () => {
+    // The rule the signal path keeps: off, the pipeline never takes the system
+    // down, and a halt on the way changes nothing about whose system it is.
+    const { system, log } = withRecordedLog('halted-downing-no-terminator', {
+      ...halting,
+      'terminate-actor-system': false,
+    });
+    const shutdown = system.extension(CoordinatedShutdownId);
+    shutdown.addTask(Phases.ServiceStop, 'throws', () => { throw new Error('boom'); });
+
+    expect(await settled(shutdown.run(ClusterDowningReason.instance))).toBe('rejected: boom');
+
+    expect(reportsHalt(log)).toBe(true);
+    expect(acceptsSpawns(system)).toBe(true);
+    await system.terminate();
+  });
+
+  test('a run() of your own, with any other reason, leaves the system as the halt found it', async () => {
+    const { system } = withRecordedLog('halted-own-run', halting);
+    const shutdown = system.extension(CoordinatedShutdownId);
+    shutdown.addTask(Phases.ServiceStop, 'throws', () => { throw new Error('boom'); });
+
+    expect(await settled(shutdown.run(UnknownReason.instance))).toBe('rejected: boom');
+
+    expect(acceptsSpawns(system)).toBe(true);
+    expect(system.isTerminated).toBe(false);
+    await system.terminate();
+  });
+});
+
+// The run stays in flight until its exit has happened — or will not happen.
+// The exit flushes the dead-letter queue and the log sinks first, and a
+// `terminate()` arriving during that flush must find the run in flight and
+// start nothing: the exit takes the place of the teardown, so nothing may tear
+// down in front of it (#1455).  A logger whose `flush` calls `terminate()`
+// puts the call exactly there.
+describe('with exit-process on, a run is in flight until it has exited', () => {
+  /** Calls `onFlush` from inside its first `flush` — a plain `terminate()` here. */
+  class FlushHookLogger extends NoopLogger {
+    onFlush: () => void = () => {};
+
+    flush(): Promise<void> {
+      const hook = this.onFlush;
+      this.onFlush = () => {};
+      hook();
+      return Promise.resolve();
+    }
+  }
+
+  function systemWithFlushHook(name: string, settings: ConfigObject): ActorSystem {
+    const logger = new FlushHookLogger();
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(logger)
+      .withConfig({ 'actor-ts': { 'coordinated-shutdown': settings } });
+    const system = ActorSystem.create(name, systemOptions);
+    logger.onFlush = () => { void system.terminate(); };
+    return system;
+  }
+
+  /** Replace `process.exit` until `body` is done, writing what held when it was called. */
+  async function seenAtExit(system: ActorSystem, body: () => Promise<unknown>): Promise<string[]> {
+    const seen: string[] = [];
+    const realExit = process.exit;
+    process.exit = ((code?: number): never => {
+      seen.push(`exit ${code} accepts spawns=${acceptsSpawns(system)}`);
+      return undefined as never;
+    }) as typeof process.exit;
+    try {
+      await body();
+    } finally {
+      process.exit = realExit;
+    }
+    return seen;
+  }
+
+  test('a terminate() during the halted exit\'s flush starts no teardown in front of the exit', async () => {
+    const system = systemWithFlushHook('in-flight-until-halted-exit', {
+      phases: { 'service-stop': { recover: false } },
+      'exit-process': true,
+    });
+    system.extension(CoordinatedShutdownId).addTask(Phases.ServiceStop, 'throws', () => {
+      throw new Error('boom');
+    });
+
+    const seen = await seenAtExit(system, () => settled(system.extension(CoordinatedShutdownId).run()));
+
+    expect(seen).toEqual(['exit 1 accepts spawns=true']);
+    // Not dropped either: it follows the run, which only a replaced exit lets end.
+    await awaitCondition(() => system.isTerminated, {
+      label: 'the teardown that terminate() asked for followed the run',
+      timeoutMs: 3_000,
+    });
+  });
+
+  test('nor during a completed run\'s, with terminate-actor-system = false', async () => {
+    const system = systemWithFlushHook('in-flight-until-completed-exit', {
+      'exit-process': true,
+      'terminate-actor-system': false,
+    });
+
+    const seen = await seenAtExit(system, () => system.extension(CoordinatedShutdownId).run());
+
+    expect(seen).toEqual(['exit 0 accepts spawns=true']);
+    await awaitCondition(() => system.isTerminated, {
+      label: 'the teardown that terminate() asked for followed the run',
+      timeoutMs: 3_000,
+    });
+  });
+
+  test('a run that halted is no longer in flight: a plain terminate() after it is the whole teardown again', async () => {
+    // Without exit-process, the halt is where the run ends, and the rejection
+    // is what tells the trigger; a run still "in flight" past it would turn
+    // every later terminate() into a call that starts nothing.
+    const { system } = withRecordedLog('halted-run-settled', { phases: { 'service-stop': { recover: false } } });
+    const shutdown = system.extension(CoordinatedShutdownId);
+    shutdown.addTask(Phases.ServiceStop, 'throws', () => { throw new Error('boom'); });
+
+    expect(await settled(shutdown.run(UnknownReason.instance))).toBe('rejected: boom');
+
+    expect(shutdown._runInProgress).toBeNull();
+    await system.terminate();
+    expect(system.isTerminated).toBe(true);
+  });
+});
+
+// The pre-exit flush's first step: the dead-letter queue's writes, each step
+// bounded by `actor-ts.logger.close-timeout` and never rejecting.  A store
+// that never answers must not hold the exit open, which is the hang
+// `exit-process` exists to end, and one that fails must not skip the exit or
+// put its own error in place of the task's (#1455).
+describe('with exit-process on, the dead-letter flush before the exit is bounded', () => {
+  /**
+   * A halting run with a dead-letter store, a 50 ms flush budget, and the
+   * queue's `flush` replaced by `flush` — put back before the case tears the
+   * system down, so the teardown's own flush is the queue's again.
+   */
+  function haltingWithDeadLetterFlush(
+    name: string,
+    flush: () => Promise<void>,
+  ): { system: ActorSystem; restoreFlush: () => void } {
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withConfig({
+        'actor-ts': {
+          logger: { 'close-timeout': '50ms' },
+          'dead-letters': { store: 'memory' },
+          'coordinated-shutdown': { phases: { 'service-stop': { recover: false } }, 'exit-process': true },
+        },
+      });
+    const system = ActorSystem.create(name, systemOptions);
+    system.extension(CoordinatedShutdownId).addTask(Phases.ServiceStop, 'close-the-broker', () => {
+      throw new Error('the broker would not close');
+    });
+    const spy = spyOn(system.deadLetterQueue, 'flush').mockImplementation(flush);
+    return { system, restoreFlush: () => { spy.mockRestore(); } };
+  }
+
+  /**
+   * Run the pipeline with `process.exit` and `console.error` replaced — the
+   * budget reports a flush that timed out or failed on the console — until
+   * the exit has been called or `timeoutMs` has passed.
+   */
+  async function exitOf(system: ActorSystem): Promise<{ atExit: string; outcome: Promise<string>; console: string[] }> {
+    const consoleLines: string[] = [];
+    const consoleError = spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      consoleLines.push(args.map((arg) => (arg instanceof Error ? arg.message : String(arg))).join(' '));
+    });
+    const realExit = process.exit;
+    let atExit = 'not called';
+    process.exit = ((code?: number): never => {
+      atExit = `exit ${code}`;
+      return undefined as never;
+    }) as typeof process.exit;
+    let outcome: Promise<string> = Promise.resolve('not started');
+    try {
+      outcome = settled(system.extension(CoordinatedShutdownId).run());
+      await awaitCondition(() => atExit !== 'not called', {
+        label: 'the halted run called process.exit past the dead-letter flush',
+        timeoutMs: 3_000,
+      });
+    } finally {
+      process.exit = realExit;
+      consoleError.mockRestore();
+    }
+    return { atExit, outcome, console: consoleLines };
+  }
+
+  test('a dead-letter flush that never settles cannot hold the exit open', async () => {
+    const { system, restoreFlush } = haltingWithDeadLetterFlush(
+      'dead-letter-flush-hangs',
+      () => new Promise<void>(() => {}),
+    );
+
+    const { atExit, console: consoleLines } = await exitOf(system);
+
+    expect(atExit).toBe('exit 1');
+    expect(consoleLines.some((line) => line.includes('dead-letter flush timed out'))).toBe(true);
+    restoreFlush();
+    await system.terminate();
+  });
+
+  test('a dead-letter flush that rejects neither skips the exit nor replaces the task\'s error', async () => {
+    const { system, restoreFlush } = haltingWithDeadLetterFlush(
+      'dead-letter-flush-fails',
+      () => Promise.reject(new Error('the dead-letter store is gone')),
+    );
+
+    const { atExit, outcome, console: consoleLines } = await exitOf(system);
+
+    expect(atExit).toBe('exit 1');
+    expect(await outcome).toBe('rejected: the broker would not close');
+    expect(consoleLines.some((line) => line.includes('dead-letter flush failed'))).toBe(true);
+    restoreFlush();
+    await system.terminate();
   });
 });

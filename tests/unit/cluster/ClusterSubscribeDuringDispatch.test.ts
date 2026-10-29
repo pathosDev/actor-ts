@@ -245,3 +245,54 @@ describe('a listener set that changes while an event is being delivered (#1294)'
     expect(snapshot.unreachable.map((member) => member.address.toString())).toEqual([peer.toString()]);
   });
 });
+
+describe('each subscription is its own registration (#1294)', () => {
+  test('an unsubscribe removes the registration it was returned for, not the first one holding the same function', async () => {
+    // One function subscribed twice is two subscriptions, and each returned
+    // unsubscribe ends its own.  Removed by function, the second call's
+    // unsubscribe took the *first* registration out, and calling it again took
+    // the other one — silencing a subscription its owner never ended.
+    const node = await startNode('dispatch-same-function', 12_949);
+    nodes.push(node);
+    const peer = new NodeAddress('dispatch-same-function', PEER_HOST, 12_950);
+    gossipPeer(node.cluster, peer, 'up', 1);
+
+    const calls: string[] = [];
+    const recording = (name: string) => (event: ClusterEvent): void => {
+      if (event instanceof CurrentClusterState) return;
+      calls.push(name);
+    };
+    const shared = recording('shared');
+    node.cluster.subscribe(shared, { replayMode: 'snapshot' });
+    node.cluster.subscribe(recording('other'), { replayMode: 'snapshot' });
+    const unsubscribeSecond = node.cluster.subscribe(shared, { replayMode: 'snapshot' });
+
+    unsubscribeSecond();
+    gossipPeer(node.cluster, peer, 'unreachable', 2);
+    expect(calls).toEqual(['shared', 'other']);
+
+    // A second call of the same unsubscribe has nothing left to end.
+    calls.length = 0;
+    unsubscribeSecond();
+    gossipPeer(node.cluster, peer, 'up', 3);
+    expect(calls).toEqual(['shared', 'other']);
+  });
+
+  test('an unsubscribe releases its registration rather than only silencing it', async () => {
+    // Silencing alone would deliver exactly as above while every ended
+    // subscription stayed in the list for the life of the node — one entry
+    // per subscribe/unsubscribe pair, which readiness waits and advisories
+    // make on every start.
+    const node = await startNode('dispatch-releases', 12_951);
+    nodes.push(node);
+    const registrations = (): number =>
+      (node.cluster as unknown as { readonly _listeners: ReadonlyArray<unknown> })._listeners.length;
+    const before = registrations();
+
+    const unsubscribes = [1, 2, 3].map(() => node.cluster.subscribe(() => {}, { replayMode: 'snapshot' }));
+    expect(registrations()).toBe(before + 3);
+
+    for (const unsubscribe of unsubscribes) unsubscribe();
+    expect(registrations()).toBe(before);
+  });
+});

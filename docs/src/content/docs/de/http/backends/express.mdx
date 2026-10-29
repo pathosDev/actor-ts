@@ -43,7 +43,9 @@ ist das, wozu du greifen solltest: ein Backend ohne `withMaxBodyBytes`
 übernimmt den Key, und eines mit einer anderen Zahl wird bei `bind()`
 **abgelehnt**, mit beiden Zahlen in der Meldung — ein Server hält nicht zwei
 Body-Caps, und welchen auch immer man wählte, der andere bliebe still
-unbeachtet. Dieselbe Zahl an beiden Stellen bindet.
+unbeachtet. Das gilt in beide Richtungen: ein Endpoint, der bewusst enger
+gebaut ist als ein weiterer serverweiter Key, wird ebenfalls abgelehnt und nie
+auf ihn aufgeweitet. Dieselbe Zahl an beiden Stellen bindet.
 
 Das Backend baut den Server, auf dem es lauscht, selbst — `node:http`, unter
 `withTls(...)` `node:https` (siehe [TLS](#tls)) — und übergibt die App genau

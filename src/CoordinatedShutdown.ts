@@ -39,11 +39,17 @@ export class ClusterDowningReason extends Reason {
  * `actor-ts.cluster.shutdown-after-unsuccessful-join` passing with nothing
  * able to promote the node, and a `Cluster.bootstrap` readiness wait
  * expiring — so a task tells "could not join" by one reason whichever fired.
+ * A `Cluster.bootstrap` refused after it built its system ends with it too,
+ * where `run-by-actor-system-terminate` makes that end a run (#1455).
  *
  * Its own reason rather than {@link ClusterLeavingReason}, which keeps meaning
  * that a member is leaving: a task that hands work over before a node leaves
  * has nothing to hand over from a node that never joined, and one that pages
  * someone about a failed start should not page about a rolling restart.
+ *
+ * A run with it is a run for a failure: with `exit-process` on it never ends
+ * the process with status `0`, whichever way the run ends (see
+ * {@link reportsFailure}).
  */
 export class ClusterJoinUnsuccessfulReason extends Reason {
   readonly name = 'ClusterJoinUnsuccessfulReason';
@@ -54,6 +60,46 @@ export class ProcessTerminateReason extends Reason {
   constructor(public readonly signal: ProcessSignal) { super(); }
   readonly name = 'ProcessTerminateReason';
   override toString(): string { return `ProcessTerminateReason(${this.signal})`; }
+}
+
+/**
+ * Whether a run with `reason` is a run for a failure — one `exit-process`
+ * never ends with status `0`, the status that tells a supervisor the process
+ * stopped cleanly (see `CoordinatedShutdown.exitStatus`).
+ *
+ * Asked of the reason because for a node that could not join nothing else
+ * can say so: the join give-up starts its run from inside the cluster, with no
+ * caller there to mark it the way the system marks a failed startup's run
+ * ({@link CoordinatedShutdown._runForFailure}).  One answer here then covers
+ * every route to that reason — the give-up, a `Cluster.bootstrap` readiness
+ * wait that failed, a bootstrap refused after its system was built (#1500,
+ * #1455).  `StartupFailedReason` is the other failure, and the one this
+ * cannot name: it is declared beside the startup graph, which imports this
+ * module, so its run is marked by the call instead.
+ */
+function reportsFailure(reason: Reason): boolean {
+  return reason instanceof ClusterJoinUnsuccessfulReason;
+}
+
+/**
+ * Whether `reason` says this node was told to go by a trigger nobody awaits —
+ * a signal, the node's own downing decision, a join that could not complete —
+ * so that a run with it that halts still ends in the teardown (see
+ * `CoordinatedShutdown.standInForTheTerminator`).
+ *
+ * Those triggers fire the run and move on, so nobody would answer the halt:
+ * the signal handler holds nothing but the run's promise, and the cluster's
+ * two call sites only log its rejection.  Left up, a node its own downing
+ * decision removed keeps its entities and singletons running beside the side
+ * that won — the second writer `run-coordinated-shutdown-when-down` exists to
+ * stop (#1456) — and a node that could not join stays up having failed its
+ * start.  The other triggers answer for themselves: `terminate()` and a failed
+ * startup tear the system down after any run, and a caller of `run()` decides.
+ */
+function toldTheNodeToGo(reason: Reason): boolean {
+  return reason instanceof ProcessTerminateReason
+    || reason instanceof ClusterDowningReason
+    || reason instanceof ClusterJoinUnsuccessfulReason;
 }
 
 /** A single task.  Returning a Promise makes the task async. */
@@ -120,7 +166,10 @@ export class CoordinatedShutdown implements Extension {
   private readonly tasks = new Map<string, RegisteredTask[]>();
   private _running = false;
   private _completed = false;
-  /** The run has ended, completed or halted — what `_running`, set for good, cannot say. */
+  /**
+   * The run has ended, completed or halted, and past the exit `exit-process`
+   * makes at its end — what `_running`, set for good, cannot say.
+   */
   private _settled = false;
   private _runPromise: Promise<void> | null = null;
   /** Something failed and the pipeline is how the system goes — see {@link _runForFailure}. */
@@ -338,6 +387,8 @@ export class CoordinatedShutdown implements Extension {
   /**
    * @internal The run in flight, or `null` when there is none — before the
    * first `run()`, and again once that run has ended, completed or halted.
+   * A run `exit-process` ends with an exit is in flight until that exit:
+   * the flush in front of it is still the run.
    *
    * Narrower than {@link isRunning}, which stays true for good, and
    * `ActorSystem.terminate()` needs the narrow answer: while a run is in
@@ -351,8 +402,16 @@ export class CoordinatedShutdown implements Extension {
   /**
    * Run the pipeline.  Safe to call from multiple sites — subsequent calls
    * return the same in-flight promise.
+   *
+   * A reason that reports a failure — `ClusterJoinUnsuccessfulReason`, a node
+   * that could not join — makes the run one for a failure, which
+   * `exit-process` never exits `0` after; passed to a run already under way,
+   * it marks that run so too, as {@link _runForFailure} does.
    */
   run(reason: Reason = UnknownReason.instance): Promise<void> {
+    // Ahead of the in-flight check: a failure reported while a run is under
+    // way — a give-up landing beside a signal's run — still is one.
+    if (reportsFailure(reason)) this._failed = true;
     if (this._runPromise) return this._runPromise;
     // Stored before `_run` is called rather than taken from what it returns.
     // `_run` is async, but the tasks of the first phase in the order start
@@ -380,7 +439,10 @@ export class CoordinatedShutdown implements Extension {
    * A call rather than a check of the reason: the reason a failed startup
    * passes is declared beside the startup graph, which imports this module, so
    * recognising it here would be an import cycle — and the system, which
-   * learns of the failure first, is the one place that knows it was one.
+   * learns of the failure first, is the one place that knows it was one.  The
+   * reason of a node that could not join is checked instead
+   * ({@link reportsFailure}): its run starts inside the cluster, where no
+   * caller could make this call.
    */
   _runForFailure(reason: Reason): Promise<void> {
     this._failed = true;
@@ -413,51 +475,55 @@ export class CoordinatedShutdown implements Extension {
   }
 
   /**
-   * A signal arrived: run the pipeline, and answer the run if it halts.
+   * A signal arrived: run the pipeline.
    *
    * Nobody awaits a signal, so the promise `run()` hands back is held by
    * nothing but this handler, and a failing phase with `recover = false`
    * would otherwise reject it unhandled — which ends a Node process with the
-   * task's stack — after stopping the pipeline short of its terminator, which
-   * left the system up and `runUntilTerminated()` waiting on `whenTerminated()`
-   * for good (#1455).  A signal that arrives while a run exists — a second
-   * SIGINT, or one during a run something else started — joins it and adds
-   * nothing: that run's outcome is its starter's to answer.
+   * task's stack.  The run answers its own halt, as it does for every trigger
+   * that told the node to go ({@link standInForTheTerminator}): stopped short
+   * of its terminator, it used to leave the system up and
+   * `runUntilTerminated()` waiting on `whenTerminated()` for good (#1455).  A
+   * signal that arrives while a run exists — a second SIGINT, or one during a
+   * run something else started — joins it and adds nothing: that run's
+   * outcome is its starter's to answer.
    */
   private onProcessSignal(signal: ProcessSignal): void {
     if (this._runPromise !== null) return;
-    this.run(new ProcessTerminateReason(signal)).catch((error: unknown) => {
-      this.onSignalRunHalted(error);
+    this.run(new ProcessTerminateReason(signal)).catch(() => {
+      // Reported, and answered, by the run itself.
     });
   }
 
   /**
-   * Report a halted signal run, and stand in for the terminator it never
-   * reached — the teardown an opted-in `terminate()` performs after a halt
-   * too, since the process was asked to stop either way.
+   * Report a halted run whose trigger told the node to go and nobody answers
+   * — a signal, this node's own downing decision, a join that could not
+   * complete — and stand in for the terminator it never reached: the
+   * teardown an opted-in `terminate()` performs after a halt too, since the
+   * node was asked to stop either way.  Left to the trigger, a halt the
+   * downing decision's run hit kept the downed node's actors running beside
+   * the side that won (#1456).
    *
    * Only where there is a terminator to stand in for: with
    * `terminate-actor-system` off the pipeline never takes the system down,
-   * because a host process that owns it does not want a signal handler doing
-   * so, and a halt on the way changes nothing about whose system it is.
+   * because a host process that owns it does not want a signal handler or the
+   * cluster doing so, and a halt on the way changes nothing about whose system
+   * it is.
    *
    * With `exit-process` on this never runs where `process.exit` ends the
-   * process: the run exits at the halt, before its rejection gets here, so the
-   * exit takes the place of this stand-in (see {@link onRunHalted}).
+   * process: the run exits at the halt, ahead of this, so the exit takes the
+   * place of the stand-in (see {@link onRunHalted}).
    */
-  private onSignalRunHalted(error: unknown): void {
+  private standInForTheTerminator(phase: string, error: unknown, reason: Reason): void {
+    const halted = `the coordinated-shutdown pipeline (${reason}) halted in phase "${phase}"`;
     if (!this.terminateActorSystem) {
       this.system.log.error(
-        'the coordinated-shutdown pipeline a signal started halted; '
-        + `${ConfigKeys.coordinatedShutdown.terminateActorSystem} is off, so the system stays up`,
+        `${halted}; ${ConfigKeys.coordinatedShutdown.terminateActorSystem} is off, so the system stays up`,
         error,
       );
       return;
     }
-    this.system.log.error(
-      'the coordinated-shutdown pipeline a signal started halted; tearing the system down regardless',
-      error,
-    );
+    this.system.log.error(`${halted}; tearing the system down regardless`, error);
     void this.system._teardown();
   }
 
@@ -598,10 +664,16 @@ export class CoordinatedShutdown implements Extension {
 
   private async _run(reason: Reason): Promise<void> {
     this._running = true;
-    // Kept rather than answered on the spot, so a halt is answered where a
-    // completed run exits: once the run is marked settled.
-    let halt: { readonly phase: string; readonly error: unknown } | undefined;
+    // Settled in the `finally` and nowhere earlier: once the exit has happened
+    // or, where there is none, once the run has ended (#1455).  The exit
+    // flushes the dead-letter queue and the log sinks first, and a
+    // `terminate()` arriving during that flush must still find the run in
+    // flight and start nothing — settled before it, the run let that call
+    // start the very teardown the exit takes the place of, in front of the
+    // exit.  The `finally` settles a halted run too, so a `terminate()` after
+    // one is the ordinary teardown again.
     try {
+      let halt: { readonly phase: string; readonly error: unknown } | undefined;
       for (const phase of this.topologicalOrder()) {
         try {
           await this.runPhase(phase, reason);
@@ -610,40 +682,43 @@ export class CoordinatedShutdown implements Extension {
           break;
         }
       }
+      if (halt !== undefined) await this.onRunHalted(halt.phase, halt.error, reason);
+      this._completed = true;
+      // Last thing, and only when asked: a lingering handle (an open socket, a
+      // pooled DB connection a driver never released) otherwise keeps the
+      // process alive long after the pipeline is done, and the operator has no
+      // way to tell "shutting down" from "hung".  `_completed` is already set,
+      // so anything awaiting `run()` observes success even though this call
+      // does not return.
+      if (this.exitsProcess()) await this.exitWith(this.exitStatus(this._failed));
     } finally {
       this._settled = true;
     }
-    if (halt !== undefined) await this.onRunHalted(halt.phase, halt.error, reason);
-    this._completed = true;
-    // Last thing, and only when asked: a lingering handle (an open socket, a
-    // pooled DB connection a driver never released) otherwise keeps the
-    // process alive long after the pipeline is done, and the operator has no
-    // way to tell "shutting down" from "hung".  `_completed` is already set,
-    // so anything awaiting `run()` observes success even though this call
-    // does not return.
-    if (this.exitsProcess()) await this.exitWith(this.exitStatus(this._failed));
   }
 
   /**
    * A phase with `recover = false` failed, and the run ends there: rethrow, so
    * `run()` rejects with the task's error — after exiting the process first
-   * when `exit-process` is on.
+   * when `exit-process` is on, and after standing in for the terminator when
+   * the run's trigger told the node to go and nobody answers it.
    *
    * The exit follows the rule a failed startup's run exits by (see
    * {@link exitStatus}), because a run that halted is no clean stop either.  It
    * sits here, in the run, rather than in whatever answers the rejection, so
    * that every trigger gets it — a signal, a `terminate()` that runs the
    * pipeline, a `run()` of your own, the cluster's join give-up and its
-   * self-down.
+   * self-down.  The stand-in sits here for the same reason: of those triggers
+   * a signal and the cluster's two hold nothing but the run's promise
+   * ({@link standInForTheTerminator}).
    *
    * Nothing after `process.exit` runs, so the exit takes the place of the
-   * teardown a halt would otherwise get — the signal path's stand-in
-   * ({@link onSignalRunHalted}) and the one an opted-in `terminate()` performs.
-   * Hence the ERROR line naming the phase, written before the exit rather than
-   * left to the trigger: it is the last word the process has, and
-   * {@link exitWith} flushes the log sinks before exiting so that it gets
-   * out.  Where `process.exit` returns, which only a test that replaces it
-   * sees, the rejection still follows, and with it those teardowns.
+   * teardown a halt would otherwise get — the stand-in, and the one an
+   * opted-in `terminate()` performs.  Hence the ERROR line naming the phase,
+   * written before the exit rather than left to the trigger: it is the last
+   * word the process has, and {@link exitWith} flushes the log sinks before
+   * exiting so that it gets out.  Where `process.exit` returns, which only a
+   * test that replaces it sees, the stand-in and the rejection still follow,
+   * and with them those teardowns.
    */
   private async onRunHalted(phase: string, error: unknown, reason: Reason): Promise<never> {
     if (this.exitsProcess()) {
@@ -656,6 +731,7 @@ export class CoordinatedShutdown implements Extension {
       );
       await this.exitWith(status);
     }
+    if (toldTheNodeToGo(reason)) this.standInForTheTerminator(phase, error, reason);
     throw error;
   }
 
@@ -687,9 +763,10 @@ export class CoordinatedShutdown implements Extension {
    * and that is `0`.
    *
    * `0` tells a supervisor the process stopped cleanly, and neither a run for a
-   * failed startup nor a run that halted is a clean stop, so there the
-   * configured code is kept only when it already says "failed" and becomes `1`
-   * — the conventional general-failure status — otherwise.  The default
+   * failed startup, nor one for a node that could not join, nor a run that
+   * halted is a clean stop, so there the configured code is kept only when it
+   * already says "failed" and becomes `1` — the conventional general-failure
+   * status — otherwise.  The default
    * `exit-process = false` never gets here: `runUntilTerminated()` rejects with
    * the startup's error, or with the halt's once the system is down, and a
    * `main` that awaits it exits non-zero by itself.

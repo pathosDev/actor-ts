@@ -126,8 +126,10 @@ um eins. Nützlich für:
 [`actor-ts.cluster.app-version`](/de/reference/configuration/#actor-tscluster)
 oder `withAppVersion(...)` im Code —, und daran lässt sich ein Rolling Update
 ablesen: welcher Node welches Release fährt.  Das Feld steht nur bei einem
-Mitglied, das eine Version nennt, und fehlt sonst, statt `null` zu sein; es
-ist ein Label und nicht mehr — nichts platziert, routet oder downt danach.
+Mitglied, das eine Version nennt, und fehlt sonst, statt `null` zu sein — ein
+Mitglied, das ohne Version neu startet, steht ohne da, nicht mit der seines
+vorigen Laufs —; es ist ein Label und nicht mehr — nichts platziert, routet
+oder downt danach.
 Wie der Rest dieses Endpunkts wird es jedem ausgeliefert, der den Port
 erreicht, solange `managementRoutes(...)` kein `auth` bekommt
 ([#971](https://github.com/pathosDev/actor-ts/issues/971)) — es fügt also

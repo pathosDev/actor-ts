@@ -144,18 +144,47 @@ export class ClusterSharding {
     // between construction and the first region: a type started later still
     // sees its own first broadcast.  `snapshot` replay because this listener
     // discards membership anyway — one event to ignore instead of N.  Never
-    // unsubscribed: the instance is memoised per ActorSystem and both it and
-    // the listener die with the Cluster that holds them.
+    // unsubscribed: the instance is memoised per cluster (see `get`) and both
+    // it and the listener die with the Cluster that holds them.
     cluster.subscribe((event) => this.onClusterEvent(event), { replayMode: 'snapshot' });
   }
 
-  private static instances = new WeakMap<ActorSystem, ClusterSharding>();
+  private static instances = new WeakMap<ActorSystem, WeakMap<Cluster, ClusterSharding>>();
 
+  /**
+   * The facade for `cluster` on `system`, built on first use and memoised per
+   * system **and per cluster** (#1465).
+   *
+   * Everything a facade does goes through the cluster it was built with: its
+   * regions register and route over that cluster, and it subscribes to that
+   * cluster's events.  It used to be memoised per `ActorSystem` alone and
+   * ignore the cluster it was asked for, so after a `leave()` and a new
+   * `Cluster.join` on the same system the new cluster was handed the facade of
+   * the one that had left — a region started through it never registered, and
+   * a `shard-region:<type>` readiness check stayed red for good.  Any first
+   * touch pinned it, including the one `Cluster.join` makes itself when
+   * `actor-ts.sharding.healthcheck.names` is set.
+   *
+   * So each incarnation of a system's cluster gets a facade of its own, and
+   * repeated reads through one cluster still return one instance.  Keyed
+   * weakly at both levels, so a facade goes with the cluster it belongs to.
+   * The regions and coordinators a left cluster's facade started are not
+   * carried over: they belong to that cluster, stay bound to it, and keep
+   * their well-known names — so starting the same type again through the new
+   * cluster's facade fails on the name, where it used to hand back the left
+   * incarnation's region, which delivered nothing while `isRegistered` still
+   * read `true`.
+   */
   static get(system: ActorSystem, cluster: Cluster): ClusterSharding {
-    const existing = ClusterSharding.instances.get(system);
+    let byCluster = ClusterSharding.instances.get(system);
+    if (byCluster === undefined) {
+      byCluster = new WeakMap<Cluster, ClusterSharding>();
+      ClusterSharding.instances.set(system, byCluster);
+    }
+    const existing = byCluster.get(cluster);
     if (existing) return existing;
     const created = new ClusterSharding(system, cluster);
-    ClusterSharding.instances.set(system, created);
+    byCluster.set(cluster, created);
     return created;
   }
 
@@ -236,6 +265,8 @@ export class ClusterSharding {
       // How the region takes back an `isRegistered` it can no longer stand
       // behind — evicted, or stopped (#1465).
       onRegistrationLost: () => this.onShardRegionRegistrationLost(options.typeName),
+      // And a refusal whose leader term has ended (#1465).
+      onRegistrationRefusalLapsed: () => this.onShardRegionRegistrationRefusalLapsed(options.typeName),
     };
 
     this.ensureCoordinator(options as StartShardingOptionsType<unknown>, config.numShards);
@@ -541,12 +572,30 @@ export class ClusterSharding {
    * one fed by `ShardMapChanged`.
    *
    * `false` for a type this node never started; for one whose registration the
-   * coordinator refused over a `numShards` mismatch; for one whose region the
-   * coordinator evicted for going silent (stale-region detection), until the
-   * region's new registration is acknowledged; and for one whose region has
+   * coordinator refused over a `numShards` mismatch; for one whose region was
+   * told it had been evicted for going silent (stale-region detection), until
+   * the region's new registration is acknowledged; and for one whose region has
    * stopped (#1465).  In each of those the coordinator places no shard of the
    * type here, which is what a readiness probe reading this must not report as
    * ready.
+   *
+   * It is this node's account, built from what its region was told, and two
+   * situations are worth knowing exactly:
+   *
+   * - **A leader change does not turn it `false`.**  The region re-registers
+   *   with the new coordinator and the node keeps reading as registered while
+   *   it does, so an election does not take every node out of rotation at once
+   *   — also when the new leader runs no coordinator for the type at all, which
+   *   this reading cannot tell apart from a re-registration still in flight.  A
+   *   refusal the old leader issued lapses with it: from the change until the
+   *   new coordinator answers, {@link registrationRefusal} is `null` and this
+   *   stays `false`, waiting rather than refused.
+   * - **An eviction is learnt from the coordinator's notice**, a single,
+   *   unacknowledged frame.  Should it be lost, this keeps reading `true` while
+   *   the coordinator holds no entry for the region — until the region's next
+   *   beat reaches it, which the coordinator answers with a request to register:
+   *   one `heartbeat-interval` and a round trip.  Without stale-region detection
+   *   nothing is evicted, so there is no such window.
    *
    * **What it does *not* gate is message loss.**  A message sent before
    * registration lands is buffered by the region and delivered once the
@@ -579,7 +628,11 @@ export class ClusterSharding {
    * alert itself.
    *
    * Cleared when a later registration is accepted, so a rolling deploy that
-   * fixes the mismatch stops reporting one.
+   * fixes the mismatch stops reporting one — and when the leader moves: a
+   * refusal is the verdict of the coordinator that issued it, and from the
+   * leader change until the next coordinator answers there is none to report
+   * (#1465).  A stop or an eviction leaves it standing; neither says anything
+   * about the shard counts it reports.
    */
   registrationRefusal(typeName: string): ShardRegionRegistrationRefused | null {
     return this.registrationRefusals.get(typeName) ?? null;
@@ -686,6 +739,18 @@ export class ClusterSharding {
    */
   private onShardRegionRegistrationLost(typeName: string): void {
     this.registeredTypes.delete(typeName);
+  }
+
+  /**
+   * The leader moved while this node's region for `typeName` stood refused
+   * (#1465).  A refusal is a verdict of one leader term — the region drops its
+   * own latch and asks the new coordinator — so the record goes too, rather
+   * than naming a coordinator that no longer governs the type for as long as
+   * no new one answers.  The type is not registered either way: a new verdict,
+   * acceptance or refusal, arrives as an event of its own.
+   */
+  private onShardRegionRegistrationRefusalLapsed(typeName: string): void {
+    this.registrationRefusals.delete(typeName);
   }
 
   /**

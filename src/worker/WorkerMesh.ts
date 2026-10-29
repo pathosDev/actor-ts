@@ -147,6 +147,7 @@ export class WorkerMesh {
     const cluster = await Cluster.join(system, clusterOptions);
 
     const modules = (Array.isArray(resolved.module) ? resolved.module : [resolved.module]) as ReadonlyArray<URL | string>;
+    const configFile = system.config._sources()?.applicationPath ?? null;
     const initData: WorkerMeshInitData = {
       kind: 'worker-mesh-init',
       // The effective config, not the file: builder-set values on this side
@@ -156,6 +157,9 @@ export class WorkerMesh {
       // …and which of its values the secrets file set, which the plain tree
       // cannot say, so the worker's boot dump withholds them too (#1546).
       secretPaths: secretLayerPaths(system.config),
+      // …and where this side looked for its application file, so a worker
+      // reads that one rather than whichever the environment names (#1546).
+      ...(configFile === null ? {} : { configFile }),
       seeds: [mainAddress.toString()],
       roles: [...(resolved.workerRoles ?? DEFAULT_MESH_WORKER_ROLES)],
       modules: modules.map((module) => (module instanceof URL ? module.href : module)),
@@ -181,7 +185,10 @@ export class WorkerMesh {
 
     let workerCluster: WorkerCluster;
     try {
-      workerCluster = await WorkerCluster.spawn(workerClusterOptions);
+      // This system's config, not a load of the pool's own: that one would
+      // see only the environment's file and profile, and refuse a profile
+      // defined in a file this system was given in code (#1546).
+      workerCluster = await WorkerCluster.spawn(workerClusterOptions, system.config);
       await cluster.awaitReady({ minimumMembers: workers + 1, timeoutMs: readyTimeoutMs });
     } catch (error) {
       // A half-built mesh is worse than none: the main system would stay a
