@@ -766,19 +766,28 @@ function buildPattern(segments: string[]): string {
 /* ------------------------ Parameter convenience ---------------------------- */
 
 /**
- * Extract a query parameter as a trimmed string, or undefined.  Array-valued
- * params (e.g. `?x=1&x=2`) return the first value.
+ * Extract a query parameter as a string, or undefined.  Array-valued params
+ * (e.g. `?x=1&x=2`) return the first value.
+ *
+ * Only the request's own parameters answer.  The query is a record of the
+ * names the client sent, so a name it did not send is absent, never a member
+ * the record inherits, such as `constructor` or `toString`.
  */
 export function queryParam(request: HttpRequest, name: string): string | undefined {
+  if (!Object.hasOwn(request.query, name)) return undefined;
   const value = request.query[name];
   if (value === undefined) return undefined;
   if (Array.isArray(value)) return value[0];
   return value;
 }
 
-/** Extract a path parameter (guaranteed present by the pattern). */
+/**
+ * Extract a path parameter (guaranteed present by the pattern).  Only the
+ * request's own parameters answer, as for {@link queryParam}: a name the
+ * pattern never bound is missing, whatever the record inherits.
+ */
 export function pathParam(request: HttpRequest, name: string): string {
-  const value = request.params[name];
+  const value = Object.hasOwn(request.params, name) ? request.params[name] : undefined;
   if (value === undefined) throw new HttpError(500, `Missing path parameter "${name}"`);
   return value;
 }

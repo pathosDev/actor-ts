@@ -251,6 +251,40 @@ describe('param extraction — edge cases', () => {
   });
 });
 
+describe('param extraction — only the request\'s own parameters answer', () => {
+  // The query and params records carry the names the client sent or the
+  // pattern bound, and inherit the members of their prototype besides.  A
+  // name that was neither sent nor bound is absent, whatever is inherited.
+  const INHERITED_NAMES = ['constructor', '__proto__', 'toString', 'valueOf', 'hasOwnProperty'] as const;
+
+  test('queryParam returns undefined for a name the query only inherits', () => {
+    for (const name of INHERITED_NAMES) {
+      expect({ name, value: queryParam(emptyRequest, name) }).toEqual({ name, value: undefined });
+    }
+  });
+
+  test('queryParam returns undefined for a name a query with another prototype only inherits', () => {
+    const query = Object.setPrototypeOf({ q: '1' }, ['a', 'b']) as HttpRequest['query'];
+    const request: HttpRequest = { ...emptyRequest, query };
+    for (const name of ['sort', 'length', '0', 'constructor'] as const) {
+      expect({ name, value: queryParam(request, name) }).toEqual({ name, value: undefined });
+    }
+    expect(queryParam(request, 'q')).toBe('1');
+  });
+
+  test('queryParam reads an own __proto__ parameter like any other', () => {
+    const query: Record<string, string | string[]> = {};
+    Object.defineProperty(query, '__proto__', { value: ['a', 'b'], enumerable: true, writable: true, configurable: true });
+    expect(queryParam({ ...emptyRequest, query }, '__proto__')).toBe('a');
+  });
+
+  test('pathParam refuses a name the params only inherit, as missing', () => {
+    for (const name of INHERITED_NAMES) {
+      expect(() => pathParam(emptyRequest, name)).toThrow(`Missing path parameter "${name}"`);
+    }
+  });
+});
+
 describe('compile — withMiddleware (#312)', () => {
   const passthrough: Middleware = (_request, next) => next();
   const block: Middleware = () => complete(Status.Unauthorized, 'denied');
