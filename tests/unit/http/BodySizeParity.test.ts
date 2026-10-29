@@ -9,6 +9,7 @@ import { ExpressBackendOptions } from '../../../src/http/backend/ExpressBackendO
 import { HonoBackend } from '../../../src/http/backend/HonoBackend.js';
 import { HonoBackendOptions } from '../../../src/http/backend/HonoBackendOptions.js';
 import {
+  bodyCapOf,
   contentLengthExceeds,
   PAYLOAD_TOO_LARGE_RESPONSE,
 } from '../../../src/http/backend/HttpServerBackend.js';
@@ -337,6 +338,26 @@ describe.each([
   });
 });
 
+describe('bodyCapOf — how the Express and Hono readers resolve their cap at listen()', () => {
+  test('no key leaves the backend its own cap, or the shared default', () => {
+    expect(bodyCapOf('ExpressBackend', KEY_CAP_BYTES, undefined)).toBe(KEY_CAP_BYTES);
+    expect(bodyCapOf('ExpressBackend', undefined, undefined)).toBe(DEFAULT_HTTP_MAX_BODY_BYTES);
+  });
+
+  test('a set key holds when the backend names no cap, or the same one', () => {
+    expect(bodyCapOf('ExpressBackend', undefined, KEY_CAP_BYTES)).toBe(KEY_CAP_BYTES);
+    expect(bodyCapOf('ExpressBackend', KEY_CAP_BYTES, KEY_CAP_BYTES)).toBe(KEY_CAP_BYTES);
+  });
+
+  test('a withMaxBodyBytes tighter than a set key is refused, not widened to the key', () => {
+    expect(() => bodyCapOf('ExpressBackend', KEY_CAP_BYTES, OVER_KEY_CAP_BYTES)).toThrow(`withMaxBodyBytes(${KEY_CAP_BYTES})`);
+  });
+
+  test('a withMaxBodyBytes looser than a set key is refused too', () => {
+    expect(() => bodyCapOf('ExpressBackend', OVER_KEY_CAP_BYTES, KEY_CAP_BYTES)).toThrow(`withMaxBodyBytes(${OVER_KEY_CAP_BYTES})`);
+  });
+});
+
 describe('max-content-length — a backend built with a different cap of its own is refused at bind()', () => {
   test('a Fastify built by hand carries the built-in 1 MiB, and is refused naming the key and the remedy', async () => {
     const refusal = await bindRefusal({ hocon: `${MAX_CONTENT_LENGTH} = ${KEY_CAP_BYTES}`, backend: new FastifyBackend() });
@@ -378,6 +399,27 @@ describe('max-content-length — a backend built with a different cap of its own
     const url = await startWith({ hocon: `${MAX_CONTENT_LENGTH} = ${KEY_CAP_BYTES}`, backend: make() }, echoLength(seen));
 
     await expectRefusedBeforeTheHandler(url, seen);
+  });
+
+  /**
+   * The direction that matters for the cap's purpose: an endpoint built with a
+   * deliberately tight cap must not be widened by a looser server-wide key.
+   * The cases above all build the backend looser than the key, so a check that
+   * refused only that direction — `>` for `!==` in `bodyCapOf`, `<` for `!==`
+   * in `FastifyBackend.listen` — passed every one of them and served a
+   * 1 KiB body to an endpoint built for 16 bytes.
+   */
+  test.each([
+    ['ExpressBackend', () => new ExpressBackend(ExpressBackendOptions.create().withMaxBodyBytes(KEY_CAP_BYTES)), `withMaxBodyBytes(${KEY_CAP_BYTES})`],
+    ['HonoBackend', () => new HonoBackend(HonoBackendOptions.create().withMaxBodyBytes(KEY_CAP_BYTES)), `withMaxBodyBytes(${KEY_CAP_BYTES})`],
+    ['FastifyBackend', () => new FastifyBackend({ bodyLimit: KEY_CAP_BYTES }), `bodyLimit ${KEY_CAP_BYTES}`],
+  ] as const)('%s built tighter than a looser key is refused, never widened to it', async (name, make, ownCap) => {
+    const refusal = await bindRefusal({ hocon: `${MAX_CONTENT_LENGTH} = ${OVER_KEY_CAP_BYTES * 4}`, backend: make() });
+
+    expect(refusal, `${name} built for ${KEY_CAP_BYTES} bytes bound under a ${OVER_KEY_CAP_BYTES * 4}-byte key`).toBeInstanceOf(Error);
+    expect(refusal!.message).toContain(name);
+    expect(refusal!.message).toContain(MAX_CONTENT_LENGTH);
+    expect(refusal!.message).toContain(ownCap);
   });
 
   test('an unset key refuses nothing: a Fastify built with its own bodyLimit binds under no key at all', async () => {
