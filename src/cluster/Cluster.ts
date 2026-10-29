@@ -1237,9 +1237,37 @@ export class Cluster {
 
   /**
    * Take a member's application version off a record we otherwise ignore
-   * (equal or older version), version-neutrally, under the rule
-   * {@link adoptConfigurationFacts} keeps: **anyone may relay a label into an
-   * empty slot; only the member itself may restate a held one** (#843).
+   * (equal or older version), version-neutrally (#843).  **The label is one
+   * run's statement: the member's own frame says what it is — a label, or
+   * none — and a relay may only fill an empty slot, with a label for the run
+   * that slot holds.**
+   *
+   * **Why the run, and not just the address.**  A restart is a new
+   * incarnation at the same `host:port`, so both runs' records share a map key
+   * and `NodeAddress.equals` cannot tell them apart.  A peer that has not yet
+   * heard of the restart still holds the previous run's record — live, or the
+   * tombstone its leave left — and gossips it at the previous run's lower
+   * version, which lands here on the new run's entry.  Filling from it showed
+   * a node rolled back onto a release that states no label, or deployed
+   * without `APP_VERSION`, cluster-wide with the label of the run before it,
+   * for the whole of the new run.  So a record naming another run is no
+   * statement about this one, whoever sends it.  A relay has to name the
+   * held record's run to fill its slot; one that names none — relayed through
+   * a node that predates the incarnation field (#940) — leaves the slot to the
+   * subject's own frame, because nothing says whose label it carries.
+   *
+   * **Why the subject's silence counts.**  Within one run the first copy to
+   * fill a slot need not be the subject's, and a node that states no label
+   * sends no field, so a relay's invention used to stand for the rest of the
+   * run.  The subject's own frame is the freshest statement of its own label by
+   * construction — it is stamped from what the node states
+   * ({@link memberDataForGossip}) — so it is taken as it is, empty included.
+   * A relay's record without a label clears nothing: a node that predates the
+   * field sends every record that way.  What this cannot stop is a relay
+   * filling the slot again after the subject's frame has emptied it; the
+   * subject's next frame takes it back, and a relay able to do that is an
+   * active member that can rewrite the whole record at a higher version
+   * anyway.
    *
    * **Why the overlay lane, for a label that never changes within one
    * incarnation.**  A plain record field would be enough once every node knows
@@ -1253,14 +1281,12 @@ export class Cluster {
    * every peer until its next status change.  With this, the subject's own
    * next frame fills the slot.
    *
-   * **Why not fill-only**, the way {@link adoptStorageIdentities} is, although
-   * that lane's argument — a genuinely changed value arrives with a new
-   * incarnation's higher version — holds here too: the first copy to fill a
-   * slot need not be the subject's.  A relay that fills it with a label the
-   * subject never stated would keep it for the rest of the incarnation under
-   * fill-only.  Letting the subject restate, keyed on the connection the frame
-   * arrived on, corrects that on its next frame without letting a stale or
-   * hostile relay overwrite what the subject said.
+   * **Why not fill-only**, the way {@link adoptStorageIdentities} is: that is
+   * the relay half of the rule above, and alone it keeps a relay's invention
+   * for the rest of the run.  Keying the subject's authority on the connection
+   * the frame arrived on — the anchor {@link maySpeakFor} rests the merge on —
+   * is what lets it correct the slot without letting a stale or hostile relay
+   * overwrite what the subject said.
    *
    * **Never through {@link publishConfigurationFact}.**  Checked paths are
    * *compared*, and with `enforce = on` a peer whose value differs is barred
@@ -1273,13 +1299,18 @@ export class Cluster {
    * already have replaced the entry in this same merge.
    */
   private adoptAppVersion(from: NodeAddress, existing: Member, incoming: Member): void {
-    if (incoming.appVersion === undefined) return;
     if (incoming.address.equals(this.selfAddress)) return;
     const current = this.members.get(incoming.address.toString()) ?? existing;
-    if (current.appVersion !== undefined) {
-      if (!incoming.address.equals(from)) return;
+    const heldRun = current.address.incarnation;
+    const statedRun = incoming.address.incarnation;
+    if (heldRun !== undefined && statedRun !== undefined && heldRun !== statedRun) return;
+    if (incoming.address.equals(from)) {
       if (current.appVersion === incoming.appVersion) return;
+      this.setMember(current.withAppVersion(incoming.appVersion));
+      return;
     }
+    if (incoming.appVersion === undefined || current.appVersion !== undefined) return;
+    if (heldRun === undefined || statedRun === undefined) return;
     this.setMember(current.withAppVersion(incoming.appVersion));
   }
 

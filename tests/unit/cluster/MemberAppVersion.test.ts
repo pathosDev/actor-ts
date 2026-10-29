@@ -235,6 +235,8 @@ const HOST = 'h';
 type Node = {
   readonly system: ActorSystem;
   readonly cluster: Cluster;
+  /** Kept so a case can take the node down without a word, the way a crash does. */
+  readonly transport: InMemoryTransport;
 };
 
 type NodeSpec = {
@@ -242,6 +244,8 @@ type NodeSpec = {
   readonly seeds?: ReadonlyArray<string>;
   readonly appVersion?: string;
   readonly hocon?: string;
+  /** `failure-detector.auto-down` in code; unset leaves the shipped `on`. */
+  readonly autoDown?: boolean;
 };
 
 const systems: ActorSystem[] = [];
@@ -270,17 +274,19 @@ async function startNode(spec: NodeSpec): Promise<Node> {
   if (spec.hocon !== undefined) systemOptions.withConfig(Config.parseString(spec.hocon));
   const system = ActorSystem.create(SYSTEM, systemOptions);
   systems.push(system);
+  const transport = new InMemoryTransport(new NodeAddress(SYSTEM, HOST, spec.port));
   const clusterOptions = ClusterOptions.create()
     .withHost(HOST)
     .withPort(spec.port)
-    .withTransport(new InMemoryTransport(new NodeAddress(SYSTEM, HOST, spec.port)))
+    .withTransport(transport)
     .withSeeds([...(spec.seeds ?? [])])
     .withGossipIntervalMs(30)
     .withSeedRetryIntervalMs(30);
   if (spec.appVersion !== undefined) clusterOptions.withAppVersion(spec.appVersion);
+  if (spec.autoDown !== undefined) clusterOptions.withFailureDetectorAutoDown(spec.autoDown);
   const cluster = await Cluster.join(system, clusterOptions);
   clusters.push(cluster);
-  return { system, cluster };
+  return { system, cluster, transport };
 }
 
 /** What `node` holds about `address` — the label every reader of `getMembers()` sees. */
@@ -467,6 +473,8 @@ type ClaimSpec = {
   readonly status?: MemberStatus;
   /** Omitted for a record that carries none — what a node that predates the field sends. */
   readonly appVersion?: string;
+  /** A tombstone's age stamp; only meaningful with `status: 'removed'`. */
+  readonly removedAt?: number;
 };
 
 function gossipClaim(spec: ClaimSpec): void {
@@ -475,6 +483,7 @@ function gossipClaim(spec: ClaimSpec): void {
     status: spec.status ?? 'up',
     version: spec.version,
     roles: [],
+    ...(spec.removedAt === undefined ? {} : { removedAt: spec.removedAt }),
     ...(spec.appVersion === undefined ? {} : { appVersion: spec.appVersion }),
   };
   (spec.node.cluster as unknown as ClusterInternals).handleWire(spec.sender, {
@@ -646,4 +655,275 @@ describe('this node\'s own label survives a promotion merged from a peer\'s view
     expect(internals.memberDataForGossip(bareSelf).appVersion).toBe('2.4.0');
     expect('appVersion' in internals.memberDataForGossip(peer)).toBe(false);
   });
+});
+
+/* -------------------------------------------------------------------------- */
+/* A label belongs to the run that stated it                                    */
+/* -------------------------------------------------------------------------- */
+
+/** Which run — which incarnation — of `address` the node holds a record of. */
+function heldRunOf(node: Node, address: NodeAddress): string | undefined {
+  return node.cluster.getMembers().find((member) => member.address.equals(address))?.address.incarnation;
+}
+
+/** The record `node` would gossip about `address` — what it passes on, not just what it shows. */
+function gossipedRecordOf(node: Node, address: NodeAddress): MemberData | undefined {
+  const held = node.cluster.getMembers().find((member) => member.address.equals(address));
+  return held === undefined
+    ? undefined
+    : (node.cluster as unknown as ClusterInternals).memberDataForGossip(held);
+}
+
+describe('a label belongs to the run that stated it (#843)', () => {
+  /**
+   * A restart is a new run at the same `host:port`, so the two runs' records
+   * share a map key and `NodeAddress.equals` cannot tell them apart — only the
+   * incarnation can.  A relay that has not yet heard of the restart still
+   * holds the previous run's record, live or as the tombstone its leave left,
+   * and gossips it at the previous run's lower version, which lands on the
+   * overlay lane of the new run's entry.  A rollback onto a release that
+   * states no label, or a deployment that stopped setting `APP_VERSION`, would
+   * otherwise be shown cluster-wide with the label it no longer runs.
+   */
+  test("a previous run's tombstone does not label the run that replaced it", async () => {
+    const node = await startNode({ port: 59_531 });
+    const previousRun = new NodeAddress(SYSTEM, HOST, 59_532, 'previous-run');
+    const nextRun = new NodeAddress(SYSTEM, HOST, 59_532, 'next-run');
+    const relay = new NodeAddress(SYSTEM, HOST, 59_533, 'relay-run');
+    const version = Date.now();
+
+    gossipClaim({ node, sender: relay, subject: relay, version, sequence: version });
+    gossipClaim({ node, sender: previousRun, subject: previousRun, version, sequence: version, appVersion: '2.5.0' });
+    expect(labelHeldBy(node, previousRun)).toBe('2.5.0');
+
+    // The address restarts stating none: another incarnation, a higher version.
+    gossipClaim({ node, sender: nextRun, subject: nextRun, version: version + 10, sequence: version + 10 });
+    expect(heldRunOf(node, nextRun)).toBe('next-run');
+    expect(labelHeldBy(node, nextRun)).toBeUndefined();
+
+    gossipClaim({
+      node, sender: relay, subject: previousRun, version: version + 1, sequence: version + 1,
+      status: 'removed', removedAt: Date.now(), appVersion: '2.5.0',
+    });
+
+    expect(labelHeldBy(node, nextRun)).toBeUndefined();
+  });
+
+  test("a previous run's live record does not label the run that replaced it", async () => {
+    // The crash shape: no leave, so the relay still holds the previous run as
+    // a member, at the version it last saw.
+    const node = await startNode({ port: 59_541 });
+    const previousRun = new NodeAddress(SYSTEM, HOST, 59_542, 'previous-run');
+    const nextRun = new NodeAddress(SYSTEM, HOST, 59_542, 'next-run');
+    const relay = new NodeAddress(SYSTEM, HOST, 59_543, 'relay-run');
+    const version = Date.now();
+
+    gossipClaim({ node, sender: relay, subject: relay, version, sequence: version });
+    gossipClaim({ node, sender: previousRun, subject: previousRun, version, sequence: version, appVersion: '2.5.0' });
+    gossipClaim({ node, sender: nextRun, subject: nextRun, version: version + 10, sequence: version + 10 });
+
+    gossipClaim({ node, sender: relay, subject: previousRun, version, sequence: version + 1, appVersion: '2.5.0' });
+
+    expect(heldRunOf(node, nextRun)).toBe('next-run');
+    expect(labelHeldBy(node, nextRun)).toBeUndefined();
+  });
+
+  test("a frame on the subject's own connection that names another run says nothing about this one", async () => {
+    // A late frame of the previous run, numbered past the replay mark the new
+    // run's frames left — the sequence guard is not what keeps the label off.
+    const node = await startNode({ port: 59_551 });
+    const previousRun = new NodeAddress(SYSTEM, HOST, 59_552, 'previous-run');
+    const nextRun = new NodeAddress(SYSTEM, HOST, 59_552, 'next-run');
+    const version = Date.now();
+
+    gossipClaim({ node, sender: previousRun, subject: previousRun, version, sequence: version, appVersion: '2.5.0' });
+    gossipClaim({ node, sender: nextRun, subject: nextRun, version: version + 10, sequence: version + 10 });
+
+    gossipClaim({ node, sender: previousRun, subject: previousRun, version, sequence: version + 11, appVersion: '2.5.0' });
+
+    expect(labelHeldBy(node, nextRun)).toBeUndefined();
+  });
+
+  test('the subject stating none takes back a label a relay put in its slot', async () => {
+    // Within one run a relay may fill an empty slot, and the first copy to
+    // fill it need not be the subject's.  The subject's own frame is its
+    // statement — and stating none is a statement too.
+    const node = await startNode({ port: 59_561 });
+    const subject = new NodeAddress(SYSTEM, HOST, 59_562, 'subject-run');
+    const relay = new NodeAddress(SYSTEM, HOST, 59_563, 'relay-run');
+    const version = Date.now();
+
+    gossipClaim({ node, sender: relay, subject: relay, version, sequence: version });
+    gossipClaim({ node, sender: subject, subject, version, sequence: version });
+    gossipClaim({ node, sender: relay, subject, version, sequence: version + 1, appVersion: 'invented' });
+    expect(labelHeldBy(node, subject)).toBe('invented');
+
+    gossipClaim({ node, sender: subject, subject, version, sequence: version + 1 });
+
+    expect(labelHeldBy(node, subject)).toBeUndefined();
+    expect(gossipedRecordOf(node, subject)).not.toHaveProperty('appVersion');
+  });
+
+  test('a relayed record without a label clears nothing the subject stated', async () => {
+    // Only the subject's own silence is a statement.  A relay that predates
+    // the field sends every record without one, at an unchanged version too.
+    const node = await startNode({ port: 59_571 });
+    const subject = new NodeAddress(SYSTEM, HOST, 59_572, 'subject-run');
+    const relay = new NodeAddress(SYSTEM, HOST, 59_573, 'relay-run');
+    const version = Date.now();
+
+    gossipClaim({ node, sender: relay, subject: relay, version, sequence: version });
+    gossipClaim({ node, sender: subject, subject, version, sequence: version, appVersion: '2.4.0' });
+
+    gossipClaim({ node, sender: relay, subject, version, sequence: version + 1 });
+
+    expect(labelHeldBy(node, subject)).toBe('2.4.0');
+  });
+
+  test('a relayed label fills a slot only when both records name the same run', async () => {
+    // A record relayed through a node that predates the incarnation field
+    // (#940) names no run, and then nothing says whose label it carries —
+    // whichever side is missing it.  The subject's own frame still fills.
+    const node = await startNode({ port: 59_581 });
+    const subject = new NodeAddress(SYSTEM, HOST, 59_582, 'subject-run');
+    const subjectNamingNoRun = new NodeAddress(SYSTEM, HOST, 59_582);
+    const relay = new NodeAddress(SYSTEM, HOST, 59_583, 'relay-run');
+    const version = Date.now();
+
+    gossipClaim({ node, sender: relay, subject: relay, version, sequence: version });
+    gossipClaim({ node, sender: subject, subject, version, sequence: version });
+    gossipClaim({ node, sender: relay, subject: subjectNamingNoRun, version, sequence: version + 1, appVersion: '2.5.0' });
+    expect(labelHeldBy(node, subject)).toBeUndefined();
+
+    // The other side: the held record names no run, the relayed one does.
+    const otherSubject = new NodeAddress(SYSTEM, HOST, 59_584);
+    const otherSubjectRun = new NodeAddress(SYSTEM, HOST, 59_584, 'other-run');
+    gossipClaim({ node, sender: otherSubject, subject: otherSubject, version, sequence: version });
+    gossipClaim({ node, sender: relay, subject: otherSubjectRun, version, sequence: version + 2, appVersion: '2.5.0' });
+    expect(labelHeldBy(node, otherSubject)).toBeUndefined();
+
+    // And the positive half: the same run on both sides fills.
+    gossipClaim({ node, sender: relay, subject, version, sequence: version + 3, appVersion: '2.4.0' });
+    expect(labelHeldBy(node, subject)).toBe('2.4.0');
+  });
+});
+
+describe('a member restarted without a label is shown without one, cluster-wide (#843)', () => {
+  /**
+   * End to end, the shape the frame cases above take apart: three real nodes,
+   * the labelled one goes away and comes back at the same address stating
+   * none.  Whether the peer that has not yet heard of the restart gossips the
+   * previous run's record to the one that has, in the window before both
+   * have, is a race — which is why the leave case runs three times.  Once both
+   * peers hold the new run, no record of the previous one is left anywhere to
+   * relay, so that is when the check is made, and again after the restarted
+   * node's own frames have reached both.
+   */
+  type RestartMode = 'leave' | 'crash';
+
+  type Restarted = {
+    readonly peers: ReadonlyArray<Node>;
+    readonly restarted: Node;
+    readonly nextRun: NodeAddress;
+  };
+
+  /** Drop a node the case has already ended from the teardown lists. */
+  function forget(node: Node): void {
+    const clusterIndex = clusters.indexOf(node.cluster);
+    if (clusterIndex >= 0) clusters.splice(clusterIndex, 1);
+    const systemIndex = systems.indexOf(node.system);
+    if (systemIndex >= 0) systems.splice(systemIndex, 1);
+  }
+
+  async function restartWithLabel(basePort: number, mode: RestartMode, label: string | undefined): Promise<Restarted> {
+    // `auto-down = off`: the crashed run stays a member until its successor
+    // replaces it, which is the path under test, rather than being removed
+    // by a timer racing the restart.
+    const seeds = [addressOf(basePort)];
+    const peers = [
+      await startNode({ port: basePort, autoDown: false }),
+      await startNode({ port: basePort + 1, seeds, autoDown: false }),
+    ];
+    const subject = await startNode({ port: basePort + 2, seeds, appVersion: '2.5.0', autoDown: false });
+    const firstRun = subject.cluster.selfAddress;
+    // The subject's own view too: its leave goes to the peers *it* knows, and
+    // the peers can converge on it before it has heard of both of them.
+    await awaitCondition(
+      () => [...peers, subject].every((node) => node.cluster.upMembers().length === 3)
+        && peers.every((peer) => labelHeldBy(peer, firstRun) === '2.5.0'),
+      { timeoutMs: 3_000, intervalMs: 10, label: 'three members up everywhere, both peers showing the first run\'s label' },
+    );
+
+    if (mode === 'leave') {
+      await subject.cluster.leave();
+      await awaitCondition(
+        () => peers.every((peer) => heldRunOf(peer, firstRun) === undefined),
+        { timeoutMs: 3_000, intervalMs: 10, label: 'both peers holding the first run as left' },
+      );
+    } else {
+      // A crash: the transport goes first, so not even a leave frame gets out.
+      await subject.transport.shutdown();
+    }
+    await subject.system.terminate();
+    forget(subject);
+
+    const restarted = await startNode({ port: basePort + 2, seeds, appVersion: label, autoDown: false });
+    const nextRun = restarted.cluster.selfAddress;
+    expect(nextRun.incarnation).not.toBe(firstRun.incarnation);
+    await awaitCondition(
+      () => [...peers, restarted].every((node) => node.cluster.upMembers().length === 3)
+        && peers.every((peer) => heldRunOf(peer, nextRun) === nextRun.incarnation),
+      { timeoutMs: 3_000, intervalMs: 10, label: 'the restarted run up on every node' },
+    );
+    return { peers, restarted, nextRun };
+  }
+
+  /** Until each peer has accepted a gossip frame the restarted node sent after this call. */
+  async function awaitOwnFrameOnEveryPeer({ peers, restarted }: Restarted): Promise<void> {
+    const sentSoFar = (restarted.cluster as unknown as { readonly gossipSequence: number }).gossipSequence;
+    const key = restarted.cluster.selfAddress.toString();
+    await awaitCondition(
+      () => peers.every((peer) => {
+        const accepted = (peer.cluster as unknown as {
+          readonly acceptedGossipSequences: ReadonlyMap<string, number>;
+        }).acceptedGossipSequences.get(key);
+        return accepted !== undefined && accepted > sentSoFar;
+      }),
+      { timeoutMs: 3_000, intervalMs: 10, label: 'a fresh frame from the restarted node on both peers' },
+    );
+  }
+
+  function expectNoLabelAnywhere({ peers, restarted, nextRun }: Restarted): void {
+    expect(restarted.cluster.selfMember()?.appVersion).toBeUndefined();
+    for (const peer of peers) {
+      expect(labelHeldBy(peer, nextRun)).toBeUndefined();
+      expect(gossipedRecordOf(peer, nextRun)).not.toHaveProperty('appVersion');
+    }
+  }
+
+  for (const run of [1, 2, 3]) {
+    test(`after a leave, stating none (run ${run} of 3)`, async () => {
+      const restart = await restartWithLabel(59_600 + run * 10, 'leave', undefined);
+
+      expectNoLabelAnywhere(restart);
+      await awaitOwnFrameOnEveryPeer(restart);
+      expectNoLabelAnywhere(restart);
+    }, 15_000);
+  }
+
+  test('after a crash, stating none', async () => {
+    const restart = await restartWithLabel(59_640, 'crash', undefined);
+
+    expectNoLabelAnywhere(restart);
+    await awaitOwnFrameOnEveryPeer(restart);
+    expectNoLabelAnywhere(restart);
+  }, 15_000);
+
+  test('after a leave, stating another label: both peers show the new one', async () => {
+    const restart = await restartWithLabel(59_650, 'leave', '2.6.0');
+    await awaitOwnFrameOnEveryPeer(restart);
+
+    expect(restart.restarted.cluster.selfMember()?.appVersion).toBe('2.6.0');
+    for (const peer of restart.peers) expect(labelHeldBy(peer, restart.nextRun)).toBe('2.6.0');
+  }, 15_000);
 });

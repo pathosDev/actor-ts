@@ -86,6 +86,12 @@ der Mitglieder lesen, die noch auf dem alten Release sind, statt als
 Vermutung. Das Label ist rein informativ: nichts platziert, routet oder downt
 danach, und ein Node, der keines nennt, erscheint einfach ohne.
 
+Das Label gehört zu dem Lauf, der es nennt. Ein Node, der ohne Label neu
+startet — zurückgerollt auf ein Release, das keines setzt, oder ohne
+`APP_VERSION` deployt —, erscheint ohne, nie mit dem Label des Laufs davor:
+Ein Peer, der vom Neustart noch nichts gehört hat, gossipt weiter den Eintrag
+des vorigen Laufs, und dieser Eintrag zählt für die Adresse nicht mehr.
+
 Das erste Upgrade auf ein actor-ts-Release, das das Feld kennt, ist selbst
 schon ein Rollout, den das Label abdeckt. Ein Node, der noch auf dem älteren
 actor-ts läuft, lässt das Label aus jedem Eintrag fallen, den er weitergibt;
