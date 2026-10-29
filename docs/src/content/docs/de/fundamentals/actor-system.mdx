@@ -100,7 +100,15 @@ das Persistenz verdrahtet, öffnet dort sein ausgewähltes Journal,
 seinen Snapshot-Store und seinen Durable-State-Store, also lässt ein
 Store, der sich nicht öffnen lässt, den Start scheitern wie jeder
 Task — siehe [Stores beim Start
-öffnen](/de/persistence/overview/#stores-beim-start-öffnen).
+öffnen](/de/persistence/overview/#stores-beim-start-öffnen).  Jeder
+Store, der mit actor-ts ausgeliefert wird, erreicht sein Backend schon
+beim Öffnen — mit abgeschaltetem `auto-create-tables` pingt ein
+relationaler Store seine Datenbank an, und ein DynamoDB-Store fragt die
+Beschreibung seiner Tabelle ab —, außer dem Object-Storage-Snapshot-Store
+und dem Object-Storage-Durable-State-Store.  Die haben vorab nichts zu
+öffnen, also scheitert an einem Bucket, den sie nicht erreichen, ihre
+erste Operation und nicht der Start; genauso bei einem eigenen Store ohne
+`start()`.
 Schaltest du `autoStart` im Persistence-Verhalten ab — oder setzt
 `actor-ts.persistence.auto-start = off` in der Konfiguration —, bleiben
 sie bis zu ihrer ersten Operation geschlossen.  Im Code abgeschaltet,

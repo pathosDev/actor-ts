@@ -26,11 +26,16 @@ import {
   POSTGRES_DURABLE_STATE_PLUGIN_ID,
   POSTGRES_JOURNAL_PLUGIN_ID,
   POSTGRES_SNAPSHOT_PLUGIN_ID,
+  ObjectStorageDurableStateStore,
+  ObjectStorageSnapshotStore,
   RegisterCassandraPluginsOptions,
   RegisterPostgresPluginsOptions,
   registerCassandraPlugins,
   registerPostgresPlugins,
+  type DurableStateStore,
+  type ObjectStorageBackend,
   type PersistencePlugin,
+  type SnapshotStore,
 } from '../../../../src/persistence/index.js';
 import type { PgClientLike, PgQueryResult } from '../../../../src/persistence/journals/PostgresClient.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
@@ -616,6 +621,59 @@ describe('autoStart false set in code asks nothing of the behaviour block inside
       expect(system.extension(PersistenceExtensionId).journal).toBe(journal);
       expect(journal.starts).toBe(0);
       expect(() => system.extension(PersistenceExtensionId).behavior).toThrow(OptionsError);
+    } finally {
+      await system.terminate();
+    }
+  });
+});
+
+/** An object-storage backend that answers every call the way an unreachable bucket does. */
+class UnreachableObjectStorageBackend implements ObjectStorageBackend {
+  calls = 0;
+
+  put(): Promise<never> { return this.refuse(); }
+
+  get(): Promise<never> { return this.refuse(); }
+
+  delete(): Promise<never> { return this.refuse(); }
+
+  list(): Promise<never> { return this.refuse(); }
+
+  private refuse(): Promise<never> {
+    this.calls++;
+    return Promise.reject(new Error(REFUSED));
+  }
+}
+
+/**
+ * The stores the warm-up cannot reach ahead of time.  Every other store in the
+ * repository reaches its backend when it opens — a relational or DynamoDB
+ * store with `auto-create-tables` off sends a ping or describes its table —
+ * but the object-storage snapshot and durable-state stores have no `start()`,
+ * so a bucket they cannot reach is met by their first operation, never by the
+ * startup.  `fundamentals/actor-system.mdx` says so; this keeps the sentence
+ * true.
+ */
+describe('the object-storage stores have nothing to open at startup', () => {
+  test('over an unreachable bucket the startup succeeds and asks nothing, and the first operation fails', async () => {
+    const snapshotBackend = new UnreachableObjectStorageBackend();
+    const durableStateBackend = new UnreachableObjectStorageBackend();
+    const snapshotStore = new ObjectStorageSnapshotStore({ backend: snapshotBackend });
+    const durableStateStore = new ObjectStorageDurableStateStore({ backend: durableStateBackend });
+    const systemOptions = quietOptions().withPersistence({ snapshotStore, durableStateStore });
+    const system = ActorSystem.create('warm-up-object-storage', systemOptions);
+    try {
+      await system.whenReady();
+      await aMacrotaskLater();
+      // Read through the contracts, where `start()` is the optional eager open.
+      const asSnapshotStore: SnapshotStore = snapshotStore;
+      const asDurableStateStore: DurableStateStore = durableStateStore;
+      expect(asSnapshotStore.start).toBeUndefined();
+      expect(asDurableStateStore.start).toBeUndefined();
+      expect(snapshotBackend.calls + durableStateBackend.calls).toBe(0);
+
+      expect((await rejectionOf(snapshotStore.loadLatest('first-use'))).message).toContain(REFUSED);
+      expect((await rejectionOf(durableStateStore.load('first-use'))).message).toContain(REFUSED);
     } finally {
       await system.terminate();
     }
