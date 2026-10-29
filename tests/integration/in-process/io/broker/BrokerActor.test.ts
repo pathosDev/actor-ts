@@ -19,7 +19,8 @@ import {
   BrokerOptionsError,
   type BrokerCommonOptionsType,
 } from '../../../../../src/io/broker/BrokerOptions.js';
-import type { Config } from '../../../../../src/config/Config.js';
+import { ConfigError, type Config } from '../../../../../src/config/Config.js';
+import type { RetiredLeaves } from '../../../../../src/config/RetiredKeys.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import { Actor } from '../../../../../src/Actor.js';
 import { Terminated } from '../../../../../src/SystemMessages.js';
@@ -401,6 +402,72 @@ describe('BrokerActor — options resolution', () => {
     expect((captured as unknown as Error).message).toContain('missing required options');
     expect((captured as unknown as Error).message).toContain('endpoint');
     await sys.terminate();
+  });
+});
+
+/**
+ * A broker written outside this package, under a root of its own — the shape a
+ * user's subclass has.  Nothing about it is special but the root, which is
+ * the point: the refusal of a retired spelling keys on `configKey()` alone, so
+ * it has to reach a root outside `actor-ts.io.broker` as it reaches the
+ * fifteen inside it.
+ */
+class OutOfTreeBroker extends FakeBroker {
+  static readonly ROOT = 'acme.messaging.orders';
+  protected override configKey(): string { return OutOfTreeBroker.ROOT; }
+  protected override retiredLeaves(): RetiredLeaves { return { legacyEndpoint: 'endpoint' }; }
+}
+
+/** Start an {@link OutOfTreeBroker} over `block` and report how its `preStart` ended. */
+async function startOutOfTree(name: string, block: ConfigObject): Promise<{ failure: unknown; broker: FakeBroker }> {
+  const sys = makeSystem(name, { acme: { messaging: { orders: block } } });
+  let failure: unknown = null;
+  let settled = false;
+  let started: FakeBroker | null = null;
+  sys.spawnAnonymous(() => {
+    const broker = new OutOfTreeBroker();
+    started = broker;
+    const preStart = broker.preStart.bind(broker);
+    broker.preStart = async (): Promise<void> => {
+      try { await preStart(); }
+      catch (e) { failure = e; }
+      finally { settled = true; }
+    };
+    return broker as unknown as Actor<FakeCommand>;
+  });
+  await awaitCondition(() => settled, { timeoutMs: 4_000, label: 'the out-of-tree broker\'s preStart settled' });
+  await sys.terminate();
+  return { failure, broker: started! };
+}
+
+describe('BrokerActor — a retired spelling is refused under a root outside the package', () => {
+  const root = OutOfTreeBroker.ROOT;
+
+  test.each<{ label: string; block: ConfigObject; retired: string; current: string }>([
+    { label: 'a shared reconnect leaf', block: { reconnect: { initialDelayMs: 100 } },
+      retired: 'reconnect.initialDelayMs', current: 'reconnect.initial-delay' },
+    { label: 'the outbound buffer', block: { outboundBuffer: 5 }, retired: 'outboundBuffer', current: 'outbound-buffer' },
+    { label: 'the old breaker group', block: { circuitBreaker: { failureThreshold: 3 } },
+      retired: 'circuitBreaker', current: 'circuit-breaker' },
+    { label: 'a leaf the subclass itself retired', block: { legacyEndpoint: 'h:2' },
+      retired: 'legacyEndpoint', current: 'endpoint' },
+  ])('$label fails preStart, naming both paths under that root', async ({ block, retired, current }) => {
+    const { failure, broker } = await startOutOfTree(`oot-${retired.replace(/\W/g, '-')}`, { endpoint: 'h:1', ...block });
+    expect(failure).toBeInstanceOf(ConfigError);
+    expect((failure as ConfigError).message).toContain(`${root}.${retired} has been renamed to ${root}.${current}`);
+    expect(broker.connectAttempts).toBe(0);
+  });
+
+  test('the kebab spellings under that root are read, and the actor starts', async () => {
+    const { failure, broker } = await startOutOfTree('oot-kebab', {
+      endpoint: 'h:1',
+      'outbound-buffer': 5,
+      reconnect: { 'initial-delay': 100 },
+    });
+    expect(failure).toBeNull();
+    const options = (broker as unknown as { options: FakeOptions }).options;
+    expect(options.outboundBuffer).toBe(5);
+    expect(options.reconnect).toEqual({ initialDelayMs: 100 });
   });
 });
 
