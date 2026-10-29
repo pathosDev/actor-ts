@@ -309,7 +309,7 @@ export type Http2SessionLike = {
    * the stream first — how {@link enforceSessionIdleTimeout} counts what is
    * open.  Optional because the header deadline needs none of it.
    */
-  on?: (event: 'stream', listener: (...args: ReadonlyArray<unknown>) => void) => unknown;
+  on?: (event: 'stream', listener: (...eventArguments: ReadonlyArray<unknown>) => void) => unknown;
   /** `'close'`: the session is gone, from whichever end. */
   once?: (event: 'close', listener: () => void) => unknown;
 };
@@ -842,8 +842,8 @@ export function enforceSessionIdleTimeout(
       idle = undefined;
     };
     arm();
-    session.on('stream', (...args) => {
-      const stream = args[0] as { once?: (event: 'close', listener: () => void) => unknown } | null | undefined;
+    session.on('stream', (opened: unknown) => {
+      const stream = opened as { once?: (event: 'close', listener: () => void) => unknown } | null | undefined;
       if (typeof stream?.once !== 'function') return;
       openStreams++;
       disarm();
@@ -939,8 +939,7 @@ export function enforceStreamRequestTimeout(
   hostTimers: HostTimers = unreferencedHostTimers,
 ): void {
   if (typeof server.on !== 'function') return;
-  server.on('stream', (...args) => {
-    const stream = args[0];
+  server.on('stream', (stream: unknown) => {
     if (!isHttp2Stream(stream) || requestReceivedInFull(stream)) return;
     const deadline = armChainedTimeout(() => { expireStreamRequest(stream); }, requestTimeoutMs, hostTimers);
     stream.once('close', () => { deadline.cancel(); });

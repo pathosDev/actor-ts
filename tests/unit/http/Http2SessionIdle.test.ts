@@ -237,7 +237,7 @@ describe('the idle timer counts open streams', () => {
   type FakeStream = { once: (event: 'close', listener: () => void) => FakeStream; close: () => void };
 
   function fakeSession() {
-    const streamListeners: Array<(...args: ReadonlyArray<unknown>) => void> = [];
+    const streamListeners: Array<(...eventArguments: ReadonlyArray<unknown>) => void> = [];
     const closeListeners: Array<() => void> = [];
     const runtimeTimeouts: number[] = [];
     let closes = 0;

@@ -61,9 +61,9 @@ describe('the deadline, at expiry', () => {
    * deadline armed so far, and `armed` says how many are pending.
    */
   function guardedServer() {
-    const listeners: Array<(...args: ReadonlyArray<unknown>) => void> = [];
+    const listeners: Array<(...eventArguments: ReadonlyArray<unknown>) => void> = [];
     const server = {
-      on: ((event: string, listener: (...args: ReadonlyArray<unknown>) => void) => {
+      on: ((event: string, listener: (...eventArguments: ReadonlyArray<unknown>) => void) => {
         if (event === 'stream') listeners.push(listener);
         return server;
       }) as NodeHttpServerLike['on'],
@@ -154,9 +154,9 @@ describe('the deadline, at expiry', () => {
     // with more than 2^31 - 1 fires after 1 ms on Bun and Node.  The guard
     // arms through the chain the scheduler uses for long delays, so the
     // first link is held at the ceiling and firing it only arms the next.
-    const listeners: Array<(...args: ReadonlyArray<unknown>) => void> = [];
+    const listeners: Array<(...eventArguments: ReadonlyArray<unknown>) => void> = [];
     const server = {
-      on: ((event: string, listener: (...args: ReadonlyArray<unknown>) => void) => {
+      on: ((event: string, listener: (...eventArguments: ReadonlyArray<unknown>) => void) => {
         if (event === 'stream') listeners.push(listener);
         return server;
       }) as NodeHttpServerLike['on'],
