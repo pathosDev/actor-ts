@@ -5,6 +5,7 @@ import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
 import {
   applyServerOptions,
   DEFAULT_RESPONSE_SECURITY_HEADERS,
+  headerCapReachesHttp2Streams,
   PAYLOAD_TOO_LARGE_RESPONSE,
   serverOptionsReportOf,
   transportFrameCapOf,
@@ -411,11 +412,16 @@ export class FastifyBackend implements HttpServerBackend {
     // opinion.  It runs after `listen` because these are re-read per
     // connection.  The body and header caps took at construction, and the
     // checks above made sure they are the ones asked for.  What took goes back
-    // on the binding, for `bind()` to warn from.
+    // on the binding, for `bind()` to warn from — the header cap as held for
+    // HTTP/1.1 only on an HTTP/2 listener whose runtime does not cap an
+    // HTTP/2 stream's header list with it, which Node's does not.
+    const headerCapOnEveryProtocol = !this.servesHttp2 || headerCapReachesHttp2Streams();
     const serverOptionsReport = serverOptionsReportOf(
       applyServerOptions(this.app.server as NodeHttpServerLike | undefined, serverOptions),
       serverOptions,
-      { maxHeaderBytes: true },
+      headerCapOnEveryProtocol
+        ? { maxHeaderBytes: true }
+        : { maxHeaderBytes: false, heldForOneProtocol: { maxHeaderBytes: 'HTTP/1.1' } },
     );
     // Fastify returns "http://<host>:<port>".
     const match = /:(\d+)$/.exec(address);

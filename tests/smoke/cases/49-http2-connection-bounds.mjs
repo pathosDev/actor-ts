@@ -17,6 +17,9 @@
  *     value on every runtime: a session pinged every 250 ms is closed about
  *     800 ms after its response, and a handler slower than the bound is
  *     answered with no GOAWAY under it.
+ *   - **The binding report says which protocol a bound holds for.**  On Bun
+ *     idle-timeout and request-timeout hold for HTTP/2 only; on Node the
+ *     header cap holds for HTTP/1.1 only — and bind() warns in those words.
  *
  * Skipped where the runtime cannot build `node:http2`'s `createSecureServer`,
  * which Fastify serves HTTP/2 from — Deno 2.6.8 answers `ERR_NOT_IMPLEMENTED`,
@@ -238,6 +241,89 @@ export async function run({ actorTs, runtime, loadEntry }) {
     await requestTimeoutLeg(context, runtime);
     await idleTimeoutLeg(context, runtime);
   } finally {
+    await system.terminate();
+  }
+  await reportLeg({ actorTs, HttpExtensionId, HttpServerOptions, routes, cert, key, ca }, runtime);
+}
+
+/** Collects what the system logged, children included — the shape the unit suites use for bind()'s warnings. */
+function recordingLogger(LogLevel) {
+  const records = [];
+  const make = () => ({
+    level: LogLevel.Info,
+    debug: (message) => { records.push({ level: 'debug', message: String(message) }); },
+    info: (message) => { records.push({ level: 'info', message: String(message) }); },
+    warn: (message) => { records.push({ level: 'warn', message: String(message) }); },
+    error: (message) => { records.push({ level: 'error', message: String(message) }); },
+    withSource: () => make(),
+    withFields: () => make(),
+  });
+  return { logger: make(), warnings: () => records.filter((record) => record.level === 'warn').map((record) => record.message) };
+}
+
+/**
+ * What the binding report and bind()'s warning say about the HTTP/2 listener
+ * on this runtime, and the runtime facts they rest on.  A connection that
+ * negotiates HTTP/1.1 on Bun's HTTP/2 listener reads neither keepAliveTimeout
+ * nor requestTimeout, so there the two bounds hold for HTTP/2 only; under
+ * Node they hold for both.  The header cap is the other way round: Bun caps an
+ * HTTP/2 stream's header list with it (a 4 KiB one is reset under 1 KiB) and
+ * Node does not (the same stream reaches the handler), so under Node it holds
+ * for HTTP/1.1 only.  Before the report said so, every one of these read "in
+ * effect" and bind() said nothing.
+ */
+async function reportLeg({ actorTs, HttpExtensionId, HttpServerOptions, routes, cert, key, ca }, runtime) {
+  const { ActorSystem, ActorSystemOptions, LogLevel } = actorTs;
+  const { logger, warnings } = recordingLogger(LogLevel);
+  const systemOptions = ActorSystemOptions.create()
+    .withLogger(logger)
+    .withLogLevel(LogLevel.Info)
+    .withConfig({
+      'actor-ts': {
+        http: {
+          backend: 'fastify',
+          server: { 'idle-timeout': '800ms', 'request-timeout': '20s', 'max-header-bytes': 1024 },
+        },
+      },
+    });
+  const system = ActorSystem.create('smoke-http2-report', systemOptions);
+  let binding;
+  let session;
+  try {
+    const serverOptions = HttpServerOptions.create().withTls({ cert, key }).withHttp2();
+    binding = await system.extension(HttpExtensionId)
+      .newServerAt('127.0.0.1', 0)
+      .withServerOptions(serverOptions)
+      .bind(routes);
+    const report = binding.serverOptionsReport;
+    const held = report?.heldForOneProtocol ?? {};
+    const said = warnings();
+    if (said.length !== 1) {
+      throw new Error(`bind() logged ${said.length} warnings on ${runtime}, not one: ${JSON.stringify(said)}`);
+    }
+    const expected = runtime === 'bun'
+      ? { idleTimeoutMs: false, requestTimeoutMs: false, maxHeaderBytes: true, held: { idleTimeoutMs: 'HTTP/2', requestTimeoutMs: 'HTTP/2' } }
+      : { idleTimeoutMs: true, requestTimeoutMs: true, maxHeaderBytes: false, held: { maxHeaderBytes: 'HTTP/1.1' } };
+    const actual = { idleTimeoutMs: report?.idleTimeoutMs, requestTimeoutMs: report?.requestTimeoutMs, maxHeaderBytes: report?.maxHeaderBytes, held };
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+      throw new Error(`the HTTP/2 listener's report on ${runtime} is ${JSON.stringify(actual)}, not ${JSON.stringify(expected)}`);
+    }
+    const phrase = runtime === 'bun' ? 'for HTTP/2 only' : 'for HTTP/1.1 only';
+    if (!said[0].includes(phrase)) {
+      throw new Error(`bind()'s warning on ${runtime} does not say the bound holds ${phrase}: ${said[0]}`);
+    }
+    // The runtime fact the header-cap answer rests on: a 4 KiB header list
+    // over HTTP/2 under the 1 KiB cap.
+    session = http2Connect(`https://127.0.0.1:${binding.port}`, { ca, servername: 'localhost' });
+    session.on('error', () => { /* observed through the stream outcome */ });
+    const oversized = await watchStream(session, { ':method': 'GET', ':path': '/', 'x-padding': 'a'.repeat(4096) }, (stream) => { stream.end(); });
+    const capped = oversized.status === undefined;
+    if (capped !== (runtime === 'bun')) {
+      throw new Error(`a 4 KiB HTTP/2 header list under max-header-bytes = 1024 was ${capped ? 'refused' : `answered ${oversized.status}`} on ${runtime} — the runtime no longer does what the report says it does`);
+    }
+  } finally {
+    session?.destroy();
+    if (binding) await binding.unbind().catch(() => {});
     await system.terminate();
   }
 }

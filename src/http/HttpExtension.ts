@@ -8,7 +8,7 @@ import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import type { Logger } from '../Logger.js';
 import { mergeOptions, stripUndefined } from '../util/OptionsMerge.js';
-import type { HttpServerBackend, ServerBinding, ServerOptionsReport } from './backend/HttpServerBackend.js';
+import type { HttpServerBackend, ListenerProtocol, ServerBinding, ServerOptionsReport } from './backend/HttpServerBackend.js';
 import { HttpClient } from './HttpClient.js';
 import type { HttpClientOptions, HttpClientOptionsType, HttpRedirectMode } from './HttpClientOptions.js';
 import {
@@ -528,6 +528,14 @@ const SERVER_OPTION_LEAVES: ReadonlyArray<readonly [ReportedServerOption, string
  * one fact about one server — this backend cannot hold these here — and the
  * remedy is the same for all of them.
  *
+ * **A bound that holds for one protocol is named apart** from one that holds
+ * nothing.  On an HTTP/2 listener some bounds reach only one of the two
+ * protocols it speaks — `idle-timeout` and `request-timeout` only HTTP/2 under
+ * Bun, `max-header-bytes` only HTTP/1.1 under Node — and the report lists them
+ * in {@link ServerOptionsReport.heldForOneProtocol}.  "Bounds nothing" would be
+ * the opposite overclaim there, so the warning says which protocol is bounded
+ * and which is not, still in the one warning.
+ *
  * A backend that reports nothing is not warned about: an absent report means
  * the backend did not say, and guessing on its behalf would turn every backend
  * written outside this repository into a source of false alarms.
@@ -547,13 +555,37 @@ function inertServerOptionsWarning(
     if (inCode !== undefined) return !(field === 'maxConnections' && inCode === Infinity);
     return configured[field] !== undefined && configured[field] !== shipped[field];
   };
-  const inert = notInEffect.filter(([field]) => setByDeployment(field)).map(([, leaf]) => leaf);
-  if (inert.length === 0) return undefined;
-  const named = inert.length === 1 ? inert[0] : `${inert.slice(0, -1).join(', ')} and ${inert[inert.length - 1]}`;
-  const one = inert.length === 1;
-  return `${named} ${one ? 'is' : 'are'} set, but the "${backendName}" backend reports ${one ? 'it' : 'them'} `
-    + `not in effect on this server, so ${one ? 'it bounds' : 'they bound'} nothing here. `
-    + `The ${ConfigKeys.http.server.root} table in the configuration reference says which backend and runtime can hold each.`;
+  const set = notInEffect.filter(([field]) => setByDeployment(field));
+  if (set.length === 0) return undefined;
+  const heldFor: Readonly<Partial<Record<string, ListenerProtocol>>> = report.heldForOneProtocol ?? {};
+  const leavesHeldFor = (protocol: ListenerProtocol | undefined): string[] =>
+    set.filter(([field]) => heldFor[field] === protocol).map(([, leaf]) => leaf);
+  const inert = leavesHeldFor(undefined);
+  const http2Only = leavesHeldFor('HTTP/2');
+  const http1Only = leavesHeldFor('HTTP/1.1');
+  const sentences: string[] = [];
+  if (inert.length > 0) {
+    const one = inert.length === 1;
+    sentences.push(`${namedLeaves(inert)} ${one ? 'is' : 'are'} set, but the "${backendName}" backend reports ${one ? 'it' : 'them'} `
+      + `not in effect on this server, so ${one ? 'it bounds' : 'they bound'} nothing here.`);
+  }
+  if (http2Only.length > 0) {
+    const one = http2Only.length === 1;
+    sentences.push(`${namedLeaves(http2Only)} ${one ? 'is' : 'are'} set, but the "${backendName}" backend holds ${one ? 'it' : 'them'} `
+      + `for HTTP/2 only on this server: a connection that negotiates HTTP/1.1 on the same port is not bounded by ${one ? 'it' : 'them'}.`);
+  }
+  if (http1Only.length > 0) {
+    const one = http1Only.length === 1;
+    sentences.push(`${namedLeaves(http1Only)} ${one ? 'is' : 'are'} set, but the "${backendName}" backend holds ${one ? 'it' : 'them'} `
+      + `for HTTP/1.1 only on this server: a request that arrives over HTTP/2 on the same port is not bounded by ${one ? 'it' : 'them'}.`);
+  }
+  sentences.push(`The ${ConfigKeys.http.server.root} table in the configuration reference says which backend and runtime can hold each.`);
+  return sentences.join(' ');
+}
+
+/** `a`, `a and b`, `a, b and c`. */
+function namedLeaves(leaves: ReadonlyArray<string>): string {
+  return leaves.length === 1 ? leaves[0]! : `${leaves.slice(0, -1).join(', ')} and ${leaves[leaves.length - 1]}`;
 }
 
 /**

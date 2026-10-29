@@ -1,5 +1,5 @@
 import { ConfigKeys } from '../../config/ConfigKeys.js';
-import { detectRuntime } from '../../runtime/Detect.js';
+import { detectRuntime, type RuntimeKind } from '../../runtime/Detect.js';
 import { armChainedTimeout, type Cancellable, type HostTimers, unreferencedHostTimers } from '../../Scheduler.js';
 import { DEFAULT_HTTP_MAX_BODY_BYTES, DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
 import type { HttpServerOptionsType } from '../HttpServerOptions.js';
@@ -252,6 +252,14 @@ export type NodeHttpServerLike = {
    */
   setSecureContext?: unknown;
   /**
+   * Present on an HTTP/2 listener — `http2.Http2SecureServer` on Node and on
+   * Bun, measured on node v26.10.0 and bun 1.4.2, and on no `node:http` or
+   * `node:https` server — and read only for its presence: it is how
+   * {@link applyServerOptions} knows the listener also takes HTTP/1.1
+   * connections its HTTP/2 bounds do not cover.
+   */
+  updateSettings?: unknown;
+  /**
    * The server events the two guards below subscribe to, so the cap and the
    * header deadline are held in this repository rather than delegated — see
    * {@link enforceMaxConnections} and {@link enforceHeaderTimeout} for why.
@@ -353,6 +361,12 @@ export type ServerSocketLike = {
   readonly remotePort?: number;
 };
 
+/** One of the two protocols an HTTP/2 listener speaks: HTTP/1.1 stays available on the same port. */
+export type ListenerProtocol = 'HTTP/1.1' | 'HTTP/2';
+
+/** The bounds that can hold for one protocol of an HTTP/2 listener and not the other. */
+export type ProtocolHeldBound = 'idleTimeoutMs' | 'requestTimeoutMs' | 'maxHeaderBytes';
+
 /**
  * Which connection-level fields of a resolved `actor-ts.http.server` policy a
  * backend put into effect on the server it bound — the four written after
@@ -366,20 +380,27 @@ export type ServerSocketLike = {
  * where `Bun.serve` hands back no server to install it on — produced a server
  * that took every connection and a log with nothing to say about it.
  *
- * `true` means in effect, and for the two bounds actor-ts holds itself it
- * means the guard was installed, not merely the property written:
- * `headerTimeoutMs` is the `installed` flag of {@link enforceHeaderTimeout}, and
- * `maxConnections` the `installed` flag of {@link enforceMaxConnections}.  A
- * property alone does not count there, since it is exactly what Bun accepts
- * and ignores.  `idleTimeoutMs` and `requestTimeoutMs` count where the property
- * was written, which is where the runtime reads it — and `idleTimeoutMs` also
- * where `Bun.serve` took it as `idleTimeout`, which it validates, so it is read
- * there too (#1487).
+ * `true` means in effect **on every connection the listener accepts**, and for
+ * the two bounds actor-ts holds itself it means the guard was installed, not
+ * merely the property written: `headerTimeoutMs` is the `installed` flag of
+ * {@link enforceHeaderTimeout}, and `maxConnections` the `installed` flag of
+ * {@link enforceMaxConnections}.  A property alone does not count there, since
+ * it is exactly what Bun accepts and ignores.  `idleTimeoutMs` and
+ * `requestTimeoutMs` count where the property was written, which is where the
+ * runtime reads it, together with the framework's own HTTP/2 halves —
+ * {@link enforceSessionIdleTimeout} and {@link enforceStreamRequestTimeout} —
+ * and `idleTimeoutMs` also where `Bun.serve` took it as `idleTimeout`, which it
+ * validates, so it is read there too (#1487).
  *
- * `false` means not in effect, for one of two reasons the report does not
- * tell apart: the field was not set, or this backend and runtime have nowhere
- * to put it.  `HttpExtension.bind` knows which fields were set, so it only
- * ever reads the second.
+ * `false` means not in effect, for one of three reasons the booleans do not
+ * tell apart: the field was not set, this backend and runtime have nowhere to
+ * put it, or it holds for only one of the two protocols an HTTP/2 listener
+ * speaks — which {@link ServerOptionsReport.heldForOneProtocol} then names.
+ * `HttpExtension.bind` knows which fields were set, so it only ever reads the
+ * last two, and words its warning by which one it is.  A bound that holds for
+ * HTTP/2 and not for the HTTP/1.1 connections on the same port is a bound a
+ * client can step around by offering HTTP/1.1, so it is not reported as held:
+ * that is the half-guarantee this report exists to say out loud.
  *
  * The report is as good as the event the guards rest on.  Deno's `node:http`
  * shim offers `on` but never emits `'connection'` (measured on deno 2.6.8), so
@@ -413,12 +434,35 @@ export type ServerOptionsReport = {
    * builds) and Hono on Node (`@hono/node-server`'s `serverOptions`).  `false`
    * on Hono under Bun or Deno, whose `serve()` has no per-server header cap.
    *
-   * It speaks for HTTP/1.1.  On an HTTP/2 listener under Node the cap binds
-   * the HTTP/1.1 requests sharing the port and not an HTTP/2 stream's header
-   * list — measured on node v26.10.0, a 4 KiB header list reached the handler
-   * through a 1 KiB cap — so `true` there is not a claim about h2 streams.
+   * On an HTTP/2 listener it is `true` only where the cap reaches an HTTP/2
+   * stream's header list too — see {@link headerCapReachesHttp2Streams}.  Under
+   * Node it does not: the cap binds the HTTP/1.1 requests sharing the port, and
+   * an HTTP/2 stream is bounded only by Node's own 64 KiB header-list limit —
+   * measured on node v26.10.0, a 60 KiB header list reached the handler
+   * through a 1 KiB cap — so Fastify reports it `false` there, held for
+   * HTTP/1.1 only.
    */
   readonly maxHeaderBytes?: boolean;
+  /**
+   * The fields above reported `false` that do hold for one of the two
+   * protocols an HTTP/2 listener speaks, each with the protocol it holds for,
+   * so the warning `bind()` logs can say what is bounded rather than claim
+   * nothing is.  Present only on an HTTP/2 listener where such a field was set.
+   *
+   *   - **`idleTimeoutMs` and `requestTimeoutMs` under Bun** hold for HTTP/2,
+   *     through {@link enforceSessionIdleTimeout} and
+   *     {@link enforceStreamRequestTimeout}, and not for a connection that
+   *     negotiates HTTP/1.1 on the same port: Bun's HTTP/2 server reads neither
+   *     `keepAliveTimeout` nor `requestTimeout` for one.  Measured on bun 1.4.2
+   *     with Fastify over TLS + HTTP/2, a keep-alive HTTP/1.1 connection was
+   *     still open 8 s after its response under an 800 ms idle-timeout, and a
+   *     stalled HTTP/1.1 body 40 s in under a 2 s request-timeout, where node
+   *     closed the first at 1.8 s and answered the second `408` at 30.0 s.
+   *   - **`maxHeaderBytes` under Node** holds for HTTP/1.1 — see the field.
+   */
+  readonly heldForOneProtocol?: {
+    readonly [Field in ProtocolHeldBound]?: ListenerProtocol;
+  };
   /**
    * Present only where the backend chose the idle timeout itself and the
    * runtime would not let it choose one long enough: what it installed, in
@@ -466,7 +510,7 @@ export type ServerListenOptions = Partial<HttpServerOptionsType> & {
  */
 export type ListenServerOptionsReport = Pick<
   ServerOptionsReport,
-  'idleTimeoutMs' | 'headerTimeoutMs' | 'requestTimeoutMs' | 'maxConnections'
+  'idleTimeoutMs' | 'headerTimeoutMs' | 'requestTimeoutMs' | 'maxConnections' | 'heldForOneProtocol'
 >;
 
 /**
@@ -483,6 +527,12 @@ export type BuiltInServerOptions = {
   readonly idleTimeoutMs?: boolean;
   /** See {@link ServerOptionsReport.idleTimeoutHeldAtCeilingMs}. */
   readonly idleTimeoutHeldAtCeilingMs?: number;
+  /**
+   * The built-in fields reported `false` above that hold for one protocol of
+   * an HTTP/2 listener — Fastify's header cap under Node, held for HTTP/1.1.
+   * See {@link ServerOptionsReport.heldForOneProtocol}.
+   */
+  readonly heldForOneProtocol?: ServerOptionsReport['heldForOneProtocol'];
 };
 
 /**
@@ -497,8 +547,14 @@ export function serverOptionsReportOf(
   options: Partial<HttpServerOptionsType> | undefined,
   builtIn: BuiltInServerOptions,
 ): ServerOptionsReport {
+  const { heldForOneProtocol: heldAfterListen, ...installed } = installedAfterListen;
+  const heldForOneProtocol = {
+    ...heldAfterListen,
+    // Only for a header cap the policy set: an unset one left nothing to hold.
+    ...(options?.maxHeaderBytes !== undefined ? builtIn.heldForOneProtocol : undefined),
+  };
   return {
-    ...installedAfterListen,
+    ...installed,
     // An idle timeout the runtime took at construction holds as surely as one
     // written after `listen()` — `Bun.serve`'s, on the Hono backend (#1487).
     ...(builtIn.idleTimeoutMs === true ? { idleTimeoutMs: true } : {}),
@@ -507,7 +563,31 @@ export function serverOptionsReportOf(
     // and one built with a different cap was refused before it bound.
     ...(options?.maxContentLength !== undefined ? { maxContentLength: true } : {}),
     ...(options?.maxHeaderBytes !== undefined ? { maxHeaderBytes: builtIn.maxHeaderBytes } : {}),
+    ...(Object.keys(heldForOneProtocol).length > 0 ? { heldForOneProtocol } : {}),
   };
+}
+
+/**
+ * Whether a `maxHeaderSize` an HTTP/2 server was built with also caps an
+ * HTTP/2 stream's header list on `runtime`, rather than only the HTTP/1.1
+ * requests sharing its port.
+ *
+ * Measured with Fastify over TLS + HTTP/2 under a 1 KiB cap.  **Bun**: yes —
+ * a 4 KiB header list was reset over HTTP/2 and answered `431` over HTTP/1.1,
+ * where with no cap 60 KiB went through.  It counts the HTTP/2 way, each field
+ * plus 32 bytes with the pseudo-headers included, so a block near the cap
+ * that HTTP/1.1 admits can be refused over HTTP/2: a 900-byte header passed
+ * HTTP/1.1 and was reset over HTTP/2.  **Node**: no — 900 bytes, 4 KiB and
+ * 60 KiB all reached the handler over HTTP/2 while HTTP/1.1 got `431` at
+ * 4 KiB.  An HTTP/2 stream there is bounded only by Node's own header-list
+ * limit, 63 KiB through and 64 KiB refused, and `settings.maxHeaderListSize =
+ * 1024` on the server did not lower it either — so there is no setting to
+ * reach for, and the cap is reported held for HTTP/1.1 only.  **Deno** builds
+ * no HTTP/2 server for Fastify at all (`createSecureServer` is not
+ * implemented in deno 2.6.8), so it answers no.
+ */
+export function headerCapReachesHttp2Streams(runtime: RuntimeKind = detectRuntime()): boolean {
+  return runtime === 'bun';
 }
 
 const NOTHING_IN_EFFECT: ListenServerOptionsReport = Object.freeze({
@@ -545,16 +625,21 @@ const NOTHING_IN_EFFECT: ListenServerOptionsReport = Object.freeze({
  * survives, and writing `undefined` onto `keepAliveTimeout` would replace
  * Fastify's deliberate 72 s with `NaN` semantics rather than with nothing.
  *
- * **`idleTimeoutMs` is two writes, because HTTP/2 does not read the first.**
- * `keepAliveTimeout` bounds an idle HTTP/1.1 connection; an HTTP/2 session
- * never consults it, so on an HTTP/2 listener the setting reaches the session
- * through the session's own timer instead — see
- * {@link enforceSessionIdleTimeout}.
+ * **`idleTimeoutMs` and `requestTimeoutMs` are two writes each, because
+ * HTTP/2 reads neither property.**  `keepAliveTimeout` bounds an idle HTTP/1.1
+ * connection and `requestTimeout` an HTTP/1.1 request's receive; an HTTP/2
+ * session and stream consult neither, so on an HTTP/2 listener the settings
+ * also reach them through timers of the framework's own — see
+ * {@link enforceSessionIdleTimeout} and {@link enforceStreamRequestTimeout}.
  *
  * **Where it does and does not reach** — the honest half, in the shape
  * {@link transportFrameCapOf} uses for the `ws` shim:
  *
- *   - **Fastify** — `this.app.server`.  All four.
+ *   - **Fastify** — `this.app.server`.  All four — except on its HTTP/2
+ *     listener under Bun, where a connection that negotiates HTTP/1.1 reads
+ *     neither `keepAliveTimeout` nor `requestTimeout`: there `idleTimeoutMs`
+ *     and `requestTimeoutMs` hold for HTTP/2 only and are reported so, in
+ *     {@link ServerOptionsReport.heldForOneProtocol}.
  *   - **Express** — the server the backend builds and listens on: `node:http`,
  *     or `node:https` under `tls`, which carries the same four properties and
  *     events.  All four, on either.
@@ -620,10 +705,18 @@ export function applyServerOptions(
     requestTimeoutMs: false,
     maxConnections: false,
   };
+  // Bun's HTTP/2 listener hands a connection that negotiated HTTP/1.1 to
+  // handling that reads neither `keepAliveTimeout` nor `requestTimeout`, so
+  // there the two bounds hold for HTTP/2 alone — through the framework's own
+  // halves — and are reported as such rather than as in effect.  A set `0`
+  // asks for no bound, which every protocol honours.
+  const http1Unbounded = typeof server.updateSettings === 'function' && detectRuntime() === 'bun';
+  const heldForOneProtocol: { -readonly [Field in ProtocolHeldBound]?: ListenerProtocol } = {};
   if (options.idleTimeoutMs !== undefined) {
     server.keepAliveTimeout = options.idleTimeoutMs;
     enforceSessionIdleTimeout(server, options.idleTimeoutMs);
-    report.idleTimeoutMs = true;
+    if (http1Unbounded && options.idleTimeoutMs > 0) heldForOneProtocol.idleTimeoutMs = 'HTTP/2';
+    else report.idleTimeoutMs = true;
   }
   if (options.headerTimeoutMs !== undefined) {
     const headerDeadlineMs = headerDeadlineOf(options.headerTimeoutMs, options.requestTimeoutMs);
@@ -640,7 +733,8 @@ export function applyServerOptions(
     server.requestTimeout = options.requestTimeoutMs;
     // `0` is "no bound" on HTTP/2 as it is on HTTP/1.1, so it arms nothing.
     if (options.requestTimeoutMs > 0) enforceStreamRequestTimeout(server, options.requestTimeoutMs);
-    report.requestTimeoutMs = true;
+    if (http1Unbounded && options.requestTimeoutMs > 0) heldForOneProtocol.requestTimeoutMs = 'HTTP/2';
+    else report.requestTimeoutMs = true;
   }
   if (options.maxConnections !== undefined && options.maxConnections !== Infinity) {
     server.maxConnections = options.maxConnections;
@@ -649,7 +743,7 @@ export function applyServerOptions(
     // that alone would be the silent failure the report exists to end.
     report.maxConnections = enforceMaxConnections(server, options.maxConnections)().installed;
   }
-  return report;
+  return Object.keys(heldForOneProtocol).length > 0 ? { ...report, heldForOneProtocol } : report;
 }
 
 /**
