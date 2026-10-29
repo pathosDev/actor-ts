@@ -1,6 +1,7 @@
 import { compressorFor } from '../persistence/object-storage/Compression.js';
 import { getTcpBackend } from '../runtime/tcp/index.js';
-import type { TcpSocketLike, TlsTransportOptionsType } from '../runtime/tcp/TcpBackend.js';
+import { connectWithin } from '../runtime/tcp/TcpBackend.js';
+import type { TcpBackend, TcpSocketLike, TlsTransportOptionsType } from '../runtime/tcp/TcpBackend.js';
 import { Lazy } from '../util/Lazy.js';
 import { BatchingSink, SinkDeliveryError } from './BatchingSink.js';
 import {
@@ -118,12 +119,23 @@ export class GelfSink extends BatchingSink {
    */
   protected createTransport(): GelfTransport {
     if (this.protocol === 'tcp') {
-      return new TcpGelfTransport(this.host, this.port, this.tls);
+      return new TcpGelfTransport(this.host, this.port, this.tls, () => this.tcpBackend());
     }
     if (this.protocol === 'http') {
       return new HttpGelfTransport(this.url!, this.requestTimeoutMs, this.fetchFn);
     }
     return new UdpGelfTransport(this.host, this.port, this.compression, this.maxChunkBytes, this.reporter);
+  }
+
+  /**
+   * What the `tcp` transport dials through — the runtime's own backend.
+   *
+   * `protected` for the reason {@link createTransport} is: a collector that
+   * never answers is the case the dial's bound exists for, and no test can
+   * have a network blackhole a SYN on cue.
+   */
+  protected tcpBackend(): Promise<TcpBackend> {
+    return getTcpBackend();
   }
 }
 
@@ -231,6 +243,17 @@ async function defaultUdpSocket(
 /* ------------------------------- TCP ------------------------------------ */
 
 /**
+ * How long a dial to Graylog may take — the TCP connect and, over TLS, the
+ * handshake — before the batch counts as failed, retryably (#1475).
+ *
+ * The dial had no bound but the operating system's: a collector that drops
+ * SYNs held `emitBatch` for 21 s on Windows and about two minutes on Linux,
+ * per attempt, with every record behind it waiting.  Ten seconds is what the
+ * `http` transport gives a whole request by default.
+ */
+const GELF_TCP_CONNECT_TIMEOUT_MS = 10_000;
+
+/**
  * One long-lived connection, one null byte after each message.
  *
  * GELF-over-TCP supports neither compression nor chunking, for the same
@@ -245,6 +268,7 @@ class TcpGelfTransport implements GelfTransport {
     private readonly host: string,
     private readonly port: number,
     private readonly tls: TlsTransportOptionsType | undefined,
+    private readonly backend: () => Promise<TcpBackend>,
   ) {}
 
   async send(message: string): Promise<void> {
@@ -276,8 +300,7 @@ class TcpGelfTransport implements GelfTransport {
   }
 
   private async connect(): Promise<TcpSocketLike> {
-    const backend = await getTcpBackend();
-    const socket = await backend.connect({
+    const socket = await connectWithin(await this.backend(), {
       host: this.host,
       port: this.port,
       ...(this.tls !== undefined ? { tls: this.tls } : {}),
@@ -288,7 +311,7 @@ class TcpGelfTransport implements GelfTransport {
         onClose: () => { this.forget(socket); },
         onError: () => { this.forget(socket); },
       },
-    });
+    }, GELF_TCP_CONNECT_TIMEOUT_MS);
     this.socket = socket;
     this.connecting = undefined;
     return socket;

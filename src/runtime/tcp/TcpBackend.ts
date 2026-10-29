@@ -406,3 +406,31 @@ export interface TcpBackend {
     signal?: AbortSignal;
   }): Promise<TcpSocketLike>;
 }
+
+/**
+ * `backend.connect`, given up if the dial has not opened within `timeoutMs`.
+ *
+ * For a caller with no deadline of its own — the GELF and syslog TCP sinks,
+ * whose dial was bounded by nothing but the operating system's connect
+ * timeout (#1475).  The deadline rides on the dial's `signal`, so it gives
+ * the dial up exactly as {@link TcpBackend.connect} describes: the promise
+ * rejects with an error naming the deadline, and the socket under it is
+ * destroyed as far as the runtime allows.  The timer is unref'd: a dial
+ * nobody is left waiting for must not be what keeps a process alive.
+ */
+export async function connectWithin(
+  backend: Pick<TcpBackend, 'connect'>,
+  options: { host: string; port: number; tls?: TlsTransportOptionsType; handlers: TcpSocketHandlers },
+  timeoutMs: number,
+): Promise<TcpSocketLike> {
+  const dial = new AbortController();
+  const timer = setTimeout(() => {
+    dial.abort(new Error(`no connection within ${timeoutMs} ms`));
+  }, timeoutMs);
+  (timer as { unref?: () => void }).unref?.();
+  try {
+    return await backend.connect({ ...options, signal: dial.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
