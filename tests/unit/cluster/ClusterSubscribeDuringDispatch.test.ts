@@ -277,4 +277,22 @@ describe('each subscription is its own registration (#1294)', () => {
     gossipPeer(node.cluster, peer, 'up', 3);
     expect(calls).toEqual(['shared', 'other']);
   });
+
+  test('an unsubscribe releases its registration rather than only silencing it', async () => {
+    // Silencing alone would deliver exactly as above while every ended
+    // subscription stayed in the list for the life of the node — one entry
+    // per subscribe/unsubscribe pair, which readiness waits and advisories
+    // make on every start.
+    const node = await startNode('dispatch-releases', 12_951);
+    nodes.push(node);
+    const registrations = (): number =>
+      (node.cluster as unknown as { readonly _listeners: ReadonlyArray<unknown> })._listeners.length;
+    const before = registrations();
+
+    const unsubscribes = [1, 2, 3].map(() => node.cluster.subscribe(() => {}, { replayMode: 'snapshot' }));
+    expect(registrations()).toBe(before + 3);
+
+    for (const unsubscribe of unsubscribes) unsubscribe();
+    expect(registrations()).toBe(before);
+  });
 });
