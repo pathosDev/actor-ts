@@ -103,7 +103,13 @@ Vier Operationen:
 - **`subscribeFunction(channel, callback)`** — einen einfachen
   Callback abonnieren, ohne einen Actor zu spawnen, zu benennen oder zu
   stoppen.  Gibt das `() => void`-Handle zurück, das das Abo beendet;
-  die Regeln stehen unter [Callback-Abos](#callback-abos).
+  die Regeln stehen unter [Callback-Abos](#callback-abos).  Hier kommt
+  der Channel zuerst, wo `subscribe` die Ref zuerst nimmt, deshalb
+  **wirft** es einen `TypeError`, der diese Reihenfolge nennt, wenn an
+  der Stelle des Callbacks eine Klasse, ein `EventKey` oder ein String
+  steht — der Aufruf andersherum geschrieben —, wie es das auch für
+  einen unbrauchbaren Channel und jeden anderen Callback tut, der keine
+  Funktion ist.
 - **`publish(event)`** — Fire-and-Forget.  Der Bus läuft seine
   Abo-Liste durch, matcht den Channel jedes Abos und `tell`t jeden
   passenden Actor; danach ruft er jeden passenden Callback auf.

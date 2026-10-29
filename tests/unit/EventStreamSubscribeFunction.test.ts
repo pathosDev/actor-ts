@@ -576,6 +576,55 @@ describe('EventStream.subscribeFunction refuses what it cannot deliver to', () =
       .toThrow(/subscribe\(ref, channel\)/);
   });
 
+  // `subscribe` takes the subscriber first and `subscribeFunction` the channel
+  // first, so the likeliest slip is the callback in front.  With a class as the
+  // channel it used to pass both checks — a class is a function, and every
+  // function is a usable `instanceof` target — and was stored: an arrow callback
+  // in the channel slot warned on every publish of every event for the life of
+  // the system, and a function expression matched nothing and said nothing.
+  const swappedCalls: ReadonlyArray<readonly [string, (bus: EventStream) => unknown]> = [
+    ['an arrow callback in front of a class', (bus) => bus.subscribeFunction(
+      ((_event: EventA) => {}) as never, EventA as never)],
+    ['a function expression in front of a class', (bus) => bus.subscribeFunction(
+      function onEvent(_event: EventA) {} as never, EventA as never)],
+    ['a callback in front of a key', (bus) => bus.subscribeFunction(
+      ((_event: UserLoggedInEvent) => {}) as never, UserLoggedInEvent as never)],
+    ['a callback in front of a kind string', (bus) => bus.subscribeFunction(
+      ((_event: UserLoggedInEvent) => {}) as never, 'user-logged-in' as never)],
+  ];
+
+  test.each(swappedCalls)('refuses %s, naming the order', (_label, subscribeSwapped) => {
+    const bus = new EventStream();
+    expect(() => subscribeSwapped(bus))
+      .toThrow(/^EventStream\.subscribeFunction: callback must be a function — got .*subscribeFunction\(channel, callback\)/);
+    expect(bus.hasSubscribers).toBe(false);
+  });
+
+  test('a class is refused as the callback wherever it comes from, by name', () => {
+    const bus = new EventStream();
+    expect(() => bus.subscribeFunction(EventA, EventB as never)).toThrow(/got the class EventB/);
+    expect(() => bus.subscribeFunction(EventA, class {} as never)).toThrow(/got an anonymous class/);
+    expect(bus.hasSubscribers).toBe(false);
+  });
+
+  test('every other function is still a callback, and is called', () => {
+    // The class check reads the function's source.  A method that happens to be
+    // called `class` starts with the same five letters and is still a method.
+    const bus = new EventStream();
+    const seen: string[] = [];
+    const handlers = {
+      class(event: EventA): void { seen.push(`method named class:${event.payload}`); },
+    };
+    bus.subscribeFunction(EventA, (event) => { seen.push(`arrow:${event.payload}`); });
+    bus.subscribeFunction(EventA, function named(event) { seen.push(`function:${event.payload}`); });
+    bus.subscribeFunction(EventA, async (event) => { seen.push(`async:${event.payload}`); });
+    bus.subscribeFunction(EventA, handlers.class);
+    bus.subscribeFunction(EventA, ((event: EventA) => { seen.push(`bound:${event.payload}`); }).bind(null));
+
+    bus.publish(new EventA('x'));
+    expect(seen).toEqual(['arrow:x', 'function:x', 'async:x', 'method named class:x', 'bound:x']);
+  });
+
   test('refuses an unusable channel, as subscribe does', () => {
     const bus = new EventStream();
     for (const channel of [undefined, null, 42, {}, '']) {

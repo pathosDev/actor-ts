@@ -100,7 +100,12 @@ Four operations:
 - **`subscribeFunction(channel, callback)`** — subscribe a plain
   callback, with no actor to spawn, name or stop.  Returns the
   `() => void` handle that ends the subscription; the rules are under
-  [Callback subscriptions](#callback-subscriptions).
+  [Callback subscriptions](#callback-subscriptions).  The channel comes
+  first here, where `subscribe` puts the ref first, so it **throws** a
+  `TypeError` naming that order when the callback slot holds a class,
+  an `EventKey` or a string — the call written the other way round —
+  as it does for an unusable channel or any other callback that is
+  not a function.
 - **`publish(event)`** — fire-and-forget.  The bus walks its
   subscription list, matches each subscription's channel, and `tell`s
   every matching actor; then it calls every matching callback.

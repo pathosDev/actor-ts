@@ -407,8 +407,10 @@ export class EventStream {
    * calls no callback for the nested event and warns once.
    *
    * @throws TypeError when `channel` is unusable, as {@link subscribe} does,
-   * or when `callback` is not a function.  Refused on the line that wrote it,
-   * rather than stored to fail at every delivery after it.
+   * or when `callback` is not a function — or is a class, an {@link EventKey}
+   * or a string, which is what that slot holds when the two arguments were
+   * swapped, and which the message answers with the order.  Refused on the
+   * line that wrote it, rather than stored to fail at every delivery after it.
    * @throws Error once the system this bus belongs to has terminated.
    */
   subscribeFunction<TEvent>(
@@ -836,15 +838,32 @@ function subscriberDisqualification(subscriber: unknown): string | null {
 /* ------------------------------------------------------------------ */
 
 /**
- * Refuse a callback that is not a function, on the line that passed it.
+ * Refuse a callback that is not a function, or is a class, on the line that
+ * passed it.
  *
  * Stored, it would fail at every delivery instead — contained by the guard in
  * `publish` and reported at warn, but once per event and far from the call
  * that was wrong.  The parameter is `unknown` for the reason
  * {@link resolveChannel}'s is.
+ *
+ * **A class is refused too, because it is the swapped call** (#1433).
+ * `subscribe` takes the subscriber first and this method the channel first,
+ * so the likeliest slip is `subscribeFunction(callback, Channel)` — and with a
+ * class for the channel, that call passed every check there was: a class is a
+ * function, and the callback in the channel slot is a function, which is a
+ * usable `instanceof` target.  It was stored and never called.  An arrow
+ * callback in the channel slot made every publish of every event warn, for the
+ * life of the system; a function expression matched nothing and said nothing,
+ * while keeping {@link EventStream.hasSubscribers} true.
+ *
+ * The channel slot cannot be the one that is checked: a plain function there
+ * is not detectably wrong — `Error` and other built-in constructors are
+ * functions without `class` syntax, and a bound or proxied class is one too —
+ * so it would refuse channels that work.  The callback slot can: a class is
+ * never a callback, because calling it without `new` throws every time.
  */
 function assertCallback(callback: unknown): void {
-  if (typeof callback === 'function') return;
+  if (typeof callback === 'function' && !isClass(callback)) return;
   throw new TypeError(
     `EventStream.subscribeFunction: callback must be a function — got ${callbackDisqualification(callback)}`,
   );
@@ -853,11 +872,46 @@ function assertCallback(callback: unknown): void {
 /** What the value in the callback slot is, phrased for the error. */
 function callbackDisqualification(callback: unknown): string {
   if (callback === null || callback === undefined) return String(callback);
+  // Each form of channel in this slot is the call written in the other order,
+  // so each one is answered with the order.
+  if (typeof callback === 'function') return `${classDescription(callback)}, ${swappedOrder('which is a channel')}`;
+  if (callback instanceof EventKey) return `an EventKey, ${swappedOrder('which is a channel')}`;
+  if (typeof callback === 'string') return `a string, ${swappedOrder('which names a channel when it is a kind')}`;
   if (typeof callback !== 'object') return `a ${typeof callback}`;
   // The likeliest object here is a ref, from a call written in the other form.
   return typeof (callback as { tell?: unknown }).tell === 'function'
     ? 'an ActorRef (subscribe(ref, channel) is the form that takes one)'
     : 'an object';
+}
+
+/** The second half of a refusal for a channel found in the callback slot. */
+function swappedOrder(whatItIs: string): string {
+  return `${whatItIs} — the order is subscribeFunction(channel, callback)`;
+}
+
+/** A class, by name when it has one — the name is how its author finds the call. */
+function classDescription(value: object): string {
+  const name = (value as { name?: unknown }).name;
+  return typeof name === 'string' && name.length > 0 ? `the class ${name}` : 'an anonymous class';
+}
+
+/**
+ * Was `value` written with `class` syntax?
+ *
+ * Read off the source text, the one place the difference shows before a call:
+ * a class and a function are both `typeof 'function'` and both carry a
+ * `prototype`, and the class says what it is only by throwing when it is
+ * called without `new`.  The character after the keyword is part of the test,
+ * so a method that happens to be named `class` — whose source begins
+ * `class(` — is still a method.  A class that does not show its source — bound,
+ * proxied, or built in — reads as a function, and is left to the delivery guard.
+ */
+function isClass(value: object): boolean {
+  try {
+    return /^class[\s{]/.test(Function.prototype.toString.call(value));
+  } catch {
+    return false;
+  }
 }
 
 /**
