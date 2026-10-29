@@ -205,6 +205,9 @@ export class Config {
    * The profile is `profile` → `process.env.ACTOR_TS_PROFILE` → none, and a
    * name neither file defines is refused rather than read as "no overlay".
    * Both files are optional: a path with no file behind it is an empty layer.
+   * A file that is there and cannot be loaded is refused naming the file and
+   * what made `load` read it — `./secrets.conf` is read from the working
+   * directory whenever nothing names a secrets file.
    *
    * Each file is resolved on its own, as before (#1071), with its active
    * profile laid over its root *before* its substitutions resolve — so an
@@ -215,15 +218,23 @@ export class Config {
   static load(options: LoadOptions = {}): Config {
     const environment = processEnvironment();
     const reference = Config.loadReference();
-    const applicationPath = options.appConfPath
-      ?? environment.ACTOR_TS_CONFIG
-      ?? pathInWorkingDirectory('application.conf');
-    const secretsPath = options.secretsConfPath
-      ?? environment[SECRETS_CONF_ENVIRONMENT_VARIABLE]
-      ?? pathInWorkingDirectory(DEFAULT_SECRETS_CONF_FILENAME);
+    const selectedApplication = selectedFile(
+      'application file',
+      { name: 'withConfigFile / LoadOptions.appConfPath', value: options.appConfPath },
+      { name: 'ACTOR_TS_CONFIG', value: environment.ACTOR_TS_CONFIG },
+      'application.conf',
+    );
+    const selectedSecrets = selectedFile(
+      'secrets file',
+      { name: 'LoadOptions.secretsConfPath', value: options.secretsConfPath },
+      { name: SECRETS_CONF_ENVIRONMENT_VARIABLE, value: environment[SECRETS_CONF_ENVIRONMENT_VARIABLE] },
+      DEFAULT_SECRETS_CONF_FILENAME,
+    );
+    const applicationPath = selectedApplication.path;
+    const secretsPath = selectedSecrets.path;
     const profile = selectedProfile(options.profile, environment[PROFILE_ENVIRONMENT_VARIABLE]);
-    const applicationFile = readProfiledFile(applicationPath);
-    const secretsFile = readProfiledFile(secretsPath);
+    const applicationFile = readProfiledFile(selectedApplication);
+    const secretsFile = readProfiledFile(selectedSecrets);
     if (profile !== null) {
       requireDefinedProfile(profile, [
         { description: 'application file', path: applicationPath, file: applicationFile },
@@ -499,8 +510,12 @@ export type LoadOptions = {
 
 /** Thrown on type mismatches or missing paths. */
 export class ConfigError extends Error {
-  constructor(message: string) {
-    super(message);
+  /**
+   * @param options  `cause` keeps the error this one explains — the parser's,
+   *   when a file `Config.load` read does not parse.
+   */
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = 'ConfigError';
   }
 }
@@ -676,6 +691,71 @@ function selectedProfile(option: string | undefined, variable: string | undefine
   return { name: variable, selectedBy: PROFILE_ENVIRONMENT_VARIABLE };
 }
 
+/** A way to name one of `load`'s files, and what a message calls it. */
+type FileSelector = {
+  readonly name: string;
+  readonly value: string | undefined;
+};
+
+/** A file `load` reads for one layer, and what chose it. */
+type SelectedFile = {
+  /** `application file` or `secrets file`, as a refusal names it. */
+  readonly description: string;
+  readonly path: string | undefined;
+  /** Why `load` reads this path, worded to follow "because". */
+  readonly selectedBy: string;
+};
+
+/**
+ * The file `load` reads for one layer — the option, else the environment
+ * variable, else `fileName` in the working directory — and why, which a file
+ * that cannot be loaded is refused with.
+ *
+ * The reason matters most for the last case.  A file of that name is read
+ * from whatever directory the process starts in, where it may belong to
+ * another tool, and a parse error that named neither the file nor that rule
+ * left the reader to guess which of two files had failed (#1546).
+ */
+function selectedFile(
+  description: string,
+  option: FileSelector,
+  variable: FileSelector,
+  fileName: string,
+): SelectedFile {
+  // `!= null`, as the `??` chain this replaced: a null from an untyped caller
+  // falls through exactly as an absent value does.
+  if (option.value != null) return { description, path: option.value, selectedBy: `${option.name} names it` };
+  if (variable.value != null) return { description, path: variable.value, selectedBy: `${variable.name} names it` };
+  return {
+    description,
+    path: pathInWorkingDirectory(fileName),
+    selectedBy: `it is ${fileName} in the working directory, which is read whenever neither ${option.name} `
+      + `nor ${variable.name} names another file — if that one is not this application's, move it, or name `
+      + 'the right one',
+  };
+}
+
+/**
+ * The parsed text of one of `load`'s files, or a refusal naming the file and
+ * why it was read.
+ *
+ * The parser's own message says where in the text it stopped, not in which
+ * file, and `load` reads two on every start.  Only the read and the parse are
+ * wrapped: a refusal of the file's profiles names the file already.
+ */
+function parseSelectedFile(selected: SelectedFile, path: string): ConfigObject {
+  try {
+    return parseHocon(readConfigFile(path));
+  } catch (error) {
+    throw new ConfigError(
+      `The ${selected.description} ${path} could not be loaded: `
+      + `${error instanceof Error ? error.message : String(error)}.  `
+      + `Config.load read it because ${selected.selectedBy}.`,
+      { cause: error },
+    );
+  }
+}
+
 /** One file `load` read, parsed and split, before any substitution is resolved. */
 type ProfiledFile = {
   /** Everything but the `profiles` block, unresolved. */
@@ -696,9 +776,10 @@ type ProfiledFile = {
  * first run in production.  None is resolved: substitutions belong to the
  * pass that knows which profile is active.
  */
-function readProfiledFile(path: string | undefined): ProfiledFile | null {
+function readProfiledFile(selected: SelectedFile): ProfiledFile | null {
+  const path = selected.path;
   if (path === undefined || !existsSync(path)) return null;
-  const parsed = parseHocon(readConfigFile(path));
+  const parsed = parseSelectedFile(selected, path);
   const root: ConfigObject = {};
   for (const [key, value] of Object.entries(parsed)) {
     if (key !== PROFILES_ROOT_KEY) root[key] = value;

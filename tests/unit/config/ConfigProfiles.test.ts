@@ -8,7 +8,7 @@
  * profile exported in the shell running it can decide what a case sees.
  */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -291,6 +291,95 @@ describe('Config.load — the secrets file', () => {
       expect(Config.load({ ...base, secretsConfPath: join(fromOption, 'secrets.conf') }).getString('my-app.token'))
         .toBe('option');
     });
+  });
+});
+
+/** What `body` threw, or `null` — so a case can restore the working directory before it asserts. */
+function thrownBy(body: () => unknown): unknown {
+  try {
+    body();
+  } catch (error) {
+    return error;
+  }
+  return null;
+}
+
+/** `body` run with `directory` as the working directory, synchronously, and what it threw. */
+function thrownInWorkingDirectory(directory: string, body: () => unknown): unknown {
+  const previous = process.cwd();
+  // Synchronous from chdir to restore, so nothing else in this file can run
+  // with the working directory moved.
+  process.chdir(directory);
+  try {
+    return thrownBy(body);
+  } finally {
+    process.chdir(previous);
+  }
+}
+
+/** Another tool's file of the same name: nginx syntax, which is not HOCON. */
+const NOT_HOCON = 'server {\n  listen 80;\n}\n';
+
+describe('Config.load — a file that cannot be loaded names itself and why it was read', () => {
+  test('a ./secrets.conf nothing named says it was read from the working directory', () => {
+    // Read on every start from wherever the process starts, so a file of that
+    // name may well belong to something else.
+    const directory = directoryWith({ 'secrets.conf': NOT_HOCON });
+    const thrown = thrownInWorkingDirectory(directory, () => load({ appConfPath: 'no-such-application.conf' }));
+
+    expect(thrown).toBeInstanceOf(ConfigError);
+    expect((thrown as ConfigError).message).toBe(
+      `The secrets file ${resolve(directory, 'secrets.conf')} could not be loaded: HOCON parse error at line 2, `
+      + 'col 10: Expected \'=\' or \':\' after key "listen".  Config.load read it because it is secrets.conf in the '
+      + 'working directory, which is read whenever neither LoadOptions.secretsConfPath nor ACTOR_TS_SECRETS_CONF '
+      + 'names another file — if that one is not this application\'s, move it, or name the right one.',
+    );
+    // The parser's own error stays reachable.
+    expect(((thrown as ConfigError).cause as Error).message).toStartWith('HOCON parse error at line 2, col 10');
+  });
+
+  test('a secrets file a variable or the option named says which', () => {
+    const directory = directoryWith({ 'secrets.conf': NOT_HOCON });
+    const path = join(directory, 'secrets.conf');
+    const base = { appConfPath: 'no-such-application.conf' };
+
+    const fromVariable = withEnvironment({ ACTOR_TS_SECRETS_CONF: path }, () => thrownBy(() => Config.load(base)));
+    expect((fromVariable as ConfigError).message).toStartWith(`The secrets file ${path} could not be loaded: `);
+    expect((fromVariable as ConfigError).message).toEndWith('Config.load read it because ACTOR_TS_SECRETS_CONF names it.');
+
+    const fromOption = thrownBy(() => load({ ...base, secretsConfPath: path }));
+    expect((fromOption as ConfigError).message).toEndWith('Config.load read it because LoadOptions.secretsConfPath names it.');
+  });
+
+  test('so does the application file, found in the working directory or named', () => {
+    const directory = directoryWith({ 'application.conf': NOT_HOCON });
+    const path = resolve(directory, 'application.conf');
+
+    const fromWorkingDirectory = thrownInWorkingDirectory(directory, () => load({}));
+    expect((fromWorkingDirectory as ConfigError).message).toStartWith(`The application file ${path} could not be loaded: `);
+    expect((fromWorkingDirectory as ConfigError).message).toContain(
+      'because it is application.conf in the working directory, which is read whenever neither '
+      + 'withConfigFile / LoadOptions.appConfPath nor ACTOR_TS_CONFIG names another file',
+    );
+
+    const fromOption = thrownBy(() => load({ appConfPath: path }));
+    expect((fromOption as ConfigError).message)
+      .toEndWith('Config.load read it because withConfigFile / LoadOptions.appConfPath names it.');
+    const fromVariable = withEnvironment({ ACTOR_TS_CONFIG: path }, () => thrownBy(() => Config.load({})));
+    expect((fromVariable as ConfigError).message).toEndWith('Config.load read it because ACTOR_TS_CONFIG names it.');
+  });
+
+  test('a path that is there but cannot be read is refused the same way', () => {
+    // A directory called secrets.conf: it exists, so it is no empty layer.
+    const directory = directoryWith({});
+    mkdirSync(join(directory, 'secrets.conf'));
+    const thrown = thrownInWorkingDirectory(directory, () => load({ appConfPath: 'no-such-application.conf' }));
+
+    expect(thrown).toBeInstanceOf(ConfigError);
+    expect((thrown as ConfigError).message).toStartWith(
+      `The secrets file ${resolve(directory, 'secrets.conf')} could not be loaded: `,
+    );
+    expect((thrown as ConfigError).message).toContain('because it is secrets.conf in the working directory');
   });
 });
 

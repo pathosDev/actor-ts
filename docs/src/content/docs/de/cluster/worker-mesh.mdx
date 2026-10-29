@@ -135,7 +135,12 @@ Main-Thread im Code bekommen hat.  Die Anwendungsdatei, die der eigene Load
 eines Workers liest, ist die seines Main-Threads, ob mit `withConfigFile`
 benannt oder über `ACTOR_TS_CONFIG` bzw. `./application.conf` gefunden: Der
 Baum überschreibt jeden Key, den diese Datei setzt, und eine andere Datei
-könnte Keys hinzufügen, die der Main-Thread nie gesehen hat.
+könnte Keys hinzufügen, die der Main-Thread nie gesehen hat.  Er liest auch
+die [Secrets-Datei](/de/reference/configuration/#secrets-datei), die der Load
+des Main-Systems gelesen hat — `ACTOR_TS_SECRETS_CONF` oder `./secrets.conf` im
+Arbeitsverzeichnis —, eine Datei dort, die sich nicht laden lässt, hält also
+schon das Main-System an, bevor ein Worker startet, mit einem Fehler, der die
+Datei nennt und den Grund, aus dem sie gelesen wurde.
 
 | Option | Was |
 | --- | --- |
