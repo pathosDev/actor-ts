@@ -28,10 +28,14 @@ import type { ServerBinding } from '../../../src/http/backend/HttpServerBackend.
 import { HttpExtensionId, type ServerBuilder } from '../../../src/http/HttpExtension.js';
 import { HttpServerOptions } from '../../../src/http/HttpServerOptions.js';
 import { requestTimeout } from '../../../src/http/middleware/Timeout.js';
-import { complete, concat, get, path, withMiddleware, type Route } from '../../../src/http/Route.js';
+import { complete, concat, fallback, get, path, withMiddleware, type Route } from '../../../src/http/Route.js';
 import { Status, type HttpResponse } from '../../../src/http/Types.js';
+import type { WebsocketServerRef } from '../../../src/http/websocket/WebsocketMessages.js';
+import { websocket } from '../../../src/http/websocket/WebsocketRoute.js';
+import { WebsocketServerActor } from '../../../src/http/websocket/WebsocketServerActor.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { RecordingLogger } from '../../util/RecordingLogger.js';
 
 /** Bun's idle sweep: the most a silent connection can outlive its timeout, and the earliest it can be cut before it. */
 const ONE_SWEEP_MS = 4_000;
@@ -68,6 +72,28 @@ async function bindHono(
   const binding = await configure(system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0)).bind(routes);
   entry.binding = binding;
   return binding;
+}
+
+/** Bind `routesOf(system)` on the Hono backend, keeping what `bind()` logged: the binding and its warnings. */
+async function bindHonoRecording(
+  routesOf: (system: ActorSystem) => Route,
+  hocon = '',
+): Promise<{ readonly binding: ServerBinding; readonly warnings: readonly string[] }> {
+  const logger = new RecordingLogger(LogLevel.Info);
+  const systemOptions = ActorSystemOptions.create()
+    .withLogger(logger)
+    .withLogLevel(LogLevel.Info)
+    .withConfig(Config.parseString(`actor-ts.http.backend = hono\n${hocon}`));
+  const system = ActorSystem.create('hono-bun-idle-timeout', systemOptions);
+  const entry: { system: ActorSystem; binding?: ServerBinding } = { system };
+  running.push(entry);
+  const binding = await system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0).bind(routesOf(system));
+  entry.binding = binding;
+  return { binding, warnings: logger.records.filter((record) => record.level === 'warn').map((record) => record.message) };
+}
+
+class SilentServer extends WebsocketServerActor<never, never> {
+  onMessage(): void { /* never reached — nothing connects here */ }
 }
 
 /** The refusal `bind()` produced, or `undefined` when it bound. */
@@ -244,4 +270,34 @@ describe('Hono under Bun — unset, the idle timeout is derived from the longest
     // report keeps saying so — and there is nothing for bind() to warn about.
     expect(binding.serverOptionsReport?.idleTimeoutMs).toBe(false);
   }, 30_000);
+});
+
+describe('Hono under Bun — a fallback or websocket route\'s requestTimeout() counts like an HTTP route\'s', () => {
+  // Bun closes a connection whose handler has written nothing for the idle
+  // timeout, and a fallback or an upgrade request is such a request as much as
+  // an HTTP route's.  400 s is past what 255 s covers, so the derived timeout
+  // is held at the ceiling and the binding says so — which it can only do if
+  // the deadline it was derived from counted that route.
+  const heldAtCeiling = (warnings: readonly string[]): string[] =>
+    warnings.filter((warning) => warning.includes('the most this runtime can hold'));
+
+  test('a fallback() under requestTimeout(400_000) is reported held at the ceiling, and bind() warns naming its deadline', async () => {
+    const { binding, warnings } = await bindHonoRecording(() =>
+      concat(ok, withMiddleware(requestTimeout(400_000), fallback(() => complete(Status.NotFound, 'none')))));
+
+    expect(binding.serverOptionsReport?.idleTimeoutHeldAtCeilingMs).toBe(255_000);
+    expect(heldAtCeiling(warnings)).toHaveLength(1);
+    expect(heldAtCeiling(warnings)[0]).toContain('400000 ms');
+  });
+
+  test('a websocket() route under requestTimeout(400_000) is too', async () => {
+    const { binding, warnings } = await bindHonoRecording((system) => {
+      const server = system.spawn(SilentServer, 'silent') as unknown as WebsocketServerRef<never, never, never>;
+      return concat(ok, withMiddleware(requestTimeout(400_000), websocket('socket', server)));
+    });
+
+    expect(binding.serverOptionsReport?.idleTimeoutHeldAtCeilingMs).toBe(255_000);
+    expect(heldAtCeiling(warnings)).toHaveLength(1);
+    expect(heldAtCeiling(warnings)[0]).toContain('400000 ms');
+  });
 });
