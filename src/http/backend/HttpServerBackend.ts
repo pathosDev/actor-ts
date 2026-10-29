@@ -1,5 +1,6 @@
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { detectRuntime } from '../../runtime/Detect.js';
+import { armChainedTimeout, type HostTimers, unreferencedHostTimers } from '../../Scheduler.js';
 import { DEFAULT_HTTP_MAX_BODY_BYTES, DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
 import type { HttpServerOptionsType } from '../HttpServerOptions.js';
 import type { HttpMethod, HttpRequest, HttpResponse } from '../Types.js';
@@ -628,6 +629,8 @@ export function applyServerOptions(
   }
   if (options.requestTimeoutMs !== undefined) {
     server.requestTimeout = options.requestTimeoutMs;
+    // `0` is "no bound" on HTTP/2 as it is on HTTP/1.1, so it arms nothing.
+    if (options.requestTimeoutMs > 0) enforceStreamRequestTimeout(server, options.requestTimeoutMs);
     report.requestTimeoutMs = true;
   }
   if (options.maxConnections !== undefined && options.maxConnections !== Infinity) {
@@ -719,6 +722,133 @@ export function enforceSessionIdleTimeout(server: NodeHttpServerLike, idleTimeou
   server.on('session', (session) => {
     session.setTimeout(idleTimeoutMs, () => { session.close(); });
   });
+}
+
+/**
+ * The slice of a server-side HTTP/2 stream {@link enforceStreamRequestTimeout}
+ * reads and ends — `node:http2`'s `ServerHttp2Stream` on Node, Bun's own on
+ * Bun, which carry every member alike (measured on node v26.10.0 and bun
+ * 1.4.2).
+ */
+export type Http2StreamLike = {
+  /** True when the request's HEADERS frame ended the stream: a request with no body. */
+  readonly endAfterHeaders?: boolean;
+  /**
+   * The protocol state of the stream.  `remoteClose` is `1` once the client
+   * has sent END_STREAM — whether or not anything has read the body, which is
+   * why it is asked rather than the readable side's `'end'`.
+   */
+  readonly state?: { readonly remoteClose?: number };
+  readonly headersSent?: boolean;
+  /** Whether the response has been ended — its last frame written or queued. */
+  readonly writableEnded?: boolean;
+  readonly closed?: boolean;
+  readonly destroyed?: boolean;
+  respond: (headers: Readonly<Record<string, string | number>>, options?: { readonly endStream?: boolean }) => void;
+  /** Send RST_STREAM with `code`, once what is queued has gone when that is `NO_ERROR`. */
+  close: (code?: number) => void;
+  once: (event: 'close', listener: () => void) => unknown;
+};
+
+/**
+ * RST_STREAM error codes, RFC 9113 §7: `NO_ERROR` asks a client to stop
+ * sending a request that has been answered in full; `CANCEL` says the stream
+ * is no longer wanted.
+ */
+const HTTP2_NO_ERROR = 0x0;
+const HTTP2_CANCEL = 0x8;
+
+/**
+ * Bound the receive of each HTTP/2 stream by `requestTimeoutMs` — the HTTP/2
+ * half of `request-timeout`, whose HTTP/1.1 half is the runtime's
+ * `requestTimeout` sweep.
+ *
+ * **Why a mechanism of its own.**  `requestTimeout` is read by the HTTP/1.1
+ * connection handling only, and nothing at the session level can stand in for
+ * it.  Measured on node v26.10.0 and bun 1.4.2 with the framework-built
+ * Fastify over TLS + HTTP/2, `request-timeout = 2s` and `idle-timeout =
+ * 800ms`: a POST that announced 1000 bytes and sent 10 was still open 12 s
+ * later on both, as was a body trickled every 500 ms.  The session's idle
+ * timer sent its GOAWAY for the stalled one and then, by design, let the open
+ * stream finish; the trickled one never let the timer fire.  Cutting the
+ * session some grace period after its GOAWAY was the other shape on the
+ * table, and it bounds neither a trickle nor anything when the idle timeout
+ * is unset — and it would cut a long poll the HTTP/1.1 rules leave alone.
+ *
+ * **What it bounds is the request, never the response.**  The deadline is
+ * armed when a stream opens and spent once the client has finished sending:
+ * a request with no body never arms one, and one whose client has sent
+ * END_STREAM by the deadline is left to its handler however long that takes
+ * — the HTTP/1.1 rule, where `requestTimeout` bounds the receive.  Finished
+ * sending is the protocol's answer, not a reader's: a five-byte body nothing
+ * read never emits `'end'`, and was rightly left alone on both runtimes.
+ *
+ * **At the deadline**, a stream still receiving is answered `408` and reset
+ * with `NO_ERROR`, the RFC's way to stop a client sending a request that has
+ * been answered (§8.1).  One the handler already answered in full keeps that
+ * answer and is reset the same way; one whose answer is still being written is
+ * reset with `CANCEL`, so a half-written answer is not presented as complete.
+ * The stream goes and the session stays: other streams on it are someone
+ * else's requests, and a session with nothing open is `idle-timeout`'s to
+ * close.
+ *
+ * Armed through {@link armChainedTimeout}, because `request-timeout` may be
+ * as long as 2^32 - 1 ms and a host timer armed with more than 2^31 - 1 fires
+ * after 1 ms on Bun and Node.  Unreferenced, as the header deadline is, so an
+ * open stream never holds the process up on its own.
+ *
+ * A server that emits no `'stream'` — every HTTP/1.1-only listener — is
+ * subscribed and never called, which costs one listener.  `hostTimers` is the
+ * seam a test fires the deadline through.
+ */
+export function enforceStreamRequestTimeout(
+  server: NodeHttpServerLike,
+  requestTimeoutMs: number,
+  hostTimers: HostTimers = unreferencedHostTimers,
+): void {
+  if (typeof server.on !== 'function') return;
+  server.on('stream', (...args) => {
+    const stream = args[0];
+    if (!isHttp2Stream(stream) || requestReceivedInFull(stream)) return;
+    const deadline = armChainedTimeout(() => { expireStreamRequest(stream); }, requestTimeoutMs, hostTimers);
+    stream.once('close', () => { deadline.cancel(); });
+  });
+}
+
+/** Whether `candidate` offers what {@link enforceStreamRequestTimeout} calls; anything else is not its to bound. */
+function isHttp2Stream(candidate: unknown): candidate is Http2StreamLike {
+  if (typeof candidate !== 'object' || candidate === null) return false;
+  const { respond, close, once } = candidate as Partial<Http2StreamLike>;
+  return typeof respond === 'function' && typeof close === 'function' && typeof once === 'function';
+}
+
+/**
+ * Whether the client has finished sending.  A state that cannot be read
+ * counts as unfinished: the deadline then holds rather than lapses.
+ */
+function requestReceivedInFull(stream: Http2StreamLike): boolean {
+  if (stream.endAfterHeaders === true) return true;
+  try {
+    return stream.state?.remoteClose === 1;
+  } catch {
+    return false;
+  }
+}
+
+function expireStreamRequest(stream: Http2StreamLike): void {
+  if (stream.closed === true || stream.destroyed === true || requestReceivedInFull(stream)) return;
+  try {
+    if (stream.headersSent !== true) {
+      stream.respond({ ':status': 408 }, { endStream: true });
+      stream.close(HTTP2_NO_ERROR);
+      return;
+    }
+    stream.close(stream.writableEnded === true ? HTTP2_NO_ERROR : HTTP2_CANCEL);
+  } catch {
+    // A stream that went away between the checks above and the write: the
+    // cut is what was wanted, so make sure of it and say nothing.
+    try { stream.close(HTTP2_CANCEL); } catch { /* already gone */ }
+  }
 }
 
 /**
