@@ -40,6 +40,8 @@ import { readSseOptionsFromConfig, SseActor } from '../../../../src/io/broker/Ss
 import { readTcpServerOptionsFromConfig, TcpServerActor } from '../../../../src/io/broker/TcpServerActor.js';
 import { readTcpSocketOptionsFromConfig, TcpSocketActor } from '../../../../src/io/broker/TcpSocketActor.js';
 import { readUdpSocketOptionsFromConfig, UdpSocketActor } from '../../../../src/io/broker/UdpSocketActor.js';
+import type { TcpFraming } from '../../../../src/io/broker/TcpFraming.js';
+import { OptionsError } from '../../../../src/util/OptionsValidator.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
 import { expectExactOptions } from '../../../util/ExactOptions.js';
 import { createTestActorSystem } from '../../../util/TestActorSystem.js';
@@ -1956,6 +1958,122 @@ describe('the TCP framing caps refuse their retired spellings and read their own
     );
     expect(started.failure).toBeNull();
     expectExactOptions<unknown>(started.options?.['framing'], { kind: cap.kind, [cap.field]: 65_536 });
+  });
+});
+
+/**
+ * Spellings of the two caps that were never leaves, but are what a migration
+ * by hand produces: the old name kebab-cased, and the field kebab-cased with
+ * its unit dropped, which is the rule every duration leaf follows.  Each one
+ * used to be read by nothing and start the actor on the 1 MiB / 16 MiB default.
+ */
+const MISSPELT_FRAMING_CAPS = [
+  { kind: 'length-prefixed', leaf: 'max-frame-len', current: 'max-frame-bytes' },
+  { kind: 'lines', leaf: 'max-line-len', current: 'max-line-bytes' },
+  { kind: 'length-prefixed', leaf: 'max-frame', current: 'max-frame-bytes' },
+  { kind: 'lines', leaf: 'max-line', current: 'max-line-bytes' },
+] as const;
+
+/** Every (TCP block, misspelt cap) pair, flattened for `test.each`. */
+const MISSPELT_FRAMING_CAP_CASES = TCP_BLOCKS.flatMap((block) => MISSPELT_FRAMING_CAPS.map((cap) => ({
+  ...cap, block, label: `${block.name}: framing.${cap.leaf}`,
+})));
+
+/**
+ * A cap misspelt the way a migration by hand misspells it is refused by name
+ * rather than dropped (#1443): both caps bound what a peer can make the actor
+ * buffer, and a cap that silently fell back to its default would be the
+ * failure the retired-spelling refusal above exists to prevent, under a
+ * spelling that refusal does not list.
+ */
+describe('a TCP framing block refuses a misspelt cap, under both roots', () => {
+  test.each(MISSPELT_FRAMING_CAP_CASES)('$label fails preStart, naming the leaf and the cap it means', async (cap) => {
+    const { root, required, create } = cap.block;
+    const started = await startBroker(
+      `${root} {\n${required}\nframing { kind = "${cap.kind}", ${cap.leaf} = 64 }\n}`,
+      create,
+    );
+    expect(started.failure).toBeInstanceOf(ConfigError);
+    const message = (started.failure as ConfigError).message;
+    expect(message).toContain(`${root}.framing.${cap.leaf} is not a framing leaf`);
+    expect(message).toContain(`${root}.framing.${cap.current}`);
+  });
+
+  test.each(MISSPELT_FRAMING_CAP_CASES)('$label is refused beside the other kind too', async (cap) => {
+    // The spelling is wrong whichever strategy the block names, so a
+    // length-prefixed cap misspelt under `lines` is refused as well.
+    const { root, required, create } = cap.block;
+    const otherKind = cap.kind === 'lines' ? 'length-prefixed' : 'lines';
+    const started = await startBroker(
+      `${root} {\n${required}\nframing { kind = "${otherKind}", ${cap.leaf} = 64 }\n}`,
+      create,
+    );
+    expect(started.failure).toBeInstanceOf(ConfigError);
+    expect((started.failure as ConfigError).message).toContain(`${root}.framing.${cap.leaf}`);
+  });
+
+  test.each(TCP_BLOCKS)('$name: the four leaves together still start the actor', async (block) => {
+    const started = await startBroker(
+      `${block.root} {\n${block.required}\n`
+      + 'framing { kind = "lines", delimiter = "|", max-line-bytes = 64, max-frame-bytes = 128 }\n}',
+      block.create,
+    );
+    expect(started.failure).toBeNull();
+    expectExactOptions<unknown>(started.options?.['framing'], { kind: 'lines', delimiter: '|', maxLineBytes: 64 });
+  });
+});
+
+/**
+ * A `kind` outside the three used to be read as `bytes`, so a typo dropped the
+ * framing and its cap together.  The reader hands it on as written and the
+ * options validator refuses it, the same rule a framing built in code meets.
+ */
+describe('a TCP framing kind that does not exist is refused at start, under both roots', () => {
+  test.each(TCP_BLOCKS.flatMap((block) => ['line', 'length_prefixed', 'lengthPrefixed'].map((kind) => ({
+    block, kind, label: `${block.name}: kind = "${kind}"`,
+  }))))('$label fails preStart with an OptionsError naming framing.kind', async ({ block, kind }) => {
+    const started = await startBroker(
+      `${block.root} {\n${block.required}\nframing { kind = "${kind}", max-line-bytes = 64 }\n}`,
+      block.create,
+    );
+    expect(started.failure).toBeInstanceOf(OptionsError);
+    expect((started.failure as OptionsError).field).toBe('framing.kind');
+    expect((started.failure as OptionsError).message).toContain(`"${kind}"`);
+  });
+});
+
+/**
+ * The code route of the same two caps.  A framing object that never met the
+ * compiler's excess-property check — parsed from JSON here, as a plain
+ * JavaScript caller or a cast would hand it over — reaches the actor carrying
+ * a field nothing reads, and used to start it on the default cap.
+ */
+describe('a framing object carrying a retired cap field is refused at start, by both TCP actors', () => {
+  const RETIRED_FIELDS = [
+    { json: '{"kind":"length-prefixed","maxFrameLen":64}', field: 'framing.maxFrameLen', current: 'maxFrameBytes' },
+    { json: '{"kind":"lines","maxLineLen":64}', field: 'framing.maxLineLen', current: 'maxLineBytes' },
+  ] as const;
+  const ACTORS = [
+    {
+      name: 'tcp',
+      create: (target: ActorRef<never>, framing: TcpFraming) =>
+        new TcpSocketActor({ target, host: 'peer.local', port: 7000, framing }) as unknown as Actor<never>,
+    },
+    {
+      name: 'tcp-server',
+      create: (target: ActorRef<never>, framing: TcpFraming) =>
+        new TcpServerActor({ target, bindPort: 7001, framing }) as unknown as Actor<never>,
+    },
+  ] as const;
+
+  test.each(ACTORS.flatMap((actor) => RETIRED_FIELDS.map((retired) => ({
+    ...retired, actor, label: `${actor.name}: ${retired.json}`,
+  }))))('$label fails preStart, naming the field and its replacement', async ({ json, field, current, actor }) => {
+    const framing = JSON.parse(json) as TcpFraming;
+    const started = await startBroker('', (target) => actor.create(target, framing));
+    expect(started.failure).toBeInstanceOf(OptionsError);
+    expect((started.failure as OptionsError).field).toBe(field);
+    expect((started.failure as OptionsError).message).toContain(current);
   });
 });
 

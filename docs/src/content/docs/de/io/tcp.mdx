@@ -69,11 +69,17 @@ actor-ts.io.broker.tcp {
 }
 ```
 
-Jedes Blatt ist das kebab-case seines Feldes ohne Einheitensuffix:
-`idle-timeout`, `connect-timeout` und `keep-alive` sind Dauern, nehmen `90s`
-also genauso wie eine bloße Millisekundenzahl, und die beiden Framing-Limits
-sind Größen, bei denen `64K` 65 536 Bytes bedeutet.  Ein `framing`-Block nennt
-seine `kind`, und nur die Blätter dieser Strategie wirken.  `target` benennt
+Jedes Blatt ist das kebab-case seines Feldes.  Die Dauern verlieren ihr
+Einheitensuffix — `idle-timeout`, `connect-timeout` und `keep-alive` nehmen
+`90s` also genauso wie eine bloße Millisekundenzahl —, und die beiden
+Framing-Limits sind Größen, die ihres behalten: `max-line-bytes` und
+`max-frame-bytes`, bei denen `64K` 65 536 Bytes bedeutet.  Ein `framing`-Block
+nennt seine `kind`, und nur die Blätter dieser Strategie wirken.  Ein Limit in
+einer der Schreibweisen, die eine Migration von Hand hervorbringt — die alten
+`maxLineLen` / `maxFrameLen`, `max-frame-len` oder `max-frame` ohne Einheit,
+und ihre Zeilen-Gegenstücke —, stoppt den Actor beim Start mit einem
+`ConfigError`, der das gemeinte Blatt nennt, statt das Default-Limit in Kraft
+zu lassen.  `target` benennt
 einen Actor und hat kein Blatt.  Die Reconnect-, Circuit-Breaker- und
 Outbound-Buffer-Blätter, die sich alle Broker teilen, gehören unter denselben
 Root — siehe
@@ -201,7 +207,14 @@ wirft also einen `OptionsError`, bevor es einen Socket gibt — nicht
 erst beim ersten eingehenden Byte.  Ein Limit, das keine positive
 Ganzzahl ist, wird abgelehnt, und ein **leerer `delimiter`** ebenso:
 Er passt an jeder Position, ohne etwas zu verbrauchen, und das ist
-kein langsamer Framer, sondern ein festgefahrener Prozess.
+kein langsamer Framer, sondern ein festgefahrener Prozess.  Ebenso
+abgelehnt wird eine `kind` außer den dreien, die sonst das Framing
+samt seinem Limit fallen ließe, und ein Framing, das noch
+`maxLineLen` oder `maxFrameLen` trägt, die Namen der beiden Limits
+vor ihrer Umbenennung.  Der Compiler fängt diese nur in einem
+Objektliteral ab; eines, das aus JSON geparst oder in reinem
+JavaScript gebaut wurde, erreicht den Actor mit dem alten Feld, und
+niemand liest dieses Feld.
 
 Beide Actors lesen dieselben Strategien aus demselben Code — auf
 `TcpServerActor` wird das gewählte Framing **pro angenommener

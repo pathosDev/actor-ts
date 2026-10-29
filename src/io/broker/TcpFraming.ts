@@ -17,7 +17,7 @@
  * callers use for it, and it imports this module rather than the other way
  * round.
  */
-import type { Config } from '../../config/Config.js';
+import { ConfigError, type Config } from '../../config/Config.js';
 import { rejectRetiredLeaves, type RetiredLeaves } from '../../config/RetiredKeys.js';
 
 /** Raw byte chunks, no framing — the subscriber handles stream semantics. */
@@ -303,12 +303,24 @@ const FRAMING_FIELD_RENAME_NOTE =
  * than by either caller, so every root this reader is pointed at gets the
  * refusal and no caller can read the block without it.
  *
+ * So are the spellings a migration by hand produces, which were never leaves —
+ * see {@link MISSPELT_TCP_FRAMING_LEAVES}: each would leave a cap at its
+ * default as surely as the retired spelling.
+ *
+ * A `kind` outside the three is handed on as written rather than read as
+ * `bytes`, which dropped the framing and its cap together on a typo.  The
+ * options validator refuses it at start, through {@link findFramingViolation} —
+ * the rule a framing built in code meets as well — so the refusal names the
+ * kinds there are once, for both routes.  A refusal here instead would also
+ * read to the dead-key gate as a leaf no reader answers.
+ *
  * An unset leaf is omitted rather than written as `undefined`, the contract
  * every config reader keeps: an own `undefined` shadows whatever a spread puts
  * beneath it.
  */
 export function readFramingFromConfig(config: Config, keys: TcpFramingKeys): TcpFraming {
   rejectRetiredLeaves(config, keys.root, RETIRED_TCP_FRAMING_LEAVES, FRAMING_FIELD_RENAME_NOTE);
+  rejectMisspeltFramingLeaves(config, keys.root);
   const kind = config.getString(keys.kind) as TcpFraming['kind'];
   if (kind === 'lines') {
     const framing: { -readonly [K in keyof LinesFraming]: LinesFraming[K] } = { kind };
@@ -321,15 +333,76 @@ export function readFramingFromConfig(config: Config, keys: TcpFramingKeys): Tcp
     if (config.hasPath(keys.maxFrameBytes)) framing.maxFrameBytes = config.getBytes(keys.maxFrameBytes);
     return framing;
   }
-  return { kind: 'bytes' };
+  // `bytes`, which has no leaves of its own — or a kind that is none of the
+  // three, cast above and refused by the validator before a socket exists.
+  return { kind };
+}
+
+/**
+ * Spellings of the two caps that were never leaves, relative to a framing
+ * block's root, each mapped to the leaf it means.
+ *
+ * They are what migrating the retired spellings by hand produces: the old name
+ * kebab-cased, and the field kebab-cased with its unit dropped — the rule every
+ * duration leaf follows, and one the caps, as sizes, do not.  Read by nothing,
+ * each would start the actor on the default cap — 16 MiB for a frame — with
+ * the lower one its operator wrote nowhere in force, exactly what refusing
+ * the retired spellings exists to prevent.  Kept apart from
+ * {@link RETIRED_TCP_FRAMING_LEAVES} because none of them was ever renamed,
+ * and the refusal must not say otherwise.
+ */
+const MISSPELT_TCP_FRAMING_LEAVES: Readonly<Record<string, string>> = {
+  'max-line-len': 'max-line-bytes',
+  'max-frame-len': 'max-frame-bytes',
+  'max-line': 'max-line-bytes',
+  'max-frame': 'max-frame-bytes',
+};
+
+/** Refuse a cap written as one of {@link MISSPELT_TCP_FRAMING_LEAVES}, naming the leaf it means. */
+function rejectMisspeltFramingLeaves(config: Config, root: string): void {
+  for (const [misspelt, leaf] of Object.entries(MISSPELT_TCP_FRAMING_LEAVES)) {
+    const path = `${root}.${misspelt}`;
+    if (!config.hasPath(path)) continue;
+    throw new ConfigError(
+      `${path} is not a framing leaf — the cap is ${root}.${leaf}.  Read by nothing, it would leave the `
+      + 'default cap in force, so it is refused rather than ignored.',
+    );
+  }
 }
 
 /** A framing setting that is present but outside its domain. */
 export type FramingViolation = {
   readonly field: string;
   readonly reason: string;
-  readonly value: number | string;
+  /** As found — a framing from plain JavaScript can carry any value in any field. */
+  readonly value: unknown;
 };
+
+/**
+ * Every strategy's `kind`, keyed by the union so the compiler holds the two
+ * together: a kind the union gains without an entry here is a missing
+ * property, and an entry the union lacks is an excess one.
+ */
+const TCP_FRAMING_KINDS: Readonly<Record<TcpFraming['kind'], true>> = {
+  bytes: true,
+  lines: true,
+  'length-prefixed': true,
+};
+
+/**
+ * The fields the two caps had before #1443, mapped to the fields that replaced
+ * them — the code half of {@link RETIRED_TCP_FRAMING_LEAVES}.
+ *
+ * The compiler refuses them only on a fresh object literal.  A framing parsed
+ * from JSON, built in plain JavaScript or passed through a cast reaches the
+ * validator with the old field still on it, and nothing reads that field: the
+ * actor would start on the default cap, 16 MiB for a frame, with the lower one
+ * its caller set nowhere in force.
+ */
+const RETIRED_TCP_FRAMING_FIELDS: ReadonlyMap<string, 'maxLineBytes' | 'maxFrameBytes'> = new Map([
+  ['maxLineLen', 'maxLineBytes'],
+  ['maxFrameLen', 'maxFrameBytes'],
+]);
 
 /**
  * The offending `framing` setting, or `undefined` when all of them are fine —
@@ -355,11 +428,34 @@ export type FramingViolation = {
  * synchronous spin — not a slow actor but a wedged process, since no timeout
  * can interrupt it (#789).  `''` survives every layer on its own (`??`
  * treats it as set, HOCON reads it verbatim), so nothing else would catch it.
+ *
+ * An unknown `kind` and a retired cap field fail the same way the caps do,
+ * by dropping a limit without a word.  {@link extractFrames} reads any kind
+ * but `bytes` and `lines` as `length-prefixed` on the default cap, and the
+ * HOCON reader hands an unknown kind on for this rule to refuse.  A field
+ * nothing reads (`maxFrameLen`) leaves its cap at the default.  The kind is
+ * checked first, against an own key of the table, because every other rule
+ * here depends on it and `'toString' in {}` is `true`.
  */
 export function findFramingViolation(
   framing: TcpFraming | undefined,
 ): FramingViolation | undefined {
   if (framing === undefined) return undefined;
+  const kind: unknown = framing.kind;
+  if (typeof kind !== 'string' || !Object.hasOwn(TCP_FRAMING_KINDS, kind)) {
+    const accepted = Object.keys(TCP_FRAMING_KINDS).map((name) => `'${name}'`);
+    return {
+      field: 'framing.kind',
+      reason: `must be ${accepted.slice(0, -1).join(', ')} or ${accepted.at(-1)}`,
+      value: kind,
+    };
+  }
+  for (const [retired, current] of RETIRED_TCP_FRAMING_FIELDS) {
+    const value: unknown = (framing as Readonly<Record<string, unknown>>)[retired];
+    if (value !== undefined) {
+      return { field: `framing.${retired}`, reason: `has been renamed to framing.${current}`, value };
+    }
+  }
   if (framing.kind === 'lines' && framing.delimiter === '') {
     return { field: 'framing.delimiter', reason: 'must not be empty', value: framing.delimiter };
   }

@@ -69,11 +69,16 @@ actor-ts.io.broker.tcp {
 }
 ```
 
-Each leaf is the kebab-case of its field with the unit suffix dropped:
-`idle-timeout`, `connect-timeout` and `keep-alive` are durations, so `90s` and
-a bare millisecond count read alike, and the two framing caps are sizes, where
-`64K` is 65 536 bytes.  A `framing` block names its `kind`, and only that
-strategy's leaves take effect.  `target` names an actor and has no leaf.  The
+Each leaf is the kebab-case of its field.  The durations drop their unit
+suffix — `idle-timeout`, `connect-timeout` and `keep-alive`, so `90s` and a
+bare millisecond count read alike — and the two framing caps are sizes that
+keep theirs: `max-line-bytes` and `max-frame-bytes`, where `64K` is 65 536
+bytes.  A `framing` block names its `kind`, and only that strategy's leaves
+take effect.  A cap written any of the ways a migration by hand writes it —
+the old `maxLineLen` / `maxFrameLen`, `max-frame-len`, or `max-frame` with
+the unit dropped, and their line twins — stops the actor at start with a
+`ConfigError` naming the leaf it means, rather than leaving the default cap in
+force.  `target` names an actor and has no leaf.  The
 reconnect, circuit-breaker and outbound-buffer leaves every broker shares go
 under the same root — see
 [BrokerActor base](/io/broker-actor-base/#reconnect-with-backoff).
@@ -192,7 +197,13 @@ throws an `OptionsError` before a socket exists rather than at the
 first inbound byte.  A cap that is not a positive integer is
 rejected, and so is an **empty `delimiter`** — it matches at every
 offset without consuming anything, which is not a slow framer but a
-wedged process.
+wedged process.  So is a `kind` other than the three, which would
+otherwise drop the framing and its cap together, and so is a framing
+that still carries `maxLineLen` or `maxFrameLen`, the names the two
+caps had before they were renamed.  The compiler catches those only
+in an object literal; one parsed from JSON or built in plain
+JavaScript reaches the actor with the old field on it, and nothing
+reads that field.
 
 Both actors read the same strategies from the same code — on
 `TcpServerActor` the chosen framing is applied **per accepted
