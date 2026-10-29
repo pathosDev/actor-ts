@@ -55,14 +55,11 @@ export class BunHonoRunner implements HonoServerRunner {
     // Before `Bun.serve`, so a value it would refuse never reaches it.
     const idle = bunIdleTimeoutOf(options);
     // `serveOptions` goes in first, beneath everything the runner writes, and
-    // its own `tls`, `http2` and `idleTimeout` are dropped rather than merely
-    // outranked: the listener's TLS and HTTP/2 shape and its idle timeout are
-    // the typed members' to decide, set or unset.  A bag `http2` with no
-    // `tls` is the h2c listener refused above (#1486), and a bag
-    // `idleTimeout` would pass the conversion and the ceiling by (#1487).
-    const { tls: _tls, http2: _http2, idleTimeout: _idleTimeout, ...tuning } = (options.serveOptions ?? {}) as BunListenerShape;
+    // whatever in it would decide the listener's TLS, its HTTP versions or its
+    // idle timeout is dropped rather than merely outranked — see
+    // {@link BUN_LISTENER_SHAPE_KEYS}.
     const server = bun.serve({
-      ...tuning,
+      ...withoutListenerShape(options.serveOptions),
       hostname: options.host,
       port: options.port,
       fetch: options.fetch,
@@ -225,12 +222,39 @@ interface BunServer {
   stop(forceCloseConnections?: boolean): void;
 }
 
-/** The `Bun.serve` members only the typed `tls`, `http2` and idle members may set — never a `serveOptions` bag. */
-type BunListenerShape = {
-  readonly tls?: unknown;
-  readonly http2?: unknown;
-  readonly idleTimeout?: unknown;
-};
+/**
+ * The `Bun.serve` members a `serveOptions` bag may not set, because the typed
+ * members decide them, set or unset (#1486, #1487).
+ *
+ * **TLS** is `tls`'s to decide, and dropping the bag's `tls` member alone is not
+ * enough: with no `tls` member set, `Bun.serve` still reads TLS material from
+ * the top level of its options — measured on bun 1.4.2, a bag `cert` and `key`,
+ * or the older `certFile` and `keyFile`, made a listener configured without TLS
+ * terminate it, resetting plain HTTP.  So every name of Bun's TLS options goes,
+ * the deprecated file spellings included.
+ *
+ * **The HTTP versions** are `http2`'s: a bag `http2` with no `tls` is the h2c
+ * listener refused above, a bag `http1: false` beside the typed pair answered
+ * HTTP/1.1 with `505` where the Node runner keeps it on the h2 port — so
+ * HTTP/1.1 now stays beside h2 on every runtime — and `http3` would add a QUIC
+ * listener beside the one the typed members describe.
+ *
+ * **`idleTimeout`** is `idleTimeoutMs`'s and `requestDeadlineMs`'s: a bag value
+ * would pass the conversion and the ceiling by.
+ */
+const BUN_LISTENER_SHAPE_KEYS: ReadonlySet<string> = new Set([
+  'tls',
+  'cert', 'key', 'ca', 'passphrase', 'dhParamsFile', 'serverName', 'lowMemoryMode', 'secureOptions',
+  'requestCert', 'rejectUnauthorized', 'ALPNProtocols', 'ciphers', 'clientRenegotiationLimit',
+  'clientRenegotiationWindow', 'certFile', 'keyFile', 'caFile',
+  'http1', 'http2', 'http3',
+  'idleTimeout',
+]);
+
+/** A caller's `serveOptions` without the members {@link BUN_LISTENER_SHAPE_KEYS} reserves. */
+function withoutListenerShape(serveOptions: object | undefined): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(serveOptions ?? {}).filter(([name]) => !BUN_LISTENER_SHAPE_KEYS.has(name)));
+}
 
 /** `Bun.serve`'s `tls` bag, the fields this runner writes; names as Bun spells them. */
 type BunTlsOptions = {

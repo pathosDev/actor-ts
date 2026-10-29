@@ -13,10 +13,11 @@
  * precedence.
  *
  * No sockets: the runtime's `serve()` is a stand-in that records the bag it is
- * handed.  `globalThis.Bun` is not configurable, so the Bun stand-in goes in
- * through the runner's constructor; `Deno` is absent under Bun, so it is
- * defined for the case and taken away again, as `HonoFetchHandlerArity.test.ts`
- * does.
+ * handed, so what a dropped key would have done to a live Bun listener is in
+ * `BunHonoRunnerServeOptionsLive.test.ts`.  `globalThis.Bun` is not
+ * configurable, so the Bun stand-in goes in through the runner's constructor;
+ * `Deno` is absent under Bun, so it is defined for the case and taken away
+ * again, as `HonoFetchHandlerArity.test.ts` does.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { BunHonoRunner } from '../../../src/runtime/http/BunHonoRunner.js';
@@ -75,6 +76,43 @@ describe('BunHonoRunner — serveOptions go in beneath the runner\'s own fields 
 
     expect(bag.tls).toBeUndefined();
     expect(bag.http2).toBeUndefined();
+  });
+
+  // `Bun.serve` reads its TLS material from the top level when no `tls` member
+  // is set, so every name it reads there has to go, not only `tls` — the live
+  // listener is in `BunHonoRunnerServeOptionsLive.test.ts`.  One case per name,
+  // so a name missing from the runner's list is named by the case that fails.
+  const topLevelTlsNames = [
+    'cert', 'key', 'ca', 'passphrase', 'dhParamsFile', 'serverName', 'lowMemoryMode', 'secureOptions',
+    'requestCert', 'rejectUnauthorized', 'ALPNProtocols', 'ciphers', 'clientRenegotiationLimit',
+    'clientRenegotiationWindow', 'certFile', 'keyFile', 'caFile',
+  ] as const;
+  for (const name of topLevelTlsNames) {
+    test(`a top-level ${name} in the bag never reaches Bun.serve, with tls or without`, async () => {
+      const bagValue = `the bag's ${name}`;
+
+      expect(await bunBagFor({ serveOptions: { [name]: bagValue } })).not.toHaveProperty(name);
+      expect(await bunBagFor({ tls: TLS, serveOptions: { [name]: bagValue } })).not.toHaveProperty(name);
+    });
+  }
+
+  // HTTP/1.1 stays on an h2 port on every runtime: the Node runner's TLS half
+  // writes `allowHTTP1: true` over the caller's, and here the bag's `http1`
+  // is dropped.  `http3` would add a QUIC listener beside the one `tls` and
+  // `http2` describe, which is the same decision.
+  for (const name of ['http1', 'http3'] as const) {
+    test(`the bag's ${name} never reaches Bun.serve, with tls and http2 or without`, async () => {
+      expect(await bunBagFor({ serveOptions: { [name]: false } })).not.toHaveProperty(name);
+      expect(await bunBagFor({ tls: TLS, http2: true, serveOptions: { [name]: false } })).not.toHaveProperty(name);
+    });
+  }
+
+  test('the websocket handlers the bridge puts in the bag still arrive beside the dropped names', async () => {
+    const websocket = { maxPayloadLength: 1024 };
+    const bag = await bunBagFor({ tls: TLS, serveOptions: { websocket, cert: 'a certificate of the bag\'s', http1: false } });
+
+    expect(bag.websocket).toBe(websocket);
+    expect(bag.tls).toEqual({ cert: TLS.cert, key: TLS.key });
   });
 });
 
