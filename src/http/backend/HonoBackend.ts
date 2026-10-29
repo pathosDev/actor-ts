@@ -223,6 +223,12 @@ export function honoFetchHandler(app: HonoAppLike): FetchHandler {
  * raised here, naming both the HOCON leaf and the builder method, since either
  * could have set it.  A value is refused rather than clamped: an operator who
  * asked for ten minutes and got four would find out from a cut connection.
+ *
+ * The remedy it names is the ceiling and nothing else — not `0`, which turns
+ * the idle timeout off.  Under Bun that timeout is the one bound this backend
+ * has on a request whose body stops arriving and on a connection left idle,
+ * since `header-timeout`, `request-timeout` and `max-connections` cannot be
+ * installed there, so `0` is no answer to a value that is too long.
  */
 function refuseIdleTimeoutPastCeiling(runner: HonoServerRunner, idleTimeoutMs: number | undefined): void {
   const ceilingMs = runner.idleTimeoutCeilingMs;
@@ -230,7 +236,7 @@ function refuseIdleTimeoutPastCeiling(runner: HonoServerRunner, idleTimeoutMs: n
   throw new OptionsError(
     `HttpServerOptions: ${ConfigKeys.http.server.idleTimeout} (withIdleTimeoutMs in code) is ${idleTimeoutMs} ms, `
       + `longer than the Hono backend can hold on this runtime — at most ${ceilingMs} ms, in whole seconds — `
-      + `and the server would refuse it rather than bind. Set it to ${ceilingMs / 1_000}s or less, or to 0 to disable it.`,
+      + `and the server would refuse it rather than bind. Set it to ${ceilingMs / 1_000}s or less.`,
     'HttpServerOptions',
     'idleTimeoutMs',
     idleTimeoutMs,

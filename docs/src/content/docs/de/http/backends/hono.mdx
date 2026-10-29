@@ -129,15 +129,27 @@ also bis zu einen Takt zu früh geschlossen werden. Über `255s` scheitert
 `bind()` mit dem Namen des Keys: mehr hält `Bun.serve` nicht. Auch eine
 untätige HTTP/2-Session wird von ihr geschlossen.
 
+Lass ihn positiv. `0` schaltet ihn ab, und unter Hono auf Bun ist er die
+einzige Schranke für einen Request, dessen Body nicht mehr weiterkommt, und für
+eine Verbindung, die zwischen zwei Requests untätig ist, weil keine der anderen
+drei installiert wird: mit `0` bleibt eine solche Verbindung offen, bis der
+Client sie schließt. Eine Verbindung, deren Request-Header nie vollständig
+ankommen, schließt Bun selbst weiterhin, nach etwa 12 s.
+
 Ungesetzt gilt nicht Buns eigenes 10-s-Default, das jeden Request schloss, der
 etwa 12 s schwieg. Das Backend leitet den Wert aus der längsten Request-Deadline
 des Servers ab — `actor-ts.http.request-timeout.deadline`, angehoben auf das
 längste `requestTimeout()` im Routenbaum —, damit die `503` geschrieben wird,
-bevor die Verbindung fällt: **36 s für die eingebaute Deadline von 30 s**. Ab
-einer Deadline von etwa 250 s wird der Timeout bei `255s` gehalten, der sie
-nicht mehr abdeckt, und `bind()` sagt das in einer Warnung. Auf Deno gibt es
-nichts davon: `Deno.serve` hat keinen Idle-Knopf, und `idle-timeout` wird dort
-als nicht installiert gemeldet.
+bevor die Verbindung fällt: **36 s für die eingebaute Deadline von 30 s**. Der
+abgeleitete Wert beträgt `4 × (⌈(deadline + 2 s) / 4⌉ + 1)` Sekunden, ist also
+nicht immer länger als Buns eigener: eine konfigurierte Deadline von 2 s oder
+weniger ergibt 8 s, und weil die konfigurierte Deadline auch ohne
+`requestTimeout()` im Routenbaum zählt, wird ein gewöhnlicher Handler, der
+länger als 4 bis 8 s schweigt, dann ohne Antwort abgeschnitten. Ab einer
+Deadline von etwa 250 s wird der Timeout bei `255s` gehalten, der sie nicht
+mehr abdeckt, und `bind()` sagt das in einer Warnung. Auf Deno gibt es nichts
+davon: `Deno.serve` hat keinen Idle-Knopf, und `idle-timeout` wird dort als
+nicht installiert gemeldet.
 :::
 
 ## Security-Header

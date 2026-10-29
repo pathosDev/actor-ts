@@ -190,6 +190,22 @@ describe('Hono under Bun — an idle-timeout Bun.serve cannot hold fails bind(),
     expect((refusal as Error).message).toContain('withIdleTimeoutMs');
   });
 
+  test('the refusal points at the most Bun.serve holds, and not at turning the bound off', async () => {
+    // Under Bun the idle timeout is the one bound on a request whose body stops
+    // arriving and on a connection left idle — header-timeout, request-timeout
+    // and max-connections cannot be installed there — so 0 is no remedy for a
+    // value that is too long.  The whole message is pinned, since a fragment
+    // check lets a reworded offer ("zero turns it off") through.
+    const message = (await refusalOf(bindHono('actor-ts.http.server.idle-timeout = 5m')) as Error).message;
+
+    expect(message).toBe(
+      'HttpServerOptions: actor-ts.http.server.idle-timeout (withIdleTimeoutMs in code) is 300000 ms, longer than the '
+        + 'Hono backend can hold on this runtime — at most 255000 ms, in whole seconds — and the server would refuse it '
+        + 'rather than bind. Set it to 255s or less.',
+    );
+    expect(message).not.toMatch(/\b0(?:s|ms)?\b/);
+  });
+
   test('255s is the most it holds, and binds', async () => {
     const binding = await bindHono('actor-ts.http.server.idle-timeout = 255s');
 
@@ -299,5 +315,22 @@ describe('Hono under Bun — a fallback or websocket route\'s requestTimeout() c
     expect(binding.serverOptionsReport?.idleTimeoutHeldAtCeilingMs).toBe(255_000);
     expect(heldAtCeiling(warnings)).toHaveLength(1);
     expect(heldAtCeiling(warnings)[0]).toContain('400000 ms');
+  });
+
+  test('the warning names the remedies that keep a bound, and not turning it off', async () => {
+    // For the reason the refusal above offers no 0: under Bun nothing else
+    // bounds a stalled body or an idle connection on this backend.  Pinned
+    // whole, for the reason given there.
+    const { binding, warnings } = await bindHonoRecording(() => withMiddleware(requestTimeout(400_000), ok));
+
+    expect(heldAtCeiling(warnings)).toEqual([
+      `[http] ${binding.host}:${binding.port}: actor-ts.http.server.idle-timeout is unset, so the "hono" backend derived `
+        + 'the idle timeout from this server\'s request deadline, 400000 ms — and holds it at 255000 ms, the most this '
+        + 'runtime can hold, which is too short to cover it: a handler that writes nothing for about that long is cut '
+        + 'with no response before its 503. Shorten the deadline, or have such a handler write sooner; or set '
+        + 'actor-ts.http.server.idle-timeout (withIdleTimeoutMs in code) to choose the bound yourself.',
+    ]);
+    // Past the `[http] 127.0.0.1:port: ` prefix, whose address has zeros of its own.
+    expect(heldAtCeiling(warnings)[0]?.slice(`[http] ${binding.host}:${binding.port}: `.length)).not.toMatch(/\b0(?:s|ms)?\b/);
   });
 });

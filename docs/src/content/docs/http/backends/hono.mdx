@@ -122,14 +122,25 @@ a 4 s sweep, so a connection can be closed up to one sweep early. Above `255s`
 it fails `bind()`, naming the key: `Bun.serve` holds no more. An idle HTTP/2
 session is closed by it too.
 
+Keep it positive. `0` turns it off, and on Hono under Bun it is the only bound
+on a request whose body stops arriving and on a connection left idle between
+requests, since none of the other three is installed: with `0` such a
+connection stays open until the client closes it. Bun itself still closes a
+connection whose request headers never complete, at about 12 s.
+
 Unset, it is not Bun's own 10 s, which closed any request silent for about
 12 s. The backend derives it from the server's longest request deadline —
 `actor-ts.http.request-timeout.deadline`, raised to the longest
 `requestTimeout()` in the route tree — so that the `503` is written before the
-connection is cut: **36 s for the built-in 30 s deadline**. Past a deadline of
-about 250 s the timeout is held at `255s`, which no longer covers it, and
-`bind()` says so in a warning. On Deno none of this exists: `Deno.serve` has no
-idle knob, and `idle-timeout` is reported not installed there.
+connection is cut: **36 s for the built-in 30 s deadline**. The derived value is
+`4 × (⌈(deadline + 2 s) / 4⌉ + 1)` seconds, so it is not always longer than
+Bun's own: a configured deadline of 2 s or less derives 8 s, and since the
+configured deadline counts with no `requestTimeout()` in the tree, a plain
+handler that stays silent past 4 to 8 s is then cut without a response. Past a
+deadline of about 250 s the timeout is held at `255s`, which no longer covers
+it, and `bind()` says so in a warning. On Deno none of this exists:
+`Deno.serve` has no idle knob, and `idle-timeout` is reported not installed
+there.
 :::
 
 ## Security headers

@@ -598,8 +598,12 @@ function namedLeaves(leaves: ReadonlyArray<string>): string {
  * so with `idle-timeout` unset the backend derives one that lets the `503`
  * win, and `Bun.serve` holds no more than 255 s.  Past a deadline of about
  * 250 s that is too short, and a handler silent that long is cut with no
- * response at all — which the operator can only fix by choosing the bound
- * themselves, so the warning names the key and the deadline.
+ * response at all — so the warning names the key and the deadline.
+ *
+ * The remedies it names are the ones that keep a bound: a shorter deadline, a
+ * handler that writes sooner, or a bound the operator chooses.  Not `0`, which
+ * turns the idle timeout off: under Bun it is the one bound the Hono backend
+ * has on a request whose body stops arriving and on a connection left idle.
  */
 function idleTimeoutHeldAtCeilingWarning(
   backendName: string,
@@ -612,7 +616,7 @@ function idleTimeoutHeldAtCeilingWarning(
   return `${key} is unset, so the "${backendName}" backend derived the idle timeout from this server's request deadline, `
     + `${requestDeadlineMs} ms — and holds it at ${heldAtMs} ms, the most this runtime can hold, which is too short to cover it: `
     + `a handler that writes nothing for about that long is cut with no response before its 503. `
-    + `Set ${key} (withIdleTimeoutMs in code) to choose the bound yourself, or 0 to disable it, or shorten the deadline.`;
+    + `Shorten the deadline, or have such a handler write sooner; or set ${key} (withIdleTimeoutMs in code) to choose the bound yourself.`;
 }
 
 /** The backends `actor-ts.http.backend` can name: the three that ship. */
