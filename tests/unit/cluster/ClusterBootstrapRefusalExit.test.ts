@@ -22,7 +22,7 @@ import { RecordingLogger } from '../../util/RecordingLogger.js';
  * a run of the pipeline.  With `exit-process` on as well, the run used to exit
  * with `exit-code` — `0` by default — from inside the guard, before the
  * refusal could reach `main`: the process ended with a status that reads as a
- * clean stop and with no line saying why (#860, #1475).  Each case below
+ * clean stop and with no line saying why (#860, #1455).  Each case below
  * refuses one field the bootstrap forwards, the ones that are refused only
  * once the system exists, with `process.exit` replaced.  The replacement
  * returns, so the refusal still reaches the caller here, which is how a case

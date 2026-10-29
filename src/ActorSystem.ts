@@ -1029,7 +1029,7 @@ export class ActorSystem {
    * is the point.  `ActorSystemTerminateReason` says a program decided to stop,
    * a clean stop, which `exit-process` exits with `exit-code` — `0` by default
    * — so a refused start used to end the process with that status, from inside
-   * the bootstrap and before the refusal could reach its caller (#1475).  A
+   * the bootstrap and before the refusal could reach its caller (#1455).  A
    * reason that reports a failure makes the exit a failed one.
    */
   _terminateFor(reason: Reason): Promise<void> {

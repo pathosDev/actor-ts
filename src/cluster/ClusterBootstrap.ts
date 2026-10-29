@@ -128,7 +128,7 @@ export async function bootstrapCluster(
   // `terminate()` performs is the whole of it; the pipeline runs first only
   // where `run-by-actor-system-terminate` asks that of every `terminate()`.
   //
-  // A refusal is a failed start, though, and ends as one (#1475): said at
+  // A refusal is a failed start, though, and ends as one (#1455): said at
   // ERROR first, then the system ended with the reason of a node that could
   // not join.  Under `exit-process` that pipeline run is where the process
   // exits — inside this guard, before the refusal can reach the caller — so

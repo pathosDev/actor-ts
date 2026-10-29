@@ -40,7 +40,7 @@ export class ClusterDowningReason extends Reason {
  * able to promote the node, and a `Cluster.bootstrap` readiness wait
  * expiring — so a task tells "could not join" by one reason whichever fired.
  * A `Cluster.bootstrap` refused after it built its system ends with it too,
- * where `run-by-actor-system-terminate` makes that end a run (#1475).
+ * where `run-by-actor-system-terminate` makes that end a run (#1455).
  *
  * Its own reason rather than {@link ClusterLeavingReason}, which keeps meaning
  * that a member is leaving: a task that hands work over before a node leaves
@@ -73,7 +73,7 @@ export class ProcessTerminateReason extends Reason {
  * ({@link CoordinatedShutdown._runForFailure}).  One answer here then covers
  * every route to that reason — the give-up, a `Cluster.bootstrap` readiness
  * wait that failed, a bootstrap refused after its system was built (#1500,
- * #1475).  `StartupFailedReason` is the other failure, and the one this
+ * #1455).  `StartupFailedReason` is the other failure, and the one this
  * cannot name: it is declared beside the startup graph, which imports this
  * module, so its run is marked by the call instead.
  */
