@@ -227,7 +227,7 @@ Eingebaute `Reason`-Klassen:
 | `ActorSystemTerminateReason` | Was `system.terminate()` übergibt, wenn es die Pipeline ausführt — verlangt mit `runCoordinatedShutdown: true` oder per Default mit `actor-ts.coordinated-shutdown.run-by-actor-system-terminate` an.  Ein gewöhnlicher Shutdown, den dein Programm beschließt, ist dieser Aufruf statt eines `run()`, dem du diesen Grund übergibst: Der Aufruf fährt das System auch dann herunter, wenn der Lauf es nicht tut. |
 | `ClusterLeavingReason` | Was `shutdown()` von `Cluster.bootstrap` übergibt — ein Mitglied, das absichtlich geht. |
 | `ClusterDowningReason` | Was ein Knoten übergibt, wenn ihn seine eigene Downing-Entscheidung entfernt und `actor-ts.cluster.run-coordinated-shutdown-when-down` an ist — siehe [wenn der Cluster diesen Knoten downt](#wenn-der-cluster-diesen-knoten-downt). |
-| `ClusterJoinUnsuccessfulReason` | Was ein Knoten übergibt, wenn er seinen Join aufgibt — `actor-ts.cluster.shutdown-after-unsuccessful-join` ist abgelaufen, ohne dass ihn etwas befördern kann —, und was `Cluster.bootstrap` übergibt, wenn sein Readiness-Warten scheitert; siehe [wenn kein Seed je antwortet](/de/cluster/joining-and-seeds/#wenn-kein-seed-je-antwortet). |
+| `ClusterJoinUnsuccessfulReason` | Was ein Knoten übergibt, wenn er seinen Join aufgibt — `actor-ts.cluster.shutdown-after-unsuccessful-join` ist abgelaufen, ohne dass ihn etwas befördern kann —, und was `Cluster.bootstrap` übergibt, wenn sein Readiness-Warten scheitert oder wenn es nach dem Aufbau seines Systems den Start verweigert; siehe [wenn kein Seed je antwortet](/de/cluster/joining-and-seeds/#wenn-kein-seed-je-antwortet).  Ein Lauf damit endet nie mit `0`. |
 | `StartupFailedReason(phase, task, cause)` | Was das System übergibt, wenn ein Task des [Starts](/de/fundamentals/actor-system/#hochfahren) fehlgeschlagen ist oder das Budget seiner Phase überschritten hat — sie nennt Phase und Task und trägt die Ursache. |
 | `UnknownReason` | Der Default, wenn `run()` ohne Argument aufgerufen wird. |
 
@@ -244,13 +244,19 @@ Beim Default `exit-process = off` scheitert stattdessen
 darauf wartet, endet von selbst mit einem Status ungleich null.
 
 Ein Knoten, der nicht beitreten konnte, führt sie ebenfalls aus, und sein
-Grund sagt es. `ClusterJoinUnsuccessfulReason` kommt sowohl, wenn der Join
-aufgibt, als auch, wenn das Readiness-Warten von `Cluster.bootstrap`
-scheitert — das früher `ClusterLeavingReason` übergab; ein Task, der einen
-gescheiterten Start an diesem Grund erkannte, sieht jetzt diesen. Keines
-von beiden beendet den Prozess von selbst: Der eingebaute Terminator
-beendet das Actor-System, und der Prozess endet nur mit
-`actor-ts.coordinated-shutdown.exit-process = on`.
+Grund sagt es. `ClusterJoinUnsuccessfulReason` kommt, wenn der Join
+aufgibt, wenn das Readiness-Warten von `Cluster.bootstrap` scheitert — das
+früher `ClusterLeavingReason` übergab; ein Task, der einen gescheiterten
+Start an diesem Grund erkannte, sieht jetzt diesen — und wenn der Bootstrap
+nach dem Aufbau seines Systems nicht weitermacht, sofern
+`run-by-actor-system-terminate` diesen Abbau zu einem Lauf macht. Keiner
+davon beendet den Prozess von selbst: Der eingebaute Terminator beendet das
+Actor-System, und der Prozess endet nur mit
+`actor-ts.coordinated-shutdown.exit-process = on`, und dann nach der Regel
+oben: Ein Knoten, der nicht beitreten konnte, hat ebenfalls nicht sauber
+gestoppt, und ein Fehlschlag endet nie mit `0`. Der Bootstrap nennt den
+Grund auf ERROR, bevor der Lauf beginnt, weil der Exit kommt, bevor sein
+Fehler dein `main` erreichen könnte.
 
 Du kannst `Reason` für app-spezifische Trigger subklassen
 (`AdminEndpointReason`, `HotReloadReason`, etc.).
@@ -275,12 +281,15 @@ fertig wird, wird geloggt und entweder:
   werden *nicht* ausgeführt; der Shutdown stoppt mitten im Flug.  Ein
   Lauf, den `terminate({ runCoordinatedShutdown: true })` gestartet
   hat, endet trotzdem im Teardown, denn dieser Aufruf hat ein
-  terminiertes System verlangt; ebenso ein Lauf, den ein Signal
-  gestartet hat, es sei denn, `terminate-actor-system = false` legt
-  fest, dass die Pipeline das System nie herunterfährt.  In beiden
-  Fällen wird der Halt als ERROR geloggt.  Ein `run()`, das du selbst
-  aufrufst, scheitert mit dem Fehler des Tasks und lässt das System so,
-  wie der Halt es vorgefunden hat.
+  terminiertes System verlangt; ebenso ein Lauf, den ein Signal, die
+  eigene Downing-Entscheidung dieses Knotens oder ein Join, der nicht
+  zustande kam, gestartet hat — auf diese Läufe wartet niemand, also
+  beantwortet der Lauf seinen Halt selbst —, es sei denn,
+  `terminate-actor-system = false` legt fest, dass die Pipeline das
+  System nie herunterfährt.  In beiden Fällen wird der Halt als ERROR
+  geloggt.  Ein `run()`, das du selbst mit einem anderen Grund aufrufst,
+  scheitert mit dem Fehler des Tasks und lässt das System so, wie der
+  Halt es vorgefunden hat.
 
   Mit `exit-process = on` endet stattdessen der Prozess am Halt, gleich
   welcher Auslöser den Lauf gestartet hat — ein Signal, `terminate()`,
@@ -295,7 +304,9 @@ fertig wird, wird geloggt und entweder:
   einen bündelnden Sink erreicht.  Ein abgeschlossener Lauf, der das
   System stehen ließ (`terminate-actor-system = false`), wird vor seinem
   Exit genauso geflusht; einen, dessen Terminator das System
-  heruntergefahren hat, hat dieser Teardown bereits geflusht.
+  heruntergefahren hat, hat dieser Teardown bereits geflusht.  Der Lauf
+  ist bis zu seinem Exit im Gange, ein `terminate()`, das während dieser
+  Flushes eintrifft, startet also nichts.
 
 Überschreibe pro Phase:
 
@@ -497,10 +508,15 @@ Pipeline mit `ClusterDowningReason` aus, auch wenn das Verlassen fehlschlägt:
 seine Services werden entbunden, und der eingebaute Terminator beendet das
 Actor-System und mit ihm jede Entity und jeden Singleton, die der Knoten
 hielt.  `terminate-actor-system` und `exit-process` entscheiden, worin der
-Lauf endet, wie bei einem Signal, und `auto-register-tasks = off` unterdrückt
-ihn nicht — dieser Schalter hält die eigenen Tasks des Frameworks zurück und
-entscheidet nichts darüber, wann die Pipeline läuft.  Der Knoten meldet das
-auf `warn`, bevor der Lauf beginnt.
+Lauf endet, wie bei einem Signal — ein Lauf, den eine Phase
+[anhält](#timeouts), endet trotzdem im Teardown, weil ein gedownter Knoten
+seine Actors nicht neben der Seite weiterlaufen lassen darf, die gewonnen hat
+—, und `auto-register-tasks = off` unterdrückt ihn nicht: Dieser Schalter hält
+die eigenen Tasks des Frameworks zurück und entscheidet nichts darüber, wann
+die Pipeline läuft.  Der Knoten meldet das auf `warn`, bevor der Lauf beginnt.
+Eine Entscheidung, die nur Peers downt, ändert an diesem Knoten nichts: Der
+Schalter beantwortet seine eigene Entfernung, nicht ein Downing, das er
+entscheidet.
 
 Ausgeliefert wird **aus**, und keiner der beiden Werte ist für sich genommen
 sicher:
@@ -628,8 +644,16 @@ Prozess beendet sich, weil nichts mehr die Loop am Leben hält.
   irgendwo, solange ein Lauf unterwegs ist — startet `terminate()` nichts
   und resolved sofort, egal in welcher Form du es aufrufst.  Der Lauf
   endet ohnehin im Teardown, und ein Task, der darauf wartete, hielte
-  seine eigene Phase fest, bis deren Timeout ihn aufgibt.  Await
-  `system.whenTerminated()`, wenn du das System unten brauchst.
+  seine eigene Phase fest, bis deren Timeout ihn aufgibt.  Außerhalb der
+  Pipeline — etwa neben einem durch ein Signal ausgelösten Shutdown —
+  await `system.whenTerminated()`, wenn du das System unten brauchst.
+  Nicht aus einem Task: Der Teardown, auf den er warten würde, läuft in
+  der letzten Phase, die nicht beginnen kann, bevor die eigene Phase des
+  Tasks zu Ende ist; das Warten hält diese Phase also ihr ganzes Budget
+  lang fest und wird als `timed out` geloggt — derselbe Stillstand.  Nur
+  ein Task von `actor-system-terminate` läuft neben dem Terminator;
+  Arbeit, die das System unten braucht, gehört hinter den Lauf, nicht in
+  ihn.
 </Aside>
 
 <Aside type="caution" title="Tasks mit Seiteneffekten auf das Actor-System">
