@@ -227,6 +227,13 @@ type ClusterListenerRegistration = {
 const CLUSTER_LEAVE_TASK_NAME = 'cluster-leave';
 
 /**
+ * Name of the `cluster-sharding-shutdown-region` phase task {@link Cluster.join}
+ * registers and {@link Cluster.leave} takes back out (#1465) — module-local for
+ * the reasons {@link CLUSTER_LEAVE_TASK_NAME} gives, and paired the same way.
+ */
+const SHARDING_SHUTDOWN_TASK_NAME = 'cluster-sharding-shutdown-region';
+
+/**
  * The Cluster is a single-instance "extension" attached to an ActorSystem.
  * It owns a Transport, a gossip-based membership view, a failure detector
  * and the plumbing that dispatches inbound envelope messages to local actors.
@@ -755,7 +762,16 @@ export class Cluster {
     // routing to it until the failure detector gave up (#549).  Registered
     // after a successful `_start` on purpose — a cluster that never bound its
     // transport has nothing to leave.
-    system.extension(CoordinatedShutdownId).addFrameworkTask(
+    const coordinatedShutdown = system.extension(CoordinatedShutdownId);
+    // The phase before it hands this node's shards off, which `leave()` would
+    // do anyway; as a task of its own it runs under its own phase timeout, and
+    // the shards are gone before the leave is even begun (#1465).
+    coordinatedShutdown.addFrameworkTask(
+      Phases.ClusterShardingShutdownRegion,
+      SHARDING_SHUTDOWN_TASK_NAME,
+      () => cluster.shutdownSharding(),
+    );
+    coordinatedShutdown.addFrameworkTask(
       Phases.ClusterLeave,
       CLUSTER_LEAVE_TASK_NAME,
       () => cluster.leave(),
@@ -790,9 +806,10 @@ export class Cluster {
   }
 
   /**
-   * The cluster's sharding facade.  Lazily constructs (and memoises) a
-   * single `ClusterSharding` instance per `ActorSystem` so callers can
-   * start regions inline:
+   * The cluster's sharding facade.  Lazily constructs (and memoises) one
+   * `ClusterSharding` instance per cluster incarnation of the `ActorSystem` —
+   * a re-join builds a fresh one, and {@link leave} stops what the old one
+   * started (#1465) — so callers can start regions inline:
    *
    * ```ts
    * const region = cluster.sharding.start('cart', CartActor, {
@@ -1657,17 +1674,67 @@ export class Cluster {
     return true;
   }
 
-  /** Gracefully leave the cluster (broadcast `leave`, stop transport). */
+  /**
+   * Gracefully leave the cluster: hand off this node's shards and stop the
+   * sharding this cluster started, then broadcast `leave` and stop the
+   * transport.
+   *
+   * The hand-off comes first, and is waited out, because of what a peer does
+   * with the broadcast: it removes this node, and its coordinator re-homes the
+   * shards this node hosted.  Broadcast first, and those shards ran on both
+   * nodes until the process ended (#1465).  So when the peers hear of the
+   * leave, nothing of those shards runs here any more, and once this resolves
+   * a re-join on the same system can start the same types again.
+   */
   async leave(): Promise<void> {
-    if (!this.started) return;
+    if (!this.beginLeaving()) return;
+    // Usually done already, by the phase before this one; then this is the
+    // promise that phase waited on.
+    await this.shutdownSharding();
+    await this.depart();
+  }
+
+  /**
+   * Leave without a hand-off, for a node the cluster no longer has a use for:
+   * one its own downing decision took out (#1456), or one that gave its join up
+   * (#1500).  Both callers rely on the departure being synchronous — self is
+   * `leaving`, the peers are told, every timer is stopped before this returns —
+   * and there is nobody to hand shards to first: the peers that downed this
+   * node have already re-homed them, and a node that never joined hosts none.
+   * So the sharding stops beside the departure rather than ahead of it, and
+   * stops all the same: actors left running for a cluster that is gone are the
+   * defect {@link leave} exists to prevent (#1465).
+   */
+  private async leaveAtOnce(): Promise<void> {
+    if (!this.beginLeaving()) return;
+    const departed = this.depart();
+    await Promise.all([this.shutdownSharding(), departed]);
+  }
+
+  /**
+   * What both leaves do first, and whether this one is the first: `false`
+   * when the cluster was already leaving, or never started.
+   */
+  private beginLeaving(): boolean {
+    if (!this.started) return false;
     this.started = false;
-    // Drop the pipeline's task with the membership it named.  A process that
+    // Drop the pipeline's tasks with the membership they named.  A process that
     // leaves and re-joins — a test, a reconfiguration — would otherwise hit
     // `addTask`'s duplicate-name check on the second `Cluster.join`.  Safe to
-    // do here even though `leave()` is usually *called by* that task:
+    // do here even though `leave()` is usually *called by* one of them:
     // `runPhase` snapshots the list before invoking anything.
-    this.system.extension(CoordinatedShutdownId)
-      .removeTask(Phases.ClusterLeave, CLUSTER_LEAVE_TASK_NAME);
+    const coordinatedShutdown = this.system.extension(CoordinatedShutdownId);
+    coordinatedShutdown.removeTask(Phases.ClusterLeave, CLUSTER_LEAVE_TASK_NAME);
+    coordinatedShutdown.removeTask(Phases.ClusterShardingShutdownRegion, SHARDING_SHUTDOWN_TASK_NAME);
+    return true;
+  }
+
+  /**
+   * Stop being a member: self moves to `leaving`, the reachable peers are
+   * told, gossip, heartbeats and every other timer stop — all of it before the
+   * first `await` — and then the transport closes.
+   */
+  private async depart(): Promise<void> {
     // The readiness checks stay registered, and this is the whole point of
     // them.  Leaving used to un-register the pair here — before self had even
     // been moved to `leaving` — which left `checkReadiness()` empty on a node
@@ -1697,6 +1764,16 @@ export class Cluster {
     this.joinGiveUpTimer?.cancel();
     this._remoteWatcher.shutdown();
     await this.transport.shutdown();
+  }
+
+  /**
+   * Hand off and stop what this cluster's sharding facade started, if anything
+   * did (#1465): the `cluster-sharding-shutdown-region` task, and the first
+   * thing {@link leave} does.  Never builds a facade — one nobody asked for has
+   * nothing to stop.
+   */
+  private async shutdownSharding(): Promise<void> {
+    await ClusterSharding._existing(this.system, this)?._shutdown();
   }
 
   /* ================================ Internal ================================ */
@@ -2230,9 +2307,9 @@ export class Cluster {
    * `ClusterJoinUnsuccessfulReason`.
    *
    * Leave first, for the reason {@link leaveAfterDowningSelf} does: the
-   * synchronous part of `leave()` ends the seed loop and every other timer,
-   * and drops the pipeline's `cluster-leave` task so the run cannot leave a
-   * second time.  It is also what keeps the give-up whole where
+   * synchronous departure of {@link leaveAtOnce} ends the seed loop and every
+   * other timer, and drops the pipeline's `cluster-leave` task so the run
+   * cannot leave a second time.  It is also what keeps the give-up whole where
    * `coordinated-shutdown.auto-register-tasks` is off: that pipeline has no
    * `cluster-leave` task at all, and without the call here the node would go
    * on dialling its seeds beside a run that terminates everything else.
@@ -2250,12 +2327,12 @@ export class Cluster {
       + `its own is pending — ${this.coldStartStallRemedy(this.livePeerCount())}. Leaving the cluster `
       + 'and running the coordinated-shutdown pipeline with ClusterJoinUnsuccessfulReason.',
     );
-    // Before `leave()`, so the notice carries the status the node gave up in
+    // Before the leave, so the notice carries the status the node gave up in
     // rather than the `leaving` it is about to be.  A readiness wait settling
     // here rejects a microtask later, by when the run below has started, so
     // a caller that runs the pipeline in response joins this run.
     this.announceJoinGivenUp({ deadlineMs: this.shutdownAfterUnsuccessfulJoinMs, selfStatus: status });
-    void this.leave().catch((e) => this.log.warn('leaving after the join was given up failed', e));
+    void this.leaveAtOnce().catch((e) => this.log.warn('leaving after the join was given up failed', e));
     void this.system.extension(CoordinatedShutdownId).run(ClusterJoinUnsuccessfulReason.instance)
       .catch((e: unknown) => this.log.error(
         'the coordinated-shutdown pipeline this node started after giving up its join halted', e));
@@ -3305,12 +3382,14 @@ export class Cluster {
    * The self-down half of {@link applyDowningDecision}: leave, then — with
    * {@link runCoordinatedShutdownWhenDown} on — run the pipeline (#1456).
    *
-   * `leave()` goes first because its synchronous part is what stops this node
-   * acting as a member: self moves to `leaving`, the reachable peers are told,
-   * gossip and heartbeats stop, and the pipeline's `cluster-leave` task is
-   * dropped, so the run cannot leave a second time.  The run then starts
-   * beside the rest of the leave — the transport closing — rather than behind
-   * it.  A leave that rejects, or never settles, must not be what keeps this
+   * {@link leaveAtOnce} goes first because its synchronous departure is what
+   * stops this node acting as a member: self moves to `leaving`, the reachable
+   * peers are told, gossip and heartbeats stop, and the pipeline's
+   * `cluster-leave` task is dropped, so the run cannot leave a second time.  The
+   * run then starts beside the rest of the leave — the transport closing, the
+   * sharding stopping — rather than behind it, and not behind a hand-off
+   * either: the peers that downed this node do not wait for one.  A leave that
+   * rejects, or never settles, must not be what keeps this
    * node's actors running: they are the second writer the decision exists to
    * stop.  `run()` is idempotent, so a run already under way, from a signal
    * or an operator, is joined rather than doubled, and
@@ -3318,7 +3397,7 @@ export class Cluster {
    * decide what the run ends in.
    */
   private leaveAfterDowningSelf(): void {
-    void this.leave().catch((e) =>
+    void this.leaveAtOnce().catch((e) =>
       this.log.warn(`self-leave after downing decision failed`, e));
     if (!this.runCoordinatedShutdownWhenDown) return;
     // At warn, like the escalation's own announcement: an operator who finds

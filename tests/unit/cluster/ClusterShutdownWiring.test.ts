@@ -1,16 +1,23 @@
 import { describe, expect, test } from 'bun:test';
+import { match } from 'ts-pattern';
+import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Cluster } from '../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../src/cluster/ClusterOptions.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
+import { StartShardingOptions } from '../../../src/cluster/sharding/StartShardingOptions.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
+import { Config } from '../../../src/config/Config.js';
 import {
   ClusterLeavingReason,
   CoordinatedShutdownId,
   Phases,
 } from '../../../src/CoordinatedShutdown.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
+import { regionSegments } from '../../util/SystemPaths.js';
 
 /**
  * `Phases.ClusterLeave` was empty in every deployment: `grep addTask src/`
@@ -140,6 +147,119 @@ describe('cluster leave is a shutdown phase task', () => {
     await joinNode(system, 27_105);
     expect(leaveTaskNames(system)).toEqual([]);
 
+    await system.terminate();
+  });
+});
+
+/**
+ * `Phases.ClusterShardingShutdownRegion` was empty as well: nothing handed a
+ * node's shards off on the way out, and `leave()` did not either, so the
+ * regions and coordinators the node had started kept running after it left
+ * (#1465).  The phase runs before `cluster-leave`, so the shards are gone
+ * before the leave is even begun.
+ */
+describe('the sharding hand-off is a shutdown phase task (#1465)', () => {
+  type PingCommand = { readonly kind: 'ping'; readonly id: string };
+
+  class Pinged extends Actor<PingCommand> {
+    override onReceive(message: PingCommand): void {
+      match(message)
+        .with({ kind: 'ping' }, () => this.onPing())
+        .exhaustive();
+    }
+
+    private onPing(): void { /* nothing to do */ }
+  }
+
+  const TYPE_NAME = 'orders';
+
+  const shardingTaskNames = (system: ActorSystem): string[] => {
+    const registry = system.extension(CoordinatedShutdownId) as unknown as {
+      tasks: Map<string, ReadonlyArray<{ name: string }>>;
+    };
+    return (registry.tasks.get(Phases.ClusterShardingShutdownRegion) ?? []).map((task) => task.name);
+  };
+
+  test('Cluster.join registers one, and leave() takes it back out for a re-join', async () => {
+    const system = newSystem('sharding-task-registered');
+    expect(shardingTaskNames(system)).toEqual([]);
+
+    const cluster = await joinNode(system, 27_110);
+    expect(shardingTaskNames(system)).toEqual(['cluster-sharding-shutdown-region']);
+
+    await cluster.leave();
+    expect(shardingTaskNames(system)).toEqual([]);
+
+    // A duplicate name within a phase is refused, so this join would throw.
+    await joinNode(system, 27_111);
+    expect(shardingTaskNames(system)).toEqual(['cluster-sharding-shutdown-region']);
+
+    await system.terminate();
+  });
+
+  test('running the pipeline stops the sharding before the cluster-leave phase begins', async () => {
+    const system = newSystem('sharding-task-runs');
+    const cluster = await joinNode(system, 27_112);
+    const shardingOptions = StartShardingOptions.create<PingCommand>()
+      .withTypeName(TYPE_NAME)
+      .withEntityActor(Pinged)
+      .withExtractEntityId((message) => message.id);
+    cluster.sharding.start<PingCommand>(shardingOptions);
+    const regionRunning = (): boolean => system._resolvePath(regionSegments(system.name, TYPE_NAME)).isSome();
+    expect(regionRunning()).toBe(true);
+
+    // In the phase after it, beside the leave itself: a leave that only began
+    // the hand-off here would still find the region running.
+    const observed: boolean[] = [];
+    system.extension(CoordinatedShutdownId).addTask(
+      Phases.ClusterLeave,
+      'observe',
+      () => { observed.push(regionRunning()); },
+    );
+
+    await system.extension(CoordinatedShutdownId).run(ClusterLeavingReason.instance);
+
+    expect(observed).toEqual([false]);
+    expect(system.isTerminated).toBe(true);
+  });
+
+  test('a node that gives its join up stops its sharding as well, with the phase task already gone', async () => {
+    // The give-up leaves at once — its departure is synchronous and waits for
+    // no hand-off — and takes the phase's task out with the leave's own.  The
+    // run it starts here terminates nothing, so if this leave did not stop the
+    // sharding itself, nothing would.
+    const scheduler = new ManualScheduler();
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withScheduler(scheduler)
+      .withConfig(Config.parseString('actor-ts.coordinated-shutdown.terminate-actor-system = off'));
+    const system = ActorSystem.create('sharding-give-up', systemOptions);
+    const address = new NodeAddress(system.name, HOST, 27_113);
+    const clusterOptions = ClusterOptions.create()
+      .withHost(HOST)
+      .withPort(27_113)
+      .withTransport(new InMemoryTransport(address))
+      .withSeeds([`${system.name}@10.0.152.2:27113`])
+      .withSeedRetryIntervalMs(100)
+      .withShutdownAfterUnsuccessfulJoinMs(1_000)
+      .withGossipIntervalMs(60_000);
+    const cluster = await Cluster.join(system, clusterOptions);
+    const shardingOptions = StartShardingOptions.create<PingCommand>()
+      .withTypeName(TYPE_NAME)
+      .withEntityActor(Pinged)
+      .withExtractEntityId((message) => message.id);
+    cluster.sharding.start<PingCommand>(shardingOptions);
+    const regionRunning = (): boolean => system._resolvePath(regionSegments(system.name, TYPE_NAME)).isSome();
+    expect(regionRunning()).toBe(true);
+
+    scheduler.advance(1_000);
+
+    expect(shardingTaskNames(system)).toEqual([]);
+    await awaitCondition(() => !regionRunning(), {
+      timeoutMs: 4_000,
+      label: 'the region of the node that gave its join up stopped',
+    });
     await system.terminate();
   });
 });

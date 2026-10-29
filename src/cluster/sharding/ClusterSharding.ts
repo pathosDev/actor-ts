@@ -1,11 +1,13 @@
 import { match, P } from 'ts-pattern';
 import type { Actor, ActorClassOrFactory } from '../../Actor.js';
+import { parsePathSegments } from '../../ActorPath.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { Lease } from '../../coordination/Lease.js';
 import { configuredLeaseFor } from '../../coordination/LeaseFromConfig.js';
 import { actorFactoryOf } from '../../internal/ActorBlueprint.js';
+import { gracefulStop } from '../../pattern/GracefulStop.js';
 import { PersistenceExtensionId } from '../../persistence/PersistenceExtension.js';
 import { StorageLocalityError } from '../../persistence/StorageLocality.js';
 import { mergeOptions } from '../../util/OptionsMerge.js';
@@ -38,7 +40,7 @@ import {
   coordinatorPath,
 } from './ShardRegion.js';
 import { ShardCoordinator } from './ShardCoordinator.js';
-import { ShardCoordinatorOptions } from './ShardCoordinatorOptions.js';
+import { DEFAULT_HAND_OFF_TIMEOUT_MS, ShardCoordinatorOptions } from './ShardCoordinatorOptions.js';
 import {
   ShardKey,
   shardKeyOf,
@@ -135,6 +137,22 @@ export class ClusterSharding {
    */
   private readonly registrationRefusals = new Map<string, ShardRegionRegistrationRefused>();
 
+  /**
+   * Type name → how long its region may take to hand its shards off when the
+   * cluster leaves (#1465): the type's `hand-off-timeout`, the bound the
+   * coordinator already gives a region to hand off one shard.  Filled from the
+   * same merged options as every other per-type setting here.
+   */
+  private readonly handOffTimeoutByType = new Map<string, number>();
+
+  /**
+   * The stop {@link _shutdown} began when this facade's cluster started to
+   * leave, or `null` while it has not (#1465).  One promise rather than a flag,
+   * so the shutdown phase's task and `leave()` itself wait on the same stop
+   * instead of racing two — and `start` refuses once it is set.
+   */
+  private shutdownBegun: Promise<void> | null = null;
+
   private constructor(
     public readonly system: ActorSystem,
     public readonly cluster: Cluster,
@@ -169,11 +187,9 @@ export class ClusterSharding {
    * repeated reads through one cluster still return one instance.  Keyed
    * weakly at both levels, so a facade goes with the cluster it belongs to.
    * The regions and coordinators a left cluster's facade started are not
-   * carried over: they belong to that cluster, stay bound to it, and keep
-   * their well-known names — so starting the same type again through the new
-   * cluster's facade fails on the name, where it used to hand back the left
-   * incarnation's region, which delivered nothing while `isRegistered` still
-   * read `true`.
+   * carried over: they belong to that cluster, and leaving stops them — see
+   * {@link _shutdown} — which also frees their well-known names, so the new
+   * cluster's facade can start the same type again.
    */
   static get(system: ActorSystem, cluster: Cluster): ClusterSharding {
     let byCluster = ClusterSharding.instances.get(system);
@@ -186,6 +202,16 @@ export class ClusterSharding {
     const created = new ClusterSharding(system, cluster);
     byCluster.set(cluster, created);
     return created;
+  }
+
+  /**
+   * @internal The facade `cluster` was given on `system`, or `undefined` when
+   * nothing has asked for one — {@link get} without building one.  A cluster
+   * on its way out asks this, because a facade built then would subscribe to
+   * a cluster that is leaving and have nothing to stop (#1465).
+   */
+  static _existing(system: ActorSystem, cluster: Cluster): ClusterSharding | undefined {
+    return ClusterSharding.instances.get(system)?.get(cluster);
   }
 
   /**
@@ -240,6 +266,16 @@ export class ClusterSharding {
   start<TMessage>(arg1: unknown, arg2?: unknown, arg3?: unknown): ActorRef<TMessage> {
     const options = this.withConfigDefaults(this.resolveStartOptions<TMessage>(arg1, arg2, arg3));
     new StartShardingOptionsValidator<TMessage>().validate(options);
+    // A start after the shutdown would bind fresh actors to a cluster that has
+    // left — the very state the shutdown exists to end — and take the names a
+    // re-join needs for the same type (#1465).
+    if (this.shutdownBegun !== null) {
+      throw new Error(
+        `[sharding] cannot start '${options.typeName}': the cluster this sharding belongs to `
+        + `(${this.cluster.selfAddress}) has left, or is leaving, and its regions and coordinators `
+        + "are stopped.  After a re-join, start the type through the new cluster's `sharding`.",
+      );
+    }
 
     // Resolve the config BEFORE anything reads a shard count.  This used to
     // sit below `ensureCoordinator`, which read `numShardsByType` — a map
@@ -294,6 +330,7 @@ export class ClusterSharding {
     this.numShardsByType.set(options.typeName, config.numShards);
     this.proxyByType.set(options.typeName, config.proxy);
     this.queryTimeoutByType.set(options.typeName, queryTimeoutMs);
+    this.handOffTimeoutByType.set(options.typeName, options.handOffTimeoutMs ?? DEFAULT_HAND_OFF_TIMEOUT_MS);
     const ref = this.system._spawnSystemActor<TMessage>(
       // ShardRegion internally handles extra envelope types; cast to Actor<TMessage>
       // so the returned ref presents the user-facing signature.
@@ -673,6 +710,84 @@ export class ClusterSharding {
   }
 
   /**
+   * @internal Hand off this node's shards for every type started through this
+   * facade, then stop its coordinators — the cluster is leaving (#1465).  Run
+   * by the `cluster-sharding-shutdown-region` phase task and by
+   * `Cluster.leave()` before anything else it does; both get the same promise.
+   *
+   * Leaving used to stop none of it.  The regions, their entities and the
+   * coordinators stayed alive, bound to a cluster that had gone, while the
+   * remaining members re-homed the shards on `MemberRemoved` — so a shard had
+   * two live homes until the process ended, a second writer for a persistent
+   * entity fed by local traffic.  And a re-join on the same system could not
+   * start a type the left incarnation ran: the old actors held its names.
+   *
+   * **Regions first, and to the end.**  Stopping a region stops its shards and
+   * their entities — each finishes the message it is handling, so a persistent
+   * one's write lands, and runs `postStop` — and only then does the region tell
+   * the coordinator it is gone.  That makes the coordinator's re-home of those
+   * shards start after the last entity here stopped, and the caller holds the
+   * leave broadcast back until this resolves, so a peer's `MemberRemoved`
+   * cannot overtake it either.  Each region gets its type's `hand-off-timeout`;
+   * past it the stop is forced.  **Coordinators after**: one here may be the
+   * active coordinator, and the notices its own regions sent it on the way down
+   * are queued ahead of its stop.
+   *
+   * Resolves once every name is free again, not merely once every actor has
+   * stopped — see {@link stopReleasingName}.
+   */
+  _shutdown(): Promise<void> {
+    this.shutdownBegun ??= this.stopShardingActors();
+    return this.shutdownBegun;
+  }
+
+  private async stopShardingActors(): Promise<void> {
+    await Promise.all(Array.from(this.regionPathsByType, ([typeName, path]) => {
+      const region = this.regionsByPath.get(path);
+      return region === undefined ? undefined : this.stopReleasingName(region, typeName, 'region');
+    }));
+    await Promise.all(Array.from(this.coordinators, ([typeName, coordinator]) =>
+      this.stopReleasingName(coordinator, typeName, 'coordinator')));
+  }
+
+  /**
+   * Stop `actor` gracefully, within `typeName`'s hand-off timeout, and resolve
+   * once its name is free.
+   *
+   * `gracefulStop` resolves on the `Terminated`, and the runtime tells a
+   * watcher before it tells the parent — so for a turn or two after that the
+   * parent still holds the name, and a re-join starting the type on the next
+   * line collided on it.  The parent's notice is already queued by then; only
+   * the event loop has to reach it, which is all the loop below waits for, with
+   * the same budget as a bound.
+   */
+  private async stopReleasingName(
+    actor: ActorRef<unknown>,
+    typeName: string,
+    role: 'region' | 'coordinator',
+  ): Promise<void> {
+    const budgetMs = this.handOffTimeoutByType.get(typeName) ?? DEFAULT_HAND_OFF_TIMEOUT_MS;
+    let expired = false;
+    const deadline = this.system.scheduler.scheduleOnceFunction(budgetMs, () => { expired = true; });
+    try {
+      const stopped = await gracefulStop(actor, budgetMs);
+      const segments = parsePathSegments(actor.path.toString());
+      while (!expired && this.system._resolvePath(segments).exists((current) => current === actor)) {
+        await nextMacrotask();
+      }
+      if (!stopped || expired) {
+        this.system.log.warn(
+          `[sharding] the ${role} for '${typeName}' did not stop within its hand-off timeout of `
+          + `${budgetMs} ms while the cluster was leaving; it was stopped outright, and a re-join may `
+          + 'not be able to start the type until it has gone',
+        );
+      }
+    } finally {
+      deadline.cancel();
+    }
+  }
+
+  /**
    * The configured query wait for a type, or the built-in one.
    *
    * The fallback covers a type started before this node learned about it —
@@ -905,6 +1020,15 @@ export class ClusterSharding {
     }
     ref.tell(env.body as never);
   }
+}
+
+/**
+ * One trip round the event loop.  A host timer rather than the system
+ * scheduler on purpose: what {@link ClusterSharding} waits for with it is a
+ * dispatcher turn, and a virtual scheduler nobody advances would never fire.
+ */
+function nextMacrotask(): Promise<void> {
+  return new Promise<void>((resolve) => { setTimeout(resolve, 0); });
 }
 
 export { isShardingMessage };
