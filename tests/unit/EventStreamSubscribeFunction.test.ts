@@ -401,6 +401,49 @@ describe('EventStream.subscribeFunction contains a failing callback', () => {
     });
     expect(warnings[0]).toContain('callback storing');
   });
+
+  test('a channel whose instanceof throws at delivery reaches no spawn, stop or terminate()', async () => {
+    // Subscribing checks a channel's shape, not its behaviour: `instanceof`
+    // runs the channel's own `Symbol.hasInstance`, so this one passes the
+    // subscribe and throws on every event after it.  On a running system the
+    // first such event is an actor start, and the hardest one is the stop,
+    // published from inside the actor's termination.  Contained, each throw is
+    // one skipped callback and one warning.  Uncontained, it left `publish` out
+    // of that termination — `terminate()` never settled — and the callbacks
+    // behind this one in the list missed the event.
+    const system = ActorSystem.create('es-callback-throwing-channel', quietSystemOptions());
+    const { warnings } = recordLog(system.eventStream);
+    const throwingChannel = {
+      [Symbol.hasInstance](_candidate: unknown): boolean { throw new Error('hasInstance boom'); },
+    };
+    let throwingChannelCalls = 0;
+    system.eventStream.subscribeFunction(throwingChannel as never, () => { throwingChannelCalls++; });
+    // Subscribed second, so it is reached only if the throw stayed contained.
+    const started: ActorStarted[] = [];
+    system.eventStream.subscribeFunction(ActorStarted, (event) => { started.push(event); });
+
+    class Quiet extends Actor<string> {
+      override onReceive(): void {}
+    }
+    const first = system.spawn(Quiet, 'first');
+    await awaitCondition(() => started.some((event) => event.actor.equals(first)), {
+      timeoutMs: 2_000,
+      label: 'the start reached the callback behind the throwing channel',
+    });
+    expect(await gracefulStop(first, 1_000)).toBe(true);
+    const second = system.spawn(Quiet, 'second');
+    await awaitCondition(() => started.some((event) => event.actor.equals(second)), {
+      timeoutMs: 2_000,
+      label: 'a start after the stop still reached it',
+    });
+    expect(() => system.eventStream.publish(new EventA('direct'))).not.toThrow();
+    await assertCompletesWithin(system.terminate(), 2_000, 'terminate() with a channel whose instanceof throws');
+
+    expect(throwingChannelCalls).toBe(0);
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(warnings.filter((warning) => !warning.includes('matching an event against an unnamed channel threw')))
+      .toEqual([]);
+  });
 });
 
 describe('EventStream.subscribeFunction bounds a callback that publishes', () => {
@@ -473,6 +516,95 @@ describe('EventStream.subscribeFunction bounds a callback that publishes', () =>
     expect(listener.received).toHaveLength(MAX_EVENT_STREAM_CALLBACK_DEPTH + 1);
   });
 
+  /**
+   * `callbackCount` callbacks on one channel, each publishing on it
+   * `publishesPerCall` times per call, plus an actor subscriber counting what
+   * reaches it.  The fixture stops publishing after `CALL_CAP` calls: the loop
+   * is synchronous, so a bus that does not bound it would hold the runner far
+   * past any per-test timeout, which cannot interrupt it — capped, it fails on
+   * the count instead.
+   */
+  function loopOf(callbackCount: number, publishesPerCall: number): {
+    calls: number; warnings: number; actorReceived: number;
+  } {
+    const CALL_CAP = 10_000;
+    const bus = new EventStream();
+    const { warnings } = recordLog(bus);
+    const listener = new RecordingRef('listener');
+    bus.subscribe(listener, EventA);
+    let calls = 0;
+    for (let callback = 0; callback < callbackCount; callback++) {
+      bus.subscribeFunction(EventA, (event) => {
+        calls++;
+        if (calls >= CALL_CAP) return;
+        for (let publish = 0; publish < publishesPerCall; publish++) bus.publish(new EventA(event.payload));
+      });
+    }
+    bus.publish(new EventA('loop'));
+    return { calls, warnings: warnings.length, actorReceived: listener.received.length };
+  }
+
+  // A bound on depth alone is a bound on one path through the loop, and the
+  // loop has as many paths as callbacks or publishes per call allow: two
+  // callbacks made 131 070 calls and 65 536 warnings of one publish, three made
+  // 64 570 080 calls.  The bound now cuts the cascade it is reached in, so the
+  // count follows from two rules.  Everything published below the bound
+  // reaches every callback that wants it: the first descent is sixteen calls,
+  // and on the way back up each of the 15 nested levels calls the other
+  // k - 1 callbacks once.  Nothing the cascade publishes after the cut reaches
+  // a callback, which is why the publishes per call stop mattering.  The
+  // outermost publish gives each of its k callbacks a cascade of its own:
+  // k * (16 + 15 * (k - 1)) calls and k warnings.  The actor subscriber still
+  // receives everything — the outermost event, and every publish of every call.
+  const loopShapes: ReadonlyArray<readonly [string, number, number, { calls: number; warnings: number; actorReceived: number }]> = [
+    ['one callback publishing twice per call', 1, 2, { calls: 16, warnings: 1, actorReceived: 33 }],
+    ['two callbacks publishing once per call', 2, 1, { calls: 62, warnings: 2, actorReceived: 63 }],
+    ['three callbacks publishing once per call', 3, 1, { calls: 138, warnings: 3, actorReceived: 139 }],
+  ];
+
+  test.each(loopShapes)('the bound limits the work of %s, not only its depth', (_label, callbackCount, publishesPerCall, expected) => {
+    expect(loopOf(callbackCount, publishesPerCall)).toEqual(expected);
+  });
+
+  test('a cut cascade leaves the cascades of the other callbacks alone', () => {
+    // The outermost event reaches every callback, and what each of them
+    // publishes in turn is its own cascade.  The looping callback's cut ends
+    // its own cascade only: the callback behind it still publishes for the
+    // outermost event, and that publish still reaches its callback.  What it
+    // published for the looping cascade's echoes did not.
+    const bus = new EventStream();
+    const { warnings } = recordLog(bus);
+    bus.subscribeFunction(EventA, () => { bus.publish(new EventA('echo')); });
+    bus.subscribeFunction(EventA, (event) => { bus.publish(new EventB(event.payload.length)); });
+    const forwarded: number[] = [];
+    bus.subscribeFunction(EventB, (event) => { forwarded.push(event.payload); });
+
+    bus.publish(new EventA('outermost'));
+    expect(forwarded).toEqual(['outermost'.length]);
+    expect(warnings).toHaveLength(1);
+  });
+
+  test('a cut does not carry over into the next cascade, not even into its channel match', () => {
+    // Matching runs the channel's own code, before the callback is called, and
+    // that code can publish.  It runs for the next callback of the outermost
+    // publish, so it belongs to that callback's cascade, not to the cut one.
+    const bus = new EventStream();
+    recordLog(bus);
+    bus.subscribeFunction(EventA, () => { bus.publish(new EventA('echo')); });
+    const publishingChannel = {
+      [Symbol.hasInstance](candidate: unknown): boolean {
+        if (candidate instanceof EventA && candidate.payload === 'outermost') bus.publish(new EventB(1));
+        return false;
+      },
+    };
+    bus.subscribeFunction(publishingChannel as never, () => {});
+    const announced: number[] = [];
+    bus.subscribeFunction(EventB, (event) => { announced.push(event.payload); });
+
+    bus.publish(new EventA('outermost'));
+    expect(announced).toEqual([1]);
+  });
+
   test('the bound starts again with every outermost publish', () => {
     const bus = new EventStream();
     const { warnings } = recordLog(bus);
@@ -489,18 +621,15 @@ describe('EventStream.subscribeFunction bounds a callback that publishes', () =>
   });
 
   test('a logger that throws does not leave the depth raised', () => {
-    // The warning for a throwing callback is the one call in the delivery loop
-    // that runs outside a guard.  Whatever escapes through it, the depth has to
-    // unwind, or every later publish would find the bound already reached.
+    // The warning for a throwing callback used to run outside any guard, so a
+    // logger that threw left the delivery loop through it.  The warning is
+    // guarded now and nothing escapes, but the depth is the thing that must
+    // never stay raised: every later publish would find the bound reached.
     const bus = new EventStream();
     bus.log = { warn: () => { throw new Error('logger boom'); } };
     const remove = bus.subscribeFunction(EventA, () => { throw new Error('callback boom'); });
     for (let attempt = 0; attempt < MAX_EVENT_STREAM_CALLBACK_DEPTH; attempt++) {
-      try {
-        bus.publish(new EventA('x'));
-      } catch {
-        /* the logger's own failure; not what this test is about */
-      }
+      expect(() => bus.publish(new EventA('x'))).not.toThrow();
     }
     remove();
 
@@ -531,6 +660,55 @@ describe('EventStream.subscribeFunction refuses what it cannot deliver to', () =
     const bus = new EventStream();
     expect(() => bus.subscribeFunction(EventA, new RecordingRef('a-ref') as never))
       .toThrow(/subscribe\(ref, channel\)/);
+  });
+
+  // `subscribe` takes the subscriber first and `subscribeFunction` the channel
+  // first, so the likeliest slip is the callback in front.  With a class as the
+  // channel it used to pass both checks — a class is a function, and every
+  // function is a usable `instanceof` target — and was stored: an arrow callback
+  // in the channel slot warned on every publish of every event for the life of
+  // the system, and a function expression matched nothing and said nothing.
+  const swappedCalls: ReadonlyArray<readonly [string, (bus: EventStream) => unknown]> = [
+    ['an arrow callback in front of a class', (bus) => bus.subscribeFunction(
+      ((_event: EventA) => {}) as never, EventA as never)],
+    ['a function expression in front of a class', (bus) => bus.subscribeFunction(
+      function onEvent(_event: EventA) {} as never, EventA as never)],
+    ['a callback in front of a key', (bus) => bus.subscribeFunction(
+      ((_event: UserLoggedInEvent) => {}) as never, UserLoggedInEvent as never)],
+    ['a callback in front of a kind string', (bus) => bus.subscribeFunction(
+      ((_event: UserLoggedInEvent) => {}) as never, 'user-logged-in' as never)],
+  ];
+
+  test.each(swappedCalls)('refuses %s, naming the order', (_label, subscribeSwapped) => {
+    const bus = new EventStream();
+    expect(() => subscribeSwapped(bus))
+      .toThrow(/^EventStream\.subscribeFunction: callback must be a function — got .*subscribeFunction\(channel, callback\)/);
+    expect(bus.hasSubscribers).toBe(false);
+  });
+
+  test('a class is refused as the callback wherever it comes from, by name', () => {
+    const bus = new EventStream();
+    expect(() => bus.subscribeFunction(EventA, EventB as never)).toThrow(/got the class EventB/);
+    expect(() => bus.subscribeFunction(EventA, class {} as never)).toThrow(/got an anonymous class/);
+    expect(bus.hasSubscribers).toBe(false);
+  });
+
+  test('every other function is still a callback, and is called', () => {
+    // The class check reads the function's source.  A method that happens to be
+    // called `class` starts with the same five letters and is still a method.
+    const bus = new EventStream();
+    const seen: string[] = [];
+    const handlers = {
+      class(event: EventA): void { seen.push(`method named class:${event.payload}`); },
+    };
+    bus.subscribeFunction(EventA, (event) => { seen.push(`arrow:${event.payload}`); });
+    bus.subscribeFunction(EventA, function named(event) { seen.push(`function:${event.payload}`); });
+    bus.subscribeFunction(EventA, async (event) => { seen.push(`async:${event.payload}`); });
+    bus.subscribeFunction(EventA, handlers.class);
+    bus.subscribeFunction(EventA, ((event: EventA) => { seen.push(`bound:${event.payload}`); }).bind(null));
+
+    bus.publish(new EventA('x'));
+    expect(seen).toEqual(['arrow:x', 'function:x', 'async:x', 'method named class:x', 'bound:x']);
   });
 
   test('refuses an unusable channel, as subscribe does', () => {

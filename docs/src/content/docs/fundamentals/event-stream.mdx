@@ -100,7 +100,12 @@ Four operations:
 - **`subscribeFunction(channel, callback)`** — subscribe a plain
   callback, with no actor to spawn, name or stop.  Returns the
   `() => void` handle that ends the subscription; the rules are under
-  [Callback subscriptions](#callback-subscriptions).
+  [Callback subscriptions](#callback-subscriptions).  The channel comes
+  first here, where `subscribe` puts the ref first, so it **throws** a
+  `TypeError` naming that order when the callback slot holds a class,
+  an `EventKey` or a string — the call written the other way round —
+  as it does for an unusable channel or any other callback that is
+  not a function.
 - **`publish(event)`** — fire-and-forget.  The bus walks its
   subscription list, matches each subscription's channel, and `tell`s
   every matching actor; then it calls every matching callback.
@@ -257,7 +262,10 @@ callback's parameter.  The rest follows from having no mailbox:
   `warn` and skips that callback for that event; it stays subscribed,
   and everyone else still receives the event.  A returned promise is
   not awaited, and its rejection is logged the same way instead of
-  surfacing as an unhandled rejection.
+  surfacing as an unhandled rejection.  That holds whatever was
+  thrown, as it does for every failure the bus contains: a value the
+  logger cannot render — an error whose `message` getter throws, say —
+  is left out of the warning, which is written without it.
 - **No actor stop ends a callback subscription; the system's end
   does.**  The callback sees the whole shutdown, every `ActorStopped`
   included, and is not called again once the system has terminated.
@@ -270,12 +278,21 @@ callback's parameter.  The rest follows from having no mailbox:
   callback that one reaches, before its own call returns.  Publishing
   on another channel is fine.  Publishing on its own channel, directly
   or through another callback, makes it call itself, level after
-  level.  Past 16 nested levels the bus calls no callback: it logs one
-  warning instead, and still delivers that event to every actor
-  subscriber.  The bound contains the loop; it does not make it
-  correct.  An actor subscriber cannot loop like this, because its
-  mailbox takes the delivery off the stack — when a reaction has to
-  publish on its own channel, that is the subscriber to use.
+  level.  Past 16 nested levels the bus cuts the cascade — everything
+  one callback's call on the published event set off: from then on,
+  nothing the cascade publishes reaches a callback, and the bus logs
+  one warning for it.  The actor subscribers still receive every
+  event, and the deliveries already under way finish, so every event
+  published below the bound reaches every callback that wants it.
+  Each callback the published event reaches has a cascade of its own,
+  so a loop in one cascade never cuts another, and with several
+  callbacks publishing on their own channel the bus warns once per
+  cascade — a sixteen-level loop through two callbacks costs 62 calls
+  and two warnings, not the 131 070 calls of every path through it.
+  The bound contains the loop; it does not make it correct.  An actor
+  subscriber cannot loop like this, because its mailbox takes the
+  delivery off the stack — when a reaction has to publish on its own
+  channel, that is the subscriber to use.
 </Aside>
 
 ## Watching it live

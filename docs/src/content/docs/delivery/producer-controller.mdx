@@ -129,6 +129,9 @@ delivered, queued sends keep moving into the window, and a stopping producer
 still settles every other send.  The callback may be `async` as well: the
 promise it returns is not awaited, and its rejection is logged the same way
 instead of surfacing as an unhandled rejection, which would end the process.
+That holds whatever the value: when the logger cannot render it — an error
+whose `message` getter throws, say, or a revoked proxy — the line is written
+without it.
 
 ## Retransmission
 

@@ -124,6 +124,18 @@ export class EventStream {
   private callbackDepth = 0;
 
   /**
+   * Whether the cascade running now has reached the depth bound.
+   *
+   * A cascade is one call the outermost `publish` makes to a callback, and
+   * everything that call publishes, directly or through other callbacks.  Once
+   * the bound is reached in it, no publish the cascade makes reaches a callback
+   * again — see {@link callCallbacks} for why depth alone bounded nothing.  Set
+   * at the bound, and cleared as the outermost delivery moves to its next
+   * callback, which starts a cascade of its own.
+   */
+  private cascadeCut = false;
+
+  /**
    * Whether the system this bus belongs to has ended every callback
    * subscription — set once, by {@link _endCallbackSubscriptions}, and what
    * makes {@link subscribeFunction} refuse from then on.
@@ -326,7 +338,7 @@ export class EventStream {
     try {
       return subscription.subscriber.equals(candidate);
     } catch (error) {
-      this.log?.warn(
+      this.warnContained(
         `EventStream.${operation}: comparing against a subscriber of ${subscription.label} threw`
         + ' — treating the two as different subscribers',
         error,
@@ -404,11 +416,18 @@ export class EventStream {
    * another callback: the nested `publish` calls it again before its first call
    * has returned, and so on down the stack.  Publishing on another channel is
    * fine.  Past {@link MAX_EVENT_STREAM_CALLBACK_DEPTH} nested levels the bus
-   * calls no callback for the nested event and warns once.
+   * calls no callback for the nested event, nor for anything else published in
+   * the same cascade — everything one call of the outermost `publish` set off —
+   * and warns once for it.  The deliveries already under way finish, and the
+   * cascades of the outermost event's other callbacks are their own, so what a
+   * loop costs is the bound plus, at each of its levels, one call for every
+   * other callback its events reach — not one more path for each of them.
    *
    * @throws TypeError when `channel` is unusable, as {@link subscribe} does,
-   * or when `callback` is not a function.  Refused on the line that wrote it,
-   * rather than stored to fail at every delivery after it.
+   * or when `callback` is not a function — or is a class, an {@link EventKey}
+   * or a string, which is what that slot holds when the two arguments were
+   * swapped, and which the message answers with the order.  Refused on the
+   * line that wrote it, rather than stored to fail at every delivery after it.
    * @throws Error once the system this bus belongs to has terminated.
    */
   subscribeFunction<TEvent>(
@@ -530,7 +549,9 @@ export class EventStream {
    * registered *after* it silently stopped receiving anything, in an order no
    * caller controls.  That reached far: `publish` runs on every actor start,
    * every actor stop and every dead-lettered `tell`, so it turned `ref.tell`,
-   * an API that does not throw by contract, into one that did.
+   * an API that does not throw by contract, into one that did.  The warning
+   * each guard ends in is guarded as well ({@link warnContained}): it renders
+   * the thrown value, which can throw too.
    *
    * **Callbacks come last (#1433)**, under a guard of their own — see
    * {@link callCallbacks} for their order, their recipient rule and the depth
@@ -557,7 +578,7 @@ export class EventStream {
           if (!this.accepts(subscription, event)) continue;
           subscription.subscriber.tell(event as never);
         } catch (err) {
-          this.log?.warn(
+          this.warnContained(
             `EventStream: delivering to ${subscription.label} failed`
             + ' — skipping this subscriber',
             err,
@@ -588,22 +609,47 @@ export class EventStream {
    *
    * **The depth bound** counts callback deliveries on the stack, and is checked
    * against the first callback that actually wants the event: a nested publish
-   * no callback wants costs nothing and says nothing.  The `finally` is not
-   * ceremony — the warning a throwing callback produces runs outside any guard,
-   * so a logger that throws leaves through here, and a depth left raised would
-   * have every later publish find the bound already reached.
+   * no callback wants costs nothing and says nothing.  Nothing in the loop is
+   * meant to throw — every call into a subscriber's code is guarded, and so is
+   * every warning, logger included — and the `finally` unwinds the depth all
+   * the same: a depth left raised would have every later publish find the
+   * bound already reached, which is too costly a way to learn a guard missed.
+   *
+   * **Reaching it cuts the cascade, not only the event** (#1433).  Depth alone
+   * bounds one path through a loop, and a loop has as many paths as callbacks
+   * and publishes per call allow: every level the stack unwinds through calls
+   * the callbacks after the looping one, and each of them descends to the bound
+   * again.  Two callbacks publishing on their own channel made 131 070 calls and
+   * 65 536 warnings of a single publish, three made 64 570 080 calls — seconds
+   * on the publisher's stack, which for the framework's own events is an actor
+   * start or stop.  So once the bound is reached, nothing the cascade publishes
+   * from then on reaches a callback, while every delivery already under way
+   * finishes: an event published below the bound still reaches every callback
+   * that wants it, which is the recipient rule above, and the work of a loop is
+   * at most the bound once more for every other callback on each level of the
+   * one path, one warning for the cascade.  The outermost publish starts a
+   * cascade per callback, so a loop in one callback's cascade costs the
+   * others nothing — not even the event the publisher published.
    */
   private callCallbacks(event: object): void {
+    const outermost = this.callbackDepth === 0;
+    if (!outermost && this.cascadeCut) return;
     const tooDeep = this.callbackDepth >= MAX_EVENT_STREAM_CALLBACK_DEPTH;
     const recipients = [...this.callbacks];
     this.callbackDepth++;
     try {
       for (const subscription of recipients) {
+        // Each call the outermost publish makes starts a cascade of its own —
+        // cleared before the channel is even matched, because a match can run
+        // code that publishes too.
+        if (outermost) this.cascadeCut = false;
         if (!subscription.subscribed || !this.wants(subscription, event)) continue;
         if (tooDeep) {
-          this.log?.warn(
+          this.cascadeCut = true;
+          this.warnContained(
             `EventStream: callback deliveries are nested ${MAX_EVENT_STREAM_CALLBACK_DEPTH} deep`
-            + ` — calling no callback for this event on ${subscription.label};`
+            + ` — calling no callback for this event on ${subscription.label},`
+            + ' nor for anything else this cascade publishes;'
             + ' a callback that publishes on its own channel calls itself',
           );
           return;
@@ -624,7 +670,7 @@ export class EventStream {
     try {
       return subscription.matches(event);
     } catch (error) {
-      this.log?.warn(
+      this.warnContained(
         `EventStream: matching an event against ${subscription.label} threw`
         + ` — skipping ${subscription.callbackLabel} for it`,
         error,
@@ -639,7 +685,7 @@ export class EventStream {
       const returned = subscription.callback(event);
       if (isThenable(returned)) {
         returned.then(undefined, (error: unknown) => {
-          this.log?.warn(
+          this.warnContained(
             `EventStream: ${subscription.callbackLabel} on ${subscription.label}`
             + ' returned a promise that rejected',
             error,
@@ -647,7 +693,7 @@ export class EventStream {
         });
       }
     } catch (error) {
-      this.log?.warn(
+      this.warnContained(
         `EventStream: ${subscription.callbackLabel} on ${subscription.label} threw`
         + ' — skipping it for this event',
         error,
@@ -672,12 +718,51 @@ export class EventStream {
     } catch (err) {
       // A throwing predicate must NOT break the bus for other
       // subscribers — treat as "no match" and keep going.
-      this.log?.warn(
+      this.warnContained(
         `EventStream: predicate threw on ${subscription.label} delivery`
         + ' — treating as no-match',
         err,
       );
       return false;
+    }
+  }
+
+  /**
+   * Report a failure this bus contained, at warn, with what was thrown as the
+   * line's argument — and never throw doing it.
+   *
+   * Every guard here ends in such a line, and rendering the thrown value runs
+   * code the subscriber chose: `JsonLogger` reads `message` and `stack` off an
+   * `Error` and asks `instanceof` of anything, `ConsoleLogger` runs a custom
+   * inspect, and an error whose `message` getter throws, or a revoked proxy,
+   * defeats either.  Unguarded, the report was the way out of the guard it
+   * reports.  From the delivery, channel-match and callback guards the throw
+   * left `publish`, so every subscription after the faulty one missed the
+   * event, and on a running system the warning for a callback that threw on an
+   * actor start failed the system's own guardians; from the comparison guard
+   * it left `subscribe` and `unsubscribe`, which every actor stop calls; from
+   * the predicate guard it reached the delivery guard, which logged a failed
+   * delivery carrying the logger's own error.  The producer's confirm report
+   * had the same hole (#1230).
+   *
+   * A value the logger cannot render is left out, and the line is written
+   * without it.  A logger that cannot write even that has nothing left to
+   * report with, and `publish` — whose `ref.tell` callers rely on it not
+   * throwing — is not the place to find out.
+   */
+  private warnContained(message: string, ...thrown: unknown[]): void {
+    const log = this.log;
+    if (log === undefined) return;
+    try {
+      log.warn(message, ...thrown);
+      return;
+    } catch {
+      if (thrown.length === 0) return;
+    }
+    try {
+      log.warn(`${message} — what was thrown could not be rendered by the logger, so it is left out`);
+    } catch {
+      /* a logger that cannot write a plain line leaves nothing to report with */
     }
   }
 }
@@ -836,15 +921,32 @@ function subscriberDisqualification(subscriber: unknown): string | null {
 /* ------------------------------------------------------------------ */
 
 /**
- * Refuse a callback that is not a function, on the line that passed it.
+ * Refuse a callback that is not a function, or is a class, on the line that
+ * passed it.
  *
  * Stored, it would fail at every delivery instead — contained by the guard in
  * `publish` and reported at warn, but once per event and far from the call
  * that was wrong.  The parameter is `unknown` for the reason
  * {@link resolveChannel}'s is.
+ *
+ * **A class is refused too, because it is the swapped call** (#1433).
+ * `subscribe` takes the subscriber first and this method the channel first,
+ * so the likeliest slip is `subscribeFunction(callback, Channel)` — and with a
+ * class for the channel, that call passed every check there was: a class is a
+ * function, and the callback in the channel slot is a function, which is a
+ * usable `instanceof` target.  It was stored and never called.  An arrow
+ * callback in the channel slot made every publish of every event warn, for the
+ * life of the system; a function expression matched nothing and said nothing,
+ * while keeping {@link EventStream.hasSubscribers} true.
+ *
+ * The channel slot cannot be the one that is checked: a plain function there
+ * is not detectably wrong — `Error` and other built-in constructors are
+ * functions without `class` syntax, and a bound or proxied class is one too —
+ * so it would refuse channels that work.  The callback slot can: a class is
+ * never a callback, because calling it without `new` throws every time.
  */
 function assertCallback(callback: unknown): void {
-  if (typeof callback === 'function') return;
+  if (typeof callback === 'function' && !isClass(callback)) return;
   throw new TypeError(
     `EventStream.subscribeFunction: callback must be a function — got ${callbackDisqualification(callback)}`,
   );
@@ -853,11 +955,46 @@ function assertCallback(callback: unknown): void {
 /** What the value in the callback slot is, phrased for the error. */
 function callbackDisqualification(callback: unknown): string {
   if (callback === null || callback === undefined) return String(callback);
+  // Each form of channel in this slot is the call written in the other order,
+  // so each one is answered with the order.
+  if (typeof callback === 'function') return `${classDescription(callback)}, ${swappedOrder('which is a channel')}`;
+  if (callback instanceof EventKey) return `an EventKey, ${swappedOrder('which is a channel')}`;
+  if (typeof callback === 'string') return `a string, ${swappedOrder('which names a channel when it is a kind')}`;
   if (typeof callback !== 'object') return `a ${typeof callback}`;
   // The likeliest object here is a ref, from a call written in the other form.
   return typeof (callback as { tell?: unknown }).tell === 'function'
     ? 'an ActorRef (subscribe(ref, channel) is the form that takes one)'
     : 'an object';
+}
+
+/** The second half of a refusal for a channel found in the callback slot. */
+function swappedOrder(whatItIs: string): string {
+  return `${whatItIs} — the order is subscribeFunction(channel, callback)`;
+}
+
+/** A class, by name when it has one — the name is how its author finds the call. */
+function classDescription(value: object): string {
+  const name = (value as { name?: unknown }).name;
+  return typeof name === 'string' && name.length > 0 ? `the class ${name}` : 'an anonymous class';
+}
+
+/**
+ * Was `value` written with `class` syntax?
+ *
+ * Read off the source text, the one place the difference shows before a call:
+ * a class and a function are both `typeof 'function'` and both carry a
+ * `prototype`, and the class says what it is only by throwing when it is
+ * called without `new`.  The character after the keyword is part of the test,
+ * so a method that happens to be named `class` — whose source begins
+ * `class(` — is still a method.  A class that does not show its source — bound,
+ * proxied, or built in — reads as a function, and is left to the delivery guard.
+ */
+function isClass(value: object): boolean {
+  try {
+    return /^class[\s{]/.test(Function.prototype.toString.call(value));
+  } catch {
+    return false;
+  }
 }
 
 /**

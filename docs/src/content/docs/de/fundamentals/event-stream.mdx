@@ -103,7 +103,13 @@ Vier Operationen:
 - **`subscribeFunction(channel, callback)`** — einen einfachen
   Callback abonnieren, ohne einen Actor zu spawnen, zu benennen oder zu
   stoppen.  Gibt das `() => void`-Handle zurück, das das Abo beendet;
-  die Regeln stehen unter [Callback-Abos](#callback-abos).
+  die Regeln stehen unter [Callback-Abos](#callback-abos).  Hier kommt
+  der Channel zuerst, wo `subscribe` die Ref zuerst nimmt, deshalb
+  **wirft** es einen `TypeError`, der diese Reihenfolge nennt, wenn an
+  der Stelle des Callbacks eine Klasse, ein `EventKey` oder ein String
+  steht — der Aufruf andersherum geschrieben —, wie es das auch für
+  einen unbrauchbaren Channel und jeden anderen Callback tut, der keine
+  Funktion ist.
 - **`publish(event)`** — Fire-and-Forget.  Der Bus läuft seine
   Abo-Liste durch, matcht den Channel jedes Abos und `tell`t jeden
   passenden Actor; danach ruft er jeden passenden Callback auf.
@@ -270,7 +276,10 @@ keine Mailbox gibt:
   dieses Event; er bleibt abonniert, und alle anderen erhalten das
   Event trotzdem.  Ein zurückgegebenes Promise wird nicht abgewartet,
   und seine Rejection wird genauso geloggt, statt als Unhandled
-  Rejection aufzuschlagen.
+  Rejection aufzuschlagen.  Das gilt für alles, was geworfen wird, wie
+  für jeden Fehler, den der Bus abfängt: Kann der Logger den Wert nicht
+  darstellen — etwa einen Error, dessen `message`-Getter wirft —, wird
+  die Warnung ohne ihn geschrieben.
 - **Kein Actor-Stopp beendet ein Callback-Abo; das Ende des Systems
   schon.**  Der Callback sieht den ganzen Shutdown, jedes
   `ActorStopped` eingeschlossen, und wird nicht mehr aufgerufen, sobald
@@ -285,13 +294,23 @@ keine Mailbox gibt:
   zurückkehrt.  Auf einem anderen Channel zu publishen ist in Ordnung.
   Auf seinem eigenen Channel zu publishen, direkt oder über einen
   anderen Callback, lässt ihn sich selbst aufrufen, Ebene um Ebene.
-  Jenseits von 16 verschachtelten Ebenen ruft der Bus keinen Callback
-  mehr auf: er loggt stattdessen eine Warnung und stellt dieses Event
-  trotzdem jedem Actor-Subscriber zu.  Die Grenze hält die Schleife
-  auf; richtig macht sie sie nicht.  Ein Actor-Subscriber kann so
-  nicht kreisen, weil seine Mailbox die Zustellung vom Stack nimmt —
-  muss eine Reaktion auf ihrem eigenen Channel publishen, ist er der
-  richtige Subscriber.
+  Jenseits von 16 verschachtelten Ebenen schneidet der Bus die Kaskade
+  ab — alles, was der Aufruf eines Callbacks für das publizierte Event
+  angestoßen hat: Von da an erreicht nichts, was die Kaskade publisht,
+  noch einen Callback, und der Bus loggt dafür eine Warnung.  Die
+  Actor-Subscriber erhalten weiterhin jedes Event, und die schon
+  laufenden Zustellungen werden zu Ende geführt, sodass jedes unterhalb
+  der Grenze publizierte Event jeden Callback erreicht, der es will.
+  Jeder Callback, den das publizierte Event erreicht, hat seine eigene
+  Kaskade, eine Schleife in einer Kaskade schneidet also nie eine andere
+  ab, und publishen mehrere Callbacks auf ihrem eigenen Channel, warnt
+  der Bus einmal pro Kaskade — eine Schleife über sechzehn Ebenen durch
+  zwei Callbacks kostet 62 Aufrufe und zwei Warnungen, nicht die
+  131 070 Aufrufe aller Pfade durch sie.  Die Grenze hält die Schleife
+  auf; richtig macht sie sie nicht.  Ein Actor-Subscriber kann so nicht
+  kreisen, weil seine Mailbox die Zustellung vom Stack nimmt — muss eine
+  Reaktion auf ihrem eigenen Channel publishen, ist er der richtige
+  Subscriber.
 </Aside>
 
 ## Live zusehen

@@ -136,7 +136,9 @@ rücken weiter ins Fenster nach, und ein stoppender Producer schließt jeden
 anderen Send trotzdem ab.  Der Callback darf auch `async` sein: Das Promise,
 das er zurückgibt, wird nicht abgewartet, und seine Rejection wird genauso
 geloggt, statt als Unhandled Rejection aufzuschlagen, die den Prozess
-beenden würde.
+beenden würde.  Das gilt für jeden Wert: Kann der Logger ihn nicht
+darstellen — etwa einen Error, dessen `message`-Getter wirft, oder einen
+widerrufenen Proxy —, wird die Zeile ohne ihn geschrieben.
 
 ## Retransmission
 

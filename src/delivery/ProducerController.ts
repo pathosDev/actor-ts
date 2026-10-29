@@ -207,6 +207,18 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
    * with as the line's argument.  It names the seq — a queued send has none
    * yet, so it says that instead — and what the callback was told, because a
    * failure on an acknowledgment leaves a message that *was* delivered.
+   *
+   * **Writing it cannot throw**, because rendering the argument runs code the
+   * caller chose: `JsonLogger` reads `message` and `stack` off an `Error` and
+   * asks `instanceof` of anything, `ConsoleLogger` runs a custom inspect, and
+   * an error whose `message` getter throws, or a revoked proxy, defeats either.
+   * Unguarded, that throw left {@link settle}'s containment by the report it
+   * ends in — on the acknowledgment the producer faulted and restarted, in
+   * {@link postStop} the settlement loop was abandoned, and an `async`
+   * callback's rejection became an unhandled one, which ends a Bun or Node
+   * process: #1230 itself, on both of its paths.  A value the logger cannot
+   * render is left out, and the line is written without it; a logger that
+   * cannot write even that has nothing left to report with.
    */
   private reportConfirmFailure(
     failure: string,
@@ -216,11 +228,17 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
   ): void {
     const send = sequenceNumber === null ? 'a queued send (not yet numbered)' : `seq=${sequenceNumber}`;
     const told = outcome === null ? 'it was delivered' : `'${outcome.message}'`;
-    this.log.error(
-      `producer ${this.id}: the confirm callback for ${send}, told ${told}, ${failure}; `
-      + 'contained, so no other send is affected',
-      error,
-    );
+    const line = `producer ${this.id}: the confirm callback for ${send}, told ${told}, ${failure}; `
+      + 'contained, so no other send is affected';
+    try {
+      this.log.error(line, error);
+    } catch {
+      try {
+        this.log.error(`${line} — what it failed with could not be rendered by the logger, so it is left out`);
+      } catch {
+        /* a logger that cannot write a plain line leaves nothing to report with */
+      }
+    }
   }
 
   override onReceive(message: ProducerSend<T> | Acknowledgment): void {
