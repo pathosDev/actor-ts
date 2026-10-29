@@ -18,10 +18,13 @@ import { awaitCondition } from '../util/AwaitCondition.js';
  * and rendering that value runs code the subscriber chose.  The stock loggers
  * throw on some of it: `JsonLogger` reads `message` and `stack` off an `Error`
  * and asks `instanceof` of anything.  The warnings were unguarded, so such a
- * value left the guard through its own report: `publish` threw, every
- * subscription after the faulty one missed the event, and on a running system
- * the warning for a callback that threw on an actor start failed the system's
- * own guardians.
+ * value left the guard through its own report.  From the delivery,
+ * channel-match and callback guards `publish` threw and every subscription
+ * after the faulty one missed the event — on a running system the warning for
+ * a callback that threw on an actor start failed the system's own guardians;
+ * from the comparison guard `subscribe` and `unsubscribe` threw; from the
+ * predicate guard the throw reached the delivery guard, which logged a failed
+ * delivery instead of the predicate's failure.
  */
 
 class EventA { constructor(public readonly payload: string) {} }

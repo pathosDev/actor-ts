@@ -736,10 +736,14 @@ export class EventStream {
    * `Error` and asks `instanceof` of anything, `ConsoleLogger` runs a custom
    * inspect, and an error whose `message` getter throws, or a revoked proxy,
    * defeats either.  Unguarded, the report was the way out of the guard it
-   * reports: the throw left `publish`, every subscription after the faulty one
-   * missed the event, and on a running system the warning for a callback that
-   * threw on an actor start failed the system's own guardians — the hole the
-   * producer's confirm report had as well (#1230).
+   * reports.  From the delivery, channel-match and callback guards the throw
+   * left `publish`, so every subscription after the faulty one missed the
+   * event, and on a running system the warning for a callback that threw on an
+   * actor start failed the system's own guardians; from the comparison guard
+   * it left `subscribe` and `unsubscribe`, which every actor stop calls; from
+   * the predicate guard it reached the delivery guard, which logged a failed
+   * delivery carrying the logger's own error.  The producer's confirm report
+   * had the same hole (#1230).
    *
    * A value the logger cannot render is left out, and the line is written
    * without it.  A logger that cannot write even that has nothing left to
