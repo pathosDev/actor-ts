@@ -6,6 +6,7 @@ import {
   ActorSystemTerminateReason,
   ClusterDowningReason,
   ClusterJoinUnsuccessfulReason,
+  ClusterLeavingReason,
   CoordinatedShutdown,
   CoordinatedShutdownId,
   Phases,
@@ -1219,6 +1220,79 @@ async function settled(promise: Promise<unknown>): Promise<string> {
     return `rejected: ${(error as Error).message}`;
   }
 }
+
+/** Replace `process.exit` until `body` is done, and hand back every status it was called with. */
+async function exitStatusesDuring(body: () => Promise<unknown>): Promise<number[]> {
+  const statuses: number[] = [];
+  const realExit = process.exit;
+  process.exit = ((code?: number): never => {
+    statuses.push(code ?? Number.NaN);
+    return undefined as never;
+  }) as typeof process.exit;
+  try {
+    await body();
+  } finally {
+    process.exit = realExit;
+  }
+  return statuses;
+}
+
+// A failure never exits 0 (D-M5 1).  A node that could not join — its join
+// gave up, a `Cluster.bootstrap` readiness wait failed, or the bootstrap
+// refused to start it — runs with `ClusterJoinUnsuccessfulReason`, and the
+// reason is what makes the run one for a failure: the join give-up starts it
+// from inside the cluster, where nothing else could say so.
+describe('with exit-process on, a run for a node that could not join never exits 0', () => {
+  test('a completed run exits 1 where exit-code is 0', async () => {
+    const { system } = withRecordedLog('join-unsuccessful-exits-1', { 'exit-process': true });
+
+    const statuses = await exitStatusesDuring(() =>
+      system.extension(CoordinatedShutdownId).run(ClusterJoinUnsuccessfulReason.instance));
+
+    expect(statuses).toEqual([1]);
+    expect(system.isTerminated).toBe(true);
+  });
+
+  test('an exit-code that already says "failed" is kept', async () => {
+    const { system } = withRecordedLog('join-unsuccessful-keeps-its-code', { 'exit-process': true, 'exit-code': 17 });
+
+    const statuses = await exitStatusesDuring(() =>
+      system.extension(CoordinatedShutdownId).run(ClusterJoinUnsuccessfulReason.instance));
+
+    expect(statuses).toEqual([17]);
+  });
+
+  test.each([
+    ['ActorSystemTerminateReason', ActorSystemTerminateReason.instance],
+    ['ClusterLeavingReason', ClusterLeavingReason.instance],
+    ['ProcessTerminateReason', new ProcessTerminateReason('SIGTERM')],
+    ['UnknownReason', UnknownReason.instance],
+  ] as const)('a run for a clean stop (%s) still exits with exit-code', async (name, reason) => {
+    // The other half of the rule: the reason decides, not exit-process alone.
+    const { system } = withRecordedLog(`clean-stop-exits-0-${name}`, { 'exit-process': true });
+
+    const statuses = await exitStatusesDuring(() => system.extension(CoordinatedShutdownId).run(reason));
+
+    expect(statuses).toEqual([0]);
+  });
+
+  test('the reason marks a run already in flight as failed, as a failed startup does', async () => {
+    const { system } = withRecordedLog('join-unsuccessful-joins-a-run', { 'exit-process': true });
+    const shutdown = system.extension(CoordinatedShutdownId);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    shutdown.addTask(Phases.ServiceUnbind, 'held-open', () => held);
+
+    const statuses = await exitStatusesDuring(async () => {
+      const first = shutdown.run(UnknownReason.instance);
+      expect(shutdown.run(ClusterJoinUnsuccessfulReason.instance)).toBe(first);
+      release();
+      await first;
+    });
+
+    expect(statuses).toEqual([1]);
+  });
+});
 
 // The run stays in flight until its exit has happened — or will not happen.
 // The exit flushes the dead-letter queue and the log sinks first, and a

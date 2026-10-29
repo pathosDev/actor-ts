@@ -44,6 +44,10 @@ export class ClusterDowningReason extends Reason {
  * that a member is leaving: a task that hands work over before a node leaves
  * has nothing to hand over from a node that never joined, and one that pages
  * someone about a failed start should not page about a rolling restart.
+ *
+ * A run with it is a run for a failure: with `exit-process` on it never ends
+ * the process with status `0`, whichever way the run ends (see
+ * {@link reportsFailure}).
  */
 export class ClusterJoinUnsuccessfulReason extends Reason {
   readonly name = 'ClusterJoinUnsuccessfulReason';
@@ -54,6 +58,25 @@ export class ProcessTerminateReason extends Reason {
   constructor(public readonly signal: ProcessSignal) { super(); }
   readonly name = 'ProcessTerminateReason';
   override toString(): string { return `ProcessTerminateReason(${this.signal})`; }
+}
+
+/**
+ * Whether a run with `reason` is a run for a failure — one `exit-process`
+ * never ends with status `0`, the status that tells a supervisor the process
+ * stopped cleanly (see `CoordinatedShutdown.exitStatus`).
+ *
+ * Asked of the reason because for a node that could not join nothing else
+ * can say so: the join give-up starts its run from inside the cluster, with no
+ * caller there to mark it the way the system marks a failed startup's run
+ * ({@link CoordinatedShutdown._runForFailure}).  One answer here then covers
+ * every route to that reason — the give-up, a `Cluster.bootstrap` readiness
+ * wait that failed, a bootstrap refused after its system was built (#1500,
+ * #1475).  `StartupFailedReason` is the other failure, and the one this
+ * cannot name: it is declared beside the startup graph, which imports this
+ * module, so its run is marked by the call instead.
+ */
+function reportsFailure(reason: Reason): boolean {
+  return reason instanceof ClusterJoinUnsuccessfulReason;
 }
 
 /** A single task.  Returning a Promise makes the task async. */
@@ -356,8 +379,16 @@ export class CoordinatedShutdown implements Extension {
   /**
    * Run the pipeline.  Safe to call from multiple sites — subsequent calls
    * return the same in-flight promise.
+   *
+   * A reason that reports a failure — `ClusterJoinUnsuccessfulReason`, a node
+   * that could not join — makes the run one for a failure, which
+   * `exit-process` never exits `0` after; passed to a run already under way,
+   * it marks that run so too, as {@link _runForFailure} does.
    */
   run(reason: Reason = UnknownReason.instance): Promise<void> {
+    // Ahead of the in-flight check: a failure reported while a run is under
+    // way — a give-up landing beside a signal's run — still is one.
+    if (reportsFailure(reason)) this._failed = true;
     if (this._runPromise) return this._runPromise;
     // Stored before `_run` is called rather than taken from what it returns.
     // `_run` is async, but the tasks of the first phase in the order start
@@ -385,7 +416,10 @@ export class CoordinatedShutdown implements Extension {
    * A call rather than a check of the reason: the reason a failed startup
    * passes is declared beside the startup graph, which imports this module, so
    * recognising it here would be an import cycle — and the system, which
-   * learns of the failure first, is the one place that knows it was one.
+   * learns of the failure first, is the one place that knows it was one.  The
+   * reason of a node that could not join is checked instead
+   * ({@link reportsFailure}): its run starts inside the cluster, where no
+   * caller could make this call.
    */
   _runForFailure(reason: Reason): Promise<void> {
     this._failed = true;
@@ -698,9 +732,10 @@ export class CoordinatedShutdown implements Extension {
    * and that is `0`.
    *
    * `0` tells a supervisor the process stopped cleanly, and neither a run for a
-   * failed startup nor a run that halted is a clean stop, so there the
-   * configured code is kept only when it already says "failed" and becomes `1`
-   * — the conventional general-failure status — otherwise.  The default
+   * failed startup, nor one for a node that could not join, nor a run that
+   * halted is a clean stop, so there the configured code is kept only when it
+   * already says "failed" and becomes `1` — the conventional general-failure
+   * status — otherwise.  The default
    * `exit-process = false` never gets here: `runUntilTerminated()` rejects with
    * the startup's error, or with the halt's once the system is down, and a
    * `main` that awaits it exits non-zero by itself.
