@@ -138,4 +138,51 @@ describe('Cluster — WeaklyUp', () => {
       if (systemB) await systemB.terminate();
     }
   });
+
+  test('a node its own timer moves on before the leader answers still reaches up (#935)', async () => {
+    // The seed is up already, so its first answer is a promotion — from the
+    // `joining@E` record the join carried, to `up@E+1`.  A 1 ms timer has
+    // moved the node to `weakly-up@E+1` by then: the same version.  The merge
+    // used to drop the promotion as not newer, and the node stayed weakly-up
+    // in its own view for good — no `SelfUp`, not ready — while the seed
+    // counted it up.
+    const systemOptionsB = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+    const systemB = ActorSystem.create('wup-4', systemOptionsB);
+    const clusterOptionsB = ClusterOptions.create()
+      .withHost('h')
+      .withPort(55302)
+      .withTransport(new InMemoryTransport(new NodeAddress('wup-4', 'h', 55302)))
+      .withGossipIntervalMs(60);
+    const nodeB = await Cluster.join(systemB, clusterOptionsB);
+    let systemA: ActorSystem | null = null;
+    let nodeA: Cluster | null = null;
+    try {
+      await awaitCondition(() => nodeB.selfMember()?.status === 'up', {
+        timeoutMs: 4_000, intervalMs: 5, label: 'the seed formed its cluster',
+      });
+
+      const systemOptionsA = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+      systemA = ActorSystem.create('wup-4', systemOptionsA);
+      const clusterOptionsA = ClusterOptions.create()
+        .withHost('h')
+        .withPort(55301)
+        .withSeeds(['wup-4@h:55302'])
+        .withTransport(new InMemoryTransport(new NodeAddress('wup-4', 'h', 55301)))
+        .withWeaklyUpAfterMs(1)
+        .withSeedRetryIntervalMs(50)
+        .withGossipIntervalMs(60);
+      const joined = nodeA = await Cluster.join(systemA, clusterOptionsA);
+
+      await awaitCondition(() => joined.selfMember()?.status === 'up', {
+        timeoutMs: 4_000, intervalMs: 10, label: 'the node reached up in its own view',
+      });
+      expect(joined.isReady()).toBe(true);
+      expect(nodeB.getMembers().find((member) => member.address.equals(joined.selfAddress))?.status).toBe('up');
+    } finally {
+      if (nodeA) await nodeA.leave();
+      if (systemA) await systemA.terminate();
+      await nodeB.leave();
+      await systemB.terminate();
+    }
+  });
 });

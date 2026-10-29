@@ -5,6 +5,7 @@ import { Cluster } from '../../../../src/cluster/Cluster.js';
 import { bootstrapCluster } from '../../../../src/cluster/ClusterBootstrap.js';
 import type { BootstrappedCluster } from '../../../../src/cluster/ClusterBootstrap.js';
 import { ClusterBootstrapOptions, DEFAULT_AWAIT_READY_MS } from '../../../../src/cluster/ClusterBootstrapOptions.js';
+import { clusterOf } from '../../../../src/cluster/ClusterExtension.js';
 import { ClusterOptions, DEFAULT_SEED_RETRY_INTERVAL_MS } from '../../../../src/cluster/ClusterOptions.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
@@ -59,6 +60,16 @@ class CountingTransport extends InMemoryTransport {
 /** The join deadline's timer — armed, re-armed, or `null` once it has stood down (#1500). */
 function giveUpTimerOf(cluster: Cluster): Cancellable | null {
   return (cluster as unknown as { readonly joinGiveUpTimer: Cancellable | null }).joinGiveUpTimer;
+}
+
+/** A deferred self-election's timer — set while the grace runs, `null` once it has fired. */
+function selfElectionTimerOf(cluster: Cluster): Cancellable | null {
+  return (cluster as unknown as { readonly selfElectionTimer: Cancellable | null }).selfElectionTimer;
+}
+
+/** The verdict the join give-up evaluates at its deadline (#1500): nothing can promote this node. */
+function nothingCanPromote(cluster: Cluster): boolean {
+  return (cluster as unknown as { nothingCanPromoteThisNode(): boolean }).nothingCanPromoteThisNode();
 }
 
 async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
@@ -391,18 +402,29 @@ describe('bootstrapCluster — stableObservation', () => {
   }, 20_000);
 
   test('a join give-up longer than the election budget leaves the cold start alone (#1500)', async () => {
+    // Concurrent, as a cold start is — which is the case the refusal above
+    // exists for.  Every node but the elected one joins with 'never' and waits
+    // through the founder's grace with the give-up's verdict holding: nothing
+    // is up, and it holds no election of its own.  Bootstrapped one after
+    // another, each awaited bootstrap returned only once its node was ready,
+    // so the founder formed the cluster alone and the other two joined one
+    // already up: no non-winner ever waited for it.  A seed round well inside
+    // the grace, so a give-up that acted on the verdict before its deadline
+    // would have time to fire here.
     const name = 'stable-give-up-long';
     const ports = [56411, 56412, 56413];
+    const [founderPort, ...nonWinnerPorts] = ports;
     const everyone = ports.map((port) => `${name}@h:${port}`);
     const graceMs = 250;
     // One millisecond over the budget the refusal above holds the line at.
     const giveUpMs = graceMs + DEFAULT_AWAIT_READY_MS + 1;
     const tuning = { pollIntervalMs: 5, stableMarginMs: 0, maxWaitMs: 2_000, selfElectionGraceMs: graceMs };
-
-    const started: BootstrappedCluster[] = [];
-    for (const port of ports) {
-      const giveUp = Config.parseString(`actor-ts.cluster.shutdown-after-unsuccessful-join = ${giveUpMs}ms`);
-      const bootstrapOptions = ClusterBootstrapOptions.create(name)
+    const bootstrapOptionsFor = (port: number): ReturnType<typeof ClusterBootstrapOptions.create> => {
+      const giveUp = Config.parseString(`
+        actor-ts.cluster.shutdown-after-unsuccessful-join = ${giveUpMs}ms
+        actor-ts.cluster.seed-retry-interval = 50ms
+      `);
+      return ClusterBootstrapOptions.create(name)
         .withHost('h')
         .withPort(port)
         .withSeeds([...everyone])
@@ -414,30 +436,50 @@ describe('bootstrapCluster — stableObservation', () => {
         .withLogger(new NoopLogger())
         .withLogLevel(LogLevel.Off)
         .withGossipIntervalMs(50);
-      const node = await bootstrapCluster(bootstrapOptions);
-      started.push(node);
+    };
+
+    await observingSystems(async (created) => {
+      const clusterOn = (port: number): Cluster | undefined => created
+        .map((system) => clusterOf(system).getOrElse(undefined))
+        .find((cluster) => cluster?.selfAddress.port === port);
+      const bootstraps = ports.map((port) => bootstrapCluster(bootstrapOptionsFor(port)));
+
+      // Mid-grace: the founder's election still pending, and both non-winners
+      // joining with their deadline armed and nothing able to promote them.
+      await awaitCondition(() => {
+        const founder = clusterOn(founderPort);
+        const nonWinners = nonWinnerPorts.map(clusterOn);
+        return founder !== undefined && selfElectionTimerOf(founder) !== null
+          && nonWinners.every((cluster) => cluster !== undefined
+            && cluster.selfMember()?.status === 'joining'
+            && giveUpTimerOf(cluster) !== null
+            && nothingCanPromote(cluster));
+      }, { timeoutMs: 3_000, intervalMs: 2, label: 'both non-winners waiting out the founder\'s grace, the give-up verdict holding' });
+
+      const started = await Promise.all(bootstraps);
+      const byPort = (port: number): BootstrappedCluster =>
+        started.find(({ cluster }) => cluster.selfAddress.port === port)!;
+      await awaitCondition(
+        () => started.every(({ cluster }) => cluster.upMembers().length === 3),
+        { timeoutMs: 4_000, intervalMs: 20, label: 'all three bootstrapped nodes joined one cluster' },
+      );
+      expect(ports.map((port) => byPort(port).cluster.selfElected)).toEqual([true, false, false]);
       // Accepted, and armed by the join — or every check below would hold of
       // a node that never had a deadline at all.
-      expect(giveUpTimerOf(node.cluster)).not.toBeNull();
-    }
+      expect(started.every(({ cluster }) => giveUpTimerOf(cluster) !== null)).toBe(true);
 
-    await awaitCondition(
-      () => started.every(({ cluster }) => cluster.upMembers().length === 3),
-      { timeoutMs: 6_000, intervalMs: 20, label: 'all three bootstrapped nodes joined one cluster' },
-    );
-    expect(started.map(({ cluster }) => cluster.selfElected)).toEqual([true, false, false]);
+      // Past every node's deadline: each found itself up and stood down, and no
+      // node ran the pipeline.
+      await awaitCondition(
+        () => started.every(({ cluster }) => giveUpTimerOf(cluster) === null),
+        { timeoutMs: 12_000, intervalMs: 50, label: 'every node\'s join deadline to pass' },
+      );
+      expect(started.map(({ system }) => system.extension(CoordinatedShutdownId).isRunning))
+        .toEqual([false, false, false]);
+      expect(started.every(({ cluster }) => cluster.isReady())).toBe(true);
 
-    // Past every node's deadline: each found itself up and stood down, and no
-    // node ran the pipeline.
-    await awaitCondition(
-      () => started.every(({ cluster }) => giveUpTimerOf(cluster) === null),
-      { timeoutMs: 12_000, intervalMs: 50, label: 'every node\'s join deadline to pass' },
-    );
-    expect(started.map(({ system }) => system.extension(CoordinatedShutdownId).isRunning))
-      .toEqual([false, false, false]);
-    expect(started.every(({ cluster }) => cluster.isReady())).toBe(true);
-
-    for (const { shutdown } of started) await shutdown();
+      for (const { shutdown } of started) await shutdown();
+    });
   }, 30_000);
 
   test('refuses to elect on a wildcard advertised host', async () => {

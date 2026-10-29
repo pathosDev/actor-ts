@@ -165,13 +165,14 @@ export class Member {
   }
 
   /**
-   * The same member stating an application version — same `version`, the
-   * overlay-lane rule {@link withStorageIdentities} spells out, and the third
-   * reader of it (#843).  The receive side calls it under the rule
-   * `adoptConfigurationFacts` keeps: anyone may fill an empty slot, only the
-   * member itself may restate a held one.
+   * The same member stating an application version, or none — same
+   * `version`, the overlay-lane rule {@link withStorageIdentities} spells out,
+   * and the third reader of it (#843).  The receive side calls it under the
+   * rule `Cluster.adoptAppVersion` keeps: the member's own frame says what the
+   * label is, `undefined` included, and a relay may only fill an empty slot
+   * for the run that slot holds — the label is one incarnation's statement.
    */
-  withAppVersion(appVersion: string): Member {
+  withAppVersion(appVersion: string | undefined): Member {
     return new Member(
       this.address, this.status, this.version, this.roles, this.removedAt,
       this.storageIdentities, this.configurationFacts, appVersion,

@@ -238,12 +238,23 @@ import { Aside } from '@astrojs/starlight/components';
   du Mitglieder schon bei routinemäßigen
   Gossip-Round-Trip-Verzögerungen zu `weakly-up` befördern, bevor
   die Antwort des Leaders ankommt. Zurückgestuft werden sie danach
-  nicht — kein Übergang führt von `weakly-up` zurück zu `joining`,
-  die Antwort des Leaders befördert sie einfach weiter zu `up` —,
-  der Preis ist also kein Hin und Her, sondern das Signal:
-  Gewöhnliche Joins erzeugen jetzt `MemberWeaklyUp`, und diese
-  Events zu zählen, wie oben vorgeschlagen, unterscheidet keine
-  Partition mehr von einer langsamen Gossip-Runde. Halte
+  nicht — kein Übergang führt von `weakly-up` zurück zu `joining`.
+  Die Antwort des Leaders befördert sie weiter zu `up`, kann aber
+  mit dem Timer gleichziehen: Der Leader befördert den
+  `joining`-Eintrag, den er in Version `E` hält, zu `up` in
+  `E + 1`, während der eigene Timer des Nodes schon `weakly-up` in
+  `E + 1` geschrieben hat. Ein Seed, der kurz nach dem Feuern des
+  Timers startet, erzeugt genau diese Reihenfolge. Der Merge
+  verwarf früher jeden Eintrag, der nicht echt neuer war, also
+  blieb der Node in seiner eigenen Sicht für immer `weakly-up` —
+  kein `SelfUp`, `isReady()` false —, während jeder Peer ihn als
+  `up` zählte ([#935](https://github.com/pathosDev/actor-ts/issues/935)).
+  Dieser Gleichstand wird jetzt auf jedem Node zugunsten von `up`
+  aufgelöst; #935 bleibt offen für Gleichstände gleicher Version
+  zwischen anderen Zuständen. Der Preis, der bleibt, ist das
+  Signal: Gewöhnliche Joins erzeugen jetzt `MemberWeaklyUp`, und
+  diese Events zu zählen, wie oben vorgeschlagen, unterscheidet
+  keine Partition mehr von einer langsamen Gossip-Runde. Halte
   `weaklyUpAfterMs > unreachableAfterMs`.
 </Aside>
 
