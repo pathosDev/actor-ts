@@ -214,12 +214,14 @@ describe('max-header-bytes — Fastify over TLS', () => {
   });
 
   test('an HTTP/2 stream with a 4 KiB header list is refused on Bun — the runtime\'s doing, documented beside the Node gap', async () => {
-    // Pins the documented runtime behaviour, not a guarantee of actor-ts:
+    // Pins the runtime behaviour the binding report rests on: Fastify reports
+    // the cap in effect on an HTTP/2 listener only where the runtime caps an
+    // HTTP/2 stream's header list with it (`headerCapReachesHttp2Streams`).
     // node v26.10.0 lets the same stream through to the handler — neither
     // `maxHeaderSize` nor `settings.maxHeaderListSize` bounds an h2 header
-    // list there — and the configuration reference says so.  The day Bun
-    // stops refusing it, the docs' "Bun refuses the stream" goes stale and
-    // this case says so first.
+    // list there — so there the cap is reported held for HTTP/1.1 only and
+    // bind() warns (smoke case 49 holds that half).  The day Bun stops
+    // refusing it, the report's `true` goes stale and this case says so first.
     const reached = { count: 0 };
     const serverOptions = HttpServerOptions.create()
       .withTls({ cert: CERT, key: KEY })

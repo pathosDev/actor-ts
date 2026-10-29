@@ -1,9 +1,12 @@
 import { readFileSync } from 'node:fs';
+import { createServer as createHttpServer } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import { connect as http2Connect, createSecureServer, type ClientHttp2Session } from 'node:http2';
+import { connect as netConnect, type Socket } from 'node:net';
 import { connect as tlsConnect, type TLSSocket } from 'node:tls';
 import { afterEach, describe, expect, test } from 'bun:test';
-import { applyServerOptions, type NodeHttpServerLike } from '../../../src/http/backend/HttpServerBackend.js';
+import { applyServerOptions, enforceHeaderTimeout, type NodeHttpServerLike } from '../../../src/http/backend/HttpServerBackend.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 
 /**
  * The header deadline on the two transports where the socket `'connection'`
@@ -283,6 +286,18 @@ describe('the deadline follows the connection across the objects that stand for 
 
   /** A server that records listeners and emits on demand; `secure` gives it the TLS listener's mark. */
   function fakeServer(secure: boolean) {
+    const { server, emit } = recordingServer(secure);
+    applyServerOptions(server, { headerTimeoutMs: DEADLINE_MS });
+    return emit;
+  }
+
+  /** {@link fakeServer} with the guard installed directly, so the test can read what it holds. */
+  function reportingFakeServer(secure: boolean) {
+    const { server, emit } = recordingServer(secure);
+    return { emit, report: enforceHeaderTimeout(server, DEADLINE_MS) };
+  }
+
+  function recordingServer(secure: boolean) {
     const listeners = new Map<string, FakeListener[]>();
     const record = (event: string, listener: FakeListener): unknown => {
       const existing = listeners.get(event);
@@ -297,8 +312,7 @@ describe('the deadline follows the connection across the objects that stand for 
     const emit = (event: string, ...args: ReadonlyArray<unknown>): void => {
       for (const listener of listeners.get(event) ?? []) listener(...args);
     };
-    applyServerOptions(server, { headerTimeoutMs: DEADLINE_MS });
-    return emit;
+    return { server, emit };
   }
 
   test('Node\'s TLS shape: a request on the TLS socket clears the deadline armed on the TCP socket', async () => {
@@ -450,4 +464,94 @@ describe('the deadline follows the connection across the objects that stand for 
     expect(await raw.destroyedWithin(SURVIVAL_WINDOW_MS), 'the newer connection lost its deadline to the older one\'s close').toBe(false);
     expect(earlier.wrote, 'a connection that had closed was still answered').toBe('');
   });
+
+  test('a settled deadline leaves the endpoint map, whichever way it settled', async () => {
+    // The endpoint map holds each deadline strongly, and its socket with it, so
+    // an entry `settle` failed to drop would keep every accepted connection
+    // alive for the life of the server — and change no answer the guard gives,
+    // which is why only the count shows it.  One connection per way a deadline
+    // settles, on each transport shape: completing, closing and expiring on
+    // plain HTTP; completing through the TLS socket; and an HTTP/2 session
+    // whose first stream completes it.
+    const plain = reportingFakeServer(false);
+    const completed = fakeSocket(endpoint());
+    const closed = fakeSocket(endpoint());
+    const expired = fakeSocket(endpoint());
+    plain.emit('connection', completed.socket);
+    plain.emit('connection', closed.socket);
+    plain.emit('connection', expired.socket);
+    expect(plain.report().endpointEntries).toBe(3);
+    plain.emit('request', { socket: completed.socket }, {});
+    closed.close();
+    expect(await expired.destroyedWithin(SURVIVAL_WINDOW_MS), 'the stalled connection was never cut').toBe(true);
+    expect(plain.report(), 'a settled deadline stayed in the endpoint map, and its socket with it').toEqual({
+      installed: true,
+      endpointEntries: 0,
+    });
+
+    const secure = reportingFakeServer(true);
+    const overTls = endpoint();
+    const raw = fakeSocket(overTls);
+    const secured = fakeSocket(overTls);
+    const overHttp2 = endpoint();
+    const sessionRaw = fakeSocket(overHttp2);
+    const session = fakeSession(overHttp2);
+    secure.emit('connection', raw.socket);
+    secure.emit('connection', sessionRaw.socket);
+    secure.emit('secureConnection', secured.socket);
+    secure.emit('request', { socket: secured.socket }, {});
+    secure.emit('session', session.session);
+    secure.emit('stream', { session: session.session }, {}, 0);
+    expect(secure.report(), 'a deadline completed over TLS or HTTP/2 stayed in the endpoint map').toEqual({
+      installed: true,
+      endpointEntries: 0,
+    });
+  });
+});
+
+/**
+ * The same bookkeeping against the runtime's own plain HTTP/1.1 server: the
+ * events that settle a deadline have to arrive from a real socket for the map
+ * to empty, which a fake can only assume.
+ */
+/** How long the live endpoint map may take to empty: its 300 ms deadline, plus slack for a loaded runner. */
+const ENDPOINT_MAP_SETTLE_WITHIN_MS = 2_000;
+
+describe('on this runtime\'s own plain HTTP/1.1 server', () => {
+  const DEADLINE_MS = 300;
+  const LIVE_TEST_TIMEOUT_MS = 10_000;
+
+  const cleanups: Array<() => void> = [];
+  afterEach(() => {
+    while (cleanups.length) cleanups.pop()!();
+  });
+
+  function client(port: number, written: string): Socket {
+    const socket = netConnect({ host: '127.0.0.1', port }, () => { socket.write(written); });
+    socket.on('error', () => { /* a reset is how the deadline shows up here */ });
+    cleanups.push(() => { socket.destroy(); });
+    return socket;
+  }
+
+  test('the endpoint map empties as connections complete, close and expire', async () => {
+    const server = createHttpServer((_request, response) => { response.end('ok'); });
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve); });
+    cleanups.push(() => { server.closeAllConnections(); server.close(); });
+    const report = enforceHeaderTimeout(server as unknown as NodeHttpServerLike, DEADLINE_MS);
+    let accepted = 0;
+    server.on('connection', () => { accepted++; });
+    const port = (server.address() as { port: number }).port;
+
+    client(port, COMPLETE_REQUEST);
+    const closing = client(port, PARTIAL_REQUEST);
+    client(port, PARTIAL_REQUEST);
+    await awaitCondition(() => accepted === 3, { timeoutMs: ENDPOINT_MAP_SETTLE_WITHIN_MS, label: 'all three connections were accepted' });
+    closing.destroy();
+
+    await awaitCondition(() => report().endpointEntries === 0, {
+      timeoutMs: ENDPOINT_MAP_SETTLE_WITHIN_MS,
+      label: `the endpoint map emptied (holding ${report().endpointEntries})`,
+    });
+    expect(report()).toEqual({ installed: true, endpointEntries: 0 });
+  }, LIVE_TEST_TIMEOUT_MS);
 });

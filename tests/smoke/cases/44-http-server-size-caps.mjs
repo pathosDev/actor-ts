@@ -27,8 +27,10 @@
  * `node:http`, which all three runtimes provide, and every request is
  * destroyed on every path, so no outcome leaves a handle open.
  *
- * Skips when `hono` cannot be loaded on this runtime, like the other Hono
- * cases — but once a server binds, every check below MUST hold.
+ * Skips only when a peer the Hono backend needs on this runtime cannot be
+ * loaded — `hono`, and on Node `@hono/node-server` — and names it.  With the
+ * peers in place a bind that fails is a failure, never a skip, and once a
+ * server binds every check below MUST hold.
  */
 import { request as httpRequest } from 'node:http';
 
@@ -71,11 +73,20 @@ export async function run({ actorTs, runtime, loadEntry }) {
   const { ActorSystem, ActorSystemOptions, LogLevel, NoopLogger } = actorTs;
   const { HttpExtensionId, completeText, concat, get, path, post } = await loadEntry('http');
 
-  try {
-    await import('hono');
-  } catch (e) {
-    console.log(`  (skipped: hono not loadable on this runtime — ${e.message})`);
-    return;
+  // The one reason to skip is a peer the Hono backend needs on this runtime
+  // and cannot load: `hono` everywhere, and on Node the `@hono/node-server`
+  // adapter its runner serves through.  Asked for up front and by name, so a
+  // bind that fails *with* the peers in place fails the case instead of
+  // passing as a skip — the shape that let a Node runner refusing every
+  // `max-header-bytes` sail through as "skipped".
+  const peers = runtime === 'node' ? ['hono', '@hono/node-server'] : ['hono'];
+  for (const peer of peers) {
+    try {
+      await import(peer);
+    } catch (e) {
+      console.log(`  (skipped: ${peer}, which the Hono backend needs on ${runtime}, is not installed — ${e.message})`);
+      return;
+    }
   }
 
   const systemOptions = ActorSystemOptions.create()
@@ -106,8 +117,7 @@ export async function run({ actorTs, runtime, loadEntry }) {
     try {
       binding = await system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0).bind(routes);
     } catch (e) {
-      console.log(`  (skipped: could not bind the Hono backend on this runtime — ${e.message})`);
-      return;
+      throw new Error(`the Hono backend did not bind on ${runtime} under max-content-length and max-header-bytes, with every peer it needs installed: ${e.message}`, { cause: e });
     }
     const port = binding.port;
     const report = binding.serverOptionsReport;
