@@ -1586,6 +1586,19 @@ describe('readJetStreamOptionsFromConfig', () => {
     const config = Config.parseString(`${root} { ${block} }`);
     expect(() => readJetStreamOptionsFromConfig(config)).toThrow(`Config at "${root}.${leaf}" is not a integer`);
   });
+
+  // A whole number the reader takes and the server cannot: a uint64 sequence
+  // written out in full reads as the nearest double, which is not the number
+  // written and, here, not one a uint64 holds either.  The start refuses it.
+  test('a start-seq past the exact range of a number fails preStart, naming the field', async () => {
+    const started = await startBroker(
+      `${root} {\nservers = ["nats://h:4222"]\nstream { name = "S", subjects = ["s.>"] }\n`
+      + 'consumer { durable = "d", deliver-policy { kind = "by-start-sequence", start-seq = 18446744073709551616 } }\n}',
+      () => new JetStreamActor() as unknown as Actor<never>,
+    );
+    expect(started.failure).toBeInstanceOf(OptionsError);
+    expect((started.failure as OptionsError).field).toBe('consumer.deliverPolicy.startSeq');
+  });
 });
 
 describe('readJetStreamKeyValueOptionsFromConfig', () => {

@@ -318,12 +318,17 @@ function findDeliverPolicyProblem(deliverPolicy: unknown): JetStreamGroupViolati
  * `undefined` when it is one the server can start a consumer at.
  *
  * `startSeq` is a stream sequence, and those count from 1: `0` is the server's
- * "unset", which `by_start_sequence` refuses.  `startTimeMs` is an instant in
- * epoch milliseconds, anywhere from the epoch to {@link MAX_DATE_EPOCH_MS} — a
- * fraction is fine there, since a `Date` takes one, but past that bound the
- * actor's `toISOString()` throws instead of translating it.  `typeof` first in
- * both, because a plain-JavaScript caller hands over a string as readily as a
- * number, and `'42' >= 1` is `true`.
+ * "unset", which `by_start_sequence` refuses.  It ends at
+ * `Number.MAX_SAFE_INTEGER`, because it reaches the server as JSON, into a
+ * uint64: past that bound a number no longer holds every integer, so the
+ * sequence sent is not always the one written, and from `1e21` on JSON writes
+ * it in exponent form, which no uint64 parses — a consumer the server refuses
+ * at connect, retried for ever under the default reconnect policy.
+ * `startTimeMs` is an instant in epoch milliseconds, anywhere from the epoch to
+ * {@link MAX_DATE_EPOCH_MS} — a fraction is fine there, since a `Date` takes
+ * one, but past that bound the actor's `toISOString()` throws instead of
+ * translating it.  `typeof` first in both, because a plain-JavaScript caller
+ * hands over a string as readily as a number, and `'42' >= 1` is `true`.
  */
 function findDeliverPolicyStartProblem(
   kind: DeliverPolicyObjectKind,
@@ -331,10 +336,11 @@ function findDeliverPolicyStartProblem(
 ): JetStreamGroupViolation | undefined {
   if (kind === 'by-start-sequence') {
     const startSeq: unknown = (deliverPolicy as { readonly startSeq?: unknown }).startSeq;
-    if (typeof startSeq === 'number' && Number.isInteger(startSeq) && startSeq >= 1) return undefined;
+    if (typeof startSeq === 'number' && Number.isSafeInteger(startSeq) && startSeq >= 1) return undefined;
     return {
       field: 'consumer.deliverPolicy.startSeq',
-      reason: 'must be a positive integer — stream sequences start at 1',
+      reason: `must be a positive integer up to ${Number.MAX_SAFE_INTEGER} — stream sequences start at 1, and a `
+        + 'larger one has no exact number to send the server',
       value: startSeq,
     };
   }

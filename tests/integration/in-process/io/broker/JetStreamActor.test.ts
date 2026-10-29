@@ -1373,6 +1373,35 @@ describe('JetStreamOptionsValidator — the stream / consumer group rules (#871)
       .not.toThrow();
   });
 
+  // A start sequence goes to the server as JSON, into a uint64.  Past
+  // Number.MAX_SAFE_INTEGER a number no longer holds every integer — the
+  // sequence sent is not always the one written — and from 1e21 on JSON writes
+  // it in exponent form, which no uint64 parses: the consumer would be refused
+  // at connect and retried for ever under the default reconnect policy.
+  test.each([
+    { label: '2^53, the first integer past the exact range', startSeq: 2 ** 53 },
+    { label: '2^64, past the server\'s uint64', startSeq: 2 ** 64 },
+    { label: '1e21, which JSON writes as 1e+21', startSeq: 1e21 },
+  ])('refuses a startSeq of $label, naming the field', ({ startSeq }) => {
+    let refusal: unknown = null;
+    try {
+      validate({ consumer: { durable: 'd', deliverPolicy: { kind: 'by-start-sequence', startSeq } } });
+    } catch (e) {
+      refusal = e;
+    }
+    expect(refusal).toBeInstanceOf(OptionsError);
+    expect((refusal as OptionsError).field).toBe('consumer.deliverPolicy.startSeq');
+    expect((refusal as OptionsError).message).toContain(String(Number.MAX_SAFE_INTEGER));
+  });
+
+  test('accepts the largest start sequence a number holds exactly, and JSON writes it out whole', () => {
+    expect(() => validate({
+      consumer: { durable: 'd', deliverPolicy: { kind: 'by-start-sequence', startSeq: Number.MAX_SAFE_INTEGER } },
+    })).not.toThrow();
+    expect(JSON.stringify(Number.MAX_SAFE_INTEGER)).toBe('9007199254740991');
+    expect(JSON.stringify(1e21)).toBe('1e+21');
+  });
+
   test('rejects a non-positive ackWaitMs', () => {
     expect(() => validate({ consumer: { durable: 'd', ackWaitMs: 0 } })).toThrow(OptionsError);
   });
