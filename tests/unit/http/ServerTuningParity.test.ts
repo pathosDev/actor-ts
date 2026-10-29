@@ -427,8 +427,8 @@ describe('applyServerOptions', () => {
   });
 
   test('an unset idle-timeout leaves a session\'s timer to the backend', () => {
-    // The negative control: unset keeps the backend's own, which is Fastify's
-    // 72 s on an HTTP/2 session exactly as it is on an HTTP/1.1 socket.
+    // The negative control: unset keeps the backend's own — on an HTTP/2
+    // session Fastify's own session timer, 72 s on Node and 144 s on Bun.
     const { server, openSession, subscribed } = sessionServer();
     applyServerOptions(server, { requestTimeoutMs: 3_000, maxConnections: 10 });
 

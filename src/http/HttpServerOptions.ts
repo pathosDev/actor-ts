@@ -146,7 +146,10 @@ export type HttpServerOptionsType = {
    * requests — a slow handler, a long poll or an SSE stream holds its
    * connection, and the bound starts when it ends — and on HTTP/2 it is the
    * same value on every runtime, reset by nothing but a request: a PING keeps
-   * no session open.
+   * no session open.  On Bun's HTTP/2 listener a connection that negotiates
+   * HTTP/1.1 reads no `keepAliveTimeout` at all (still open 8 s after its
+   * response under 800 ms, bun 1.4.2), so there it is reported held for
+   * HTTP/2 only and `bind()` warns when it is set.
    *
    * **No built-in default** — unset leaves the backend's own, and the backends
    * deliberately disagree: 72 s on Fastify, and 5 s on Express and on
@@ -202,6 +205,13 @@ export type HttpServerOptionsType = {
    * so a slow handler, a long poll and an SSE stream are unaffected.  `0`
    * disables it.
    *
+   * On HTTP/2 no stream reads `requestTimeout`, so each stream carries a
+   * deadline of the framework's own instead: one whose request is still
+   * arriving at the value is answered `408` and reset, held to the value
+   * rather than to a sweep.  On Bun's HTTP/2 listener a connection that
+   * negotiates HTTP/1.1 reads neither, so there it is reported held for
+   * HTTP/2 only and `bind()` warns when it is set.
+   *
    * Below {@link headerTimeoutMs} it bounds the header phase as well — the
    * header guard is armed with it and `server.headersTimeout` is written as
    * it — rather than being quietly raised to the header deadline, which is
@@ -256,7 +266,8 @@ export type HttpServerOptionsType = {
    * or Deno it is reported not in effect and `bind()` warns.  On an HTTP/2
    * listener it caps the HTTP/1.1 requests sharing the port, but on Node not an
    * HTTP/2 stream's header list: measured on node v26.10.0, a 4 KiB header
-   * reached the handler over h2 through a 1 KiB cap (Bun refuses the stream).
+   * reached the handler over h2 through a 1 KiB cap, so there it is reported
+   * held for HTTP/1.1 only and `bind()` warns.  Bun refuses the stream.
    */
   readonly maxHeaderBytes?: number;
   /**
