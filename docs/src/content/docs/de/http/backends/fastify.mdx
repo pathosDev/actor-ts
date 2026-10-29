@@ -90,6 +90,24 @@ Empfangs-Deadline, wo vorher keine war. Setz sie in deiner Config zurück auf
 `0`, um das alte Verhalten herzustellen; `idle-timeout` liefert keinen Wert,
 Fastifys 72 s bleiben also unangetastet.
 
+Auf dem HTTP/2-Listener (`withHttp2()`) erreichen Fastifys 72 s eine untätige
+Session als Fastifys eigener Session-Timer, der die stille Zeit auf der
+Verbindung zählt: er schließt eine untätige Session **auf Node nach 72 s, auf
+Bun aber nach 144 s**, weil Bun ihn beim doppelten Wert feuern lässt, und auf
+Bun setzt ein PING-Frame ihn zurück — ein Client, der einmal pro Sekunde pingt,
+hält eine Session ohne jeden Request beliebig lange offen (nach 170 s noch
+offen, bun 1.4.2). Ein gesetzter `idle-timeout` ersetzt diesen Timer durch den
+von actor-ts, der eine Session schließt, die so lange keinen offenen Stream
+hatte — derselbe Wert auf beiden Runtimes, mit oder ohne PINGs —, und
+`request-timeout` gibt jedem HTTP/2-Stream eine eigene Empfangs-Deadline. Zwei
+Schranken gelten auf diesem Listener nur für ein Protokoll, und `bind()` warnt
+vor jeder, die du setzt: auf **Bun** begrenzen `idle-timeout` und
+`request-timeout` HTTP/2, aber keine Verbindung, die auf demselben Port HTTP/1.1
+aushandelt; auf **Node** begrenzt `max-header-bytes` die HTTP/1.1-Requests,
+aber nicht die Header-Liste eines HTTP/2-Streams, die nur Nodes eigene
+64-KiB-Grenze begrenzt. Die [Sicherheitsseite](/de/http/security/) hat die
+Zahlen.
+
 Die meisten Settings werden an Fastifys `FastifyServerOptions`
 durchgereicht.  Das Framework konfiguriert die Routen-
 Registrierung; du drehst an Fastifys eigenen Reglern.
