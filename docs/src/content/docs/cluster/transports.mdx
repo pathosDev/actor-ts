@@ -100,6 +100,16 @@ deadline as an abort signal (see [Association lifecycle](#association-lifecycle)
 and native `Bun.connect` cannot be cancelled, so they go through Bun's own
 `node:net` / `node:tls`, which can.  The listener stays on `Bun.listen`.
 
+So on Bun the two ends of one connection do not buffer alike — the dialling
+side's half of #931.  The side that dialled writes through `node:net`, which
+keeps in memory whatever the peer cannot take yet, without bound; a socket that
+`Bun.listen` accepted writes natively, and native Bun drops what the kernel
+will not take, so the receiver's decoder reads the rest of the stream from the
+middle of a frame.  On Node and Deno both ends buffer.  Neither runtime pushes
+back on the sender — `TcpSocketLike.write` reports nothing — so a peer that
+stops reading grows the heap at one end and breaks the stream at the other,
+and the bound that would stop both is #931's to add.
+
 ### Optional TLS
 
 ```ts
@@ -211,10 +221,21 @@ connecting on for as long as the OS keeps trying.  A dial that fails before its
 connect deadline — refused, unresolvable, a certificate the CA does not sign —
 logs the `could not connect` line too, with the runtime's error attached rather
 than quoted, because a runtime's error code can misname the cause: Bun on
-Windows reports an unanswered connect as `ECONNREFUSED`.  One combination cannot be aborted.  Deno has no way to cancel a
-TLS connect (`Deno.connectTls` takes no signal), so there the dial is dropped
-and its connection closed the moment it appears, while the connect itself runs
-on until it completes or the OS gives up.
+Windows reports an unanswered connect as `ECONNREFUSED`.  That holds on every
+runtime because every backend reports a TLS dial open only once its handshake
+is done, Deno included: `Deno.connectTls` resolves at the TCP connect, so the
+Deno backend runs the handshake itself before it hands the connection over.
+A certificate the CA does not sign is therefore a dial that could not connect
+there too, and a peer that accepts the connect and stalls the handshake is
+the connect deadline's to give up.
+
+One part of one combination cannot be aborted.  Deno has no way to cancel the
+TCP connect of a TLS dial (`Deno.connectTls` takes no signal), so a dial given
+up while connecting is dropped and its connection closed the moment it
+appears, while the connect itself runs on until it completes or the OS gives
+up.  A dial given up during its handshake is dropped at once, but Deno does not
+end the TCP connection under it: on Deno 2.6.8 the far side keeps that socket
+until it closes it itself.
 
 A transport you build yourself carries its own values.  The cluster only passes
 the config block's to a transport *it* constructed, never to one handed in via

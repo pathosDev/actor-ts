@@ -176,6 +176,20 @@ const gelfSinkOptions = GelfSinkOptions.create()
   .withTls({ ca: process.env['GRAYLOG_CA']! });
 ```
 
+### When Graylog does not answer
+
+Over `tcp` a batch is written once the connection is open — over TLS, once
+the handshake is done — so the first batch on a fresh connection arrives like
+any other.  A Graylog that refuses the connection fails the batch at once,
+retryably: it is retried on the sink's
+[`delivery`](/observability/logging/multi-sink/#batched-delivery) schedule,
+and dropped and reported only once that runs out.  One that does not answer at
+all — a dropped SYN, a firewall that discards — is given up after **10 s** for
+the TCP connect and the TLS handshake together, and fails the batch the same
+way.  Without that bound one attempt waited for the operating system's own
+connect timeout, 21 s on Windows and about two minutes on Linux, with every
+record behind it held.  The 10 s are fixed; no option sets them yet.
+
 ## Parseable
 
 ```ts
@@ -465,6 +479,15 @@ character cannot make the receiver cut the frame short.
 
 TLS material is code-only, with no HOCON leaf: those fields carry the
 certificate and key themselves.
+
+### When the collector does not answer
+
+`tcp` and `tls` behave as GELF over TCP does
+([above](#when-graylog-does-not-answer)): a batch is written once the
+connection is open — over `tls`, once the handshake is done — a refused
+connection fails the batch at once and retryably, and a collector that does
+not answer at all is given up after a fixed **10 s** for the connect and the
+handshake together.
 
 ## Related
 
