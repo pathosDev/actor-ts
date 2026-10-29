@@ -171,6 +171,15 @@ export type ShardRegionConfig<TMessage> = {
    * something worth subscribing to, keeps its own event.
    */
   readonly onRegistrationLost?: () => void;
+  /**
+   * Called when a refusal this region was latched on lapses with the leader
+   * term that issued it, so `ClusterSharding.registrationRefusal` stops
+   * reporting a verdict no coordinator stands behind any more (#1465).  The
+   * region is not registered at that moment either — it is asking the new
+   * coordinator — so nothing else changes.  Supplied by
+   * `ClusterSharding.start`, like {@link onRegistrationLost}.
+   */
+  readonly onRegistrationRefusalLapsed?: () => void;
   readonly cluster: Cluster;
   readonly localResolver: (path: string) => ActorRef | null;
 };
@@ -2853,8 +2862,12 @@ export class ShardRegion<TMessage = unknown>
     this.coordinatorNode = null;
     // The coordinator moved, so the count it governs the type with may have
     // moved with it; a refusal from the previous leader says nothing about
-    // this one.
+    // this one — and neither may the node's record of it, which would
+    // otherwise keep naming that verdict for as long as no new coordinator
+    // answers, a leader without the type included (#1465).
+    const refusalLapsed = this.registerRefused;
     this.registerRefused = false;
+    if (refusalLapsed) this.config.onRegistrationRefusalLapsed?.();
     this.ensureRegistered();
   }
 

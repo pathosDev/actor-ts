@@ -261,6 +261,8 @@ export class ClusterSharding {
       // How the region takes back an `isRegistered` it can no longer stand
       // behind — evicted, or stopped (#1465).
       onRegistrationLost: () => this.onShardRegionRegistrationLost(options.typeName),
+      // And a refusal whose leader term has ended (#1465).
+      onRegistrationRefusalLapsed: () => this.onShardRegionRegistrationRefusalLapsed(options.typeName),
     };
 
     this.ensureCoordinator(options as StartShardingOptionsType<unknown>, config.numShards);
@@ -566,12 +568,30 @@ export class ClusterSharding {
    * one fed by `ShardMapChanged`.
    *
    * `false` for a type this node never started; for one whose registration the
-   * coordinator refused over a `numShards` mismatch; for one whose region the
-   * coordinator evicted for going silent (stale-region detection), until the
-   * region's new registration is acknowledged; and for one whose region has
+   * coordinator refused over a `numShards` mismatch; for one whose region was
+   * told it had been evicted for going silent (stale-region detection), until
+   * the region's new registration is acknowledged; and for one whose region has
    * stopped (#1465).  In each of those the coordinator places no shard of the
    * type here, which is what a readiness probe reading this must not report as
    * ready.
+   *
+   * It is this node's account, built from what its region was told, and two
+   * situations are worth knowing exactly:
+   *
+   * - **A leader change does not turn it `false`.**  The region re-registers
+   *   with the new coordinator and the node keeps reading as registered while
+   *   it does, so an election does not take every node out of rotation at once
+   *   — also when the new leader runs no coordinator for the type at all, which
+   *   this reading cannot tell apart from a re-registration still in flight.  A
+   *   refusal the old leader issued lapses with it: from the change until the
+   *   new coordinator answers, {@link registrationRefusal} is `null` and this
+   *   stays `false`, waiting rather than refused.
+   * - **An eviction is learnt from the coordinator's notice**, a single,
+   *   unacknowledged frame.  Should it be lost, this keeps reading `true` while
+   *   the coordinator holds no entry for the region — until the region's next
+   *   beat reaches it, which the coordinator answers with a request to register:
+   *   one `heartbeat-interval` and a round trip.  Without stale-region detection
+   *   nothing is evicted, so there is no such window.
    *
    * **What it does *not* gate is message loss.**  A message sent before
    * registration lands is buffered by the region and delivered once the
@@ -604,7 +624,11 @@ export class ClusterSharding {
    * alert itself.
    *
    * Cleared when a later registration is accepted, so a rolling deploy that
-   * fixes the mismatch stops reporting one.
+   * fixes the mismatch stops reporting one — and when the leader moves: a
+   * refusal is the verdict of the coordinator that issued it, and from the
+   * leader change until the next coordinator answers there is none to report
+   * (#1465).  A stop or an eviction leaves it standing; neither says anything
+   * about the shard counts it reports.
    */
   registrationRefusal(typeName: string): ShardRegionRegistrationRefused | null {
     return this.registrationRefusals.get(typeName) ?? null;
@@ -711,6 +735,18 @@ export class ClusterSharding {
    */
   private onShardRegionRegistrationLost(typeName: string): void {
     this.registeredTypes.delete(typeName);
+  }
+
+  /**
+   * The leader moved while this node's region for `typeName` stood refused
+   * (#1465).  A refusal is a verdict of one leader term — the region drops its
+   * own latch and asks the new coordinator — so the record goes too, rather
+   * than naming a coordinator that no longer governs the type for as long as
+   * no new one answers.  The type is not registered either way: a new verdict,
+   * acceptance or refusal, arrives as an event of its own.
+   */
+  private onShardRegionRegistrationRefusalLapsed(typeName: string): void {
+    this.registrationRefusals.delete(typeName);
   }
 
   /**
