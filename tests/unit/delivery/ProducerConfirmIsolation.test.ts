@@ -403,6 +403,43 @@ describe('ProducerController — a confirm failure the logger cannot render (#12
     await kit.system.terminate();
   });
 
+  test('a logger that cannot write an error line at all costs the producer nothing either', async () => {
+    // The line without the value is written under a guard of its own: with a
+    // logger that throws on every error line there is nothing left to report
+    // with, and the containment still holds.
+    class UnwritableErrorLogger extends LineRecordingLogger {
+      override error(): void { throw new Error('this logger cannot write an error line'); }
+      override withSource(_source: string): Logger { return new UnwritableErrorLogger(this.lines); }
+      override withFields(_fields: LogContextData): Logger { return new UnwritableErrorLogger(this.lines); }
+    }
+    const kit = TestKit.create('confirm-unwritable-log', TestKitOptions.create().withLogger(new UnwritableErrorLogger()));
+    const restarts = kit.createTestProbe();
+    kit.system.eventStream.subscribe(restarts, ActorRestarted);
+    const settled: Settlement[] = [];
+
+    const neverAcknowledges = kit.createTestProbe();
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(neverAcknowledges as never)
+      .withProducerId('unwritable-log')
+      .withResendTimeout(10_000)
+      .withWindowSize(2);
+    const producer = ReliableDelivery.producer<string>(kit.system, producerOptions);
+    producer.tell('a', throwing(settled, 'a', new Error('an ordinary failure')));
+    producer.tell('b', recording(settled, 'b'));
+    producer.tell('c', recording(settled, 'c'));
+    const first = await neverAcknowledges.receiveOne(4_000) as Delivery<string>;
+    await neverAcknowledges.receiveOne(4_000);
+
+    acknowledge(first);
+    const third = await neverAcknowledges.receiveOne(2_000) as Delivery<string>;
+    expect([third.body, third.seq, third.incarnation]).toEqual(['c', 3, first.incarnation]);
+    expect(settled).toEqual([['a', null]]);
+    expect(restarts.messageCount).toBe(0);
+
+    producer.stop();
+    await kit.system.terminate();
+  });
+
   test.each(unrenderableValues)('a confirm whose promise rejects with %s is reported, not left unhandled', async (_label, value) => {
     const unhandled: unknown[] = [];
     const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
