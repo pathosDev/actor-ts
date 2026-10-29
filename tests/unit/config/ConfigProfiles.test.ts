@@ -7,9 +7,11 @@
  * a stray `application.conf` or `secrets.conf` beside the test runner nor a
  * profile exported in the shell running it can decide what a case sees.
  */
+import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
@@ -400,6 +402,123 @@ describe('Config.load — copying one profile into another', () => {
 
     expect(() => load(filesOf(directory))).toThrow('profiles.staging');
   });
+});
+
+/** How long a load may take once the child has started it — see {@link loadInChild}. */
+const CHILD_LOAD_CAP_MS = 1_000;
+/** How long the child may take to get that far: starting a runtime and importing the loader. */
+const CHILD_STARTUP_CAP_MS = 20_000;
+
+/**
+ * What the child runs: one `Config.load` of the files its environment names,
+ * reported as `name: message`, or `loaded`.  The line before the load is
+ * written synchronously, so it has left the process before the load starts.
+ */
+const CHILD_SCRIPT = [
+  "import { writeSync } from 'node:fs';",
+  'const { Config } = await import(process.env.CHILD_CONFIG_MODULE);',
+  "writeSync(1, 'loading\\n');",
+  'let outcome;',
+  'try {',
+  '  Config.load({',
+  '    appConfPath: process.env.CHILD_APPLICATION_CONF,',
+  '    secretsConfPath: process.env.CHILD_SECRETS_CONF,',
+  '  });',
+  "  outcome = 'loaded';",
+  '} catch (error) {',
+  "  outcome = String(error && error.name) + ': ' + String(error && error.message);",
+  '}',
+  "writeSync(1, JSON.stringify({ outcome }) + '\\n');",
+].join('\n');
+
+/**
+ * `Config.load` of the files in `directory`, run in a child process: the
+ * refusal as `name: message`, `loaded`, or what stopped the child.
+ *
+ * In a child, and capped there, because a copy cycle nobody refuses is a loop
+ * inside one synchronous call — this runner's per-test timeout cannot
+ * interrupt it, and it allocates as fast as it loops, hundreds of megabytes a
+ * second.  So the cap starts only once the child says it is about to load, a
+ * slow start does not count against it, and it is short: a refusal takes a
+ * millisecond.
+ */
+function loadInChild(directory: string): Promise<string> {
+  const script = join(directory, 'load-in-child.mjs');
+  writeFileSync(script, CHILD_SCRIPT, 'utf8');
+  const environment: Record<string, string | undefined> = {
+    ...process.env,
+    CHILD_CONFIG_MODULE: pathToFileURL(resolve(import.meta.dir, '../../../src/config/Config.ts')).href,
+    CHILD_APPLICATION_CONF: join(directory, 'application.conf'),
+    CHILD_SECRETS_CONF: join(directory, 'secrets.conf'),
+  };
+  for (const name of LOAD_VARIABLES) delete environment[name];
+  return new Promise((resolveOutcome) => {
+    const child = spawn(process.execPath, [script], { cwd: directory, env: environment, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    let outcome: string | null = null;
+    let loadCap: ReturnType<typeof setTimeout> | undefined;
+    const decide = (decided: string): void => {
+      if (outcome !== null) return;
+      outcome = decided;
+      clearTimeout(startupCap);
+      clearTimeout(loadCap);
+      child.kill();
+    };
+    const startupCap = setTimeout(
+      () => decide(`the child did not start loading within ${CHILD_STARTUP_CAP_MS} ms: ${stderr}`),
+      CHILD_STARTUP_CAP_MS,
+    );
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString('utf8');
+      if (loadCap === undefined && stdout.includes('loading\n')) {
+        loadCap = setTimeout(
+          () => decide(`Config.load did not return within ${CHILD_LOAD_CAP_MS} ms`),
+          CHILD_LOAD_CAP_MS,
+        );
+      }
+      const report = stdout.split('\n').find((line) => line.startsWith('{'));
+      if (report !== undefined) decide((JSON.parse(report) as { readonly outcome: string }).outcome);
+    });
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
+    // `close`, not `exit`: it comes after the last of the output, and once the
+    // process is gone, so the directory can be removed.
+    child.on('close', (code, signal) => {
+      decide(`the child ended (${code ?? signal}) without an outcome: ${stderr}`);
+      resolveOutcome(outcome!);
+    });
+  });
+}
+
+describe('Config.load — a profile copy that comes back round', () => {
+  // Every profile is followed when the file is read, active or not, so no
+  // profile is selected here.  Without the refusal the walk never ends.
+  test('a cycle of two is refused by name', async () => {
+    const directory = directoryWith({
+      'application.conf': [
+        'profiles.a = ${profiles.b}',
+        'profiles.b = ${profiles.a}',
+      ].join('\n'),
+    });
+
+    expect(await loadInChild(directory)).toBe(
+      `ConfigError: profiles.a in ${join(directory, 'application.conf')} copies itself through \${profiles.b}`,
+    );
+  }, 30_000);
+
+  test('so is a cycle of three', async () => {
+    const directory = directoryWith({
+      'application.conf': [
+        'profiles.a = ${profiles.b}',
+        'profiles.b = ${profiles.c}',
+        'profiles.c = ${profiles.a}',
+      ].join('\n'),
+    });
+
+    expect(await loadInChild(directory)).toBe(
+      `ConfigError: profiles.a in ${join(directory, 'application.conf')} copies itself through \${profiles.b}`,
+    );
+  }, 30_000);
 });
 
 describe('the secrets file in the config dump', () => {
