@@ -720,13 +720,28 @@ export class ExpressBackend implements HttpServerBackend {
     };
   }
 
+  /**
+   * The request's query parameters as every backend hands them over: one value
+   * as a string, a repeated parameter as the array of its values.
+   *
+   * Each parameter is defined on the copy rather than assigned to it.  An
+   * assignment runs a parameter named `__proto__` through `Object.prototype`'s
+   * setter instead of creating it, so that one never arrived as a parameter and
+   * the query did not stay the record the other parameters are in; defined, it
+   * is an own parameter like any other.
+   */
   private normaliseQuery(raw: Record<string, unknown>): Record<string, string | string[] | undefined> {
     const out: Record<string, string | string[] | undefined> = {};
     for (const [key, value] of Object.entries(raw)) {
       if (value === undefined || value === null) continue;
-      if (typeof value === 'string') out[key] = value;
-      else if (Array.isArray(value)) out[key] = value.map((x) => String(x));
-      else out[key] = String(value);
+      Object.defineProperty(out, key, {
+        value: typeof value === 'string'
+          ? value
+          : Array.isArray(value) ? value.map((x) => String(x)) : String(value),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
     }
     return out;
   }

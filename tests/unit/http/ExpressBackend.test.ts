@@ -13,10 +13,11 @@ import {
   path,
   post,
   put,
+  queryParam,
 } from '../../../src/http/Route.js';
 import { entity } from '../../../src/http/Marshalling.js';
 import type { ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
-import { HttpError, Status } from '../../../src/http/Types.js';
+import { HttpError, Status, type HttpRequest } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import type { Route } from '../../../src/http/Route.js';
 
@@ -271,6 +272,60 @@ describe('ExpressBackend — body size limit', () => {
       body: big,
     });
     expect(response.status).toBe(413);
+  });
+});
+
+describe('ExpressBackend — a query parameter named __proto__ arrives as an own parameter', () => {
+  // Express hands over the parameters it parsed, and the backend copies them
+  // into the request's query.  A parameter named `__proto__` is an own
+  // parameter there like any other, and the query keeps the prototype it was
+  // made with, so it carries exactly the parameters that were sent.
+  type QueryShape = {
+    readonly own: boolean;
+    readonly value: unknown;
+    readonly prototypeUntouched: boolean;
+    readonly indexZero: unknown;
+    readonly keys: readonly string[];
+  };
+  const shapeOf = (query: HttpRequest['query']): QueryShape => {
+    const prototype: unknown = Object.getPrototypeOf(query);
+    return {
+      own: Object.hasOwn(query, '__proto__'),
+      value: Object.getOwnPropertyDescriptor(query, '__proto__')?.value ?? null,
+      prototypeUntouched: prototype === Object.prototype || prototype === null,
+      indexZero: (query as Record<string, unknown>)['0'] ?? null,
+      keys: Object.keys(query),
+    };
+  };
+
+  test('repeated and single', async () => {
+    const { url } = await startServer(get((request) => completeJson(Status.OK, shapeOf(request.query))));
+
+    expect(await (await fetch(`${url}/?__proto__=a&__proto__=b&q=1`)).json())
+      .toEqual({ own: true, value: ['a', 'b'], prototypeUntouched: true, indexZero: null, keys: ['__proto__', 'q'] });
+    expect(await (await fetch(`${url}/?__proto__=a`)).json())
+      .toEqual({ own: true, value: 'a', prototypeUntouched: true, indexZero: null, keys: ['__proto__'] });
+  });
+
+  test('queryParam answers for the parameters that were sent and for no other name', async () => {
+    // `typeof` keeps a function or a number visible in the JSON, where the
+    // value itself would vanish or read as a parameter.
+    const names = ['__proto__', 'q', 'sort', 'constructor', 'length', 'toString', '0'] as const;
+    const { url } = await startServer(get((request) => completeJson(
+      Status.OK,
+      Object.fromEntries(names.map((name) => [name, typeof queryParam(request, name)])),
+    )));
+
+    expect(await (await fetch(`${url}/?__proto__=a&__proto__=b&q=1`)).json()).toEqual({
+      // Computed, so the literal defines the key instead of setting a prototype.
+      ['__proto__']: 'string',
+      q: 'string',
+      sort: 'undefined',
+      constructor: 'undefined',
+      length: 'undefined',
+      toString: 'undefined',
+      0: 'undefined',
+    });
   });
 });
 
