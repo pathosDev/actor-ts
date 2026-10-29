@@ -375,9 +375,12 @@ describe('a leave hands the shards off before the peers re-home them (#1465)', (
     });
     // It did not wait for the write, which is still held.
     expect(journal.heldAppends).toBe(1);
-    expect(logger.records.some((record) => record.level === 'warn'
-      && record.message.includes(`the region for '${TYPE_NAME}' did not stop within its hand-off timeout of 300 ms`)))
-      .toBe(true);
+    // And the warning says what that leaves behind, rather than calling the
+    // region stopped: its entity is still mid-write.
+    const overrun = logger.records.find((record) => record.level === 'warn'
+      && record.message.includes(`the region for '${TYPE_NAME}' did not stop within its hand-off timeout of 300 ms`));
+    expect(overrun?.message).toContain('the leave goes on without it');
+    expect(overrun?.message).toContain('may overlap its new home');
     journal.release();
     await left;
   }, 20_000);

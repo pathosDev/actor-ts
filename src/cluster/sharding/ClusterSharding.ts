@@ -729,7 +729,10 @@ export class ClusterSharding {
    * shards start after the last entity here stopped, and the caller holds the
    * leave broadcast back until this resolves, so a peer's `MemberRemoved`
    * cannot overtake it either.  Each region gets its type's `hand-off-timeout`;
-   * past it the stop is forced.  **Coordinators after**: one here may be the
+   * past it the stop escalates and the leave goes on without it, so an entity
+   * stuck in its handler can still overlap its new home — the bound is what
+   * keeps a stuck entity from holding the node in the cluster for good.
+   * **Coordinators after**: one here may be the
    * active coordinator, and the notices its own regions sent it on the way down
    * are queued ahead of its stop.
    *
@@ -778,8 +781,9 @@ export class ClusterSharding {
       if (!stopped || expired) {
         this.system.log.warn(
           `[sharding] the ${role} for '${typeName}' did not stop within its hand-off timeout of `
-          + `${budgetMs} ms while the cluster was leaving; it was stopped outright, and a re-join may `
-          + 'not be able to start the type until it has gone',
+          + `${budgetMs} ms while the cluster was leaving; it has been told to stop at once and the leave `
+          + 'goes on without it.  Until it has gone, what it still runs may overlap its new home, and a '
+          + 're-join cannot start the type',
         );
       }
     } finally {
