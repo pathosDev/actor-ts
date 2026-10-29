@@ -4,6 +4,8 @@ import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import {
   ActorSystemTerminateReason,
+  ClusterDowningReason,
+  ClusterJoinUnsuccessfulReason,
   CoordinatedShutdown,
   CoordinatedShutdownId,
   Phases,
@@ -1205,5 +1207,110 @@ describe('a phase budget longer than one host timer holds', () => {
     await run;
 
     expect(timeoutWarnings(log)).toEqual([]);
+  });
+});
+
+/** How `promise` settled: `resolved`, or `rejected: <message>`. */
+async function settled(promise: Promise<unknown>): Promise<string> {
+  try {
+    await promise;
+    return 'resolved';
+  } catch (error) {
+    return `rejected: ${(error as Error).message}`;
+  }
+}
+
+// The run stays in flight until its exit has happened — or will not happen.
+// The exit flushes the dead-letter queue and the log sinks first, and a
+// `terminate()` arriving during that flush must find the run in flight and
+// start nothing: the exit takes the place of the teardown, so nothing may tear
+// down in front of it (#1455).  A logger whose `flush` calls `terminate()`
+// puts the call exactly there.
+describe('with exit-process on, a run is in flight until it has exited', () => {
+  /** Calls `onFlush` from inside its first `flush` — a plain `terminate()` here. */
+  class FlushHookLogger extends NoopLogger {
+    onFlush: () => void = () => {};
+
+    flush(): Promise<void> {
+      const hook = this.onFlush;
+      this.onFlush = () => {};
+      hook();
+      return Promise.resolve();
+    }
+  }
+
+  function systemWithFlushHook(name: string, settings: ConfigObject): ActorSystem {
+    const logger = new FlushHookLogger();
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(logger)
+      .withConfig({ 'actor-ts': { 'coordinated-shutdown': settings } });
+    const system = ActorSystem.create(name, systemOptions);
+    logger.onFlush = () => { void system.terminate(); };
+    return system;
+  }
+
+  /** Replace `process.exit` until `body` is done, writing what held when it was called. */
+  async function seenAtExit(system: ActorSystem, body: () => Promise<unknown>): Promise<string[]> {
+    const seen: string[] = [];
+    const realExit = process.exit;
+    process.exit = ((code?: number): never => {
+      seen.push(`exit ${code} accepts spawns=${acceptsSpawns(system)}`);
+      return undefined as never;
+    }) as typeof process.exit;
+    try {
+      await body();
+    } finally {
+      process.exit = realExit;
+    }
+    return seen;
+  }
+
+  test('a terminate() during the halted exit\'s flush starts no teardown in front of the exit', async () => {
+    const system = systemWithFlushHook('in-flight-until-halted-exit', {
+      phases: { 'service-stop': { recover: false } },
+      'exit-process': true,
+    });
+    system.extension(CoordinatedShutdownId).addTask(Phases.ServiceStop, 'throws', () => {
+      throw new Error('boom');
+    });
+
+    const seen = await seenAtExit(system, () => settled(system.extension(CoordinatedShutdownId).run()));
+
+    expect(seen).toEqual(['exit 1 accepts spawns=true']);
+    // Not dropped either: it follows the run, which only a replaced exit lets end.
+    await awaitCondition(() => system.isTerminated, {
+      label: 'the teardown that terminate() asked for followed the run',
+      timeoutMs: 3_000,
+    });
+  });
+
+  test('nor during a completed run\'s, with terminate-actor-system = false', async () => {
+    const system = systemWithFlushHook('in-flight-until-completed-exit', {
+      'exit-process': true,
+      'terminate-actor-system': false,
+    });
+
+    const seen = await seenAtExit(system, () => system.extension(CoordinatedShutdownId).run());
+
+    expect(seen).toEqual(['exit 0 accepts spawns=true']);
+    await awaitCondition(() => system.isTerminated, {
+      label: 'the teardown that terminate() asked for followed the run',
+      timeoutMs: 3_000,
+    });
+  });
+
+  test('a run that halted is no longer in flight: a plain terminate() after it is the whole teardown again', async () => {
+    // Without exit-process, the halt is where the run ends, and the rejection
+    // is what tells the trigger; a run still "in flight" past it would turn
+    // every later terminate() into a call that starts nothing.
+    const { system } = withRecordedLog('halted-run-settled', { phases: { 'service-stop': { recover: false } } });
+    const shutdown = system.extension(CoordinatedShutdownId);
+    shutdown.addTask(Phases.ServiceStop, 'throws', () => { throw new Error('boom'); });
+
+    expect(await settled(shutdown.run(UnknownReason.instance))).toBe('rejected: boom');
+
+    expect(shutdown._runInProgress).toBeNull();
+    await system.terminate();
+    expect(system.isTerminated).toBe(true);
   });
 });

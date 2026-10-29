@@ -120,7 +120,10 @@ export class CoordinatedShutdown implements Extension {
   private readonly tasks = new Map<string, RegisteredTask[]>();
   private _running = false;
   private _completed = false;
-  /** The run has ended, completed or halted — what `_running`, set for good, cannot say. */
+  /**
+   * The run has ended, completed or halted, and past the exit `exit-process`
+   * makes at its end — what `_running`, set for good, cannot say.
+   */
   private _settled = false;
   private _runPromise: Promise<void> | null = null;
   /** Something failed and the pipeline is how the system goes — see {@link _runForFailure}. */
@@ -338,6 +341,8 @@ export class CoordinatedShutdown implements Extension {
   /**
    * @internal The run in flight, or `null` when there is none — before the
    * first `run()`, and again once that run has ended, completed or halted.
+   * A run `exit-process` ends with an exit is in flight until that exit:
+   * the flush in front of it is still the run.
    *
    * Narrower than {@link isRunning}, which stays true for good, and
    * `ActorSystem.terminate()` needs the narrow answer: while a run is in
@@ -598,10 +603,16 @@ export class CoordinatedShutdown implements Extension {
 
   private async _run(reason: Reason): Promise<void> {
     this._running = true;
-    // Kept rather than answered on the spot, so a halt is answered where a
-    // completed run exits: once the run is marked settled.
-    let halt: { readonly phase: string; readonly error: unknown } | undefined;
+    // Settled in the `finally` and nowhere earlier: once the exit has happened
+    // or, where there is none, once the run has ended (#1455).  The exit
+    // flushes the dead-letter queue and the log sinks first, and a
+    // `terminate()` arriving during that flush must still find the run in
+    // flight and start nothing — settled before it, the run let that call
+    // start the very teardown the exit takes the place of, in front of the
+    // exit.  The `finally` settles a halted run too, so a `terminate()` after
+    // one is the ordinary teardown again.
     try {
+      let halt: { readonly phase: string; readonly error: unknown } | undefined;
       for (const phase of this.topologicalOrder()) {
         try {
           await this.runPhase(phase, reason);
@@ -610,18 +621,18 @@ export class CoordinatedShutdown implements Extension {
           break;
         }
       }
+      if (halt !== undefined) await this.onRunHalted(halt.phase, halt.error, reason);
+      this._completed = true;
+      // Last thing, and only when asked: a lingering handle (an open socket, a
+      // pooled DB connection a driver never released) otherwise keeps the
+      // process alive long after the pipeline is done, and the operator has no
+      // way to tell "shutting down" from "hung".  `_completed` is already set,
+      // so anything awaiting `run()` observes success even though this call
+      // does not return.
+      if (this.exitsProcess()) await this.exitWith(this.exitStatus(this._failed));
     } finally {
       this._settled = true;
     }
-    if (halt !== undefined) await this.onRunHalted(halt.phase, halt.error, reason);
-    this._completed = true;
-    // Last thing, and only when asked: a lingering handle (an open socket, a
-    // pooled DB connection a driver never released) otherwise keeps the
-    // process alive long after the pipeline is done, and the operator has no
-    // way to tell "shutting down" from "hung".  `_completed` is already set,
-    // so anything awaiting `run()` observes success even though this call
-    // does not return.
-    if (this.exitsProcess()) await this.exitWith(this.exitStatus(this._failed));
   }
 
   /**
