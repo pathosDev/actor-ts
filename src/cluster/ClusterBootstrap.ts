@@ -179,8 +179,11 @@ export async function bootstrapCluster(
     // which the join reads as `'immediate'`, and stable observation hands its
     // winner a deferred self-election.  Either one founds a cluster when
     // nobody answers, which is what off forbids — so every node joins with
-    // `'never'` and waits for a leader to promote it.
-    if (!newClusterEnabled) joinPlan = { ...joinPlan, selfElection: 'never' };
+    // `'never'` and waits for a leader to promote it.  The election's grace
+    // goes with it: nobody is elected, so nobody waits one out, and the give-up
+    // refusal and the readiness budget below — both sized on a grace — have
+    // none to add (#1500).
+    if (!newClusterEnabled) joinPlan = { seeds: joinPlan.seeds, selfElection: 'never' };
     // Before the join, inside this guard: a refusal here has started nothing,
     // and the system goes down with it (#1500).  Judged on the deadline the
     // join will arm — the caller's, which `joinOptionsFor` forwards, over the
@@ -517,6 +520,11 @@ function refuseFoundingSeedList(seeds: ClusterBootstrapOptionsType['seeds']): vo
  * deployment's, and a refusal that depended on the election's outcome would
  * start one node and fail the rest.
  *
+ * Only where a grace runs, which is what `plan.selfElectionGraceMs` says.
+ * With `new-cluster-enabled` off every node joins `'never'`, nobody is elected
+ * and the plan carries no grace, so nothing here applies: such a node waits
+ * for a leader that already exists, not for an election (#1500).
+ *
  * `giveUpMs` is the merged value — the caller's `shutdownAfterUnsuccessfulJoinMs`
  * over `actor-ts.cluster.shutdown-after-unsuccessful-join` — because that is
  * the deadline the join under this bootstrap arms: `joinOptionsFor` forwards
@@ -613,9 +621,11 @@ type JoinPlan = {
    */
   readonly selfElection?: SelfElectionPolicy;
   /**
-   * The election grace, present exactly when stable observation ran —
-   * carried for winners and `'never'` nodes alike, because the readiness
-   * budget of a non-winner depends on the winner's grace (#1086).
+   * The election grace, present exactly when stable observation ran with
+   * `new-cluster-enabled` on — carried for winners and `'never'` nodes alike,
+   * because the readiness budget of a non-winner depends on the winner's grace
+   * (#1086).  Off, nobody is elected and no grace runs, so there is none to
+   * carry (#1500).
    */
   readonly selfElectionGraceMs?: number;
 };
@@ -654,12 +664,13 @@ async function observeStableSeeds(args: {
  * Normalise the `awaitReady` option into what `cluster.awaitReady` takes —
  * or `null` for "do not wait".
  *
- * The computed budget is five seconds — except behind stable observation,
- * where the readiness of **every** node hangs on the election grace, not
- * only the winner's: the winner's `SelfUp` is not due until its grace has
- * elapsed, and a non-winner's promotion cannot arrive before that same
- * deadline fires on the winner.  A flat default therefore expired on N-1 of
- * N nodes of every genuine cold start while nothing was wrong (#1086).
+ * The computed budget is five seconds — except behind stable observation with
+ * `new-cluster-enabled` on, where the readiness of **every** node hangs on the
+ * election grace, not only the winner's: the winner's `SelfUp` is not due
+ * until its grace has elapsed, and a non-winner's promotion cannot arrive
+ * before that same deadline fires on the winner.  A flat default therefore
+ * expired on N-1 of N nodes of every genuine cold start while nothing was
+ * wrong (#1086).  Off, nobody is elected and the plan carries no grace (#1500).
  *
  * Precedence per field: explicit option > `actor-ts.cluster.bootstrap.*` >
  * the computed budget.  Layered by hand rather than through `mergeOptions`
