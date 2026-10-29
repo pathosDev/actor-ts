@@ -228,11 +228,21 @@ import { Aside } from '@astrojs/starlight/components';
   promote members to `weakly-up` during routine gossip-round-trip
   delays, before the leader's response arrives.  Nothing demotes
   them again — no transition leads from `weakly-up` back to
-  `joining`, and the leader's response simply moves them on to
-  `up` — so the cost is not churn but the signal: ordinary joins
-  now emit `MemberWeaklyUp`, and counting those events, as
-  suggested above, no longer tells a partition from a slow
-  gossip round.  Keep `weaklyUpAfterMs > unreachableAfterMs`.
+  `joining`.  The leader's response moves them on to `up`, but it
+  can tie with the timer: the leader promotes the `joining` record
+  it holds at version `E` to `up` at `E + 1`, while the node's own
+  timer has already written `weakly-up` at `E + 1` too.  A seed
+  that starts just after the timer fires produces exactly that
+  order.  The merge used to drop any record that was not strictly
+  newer, so the node stayed `weakly-up` in its own view for good —
+  no `SelfUp`, `isReady()` false — while every peer counted it
+  `up` ([#935](https://github.com/pathosDev/actor-ts/issues/935)).
+  That tie now resolves toward `up` on every node; #935 stays open
+  for equal-version ties between other statuses.  The cost that
+  remains is the signal: ordinary joins now emit
+  `MemberWeaklyUp`, and counting those events, as suggested above,
+  no longer tells a partition from a slow gossip round.  Keep
+  `weaklyUpAfterMs > unreachableAfterMs`.
 </Aside>
 
 ## Where to next

@@ -3614,7 +3614,7 @@ export class Cluster {
       return;
     }
 
-    if (incoming.version <= existing.version) {
+    if (incoming.version <= existing.version && !this.promotedAtEqualVersion(existing, incoming)) {
       // Ignored for membership — but the overlays still land, or a claim
       // published after a member's last status change would never spread
       // (#1358, #844), and a label a previous-release relay stripped would
@@ -3646,6 +3646,33 @@ export class Cluster {
     this.checkStorageIdentityAgreement(incoming);
     this.checkConfigurationAgreement(incoming);
     this.emitStatusTransition(existing, incoming);
+  }
+
+  /**
+   * The one equal-version pair {@link mergeMember} resolves instead of
+   * ignoring (#935): `up` over `weakly-up`.
+   *
+   * Both are successors of the same `joining@E` record.  The member's own
+   * `weaklyUpAfterMs` timer writes `weakly-up@E+1`; the leader, promoting from
+   * the `joining@E` it holds, writes `up@E+1`.  Dropping every record that is
+   * not strictly newer lost the promotion wherever the timer's record had
+   * landed first — on the member itself above all, which then never emitted
+   * `SelfUp` and never became ready while every peer counted it `up`, and
+   * nothing would ever send either side a newer record.  A seed that starts
+   * just after the timer has fired produces exactly this order (#1493).
+   *
+   * Resolving toward `up` loses nothing either record says: `up` is where the
+   * leader's decision leaves the member, and `weakly-up` only the member's own
+   * stand-in for that decision until it arrives.  And it is the same answer on
+   * every node, whichever of the two reached it first, which is what lets
+   * them converge — so it applies to every observer, not only to the member.
+   * Only this pair: every other equal-version disagreement is still ignored,
+   * which is the rest of #935.
+   */
+  private promotedAtEqualVersion(existing: Member, incoming: Member): boolean {
+    return incoming.version === existing.version
+      && existing.status === 'weakly-up'
+      && incoming.status === 'up';
   }
 
   /**
