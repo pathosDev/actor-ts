@@ -42,6 +42,30 @@ function coerceWebsocketData(data: unknown): string | Uint8Array {
   return new Uint8Array(0);
 }
 
+/**
+ * The request's query parameters as every backend hands them over: one value
+ * as a string, a repeated parameter as the array of its values.
+ *
+ * Each parameter is defined on the copy rather than assigned to it.  An
+ * assignment runs a parameter named `__proto__` through `Object.prototype`'s
+ * setter instead of creating it, so that one never arrived as a parameter;
+ * defined, it is an own parameter like any other.
+ */
+function honoQueryOf(context: { req: { queries(): unknown } }): Record<string, string | string[] | undefined> {
+  const rawQueries = (context.req.queries() as Record<string, string[]> | undefined) ?? {};
+  const query: Record<string, string | string[] | undefined> = {};
+  for (const [key, values] of Object.entries(rawQueries)) {
+    if (!values) continue;
+    Object.defineProperty(query, key, {
+      value: values.length === 1 ? values[0] : values,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return query;
+}
+
 /** Read the `Content-Length` header off a Hono context as a string, if present. */
 function contentLengthHeader(c: { req: { header(name?: string): unknown } }): string | undefined {
   const cl = c.req.header('content-length');
@@ -548,11 +572,7 @@ export class HonoBackend implements HttpServerBackend {
     try {
       params = (context.req.param() as Record<string, string>) ?? {};
     } catch { /* no match — leave empty */ }
-    const rawQueries = (context.req.queries() as Record<string, string[]>) ?? {};
-    const query: Record<string, string | string[] | undefined> = {};
-    for (const [key, value] of Object.entries(rawQueries)) {
-      if (value) query[key] = value.length === 1 ? value[0] : value;
-    }
+    const query = honoQueryOf(context);
     const remoteAddress = extractHonoRemoteAddress(context);
     return {
       method: 'GET',
@@ -650,13 +670,7 @@ export class HonoBackend implements HttpServerBackend {
       params = (context.req.param() as Record<string, string>) ?? {};
     } catch { /* no match — leave empty */ }
 
-    // Hono returns queries as Record<string, string[]>; flatten single values.
-    const rawQueries = (context.req.queries() as Record<string, string[]>) ?? {};
-    const query: Record<string, string | string[] | undefined> = {};
-    for (const [key, value] of Object.entries(rawQueries)) {
-      if (!value) continue;
-      query[key] = value.length === 1 ? value[0] : value;
-    }
+    const query = honoQueryOf(context);
 
     const remoteAddress = extractHonoRemoteAddress(context);
 
