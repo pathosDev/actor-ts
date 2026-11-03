@@ -122,6 +122,32 @@ Häufige Muster:
   Properties, Reason-Codes auf `MqttMessage`).  Braucht einen v5-fähigen
   Broker.
 
+### Die Verbindung aus HOCON
+
+Die Blätter der Verbindung liegen ebenfalls unter `actor-ts.io.broker.mqtt`.
+Dieses Beispiel nimmt jedes davon aus der Umgebung: Ein Blatt, dessen
+Variable nicht gesetzt ist, bleibt ungesetzt, beim eingebauten Default, den
+sein Kommentar nennt.
+
+```hocon
+actor-ts.io.broker.mqtt {
+  broker-url       = ${?ACTOR_TS_MQTT_BROKER_URL}        # mqtt:// mqtts:// ws:// wss://; required, here or in code
+  client-id        = ${?ACTOR_TS_MQTT_CLIENT_ID}
+  credentials {
+    username = ${?ACTOR_TS_MQTT_USERNAME}
+    password = ${?ACTOR_TS_MQTT_PASSWORD}
+  }
+  qos              = ${?ACTOR_TS_MQTT_QOS}               # 0, 1 or 2; unset = 0
+  clean-session    = ${?ACTOR_TS_MQTT_CLEAN_SESSION}     # unset = true
+  keep-alive       = ${?ACTOR_TS_MQTT_KEEP_ALIVE}        # whole seconds, such as 30s; unset = 60s
+  protocol-version = ${?ACTOR_TS_MQTT_PROTOCOL_VERSION}  # 4 (MQTT 3.1.1) or 5; unset = 4
+}
+```
+
+Ein Wert aus der Umgebung wird zuerst als JSON gelesen,
+`ACTOR_TS_MQTT_KEEP_ALIVE=30` ist also die nackte Zahl 30, die `keep-alive`
+als dreißig Millisekunden ablehnt; schreib `30s`.
+
 ### Das Will aus HOCON
 
 Das Last Will will eine Flotte üblicherweise pro Deployment setzen statt pro

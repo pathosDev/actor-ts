@@ -115,6 +115,31 @@ Common patterns:
 - **`withProtocolVersion(5)`** — enables MQTT 5 features (user
   properties, reason codes on `MqttMessage`).  Requires a v5-capable broker.
 
+### The connection, from HOCON
+
+The connection's leaves sit under `actor-ts.io.broker.mqtt` too.  This sample
+takes each of them from the environment: a leaf whose variable is not set
+stays unset, at the built-in default its comment names.
+
+```hocon
+actor-ts.io.broker.mqtt {
+  broker-url       = ${?ACTOR_TS_MQTT_BROKER_URL}        # mqtt:// mqtts:// ws:// wss://; required, here or in code
+  client-id        = ${?ACTOR_TS_MQTT_CLIENT_ID}
+  credentials {
+    username = ${?ACTOR_TS_MQTT_USERNAME}
+    password = ${?ACTOR_TS_MQTT_PASSWORD}
+  }
+  qos              = ${?ACTOR_TS_MQTT_QOS}               # 0, 1 or 2; unset = 0
+  clean-session    = ${?ACTOR_TS_MQTT_CLEAN_SESSION}     # unset = true
+  keep-alive       = ${?ACTOR_TS_MQTT_KEEP_ALIVE}        # whole seconds, such as 30s; unset = 60s
+  protocol-version = ${?ACTOR_TS_MQTT_PROTOCOL_VERSION}  # 4 (MQTT 3.1.1) or 5; unset = 4
+}
+```
+
+A value from the environment is read as JSON first, so
+`ACTOR_TS_MQTT_KEEP_ALIVE=30` is the bare number 30, which `keep-alive` refuses
+as thirty milliseconds; write `30s`.
+
 ### The will, from HOCON
 
 The last will is what a fleet usually wants set per deployment rather than
