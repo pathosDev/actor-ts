@@ -420,22 +420,6 @@ function scanKinds(): { readonly gaps: readonly KindGap[]; readonly caught: read
   return { gaps, caught };
 }
 
-/**
- * Whether the gate still changes a size or a duration that ships as a bare
- * count to another bare count, which `getInt` and `getNumber` read as well as
- * the leaf's own accessor.  The kind sentence names no such exception: it is
- * written for the gate that changes such a leaf to a value carrying its unit
- * (`1ms`, `1B`) instead (#1425).  While a gate without that is the one under
- * test, the bare-count gaps are left out of the comparison; with it, there
- * are none to leave out, and the comparison is whole.
- */
-function bareCountsStayBare(): boolean {
-  return gatePerturbations().some((perturbation) =>
-    (perturbation.kind === 'duration' || perturbation.kind === 'size')
-    && typeof (perturbation.introducedAs ?? perturbation.literal) === 'number'
-    && typeof perturbation.value === 'number');
-}
-
 /** The `ConfigKeys` rule's sentence about a reader of another kind, with the sentence after it. */
 function kindSentence(): string {
   const sentences = keysRule().split(/(?<=[.!?])\s+(?=[A-Z*`])/);
@@ -509,11 +493,8 @@ describe('AGENTS.md describes the dead-key gate as it is (#1425)', () => {
     expect(sentence, 'the kind sentence denies the exceptions it names').not.toMatch(KIND_EXCEPTION_DENIAL);
     const { named, unassigned } = namedExceptions(sentence);
     expect(unassigned, 'the kind sentence names a getter before saying which exception it belongs to').toEqual([]);
-    const leftOut = bareCountsStayBare() ? KIND_EXCEPTIONS[0] : undefined;
     KIND_EXCEPTIONS.forEach((exception, index) => {
-      const letThrough = exception === leftOut
-        ? []
-        : [...new Set(gaps.filter(exception.covers).map((gap) => gap.accessor))].sort();
+      const letThrough = [...new Set(gaps.filter(exception.covers).map((gap) => gap.accessor))].sort();
       expect(
         [...named[index]!].sort(),
         `the getters the kind sentence names after "${exception.words.source}" are the ones the gate lets through there`,
