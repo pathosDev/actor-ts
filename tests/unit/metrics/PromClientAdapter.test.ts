@@ -554,6 +554,48 @@ describe('MetricsExtension.enablePromClient', () => {
     }
   });
 
+  /*
+   * The layering is per field: an explicit `undefined` means "not set" and
+   * falls through to the file, exactly as it does for `enable()`.  A plain
+   * spread of the options over the config's answer passes every case above —
+   * a builder never carries an own `undefined` — and drops the configured
+   * prefix or cap for a caller whose plain object does.
+   */
+  test('an explicitly undefined namePrefix falls through to the HOCON prefix', () => {
+    const system = systemWith('actor-ts.metrics.name-prefix = "app_"');
+    try {
+      const registry = makeFakeRegistry();
+      const client = makeFakeClient(registry);
+      const bridge = system.extension(MetricsExtensionId)
+        .enablePromClient({ client: client as never, registry, namePrefix: undefined });
+      bridge.counter('hits_total').inc();
+
+      expect(registeredNames(registry)).toContain('app_hits_total');
+      expect(registeredNames(registry)).not.toContain('hits_total');
+    } finally {
+      void system.terminate();
+    }
+  });
+
+  test('an explicitly undefined maxSeriesPerFamily falls through to the HOCON cap', () => {
+    const system = systemWith('actor-ts.metrics.max-series-per-family = 2');
+    const originalWarn = console.warn;
+    console.warn = (): void => {};
+    try {
+      const registry = makeFakeRegistry();
+      const client = makeFakeClient(registry);
+      const bridge = system.extension(MetricsExtensionId)
+        .enablePromClient({ client: client as never, registry, maxSeriesPerFamily: undefined });
+      for (const path of ['/a', '/b', '/c']) bridge.counter('hits', { path }).inc();
+
+      const metric = registry.registered.find((m) => m.options.name === 'hits')!;
+      expect(metric.calls.map((call) => call.labels['path'])).toEqual(['/a', '/b', METRICS_OVERFLOW_LABEL_VALUE]);
+    } finally {
+      console.warn = originalWarn;
+      void system.terminate();
+    }
+  });
+
   test('it installs the bridge it returns, replacing a registry enable() installed', () => {
     // `useRegistry` semantics rather than `enable()`'s: an earlier `enable()`
     // must not make this a no-op, or the bridge would be built and dropped.
