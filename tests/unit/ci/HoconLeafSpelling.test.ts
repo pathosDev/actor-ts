@@ -401,6 +401,136 @@ async function everyRetiredSpelling(): Promise<{
   return { paths, tables, placed };
 }
 
+/* ----------------------- the renames that moved code too ----------------------- */
+
+/** A source file with its comments removed, so a call a comment shows is not taken for one. */
+function codeOf(file: string): string {
+  return readFileSync(file, 'utf8')
+    .replace(/\r\n/g, '\n')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:'"`])\/\/[^\n]*/g, '$1');
+}
+
+/**
+ * The top-level arguments between the bracket at `open` and its partner.
+ * Strings are skipped, and `=>` closes nothing, so a parameter typed as a
+ * function or a generic with two arguments counts once.
+ */
+function argumentsAt(text: string, open: number): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = open + 1;
+  let quote: string | null = null;
+  for (let index = open; index < text.length; index++) {
+    const character = text[index]!;
+    if (quote !== null) {
+      if (character === '\\') index++;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '\'' || character === '"' || character === '`') quote = character;
+    else if ('([{<'.includes(character)) depth++;
+    else if (')]}'.includes(character) || (character === '>' && text[index - 1] !== '=')) {
+      depth--;
+      if (depth === 0) {
+        parts.push(text.slice(start, index));
+        return parts.map((part) => part.trim()).filter((part) => part !== '');
+      }
+    } else if (character === ',' && depth === 1) {
+      parts.push(text.slice(start, index));
+      start = index + 1;
+    }
+  }
+  throw new Error(`unbalanced brackets from offset ${open}`);
+}
+
+/** The text of every string literal in `text`, joined: a note built with `+` reads as one. */
+function stringLiteralsIn(text: string): string {
+  return [...text.matchAll(/'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"|`((?:[^`\\]|\\.)*)`/g)]
+    .map((literal) => literal[1] ?? literal[2] ?? literal[3] ?? '')
+    .join('');
+}
+
+/** A table whose refusal says something about code other than the default, and the identifiers its note names. */
+type CodeRename = {
+  readonly file: string;
+  readonly table: string;
+  readonly identifiers: readonly string[];
+};
+
+/** A TypeScript identifier a note names: a camelCase field, or a builder method. */
+const TYPESCRIPT_IDENTIFIER = /\b(?:with[A-Z]\w*|[a-z][a-z0-9]*[A-Z]\w*)\b/g;
+
+/**
+ * Every call in `src/` that passes `rejectRetiredLeaves` a note of its own —
+ * a rename that moved TypeScript as well, where the default note ("no code
+ * change is needed") would be false.  The note is read where the call names
+ * it, so what the prose has to name comes from what the refusal says.
+ */
+function codeRenames(): CodeRename[] {
+  return sourceFiles(SOURCE_ROOT).flatMap((file) => {
+    const code = codeOf(file);
+    return [...code.matchAll(/\brejectRetiredLeaves\(/g)].flatMap((call): CodeRename[] => {
+      if (/\bfunction\s+$/.test(code.slice(Math.max(0, call.index! - 20), call.index!))) return [];
+      const parts = argumentsAt(code, call.index! + call[0].length - 1);
+      if (parts.length < 4) return [];
+      const note = parts[3]!;
+      let text: string;
+      if (/^['"`]/.test(note)) {
+        text = stringLiteralsIn(note);
+      } else {
+        const declaration = code.match(new RegExp(`\\bconst ${note}\\s*(?::[^=]+)?=([\\s\\S]*?);\\n`));
+        if (declaration === null) throw new Error(`${relative(SOURCE_ROOT, file)}: the note ${note} is no const this test can read`);
+        text = stringLiteralsIn(declaration[1]!);
+      }
+      return [{ file, table: parts[2]!, identifiers: [...new Set(text.match(TYPESCRIPT_IDENTIFIER) ?? [])] }];
+    });
+  });
+}
+
+/** The renames none of `text`'s code spans names: a span counts when it is one of the note's identifiers, or calls one. */
+function unnamedRenames(text: string, renames: readonly CodeRename[]): string[] {
+  const spans = [...text.matchAll(/`([^`]+)`/g)].map((span) => span[1]!);
+  return renames
+    .filter((rename) => !rename.identifiers.some((identifier) =>
+      spans.some((span) => span === identifier || span.startsWith(`${identifier}(`))))
+    .map((rename) => rename.table);
+}
+
+/**
+ * A claim that one table is the exception — the shape the sentence about code
+ * notes went stale in — or the plain denial that any table passes a note.
+ */
+const SINGLE_EXCEPTION_CLAIM =
+  /\b(?:the )?(?:one|only|single) (?:rename|table)\b|\bevery table is but\b|\b(?:gets?|pass(?:es)?) no note\b|\bno table passes\b/i;
+
+/** Every builder method `src/` declares, by name, with the parameter counts its declarations take. */
+function builderArities(): Map<string, Set<number>> {
+  const arities = new Map<string, Set<number>>();
+  for (const file of sourceFiles(SOURCE_ROOT)) {
+    const code = codeOf(file);
+    for (const declaration of code.matchAll(/(?:^|\n)[ \t]*(?:(?:public|protected|override)\s+)*(with[A-Z]\w*)\(/g)) {
+      const name = declaration[1]!;
+      const arity = argumentsAt(code, declaration.index! + declaration[0].length - 1).length;
+      arities.set(name, (arities.get(name) ?? new Set<number>()).add(arity));
+    }
+  }
+  return arities;
+}
+
+/** A passage's sentences, as a reader splits them. */
+function sentencesOf(passage: string): string[] {
+  return passage.split(/(?<=[.!?])\s+(?=[A-Z*`])/);
+}
+
+/** The comment `src/config/RetiredKeys.ts` gives the default note, which says which tables need another. */
+function defaultNoteComment(): string {
+  const text = readFileSync(join(SOURCE_ROOT, 'config', 'RetiredKeys.ts'), 'utf8').replace(/\r\n/g, '\n');
+  const comment = text.match(/\/\*\*((?:(?!\*\/)[\s\S])*)\*\/\s*const HOCON_ONLY_RENAME_NOTE\b/);
+  expect(comment, 'RetiredKeys.ts lost the comment on HOCON_ONLY_RENAME_NOTE').not.toBeNull();
+  return comment![1]!.replace(/^\s*\* ?/gm, '').replace(/\s+/g, ' ').trim();
+}
+
 async function errorOf(run: () => Promise<unknown>): Promise<unknown> {
   try {
     await run();
@@ -495,5 +625,50 @@ describe('the AGENTS.md naming-lockstep paragraph says so', () => {
     expect(paragraph).toMatch(/where its block is first read/);
     expect(paragraph).toMatch(/not up front at `ActorSystem\.create`/);
     expect(paragraph).not.toMatch(/refused at startup/);
+  });
+
+  test('every rename whose refusal says what changed in code is found, with what its note names', () => {
+    // Guards the guard: the two tables that pass a note of their own today.
+    const renames = codeRenames();
+    expect(renames.map((rename) => rename.table)).toEqual(expect.arrayContaining([
+      'RETIRED_BROKER_CIRCUIT_BREAKER_LEAVES',
+      'RETIRED_TCP_FRAMING_LEAVES',
+    ]));
+    for (const rename of renames) {
+      expect(rename.identifiers.length, `${rename.table}'s note names no TypeScript field or method`).toBeGreaterThan(0);
+    }
+  });
+
+  test('where it names rejectRetiredLeaves, it names every rename that moved code, and none as the only one', () => {
+    // The sentence said the TCP framing caps were the one rename that moved
+    // TypeScript fields after the broker breaker's had moved too, with its
+    // own note.  Each note-passing table is named by a field or method its
+    // note names, so the next one fails here until the sentence takes it.
+    const paragraph = lockstepParagraph();
+    const sentence = sentencesOf(paragraph).find((candidate) => candidate.includes('`rejectRetiredLeaves`'));
+    expect(sentence, 'the paragraph no longer says which tables pass rejectRetiredLeaves a note').toBeDefined();
+    expect(unnamedRenames(sentence!, codeRenames()), 'renames whose refusal says code moved, which the sentence leaves out')
+      .toEqual([]);
+    expect(paragraph).not.toMatch(SINGLE_EXCEPTION_CLAIM);
+  });
+
+  test('every builder call it shows is one src/ declares with that many parameters', () => {
+    // `withCircuitBreaker(f, r)` stood here after the breaker had become an
+    // id and the method `withCircuitBreaker(id)`.
+    const calls = [...lockstepParagraph().matchAll(/`(with[A-Z]\w*)\(([^)`]*)\)`/g)];
+    expect(calls.length).toBeGreaterThan(0);
+    const arities = builderArities();
+    for (const [, name, parameters] of calls) {
+      const arity = parameters!.trim() === '' ? 0 : parameters!.split(',').length;
+      expect([...(arities.get(name!) ?? [])], `\`${name}(${parameters})\`: no builder in src/ declares ${name} with ${arity}`)
+        .toContain(arity);
+    }
+  });
+
+  test("RetiredKeys.ts's comment on the default note names every rename that moved code, and none as the only one", () => {
+    const comment = defaultNoteComment();
+    expect(unnamedRenames(comment, codeRenames()), 'renames whose refusal says code moved, which the comment leaves out')
+      .toEqual([]);
+    expect(comment).not.toMatch(SINGLE_EXCEPTION_CLAIM);
   });
 });

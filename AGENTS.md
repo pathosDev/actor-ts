@@ -913,12 +913,14 @@ Further rules:
   is first read — a broker actor's `preStart`, a gRPC server's start, the first
   `HttpExtension` access, the `bind()` of a server with a WebSocket route,
   `cache(name)` — not up front at `ActorSystem.create`, so a block nothing reads
-  is never checked. The TCP framing caps are the one rename that moved
-  TypeScript fields as well (`maxLineBytes` / `maxFrameBytes`); their table
-  passes `rejectRetiredLeaves` a note saying so — every other table keeps the
-  default, which tells the operator no code change is needed. Multi-arg sugar
-  is fine when the field still matches the stem (`withCredentials(u, p)` → field
-  `credentials`; `withCircuitBreaker(f, r)` → field `circuitBreaker`).
+  is never checked. Where a rename moved TypeScript as well, its table passes
+  `rejectRetiredLeaves` a note saying what changed in code: the TCP framing
+  caps, whose fields became `maxLineBytes` / `maxFrameBytes`, and the broker
+  breaker, whose numbers became an id that `circuitBreaker` holds and
+  `withCircuitBreaker(id)` takes. Every other table keeps the default, which
+  tells the operator no code change is needed. Multi-arg sugar is fine when
+  the field still matches the stem (`withCredentials(u, p)` → field
+  `credentials`).
 - **An optional fourth export, `XOptionsValidator`**, when the options have
   fields with real constraints (ports, positive durations/counts, byte sizes,
   enums, non-empty strings/arrays, URLs, cross-field rules). It `extends

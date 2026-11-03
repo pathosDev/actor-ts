@@ -19,9 +19,11 @@ export type RetiredLeaves = Readonly<Record<string, string>>;
 
 /**
  * What the refusal says about the operator's code unless the table says
- * otherwise: true of a rename that moved only the HOCON spelling, which every
- * table is but the TCP framing caps' — those fields were renamed in code as
- * well, so that table passes a note of its own.
+ * otherwise: true of a rename that moved only the HOCON spelling.  A rename
+ * that moved TypeScript too has its table pass a note of its own saying what
+ * changed — the TCP framing caps' (`maxLineBytes`, `maxFrameBytes`) and the
+ * broker breaker's (`circuitBreaker`, `withCircuitBreaker`), whose numbers
+ * became an id.
  */
 const HOCON_ONLY_RENAME_NOTE =
   'The TypeScript field names and builder methods are unchanged, so no code change is needed.';
