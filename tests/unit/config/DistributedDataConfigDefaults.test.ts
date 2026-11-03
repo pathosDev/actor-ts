@@ -169,9 +169,9 @@ describe('DistributedDataOptionsValidator over config-sourced values', () => {
   });
 
   test('takes a positive default quorum deadline and refuses 0 — unlike the ceiling, 0 is not "off" here', () => {
-    // The ceiling's `0` switches a bound off; a deadline's would arm no timer,
-    // and a quorum request without one never settles when a replica stays
-    // silent.  There is no honest reading of it, so it is refused rather than
+    // The ceiling's `0` switches a bound off; a deadline of 0 is armed like
+    // any other, so it would expire nearly every request at the next timer
+    // tick.  There is no honest reading of it, so it is refused rather than
     // translated (#856).
     const validator = new DistributedDataOptionsValidator();
 
