@@ -263,7 +263,10 @@ expose these endpoints.
   string — a wrong host, a wrong password, a driver the image lacks —
   fails the pod at boot, not at its first persisted message
   ([opening the stores at
-  startup](/persistence/overview/#opening-the-stores-at-startup)).
+  startup](/persistence/overview/#opening-the-stores-at-startup)) —
+  except behind the object-storage snapshot and durable-state stores,
+  which open nothing ahead of time, so an unreachable bucket fails
+  their first operation instead.
   The other side of it: a database that becomes reachable only after
   the app starts sends the pod into `CrashLoopBackOff` until it is,
   each attempt failing when the store is refused, or when the

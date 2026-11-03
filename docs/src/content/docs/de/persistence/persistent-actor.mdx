@@ -467,9 +467,14 @@ Eine Recovery, die scheitert — nach `recovery-timeout` oder von einem
 Breaker abgewiesen —, lässt `preStart` scheitern, denn die Klasse hat
 kein `onRecoveryFailure`.  Und ein Schreibvorgang, der in das Timeout
 gelaufen ist, ist dort **nicht** konstruktionsbedingt sicher: Landet
-er doch, faltet die Replica das Event beim nächsten Neustart, während
-kein Peer es je bekommen hat — denn nur ein erfolgreiches `persist`
-verteilt.
+er doch, faltet und verteilt nichts das Event — beides tut nur ein
+erfolgreiches `persist` —, also bekommt es kein Peer je, und das
+Journal der Replica enthält ein Event, das ihr Zustand nicht zeigt.
+Ob eine spätere Recovery es faltet, hängt davon ab, wo sie beginnt:
+Ein nach der Landung aufgenommener Snapshot zählt das Event als
+abgedeckt, also faltet eine Recovery aus diesem Snapshot es nie,
+während ein vollständiges Replay — ohne Snapshot, oder wenn
+`snapshot-is-optional` auf das Journal ausweicht — es faltet.
 
 [`DurableStateActor`](/de/persistence/durable-state/) steht außerhalb
 davon: Keine dieser Einstellungen erreicht einen Durable-State-Store,

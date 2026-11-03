@@ -483,7 +483,11 @@ erreicht seine Datenbank, ob er seine Tabellen selbst anlegt oder
 nicht: Mit `autoCreateTables: false` schickt er ein `SELECT 1`, wo er
 sonst sein DDL ausführen würde, also lässt eine unerreichbare Datenbank
 den Start auch hinter einem Schema scheitern, das der Operator
-verwaltet.  Ein Store, der weder
+verwaltet.  Die Ausnahme sind der Object-Storage-Snapshot-Store und
+der Object-Storage-Durable-State-Store: Sie haben kein `start()`, also
+wird vorab nichts geöffnet, und an einem Bucket, den sie nicht
+erreichen, scheitert ihre erste Operation statt des Starts — genauso
+bei einem eigenen Store ohne `start()`.  Ein Store, der weder
 öffnet noch scheitert, hinter einem Host, der Pakete verwirft, lässt
 den Start scheitern, sobald das Budget seiner Phase abläuft (30 s,
 sofern weder `withCoordinatedStartup` noch

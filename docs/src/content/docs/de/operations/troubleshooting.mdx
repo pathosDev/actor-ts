@@ -309,9 +309,12 @@ unberührt, der Restart liest also den echten Kopf.  Ein nicht
 wiederholbarer Seiteneffekt im Handler ist allerdings schon
 gelaufen.  Ein `ReplicatedEventSourcedActor` ist die Ausnahme: Ein
 Schreibvorgang, der in das Timeout lief und trotzdem landet, wird
-von dieser Replica beim nächsten Neustart gefaltet und erreicht ihre
-Peers nie, denn nur ein erfolgreiches `persist` verteilt — siehe
-[Replicated Event
+nie live gefaltet und erreicht die Peers nie, denn nur ein
+erfolgreiches `persist` faltet und verteilt.  Eine spätere Recovery
+faltet ihn nur, wenn sie ihn wieder abspielt — ein nach der Landung
+aufgenommener Snapshot zählt das Event als abgedeckt, also faltet eine
+Recovery aus diesem Snapshot es nie, ein vollständiges Replay dagegen
+schon — siehe [Replicated Event
 Sourcing](/de/persistence/replicated-event-sourcing/overview/#wenn-die-stores-ausfallen).
 
 Verwandte Stellschrauben im selben Block:
