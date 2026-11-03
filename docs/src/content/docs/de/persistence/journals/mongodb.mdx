@@ -103,7 +103,10 @@ Index anlegt —, und ein abgelehnter Ping lässt das Öffnen mit einem Fehler
 scheitern, der den Store nennt.  Der Ping braucht kein Recht, liest nichts und
 legt nichts an.  Er geht über das `command` des Datenbank-Handles, das das
 Handle des Treibers immer hat; ein Ersatz, der ohne es übergeben wird, wird
-nicht angepingt.  Das
+nicht angepingt.  Das gilt für diese Stores, nicht für jede Achse: Ein
+Object-Storage-Snapshot- oder -Durable-State-Store, der daneben ausgewählt ist,
+oder ein eigener Store ohne `start()` hat vorab nichts zu öffnen und scheitert
+stattdessen bei seiner ersten Operation.  Das
 zurückgegebene `durableStateStore` funktioniert weiterhin und liefert dieselbe
 Instanz; sie wird nur gebaut, wenn sie zum ersten Mal angefragt wird, statt bei
 der Registrierung, wer sie also lieber im Code an einen `DurableStateActor`

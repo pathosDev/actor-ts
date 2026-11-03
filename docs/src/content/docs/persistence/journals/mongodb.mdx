@@ -101,7 +101,10 @@ durable-state store, which creates no index at all — and a refused ping fails
 the open with an error naming the store.  The ping needs no privilege, reads
 nothing and creates nothing.  It goes through the database handle's `command`,
 which the driver's handle always has; a stand-in handed over without one is not
-pinged.
+pinged.  It holds for these stores, not for every axis: an object-storage
+snapshot or durable-state store selected beside them, or a store of your own
+without `start()`, has nothing to open ahead of time and fails its first
+operation instead.
 The returned `durableStateStore` still works and still yields the same instance;
 it is simply built when it is first asked for rather than at registration, so a
 caller who prefers to hand it to `DurableStateActor` in code can carry on doing
