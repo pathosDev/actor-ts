@@ -118,7 +118,9 @@ aggregate reads as *healthy* (see below), so un-registering would make
 "everything passes" and "nothing is reporting any more" the same
 answer.  A later `Cluster.join` on the same system retires the old
 pair and installs its own, so a process that leaves and re-joins
-recovers normally.
+recovers normally — sharding included: leaving stops the regions and
+coordinators the node started, so the new cluster can start the same
+types again.
 
 ### Gating on a shard region
 
@@ -140,21 +142,33 @@ check passes once `cluster.sharding.isRegistered(type)` does, and its
 `detail` says which of three things keeps it red:
 
 - **no region is running** for the type on this node — it was never
-  started here, or it has stopped;
+  started here, or it has stopped, which leaving the cluster does;
 - **the coordinator refused it** over `number-of-shards`, with both
   counts;
 - **the region is running and not acknowledged yet** — after it
-  starts, after a leader change, and after the coordinator evicts it.
+  starts, after the coordinator evicts it, and after a leader change
+  lifts a refusal.
+
+A leader change on its own turns no check red.  What the check reads
+is this node's account of what its region was last told, and a new
+leader tells it nothing until its coordinator answers: a registered
+region registers with the new coordinator in the background and stays
+green throughout.
 
 **A refused node stays out of rotation until `number-of-shards`
-agrees, or until a leader change reaches a coordinator that accepts
-it.**  That is a decision, not a side effect: a refused region keeps
-accepting traffic for the type and buffers all of it, because no shard
-will ever be allocated to it, so taking the node out of the load
+agrees.**  That is a decision, not a side effect: a refused region
+keeps accepting traffic for the type and buffers all of it, because no
+shard will ever be allocated to it, so taking the node out of the load
 balancer is the one thing that helps.  There is deliberately no window
 after which the check gives up, and no timeout: the check is a set
 read with nothing to wait for, and passing after a deadline would put
 exactly that node back in rotation.
+
+A refusal is the verdict of one leader's term.  A leader change lifts
+it: the `detail` reads *running and not acknowledged yet* until the
+next coordinator answers, and that coordinator decides again — it
+accepts the region when the counts agree with its own, and refuses it
+when they do not.
 
 Like the cluster's two, the checks stay registered through `leave()`,
 and a later `Cluster.join` retires them with the pair.  For a type only

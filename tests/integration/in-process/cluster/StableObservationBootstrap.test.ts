@@ -401,6 +401,82 @@ describe('bootstrapCluster — stableObservation', () => {
     expect(systems.map((system) => system.isTerminated)).toEqual([true]);
   }, 20_000);
 
+  test('with new-cluster-enabled off no grace runs, so the same give-up is not refused (#1500)', async () => {
+    // Off, every node joins 'never': nobody is elected, nobody waits out a
+    // grace, and a node is promoted by the leader of a cluster that already
+    // exists or by nothing at all.  The give-up that the case above refuses —
+    // the election budget exactly — has nothing to trip here.
+    const name = 'stable-give-up-off';
+    const graceMs = 250;
+    const giveUpMs = graceMs + DEFAULT_AWAIT_READY_MS;
+    const transport = new CountingTransport(new NodeAddress(name, 'h', 56603));
+    const configuration = Config.parseString(`
+      actor-ts.cluster.bootstrap.new-cluster-enabled = off
+      actor-ts.cluster.shutdown-after-unsuccessful-join = ${giveUpMs}ms
+    `);
+    const bootstrapOptions = ClusterBootstrapOptions.create(name)
+      .withHost('h')
+      .withPort(56603)
+      .withSeeds([`${name}@h:56603`, `${name}@h:56604`])
+      .withStableObservation({ pollIntervalMs: 5, stableMarginMs: 0, maxWaitMs: 2_000, selfElectionGraceMs: graceMs })
+      .withTransport(transport)
+      .withConfig(configuration)
+      .withReceptionist(false)
+      .withShutdownOnSignals(false)
+      .withAwaitReady(false)
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+
+    await observingSystems(async (systems) => {
+      const { cluster } = await bootstrapCluster(bootstrapOptions);
+      expect(transport.startCalls).toBe(1);
+      expect(systems.map((system) => system.isTerminated)).toEqual([false]);
+      // Joined 'never', as off makes every node: no election of its own.
+      expect(selfElectionTimerOf(cluster)).toBeNull();
+      expect(cluster.selfElected).toBe(false);
+    });
+  }, 20_000);
+
+  test('the readiness budget carries the grace only where a grace runs (#1086, #1500)', async () => {
+    // The budget a bootstrap waits for readiness is the grace plus five
+    // seconds behind stable observation, because a non-winner cannot be
+    // promoted before the winner's grace has run out.  Off, no winner exists
+    // and no grace runs, so the plain five seconds are the budget.  Read off
+    // the call itself: waiting out either budget would be the whole test.
+    const name = 'stable-readiness-budget';
+    const graceMs = 250;
+    const budgetFor = async (newClusterEnabled: boolean, port: number): Promise<number | undefined> => {
+      const configuration = Config.parseString(
+        `actor-ts.cluster.bootstrap.new-cluster-enabled = ${newClusterEnabled ? 'on' : 'off'}`,
+      );
+      const bootstrapOptions = ClusterBootstrapOptions.create(name)
+        .withHost('h')
+        .withPort(port)
+        .withSeeds([`${name}@h:${port}`, `${name}@h:${port + 1}`])
+        .withStableObservation({ pollIntervalMs: 5, stableMarginMs: 0, maxWaitMs: 2_000, selfElectionGraceMs: graceMs })
+        .withTransport(new InMemoryTransport(new NodeAddress(name, 'h', port)))
+        .withConfig(configuration)
+        .withReceptionist(false)
+        .withShutdownOnSignals(false)
+        .withLogger(new NoopLogger())
+        .withLogLevel(LogLevel.Off);
+      const asked: Array<number | undefined> = [];
+      const spy = spyOn(Cluster.prototype, 'awaitReady').mockImplementation(async (options) => {
+        asked.push(options?.timeoutMs);
+      });
+      try {
+        await observingSystems(async () => { await bootstrapCluster(bootstrapOptions); });
+      } finally {
+        spy.mockRestore();
+      }
+      expect(asked).toHaveLength(1);
+      return asked[0];
+    };
+
+    expect(await budgetFor(true, 56605)).toBe(graceMs + DEFAULT_AWAIT_READY_MS);
+    expect(await budgetFor(false, 56607)).toBe(DEFAULT_AWAIT_READY_MS);
+  }, 20_000);
+
   test('a join give-up longer than the election budget leaves the cold start alone (#1500)', async () => {
     // Concurrent, as a cold start is — which is the case the refusal above
     // exists for.  Every node but the elected one joins with 'never' and waits

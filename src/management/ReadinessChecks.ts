@@ -42,12 +42,16 @@ export function shardRegionCheckName(typeName: string): string {
  *
  * The detail tells the three ways of not being registered apart, because each
  * wants something different done: **no region is running** for the type on
- * this node — never started here, or stopped — so start it, or stop gating on
- * it; **the coordinator refused it** over `number-of-shards`, which stays
- * refused until the counts agree or a leader change reaches a coordinator that
- * accepts it; or the region is **running and not acknowledged yet** — after
- * it starts, after a leader change and after an eviction — which resolves on
- * its own.  "Running" is read off the actor tree at the region's well-known
+ * this node — never started here, or stopped, which leaving the cluster does —
+ * so start it, or stop gating on it; **the coordinator refused it** over
+ * `number-of-shards`, a verdict that lasts until the counts agree or the
+ * leader's term ends, because a leader change lifts the refusal and the next
+ * coordinator decides again; or the region is **running and not acknowledged
+ * yet** — after it starts, after an eviction, and after a leader change that
+ * lifted a refusal — which resolves on its own.  A leader change alone turns
+ * nothing red: what the check reads is this node's account of what its region
+ * was last told, and a new leader tells it nothing until its coordinator
+ * answers.  "Running" is read off the actor tree at the region's well-known
  * path rather than from anything `ClusterSharding` keeps, because its record
  * of started types outlives a region that stopped.
  *
@@ -93,9 +97,10 @@ function notRegisteredDetail(
   if (refusal !== null) {
     return `the coordinator refused this node's region for '${typeName}': this node is configured with `
       + `${refusal.regionNumShards} shards and the coordinator governs the type with ${refusal.coordinatorNumShards}. `
-      + `It stays out of rotation until ${ConfigKeys.sharding.numberOfShards} agrees, or a leader change `
-      + 'reaches a coordinator that accepts it';
+      + `It stays out of rotation until ${ConfigKeys.sharding.numberOfShards} agrees; a leader change lifts `
+      + 'the refusal, and the next coordinator decides again';
   }
   return `the shard region for '${typeName}' is running and not registered with the coordinator yet: `
-    + 'a region registers after it starts, after a leader change, and again after the coordinator evicts it';
+    + 'a region registers after it starts, after the coordinator evicts it, and after a leader change lifts '
+    + 'a refusal';
 }
