@@ -2215,17 +2215,22 @@ Three things deliberately have **no leaf**.  A pre-built `pool` or `client` and 
 is the driver's whole option surface, free-form and unvalidated, so it stays
 code-only — the long tail.  For SQL Server that means a purely config-driven
 store is reached through `url`, in the `Server=...;Database=...` form.  An
-`mssql://` url is refused when the store is built: node-mssql has parsed none
-since its 8.0, and reads one as a single unknown key with no server behind it.
+`mssql://` url passes the read like any other string and is refused with an
+`OptionsError` when the store is built: node-mssql has parsed none since its
+8.0, and reads one as a single unknown key with no server behind it.
 
 What an operator does tune on the three SQL drivers has **typed leaves** instead
 (#1490): `max-pool-size`, `idle-timeout`, `connect-timeout` and `ca-file` under
 every Postgres, MariaDB and SQL Server block, plus MariaDB's `acquire-timeout`
 and SQL Server's `request-timeout`.  Every one is **comment-only** — unset
 leaves the driver's own default, the only value that keeps tracking it — and
-reaches the driver under the driver's own name only when set.  The store checks
-them when it is built: a size or timeout that is not a positive whole number, a
-timeout the driver could not arm as a timer (above about 24.8 days), and a
+reaches the driver under the driver's own name only when set.  Each is read
+when the store is built.  A value of the wrong kind — a word where a number
+goes, a fraction where a count goes, a duration that does not parse — fails
+that read, with a `ConfigError` naming the leaf, or for the duration an error
+naming only the value.  One of the right kind is then checked by the store: a
+size below `1`, a timeout that is not a positive whole number of milliseconds,
+a timeout the driver could not arm as a timer (above about 24.8 days), and a
 MariaDB `idle-timeout` that is not a whole number of seconds — the connector
 counts it in seconds — are refused with an `OptionsError`.  So is a setting
 made twice: a leaf beside the same key in `poolConfig` or in the url

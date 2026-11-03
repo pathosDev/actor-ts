@@ -26,6 +26,10 @@ import { ConfigKeys } from '../../../src/config/ConfigKeys.js';
 import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import { Dispatchers } from '../../../src/Dispatcher.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { MsSqlJournalOptionsValidator } from '../../../src/persistence/journals/MsSqlJournalOptions.js';
+import { readMsSqlJournalOptionsFromConfig } from '../../../src/persistence/journals/MsSqlPluginOptions.js';
+import { PostgresJournalOptionsValidator } from '../../../src/persistence/journals/PostgresJournalOptions.js';
+import { readPostgresJournalOptionsFromConfig } from '../../../src/persistence/journals/PostgresPluginOptions.js';
 import { bunIdleTimeoutOf } from '../../../src/runtime/http/BunHonoRunner.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 
@@ -335,5 +339,75 @@ describe('app-version = ${?APP_VERSION} and a version that reads as a number (#8
     expect(row).toContain('${?APP_VERSION}');
     expect(row).toContain(sentence);
     expect(row).toContain(REMEDY);
+  });
+});
+
+describe('when a bad persistence client leaf fails (#1490)', () => {
+  /** Where building a store from `block` fails: the read, the store's own check, or neither. */
+  function failureOf(read: () => unknown, check: (settings: never) => void): { readonly at: string; readonly error?: Error } {
+    let settings: unknown;
+    try {
+      settings = read();
+    } catch (error) {
+      return { at: 'read', error: error as Error };
+    }
+    try {
+      check(settings as never);
+    } catch (error) {
+      return { at: 'check', error: error as Error };
+    }
+    return { at: 'nowhere' };
+  }
+  const postgres = (leaf: string): ReturnType<typeof failureOf> => failureOf(
+    () => readPostgresJournalOptionsFromConfig(Config.parseString(`actor-ts.persistence.journal.postgres { url = "postgres://h/db", ${leaf} }`)),
+    (settings) => new PostgresJournalOptionsValidator().validate(settings),
+  );
+  const msSql = (leaf: string): ReturnType<typeof failureOf> => failureOf(
+    () => readMsSqlJournalOptionsFromConfig(Config.parseString(`actor-ts.persistence.journal.mssql { ${leaf} }`)),
+    (settings) => new MsSqlJournalOptionsValidator().validate(settings),
+  );
+
+  test('the wrong kind fails the read, naming the leaf — a duration that does not parse names only the value', () => {
+    const word = postgres('max-pool-size = lots');
+    expect(word.at).toBe('read');
+    expect(word.error).toBeInstanceOf(ConfigError);
+    expect(word.error?.message).toContain('actor-ts.persistence.journal.postgres.max-pool-size');
+    const duration = postgres('connect-timeout = soon');
+    expect(duration.at).toBe('read');
+    expect(duration.error?.message).toBe('Invalid duration: soon');
+  });
+
+  test('a value of the right kind out of range is the store\'s OptionsError, and so is an mssql:// url', () => {
+    const zero = postgres('max-pool-size = 0');
+    expect(zero.at).toBe('check');
+    expect(zero.error).toBeInstanceOf(OptionsError);
+    const url = msSql('url = "mssql://sa:secret@host:1433/app"');
+    expect(url.at).toBe('check');
+    expect(url.error).toBeInstanceOf(OptionsError);
+  });
+
+  const STANDARD = 'Each is read when the store is built: a value of the wrong kind fails that read with a ConfigError naming the leaf (a duration that does not parse, with an error naming only the value), and one out of range is then refused with an OptionsError.';
+
+  test('reference.conf says so for every block that has the leaves, and for the url', () => {
+    expect(REFERENCE).not.toContain('A bad value is refused with an OptionsError when the store is built');
+    expect(REFERENCE.split(STANDARD).length - 1).toBe(3);
+    expect(REFERENCE).toContain('An mssql:// url passes the read like any other string and is refused with an OptionsError when the store is built');
+  });
+
+  test.each([
+    [
+      'reference/configuration.mdx',
+      'An `mssql://` url passes the read like any other string and is refused with an `OptionsError` when the store is built',
+      'Each is read when the store is built. A value of the wrong kind — a word where a number goes, a fraction where a count goes, a duration that does not parse — fails that read, with a `ConfigError` naming the leaf, or for the duration an error naming only the value.',
+    ],
+    [
+      'de/reference/configuration.mdx',
+      'Eine `mssql://`-URL besteht das Lesen wie jeder andere String und wird beim Bau des Stores mit einem `OptionsError` abgelehnt',
+      'Gelesen wird jedes beim Bau des Stores. Ein Wert der falschen Art — ein Wort, wo eine Zahl hingehört, ein Bruch, wo eine Anzahl hingehört, eine Dauer, die sich nicht parsen lässt — scheitert schon beim Lesen, mit einem `ConfigError`, der das Blatt nennt, bei der Dauer mit einem Fehler, der nur den Wert nennt.',
+    ],
+  ])('%s says when each fails', (path, url, leaves) => {
+    const text = prose(page(path));
+    expect(text).toContain(url);
+    expect(text).toContain(leaves);
   });
 });

@@ -2131,8 +2131,11 @@ actor-ts {
         auto-create-tables = on       # CREATE TABLE IF NOT EXISTS when the store opens (see auto-start)
         # The connection's tuning -- typed leaves, each deliberately unset:
         #   absence leaves the driver's own default (pg 8.23 over pg-pool 3.14),
-        #   which is the only value that keeps tracking it.  A bad value is
-        #   refused with an OptionsError when the store is built.
+        #   which is the only value that keeps tracking it.  Each is read when
+        #   the store is built: a value of the wrong kind fails that read with
+        #   a ConfigError naming the leaf (a duration that does not parse, with
+        #   an error naming only the value), and one out of range is then
+        #   refused with an OptionsError.
         # max-pool-size -- connections the pool holds; pg-pool's max, default 10.
         # idle-timeout -- how long an idle connection stays open; pg-pool's
         #   idleTimeoutMillis, default 10s.
@@ -2176,7 +2179,8 @@ actor-ts {
       # SQL Server journal -- see the postgres block above.
       mssql {
         # A connection string, "Server=host,1433;Database=app;…".  An mssql://
-        #   url is refused when the store is built: node-mssql has parsed none
+        #   url passes the read like any other string and is refused with an
+        #   OptionsError when the store is built: node-mssql has parsed none
         #   since its 8.0 and reads one as no server at all.  A url that
         #   switches TLS verification off (TrustServerCertificate set to
         #   anything but false) is refused with a ConfigError.
@@ -2245,8 +2249,11 @@ actor-ts {
         auto-create-indexes = on      # the unique index is what refuses a duplicate append
         # The client's tuning -- typed leaves, each deliberately unset: absence
         #   leaves the driver's own default (mongodb 6 and 7 alike), which is
-        #   the only value that keeps tracking it.  A bad value is refused with
-        #   an OptionsError when the store is built.
+        #   the only value that keeps tracking it.  Each is read when the store
+        #   is built: a value of the wrong kind fails that read with a
+        #   ConfigError naming the leaf (a duration that does not parse, with an
+        #   error naming only the value), and one out of range is then refused
+        #   with an OptionsError.
         # max-pool-size -- connections the client holds open to one server;
         #   maxPoolSize, default 100.
         # min-pool-size -- connections it keeps open ahead of use; minPoolSize,
@@ -2280,8 +2287,11 @@ actor-ts {
         # The client's retry and timeout settings -- typed leaves, each
         #   deliberately unset: absence leaves the SDK's own resolution (an
         #   AWS_* environment variable, then the shared config file, then its
-        #   default), which a shipped value would overrule.  A bad value is
-        #   refused with an OptionsError when the store is built.
+        #   default), which a shipped value would overrule.  Each is read when
+        #   the store is built: a value of the wrong kind fails that read with
+        #   a ConfigError naming the leaf (a duration that does not parse, with
+        #   an error naming only the value), and one out of range is then
+        #   refused with an OptionsError.
         # max-attempts -- attempts per request, the first included;
         #   maxAttempts, default 3 (AWS_MAX_ATTEMPTS while unset).
         # retry-mode -- standard or adaptive; retryMode, default standard
