@@ -263,7 +263,12 @@ und `maxAttempts` ist standardmäßig `Infinity` — für sich genommen wird ein
 toter Endpoint also endlos wiederholt, im Backoff von oben.  Mit einem Breaker
 hört der Client nach `max-failures` fehlgeschlagenen Connects in Folge für
 das Fenster des Breakers auf zu wählen und schickt danach eine einzige
-Probe — eine Probe pro Fenster für alle Clients, die sich die Id teilen.  Er
+Probe.  Clients, die sich die Id teilen, machen höchstens einen Versuch je
+Fenster, und eine Probe antwortet nur so lange für alle, wie ein
+fehlschlagender Connect kurz ist gegenüber der Streuung ihres Aufwachens — ein
+Connect, der hängt, läuft noch, wenn der nächste Client aufwacht, und der
+probt ebenfalls (siehe
+[Circuit Breaker](/de/io/broker-actor-base/#circuit-breaker)).  Er
 versucht es weiterhin, solange `maxAttempts` es erlaubt; der Breaker streckt
 die Versuche, er beendet sie nicht.
 
