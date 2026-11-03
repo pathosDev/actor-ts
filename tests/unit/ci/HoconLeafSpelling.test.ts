@@ -709,13 +709,23 @@ describe('no comment says the framework detects no unknown key', () => {
   const ABSENCE_CLAIM = /\bno unknown-key detection\b/i;
 
   /**
+   * The claim as `LeaseOptions.ts` made it until #1443, kept as the passage the
+   * pattern has to refuse: with no file making the claim and the list below
+   * empty, a pattern narrowed until it matches nothing would leave the scan
+   * green.
+   */
+  const RETIRED_ABSENCE_CLAIM =
+    'There is no unknown-key detection anywhere in this package, so an unread key is a key that silently does nothing.';
+
+  /**
    * Files that still make the claim, each with where.  An entry fails once its
    * file stops making it, so the list only shrinks.
+   *
+   * Empty since #1443: no file makes the claim now.  The list stays as the
+   * place a file found making it again goes, with the issue that corrects it,
+   * and such an entry still fails once its file stops.
    */
-  const KNOWN_ABSENCE_CLAIMS: Readonly<Record<string, string>> = {
-    'src/coordination/LeaseOptions.ts': 'the comment on rejectAbsentLeaseKeys: "anywhere in this package" (#1443)',
-    'tests/unit/docs/BrokerFenceKeys.test.ts': 'the file comment, about broker samples, beside a TCP framing block that refuses one (#1443)',
-  };
+  const KNOWN_ABSENCE_CLAIMS: Readonly<Record<string, string>> = {};
 
   /** Every `.ts` file under `directory`, outside any `node_modules` a nested manifest installed. */
   function typescriptFilesUnder(directory: string): string[] {
@@ -763,5 +773,9 @@ describe('no comment says the framework detects no unknown key', () => {
     for (const file of Object.keys(KNOWN_ABSENCE_CLAIMS)) {
       expect(claiming, `${file} no longer makes the claim: drop it from KNOWN_ABSENCE_CLAIMS`).toContain(file);
     }
+  });
+
+  test('the claim pattern refuses the sentence it was written against', () => {
+    expect(RETIRED_ABSENCE_CLAIM).toMatch(ABSENCE_CLAIM);
   });
 });

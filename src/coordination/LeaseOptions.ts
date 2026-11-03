@@ -210,11 +210,12 @@ export type AbsentLeaseKeys = Readonly<Record<string, string>>;
 /**
  * Refuse the first of `absent` the config sets, naming it (#1454).
  *
- * There is no unknown-key detection anywhere in this package, so an unread key
- * is a key that silently does nothing — and for these that is the worst case,
- * because each reads as split-brain protection: an `owner` an operator believes
- * is in force, a `lease-name` that names nothing.  Each table lives beside the
- * reader of the block it guards; this is only the loop they share.
+ * Most blocks do not detect an unknown key, and the lease block does not, so
+ * an unread key is a key that silently does nothing — and for these that is
+ * the worst case, because each reads as split-brain protection: an `owner` an
+ * operator believes is in force, a `lease-name` that names nothing.  Each
+ * table lives beside the reader of the block it guards; this is only the loop
+ * they share.
  */
 export function rejectAbsentLeaseKeys(config: Config, absent: AbsentLeaseKeys): void {
   for (const [path, instead] of Object.entries(absent)) {
