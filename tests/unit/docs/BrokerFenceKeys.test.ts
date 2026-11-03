@@ -64,9 +64,11 @@ import { GrpcServerActor } from '../../../src/io/broker/GrpcServerActor.js';
  *
  * `reference/configuration.mdx` lists every broker subtree with the page that
  * publishes its keys.  Each root `ConfigKeys` declares has a row there, each
- * row is a root, and the page a row names publishes at least one of that
- * root's own leaves in a HOCON fence, in both languages — so "see the
- * per-protocol pages for the keys" holds for every root.  The two languages
+ * row is a root, and the page a row names publishes every one of that root's
+ * own leaves in a HOCON fence, in both languages — so "see the per-protocol
+ * pages for the keys" holds for every root — except the leaves
+ * `KNOWN_UNPUBLISHED_LEAVES` lists, each with the issue that owes it.  The
+ * list can only shrink: an entry a page now publishes fails.  The two languages
  * publish the same HOCON, fence for fence, since a German sample is copied as
  * often as an English one — the same *code*: comment prose may be translated,
  * as AGENTS.md allows for every fence but the reference-conf one, which
@@ -134,6 +136,66 @@ const ROOTS_WITHOUT_SHARED_LEAVES: ReadonlyMap<string, string> = new Map([
 const APPLICATION_DATA_BLOCKS: ReadonlyMap<string, string> = new Map([
   [ConfigKeys.io.broker.sse.headers, 'its keys are the HTTP header names the request sends, read as one block'],
 ]);
+
+/**
+ * A root's own leaves: every path its `ConfigKeys` group declares, the group's
+ * blocks left out — a nested `root` is the block a fence opens, not a setting.
+ */
+function ownLeavesOf(group: KeyTree): string[] {
+  return Object.entries(group).flatMap(([name, value]) => {
+    if (name === 'root') return [];
+    return typeof value === 'string' ? [value] : ownLeavesOf(value);
+  });
+}
+
+/**
+ * Own leaves that the page a root's row names does not publish yet, each
+ * with the issue that owes it.
+ *
+ * The configuration page sends the reader to a root's page "for the keys",
+ * and until #1443's verification that meant only "at least one of them": the
+ * Kafka page published 2 of its 13 leaves.  Every leaf is checked now, and a
+ * leaf a page still owes is listed here rather than passed in silence.
+ * Checked in both directions, as `HoconFenceKeys`' exemptions are — an entry
+ * whose leaf a page now publishes fails — so the list can only shrink, and
+ * each reason has to name an issue.
+ */
+const KNOWN_UNPUBLISHED_LEAVES: ReadonlyMap<string, string> = new Map<string, string>([
+  ...unpublished('#1443: io/email-bridge.mdx shows the IMAP block without these two', [
+    'email-bridge.imap.move-to-mailbox', 'email-bridge.imap.disable-idle',
+  ]),
+  ...unpublished('#1443: io/jetstream.mdx shows no connection leaf, and `start-time` only in comment prose', [
+    'jetstream.servers', 'jetstream.token', 'jetstream.user', 'jetstream.password', 'jetstream.name',
+    'jetstream.consumer.deliver-policy.start-time',
+  ]),
+  ...unpublished('#1443: io/jetstream-kv.mdx shows only `servers`, `bucket` and `history` for the key-value bucket', [
+    'jetstream-key-value.token', 'jetstream-key-value.user', 'jetstream-key-value.password', 'jetstream-key-value.name',
+    'jetstream-key-value.time-to-live', 'jetstream-key-value.storage', 'jetstream-key-value.replicas',
+    'jetstream-key-value.max-value-bytes', 'jetstream-key-value.create',
+  ]),
+  ...unpublished('#1443: io/jetstream-kv.mdx shows only `servers`, `bucket` and `max-object-bytes` for the object store', [
+    'jetstream-object-store.token', 'jetstream-object-store.user', 'jetstream-object-store.password',
+    'jetstream-object-store.name', 'jetstream-object-store.description', 'jetstream-object-store.storage',
+    'jetstream-object-store.replicas', 'jetstream-object-store.create',
+  ]),
+  ...unpublished('#1443: io/kafka.mdx shows only the producer block', [
+    'kafka.brokers', 'kafka.client-id', 'kafka.ssl', 'kafka.sasl.mechanism', 'kafka.sasl.username', 'kafka.sasl.password',
+    'kafka.consumer.group-id', 'kafka.consumer.from-beginning', 'kafka.consumer.commit-mode', 'kafka.consumer.commit-timeout',
+    'kafka.topics',
+  ]),
+  ...unpublished('#1443: io/mqtt.mdx shows only the will block', [
+    'mqtt.broker-url', 'mqtt.client-id', 'mqtt.credentials.username', 'mqtt.credentials.password', 'mqtt.qos',
+    'mqtt.clean-session', 'mqtt.keep-alive', 'mqtt.protocol-version',
+  ]),
+  ...unpublished("#1443: io/tcp.mdx says the listener's framing takes the client's leaves, and shows two of them under it", [
+    'tcp-server.framing.delimiter', 'tcp-server.framing.max-frame-bytes',
+  ]),
+]);
+
+/** The entries of {@link KNOWN_UNPUBLISHED_LEAVES} for some leaves under `actor-ts.io.broker`, all with one reason. */
+function unpublished(reason: string, leaves: ReadonlyArray<string>): Array<[string, string]> {
+  return leaves.map((leaf) => [`actor-ts.io.broker.${leaf}`, reason]);
+}
 
 /** Every path a fence may publish under {@link NAMESPACE}. */
 const DECLARED_PATHS: ReadonlySet<string> = new Set([
@@ -479,6 +541,42 @@ function unreadIn(lines: ReadonlyArray<string>): string[] {
   return unreadKeys(keysIn(fenceOf(lines))).map((key) => key.path);
 }
 
+/**
+ * The own leaves of `group` that no fence on `page` publishes — live or
+ * commented out, since either shows the reader the key.  A fence on another
+ * page does not count: the configuration page sends the reader to this one.
+ */
+function leavesNotPublishedOn(page: string, group: KeyTree, fences: ReadonlyArray<BrokerFence>): string[] {
+  const published = new Set(fences.filter((fence) => fence.page === page).flatMap((fence) => fence.keys.map((key) => key.path)));
+  return ownLeavesOf(group).filter((leaf) => !published.has(leaf));
+}
+
+/** How one root's page stands against the allow-list. */
+type PublicationProblems = {
+  /** Leaves the page does not publish and the list does not name. */
+  readonly unlisted: ReadonlyArray<string>;
+  /** Leaves the list names that the page publishes now. */
+  readonly stale: ReadonlyArray<string>;
+  /** The page publishes none of the root's leaves at all. */
+  readonly nothingPublished: boolean;
+};
+
+function publicationProblems(leaves: ReadonlyArray<string>, missing: ReadonlyArray<string>, known: ReadonlyMap<string, string>): PublicationProblems {
+  return {
+    unlisted: missing.filter((leaf) => !known.has(leaf)),
+    stale: leaves.filter((leaf) => known.has(leaf) && !missing.includes(leaf)),
+    nothingPublished: missing.length === leaves.length,
+  };
+}
+
+/** What is wrong with an allow-list of unpublished leaves: entries that name no own leaf, or no issue. */
+function allowListProblems(known: ReadonlyMap<string, string>, leaves: ReadonlySet<string>): string[] {
+  return [...known].flatMap(([leaf, reason]) => [
+    ...(leaves.has(leaf) ? [] : [`${leaf} is no own leaf of any broker root`]),
+    ...(/#\d+/.test(reason) ? [] : [`${leaf}: its reason names no issue`]),
+  ]);
+}
+
 /* -------------------------------- tests --------------------------------- */
 
 describe('every key the io pages publish under actor-ts.io.broker is one a reader reads', () => {
@@ -701,21 +799,62 @@ describe('every key the io pages publish under actor-ts.io.broker is one a reade
     language,
     languageName: language.language,
   }))))(
-    '$root publishes its own keys on the page the $languageName configuration page names',
+    '$root publishes every one of its own leaves on the page the $languageName configuration page names',
     ({ root, group, language }) => {
       const page = brokerTableOf(language).get(root);
       expect(page, `${language.configurationPage} has no row for ${root}`).toBeDefined();
-      const ownLeaves = new Set(pathsOf(group).filter((path) => path !== root));
-      const published = BROKER_FENCES
-        .filter((fence) => fence.page === page)
-        .flatMap((fence) => fence.keys.filter((key) => ownLeaves.has(key.path)));
+      const leaves = ownLeavesOf(group);
+      expect(leaves.length, `${root} declares no leaf of its own`).toBeGreaterThan(0);
+      const problems = publicationProblems(leaves, leavesNotPublishedOn(page ?? '', group, BROKER_FENCES), KNOWN_UNPUBLISHED_LEAVES);
       expect(
-        published.length,
-        `${page} publishes none of ${root}'s own keys in a HOCON fence, while ${language.configurationPage} `
+        problems.unlisted,
+        `${page} publishes none of these leaves of ${root} in a HOCON fence, while ${language.configurationPage} `
         + 'sends the reader there for them.',
-      ).toBeGreaterThan(0);
+      ).toEqual([]);
+      expect(problems.stale, `${page} publishes these leaves now — drop them from KNOWN_UNPUBLISHED_LEAVES.`).toEqual([]);
+      expect(
+        problems.nothingPublished,
+        `${page} publishes none of ${root}'s own leaves at all, so its row on ${language.configurationPage} points nowhere.`,
+      ).toBe(false);
     },
   );
+
+  test('a leaf a page owes is listed or fails, a listed leaf the page publishes fails, and so does a page that publishes nothing', () => {
+    const leaves = ['probe.a', 'probe.b', 'probe.c'];
+    const known = new Map([['probe.b', '#1443'], ['probe.c', '#1443']]);
+    expect(publicationProblems(leaves, ['probe.b'], known)).toEqual({ unlisted: [], stale: ['probe.c'], nothingPublished: false });
+    expect(publicationProblems(leaves, ['probe.a', 'probe.b', 'probe.c'], known)).toEqual({ unlisted: ['probe.a'], stale: [], nothingPublished: true });
+    expect(publicationProblems(leaves, ['probe.b', 'probe.c'], known)).toEqual({ unlisted: [], stale: [], nothingPublished: false });
+  });
+
+  test('KNOWN_UNPUBLISHED_LEAVES names own leaves of the broker roots, each with the issue that owes it', () => {
+    const leaves = new Set(BROKER_BLOCKS.flatMap((block) => ownLeavesOf(block.group)));
+    expect(allowListProblems(KNOWN_UNPUBLISHED_LEAVES, leaves)).toEqual([]);
+    // And what it would refuse.
+    expect(allowListProblems(new Map([
+      ['actor-ts.io.broker.kafka.topic', '#1443: a misspelt leaf'],
+      ['actor-ts.io.broker.kafka.brokers', 'no reason anybody could follow up'],
+    ]), leaves)).toEqual([
+      'actor-ts.io.broker.kafka.topic is no own leaf of any broker root',
+      'actor-ts.io.broker.kafka.brokers: its reason names no issue',
+    ]);
+  });
+
+  test('a leaf is published only by a fence on the page a row names, live or commented out, and a block is no leaf', () => {
+    const group: KeyTree = {
+      root: 'actor-ts.io.broker.probe',
+      host: 'actor-ts.io.broker.probe.host',
+      port: 'actor-ts.io.broker.probe.port',
+      tls: { root: 'actor-ts.io.broker.probe.tls', enabled: 'actor-ts.io.broker.probe.tls.enabled' },
+    };
+    const fences = [
+      ...brokerFencesOf('io/probe.mdx', ['```hocon', 'actor-ts.io.broker.probe {', '  host = "h"', '  # tls { enabled = true }', '}', '```'].join('\n')),
+      ...brokerFencesOf('io/elsewhere.mdx', ['```hocon', 'actor-ts.io.broker.probe.port = 1', '```'].join('\n')),
+    ];
+    expect(ownLeavesOf(group)).toEqual(['actor-ts.io.broker.probe.host', 'actor-ts.io.broker.probe.port', 'actor-ts.io.broker.probe.tls.enabled']);
+    expect(leavesNotPublishedOn('io/probe.mdx', group, fences)).toEqual(['actor-ts.io.broker.probe.port']);
+    expect(leavesNotPublishedOn('io/elsewhere.mdx', group, fences)).toEqual(['actor-ts.io.broker.probe.host', 'actor-ts.io.broker.probe.tls.enabled']);
+  });
 
   test.each(IO_PAGES.get(LANGUAGES[0])!.map(({ page, text }) => ({ page, text })))(
     '$page and its German mirror publish the same HOCON',
