@@ -22,13 +22,16 @@ export type PhiAccrualOptionsType = {
    * The inter-arrival time φ assumes before a peer has a history: the mean
    * of its estimate on first contact, with a deviation of a quarter of it
    * (never below {@link minStdDeviationMs}).  It judges a peer from its first
-   * frame until real heartbeat intervals wash the estimate out.
+   * frame — or, for a member registered before anything arrived from it, from
+   * its registration — until the peer's first heartbeat interval is measured.
+   * That interval replaces it, and it has no say from then on (#1451).
    *
    * `'auto'` is {@link heartbeatIntervalMs} — the cadence the cluster imposes
    * on the detector — so a heartbeat-interval tuned in HOCON or in code
    * carries the estimate with it, and the cadence stays single-sourced
    * (#1142).  A number decouples the two: a more forgiving first contact,
-   * say, without the steady-state cost of a larger pause (#1451).
+   * say, without the cost of a larger pause once the peer has a history
+   * (#1451).
    */
   readonly expectedResponseAfterMs: number | 'auto';
 };
@@ -78,7 +81,7 @@ export class PhiAccrualOptionsBuilder extends OptionsBuilder<PhiAccrualOptionsTy
     return this.set('acceptableHeartbeatPauseMs', ms);
   }
 
-  /** The inter-arrival time assumed before a peer has a history — `'auto'` follows the cadence. */
+  /** The inter-arrival time assumed until a peer's first interval is measured — `'auto'` follows the cadence. */
   withExpectedResponseAfterMs(ms: number | 'auto'): this {
     return this.set('expectedResponseAfterMs', ms);
   }

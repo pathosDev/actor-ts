@@ -284,9 +284,10 @@ describe('ClusterTap — an event with no arm (#1502)', () => {
     // The tap listens in-process, so every event it receives is a member of
     // this build's union, and one that reaches no arm is a gap in the tap —
     // never a newer node's event.  It used to vanish without a trace.  A
-    // subclass is the one way to publish such an event without deleting an
-    // arm: the member-event lookup keys on the exact constructor, so
-    // `MemberUp`'s entry does not cover it.
+    // subclass is one way to publish such an event without deleting an arm:
+    // the member-event lookup keys on the exact constructor, so `MemberUp`'s
+    // entry does not cover it.  A cast is the other, and it is the only one
+    // for the events that carry no `member` — the look-alikes further down.
     class UnmappedMemberEvent extends MemberUp {}
     const harness = await startTapped('tap-unknown', 9_328);
     harness.tap.install((payload) => { harness.emitted.push(payload); });
@@ -404,5 +405,100 @@ describe('ClusterTap — every exported cluster event has an arm (#1502)', () =>
         .slice(sweepStart)
         .filter((record) => record.level === 'warn' || record.level === 'error'),
     ).toEqual([]);
+  });
+
+  test('only the member events take the fall-through, and every one of them is forwarded', async () => {
+    // The sweep above sees a deleted arm only through the report the
+    // fall-through makes, so a fall-through that stopped reporting — for one
+    // shape, or for every class this build exports — would let an arm go with
+    // the sweep still green.  This asks the fall-through itself who reached
+    // it: an event with an arm of its own never does, and a member event does
+    // exactly once and comes out as a payload.
+    const harness = await startTapped('tap-fall-through', 9_331);
+    harness.tap.install((payload) => { harness.emitted.push(payload); });
+    const fixture: InventoryFixture = {
+      member: new Member(peerAddress('tap-fall-through', 9_402), 'up', 1),
+      address: harness.address,
+    };
+    const reached: string[] = [];
+    const fallThrough = harness.tap as unknown as Record<FallThroughStep, (event: ClusterEvent) => void>;
+    for (const step of FALL_THROUGH_STEPS) {
+      const original = fallThrough[step];
+      fallThrough[step] = (event: ClusterEvent): void => {
+        reached.push(step);
+        original.call(harness.tap, event);
+      };
+    }
+
+    const misrouted: string[] = [];
+    for (const [eventClass, build] of EVENT_FACTORIES) {
+      reached.length = 0;
+      const forwardedBefore = eventsIn(harness.emitted).length;
+      harness.cluster._publishClusterEvent(build(fixture));
+      const memberEvent = MEMBER_EVENT_CLASSES.has(eventClass);
+      const forwarded = eventsIn(harness.emitted).length > forwardedBefore;
+      if (reached.join() !== (memberEvent ? 'onMemberEvent' : '') || (memberEvent && !forwarded)) {
+        misrouted.push(`${eventClass.name}: ${reached.join(' > ') || 'its own arm'}${memberEvent && !forwarded ? ', nothing forwarded' : ''}`);
+      }
+    }
+
+    expect(misrouted).toEqual([]);
+  });
+});
+
+/** The ten classes the tap tells apart by constructor in its fall-through, not by an arm of their own. */
+const MEMBER_EVENT_CLASSES: ReadonlySet<EventClass> = new Set<EventClass>([
+  SelfUp,
+  SelfRemoved,
+  MemberJoined,
+  MemberUp,
+  MemberWeaklyUp,
+  MemberUnreachable,
+  MemberReachable,
+  MemberDown,
+  MemberLeft,
+  MemberRemoved,
+]);
+
+/** The fall-through, in the order an event takes it: the member-event lookup, then the report of a gap. */
+const FALL_THROUGH_STEPS = ['onMemberEvent', 'onUnknownEvent'] as const;
+
+type FallThroughStep = (typeof FALL_THROUGH_STEPS)[number];
+
+/**
+ * The own fields of `event` on a class of its own, named after the class it
+ * copies — a gap in the tap as it looks at runtime.  No arm matches it and no
+ * lookup knows it; nothing in the union describes it either, hence the cast.
+ */
+function lookAlikeOf(eventClass: EventClass, event: ClusterEvent): ClusterEvent {
+  const name = `${eventClass.name}LookAlike`;
+  const LookAlike = { [name]: class {} }[name]!;
+  return Object.assign(new LookAlike(), event) as unknown as ClusterEvent;
+}
+
+describe('ClusterTap — an event with no arm is reported whatever it carries (#1502)', () => {
+  // The inventory notices a deleted arm only through this report: the event
+  // falls through to the unknown-event path and is named there.  So the report
+  // has to reach every event that can fall through, and the case further up
+  // publishes only one that carries a `member`.  A fall-through that returned
+  // early for any other shape — no `member`, a `leader`, a `members` field —
+  // let `ClusterStatsPublished` and `CurrentClusterState` lose their arms with
+  // every test green.  So each look-alike copies one exported class's fields,
+  // and every one of them has to be reported.
+  test('a look-alike of every exported event is reported at debug, and nothing is forwarded', async () => {
+    const harness = await startTapped('tap-look-alikes', 9_330);
+    harness.tap.install((payload) => { harness.emitted.push(payload); });
+    const fixture: InventoryFixture = {
+      member: new Member(peerAddress('tap-look-alikes', 9_401), 'up', 1),
+      address: harness.address,
+    };
+
+    const unreported = [...EVENT_FACTORIES]
+      .map(([eventClass, build]) => lookAlikeOf(eventClass, build(fixture)))
+      .filter((event) => publishAndCollectReports(harness, event).map((record) => record.level).join() !== 'debug')
+      .map((event) => event.constructor.name);
+
+    expect(unreported).toEqual([]);
+    expect(harness.emitted).toEqual([]);
   });
 });

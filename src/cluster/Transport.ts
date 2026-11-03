@@ -97,6 +97,19 @@ type Connection = {
    */
   targetKey: string | null;
   /**
+   * Every `byPeer` key this connection was registered under: the address a
+   * dial was opened to, and each identity a `hello` or `hello-ack` announced
+   * on it.  {@link TcpTransport.releasePeerSlot} gives all of them back.
+   *
+   * `peer` and `targetKey` name two at most — the identity announced last and
+   * the dialled address — and a connection that announced a second identity
+   * holds more.  Released by those two alone, the earlier identity stayed
+   * mapped to a closed connection: every `send` to it went into that
+   * connection instead of a new dial, and the real peer's `hello` under it was
+   * turned away as a claim on an address already held (#1476).
+   */
+  readonly peerKeys: Set<string>;
+  /**
    * For an outbound dial: what gives the dial up, handed to the backend as
    * `connect`'s `signal` and fired once, when the connection is retired —
    * however it is retired (#1475).
@@ -264,6 +277,7 @@ export class TcpTransport implements Transport {
       outbound: false,
       opened: true,
       targetKey: null,
+      peerKeys: new Set(),
       dial: null,
       connectTimer: null,
       handshakeTimer: null,
@@ -346,8 +360,9 @@ export class TcpTransport implements Transport {
   disconnect(peer: NodeAddress): void {
     // Every key the connection holds goes with it, not just the one asked for:
     // a dial is registered under the address it dialled and, once acked, under
-    // the one the peer announced, and the two differ whenever a seed names a
-    // host the peer does not advertise itself as.
+    // the one the peer announced — two different keys whenever a seed names a
+    // host the peer does not advertise itself as — and a connection holds one
+    // more for each further identity a handshake frame announced on it.
     const connection = this.byPeer.get(peer.toString());
     if (connection) this.closeConnection(connection);
   }
@@ -443,6 +458,7 @@ export class TcpTransport implements Transport {
       outbound: false,
       opened: true,
       targetKey: null,
+      peerKeys: new Set(),
       dial: null,
       connectTimer: null,
       handshakeTimer: null,
@@ -470,6 +486,7 @@ export class TcpTransport implements Transport {
       outbound: true,
       opened: false,
       targetKey,
+      peerKeys: new Set(),
       dial: new AbortController(),
       connectTimer: null,
       handshakeTimer: null,
@@ -478,7 +495,7 @@ export class TcpTransport implements Transport {
       pendingOverflowed: false,
       dropped: false,
     };
-    this.byPeer.set(targetKey, connection);
+    this.claimPeerSlot(targetKey, connection);
     // Connect first, from the same moment: with the two deadlines equal —
     // what an unset connect deadline is — the connect one still fires first
     // for a dial that never opened, and takes the handshake one with it.
@@ -668,7 +685,7 @@ export class TcpTransport implements Transport {
       }
       connection.peer = peer;
       this.clearHandshakeTimer(connection);
-      this.byPeer.set(peerKey, connection);
+      this.claimPeerSlot(peerKey, connection);
       const ack: HelloAcknowledgmentMessage = { kind: 'hello-ack', self: this.self.toJSON() };
       connection.socket?.write(encodeFrame(ack));
       return;
@@ -691,7 +708,7 @@ export class TcpTransport implements Transport {
       }
       connection.peer = peer;
       this.clearHandshakeTimer(connection);
-      this.byPeer.set(peerKey, connection);
+      this.claimPeerSlot(peerKey, connection);
       const buffered = connection.pending.splice(0, connection.pending.length);
       for (const bufferedMessage of buffered) this.writeFrame(connection, bufferedMessage);
       return;
@@ -799,20 +816,32 @@ export class TcpTransport implements Transport {
   }
 
   /**
-   * Release the `byPeer` slots a connection owns.  A dialled connection is
-   * registered under `targetKey` *before* the handshake, so keying cleanup on
-   * `peer` alone (as this did) stranded the slot whenever the handshake never
-   * completed — the address could then never be re-dialled (#697).
+   * Register `connection` under `key`, and remember that it holds the key — the
+   * one way into `byPeer`, so {@link releasePeerSlot} can give back every key
+   * a connection was ever registered under (#1476).
+   */
+  private claimPeerSlot(key: string, connection: Connection): void {
+    this.byPeer.set(key, connection);
+    connection.peerKeys.add(key);
+  }
+
+  /**
+   * Release every `byPeer` slot a connection holds.  A dial is registered under
+   * its target *before* the handshake, so keying cleanup on `peer` alone
+   * stranded the slot whenever the handshake never completed — the address
+   * could then never be re-dialled (#697).  And `peer` is only the identity
+   * announced last: keying it on `peer` and the target stranded every earlier
+   * identity a connection announced (#1476).  So it walks
+   * {@link Connection.peerKeys}, which every registration goes through.
    *
-   * Both deletes are guarded on the map still pointing at this connection, so
-   * a slot already taken over by its replacement is left alone.
+   * Each delete is guarded on the map still pointing at this connection, so a
+   * slot already taken over by its replacement is left alone.
    */
   private releasePeerSlot(connection: Connection): void {
-    for (const key of [connection.peer?.toString(), connection.targetKey]) {
-      if (key !== undefined && key !== null && this.byPeer.get(key) === connection) {
-        this.byPeer.delete(key);
-      }
+    for (const key of connection.peerKeys) {
+      if (this.byPeer.get(key) === connection) this.byPeer.delete(key);
     }
+    connection.peerKeys.clear();
   }
 
   /**
