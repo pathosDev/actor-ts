@@ -16,7 +16,7 @@ import { describe, expect, test } from 'bun:test';
  * saying a store connects "on first use" now states the exception, the
  * boot-time open turned off, as if it were the rule.
  *
- * Four things are pinned, in both languages:
+ * Five things are pinned, in both languages:
  *
  *   - every call of the ten register helpers in a fence sits inside the
  *     `plugins` array of a `withPersistence(...)` call and is handed that
@@ -26,6 +26,10 @@ import { describe, expect, test } from 'bun:test';
  *     wired there too — and no
  *     fence sets a store on the extension with `setJournal` and its siblings,
  *     which can only happen after `create` and so misses the startup too;
+ *   - the call runs while its plug-in does — before the plug-in's first
+ *     `await` and not in a function the plug-in defers — and a failure of it
+ *     is left to the startup rather than caught in the plug-in, and the
+ *     options holding the `plugins` reach `ActorSystem.create`;
  *   - a fence that wires persistence is byte-identical on the English page and
  *     its German mirror — the code is shared, only the prose is translated;
  *   - a prose sentence that says a store opens on first use, lazily or on
@@ -331,23 +335,220 @@ function helperNames(code: string): Map<string, string> {
   return names;
 }
 
-/** The parameter of the last arrow function that starts between `from` and `before`. */
-function nearestArrowParameter(code: string, from: number, before: number): string | null {
-  const heads = [...code.slice(from, before).matchAll(/(?:\(\s*([A-Za-z_$][\w$]*)\s*(?::[^)]*)?\)|\b([A-Za-z_$][\w$]*))\s*=>/g)];
-  const last = heads.at(-1);
-  return last === undefined ? null : (last[1] ?? last[2] ?? null);
-}
-
 const inside = (spans: readonly Span[], at: number): boolean => spans.some((span) => at > span.start && at < span.end);
 
 /**
+ * `code` with its string literals and comments blanked to spaces, newlines
+ * kept, so every position still lines up with the fence.  The timing rules
+ * read this: an `await` in a comment, or a `try` in a string, is no statement.
+ */
+function codeOnly(code: string): string {
+  let out = '';
+  let index = 0;
+  while (index < code.length) {
+    const character = code[index]!;
+    let end = -1;
+    if (character === '/' && code[index + 1] === '/') {
+      const lineEnd = code.indexOf('\n', index);
+      end = lineEnd < 0 ? code.length : lineEnd;
+    } else if (character === '/' && code[index + 1] === '*') {
+      const commentEnd = code.indexOf('*/', index + 2);
+      end = commentEnd < 0 ? code.length : commentEnd + 2;
+    } else if (character === '\'' || character === '"' || character === '`') {
+      const stringEnd = endOfString(code, index);
+      end = stringEnd < 0 ? code.length : stringEnd + 1;
+    }
+    if (end < 0) {
+      out += character;
+      index++;
+    } else {
+      out += code.slice(index, end).replace(/[^\n]/g, ' ');
+      index = end;
+    }
+  }
+  return out;
+}
+
+/** One plug-in of a `plugins` array: its extent, where its body begins, and its parameter. */
+type Plugin = Span & { readonly bodyStart: number; readonly parameter: string | null };
+
+/**
+ * The head of a plug-in, at the start of its element: an arrow function or a
+ * function expression, `async` or not, its parameter typed or not.
+ */
+const PLUGIN_HEAD = /^\s*(?:async\s+)?(?:function\b[^(]*\(\s*([A-Za-z_$][\w$]*)\s*(?::[^)]*)?\)\s*(?::[^{]*)?\{|\(\s*([A-Za-z_$][\w$]*)\s*(?::[^)]*)?\)\s*(?::[^=]*)?=>|([A-Za-z_$][\w$]*)\s*=>)/;
+
+/** The plug-ins of the `plugins` array `array` spans, split at its top-level commas. */
+function pluginsIn(masked: string, array: Span): Plugin[] {
+  const plugins: Plugin[] = [];
+  let depth = 0;
+  let start = array.start + 1;
+  for (let index = array.start + 1; index <= array.end; index++) {
+    const character = masked[index]!;
+    if (index === array.end || (character === ',' && depth === 0)) {
+      const head = PLUGIN_HEAD.exec(masked.slice(start, index));
+      plugins.push({
+        start,
+        end: index,
+        bodyStart: head === null ? start : start + head[0].length,
+        parameter: head === null ? null : (head[1] ?? head[2] ?? head[3] ?? null),
+      });
+      start = index + 1;
+    } else if (character === '(' || character === '[' || character === '{') {
+      depth++;
+    } else if (character === ')' || character === ']' || character === '}') {
+      depth--;
+    }
+  }
+  return plugins;
+}
+
+/** Where an arrow function's expression body ends: at a `,` or `;` outside brackets, or where the group around it closes. */
+function expressionEnd(masked: string, from: number, limit: number): number {
+  let depth = 0;
+  for (let index = from; index < limit; index++) {
+    const character = masked[index]!;
+    if (character === '(' || character === '[' || character === '{') {
+      depth++;
+    } else if (character === ')' || character === ']' || character === '}') {
+      if (depth === 0) return index;
+      depth--;
+    } else if ((character === ',' || character === ';') && depth === 0) {
+      return index;
+    }
+  }
+  return limit;
+}
+
+/**
+ * The functions a plug-in defines in its body before `before`, each from its
+ * head to the end of its body.  A helper inside one runs whenever that
+ * function is called — after a microtask, a timer, a promise — and not while
+ * the plug-in runs.
+ */
+function functionsInside(masked: string, plugin: Plugin, before: number): Span[] {
+  const spans: Span[] = [];
+  for (const head of masked.slice(plugin.bodyStart, before).matchAll(/=>|\bfunction\b/g)) {
+    const at = plugin.bodyStart + head.index!;
+    if (head[0] === '=>') {
+      let body = at + 2;
+      while (/\s/.test(masked[body] ?? '')) body++;
+      spans.push({ start: at, end: masked[body] === '{' ? closingBracket(masked, body) : expressionEnd(masked, body, plugin.end) });
+    } else {
+      const parameters = masked.indexOf('(', at);
+      const parametersClose = parameters < 0 ? -1 : closingBracket(masked, parameters);
+      const brace = parametersClose < 0 ? -1 : masked.indexOf('{', parametersClose);
+      spans.push({ start: at, end: brace < 0 ? plugin.end : closingBracket(masked, brace) });
+    }
+  }
+  return spans;
+}
+
+const encloses = (span: Span, at: number): boolean => at > span.start && (span.end < 0 || at < span.end);
+
+/**
+ * Whether the plug-in awaits before it reaches `at`, in its own body rather
+ * than in a function it defines.  The `await` of the helper's own promise is
+ * the exception: the helper has registered by the time it suspends.
+ */
+function awaitsBefore(masked: string, plugin: Plugin, at: number, functions: readonly Span[]): boolean {
+  const before = masked.slice(plugin.bodyStart, at);
+  const own = /\bawait\s*(?:[A-Za-z_$][\w$]*\s*\.\s*)?$/.exec(before);
+  return [...before.slice(0, own === null ? before.length : own.index).matchAll(/\bawait\b/g)]
+    .some((found) => !functions.some((span) => encloses(span, plugin.bodyStart + found.index!)));
+}
+
+/**
+ * Whether a rejection or a throw of the call opening at `callOpen` is handled
+ * inside its plug-in: a `.catch(...)` or a two-argument `.then(...)` chained on
+ * it, or a `try` around it with a `catch`.  Either one turns a malformed key
+ * ring, a missing codec peer or a refused option into a startup that goes on.
+ */
+function failureCaught(code: string, masked: string, plugin: Plugin, at: number, callOpen: number): boolean {
+  const callClose = closingBracket(code, callOpen);
+  if (callClose > 0) {
+    const chained = /^\s*\.\s*(catch|then)\s*\(/.exec(masked.slice(callClose + 1));
+    if (chained !== null && (chained[1] === 'catch' || callArguments(code, callClose + chained[0].length).length > 1)) return true;
+  }
+  for (const attempt of masked.slice(plugin.bodyStart, at).matchAll(/\btry\s*\{/g)) {
+    const blockClose = closingBracket(masked, plugin.bodyStart + attempt.index! + attempt[0].length - 1);
+    if (blockClose > at && /^\s*catch\b/.test(masked.slice(blockClose + 1))) return true;
+  }
+  return false;
+}
+
+/** Every problem a wiring fence has. */
+function wiringProblems(fence: Fence): string[] {
+  return [...misplacedHelpers(fence), ...unpassedPluginOptions(fence)];
+}
+
+/**
+ * The text of the statement holding `at`, from its start up to `at` — or
+ * `null` when `at` sits in another call's arguments or in an array, whose
+ * holder hands the value on as far as a fence can tell.
+ */
+function statementBefore(masked: string, at: number): string | null {
+  let depth = 0;
+  for (let index = at - 1; index >= 0; index--) {
+    const character = masked[index]!;
+    if (character === ')' || character === ']') {
+      depth++;
+    } else if (character === '}' || character === '{') {
+      if (depth === 0) return masked.slice(index + 1, at);
+      depth += character === '}' ? 1 : -1;
+    } else if (character === '(' || character === '[') {
+      if (depth === 0) return null;
+      depth--;
+    } else if (character === ';' && depth === 0) {
+      return masked.slice(index + 1, at);
+    }
+  }
+  return masked.slice(0, at);
+}
+
+/**
+ * Where a fence builds options with plugins that never reach
+ * `ActorSystem.create`: kept in a local that no `create` in the fence is
+ * handed, or built and dropped.  A fence that creates no system shows the
+ * options alone; options built as an argument — of `create` or of any other
+ * call — returned, or set on a property are handed on, as far as a fence can
+ * tell.
+ */
+function unpassedPluginOptions(fence: Fence): string[] {
+  const { code } = fence;
+  const masked = codeOnly(code);
+  const handedToCreate = [...masked.matchAll(/\bActorSystem\s*\.\s*create\s*\(/g)]
+    .map((create) => /^\s*([A-Za-z_$][\w$]*)/.exec(callArguments(code, create.index! + create[0].length - 1)[1] ?? '')?.[1]);
+  const problems: string[] = [];
+  for (const call of masked.matchAll(/\bwithPersistence\s*\(/g)) {
+    const at = call.index!;
+    const open = at + call[0].length - 1;
+    const close = closingBracket(masked, open);
+    if (close < 0 || !/\bplugins\s*:/.test(masked.slice(open, close))) continue;
+    const statement = statementBefore(masked, at);
+    if (statement === null || /^\s*return\b/.test(statement) || /=>/.test(statement)) continue;
+    if (/^\s*[A-Za-z_$][\w$]*\s*:/.test(statement) && !statement.includes('=')) continue;
+    const line = fence.line + code.slice(0, at).split('\n').length;
+    const local = /^\s*(?:export\s+)?(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)\s*(?::[^=]*)?=(?![=>])/.exec(statement)?.[1];
+    if (local === undefined) {
+      problems.push(`line ${line}: the plugins of this withPersistence(...) are built and dropped, never handed to ActorSystem.create(...)`);
+    } else if (handedToCreate.length > 0 && !handedToCreate.includes(local)) {
+      problems.push(`line ${line}: ${local} holds the plugins of this withPersistence(...), but no ActorSystem.create(...) is handed it`);
+    }
+  }
+  return problems;
+}
+
+/**
  * Where a fence names a register helper anywhere but in an import or as a call
- * a `plugins` callback makes with its own parameter.  Comments are read too: a
- * `// registerPostgresPlugins(ext)` in a sample is an instruction its reader
- * follows.
+ * a `plugins` callback makes with its own parameter, before its first `await`,
+ * outside any function it defers, and with its failure left to the startup.
+ * Comments are read too: a `// registerPostgresPlugins(ext)` in a sample is an
+ * instruction its reader follows.
  */
 function misplacedHelpers(fence: Fence): string[] {
   const { code } = fence;
+  const masked = codeOnly(code);
   const names = helperNames(code);
   const imports = importStatements(code);
   const plugins = pluginArrays(code);
@@ -376,8 +577,10 @@ function misplacedHelpers(fence: Fence): string[] {
       problems.push(`line ${line}: ${helper}(...) is not inside the plugins array of a withPersistence(...) call`);
       continue;
     }
-    const parameter = nearestArrowParameter(code, span.start, at);
-    const [extension = '', options] = callArguments(code, at + use[1]!.length + call[0].length - 1);
+    const plugin = pluginsIn(masked, span).find((candidate) => at >= candidate.start && at < candidate.end);
+    const parameter = plugin?.parameter ?? null;
+    const callOpen = at + use[1]!.length + call[0].length - 1;
+    const [extension = '', options] = callArguments(code, callOpen);
     if (parameter === null || extension !== parameter) {
       problems.push(`line ${line}: ${helper}(${extension}, ...) is not handed the plug-in's own parameter (${parameter ?? 'none'})`);
     }
@@ -394,6 +597,20 @@ function misplacedHelpers(fence: Fence): string[] {
     // carries on without it.
     if (ASYNC_HELPERS.includes(helper) && !/(?:=>|\bawait|\breturn)\s*(?:[A-Za-z_$][\w$]*\s*\.\s*)?$/.test(code.slice(span.start, at))) {
       problems.push(`line ${line}: the promise ${helper}(...) returns never reaches the plugins slot`);
+    }
+    // When it runs, and where its failure goes — for a call in a comment too,
+    // which a reader uncomments where it stands.  What came before it is read
+    // as code only: an `await` in a comment is no statement.
+    if (plugin !== undefined) {
+      const functions = functionsInside(masked, plugin, at);
+      if (functions.some((span) => encloses(span, at))) {
+        problems.push(`line ${line}: ${helper}(...) runs in a function its plug-in defers, so it registers after create returns`);
+      } else if (awaitsBefore(masked, plugin, at, functions)) {
+        problems.push(`line ${line}: ${helper}(...) runs after an await in its plug-in, so it registers after create returns`);
+      }
+      if (failureCaught(code, masked, plugin, at, callOpen)) {
+        problems.push(`line ${line}: a failure of ${helper}(...) is caught inside its plug-in and never reaches the startup`);
+      }
     }
   }
   for (const helper of imported) {
@@ -484,7 +701,7 @@ describe('the persistence pages register a backend through the plugins slot (#14
   for (const page of PAGES) {
     for (const language of LANGUAGES) {
       test(`${language} ${page}: every register helper call is a plug-in handed its own parameter`, () => {
-        const problems = fencesOf(read(language, page)).flatMap((fence) => misplacedHelpers(fence));
+        const problems = fencesOf(read(language, page)).flatMap((fence) => wiringProblems(fence));
         expect(problems, `${pageFile(language, page)} registers a backend outside the plugins slot`).toEqual([]);
       });
     }
@@ -703,6 +920,80 @@ describe('the scanner sees through the disguises of a post-create registration (
   test('a helper imported and never wired is refused', () => {
     expect(misplacedHelpers(fence("import { registerObjectStoragePlugins } from 'actor-ts/persistence';")))
       .toEqual(['registerObjectStoragePlugins is imported but never wired']);
+  });
+});
+
+/**
+ * Shapes that break the startup, or the protection it gives, though every
+ * helper call sits in the plugins array and is handed its plug-in's own
+ * parameter.  Plug-ins run inside `ActorSystem.create`, and a factory
+ * registered after a plug-in's first `await` — or in a function the plug-in
+ * defers — misses the selected stores, which `create` resolves before it
+ * returns; options that never reach `create` register nothing at all; and a
+ * rejection handled inside the plug-in never reaches the `persistence-start`
+ * phase, so a malformed key ring starts up.  Each shape is pinned with its
+ * one problem, and a correct plug-in of each kind with none.
+ */
+describe('a plug-in registers before create returns, and its failure reaches the startup (#1473)', () => {
+  const fence = (code: string): Fence => ({ line: 1, text: `\`\`\`ts\n${code}\n\`\`\``, code });
+  const sample = (plugin: string, create = "const system = ActorSystem.create('my-app', systemOptions);"): string =>
+    ['const systemOptions = ActorSystemOptions.create().withPersistence({', `  plugins: [${plugin}],`, '});', create].join('\n');
+  const awaited = (helper: string): string => `line 3: ${helper}(...) runs after an await in its plug-in, so it registers after create returns`;
+  const deferred = (helper: string): string => `line 3: ${helper}(...) runs in a function its plug-in defers, so it registers after create returns`;
+  const caught = (helper: string): string => `line 3: a failure of ${helper}(...) is caught inside its plug-in and never reaches the startup`;
+
+  test.each([
+    ['an arrow plug-in', '(persistence) => registerPostgresPlugins(persistence, registerOptions)'],
+    ['a block-bodied one keeping the handle', '(persistence) => { postgres = registerPostgresPlugins(persistence, registerOptions); }'],
+    ['an async one awaiting the object-storage helper', 'async (persistence) => { objectStorage = await registerObjectStoragePlugins(persistence, pluginOptions); }'],
+    ['an expression-bodied object-storage plug-in', '(persistence) => registerObjectStoragePlugins(persistence, pluginOptions)'],
+    ['a function expression', 'function (persistence) { return registerPostgresPlugins(persistence, registerOptions); }'],
+    ['a named async function expression', 'async function plugin(persistence) { objectStorage = await registerObjectStoragePlugins(persistence); }'],
+    ['a sync helper, then the awaited object-storage one', 'async (persistence) => { registerSqlitePlugins(persistence); objectStorage = await registerObjectStoragePlugins(persistence); }'],
+    ['an await in a comment', 'async (persistence) => { /* no await before this */ registerSqlitePlugins(persistence); }'],
+    ['a try with finally only, which rethrows', 'async (persistence) => { try { objectStorage = await registerObjectStoragePlugins(persistence); } finally { log(); } }'],
+    ['a function the plug-in defines and finishes before registering', '(persistence) => { const log = () => audit(); registerSqlitePlugins(persistence); }'],
+    ['an await inside a function it defines and does not await', 'async (persistence) => { const warm = async () => { await cache.warm(); }; registerSqlitePlugins(persistence); }'],
+  ])('%s passes', (_shape, plugin) => {
+    expect(wiringProblems(fence(sample(plugin)))).toEqual([]);
+  });
+
+  test.each([
+    ['an await before a synchronous helper', "async (persistence) => { const password = await vault.read('mariadb/password'); registerMariaDbPlugins(persistence, registerOptions); }", [awaited('registerMariaDbPlugins')]],
+    ['an await before the object-storage helper', "async (persistence) => { const key = await vault.read('key'); objectStorage = await registerObjectStoragePlugins(persistence, pluginOptions); }", [awaited('registerObjectStoragePlugins')]],
+    ['a commented-out registration after an await', 'async (persistence) => { await vault.ready(); /* registerSqlitePlugins(persistence); */ }', [awaited('registerSqlitePlugins')]],
+    ['a registration deferred with queueMicrotask', '(persistence) => { queueMicrotask(() => registerMsSqlPlugins(persistence, registerOptions)); }', [deferred('registerMsSqlPlugins')]],
+    ['a registration deferred with setTimeout', '(persistence) => { setTimeout(() => registerMsSqlPlugins(persistence, registerOptions), 0); }', [deferred('registerMsSqlPlugins')]],
+    ['a registration in a then callback', '(persistence) => loadSecret().then(() => registerPostgresPlugins(persistence, registerOptions))', [deferred('registerPostgresPlugins')]],
+    ['a registration in a function expression it defers', '(persistence) => { process.nextTick(function () { registerPostgresPlugins(persistence, registerOptions); }); }', [deferred('registerPostgresPlugins')]],
+    ['a rejection caught with catch', '(persistence) => registerObjectStoragePlugins(persistence, options).catch(() => undefined)', [caught('registerObjectStoragePlugins')]],
+    ['a rejection handled by then', '(persistence) => registerObjectStoragePlugins(persistence, options).then((handles) => handles, () => undefined)', [caught('registerObjectStoragePlugins')]],
+    ['a rejection caught by try', 'async (persistence) => { try { objectStorage = await registerObjectStoragePlugins(persistence, options); } catch { } }', [caught('registerObjectStoragePlugins')]],
+    ['a throw caught by try', '(persistence) => { try { registerPostgresPlugins(persistence, registerOptions); } catch (error) { console.warn(error); } }', [caught('registerPostgresPlugins')]],
+  ])('%s is refused', (_shape, plugin, problems) => {
+    expect(wiringProblems(fence(sample(plugin)))).toEqual(problems);
+  });
+
+  const arrow = '(persistence) => registerLibSqlPlugins(persistence, registerOptions)';
+
+  test.each([
+    ['handed to create', sample(arrow)],
+    ['in a fence that creates no system', sample(arrow, '')],
+    ['built inside the create call', `const system = ActorSystem.create('my-app', ActorSystemOptions.create().withPersistence({ plugins: [${arrow}] }));`],
+    ['returned for a caller to pass', `function systemOptionsFor(registerOptions) {\n  return ActorSystemOptions.create().withPersistence({ plugins: [${arrow}] });\n}`],
+  ])('options with plugins %s pass', (_shape, code) => {
+    expect(wiringProblems(fence(code))).toEqual([]);
+  });
+
+  test.each([
+    ['a create without them', sample(arrow, "const system = ActorSystem.create('my-app');"),
+      ['line 2: systemOptions holds the plugins of this withPersistence(...), but no ActorSystem.create(...) is handed it']],
+    ['a create handed other options', sample(arrow, "const system = ActorSystem.create('my-app', otherOptions);"),
+      ['line 2: systemOptions holds the plugins of this withPersistence(...), but no ActorSystem.create(...) is handed it']],
+    ['options built and dropped', `ActorSystemOptions.create().withPersistence({ plugins: [${arrow}] });\nconst system = ActorSystem.create('my-app');`,
+      ['line 2: the plugins of this withPersistence(...) are built and dropped, never handed to ActorSystem.create(...)']],
+  ])('options with plugins and %s are refused', (_shape, code, problems) => {
+    expect(wiringProblems(fence(code))).toEqual(problems);
   });
 });
 
