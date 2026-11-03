@@ -246,7 +246,9 @@ configured in the same block: the persistence stores name theirs with
 actor names one with `withCircuitBreaker('kafka')` or
 `circuit-breaker = "kafka"` under its root — off until it does.  Every
 actor that names the same id shares the instance: one breaker per broker
-cluster, opened by any of them and probed once per window for all
+cluster, opened by any of them, with at most one attempt per window from each
+— and a single probe for all of them only while a failing connect is short
+against the spread of their wake-ups
 (see [BrokerActor base](/io/broker-actor-base/#circuit-breaker)).
 
 Options a config file cannot express are passed as the second

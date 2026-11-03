@@ -74,7 +74,13 @@ actor-ts.io.broker.amqp {
 ```
 
 The URL carries the credentials, which is why the sample takes it from the
-environment rather than from the file.  `bindings` and `tls` have no leaf: a
+environment rather than from the file.  A value from the environment is read
+as JSON first wherever it parses as JSON; an `amqp://` URL never does, so it
+arrives as written.  A value that does — a number in another spelling, `null`,
+a list — would arrive changed or stop the start: quote it inside the
+variable, or set it in code.
+
+`bindings` and `tls` have no leaf: a
 binding names the actor its queue delivers to, and TLS material is a private
 key, so both are set in code.  The reconnect, circuit-breaker and
 outbound-buffer leaves every broker shares go under the same root — see

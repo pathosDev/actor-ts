@@ -257,8 +257,9 @@ selben Block konfiguriert: Die Persistence-Stores benennen ihre mit
 Broker-Actor benennt einen mit `withCircuitBreaker('kafka')` oder
 `circuit-breaker = "kafka"` unter seinem Root — aus, bis er es tut.  Jeder
 Actor, der dieselbe Id nennt, teilt sich die Instanz: ein Breaker pro
-Broker-Cluster, geöffnet von irgendeinem von ihnen und einmal pro Fenster
-für alle geprobt (siehe
+Broker-Cluster, geöffnet von irgendeinem von ihnen, mit höchstens einem Versuch
+pro Fenster von jedem — und einer einzigen Probe für alle nur so lange, wie ein
+fehlschlagender Connect kurz ist gegenüber der Streuung ihres Aufwachens (siehe
 [BrokerActor-Basis](/de/io/broker-actor-base/#circuit-breaker)).
 
 Was eine Config-Datei nicht ausdrücken kann, wird als zweites Argument

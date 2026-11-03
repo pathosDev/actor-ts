@@ -254,8 +254,12 @@ There is no **circuit breaker** until `circuitBreaker` names one, and
 `maxAttempts` defaults to `Infinity`, so on its own a dead endpoint is
 retried forever, on the backoff above.  Name a breaker and, after
 `max-failures` failed connects in a row, the client stops dialling for the
-breaker's window and then sends a single probe — one probe per window for
-every client that shares the id.  It still retries for as long as
+breaker's window and then sends a single probe.  Clients that share the id
+make at most one attempt each per window, and one probe answers for all of
+them only while a failing connect is short against the spread of their
+wake-ups — a connect that hangs is still in flight when the next client wakes,
+and that one probes too (see
+[Circuit breaker](/io/broker-actor-base/#circuit-breaker)).  It still retries for as long as
 `maxAttempts` allows; the breaker spaces the attempts out, it does not end
 them.
 

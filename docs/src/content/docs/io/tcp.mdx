@@ -69,11 +69,18 @@ actor-ts.io.broker.tcp {
 }
 ```
 
-Each leaf is the kebab-case of its field with the unit suffix dropped:
-`idle-timeout`, `connect-timeout` and `keep-alive` are durations, so `90s` and
-a bare millisecond count read alike, and the two framing caps are sizes, where
-`64K` is 65 536 bytes.  A `framing` block names its `kind`, and only that
-strategy's leaves take effect.  `target` names an actor and has no leaf.  The
+Each leaf is the kebab-case of its field.  The durations drop their unit
+suffix — `idle-timeout`, `connect-timeout` and `keep-alive`, so `90s` and a
+bare millisecond count read alike — and the two framing caps are sizes that
+keep theirs: `max-line-bytes` and `max-frame-bytes`, where `64K` is 65 536
+bytes.  A `framing` block names its `kind`, and only that strategy's leaves
+take effect.  Those four leaves are all it takes: any other one stops the
+actor at start with a `ConfigError` that names it and lists the four, rather
+than leaving a cap at its default.  That covers every way a migration by hand
+spells a cap — `max-frame-len`, `max-frame` with the unit dropped, the field
+name `maxFrameBytes`, and their line twins — and the old `maxLineLen` /
+`maxFrameLen` are refused naming their replacement.  `target` names an actor
+and has no leaf.  The
 reconnect, circuit-breaker and outbound-buffer leaves every broker shares go
 under the same root — see
 [BrokerActor base](/io/broker-actor-base/#reconnect-with-backoff).
@@ -192,7 +199,13 @@ throws an `OptionsError` before a socket exists rather than at the
 first inbound byte.  A cap that is not a positive integer is
 rejected, and so is an **empty `delimiter`** — it matches at every
 offset without consuming anything, which is not a slow framer but a
-wedged process.
+wedged process.  So is a `kind` other than the three, which would
+otherwise drop the framing and its cap together, and so is a framing
+that still carries `maxLineLen` or `maxFrameLen`, the names the two
+caps had before they were renamed.  The compiler catches those only
+in an object literal; one parsed from JSON or built in plain
+JavaScript reaches the actor with the old field on it, and nothing
+reads that field.
 
 Both actors read the same strategies from the same code — on
 `TcpServerActor` the chosen framing is applied **per accepted

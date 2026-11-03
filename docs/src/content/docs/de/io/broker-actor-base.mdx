@@ -358,7 +358,7 @@ actor-ts.io.broker.kafka {
     max-delay     = 30s
     factor        = 2
     random-factor = 0.2    # ±20 % jitter; 0 for a deterministic schedule
-    # max-attempts omitted = unlimited (the default); 1 = one attempt, no retry
+    # max-attempts omitted = unlimited (the default); 1 = one reconnect, two connects in all
   }
   circuit-breaker = "kafka"   # a breaker id; none when unset or ""
   outbound-buffer = 1000   # messages held while disconnected; 0 = fail-fast
@@ -375,8 +375,10 @@ Jedes Blatt ist das kebab-case seines Feldes ohne Einheitensuffix, eine Dauer
 nimmt also `30s` genauso wie eine bloße Millisekundenzahl.  Für
 `reconnect: false` gibt es keine HOCON-Schreibweise: Auto-Reconnect ganz
 abzuschalten geht nur über den Konstruktor, und `max-attempts = 1` kommt dem
-in einer Config-Datei am nächsten.  Die camelCase-Schreibweisen, die diese
-Blätter früher hatten — `initialDelayMs`, `outboundBuffer` und die übrigen —,
+in einer Config-Datei am nächsten.  Es wiederholt trotzdem einmal: Gezählt
+werden Reconnects, der erste Connect ist keiner, und `0` wird abgelehnt.  Die
+camelCase-Schreibweisen, die diese Blätter früher hatten — `initialDelayMs`,
+`outboundBuffer` und die übrigen —,
 und jeder Block, den der Breaker hatte, bevor er eine Id wurde —
 `circuitBreaker { … }` und `circuit-breaker { failure-threshold, reset }` —,
 werden mit einem `ConfigError` abgelehnt, der den neuen Key nennt, statt
@@ -448,15 +450,30 @@ Was er am Connect-Zyklus ändert:
   wachsen lässt, bis `max-reset-timeout`.
 - **`ignored-error-names`** listet `Error.name`-Werte, die nie zählen — etwa
   den vorübergehenden Resolver-Fehler eines Treibers.
-- **`call-timeout`** ist, wenn gesetzt, eine Deadline für jeden Connect: Der
-  Versuch wird über `abortConnectAttempt` abgebrochen, wie ihn die
-  Connect-Deadline unten abbricht, und als Fehlschlag gezählt.
+- **`call-timeout`** ist, wenn gesetzt, eine Deadline für jeden Connect, und
+  ein Versuch, der sie überschreitet, zählt als Fehlschlag.  Der
+  WebSocket-Client, `SseActor` und `TcpSocketActor` brechen diesen Versuch über
+  `abortConnectAttempt` ab, wie ihn die Connect-Deadline unten abbricht.  Kein
+  anderer eingebauter Broker kann einen laufenden Connect abbrechen: Dort zählt
+  das Timeout trotzdem und kann den Breaker öffnen, aber der Connect läuft
+  weiter, bis er von selbst endet, der nächste Versuch wartet auf ihn, und eine
+  Warnung sagt das.
 
 Actors, die dieselbe Id nennen, **teilen sich einen Breaker** und damit ein
 Urteil: Ist er offen, wird auch ein Actor abgelehnt, der es nie versucht hat,
-und eine Probe nach dem Fenster antwortet für alle.  Für eine Flotte von
-Actors an einem Broker-Cluster ist genau das der Zweck — eine Probe pro
-Fenster statt eines Reconnect-Schwalls von jedem.  Deshalb bekommen auch zwei
+und jeder Actor macht höchstens einen Connect pro Fenster.  Für eine Flotte von
+Actors an einem Broker-Cluster ist genau das der Zweck — ein Versuch je Actor
+und Fenster statt eines Reconnect-Schwalls von jedem.  Ob eine einzige Probe
+für alle antwortet, hängt davon ab, wie lange ein fehlschlagender Connect
+dauert.  Das Aufwachen jedes Actors wird um sein `randomFactor` nach vorn
+gestreut, und der halboffene Breaker lässt jeden Versuch durch, der kommt,
+bevor die Probe entschieden ist.  Ein Connect, der schnell fehlschlägt, öffnet
+den Breaker wieder, bevor der nächste Actor aufwacht, die übrigen werden also
+abgelehnt, und eine Probe hat für die Flotte entschieden; ein Connect, der
+hängt — ein Broker, der seinen Verkehr verschluckt —, läuft noch, wenn die
+anderen aufwachen, und jeder von ihnen probt ebenfalls.  Ein `call-timeout`
+begrenzt, wie lange eine hängende Probe den Breaker halboffen hält.  Deshalb
+bekommen auch zwei
 voneinander unabhängige Broker zwei Ids: Ein Breaker, den beide teilen, öffnet
 auf die Fehlschläge des einen und hält beide fern.
 

@@ -184,6 +184,17 @@ object built in code as well, where a cast or plain JavaScript can hand over
 any `kind`: it is refused at startup with an `OptionsError` naming the kinds
 there are — or, for a retired spelling, the one that replaced it.
 
+The start value is checked at startup too, so a consumer the server would
+refuse at connect, and the reconnect loop would retry for ever, fails before
+it gets there, naming the field.  `start-seq` (`startSeq`) is a positive
+integer up to `Number.MAX_SAFE_INTEGER`: stream sequences start at 1, and past
+that bound a number no longer holds every integer, so the sequence sent would
+not always be the one written.  `start-time` (`startTimeMs`) is an instant in
+epoch milliseconds from `0` up to `253402300799999`, which is
+`9999-12-31T23:59:59.999Z`: the server reads it as an RFC 3339 time, whose year
+has four digits, and an epoch in microseconds mistaken for milliseconds lands
+far past that.
+
 Both groups are read **whole**: `withStream({ … })` / `withConsumer({ … })` in
 code replace the configured block rather than merging into it, which is the
 ordinary precedence (constructor > HOCON > defaults) applied at the field each

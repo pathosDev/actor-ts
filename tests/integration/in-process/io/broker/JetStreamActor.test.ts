@@ -603,6 +603,27 @@ describe('JetStreamActor — stream + consumer lifecycle', () => {
     }
   });
 
+  test('the last start time the validator takes reaches nats.js with a four-digit year', async () => {
+    // The bound is where toISOString() stops writing a year RFC 3339 can
+    // hold; one millisecond later it writes +010000, which the validator
+    // refuses at start rather than letting the server refuse at connect.
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('js-policy-time-edge', sysOptions);
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'S', subjects: ['s.>'] })
+        .withConsumer({ durable: 'd', deliverPolicy: { kind: 'by-start-time', startTimeMs: 253_402_300_799_999 } });
+      const { mock } = await bootActor(sys, jetstreamOptions);
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.opt_start_time).toBe('9999-12-31T23:59:59.999Z');
+      expect(new Date(253_402_300_800_000).toISOString()).toBe('+010000-01-01T00:00:00.000Z');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
   test.each([
     { label: 'unset', deliverPolicy: undefined, expected: 'all' },
     { label: 'all', deliverPolicy: 'all', expected: 'all' },
@@ -1371,6 +1392,35 @@ describe('JetStreamOptionsValidator — the stream / consumer group rules (#871)
       .toThrow(/consumer\.deliverPolicy/);
     expect(() => validate({ consumer: { durable: 'd', deliverPolicy: { kind: 'by-start-sequence', startSeq: 1 } } }))
       .not.toThrow();
+  });
+
+  // A start sequence goes to the server as JSON, into a uint64.  Past
+  // Number.MAX_SAFE_INTEGER a number no longer holds every integer — the
+  // sequence sent is not always the one written — and from 1e21 on JSON writes
+  // it in exponent form, which no uint64 parses: the consumer would be refused
+  // at connect and retried for ever under the default reconnect policy.
+  test.each([
+    { label: '2^53, the first integer past the exact range', startSeq: 2 ** 53 },
+    { label: '2^64, past the server\'s uint64', startSeq: 2 ** 64 },
+    { label: '1e21, which JSON writes as 1e+21', startSeq: 1e21 },
+  ])('refuses a startSeq of $label, naming the field', ({ startSeq }) => {
+    let refusal: unknown = null;
+    try {
+      validate({ consumer: { durable: 'd', deliverPolicy: { kind: 'by-start-sequence', startSeq } } });
+    } catch (e) {
+      refusal = e;
+    }
+    expect(refusal).toBeInstanceOf(OptionsError);
+    expect((refusal as OptionsError).field).toBe('consumer.deliverPolicy.startSeq');
+    expect((refusal as OptionsError).message).toContain(String(Number.MAX_SAFE_INTEGER));
+  });
+
+  test('accepts the largest start sequence a number holds exactly, and JSON writes it out whole', () => {
+    expect(() => validate({
+      consumer: { durable: 'd', deliverPolicy: { kind: 'by-start-sequence', startSeq: Number.MAX_SAFE_INTEGER } },
+    })).not.toThrow();
+    expect(JSON.stringify(Number.MAX_SAFE_INTEGER)).toBe('9007199254740991');
+    expect(JSON.stringify(1e21)).toBe('1e+21');
   });
 
   test('rejects a non-positive ackWaitMs', () => {

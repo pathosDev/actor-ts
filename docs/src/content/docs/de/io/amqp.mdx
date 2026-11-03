@@ -74,7 +74,13 @@ actor-ts.io.broker.amqp {
 ```
 
 Die URL trägt die Zugangsdaten, deshalb nimmt das Beispiel sie aus der
-Umgebung statt aus der Datei.  `bindings` und `tls` haben kein Blatt: Ein
+Umgebung statt aus der Datei.  Ein Wert aus der Umgebung wird zuerst als JSON
+gelesen, wo immer er sich als JSON parsen lässt; eine `amqp://`-URL tut das nie
+und kommt deshalb so an, wie sie geschrieben ist.  Ein Wert, der es tut — eine
+Zahl in anderer Schreibweise, `null`, eine Liste —, käme verändert an oder ließe
+den Start scheitern: ihn in der Variablen selbst quoten oder im Code setzen.
+
+`bindings` und `tls` haben kein Blatt: Ein
 Binding benennt den Actor, an den seine Queue ausliefert, und TLS-Material ist
 ein privater Schlüssel — beides wird im Code gesetzt.  Die Reconnect-,
 Circuit-Breaker- und Outbound-Buffer-Blätter, die sich alle Broker teilen,

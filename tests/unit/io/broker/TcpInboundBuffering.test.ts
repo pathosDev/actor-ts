@@ -295,4 +295,16 @@ describe('TcpInboundBuffer', () => {
     buffer.clear();
     expect(buffer.pendingBytes()).toBe(0);
   });
+
+  test('a length-prefixed header past the configured frame cap is refused before its payload', () => {
+    // The frame cap's twin of the case above, on the path both actors push
+    // every chunk through.  The header claims 100 bytes against a cap of 64:
+    // under the 16 MiB default the buffer would sit waiting for the payload.
+    const buffer = new TcpInboundBuffer();
+    const header = lengthPrefixed('p'.repeat(100)).subarray(0, 4);
+    const extraction = buffer.push(header, { kind: 'length-prefixed', maxFrameBytes: 64 });
+    expect(extraction.overflow).toBe('frame exceeds maxFrameBytes=64');
+    expect(extraction.consumed).toBe(0);
+    expect(buffer.pendingBytes()).toBe(4);
+  });
 });

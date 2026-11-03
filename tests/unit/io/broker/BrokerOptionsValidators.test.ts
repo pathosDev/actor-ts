@@ -338,6 +338,11 @@ describe('JetStreamOptionsValidator — consumer.deliverPolicy', () => {
     // Finite, and still past the last instant a Date can hold, so the actor's
     // `new Date(startTimeMs).toISOString()` throws a RangeError at connect.
     { label: 'a startTimeMs past the range of a Date', start: { startTimeMs: 8.64e15 + 1 } },
+    // A Date holds them, but toISOString() writes a five-digit year the
+    // server's RFC 3339 parser refuses — the first, and an epoch in
+    // microseconds mistaken for milliseconds.
+    { label: 'a startTimeMs in the year 10000', start: { startTimeMs: 253_402_300_800_000 } },
+    { label: 'a startTimeMs in microseconds', start: { startTimeMs: 1_767_225_600_000_000 } },
     { label: 'a startTimeMs spelled as a date string', start: { startTimeMs: '2026-01-01T00:00:00Z' } },
   ])('refuses by-start-time with $label, naming the field', ({ start }) => {
     const refusal = refusalOf({ kind: 'by-start-time', ...start });
@@ -345,20 +350,20 @@ describe('JetStreamOptionsValidator — consumer.deliverPolicy', () => {
     expect(refusal.message).toMatch(/epoch milliseconds/);
   });
 
-  test('accepts the edges: the first sequence, the epoch, and the last instant a Date holds', () => {
+  test('accepts the edges: the first sequence, the epoch, and the last instant the server parses', () => {
     for (const deliverPolicy of [
       { kind: 'by-start-sequence', startSeq: 1 },
       { kind: 'by-start-time', startTimeMs: 0 },
-      { kind: 'by-start-time', startTimeMs: 8.64e15 },
+      { kind: 'by-start-time', startTimeMs: 253_402_300_799_999 },
     ] as const) {
       expect(
         () => new JetStreamOptionsValidator().validate(withPolicy(deliverPolicy)),
         `${JSON.stringify(deliverPolicy)} was refused`,
       ).not.toThrow();
     }
-    // The bound is the Date's own, not a rounder number near it.
-    expect(new Date(8.64e15).toISOString()).toBe('+275760-09-13T00:00:00.000Z');
-    expect(() => new Date(8.64e15 + 1).toISOString()).toThrow(RangeError);
+    // The bound is the last four-digit year, not a rounder number near it.
+    expect(new Date(253_402_300_799_999).toISOString()).toBe('9999-12-31T23:59:59.999Z');
+    expect(new Date(253_402_300_800_000).toISOString()).toBe('+010000-01-01T00:00:00.000Z');
   });
 });
 

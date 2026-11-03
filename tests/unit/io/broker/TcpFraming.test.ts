@@ -1,4 +1,10 @@
 import { describe, expect, test } from 'bun:test';
+import {
+  DEFAULT_MAX_FRAME_BYTES,
+  extractFrames,
+  findFramingViolation,
+  type TcpFraming,
+} from '../../../../src/io/broker/TcpFraming.js';
 import { TcpSocketActor } from '../../../../src/io/broker/TcpSocketActor.js';
 import { TcpSocketOptions } from '../../../../src/io/broker/TcpSocketOptions.js';
 import type { TcpSocketOptionsType } from '../../../../src/io/broker/TcpSocketOptions.js';
@@ -189,5 +195,103 @@ describe('TcpSocketActor — lines framing across chunks (#610)', () => {
     harness.feedChunk(encoder.encode('\n'));
     expect(harness.delivered).toEqual(['abcdefgh']);
     expect(harness.pendingBytes()).toBe(0);
+  });
+});
+
+/** A `length-prefixed` header announcing `length` payload bytes, and no payload. */
+function lengthHeader(length: number): Uint8Array {
+  const header = new Uint8Array(4);
+  new DataView(header.buffer).setUint32(0, length, false);
+  return header;
+}
+
+// The dispatch every TCP actor and `TcpInboundBuffer` go through.  The cap is
+// checked against the declared length, so a header past it is refused before
+// any payload is waited for — but only if the cap handed to the extractor is
+// the configured one.  Read off a field that no longer exists, or not read at
+// all, it is the 16 MiB default, and every frame below that is taken.
+describe('extractFrames — a length-prefixed framing applies its own maxFrameBytes', () => {
+  test('a declared length past the configured cap is refused, though the default would take it', () => {
+    const extraction = extractFrames(lengthHeader(100), { kind: 'length-prefixed', maxFrameBytes: 64 });
+    expect(extraction.overflow).toBe('frame exceeds maxFrameBytes=64');
+    expect(extraction.frames).toEqual([]);
+    expect(extraction.consumed).toBe(0);
+    expect(100).toBeLessThan(DEFAULT_MAX_FRAME_BYTES);
+  });
+
+  test('a frame at the configured cap is taken', () => {
+    const frame = new Uint8Array(4 + 64);
+    frame.set(lengthHeader(64));
+    const extraction = extractFrames(frame, { kind: 'length-prefixed', maxFrameBytes: 64 });
+    expect(extraction.overflow).toBeUndefined();
+    expect(extraction.frames).toHaveLength(1);
+    expect(extraction.consumed).toBe(68);
+  });
+
+  test('an unset cap is the shipped default', () => {
+    const atDefault = extractFrames(lengthHeader(DEFAULT_MAX_FRAME_BYTES), { kind: 'length-prefixed' });
+    expect(atDefault.overflow).toBeUndefined();
+    const pastDefault = extractFrames(lengthHeader(DEFAULT_MAX_FRAME_BYTES + 1), { kind: 'length-prefixed' });
+    expect(pastDefault.overflow).toBe(`frame exceeds maxFrameBytes=${DEFAULT_MAX_FRAME_BYTES}`);
+  });
+});
+
+/**
+ * A framing object TypeScript never saw: parsed from JSON, built in plain
+ * JavaScript, or cast.  The compiler's excess-property check covers a fresh
+ * literal only, so these are the shapes that reach a validator unchecked.
+ */
+function fromJson(json: string): TcpFraming {
+  return JSON.parse(json) as TcpFraming;
+}
+
+// #1443 renamed the two caps' fields along with their HOCON leaves.  An object
+// that still carries an old field used to start the actor with the field
+// ignored and the default cap in force; it is refused instead, by the rule both
+// TCP options validators share.
+describe('findFramingViolation — a retired cap field or an unknown kind is refused', () => {
+  test.each([
+    { json: '{"kind":"length-prefixed","maxFrameLen":64}', field: 'framing.maxFrameLen', current: 'maxFrameBytes' },
+    { json: '{"kind":"lines","maxLineLen":64}', field: 'framing.maxLineLen', current: 'maxLineBytes' },
+    // Under the other kind too: the field is gone whichever strategy it sits beside.
+    { json: '{"kind":"lines","maxFrameLen":64}', field: 'framing.maxFrameLen', current: 'maxFrameBytes' },
+    { json: '{"kind":"bytes","maxLineLen":64}', field: 'framing.maxLineLen', current: 'maxLineBytes' },
+    // Beside its replacement as well, which it would otherwise pass for.
+    {
+      json: '{"kind":"length-prefixed","maxFrameBytes":64,"maxFrameLen":64}',
+      field: 'framing.maxFrameLen',
+      current: 'maxFrameBytes',
+    },
+  ])('$json names $field and its replacement', ({ json, field, current }) => {
+    const violation = findFramingViolation(fromJson(json));
+    expect(violation?.field).toBe(field);
+    expect(violation?.reason).toContain(current);
+    expect(violation?.value).toBe(64);
+  });
+
+  test('a retired field holding undefined sets nothing, and is not refused', () => {
+    const framing = { kind: 'length-prefixed', maxFrameBytes: 64, maxFrameLen: undefined } as unknown as TcpFraming;
+    expect(findFramingViolation(framing)).toBeUndefined();
+  });
+
+  test.each(['line', 'length_prefixed', 'lengthPrefixed', 'Bytes', '', 'toString'])(
+    'kind %p is refused, naming the kinds there are',
+    (kind) => {
+      const violation = findFramingViolation(fromJson(JSON.stringify({ kind })));
+      expect(violation?.field).toBe('framing.kind');
+      expect(violation?.reason).toContain("'bytes', 'lines' or 'length-prefixed'");
+      expect(violation?.value).toBe(kind);
+    },
+  );
+
+  test('a missing or non-string kind is refused too', () => {
+    expect(findFramingViolation(fromJson('{}'))?.field).toBe('framing.kind');
+    expect(findFramingViolation(fromJson('{"kind":1}'))?.field).toBe('framing.kind');
+  });
+
+  test('the three kinds there are pass', () => {
+    for (const json of ['{"kind":"bytes"}', '{"kind":"lines"}', '{"kind":"length-prefixed"}']) {
+      expect(findFramingViolation(fromJson(json))).toBeUndefined();
+    }
   });
 });
