@@ -407,7 +407,9 @@ export type ProtocolHeldBound = 'idleTimeoutMs' | 'requestTimeoutMs' | 'maxHeade
  * on Fastify or Express under Deno — pairs this project does not support —
  * neither guard fires, and both say so: on Deno each installs nothing and
  * reports itself not in effect, so a set `header-timeout` or `max-connections`
- * is warned about at `bind()`.
+ * is warned about at `bind()`.  The same shim accepts `keepAliveTimeout` and
+ * `requestTimeout` and applies neither, so `idle-timeout` and
+ * `request-timeout` are reported not in effect there too.
  */
 export type ServerOptionsReport = {
   readonly idleTimeoutMs: boolean;
@@ -662,6 +664,15 @@ const NOTHING_IN_EFFECT: ListenServerOptionsReport = Object.freeze({
  *   - **Express** — the server the backend builds and listens on: `node:http`,
  *     or `node:https` under `tls`, which carries the same four properties and
  *     events.  All four, on either.
+ *   - **Fastify and Express under Deno** — none of the four.  Deno's
+ *     `node:http` shim accepts `keepAliveTimeout` and `requestTimeout` and
+ *     applies neither: measured on deno 2.6.8 with both backends under
+ *     `idle-timeout = 600ms` and `request-timeout = 2s`, a keep-alive
+ *     connection was still open 3 s after its response and a stalled body
+ *     still open after 40 s with no `408`, where node v26.10.0 and bun 1.4.2
+ *     closed the first at 1.6 s and answered the second at 30.0 s.  It emits
+ *     no `'connection'` either, so the two guards install nothing.  Each is
+ *     reported not in effect, and `bind()` names the ones that were set.
  *   - **Hono on Node** — `@hono/node-server` hands its `node:http` server back
  *     as `HonoServerHandle.raw`.  All four.
  *   - **Hono on Bun** — `Bun.serve` exposes no server object, so `raw` is
@@ -730,12 +741,16 @@ export function applyServerOptions(
   // halves — and are reported as such rather than as in effect.  A set `0`
   // asks for no bound, which every protocol honours.
   const http1Unbounded = typeof server.updateSettings === 'function' && detectRuntime() === 'bun';
+  // Deno's node:http shim accepts `keepAliveTimeout` and `requestTimeout` and
+  // applies neither, so a value above `0` is written and reported not in
+  // effect there; `0` asks for no bound, which arming nothing honours.
+  const timeoutsIgnored = detectRuntime() === 'deno';
   const heldForOneProtocol: { -readonly [Field in ProtocolHeldBound]?: ListenerProtocol } = {};
   if (options.idleTimeoutMs !== undefined) {
     server.keepAliveTimeout = options.idleTimeoutMs;
     enforceSessionIdleTimeout(server, options.idleTimeoutMs);
     if (http1Unbounded && options.idleTimeoutMs > 0) heldForOneProtocol.idleTimeoutMs = 'HTTP/2';
-    else report.idleTimeoutMs = true;
+    else report.idleTimeoutMs = !timeoutsIgnored || options.idleTimeoutMs === 0;
   }
   if (options.headerTimeoutMs !== undefined) {
     const headerDeadlineMs = headerDeadlineOf(options.headerTimeoutMs, options.requestTimeoutMs);
@@ -753,7 +768,7 @@ export function applyServerOptions(
     // `0` is "no bound" on HTTP/2 as it is on HTTP/1.1, so it arms nothing.
     if (options.requestTimeoutMs > 0) enforceStreamRequestTimeout(server, options.requestTimeoutMs);
     if (http1Unbounded && options.requestTimeoutMs > 0) heldForOneProtocol.requestTimeoutMs = 'HTTP/2';
-    else report.requestTimeoutMs = true;
+    else report.requestTimeoutMs = !timeoutsIgnored || options.requestTimeoutMs === 0;
   }
   if (options.maxConnections !== undefined && options.maxConnections !== Infinity) {
     server.maxConnections = options.maxConnections;
