@@ -240,9 +240,11 @@ export const PERTURBATION_WORD = 'perturbed';
 /**
  * The word an empty leaf's second value is spelled with: lowercase letters
  * only, like {@link PERTURBATION_WORD}, so that a reader taking the first takes
- * this one for the same reasons.
+ * this one for the same reasons, and exactly as long, so that a reader keeping
+ * only the length — a redaction masking each character — cannot tell them
+ * apart either.
  */
-export const SECOND_PERTURBATION_WORD = 'reperturbed';
+export const SECOND_PERTURBATION_WORD = 'disturbed';
 
 const SWITCH_SPELLINGS: ReadonlyMap<string, string> = new Map([
   ['on', 'off'], ['off', 'on'],

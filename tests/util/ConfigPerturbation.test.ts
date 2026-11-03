@@ -117,12 +117,12 @@ describe('perturbationFor — a value of the literal\'s own kind', () => {
   });
 
   test('an empty literal gets a second value of its kind, non-empty and distinct from the first', () => {
-    expect(perturbationFor('x', '')).toMatchObject({ value: 'perturbed', secondValue: 'reperturbed' });
-    expect(perturbationFor('x', [])).toMatchObject({ value: ['perturbed'], secondValue: ['reperturbed'] });
+    expect(perturbationFor('x', '')).toMatchObject({ value: 'perturbed', secondValue: 'disturbed' });
+    expect(perturbationFor('x', [])).toMatchObject({ value: ['perturbed'], secondValue: ['disturbed'] });
     expect(perturbationFor('x', {}))
-      .toMatchObject({ value: { perturbed: 'perturbed' }, secondValue: { perturbed: 'reperturbed' } });
+      .toMatchObject({ value: { perturbed: 'perturbed' }, secondValue: { perturbed: 'disturbed' } });
     expect(introductionFor('a.b', '', 'documented as a template'))
-      .toMatchObject({ value: 'perturbed', secondValue: 'reperturbed' });
+      .toMatchObject({ value: 'perturbed', secondValue: 'disturbed' });
     // A literal that is not empty already differs from its perturbation in
     // the value alone.
     for (const literal of ['hybrid', 'off', 0, 7, ['/user/*'], { 'rsp:': 7000 }]) {
@@ -433,6 +433,10 @@ describe('observeLeaf — what counts as a read', () => {
     expect(verdict('a.name', '', emptinessOnly).observedBy).toEqual([]);
     const valueKept = (config: Config) => ({ name: config.getString('a.name') || undefined });
     expect(verdict('a.name', '', valueKept).observedBy).toEqual(['probe']);
+    // Nor by one that keeps only the length, as a redaction that masks each
+    // character does: the two values are as long as each other.
+    const lengthOnly = (config: Config) => ({ masked: '*'.repeat(config.getString('a.name').length) });
+    expect(verdict('a.name', '', lengthOnly).observedBy).toEqual([]);
 
     // The same holds for a key introduced empty.
     const labelSet = (config: Config) =>
