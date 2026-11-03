@@ -327,9 +327,12 @@ ausdrücklich miteinander verbunden:
 - **`awaitReady` läuft zuerst ab** — die Ablehnung von oben. Die Pipeline
   läuft mit `ClusterJoinUnsuccessfulReason`, dem Grund, den auch das
   Aufgeben übergibt, also erkennt ein Shutdown-Task einen gescheiterten
-  Join an einem einzigen Grund, egal welche Frist abgelaufen ist.
-  `shutdown()` auf einem Knoten, der gestartet ist, übergibt weiterhin
-  `ClusterLeavingReason`.
+  Join an einem einzigen Grund, egal welche Frist abgelaufen ist. Das
+  Scheitern wird auf Error geloggt, bevor dieser Lauf beginnt — unter
+  `exit-process = on` beendet der Lauf den Prozess, bevor die Ablehnung den
+  Aufrufer erreichen kann —, und der Lauf endet nie mit `0`: Mit
+  `exit-code = 0` endet er mit `1`.  `shutdown()` auf einem Knoten, der
+  gestartet ist, übergibt weiterhin `ClusterLeavingReason`.
 - **Das Aufgeben kommt zuerst** — das Warten endet sofort. Der Bootstrap
   wartet auf die Pipeline, die das Aufgeben gestartet hat, und lehnt mit
   einem `ClusterReadyTimeoutError` ab, der

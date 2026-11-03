@@ -446,3 +446,14 @@ describe('idle-timeout and request-timeout on an HTTP/2 listener (#870)', () => 
     for (const gone of retired) expect(text).not.toContain(gone);
   });
 });
+
+describe('a failed Cluster.bootstrap readiness wait (#1500)', () => {
+  // ClusterBootstrap.test.ts pins it: 'the wait's own deadline: the readiness
+  // error is logged at error, then the exit status is 1'.
+  test.each([
+    ['cluster/cluster-bootstrap.mdx', 'The failure is logged at error before that run starts — under `exit-process = on` the run ends the process before the rejection can reach the caller — and the run never exits `0`: with `exit-code = 0` it exits `1`.'],
+    ['de/cluster/cluster-bootstrap.mdx', 'Das Scheitern wird auf Error geloggt, bevor dieser Lauf beginnt — unter `exit-process = on` beendet der Lauf den Prozess, bevor die Ablehnung den Aufrufer erreichen kann —, und der Lauf endet nie mit `0`: Mit `exit-code = 0` endet er mit `1`.'],
+  ])('%s says it is logged first and never exits 0', (path, sentence) => {
+    expect(prose(page(path))).toContain(sentence);
+  });
+});
