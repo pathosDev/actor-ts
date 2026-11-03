@@ -3204,10 +3204,8 @@ den neuen Wert nur ablehnt, zählt
 nicht, denn ein Wert, der geprüft und dann verworfen wird, wird genauso
 abgelehnt; einer, der das Blatt als eine andere Art liest, als es
 ausgeliefert wird — eine Größe, wo eine Dauer steht, eine Ganzzahl, wo eine
-Größe als bloße Zahl steht —, lässt es durchfallen, außer bei einem Bruch,
-der als Größe gelesen wird: Sein Wert der falschen Art ist eine Dauer, die
-`getBytes` genauso ablehnt wie der eigene Accessor des Bruchs; `getBytes`
-liest einen Bruch also unbemerkt.
+Größe als bloße Zahl steht, eine Größe, wo ein Bruch steht —, lässt es
+durchfallen.
 Ein Key, den diese Datei nur als Kommentar führt, hat keinen Wert zum
 Ändern; der Test führt ihn deshalb mit einem Wert aus der Registry ein und
 ändert ihn auf einen zweiten, und ein Leser muss auf beide verschieden

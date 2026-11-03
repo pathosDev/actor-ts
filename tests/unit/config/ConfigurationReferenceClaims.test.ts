@@ -285,29 +285,30 @@ describe('the dead-key gate as the reference-conf page describes it (#1425)', ()
     expect(text).toContain(notProven);
   });
 
-  // A size or duration leaf is perturbed with its unit, so a reader that
-  // takes it as another kind fails it — except getBytes on a fraction, whose
-  // wrong-kind value is a duration that getBytes refuses anyway.  And the
-  // Cassandra data-centers list is outside the gate for want of a registry
-  // entry, not of a second value.
-  test.each([
+  // A size or duration leaf is perturbed with its unit, and a fraction with a
+  // time unit and with a byte unit, so a reader that takes a leaf as another
+  // kind fails it — getBytes on a fraction too, which the sentence named as
+  // its exception until the gate caught it.  And the Cassandra data-centers
+  // list is outside the gate for want of a registry entry, not of a second
+  // value.
+  test.each<[string, string, string, readonly string[]]>([
     [
       'reference/reference-conf.mdx',
-      'one that takes the leaf as another kind than it ships as — a size where a duration ships, an integer where a size ships as a bare count — fails it, except a fraction read as a size: its wrong-kind value is a duration, which `getBytes` refuses as readily as the fraction\'s own accessor, so `getBytes` reads a fraction unremarked.',
+      'one that takes the leaf as another kind than it ships as — a size where a duration ships, an integer where a size ships as a bare count, a size where a fraction ships — fails it.',
       'Cassandra blocks\' `replication.data-centers`, which waits only for its registry entry: a second list as the entry\'s override and a context selecting `network-topology-strategy` would bring it in.',
-      'a list of objects the test has no second value for',
+      ['a list of objects the test has no second value for', '`getBytes` reads a fraction unremarked'],
     ],
     [
       'de/reference/reference-conf.mdx',
-      'einer, der das Blatt als eine andere Art liest, als es ausgeliefert wird — eine Größe, wo eine Dauer steht, eine Ganzzahl, wo eine Größe als bloße Zahl steht —, lässt es durchfallen, außer bei einem Bruch, der als Größe gelesen wird: Sein Wert der falschen Art ist eine Dauer, die `getBytes` genauso ablehnt wie der eigene Accessor des Bruchs; `getBytes` liest einen Bruch also unbemerkt.',
+      'einer, der das Blatt als eine andere Art liest, als es ausgeliefert wird — eine Größe, wo eine Dauer steht, eine Ganzzahl, wo eine Größe als bloße Zahl steht, eine Größe, wo ein Bruch steht —, lässt es durchfallen.',
       '`replication.data-centers` der Cassandra-Blöcke, dem nur sein Eintrag in der Registry fehlt: eine zweite Liste als Override des Eintrags und ein Kontext, der `network-topology-strategy` wählt, brächten ihn hinein.',
-      'eine Liste von Objekten, für die der Test keinen zweiten Wert hat',
+      ['eine Liste von Objekten, für die der Test keinen zweiten Wert hat', '`getBytes` liest einen Bruch also unbemerkt'],
     ],
   ])('%s: the kind sentence and what sits outside the gate', (path, kind, dataCenters, retired) => {
     const text = prose(page(path));
     expect(text).toContain(kind);
     expect(text).toContain(dataCenters);
-    expect(text).not.toContain(retired);
+    for (const words of retired) expect(text).not.toContain(words);
   });
 });
 
