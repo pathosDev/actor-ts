@@ -1843,7 +1843,7 @@ Namen `strictTransportSecurity()` — liest ihre Policy aus
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `http.hsts.max-age` | `15552000` | Wie lange ein Browser den Pin hält, in **Sekunden** (180 Tage) — eine blanke Ganzzahl, kein Duration-String. `0` wird abgelehnt. |
+| `http.hsts.max-age` | `15552000` | Wie lange ein Browser den Pin hält, in **Sekunden** (180 Tage) — eine blanke Ganzzahl, kein Duration-String. `0` und alles unter `86400` (einem Tag) werden hier abgelehnt; Code darf jeden Wert setzen. |
 | `http.hsts.include-sub-domains` | `true` | `includeSubDomains` senden. |
 | `http.hsts.preload` | `false` | `preload` senden. Braucht ein `max-age` von mindestens einem Jahr und `include-sub-domains`. |
 
@@ -1862,10 +1862,14 @@ actor-ts.http.hsts {
 }
 ```
 
-`max-age = 0` wird mit einem `ConfigError` abgelehnt, der den Key nennt. Es
-sagt jedem Browser, den Pin zu vergessen; eine Zeile in einer Config-Datei
-würde also jeden Client jeder `hsts()`-Route im Prozess entpinnen. HSTS
-abschalten bleibt dem Code vorbehalten, mit `withMaxAge(0)`.
+Ein `max-age` unter `86400` — einem Tag — wird mit einem `ConfigError`
+abgelehnt, der den Key und die Untergrenze nennt. `0` sagt jedem Browser, den
+Pin zu vergessen, und ein kürzerer Pin als ein Tag ist abgelaufen, bevor ein
+Besucher am nächsten Tag wiederkommt; eine Zeile in einer Config-Datei würde
+also jeden Client jeder `hsts()`-Route im Prozess entpinnen. Code darf
+weiterhin jeden Wert setzen, mit `withMaxAge(...)` — die fünfminütige erste
+Stufe des Ramp-ups von hstspreload.org, `withMaxAge(300)`, und
+`withMaxAge(0)`, das HSTS abschaltet, eingeschlossen.
 
 Der Block steuert nur die Middleware `hsts()`. Das `hsts`-Feld des Bündels
 `securityHeaders()` und von `withSecurityHeaders(...)` ist nur im Code

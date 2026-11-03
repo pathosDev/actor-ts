@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { hsts, resolveHsts, strictTransportSecurity } from '../../../../src/http/middleware/Hsts.js';
+import { Config, ConfigError } from '../../../../src/config/Config.js';
+import { hsts, readHstsOptionsFromConfig, resolveHsts, strictTransportSecurity } from '../../../../src/http/middleware/Hsts.js';
 import {
   DEFAULT_HSTS_INCLUDE_SUB_DOMAINS,
   DEFAULT_HSTS_MAX_AGE_SECONDS,
@@ -99,5 +100,52 @@ describe('strictTransportSecurity', () => {
     const rethrown = await rethrownBy(strictTransportSecurity(), new HttpError(Status.Unauthorized, 'no'));
     expect(rethrown).toBeInstanceOf(HttpError);
     expect((rethrown as HttpError).headers?.['strict-transport-security']).toBe('max-age=15552000; includeSubDomains');
+  });
+});
+
+/** `actor-ts.http.hsts` with `max-age` set to `value`. */
+const configuredMaxAge = (value: number): Config => Config.parseString(`actor-ts.http.hsts.max-age = ${value}`);
+
+/** What reading `config`'s block throws, or `undefined` when it reads. */
+function readRefusal(config: Config): unknown {
+  try {
+    readHstsOptionsFromConfig(config);
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+}
+
+describe('a configured max-age is held to a floor of one day (#1462)', () => {
+  // `0` makes every browser forget the pin, and anything under a day has
+  // lapsed before a visitor comes back the next day: either way one line in
+  // a file would turn HSTS off for every hsts() route.  Code is not held to
+  // it.
+  test.each([0, 1, 300, 3_600, 86_399])('max-age = %p is refused, naming the key and the floor', (value) => {
+    const refusal = readRefusal(configuredMaxAge(value));
+    expect(refusal).toBeInstanceOf(ConfigError);
+    expect((refusal as ConfigError).message).toContain('actor-ts.http.hsts.max-age');
+    expect((refusal as ConfigError).message).toContain('86400');
+  });
+
+  test.each([86_400, 604_800, 15_552_000, 63_072_000])('max-age = %p is read as written', (value) => {
+    expect(readHstsOptionsFromConfig(configuredMaxAge(value))).toEqual({ maxAge: value });
+  });
+
+  test('code may still set any max-age, under a file or without one', () => {
+    expect(resolveHsts({ maxAge: 300 }).maxAge).toBe(300);
+    expect(resolveHsts({ maxAge: 0 }).maxAge).toBe(0);
+    // The route's own options win over the block, and are not held to the
+    // block's floor.
+    expect(resolveHsts({ maxAge: 1 }, configuredMaxAge(63_072_000)).maxAge).toBe(1);
+  });
+
+  test('a negative max-age is left to the validator, which refuses it as it does from code', () => {
+    // An OptionsError on the merged policy, the refusal a negative value from
+    // code gets too, rather than a floor message about a value no header can
+    // carry.
+    expect(readHstsOptionsFromConfig(configuredMaxAge(-5))).toEqual({ maxAge: -5 });
+    expect(() => resolveHsts({}, configuredMaxAge(-5))).toThrow(OptionsError);
+    expect(() => resolveHsts({ maxAge: -5 })).toThrow(OptionsError);
   });
 });

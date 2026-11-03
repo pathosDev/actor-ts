@@ -1721,7 +1721,7 @@ The [`hsts()`](/http/middleware/security-headers/) middleware —
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `http.hsts.max-age` | `15552000` | How long a browser keeps the pin, in **seconds** (180 days) — a bare integer, not a duration string. `0` is refused. |
+| `http.hsts.max-age` | `15552000` | How long a browser keeps the pin, in **seconds** (180 days) — a bare integer, not a duration string. `0` and anything below `86400` (a day) are refused here; code may set any value. |
 | `http.hsts.include-sub-domains` | `true` | Emit `includeSubDomains`. |
 | `http.hsts.preload` | `false` | Emit `preload`. Needs a `max-age` of at least a year and `include-sub-domains`. |
 
@@ -1739,10 +1739,13 @@ actor-ts.http.hsts {
 }
 ```
 
-`max-age = 0` is refused with a `ConfigError` naming the key. It tells every
-browser to forget the pin, so one line in a configuration file would un-pin
-every client of every `hsts()` route in the process; switching HSTS off stays
-code-only, with `withMaxAge(0)`.
+A `max-age` below `86400` — one day — is refused with a `ConfigError` naming
+the key and the floor. `0` tells every browser to forget the pin, and a shorter
+pin than a day has lapsed before a visitor comes back the next day, so one line
+in a configuration file would un-pin every client of every `hsts()` route in
+the process. Code may still set any value with `withMaxAge(...)` — the
+five-minute first stage of hstspreload.org's ramp-up, `withMaxAge(300)`, and
+`withMaxAge(0)`, which switches HSTS off, included.
 
 The block governs the `hsts()` middleware only. The `hsts` field of the
 `securityHeaders()` bundle and of `withSecurityHeaders(...)` is code-only, and

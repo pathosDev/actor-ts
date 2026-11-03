@@ -1693,9 +1693,11 @@ actor-ts {
     #
     # max-age is in SECONDS, as a bare integer rather than a duration string:
     # the header carries seconds, and a duration would be read as
-    # milliseconds.  max-age = 0 is refused with a ConfigError -- it tells
-    # every browser to forget the pin, so switching HSTS off is code-only
-    # (withMaxAge(0)).
+    # milliseconds.  Here a max-age below 86400 (one day) is refused with a
+    # ConfigError naming the key and the floor: 0 tells every browser to
+    # forget the pin, and a shorter pin than a day has lapsed before a
+    # visitor comes back the next day.  Code may still set any value
+    # (withMaxAge(...)).
     hsts {
       max-age             = 15552000  # 180 days
       include-sub-domains = on
