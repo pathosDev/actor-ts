@@ -165,10 +165,10 @@ function crossingsAfterCleanIntervals(estimate: number | 'auto', intervals: numb
   const detectorOptions = PhiAccrualOptions.create()
     .withHeartbeatIntervalMs(cadenceMs)
     .withExpectedResponseAfterMs(estimate);
-  const fd = new PhiAccrualFailureDetector(detectorOptions);
+  const detector = new PhiAccrualFailureDetector(detectorOptions);
   const peer = addr(40);
-  for (let beat = 0; beat <= intervals; beat++) fd.heartbeat(peer, beat * cadenceMs);
-  return crossingsAfter(fd, peer, intervals * cadenceMs);
+  for (let beat = 0; beat <= intervals; beat++) detector.heartbeat(peer, beat * cadenceMs);
+  return crossingsAfter(detector, peer, intervals * cadenceMs);
 }
 
 describe('expected-response-after: what φ assumes before it has a history (#1451)', () => {

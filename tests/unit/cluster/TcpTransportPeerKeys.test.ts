@@ -44,13 +44,13 @@ function recordingSocket(): RecordingSocket {
 }
 
 /** The private seams the cases drive the transport through. */
-type TransportInternals = {
+interface TransportInternals {
   backend: unknown;
   readonly byPeer: ReadonlyMap<string, unknown>;
   attachInbound(socket: unknown): void;
   onData(socket: unknown, chunk: Uint8Array): void;
   onClose(socket: unknown): void;
-};
+}
 
 function internals(transport: TcpTransport): TransportInternals {
   return transport as unknown as TransportInternals;
