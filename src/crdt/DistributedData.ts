@@ -452,20 +452,26 @@ type SubscriberCallbackRegistration = { readonly listener: SubscriberCallback };
 type SubscriberActor = ActorRef<DistributedDataChanged<any>>;
 
 /**
- * One actor's subscription to one key, and the latest-value slot that paces
- * what the actor is told (#1468).
+ * The latest-value slot that paces what one actor is told about one key
+ * (#1468).
  *
- * At most one notification per subscriber and key is ever queued.  A change
- * finds the slot either empty — and posts a fresh `DistributedDataChanged` —
- * or holding the one still waiting in the subscriber's mailbox, whose value it
- * overwrites in place.  The slot empties when the subscriber's cell hands that
- * notification to the behavior: the release `postSignalEnvelope` fires, which
- * is the one moment after which the next change has to become a fresh message
- * rather than land in one the subscriber is already holding.  So the rate the
- * subscriber is told at is the rate it takes them, and no timer is involved.
+ * At most one notification per subscriber and key is ever posted and not yet
+ * handed over.  A change finds the slot either empty — and posts a fresh
+ * `DistributedDataChanged` — or holding the one still waiting in the
+ * subscriber's mailbox, whose value it overwrites in place.  The slot empties
+ * when the subscriber's cell hands that notification to the behavior: the
+ * release `postSignalEnvelope` fires, which is the one moment after which the
+ * next change has to become a fresh message rather than land in one the
+ * subscriber is already holding.  So the rate the subscriber is told at is the
+ * rate it takes them, and no timer is involved.
  *
- * The slot *is* the subscription: one per subscriber path and key, so
- * subscribing again finds it rather than adding a second.
+ * One per subscriber path and key, so subscribing again finds it rather than
+ * adding a second — and it outlives the subscription that holds it while a
+ * notification is still queued.  That is what keeps the bound across an
+ * unsubscribe: a subscription taken out before the actor is handed that
+ * notification takes it over, and its replay overwrites the value in place.
+ * A slot that went with its subscription let every unsubscribe and subscribe
+ * while the actor was behind leave one more notification no bound could shed.
  */
 type SubscriberSlot = {
   readonly subscriber: SubscriberActor;
@@ -478,11 +484,28 @@ type SubscriberSlot = {
   readonly cell: ActorCell<DistributedDataChanged<any>> | null;
   /** The notification posted and not yet handed over, or `null`. */
   queued: DistributedDataChanged<any> | null;
+  /**
+   * The subscription that holds the slot, or `null` once it ended with a
+   * notification still queued.  No change reaches the slot then; it stays,
+   * and the replicator's watch with it, only until that notification is
+   * handed over or a new subscription takes it over.
+   */
+  registration: SubscriberActorRegistration | null;
 };
 
 /**
+ * One actor subscription, and the identity that tells it apart from a later
+ * one of the same actor and key — what {@link SubscriberCallbackRegistration}
+ * is for a function.  The slot cannot be that identity, because a later
+ * subscription may take over the slot an ended one left: the function the
+ * ended one returned has to go on ending nothing.
+ */
+type SubscriberActorRegistration = { readonly slot: SubscriberSlot };
+
+/**
  * Every key one actor holds a slot for — what a single `Terminated` cleans up,
- * and what says when its last subscription ended and the watch can go.
+ * and what says when the watch can go: once its last subscription has ended
+ * and it has been handed every notification those left queued.
  */
 type SubscriberEntry = {
   readonly subscriber: SubscriberActor;
@@ -497,11 +520,12 @@ type SubscriberEntry = {
  * Filled in on the replicator's turn, when the call is handled, and read there
  * again by the unsubscribe the call returned — the handle never looks inside.
  * It is how an actor subscription answers what a callback registration
- * answers: a repeated `subscribe` is bound to the slot the first one created,
- * so either returned function ends it, and one kept from a subscription that
- * has since ended names a slot that is no longer there, so it ends nothing.
+ * answers: a repeated `subscribe` is bound to the registration the first one
+ * made, so either returned function ends it, and one kept from a subscription
+ * that has since ended names a registration no slot holds any more, so it ends
+ * nothing — not even the subscription that took that slot over.
  */
-type SubscriptionTicket = { slot: SubscriberSlot | null };
+type SubscriptionTicket = { registration: SubscriberActorRegistration | null };
 
 /** Shared between actor + handle so reads stay synchronous. */
 type SharedView = {
@@ -637,6 +661,18 @@ type DistributedDataUnsubscribeMessage = {
 };
 
 /**
+ * The notification an ended subscription left queued has been handed over,
+ * so the slot kept for it can go.  Told by the release, which runs on the
+ * subscriber's turn: the slot, the subscriber's entry and the watch are the
+ * replicator's, and are let go of on its own.
+ */
+type DistributedDataHandedOverMessage = {
+  readonly kind: 'distributed-data-handed-over';
+  readonly key: string;
+  readonly slot: SubscriberSlot;
+};
+
+/**
  * Everything the replicator handles.  `Terminated` is here because it watches
  * its actor subscribers; it reaches the actor through death watch, never from
  * a holder of the ref.
@@ -648,6 +684,7 @@ type ActorMessage =
   | WireFrameMessage
   | DistributedDataSubscribeMessage
   | DistributedDataUnsubscribeMessage
+  | DistributedDataHandedOverMessage
   | Terminated;
 
 /**
@@ -843,16 +880,20 @@ export class DistributedDataHandle {
    * second subscription, replays the current value again, and either returned
    * function ends the one subscription, exactly as for a function.  Ending it
    * leaves a notification already queued where it is, carrying the value it
-   * had.
+   * had — unless the actor subscribes to the key again before it is handed
+   * that notification: the new subscription takes it over, and its replay
+   * overwrites the value in place rather than queueing a second, so the bound
+   * of one per key holds however often the actor unsubscribes and subscribes.
    *
    * The actor has to live on this node.  A `RemoteActorRef` is refused here
    * with a `TypeError`: a notification carries this replica's live CRDT, and
    * every node holds a replica of its own, so subscribe on the subscriber's
    * node.  The replicator watches every actor it notifies, so one that stops
    * takes its subscriptions with it, and a replicator restart keeps them; the
-   * last subscription an actor gives up ends the watch.  Any other in-process
-   * ref — a `TestProbe` extends `ActorRef` directly and has no mailbox to pace
-   * — is told every change directly and is not watched.
+   * watch ends with the last subscription the actor gives up, once it has been
+   * handed any notification that subscription left queued.  Any other
+   * in-process ref — a `TestProbe` extends `ActorRef` directly and has no
+   * mailbox to pace — is told every change directly and is not watched.
    *
    *   class Dashboard extends Actor<DistributedDataChanged<GCounter>> {
    *     override preStart(): void {
@@ -919,7 +960,7 @@ export class DistributedDataHandle {
         + `not ${subscriber === null ? 'null' : typeof subscriber}`,
       );
     }
-    const ticket: SubscriptionTicket = { slot: null };
+    const ticket: SubscriptionTicket = { registration: null };
     this.ref.tell({ kind: 'distributed-data-subscribe', key, subscriber, ticket });
     return () => {
       this.ref.tell({ kind: 'distributed-data-unsubscribe', key, ticket });
@@ -1352,6 +1393,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
       .with({ kind: 'ddata-wire' }, (m) => this.onWireFrame(m))
       .with({ kind: 'distributed-data-subscribe' }, (m) => this.onDistributedDataSubscribe(m))
       .with({ kind: 'distributed-data-unsubscribe' }, (m) => this.onDistributedDataUnsubscribe(m))
+      .with({ kind: 'distributed-data-handed-over' }, (m) => this.onDistributedDataHandedOver(m))
       .exhaustive();
   }
 
@@ -1361,7 +1403,10 @@ class DistributedDataActor extends Actor<ActorMessage> {
    * Take a subscription out on this turn: find or make the slot, watch an
    * actor the first time it subscribes to anything, and replay the current
    * value through the slot.  A repeated subscription finds the slot and does
-   * nothing but the replay — see {@link SubscriberSlot}.
+   * nothing but the replay.  So does one that finds the slot an ended
+   * subscription left for a notification still queued: it takes the slot
+   * over, and the replay overwrites that notification's value instead of
+   * posting a second — see {@link SubscriberSlot}.
    */
   private onDistributedDataSubscribe(message: DistributedDataSubscribeMessage): void {
     const { key, subscriber, ticket } = message;
@@ -1377,36 +1422,68 @@ class DistributedDataActor extends Actor<ActorMessage> {
         subscriber,
         cell: subscriber instanceof LocalActorRef ? subscriber.getCell() : null,
         queued: null,
+        registration: null,
       };
       slots.set(path, slot);
       this.rememberSubscriber(path, slot, key);
     }
-    ticket.slot = slot;
+    slot.registration ??= { slot };
+    ticket.registration = slot.registration;
     const current = this.view.state.get(key);
     if (current !== undefined) this.offerToSubscriber(key, slot, current);
   }
 
   /**
-   * End the subscription this ticket was bound to, if it still holds the slot.
+   * End the subscription this ticket was bound to, if it still holds its slot.
+   *
    * A notification already queued is left alone: the subscriber is handed it
-   * as it is, and its release empties a slot no change will look at again.
+   * as it is.  The slot stays for it, out of every later change's reach, so
+   * that a subscription taken out before the hand-over takes it over rather
+   * than queueing a second — and so does the watch, so that a subscriber that
+   * stops first is still cleaned up by its `Terminated`.  The release ends
+   * both once the notification is handed over.
    */
   private onDistributedDataUnsubscribe(message: DistributedDataUnsubscribeMessage): void {
-    const slot = message.ticket.slot;
-    if (slot === null) return;
+    const registration = message.ticket.registration;
+    if (registration === null) return;
+    const slot = registration.slot;
+    if (slot.registration !== registration) return;
     const path = slot.subscriber.path.toString();
     const slots = this.view.subscriberSlots.get(message.key);
     if (slots === undefined || slots.get(path) !== slot) return;
+    slot.registration = null;
+    if (slot.queued !== null) return;
+    this.dropSlot(message.key, path, slots);
+  }
+
+  /**
+   * The notification an ended subscription left was handed over: drop the
+   * slot kept for it, unless a subscription took it over meanwhile.
+   */
+  private onDistributedDataHandedOver(message: DistributedDataHandedOverMessage): void {
+    const { key, slot } = message;
+    if (slot.registration !== null || slot.queued !== null) return;
+    const path = slot.subscriber.path.toString();
+    const slots = this.view.subscriberSlots.get(key);
+    if (slots === undefined || slots.get(path) !== slot) return;
+    this.dropSlot(key, path, slots);
+  }
+
+  /** Let go of one subscriber's slot for `key`, and of the watch with its last. */
+  private dropSlot(key: string, path: string, slots: Map<string, SubscriberSlot>): void {
     slots.delete(path);
-    if (slots.size === 0) this.view.subscriberSlots.delete(message.key);
-    this.forgetSubscription(path, message.key);
+    if (slots.size === 0) this.view.subscriberSlots.delete(key);
+    this.forgetSubscription(path, key);
   }
 
   /**
    * A watched subscriber stopped, and every slot it held goes with it.  An
    * unsubscribe is the subscriber's to send and a stopped actor sends none, so
    * without this its slots would stay, each posting one notification into dead
-   * letters and then waiting for ever on a hand-over that cannot come.
+   * letters and then waiting for ever on a hand-over that cannot come.  That
+   * includes a slot kept for a notification an ended subscription left: the
+   * dead cell lets go of its release unfired, and an actor spawned later on
+   * the same path would otherwise take that slot over.
    *
    * No `unwatch`: the cell dropped the watch when it delivered this.
    */
@@ -1439,7 +1516,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
     entry.keys.add(key);
   }
 
-  /** Strike `key` off the subscriber, and end the watch with its last subscription. */
+  /** Strike `key` off the subscriber, and end the watch with its last slot. */
   private forgetSubscription(path: string, key: string): void {
     const entry = this.view.subscribers.get(path);
     if (entry === undefined) return;
@@ -1464,6 +1541,11 @@ class DistributedDataActor extends Actor<ActorMessage> {
    * A post the subscriber's mailbox refuses is warned about and leaves the
    * slot empty, so the next change tries again; the replicator does not fail
    * for a subscriber's queue.
+   *
+   * A release that finds the slot's subscription ended tells the replicator,
+   * which drops the slot kept for it — see {@link onDistributedDataUnsubscribe}.
+   * Only then: a live slot's release clears the mark and nothing else, because
+   * it runs on the subscriber's turn and the slot maps are the replicator's.
    */
   private offerToSubscriber(key: string, slot: SubscriberSlot, value: Crdt<any>): void {
     if (slot.cell === null) {
@@ -1475,10 +1557,13 @@ class DistributedDataActor extends Actor<ActorMessage> {
       return;
     }
     const notification = new DistributedDataChanged(key, value);
+    const replicator = this.self;
     slot.queued = notification;
     try {
       slot.cell.postSignalEnvelope({ message: notification, sender: null }, () => {
-        if (slot.queued === notification) slot.queued = null;
+        if (slot.queued !== notification) return;
+        slot.queued = null;
+        if (slot.registration === null) replicator.tell({ kind: 'distributed-data-handed-over', key, slot });
       });
     } catch (e) {
       if (slot.queued === notification) slot.queued = null;
@@ -1914,12 +1999,16 @@ class DistributedDataActor extends Actor<ActorMessage> {
     // — harmless and keeps the code path uniform.
     this.scheduleDurableSave();
     // The actor subscribers first, and without a copy: the slot maps change
-    // only when this actor handles a subscribe, an unsubscribe or a
-    // `Terminated`, and nothing an offer runs can hand it one of those
-    // synchronously — a subscription made meanwhile is a message, queued.
+    // only when this actor handles a subscribe, an unsubscribe, a hand-over or
+    // a `Terminated`, and nothing an offer runs can hand it one of those
+    // synchronously — a subscription made meanwhile is a message, queued.  A
+    // slot kept for an ended subscription's notification is passed over: that
+    // notification keeps the value it had.
     const slots = this.view.subscriberSlots.get(key);
     if (slots !== undefined) {
-      for (const slot of slots.values()) this.offerToSubscriber(key, slot, next);
+      for (const slot of slots.values()) {
+        if (slot.registration !== null) this.offerToSubscriber(key, slot, next);
+      }
     }
     const registrations = this.view.listeners.get(key);
     if (!registrations) return;

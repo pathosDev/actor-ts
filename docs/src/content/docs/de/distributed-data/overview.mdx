@@ -224,7 +224,10 @@ hat, und nicht schon, bevor `subscribe` zurückkehrt.  Denselben Actor
 noch einmal auf denselben Key zu subscriben, legt keine zweite
 Subscription an.  `subscribe` gibt die Funktion zurück, die die
 Subscription beendet; eine schon eingereihte Benachrichtigung kommt
-trotzdem noch an.
+trotzdem noch an, und wer vorher erneut subscribed, übernimmt sie,
+statt eine zweite einzureihen — wie oft sich der Actor auch ab- und
+wieder anmeldet, mehr als eine wartende Benachrichtigung pro Key hat
+er nie.
 
 Der Actor muss **auf diesem Node** leben.  Eine Ref auf einen Actor
 auf einem anderen Node zu subscriben, wirft einen `TypeError`: Eine

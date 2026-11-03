@@ -209,6 +209,16 @@ async function drained(subscriber: ActorRef<SubscriberMessage>, journal: readonl
 }
 
 /**
+ * Whether the replicator watches `subscriber`.  Read off the subscriber's
+ * cell, which records its watchers, because nothing public says when a watch
+ * ends — and when it ends is what a subscription that outlives its last
+ * unsubscribe has to get right.
+ */
+const watchedByReplicator = (subscriber: LocalActorRef<SubscriberMessage>): boolean =>
+  [...(subscriber.getCell() as unknown as { _watchers: ReadonlySet<ActorRef<unknown>> })._watchers]
+    .some((watcher) => watcher.path.toString().endsWith('/cluster/crdt/data'));
+
+/**
  * Wait until the replicator has handled everything told to it so far, and
  * then until the subscriber has handled every notification that produced.
  */
@@ -437,6 +447,85 @@ describe('replay, repetition and unsubscribe', () => {
     await settled(data, subscriber, journal);
     expect(changedValues(journal)).toEqual([1]);
   });
+
+  test('subscribing again before the notification an ended subscription left is handed over takes it over', async () => {
+    // Ending a subscription leaves its queued notification where it is.  A
+    // subscription taken out before the actor is handed it used to start a
+    // slot of its own, and its replay posted a second notification for the
+    // same key behind the first.
+    const node = await startNode('ddata-ref-p', 48_971);
+    const data = node.system.extension(DistributedDataId).start(node);
+    const journal: string[] = [];
+    const control = newControl();
+    const subscriber = node.system.spawn(() => new Subscriber(journal, control), 'subscriber');
+    const increment = (): void => {
+      data.update<GCounter>(KEY, GCounter.empty, (counter) => counter.increment(data.selfReplicaId(), 1));
+    };
+
+    const gate = newGate();
+    control.park = gate;
+    const unsubscribeFirst = data.subscribe<GCounter>(KEY, subscriber);
+    increment();
+    await awaitCondition(() => journal.includes('parked:1'), { label: 'the subscriber is parked on the first value' });
+    increment();
+    await data.getAsync(KEY, { consistency: 'local' });
+
+    // 2 is queued.  End the subscription, and take one out again at once.
+    unsubscribeFirst();
+    data.subscribe<GCounter>(KEY, subscriber);
+    // The function kept from the ended subscription ends nothing — not the
+    // subscription that took its notification over.
+    unsubscribeFirst();
+    // Taken over, so the change lands in the notification still queued.
+    increment();
+    await data.getAsync(KEY, { consistency: 'local' });
+
+    gate.open();
+    await drained(subscriber, journal);
+    expect(changedValues(journal)).toEqual([1, 3]);
+
+    // And it is a live subscription: the next change is posted afresh.
+    increment();
+    await settled(data, subscriber, journal);
+    expect(changedValues(journal)).toEqual([1, 3, 4]);
+  });
+
+  test('a subscription that ended with a notification queued ends the watch once that notification is handed over', async () => {
+    // The replicator keeps watching while a notification the ended
+    // subscription left is still to be handed over, so a subscriber that
+    // stopped first would still be cleaned up by its `Terminated`.  Handed
+    // over, nothing is left to wait for, and the watch goes.
+    const node = await startNode('ddata-ref-q', 48_981);
+    const data = node.system.extension(DistributedDataId).start(node);
+    const journal: string[] = [];
+    const control = newControl();
+    const subscriber = node.system.spawn(
+      () => new Subscriber(journal, control),
+      'subscriber',
+    ) as LocalActorRef<SubscriberMessage>;
+    const increment = (): void => {
+      data.update<GCounter>(KEY, GCounter.empty, (counter) => counter.increment(data.selfReplicaId(), 1));
+    };
+
+    const gate = newGate();
+    control.park = gate;
+    const unsubscribe = data.subscribe<GCounter>(KEY, subscriber);
+    increment();
+    await awaitCondition(() => journal.includes('parked:1'), { label: 'the subscriber is parked on the first value' });
+    increment();
+    await data.getAsync(KEY, { consistency: 'local' });
+
+    unsubscribe();
+    await data.getAsync(KEY, { consistency: 'local' });
+    expect(watchedByReplicator(subscriber)).toBe(true);
+
+    gate.open();
+    await drained(subscriber, journal);
+    expect(changedValues(journal)).toEqual([1, 2]);
+    await awaitCondition(() => !watchedByReplicator(subscriber), {
+      label: 'the replicator ended the watch once the queued notification was handed over',
+    });
+  });
 });
 
 describe('death watch and restarts', () => {
@@ -523,6 +612,56 @@ describe('death watch and restarts', () => {
     }
   });
 
+  test('a subscriber that stops with an ended subscription still queued leaves nothing behind for the next one on its path', async () => {
+    // A slot kept for the notification an ended subscription left belongs to
+    // that actor.  Its `Terminated` has to take the slot along: left behind,
+    // an actor spawned later on the same path would be bound to it by its
+    // first subscription, its replay would land in the dead actor's mailbox,
+    // and the slot would wait for ever on a hand-over that cannot come.
+    const node = await startNode('ddata-ref-r', 48_991);
+    const data = node.system.extension(DistributedDataId).start(node);
+    const increment = (): void => {
+      data.update<GCounter>(KEY, GCounter.empty, (counter) => counter.increment(data.selfReplicaId(), 1));
+    };
+    const journal: string[] = [];
+    const control = newControl();
+    const first = node.system.spawn(
+      () => new Subscriber(journal, control),
+      'subscriber',
+    ) as LocalActorRef<SubscriberMessage>;
+
+    const gate = newGate();
+    control.park = gate;
+    const unsubscribe = data.subscribe<GCounter>(KEY, first);
+    increment();
+    await awaitCondition(() => journal.includes('parked:1'), { label: 'the subscriber is parked on the first value' });
+    increment();
+    await data.getAsync(KEY, { consistency: 'local' });
+    unsubscribe();
+    await data.getAsync(KEY, { consistency: 'local' });
+
+    first.stop();
+    gate.open();
+    // The name is free once the guardian has dropped the child, which the cell
+    // tells it after posting its watchers their `Terminated`; the read after
+    // that is answered past the replicator's.
+    await awaitCondition(() => node.system._resolvePath(['user', 'subscriber']).isNone(), {
+      label: 'the first subscriber terminated and its name was freed',
+    });
+    await data.getAsync(KEY, { consistency: 'local' });
+
+    const nextJournal: string[] = [];
+    const next = node.system.spawn(() => new Subscriber(nextJournal, newControl()), 'subscriber');
+    expect(next.path.toString()).toBe(first.path.toString());
+    data.subscribe<GCounter>(KEY, next);
+    await settled(data, next, nextJournal);
+    expect(changedValues(nextJournal)).toEqual([2]);
+
+    increment();
+    await settled(data, next, nextJournal);
+    expect(changedValues(nextJournal)).toEqual([2, 3]);
+  });
+
   test('a notification stashed and unstashed keeps its value, and later ones still arrive', async () => {
     const node = await startNode('ddata-ref-k', 48_901);
     const data = node.system.extension(DistributedDataId).start(node);
@@ -584,6 +723,60 @@ describe('a bounded subscriber', () => {
     increment();
     await settled(data, subscriber, journal);
     expect(changedValues(journal)).toEqual([1, 200, 201]);
+  });
+
+  test('holds at most one notification per key queued, however often it unsubscribes and subscribes again', async () => {
+    // The bound that lets a notification past the mailbox's own is one per
+    // subscriber and key.  Each unsubscribe and subscribe while the actor was
+    // behind used to add one more envelope that no policy could shed — so the
+    // overshoot followed the caller's subscribe calls rather than its keys.
+    // Capacity 1 makes every such envelope show in the mailbox's size.
+    const node = await startNode('ddata-ref-s', 49_001);
+    const data = node.system.extension(DistributedDataId).start(node);
+    const journal: string[] = [];
+    const control = newControl();
+    const boundedOptions = ActorOptions.create<SubscriberMessage>()
+      .withMailboxCapacity(1)
+      .withMailboxOverflow('drop-head');
+    const subscriber = node.system.spawn(
+      () => new Subscriber(journal, control),
+      'subscriber',
+      boundedOptions,
+    ) as LocalActorRef<SubscriberMessage>;
+    const increment = (): void => {
+      data.update<GCounter>(KEY, GCounter.empty, (counter) => counter.increment(data.selfReplicaId(), 1));
+    };
+
+    const gate = newGate();
+    control.park = gate;
+    let unsubscribe = data.subscribe<GCounter>(KEY, subscriber);
+    increment();
+    await awaitCondition(() => journal.includes('parked:1'), { label: 'the subscriber is parked on the first value' });
+    increment();
+    await data.getAsync(KEY, { consistency: 'local' });
+    expect(subscriber.getCell().mailboxSize).toBe(1);
+
+    // Subscribing again, with the subscription still in force, replays into
+    // the notification already queued.
+    for (let repeat = 0; repeat < 5; repeat++) data.subscribe<GCounter>(KEY, subscriber);
+    await data.getAsync(KEY, { consistency: 'local' });
+    expect(subscriber.getCell().mailboxSize).toBe(1);
+
+    // And so does subscribing again after ending it.
+    for (let cycle = 0; cycle < 5; cycle++) {
+      unsubscribe();
+      unsubscribe = data.subscribe<GCounter>(KEY, subscriber);
+    }
+    await data.getAsync(KEY, { consistency: 'local' });
+    expect(subscriber.getCell().mailboxSize).toBe(1);
+
+    increment();
+    await data.getAsync(KEY, { consistency: 'local' });
+    expect(subscriber.getCell().mailboxSize).toBe(1);
+
+    gate.open();
+    await drained(subscriber, journal);
+    expect(changedValues(journal)).toEqual([1, 3]);
   });
 });
 

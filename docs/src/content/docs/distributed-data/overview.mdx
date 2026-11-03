@@ -217,7 +217,9 @@ through its mailbox, once the replicator has handled the subscription,
 rather than before `subscribe` returns.  Subscribing the same actor to
 the same key again adds no second subscription.  `subscribe` returns
 the function that unsubscribes; a notification already queued still
-arrives.
+arrives, and subscribing again before it does takes it over instead of
+queueing a second one — so however often the actor unsubscribes and
+subscribes, it never has more than one notification per key waiting.
 
 The actor has to live **on this node**.  Subscribing a ref to an actor
 on another node throws a `TypeError`: a notification carries the local
