@@ -148,6 +148,38 @@ function recordingRuntimeTimeouts<T>(arm: () => T): { readonly result: T; readon
 
 const delaysOf = (timeouts: readonly RuntimeTimeout[]): unknown[] => timeouts.map((timeout) => timeout.delayMs);
 
+/**
+ * Run `act` with the runtime's own `clearTimeout` recorded, and hand back
+ * every handle it was asked to clear.  Passed through, so what is cleared
+ * stays cleared.
+ */
+function recordingRuntimeClears(act: () => void): readonly unknown[] {
+  const realClearTimeout = globalThis.clearTimeout;
+  const cleared: unknown[] = [];
+  globalThis.clearTimeout = ((handle?: Parameters<typeof clearTimeout>[0]) => {
+    cleared.push(handle);
+    realClearTimeout(handle);
+  }) as typeof clearTimeout;
+  try {
+    act();
+    return cleared;
+  } finally {
+    globalThis.clearTimeout = realClearTimeout;
+  }
+}
+
+/**
+ * Stand in for a recorded runtime link elapsing: clear the real timer so it
+ * can never also fire, then run its callback now, recording whatever that
+ * arms next.  A link of a chain is up to 24.9 days long, and the path that
+ * arms on the runtime's own timers has no virtual host to elapse it.
+ */
+function elapseByHand(timeout: RuntimeTimeout | undefined): readonly RuntimeTimeout[] {
+  if (timeout === undefined) throw new Error('no runtime timer was armed to elapse');
+  clearTimeout(timeout.handle);
+  return recordingRuntimeTimeouts(() => { (timeout.callback as () => void)(); }).timeouts;
+}
+
 /** Captures `tell` calls into an array for verification. */
 class RecordingRef<T = unknown> extends ActorRef<T> {
   readonly path = new ActorPath('recording');
@@ -403,6 +435,52 @@ describe('cancel and shutdown reach the link that is armed', () => {
     expect(fired).toBe(0);
     expect(ticks).toBe(1);
   });
+
+  // Once a long initial delay has run out, a short interval is handed to the
+  // host's own `setInterval`, and that interval is then the one armed handle.
+  // Counting ticks cannot show it is left behind: every firing checks the
+  // handle and returns early, so a cancel that only flags the schedule looks
+  // exactly like one that clears it — while a referenced interval keeps the
+  // process alive for good (the #1567 shape).  The armed handles can show it.
+  test('cancel() clears the host interval a spent initial chain handed over to', () => {
+    const host = new VirtualHostTimers();
+    const scheduler = new Scheduler(host);
+    let ticks = 0;
+    const handle = scheduler.scheduleAtFixedRateFunction(CEILING_PLUS_ONE_MS, 10, () => { ticks++; });
+    try {
+      host.elapse(CEILING_PLUS_ONE_MS + 25);
+      expect(ticks).toBe(3);
+      expect(host.intervalDelays).toEqual([10]);
+      // The chain is spent, so the interval is all that is armed.
+      const [interval] = host.pendingHandles;
+      expect(interval).toBeDefined();
+      expect(host.pendingHandles).toHaveLength(1);
+
+      expect(handle.cancel()).toBe(true);
+      expect(host.cleared).toEqual([interval]);
+      expect(host.pendingHandles).toEqual([]);
+    } finally {
+      scheduler.shutdown();
+    }
+  });
+
+  test('shutdown() clears the host interval a spent initial chain handed over to', () => {
+    const host = new VirtualHostTimers();
+    const scheduler = new Scheduler(host);
+    let ticks = 0;
+    const handle = scheduler.scheduleAtFixedRateFunction(CEILING_PLUS_ONE_MS, 10, () => { ticks++; });
+    host.elapse(CEILING_PLUS_ONE_MS + 25);
+    expect(ticks).toBe(3);
+    const [interval] = host.pendingHandles;
+    expect(interval).toBeDefined();
+    expect(host.pendingHandles).toHaveLength(1);
+
+    scheduler.shutdown();
+
+    expect(host.cleared).toEqual([interval]);
+    expect(host.pendingHandles).toEqual([]);
+    expect(handle.isCancelled).toBe(true);
+  });
 });
 
 describe('at and below the ceiling nothing changes', () => {
@@ -534,6 +612,46 @@ describe('everything armed on the scheduler inherits the chain', () => {
       expect(outcome).toBe('timed out');
     } finally {
       scheduler.shutdown();
+    }
+  });
+});
+
+/**
+ * An ask that reaches no scheduler — every ask outside a `ManualScheduler`
+ * test — chains a deadline past the ceiling on the runtime's own timers, and
+ * the reply is the only thing that ever clears it.  A reply that settles the
+ * promise without reaching the armed link leaves a referenced timer of up to
+ * 24.9 days behind every such ask: invisible from inside the process, since
+ * the deadline's callback finds the ask settled and returns, and visible only
+ * as a process that does not exit.  So the clear itself is what is asserted.
+ */
+describe('a reply clears an ask deadline chained on the runtime timers', () => {
+  test('while the first link is armed', async () => {
+    const { result: reply, timeouts: firstLinks } = recordingRuntimeTimeouts(
+      () => new AskResponseRef<string>('long-ask', 'reply-on-first-link', THIRTY_DAYS_MS, 'target'),
+    );
+    try {
+      expect(delaysOf(firstLinks)).toEqual([MAX_TIMER_DELAY_MS]);
+      const cleared = recordingRuntimeClears(() => { reply.tell('answer'); });
+      expect(cleared).toEqual([firstLinks[0]?.handle]);
+      expect(await reply.promise).toBe('answer');
+    } finally {
+      for (const link of firstLinks) clearTimeout(link.handle);
+    }
+  });
+
+  test('once the first link has elapsed and the second is armed', async () => {
+    const { result: reply, timeouts: firstLinks } = recordingRuntimeTimeouts(
+      () => new AskResponseRef<string>('long-ask', 'reply-on-second-link', THIRTY_DAYS_MS, 'target'),
+    );
+    const secondLinks = elapseByHand(firstLinks[0]);
+    try {
+      expect(delaysOf(secondLinks)).toEqual([THIRTY_DAYS_MS - MAX_TIMER_DELAY_MS]);
+      const cleared = recordingRuntimeClears(() => { reply.tell('answer'); });
+      expect(cleared).toEqual([secondLinks[0]?.handle]);
+      expect(await reply.promise).toBe('answer');
+    } finally {
+      for (const link of [...firstLinks, ...secondLinks]) clearTimeout(link.handle);
     }
   });
 });

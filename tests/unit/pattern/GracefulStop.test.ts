@@ -1,10 +1,16 @@
+import { spawnSync } from 'node:child_process';
+import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
+import { Actor } from '../../../src/Actor.js';
 import { ActorPath } from '../../../src/ActorPath.js';
 import { ActorRef } from '../../../src/ActorRef.js';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
+import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { PoisonPill } from '../../../src/SystemMessages.js';
 import { gracefulStop } from '../../../src/pattern/GracefulStop.js';
 import { MAX_TIMER_DELAY_MS } from '../../../src/util/Constants.js';
-import { assertDoesNotCompleteWithin } from '../../util/AsyncAssertions.js';
+import { assertCompletesWithin, assertDoesNotCompleteWithin } from '../../util/AsyncAssertions.js';
 
 /**
  * `gracefulStop` on a ref with no local cell waits a budget past the host
@@ -129,4 +135,97 @@ describe('gracefulStop on a ref it cannot watch, past the host timer ceiling', (
     expect(delaysOf(next)).toEqual([]);
     expect(await first.result).toBe(false);
   });
+});
+
+/**
+ * The delays of the recorded timers that would keep the process alive.  A
+ * handle that cannot say (`hasRef` absent) counts as referenced, because that
+ * is what a host timer is unless someone unreferenced it.
+ */
+const referencedDelaysOf = (timeouts: readonly RecordedTimeout[]): unknown[] => timeouts
+  .filter((timeout) => (timeout.handle as { hasRef?: () => boolean }).hasRef?.() !== false)
+  .map((timeout) => timeout.delayMs);
+
+/** An actor with nothing to drain, which says when it has stopped. */
+class StopRecorder extends Actor<unknown> {
+  constructor(private readonly onStopped: () => void) { super(); }
+  override onReceive(): void {}
+  override postStop(): void { this.onStopped(); }
+}
+
+/**
+ * `Infinity` is a budget that never runs out, and it used to fire after 1 ms
+ * like every other overflowing delay.  Taken at its word, a timer for it can
+ * never do anything but keep the process alive: for a ref with no local cell
+ * the chain re-armed a referenced 24.9-day link forever with no handle anyone
+ * could cancel, so an un-awaited `gracefulStop(ref, Infinity)` kept the
+ * process up indefinitely.
+ */
+describe('gracefulStop with a budget that never runs out', () => {
+  test('arms no referenced timer for a ref it cannot watch, and still delivers the stop', async () => {
+    const ref = new RemoteLikeRef();
+    const { result: stopped, timeouts } = recordingTimeouts(() => gracefulStop(ref, Number.POSITIVE_INFINITY));
+    try {
+      expect(ref.received).toEqual([PoisonPill.instance]);
+      expect(referencedDelaysOf(timeouts)).toEqual([]);
+      // Nothing local can confirm the stop and no budget ever ends it.
+      expect(await settledValue(stopped)).toBe(STILL_PENDING);
+    } finally {
+      for (const timeout of timeouts) clearTimeout(timeout.handle);
+    }
+  });
+
+  test('arms no referenced timer for a local actor, which still resolves true once it stops', async () => {
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const system = ActorSystem.create('graceful-stop-infinite-budget', systemOptions);
+    try {
+      let actorStopped = false;
+      const ref = system.spawn(() => new StopRecorder(() => { actorStopped = true; }), 'stop-recorder');
+      const { result: stopped, timeouts } = recordingTimeouts(() => gracefulStop(ref, Number.POSITIVE_INFINITY));
+      // What was true at the moment it resolved: `true` is a confirmation, so
+      // it must not arrive before the actor has actually stopped.
+      const observed = stopped.then((value) => ({ value, actorStopped }));
+      try {
+        expect(referencedDelaysOf(timeouts)).toEqual([]);
+        expect(await assertCompletesWithin(observed, 4_000, 'gracefulStop(local ref, Infinity)'))
+          .toEqual({ value: true, actorStopped: true });
+      } finally {
+        for (const timeout of timeouts) clearTimeout(timeout.handle);
+      }
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a budget of -Infinity has already run out, so a ref it cannot watch gets false at once', async () => {
+    // The other end of the same axis, and why only +Infinity is special: a
+    // budget that is over before it starts gives up as a budget of 0 does.
+    const ref = new RemoteLikeRef();
+    const stopped = gracefulStop(ref, Number.NEGATIVE_INFINITY);
+    expect(await assertCompletesWithin(stopped, 4_000, 'gracefulStop(non-local ref, -Infinity)')).toBe(false);
+    expect(ref.received).toEqual([PoisonPill.instance]);
+  });
+
+  /**
+   * The property itself, asserted the only way it can be: from outside the
+   * process.  The fixture asks for an infinite stop of a ref it cannot watch,
+   * does not await it, and returns; before this, the process ran until the
+   * spawn timeout killed it.
+   */
+  test('lets a process exit that never awaited its stop of a ref it cannot watch', () => {
+    const fixture = join(import.meta.dir, 'GracefulStopInfiniteBudget.fixture.ts');
+    const child = spawnSync(process.execPath, ['run', fixture], {
+      encoding: 'utf8',
+      env: { ...process.env, NO_COLOR: '1' },
+      // Generous against a loaded runner; the fixture itself is done in a few
+      // dozen milliseconds, so a run that reaches this limit is the held
+      // process, not slowness.
+      timeout: 8_000,
+    });
+    expect(child.stdout, 'the fixture did not run to its stop').toContain('stop-delivered=true');
+    expect(child.signal, 'the fixture had to be killed — something kept its event loop alive').toBeNull();
+    expect(child.status).toBe(0);
+  }, 15_000);
 });

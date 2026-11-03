@@ -193,8 +193,9 @@ class ChainedTimeout implements Cancellable {
  * callers are the scheduler, the `ask` deadline, `after()` without a
  * scheduler, `gracefulStop`'s budget for a ref it cannot watch, the
  * `InMemoryCache` sweep, a persistent actor's recovery deadline, an
- * `HttpClient` deadline, a circuit breaker's call timeout and the phase
- * budgets of coordinated startup and coordinated shutdown.
+ * `HttpClient` deadline, a circuit breaker's call timeout, the phase
+ * budgets of coordinated startup and coordinated shutdown, and a
+ * `ClusterClient`'s ask and connect deadlines.
  */
 export function armChainedTimeout(
   callback: () => void,

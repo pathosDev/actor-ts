@@ -72,7 +72,12 @@ it.
 If HTTP still waits too long, yield more often system-wide: a smaller
 hybrid budget (`Dispatchers.Hybrid(16)` lets the loop run every 16th
 turn), or `ImmediateDispatcher`, which yields after every turn at the
-cost of the `setImmediate` hop the default exists to avoid.
+cost of the `setImmediate` hop the default exists to avoid.  The budget
+counts turns, so it is an integer from `1` up, and at `1` the loop runs
+after every turn.  `0`, a negative or fractional count, `NaN` and
+`Infinity` are refused with an `OptionsError` when the dispatcher is
+built: below `1` no turn would ever run, and a budget that never runs
+out never yields.
 
 :::caution[Not `withDispatcher(new ThroughputDispatcher(...))`]
 This page used to recommend giving the busy actor its own
@@ -119,7 +124,9 @@ prompt turn:
 `MicrotaskDispatcher` is not the fix, even though it removes the
 yields entirely: with no budget at all, a busy system never lets
 timers or sockets run again — see
-[Dispatchers](/fundamentals/dispatchers/).
+[Dispatchers](/fundamentals/dispatchers/).  For the same reason
+`Dispatchers.Hybrid(Infinity)` is refused rather than taken as a
+hybrid that never yields.
 
 ## ThroughputDispatcher options
 
@@ -135,7 +142,14 @@ optional dispatcher `id` second:
   per actor: each turn belongs to a different actor, because an
   actor may only have one turn queued at a time.  Higher = more
   throughput, worse I/O interleaving.  Common values: 10-1000.
-  Defaults to 16.
+  Defaults to 16.  An integer from `1` up: `0`, a negative or
+  fractional count, `NaN` and `Infinity` are refused with an
+  `OptionsError` when the dispatcher is built, because below `1` no
+  turn is ever drained and a drain without a bound never yields.  The
+  configured `actor-ts.dispatcher.throughput` takes the same values
+  and is not raised to `1` the way the per-actor `throughput` is:
+  with `default = throughput` in that block, a `0` there fails
+  `ActorSystem.create`.
 - Between batches it always yields via `setImmediate` (falling
   back to `setTimeout(0)` where `setImmediate` is unavailable),
   so I/O and timers interleave.  This isn't configurable.
