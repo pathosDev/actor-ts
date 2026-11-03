@@ -1,5 +1,5 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { delimiter, join, relative } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 
@@ -308,4 +308,148 @@ describe('the doc-sample harness over a fixture tree', () => {
     expect(plain.stdout).not.toContain('ENOENT');
     expect(report.stderr).toBe('');
   });
+});
+
+/**
+ * What a compiler that died looks like to the harness.
+ *
+ * The phase-34 gate ran this script while the machine was out of memory, and
+ * `bunx tsc` stopped with `fatal error: runtime: cannot allocate memory`: exit
+ * status 2, a goroutine dump on stderr, and not one diagnostic.  The script
+ * read that as a program without diagnostics, so every fence counted as clean
+ * and the run printed `OK`.  These stand-ins replace `bunx` on the PATH the
+ * harness inherits — it resolves the command through the PATH like any other
+ * — so each one is the real script facing one way a compile can end.
+ *
+ * A stand-in ignores its arguments, prints `output` to stderr and exits with
+ * `status`; `signal` has it killed instead, the end a POSIX out-of-memory kill
+ * gives.  Windows has no signals: a process the system kills there exits with
+ * an NTSTATUS code, which is what the `win32` branch of that case uses.
+ */
+type FakeCompiler = {
+  readonly name: string;
+  readonly output: string;
+  readonly status: number;
+  readonly signal?: 'SIGKILL';
+};
+
+/** The fence a working compiler reports, so a run that says `OK` has trusted a compiler that checked nothing. */
+const COMPILED_PAGE = WRONG_ARGUMENT_PAGE;
+
+/** How the Go runtime of TypeScript 7 ends when an allocation fails — the measured case. */
+const OUT_OF_MEMORY = [
+  'fatal error: runtime: cannot allocate memory',
+  '',
+  'goroutine 1 [running]:',
+  'runtime.throw({0x7ff6b2c1a3f0?, 0x0?})',
+  '',
+].join('\n');
+
+/** A diagnostic in the shape `tsc` prints it, for the cases where some output came before the end. */
+const ONE_DIAGNOSTIC = "tmp/elsewhere.ts(1,7): error TS2322: Type 'string' is not assignable to type 'number'.\n";
+
+/** STATUS_STACK_BUFFER_OVERRUN, the exit a process killed for want of commit memory reports on Windows. */
+const KILLED_ON_WINDOWS = -1073740791;
+
+function fakeCompilerIn(directory: string, fake: FakeCompiler): void {
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, 'output.txt'), fake.output, 'utf8');
+  if (process.platform === 'win32') {
+    const status = fake.signal === undefined ? fake.status : KILLED_ON_WINDOWS;
+    writeFileSync(join(directory, 'bunx.cmd'), `@echo off\r\ntype "%~dp0output.txt" 1>&2\r\nexit /b ${String(status)}\r\n`, 'utf8');
+    return;
+  }
+  const end = fake.signal === undefined ? `exit ${String(fake.status)}` : `kill -${fake.signal.slice(3)} $$`;
+  writeFileSync(join(directory, 'bunx'), `#!/bin/sh\ncat "$(dirname "$0")/output.txt" >&2\n${end}\n`, 'utf8');
+  chmodSync(join(directory, 'bunx'), 0o755);
+}
+
+/** The test process's environment with `directory` first on the PATH, whatever case the variable's name has here. */
+function environmentWithFirstOnPath(directory: string): Record<string, string> {
+  const environment: Record<string, string> = {};
+  let searchPath = '';
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue;
+    if (key.toLowerCase() === 'path') searchPath = value;
+    else environment[key] = value;
+  }
+  environment['PATH'] = searchPath === '' ? directory : `${directory}${delimiter}${searchPath}`;
+  return environment;
+}
+
+/** One run's spawn budget, plus room for the test around it — the reasoning of {@link MEASURE_BUDGET_MS}. */
+const ONE_RUN_TEST_BUDGET_MS = RUN_BUDGET_MS + 15_000;
+
+describe('a compiler that did not run to completion fails the harness', () => {
+  let crashFixture = '';
+  let crashOutName = '';
+
+  beforeAll(() => {
+    mkdirSync(join(ROOT, 'tmp'), { recursive: true });
+    crashFixture = mkdtempSync(join(ROOT, 'tmp', 'doc-sample-crash-fixture-'));
+    crashOutName = `tmp/doc-samples-crash-out-${String(process.pid)}`;
+    mkdirSync(join(crashFixture, 'docs'), { recursive: true });
+    writeFileSync(join(crashFixture, 'docs', 'compiled.mdx'), COMPILED_PAGE, 'utf8');
+  });
+
+  afterAll(() => {
+    if (crashFixture !== '') rmSync(crashFixture, { recursive: true, force: true });
+    if (crashOutName !== '') rmSync(join(ROOT, crashOutName), { recursive: true, force: true });
+  });
+
+  /** The real script over the one-page fixture, with `fake` standing in for `bunx`. */
+  function runAgainst(fake: FakeCompiler): Run {
+    const directory = join(crashFixture, `fake-${fake.name}`);
+    fakeCompilerIn(directory, fake);
+    const result = spawnSync(
+      process.execPath,
+      [SCRIPT, `--docs=${relative(ROOT, join(crashFixture, 'docs')).split('\\').join('/')}`, `--out=${crashOutName}`],
+      { cwd: ROOT, encoding: 'utf8', timeout: RUN_BUDGET_MS, env: environmentWithFirstOnPath(directory) },
+    );
+    if (result.error !== undefined || result.signal !== null) {
+      throw new Error(`check-doc-samples.mjs against the ${fake.name} stand-in did not complete: ${result.error?.message ?? `killed by ${result.signal}`}`);
+    }
+    return { status: result.status ?? -1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+  }
+
+  test.each<FakeCompiler>([
+    { name: 'out-of-memory', output: OUT_OF_MEMORY, status: 2 },
+    { name: 'exit-status-outside-tsc', output: ONE_DIAGNOSTIC, status: 134 },
+    { name: 'crash-after-a-diagnostic', output: `${ONE_DIAGNOSTIC}${OUT_OF_MEMORY}`, status: 2 },
+    { name: 'silent-failure', output: '', status: 1 },
+    { name: 'killed', output: '', status: 0, signal: 'SIGKILL' },
+  ])('$name: exit 2, and the run says the compiler did not finish instead of passing the fence', (fake) => {
+    const ended = runAgainst(fake);
+    expect(ended.stdout, 'a run that trusted the dead compiler prints OK').not.toContain('OK —');
+    expect(ended.stderr).toContain('the compiler did not run to completion');
+    expect(ended.status).toBe(2);
+  }, ONE_RUN_TEST_BUDGET_MS);
+
+  test('a compiler that exits 0 with nothing to say is still believed', () => {
+    // The control: the stand-in is the compiler this run used — the fixture's
+    // fence is a real TS2345, which a real compile reports — and a clean exit
+    // is still the clean program it always was.
+    const clean = runAgainst({ name: 'clean', output: '', status: 0 });
+    expect(clean.stderr).toBe('');
+    expect(clean.stdout).toContain('OK — 1 self-contained doc samples compile');
+    expect(clean.status).toBe(0);
+  }, ONE_RUN_TEST_BUDGET_MS);
+
+  test('a tree with nothing to compile is not a crash, although the real compiler exits 2 on it', () => {
+    // `tsc` over a program with no inputs reports `error TS18003: No inputs were
+    // found` — no file, no line — and exits 2, the status of a crash.  It is a
+    // finished compile with nothing in it, so the diagnostic counts as one.
+    const empty = join(crashFixture, 'nothing-to-compile');
+    mkdirSync(empty, { recursive: true });
+    writeFileSync(join(empty, 'exempt.mdx'), EXEMPT_PAGE, 'utf8');
+    const result = spawnSync(
+      process.execPath,
+      [SCRIPT, `--docs=${relative(ROOT, empty).split('\\').join('/')}`, `--out=${crashOutName}`],
+      { cwd: ROOT, encoding: 'utf8', timeout: RUN_BUDGET_MS },
+    );
+    expect(result.stderr).toBe('');
+    expect(result.stdout).toContain('compiled             0');
+    expect(result.stdout).toContain('OK — 0 self-contained doc samples compile');
+    expect(result.status).toBe(0);
+  }, ONE_RUN_TEST_BUDGET_MS);
 });

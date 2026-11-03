@@ -58,7 +58,7 @@
  * Rules 1 and 2 need no sweep and no markup: they classify what authors
  * already wrote.  Rule 3 is what the sweep applies.
  *
- * ## Three things that used to make the numbers lie
+ * ## Four things that used to make the numbers lie
  *
  * **A parse error suppressed every semantic diagnostic in the whole program.**
  * Four unmarked fences — a comment used as an arrow-function body
@@ -144,15 +144,25 @@
  *     duplicate-declaration errors, because pages re-import and re-`const` the
  *     same names fence after fence.
  *
+ * **A compiler that died read as a clean program.**  The verdict is the
+ * absence of diagnostics, and a compiler that stops early reports none: a
+ * `bunx tsc` out of memory exits 2 with a Go runtime crash on stderr, and every
+ * fence counted as clean.  So a compile that did not finish — killed, an exit
+ * status `tsc` never reports, a runtime crash report, or a failure without one
+ * diagnostic — ends the run with **exit 2** and no verdict, in every mode, and
+ * exit 1 keeps meaning "a page is wrong" (`incompleteCompile`).
+ *
  * Usage:
  *   node scripts/check-doc-samples.mjs            # compile, report, exit 1 on error
  *   node scripts/check-doc-samples.mjs --measure  # classify fences only, never fails
- *   node scripts/check-doc-samples.mjs --report   # classify diagnostics, never fails
+ *   node scripts/check-doc-samples.mjs --report   # classify diagnostics, never fails on a finding
  *   node scripts/check-doc-samples.mjs --keep     # leave the generated tree in place
  *   node scripts/check-doc-samples.mjs --docs=DIR --out=NAME   # drive a fixture tree
+ *
+ * Exit 2, whatever the flags, when the compiler did not run to completion.
  */
 
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -709,18 +719,75 @@ export function exportsPaths(manifest, toRoot = '..') {
   return paths;
 }
 
-function runTypescript(configPath) {
-  try {
-    execFileSync('bunx', ['tsc', '-p', configPath], {
-      cwd: ROOT,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: process.platform === 'win32',
-    });
-    return '';
-  } catch (error) {
-    return `${error.stdout ?? ''}${error.stderr ?? ''}`;
+/**
+ * A diagnostic as `tsc` prints one, with a location or without one (`error
+ * TS18003: No inputs were found …`).  Piped, TypeScript prints no summary line,
+ * so a diagnostic is the one thing a finished compile that failed is sure to
+ * print.
+ */
+const ANY_DIAGNOSTIC = /\berror TS\d+:/;
+
+/**
+ * The first line of a runtime's own crash report: the Go runtime TypeScript 7
+ * runs on (`fatal error: runtime: cannot allocate memory`, `panic:`, the
+ * `goroutine 1 [running]:` dump) and Node's, for a compiler written in
+ * JavaScript (`FATAL ERROR: … JavaScript heap out of memory`).  Only at the
+ * start of a line: a diagnostic starts with its file or with `error`, and its
+ * continuation lines are indented, so neither can begin like this.
+ */
+const RUNTIME_CRASH = /^(?:fatal error:|panic:|goroutine \d+ \[|FATAL ERROR:|runtime: )/m;
+
+/** The exits of a compile that finished: clean, diagnostics without output, diagnostics with output. */
+const COMPLETED_STATUSES = new Set([0, 1, 2]);
+
+/**
+ * Room for every diagnostic the tree can produce.  Node's default is 1 MiB, and
+ * past it the compiler is killed and the output cut off — which used to be
+ * parsed as far as it went, dropping every diagnostic after the cut.
+ */
+const COMPILER_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024;
+
+/**
+ * Why a compile did not run to completion, or `null` when it did.
+ *
+ * This has to be decided before a single diagnostic is read, because the
+ * harness's verdict is the *absence* of diagnostics: a compiler that dies
+ * reports none, so a dead one and a clean program looked alike.  The phase-34
+ * gate met exactly that — `bunx tsc` stopped with `fatal error: runtime:
+ * cannot allocate memory`, exit 2 and no diagnostic, and every fence counted
+ * as clean.  Exit 2 is also an ordinary failing compile's status, so the status
+ * alone cannot tell them apart; what a dead compiler lacks is a diagnostic, and
+ * what it adds is its runtime's crash report.
+ */
+function incompleteCompile(result, output) {
+  if (result.error !== undefined) return `it could not be run (${result.error.message})`;
+  if (result.signal !== null) return `it was killed by ${result.signal}`;
+  if (!COMPLETED_STATUSES.has(result.status)) return `it exited with status ${result.status}, which no finished compile reports`;
+  if (RUNTIME_CRASH.test(output)) return 'its runtime reported a crash';
+  if (result.status !== 0 && !ANY_DIAGNOSTIC.test(output)) {
+    return `it exited with status ${result.status} without reporting a single diagnostic`;
   }
+  return null;
+}
+
+function runTypescript(configPath) {
+  const result = spawnSync('bunx', ['tsc', '-p', configPath], {
+    cwd: ROOT,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    shell: process.platform === 'win32',
+    maxBuffer: COMPILER_OUTPUT_LIMIT_BYTES,
+  });
+  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+  const incomplete = incompleteCompile(result, output);
+  if (incomplete !== null) {
+    console.error(`\nthe compiler did not run to completion: ${incomplete}.`);
+    const tail = output.trimEnd().split(/\r?\n/).slice(-20);
+    if (tail.join('') !== '') console.error(`\nIts last output:\n\n${tail.map((line) => `  ${line}`).join('\n')}`);
+    console.error('\nNo fence has a verdict: a compile that ended early reports no diagnostics, which reads as every fence being clean.');
+    process.exit(2);
+  }
+  return result.status === 0 ? '' : output;
 }
 
 async function main() {
