@@ -402,9 +402,11 @@ type KindGap = {
 };
 
 /**
- * The exceptions the kind sentence has words for, each with the gaps it
- * covers.  A gap neither covers fails the test outright: the sentence has no
- * words for it, so the sentence and this list grow together.
+ * The exceptions the kind sentence would name, each with the words it would
+ * name it by and the gaps it covers.  The gate leaves none of these gaps
+ * today, so the sentence names no exception; one that comes back fails the
+ * test until the sentence names it, and a gap neither covers fails it
+ * outright, so the sentence and this list grow together.
  */
 const KIND_EXCEPTIONS = [
   {
