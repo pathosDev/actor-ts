@@ -23,6 +23,11 @@
  *
  * The captured interval doubles as an assertion: the timer runs at the
  * lifetime, so a region that arms it anywhere else fails `fireSweep` by name.
+ *
+ * A shard can also be placed on another node that nobody runs.  An entity
+ * message for it goes out in an envelope the transport records, and the
+ * correlation in that envelope is what a test answers with — the remote-ask
+ * table, the one of the three the lifetime was first raised for.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { match } from 'ts-pattern';
@@ -35,7 +40,9 @@ import { Cluster } from '../../../../src/cluster/Cluster.js';
 import { LeaderChanged } from '../../../../src/cluster/ClusterEvents.js';
 import { ClusterOptions } from '../../../../src/cluster/ClusterOptions.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
+import type { WireMessage } from '../../../../src/cluster/Protocol.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
+import { hashShardId } from '../../../../src/cluster/sharding/ShardAllocator.js';
 import { ShardRegion, type ShardRegionConfig } from '../../../../src/cluster/sharding/ShardRegion.js';
 import type { ShardingOptionsType } from '../../../../src/cluster/sharding/ShardingOptions.js';
 import { StartShardingOptions } from '../../../../src/cluster/sharding/StartShardingOptions.js';
@@ -45,8 +52,10 @@ import {
   type GetShardLocation,
   type GetShards,
   type RegisterAcknowledgment,
+  type ShardEnvelope,
   type ShardHome,
   type ShardingMessage,
+  type ShardReply,
 } from '../../../../src/cluster/sharding/ShardingProtocol.js';
 import { Scheduler, type Cancellable } from '../../../../src/Scheduler.js';
 import { RecordingLogger } from '../../../util/RecordingLogger.js';
@@ -107,6 +116,29 @@ class Recorder extends Actor<unknown> {
 /** What the region sent its coordinator, unwrapped. */
 let coordinatorFrames: ShardingMessage[] = [];
 
+/**
+ * Every entity envelope the node put on the wire for a shard on another
+ * node — the correlation in it is the key of the remote-ask table entry its
+ * caller is waiting in.
+ */
+let remoteEnvelopes: ShardEnvelope[] = [];
+
+const isShardEnvelope = (body: unknown): body is ShardEnvelope =>
+  typeof body === 'object' && body !== null && (body as { kind?: unknown }).kind === 'sharding.Envelope';
+
+/**
+ * Record what the node hands its transport.  The node the envelopes are
+ * addressed to has no process behind it, and `InMemoryTransport.send` drops a
+ * frame for an address nobody listens on, so the send is where it is seen.
+ */
+function recordEnvelopes(transport: InMemoryTransport): void {
+  const send = transport.send.bind(transport);
+  transport.send = (to: NodeAddress, message: WireMessage): void => {
+    if (message.kind === 'envelope' && isShardEnvelope(message.body)) remoteEnvelopes.push(message.body);
+    send(to, message);
+  };
+}
+
 /** Stands in for the coordinator in the one test that needs the region to register. */
 class CoordinatorProbe extends Actor<unknown> {
   override onReceive(message: unknown): void {
@@ -131,6 +163,8 @@ class SweepClockScheduler extends Scheduler {
   private offsetMs = 0;
   private captureIntervalMs: number | null = null;
   private readonly sweeps: Array<() => void> = [];
+  /** Every fixed-rate interval asked for since capture was switched on, captured or armed. */
+  private readonly requestedIntervals: number[] = [];
 
   override now(): number { return super.now() + this.offsetMs; }
 
@@ -145,6 +179,7 @@ class SweepClockScheduler extends Scheduler {
     intervalMs: number,
     task: () => void,
   ): Cancellable {
+    if (this.captureIntervalMs !== null) this.requestedIntervals.push(intervalMs);
     if (intervalMs !== this.captureIntervalMs) {
       return super.scheduleAtFixedRateFunction(initialDelayMs, intervalMs, task);
     }
@@ -162,6 +197,9 @@ class SweepClockScheduler extends Scheduler {
 
   /** How many timers have been captured so far. */
   capturedTimers(): number { return this.sweeps.length; }
+
+  /** Every fixed-rate interval asked for since capture was switched on — what a failure names. */
+  fixedRateIntervals(): readonly number[] { return this.requestedIntervals; }
 
   /** Fire the region's sweep timer exactly as it would have fired itself. */
   fireSweep(): void {
@@ -198,6 +236,10 @@ type Harness = {
   readonly recorder: (label: string) => ActorRef<unknown>;
   /** Tell the region the coordinator placed `shardId` on it, which answers its callers. */
   readonly place: (shardId: number) => void;
+  /** Tell the region the coordinator placed `shardId` on another node, which nobody listens on. */
+  readonly placeRemotely: (shardId: number) => void;
+  /** Hand the region the other node's reply for the remote ask carrying `correlationId`. */
+  readonly reply: (correlationId: number, message: unknown) => void;
   /** Answer the `shards()` query carrying `correlationId`, with an empty map. */
   readonly answerStats: (correlationId: number) => void;
   /** Resolve once the region has handled everything told to it before this call. */
@@ -220,6 +262,7 @@ afterEach(async () => {
   }
   answers.clear();
   coordinatorFrames = [];
+  remoteEnvelopes = [];
 });
 
 type Node = {
@@ -238,11 +281,13 @@ async function joinCluster(systemName: string, port: number, hocon?: string): Pr
     .withScheduler(scheduler);
   if (hocon !== undefined) systemOptions.withConfig(Config.parseString(hocon));
   const system = ActorSystem.create(systemName, systemOptions);
+  const transport = new InMemoryTransport(new NodeAddress(systemName, 'h', port));
+  recordEnvelopes(transport);
   const clusterOptions = ClusterOptions.create()
     .withHost('h')
     .withPort(port)
     .withSeeds([])
-    .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
+    .withTransport(transport)
     .withGossipIntervalMs(30);
   const cluster = await Cluster.join(system, clusterOptions);
   running = { cluster, system };
@@ -303,6 +348,27 @@ async function startRegion(options: HarnessOptions): Promise<Harness> {
     region.tell(authenticated(home));
   };
 
+  // The other node of the remote cases: a member nobody runs, so what the
+  // region sends it is recorded by `recordEnvelopes` and goes no further.
+  const remoteNode = new NodeAddress(options.systemName, 'elsewhere', options.port);
+
+  const placeRemotely = (shardId: number): void => {
+    const home: ShardHome = {
+      kind: 'sharding.ShardHome',
+      shardId,
+      region: region.path.toString(),
+      node: remoteNode.toJSON(),
+    };
+    region.tell(authenticated(home));
+  };
+
+  // How a reply arrives: the other node's region tells it back, and the
+  // cluster hands it over attributed to the connection it came in on.
+  const reply = (correlationId: number, message: unknown): void => {
+    const shardReply: ShardReply = { kind: 'sharding.Reply', correlationId, message };
+    region.tell(new AuthenticatedShardingMessage(remoteNode, shardReply));
+  };
+
   const answerStats = (correlationId: number): void => {
     const stats: ClusterShardingStats = { kind: 'sharding.ClusterShardingStats', correlationId, shards: [] };
     region.tell(authenticated(stats));
@@ -327,6 +393,8 @@ async function startRegion(options: HarnessOptions): Promise<Harness> {
     },
     recorder,
     place,
+    placeRemotely,
+    reply,
     answerStats,
     fence,
     sweep: async () => {
@@ -372,6 +440,85 @@ const debugLines = (log: RecordingLogger, fragment: string): string[] =>
 const pendingLocationsOf = (region: ShardRegion<Command>): ReadonlyMap<number, readonly unknown[]> =>
   (region as unknown as { readonly pendingLocationAsks: ReadonlyMap<number, readonly unknown[]> })
     .pendingLocationAsks;
+
+/** The first of `entity-0`, `entity-1`, … that hashes to `shardId`. */
+function entityOn(shardId: number): string {
+  for (let index = 0; index < 10_000; index++) {
+    const entityId = `entity-${index}`;
+    if (hashShardId(entityId, NUM_SHARDS) === shardId) return entityId;
+  }
+  throw new Error(`no entity id among the first 10 000 hashes to shard ${shardId}`);
+}
+
+/** A caller waiting on another node, and the correlation its entry in the remote-ask table is keyed by. */
+type RemoteAsk = {
+  readonly caller: ActorRef<unknown>;
+  readonly correlationId: number;
+};
+
+/**
+ * Send an entity on `shardId`, placed on another node, a message from a
+ * recorder labelled `label`.  The region forwards it in an envelope and keeps
+ * the recorder in its remote-ask table, under the correlation the envelope
+ * carries, until the reply comes back or the sweep forgets it.
+ */
+async function askRemotely(harness: Harness, label: string, shardId: number): Promise<RemoteAsk> {
+  const caller = harness.recorder(label);
+  const entityId = entityOn(shardId);
+  harness.placeRemotely(shardId);
+  const work: WorkCommand = { kind: 'work', id: entityId };
+  harness.region.tell(work, caller);
+  await harness.fence();
+  const correlationId = remoteEnvelopes
+    .find((envelope) => (envelope.message as Partial<WorkCommand>).id === entityId)?.correlationId;
+  if (correlationId === undefined || correlationId === null) {
+    throw new Error(`no envelope carrying a correlation went out for '${entityId}'`);
+  }
+  return { caller, correlationId };
+}
+
+/**
+ * {@link keptUntil}'s counterpart for the remote-ask table: two callers waiting
+ * on another node, asked together.  A reply for the first after the first
+ * sweep must still reach it; a reply for the second after the second sweep
+ * must find nobody waiting.
+ */
+async function remoteKeptUntil(harness: Harness, keptAtMs: number, droppedAtMs: number): Promise<void> {
+  const kept = await askRemotely(harness, 'remote-kept', 5);
+  const dropped = await askRemotely(harness, 'remote-dropped', 6);
+
+  harness.scheduler.advance(keptAtMs);
+  await harness.sweep();
+  harness.reply(kept.correlationId, 'answered in time');
+  await harness.fence();
+  await drain(kept.caller);
+  expect(answersOf('remote-kept')).toEqual(['answered in time']);
+
+  harness.scheduler.advance(droppedAtMs - keptAtMs);
+  await harness.sweep();
+  harness.reply(dropped.correlationId, 'answered too late');
+  await harness.fence();
+  await drain(dropped.caller);
+  expect(answerCountOf('remote-dropped')).toBe(0);
+}
+
+/**
+ * Start a type through `ClusterSharding.start`, the path production takes,
+ * capturing a fixed-rate timer at {@link LIFETIME_FLOOR_MS}, and return once
+ * its region has armed every timer `preStart` arms.  A shard id outside the
+ * range is refused on the region's own turn, so its answer can only come
+ * after `preStart`.
+ */
+async function startTypeCapturingTheFloor(node: Node, queryTimeoutMs?: number): Promise<void> {
+  const shardingOptions = StartShardingOptions.create<Command>()
+    .withTypeName(TYPE_NAME)
+    .withEntityActor(Entity)
+    .withExtractEntityId((message) => message.id);
+  if (queryTimeoutMs !== undefined) shardingOptions.withShardRegionQueryTimeoutMs(queryTimeoutMs);
+  node.scheduler.captureFixedRate(LIFETIME_FLOOR_MS);
+  const region = node.cluster.sharding.start<Command>(shardingOptions) as unknown as ActorRef<unknown>;
+  await region.ask(locationQuery(-1), 2_000).catch(() => undefined);
+}
 
 describe('the asks sweep forgets the callers nobody answers (#1436)', () => {
   test('a shards() query past its lifetime is dropped, one asked later still answers', async () => {
@@ -541,6 +688,60 @@ describe('how long the region keeps an unanswered caller (#1436)', () => {
     });
     expect(node.scheduler.capturedTimers()).toBe(1);
   }, 20_000);
+
+  test('a query timeout under a minute leaves the lifetime at the minute', async () => {
+    // `ClusterSharding.start` always hands its region a query timeout, so a
+    // region that took it as the lifetime, rather than as a bound the
+    // lifetime may not fall below, would forget every remote ask and every
+    // waiting query a second in here.  The query timeout only ever raises it.
+    const node = await joinCluster('1436-short-query', 45_747);
+    await startTypeCapturingTheFloor(node, 1_000);
+
+    expect(node.scheduler.fixedRateIntervals()).not.toContain(1_000);
+    expect(node.scheduler.capturedTimers(), `fixed-rate timers armed: ${node.scheduler.fixedRateIntervals()}`)
+      .toBe(1);
+  }, 20_000);
+
+  test('and so does the query timeout a type gets when it names none', async () => {
+    // Five seconds out of the box — the value every type started without one
+    // hands its region.
+    const node = await joinCluster('1436-shipped-query', 45_748);
+    await startTypeCapturingTheFloor(node);
+
+    expect(node.scheduler.capturedTimers(), `fixed-rate timers armed: ${node.scheduler.fixedRateIntervals()}`)
+      .toBe(1);
+  }, 20_000);
+});
+
+describe('a caller waiting on another node is kept as long, on the same clock (#1436)', () => {
+  // The remote-ask table: an entity message whose shard lives on another node
+  // goes out in an envelope, and the caller waits here for the reply.  It was
+  // the case the lifetime was raised for, and every case above waits on a
+  // query instead.
+  test('a minute, with the shipped ask timeout', async () => {
+    const harness = await startRegion({ systemName: '1436-remote-floor', port: 45_749, lifetimeMs: LIFETIME_FLOOR_MS });
+    await remoteKeptUntil(harness, 59_000, LIFETIME_FLOOR_MS + 1);
+  }, 20_000);
+
+  test('no less than actor-ts.actor.ask-timeout, when that is longer', async () => {
+    // An entity on another node answering inside a long ask's deadline but
+    // more than a minute in: the reply has to find its caller.
+    const harness = await startRegion({
+      systemName: '1436-remote-ask-timeout',
+      port: 45_750,
+      hocon: 'actor-ts.actor.ask-timeout = 121237ms',
+      lifetimeMs: 121_237,
+    });
+    await remoteKeptUntil(harness, 120_000, 121_300);
+  }, 20_000);
+
+  test('stamped on system.clock, the clock the sweep reads', async () => {
+    // Ten minutes between `system.clock` and the wall clock: a caller stamped
+    // from the wall clock is already past its lifetime at the first sweep.
+    const harness = await startRegion({ systemName: '1436-remote-clock', port: 45_751, lifetimeMs: LIFETIME_FLOOR_MS });
+    harness.scheduler.advance(600_000);
+    await remoteKeptUntil(harness, 59_000, LIFETIME_FLOOR_MS + 1);
+  }, 20_000);
 });
 
 describe('a shard id outside the type\'s range is refused at once (#1436)', () => {
@@ -665,5 +866,50 @@ describe('a query made before the region registered is delayed, not lost (#1436)
       timeoutMs: 4_000,
       label: 'the waiting query was asked again of the new coordinator',
     });
+  }, 20_000);
+
+  test('each acknowledgment asks a waiting query again, and its caller is answered once', async () => {
+    // A region registers again — and is acknowledged again — on every
+    // MemberUp, MemberRemoved and LeaderChanged, and every acknowledgment asks
+    // every waiting query again.  So a query in flight across two of them is
+    // asked three times and can be answered three times, not twice at most;
+    // the caller is answered by the first, and the others find nobody waiting.
+    const harness = await startRegion({
+      systemName: '1436-asked-per-acknowledgment',
+      port: 45_752,
+      lifetimeMs: LIFETIME_FLOOR_MS,
+      withCoordinator: true,
+    });
+    const stats = harness.recorder('stats');
+    const statsRequests = (): number[] => coordinatorFrames.flatMap((frame) =>
+      frame.kind === 'sharding.GetClusterShardingStats' ? [frame.correlationId] : []);
+
+    harness.openCoordinator();
+    await awaitCondition(() => coordinatorFrames.some((frame) => frame.kind === 'sharding.Register'), {
+      timeoutMs: 4_000,
+      label: 'the region registered once its coordinator could be reached',
+    });
+    harness.acknowledgeRegistration();
+    await harness.fence();
+
+    harness.region.tell(statsQuery(), stats);
+    await harness.fence();
+    harness.acknowledgeRegistration();
+    await harness.fence();
+    harness.acknowledgeRegistration();
+    await harness.fence();
+    await awaitCondition(() => statsRequests().length >= 3, {
+      timeoutMs: 4_000,
+      label: 'the query was asked once, and again on each acknowledgment',
+    });
+
+    const correlations = statsRequests();
+    expect(correlations).toHaveLength(3);
+    expect(new Set(correlations).size).toBe(1);
+    for (const correlationId of correlations) harness.answerStats(correlationId);
+    await harness.fence();
+    await drain(stats);
+
+    expect(answersOf('stats')).toEqual([[]]);
   }, 20_000);
 });
