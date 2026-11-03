@@ -7,7 +7,8 @@
  * level-filtering without pulling in a real OTel SDK.
  */
 
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
+import { Config } from '../../../src/config/Config.js';
 import {
   otelLogger,
   type OtelLoggerLike,
@@ -190,6 +191,27 @@ describe('otelLogger', () => {
     // its logger through it, but layers the config file over the options
     // first, outside this function.
     expect(otelLogger.length).toBe(1);
+  });
+
+  test('loads no configuration of its own: the options are all it knows', () => {
+    // The length check above passes a defaulted second parameter and an
+    // inline `Config.load()` alike.  So this hands `Config.load()` a file
+    // that names a logger, and watches it: a factory that loaded one — inline,
+    // as a parameter default, or through the block's reader — would take that
+    // name.  The file reaches the pure path only as options, through the
+    // system's `otelLogs` slot, which reads `system.config` and passes the
+    // merged result in.
+    const configured = Config.parseString('actor-ts.tracing { logger-name = "from-a-file", logger-version = "9.9.9" }');
+    const load = spyOn(Config, 'load').mockImplementation(() => configured);
+    try {
+      const fake = makeFakeLogsApi();
+      otelLogger({ api: fake.api });
+
+      expect(fake.getLoggerCalls).toEqual([[DEFAULT_OTEL_LOGGER_NAME, undefined]]);
+      expect(load).not.toHaveBeenCalled();
+    } finally {
+      load.mockRestore();
+    }
   });
 
   test('a plain object still has to name the api namespace', () => {
