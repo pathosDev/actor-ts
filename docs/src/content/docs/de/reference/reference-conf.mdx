@@ -638,7 +638,10 @@ actor-ts {
     #   app-version = ${?APP_VERSION}
     #
     # A literal goes in quotes: an unquoted 1.0 is a number, and reads back
-    # as "1".
+    # as "1".  An environment value is read as JSON first, so APP_VERSION=1.10
+    # reads back as "1.1" and 2.0 as "2" -- releases 1.1 and 1.10 print the
+    # same label; quote such a value inside the variable (APP_VERSION='"1.10"').
+    # A version with a second dot (1.2.3) or a letter (v1.10) is unchanged.
 
     # Per-role thresholds compose with the one above as an AND: the global
     # count and every configured role's count must be met.  Counted over the

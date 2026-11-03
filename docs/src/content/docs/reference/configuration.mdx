@@ -683,6 +683,14 @@ actor-ts.cluster.app-version = ${?APP_VERSION}
 A literal version goes in quotes: `app-version = 1.0` is a number to HOCON
 and reaches the peers as `"1"`.
 
+A value from the environment is read as JSON first wherever it parses as
+JSON.  A version that reads as a number comes back in that number's own
+spelling — `1.10` as `1.1`, `2.0` as `2`, `1e3` as `1000` — so releases `1.1`
+and `1.10` print the same label, and one that reads as `null` or a list stops
+the start; a version with a second dot (`1.2.3`) or a letter (`v1.10`) is
+unchanged.  Quote such a value inside the variable (`APP_VERSION='"1.10"'`),
+or set it in code with `withAppVersion(...)`.
+
 A label is 1 to 64 visible ASCII characters — no whitespace and no control
 character, because every peer prints it — and `Cluster.join` refuses one that
 is not, an empty one included, before the transport binds.  A peer's label

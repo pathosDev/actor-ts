@@ -724,6 +724,15 @@ actor-ts.cluster.app-version = ${?APP_VERSION}
 Eine wörtliche Version gehört in Anführungszeichen: `app-version = 1.0` ist
 für HOCON eine Zahl und erreicht die Peers als `"1"`.
 
+Ein Wert aus der Umgebung wird zuerst als JSON gelesen, wo immer er sich als
+JSON parsen lässt.  Eine Version, die sich wie eine Zahl liest, kommt in der
+Schreibweise dieser Zahl zurück — `1.10` als `1.1`, `2.0` als `2`, `1e3` als
+`1000` —, die Releases `1.1` und `1.10` tragen also dasselbe Label, und eine,
+die sich wie `null` oder eine Liste liest, lässt den Start scheitern; eine
+Version mit einem zweiten Punkt (`1.2.3`) oder einem Buchstaben (`v1.10`)
+bleibt unverändert.  Einen solchen Wert in der Variablen selbst quoten
+(`APP_VERSION='"1.10"'`) oder im Code mit `withAppVersion(...)` setzen.
+
 Ein Label besteht aus 1 bis 64 sichtbaren ASCII-Zeichen — ohne Leerzeichen
 und ohne Steuerzeichen, weil jeder Peer es ausgibt —, und `Cluster.join`
 lehnt eines ab, das dem nicht entspricht, ein leeres eingeschlossen, bevor

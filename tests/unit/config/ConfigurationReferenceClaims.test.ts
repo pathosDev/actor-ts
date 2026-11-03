@@ -20,7 +20,8 @@ import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
-import { Config } from '../../../src/config/Config.js';
+import { readClusterOptionsFromConfig } from '../../../src/cluster/ClusterOptions.js';
+import { Config, ConfigError } from '../../../src/config/Config.js';
 import { ConfigKeys } from '../../../src/config/ConfigKeys.js';
 import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import { Dispatchers } from '../../../src/Dispatcher.js';
@@ -278,5 +279,61 @@ describe('the dead-key gate as the reference-conf page describes it (#1425)', ()
     const text = prose(page(path));
     expect(text).toContain(emptyLeaf);
     expect(text).toContain(notProven);
+  });
+});
+
+describe('app-version = ${?APP_VERSION} and a version that reads as a number (#843)', () => {
+  /** The label `app-version = ${?APP_VERSION}` reads back with `APP_VERSION` set to `value`, through the cluster's own reader. */
+  function appVersionFrom(value: string): string | undefined {
+    const previous = process.env.APP_VERSION;
+    process.env.APP_VERSION = value;
+    try {
+      return readClusterOptionsFromConfig(Config.parseString('actor-ts.cluster.app-version = ${?APP_VERSION}')).appVersion;
+    } finally {
+      if (previous === undefined) delete process.env.APP_VERSION;
+      else process.env.APP_VERSION = previous;
+    }
+  }
+
+  // The HOCON layer reads an environment value as JSON first (until that
+  // parser behaviour is decided), which is what every sentence below warns of.
+  test('a numeric-looking version comes back in the number\'s spelling, and a quoted one as written', () => {
+    expect(appVersionFrom('1.10')).toBe('1.1');
+    expect(appVersionFrom('2.0')).toBe('2');
+    expect(appVersionFrom('1e3')).toBe('1000');
+    expect(appVersionFrom('"1.10"')).toBe('1.10');
+    expect(appVersionFrom('1.2.3')).toBe('1.2.3');
+    expect(appVersionFrom('v1.10')).toBe('v1.10');
+    expect(() => appVersionFrom('null')).toThrow(ConfigError);
+  });
+
+  test('reference.conf says so beside the substitution form', () => {
+    expect(REFERENCE).toContain('An environment value is read as JSON first, so APP_VERSION=1.10 reads back as "1.1" and 2.0 as "2" -- releases 1.1 and 1.10 print the same label; quote such a value inside the variable (APP_VERSION=\'"1.10"\').');
+  });
+
+  const EN = 'A version that reads as a number comes back in that number\'s own spelling — `1.10` as `1.1`, `2.0` as `2`, `1e3` as `1000` — so releases `1.1` and `1.10` print the same label';
+  const DE = 'Eine Version, die sich wie eine Zahl liest, kommt in der Schreibweise dieser Zahl zurück — `1.10` als `1.1`, `2.0` als `2`, `1e3` als `1000` —, die Releases `1.1` und `1.10` tragen also dasselbe Label';
+  const REMEDY = '(`APP_VERSION=\'"1.10"\'`)';
+
+  test.each([
+    ['reference/configuration.mdx', EN],
+    ['de/reference/configuration.mdx', DE],
+    ['operations/upgrades/upgrade-strategies.mdx', EN],
+    ['de/operations/upgrades/upgrade-strategies.mdx', DE],
+  ])('%s says what an unquoted version becomes, and how to quote it', (path, sentence) => {
+    const text = prose(page(path));
+    expect(text).toContain('${?APP_VERSION}');
+    expect(text).toContain(sentence);
+    expect(text).toContain(REMEDY);
+  });
+
+  test.each([
+    ['cluster/overview.mdx', 'an environment value is read as JSON first, so an unquoted `1.10` reaches the peers as `1.1`'],
+    ['de/cluster/overview.mdx', 'ein Wert aus der Umgebung wird zuerst als JSON gelesen, ein ungequotetes `1.10` erreicht die Peers also als `1.1`'],
+  ])('%s carries the caveat in the appVersion row', (path, sentence) => {
+    const row = rowOf(path, '| `appVersion` |');
+    expect(row).toContain('${?APP_VERSION}');
+    expect(row).toContain(sentence);
+    expect(row).toContain(REMEDY);
   });
 });
