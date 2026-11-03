@@ -375,7 +375,7 @@ Blatt als den dreien; und bei einem Wert außerhalb seines Bereichs.
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `dispatcher.default` | `"hybrid"` | `hybrid` (Default) — weckt Actors über die Microtask-Queue und gibt jede 64. Einheit an eine Macrotask ab, damit Timer und I/O weiter drankommen; `immediate` — der bisherige Default, ein `setImmediate` pro Turn: fair, zum Preis von rund 2,4 µs pro Sprung; `microtask` — unbegrenzt, hungert die Event-Loop unter Dauerlast aus, nur zum Messen; `throughput` — arbeitet pro Tick bis zu `dispatcher.throughput` eingereihte Turns ab, über Actors hinweg.  Ein nicht gesetzter oder unbekannter Wert fällt auf `hybrid` zurück. |
-| `dispatcher.throughput` | `16` | Eingereihte Actor-**Turns**, die ein `ThroughputDispatcher` pro Tick abarbeitet, über Actors hinweg — keine Nachrichten und nicht pro Actor.  Siehe `actor.throughput` oben für den Per-Actor-Batch. |
+| `dispatcher.throughput` | `16` | Eingereihte Actor-**Turns**, die ein `ThroughputDispatcher` pro Tick abarbeitet, über Actors hinweg — keine Nachrichten und nicht pro Actor.  Siehe `actor.throughput` oben für den Per-Actor-Batch.  Eine ganze Zahl ab `1`; anders als `actor.throughput` wird sie nicht auf `1` angehoben — mit `default = throughput` lässt eine `0` oder weniger `ActorSystem.create` mit einem `OptionsError` aus `ThroughputDispatcher` scheitern. |
 
 ### `actor-ts.dead-letters`
 

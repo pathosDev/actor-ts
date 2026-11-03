@@ -18,10 +18,15 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Config } from '../../../src/config/Config.js';
 import { ConfigKeys } from '../../../src/config/ConfigKeys.js';
 import { REFERENCE_CONF } from '../../../src/config/Reference.js';
+import { Dispatchers } from '../../../src/Dispatcher.js';
+import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { bunIdleTimeoutOf } from '../../../src/runtime/http/BunHonoRunner.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 
 const DOCS_ROOT = join(import.meta.dir, '..', '..', '..', 'docs', 'src', 'content', 'docs');
 
@@ -132,5 +137,47 @@ describe('how far the φ first-contact estimate reaches (#1451)', () => {
     const text = prose(page(path));
     expect(text).toContain(sentence);
     expect(text).not.toContain(retired);
+  });
+});
+
+/** The one table row of `path` that starts with `prefix`, the cell text as written. */
+function rowOf(path: string, prefix: string): string {
+  const rows = page(path).split(/\r?\n/).filter((line) => line.startsWith(prefix));
+  expect(rows, `${path}: exactly one row starting with ${prefix}`).toHaveLength(1);
+  return rows[0]!;
+}
+
+describe('a dispatcher budget is an integer from 1 up (#1461)', () => {
+  // Dispatcher.test.ts pins the refusals themselves ('Hybrid(%p) is refused,
+  // naming the argument', 'a system configured with a throughput of 0 is
+  // refused at startup'); this ties the two sentences to the error they name.
+  test('a configured throughput of 0 fails ActorSystem.create with an OptionsError from ThroughputDispatcher', () => {
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig(Config.parseString('actor-ts.dispatcher { default = throughput, throughput = 0 }'));
+    let refusal: unknown;
+    try {
+      ActorSystem.create('documented-throughput-zero', systemOptions);
+    } catch (error) {
+      refusal = error;
+    }
+    expect(refusal).toBeInstanceOf(OptionsError);
+    expect((refusal as OptionsError).message).toStartWith('ThroughputDispatcher: throughput must be an integer >= 1');
+    expect(() => Dispatchers.Hybrid(0)).toThrow(OptionsError);
+  });
+
+  test.each([
+    ['reference/configuration.mdx', 'An integer from `1` up; unlike `actor.throughput` it is not raised to `1` — with `default = throughput`, a `0` or below fails `ActorSystem.create` with an `OptionsError` from `ThroughputDispatcher`.'],
+    ['de/reference/configuration.mdx', 'Eine ganze Zahl ab `1`; anders als `actor.throughput` wird sie nicht auf `1` angehoben — mit `default = throughput` lässt eine `0` oder weniger `ActorSystem.create` mit einem `OptionsError` aus `ThroughputDispatcher` scheitern.'],
+  ])('%s states the domain in the dispatcher.throughput row', (path, clause) => {
+    expect(rowOf(path, '| `dispatcher.throughput` |')).toContain(clause);
+  });
+
+  test.each([
+    ['fundamentals/actor-system.mdx', 'A budget is an integer from `1` up: `Dispatchers.Hybrid(0)` is refused with an `OptionsError` when it is built, and with `actor-ts.dispatcher.default = throughput` a configured `throughput` of `0` fails `ActorSystem.create` the same way.'],
+    ['de/fundamentals/actor-system.mdx', 'Ein Budget ist eine ganze Zahl ab `1`: `Dispatchers.Hybrid(0)` wird beim Bau mit einem `OptionsError` abgelehnt, und mit `actor-ts.dispatcher.default = throughput` lässt ein konfiguriertes `throughput` von `0` `ActorSystem.create` ebenso scheitern.'],
+  ])('%s states the domain in the dispatcher row', (path, clause) => {
+    expect(rowOf(path, '| `dispatcher` |')).toContain(clause);
   });
 });

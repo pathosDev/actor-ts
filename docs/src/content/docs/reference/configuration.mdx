@@ -358,7 +358,7 @@ block; on a leaf other than the three; and on a value outside its range.
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `dispatcher.default` | `"hybrid"` | `hybrid` (default) — wakes actors on the microtask queue and spends every 64th unit on a macrotask, so timers and I/O still run; `immediate` — the previous default, one `setImmediate` per turn: fair, at ~2.4 µs a hop; `microtask` — unbounded, starves the event loop under sustained load, for measurement only; `throughput` — drains up to `dispatcher.throughput` queued turns per tick, across actors.  An unset or unrecognised value falls back to `hybrid`. |
-| `dispatcher.throughput` | `16` | Queued actor **turns** a `ThroughputDispatcher` drains per tick, across actors — not messages, and not per actor.  See `actor.throughput` above for the per-actor batch. |
+| `dispatcher.throughput` | `16` | Queued actor **turns** a `ThroughputDispatcher` drains per tick, across actors — not messages, and not per actor.  See `actor.throughput` above for the per-actor batch.  An integer from `1` up; unlike `actor.throughput` it is not raised to `1` — with `default = throughput`, a `0` or below fails `ActorSystem.create` with an `OptionsError` from `ThroughputDispatcher`. |
 
 ### `actor-ts.dead-letters`
 
