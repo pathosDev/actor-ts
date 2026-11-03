@@ -97,8 +97,10 @@ export type DistributedDataOptionsType = {
    * acknowledgments travel on the request, not on the gossip tick.
    *
    * Positive, never `0`.  The ceiling's `0` switches a bound off; a deadline's
-   * would arm no timer, and a request waiting on a silent replica would never
-   * settle.
+   * cannot, because the replicator arms it like any other value: it expires at
+   * the next timer tick — a write fails there and a read settles for what this
+   * replica alone holds — unless every replica it waits on has already
+   * answered.
    */
   readonly quorumTimeout?: number;
   /**
@@ -291,8 +293,9 @@ export class DistributedDataOptionsValidator extends OptionsValidator<Distribute
   }
   protected rules(s: Partial<DistributedDataOptionsType>): void {
     this.positiveNumber('gossipInterval');
-    // Positive, where the ceiling below is non-negative: a deadline of `0`
-    // arms no timer, so it cannot mean "off" — it would mean "never settle".
+    // Positive, where the ceiling below is non-negative: a deadline of `0` is
+    // armed like any other, so it cannot mean "off" — it would expire nearly
+    // every quorum request at the next timer tick.
     this.positiveNumber('quorumTimeout');
     // Non-negative rather than positive on all three: `0` is the documented
     // "disabled" spelling, which the project prefers over `Infinity`.

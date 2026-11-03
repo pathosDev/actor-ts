@@ -901,8 +901,10 @@ never came near the cap themselves.
 It is a key of its own rather than `actor.ask-timeout`: that one moves the
 default of `ActorRef.ask`, and how long a replica holds a pending slot for its
 peers to answer is a different wait.  Unlike the two caps it has no off
-switch — a deadline of `0` would arm no timer, so a request waiting on a silent
-replica would never settle, and the validator refuses it.
+switch, and `0` cannot be one: the replicator arms a `0` deadline like any
+other, so it expires at the next timer tick — a write fails there and a read
+settles for what this replica alone holds — unless every replica it waits on
+has already answered, and the validator refuses it.
 
 ### `actor-ts.coordination`
 

@@ -1050,8 +1050,11 @@ actor-ts {
     # per-call timeoutMs still wins, and max-quorum-timeout below clamps this
     # exactly as it clamps that.  Its own key rather than actor.ask-timeout,
     # which moves ActorRef.ask -- a different wait from how long this replica
-    # holds a pending slot for its peers to answer.  Positive: 0 would arm no
-    # timer, and a request waiting on a silent replica would never settle.
+    # holds a pending slot for its peers to answer.  Positive: 0 cannot mean
+    # off.  The replicator arms it like any other deadline, so it expires at
+    # the next timer tick -- a write fails there and a read settles for what
+    # this replica alone holds -- unless every replica it waits on has
+    # already answered.
     quorum-timeout = 5s
 
     max-pending-quorum-requests = 1000

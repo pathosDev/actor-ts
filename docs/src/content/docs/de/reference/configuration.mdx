@@ -960,10 +960,12 @@ selbst keine nennt, und `max-quorum-timeout` begrenzt sie genau so wie das
 `timeoutMs` eines Aufrufers.  Es ist ein eigener Key statt
 `actor.ask-timeout`: Jener verschiebt den Default von `ActorRef.ask`, und wie
 lange eine Replika einen offenen Slot für die Antworten ihrer Peers hält, ist
-eine andere Wartezeit.  Anders als die beiden Caps hat er keinen Aus-Schalter —
-eine Deadline von `0` würde keinen Timer stellen, ein Request, der auf eine
-stumme Replika wartet, käme also nie zum Abschluss, und der Validator weist sie
-ab.
+eine andere Wartezeit.  Anders als die beiden Caps hat er keinen Aus-Schalter,
+und `0` kann keiner sein: Der Replikator stellt eine Deadline von `0` wie jede
+andere, sie läuft also beim nächsten Timer-Tick ab — ein Write scheitert dort,
+und ein Read begnügt sich mit dem, was diese Replika allein hält —, sofern
+nicht jede Replika, auf die der Request wartet, schon geantwortet hat, und der
+Validator weist sie ab.
 
 ### `actor-ts.coordination`
 
