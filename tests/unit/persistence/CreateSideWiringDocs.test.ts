@@ -30,8 +30,9 @@ import { describe, expect, test } from 'bun:test';
  *     `await` and not in a function the plug-in defers — and a failure of it
  *     is left to the startup rather than caught in the plug-in, and the
  *     options holding the `plugins` reach `ActorSystem.create`;
- *   - a fence that wires persistence is byte-identical on the English page and
- *     its German mirror — the code is shared, only the prose is translated;
+ *   - a fence that wires persistence has the same code on the English page and
+ *     its German mirror — the code is shared; the prose around it, and the
+ *     comments in it, may be translated;
  *   - a prose sentence that says a store opens on first use, lazily or on
  *     demand also says that this holds when the boot-time open is turned off,
  *     or links the overview section that says so — and so does an
@@ -706,7 +707,7 @@ describe('the persistence pages register a backend through the plugins slot (#14
       });
     }
 
-    test(`${page}: a fence that wires persistence is byte-identical in English and German`, () => {
+    test(`${page}: a fence that wires persistence has the same code in English and German`, () => {
       expect(wiringFenceDifferences(read('english', page), read('german', page)), `${page}: a wiring sample differs between the languages`)
         .toEqual([]);
     });
@@ -723,9 +724,43 @@ describe('the persistence pages register a backend through the plugins slot (#14
 });
 
 /**
- * Where the wiring fences of a page and its mirror differ, by position.  The
- * mirrors are paired fence by fence, so their numbers of fences have to agree
- * first.
+ * What the two languages of a fence have to share: its language and its code,
+ * comments taken out, line ends trimmed and blank lines dropped.  A comment
+ * may be translated, as AGENTS.md allows for every fence but the reference-conf
+ * one — and nothing is lost by it here, because the scanner reads each
+ * language's own comments, so a German one that registers after `create` is
+ * refused on the German page.
+ */
+function sharedCodeOf(fence: Fence): string {
+  const language = /^\s*(?:`{3,}|~{3,})\s*(\S*)/.exec(fence.text)?.[1] ?? '';
+  let code = '';
+  let index = 0;
+  while (index < fence.code.length) {
+    const character = fence.code[index]!;
+    if (character === '/' && fence.code[index + 1] === '/') {
+      const lineEnd = fence.code.indexOf('\n', index);
+      index = lineEnd < 0 ? fence.code.length : lineEnd;
+    } else if (character === '/' && fence.code[index + 1] === '*') {
+      const commentEnd = fence.code.indexOf('*/', index + 2);
+      index = commentEnd < 0 ? fence.code.length : commentEnd + 2;
+    } else if (character === '\'' || character === '"' || character === '`') {
+      const stringEnd = endOfString(fence.code, index);
+      const end = stringEnd < 0 ? fence.code.length : stringEnd + 1;
+      code += fence.code.slice(index, end);
+      index = end;
+    } else {
+      code += character;
+      index++;
+    }
+  }
+  const lines = code.split('\n').map((line) => line.trimEnd()).filter((line) => line.trim() !== '');
+  return [language, ...lines].join('\n');
+}
+
+/**
+ * Where the wiring fences of a page and its mirror differ in their code, by
+ * position.  The mirrors are paired fence by fence, so their numbers of fences
+ * have to agree first.
  */
 function wiringFenceDifferences(englishText: string, germanText: string): string[] {
   const english = fencesOf(englishText);
@@ -736,7 +771,7 @@ function wiringFenceDifferences(englishText: string, germanText: string): string
   return english
     .map((fence, index) => ({ english: fence, german: german[index]! }))
     .filter((pair) => WIRING.test(pair.english.text) || WIRING.test(pair.german.text))
-    .filter((pair) => pair.english.text !== pair.german.text)
+    .filter((pair) => sharedCodeOf(pair.english) !== sharedCodeOf(pair.german))
     .map((pair) => `English :${pair.english.line} / German :${pair.german.line}`);
 }
 
@@ -1013,6 +1048,22 @@ describe('the page rules hold on pages made to break them (#1473)', () => {
     expect(wiringFenceDifferences(english, english)).toEqual([]);
     expect(wiringFenceDifferences(english, german)).toEqual(['English :3 / German :3']);
     expect(wiringFenceDifferences(english, page('Prosa.', ts(route)))).toEqual(['the mirrors hold 2 and 1 fences, so they cannot be paired']);
+  });
+
+  test('the mirrors share the code of a wiring fence, not its comments', () => {
+    const commented = (lineComment: string, blockComment: string): string => page('Prose.', ts([
+      `// ${lineComment}`,
+      'const systemOptions = ActorSystemOptions.create().withPersistence({',
+      `  plugins: [(persistence) => registerSqlitePlugins(persistence)],   /* ${blockComment} */`,
+      "  endpoint: 'https://example.com//path',",
+      '});',
+    ].join('\n')));
+    const english = commented('the boot-time open covers it', 'path, tables, retention … from HOCON');
+    // Translated comments, the kind AGENTS.md allows.
+    expect(wiringFenceDifferences(english, commented('das Öffnen beim Start deckt ihn ab', 'Pfad, Tabellen, Aufbewahrung … aus HOCON'))).toEqual([]);
+    // Code is code: a string that holds `//`, and the fence's language.
+    expect(wiringFenceDifferences(english, english.replace('//path', '//other'))).toEqual(['English :3 / German :3']);
+    expect(wiringFenceDifferences(english, english.replace('```ts', '```js'))).toEqual(['English :3 / German :3']);
   });
 
   test('a paragraph is read sentence by sentence, so an explained sentence cannot cover the next one', () => {
