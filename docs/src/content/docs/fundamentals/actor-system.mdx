@@ -133,13 +133,10 @@ the orchestrator starts a fresh process.
 failed: `whenReady()` rejects with an abandonment error, the later
 phases do not run, nothing is logged above debug and no shutdown of its
 own runs — so a SIGTERM while the system starts ends the process as a
-shutdown, not as a failed start.  `terminate()` abandons at once: the
-running tasks' signals abort before its pipeline begins.  A
-coordinated-shutdown run started any other way — a signal, an explicit
-`run()` — is met at the startup's next step: a task that fails or
-outlives its budget, or a phase that finishes, abandons the startup
-rather than failing or continuing it, and the pipeline's teardown aborts
-whatever is still running.
+shutdown, not as a failed start.  It happens at once, whatever started
+the shutdown — `terminate()`, a SIGTERM, an explicit `run()` of the
+coordinated-shutdown pipeline: the running tasks' signals abort before
+the pipeline's first phase runs.
 
 The graph is sealed when `create` returns.
 `system.extension(CoordinatedStartupId).addTask(...)` afterwards throws

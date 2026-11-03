@@ -1091,11 +1091,12 @@ export class ActorSystem {
 
   /**
    * Whether a coordinated-shutdown run has ever begun — asked by the startup
-   * graph at each of its steps, and without building the extension, for the
-   * reason {@link coordinatedShutdownRunInProgress} gives.  "Ever", not "in
-   * flight": a run that ended and left the system up — no terminator in its
-   * last phase — still unbound and left, and a startup that finished after
-   * it would report ready a node that is on its way out.
+   * graph at each of its steps, the second line behind
+   * {@link _abandonStartup} for a run that began before the graph was
+   * running, and without building the extension, for the reason
+   * {@link coordinatedShutdownRunInProgress} gives.  "Ever", not "in flight":
+   * a run that ended and left the system up — no terminator in its last
+   * phase — still unbound and left.
    */
   private coordinatedShutdownHasBegun(): boolean {
     return this.extensions.has(CoordinatedShutdownId)
@@ -1138,6 +1139,22 @@ export class ActorSystem {
   }
 
   /**
+   * @internal Abandon a startup still running — what `CoordinatedShutdown`
+   * calls as a run begins, before its first phase starts.
+   *
+   * `terminate()` abandons the startup before it starts its pipeline, but a
+   * run started any other way — a signal's, an explicit `run()`, a node that
+   * could not join — never passes through `terminate()`.  Left to meet such
+   * a run at its own next step ({@link coordinatedShutdownHasBegun}), a task
+   * waiting inside a thirty-second budget ran on through the unbind and the
+   * leave; asked here, every run aborts the tasks' signals the moment it
+   * begins (#1473).  A no-op once the startup has ended.
+   */
+  _abandonStartup(): void {
+    this.coordinatedStartup._abandon();
+  }
+
+  /**
    * @internal The teardown itself — drain, preludes, stop cascade — behind
    * none of {@link terminate}'s choices.
    *
@@ -1145,11 +1162,9 @@ export class ActorSystem {
    * runs inside a coordinated-shutdown run, where `terminate()` deliberately
    * starts nothing, so it needs a way in that is not `terminate()`.
    *
-   * It abandons a startup still running, as `terminate()` does.  A pipeline
-   * started by a signal never calls `terminate()`; the startup meets such a
-   * run at its own next step ({@link coordinatedShutdownHasBegun}), and this
-   * is where a task that takes no further step — one still waiting inside
-   * its budget — is aborted.
+   * It abandons a startup still running, as `terminate()` does — a no-op
+   * after a run, which abandoned it as it began ({@link _abandonStartup}),
+   * and the one abandonment a teardown outside any run gets.
    */
   _teardown(): Promise<void> {
     if (this._terminated) return Promise.resolve();

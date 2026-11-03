@@ -93,10 +93,10 @@ type StartupTaskFailure = {
  * graph runs abandons the startup rather than failing it: the running tasks'
  * signals abort, no further phase starts, `whenReady()` rejects with an
  * abandonment error, and nothing is logged above debug, so a SIGTERM during
- * startup ends the process as a shutdown.  `terminate()` abandons before its
- * pipeline starts; a coordinated-shutdown run started any other way — a
- * signal, an explicit `run()` — is met at the graph's next step, or at the
- * teardown in the pipeline's last phase.
+ * startup ends the process as a shutdown.  It happens before the pipeline's
+ * first phase, whatever started it: `terminate()` abandons before it starts
+ * its pipeline, and every coordinated-shutdown run — a signal's, an explicit
+ * `run()` — does as it begins.
  *
  * **The budgets are the deployment's to tune.**  `actor-ts.coordinated-startup`
  * carries the default phase budget and a `phases` block of the shutdown
@@ -236,9 +236,9 @@ export class CoordinatedStartup implements Extension {
    * finished — a task that refers to the system through the very `const` its
    * registration sits in would otherwise meet that binding before it exists.
    *
-   * `shutdownHasBegun` answers whether a coordinated-shutdown run has begun.
-   * Nothing tells the graph when one starts, so the run asks at every step it
-   * takes — see {@link abandonedForShutdown}.
+   * `shutdownHasBegun` answers whether a coordinated-shutdown run has begun —
+   * the second line behind the abandonment a run makes as it begins, asked
+   * at every step the graph takes ({@link abandonedForShutdown}).
    */
   _start(
     onFailed: (reason: StartupFailedReason, error: Error) => void,
@@ -260,9 +260,11 @@ export class CoordinatedStartup implements Extension {
 
   /**
    * @internal Give up on a startup the system no longer wants: it began
-   * shutting down while the graph still runs — `terminate()` and the
-   * teardown call this, and so does the run itself once it meets a
-   * coordinated-shutdown run ({@link abandonedForShutdown}).
+   * shutting down while the graph still runs.  `terminate()` calls this,
+   * every coordinated-shutdown run as it begins (through
+   * `ActorSystem._abandonStartup`), the teardown, and the graph itself when
+   * one of its steps meets a run that began before it was running
+   * ({@link abandonedForShutdown}).
    *
    * Every running task's signal aborts, its budget is cleared on the spot, no
    * further phase starts, and {@link whenReady} rejects.  Not a failure — the
@@ -308,20 +310,18 @@ export class CoordinatedStartup implements Extension {
 
   /**
    * Abandon the run, and answer `true`, when a coordinated-shutdown run has
-   * begun since the run's last step.
+   * begun since the run's last step — the second line behind the abandonment
+   * every run makes as it begins.
    *
-   * `terminate()` abandons the startup before its pipeline starts, but a run
-   * started any other way — a signal's, an explicit `run()`, a node that
-   * could not join — reaches the graph only at its teardown, in the last
-   * phase.  Until then the startup went on as if nothing happened: a task
-   * whose budget ran out mid-pipeline failed the startup, logged an ERROR and
-   * made `runUntilTerminated()` reject, so an ordinary SIGTERM ended the
-   * process as a failed start; and a phase that finished started the next one
-   * on a system that was going down.  So every step asks — before a phase,
-   * before a failure is declared, before readiness resolves — and a shutdown
-   * that has begun turns the step into the abandonment `terminate()` would
-   * have made.  A task still in flight is reached at its next step or at the
-   * teardown, whichever comes first.
+   * That first line finds nothing to abandon when the run began before the
+   * graph was running: inside `create`, ahead of {@link _start}.  The graph
+   * would then go on as if nothing had happened — a task whose budget ran
+   * out failed the startup, logged an ERROR and made `runUntilTerminated()`
+   * reject, so an ordinary shutdown ended the process as a failed start; a
+   * phase that finished started the next one on a system that was going
+   * down.  So every step asks — before a phase, before a failure is
+   * declared, before readiness resolves — and a shutdown that has begun
+   * turns the step into the abandonment the run would have made.
    */
   private abandonedForShutdown(): boolean {
     if (!this.shutdownHasBegun()) return false;
