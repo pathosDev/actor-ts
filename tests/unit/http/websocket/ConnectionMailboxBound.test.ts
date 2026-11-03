@@ -54,6 +54,7 @@ import type { WebsocketServerRef } from '../../../../src/http/websocket/Websocke
 import { websocket } from '../../../../src/http/websocket/WebsocketRoute.js';
 import { WebsocketRouteOptions } from '../../../../src/http/websocket/WebsocketRouteOptions.js';
 import { WebsocketServerActor } from '../../../../src/http/websocket/WebsocketServerActor.js';
+import { MailboxFullError } from '../../../../src/mailbox/DroppingMailbox.js';
 import { OptionsError } from '../../../../src/util/OptionsValidator.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
 
@@ -75,7 +76,20 @@ type BurstThenCloseCommand = {
   readonly code: number;
   readonly reason: string;
 };
-type HubCommand = BurstThenCloseAllCommand | BurstThenCloseCommand;
+/**
+ * The same burst to one connection through `tell`, keeping each refusal: the
+ * frame numbers whose `tell` threw `MailboxFullError` go into `refused`, which
+ * the test owns.  Then the connection's own `close()`.
+ */
+type TellCountingRefusalsCommand = {
+  readonly kind: 'tell-counting-refusals';
+  readonly id: string;
+  readonly frames: number;
+  readonly code: number;
+  readonly reason: string;
+  readonly refused: number[];
+};
+type HubCommand = BurstThenCloseAllCommand | BurstThenCloseCommand | TellCountingRefusalsCommand;
 
 /** How many frames one burst offers a queue — above every capacity used here. */
 const BURST = 6;
@@ -96,7 +110,22 @@ class BurstHub extends WebsocketServerActor<Out, In, HubCommand> {
     match(command)
       .with({ kind: 'burst-then-close-all' }, (c) => this.onBurstThenCloseAll(c))
       .with({ kind: 'burst-then-close' }, (c) => this.onBurstThenClose(c))
+      .with({ kind: 'tell-counting-refusals' }, (c) => this.onTellCountingRefusals(c))
       .exhaustive();
+  }
+
+  private onTellCountingRefusals(command: TellCountingRefusalsCommand): void {
+    const connection = this.clients.get(command.id);
+    if (connection === undefined) throw new Error(`no connection ${command.id}`);
+    for (let n = 0; n < command.frames; n++) {
+      try {
+        connection.tell({ kind: 'pong', n });
+      } catch (e) {
+        if (!(e instanceof MailboxFullError)) throw e;
+        command.refused.push(n);
+      }
+    }
+    connection.close(command.code, command.reason);
   }
 
   private onBurstThenCloseAll(command: BurstThenCloseAllCommand): void {
@@ -251,6 +280,33 @@ describe('a route bounds its connection mailboxes (#1432)', () => {
     expect(socket.closeCalls).toEqual([{ code: 1000, reason: 'goodbye' }]);
     // drop-new keeps the oldest: the first two frames, and nothing after them.
     expect(socket.frameNumbers).toEqual([0, 1]);
+  });
+
+  /*
+   * `reject` writes what `drop-new` writes — the oldest frames — so the frames
+   * alone cannot tell the two apart, and `reply` and `broadcast` contain the
+   * refusal so that it looks like `drop-new` there too.  What only `reject`
+   * does is throw `MailboxFullError` out of a `connection.tell()` an
+   * application makes itself, on its own stack, for every frame over the
+   * bound — which is what this case counts.
+   */
+  test('a reject bound refuses each frame over it on the caller\'s stack, and close() still closes the connection', async () => {
+    const routeOptions = WebsocketRouteOptions.create<Out, In>()
+      .withConnectionMailboxCapacity(2)
+      .withConnectionMailboxOverflow('reject');
+    const route = await bindRoute('ws-connection-bound-reject', {}, routeOptions);
+    const { id, socket } = await route.connect();
+    const refused: number[] = [];
+
+    route.hub.tell({ kind: 'tell-counting-refusals', id, frames: BURST, code: 1000, reason: 'goodbye', refused });
+
+    await awaitCondition(() => socket.closeCalls.length > 0, {
+      timeoutMs: 4_000,
+      label: 'close() closed the bounded connection',
+    });
+    expect(refused).toEqual([2, 3, 4, 5]);
+    expect(socket.frameNumbers).toEqual([0, 1]);
+    expect(socket.closeCalls).toEqual([{ code: 1000, reason: 'goodbye' }]);
   });
 
   test('the shipped default leaves a connection unbounded', async () => {
