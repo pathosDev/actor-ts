@@ -282,23 +282,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **Cluster members can state an application version, so the mixed window of
   a rolling update can be read off the cluster itself** (#843). Set
   `actor-ts.cluster.app-version` (shipped comment-only; the usual form is
-  `${?APP_VERSION}`) or `ClusterOptions.withAppVersion(...)`. The label is
-  gossiped on the member record, printed by `Member.toString` as
-  `app-version=...` and returned as `appVersion` per member by
-  `GET /cluster/members`; it is advisory only, and nothing places, routes or
-  downs on it. It rides the gossip overlay lane, so a member first learned
-  through, or promoted by, a node running an older actor-ts regains its
-  label from its own next gossip, and a node's own label survives a
-  promotion from such a leader. A label belongs to the run that states it: a
-  member restarted without one, on a release that sets none or a deployment
-  without `APP_VERSION`, is shown without one cluster-wide, never with its
-  previous run's label, and a label a peer relayed into the slot of a member
-  that states none is taken back by that member's own next gossip. A label
-  is 1 to 64 visible ASCII characters: `Cluster.join` refuses one that is
-  not, and a peer's label that is not is dropped while the member is kept.
-  `/cluster/members` answers anonymous callers unless `auth` is configured
-  (#971), so the label adds each node's release to what that endpoint
-  discloses.
+  `${?APP_VERSION}`) or `ClusterOptions.withAppVersion(...)`. Through the
+  `${?APP_VERSION}` form a version that reads as a number comes back in that
+  number's own spelling, because an environment value is read as JSON first:
+  `1.10` as `1.1`, `2.0` as `2`, so releases `1.1` and `1.10` print the same
+  label. Quote such a value inside the variable (`APP_VERSION='"1.10"'`), or
+  set it with `withAppVersion(...)`. The label is gossiped on the member
+  record, printed by `Member.toString` as `app-version=...` and returned as
+  `appVersion` per member by `GET /cluster/members`; it is advisory only,
+  and nothing places, routes or downs on it. It rides the gossip overlay
+  lane, so a member first learned through, or promoted by, a node running an
+  older actor-ts regains its label from its own next gossip, and a node's
+  own label survives a promotion from such a leader. A label belongs to the
+  run that states it: a member restarted without one, on a release that sets
+  none or a deployment without `APP_VERSION`, is shown without one
+  cluster-wide, never with its previous run's label, and a label a peer
+  relayed into the slot of a member that states none is taken back by that
+  member's own next gossip. A label is 1 to 64 visible ASCII characters:
+  `Cluster.join` refuses one that is not, and a peer's label that is not is
+  dropped while the member is kept. `/cluster/members` answers anonymous
+  callers unless `auth` is configured (#971), so the label adds each node's
+  release to what that endpoint discloses.
 
   Quote a literal version: HOCON reads an unquoted `1.0` as a number, and
   the peers are told `"1"`.
@@ -419,10 +423,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   now, so `max-quorum-timeout` clamps a configured default exactly as it
   clamps a caller's `timeoutMs`, and a per-call `timeoutMs` still wins. It
   is a key of its own rather than an inherited `actor.ask-timeout`, because
-  that key moves `ActorRef.ask`, a different wait. It has to be positive:
-  `0` would arm no deadline, so a request waiting on a silent replica would
-  never settle, and the validator refuses it. The `updateAsync` JSDoc no
-  longer claims the default is `gossipIntervalMs × 5`.
+  that key moves `ActorRef.ask`, a different wait. It has to be positive,
+  and the validator refuses `0`: the replicator arms it like any other
+  deadline, so it would not switch the deadline off but expire it at the
+  next timer tick, failing a write and leaving a read with what the local
+  replica alone holds. The `updateAsync` JSDoc no longer claims the default
+  is `gossipIntervalMs × 5`.
 
 - **The MongoDB and DynamoDB journal, snapshot-store and durable-state
   blocks take typed client leaves, each comment-only in `reference.conf` so
@@ -521,9 +527,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   getter refusing it as the wrong kind, and for the four numeric kinds the
   values that getter refuses have to be refused, so `int`, `number`,
   `duration` and `bytes` no longer pass for one another on a whole literal.
-  A duration or size row may no longer publish a bare non-zero number. The
-  GELF sink's `max-chunk-bytes` was the last, labelled as a count while its
-  reader takes a size, and `reference.conf` now publishes it as `1420B`.
+  `int` and `number` rows are also set to a size, which their getters refuse
+  and `getBytes` takes; before, a bytes row labelled `number` passed both
+  halves of the kind check and was caught only by the value read, or not at
+  all where the literal is a bare count, as the read constraints'
+  `max-document-bytes = 0` is. A duration or size row may no longer publish
+  a bare non-zero number. The GELF sink's `max-chunk-bytes` was the last,
+  labelled as a count while its reader takes a size, and `reference.conf`
+  now publishes it as `1420B`.
 
 - **`ActorSystemOptions.withPersistence` takes `plugins`, functions that
   register persistence backends inside `ActorSystem.create`** (#1473). Each
@@ -534,7 +545,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   selects resolves as soon as `create` returns. A plugin that throws makes
   `create` throw; a promise one returns is awaited in the
   `persistence-start` phase of the startup graph, where a rejection fails
-  the startup: `whenReady()` rejects and the system goes down.
+  the startup: `whenReady()` rejects and the system goes down. A selected
+  backend has to be registered before a plug-in's first `await`: the
+  selected stores are resolved inside `create` right after the plug-ins are
+  called, so a factory registered after an `await` comes too late for them
+  and the startup fails with an `Unknown … plugin` error. Work the stores
+  need once they open, such as a key fetched from a vault, may follow it,
+  because they open only once the promise has settled.
   `ClusterBootstrapOptions.withPersistence` takes them too, and the slot
   gains `durableStateStore` beside `journal` and `snapshotStore`; each
   instance wins over the plugin its axis selects.
@@ -762,9 +779,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   on and off; what `hsts(options)` names in code wins per field, then the
   block, then the default, and the merged policy is validated once, when
   `bind()` compiles the route tree, which is also where the `preload` rule
-  now runs, so the year it needs may come from the file. `max-age = 0` is
-  refused from the file with a `ConfigError` naming the key, so switching
-  HSTS off stays code-only, and the block governs `hsts()` only: the `hsts`
+  now runs, so the year it needs may come from the file. A `max-age` below
+  one day (86400) is refused from the file with a `ConfigError` naming the
+  key and the floor: `0` has every browser forget the pin, and a shorter pin
+  than a day has lapsed before a visitor comes back the next day. Code may
+  still set any value, `0` included, and a negative one stays the
+  validator's `OptionsError`. The block governs `hsts()` only: the `hsts`
   field of `securityHeaders()` and `withSecurityHeaders()` stays code-only,
   and where both send the header the route-level `hsts()` wins. A middleware
   reaches its block through a hook `compile()` resolves, so `hsts()` wrapped
@@ -6287,19 +6307,32 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   label their servers as configured in lifecycle events and logs; a list of
   `nats://` URLs used to be labelled `nats://nats://…`** (#1443).
 
-- **A shard region now forgets the callers of `shards()` and `shardRefFor()`
-  that never get an answer, instead of keeping them for its whole life**
-  (#1436). The asks sweep drains all three of the region's tables of waiting
-  callers on the region's own turn, logs every dropped query at debug, and
-  keeps a caller at least as long as the deadline it is waiting out — the
-  largest of a minute, `actor-ts.actor.ask-timeout` and the type's
-  `shard-region-query-timeout` — so a cross-node reply under a long ask
-  timeout is no longer dropped either. `shardRefFor()` with a shard id
-  outside `0..numShards - 1` now rejects at once with a `RangeError` instead
-  of an `AskTimeoutError` after the full timeout, and a `shards()` or
-  `shardRefFor()` made before the region registered is asked again once the
-  coordinator acknowledges it, instead of timing out while a message sent in
-  the same window is delivered.
+- **BREAKING — A shard region now forgets the callers of `shards()` and
+  `shardRefFor()` that never get an answer, instead of keeping them for its
+  whole life** (#1436). The asks sweep drains all three of the region's
+  tables of waiting callers on the region's own turn, logs every dropped
+  query at debug, and keeps a caller at least as long as the deadline it is
+  waiting out — the largest of a minute, `actor-ts.actor.ask-timeout` and
+  the type's `shard-region-query-timeout` — so a cross-node reply under a
+  long ask timeout is no longer dropped either. The region cannot see a
+  per-call `timeoutMs`, so a `shards()` or `shardRefFor()` that passes one
+  longer than that lifetime is not waited out in full: an answer that
+  arrives after the lifetime reaches nobody, and for `shards()` that
+  includes the coordinator's partial answer, which comes after 0.6 × the
+  wait when a region is slow. Such a call fails with `AskTimeoutError` once
+  its own wait runs out, where v0.17.0, which never swept these tables,
+  still delivered the answer. A wait longer than a minute belongs in the
+  type's `shard-region-query-timeout`, which raises the lifetime with it.
+  `shardRefFor()` with a shard id outside `0..numShards - 1` now rejects at
+  once with a `RangeError` instead of an `AskTimeoutError` after the full
+  timeout, and a `shards()` or `shardRefFor()` made before the region
+  registered is asked again once the coordinator acknowledges it, instead of
+  timing out while a message sent in the same window is delivered.
+
+  **Migration.** Pass a wait longer than a minute as the type's query
+  timeout (`withShardRegionQueryTimeoutMs` or
+  `actor-ts.sharding.shard-region-query-timeout`), not as the per-call
+  `timeoutMs`.
 
 - **BREAKING — A SQL Server url that is a URL, such as
   `mssql://user:pass@host:1433/db`, is refused when the store is built, with
@@ -6516,8 +6549,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **The GELF sink's `max-chunk-bytes` is read as a byte size** (#1425). It
   was read as a plain integer, so `8K` failed at startup where every other
   byte-size key takes a unit; `8K` and `8192` now mean the same. A chunk
-  size that is not a whole number of bytes is refused, from HOCON and from
-  code alike, because the chunker slices the payload on it.
+  size that is a bare fraction is refused, from HOCON and from code alike,
+  because the chunker slices the payload on it; one written with a unit is
+  rounded to the nearest byte first, so `1420.5B` is read as 1421.
 
   `reference.conf` now publishes the default with its unit, as `1420B`
   (#1438).
@@ -8651,6 +8685,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   such messages, losing every message sent in the first grace after each
   start and respawn, 50 ms by default; `forward: 'drop'` now applies only
   while there is no child at all.
+
+- **`bun run check:doc-samples` no longer reads a compile that did not
+  finish as a clean program** (#1335). A compiler that is killed, exits with
+  a status tsc never reports, prints a runtime crash report, fails without a
+  single diagnostic, or refuses its own configuration now ends the run with
+  exit 2 and the message "the compiler did not run to completion", where it
+  used to count every fence as clean and print OK; exit 1 keeps meaning that
+  a sample is wrong. The compiler's output buffer is raised from 1 MiB to 64
+  MiB, past which the output used to be cut and parsed only as far as the
+  cut.
 
 ### Removed
 
