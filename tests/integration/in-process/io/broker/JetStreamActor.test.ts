@@ -603,6 +603,27 @@ describe('JetStreamActor — stream + consumer lifecycle', () => {
     }
   });
 
+  test('the last start time the validator takes reaches nats.js with a four-digit year', async () => {
+    // The bound is where toISOString() stops writing a year RFC 3339 can
+    // hold; one millisecond later it writes +010000, which the validator
+    // refuses at start rather than letting the server refuse at connect.
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('js-policy-time-edge', sysOptions);
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'S', subjects: ['s.>'] })
+        .withConsumer({ durable: 'd', deliverPolicy: { kind: 'by-start-time', startTimeMs: 253_402_300_799_999 } });
+      const { mock } = await bootActor(sys, jetstreamOptions);
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.opt_start_time).toBe('9999-12-31T23:59:59.999Z');
+      expect(new Date(253_402_300_800_000).toISOString()).toBe('+010000-01-01T00:00:00.000Z');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
   test.each([
     { label: 'unset', deliverPolicy: undefined, expected: 'all' },
     { label: 'all', deliverPolicy: 'all', expected: 'all' },

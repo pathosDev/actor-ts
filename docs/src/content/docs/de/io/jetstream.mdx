@@ -195,7 +195,10 @@ schon vorher scheitert und das Feld nennt.  `start-seq` (`startSeq`) ist eine
 positive Ganzzahl bis `Number.MAX_SAFE_INTEGER`: Stream-Sequenzen beginnen bei
 1, und jenseits dieser Grenze hält eine Zahl nicht mehr jede Ganzzahl, die
 gesendete Sequenz wäre also nicht immer die geschriebene.  `start-time`
-(`startTimeMs`) ist ein Zeitpunkt in Epoch-Millisekunden, nie negativ.
+(`startTimeMs`) ist ein Zeitpunkt in Epoch-Millisekunden von `0` bis
+`253402300799999`, also `9999-12-31T23:59:59.999Z`: Der Server liest ihn als
+RFC-3339-Zeit, deren Jahr vier Stellen hat, und eine Epoch in Mikrosekunden,
+für Millisekunden gehalten, landet weit dahinter.
 
 Beide Gruppen werden **als Ganzes** gelesen: `withStream({ … })` /
 `withConsumer({ … })` im Code ersetzen den konfigurierten Block, statt sich

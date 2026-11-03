@@ -178,16 +178,21 @@ export const RETIRED_DELIVER_POLICY_KINDS: ReadonlyMap<string, DeliverPolicyObje
 ]);
 
 /**
- * The last instant a `Date` can hold, in epoch milliseconds — the upper bound
- * on a `by-start-time` arm's `startTimeMs`.
+ * The last instant the server can read as a start time, in epoch milliseconds
+ * — `9999-12-31T23:59:59.999Z`, the upper bound on a `by-start-time` arm's
+ * `startTimeMs`.
  *
- * ECMAScript's own limit (±100 000 000 days from the epoch), not a rounder
- * number near it.  The actor hands the value on as
- * `new Date(startTimeMs).toISOString()`, and one millisecond past this is an
- * Invalid Date whose `toISOString()` throws a `RangeError` — at connect, inside
- * the consumer provisioning the reconnect loop retries, rather than here.
+ * The actor hands the value on as `new Date(startTimeMs).toISOString()`, and
+ * the server reads that as RFC 3339, whose year has four digits.  One
+ * millisecond later `toISOString()` writes the expanded year `+010000`, which
+ * no four-digit-year parser takes: the consumer would be refused at connect,
+ * inside the consumer provisioning the reconnect loop retries — the failure
+ * this bound moves to the start.  An epoch in microseconds mistaken for
+ * milliseconds lands far past it.  The `Date` limit of 8.64e15 that stood here
+ * bounded nothing the server can read: every instant past this one has no
+ * four-digit year.
  */
-const MAX_DATE_EPOCH_MS = 8.64e15;
+const MAX_START_TIME_EPOCH_MS = 253_402_300_799_999;
 
 /**
  * A `stream` / `consumer` leaf that is present but outside its domain — the
@@ -325,9 +330,9 @@ function findDeliverPolicyProblem(deliverPolicy: unknown): JetStreamGroupViolati
  * it in exponent form, which no uint64 parses — a consumer the server refuses
  * at connect, retried for ever under the default reconnect policy.
  * `startTimeMs` is an instant in epoch milliseconds, anywhere from the epoch to
- * {@link MAX_DATE_EPOCH_MS} — a fraction is fine there, since a `Date` takes
- * one, but past that bound the actor's `toISOString()` throws instead of
- * translating it.  `typeof` first in both, because a plain-JavaScript caller
+ * {@link MAX_START_TIME_EPOCH_MS} — a fraction is fine there, since a `Date`
+ * takes one, but past that bound the actor's `toISOString()` writes a year the
+ * server cannot parse.  `typeof` first in both, because a plain-JavaScript caller
  * hands over a string as readily as a number, and `'42' >= 1` is `true`.
  */
 function findDeliverPolicyStartProblem(
@@ -345,10 +350,11 @@ function findDeliverPolicyStartProblem(
     };
   }
   const startTimeMs: unknown = (deliverPolicy as { readonly startTimeMs?: unknown }).startTimeMs;
-  if (typeof startTimeMs === 'number' && startTimeMs >= 0 && startTimeMs <= MAX_DATE_EPOCH_MS) return undefined;
+  if (typeof startTimeMs === 'number' && startTimeMs >= 0 && startTimeMs <= MAX_START_TIME_EPOCH_MS) return undefined;
   return {
     field: 'consumer.deliverPolicy.startTimeMs',
-    reason: `must be an instant in epoch milliseconds, from 0 to ${MAX_DATE_EPOCH_MS} (the last a Date holds)`,
+    reason: `must be an instant in epoch milliseconds, from 0 to ${MAX_START_TIME_EPOCH_MS} `
+      + '(9999-12-31T23:59:59.999Z, the last the server parses)',
     value: startTimeMs,
   };
 }

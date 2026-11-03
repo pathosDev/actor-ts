@@ -1599,6 +1599,18 @@ describe('readJetStreamOptionsFromConfig', () => {
     expect(started.failure).toBeInstanceOf(OptionsError);
     expect((started.failure as OptionsError).field).toBe('consumer.deliverPolicy.startSeq');
   });
+
+  // An instant a Date holds and the server cannot read: toISOString() writes
+  // the year 10000 as +010000, and RFC 3339 has a four-digit year.
+  test('a start-time past 9999-12-31T23:59:59.999Z fails preStart, naming the field', async () => {
+    const started = await startBroker(
+      `${root} {\nservers = ["nats://h:4222"]\nstream { name = "S", subjects = ["s.>"] }\n`
+      + 'consumer { durable = "d", deliver-policy { kind = "by-start-time", start-time = 253402300800000 } }\n}',
+      () => new JetStreamActor() as unknown as Actor<never>,
+    );
+    expect(started.failure).toBeInstanceOf(OptionsError);
+    expect((started.failure as OptionsError).field).toBe('consumer.deliverPolicy.startTimeMs');
+  });
 });
 
 describe('readJetStreamKeyValueOptionsFromConfig', () => {
