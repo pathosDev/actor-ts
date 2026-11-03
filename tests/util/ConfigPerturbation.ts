@@ -383,7 +383,8 @@ function offKindValue(kind: LeafKind, value: ConfigValue): ConfigValue | undefin
   return match(kind)
     .returnType<ConfigValue | undefined>()
     // `getInt` refuses a fraction; `getNumber`, `getDuration`, `getBytes`
-    // (rounding it) and `getString` all take one.
+    // and `getString` all take one, `getBytes` unchanged: only a size written
+    // with a unit is rounded.
     .with('integer', () => (value as number) + 0.5)
     // `getNumber` refuses a unit; `getDuration` and `getString` take one.
     .with('fraction', () => `${String(value)}s`)
