@@ -78,6 +78,10 @@ Konfiguration auswählt, öffnen als Teil des Starts: Eine Datenbank, die der
 Knoten nicht erreicht, lässt den Start scheitern statt erst die erste
 persistierte Nachricht — siehe [Stores beim Start
 öffnen](/de/persistence/overview/#stores-beim-start-öffnen).
+Das gilt auch mit `autoCreateTables: false`, weil das Öffnen dann ein
+`SELECT 1` schickt, wo es sonst das DDL ausführen würde, und solange das
+Öffnen beim Start an ist, der Default: Ist das Öffnen beim Start abgeschaltet,
+wandert der Fehler zur ersten Operation des Stores.
 `registerPostgresPlugins` **gibt** außerdem den Durable-State-Store
 **zurück**, falls du ihn lieber von Hand verdrahtest; ein Plug-in behält ihn,
 indem es das Ergebnis zuweist,
