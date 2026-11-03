@@ -13,11 +13,11 @@ export type ControlAwareMailboxOptionsType<T> = {
    * any other answer, classes it ordinary, which is where it would have been
    * on any other mailbox: the predicate runs synchronously inside the
    * **sender's** `tell`, and a sender is a bystander to the receiver's mailbox
-   * configuration.  A throw is reported all the same — see
-   * {@link onControlError}.  `PoisonPill` and `Kill` reach it too — `ActorRef.stop()`
-   * and `.kill()` post them as user messages, and neither has a field to
-   * match on — so a predicate written for the actor's own protocol meets them
-   * on the framework's own shutdown path.
+   * configuration.  `PoisonPill` and `Kill` reach the predicate too —
+   * `ActorRef.stop()` and `.kill()` post them as user messages, and neither
+   * has a field to match on — so a predicate written for the actor's own
+   * protocol meets them on the framework's own shutdown path.  A throw is
+   * reported all the same: see {@link onControlError}.
    *
    * Keep it to a check of the message's shape.  A message that is control
    * overtakes everything ordinary already queued, its own sender's earlier
