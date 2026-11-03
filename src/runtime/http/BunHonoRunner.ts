@@ -55,14 +55,11 @@ export class BunHonoRunner implements HonoServerRunner {
     // Before `Bun.serve`, so a value it would refuse never reaches it.
     const idle = bunIdleTimeoutOf(options);
     // `serveOptions` goes in first, beneath everything the runner writes, and
-    // its own `tls`, `http2` and `idleTimeout` are dropped rather than merely
-    // outranked: the listener's TLS and HTTP/2 shape and its idle timeout are
-    // the typed members' to decide, set or unset.  A bag `http2` with no
-    // `tls` is the h2c listener refused above (#1486), and a bag
-    // `idleTimeout` would pass the conversion and the ceiling by (#1487).
-    const { tls: _tls, http2: _http2, idleTimeout: _idleTimeout, ...tuning } = (options.serveOptions ?? {}) as BunListenerShape;
+    // whatever in it would decide the listener's TLS, its HTTP versions or its
+    // idle timeout is dropped rather than merely outranked — see
+    // {@link BUN_LISTENER_SHAPE_KEYS}.
     const server = bun.serve({
-      ...tuning,
+      ...withoutListenerShape(options.serveOptions),
       hostname: options.host,
       port: options.port,
       fetch: options.fetch,
@@ -79,6 +76,7 @@ export class BunHonoRunner implements HonoServerRunner {
         maxHeaderBytes: false,
         idleTimeoutMs: options.idleTimeoutMs !== undefined,
         ...(idle.heldAtCeilingMs !== undefined ? { idleTimeoutHeldAtCeilingMs: idle.heldAtCeilingMs } : {}),
+        ...(idle.earliestCutMs !== undefined ? { idleTimeoutEarliestCutMs: idle.earliestCutMs } : {}),
       },
       async stop(graceful: boolean): Promise<void> { server.stop(!graceful); },
     };
@@ -140,13 +138,25 @@ export const BUN_IDLE_SWEEP_SECONDS = 4;
  */
 const IDLE_CUT_MARGIN_SECONDS = 2;
 
-/** What {@link bunIdleTimeoutOf} decided: the `idleTimeout` to write, if any, and whether a derived one fell short. */
+/** What {@link bunIdleTimeoutOf} decided: the `idleTimeout` to write, if any, and whether it falls short of the deadline. */
 type BunIdleTimeout = {
   /** `Bun.serve`'s `idleTimeout`, or `undefined` to leave Bun's own default (10 s). */
   readonly seconds?: number;
   /** Set when a derived value was held at the ceiling, too short for the deadline it came from — the ceiling, in ms. */
   readonly heldAtCeilingMs?: number;
+  /** Set when a set value can cut a silent handler before the deadline's `503` — its earliest cut, in ms. */
+  readonly earliestCutMs?: number;
 };
+
+/**
+ * The earliest moment, in milliseconds after a connection fell silent, at
+ * which `Bun.serve` can close it under an `idleTimeout` of `seconds`: the value
+ * is held as `ceil(seconds / 4)` sweeps, and the cut comes on the sweep that
+ * completes them — so one sweep before the last.
+ */
+function earliestCutMsOf(seconds: number): number {
+  return BUN_IDLE_SWEEP_SECONDS * 1_000 * (Math.ceil(seconds / BUN_IDLE_SWEEP_SECONDS) - 1);
+}
 
 /**
  * The `idleTimeout` this runner writes into `Bun.serve` (#1487).
@@ -157,7 +167,12 @@ type BunIdleTimeout = {
  * "never close" and throws on a fraction: 1–999 ms has to become 1 s.  A value
  * that rounds past {@link BUN_MAX_IDLE_TIMEOUT_SECONDS} is refused here, before
  * `Bun.serve` is called — the backend refuses it first, by the key's name, so
- * this is the guard for a caller that reaches the runner directly.
+ * this is the guard for a caller that reaches the runner directly.  A set value
+ * is the deployment's to choose and is written as given, but where
+ * `requestDeadlineMs` is known and the value's earliest cut lands less than
+ * {@link IDLE_CUT_MARGIN_SECONDS} past it, a handler that writes nothing loses
+ * its `503` — `32` under the built-in 30 s deadline cuts from 28 s on — so the
+ * earliest cut is returned for the backend to report.  `0` never cuts.
  *
  * **Unset**, it is derived from `requestDeadlineMs`.  Bun's bound is the whole
  * connection, and a request whose handler has written nothing counts as idle,
@@ -189,7 +204,11 @@ export function bunIdleTimeoutOf(options: Pick<HonoServeOptions, 'idleTimeoutMs'
           + `${BUN_MAX_IDLE_TIMEOUT_SECONDS} — at most ${BUN_MAX_IDLE_TIMEOUT_SECONDS * 1_000} ms.`,
       );
     }
-    return { seconds };
+    if (seconds === 0 || requestDeadlineMs === undefined || !Number.isFinite(requestDeadlineMs) || requestDeadlineMs < 0) {
+      return { seconds };
+    }
+    const earliestCutMs = earliestCutMsOf(seconds);
+    return earliestCutMs >= requestDeadlineMs + IDLE_CUT_MARGIN_SECONDS * 1_000 ? { seconds } : { seconds, earliestCutMs };
   }
   if (requestDeadlineMs === undefined) return {};
   if (!Number.isFinite(requestDeadlineMs) || requestDeadlineMs < 0) {
@@ -199,8 +218,7 @@ export function bunIdleTimeoutOf(options: Pick<HonoServeOptions, 'idleTimeoutMs'
   const neededMs = requestDeadlineMs + IDLE_CUT_MARGIN_SECONDS * 1_000;
   const derived = BUN_IDLE_SWEEP_SECONDS * (Math.ceil(neededMs / sweepMs) + 1);
   const seconds = Math.min(derived, BUN_MAX_IDLE_TIMEOUT_SECONDS);
-  const earliestCutMs = sweepMs * (Math.ceil(seconds / BUN_IDLE_SWEEP_SECONDS) - 1);
-  return earliestCutMs >= neededMs ? { seconds } : { seconds, heldAtCeilingMs: seconds * 1_000 };
+  return earliestCutMsOf(seconds) >= neededMs ? { seconds } : { seconds, heldAtCeilingMs: seconds * 1_000 };
 }
 
 /**
@@ -225,12 +243,46 @@ interface BunServer {
   stop(forceCloseConnections?: boolean): void;
 }
 
-/** The `Bun.serve` members only the typed `tls`, `http2` and idle members may set — never a `serveOptions` bag. */
-type BunListenerShape = {
-  readonly tls?: unknown;
-  readonly http2?: unknown;
-  readonly idleTimeout?: unknown;
-};
+/**
+ * The `Bun.serve` members a `serveOptions` bag may not set, because the typed
+ * members decide them, set or unset (#1486, #1487).
+ *
+ * **TLS** is `tls`'s to decide, and dropping the bag's `tls` member alone is not
+ * enough: with no `tls` member set, `Bun.serve` still reads TLS material from
+ * the top level of its options — measured on bun 1.4.2, a bag `cert` and `key`,
+ * or the older `certFile` and `keyFile`, made a listener configured without TLS
+ * terminate it, resetting plain HTTP.  So every name of Bun's TLS options goes,
+ * the deprecated file spellings included.
+ *
+ * **The HTTP versions** are `http2`'s: a bag `http2` with no `tls` is the h2c
+ * listener refused above, a bag `http1: false` beside the typed pair answered
+ * HTTP/1.1 with `505` where the Node runner keeps it on the h2 port — so
+ * HTTP/1.1 now stays beside h2 on every runtime — and `http3` would add a QUIC
+ * listener beside the one the typed members describe.
+ *
+ * **`idleTimeout`** is `idleTimeoutMs`'s and `requestDeadlineMs`'s: a bag value
+ * would pass the conversion and the ceiling by.
+ *
+ * **What answers and where** are `fetch`'s, `host`'s and `port`'s: `Bun.serve`
+ * answers a path in `routes` or `static` itself, ahead of `fetch` — measured on
+ * bun 1.4.2 and 1.4.4, a bag route answered its path while every other one
+ * still reached the runner's handler — and `unix` moves the listener off host
+ * and port, which beside a hostname throws at `serve()`.
+ */
+const BUN_LISTENER_SHAPE_KEYS: ReadonlySet<string> = new Set([
+  'tls',
+  'cert', 'key', 'ca', 'passphrase', 'dhParamsFile', 'serverName', 'lowMemoryMode', 'secureOptions',
+  'requestCert', 'rejectUnauthorized', 'ALPNProtocols', 'ciphers', 'clientRenegotiationLimit',
+  'clientRenegotiationWindow', 'certFile', 'keyFile', 'caFile',
+  'http1', 'http2', 'http3',
+  'idleTimeout',
+  'routes', 'static', 'unix',
+]);
+
+/** A caller's `serveOptions` without the members {@link BUN_LISTENER_SHAPE_KEYS} reserves. */
+function withoutListenerShape(serveOptions: object | undefined): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(serveOptions ?? {}).filter(([name]) => !BUN_LISTENER_SHAPE_KEYS.has(name)));
+}
 
 /** `Bun.serve`'s `tls` bag, the fields this runner writes; names as Bun spells them. */
 type BunTlsOptions = {

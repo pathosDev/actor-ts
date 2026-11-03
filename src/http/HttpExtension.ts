@@ -442,6 +442,15 @@ export class HttpExtension implements Extension {
         if (idleTimeoutShortOfDeadline !== undefined) {
           system.log.warn(`[http] ${binding.host}:${binding.port}: ${idleTimeoutShortOfDeadline}`);
         }
+        const idleTimeoutCutsBeforeDeadline = idleTimeoutEarliestCutWarning(
+          active.name,
+          raw.serverOptionsReport,
+          resolvedServerOptions.idleTimeoutMs,
+          requestDeadlineMs,
+        );
+        if (idleTimeoutCutsBeforeDeadline !== undefined) {
+          system.log.warn(`[http] ${binding.host}:${binding.port}: ${idleTimeoutCutsBeforeDeadline}`);
+        }
         return binding;
       },
     };
@@ -598,8 +607,12 @@ function namedLeaves(leaves: ReadonlyArray<string>): string {
  * so with `idle-timeout` unset the backend derives one that lets the `503`
  * win, and `Bun.serve` holds no more than 255 s.  Past a deadline of about
  * 250 s that is too short, and a handler silent that long is cut with no
- * response at all — which the operator can only fix by choosing the bound
- * themselves, so the warning names the key and the deadline.
+ * response at all — so the warning names the key and the deadline.
+ *
+ * The remedies it names are the ones that keep a bound: a shorter deadline, a
+ * handler that writes sooner, or a bound the operator chooses.  Not `0`, which
+ * turns the idle timeout off: under Bun it is the one bound the Hono backend
+ * has on a request whose body stops arriving and on a connection left idle.
  */
 function idleTimeoutHeldAtCeilingWarning(
   backendName: string,
@@ -612,7 +625,36 @@ function idleTimeoutHeldAtCeilingWarning(
   return `${key} is unset, so the "${backendName}" backend derived the idle timeout from this server's request deadline, `
     + `${requestDeadlineMs} ms — and holds it at ${heldAtMs} ms, the most this runtime can hold, which is too short to cover it: `
     + `a handler that writes nothing for about that long is cut with no response before its 503. `
-    + `Set ${key} (withIdleTimeoutMs in code) to choose the bound yourself, or 0 to disable it, or shorten the deadline.`;
+    + `Shorten the deadline, or have such a handler write sooner; or set ${key} (withIdleTimeoutMs in code) to choose the bound yourself.`;
+}
+
+/**
+ * The warning `bind()` logs when the deployment set an idle timeout the
+ * backend holds as whole-connection inactivity and it can close a connection
+ * under a silent handler before the request deadline's `503` is written, or
+ * `undefined` — every other case, including every backend that never reports
+ * it.
+ *
+ * The Hono backend under Bun is the one that does (#1487): `Bun.serve` checks
+ * idleness on a 4 s sweep, so a set value can cut from one sweep before itself
+ * on, and a cut less than 2 s past the deadline leaves the client with no
+ * response at all — `32s` under the built-in 30 s deadline cuts from 28 s on.
+ * The value is the deployment's to choose, so it is said, not refused; the
+ * remedies named are the ones that keep a bound.
+ */
+function idleTimeoutEarliestCutWarning(
+  backendName: string,
+  report: ServerOptionsReport | undefined,
+  idleTimeoutMs: number | undefined,
+  requestDeadlineMs: number,
+): string | undefined {
+  const earliestCutMs = report?.idleTimeoutEarliestCutMs;
+  if (earliestCutMs === undefined || idleTimeoutMs === undefined) return undefined;
+  const key = ConfigKeys.http.server.idleTimeout;
+  return `${key} is ${idleTimeoutMs} ms, and the "${backendName}" backend holds it as whole-connection inactivity on this runtime: `
+    + `a handler that writes nothing can be cut from ${earliestCutMs} ms on, before this server's request deadline, `
+    + `${requestDeadlineMs} ms, has its 503 written — the client gets no response at all. `
+    + `Raise ${key} (withIdleTimeoutMs in code), leave it unset to have it derived from the deadline, or shorten the deadline.`;
 }
 
 /** The backends `actor-ts.http.backend` can name: the three that ship. */

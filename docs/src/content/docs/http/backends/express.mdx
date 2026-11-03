@@ -183,10 +183,16 @@ nothing: its middleware sees every request, a `websocket()` route upgrades as
 connection-level bounds hold on the TLS server as they do on a plain one. The
 header deadline follows each connection into TLS, so a slow-loris is answered
 `408` inside it. Deno is the exception, as it is for plain HTTP: its `node:http`
-and `node:https` emit none of the connection events the guards rest on and
-ignore the header cap, so there neither the header deadline, `max-connections`
-nor `max-header-bytes` holds, and `bind()` warns about each of the three that
-is set. `requestClientCert` becomes `node:tls`'s `requestCert` and
+and `node:https` emit none of the connection events the guards rest on, ignore
+the header cap, and accept `keepAliveTimeout` and `requestTimeout` without
+applying either. So there none of the connection-level bounds holds —
+`idle-timeout`, `header-timeout`, `request-timeout` and `max-connections` — nor
+`max-header-bytes`, and `bind()` names each one that is set in a warning.
+Measured on deno 2.6.8 under `idle-timeout = 600ms` and `request-timeout = 2s`:
+a keep-alive connection was still open 3 s after its response, and a body that
+stopped arriving was still open after 40 s with no `408`, where Node and Bun
+closed the first at 1.6 s and answered the second at 30 s.
+`requestClientCert` becomes `node:tls`'s `requestCert` and
 `rejectUnauthorized` passes through, as on the Hono backend under Node. The
 demand needs a `ca` to verify against: without one `bind()` refuses it, on
 every backend, because `node:tls` would otherwise check client certificates

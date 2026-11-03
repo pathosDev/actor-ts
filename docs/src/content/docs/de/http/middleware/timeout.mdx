@@ -62,9 +62,19 @@ das längste `requestTimeout(...)` im Routenbaum — mit Luft dafür, dass die
 `503` zuerst rausgeht: 36 s bei den eingebauten 30 s. Über etwa 250 s geht das
 nicht: `Bun.serve` hält höchstens 255 s, der Idle-Timeout bleibt dort stehen,
 ein Handler, der so lange schweigt, wird weiterhin ohne Antwort abgeschnitten,
-und `bind()` schreibt eine Warnung mit dem Key und der Frist ins Log. Setz
-`idle-timeout` selbst, höchstens `255s` oder `0` für keinen, wenn eine Route
-länger braucht.
+und `bind()` schreibt eine Warnung mit dem Key und der Frist ins Log. Eine
+Route, die länger braucht, muss vorher etwas schreiben oder auf einem anderen
+Backend laufen: `idle-timeout` selbst zu setzen wählt die Schranke, höchstens
+`255s`, hebt sie aber nicht darüber hinaus.
+
+Lass `idle-timeout` auf diesem Backend unter Bun positiv. `0` schaltet ihn ab,
+und er ist dort die einzige Schranke für einen Request, dessen Body nicht mehr
+weiterkommt, und für eine Verbindung, die zwischen zwei Requests untätig ist —
+`header-timeout`, `request-timeout` und `max-connections` lassen sich auf
+diesem Paar nicht installieren —, mit `0` bleibt eine solche Verbindung also
+offen, bis der Client sie schließt. Gemessen auf bun 1.4.2: ein Body, der mit
+10 Bytes angekündigt war und nach 1 Byte stehen blieb, war unter `0` nach
+40 s noch offen und wurde bei ungesetztem Key nach 36 s geschlossen.
 
 Der Block erreicht `requestTimeout()` über einen Hook, den `compile()`
 auflöst — gib die Middleware also so, wie sie ist, an `withMiddleware(...)`.

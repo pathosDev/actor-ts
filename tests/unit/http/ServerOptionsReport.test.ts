@@ -239,15 +239,17 @@ describe('a configured server bound the backend did not install is reported at b
 
   test('idle-timeout set on the Hono backend under Bun is in effect and no longer named — Bun.serve holds it (#1487)', async () => {
     // Beside a key Bun still cannot hold, so the warning that remains shows
-    // the idle timeout is left out of it rather than the warning gone.
-    const { binding, warnings } = await bindUnder(onBackend('hono', 'idle-timeout = 30s\nmax-connections = 5'));
+    // the idle timeout is left out of it rather than the warning gone.  36 s
+    // and not less: under the built-in 30 s deadline a shorter value can cut a
+    // silent handler before its 503, which has a warning of its own (below).
+    const { binding, warnings } = await bindUnder(onBackend('hono', 'idle-timeout = 36s\nmax-connections = 5'));
 
     expect(binding.serverOptionsReport?.idleTimeoutMs).toBe(true);
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain('actor-ts.http.server.max-connections');
     expect(warnings[0]).not.toContain('idle-timeout');
 
-    const alone = await bindUnder(onBackend('hono', 'idle-timeout = 30s'));
+    const alone = await bindUnder(onBackend('hono', 'idle-timeout = 36s'));
     expect(alone.warnings).toEqual([]);
   });
 
@@ -295,14 +297,76 @@ describe('a configured server bound the backend did not install is reported at b
       expect(heldAtCeiling(warnings)[0]).toContain('300000 ms');
     });
 
-    test('nothing is said where 255 s still covers the deadline, where the key is set, or on a backend that derives nothing', async () => {
+    test('nothing is said where 255 s still covers the deadline, where the key is 0, or on a backend that derives nothing', async () => {
+      // A set key is not derived, so it is never held at the ceiling — a set
+      // value too short for the deadline has a warning of its own, below.
       expect((await bindTimed('actor-ts.http { backend = hono, request-timeout { deadline = 250s } }')).warnings).toEqual([]);
-      expect((await bindTimed('actor-ts.http { backend = hono, request-timeout { deadline = 300s }, server { idle-timeout = 255s } }')).warnings).toEqual([]);
       expect((await bindTimed('actor-ts.http { backend = hono, request-timeout { deadline = 300s }, server { idle-timeout = 0 } }')).warnings).toEqual([]);
       for (const backend of ['fastify', 'express']) {
         const { binding, warnings } = await bindTimed(`actor-ts.http { backend = ${backend}, request-timeout { deadline = 300s } }`);
         expect(warnings, backend).toEqual([]);
         expect(binding.serverOptionsReport, backend).not.toHaveProperty('idleTimeoutHeldAtCeilingMs');
+      }
+    });
+  });
+
+  describe('a set idle-timeout that can cut a silent handler before the deadline\'s 503 is said once at bind() (#1487)', () => {
+    // Under Bun the idle timeout is whole-connection inactivity, checked on a
+    // 4 s sweep: X seconds are held as ceil(X / 4) sweeps, so a handler that
+    // has written nothing can be cut from one sweep before X on.  Where that
+    // earliest cut lands less than 2 s past the request deadline the handler
+    // loses its 503, the margin the derived value keeps — so 32 s under the
+    // built-in 30 s does, and 33 s, held as the same nine sweeps as 36 s,
+    // does not.
+    const cutsBeforeDeadline = (warnings: readonly string[]): string[] =>
+      warnings.filter((warning) => warning.includes('can be cut from'));
+    const timedRoutes = path('', withMiddleware(requestTimeout(), get(() => completeText(200, 'ok'))));
+    const bindTimed = (hocon: string): Promise<Bound> => bindUnder(hocon, undefined, timedRoutes);
+
+    test('idle-timeout = 255s under a 300 s deadline: one warning naming the key, the value, the earliest cut and the deadline', async () => {
+      const { binding, warnings } = await bindTimed('actor-ts.http { backend = hono, request-timeout { deadline = 300s }, server { idle-timeout = 255s } }');
+
+      expect(binding.serverOptionsReport?.idleTimeoutEarliestCutMs).toBe(252_000);
+      expect(binding.serverOptionsReport).not.toHaveProperty('idleTimeoutHeldAtCeilingMs');
+      expect(warnings).toEqual([
+        `[http] ${binding.host}:${binding.port}: actor-ts.http.server.idle-timeout is 255000 ms, and the "hono" backend `
+          + 'holds it as whole-connection inactivity on this runtime: a handler that writes nothing can be cut from '
+          + '252000 ms on, before this server\'s request deadline, 300000 ms, has its 503 written — the client gets no '
+          + 'response at all. Raise actor-ts.http.server.idle-timeout (withIdleTimeoutMs in code), leave it unset to '
+          + 'have it derived from the deadline, or shorten the deadline.',
+      ]);
+    });
+
+    test('32s under the built-in 30 s deadline is cut from 28 s on', async () => {
+      const { binding, warnings } = await bindTimed('actor-ts.http { backend = hono, server { idle-timeout = 32s } }');
+
+      expect(binding.serverOptionsReport?.idleTimeoutEarliestCutMs).toBe(28_000);
+      expect(cutsBeforeDeadline(warnings)).toHaveLength(1);
+      expect(cutsBeforeDeadline(warnings)[0]).toContain('is 32000 ms');
+      expect(cutsBeforeDeadline(warnings)[0]).toContain('cut from 28000 ms on');
+      expect(cutsBeforeDeadline(warnings)[0]).toContain('request deadline, 30000 ms');
+    });
+
+    test('5s, the example the configuration reference shows, is cut from 4 s on — with no requestTimeout() in the tree', async () => {
+      // The configured deadline counts for every handler, wrapped or not.
+      const { binding, warnings } = await bindUnder(onBackend('hono', 'idle-timeout = 5s'));
+
+      expect(binding.serverOptionsReport?.idleTimeoutEarliestCutMs).toBe(4_000);
+      expect(cutsBeforeDeadline(warnings)).toHaveLength(1);
+      expect(cutsBeforeDeadline(warnings)[0]).toContain('is 5000 ms');
+      expect(cutsBeforeDeadline(warnings)[0]).toContain('cut from 4000 ms on');
+    });
+
+    test('nothing is said once the earliest cut is 2 s past the deadline, for 0, or where the idle timeout is a keep-alive window', async () => {
+      for (const idleTimeout of ['33s', '36s', '0']) {
+        const { binding, warnings } = await bindTimed(`actor-ts.http { backend = hono, server { idle-timeout = ${idleTimeout} } }`);
+        expect(warnings, idleTimeout).toEqual([]);
+        expect(binding.serverOptionsReport, idleTimeout).not.toHaveProperty('idleTimeoutEarliestCutMs');
+      }
+      for (const backend of ['fastify', 'express']) {
+        const { binding, warnings } = await bindTimed(`actor-ts.http { backend = ${backend}, server { idle-timeout = 5s } }`);
+        expect(cutsBeforeDeadline(warnings), backend).toEqual([]);
+        expect(binding.serverOptionsReport, backend).not.toHaveProperty('idleTimeoutEarliestCutMs');
       }
     });
   });
