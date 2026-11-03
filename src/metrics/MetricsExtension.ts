@@ -1,6 +1,9 @@
 import type { ActorSystem } from '../ActorSystem.js';
+import { ConfigError } from '../config/Config.js';
+import { ConfigKeys } from '../config/ConfigKeys.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import { mergeOptions } from '../util/OptionsMerge.js';
+import { OptionsError } from '../util/OptionsValidator.js';
 import { MAIN_THREAD_LABEL_VALUE, THREAD_LABEL } from './Constants.js';
 import { MailboxDepthSampler } from './MailboxDepthSampler.js';
 import {
@@ -67,6 +70,8 @@ export class MetricsExtension implements Extension {
    * shifts.
    */
   private readonly sampleSources = new Set<MetricSampleSource>();
+  /** Whether a refused `actor-ts.metrics` value has been logged — once per system (#1466). */
+  private refusedConfigurationReported = false;
 
   constructor(private readonly _system: ActorSystem) {}
 
@@ -132,7 +137,9 @@ export class MetricsExtension implements Extension {
    * The settings are **explicit `options` > `actor-ts.metrics` > the
    * registry's own default**, per field, and the registry's constructor
    * validates the merged result — so a cap a config file puts out of range
-   * fails here exactly as the same value written in code does (#1466).
+   * fails here exactly as the same value written in code does (#1466), with
+   * the key it came from in front of the message, and is logged once per
+   * system as well (see {@link buildFromConfiguredSettings}).
    *
    * The block is read here, from `system.config`, rather than left to callers,
    * because two framework callers enable with no options at all: DevTools
@@ -144,12 +151,15 @@ export class MetricsExtension implements Extension {
    */
   enable(options?: MetricsRegistryOptions): MetricsRegistry {
     if (this.registry instanceof NoopMetricsRegistry) {
-      const settings = mergeOptions<MetricsRegistryOptionsType>(
-        {},
-        readMetricsRegistryOptionsFromConfig(this._system.config),
-        (options ?? {}) as Partial<MetricsRegistryOptionsType>,
-      );
-      this.install(new DefaultMetricsRegistry(settings));
+      const explicit = (options ?? {}) as Partial<MetricsRegistryOptionsType>;
+      const registry = this.buildFromConfiguredSettings(explicit, () => new DefaultMetricsRegistry(
+        mergeOptions<MetricsRegistryOptionsType>(
+          {},
+          readMetricsRegistryOptionsFromConfig(this._system.config),
+          explicit,
+        ),
+      ));
+      this.install(registry);
       this.startMailboxDepthSampler();
     }
     return this.registry;
@@ -182,14 +192,49 @@ export class MetricsExtension implements Extension {
    *     system.extension(MetricsExtensionId).enablePromClient(promOptions);
    */
   enablePromClient(options: PromClientAdapterOptions): MetricsRegistry {
-    const settings = mergeOptions<PromClientAdapterOptionsType>(
-      {},
-      readPromClientAdapterOptionsFromConfig(this._system.config),
-      options as Partial<PromClientAdapterOptionsType>,
-    );
-    const bridge = promClientRegistry(settings);
+    const explicit = options as Partial<PromClientAdapterOptionsType>;
+    const bridge = this.buildFromConfiguredSettings(explicit, () => promClientRegistry(
+      mergeOptions<PromClientAdapterOptionsType>(
+        {},
+        readPromClientAdapterOptionsFromConfig(this._system.config),
+        explicit,
+      ),
+    ));
     this.useRegistry(bridge);
     return bridge;
+  }
+
+  /**
+   * Run `build` over settings that layer `actor-ts.metrics` under `explicit`,
+   * and make a refusal of a value the file supplied say where it came from
+   * (#1466).
+   *
+   * A validator names the field — `maxSeriesPerFamily` — which is the right
+   * word for a value written in code and leaves an operator who wrote a config
+   * file guessing.  So when the explicit layer did not set the refused field,
+   * the refusal is thrown again with the key in front: still an `OptionsError`,
+   * exactly as the same value in code throws.  A refusal the reader raised
+   * already names the key and is thrown as it is.
+   *
+   * Either kind is also logged, once per system.  Two framework callers switch
+   * metrics on and never see what this throws — DevTools, and the worker-mesh
+   * relay inside every worker, whose transport drops the frame with a warning
+   * that names neither the key nor the error — so a refused cap used to turn
+   * every worker's metrics off with nothing in any log saying why.  Once,
+   * because the relay asks again on every tick.
+   */
+  private buildFromConfiguredSettings<T>(explicit: object, build: () => T): T {
+    try {
+      return build();
+    } catch (error) {
+      const refusal = refusalOfConfiguredValue(error, explicit);
+      if (refusal === null) throw error;
+      if (!this.refusedConfigurationReported) {
+        this.refusedConfigurationReported = true;
+        this._system.log.error(`no metrics registry was installed: ${refusal.message}`);
+      }
+      throw refusal;
+    }
   }
 
   /**
@@ -291,4 +336,29 @@ export function metricsOf(system: ActorSystem): MetricsRegistry {
  */
 export function withThreadLabel(sample: MetricSample, thread: string): MetricSample {
   return { ...sample, labels: { ...sample.labels, [THREAD_LABEL]: thread } };
+}
+
+/**
+ * The `actor-ts.metrics` leaf each settings field can come from.  A lookup
+ * table that is the implementation of {@link refusalOfConfiguredValue}, so it
+ * stays beside it.
+ */
+const CONFIGURED_FIELD_KEYS: Readonly<Record<string, string>> = {
+  maxSeriesPerFamily: ConfigKeys.metrics.maxSeriesPerFamily,
+  namePrefix: ConfigKeys.metrics.namePrefix,
+};
+
+/**
+ * `error` as a refusal of a value `actor-ts.metrics` supplied, or `null` when it
+ * is not one: a refusal the reader raised as it is, since it names the key
+ * already; a validator's refusal of a field the explicit layer left unset
+ * thrown again with that field's key in front; anything else — a value passed
+ * in code included — `null`, to be thrown untouched.
+ */
+function refusalOfConfiguredValue(error: unknown, explicit: object): Error | null {
+  if (error instanceof ConfigError) return error;
+  if (!(error instanceof OptionsError)) return null;
+  const key = CONFIGURED_FIELD_KEYS[error.field];
+  if (key === undefined || (explicit as Record<string, unknown>)[error.field] !== undefined) return null;
+  return new OptionsError(`${key}: ${error.message}`, error.options, error.field, error.value);
 }
