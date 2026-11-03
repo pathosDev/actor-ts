@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { Config, ConfigError } from '../../src/config/Config.js';
+import type { ConfigObject, ConfigValue } from '../../src/config/HoconParser.js';
+import { REFERENCE_CONF } from '../../src/config/Reference.js';
 import {
   baselineOf,
   inferKind,
@@ -29,6 +31,23 @@ import {
 
 function value(leaf: string, literal: Parameters<typeof perturbationFor>[1]): unknown {
   return perturbationFor(leaf, literal).value;
+}
+
+/** The value a dotted path holds in a parsed tree. */
+function literalIn(tree: ConfigObject, path: string): ConfigValue {
+  let node: ConfigValue = tree;
+  for (const segment of path.split('.')) node = (node as ConfigObject)[segment]!;
+  return node;
+}
+
+/** What `read` throws, or `undefined` when it answers. */
+function refusalOf(read: () => unknown): unknown {
+  try {
+    read();
+    return undefined;
+  } catch (error) {
+    return error;
+  }
 }
 
 describe('perturbationFor — a value of the literal\'s own kind', () => {
@@ -160,7 +179,42 @@ describe('the override and declaration tables', () => {
     const factor = perturbationFor('actor-ts.circuit-breaker.default.backoff-factor', 1);
     expect(factor).toMatchObject({ kind: 'fraction', value: 0.9, offKindValue: '0.9s' });
     const timeToLive = perturbationFor('actor-ts.cache.in-memory.time-to-live', 0);
-    expect(timeToLive).toMatchObject({ kind: 'duration', value: 1, offKindValue: '1KiB' });
+    expect(timeToLive).toMatchObject({ kind: 'duration', value: '1ms', offKindValue: '1KiB' });
+    const documentBytes = perturbationFor('actor-ts.serialization.read-constraints.max-document-bytes', 0);
+    expect(documentBytes).toMatchObject({ kind: 'size', value: '1B', offKindValue: '1s' });
+  });
+
+  test('a declared duration or size is set with its unit, which its own accessor takes and no integer one does', () => {
+    // A bare count reads through `getInt` and `getNumber` exactly as through
+    // `getDuration` or `getBytes`, so a declared leaf perturbed to one left a
+    // reader that switched to an integer accessor counted as reading it, and
+    // its off-kind value is refused by both alike (#1425).  So the value
+    // carries the unit a bare count stands in, and each accessor is asked.
+    const reference = Config.parseString(REFERENCE_CONF);
+    const tree = reference.toJSON();
+    const declared = [...KIND_DECLARATIONS].filter(([, { kind }]) => kind === 'duration' || kind === 'size');
+    expect(declared.map(([leaf]) => leaf)).toEqual(expect.arrayContaining([
+      'actor-ts.cache.in-memory.time-to-live',
+      'actor-ts.cache.in-memory.time-to-idle',
+      'actor-ts.serialization.read-constraints.max-document-bytes',
+    ]));
+    for (const [leaf, { kind }] of declared) {
+      const { value } = perturbationFor(leaf, literalIn(tree, leaf));
+      const config = withOverlay(reference, { [leaf]: value });
+      const own = kind === 'duration' ? () => config.getDuration(leaf) : () => config.getBytes(leaf);
+      const shipped = kind === 'duration' ? reference.getDuration(leaf) : reference.getBytes(leaf);
+      expect(own(), `${leaf} (${kind}) = ${JSON.stringify(value)} reads as the quantity it ships as`).not.toBe(shipped);
+      const others: ReadonlyArray<readonly [string, () => unknown]> = [
+        ['getInt', () => config.getInt(leaf)],
+        ['getNumber', () => config.getNumber(leaf)],
+        // The other quantity, so the unit cannot be one both read (`m`).
+        kind === 'duration' ? ['getBytes', () => config.getBytes(leaf)] : ['getDuration', () => config.getDuration(leaf)],
+      ];
+      for (const [accessor, read] of others) {
+        expect(isKindMismatch(refusalOf(read)), `${leaf} (${kind}) = ${JSON.stringify(value)} is taken by ${accessor}`)
+          .toBe(true);
+      }
+    }
   });
 
   test('an unpublished leaf is introduced at its value, then changed within its kind as a literal would be', () => {

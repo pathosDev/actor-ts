@@ -286,6 +286,22 @@ function inUnit(value: ConfigValue, unit: string): string {
   return `${quantity}${spacing}${unit}`;
 }
 
+/**
+ * The unit a bare count of each quantity kind stands in: `getDuration` reads
+ * `250` as 250 ms and `getBytes` as 250 bytes.
+ *
+ * A duration or size leaf that ships as a bare count — only a
+ * {@link KIND_DECLARATIONS} entry can say it is one — is perturbed to the
+ * count one higher **spelled with this unit**, never to the bare count.  A bare
+ * count is a value `getInt` and `getNumber` take as readily as the declared
+ * accessor, so a reader that switched to either answered it differently and
+ * passed as a read, while the off-kind value carries a unit those two refuse
+ * as well: neither value told the declared accessor from an integer one.
+ * Spelled with its unit the value is the same quantity, the declared accessor
+ * reads it as such, and an integer accessor refuses it as the wrong kind.
+ */
+const BARE_COUNT_UNITS = { duration: 'ms', size: 'B' } as const;
+
 function inKindValue(kind: LeafKind, literal: ConfigValue): ConfigValue {
   return match(kind)
     .returnType<ConfigValue>()
@@ -293,8 +309,10 @@ function inKindValue(kind: LeafKind, literal: ConfigValue): ConfigValue {
     .with('switch', () => flipSwitch(literal as string))
     .with('integer', () => (literal as number) + 1)
     .with('fraction', () => nudgeFraction(literal as number))
-    .with('duration', 'size', () =>
-      (typeof literal === 'number' ? literal + 1 : nudgeQuantity(literal as string)))
+    .with('duration', 'size', (quantityKind) =>
+      (typeof literal === 'number'
+        ? inUnit(literal + 1, BARE_COUNT_UNITS[quantityKind])
+        : nudgeQuantity(literal as string)))
     .with('text', () => (literal === '' ? PERTURBATION_WORD : `${String(literal)}-${PERTURBATION_WORD}`))
     .with('list', () => [...(literal as ConfigValue[]), listElement(literal as ConfigValue[])])
     .with('object', () => objectValue(literal as ConfigObject))
