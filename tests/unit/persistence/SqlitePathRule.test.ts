@@ -21,6 +21,10 @@ import {
   SQLITE_JOURNAL_PLUGIN_ID,
   SQLITE_SNAPSHOT_PLUGIN_ID,
 } from '../../../src/persistence/journals/SqlitePlugin.js';
+import { InMemoryDurableStateStore } from '../../../src/persistence/durable-state-stores/InMemoryDurableStateStore.js';
+import { InMemoryJournal } from '../../../src/persistence/journals/InMemoryJournal.js';
+import { PersistenceExtensionId } from '../../../src/persistence/PersistenceExtension.js';
+import { InMemorySnapshotStore } from '../../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
 import { getSqliteDriver, type SqliteDb } from '../../../src/runtime/sqlite/index.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 
@@ -243,6 +247,95 @@ describe('registerSqlitePlugins keeps a query-string token out of its refusal (#
       expect(String(refusal.value)).not.toContain('QUERY-SECRET');
     });
   }
+});
+
+/**
+ * A store set in code is the explicit layer over whatever the configuration
+ * selects (#1473), so a pathless SQLite selection it replaces is never built —
+ * and is not refused (#1492).  The registration refused it anyway: it keyed
+ * the path rule on the selection alone, and the plug-ins run before the
+ * instances set in code are applied, so it could not see the replacement.
+ * The shape is plausible in a test that sets a store in code over an
+ * `application.conf` selecting SQLite through an unset `${?ENV}` path.
+ */
+describe('registerSqlitePlugins and a pathless SQLite selection that code replaces (#1492)', () => {
+  const quietOptionsSelecting = (axis: 'journal' | 'snapshot-store' | 'durable-state', plugin: string) =>
+    ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({ 'actor-ts': { persistence: { [axis]: { plugin } } } } as ConfigObject);
+
+  test('a journal set in code over a pathless sqlite journal selection: create succeeds and the code-set journal is used', async () => {
+    const journal = new InMemoryJournal();
+    const systemOptions = quietOptionsSelecting('journal', SQLITE_JOURNAL_PLUGIN_ID)
+      .withPersistence({ journal, plugins: [(persistence) => registerSqlitePlugins(persistence)] });
+    const system = ActorSystem.create('sqlite-shadowed-journal', systemOptions);
+    try {
+      const persistence = system.extension(PersistenceExtensionId);
+      expect(persistence.journal).toBe(journal);
+      await persistence.journal.append('shadowed', [{ event: { kind: 'noted' } }], 0);
+      expect(await persistence.journal.highestSeq('shadowed')).toBe(1);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a snapshot store set in code over a pathless sqlite snapshot-store selection: create succeeds', async () => {
+    const snapshotStore = new InMemorySnapshotStore();
+    const systemOptions = quietOptionsSelecting('snapshot-store', SQLITE_SNAPSHOT_PLUGIN_ID)
+      .withPersistence({ snapshotStore, plugins: [(persistence) => registerSqlitePlugins(persistence)] });
+    const system = ActorSystem.create('sqlite-shadowed-snapshot-store', systemOptions);
+    try {
+      expect(system.extension(PersistenceExtensionId).snapshotStore).toBe(snapshotStore);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a durable-state store set in code over a pathless sqlite durable-state selection: create succeeds', async () => {
+    const durableStateStore = new InMemoryDurableStateStore();
+    const systemOptions = quietOptionsSelecting('durable-state', SQLITE_DURABLE_STATE_PLUGIN_ID)
+      .withPersistence({ durableStateStore, plugins: [(persistence) => registerSqlitePlugins(persistence)] });
+    const system = ActorSystem.create('sqlite-shadowed-durable-state', systemOptions);
+    try {
+      expect(system.extension(PersistenceExtensionId).durableStateStore).toBe(durableStateStore);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('only the replaced axis is excused: a pathless selection on another axis is still refused', () => {
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({
+        'actor-ts': {
+          persistence: {
+            journal: { plugin: SQLITE_JOURNAL_PLUGIN_ID },
+            'snapshot-store': { plugin: SQLITE_SNAPSHOT_PLUGIN_ID },
+          },
+        },
+      } as ConfigObject)
+      .withPersistence({ journal: new InMemoryJournal(), plugins: [(persistence) => registerSqlitePlugins(persistence)] });
+    const refusal = refusalOf(() => ActorSystem.create('sqlite-shadowed-one-axis', systemOptions));
+    expect(refusal.message).toContain(`the selected plugin '${SQLITE_SNAPSHOT_PLUGIN_ID}' has no usable path`);
+  });
+
+  test('a plug-in that sets its own journal does not override the one set in code', async () => {
+    const journal = new InMemoryJournal();
+    const fromThePlugin = new InMemoryJournal();
+    const systemOptions = quietOptionsSelecting('journal', SQLITE_JOURNAL_PLUGIN_ID)
+      .withPersistence({
+        journal,
+        plugins: [(persistence) => { persistence.setJournal(fromThePlugin); }],
+      });
+    const system = ActorSystem.create('sqlite-shadowed-plugin-sets-journal', systemOptions);
+    try {
+      expect(system.extension(PersistenceExtensionId).journal).toBe(journal);
+    } finally {
+      await system.terminate();
+    }
+  });
 });
 
 /**

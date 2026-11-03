@@ -273,6 +273,13 @@ export type PersistencePlugin = (persistence: PersistenceExtension) => unknown;
 /** Which store the warm-up is opening, as a failure to open it names it. */
 type StoreAxis = 'journal' | 'snapshot store' | 'durable-state store';
 
+/**
+ * @internal One of the three stores, spelled as `withPersistence` spells the
+ * field that sets it in code — what {@link PersistenceExtension._isSetInCode}
+ * is asked about.
+ */
+export type PersistenceAxis = 'journal' | 'snapshotStore' | 'durableStateStore';
+
 /** A store the warm-up opens, and where it came from — `pluginId` is `null` for one set in code. */
 type StoreToOpen = {
   readonly axis: StoreAxis;
@@ -337,6 +344,8 @@ export class PersistenceExtension implements Extension {
   private journalBuiltFrom: string | null = null;
   private snapshotStoreBuiltFrom: string | null = null;
   private durableStateStoreBuiltFrom: string | null = null;
+  /** The axes `ActorSystemOptions.withPersistence` set a store on — see {@link _markSetInCode}. */
+  private axesSetInCode: ReadonlySet<PersistenceAxis> = new Set();
   private readonly storageAdvisory: StorageLocalityAdvisory;
   private readonly log: Logger;
   /**
@@ -746,6 +755,32 @@ export class PersistenceExtension implements Extension {
     if (stores.journal !== undefined) this.setJournal(stores.journal);
     if (stores.snapshotStore !== undefined) this.setSnapshotStore(stores.snapshotStore);
     if (stores.durableStateStore !== undefined) this.setDurableStateStore(stores.durableStateStore);
+  }
+
+  /**
+   * @internal Record which stores `ActorSystemOptions.withPersistence` sets in
+   * code — called once, by the `ActorSystem` constructor, before the plug-ins
+   * run.
+   *
+   * The instances themselves are applied only after the plug-ins, so that a
+   * plug-in's own `setJournal` and the like cannot replace the explicit layer;
+   * which leaves a plug-in unable to see that the store its axis selects will
+   * never be built.  Asked through {@link _isSetInCode}, a plug-in can skip
+   * whatever it would refuse about a selection that code replaces — the
+   * SQLite plug-in's path rule, which used to fail `create` over a pathless
+   * selection no store would ever open (#1492).
+   */
+  _markSetInCode(axes: ReadonlyArray<PersistenceAxis>): void {
+    this.axesSetInCode = new Set(axes);
+  }
+
+  /**
+   * @internal Whether `withPersistence` sets this axis's store in code — so
+   * the plug-in its configuration selects is never built for it.  See
+   * {@link _markSetInCode}.
+   */
+  _isSetInCode(axis: PersistenceAxis): boolean {
+    return this.axesSetInCode.has(axis);
   }
 
   /**

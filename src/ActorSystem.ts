@@ -630,6 +630,13 @@ export class ActorSystem {
       || (!warmUpOptedOut && (persistenceOptions !== undefined || selectsPersistencePlugin(this.config)));
     if (persistenceWorkInCreate) {
       const persistence = this.extensions.get(PersistenceExtensionId);
+      // Before the plug-ins, which cannot see the instances yet: a plug-in
+      // asks this so it skips refusing a selection code replaces (#1492).
+      persistence._markSetInCode([
+        ...(persistenceOptions?.journal ? ['journal' as const] : []),
+        ...(persistenceOptions?.snapshotStore ? ['snapshotStore' as const] : []),
+        ...(persistenceOptions?.durableStateStore ? ['durableStateStore' as const] : []),
+      ]);
       persistence._runPlugins(persistenceOptions?.plugins ?? []);
       if (persistenceOptions?.journal) persistence.setJournal(persistenceOptions.journal);
       if (persistenceOptions?.snapshotStore) persistence.setSnapshotStore(persistenceOptions.snapshotStore);
