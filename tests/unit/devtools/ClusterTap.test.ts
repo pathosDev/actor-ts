@@ -406,7 +406,64 @@ describe('ClusterTap — every exported cluster event has an arm (#1502)', () =>
         .filter((record) => record.level === 'warn' || record.level === 'error'),
     ).toEqual([]);
   });
+
+  test('only the member events take the fall-through, and every one of them is forwarded', async () => {
+    // The sweep above sees a deleted arm only through the report the
+    // fall-through makes, so a fall-through that stopped reporting — for one
+    // shape, or for every class this build exports — would let an arm go with
+    // the sweep still green.  This asks the fall-through itself who reached
+    // it: an event with an arm of its own never does, and a member event does
+    // exactly once and comes out as a payload.
+    const harness = await startTapped('tap-fall-through', 9_331);
+    harness.tap.install((payload) => { harness.emitted.push(payload); });
+    const fixture: InventoryFixture = {
+      member: new Member(peerAddress('tap-fall-through', 9_402), 'up', 1),
+      address: harness.address,
+    };
+    const reached: string[] = [];
+    const fallThrough = harness.tap as unknown as Record<FallThroughStep, (event: ClusterEvent) => void>;
+    for (const step of FALL_THROUGH_STEPS) {
+      const original = fallThrough[step];
+      fallThrough[step] = (event: ClusterEvent): void => {
+        reached.push(step);
+        original.call(harness.tap, event);
+      };
+    }
+
+    const misrouted: string[] = [];
+    for (const [eventClass, build] of EVENT_FACTORIES) {
+      reached.length = 0;
+      const forwardedBefore = eventsIn(harness.emitted).length;
+      harness.cluster._publishClusterEvent(build(fixture));
+      const memberEvent = MEMBER_EVENT_CLASSES.has(eventClass);
+      const forwarded = eventsIn(harness.emitted).length > forwardedBefore;
+      if (reached.join() !== (memberEvent ? 'onMemberEvent' : '') || (memberEvent && !forwarded)) {
+        misrouted.push(`${eventClass.name}: ${reached.join(' > ') || 'its own arm'}${memberEvent && !forwarded ? ', nothing forwarded' : ''}`);
+      }
+    }
+
+    expect(misrouted).toEqual([]);
+  });
 });
+
+/** The ten classes the tap tells apart by constructor in its fall-through, not by an arm of their own. */
+const MEMBER_EVENT_CLASSES: ReadonlySet<EventClass> = new Set<EventClass>([
+  SelfUp,
+  SelfRemoved,
+  MemberJoined,
+  MemberUp,
+  MemberWeaklyUp,
+  MemberUnreachable,
+  MemberReachable,
+  MemberDown,
+  MemberLeft,
+  MemberRemoved,
+]);
+
+/** The fall-through, in the order an event takes it: the member-event lookup, then the report of a gap. */
+const FALL_THROUGH_STEPS = ['onMemberEvent', 'onUnknownEvent'] as const;
+
+type FallThroughStep = (typeof FALL_THROUGH_STEPS)[number];
 
 /**
  * The own fields of `event` on a class of its own, named after the class it
