@@ -258,8 +258,8 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
    *
    * What is left is a `close()` that throws anyway, for a reason of the
    * transport's own.  `terminate()` still shuts such a socket.  An adapter
-   * without it, as Hono's is, has nothing left to try, and the warning is the
-   * only trace of a socket that may still be open.
+   * without it, as Hono's is under Deno, has nothing left to try, and the
+   * warning is the only trace of a socket that may still be open.
    */
   private shutSocket(code?: number, reason?: string): void {
     const socket = this.d.socket;
@@ -289,12 +289,12 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
    *      early, `handleInbound` drops what the transport still delivers, and
    *      `postStop` reports this code and reason, as the server's, once.
    *   2. The socket.  `terminate()` where the adapter has one — the `ws`-backed
-   *      backends: no close frame, and nothing still buffered is sent —
-   *      otherwise a close, which is what Hono gets: with `reason` cut to fit
-   *      a close frame and with `code`, or 1008 — what `abort()` sends when it
-   *      is given none — where a close frame cannot carry `code`.  Asked for
-   *      more, Hono's transports leave the socket open (see
-   *      {@link shutSocket}).
+   *      backends, and Hono under Bun and Node: no close frame, and nothing
+   *      still buffered is sent — otherwise a close, which is what Hono under
+   *      Deno gets: with `reason` cut to fit a close frame and with `code`, or
+   *      1008 — what `abort()` sends when it is given none — where a close
+   *      frame cannot carry `code`.  Asked for more, Deno's socket refuses the
+   *      close and stays open (see {@link shutSocket}).
    *   3. The actor, through the system lane, which the mailbox serves ahead of
    *      every queued command.  The backlog never gets a turn; stopping drains
    *      it to dead letters.

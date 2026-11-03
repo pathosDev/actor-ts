@@ -617,13 +617,14 @@ already queued for it.  `abort()` acts before it returns.  The frames
 still queued for the connection are dropped — they become
 [dead letters](/operations/dead-letters/), never writes — and the socket
 is shut on the spot.  Where the backend can hard-close a socket, as the
-`ws`-backed Fastify and Express backends can, the peer sees the
-connection drop without a close frame; on Hono, which cannot, it
-receives a close frame with your `code` and `reason`.  The hub still
-gets exactly one `onClientDisconnected`, carrying that `code` and
-`reason` with `initiatedBy: 'server'`, and it still comes last: frames
-the peer sent before the abort that are already queued for the hub reach
-`onMessage` first.  On a connection that is no longer open — after
+`ws`-backed Fastify and Express backends can, and Hono can under Bun
+and Node, the peer sees the connection drop without a close frame; on
+Hono under Deno, whose socket has no hard close, it receives a close
+frame with your `code` and `reason`.  The hub still gets exactly one
+`onClientDisconnected`, carrying that `code` and `reason` with
+`initiatedBy: 'server'`, and it still comes last: frames the peer sent
+before the abort that are already queued for the hub reach `onMessage`
+first.  On a connection that is no longer open — after
 `close()`, after an earlier `abort()`, or once the client has gone —
 `abort()` does nothing, so the first decision about a socket stands.
 Its code defaults to 1008, policy violation, where `close()`'s defaults
