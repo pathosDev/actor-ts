@@ -1,5 +1,6 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, relative, sep } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 
 /**
@@ -87,6 +88,22 @@ const PAGES: readonly string[] = [
 ];
 
 /**
+ * Pages that are in {@link PAGES} for their prose alone: their fences register
+ * nothing, but a sentence there says when a store opens.
+ */
+const PROSE_ONLY_PAGES: ReadonlyMap<string, string> = new Map([
+  ['persistence/journals/wire-compatible.mdx', 'its prose names registerPostgresPlugins; its fences wire nothing'],
+]);
+
+/**
+ * Pages whose fences name a register helper and that this guard leaves to
+ * another one, with the reason.
+ */
+const CENSUS_EXEMPT_PAGES: ReadonlyMap<string, string> = new Map([
+  ['reference/reference-conf.mdx', 'its one fence mirrors src/config/Reference.ts byte for byte, which ReferenceConfDocs holds; the helpers it names sit in HOCON comments'],
+]);
+
+/**
  * The configuration reference is one page for every subsystem, so only its
  * persistence section is read.  Its table rows are left out as well: a row
  * documents one leaf's default, and its wording moves with that leaf's other
@@ -133,6 +150,31 @@ const OPENS_LATE_REGARDLESS: Readonly<Record<Language, RegExp>> = {
 
 /** A fence that wires persistence: a helper call or a `withPersistence(...)`. */
 const WIRING = new RegExp(`\\b(?:${HELPERS.join('|')})\\b|\\bwithPersistence\\s*\\(`);
+
+/** A fence that registers a backend: it names a helper, or fills a `plugins` slot. */
+function registersABackend(fence: Fence): boolean {
+  return new RegExp(`\\b(?:${HELPERS.join('|')})\\b`).test(fence.code)
+    || (/\bwithPersistence\s*\(/.test(fence.code) && /\bplugins\s*:/.test(fence.code));
+}
+
+/**
+ * Every page under `root` — the docs root — whose fences register a backend in
+ * either language, as its English path.  The generated `api/` tree at the top
+ * is skipped, as everywhere else.
+ */
+function pagesRegisteringABackend(root: string, directory = root, out = new Set<string>()): Set<string> {
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      if (!(directory === root && entry.name === 'api')) pagesRegisteringABackend(root, path, out);
+    } else if (/\.mdx?$/.test(entry.name)) {
+      const page = relative(root, path).split(sep).join('/');
+      const text = readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
+      if (fencesOf(text).some(registersABackend)) out.add(page.replace(/^de\//, ''));
+    }
+  }
+  return out;
+}
 
 function pageFile(language: Language, page: string): string {
   return language === 'german' ? join(DOCS_ROOT, 'de', page) : join(DOCS_ROOT, page);
@@ -448,19 +490,38 @@ describe('the persistence pages register a backend through the plugins slot (#14
     }
 
     test(`${page}: a fence that wires persistence is byte-identical in English and German`, () => {
-      const english = fencesOf(read('english', page));
-      const german = fencesOf(read('german', page));
-      expect(german.length, `${page}: the mirrors hold different numbers of fences, so they cannot be paired`)
-        .toBe(english.length);
-      const differing = english
-        .map((fence, index) => ({ english: fence, german: german[index]! }))
-        .filter((pair) => WIRING.test(pair.english.text) || WIRING.test(pair.german.text))
-        .filter((pair) => pair.english.text !== pair.german.text)
-        .map((pair) => `English :${pair.english.line} / German :${pair.german.line}`);
-      expect(differing, `${page}: a wiring sample differs between the languages`).toEqual([]);
+      expect(wiringFenceDifferences(read('english', page), read('german', page)), `${page}: a wiring sample differs between the languages`)
+        .toEqual([]);
     });
   }
+
+  test('the page list is every page that registers a backend in a fence, and the pages it holds for their prose', () => {
+    // Both directions: a page dropped from the list, a new page that wires a
+    // backend, and a census that stopped finding anything all fail here.
+    expect([...pagesRegisteringABackend(DOCS_ROOT)].sort()).toEqual(
+      [...PAGES.filter((page) => !PROSE_ONLY_PAGES.has(page)), ...CENSUS_EXEMPT_PAGES.keys()].sort(),
+    );
+    for (const page of PROSE_ONLY_PAGES.keys()) expect(PAGES, `${page} is held for its prose`).toContain(page);
+  });
 });
+
+/**
+ * Where the wiring fences of a page and its mirror differ, by position.  The
+ * mirrors are paired fence by fence, so their numbers of fences have to agree
+ * first.
+ */
+function wiringFenceDifferences(englishText: string, germanText: string): string[] {
+  const english = fencesOf(englishText);
+  const german = fencesOf(germanText);
+  if (german.length !== english.length) {
+    return [`the mirrors hold ${english.length} and ${german.length} fences, so they cannot be paired`];
+  }
+  return english
+    .map((fence, index) => ({ english: fence, german: german[index]! }))
+    .filter((pair) => WIRING.test(pair.english.text) || WIRING.test(pair.german.text))
+    .filter((pair) => pair.english.text !== pair.german.text)
+    .map((pair) => `English :${pair.english.line} / German :${pair.german.line}`);
+}
 
 describe('a store that opens late says it is the boot-time open turned off (#1473)', () => {
   for (const page of PAGES) {
@@ -526,26 +587,38 @@ const OVERVIEW_HEADINGS: Readonly<Record<Language, { readonly backends: string; 
   },
 };
 
+/**
+ * What is wrong with how an overview page shows the `plugins` route: it has to
+ * show it in exactly one fence, and that fence has to stand in the
+ * pluggable-backends section.
+ */
+function routeProblems(language: Language, text: string): string[] {
+  const headings = OVERVIEW_HEADINGS[language];
+  const routes = fencesOf(text).filter((fence) => /\bwithPersistence\s*\(/.test(fence.code) && /\bplugins\s*:/.test(fence.code));
+  if (routes.length !== 1) return [`the plugins route is shown ${routes.length} times, at lines ${routes.map((fence) => fence.line).join(', ')}`];
+  const backends = sectionOf(text, headings.backends);
+  const line = routes[0]!.line;
+  return line > backends.from && line < backends.to ? [] : [`the plugins route at line ${line} is not under "${headings.backends}"`];
+}
+
+/** What is wrong with the startup section of an overview page: it has to link the route rather than repeat it. */
+function startupLinkProblems(language: Language, text: string): string[] {
+  const headings = OVERVIEW_HEADINGS[language];
+  const startup = sectionOf(text, headings.startup);
+  const section = text.split('\n').slice(startup.from, startup.to).join('\n');
+  return section.includes(headings.backendsAnchor) ? [] : [`"${headings.startup}" does not link "${headings.backendsAnchor}"`];
+}
+
 describe('the persistence overview shows the plugins route once (#1473)', () => {
   for (const language of LANGUAGES) {
     const headings = OVERVIEW_HEADINGS[language];
 
     test(`${language}: one fence wires a plug-in, and it stands under "${headings.backends}"`, () => {
-      const text = read(language, OVERVIEW);
-      const routes = fencesOf(text).filter((fence) => /\bwithPersistence\s*\(/.test(fence.code) && /\bplugins\s*:/.test(fence.code));
-      expect(routes.map((fence) => fence.line), `${pageFile(language, OVERVIEW)} shows the plugins route more or less than once`)
-        .toHaveLength(1);
-      const backends = sectionOf(text, headings.backends);
-      expect(routes[0]!.line, `${pageFile(language, OVERVIEW)}: the plugins route is not under "${headings.backends}"`)
-        .toBeGreaterThan(backends.from);
-      expect(routes[0]!.line).toBeLessThan(backends.to);
+      expect(routeProblems(language, read(language, OVERVIEW)), pageFile(language, OVERVIEW)).toEqual([]);
     });
 
     test(`${language}: "${headings.startup}" points to the route rather than repeating it`, () => {
-      const text = read(language, OVERVIEW);
-      const startup = sectionOf(text, headings.startup);
-      const section = text.split('\n').slice(startup.from, startup.to).join('\n');
-      expect(section).toContain(headings.backendsAnchor);
+      expect(startupLinkProblems(language, read(language, OVERVIEW)), pageFile(language, OVERVIEW)).toEqual([]);
     });
   }
 });
@@ -555,6 +628,11 @@ describe('the persistence overview shows the plugins route once (#1473)', () => 
  * tests above pass on today's pages either way; these hold the scanner itself
  * to its word, so a rule that stops matching turns red here rather than going
  * quiet over pages that happen to be clean.
+ *
+ * Each case pins the whole list of problems, so it is caught by one rule and
+ * no other: a case two rules both catch would stay red with either of them
+ * gone, which is how six of the sixteen rules could be switched off with the
+ * suite green.
  */
 describe('the scanner sees through the disguises of a post-create registration (#1473)', () => {
   const route = [
@@ -564,6 +642,9 @@ describe('the scanner sees through the disguises of a post-create registration (
     '});',
   ].join('\n');
   const fence = (code: string): Fence => ({ line: 1, text: `\`\`\`ts\n${code}\n\`\`\``, code });
+  const notInPlugins = (line: number): string =>
+    `line ${line}: registerPostgresPlugins(...) is not inside the plugins array of a withPersistence(...) call`;
+  const notCalled = (line: number): string => `line ${line}: registerPostgresPlugins is referenced without being called`;
 
   test('the create-side route passes, and so does an async object-storage plug-in that awaits', () => {
     expect(misplacedHelpers(fence(route))).toEqual([]);
@@ -579,28 +660,33 @@ describe('the scanner sees through the disguises of a post-create registration (
   });
 
   test.each([
-    ['a call after create', 'registerPostgresPlugins(system.extension(PersistenceExtensionId));'],
-    ['an alias', 'const register = registerPostgresPlugins;\nregister(extension);'],
-    ['an import alias', "import { registerPostgresPlugins as wire } from 'actor-ts/persistence';\nwire(extension);"],
-    ['a namespace import', 'persistenceModule.registerPostgresPlugins(extension);'],
-    ['a comment', '// later, on the running system: registerPostgresPlugins(extension);'],
-    ['a template string', 'console.log(`${registerPostgresPlugins(extension)}`);'],
-    ['a wrapper function', 'function wire(target) { return registerPostgresPlugins(target); }'],
-    ['a computed member', "persistenceModule['registerPostgresPlugins'](extension);"],
-    ['call()', 'registerPostgresPlugins.call(undefined, extension);'],
-    ['a store set on the extension', 'system.extension(PersistenceExtensionId).setJournal(journal);'],
-  ])('%s is refused', (_disguise, extra) => {
-    expect(misplacedHelpers(fence(`${route}\n${extra}`))).not.toEqual([]);
+    ['a call after create', 'registerPostgresPlugins(system.extension(PersistenceExtensionId));', [notInPlugins(6)]],
+    ['an arrow wrapper after create', 'const wire = (persistence) => registerPostgresPlugins(persistence, registerOptions);', [notInPlugins(6)]],
+    ['an alias', 'const register = registerPostgresPlugins;\nregister(extension);', [notCalled(6)]],
+    ['an import alias', "import { registerPostgresPlugins as wire } from 'actor-ts/persistence';\nwire(extension);", [notInPlugins(7)]],
+    ['a namespace import', 'persistenceModule.registerPostgresPlugins(extension);', [notInPlugins(6)]],
+    ['a comment', '// later, on the running system: registerPostgresPlugins(extension);', [notInPlugins(6)]],
+    ['a template string', 'console.log(`${registerPostgresPlugins(extension)}`);', [notInPlugins(6)]],
+    ['a wrapper function', 'function wire(target) { return registerPostgresPlugins(target); }', [notInPlugins(6)]],
+    ['a computed member', "persistenceModule['registerPostgresPlugins'](extension);", [notCalled(6)]],
+    ['call()', 'registerPostgresPlugins.call(undefined, extension);', [notCalled(6)]],
+    ['a store set on the extension', 'system.extension(PersistenceExtensionId).setJournal(journal);',
+      ['line 6: setJournal(...) sets a store on the extension after create instead of in withPersistence(...)']],
+  ])('%s is refused', (_disguise, extra, problems) => {
+    expect(misplacedHelpers(fence(`${route}\n${extra}`))).toEqual(problems);
   });
 
   test('a plug-in handed something other than its own parameter is refused', () => {
     const outer = route.replace('registerPostgresPlugins(persistence,', 'registerPostgresPlugins(extension,');
-    expect(misplacedHelpers(fence(outer))).not.toEqual([]);
+    expect(misplacedHelpers(fence(outer)))
+      .toEqual(["line 4: registerPostgresPlugins(extension, ...) is not handed the plug-in's own parameter (persistence)"]);
   });
 
   test('options built inside the call are refused', () => {
     const inline = route.replace('registerOptions)', 'RegisterPostgresPluginsOptions.create().withUrl(url))');
-    expect(misplacedHelpers(fence(inline))).not.toEqual([]);
+    expect(misplacedHelpers(fence(inline))).toEqual([
+      'line 4: registerPostgresPlugins(..., RegisterPostgresPluginsOptions.create().withUrl(url)) builds its options inside the call instead of in a local',
+    ]);
   });
 
   test('an object-storage promise that never reaches the slot is refused', () => {
@@ -610,11 +696,77 @@ describe('the scanner sees through the disguises of a post-create registration (
       '  plugins: [(persistence) => { registerObjectStoragePlugins(persistence, pluginOptions); }],',
       '});',
     ].join('\n');
-    expect(misplacedHelpers(fence(dropped))).not.toEqual([]);
+    expect(misplacedHelpers(fence(dropped)))
+      .toEqual(['line 4: the promise registerObjectStoragePlugins(...) returns never reaches the plugins slot']);
   });
 
   test('a helper imported and never wired is refused', () => {
-    expect(misplacedHelpers(fence("import { registerObjectStoragePlugins } from 'actor-ts/persistence';"))).not.toEqual([]);
+    expect(misplacedHelpers(fence("import { registerObjectStoragePlugins } from 'actor-ts/persistence';")))
+      .toEqual(['registerObjectStoragePlugins is imported but never wired']);
+  });
+});
+
+/** The page-level rules, each against a page made to break it and only it. */
+describe('the page rules hold on pages made to break them (#1473)', () => {
+  const page = (...blocks: ReadonlyArray<string>): string => `${blocks.join('\n\n')}\n`;
+  const ts = (code: string): string => `\`\`\`ts\n${code}\n\`\`\``;
+  const route = [
+    'const systemOptions = ActorSystemOptions.create().withPersistence({',
+    '  plugins: [(persistence) => registerPostgresPlugins(persistence, registerOptions)],',
+    '});',
+  ].join('\n');
+
+  test('a wiring fence that differs between the mirrors is reported, and nothing else', () => {
+    const english = page('Prose.', ts(route), 'More prose.', ts('const unrelated = 1;'));
+    const german = page('Prosa.', ts(route.replace('registerOptions)', 'otherOptions)')), 'Mehr Prosa.', ts('const unrelated = 2;'));
+    expect(wiringFenceDifferences(english, english)).toEqual([]);
+    expect(wiringFenceDifferences(english, german)).toEqual(['English :3 / German :3']);
+    expect(wiringFenceDifferences(english, page('Prosa.', ts(route)))).toEqual(['the mirrors hold 2 and 1 fences, so they cannot be paired']);
+  });
+
+  test('a paragraph is read sentence by sentence, so an explained sentence cannot cover the next one', () => {
+    const paragraph = 'One store opens on first use when the boot-time open is turned off. Another one opens on first use.';
+    expect(lateOpenSentences('english', paragraph)).toEqual(['Another one opens on first use.']);
+    expect(lateOpenSentences('german', 'Ein Store öffnet bei Bedarf, wenn das Öffnen beim Start abgeschaltet ist. Ein anderer öffnet bei Bedarf.'))
+      .toEqual(['Ein anderer öffnet bei Bedarf.']);
+  });
+
+  const headings = OVERVIEW_HEADINGS.english;
+  const overview = (backends: ReadonlyArray<string>, startup: ReadonlyArray<string>): string =>
+    page('# Persistence', headings.backends, ...backends, headings.startup, ...startup, '## Next');
+
+  test('the overview shows the route once, under the pluggable-backends heading, and its startup section links there', () => {
+    const linked = `See [the route]${headings.backendsAnchor}.`;
+    expect(routeProblems('english', overview([ts(route)], [linked]))).toEqual([]);
+    expect(startupLinkProblems('english', overview([ts(route)], [linked]))).toEqual([]);
+    expect(routeProblems('english', overview([ts(route), ts(route)], [linked]))).toEqual(['the plugins route is shown 2 times, at lines 5, 11']);
+    expect(routeProblems('english', overview(['Prose.'], [ts(route)]))).toEqual([`the plugins route at line 9 is not under "${headings.backends}"`]);
+    expect(startupLinkProblems('english', overview([ts(route)], [ts(route)])))
+      .toEqual([`"${headings.startup}" does not link "${headings.backendsAnchor}"`]);
+  });
+
+  test('the census finds a registering fence on any page, at any depth, in either language, and skips the generated tree', () => {
+    const root = mkdtempSync(join(tmpdir(), 'create-side-wiring-'));
+    try {
+      const pages: ReadonlyArray<readonly [string, string]> = [
+        ['registers.mdx', page('Prose.', ts('registerSqlitePlugins(persistence);'))],
+        ['de/only-german.mdx', page('Prosa.', ts(route))],
+        ['nested/deeper/slot.md', page(ts(route))],
+        ['slot-only.mdx', page(ts('const systemOptions = ActorSystemOptions.create().withPersistence({ plugins: [postgresPlugin] });'))],
+        ['api/generated.mdx', page(ts(route))],
+        ['nested/api/handwritten.mdx', page(ts(route))],
+        ['prose-only.mdx', page('It calls `registerPostgresPlugins` once.')],
+        ['instances-only.mdx', page(ts('const systemOptions = ActorSystemOptions.create().withPersistence({ journal });'))],
+      ];
+      for (const [path, text] of pages) {
+        mkdirSync(dirname(join(root, path)), { recursive: true });
+        writeFileSync(join(root, path), text);
+      }
+      expect([...pagesRegisteringABackend(root)].sort())
+        .toEqual(['nested/api/handwritten.mdx', 'nested/deeper/slot.md', 'only-german.mdx', 'registers.mdx', 'slot-only.mdx']);
+    } finally {
+      if (root !== '') rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
