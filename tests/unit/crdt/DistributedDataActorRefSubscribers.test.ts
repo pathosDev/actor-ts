@@ -641,7 +641,12 @@ describe('death watch and restarts', () => {
     unsubscribe();
     await data.getAsync(KEY, { consistency: 'local' });
 
-    first.stop();
+    // Stopped from its system queue, the way a supervisor's stop or a
+    // parent's shutdown reaches it, so the terminate overtakes the queued
+    // notification and the actor is never handed it.  `stop()` would queue a
+    // `PoisonPill` behind the notification, whose hand-over then lets go of
+    // the slot by itself.
+    first.getCell().stopSelf();
     gate.open();
     // The name is free once the guardian has dropped the child, which the cell
     // tells it after posting its watchers their `Terminated`; the read after
