@@ -21,18 +21,23 @@
  *
  * Hono on Bun closes through `Bun.serve`'s socket on both: 1005 for 1006 as
  * above, and a long reason cut at byte 123 on 1.4.2, between two characters
- * on 1.4.4.  Measured without the fix, twelve of the sixteen cases fail on
- * 1.4.2 and ten on 1.4.4: Fastify's and Express's aborts hard-close and pass
- * on both, and Hono on Bun's two long-reason cases pass on 1.4.4.
+ * on 1.4.4.  Measured without the fix, and before Hono's aborts hard-closed,
+ * twelve of the sixteen cases fail on 1.4.2 and ten on 1.4.4: Fastify's and
+ * Express's aborts hard-close and pass on both, and Hono on Bun's two
+ * long-reason cases pass on 1.4.4.
  *
  * So the cases here pin the close as the peer reads it, and that it happens: a
  * code a close frame cannot carry goes out as the method's own default — 1008
  * for `abort()`, 1000 for `close()` — and the reason is cut between two
  * characters.  `abort()` still hard-closes where the backend can, so on
- * Fastify and Express the peer sees the connection drop (1006) whatever it
- * was given.  `ConnectionCloseAndAbort.test.ts` reproduces the `ws` package's
- * and Deno's `close()` independently of the Bun release, and the smoke case
- * `52-websocket-close-arguments.mjs` drives the real ones on Node and Deno.
+ * Fastify, Express and Hono the peer sees the connection drop (1006) whatever
+ * it was given: Hono's adapter hands on the runtime socket's own
+ * `terminate()`, which Bun's and Node's have (13309751d).  Only Hono under
+ * Deno, whose socket has none, falls back to a close frame for an abort, and
+ * the smoke case covers that.  `ConnectionCloseAndAbort.test.ts` reproduces
+ * the `ws` package's and Deno's `close()` independently of the Bun release,
+ * and the smoke case `52-websocket-close-arguments.mjs` drives the real ones
+ * on Node and Deno.
  *
  * Each case then connects a second client to the same route, capped at one
  * connection: it is admitted only once the first socket has closed and given
@@ -40,9 +45,9 @@
  *
  * Hono's Node runner is reached through the runtime seam, the way
  * `HeaderSizeParity.test.ts` reaches `NodeHonoRunner`: the backend picks
- * `Bun.serve` under `bun test`, and the adapter the Node runner builds — one
- * without `terminate`, unlike Fastify's and Express's — is the path the abort
- * takes on Node.
+ * `Bun.serve` under `bun test`, and the socket the Node runner hands the
+ * adapter — `@hono/node-ws`'s, whose `terminate()` the adapter passes on — is
+ * the path the abort takes on Node.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { match } from 'ts-pattern';
@@ -202,11 +207,11 @@ type BackendCase = {
 const backends: readonly BackendCase[] = [
   { name: 'Fastify', backend: () => new FastifyBackend(), terminates: true },
   { name: 'Express', backend: () => new ExpressBackend(), terminates: true },
-  { name: 'Hono on Bun', backend: () => new HonoBackend(), terminates: false },
+  { name: 'Hono on Bun', backend: () => new HonoBackend(), terminates: true },
   {
     name: 'Hono on Node',
     backend: () => new HonoBackend(),
-    terminates: false,
+    terminates: true,
     arrange: () => {
       setRuntimeOverride('node');
       resetHonoRunnerCache();

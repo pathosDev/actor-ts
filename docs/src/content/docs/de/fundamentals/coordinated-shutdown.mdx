@@ -9,9 +9,9 @@ import { Aside } from '@astrojs/starlight/components';
 Produktions-App hat normalerweise vor dem Stopp noch Arbeit:
 laufende HTTP-Requests drainen, dem Cluster sagen, dass du gehst,
 ein Journal flushen, Broker-Verbindungen schließen.  Und diese
-Schritte haben eine Reihenfolge — verlasse den Cluster *bevor* du
-die Sharding-Region stoppst; stoppe den HTTP-Server *bevor* die
-Actors, die Requests behandeln.
+Schritte haben eine Reihenfolge — übergib die Shards der
+Sharding-Region *bevor* du den Cluster verlässt; stoppe den
+HTTP-Server *bevor* die Actors, die Requests behandeln.
 
 **Coordinated Shutdown** ist das DSL dafür.  Du registrierst Tasks
 gegen benannte **Phasen**; das Framework führt sie in
@@ -70,7 +70,7 @@ du etwas registrierst.
 | 3 | `service-requests-done` | — | Auf das Ende laufender Requests warten; den Rest abbrechen. |
 | 4 | `service-stop` | Broker-Actors (MQTT, Kafka, NATS, AMQP, …) | Client-Verbindungen schließen, Sockets freigeben. |
 | 5 | `before-cluster-shutdown` | — | Optionale Pre-Cluster-Leave-Hooks. |
-| 6 | `cluster-sharding-shutdown-region` | — | Der Sharding-Region sagen, Entitäten zu übergeben. |
+| 6 | `cluster-sharding-shutdown-region` | `Cluster.join(...)` | Der Sharding-Region sagen, Entitäten zu übergeben. |
 | 7 | `cluster-leave` | `Cluster.join(...)` | Ein `Cluster.leave()` ausgeben — Leaving-Status gossipen. |
 | 8 | `cluster-exiting` | — | Warten, bis der Cluster den Leave bestätigt. |
 | 9 | `cluster-exiting-done` | — | Cluster-Übergang als abgeschlossen bestätigen. |
@@ -82,14 +82,23 @@ Du musst nicht jede Phase verwenden.  Leere Phasen sind No-Ops; nur
 Phasen mit registrierten Tasks tun etwas.
 
 <Aside type="note" title="Phase 8 wartet auf keine Bestätigung">
-  `cluster.leave()` ist ein einzelner Best-Effort-Broadcast: er setzt
-  diesen Knoten auf `leaving`, informiert jeden erreichbaren Peer und
-  stoppt den Transport.  Es gibt keine vom Leader sequenzierte
-  Entfernung, auf die zu warten wäre — ein Task, den du in
-  `cluster-exiting` registrierst, hat also nichts abzuwarten, und die
-  Phase ist ein reiner App-Level-Hook.  Bemiss deine
-  Kubernetes-Grace-Period danach, nicht nach einer Bestätigung, die
-  nicht kommt.
+  `cluster.leave()` übergibt zuerst die Shards dieses Knotens und
+  wartet darauf: Erst stoppen seine Regionen, dann seine Koordinatoren,
+  jeweils innerhalb des `hand-off-timeout` ihres Typs (Default 10 s).
+  Führt diese Pipeline den Leave aus, hat Phase 6 die Übergabe schon
+  begonnen, und der Leave teilt ihr Warten.  Der Rest ist ein einzelner
+  Best-Effort-Broadcast: er setzt diesen Knoten auf `leaving`,
+  informiert jeden erreichbaren Peer und stoppt den Transport, während
+  der Downing-Provider zurückgibt, was er hält — eine
+  `lease-majority`-Lease wird released.  Ein Knoten, den seine eigene
+  Downing-Entscheidung entfernt hat, oder einer, der seinen Join
+  aufgegeben hat, geht auf dieselbe Weise sofort, ohne auf eine
+  Übergabe zu warten; sein Sharding stoppt neben dem Abgang.  Es gibt
+  keine vom Leader sequenzierte Entfernung, auf die zu warten wäre —
+  ein Task, den du in `cluster-exiting` registrierst, hat also nichts
+  abzuwarten, und die Phase ist ein reiner App-Level-Hook.  Bemiss
+  deine Kubernetes-Grace-Period danach — die Übergabe plus ein
+  Broadcast —, nicht nach einer Bestätigung, die nicht kommt.
 </Aside>
 
 ### Die verdrahteten Tasks abwählen
@@ -674,8 +683,8 @@ Prozess beendet sich, weil nichts mehr die Loop am Leben hält.
 - **[Actor-System](/de/fundamentals/actor-system/)** —
   das `terminate()`, das am Ende der Pipeline läuft.
 - **[Cluster-Überblick](/de/cluster/overview/)** — `Cluster.join()`
-  registriert den `cluster-leave`-Task; die übrigen Cluster-Phasen
-  füllst du selbst.
+  registriert die Tasks `cluster-sharding-shutdown-region` und
+  `cluster-leave`; die übrigen Cluster-Phasen füllst du selbst.
 - **[Kubernetes-Deployment](/de/operations/deployment/kubernetes/)** —
   das vollständige PreStop + SIGTERM + Grace-Period-Rezept.
 - **[Persistenz — Migration](/de/persistence/migration/overview/)** —

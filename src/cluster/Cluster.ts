@@ -1732,7 +1732,8 @@ export class Cluster {
   /**
    * Stop being a member: self moves to `leaving`, the reachable peers are
    * told, gossip, heartbeats and every other timer stop — all of it before the
-   * first `await` — and then the transport closes.
+   * first `await` — and then the transport closes while the downing provider
+   * gives back what it holds.
    */
   private async depart(): Promise<void> {
     // The readiness checks stay registered, and this is the whole point of
@@ -1763,7 +1764,26 @@ export class Cluster {
     this.statsTimer?.cancel();
     this.joinGiveUpTimer?.cancel();
     this._remoteWatcher.shutdown();
-    await this.transport.shutdown();
+    // The provider's hook comes after the failure-detector tick is cancelled,
+    // so nothing asks it to decide again once it has given its lease back
+    // (#1454), and beside the transport closing rather than ahead of it: a
+    // release still on its way to a backend does not hold the transport open.
+    await Promise.all([this.shutdownDowning(), this.transport.shutdown()]);
+  }
+
+  /**
+   * Let the downing provider give back what it holds, once nothing will ask it
+   * to decide again — a lease-majority resolver's lease, which its backend
+   * would otherwise go on renewing for as long as the process runs (#1454).  A
+   * hook that throws or rejects is logged and goes no further: a leave must not
+   * fail because a release did, and a lease left behind runs out at its TTL.
+   */
+  private async shutdownDowning(): Promise<void> {
+    try {
+      await this.downing?.shutdown?.();
+    } catch (error) {
+      this.log.warn('leaving: the downing provider could not release what it holds', error);
+    }
   }
 
   /**

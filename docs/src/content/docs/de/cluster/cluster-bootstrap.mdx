@@ -283,7 +283,7 @@ berechnete Budget durch:
 | Feld | Default | Was |
 | --- | --- | --- |
 | `minimumMembers` | 1 | Wenigste `up`-Mitglieder — self eingeschlossen —, bevor das Cluster als bereit gilt. Wie `requiredContactPoints` dimensionieren: auf die Replica-Anzahl. |
-| `timeoutMs` | abgeleitet | `await-ready`, wenn gesetzt; sonst `self-election-grace` + 5 s hinter Stable Observation — das Budget, an dem die Readiness jedes Knotens tatsächlich hängt, Gewinner oder nicht — sonst flache 5 s. |
+| `timeoutMs` | abgeleitet | `await-ready`, wenn gesetzt; sonst `self-election-grace` + 5 s hinter Stable Observation mit `new-cluster-enabled` an — das Budget, an dem die Readiness jedes Knotens tatsächlich hängt, Gewinner oder nicht — sonst flache 5 s. |
 
 ```hocon
 actor-ts.cluster.bootstrap {
@@ -337,12 +337,14 @@ ausdrücklich miteinander verbunden:
   Frist als `timeoutMs` trägt.
 - **`awaitReady: false` oder `0`** — das Aufgeben ist die einzige Frist,
   die bleibt, sobald `bootstrapCluster` zurückgekehrt ist.
-- **Hinter Stable Observation** wird ein Aufgeben, das
-  `self-election-grace` + 5 s — das berechnete Budget von oben — nicht
-  überschreitet, vor dem Join mit einem `OptionsError` abgelehnt, der
-  beide Schlüssel nennt. Jeder Knoten außer dem gewählten wartet diese
-  Frist ab, ohne dass ihn etwas befördern kann, und gäbe auf einem
-  Cluster auf, der gerade entsteht.
+- **Hinter Stable Observation mit `new-cluster-enabled` an** wird ein
+  Aufgeben, das `self-election-grace` + 5 s — das berechnete Budget von
+  oben — nicht überschreitet, vor dem Join mit einem `OptionsError`
+  abgelehnt, der beide Schlüssel nennt. Jeder Knoten außer dem gewählten
+  wartet diese Frist ab, ohne dass ihn etwas befördern kann, und gäbe auf
+  einem Cluster auf, der gerade entsteht.  Ist `new-cluster-enabled` aus,
+  wird niemand gewählt und keine Frist läuft, also wird auch kein
+  Aufgeben ihretwegen abgelehnt.
 
 Die Uhr des Aufgebens startet beim Join, also laufen Discovery und Stable
 Observation vorher. Setze es in HOCON, wo jeder Knoten des Deployments
@@ -401,8 +403,9 @@ Die Stable Observation selbst hat im Block keinen Schalter, und das ist eine
 Entscheidung, keine Lücke.  Sie einzuschalten ändert, was `bootstrapCluster`
 dem aufrufenden Code verspricht: Jeder Start wartet mindestens
 `stable-margin`, ein Start, dessen Discovery nie zur Ruhe kommt, scheitert
-nach `max-wait`, statt beizutreten, und das Readiness-Budget wächst um die
-Wahl-Grace.  Das sind Eigenschaften des Startpfads, um den eine Anwendung
+nach `max-wait`, statt beizutreten, und mit `new-cluster-enabled` an wächst
+das Readiness-Budget um die Wahl-Grace.  Das sind Eigenschaften des
+Startpfads, um den eine Anwendung
 herumgeschrieben ist, also bleibt der Schalter neben diesem Code
 (`withStableObservation`), und die fünf Timings sind Konfiguration, weil sie
 eine Phase einstellen, die der Code gewählt hat.  Was ein Deployment aus einer

@@ -23,12 +23,15 @@
  * reason cut to 61 two-byte characters.  A second client must then get in and
  * be answered, which it can only once the first socket has really closed.
  *
- * Fastify hard-closes an abort and Hono cannot, so between them they cover
- * both ways an abort reaches the socket.  A backend that cannot bind a
- * websocket route on this runtime is skipped with a line saying so; once one
- * binds, every check MUST hold.  Every client is closed, every timer cleared,
- * every binding unbound and every system terminated on every path — a socket
- * left open keeps Deno's event loop alive past the last line (#1196).
+ * Fastify hard-closes an abort, and so does Hono under Bun and Node, whose
+ * sockets have a `terminate()` Hono's adapter hands on; Hono under Deno,
+ * whose standard `WebSocket` has none, sends the close frame instead.  So
+ * between them they cover both ways an abort reaches the socket, the second
+ * on Deno.  A backend that cannot bind a websocket route on this runtime is
+ * skipped with a line saying so; once one binds, every check MUST hold.
+ * Every client is closed, every timer cleared, every binding unbound and
+ * every system terminated on every path — a socket left open keeps Deno's
+ * event loop alive past the last line (#1196).
  */
 export const name = 'websocket close arguments';
 export const description = 'abort() and close() with a reserved code or a 200-byte reason close the socket and give its maxConnections slot back, on Fastify and on Hono';
@@ -151,7 +154,9 @@ export async function run({ actorTs, runtime, loadEntry }) {
 
   const backends = [
     { name: 'fastify', create: () => new FastifyBackend(), terminates: true, needs: null },
-    { name: 'hono', create: () => new HonoBackend(), terminates: false, needs: 'hono' },
+    // Hono's adapter hard-closes where the runtime's socket can: Bun's and
+    // Node's can, Deno's standard WebSocket cannot (13309751d).
+    { name: 'hono', create: () => new HonoBackend(), terminates: runtime !== 'deno', needs: 'hono' },
   ];
   const systemOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())

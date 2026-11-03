@@ -94,8 +94,10 @@ export interface WebsocketSocketAdapter {
    * (`ConnectionTracker.terminateAll`), `WebsocketConnection.abort()`, and the
    * connection actor when a `close()` throws, which `ws` does after it has
    * already moved the socket to CLOSING, so nothing else would shut it
-   * (#1431).  Absent on Hono, where the first two fall back to `close()` and
-   * the third has nothing left to try.
+   * (#1431).  On Hono it is the runtime socket's own, which Bun's and Node's
+   * have.  Absent where the socket has no hard close — Hono under Deno, whose
+   * standard `WebSocket` has none — and there the first two fall back to
+   * `close()` and the third has nothing left to try.
    */
   terminate?(): void;
   /** Single-shot listener attach — see {@link WebsocketListeners}. */

@@ -663,13 +663,15 @@ es zurückkehrt.  Die Frames, die noch für die Verbindung in der Queue
 stehen, werden verworfen — sie werden zu
 [Dead Letters](/de/operations/dead-letters/), nie geschrieben — und der
 Socket wird auf der Stelle geschlossen.  Wo das Backend einen Socket hart
-schließen kann, wie die `ws`-basierten Backends Fastify und Express, sieht
-der Peer die Verbindung ohne Close-Frame abreißen; auf Hono, das es nicht
-kann, erhält er einen Close-Frame mit deinem `code` und `reason`.  Der Hub
-bekommt trotzdem genau ein `onClientDisconnected`, mit diesem `code` und
-`reason` und `initiatedBy: 'server'`, und es kommt weiterhin als Letztes:
-Frames, die der Peer vor dem Abort geschickt hat und die schon für den
-Hub in der Queue stehen, erreichen `onMessage` zuerst.  Auf einer
+schließen kann, wie es die `ws`-basierten Backends Fastify und Express
+können und Hono unter Bun und Node, sieht der Peer die Verbindung ohne
+Close-Frame abreißen; auf Hono unter Deno, dessen Socket kein hartes
+Schließen kennt, erhält er einen Close-Frame mit deinem `code` und
+`reason`.  Der Hub bekommt trotzdem genau ein `onClientDisconnected`, mit
+diesem `code` und `reason` und `initiatedBy: 'server'`, und es kommt
+weiterhin als Letztes: Frames, die der Peer vor dem Abort geschickt hat
+und die schon für den Hub in der Queue stehen, erreichen `onMessage`
+zuerst.  Auf einer
 Verbindung, die nicht mehr offen ist — nach `close()`, nach einem früheren
 `abort()` oder wenn der Client schon weg ist — tut `abort()` nichts; die
 erste Entscheidung über einen Socket bleibt stehen.  Sein Code ist

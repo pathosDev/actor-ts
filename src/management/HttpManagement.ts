@@ -155,8 +155,12 @@ export function managementRoutes(
   const leaveRoute: Route = options.enableLeaveEndpoint && cluster
     ? post(async () => {
       // Fire-and-forget leave — the caller typically uses this as a PreStop
-      // hook and doesn't wait for completion in-request.  We do await one
-      // microtask so the intent is registered before returning 202.
+      // hook and doesn't wait for completion in-request.  Nothing is awaited
+      // and nothing needs to be: `leave()` claims the leave synchronously,
+      // before the 202 goes out, so a second request or a coordinated-shutdown
+      // run does not start another.  The leave broadcast follows the sharding
+      // hand-off, bounded by each type's hand-off-timeout (#1465), so the peers
+      // may hear of it some seconds after this reply.
       void cluster.leave();
       return complete(Status.Accepted, 'leaving');
     })

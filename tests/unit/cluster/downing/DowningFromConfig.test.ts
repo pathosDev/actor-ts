@@ -360,9 +360,6 @@ describe('readDowningFromConfig', () => {
   });
 });
 
-/** A configured provider's lifecycle hook, which `DowningProvider` does not declare yet. */
-type ShutdownableProvider = DowningProvider & { shutdown(): Promise<void> };
-
 describe('a lease-majority provider built from configuration gives its lease back (#1454)', () => {
   /**
    * The backend seam builds an `InMemoryLease` from exactly what the
@@ -383,12 +380,12 @@ describe('a lease-majority provider built from configuration gives its lease bac
   });
   afterEach(() => { restore(); });
 
-  function configuredProvider(): ShutdownableProvider {
+  function configuredProvider(): DowningProvider {
     const configured = Config.parseString(`
       actor-ts.coordination.lease { backend = kubernetes, ttl = 15s }
       actor-ts.cluster.split-brain-resolver.active-strategy = lease-majority
     `);
-    return readDowningFromConfig(configured) as ShutdownableProvider;
+    return readDowningFromConfig(configured)!;
   }
 
   /** Two members, `sys@h:2` silent, seen from `sys@h:1`: the even split only the lease decides. */
@@ -402,7 +399,7 @@ describe('a lease-majority provider built from configuration gives its lease bac
     return version > 0;
   }
 
-  async function wonArbitration(provider: ShutdownableProvider): Promise<void> {
+  async function wonArbitration(provider: DowningProvider): Promise<void> {
     expect(provider.decide(evenSplit())).toEqual(new Set());
     await awaitCondition(() => provider.decide(evenSplit()).size > 0, { label: 'the arbitration was won' });
     expect(provider.decide(evenSplit())).toEqual(new Set(['sys@h:2']));
@@ -417,7 +414,7 @@ describe('a lease-majority provider built from configuration gives its lease bac
     // spy calls through, so the scheduler really is shut down.
     const schedulerShutdown = spyOn(handed[0]!.scheduler, 'shutdown');
     try {
-      await provider.shutdown();
+      await provider.shutdown?.();
       expect(schedulerShutdown).toHaveBeenCalledTimes(1);
     } finally {
       schedulerShutdown.mockRestore();
@@ -431,7 +428,7 @@ describe('a lease-majority provider built from configuration gives its lease bac
   test('a provider shut down before its first decision builds no lease and decides nothing', async () => {
     const provider = configuredProvider();
 
-    await provider.shutdown();
+    await provider.shutdown?.();
 
     expect(provider.decide(evenSplit())).toEqual(new Set());
     expect(handed).toEqual([]);
@@ -455,7 +452,7 @@ describe('a lease-majority provider built from configuration gives its lease bac
     const schedulerShutdown = spyOn(captured.scheduler!, 'shutdown');
     try {
       let failure: unknown = null;
-      await provider.shutdown().catch((error: unknown) => { failure = error; });
+      await provider.shutdown?.().catch((error: unknown) => { failure = error; });
       expect((failure as Error).message).toBe('the lease API is unreachable');
       expect(schedulerShutdown).toHaveBeenCalledTimes(1);
     } finally {
