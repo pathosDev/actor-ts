@@ -1,4 +1,6 @@
 import type { Envelope } from '../internal/Mailbox.js';
+import { ConsoleLogger, LogLevel } from '../Logger.js';
+import { classNameOf } from '../util/ClassName.js';
 import { RingBuffer } from '../util/RingBuffer.js';
 import type { BoundedMailboxOverflow } from './BoundedMailboxOptions.js';
 import {
@@ -56,7 +58,8 @@ import { DroppingMailbox, MailboxFullError } from './DroppingMailbox.js';
  * the receiver's mailbox configuration, and `PoisonPill` / `Kill` reach the
  * predicate as user messages with no fields.  Ordinary is also the right
  * fallback rather than merely the safe one — it is the class the message
- * would have had on any other mailbox.
+ * would have had on any other mailbox.  Contained is not silent, though: a
+ * throw goes to `onControlError`, which by default logs the first one.
  *
  * A replay re-runs it, so a stashed message rejoins whichever class the
  * predicate puts it in *now*; for a predicate that only reads the message's
@@ -66,6 +69,8 @@ export class ControlAwareMailbox<T = unknown> extends DroppingMailbox<T> {
   private readonly isControl: (message: T) => boolean;
   private readonly capacity: number | undefined;
   private readonly overflow: BoundedMailboxOverflow;
+  /** The caller's hook, or the one that logs the first throw — see `ControlAwareMailboxOptionsType.onControlError`. */
+  private readonly onControlError: (cause: unknown, message: T) => void;
   /** The control class.  The ordinary class is the base user queue — see the class comment. */
   private readonly controlQueue = new RingBuffer<Envelope<T>>();
 
@@ -78,6 +83,7 @@ export class ControlAwareMailbox<T = unknown> extends DroppingMailbox<T> {
     this.isControl = settings.isControl!;
     this.capacity = settings.capacity;
     this.overflow = settings.overflow ?? 'reject';
+    this.onControlError = settings.onControlError ?? logFirstControlError<T>();
     // The caller's hook is just the first observer — see `DroppingMailbox`.
     if (settings.onDrop !== undefined) this.observeDrops(settings.onDrop);
   }
@@ -262,8 +268,34 @@ export class ControlAwareMailbox<T = unknown> extends DroppingMailbox<T> {
   private classesAsControl(message: T): boolean {
     try {
       return this.isControl(message) === true;
-    } catch {
+    } catch (cause) {
+      this.onControlError(cause, message);
       return false;
     }
   }
+}
+
+/**
+ * What a mailbox does with a throwing `isControl` when it was given no
+ * `onControlError` (#1431): it logs the first throw, at warn, and none after it.
+ *
+ * Contained and silent was the alternative, and it is the failure nobody
+ * sees: the predicate's throws turn the mailbox into a plain FIFO queue while
+ * every message still arrives.  The line names classes only — what was thrown
+ * and what it was thrown on — because an exhaustive matcher's error quotes
+ * the value it could not match, and a message is application data
+ * (`classNameOf` says why).  The console, because a mailbox does not know
+ * which actor owns it; the logger is built on the first throw, so a predicate
+ * that never throws costs nothing.
+ */
+function logFirstControlError<T>(): (cause: unknown, message: T) => void {
+  let logged = false;
+  return (cause, message) => {
+    if (logged) return;
+    logged = true;
+    new ConsoleLogger(LogLevel.Warn, 'ControlAwareMailbox').warn(
+      `isControl threw on a message of class ${classNameOf(message)} (thrown: ${classNameOf(cause)}); it was queued as ordinary,`
+        + ' as is every message the predicate throws on.  Logged once per mailbox; pass onControlError to see each one and what was thrown.',
+    );
+  };
 }

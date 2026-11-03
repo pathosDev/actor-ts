@@ -673,6 +673,30 @@ the message is ordinary and the `tell` goes through.  Ordinary is not only
 the safe answer but the right one — it is the class the message would have
 had on any other mailbox.
 
+Contained is not silent.  A predicate that throws on every message — a
+method handed over without its instance is the usual one — turns the
+mailbox into a plain FIFO queue while every message still arrives, so the
+mailbox logs the first throw at warn.  Once per mailbox, because the
+predicate runs on every `tell`; and by class only — the class of the
+message it threw on and of what it threw, never the message or the error's
+text, since an exhaustive matcher's error quotes the value it could not
+match.  To see each throw, or to send it to your own logger, pass
+`onControlError`:
+
+```ts
+const ingestMailboxOptions = ControlAwareMailboxOptions.create<IngestCommand>()
+  .withIsControl(isControl)
+  .withOnControlError((cause) => {
+    log.warn(`isControl threw: ${String(cause)}`);
+  });
+```
+
+`cause` is what the predicate threw.  A hook you pass replaces the log
+line, and the rule `onPriorityError` has holds here too: **record and
+return** — it runs on the sender's stack.  An answer that is not `true` is
+not a failure and never reaches the hook; it makes the message ordinary,
+as above.
+
 <Aside type="caution" title="A control message overtakes its own sender's earlier messages">
   Control-first is a property of the queue, not of each sender.  A control
   message told *after* ordinary ones by the same sender is still handled
