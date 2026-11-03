@@ -265,8 +265,14 @@ function unreadMessage(verdict: LeafVerdict): string {
     ? ''
     : ` ${verdict.refusedBy.length} refused it on its merits (${verdict.refusedBy.join('; ')}), which shows a check, `
       + `not a read: if the reader keeps the leaf but takes only some values, ${secondValueRemedy(verdict.perturbation)}.`;
+  const { secondValue } = verdict.perturbation;
+  const setTo = secondValue === undefined
+    ? `set to ${JSON.stringify(value)}, none of the ${probes.length} probes answered to its value.`
+    : `set to ${JSON.stringify(value)} and to ${JSON.stringify(secondValue)}, none of the ${probes.length} probes `
+      + 'answered the two differently: from empty, a reader that keeps only whether the value is empty answers to '
+      + 'either, so only two non-empty values show that the value itself is kept.';
   return `${leaf} (${kind}, ${shippedAs(verdict.perturbation)}) is read by no registered reader: `
-    + `set to ${JSON.stringify(value)}, none of the ${probes.length} probes answered to its value.${refusals} `
+    + `${setTo}${refusals} `
     + 'Fix the reader that should read it, register that reader (an entry in tests/util/ConfigReaderRegistry.ts '
     + 'and the exact-object suite it names), delete the key, or — if it is knowingly unimplemented — list it in '
     + 'KNOWN_DEAD_KEYS with the issue that will remove it.';
@@ -496,6 +502,11 @@ describe('the reader registry', () => {
     for (const [leaf, override] of PERTURBATION_OVERRIDES) {
       expect(referenceLeaves, `PERTURBATION_OVERRIDES names ${leaf}, which reference.conf does not ship`).toContain(leaf);
       expect(override.value, `${leaf}'s override is its own literal`).not.toEqual(literalAt(leaf));
+      if (override.secondValue !== undefined) {
+        expect(override.secondValue, `${leaf}'s second value is its first`).not.toEqual(override.value);
+        expect([literalAt(leaf), ''], `${leaf}'s second value is empty, or its own literal`)
+          .not.toContainEqual(override.secondValue);
+      }
     }
     for (const [leaf, declaration] of KIND_DECLARATIONS) {
       expect(referenceLeaves, `KIND_DECLARATIONS names ${leaf}, which reference.conf does not ship`).toContain(leaf);

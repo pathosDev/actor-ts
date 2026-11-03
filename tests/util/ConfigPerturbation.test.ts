@@ -116,6 +116,20 @@ describe('perturbationFor — a value of the literal\'s own kind', () => {
     expect(value('x', {})).toEqual({ perturbed: 'perturbed' });
   });
 
+  test('an empty literal gets a second value of its kind, non-empty and distinct from the first', () => {
+    expect(perturbationFor('x', '')).toMatchObject({ value: 'perturbed', secondValue: 'reperturbed' });
+    expect(perturbationFor('x', [])).toMatchObject({ value: ['perturbed'], secondValue: ['reperturbed'] });
+    expect(perturbationFor('x', {}))
+      .toMatchObject({ value: { perturbed: 'perturbed' }, secondValue: { perturbed: 'reperturbed' } });
+    expect(introductionFor('a.b', '', 'documented as a template'))
+      .toMatchObject({ value: 'perturbed', secondValue: 'reperturbed' });
+    // A literal that is not empty already differs from its perturbation in
+    // the value alone.
+    for (const literal of ['hybrid', 'off', 0, 7, ['/user/*'], { 'rsp:': 7000 }]) {
+      expect(perturbationFor('x', literal).secondValue, JSON.stringify(literal)).toBeUndefined();
+    }
+  });
+
   test('a literal with no kind is refused rather than guessed at', () => {
     expect(() => perturbationFor('x', null)).toThrow(/add an override/);
   });
@@ -173,6 +187,13 @@ describe('the override and declaration tables', () => {
     expect(level.reason).toMatch(/maps an unknown level name/);
     const size = perturbationFor('actor-ts.offload-pool.size', 'auto');
     expect(size).toMatchObject({ kind: 'integer', value: 3, offKindValue: 3.5 });
+  });
+
+  test('an override of an empty literal names its own second value, since no word is surely another member', () => {
+    expect(perturbationFor('actor-ts.persistence.snapshot-store.object-storage.backend', ''))
+      .toMatchObject({ kind: 'text', value: 'filesystem', secondValue: 's3' });
+    expect(() => introductionFor('a.backend', '', 'comment-only', { value: 'filesystem', reason: 'an enum' }))
+      .toThrow(/a\.backend starts empty, so its override needs a secondValue/);
   });
 
   test('a declared kind replaces the inferred one', () => {
@@ -402,6 +423,24 @@ describe('observeLeaf — what counts as a read', () => {
       baselineOf({ label: 'probe', read: valueRead }, reference),
     ]);
     expect(read.observedBy).toEqual(['probe']);
+  });
+
+  test('a leaf that starts empty is read only by a probe that tells two non-empty values apart', () => {
+    // From "" to "perturbed" a reader that keeps only whether the value is
+    // empty — a host name answered as 'localhost' whenever one is given —
+    // answers differently as surely as one that keeps the value (#1425).
+    const emptinessOnly = (config: Config) => ({ name: config.getString('a.name') === '' ? undefined : 'localhost' });
+    expect(verdict('a.name', '', emptinessOnly).observedBy).toEqual([]);
+    const valueKept = (config: Config) => ({ name: config.getString('a.name') || undefined });
+    expect(verdict('a.name', '', valueKept).observedBy).toEqual(['probe']);
+
+    // The same holds for a key introduced empty.
+    const labelSet = (config: Config) =>
+      (config.hasPath('a.label') && config.getString('a.label') !== '' ? { label: 'set' } : {});
+    const introduced = observeLeaf(introductionFor('a.label', '', 'comment-only'), [
+      baselineOf({ label: 'probe', read: labelSet }, reference),
+    ]);
+    expect(introduced.observedBy).toEqual([]);
   });
 
   test('nor is a block built whenever it exists, whatever becomes of the key', () => {
