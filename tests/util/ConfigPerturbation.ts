@@ -23,6 +23,10 @@ import { parseSize } from '../../src/config/Size.js';
  * it is introduced at one value and changed to another, and the two answers
  * are compared ({@link introductionFor}).  Comparing the key absent with the
  * key present would count a reader that answers only whether it is there.
+ * For the same reason a leaf that starts empty — the empty string, list or
+ * object — is compared at two non-empty values: from empty, a reader that
+ * keeps only whether the value is empty answers differently too
+ * ({@link LeafPerturbation.secondValue}).
  *
  * Only the answer counts.  A reader that *refuses* the new value has shown
  * that it checks the leaf, not that it keeps it: a URL validated and then
@@ -78,6 +82,15 @@ export type LeafPerturbation = {
   readonly introducedAs?: ConfigValue;
   /** A value of the leaf's kind that differs from the literal, or from {@link introducedAs}. */
   readonly value: ConfigValue;
+  /**
+   * For a leaf whose literal — or {@link introducedAs} — is empty, a second
+   * value of its kind, non-empty and distinct from {@link value}.  Changed from
+   * empty, a leaf moves both its value and whether it is empty, so a reader
+   * that keeps only the latter answers differently all the same; between two
+   * non-empty values only the value moves.  A probe counts as reading such a
+   * leaf only when it answers the two differently.
+   */
+  readonly secondValue?: ConfigValue;
   /** A value its own accessor refuses; absent for kinds no getter checks. */
   readonly offKindValue?: ConfigValue;
   /** Why {@link value} was not inferred, when it was not. */
@@ -88,6 +101,11 @@ export type LeafPerturbation = {
 export type PerturbationOverride = {
   readonly value: ConfigValue;
   readonly reason: string;
+  /**
+   * Required where the literal is empty: another value the reader answers
+   * to, compared with {@link value} (see {@link LeafPerturbation.secondValue}).
+   */
+  readonly secondValue?: ConfigValue;
 };
 
 const ANOTHER_MEMBER = 'the reader refuses any word outside the enum, and a refusal alone is not a read, '
@@ -104,7 +122,11 @@ export const PERTURBATION_OVERRIDES: ReadonlyMap<string, PerturbationOverride> =
   ['actor-ts.cluster.split-brain-resolver.active-strategy', { value: 'keep-majority', reason: ANOTHER_MEMBER }],
   ['actor-ts.cluster.bootstrap.discovery.method', { value: 'dns', reason: ANOTHER_MEMBER }],
   ['actor-ts.http.backend', { value: 'hono', reason: ANOTHER_MEMBER }],
-  ['actor-ts.persistence.snapshot-store.object-storage.backend', { value: 'filesystem', reason: ANOTHER_MEMBER }],
+  // Shipped empty, so a second member as well: `filesystem` alone would pass
+  // a reader that keeps only whether a backend is chosen.
+  ['actor-ts.persistence.snapshot-store.object-storage.backend', {
+    value: 'filesystem', secondValue: 's3', reason: ANOTHER_MEMBER,
+  }],
   ['actor-ts.persistence.snapshot-store.object-storage.compression.algorithm', { value: 'zstd', reason: ANOTHER_MEMBER }],
   ['actor-ts.persistence.snapshot-store.object-storage.encryption.mode', { value: 'sse-s3', reason: ANOTHER_MEMBER }],
   ['actor-ts.persistence.journal.dynamodb.billing-mode', { value: 'provisioned', reason: ANOTHER_MEMBER }],
@@ -215,6 +237,15 @@ export const KIND_DECLARATIONS: ReadonlyMap<string, KindDeclaration> = new Map<s
 /** The suffix a text leaf is perturbed with, and the word an off-kind check uses. */
 export const PERTURBATION_WORD = 'perturbed';
 
+/**
+ * The word an empty leaf's second value is spelled with: lowercase letters
+ * only, like {@link PERTURBATION_WORD}, so that a reader taking the first takes
+ * this one for the same reasons, and exactly as long, so that a reader keeping
+ * only the length — a redaction masking each character — cannot tell them
+ * apart either.
+ */
+export const SECOND_PERTURBATION_WORD = 'disturbed';
+
 const SWITCH_SPELLINGS: ReadonlyMap<string, string> = new Map([
   ['on', 'off'], ['off', 'on'],
   ['yes', 'no'], ['no', 'yes'],
@@ -286,6 +317,22 @@ function inUnit(value: ConfigValue, unit: string): string {
   return `${quantity}${spacing}${unit}`;
 }
 
+/**
+ * The unit a bare count of each quantity kind stands in: `getDuration` reads
+ * `250` as 250 ms and `getBytes` as 250 bytes.
+ *
+ * A duration or size leaf that ships as a bare count — only a
+ * {@link KIND_DECLARATIONS} entry can say it is one — is perturbed to the
+ * count one higher **spelled with this unit**, never to the bare count.  A bare
+ * count is a value `getInt` and `getNumber` take as readily as the declared
+ * accessor, so a reader that switched to either answered it differently and
+ * passed as a read, while the off-kind value carries a unit those two refuse
+ * as well: neither value told the declared accessor from an integer one.
+ * Spelled with its unit the value is the same quantity, the declared accessor
+ * reads it as such, and an integer accessor refuses it as the wrong kind.
+ */
+const BARE_COUNT_UNITS = { duration: 'ms', size: 'B' } as const;
+
 function inKindValue(kind: LeafKind, literal: ConfigValue): ConfigValue {
   return match(kind)
     .returnType<ConfigValue>()
@@ -293,8 +340,10 @@ function inKindValue(kind: LeafKind, literal: ConfigValue): ConfigValue {
     .with('switch', () => flipSwitch(literal as string))
     .with('integer', () => (literal as number) + 1)
     .with('fraction', () => nudgeFraction(literal as number))
-    .with('duration', 'size', () =>
-      (typeof literal === 'number' ? literal + 1 : nudgeQuantity(literal as string)))
+    .with('duration', 'size', (quantityKind) =>
+      (typeof literal === 'number'
+        ? inUnit(literal + 1, BARE_COUNT_UNITS[quantityKind])
+        : nudgeQuantity(literal as string)))
     .with('text', () => (literal === '' ? PERTURBATION_WORD : `${String(literal)}-${PERTURBATION_WORD}`))
     .with('list', () => [...(literal as ConfigValue[]), listElement(literal as ConfigValue[])])
     .with('object', () => objectValue(literal as ConfigObject))
@@ -354,10 +403,10 @@ export function perturbationFor(leaf: string, literal: ConfigValue): LeafPerturb
   const override = PERTURBATION_OVERRIDES.get(leaf);
   if (override) {
     const kind = inferKind(override.value);
-    return withOffKind({ leaf, kind, literal, value: override.value, reason: override.reason });
+    return withOffKind(withSecondValue({ leaf, kind, literal, value: override.value, reason: override.reason }, override));
   }
   const kind = KIND_DECLARATIONS.get(leaf)?.kind ?? inferKind(literal);
-  return withOffKind({ leaf, kind, literal, value: inKindValue(kind, literal) });
+  return withOffKind(withSecondValue({ leaf, kind, literal, value: inKindValue(kind, literal) }));
 }
 
 /**
@@ -381,12 +430,46 @@ export function introductionFor(
 ): LeafPerturbation {
   if (override) {
     const kind = inferKind(override.value);
-    return withOffKind({
+    return withOffKind(withSecondValue({
       leaf, kind, literal: undefined, introducedAs: value, value: override.value, reason: override.reason,
-    });
+    }, override));
   }
   const kind = inferKind(value);
-  return withOffKind({ leaf, kind, literal: undefined, introducedAs: value, value: inKindValue(kind, value), reason });
+  return withOffKind(withSecondValue({
+    leaf, kind, literal: undefined, introducedAs: value, value: inKindValue(kind, value), reason,
+  }));
+}
+
+/** Whether a value is the empty one of its kind: the empty string, list or object. */
+function isEmpty(value: ConfigValue | undefined): boolean {
+  if (value === '') return true;
+  if (Array.isArray(value)) return value.length === 0;
+  return isPlainObject(value) && Object.keys(value).length === 0;
+}
+
+/**
+ * `perturbation` with the second value a leaf that starts empty is compared
+ * at (see {@link LeafPerturbation.secondValue}): the first value's shape with
+ * the second word in it, or the override's own second value, which an
+ * override of an empty leaf has to give — no word is guaranteed to be one
+ * more member of the override's enum.
+ */
+function withSecondValue(perturbation: LeafPerturbation, override?: PerturbationOverride): LeafPerturbation {
+  const start = perturbation.literal === undefined ? perturbation.introducedAs : perturbation.literal;
+  if (!isEmpty(start)) return perturbation;
+  if (override !== undefined) {
+    if (override.secondValue === undefined) {
+      throw new Error(`${perturbation.leaf} starts empty, so its override needs a secondValue the reader answers to`);
+    }
+    return { ...perturbation, secondValue: override.secondValue };
+  }
+  const secondValue = match(perturbation.kind)
+    .returnType<ConfigValue | undefined>()
+    .with('text', () => SECOND_PERTURBATION_WORD)
+    .with('list', () => [SECOND_PERTURBATION_WORD])
+    .with('object', () => ({ [PERTURBATION_WORD]: SECOND_PERTURBATION_WORD }))
+    .otherwise(() => undefined);
+  return secondValue === undefined ? perturbation : { ...perturbation, secondValue };
 }
 
 function withOffKind(perturbation: LeafPerturbation): LeafPerturbation {
@@ -514,16 +597,19 @@ type LeafConfigs = {
   /** The baseline with an unpublished leaf introduced; absent for a published leaf. */
   readonly introduced?: Config;
   readonly inKind: Config;
+  /** The baseline with an empty leaf's second value; absent for a leaf that does not start empty. */
+  readonly second?: Config;
   readonly offKind?: Config;
 };
 
 function leafConfigsOver(perturbation: LeafPerturbation, config: Config): LeafConfigs {
-  const { leaf, introducedAs, value, offKindValue } = perturbation;
+  const { leaf, introducedAs, value, secondValue, offKindValue } = perturbation;
   const introduced = introducedAs === undefined ? undefined : withOverlay(config, { [leaf]: introducedAs });
   const before = introduced ?? config;
   return {
     ...(introduced === undefined ? {} : { introduced }),
     inKind: withOverlay(before, { [leaf]: value }),
+    ...(secondValue === undefined ? {} : { second: withOverlay(before, { [leaf]: secondValue }) }),
     ...(offKindValue === undefined ? {} : { offKind: withOverlay(before, { [leaf]: offKindValue }) }),
   };
 }
@@ -566,8 +652,16 @@ export function observeLeaf(perturbation: LeafPerturbation, baselines: readonly 
       continue;
     }
     const outcome = runProbe(baseline.probe, leafConfigs.inKind);
-    if (outcome.kind === 'threw') recordRefusal(label, outcome.error);
-    else if (changed(outcome, before)) observedBy.push(label);
+    if (outcome.kind === 'threw') {
+      recordRefusal(label, outcome.error);
+    } else if (leafConfigs.second === undefined) {
+      if (changed(outcome, before)) observedBy.push(label);
+    } else {
+      // An empty leaf: the two non-empty values have to be told apart.
+      const second = runProbe(baseline.probe, leafConfigs.second);
+      if (second.kind === 'threw') recordRefusal(label, second.error);
+      else if (changed(second, outcome)) observedBy.push(label);
+    }
     if (leafConfigs.offKind) {
       const offKind = runProbe(baseline.probe, leafConfigs.offKind);
       if (offKind.kind === 'returned' && changed(offKind, before)) offKindAcceptedBy.push(label);

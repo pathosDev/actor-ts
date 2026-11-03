@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test, type Mock } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
@@ -12,6 +12,7 @@ import {
   REDIS_CACHE_PLUGIN_ID,
   RedisCache,
 } from '../../../src/cache/index.js';
+import * as InMemoryCacheModule from '../../../src/cache/InMemoryCache.js';
 import {
   DEFAULT_CLEANUP_MS,
   DEFAULT_MAX_ENTRIES,
@@ -557,6 +558,81 @@ describe('CacheExtension', () => {
     expect(IN_MEMORY_CACHE_PLUGIN_ID).toBe('actor-ts.cache.in-memory');
     expect(REDIS_CACHE_PLUGIN_ID).toBe('actor-ts.cache.redis');
     expect(MEMCACHED_CACHE_PLUGIN_ID).toBe('actor-ts.cache.memcached');
+  });
+});
+
+/**
+ * Spies on the `new` a module's class export is built with, and builds it all
+ * the same.  bun's spy on a class export calls the class without `new`, which
+ * a class refuses, so the spy constructs the class it replaced, captured
+ * before it is replaced; and it is typed as a plain function, because
+ * `spyOn` types a class export as nothing callable.
+ */
+function spyOnConstruction<Arguments extends unknown[], Instance>(
+  namespace: object,
+  exportName: string,
+  original: new (...args: Arguments) => Instance,
+): Mock<(...args: Arguments) => Instance> {
+  const seam = namespace as Record<string, (...args: Arguments) => Instance>;
+  return spyOn(seam, exportName).mockImplementation((...args: Arguments) => new original(...args));
+}
+
+/**
+ * The options a named in-memory instance is built with, read off its
+ * constructor (#1425).  The reader cases below bind what
+ * `readInMemoryCacheOptionsFromConfig` answers for a per-name root, and the
+ * cases above watch sizes and expiry, which no case can do for a sweep
+ * interval or an idle window: the extension could drop a per-name
+ * `cleanup-interval` or `time-to-idle` before merging the two blocks, and
+ * every suite stayed green.  So what the extension hands `new InMemoryCache`
+ * is captured and compared whole, with a distinct value on each layer.
+ */
+describe('CacheExtension builds a named in-memory cache from its own block over the global one', () => {
+  const GLOBAL_BLOCK = 'actor-ts.cache.in-memory { max-entries = 50, cleanup-interval = 30s, time-to-live = 10m, time-to-idle = 5m }';
+
+  async function optionsBuiltWith(name: string, hocon: string): Promise<unknown> {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig(Config.parseString(hocon));
+    const sys = ActorSystem.create(`cache-built-${name}`, sysOptions);
+    const extension = sys.extension(CacheExtensionId);
+    // Captured first: every import of the class is a live binding to the spy
+    // while it is installed, the barrel's included.
+    const cacheClass = InMemoryCache;
+    const construction = spyOnConstruction(InMemoryCacheModule, 'InMemoryCache', cacheClass);
+    try {
+      expect(extension.cache(name)).toBeInstanceOf(cacheClass);
+      expect(construction).toHaveBeenCalledTimes(1);
+      return construction.mock.calls[0]![0];
+    } finally {
+      construction.mockRestore();
+      await sys.terminate();
+    }
+  }
+
+  test('every leaf of a per-name block reaches the instance, each over the global one', async () => {
+    const options = await optionsBuiltWith('sessions', `
+      ${GLOBAL_BLOCK}
+      actor-ts.cache.sessions.in-memory { max-entries = 7, cleanup-interval = 45s, time-to-live = 2h, time-to-idle = 20m }
+    `);
+    expectExactOptions(options, { maxEntries: 7, cleanupMs: 45_000, timeToLiveMs: 7_200_000, timeToIdleMs: 1_200_000 });
+  });
+
+  test('a per-name cleanup-interval and time-to-idle reach the instance, and the rest comes from the global block', async () => {
+    const options = await optionsBuiltWith('sessions', `
+      ${GLOBAL_BLOCK}
+      actor-ts.cache.sessions.in-memory { cleanup-interval = 45s, time-to-idle = 20m }
+    `);
+    expectExactOptions(options, { maxEntries: 50, cleanupMs: 45_000, timeToLiveMs: 600_000, timeToIdleMs: 1_200_000 });
+  });
+
+  test('another name keeps the global block whole', async () => {
+    const options = await optionsBuiltWith('orders', `
+      ${GLOBAL_BLOCK}
+      actor-ts.cache.sessions.in-memory { cleanup-interval = 45s, time-to-idle = 20m }
+    `);
+    expectExactOptions(options, { maxEntries: 50, cleanupMs: 30_000, timeToLiveMs: 600_000, timeToIdleMs: 300_000 });
   });
 });
 

@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { Config } from '../../../src/config/Config.js';
 import { parseSize } from '../../../src/config/Size.js';
 
 describe('parseSize', () => {
@@ -43,6 +44,28 @@ describe('parseSize', () => {
 
   test('fractional values round to nearest byte', () => {
     expect(parseSize('1.5 K')).toBe(1536);
+  });
+
+  // What the parser does today, pinned so that changing it is a decision
+  // (#1425).  1.5 K above is a whole 1536 bytes and shows no rounding at all;
+  // these do.  A fraction written with a unit comes back as a whole number of
+  // bytes, so a check that a size be whole — the GELF sink's max-chunk-bytes —
+  // sees 1421 for 1420.5B and cannot refuse it.  Below half a byte the result
+  // is 0, which several caps read as "no cap".
+  test('a fraction written with a unit is rounded to the nearest byte, not refused', () => {
+    expect(parseSize('1420.5B')).toBe(1421);
+    expect(parseSize('1420.5 bytes')).toBe(1421);
+    expect(parseSize('1.1K')).toBe(1126); // 1126.4 bytes
+    expect(parseSize('511.6B')).toBe(512);
+    expect(parseSize('0.4B')).toBe(0);
+  });
+
+  test('Config.getBytes rounds a fraction written with a unit, and hands a bare one on as it is', () => {
+    // A bare number never reaches parseSize, so only a unit-less fraction
+    // arrives at a whole-bytes check as a fraction.
+    const config = Config.parseString('with-unit = 1420.5B\nbare = 1420.5');
+    expect(config.getBytes('with-unit')).toBe(1421);
+    expect(config.getBytes('bare')).toBe(1420.5);
   });
 
   test('rejects empty / malformed / unknown units', () => {
