@@ -34,9 +34,17 @@ import { awaitCondition } from '../../util/AwaitCondition.js';
 const REPOSITORY_ROOT = join(import.meta.dir, '..', '..', '..');
 const DOCS_ROOT = join(REPOSITORY_ROOT, 'docs', 'src', 'content', 'docs');
 
-/** Text with HOCON and JSDoc comment markers and line breaks folded away. */
+/**
+ * Text with HOCON and JSDoc comment markers and line breaks folded away.  An
+ * MDX comment renders nothing, so it is cut first — a sentence that lives
+ * only in one does not count as said.
+ */
 function prose(text: string): string {
-  return text.replace(/\r\n/g, '\n').replace(/^[ \t]*(?:#|\/\/|\*)[ \t]?/gm, '').replace(/\s+/g, ' ');
+  return text
+    .replace(/\r\n/g, '\n')
+    .replace(/\{\/\*[\s\S]*?\*\/\}/g, '')
+    .replace(/^[ \t]*(?:#|\/\/|\*)[ \t]?/gm, '')
+    .replace(/\s+/g, ' ');
 }
 
 const systems: ActorSystem[] = [];

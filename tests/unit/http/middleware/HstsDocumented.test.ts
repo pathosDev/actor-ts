@@ -32,10 +32,18 @@ import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 
 const DOCS_ROOT = join(import.meta.dir, '..', '..', '..', '..', 'docs', 'src', 'content', 'docs');
 
-/** A docs page by its path under `docs/src/content/docs`, line breaks and HOCON comment markers folded away. */
+/**
+ * A docs page by its path under `docs/src/content/docs`, line breaks and HOCON
+ * comment markers folded away.  An MDX comment renders nothing, so it is cut
+ * first: a sentence that lives only in one does not count as said.
+ */
 function prose(relativeOrText: string, isText = false): string {
   const text = isText ? relativeOrText : readFileSync(join(DOCS_ROOT, relativeOrText), 'utf8');
-  return text.replace(/\r\n/g, '\n').replace(/^[ \t]*#[ \t]?/gm, '').replace(/\s+/g, ' ');
+  return text
+    .replace(/\r\n/g, '\n')
+    .replace(/\{\/\*[\s\S]*?\*\/\}/g, '')
+    .replace(/^[ \t]*#[ \t]?/gm, '')
+    .replace(/\s+/g, ' ');
 }
 
 describe('the floor a configured max-age is held to, as the pages state it', () => {

@@ -35,9 +35,17 @@ function page(relative: string): string {
   return readFileSync(join(DOCS_ROOT, relative), 'utf8');
 }
 
-/** Text with HOCON comment markers and line breaks folded away: a sentence reads as one line. */
+/**
+ * Text with HOCON comment markers and line breaks folded away: a sentence
+ * reads as one line.  An MDX comment renders nothing, so it is cut first — a
+ * sentence that lives only in one does not count as said.
+ */
 function prose(text: string): string {
-  return text.replace(/\r\n/g, '\n').replace(/^[ \t]*#[ \t]?/gm, '').replace(/\s+/g, ' ');
+  return text
+    .replace(/\r\n/g, '\n')
+    .replace(/\{\/\*[\s\S]*?\*\/\}/g, '')
+    .replace(/^[ \t]*#[ \t]?/gm, '')
+    .replace(/\s+/g, ' ');
 }
 
 const REFERENCE = prose(REFERENCE_CONF);
