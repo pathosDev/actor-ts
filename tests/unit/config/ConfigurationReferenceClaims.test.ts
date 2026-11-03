@@ -257,3 +257,26 @@ describe('a WorkerMesh pool and the secrets file (#1546)', () => {
     expect(prose(page(path))).toContain(sentence);
   });
 });
+
+describe('the dead-key gate as the reference-conf page describes it (#1425)', () => {
+  // The registry knows which registered reader calls which, so between two of
+  // them the gate does say whether the runtime asks the reader; and a leaf
+  // that ships empty has no "other value of the same kind", so it is set to
+  // two non-empty ones.
+  test.each([
+    [
+      'reference/reference-conf.mdx',
+      'requires at least one of them to answer differently; a leaf that ships empty is set to two non-empty values instead, which a reader has to tell apart.',
+      'That the runtime asks the reader, or keeps its answer — except between two registered readers: a reader that another registered reader calls, such as a sink\'s delivery block or the cluster\'s downing provider, counts only where that caller answers to the same leaf.',
+    ],
+    [
+      'de/reference/reference-conf.mdx',
+      'verlangt, dass mindestens einer anders antwortet; ein leer ausgelieferter Key wird stattdessen auf zwei nicht leere Werte gesetzt, die ein Leser unterscheiden muss.',
+      'Dass die Laufzeit den Leser fragt oder seine Antwort behält — außer zwischen zwei registrierten Lesern: Ein Leser, den ein anderer registrierter Leser aufruft, etwa der delivery-Block einer Senke oder der Downing-Provider des Clusters, zählt nur dort, wo dieser Aufrufer auf denselben Key antwortet.',
+    ],
+  ])('%s', (path, emptyLeaf, notProven) => {
+    const text = prose(page(path));
+    expect(text).toContain(emptyLeaf);
+    expect(text).toContain(notProven);
+  });
+});

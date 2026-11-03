@@ -3164,7 +3164,9 @@ muss **gelesen** werden: Der Test ändert das Blatt für sich allein auf einen
 anderen Wert derselben Art — eine längere Dauer, die andere Schalterstellung,
 ein Wort mit Suffix —, lässt jeden in `tests/util/ConfigReaderRegistry.ts`
 registrierten Leser über das Ergebnis laufen und verlangt, dass mindestens
-einer anders antwortet.  Ein Leser, der den neuen Wert nur ablehnt, zählt
+einer anders antwortet; ein leer ausgelieferter Key wird stattdessen auf zwei
+nicht leere Werte gesetzt, die ein Leser unterscheiden muss.  Ein Leser, der
+den neuen Wert nur ablehnt, zählt
 nicht, denn ein Wert, der geprüft und dann verworfen wird, wird genauso
 abgelehnt; einer, der das Blatt als eine andere Art liest, als es
 ausgeliefert wird — eine Größe, wo eine Dauer steht —, lässt es durchfallen.
@@ -3190,7 +3192,10 @@ verschlüsseln ist weiterhin
 ausschließt, ist ein Key, den niemand auch nur anschaut.
 
 **Was er nicht beweist.**  Dass die Laufzeit den Leser fragt oder seine
-Antwort behält: Einen Verbraucher, der einen Key direkt statt über seinen
+Antwort behält — außer zwischen zwei registrierten Lesern: Ein Leser, den ein
+anderer registrierter Leser aufruft, etwa der delivery-Block einer Senke oder
+der Downing-Provider des Clusters, zählt nur dort, wo dieser Aufrufer auf
+denselben Key antwortet.  Einen Verbraucher, der einen Key direkt statt über seinen
 Leser liest, fängt `tests/unit/config/ConsumersReadThroughRegisteredReaders.test.ts`
 ab, für die Verbraucher, die das getan haben — einer aber, der seinen Leser
 aufruft und daneben trotzdem einen Key selbst liest, und eine Verdrahtung,
