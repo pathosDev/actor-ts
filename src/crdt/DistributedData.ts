@@ -833,8 +833,16 @@ export class DistributedDataHandle {
    * read.  Its time is the replicator's time: while it runs, no merge, gossip
    * round or quorum reply is processed, for any key.  Twenty calls of a 10 ms
    * listener held a local read queued behind them back by 203 ms.
-   * Debouncing inside the listener does not help: it still runs once per
-   * change, here.
+   *
+   * What the replicator waits for is what the listener does before it
+   * returns.  So a debounce helps: a listener that only re-arms a trailing
+   * timer still runs once per change, but the work runs once, after the
+   * burst, and the same read waited under 5 ms — though that work runs on a
+   * timer, outside any actor, and must not touch actor state.  Telling an
+   * actor each change does not help: the actor is told once per change, and
+   * its turns run between the replicator's on the one thread, so the read
+   * still waited as long.  For work that should run once per burst rather
+   * than once per change, subscribe the actor itself — the overload below.
    *
    * A key that already holds a value is replayed to the new listener at once,
    * on the caller's stack, before `subscribe` returns.  A merge reaches the
@@ -858,9 +866,16 @@ export class DistributedDataHandle {
   /**
    * Subscribe an actor to changes of `key`; returns the function that
    * unsubscribes.  The actor is told a {@link DistributedDataChanged} and
-   * handles it on its own turn, so its work costs the replicator nothing — the
-   * form for anything that does work or touches actor state.  What counts as a
-   * change is the function form's: every merge that changes the local value.
+   * handles it on its own turn, outside the merge — the form for anything
+   * that does work or touches actor state.  What counts as a change is the
+   * function form's: every merge that changes the local value.
+   *
+   * Its turns still share the one thread with the replicator's, so its work
+   * is not free.  What bounds it is the coalescing below: under a burst the
+   * actor works once per notification it is handed rather than once per
+   * change.  The twenty changes that held a read 203 ms behind a 10 ms
+   * listener held it 21 ms behind an actor doing the same work, which was
+   * handed two of the twenty values.
    *
    * What the actor is told is coalesced into a latest-value slot per subscriber
    * and key.  At most one notification waits in its mailbox; a change while it

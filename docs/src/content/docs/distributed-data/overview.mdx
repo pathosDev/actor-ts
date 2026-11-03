@@ -196,7 +196,7 @@ class HitsDashboard extends Actor<DashboardMessage> {
 
 The actor subscribes itself and handles the change in its own
 `onReceive`, like any other message — so it may touch its own state,
-and whatever it does costs the replicator nothing.  A
+and none of its work runs inside the replicator's merge.  A
 `DistributedDataChanged` carries the `key` and the new `value`; match
 it by its class, as here, or by its `kind`,
 `'distributed-data-changed'`.
@@ -211,6 +211,14 @@ is the pacing, so there is no timer, and no
 `notify-subscribers-interval` to configure.  A bounded mailbox cannot
 shed the notification either: it is admitted past the bound, the way a
 death-watch `Terminated` is.
+
+That coalescing is also what keeps the actor's work from holding the
+replicator up.  Its turns are not the replicator's, but they run on
+the same thread, so the work is not free — it is bounded by how often
+the actor is told rather than by how often the key changes.  Twenty
+changes with 10 ms of work each held a read queued behind them back
+203 ms when a callback did the work, and 21 ms with this actor, which
+was handed two of the twenty values.
 
 If the key already holds a value, the actor is told that too —
 through its mailbox, once the replicator has handled the subscription,
@@ -248,11 +256,20 @@ The callback runs **synchronously on the replicator's own turn**, so
 its time is the replicator's time: while it runs, no merge, gossip
 round or quorum reply is processed — for any key.  Twenty calls of a
 10 ms callback held a local read queued behind them back by 203 ms.
+
+What the replicator waits for is what the callback does before it
+returns.  A **debounce** helps: a callback that only re-arms a
+trailing timer still runs once per change, but the work runs once,
+after the burst, and the same read waited under 5 ms — though that
+work runs on a timer, outside any actor, so it must not touch actor
+state.  A callback that only **`tell`s an actor** does not help: the
+actor is told once per change, and its turns run between the
+replicator's on the same thread, so the read still waited as long.
 Keep a callback to a cheap synchronous read — refresh a figure on a
-UI, compare a counter against a threshold — and subscribe an actor
-for anything more, as [Replication](/distributed-data/replication/)
-explains.  A callback that throws is logged as a warning and stays
-subscribed.
+UI, compare a counter against a threshold — or to arming a debounce,
+and subscribe the actor itself for anything more, as
+[Replication](/distributed-data/replication/) explains.  A callback
+that throws is logged as a warning and stays subscribed.
 
 ## Durability
 
