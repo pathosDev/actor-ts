@@ -114,3 +114,23 @@ describe('the bootstrap\'s election budget needs new-cluster-enabled (#1500)', (
     expect(prose(page(path))).toContain(clause);
   });
 });
+
+describe('how far the φ first-contact estimate reaches (#1451)', () => {
+  // The behaviour is PhiAccrualFailureDetector.test.ts's 'one heartbeat
+  // leaves the estimate in place' and 'the first measured interval replaces
+  // the estimate': a first heartbeat has nothing to be measured from, so the
+  // estimate covers the gap to the second one too.
+  test('reference.conf says the estimate stands until the first interval is measured', () => {
+    expect(REFERENCE).not.toContain('assumes before a peer\'s first heartbeat');
+    expect(REFERENCE).toContain('The mean phi assumes until a peer\'s first heartbeat interval is measured, with a deviation of a quarter of it');
+  });
+
+  test.each([
+    ['reference/configuration.mdx', 'The inter-arrival time φ assumes until a peer\'s first heartbeat interval is measured, with a deviation of a quarter of it.', 'before a peer\'s first heartbeat'],
+    ['de/reference/configuration.mdx', 'Die Zwischenankunftszeit, die φ annimmt, bis das erste Heartbeat-Intervall eines Peers gemessen ist, mit einer Standardabweichung von einem Viertel davon.', 'vor dem ersten Heartbeat eines Peers'],
+  ])('%s says the same in the expected-response-after row', (path, sentence, retired) => {
+    const text = prose(page(path));
+    expect(text).toContain(sentence);
+    expect(text).not.toContain(retired);
+  });
+});
