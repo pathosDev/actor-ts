@@ -358,7 +358,7 @@ block; on a leaf other than the three; and on a value outside its range.
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `dispatcher.default` | `"hybrid"` | `hybrid` (default) — wakes actors on the microtask queue and spends every 64th unit on a macrotask, so timers and I/O still run; `immediate` — the previous default, one `setImmediate` per turn: fair, at ~2.4 µs a hop; `microtask` — unbounded, starves the event loop under sustained load, for measurement only; `throughput` — drains up to `dispatcher.throughput` queued turns per tick, across actors.  An unset or unrecognised value falls back to `hybrid`. |
-| `dispatcher.throughput` | `16` | Queued actor **turns** a `ThroughputDispatcher` drains per tick, across actors — not messages, and not per actor.  See `actor.throughput` above for the per-actor batch. |
+| `dispatcher.throughput` | `16` | Queued actor **turns** a `ThroughputDispatcher` drains per tick, across actors — not messages, and not per actor.  See `actor.throughput` above for the per-actor batch.  An integer from `1` up; unlike `actor.throughput` it is not raised to `1` — with `default = throughput`, a `0` or below fails `ActorSystem.create` with an `OptionsError` from `ThroughputDispatcher`. |
 
 ### `actor-ts.dead-letters`
 
@@ -406,7 +406,7 @@ replay from it.
 | `cluster.failure-detector.phi.max-sample-size` | `200` | How many recent inter-arrival times are kept per peer. |
 | `cluster.failure-detector.phi.min-std-deviation` | `100ms` | Floor on the sampled standard deviation, so a very steady peer is not flagged on noise. |
 | `cluster.failure-detector.phi.acceptable-heartbeat-pause` | `3s` | Grace added to the last heartbeat before φ starts rising — a pure offset, so a stall up to ~3.5 s past the expected beat passes at the default cadence.  Chosen by measurement; see [the φ-accrual detector](/cluster/failure-detector/#what-the-shipped-settings-tolerate). |
-| `cluster.failure-detector.phi.expected-response-after` | `"auto"` | The inter-arrival time φ assumes before a peer's first heartbeat, with a deviation of a quarter of it.  `"auto"` is `heartbeat-interval`; a duration decouples the two. |
+| `cluster.failure-detector.phi.expected-response-after` | `"auto"` | The inter-arrival time φ assumes until a peer's first heartbeat interval is measured, with a deviation of a quarter of it.  `"auto"` is `heartbeat-interval`; a duration decouples the two. |
 | `cluster.split-brain-resolver.active-strategy` | `off` | Which downing strategy arbitrates a partition — `off`, `keep-majority`, `keep-oldest`, `keep-referee`, `static-quorum` or `lease-majority`. |
 | `cluster.split-brain-resolver.stable-after` | `20s` | How long the membership **and** reachability view must hold still before the strategy is consulted — or, if it never does, half of how long one peer must have been continuously unreachable.  See below. |
 | `cluster.split-brain-resolver.down-all-when-unstable` | `off` | Down every member, this node included, when the view never once holds still for `stable-after` across `3 × stable-after` of churn.  Off — see below. |
@@ -683,6 +683,14 @@ actor-ts.cluster.app-version = ${?APP_VERSION}
 A literal version goes in quotes: `app-version = 1.0` is a number to HOCON
 and reaches the peers as `"1"`.
 
+A value from the environment is read as JSON first wherever it parses as
+JSON.  A version that reads as a number comes back in that number's own
+spelling — `1.10` as `1.1`, `2.0` as `2`, `1e3` as `1000` — so releases `1.1`
+and `1.10` print the same label, and one that reads as `null` or a list stops
+the start; a version with a second dot (`1.2.3`) or a letter (`v1.10`) is
+unchanged.  Quote such a value inside the variable (`APP_VERSION='"1.10"'`),
+or set it in code with `withAppVersion(...)`.
+
 A label is 1 to 64 visible ASCII characters — no whitespace and no control
 character, because every peer prints it — and `Cluster.join` refuses one that
 is not, an empty one included, before the transport binds.  A peer's label
@@ -901,8 +909,10 @@ never came near the cap themselves.
 It is a key of its own rather than `actor.ask-timeout`: that one moves the
 default of `ActorRef.ask`, and how long a replica holds a pending slot for its
 peers to answer is a different wait.  Unlike the two caps it has no off
-switch — a deadline of `0` would arm no timer, so a request waiting on a silent
-replica would never settle, and the validator refuses it.
+switch, and `0` cannot be one: the replicator arms a `0` deadline like any
+other, so it expires at the next timer tick — a write fails there and a read
+settles for what this replica alone holds — unless every replica it waits on
+has already answered, and the validator refuses it.
 
 ### `actor-ts.coordination`
 
@@ -1030,7 +1040,7 @@ which a switch cannot express.
 | `cluster.bootstrap.self-election-grace` | `10s` | How long the lowest-addressed node waits for a peer to promote it before forming a cluster itself. |
 | `cluster.bootstrap.new-cluster-enabled` | `on` | Whether a node that finds nobody to join may **found** a cluster.  `on` is right for a deployment's first start only, and every start logs a warning while it is; set it `off` once the cluster exists.  Off, no bootstrapped node self-elects, on either path, and an explicit `seeds: []` is refused — a node that finds nobody fails its readiness wait instead of starting alone. |
 | `cluster.bootstrap.minimum-members` | `1` | Fewest `up` members — self included — before `awaitReady` / `Cluster.isReady` counts the cluster as ready. |
-| `cluster.bootstrap.await-ready` | *(unset)* | Readiness budget.  Comment-only in `reference.conf`: unset is what selects the computed default (`self-election-grace + 5s` behind stable observation, `5s` otherwise), and a key that is always present could not express it. |
+| `cluster.bootstrap.await-ready` | *(unset)* | Readiness budget.  Comment-only in `reference.conf`: unset is what selects the computed default (`self-election-grace + 5s` behind stable observation with `new-cluster-enabled` on, `5s` otherwise), and a key that is always present could not express it. |
 | `cluster.bootstrap.discovery.method` | `"auto"` | Which seed provider the bootstrap builds — `auto`, `config`, `dns` or `kubernetes`.  `auto` is the ladder; the other three pin one rung so a misconfigured deployment fails loudly instead of falling through. |
 | `cluster.bootstrap.discovery.service-name` | `""` | The DNS name the `dns` provider resolves and the Kubernetes Service whose `Endpoints` the `kubernetes` provider reads.  `""` means "not stated here", and `CLUSTER_SERVICE_NAME` then answers. |
 
@@ -1417,7 +1427,7 @@ The bounds on a **connection** — as against a route on it — come from
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `http.server.idle-timeout` | *(backend's own)* | How long an idle connection is held before it is closed — a keep-alive HTTP/1.1 connection between requests, and an HTTP/2 session with nothing moving on it.  Ships **no leaf** — see below.  `0` disables it.  At most `2147482647` ms — on the Hono backend under Bun, where it is a wider bound, at most `255s` (§ below). |
+| `http.server.idle-timeout` | *(backend's own)* | How long an idle connection is held before it is closed — a keep-alive HTTP/1.1 connection between requests, and an HTTP/2 session with nothing moving on it.  Ships **no leaf** — see below.  `0` disables it — on the Hono backend under Bun, where it is the only bound on a request whose body stops arriving, that leaves such a connection open until the client closes it (§ below).  At most `2147482647` ms — on the Hono backend under Bun, where it is a wider bound, at most `255s` (§ below). |
 | `http.server.header-timeout` | `60s` | How long a connection may take to deliver its complete header block before it is answered `408` and destroyed.  The slow-loris guard, held by actor-ts itself — see below.  A shorter `request-timeout` is the header deadline too: the guard runs on the smaller of the two.  `0` disables it.  At most `2147483647` ms. |
 | `http.server.request-timeout` | `300s` | How long a connection may take to deliver a request in full, headers and body.  Bounds *receiving*, never answering — a handler's deadline is `http.request-timeout`.  Shorter than `header-timeout`, it bounds the header phase as well, since the headers are part of the request.  At most `4294967295` ms. |
 | `http.server.max-connections` | *(unlimited)* | Concurrent connections the listening socket accepts before it starts closing new ones.  Ships **no leaf** — see below. |
@@ -1550,6 +1560,15 @@ silent requests started across one sweep between 4.5 s and 8.0 s after each
 began.  Above `255s` it is refused at `bind()`, naming the key: `Bun.serve`
 holds no more.  It bounds an idle HTTP/2 session too.
 
+A value you set is written as given.  Where it can cut a silent handler before
+the request deadline's `503` — its earliest cut lands less than 2 s past the
+deadline — `bind()` warns, naming the key, the value and the deadline: the
+`5s` of the example above cuts a handler that has written nothing from 4 s on.
+`0` turns it off, and here it is the only bound on a request whose body stops
+arriving and on a connection idle between requests, since none of the other
+three is installed: with `0` such a connection stays open until the client
+closes it.
+
 Unset, it is not Bun's own 10 s, which cut any handler silent for about 12 s
 with no response at all.  It is derived from the server's longest request
 deadline — `http.request-timeout.deadline`, raised to the longest
@@ -1578,17 +1597,21 @@ one backend that does not keep its runtime's own: Bun's 10 s cut slow handlers
 with no response, so there an unset `idle-timeout` is derived from the request
 deadline instead — 36 s by default (§ above).
 
-It bounds an idle **HTTP/2 session** too.  `keepAliveTimeout`, which carries
-it to an HTTP/1.1 connection, is a property no HTTP/2 session reads, so on a
-listener with `http2` on, actor-ts also arms each session's own idle timer.
-When it fires the session is closed gracefully — a GOAWAY, and a stream still
-in flight finishes — so a slow handler, a long poll and an SSE stream outlive
-it as they do on HTTP/1.1.  Unset, an idle HTTP/2 session is left to Fastify's
-own 72 s, and on Hono over Node to nothing at all.  The runtimes fire that
-timer differently: measured from the end of the last response, node v26.10.0
-closed an idle session 0.80 s later for `800ms` and 2.00 s later for `2s`, bun
-1.4.2 1.60 s and 4.00 s later — **Bun fires an HTTP/2 session's timer at twice
-the value**.  actor-ts states that rather than halving the number on Bun.  None
+It bounds an idle **HTTP/2 session** too, and `request-timeout` an HTTP/2
+stream's receive.  `keepAliveTimeout` and `requestTimeout`, which carry them to
+an HTTP/1.1 connection, are properties no HTTP/2 session or stream reads, so on
+a listener with `http2` on actor-ts runs timers of its own: a session that has
+had no stream open for `idle-timeout` is closed with a GOAWAY — the same value
+on both runtimes, and a PING frame resets nothing — and a stream whose request
+is still arriving at `request-timeout` is answered `408` and reset.  A stream
+in flight holds its session, so a slow handler, a long poll and an SSE stream
+outlive the idle bound as they do on HTTP/1.1, and a request received in full
+is never cut by the receive deadline.  Unset, an idle HTTP/2 session is left to
+Fastify's own session timer — 72 s on Node, 144 s on Bun, which fires it at
+twice the value and lets a PING reset it — and on Hono over Node to nothing at
+all.  On Bun the HTTP/2 listener bounds a connection that negotiates HTTP/1.1
+on the same port by neither key, so there both are reported held for HTTP/2
+only and `bind()` warns.  None
 of this is the Hono backend under Bun, whose sessions `Bun.serve`'s own
 whole-connection bound holds (§ above), set or derived: an idle session there
 was closed within one sweep of a `4s` value (bun 1.4.2), and a silent stream
@@ -1710,7 +1733,7 @@ The [`hsts()`](/http/middleware/security-headers/) middleware —
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `http.hsts.max-age` | `15552000` | How long a browser keeps the pin, in **seconds** (180 days) — a bare integer, not a duration string. `0` is refused. |
+| `http.hsts.max-age` | `15552000` | How long a browser keeps the pin, in **seconds** (180 days) — a bare integer, not a duration string. `0` and anything below `86400` (a day) are refused here; code may set any value. |
 | `http.hsts.include-sub-domains` | `true` | Emit `includeSubDomains`. |
 | `http.hsts.preload` | `false` | Emit `preload`. Needs a `max-age` of at least a year and `include-sub-domains`. |
 
@@ -1728,10 +1751,13 @@ actor-ts.http.hsts {
 }
 ```
 
-`max-age = 0` is refused with a `ConfigError` naming the key. It tells every
-browser to forget the pin, so one line in a configuration file would un-pin
-every client of every `hsts()` route in the process; switching HSTS off stays
-code-only, with `withMaxAge(0)`.
+A `max-age` below `86400` — one day — is refused with a `ConfigError` naming
+the key and the floor. `0` tells every browser to forget the pin, and a shorter
+pin than a day has lapsed before a visitor comes back the next day, so one line
+in a configuration file would un-pin every client of every `hsts()` route in
+the process. Code may still set any value with `withMaxAge(...)` — the
+five-minute first stage of hstspreload.org's ramp-up, `withMaxAge(300)`, and
+`withMaxAge(0)`, which switches HSTS off, included.
 
 The block governs the `hsts()` middleware only. The `hsts` field of the
 `securityHeaders()` bundle and of `withSecurityHeaders(...)` is code-only, and
@@ -2193,17 +2219,22 @@ Three things deliberately have **no leaf**.  A pre-built `pool` or `client` and 
 is the driver's whole option surface, free-form and unvalidated, so it stays
 code-only — the long tail.  For SQL Server that means a purely config-driven
 store is reached through `url`, in the `Server=...;Database=...` form.  An
-`mssql://` url is refused when the store is built: node-mssql has parsed none
-since its 8.0, and reads one as a single unknown key with no server behind it.
+`mssql://` url passes the read like any other string and is refused with an
+`OptionsError` when the store is built: node-mssql has parsed none since its
+8.0, and reads one as a single unknown key with no server behind it.
 
 What an operator does tune on the three SQL drivers has **typed leaves** instead
 (#1490): `max-pool-size`, `idle-timeout`, `connect-timeout` and `ca-file` under
 every Postgres, MariaDB and SQL Server block, plus MariaDB's `acquire-timeout`
 and SQL Server's `request-timeout`.  Every one is **comment-only** — unset
 leaves the driver's own default, the only value that keeps tracking it — and
-reaches the driver under the driver's own name only when set.  The store checks
-them when it is built: a size or timeout that is not a positive whole number, a
-timeout the driver could not arm as a timer (above about 24.8 days), and a
+reaches the driver under the driver's own name only when set.  Each is read
+when the store is built.  A value of the wrong kind — a word where a number
+goes, a fraction where a count goes, a duration that does not parse — fails
+that read, with a `ConfigError` naming the leaf, or for the duration an error
+naming only the value.  One of the right kind is then checked by the store: a
+size below `1`, a timeout that is not a positive whole number of milliseconds,
+a timeout the driver could not arm as a timer (above about 24.8 days), and a
 MariaDB `idle-timeout` that is not a whole number of seconds — the connector
 counts it in seconds — are refused with an `OptionsError`.  So is a setting
 made twice: a leaf beside the same key in `poolConfig` or in the url
@@ -3038,7 +3069,7 @@ other phases still are.
 | `coordinated-shutdown.default-phase-timeout` | `5s` | Default per-phase timeout.  A phase that overruns it is abandoned so the next one still runs. |
 | `coordinated-shutdown.terminate-actor-system` | `true` | Whether the built-in terminator task tears the actor system down in the final phase. |
 | `coordinated-shutdown.exit-process` | `false` | Whether to call `process.exit(exit-code)` once a run ends.  A run that a phase with `recover = false` halts exits at the halt, in place of the teardown it would otherwise get, and with `1` where `exit-code` is `0`. |
-| `coordinated-shutdown.exit-code` | `0` | Status that exit carries.  `0`–`255`; anything else is a `ConfigError` at startup.  A run for a failed startup, and a run that a phase with `recover = false` halts, exit `1` where this is `0`, so neither reads as a clean stop. |
+| `coordinated-shutdown.exit-code` | `0` | Status that exit carries.  `0`–`255`; anything else is a `ConfigError` at startup.  A run for a failed startup, a run for a node that could not join (`ClusterJoinUnsuccessfulReason`: the join give-up, a failed `Cluster.bootstrap` readiness wait or refusal), and a run that a phase with `recover = false` halts, exit `1` where this is `0`, so none of them reads as a clean stop. |
 | `coordinated-shutdown.auto-register-tasks` | `true` | Whether framework components register their own teardown — the HTTP unbind, broker closes, the cluster leave, the DevTools detach. |
 | `coordinated-shutdown.run-by-process-signals` | `true` | Whether `runUntilTerminated()` and the cluster bootstrap arm SIGTERM/SIGINT when the caller named no signals. |
 | `coordinated-shutdown.run-by-actor-system-terminate` | `false` | Whether a `system.terminate()` that names no `runCoordinatedShutdown` runs the pipeline first, with `ActorSystemTerminateReason`.  `false` keeps it the bare teardown; a call that chooses gets what it chose, either way. |
@@ -3707,13 +3738,15 @@ const system = ActorSystem.create('my-app', actorSystemOptions);
 `withProfile` reaches the configuration of the system it builds,
 `system.config`.  A few components read the configuration themselves when
 no system or `Config` is handed to them: `ClusterClient`, `InMemoryLease`,
-`KubernetesLease` and `WorkerCluster` — including the worker pool a
-`WorkerMesh` starts — and the exported `read…OptionsFromConfig` helpers
-called without a `Config`, `readMessageBoundaryOptionsFromConfig`,
-`readLeaseOptionsFromConfig`, `readKubernetesLeaseOptionsFromConfig` and
-`readOffloadPoolOptionsFromConfig` among them.  They call `Config.load()`
-and see a profile only through `ACTOR_TS_PROFILE` — set the variable when
-you use them, or hand them `system.config`.
+`KubernetesLease` and `WorkerCluster.spawn`, and the exported
+`read…OptionsFromConfig` helpers called without a `Config`,
+`readMessageBoundaryOptionsFromConfig`, `readLeaseOptionsFromConfig`,
+`readKubernetesLeaseOptionsFromConfig` and `readOffloadPoolOptionsFromConfig`
+among them.  They call `Config.load()` and see a profile only through
+`ACTOR_TS_PROFILE` — set the variable when you use them, or hand them
+`system.config`.  A `WorkerMesh` hands its worker pool the main system's
+`system.config`, and its workers select no profile of their own: they run
+with the values the main system's profile produced.
 
 ## Secrets file
 
@@ -3733,7 +3766,11 @@ It is the first of these that is set: the `ACTOR_TS_SECRETS_CONF`
 environment variable, then `secrets.conf` in the working directory —
 with `secretsConfPath` ahead of both when you call `Config.load`
 yourself.  A file that is not there is an empty layer, not an error, so a
-deployment without one needs nothing.  It splits into a root and
+deployment without one needs nothing.  A file that is there is read on every
+start, so a `secrets.conf` in the working directory that belongs to another
+tool stops startup: the `ConfigError` names the file and why it was read —
+move such a file, or name the right one with `ACTOR_TS_SECRETS_CONF`.  It
+splits into a root and
 `profiles` exactly as the application file does, and the same profile is
 laid over its root.
 

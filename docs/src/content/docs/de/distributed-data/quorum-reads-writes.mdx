@@ -195,8 +195,10 @@ Jener Key verschiebt den Default von `ActorRef.ask`, und wie lange eine
 Replika einen Quorum-Request für die Antworten ihrer Peers offen hält, ist
 eine andere Wartezeit.  `maxQuorumTimeout` (unten) begrenzt den Default genau
 so wie ein `timeoutMs`, das du übergibst, und der Default muss positiv sein —
-`0` würde gar keine Frist stellen, und ein Request, der auf eine stumme
-Replika wartet, käme nie zum Abschluss.  Pro Call überschreiben, wenn:
+`0` wird wie jede andere Frist gestellt, sie liefe also beim nächsten
+Timer-Tick ab: Ein Write scheiterte dort, und ein Read begnügte sich mit dem,
+was diese Replika allein hält, sofern nicht jede Replika schon geantwortet
+hätte.  Pro Call überschreiben, wenn:
 
 - **Strengeres Latenz-Budget** — niedriger setzen; früh ablehnen,
   wenn Konsistenz nicht erreicht werden kann.

@@ -312,7 +312,10 @@ explicitly:
 - **`awaitReady` fires first** — the rejection above.  The pipeline runs
   with `ClusterJoinUnsuccessfulReason`, the reason the give-up passes too,
   so a shutdown task tells a failed join by one reason whichever deadline
-  fired.  `shutdown()` on a node that did start still passes
+  fired.  The failure is logged at error before that run starts — under
+  `exit-process = on` the run ends the process before the rejection can
+  reach the caller — and the run never exits `0`: with `exit-code = 0` it
+  exits `1`.  `shutdown()` on a node that did start still passes
   `ClusterLeavingReason`.
 - **The give-up fires first** — the wait ends at once.  The bootstrap
   waits for the pipeline the give-up started and rejects with a

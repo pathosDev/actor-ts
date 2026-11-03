@@ -21,6 +21,17 @@ import {
   type HstsOptionsType,
 } from './HstsOptions.js';
 
+/**
+ * The shortest `max-age`, in seconds, that `actor-ts.http.hsts.max-age` may
+ * set: one day.  A pin shorter than that has lapsed before a visitor comes
+ * back the next day, so a file that set it would switch HSTS off in all but
+ * name — and `0` switches it off outright (RFC 6797 §6.1.1).  A day still
+ * leaves every stage of hstspreload.org's ramp-up from one week on to the
+ * file; its five-minute first stage, the one meant for backing out quickly,
+ * is a decision for code (`withMaxAge(300)`), as is any value below this.
+ */
+export const MINIMUM_CONFIGURED_HSTS_MAX_AGE_SECONDS = 86_400;
+
 export type ResolvedHsts = {
   readonly maxAge: number;
   readonly includeSubDomains: boolean;
@@ -64,12 +75,16 @@ export function resolveHsts(options: Partial<HstsOptionsType>, config?: Config):
  * present as `undefined`.
  *
  * Values are read raw and left to {@link HstsOptionsValidator} on the merged
- * policy, with one exception: `max-age = 0` is refused here, with a
- * `ConfigError` naming the key.  It is the one value that switches HSTS off
- * for every client that ever saw the header — RFC 6797 §6.1.1 has a browser
- * forget the pin — and one line in a configuration file must not be able to
- * do that to every `hsts()` route in the process.  Code can still ask for it,
- * with `withMaxAge(0)`.  The refusal sits in the reader rather than in a
+ * policy, with one exception: a `max-age` below
+ * {@link MINIMUM_CONFIGURED_HSTS_MAX_AGE_SECONDS}, a day, is refused here
+ * with a `ConfigError` naming the key and the floor.  `0` has every browser
+ * forget the pin (RFC 6797 §6.1.1), and a shorter pin than a day has lapsed
+ * before a visitor comes back the next day — either way HSTS is off for every
+ * client of every `hsts()` route in the process, which one line in a
+ * configuration file must not be able to do.  Code can still ask for any
+ * value, `withMaxAge(0)` included.  A negative one is not a pin at all and
+ * stays the validator's, which refuses it on the merged policy exactly as it
+ * refuses one from code.  The refusal sits in the reader rather than in a
  * caller so that no caller of this seam can skip it.
  */
 export function readHstsOptionsFromConfig(config: Config): Partial<HstsOptionsType> {
@@ -85,14 +100,15 @@ export function readHstsOptionsFromConfig(config: Config): Partial<HstsOptionsTy
   return out;
 }
 
-/** The configured `max-age`, with the value that un-pins every client refused. */
+/** The configured `max-age`, held to {@link MINIMUM_CONFIGURED_HSTS_MAX_AGE_SECONDS}. */
 function configuredMaxAge(config: Config, key: string): number {
   const maxAge = config.getInt(key);
-  if (maxAge === 0) {
+  if (maxAge >= 0 && maxAge < MINIMUM_CONFIGURED_HSTS_MAX_AGE_SECONDS) {
     throw new ConfigError(
-      `Config at "${key}" must not be 0 — max-age=0 tells every browser to forget its HSTS pin, `
-      + 'so switching HSTS off is code-only (withMaxAge(0)) and a configuration file cannot do it '
-      + 'for every hsts() route in the process.',
+      `Config at "${key}" must be at least ${MINIMUM_CONFIGURED_HSTS_MAX_AGE_SECONDS} (one day, in seconds), got ${maxAge}.  `
+      + 'max-age=0 tells every browser to forget its HSTS pin, and a shorter pin than a day lapses before a '
+      + 'visitor comes back the next day, so a configuration file may not set either for every hsts() route '
+      + 'in the process.  A shorter max-age is set in code, with withMaxAge(...).',
     );
   }
   return maxAge;

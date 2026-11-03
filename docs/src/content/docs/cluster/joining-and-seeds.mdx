@@ -322,7 +322,9 @@ A few details settle the edges:
 - **`leave()` comes first**, so the seed loop stops even with
   `coordinated-shutdown.auto-register-tasks = off`.  What the run ends in
   is the pipeline's to decide: the actor system terminates by default, and
-  the process exits only with `coordinated-shutdown.exit-process = on`.
+  the process exits only with `coordinated-shutdown.exit-process = on`,
+  and then never with status `0` — see
+  [Task semantics](/fundamentals/coordinated-shutdown/#task-semantics).
 - **A readiness wait answers to it too**: an `awaitReady()` still pending
   when the join gives up rejects at once with a `ClusterReadyTimeoutError`
   that names the key, rather than waiting out its own deadline.

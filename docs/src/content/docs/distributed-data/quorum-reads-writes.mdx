@@ -187,8 +187,10 @@ as well, although the two share their built-in 5 seconds: that key moves the
 default of `ActorRef.ask`, and how long a replica holds a quorum request open
 for its peers to answer is a different wait.  `maxQuorumTimeout` (below)
 clamps the default exactly as it clamps a `timeoutMs` you pass, and the
-default has to be positive — `0` would arm no deadline at all, and a request
-waiting on a silent replica would never settle.  Override per call when:
+default has to be positive — `0` is armed like any other deadline, so it would
+expire at the next timer tick: a write would fail there and a read settle for
+what this replica alone holds, unless every replica had already answered.
+Override per call when:
 
 - **Stricter latency budget** — set lower; reject early if
   consistency can't be achieved.

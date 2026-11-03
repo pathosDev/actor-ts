@@ -83,6 +83,14 @@ the old release rather than as a guess.  The label is advisory: nothing
 places, routes or downs on it, and a node that states none is simply shown
 without one.
 
+A value from the environment is read as JSON first wherever it parses as
+JSON.  A version that reads as a number comes back in that number's own
+spelling — `1.10` as `1.1`, `2.0` as `2`, `1e3` as `1000` — so releases `1.1`
+and `1.10` print the same label, and one that reads as `null` or a list stops
+the start; a version with a second dot (`1.2.3`) or a letter (`v1.10`) is
+unchanged.  Quote such a value inside the variable (`APP_VERSION='"1.10"'`),
+or set it in code with `withAppVersion(...)`.
+
 The label belongs to the run that states it.  A node restarted without one
 — rolled back onto a release that sets none, or deployed without
 `APP_VERSION` — is shown without one, never with the label of the run

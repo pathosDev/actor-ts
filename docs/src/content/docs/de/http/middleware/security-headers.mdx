@@ -104,9 +104,11 @@ actor-ts.http.hsts {
 }
 ```
 
-`max-age = 0` wird dort mit einem `ConfigError` abgelehnt: Es würde jeden
-Client jeder `hsts()`-Route im Prozess entpinnen, HSTS abschalten bleibt also
-dem Code vorbehalten (`withMaxAge(0)`). Die Keys und ihre Defaults stehen in
+Ein `max-age` unter `86400` — einem Tag — wird dort mit einem `ConfigError`
+abgelehnt, der den Key und die Untergrenze nennt: `0` würde jeden Client jeder
+`hsts()`-Route im Prozess sofort entpinnen, und ein kürzerer Pin als ein Tag
+läuft ab, bevor ein Besucher am nächsten Tag wiederkommt. Code darf weiterhin
+jeden Wert setzen (`withMaxAge(0)` schaltet HSTS ab). Die Keys und ihre Defaults stehen in
 [Konfiguration → `actor-ts.http`](/de/reference/configuration/).
 
 Der Block erreicht `hsts()` über einen Hook, den `compile()` auflöst — gib die
@@ -133,8 +135,12 @@ ist, und die serverweite Map von `withSecurityHeaders(...)` wird unter das
 geschrieben, was die Response trägt. Eine Route unter `hsts()` bekommt die
 konfigurierte Policy also auch auf einem Server, dessen
 `withSecurityHeaders({ hsts })` eine andere nennt, und nur die Responses, die
-kein HSTS auf Routenebene erreicht — der eigene 404 des Backends, ein
-Body-Parse-413 —, tragen die serverweite Policy.
+kein HSTS auf Routenebene erreicht — ein `413` aus dem Body-Parsing etwa —,
+tragen die serverweite Policy. Der eigene `404` des Backends für einen Pfad,
+auf den keine Route passt, trägt keine, auf keinem Backend: Er wird außerhalb
+jedes Decorators beantwortet. Ein Baum, der mit einem `fallback(...)` endet,
+beantwortet diesen `404` selbst, und dann trägt er die Policy
+([#1059](https://github.com/pathosDev/actor-ts/issues/1059)).
 
 import { Aside } from '@astrojs/starlight/components';
 
