@@ -143,9 +143,13 @@ describe('the HOCON the MQTT and TCP pages publish configures what they say (#14
     environment();
     expect(readFramingFromConfig(Config.parseString(tcpServerFenceOf(ioDirectory)), keys))
       .toEqual({ kind: 'lines', maxLineBytes: 64 * 1024 });
-    // max-frame-bytes is shown commented out: setting its variable reads nothing.
+    // max-frame-bytes is shown commented out, because lines framing has no
+    // frame cap: uncommented, it would be a line the reader never reads, and
+    // the result would not change, so its absence is what is checked.
     environment({ ACTOR_TS_TCP_SERVER_DELIMITER: ';', ACTOR_TS_TCP_SERVER_MAX_FRAME_BYTES: '1K' });
-    expect(readFramingFromConfig(Config.parseString(tcpServerFenceOf(ioDirectory)), keys))
-      .toEqual({ kind: 'lines', delimiter: ';', maxLineBytes: 64 * 1024 });
+    const configured = Config.parseString(tcpServerFenceOf(ioDirectory));
+    expect(configured.hasPath(keys.maxFrameBytes), 'the lines sample sets max-frame-bytes, which lines framing never reads')
+      .toBe(false);
+    expect(readFramingFromConfig(configured, keys)).toEqual({ kind: 'lines', delimiter: ';', maxLineBytes: 64 * 1024 });
   });
 });
