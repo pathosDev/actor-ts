@@ -84,3 +84,15 @@ describe('idle-timeout on the Hono backend under Bun (#1487)', () => {
     expect(text).toContain(sentence);
   });
 });
+
+describe('the shard-region readiness check through a leader change (#1465)', () => {
+  // The behaviour is ReadinessChecks.test.ts's 'a leader change keeps a
+  // registered node green while its region registers again': a leader change
+  // re-registers the region without taking its registration away.
+  test('reference.conf no longer lists a leader change among what turns the check red', () => {
+    expect(REFERENCE).not.toContain('from a start, a leader change or an eviction until the acknowledgment');
+    expect(REFERENCE).not.toContain('a leader change reaches a coordinator that accepts it');
+    expect(REFERENCE).toContain('from a start, an eviction or a lapsed refusal until the acknowledgment; a leader change alone keeps it green');
+    expect(REFERENCE).toContain('A refusal lasts until the counts agree or the leader changes, which lifts it until the next coordinator decides');
+  });
+});
