@@ -1597,17 +1597,21 @@ one backend that does not keep its runtime's own: Bun's 10 s cut slow handlers
 with no response, so there an unset `idle-timeout` is derived from the request
 deadline instead — 36 s by default (§ above).
 
-It bounds an idle **HTTP/2 session** too.  `keepAliveTimeout`, which carries
-it to an HTTP/1.1 connection, is a property no HTTP/2 session reads, so on a
-listener with `http2` on, actor-ts also arms each session's own idle timer.
-When it fires the session is closed gracefully — a GOAWAY, and a stream still
-in flight finishes — so a slow handler, a long poll and an SSE stream outlive
-it as they do on HTTP/1.1.  Unset, an idle HTTP/2 session is left to Fastify's
-own 72 s, and on Hono over Node to nothing at all.  The runtimes fire that
-timer differently: measured from the end of the last response, node v26.10.0
-closed an idle session 0.80 s later for `800ms` and 2.00 s later for `2s`, bun
-1.4.2 1.60 s and 4.00 s later — **Bun fires an HTTP/2 session's timer at twice
-the value**.  actor-ts states that rather than halving the number on Bun.  None
+It bounds an idle **HTTP/2 session** too, and `request-timeout` an HTTP/2
+stream's receive.  `keepAliveTimeout` and `requestTimeout`, which carry them to
+an HTTP/1.1 connection, are properties no HTTP/2 session or stream reads, so on
+a listener with `http2` on actor-ts runs timers of its own: a session that has
+had no stream open for `idle-timeout` is closed with a GOAWAY — the same value
+on both runtimes, and a PING frame resets nothing — and a stream whose request
+is still arriving at `request-timeout` is answered `408` and reset.  A stream
+in flight holds its session, so a slow handler, a long poll and an SSE stream
+outlive the idle bound as they do on HTTP/1.1, and a request received in full
+is never cut by the receive deadline.  Unset, an idle HTTP/2 session is left to
+Fastify's own session timer — 72 s on Node, 144 s on Bun, which fires it at
+twice the value and lets a PING reset it — and on Hono over Node to nothing at
+all.  On Bun the HTTP/2 listener bounds a connection that negotiates HTTP/1.1
+on the same port by neither key, so there both are reported held for HTTP/2
+only and `bind()` warns.  None
 of this is the Hono backend under Bun, whose sessions `Bun.serve`'s own
 whole-connection bound holds (§ above), set or derived: an idle session there
 was closed within one sweep of a `4s` value (bun 1.4.2), and a silent stream

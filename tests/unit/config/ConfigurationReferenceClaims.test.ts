@@ -411,3 +411,38 @@ describe('when a bad persistence client leaf fails (#1490)', () => {
     expect(text).toContain(leaves);
   });
 });
+
+describe('idle-timeout and request-timeout on an HTTP/2 listener (#870)', () => {
+  // The framework's own session and stream timers replaced the runtime's
+  // session timer; Http2SessionIdle.test.ts and the stream receive-deadline
+  // suites pin them.  What the page described before was the replaced timer:
+  // armed through the runtime, doubled on Bun, Fastify's 72 s when unset.
+  test.each([
+    [
+      'reference/configuration.mdx',
+      [
+        'It bounds an idle **HTTP/2 session** too, and `request-timeout` an HTTP/2 stream\'s receive.',
+        'a session that has had no stream open for `idle-timeout` is closed with a GOAWAY — the same value on both runtimes, and a PING frame resets nothing — and a stream whose request is still arriving at `request-timeout` is answered `408` and reset.',
+        'Unset, an idle HTTP/2 session is left to Fastify\'s own session timer — 72 s on Node, 144 s on Bun, which fires it at twice the value and lets a PING reset it — and on Hono over Node to nothing at all.',
+        'On Bun the HTTP/2 listener bounds a connection that negotiates HTTP/1.1 on the same port by neither key, so there both are reported held for HTTP/2 only and `bind()` warns.',
+        'None of this is the Hono backend under Bun',
+      ],
+      ['actor-ts states that rather than halving the number on Bun', 'actor-ts also arms each session\'s own idle timer'],
+    ],
+    [
+      'de/reference/configuration.mdx',
+      [
+        'Er begrenzt auch eine untätige **HTTP/2-Session**, und `request-timeout` das Empfangen eines HTTP/2-Streams.',
+        'eine Session, die `idle-timeout` lang keinen offenen Stream hatte, wird mit einem GOAWAY geschlossen — derselbe Wert auf beiden Runtimes, und ein PING-Frame setzt nichts zurück —, und ein Stream, dessen Request bei `request-timeout` noch eintrifft, wird mit `408` beantwortet und zurückgesetzt.',
+        'Ungesetzt bleibt eine untätige HTTP/2-Session Fastifys eigenem Session-Timer überlassen — 72 s auf Node, 144 s auf Bun, das ihn beim doppelten Wert feuern lässt und von einem PING zurücksetzen lässt —, auf Hono über Node gar keiner Schranke.',
+        'Auf Bun begrenzt der HTTP/2-Listener eine Verbindung, die auf demselben Port HTTP/1.1 aushandelt, mit keinem der beiden Keys; dort werden beide als nur für HTTP/2 wirksam gemeldet, und `bind()` warnt.',
+        'Nichts davon betrifft das Hono-Backend unter Bun',
+      ],
+      ['statt die Zahl auf Bun zu halbieren', 'stellt actor-ts deshalb zusätzlich den eigenen Idle-Timer jeder Session scharf'],
+    ],
+  ])('%s describes the timers actor-ts runs, not the replaced one', (path, sentences, retired) => {
+    const text = prose(page(path));
+    for (const sentence of sentences) expect(text).toContain(sentence);
+    for (const gone of retired) expect(text).not.toContain(gone);
+  });
+});

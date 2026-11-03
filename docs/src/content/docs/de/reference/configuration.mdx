@@ -1706,19 +1706,24 @@ Backend, das nicht das Eigene seiner Runtime behält: Buns 10 s schnitten
 langsame Handler ohne Antwort ab, dort wird ein ungesetztes `idle-timeout`
 deshalb aus der Request-Deadline abgeleitet — per Default 36 s (§ oben).
 
-Er begrenzt auch eine untätige **HTTP/2-Session**.  `keepAliveTimeout`, das ihn
-zu einer HTTP/1.1-Verbindung trägt, ist eine Property, die keine HTTP/2-Session
-liest; auf einem Listener mit `http2` stellt actor-ts deshalb zusätzlich den
-eigenen Idle-Timer jeder Session scharf.  Feuert er, wird die Session geordnet
-geschlossen — ein GOAWAY, und ein Stream, der noch läuft, wird fertig —; ein
-langsamer Handler, ein Long Poll und ein SSE-Stream überdauern ihn also wie
-unter HTTP/1.1.  Ungesetzt begrenzt eine untätige HTTP/2-Session auf Fastify
-nur dessen eigene 72 s, auf Hono über Node gar nichts.  Die Runtimes lassen
-diesen Timer unterschiedlich feuern: gemessen ab dem Ende der letzten Antwort
-schloss node v26.10.0 eine untätige Session 0,80 s später bei `800ms` und
-2,00 s später bei `2s`, bun 1.4.2 nach 1,60 s und 4,00 s — **Bun lässt den
-Timer einer HTTP/2-Session beim doppelten Wert feuern**.  actor-ts benennt
-das, statt die Zahl auf Bun zu halbieren.  Nichts davon betrifft das
+Er begrenzt auch eine untätige **HTTP/2-Session**, und `request-timeout` das
+Empfangen eines HTTP/2-Streams.  `keepAliveTimeout` und `requestTimeout`, die
+sie zu einer HTTP/1.1-Verbindung tragen, sind Properties, die keine
+HTTP/2-Session und kein HTTP/2-Stream liest; auf einem Listener mit `http2`
+betreibt actor-ts deshalb eigene Timer: eine Session, die `idle-timeout` lang
+keinen offenen Stream hatte, wird mit einem GOAWAY geschlossen — derselbe Wert
+auf beiden Runtimes, und ein PING-Frame setzt nichts zurück —, und ein Stream,
+dessen Request bei `request-timeout` noch eintrifft, wird mit `408` beantwortet
+und zurückgesetzt.  Ein laufender Stream hält seine Session; ein langsamer
+Handler, ein Long Poll und ein SSE-Stream überdauern die Idle-Schranke also wie
+unter HTTP/1.1, und ein vollständig empfangener Request wird von der
+Empfangs-Deadline nie gekappt.  Ungesetzt bleibt eine untätige HTTP/2-Session
+Fastifys eigenem Session-Timer überlassen — 72 s auf Node, 144 s auf Bun, das
+ihn beim doppelten Wert feuern lässt und von einem PING zurücksetzen lässt —,
+auf Hono über Node gar keiner Schranke.  Auf Bun begrenzt der HTTP/2-Listener
+eine Verbindung, die auf demselben Port HTTP/1.1 aushandelt, mit keinem der
+beiden Keys; dort werden beide als nur für HTTP/2 wirksam gemeldet, und
+`bind()` warnt.  Nichts davon betrifft das
 Hono-Backend unter Bun, dessen Sessions die eigene verbindungsweite Schranke
 von `Bun.serve` hält (§ oben), gesetzt oder abgeleitet: eine untätige Session
 wurde dort innerhalb eines Takts nach einem Wert von `4s` geschlossen (bun
