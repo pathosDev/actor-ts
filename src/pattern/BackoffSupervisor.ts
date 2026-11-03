@@ -69,7 +69,9 @@ import type {
  *      — the stash is held back until the new child has clearly
  *      survived its grace window.  New messages arriving during the
  *      grace forward immediately so the happy-path latency is
- *      unaffected.
+ *      unaffected — or, with `forwardDuringGrace: false`, wait in the
+ *      stash until the grace is over, in `drop` mode as well: `drop`
+ *      applies while there is no child, not to one inside its grace.
  *   5. The restart counter resets when the child has been alive for
  *      `resetCounter` ms — default `'after-min-stable'` which uses
  *      `minBackoff` as the threshold.  After a long-running successful
@@ -289,11 +291,16 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
       this.currentChild.tell(message as T, this.sender.toNullable());
       return;
     }
-    if (this.settings.forward === 'drop') {
+    // `forward = drop` is about the backoff window, when there is no child to
+    // hold a message for.  Inside the grace there is one — alive, not yet
+    // confirmed — and `forwardDuringGrace: false` holds its messages in the
+    // stash until the grace is over, in either mode: dropping them here lost
+    // every message of the first grace after each start and respawn (#1479).
+    if (this.currentChild === null && this.settings.forward === 'drop') {
       this.log.debug('BackoffSupervisor: dropping message during backoff window', { message });
       return;
     }
-    // 'stash' mode.
+    // 'stash' mode, or the grace hold.
     if (this.stash.length >= this.settings.stashLimit) this.evictOldestStashed();
     // The MDC is snapshotted now rather than at eviction, for the reason
     // `StashedMessage` gives: by then this turn's context is somebody else's.

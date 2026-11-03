@@ -587,6 +587,82 @@ describe('drain-grace and forward-during-grace reach a live supervisor', () => {
   });
 });
 
+/** What a never-crashing child has been sent, in arrival order. */
+const steadyInbox: unknown[] = [];
+
+class RecordsFromTheStart extends Actor<unknown> {
+  override onReceive(message: unknown): void {
+    steadyInbox.push(message);
+  }
+}
+
+/**
+ * `forward` is about the backoff window — the child dead, its replacement not
+ * spawned yet — and `forward-during-grace = false` is about the grace after a
+ * spawn, when the child is alive but has not yet proven it survives.  The
+ * reference block, the configuration docs and the option's own JSDoc all say
+ * the second holds a message in the stash until the grace is over.  Under
+ * `forward = drop` it used to discard it instead, so the two fleet-wide leaves
+ * combined as documented lost every message sent in the first grace after
+ * each start and respawn — 50 ms by default.
+ */
+describe('forward = drop governs the backoff window, not the grace (#1479)', () => {
+  const dropAndHold: ConfigObject = {
+    'actor-ts': { 'backoff-supervisor': { forward: 'drop', 'drain-grace': '5ms', 'forward-during-grace': false } },
+  };
+
+  test('a message sent inside the grace after a respawn is held for the grace, then delivered', async () => {
+    const respawned = await respawnedUnderVirtualTime('backoff-drop-grace-respawn', dropAndHold);
+    try {
+      expect(await deliveryOffsetMs(respawned)).toBe(5);
+    } finally {
+      await respawned.kit.shutdown();
+    }
+  });
+
+  test('a message sent inside the grace after the first start is held for the grace, then delivered', async () => {
+    steadyInbox.length = 0;
+    const { kit } = TestKit.withManualScheduler('backoff-drop-grace-start', { config: dropAndHold });
+    try {
+      const supervisor = kit.system.spawn(BackoffSupervisor.factory<unknown>({ child: RecordsFromTheStart }), 'steady');
+      supervisor.tell('payload');
+      await kit.settle();
+      expect(steadyInbox, 'held: the child has not survived its grace yet').toEqual([]);
+      await kit.advance(4);
+      expect(steadyInbox, 'still held a millisecond before the grace ends').toEqual([]);
+      await kit.advance(1);
+      expect(steadyInbox).toEqual(['payload']);
+    } finally {
+      await kit.shutdown();
+    }
+  });
+
+  test('a message sent while there is no child at all is still dropped', async () => {
+    graceInbox.length = 0;
+    graceSpawns = 0;
+    const { kit, scheduler } = TestKit.withManualScheduler('backoff-drop-window', { config: dropAndHold });
+    try {
+      const supervisor = kit.system.spawn(BackoffSupervisor.factory<unknown>({ child: CrashesOnceThenRecords }), 'grace');
+      await kit.settle();
+      expect(graceSpawns, 'the first incarnation is gone').toBe(1);
+      expect(scheduler.pendingCount, 'the respawn timer is the only task pending').toBe(1);
+      supervisor.tell('inside the backoff window');
+      await kit.settle();
+
+      scheduler.advanceToNext();
+      await kit.settle();
+      expect(graceSpawns).toBe(2);
+      await kit.advance(5);
+      supervisor.tell('after the grace');
+      await kit.settle();
+
+      expect(graceInbox).toEqual(['after the grace']);
+    } finally {
+      await kit.shutdown();
+    }
+  });
+});
+
 describe('a bogus value from config is rejected exactly like a bogus one in code', () => {
   test.each([
     ['forward', 'forward = "sometimes"'],
