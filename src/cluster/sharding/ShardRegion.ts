@@ -1593,10 +1593,12 @@ export class ShardRegion<TMessage = unknown>
    * tables there would hand them to exactly the off-turn access the asks sweep
    * runs on a tick to avoid.
    *
-   * Every acknowledgment asks, a leader change's included, so a query in
-   * flight to a coordinator that went away is asked of its successor too.  A
-   * query whose first request did arrive is answered twice at most; the second
-   * answer finds nobody waiting and is dropped.
+   * A leader change's acknowledgment asks too, so a query in flight to a
+   * coordinator that went away is asked of its successor.  Every
+   * acknowledgment asks every waiting query again, so a query in flight across
+   * several of them is asked, and can be answered, once per acknowledgment;
+   * the first answer reaches its caller and the rest find nobody waiting and
+   * are dropped.
    */
   private askAgainForPendingQueries(): void {
     for (const shardId of this.pendingLocationAsks.keys()) this.askCoordinator(shardId);
