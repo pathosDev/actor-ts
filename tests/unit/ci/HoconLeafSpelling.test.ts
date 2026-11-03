@@ -500,11 +500,55 @@ function unnamedRenames(text: string, renames: readonly CodeRename[]): string[] 
 }
 
 /**
- * A claim that one table is the exception — the shape the sentence about code
- * notes went stale in — or the plain denial that any table passes a note.
+ * Claims that one table is the exception — the shape the sentence about code
+ * notes went stale in — or plain denials that any table passes a note.
  */
-const SINGLE_EXCEPTION_CLAIM =
-  /\b(?:the )?(?:one|only|single) (?:rename|table)\b|\bevery table is but\b|\b(?:gets?|pass(?:es)?) no note\b|\bno table passes\b/i;
+const SINGLE_EXCEPTION_CLAIMS: readonly RegExp[] = [
+  /\b(?:the )?(?:one|only|single) (?:rename|table)\b/i,
+  /\bevery table is but\b/i,
+  /\b(?:gets?|pass(?:es)?) no note\b/i,
+  /\bno table passes\b/i,
+];
+
+/** The patterns of {@link SINGLE_EXCEPTION_CLAIMS} that refuse `text`. */
+function singleExceptionClaimsIn(text: string): RegExp[] {
+  return SINGLE_EXCEPTION_CLAIMS.filter((claim) => claim.test(text));
+}
+
+/**
+ * One passage per pattern of {@link SINGLE_EXCEPTION_CLAIMS}, each worded so
+ * that its pattern alone refuses it.  AGENTS.md and `RetiredKeys.ts` are
+ * clean, so their own text exercises none of the patterns, and any one could
+ * be deleted with both checks on them still green.  The first two are the
+ * sentences the patterns were written against.
+ */
+const ONE_SINGLE_EXCEPTION_CLAIM_EACH: readonly string[] = [
+  'The TCP framing caps are the one rename that moved TypeScript fields as well.',
+  "A rename that moved only the HOCON spelling, which every table is but the TCP framing caps'.",
+  "The broker breaker's table passes no note of its own.",
+  'No table passes rejectRetiredLeaves a note of its own.',
+];
+
+/**
+ * Hold a list of patterns to its passages: each passage refused by exactly one
+ * pattern, and each pattern refusing exactly one passage.  A pattern deleted,
+ * or narrowed until it matches nothing, leaves its passage refused by none; a
+ * pattern added without a passage of its own refuses none.
+ */
+function expectOnePatternEach(
+  patterns: readonly RegExp[],
+  passagesOfTheirOwn: readonly string[],
+  refusalsOf: (passage: string) => readonly RegExp[],
+): void {
+  const refusals = passagesOfTheirOwn.map(refusalsOf);
+  passagesOfTheirOwn.forEach((passage, index) => {
+    expect(refusals[index]!.map(String), `"${passage}" is to be refused by one pattern alone`).toHaveLength(1);
+  });
+  for (const pattern of patterns) {
+    expect(refusals.filter((refused) => refused.includes(pattern)).length, `${pattern} refuses no passage of its own`)
+      .toBe(1);
+  }
+}
 
 /** Every builder method `src/` declares, by name, with the parameter counts its declarations take. */
 function builderArities(): Map<string, Set<number>> {
@@ -651,7 +695,7 @@ describe('the AGENTS.md naming-lockstep paragraph says so', () => {
     expect(sentence, 'the paragraph no longer says which tables pass rejectRetiredLeaves a note').toBeDefined();
     expect(unnamedRenames(sentence!, codeRenames()), 'renames whose refusal says code moved, which the sentence leaves out')
       .toEqual([]);
-    expect(paragraph).not.toMatch(SINGLE_EXCEPTION_CLAIM);
+    expect(singleExceptionClaimsIn(paragraph).map(String), 'the paragraph calls one table the exception').toEqual([]);
   });
 
   test('every builder call it shows is one src/ declares with that many parameters', () => {
@@ -671,7 +715,11 @@ describe('the AGENTS.md naming-lockstep paragraph says so', () => {
     const comment = defaultNoteComment();
     expect(unnamedRenames(comment, codeRenames()), 'renames whose refusal says code moved, which the comment leaves out')
       .toEqual([]);
-    expect(comment).not.toMatch(SINGLE_EXCEPTION_CLAIM);
+    expect(singleExceptionClaimsIn(comment).map(String), 'the comment calls one table the exception').toEqual([]);
+  });
+
+  test('every pattern the two checks above refuse refuses a passage of its own', () => {
+    expectOnePatternEach(SINGLE_EXCEPTION_CLAIMS, ONE_SINGLE_EXCEPTION_CLAIM_EACH, singleExceptionClaimsIn);
   });
 });
 
