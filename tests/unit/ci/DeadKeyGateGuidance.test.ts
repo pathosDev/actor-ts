@@ -468,15 +468,55 @@ function kindSentence(): string {
 }
 
 /**
+ * The words a kind sentence can open its exceptions with: the noun, and the
+ * preposition the reference-conf pages used ("fails it, except a fraction read
+ * as a size").  Read for the noun alone, a sentence that opened its exception
+ * with the preposition had no getter counted from it, and passed while naming
+ * an exception the gate no longer makes.
+ */
+const EXCEPTION_WORDS: readonly RegExp[] = [/\bexceptions?\b/i, /\bexcept\b/i];
+
+/** The words of {@link EXCEPTION_WORDS} that `text` uses. */
+function exceptionWordsIn(text: string): RegExp[] {
+  return EXCEPTION_WORDS.filter((word) => word.test(text));
+}
+
+/** Where the first word of {@link EXCEPTION_WORDS} stands in `sentence`, or -1. */
+function firstExceptionWord(sentence: string): number {
+  const positions = EXCEPTION_WORDS.map((word) => sentence.search(word)).filter((position) => position !== -1);
+  return positions.length === 0 ? -1 : Math.min(...positions);
+}
+
+/**
+ * One passage per word of {@link EXCEPTION_WORDS}, each opening its exception
+ * with that word alone and naming a getter after the exception's own words,
+ * with the exception the getter has to be counted under.  A word deleted, or
+ * narrowed until it matches nothing, leaves its passage counting no getter.
+ */
+const ONE_EXCEPTION_WORD_EACH: ReadonlyArray<{ readonly passage: string; readonly exception: string; readonly getter: string }> = [
+  {
+    passage: 'A reader of another kind fails it, with one exception: a fraction read as a size, through `getBytes`.',
+    exception: 'fraction',
+    getter: 'getBytes',
+  },
+  {
+    passage: 'A reader of another kind fails it, except a size shipped as a bare count and read with `getInt`.',
+    exception: 'bare count',
+    getter: 'getInt',
+  },
+];
+
+/**
  * The getters the kind sentence names as exceptions, by the exception whose
- * words come last before each: everything from the word "exception" on, so a
- * getter the sentence names as an example of what fails is not counted.
- * Getters named before any exception's words come back as unassigned.
+ * words come last before each: everything from the first word an exception
+ * opens with on ({@link EXCEPTION_WORDS}), so a getter the sentence names as
+ * an example of what fails is not counted.  Getters named before any
+ * exception's words come back as unassigned.
  */
 function namedExceptions(sentence: string): { readonly named: ReadonlyArray<ReadonlySet<string>>; readonly unassigned: readonly string[] } {
   const named = KIND_EXCEPTIONS.map(() => new Set<string>());
   const unassigned: string[] = [];
-  const at = sentence.search(/\bexceptions?\b/i);
+  const at = firstExceptionWord(sentence);
   if (at === -1) return { named, unassigned };
   let current = -1;
   for (const token of sentence.slice(at).matchAll(/`(get[A-Z]\w*)`|\bbare count\b|\b[Ff]ractions?\b/g)) {
@@ -540,8 +580,10 @@ describe('AGENTS.md describes the dead-key gate as it is (#1425)', () => {
       ).toEqual(letThrough);
     });
     if (gaps.length === 0) {
-      expect(sentence, 'the gate lets no reader of another kind through, and the sentence still names an exception')
-        .not.toMatch(/\bexceptions?\b/i);
+      expect(
+        exceptionWordsIn(sentence).map(String),
+        'the gate lets no reader of another kind through, and the sentence still names an exception',
+      ).toEqual([]);
     }
   });
 
@@ -662,6 +704,18 @@ describe('AGENTS.md describes the dead-key gate as it is (#1425)', () => {
   test('the reasons and the denial the data-center and kind checks refuse are refused, each on a passage of its own', () => {
     expectOnePatternEach(RETIRED_DATA_CENTER_REASONS, ONE_DATA_CENTER_REASON_EACH, dataCenterReasonsIn);
     expect('A reader of another kind fails it without exception.').toMatch(KIND_EXCEPTION_DENIAL);
+  });
+
+  test('either word an exception opens with counts its getter, under the exception the passage names', () => {
+    expectOnePatternEach(EXCEPTION_WORDS, ONE_EXCEPTION_WORD_EACH.map(({ passage }) => passage), exceptionWordsIn);
+    for (const { passage, exception, getter } of ONE_EXCEPTION_WORD_EACH) {
+      const index = KIND_EXCEPTIONS.findIndex((candidate) => candidate.words.test(exception));
+      expect(index, `"${exception}" names no entry of KIND_EXCEPTIONS`).toBeGreaterThan(-1);
+      const { named, unassigned } = namedExceptions(passage);
+      expect(unassigned, `"${passage}" names a getter before its exception`).toEqual([]);
+      expect(named.map((getters) => [...getters]), `"${passage}" counts ${getter} under "${exception}" alone`)
+        .toEqual(KIND_EXCEPTIONS.map((_, position) => (position === index ? [getter] : [])));
+    }
   });
 
   test('the constants rule names what catches a moved reader', () => {
