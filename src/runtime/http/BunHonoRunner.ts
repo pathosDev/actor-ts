@@ -262,6 +262,12 @@ interface BunServer {
  *
  * **`idleTimeout`** is `idleTimeoutMs`'s and `requestDeadlineMs`'s: a bag value
  * would pass the conversion and the ceiling by.
+ *
+ * **What answers and where** are `fetch`'s, `host`'s and `port`'s: `Bun.serve`
+ * answers a path in `routes` or `static` itself, ahead of `fetch` — measured on
+ * bun 1.4.2 and 1.4.4, a bag route answered its path while every other one
+ * still reached the runner's handler — and `unix` moves the listener off host
+ * and port, which beside a hostname throws at `serve()`.
  */
 const BUN_LISTENER_SHAPE_KEYS: ReadonlySet<string> = new Set([
   'tls',
@@ -270,6 +276,7 @@ const BUN_LISTENER_SHAPE_KEYS: ReadonlySet<string> = new Set([
   'clientRenegotiationWindow', 'certFile', 'keyFile', 'caFile',
   'http1', 'http2', 'http3',
   'idleTimeout',
+  'routes', 'static', 'unix',
 ]);
 
 /** A caller's `serveOptions` without the members {@link BUN_LISTENER_SHAPE_KEYS} reserves. */

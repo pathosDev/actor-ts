@@ -107,6 +107,19 @@ describe('BunHonoRunner — serveOptions go in beneath the runner\'s own fields 
     });
   }
 
+  // `fetch` is the runner's, and `Bun.serve` answers a path in `routes` or
+  // `static` ahead of it; `unix` moves the listener off host and port, and
+  // beside a hostname it throws at serve().  The live half is in
+  // `BunHonoRunnerServeOptionsLive.test.ts`.
+  for (const name of ['routes', 'static', 'unix'] as const) {
+    test(`the bag's ${name} never reaches Bun.serve, with tls or without`, async () => {
+      const bagValue = name === 'unix' ? '/tmp/the-bag.sock' : { '/x': new Response('the bag\'s') };
+
+      expect(await bunBagFor({ serveOptions: { [name]: bagValue } })).not.toHaveProperty(name);
+      expect(await bunBagFor({ tls: TLS, serveOptions: { [name]: bagValue } })).not.toHaveProperty(name);
+    });
+  }
+
   test('the websocket handlers the bridge puts in the bag still arrive beside the dropped names', async () => {
     const websocket = { maxPayloadLength: 1024 };
     const bag = await bunBagFor({ tls: TLS, serveOptions: { websocket, cert: 'a certificate of the bag\'s', http1: false } });

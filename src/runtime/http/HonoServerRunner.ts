@@ -55,12 +55,14 @@ export type HonoServeOptions = {
    * `websocket` handlers, `@hono/node-server`'s `overrideGlobalObjects` or
    * `serverOptions` — always **beneath** what the runner writes itself
    * (#1486).  `host`, `port` and `fetch`, and Deno's stop signal, are the
-   * runner's; and the listener's TLS and HTTP versions are decided by `tls`
-   * and `http2` alone, set or unset, so whatever in the bag would decide them
-   * is dropped: on Bun its `tls`, every TLS option `Bun.serve` also reads from
-   * the top level, and `http1`/`http2`/`http3`; on Deno its `cert`/`key`; on
-   * Node its `createServer`, and every `node:tls` option and `allowHTTP1` in
-   * its `serverOptions`.  HTTP/1.1 therefore stays beside h2 on every runtime,
+   * runner's, so on Bun the bag's `routes`, `static` and `unix` — which would
+   * answer ahead of `fetch` or move the listener — are dropped.  The
+   * listener's TLS and HTTP versions are decided by `tls` and `http2` alone,
+   * set or unset, so whatever in the bag would decide them is dropped too: on
+   * Bun its `tls`, every TLS option `Bun.serve` also reads from the top level,
+   * and `http1`/`http2`/`http3`; on Deno its TLS material; on Node its
+   * `createServer`, and every `node:tls` option and `allowHTTP1` in its
+   * `serverOptions`.  HTTP/1.1 therefore stays beside h2 on every runtime,
    * and the typed `tls` is the whole TLS configuration.  Bun's `idleTimeout` is
    * dropped too, being `idleTimeoutMs` and `requestDeadlineMs`'s to decide: a
    * bag value would pass the ceiling and the unit conversion by.  Node's

@@ -87,6 +87,28 @@ describe('BunHonoRunner — without tls, a serveOptions bag cannot make the list
   });
 });
 
+describe('BunHonoRunner — what answers is the runner\'s fetch, and where it listens is host and port (#1486)', () => {
+  // `Bun.serve` answers a path in `routes` or `static` itself, ahead of
+  // `fetch`: measured on bun 1.4.2 and 1.4.4, a bag route answered `/x` while
+  // `/` still reached the runner's handler.  And a bag `unix` threw at
+  // `serve()` — "Cannot specify both hostname and unix".
+  test('a bag routes or static entry does not answer in place of fetch', async () => {
+    const routes = await serve({ serveOptions: { routes: { '/x': new Response('the bag route') } } });
+    const statics = await serve({ serveOptions: { static: { '/x': new Response('the bag static') } } });
+
+    for (const handle of [routes, statics]) {
+      const response = await fetch(`http://127.0.0.1:${handle.port}/x`, { signal: AbortSignal.timeout(ANSWER_WITHIN_MS) });
+      expect(`${response.status} ${await response.text()}`).toBe('200 hello');
+    }
+  });
+
+  test('a bag unix path neither moves the listener nor stops it from binding', async () => {
+    const handle = await serve({ serveOptions: { unix: fileURLToPath(new URL('bag.sock', FIXTURES)) } });
+
+    expect(await plainAnswer(handle)).toBe('200 hello');
+  });
+});
+
 describe('BunHonoRunner — under tls and http2, HTTP/1.1 stays on the port whatever the bag says (#1486)', () => {
   test('a bag http1: false does not take HTTP/1.1 away', async () => {
     const handle = await serve({ tls: { cert: CERT, key: KEY }, http2: true, serveOptions: { http1: false } });
