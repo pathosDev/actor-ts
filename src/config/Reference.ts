@@ -1546,7 +1546,9 @@ actor-ts {
     #     disagree on purpose: 72s on Fastify, so the server outlives a load
     #     balancer's idle window and the balancer never posts a request onto a
     #     socket that is closing, against node:http's 5s on Express and
-    #     Hono-on-Node.  Set a duration to make them agree, or 0 to disable it.
+    #     Hono-on-Node.  Set a duration to make them agree, or 0 to disable it
+    #     -- which on the Hono backend under Bun leaves a stalled body
+    #     unbounded, below.
     #     On the Hono backend under Bun it is Bun.serve's own idleTimeout, a
     #     wider bound: whole-connection inactivity, so a handler that writes
     #     nothing for that long, a long poll or a sparse SSE stream is cut
@@ -1556,6 +1558,12 @@ actor-ts {
     #     Bun's own 10s but derived from the longest request deadline --
     #     http.request-timeout, raised to the longest requestTimeout() in the
     #     routes -- so the 503 is written first: 36s for the built-in 30s.
+    #     There it is also the only bound on a request whose body stops
+    #     arriving and on a connection idle between requests -- none of the
+    #     other timeouts is installed -- so 0 leaves such a connection open
+    #     until the client closes it.  A value whose earliest cut lands less
+    #     than 2s past the deadline makes bind() warn: the 5s below cuts a
+    #     handler that has written nothing from 4s on.
     #
     #       idle-timeout = 5s
     #

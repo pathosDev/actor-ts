@@ -1417,7 +1417,7 @@ The bounds on a **connection** — as against a route on it — come from
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `http.server.idle-timeout` | *(backend's own)* | How long an idle connection is held before it is closed — a keep-alive HTTP/1.1 connection between requests, and an HTTP/2 session with nothing moving on it.  Ships **no leaf** — see below.  `0` disables it.  At most `2147482647` ms — on the Hono backend under Bun, where it is a wider bound, at most `255s` (§ below). |
+| `http.server.idle-timeout` | *(backend's own)* | How long an idle connection is held before it is closed — a keep-alive HTTP/1.1 connection between requests, and an HTTP/2 session with nothing moving on it.  Ships **no leaf** — see below.  `0` disables it — on the Hono backend under Bun, where it is the only bound on a request whose body stops arriving, that leaves such a connection open until the client closes it (§ below).  At most `2147482647` ms — on the Hono backend under Bun, where it is a wider bound, at most `255s` (§ below). |
 | `http.server.header-timeout` | `60s` | How long a connection may take to deliver its complete header block before it is answered `408` and destroyed.  The slow-loris guard, held by actor-ts itself — see below.  A shorter `request-timeout` is the header deadline too: the guard runs on the smaller of the two.  `0` disables it.  At most `2147483647` ms. |
 | `http.server.request-timeout` | `300s` | How long a connection may take to deliver a request in full, headers and body.  Bounds *receiving*, never answering — a handler's deadline is `http.request-timeout`.  Shorter than `header-timeout`, it bounds the header phase as well, since the headers are part of the request.  At most `4294967295` ms. |
 | `http.server.max-connections` | *(unlimited)* | Concurrent connections the listening socket accepts before it starts closing new ones.  Ships **no leaf** — see below. |
@@ -1549,6 +1549,15 @@ sweep before the value: measured on bun 1.4.2, an idle timeout of `8s` closed
 silent requests started across one sweep between 4.5 s and 8.0 s after each
 began.  Above `255s` it is refused at `bind()`, naming the key: `Bun.serve`
 holds no more.  It bounds an idle HTTP/2 session too.
+
+A value you set is written as given.  Where it can cut a silent handler before
+the request deadline's `503` — its earliest cut lands less than 2 s past the
+deadline — `bind()` warns, naming the key, the value and the deadline: the
+`5s` of the example above cuts a handler that has written nothing from 4 s on.
+`0` turns it off, and here it is the only bound on a request whose body stops
+arriving and on a connection idle between requests, since none of the other
+three is installed: with `0` such a connection stays open until the client
+closes it.
 
 Unset, it is not Bun's own 10 s, which cut any handler silent for about 12 s
 with no response at all.  It is derived from the server's longest request

@@ -1,0 +1,86 @@
+/**
+ * Sentences the configuration reference publishes about behaviour, held to
+ * that behaviour.
+ *
+ * Each one below was true when it was written, or incomplete in a way nobody
+ * could see, until a later change to the code it describes made it false —
+ * and nothing failed, because the suites that pin the behaviour never open a
+ * page.  So each is pinned here from both ends where it can be: the page has
+ * to say it, in English and in German, and where a unit test can reach the
+ * behaviour the number the sentence quotes is taken from the code rather than
+ * from a second copy of the words.
+ *
+ * `REFERENCE_CONF` stands for `src/config/Reference.ts` and for the HOCON fence
+ * of both `reference-conf.mdx` pages, which `ReferenceConfDocs` holds
+ * byte-identical to it.  Prose is compared with its line breaks and HOCON
+ * comment markers folded away, so rewrapping a paragraph moves no pin.
+ */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, expect, test } from 'bun:test';
+import { Config } from '../../../src/config/Config.js';
+import { ConfigKeys } from '../../../src/config/ConfigKeys.js';
+import { REFERENCE_CONF } from '../../../src/config/Reference.js';
+import { bunIdleTimeoutOf } from '../../../src/runtime/http/BunHonoRunner.js';
+
+const DOCS_ROOT = join(import.meta.dir, '..', '..', '..', 'docs', 'src', 'content', 'docs');
+
+/** A docs page by its path under `docs/src/content/docs`, the German mirror under `de/`. */
+function page(relative: string): string {
+  return readFileSync(join(DOCS_ROOT, relative), 'utf8');
+}
+
+/** Text with HOCON comment markers and line breaks folded away: a sentence reads as one line. */
+function prose(text: string): string {
+  return text.replace(/\r\n/g, '\n').replace(/^[ \t]*#[ \t]?/gm, '').replace(/\s+/g, ' ');
+}
+
+const REFERENCE = prose(REFERENCE_CONF);
+const reference = Config.parseString(REFERENCE_CONF);
+
+describe('idle-timeout on the Hono backend under Bun (#1487)', () => {
+  // The reference's own example value, read off the commented-out leaf.
+  const example = /idle-timeout = (\d+)s/.exec(REFERENCE)?.[1];
+  const exampleMs = Number(example) * 1_000;
+  const deadlineMs = reference.getDuration(ConfigKeys.http.requestTimeout.deadline);
+  const earliestCutSeconds = (bunIdleTimeoutOf({ idleTimeoutMs: exampleMs, requestDeadlineMs: deadlineMs }).earliestCutMs ?? NaN) / 1_000;
+
+  test('0 is written as Bun.serve\'s own 0, which never closes, and the example is one bind() warns about', () => {
+    expect(bunIdleTimeoutOf({ idleTimeoutMs: 0, requestDeadlineMs: deadlineMs }).seconds).toBe(0);
+    expect(example).toBe('5');
+    // A cut is reported only when it lands less than 2 s past the deadline,
+    // which is what makes bind() warn.
+    expect(earliestCutSeconds).toBeLessThan(deadlineMs / 1_000 + 2);
+  });
+
+  // Both pages carry an unrelated "only bound" (dead-letters retention), so
+  // the pin is the whole clause rather than the two words.
+  const ONLY_BOUND = 'the only bound on a request whose body stops arriving';
+  const EINZIGE_SCHRANKE = 'die einzige Schranke für einen Request, dessen Body nicht mehr weiterkommt';
+
+  test('reference.conf says 0 there leaves a stalled connection open, and where the example cuts', () => {
+    expect(REFERENCE).toContain(`${ONLY_BOUND} and on a connection idle between requests`);
+    expect(REFERENCE).toContain('so 0 leaves such a connection open until the client closes it');
+    expect(REFERENCE).toContain(`the ${example}s below cuts a handler that has written nothing from ${earliestCutSeconds}s on`);
+  });
+
+  test.each([
+    ['reference/configuration.mdx', ONLY_BOUND, 'until the client closes it'],
+    ['de/reference/configuration.mdx', EINZIGE_SCHRANKE, 'bis der Client sie schließt'],
+    ['http/security.mdx', ONLY_BOUND, 'until the client closes it'],
+    ['de/http/security.mdx', EINZIGE_SCHRANKE, 'bis der Client sie schließt'],
+  ])('%s says 0 leaves a stalled connection open there', (path, onlyBound, untilClosed) => {
+    const text = prose(page(path));
+    expect(text).toContain(onlyBound);
+    expect(text).toContain(untilClosed);
+  });
+
+  test.each([
+    ['reference/configuration.mdx', `the \`${example}s\` of the example above cuts a handler that has written nothing from ${earliestCutSeconds} s on`],
+    ['de/reference/configuration.mdx', `die \`${example}s\` des Beispiels oben schneiden einen Handler, der nichts geschrieben hat, ab ${earliestCutSeconds} s ab`],
+  ])('%s says where the example cuts', (path, sentence) => {
+    const text = prose(page(path));
+    expect(text).toContain(`idle-timeout = ${example}s`);
+    expect(text).toContain(sentence);
+  });
+});
