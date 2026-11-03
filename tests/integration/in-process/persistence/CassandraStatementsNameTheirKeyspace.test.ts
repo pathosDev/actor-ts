@@ -19,6 +19,11 @@ import { FakeCassandraClient } from './FakeCassandraClient.js';
  * because `autoCreateKeyspace` may have to create it first.  These cases hold
  * the corrected sentence to the code: a store that started relying on a
  * session keyspace would leave a statement here that names none.
+ *
+ * They run on an injected client, which `createCassandraClient` never builds,
+ * so a `USE` sent after connect on a client a store builds itself would never
+ * reach this log.  `tests/unit/persistence/CassandraStoreBuiltClientStatements`
+ * holds that client to the no-`USE` half, through a stand-in driver.
  */
 
 const KEYSPACE = 'app';
