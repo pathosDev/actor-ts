@@ -274,10 +274,12 @@ function readCassandraConnectionFromConfig(
  * reader has to answer differently each time (#1425) — the root literal
  * `CassandraPlugin.ts` registers as its plugin id counts for nothing.  The
  * exact-object assertions in `PersistenceConfigDefaults.test.ts` pin the
- * values.  `replication.data-centers` is the one leaf outside the gate: a
- * list of `{ name, replication-factor }` objects, read only under
- * `network-topology-strategy`, where the gate's list kind perturbs a list of
- * strings; the data-center cases in that same suite bind it.
+ * values.  `replication.data-centers` is the one leaf outside the gate, for
+ * want of a registry entry rather than a value: a list of
+ * `{ name, replication-factor }` objects, read only under
+ * `network-topology-strategy`, which an `UNPUBLISHED_LEAVES` entry with an
+ * `override` and a context selecting that class would bring in; until then
+ * the data-center cases in that same suite bind it.
  */
 export function readCassandraJournalOptionsFromConfig(
   config: Config,
