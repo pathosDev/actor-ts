@@ -220,6 +220,8 @@ actor-ts.io.broker.email-bridge {
     password                = ${?ACTOR_TS_IMAP_PASSWORD}
     mailbox                 = "INBOX"
     on-processed            = "mark-seen"
+    # move-to-mailbox       = "Processed"   # required with on-processed = "move"
+    disable-idle            = false         # the default; true polls where IDLE is advertised too
     poll-interval           = 30s
     max-idle-time           = 5m
     max-message-bytes       = 1M

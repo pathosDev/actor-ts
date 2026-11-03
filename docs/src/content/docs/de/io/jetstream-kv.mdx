@@ -155,11 +155,23 @@ HOCON-Defaults liegen unter `actor-ts.io.broker.jetstream-key-value`:
 
 ```hocon
 actor-ts.io.broker.jetstream-key-value {
-  servers = ["nats://localhost:4222"]
-  bucket  = "sessions"
-  history = 5
+  servers         = ["nats://localhost:4222"]   # a list, even for one server
+  name            = "sessions-cache"
+  user            = "my-app"
+  password        = ${?ACTOR_TS_NATS_PASSWORD}
+  # token         = ${?ACTOR_TS_NATS_TOKEN}     # instead of user and password
+  bucket          = "sessions"                  # required
+  history         = 5                           # create-time, like the four below
+  time-to-live    = 1h                          # unset: keep forever
+  storage         = "file"                      # "memory" or "file"
+  replicas        = 1
+  max-value-bytes = 64K
+  create          = true                        # the default
 }
 ```
+
+`time-to-live` ist eine Dauer, `1h` und `3600000` meinen also dasselbe, und
+`max-value-bytes` ist eine Bytegröße.
 
 ## Object Store
 
@@ -223,9 +235,17 @@ HOCON-Defaults liegen unter `actor-ts.io.broker.jetstream-object-store`:
 
 ```hocon
 actor-ts.io.broker.jetstream-object-store {
-  servers          = ["nats://localhost:4222"]
-  bucket           = "assets"
-  max-object-bytes = 4M
+  servers          = ["nats://localhost:4222"]   # a list, even for one server
+  name             = "asset-store"
+  user             = "my-app"
+  password         = ${?ACTOR_TS_NATS_PASSWORD}
+  # token          = ${?ACTOR_TS_NATS_TOKEN}     # instead of user and password
+  bucket           = "assets"                    # required
+  description      = "uploaded assets"           # create-time, like the two below
+  storage          = "file"                      # "memory" or "file"
+  replicas         = 1
+  max-object-bytes = 4M                          # the default is 1 MiB
+  create           = true                        # the default
 }
 ```
 
