@@ -151,9 +151,15 @@ system-wide `EventStream`, which has no authorization concept, so
 any actor in the system can read them — and a reconnect loop
 republishes on every backoff tick for the length of an outage.
 A joined server list keeps its shape and loses each credential
-(`nats://***@a:4222,nats://***@b:4222`), and a label that never
-carried one comes back unchanged. Call `redactedEndpointLabel()`
-in your own log lines too.
+(`nats://***@a:4222,nats://***@b:4222`). A label that never carried
+one comes back unchanged only when it holds no `?`, `#` or `@`:
+nothing behind the first `?` or `#` is shown, and an `@` anywhere
+past a host cannot be told from a password that holds a `/`, so
+`amqp://rabbit:5671/orders@eu` stops at `amqp://***`. A URL with a
+web scheme (`http`, `https`, `ws`, `wss`) is also printed the way its
+parse normalises it — `ws://Broker.Example:80/feed` as
+`ws://broker.example/feed`. Call `redactedEndpointLabel()` in your
+own log lines too.
 
 `onReceive` is **sealed** — the base class owns it, so that it can intercept
 `Terminated` before your dispatch table sees it.  Implement `onCommand`
