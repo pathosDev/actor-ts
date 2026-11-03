@@ -70,10 +70,15 @@ class Entity extends Actor<Command> {
 class FaultInjectingTransport extends InMemoryTransport {
   dropRegisters = false;
   dropBeats = false;
+  /** Registrations lost so far — what says the region asked and was not heard. */
+  droppedRegisters = 0;
 
   override send(to: NodeAddress, message: WireMessage): void {
     const kind = FaultInjectingTransport.shardingKind(message);
-    if (kind === 'sharding.Register' && this.dropRegisters) return;
+    if (kind === 'sharding.Register' && this.dropRegisters) {
+      this.droppedRegisters++;
+      return;
+    }
     if (kind === 'sharding.RegionHeartbeat' && this.dropBeats) return;
     super.send(to, message);
   }
@@ -244,6 +249,10 @@ describe('shardRegionRegistered — the three ways of not being registered', () 
     expect(result.detail).toContain(`the shard region for '${TYPE_NAME}' is running`);
     expect(result.detail).toContain('not registered with the coordinator yet');
     expect(result.detail).not.toContain('is running on this node: it was never started');
+    // What puts a running region here, and a leader change on its own is not
+    // one of them — the case below holds that — only one that lifts a refusal.
+    expect(result.detail).toContain('after a leader change lifts a refusal');
+    expect(result.detail).not.toContain('after it starts, after a leader change');
   }, 20_000);
 });
 
@@ -305,6 +314,8 @@ describe('shardRegionRegistered — following the registration', () => {
     expect(result.detail).toContain(`configured with ${NUM_SHARDS} shards`);
     expect(result.detail).toContain(`governs the type with ${NUM_SHARDS + 8}`);
     expect(result.detail).toContain('actor-ts.sharding.number-of-shards');
+    // A refusal is the verdict of one leader term, and lapses with it.
+    expect(result.detail).toContain('a leader change lifts the refusal');
     expect(node.cluster.sharding.isRegistered(TYPE_NAME)).toBe(false);
     // Still in the aggregate, failing under its own name: taking it out would
     // make "refused" and "nothing gates readiness" the same answer.
@@ -367,6 +378,44 @@ describe('shardRegionRegistered — following the registration', () => {
     });
     expect(coordinatorEntryFor(seed, other.cluster.selfAddress)).toBeDefined();
   }, 30_000);
+
+  test('a leader change keeps a registered node green while its region registers again', async () => {
+    // Three nodes, so the leadership moves to a peer rather than to C itself,
+    // and C's region registers with the new coordinator over the wire — where
+    // C's transport loses every such frame, so that coordinator never answers.
+    // The check stays green all the same: `isRegistered` is this node's account
+    // of what its region was last told, and a new leader tells it nothing.  A
+    // refusal, an eviction or a stop is what takes it back.
+    const systemName = 'readiness-check-leader';
+    const seeds = [`${systemName}@h:47910`];
+    const nodeA = await joinNode(systemName, 47_910);
+    const nodeB = await joinNode(systemName, 47_911, { seeds });
+    const nodeC = await joinNode(systemName, 47_912, { seeds });
+    const nodes = [nodeA, nodeB, nodeC];
+    await awaitCondition(() => nodes.every((node) => node.cluster.upMembers().length === 3), {
+      timeoutMs: 4_000,
+      label: 'all three nodes are up',
+    });
+    for (const node of nodes) node.cluster.sharding.start<Command>(shardingOptionsFor(false));
+    const check = shardRegionRegistered(nodeC.cluster, TYPE_NAME);
+    await awaitCondition(() => readCheck(check).status, {
+      timeoutMs: 4_000,
+      label: "C's region registered with the first leader's coordinator",
+    });
+
+    nodeC.transport.dropRegisters = true;
+    await nodeA.cluster.leave();
+    const leaderSeenByC = (): string => nodeC.cluster.leader().fold(() => '', (member) => member.address.toString());
+    const sampled: boolean[] = [];
+    await awaitCondition(() => {
+      sampled.push(readCheck(check).status);
+      return leaderSeenByC() === nodeB.cluster.selfAddress.toString() && nodeC.transport.droppedRegisters > 0;
+    }, { timeoutMs: 4_000, label: "C's region asked the new leader's coordinator to register, unheard" });
+    sampled.push(readCheck(check).status);
+
+    expect(sampled.filter((status) => !status)).toEqual([]);
+    expect(nodeC.cluster.sharding.isRegistered(TYPE_NAME)).toBe(true);
+  }, 20_000);
 
   test('a region that stops fails the check again, saying no region is running', async () => {
     const node = await joinNode('readiness-check-stopped', 47_907);

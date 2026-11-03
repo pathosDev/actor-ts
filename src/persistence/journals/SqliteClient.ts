@@ -205,7 +205,7 @@ export function assertLocalSqlitePath(
   const { path } = connection;
   const names = 'a database file, or ":memory:" for an in-memory database';
   if (path === undefined) {
-    if (acceptsDatabase && connection.database !== undefined) return;
+    if (acceptsDatabase && hasDatabaseHandle(connection)) return;
     const required = acceptsDatabase ? 'is required unless `database` is supplied' : 'is required';
     throw sqlitePathError(optionsName, `${required}: ${names}`);
   }
@@ -220,6 +220,21 @@ export function assertLocalSqlitePath(
       redactedUrlLabel(path),
     );
   }
+}
+
+/**
+ * Whether `connection` carries a pre-opened handle — `null` counted as none
+ * (#1492).
+ *
+ * `null` is what a caller without the declared types passes for "no handle",
+ * and before the path rule `buildSqliteDatabase` tested the handle for
+ * truthiness, so `null` beside a path opened the path.  A `!== undefined`
+ * test took it for a handle instead: beside a path the function handed `null`
+ * back and a store over it failed its first statement with a `TypeError`, and
+ * with no path it passed the rule as a supplied handle.
+ */
+function hasDatabaseHandle(connection: Pick<SqliteConnection, 'database'>): boolean {
+  return connection.database !== undefined && (connection.database as unknown) !== null;
 }
 
 /** The `OptionsError` `OptionsValidator.fail` raises, for field `path` — with a `(got …)` tail only when a value is given. */
@@ -237,7 +252,7 @@ export async function buildSqliteDatabase(connection: SqliteConnection): Promise
   // An injected handle is left exactly as it arrived.  It belongs to whoever
   // opened it — application code using the same connection, or a test fake —
   // so re-tuning it here would reach into a connection this store does not own.
-  if (connection.database !== undefined) return connection.database;
+  if (hasDatabaseHandle(connection)) return connection.database!;
   const driver = await getSqliteDriver();
   // With no handle given, the rule has left a usable path.
   const db = driver.open(connection.path as string);

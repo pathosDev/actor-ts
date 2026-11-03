@@ -125,7 +125,10 @@ Eine leere Aggregation gilt als *gesund* (siehe unten), Abmelden würde
 also „alles besteht" und „es meldet nichts mehr" zur selben Antwort
 machen.  Ein späteres `Cluster.join` auf demselben System zieht das
 alte Paar zurück und installiert sein eigenes; ein Prozess, der
-verlässt und wieder beitritt, erholt sich also normal.
+verlässt und wieder beitritt, erholt sich also normal — Sharding
+eingeschlossen: Das Verlassen stoppt die Regionen und Koordinatoren,
+die der Knoten gestartet hat, sodass der neue Cluster dieselben Typen
+wieder starten kann.
 
 ### Auf eine Shard-Region warten
 
@@ -148,16 +151,22 @@ statt sich bereit zu melden.  Jeder Check besteht, sobald
 welcher von drei Gründen ihn rot hält:
 
 - **keine Region läuft** für den Typ auf diesem Knoten — sie wurde
-  hier nie gestartet, oder sie ist gestoppt;
+  hier nie gestartet, oder sie ist gestoppt, was das Verlassen des
+  Clusters tut;
 - **der Koordinator hat sie abgelehnt**, wegen `number-of-shards`,
   mit beiden Zahlen;
 - **die Region läuft und ist noch nicht bestätigt** — nach ihrem
-  Start, nach einem Leader-Wechsel und nachdem der Koordinator sie
-  entfernt hat.
+  Start, nachdem der Koordinator sie entfernt hat, und nachdem ein
+  Leader-Wechsel eine Ablehnung aufgehoben hat.
+
+Ein Leader-Wechsel allein färbt keinen Check rot.  Der Check liest,
+was die Region dieses Knotens zuletzt gesagt bekommen hat, und ein
+neuer Leader sagt ihr nichts, bis sein Koordinator antwortet: Eine
+registrierte Region registriert sich im Hintergrund beim neuen
+Koordinator und bleibt dabei durchgehend grün.
 
 **Ein abgelehnter Knoten bleibt aus der Rotation, bis
-`number-of-shards` übereinstimmt oder ein Leader-Wechsel einen
-Koordinator erreicht, der ihn annimmt.**  Das ist eine Entscheidung,
+`number-of-shards` übereinstimmt.**  Das ist eine Entscheidung,
 keine Nebenwirkung: Eine abgelehnte Region nimmt weiter Traffic für
 den Typ an und puffert ihn vollständig, weil ihr nie ein Shard
 zugeteilt wird — den Knoten aus dem Load Balancer zu nehmen ist das
@@ -165,6 +174,12 @@ Einzige, was hilft.  Es gibt bewusst kein Fenster, nach dem der Check
 aufgibt, und keinen Timeout: Der Check schlägt nur in einer Menge
 nach, es gibt nichts, worauf er warten müsste, und nach einer Frist zu
 bestehen würde genau diesen Knoten zurück in die Rotation bringen.
+
+Eine Ablehnung ist das Urteil der Amtszeit eines Leaders.  Ein
+Leader-Wechsel hebt sie auf: Das `detail` lautet *läuft und ist noch
+nicht bestätigt*, bis der nächste Koordinator antwortet, und dieser
+entscheidet neu — er nimmt die Region an, wenn die Zahlen mit seinen
+eigenen übereinstimmen, und lehnt sie ab, wenn nicht.
 
 Wie die beiden des Clusters bleiben die Checks über `leave()` hinweg
 registriert, und ein späteres `Cluster.join` zieht sie mit dem Paar

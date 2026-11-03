@@ -548,9 +548,27 @@ eingereiht wurde.  Verworfen werden kann es trotzdem nicht — es nimmt die
 Spur eines `Terminated` der Death-Watch, die `drop-head`, `drop-new`,
 `reject` und eine `PriorityMailbox` alle unangetastet lassen —, aber
 `onClientConnected` ist dort eine gewöhnliche Nachricht, und eine Grenze,
-die in diese Mailbox eingebaut ist, kann es verwerfen.  Für strikte
-Ankunftsreihenfolge bei allem spawnst du den Hub mit
-`withMailbox(() => new Mailbox())`.
+die in diese Mailbox eingebaut ist, kann es verwerfen.
+
+Für strikte Ankunftsreihenfolge bei allem gibst du dem Hub eine eigene
+FIFO-Mailbox — und begrenzt sie, denn der Hub ist der Actor, den seine
+Peers füttern:
+
+```ts
+const chatMailboxOptions = BoundedMailboxOptions.create()
+  .withCapacity(1_024)
+  .withOverflow('drop-head');
+const chatOptions = ActorOptions.create().withMailbox(() => new BoundedMailbox(chatMailboxOptions));
+const chat = system.spawn(ChatRoom, 'chat', chatOptions);
+```
+
+Eine Mailbox, die du mitgibst, bringt ihre eigene Grenze mit, und keine
+andere Grenze erreicht sie: `ActorOptions` lehnt `withMailboxCapacity()`
+neben `withMailbox()` ab, und weder `actor-ts.mailbox.default.capacity`
+noch ein Eintrag unter `actor-ts.deployment` gilt für sie.
+`withMailbox(() => new Mailbox())` hält die Reihenfolge ebenfalls, aber
+unbegrenzt — ein Hub, der über den globalen Standard begrenzt war, verliert
+diese Grenze, ohne dass es irgendwo steht.
 
 Der Hub ist nicht die einzige Queue im Spiel.  Jede Verbindung hat eine
 eigene Mailbox — die des internen Connection-Actors —, und
@@ -645,17 +663,33 @@ es zurückkehrt.  Die Frames, die noch für die Verbindung in der Queue
 stehen, werden verworfen — sie werden zu
 [Dead Letters](/de/operations/dead-letters/), nie geschrieben — und der
 Socket wird auf der Stelle geschlossen.  Wo das Backend einen Socket hart
-schließen kann, wie die `ws`-basierten Backends Fastify und Express, sieht
-der Peer die Verbindung ohne Close-Frame abreißen; auf Hono, das es nicht
-kann, erhält er einen Close-Frame mit deinem `code` und `reason`.  Der Hub
-bekommt trotzdem genau ein `onClientDisconnected`, mit diesem `code` und
-`reason` und `initiatedBy: 'server'`, und es kommt weiterhin als Letztes:
-Frames, die der Peer vor dem Abort geschickt hat und die schon für den
-Hub in der Queue stehen, erreichen `onMessage` zuerst.  Auf einer
+schließen kann, wie es die `ws`-basierten Backends Fastify und Express
+können und Hono unter Bun und Node, sieht der Peer die Verbindung ohne
+Close-Frame abreißen; auf Hono unter Deno, dessen Socket kein hartes
+Schließen kennt, erhält er einen Close-Frame mit deinem `code` und
+`reason`.  Der Hub bekommt trotzdem genau ein `onClientDisconnected`, mit
+diesem `code` und `reason` und `initiatedBy: 'server'`, und es kommt
+weiterhin als Letztes: Frames, die der Peer vor dem Abort geschickt hat
+und die schon für den Hub in der Queue stehen, erreichen `onMessage`
+zuerst.  Auf einer
 Verbindung, die nicht mehr offen ist — nach `close()`, nach einem früheren
 `abort()` oder wenn der Client schon weg ist — tut `abort()` nichts; die
 erste Entscheidung über einen Socket bleibt stehen.  Sein Code ist
 standardmäßig 1008 (Policy Violation), der von `close()` 1000.
+
+Ein Close-Frame trägt einen Code aus einer festen Menge und höchstens 123
+Byte Begründung, und beide Methoden senden nur das.  Ein Code außerhalb
+von 1000–1014 und 3000–4999 oder einer der Codes, die dem Melden eines
+Close vorbehalten sind (1004, 1005, 1006), geht als Standardcode der
+jeweiligen Methode hinaus — 1000 bei `close()`, 1008 bei `abort()` —, und
+eine längere Begründung wird auf 123 UTF-8-Byte gekürzt, zwischen zwei
+Zeichen.  `onClientDisconnected` meldet weiterhin den Code und die
+Begründung, die du übergeben hast.  Direkt an den Transport gereicht, ließ
+beides den Socket auf manchen Backends offen, während der Hub hörte, er
+sei geschlossen: Das `ws`-Paket verweigert das Close, nachdem es schon
+damit begonnen hat, und Denos Socket verweigert es von vornherein.  Schlägt
+das Close eines Backends dennoch fehl, wird der Socket hart geschlossen, wo
+das Backend es kann; wo nicht, nennt eine Warnung die Verbindung.
 
 `isOpen` liest `false`, sobald `close()` oder `abort()` zurückkehrt — nach
 `close()` noch bevor der Socket tatsächlich zu ist.  `broadcast` und deine

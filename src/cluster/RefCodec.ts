@@ -198,7 +198,17 @@ function walk(value: unknown, encodeRef: RefEncoder, seen: WeakSet<object>): unk
 
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value)) {
-    out[k] = walk(v, encodeRef, seen);
+    // The mirror of `walkDecode`'s guard.  Any body built by `JSON.parse` can
+    // carry an own `"__proto__"` key, and assigned here it ran the prototype
+    // setter: the field never reached the frame, and the copy inherited the
+    // field's members instead.  Defined, it is a field like any other.
+    if (k === '__proto__') {
+      Object.defineProperty(out, k, {
+        value: walk(v, encodeRef, seen), enumerable: true, writable: true, configurable: true,
+      });
+    } else {
+      out[k] = walk(v, encodeRef, seen);
+    }
   }
   return out;
 }

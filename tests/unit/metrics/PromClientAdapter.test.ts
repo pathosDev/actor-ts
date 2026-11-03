@@ -1,4 +1,5 @@
 import { describe, expect, spyOn, test } from 'bun:test';
+import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Config } from '../../../src/config/Config.js';
@@ -99,6 +100,25 @@ function makeFakeRegistry(): FakePromRegistry {
     getSingleMetric(name) { return reg.registered.find((m) => m.options.name === name); },
   };
   return reg;
+}
+
+/**
+ * {@link makeFakeClient} plus the one prom-client rule the prefix cases need:
+ * a metric whose name breaks the Prometheus grammar is refused at
+ * construction, as prom-client's `validateMetricName` refuses it.  Written out
+ * rather than imported from `src/`, so the fake states the library's rule
+ * instead of the code under test's.
+ */
+function makeNameCheckingClient(reg: FakePromRegistry): ReturnType<typeof makeFakeClient> {
+  const client = makeFakeClient(reg);
+  const checked = (
+    Metric: new (options: FakePromMetric['options']) => Record<string, unknown>,
+  ): new (options: FakePromMetric['options']) => Record<string, unknown> =>
+    function NameChecked(options: FakePromMetric['options']): Record<string, unknown> {
+      if (!/^[a-zA-Z_:][a-zA-Z0-9_:]*$/.test(options.name)) throw new Error(`Invalid metric name: ${options.name}`);
+      return new Metric(options);
+    } as unknown as new (options: FakePromMetric['options']) => Record<string, unknown>;
+  return { Counter: checked(client.Counter), Gauge: checked(client.Gauge), Histogram: checked(client.Histogram) };
 }
 
 describe('promClientRegistry', () => {
@@ -292,6 +312,44 @@ describe('promClientRegistry', () => {
  * prom-client also never expires a series, so an uncapped bridge is the
  * more exposed of the two registries (#131).
  */
+/*
+ * #1466 — a prefix goes in front of every name the bridge registers, so it has
+ * to be the start of a valid Prometheus name: empty, or a valid name itself.
+ * prom-client checks the full name only when a family is first registered,
+ * which for the framework's own families is inside the dispatcher on an
+ * actor's turn — so an unusable prefix used to be accepted here and break
+ * message delivery later instead.
+ */
+describe('promClientRegistry — namePrefix', () => {
+  test.each(['app-', '5', 'a,b:c/d@e', 'app prefix', ' '])('a prefix no metric name can start with, %p, is refused under its field', (namePrefix) => {
+    const registry = makeFakeRegistry();
+    const client = makeFakeClient(registry);
+
+    let refusal: unknown = null;
+    try {
+      promClientRegistry({ client: client as never, registry, namePrefix });
+    } catch (error) {
+      refusal = error;
+    }
+
+    expect(refusal).toBeInstanceOf(OptionsError);
+    expect((refusal as OptionsError).field).toBe('namePrefix');
+    expect((refusal as Error).message).toStartWith('PromClientAdapterOptions: namePrefix ');
+    expect((refusal as Error).message).toContain(JSON.stringify(namePrefix));
+    expect(registry.registered).toEqual([]);
+  });
+
+  test.each(['', 'app_', 'actor_ts:', ':recorded', '_9'])('a prefix every name can follow, %p, is accepted and applied', (namePrefix) => {
+    const registry = makeFakeRegistry();
+    const client = makeNameCheckingClient(registry);
+    const adapted = promClientRegistry({ client: client as never, registry, namePrefix });
+
+    adapted.counter('hits_total').inc();
+
+    expect(registry.registered.map((metric) => metric.options.name)).toEqual([`${namePrefix}hits_total`]);
+  });
+});
+
 describe('promClientRegistry — cardinality cap', () => {
   function adaptedRegistryWith(maxSeriesPerFamily: number): {
     registry: FakePromRegistry;
@@ -549,6 +607,98 @@ describe('MetricsExtension.enablePromClient', () => {
 
       const metric = registry.registered.find((m) => m.options.name === 'hits')!;
       expect(metric.calls.map((call) => call.labels['path'])).toEqual(['/a', '/b', '/c']);
+    } finally {
+      void system.terminate();
+    }
+  });
+
+  /*
+   * The layering is per field: an explicit `undefined` means "not set" and
+   * falls through to the file, exactly as it does for `enable()`.  A plain
+   * spread of the options over the config's answer passes every case above —
+   * a builder never carries an own `undefined` — and drops the configured
+   * prefix or cap for a caller whose plain object does.
+   */
+  test('an explicitly undefined namePrefix falls through to the HOCON prefix', () => {
+    const system = systemWith('actor-ts.metrics.name-prefix = "app_"');
+    try {
+      const registry = makeFakeRegistry();
+      const client = makeFakeClient(registry);
+      const bridge = system.extension(MetricsExtensionId)
+        .enablePromClient({ client: client as never, registry, namePrefix: undefined });
+      bridge.counter('hits_total').inc();
+
+      expect(registeredNames(registry)).toContain('app_hits_total');
+      expect(registeredNames(registry)).not.toContain('hits_total');
+    } finally {
+      void system.terminate();
+    }
+  });
+
+  test('an explicitly undefined maxSeriesPerFamily falls through to the HOCON cap', () => {
+    const system = systemWith('actor-ts.metrics.max-series-per-family = 2');
+    const originalWarn = console.warn;
+    console.warn = (): void => {};
+    try {
+      const registry = makeFakeRegistry();
+      const client = makeFakeClient(registry);
+      const bridge = system.extension(MetricsExtensionId)
+        .enablePromClient({ client: client as never, registry, maxSeriesPerFamily: undefined });
+      for (const path of ['/a', '/b', '/c']) bridge.counter('hits', { path }).inc();
+
+      const metric = registry.registered.find((m) => m.options.name === 'hits')!;
+      expect(metric.calls.map((call) => call.labels['path'])).toEqual(['/a', '/b', METRICS_OVERFLOW_LABEL_VALUE]);
+    } finally {
+      console.warn = originalWarn;
+      void system.terminate();
+    }
+  });
+
+  test('a configured prefix no name can start with is refused under its key, and the actors keep answering', async () => {
+    // Against a client that applies prom-client's name rule: before the
+    // check, this prefix installed fine and the first framework metric then
+    // threw inside the dispatcher, so the actor below never answered.
+    const system = systemWith('actor-ts.metrics.name-prefix = "app-"');
+    try {
+      const registry = makeFakeRegistry();
+      const client = makeNameCheckingClient(registry);
+      const metrics = system.extension(MetricsExtensionId);
+      let refusal: unknown = null;
+      try {
+        metrics.enablePromClient({ client: client as never, registry });
+      } catch (error) {
+        refusal = error;
+      }
+
+      expect(refusal).toBeInstanceOf(OptionsError);
+      expect((refusal as Error).message).toStartWith('actor-ts.metrics.name-prefix: ');
+      expect(metrics.isEnabled()).toBe(false);
+
+      class Echo extends Actor<string> {
+        override onReceive(message: string): void { this.sender.forEach((sender) => sender.tell(`echo:${message}`)); }
+      }
+      const echo = system.spawn(Echo, 'echo');
+      expect(await echo.ask<string>('hi', 1_000)).toBe('echo:hi');
+    } finally {
+      void system.terminate();
+    }
+  });
+
+  test('a prefix passed in code is refused under its field, not a key', () => {
+    const system = systemWith('actor-ts.metrics.name-prefix = "app_"');
+    try {
+      const registry = makeFakeRegistry();
+      const promOptions = bridgeOptionsOver(registry).withNamePrefix('app-');
+
+      let refusal: unknown = null;
+      try {
+        system.extension(MetricsExtensionId).enablePromClient(promOptions);
+      } catch (error) {
+        refusal = error;
+      }
+
+      expect(refusal).toBeInstanceOf(OptionsError);
+      expect((refusal as Error).message).toStartWith('PromClientAdapterOptions: namePrefix ');
     } finally {
       void system.terminate();
     }

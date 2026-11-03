@@ -121,8 +121,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `awaitReady()` still pending — `Cluster.bootstrap`'s own included —
   rejects at once with a `ClusterReadyTimeoutError` that names the key. A
   value shorter than `seed-retry-interval` is refused, and behind
-  `Cluster.bootstrap`'s stable observation so is one that does not exceed
-  `self-election-grace` + 5 s, before the join.
+  `Cluster.bootstrap`'s stable observation with `new-cluster-enabled` on so
+  is one that does not exceed `self-election-grace` + 5 s, before the join.
+  With `actor-ts.cluster.bootstrap.new-cluster-enabled = off` every node
+  joins `never`, nobody is elected and no grace is waited out, so a give-up
+  of at most `self-election-grace` + 5 s is accepted there, and
+  `Cluster.bootstrap` waits the plain 5 s for readiness instead of the grace
+  plus 5 s.
 
   Under `exit-process` the give-up's run never exits 0, and a
   `Cluster.bootstrap` readiness wait that fails, on its own deadline or on
@@ -227,6 +232,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `shardRegionCheckName('orders')`, synchronously, and stays registered
   while it fails.
 
+  The shard-region readiness check stays green through a leader change: a
+  registered region registers with the new coordinator in the background,
+  and only a refusal, an eviction or a stop takes the registration back. A
+  refusal lasts until `number-of-shards` agrees or the leader's term ends;
+  after a leader change lifts it, the detail reads running and not
+  acknowledged yet until the next coordinator decides again.
+
 - **A broker that names a circuit breaker publishes its transitions as
   `BrokerCircuitBreakerStateChanged` — actor path, endpoint without
   credentials, breaker id and state — so an actor held off by an open
@@ -307,6 +319,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `management.enable-metrics-endpoint` and
   `worker-mesh.metrics-relay-interval` stay in their blocks.
 
+  A value in `actor-ts.metrics` that the registry refuses is refused with
+  its key in front of the validator's message, still as an `OptionsError`,
+  and logged once per system at error level, so a refused
+  `max-series-per-family` no longer switches a worker-mesh worker's metrics
+  off without a word. Through `enablePromClient`, a `name-prefix` no
+  Prometheus metric name can start with is refused the same way before the
+  bridge is installed.
+
 - **Leases can be built from configuration for the three cluster consumers
   that need one** (#1454). `actor-ts.coordination.lease.backend` (`none` or
   `kubernetes`, default `none`) names the backend, and
@@ -325,6 +345,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   as a second constructor argument, so a lease built in code can read
   `system.config` instead of loading the config chain again.
 
+  A lease-majority resolver renews its lease on a scheduler of its own and
+  gives the lease back when the node leaves. `DowningProvider` has an
+  optional `shutdown()` hook, which the cluster calls once as the node
+  leaves — on `cluster.leave()` and on the at-once leave of a node its own
+  decision downed or that gave its join up — after the failure-detector tick
+  that asks the provider has stopped. `LeaseMajority.shutdown()` stops the
+  strategy, releases a lease it holds and undoes a win that an acquire still
+  in flight reports later, and the configured resolver's shutdown also stops
+  its scheduler, so the members left behind can take the lease at their next
+  even split, nothing renews it afterwards and nothing it armed keeps the
+  process alive: a node that had won an arbitration used to go on renewing
+  the record after a leave and a terminate. A hook that throws or rejects is
+  logged at warn and the leave completes. A provider stopped this way serves
+  one cluster: a strategy selected in configuration is built anew by every
+  `Cluster.join`, and one built in code has to be built again for a node
+  that joins anew.
+
 - **`DistributedDataHandle.subscribe` accepts an `ActorRef` as well as a
   callback, so a subscriber does its work on its own turn instead of the
   replicator's** (#1468). The actor is told a `DistributedDataChanged`, a
@@ -334,14 +371,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   subscriber and key into a latest-value slot: at most one notification
   waits in its mailbox, later changes overwrite its value, and the next one
   is posted only once the actor has been handed the last, so its own mailbox
-  paces it, with no timer and no `notify-subscribers-interval`. A key that
-  already holds a value is replayed through the mailbox, subscribing the
-  same actor again adds no second subscription, and the notification is
-  exempt from mailbox bounds like a death-watch `Terminated`. The subscriber
-  has to live on the replica's node (a `RemoteActorRef` is refused with a
-  `TypeError`) and is watched, so a stopped actor's subscriptions end with
-  it, while a replicator restart keeps them; any other in-process ref, such
-  as a `TestProbe`, is told every change directly.
+  paces it, with no timer and no `notify-subscribers-interval`. That bound
+  holds across an unsubscribe as well: subscribing again before the actor is
+  handed a notification its ended subscription left queued takes that
+  notification over, and the replay overwrites its value instead of queueing
+  a second one, so the actor never has more than one notification per key
+  waiting however often it unsubscribes and subscribes. The replicator keeps
+  watching the actor until such a notification is handed over, so an actor
+  that stops first is still cleaned up. The actor's work runs outside the
+  merge but on the replicator's thread, and the coalescing is what bounds
+  it: twenty changes with 10 ms of work each held a read queued behind them
+  back 21 ms with a subscribed actor, which was handed two of the twenty
+  values, against 203 ms with a callback doing the work. A key that already
+  holds a value is replayed through the mailbox, subscribing the same actor
+  again adds no second subscription, and the notification is exempt from
+  mailbox bounds like a death-watch `Terminated`. The subscriber has to live
+  on the replica's node (a `RemoteActorRef` is refused with a `TypeError`)
+  and is watched, so a stopped actor's subscriptions end with it, while a
+  replicator restart keeps them; any other in-process ref, such as a
+  `TestProbe`, is told every change directly.
 
   The chat and voice samples now use it: `ChatRoomDirectoryActor`,
   `OnlineUsersActor`, `ReadReceiptsActor` and `VoicePresenceActor` subscribe
@@ -356,11 +404,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   code, is the inter-arrival time φ assumes before a peer has a history,
   with a deviation of a quarter of it, never below `min-std-deviation`. It
   ships as `auto`, which follows `heartbeat-interval` however that is set,
-  so the cadence stays single-sourced; a duration decouples the two. The
-  first heartbeat seeds the history with the same estimate, so real
-  intervals wash it out instead of replacing it at the first one. At the
-  shipped settings a peer heard from once reads unreachable after about
-  4.2 s of silence at a 500 ms cadence and after about 7.8 s at 2 s.
+  so the cadence stays single-sourced; a duration decouples the two. It
+  stands in only until the peer's first heartbeat interval is measured,
+  which replaces it, so a duration changes first contact and nothing after
+  it. At the shipped settings a peer heard from once reads unreachable after
+  about 4.2 s of silence at a 500 ms cadence and after about 7.8 s at 2 s.
 
 - **`actor-ts.distributed-data.quorum-timeout` (default `5s`) sets the
   deadline of an `updateAsync` / `getAsync` that names no `timeoutMs`, from
@@ -514,7 +562,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the coordinated-shutdown pipeline with the new `StartupFailedReason` and
   makes `runUntilTerminated()` reject with that error, so a process whose
   startup failed exits by itself, non-zero, on Bun, Node and Deno; a
-  `terminate()` during startup abandons it instead. The graph is sealed once
+  shutdown during startup — `terminate()`, a SIGTERM, an explicit `run()` of
+  the coordinated-shutdown pipeline — abandons it instead, before the
+  pipeline's first phase: the running tasks' signals abort, `whenReady()`
+  rejects with an abandonment error and nothing is logged above debug, so an
+  ordinary SIGTERM during startup ends the process as a shutdown rather than
+  a failed start. On Node the phase budget holds the process while its task
+  runs, so a task the documented `main` awaits through `whenReady()` fails
+  at its budget with the ERROR line naming it, where Node used to end the
+  program with "unsettled top-level await". The graph is sealed once
   `create` returns, so `CoordinatedStartup.addTask` refuses and names the
   option. `CoordinatedStartup`, `CoordinatedStartupId`, `StartupPhases`,
   `StartupFailedReason`, the `StartupTask` type and the
@@ -533,12 +589,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `ControlAwareMailboxOptions.create()` builds the options with
   `withIsControl`, `withCapacity`, `withOverflow` (`'drop-head'`,
   `'drop-new'` or `'reject'`, the default once a capacity is named),
-  `withOnDrop` and `withDeadLetterDrops`. A capacity bounds the ordinary
-  class only, so a control message is never shed, refused or counted as a
-  drop, and a stash replay or throttle re-park puts each message back at the
-  head of its own class. The predicate runs on the sender's stack and is
-  contained: a throw, or any answer but `true`, classes the message
-  ordinary. The envelopes the framework posts past a bound — a death-watch
+  `withOnDrop`, `withDeadLetterDrops` and `withOnControlError`. A capacity
+  bounds the ordinary class only, so a control message is never shed,
+  refused or counted as a drop, and a stash replay or throttle re-park puts
+  each message back at the head of its own class. The predicate runs on the
+  sender's stack and is contained: a throw, or any answer but `true`,
+  classes the message ordinary. A predicate that throws is reported:
+  `onControlError` (builder `withOnControlError`) hears each throw with what
+  was thrown and the message, and a mailbox given none logs its first throw
+  at warn, once per mailbox, naming the classes involved and never the
+  message. The envelopes the framework posts past a bound — a death-watch
   `Terminated`, whether the death was local or reported by another node, and
   the WebSocket accept and close commands — keep their place in line on
   every mailbox, this one included unless its predicate classes them as
@@ -551,12 +611,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   so a reply followed by `close()` still reaches the peer first, `abort()`
   acts before it returns: the frames still queued for the connection become
   dead letters instead of writes, and the socket is hard-closed without a
-  close frame on the `ws`-backed Fastify and Express backends, or closed
-  with the given code and reason on Hono. The hub still receives exactly one
-  `onClientDisconnected`, carrying the abort's code (1008 by default) and
-  reason with `initiatedBy: 'server'`, after any frames from that peer it
-  had already queued. On a connection that is no longer open, `abort()` does
-  nothing.
+  close frame on the `ws`-backed Fastify and Express backends and on Hono
+  under Bun and Node, or, on Hono under Deno, whose socket has no hard
+  close, closed with the given code and reason made to fit a close frame: a
+  code it cannot carry, such as 1006, goes out as 1008, and a reason over
+  123 bytes is cut between two characters. The hub still receives exactly
+  one `onClientDisconnected`, carrying the abort's code (1008 by default)
+  and reason with `initiatedBy: 'server'`, after any frames from that peer
+  it had already queued. On a connection that is no longer open, `abort()`
+  does nothing.
 
   **Migration.** `WebsocketConnection` has a new required member,
   `abort(code?, reason?)`; a class that implements the interface, typically
@@ -661,6 +724,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   neither guard ever fired — measured on deno 2.6.8, a slow-loris was still
   open 3 s after an 800 ms header deadline and a second connection under a
   cap of one was answered, while the report said both were in effect.
+  `idle-timeout` and `request-timeout` report themselves not in effect there
+  as well, and a set one is named at `bind()`: the shim accepts
+  `keepAliveTimeout` and `requestTimeout` without applying either, so a
+  keep-alive connection stayed open and a stalled body was never answered
+  `408` while the report said both held (measured on deno 2.6.8). A set `0`
+  is still reported in effect.
 
   A bound that holds for only one of the two protocols an HTTP/2 listener
   speaks is reported not in effect, with the protocol it does hold for in
@@ -4242,6 +4311,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `OptionsError` on field `path`. An in-memory database is the explicit path
   `":memory:"`.
 
+  A store that `ActorSystemOptions.withPersistence` sets in code wins over a
+  pathless SQLite selection on its axis: `registerSqlitePlugins` does not
+  refuse a selection code replaces, since that store is never built, while a
+  pathless selection on any other axis is still refused. An untyped
+  `database: null` counts as no handle for `buildSqliteDatabase`, the path
+  rule and `SqliteDurableStateStore`: beside a path the path is opened, and
+  without one the connection is refused as one given neither, instead of
+  `null` standing in for a database and failing the first statement with a
+  `TypeError`.
+
   **Migration.** Give every SQLite journal and snapshot store a path —
   `withPath(':memory:')` for an in-memory database, or `path = ":memory:"`
   in its `actor-ts.persistence.<axis>.sqlite` block — and use a libSQL store
@@ -4383,11 +4462,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   a broker breaker lets one probe through where the hand-rolled one let a
   burst of `failureThreshold` attempts through, and it gains reopen growth,
   the window's jitter and `ignored-error-names`. Actors that name the same
-  id share one breaker and one verdict; a refused attempt waits out the
-  remaining window, spread forwards by the reconnect policy's
-  `random-factor`; a connect cut short by a stop does not count; and a
-  breaker `call-timeout` aborts the connect rather than racing it. Every
-  earlier spelling of the breaker block — `circuitBreaker { … }` and
+  id share one breaker and make at most one attempt each per window, and one
+  probe decides for all of them only while a failing connect settles before
+  the next actor wakes; a refused attempt waits out the remaining window,
+  spread forwards by the reconnect policy's `random-factor`; a connect cut
+  short by a stop does not count; and a breaker `call-timeout` aborts the
+  connect rather than racing it on the brokers that can abort one in flight,
+  the WebSocket client, `SseActor` and `TcpSocketActor`, while on every
+  other broker it is counted and can open the breaker as the connect runs
+  until it settles, and the warning names the call-timeout. Every earlier
+  spelling of the breaker block — `circuitBreaker { … }` and
   `circuit-breaker { failure-threshold, reset }` — is refused when the actor
   starts, naming the id shape. As before, no broker has a breaker until one
   is named.
@@ -4407,15 +4491,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   phase, once the promises the plug-ins returned have settled. A plug-in id
   nothing registered, a connection string that names the wrong host or a
   database the node cannot reach now fails the startup with an error naming
-  the store: `whenReady()` rejects, the system shuts down and
+  the store — except on the object-storage snapshot and durable-state
+  stores, which have nothing to open ahead of time, so a bucket they cannot
+  reach fails their first operation, as does an application's own store
+  without `start()`: `whenReady()` rejects, the system shuts down and
   `runUntilTerminated()` rejects, so a `main` that awaits it ends non-zero
   instead of serving traffic it cannot persist. A store that did open before
   another failed stays open until a shutdown task of the application closes
   it: the framework does not close the stores it resolved yet (#388). For
   such a system an invalid `actor-ts.persistence` behaviour block fails
-  `create` itself. An actor spawned on the line after `create` shares the
-  store's one open. The switch is `autoStart`, a new field of
-  `PersistenceBehaviorOptions` that is on by default
+  `create` itself, unless `autoStart` is set false in code, which leaves the
+  block unread until persistence first reads it, so it no longer fails every
+  `WorkerMesh` worker's bootstrap. An actor spawned on the line after
+  `create` shares the store's one open. The switch is `autoStart`, a new
+  field of `PersistenceBehaviorOptions` that is on by default
   (`DEFAULT_PERSISTENCE_AUTO_START`), set in code through
   `withPersistence({ behavior })` or by `actor-ts.persistence.auto-start`,
   the code winning; `WorkerMesh` workers run with it off, because they
@@ -4516,9 +4605,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   A body that only spells one of the two kinds is ordinary traffic, which a
   bound sheds like any frame.
 
-  **Migration.** To keep strict arrival order, spawn the hub with
-  `withMailbox(() => new Mailbox())`; a hub spawned with `withMailbox` keeps
-  exactly that mailbox and its order.
+  **Migration.** To keep strict arrival order, spawn the hub with a FIFO
+  mailbox of its own that carries its bound,
+  `withMailbox(() => new BoundedMailbox(options))`: a supplied mailbox is
+  the only bound the hub then has — `withMailboxCapacity()` cannot be
+  combined with `withMailbox()`, and neither
+  `actor-ts.mailbox.default.capacity` nor an `actor-ts.deployment` entry
+  reaches it — so `withMailbox(() => new Mailbox())` keeps the order but
+  leaves the hub unbounded. A hub spawned with `withMailbox` keeps exactly
+  that mailbox and its order.
 
 - **BREAKING — `JetStreamMessage.streamSeq` and `consumerSeq` are
   `streamSequence` and `consumerSequence` now, and
@@ -5903,10 +5998,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 - **`JetStreamOptionsValidator` refuses a deliver policy whose start the
   server cannot use: `by-start-sequence` without a positive integer
-  `startSeq`, and `by-start-time` without a `startTimeMs` from `0` to
-  `8.64e15`, the last instant a `Date` holds** (#1443). Such a consumer used
-  to be refused at connect and retried for ever under the default reconnect
-  policy; the start now fails naming the field.
+  `startSeq` up to `Number.MAX_SAFE_INTEGER`, and `by-start-time` without a
+  `startTimeMs` from `0` to `253402300799999` (9999-12-31T23:59:59.999Z)**
+  (#1443). Such a consumer used to be refused at connect and retried for
+  ever under the default reconnect policy; the start now fails naming the
+  field.
+
+  Past `Number.MAX_SAFE_INTEGER` a number no longer holds every integer, so
+  the sequence sent is not always the one written, and from `1e21` on JSON
+  writes it in an exponent form the server's uint64 cannot parse. The
+  `startTimeMs` bound is the last instant whose ISO form keeps the
+  four-digit year RFC 3339 has, rather than the `8.64e15` a `Date` holds; an
+  epoch in microseconds mistaken for milliseconds lands far past it.
 
 - **The management-endpoints page shows member addresses the way the
   endpoints print and accept them** (#843). Its sample responses and its
@@ -6079,13 +6182,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   under the replicator's own log source), while `subscribe()` still returns
   its unsubscribe function and the subscriber stays registered. The
   documentation of `subscribe()` and the distributed-data overview and
-  replication pages now say what a subscriber costs: it runs synchronously
-  on the replicator's turn, once per changed key per merge, so its time
-  delays merges, gossip and quorum replies for every key (twenty calls of a
-  10 ms subscriber held a queued local read back by 203 ms), and the caution
-  about frequent changes now points at `subscribe(key, ref)`, which runs the
-  work on the subscriber's own turn, instead of advising a debounce inside
-  the handler.
+  replication pages now say what a subscriber costs and what helps: a
+  callback runs synchronously on the replicator's turn, once per changed key
+  per merge, so its time delays merges, gossip and quorum replies for every
+  key (twenty calls of a 10 ms subscriber held a queued local read back by
+  203 ms); a debounce inside the callback helps, since the callback then
+  only re-arms its timer per change and the work runs once after the burst
+  (the same read waited under 5 ms), while a callback that only tells an
+  actor each change does not, since the actor does all of that work on the
+  same thread; and an actor subscribed with `subscribe(key, ref)` is told
+  the latest value rather than every one.
 
   A callback subscription now belongs to its function and key, so a function
   that unsubscribes and subscribes again from inside a notification for the
@@ -6146,11 +6252,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   system started on the reference defaults without a word. All three now
   refuse it with a `ConfigError` that names the cause. `Config.fromObject`
   also refuses any other class instance instead of reading its fields as a
-  tree, and hands this copy's own `Config` back as it is.
+  tree, and hands this copy's own `Config` back as it is. It refuses a
+  spread of a `Config` too — `{ ...config }`, of this copy's or another's,
+  with or without keys beside it — with a `ConfigError` naming the spread,
+  and a class instance anywhere below the top level (a nested `Config`, a
+  `Map`, a `Date`, any class instance, in a block or a list) with one naming
+  its path; `withConfig` and `Config.load({ overrides })` go through it. A
+  spread copies a `Config`'s private fields, not its configuration, so a
+  system built on one used to start on the reference defaults without a
+  word.
 
-  **Migration.** Pass configuration overrides as a plain object (spread a
-  class instance: `{ ...settings }`), and build every `Config` with the copy
-  of actor-ts that creates the system.
+  **Migration.** Pass a `Config` itself, never a spread of one —
+  `Config.fromObject`, `withConfig` and `Config.load({ overrides })` refuse
+  a spread — and give every key a plain object or a plain value rather than
+  a class instance (convert a `Map` with `Object.fromEntries`); build every
+  `Config` with the copy of actor-ts that creates the system.
 
 - **A frame the transport delivers after the server has closed a WebSocket
   connection no longer reaches the hub** (#1431). The `ws` package keeps
@@ -6298,6 +6414,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   A `CircuitBreaker`'s `callTimeoutMs` past that ceiling is waited out in
   full as well: with no scheduler, or a wall-clock one, its per-call
   deadline fired after a millisecond and failed every call.
+
+  A `ClusterClient` ask deadline and connect deadline longer than ~24.9 days
+  are waited out in full as well. Both were a single host `setTimeout`, and
+  `ask-timeout` and `connect-timeout` are refused only when they are not
+  positive, so `actor-ts.cluster.client.ask-timeout = 30d` rejected every
+  ask about 2.5 ms after it was sent, and a 30-day `connect-timeout` gave up
+  on a contact point before its hello-ack could arrive. Both are now a chain
+  of host timers, and a reply, `close()`, a dropped connection or the
+  hello-ack clears whichever link is armed.
+
+  `gracefulStop(ref, Infinity)` arms no timer at all. A budget that never
+  runs out leaves a timer nothing to do but hold the process open, and for a
+  ref with no local cell the chain re-armed a 24.9-day link forever with no
+  handle to cancel it, so an un-awaited infinite stop kept the process
+  alive. A local actor's infinite stop still resolves `true` once the actor
+  has terminated and is never escalated; for a ref it cannot watch the
+  promise never settles, where it used to resolve `false` after 1 ms, and
+  the process can exit.
 
 - **A message whose `toString` is not callable no longer restarts a
   `WebsocketServerActor`, `WebsocketClientActor` or `MqttActor` that leaves
@@ -6494,11 +6628,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `JsonSerializer: document is not valid JSON: <engine message>`, with the
   `SyntaxError` as its `cause`, while a malformed type tag and the nesting
   ceiling keep their own messages, so the two faults stay apart in a log.
-  The default read path of every journal, snapshot store and durable-state
-  store had the same hole in its own parse and now reports a corrupt row as
-  `stored payload is not valid JSON: <engine message>`. A `__bigint__` tag
-  whose string is not an integer, the other way a raw `SyntaxError` escaped,
-  is now a malformed-tag `SerializationError` that does not echo the digits.
+  The stored-payload decoder every journal, snapshot store and durable-state
+  store reads through now reports a corrupt row as
+  `stored payload is not valid JSON: <engine message>`, with the engine's
+  `SyntaxError` as its cause. Before, the snapshot and durable-state loads
+  let that bare `SyntaxError` through, except on object storage, while a
+  journal or query read already wrapped it in a `JournalError`, which now
+  carries the typed error as its cause instead. A `__bigint__` tag whose
+  string is not an integer, the other way a raw `SyntaxError` escaped, is
+  now a malformed-tag `SerializationError` that does not echo the digits.
   `SerializationError` accepts an optional `ErrorOptions` argument so a
   wrapped error travels as its cause.
 
@@ -6619,7 +6757,10 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   dropped for a fault is aborted rather than half-closed. An abandoned
   dial's late hello-ack is no longer logged as a hijack of its replacement,
   and `disconnect()` now releases a connection under every address it is
-  registered under, not only the one it was called with.
+  registered under, not only the one it was called with. A connection that
+  announced more than one identity gives every one of them back when it
+  goes, so each of those addresses is dialled afresh and the real peer's
+  hello under it is taken.
 
 - **The DevTools `config.resolved` answer reported an application.conf path
   even when no file existed there, so the configuration panel said it had
@@ -7452,6 +7593,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   parsing two documents concatenated and merging them parsed separately stay
   the same operation — `HoconProperties.test.ts` holds them against each
   other, chains included.
+
+  A key named after an `Object.prototype` member, such as `toString`,
+  `valueOf` or `hasOwnProperty`, which HOCON allows as a key, falls back the
+  same way: when nothing answers its optional substitution and nothing set
+  it before, it is left unset instead of holding the function the parser's
+  objects inherit under that name, and across layers it keeps the value the
+  base set.
 - **`examples/config/application.conf` spells its seed list as one
   substitution per entry, under the key the cluster reads** (#1532). The
   file built each address by HOCON value concatenation —
@@ -8404,10 +8552,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   incarnation never registered, and with
   `actor-ts.sharding.healthcheck.names` set its shard-region readiness check
   stayed red for good. Each cluster incarnation now gets a facade of its
-  own, and repeated reads through one cluster still return one instance. A
-  type the left incarnation had started cannot be started again yet: its
-  region keeps its name, so the new start fails on it instead of handing
-  back the left region, which delivered nothing.
+  own, and repeated reads through one cluster still return one instance.
+  Leaving now stops what the left incarnation started, so a re-join can
+  start the same type again.
 
 - **`Config.load` names an application file it cannot read or parse**
   (#1546). It refuses such a file with a `ConfigError` that names the file
@@ -8442,6 +8589,68 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   on every run (#1493). An up record now wins over a weakly-up one at the
   same version, on every node. Other equal-version disagreements are still
   ignored, and #935 stays open for them.
+
+- **A cluster message body keeps a field named `__proto__`** (#1449). The
+  outbound copy that swaps actor refs for their wire form assigned each
+  field, so this one ran the prototype setter and never reached the frame;
+  it is now copied as data, refs inside it included, as the inbound side
+  already did.
+
+- **BREAKING — `Dispatchers.Hybrid(n)`, `Dispatchers.Throughput(n)` and the
+  `HybridDispatcher` and `ThroughputDispatcher` constructors refuse a budget
+  that is not an integer from 1 up** (#1461). The refusal is an
+  `OptionsError` naming the dispatcher and the argument. Such a budget used
+  to be accepted and then misbehave: below 1 no turn ever ran, so a system
+  built on `Dispatchers.Hybrid(0)` or on
+  `actor-ts.dispatcher { default = throughput, throughput = 0 }` never
+  answered an ask and `terminate()` never returned; `Infinity` never yielded
+  to the event loop; `NaN` stalled the throughput drain and never yielded on
+  the hybrid; and a fraction ran as the next integer up. A configured
+  dispatcher throughput of 0 or below now fails `ActorSystem.create` instead
+  of hanging. The dispatcher tuning page states the domain.
+
+  **Migration.** Pass an integer >= 1 to `Dispatchers.Hybrid` /
+  `Dispatchers.Throughput` or their constructors (round a fractional budget
+  up); for a dispatcher that never yields use `MicrotaskDispatcher`.
+
+- **`Cluster.leave()` hands this node's shards off and stops the sharding it
+  started before it tells the cluster it is leaving** (#1465). The regions,
+  their entities and the coordinators used to keep running after a leave,
+  bound to the cluster that had gone: when a member left, the leader
+  re-homed its shards and the next message started each entity a second time
+  beside the instance still alive on the node that had left, a second writer
+  for a persistent entity; when the leader left, its still-running region
+  registered its shards with the new leader's coordinator, which homed them
+  on the departed node and lost every message for them; and a re-join on the
+  same `ActorSystem` could not start a type the left incarnation ran ("Child
+  name 'coordinator-<type>' is not unique"). Now every region stops first,
+  so each entity finishes the message it is handling and runs `postStop`
+  before the coordinator re-homes its shard, then the coordinators stop,
+  each within its type's `hand-off-timeout`, and only then does the node
+  move to `leaving` and tell its peers. A region that overruns its
+  `hand-off-timeout` is told to stop at once and the leave goes on without
+  it, with a warning that says what it may still leave running. The
+  coordinated-shutdown pipeline does the same in its
+  `cluster-sharding-shutdown-region` phase, which `Cluster.join` now
+  registers; a node downed by its own split-brain decision or one that gave
+  its join up leaves at once and stops its sharding beside the departure.
+  Once `leave()` resolves, a re-join starts the same types through the new
+  cluster's sharding, and the left cluster's facade refuses `start()`.
+
+- **`promClientRegistry` refuses a `namePrefix` that no Prometheus metric
+  name can start with** (#1466). Anything but the empty string or the start
+  of a valid metric name, such as `app-` or `5`, is refused with an
+  `OptionsError` when the bridge is built. Such a prefix used to be accepted
+  and then made every framework metric throw `Invalid metric name` inside
+  the dispatcher, so actors stopped receiving messages.
+
+- **A `BackoffSupervisor` with `forwardDuringGrace: false` holds a message
+  that arrives inside the grace window under `forward: 'drop'` too**
+  (#1479). It keeps such a message in its stash and delivers it once the
+  child has survived the grace, as the option documents. It used to drop
+  such messages, losing every message sent in the first grace after each
+  start and respawn, 50 ms by default; `forward: 'drop'` now applies only
+  while there is no child at all.
 
 ### Removed
 
@@ -8586,7 +8795,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the actor at start, naming `max-line-bytes` and `max-frame-bytes`. Both
   bound what a peer can make the actor buffer — the frame cap is 16 MiB by
   default — so a lowered cap left under the old spelling can no longer be
-  dropped without a word.
+  dropped without a word. Any other leaf under a TCP framing block is
+  refused the same way, so a cap cannot be dropped under a spelling the
+  refusal does not list: the block takes `kind`, `delimiter`,
+  `max-line-bytes` and `max-frame-bytes`, and anything else, such as the
+  hand-migrated `max-frame-len` or `max-frame` or the field name
+  `maxFrameBytes`, stops the actor at start, naming it and the four. So does
+  a framing object that still carries `maxFrameLen` or `maxLineLen` in code,
+  which plain JavaScript, JSON or a cast hands over past the compiler's
+  check and which used to start the actor on the default cap.
 
 - **BREAKING — The Hono backend under Bun now holds
   `actor-ts.http.server.idle-timeout`, as `Bun.serve`'s own `idleTimeout`**
@@ -8600,16 +8817,42 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   server's longest request deadline
   (`actor-ts.http.request-timeout.deadline`, raised to the longest
   `requestTimeout()` in the routes) so the 503 is written first: 36 s for
-  the built-in 30 s; a deadline past 250 s holds it at 255 s and `bind()`
-  warns, through the new `ServerOptionsReport.idleTimeoutHeldAtCeilingMs`.
-  Hono under Deno still reports `idle-timeout` not installed. A malformed
+  the built-in 30 s, but 8 s, shorter than Bun's own 10 s, for a configured
+  deadline of 2 s or less, which counts even with no `requestTimeout()` in
+  the tree; a deadline past 250 s holds it at 255 s and `bind()` warns,
+  through the new `ServerOptionsReport.idleTimeoutHeldAtCeilingMs`. Hono
+  under Deno still reports `idle-timeout` not installed. A malformed
   `actor-ts.http.request-timeout.deadline` now fails every `bind()`, since
   it is read even where no `requestTimeout()` is.
 
+  `idle-timeout = 0` is no longer offered as a remedy there: the refusal of
+  a value past 255 s now ends on 'Set it to 255s or less', the warning for a
+  derived idle timeout held at the 255 s ceiling names a shorter deadline, a
+  handler that writes sooner or a bound chosen explicitly, and the Hono and
+  request-timeout pages say what `0` does there. It turns off the only bound
+  on that pair for a request whose body stops arriving and for a connection
+  left idle between requests, since `header-timeout`, `request-timeout` and
+  `max-connections` cannot be installed there: measured on bun 1.4.2, a body
+  announced at 10 bytes that stopped after 1 was still open after 40 s under
+  `0`, where the unset key closed it at 36 s. `0` itself is still accepted.
+
+  A set `idle-timeout` that can close a connection under a silent handler
+  before the request deadline's 503 is written is said at `bind()`: the
+  warning names the key, the value, the earliest moment the connection can
+  be cut and the deadline, and the new
+  `ServerOptionsReport.idleTimeoutEarliestCutMs` carries that moment.
+  `Bun.serve` checks idleness on a 4 s sweep, so a value cuts from one sweep
+  before itself on, and anything up to `32s` under the built-in 30 s
+  deadline can cut a handler before its 503 — the `5s` the configuration
+  reference shows as an example cuts a 10 s handler from 4 s on.
+
   **Migration.** Hono under Bun: `idle-timeout` now takes effect as
   whole-connection inactivity (a handler silent that long is cut) and a
-  value above 255 s fails `bind()`; unset is now derived from the request
-  deadline (36 s by default) instead of Bun's own 10 s.
+  value above 255 s fails `bind()`; unset is derived from the request
+  deadline instead of Bun's own 10 s — 36 s by default, but 8 s for a
+  configured deadline of 2 s or less, so a plain handler silent past 4 to 8
+  s is then cut without a response even with no `requestTimeout()` in the
+  tree; keep `idle-timeout` positive there.
 
 - **BREAKING — A Postgres store given both a `poolConfig.ssl` and a url (or
   a `poolConfig.connectionString`) that carries an ssl parameter is refused
@@ -10573,6 +10816,47 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   in effect. Each stream now carries a receive deadline of its own, spent
   once the client has finished sending, so a request received in full is
   still never cut, however long its handler takes.
+
+- **A WebSocket connection the hub closes with a code a close frame cannot
+  carry, such as 1006, or with a reason over 123 bytes is now closed**
+  (#1431). The `ws`-backed backends (Fastify, Express, and Hono on Node) and
+  Deno's socket refuse such a close, and the socket stayed open while the
+  hub was told the client had left, so the peer stayed connected and kept
+  its `maxConnections` slot. `close()` now sends only what a close frame can
+  carry: a code it cannot carry goes out as 1000, and the reason is cut to
+  123 UTF-8 bytes between two characters. A close the transport refuses
+  anyway is followed by a hard close where the backend has one, and
+  `onClientDisconnected` still reports the code and reason that were passed.
+
+- **The runners behind the Hono backend keep TLS, the HTTP versions and the
+  listener their own: a `serveOptions` bag can no longer change them**
+  (#1486). The Node runner drops every `node:tls` server option from a
+  caller's `serveOptions.serverOptions`, so the typed `tls` is the whole TLS
+  configuration of the listener. Merged beneath the TLS material, an option
+  the typed `tls` left unset reached the listener: a `pfx` or an
+  `SNICallback` presented another certificate in place of the configured
+  one, `requestCert: true` made a one-way listener demand a client
+  certificate with no `ca` to verify it against, and switching
+  `rejectUnauthorized` off admitted a client without a certificate past a
+  configured demand (measured on node v26.10.0). The Bun runner drops every
+  TLS option `Bun.serve` reads from the top level of its options, the older
+  `certFile`, `keyFile` and `caFile` included, besides the `tls` member it
+  already dropped: with no `tls` configured, a bag `cert` and `key` made the
+  listener terminate TLS. It drops the bag's `http1` and `http3` too, so
+  HTTP/1.1 stays beside h2 on every runtime, where a bag `http1: false`
+  answered HTTP/1.1 with 505, and `routes`, `static` and `unix`: `Bun.serve`
+  answers a path in `routes` or `static` ahead of the runner's `fetch`, and
+  `unix` moves the listener off host and port. The Deno runner reserves
+  `certFile`, `keyFile`, `certChain`, `privateKey` and `path` besides `cert`
+  and `key`, with typed `tls` or without: on deno 2.6.8 a bag `certFile` or
+  `keyFile` made `serve()` throw. Internal: the runners are not exported,
+  and the only producer of either bag is the runners' own WebSocket bridge.
+
+- **A TCP framing `kind` other than `bytes`, `lines` or `length-prefixed` is
+  refused when the actor starts** (#1443). The refusal names `framing.kind`.
+  Read from HOCON such a kind used to become `bytes`, dropping the framing
+  and its size cap on a typo, and built in code it was framed as
+  `length-prefixed` on the default 16 MiB cap.
 
 ## [0.17.0] — 2026-08-29
 

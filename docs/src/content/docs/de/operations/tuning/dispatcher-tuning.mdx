@@ -76,7 +76,11 @@ Wartet HTTP immer noch zu lange, gib systemweit häufiger ab: mit einem
 kleineren Hybrid-Budget (`Dispatchers.Hybrid(16)` lässt die Loop
 jeden 16. Turn laufen) oder mit dem `ImmediateDispatcher`, der nach
 jedem Turn abgibt — zum Preis des `setImmediate`-Sprungs, den der
-Default vermeiden soll.
+Default vermeiden soll. Das Budget zählt Turns, ist also eine ganze
+Zahl ab `1`, und bei `1` läuft die Loop nach jedem Turn. `0`, eine
+negative oder gebrochene Zahl, `NaN` und `Infinity` werden beim Bau
+des Dispatchers mit einem `OptionsError` abgelehnt: Unter `1` liefe
+nie ein Turn, und ein Budget, das nie abläuft, gibt nie ab.
 
 :::caution[Nicht `withDispatcher(new ThroughputDispatcher(...))`]
 Diese Seite empfahl früher, dem beschäftigten Actor einen eigenen
@@ -123,7 +127,9 @@ braucht:
 Der `MicrotaskDispatcher` ist nicht der Fix, auch wenn er die Yields
 ganz entfernt: Ohne jedes Budget lässt ein beschäftigtes System Timer
 und Sockets nie wieder laufen — siehe
-[Dispatcher](/de/fundamentals/dispatchers/).
+[Dispatcher](/de/fundamentals/dispatchers/). Aus demselben Grund wird
+`Dispatchers.Hybrid(Infinity)` abgelehnt, statt als Hybrid
+angenommen zu werden, der nie abgibt.
 
 ## ThroughputDispatcher-Optionen
 
@@ -139,7 +145,15 @@ optionale Dispatcher-`id` als zweites:
   Keine Nachrichten, und nicht pro Actor: Jeder Turn gehört einem
   anderen Actor, weil ein Actor immer nur einen Turn gleichzeitig
   eingereiht haben kann. Höher = mehr Durchsatz, schlechtere
-  I/O-Verschränkung. Übliche Werte: 10-1000. Default ist 16.
+  I/O-Verschränkung. Übliche Werte: 10-1000. Default ist 16. Eine
+  ganze Zahl ab `1`: `0`, eine negative oder gebrochene Zahl, `NaN`
+  und `Infinity` werden beim Bau des Dispatchers mit einem
+  `OptionsError` abgelehnt, weil unter `1` nie ein Turn abgearbeitet
+  wird und ein Drain ohne Grenze nie abgibt. Das konfigurierte
+  `actor-ts.dispatcher.throughput` nimmt dieselben Werte und wird
+  nicht wie der Per-Actor-`throughput` auf `1` angehoben: Mit
+  `default = throughput` in diesem Block lässt eine `0` dort
+  `ActorSystem.create` scheitern.
 - Zwischen Batches yieldet er immer via `setImmediate` (mit
   Fallback auf `setTimeout(0)`, wo `setImmediate` nicht verfügbar
   ist), damit I/O und Timer verschränken. Das ist nicht

@@ -248,6 +248,25 @@ describe('compileDeployment', () => {
   });
 
   /**
+   * The lookup tries an exact key only for an actor named like some exact
+   * key's last segment, and then builds the address from the whole path.  A
+   * lookup that built it from the name alone — `/user/<name>` — would pass
+   * every one-level key above, so these keys share the last segment `other`
+   * at different depths: that version hands the nested actor the top-level
+   * entry, and a lone nested key would reach no actor at all.  The last two
+   * lines catch the opposite mistake, a name-keyed map, which would let the
+   * nested key reach every actor called `other`.
+   */
+  test('an exact key below the first level matches its own path, not a namesake one', () => {
+    const keys = ['/user/other', '/user/top/level/other'];
+    expect(winnerOf(keys, '/user/top/level/other')).toBe('/user/top/level/other');
+    expect(winnerOf(keys, '/user/other')).toBe('/user/other');
+    expect(winnerOf(['/user/top/level/other'], '/user/top/level/other')).toBe('/user/top/level/other');
+    expect(winnerOf(['/user/top/level/other'], '/user/other')).toBeUndefined();
+    expect(winnerOf(['/user/top/level/other'], '/user/top/other')).toBeUndefined();
+  });
+
+  /**
    * Each pair is written in both orders: the record keeps the order the
    * config gave its keys, so a precedence that fell back on that order would
    * pass one direction and fail the other.

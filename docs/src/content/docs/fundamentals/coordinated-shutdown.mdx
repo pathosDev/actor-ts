@@ -8,9 +8,9 @@ import { Aside } from '@astrojs/starlight/components';
 `system.terminate()` stops the actor system, but a production app
 usually has work to do *before* that: drain in-flight HTTP requests,
 tell the cluster you're leaving, flush a journal, close broker
-connections.  And those steps have an order — leave the cluster
-*before* you stop the sharding region; stop the HTTP server
-*before* the actors that handle requests.
+connections.  And those steps have an order — hand the sharding
+region's shards off *before* you leave the cluster; stop the HTTP
+server *before* the actors that handle requests.
 
 **Coordinated shutdown** is the DSL for that.  You register tasks
 against named **phases**; the framework runs them in dependency
@@ -67,7 +67,7 @@ something.
 | 3 | `service-requests-done` | — | Wait for in-flight requests to finish; abort the rest. |
 | 4 | `service-stop` | broker actors (MQTT, Kafka, NATS, AMQP, …) | Close client connections, release sockets. |
 | 5 | `before-cluster-shutdown` | — | Optional pre-cluster-leave hooks. |
-| 6 | `cluster-sharding-shutdown-region` | — | Tell the sharding region to hand off entities. |
+| 6 | `cluster-sharding-shutdown-region` | `Cluster.join(...)` | Tell the sharding region to hand off entities. |
 | 7 | `cluster-leave` | `Cluster.join(...)` | Issue a `Cluster.leave()` — gossip leaving status. |
 | 8 | `cluster-exiting` | — | Wait for the cluster to acknowledge the leave. |
 | 9 | `cluster-exiting-done` | — | Confirm cluster transition is complete. |
@@ -79,12 +79,21 @@ You don't have to use every phase.  Empty phases are no-ops; only
 phases with registered tasks do anything.
 
 <Aside type="note" title="Phase 8 does not wait for an acknowledgment">
-  `cluster.leave()` is a single best-effort broadcast: it flips this
+  `cluster.leave()` first hands this node's shards off and waits for
+  that: its regions stop first, then its coordinators, each within its
+  type's `hand-off-timeout` (10 s by default).  When this pipeline runs
+  the leave, phase 6 has begun the hand-off already and the leave shares
+  its wait.  The rest is a single best-effort broadcast: it flips this
   node to `leaving`, tells every reachable peer, and stops the
-  transport.  There is no leader-sequenced removal to wait for, so a
+  transport, while the downing provider gives back what it holds — a
+  `lease-majority` lease is released.  A node its own downing decision
+  took out, or one that gave its join up, departs the same way at once,
+  without waiting for a hand-off; its sharding stops beside the
+  departure.  There is no leader-sequenced removal to wait for, so a
   task you register in `cluster-exiting` has nothing to await and the
-  phase is a pure app-level hook.  Size your Kubernetes grace period
-  on that basis, not on an acknowledgment that is not coming.
+  phase is a pure app-level hook.  Size your Kubernetes grace period on
+  that basis — the hand-off plus one broadcast — not on an
+  acknowledgment that is not coming.
 </Aside>
 
 ### Opting out of the wired tasks
@@ -631,8 +640,8 @@ process exits because nothing is keeping the loop alive.
 - **[Actor system](/fundamentals/actor-system/)** —
   the `terminate()` that runs at the end of the pipeline.
 - **[Cluster overview](/cluster/overview/)** — `Cluster.join()`
-  registers the `cluster-leave` task; the other cluster phases are
-  yours to fill.
+  registers the `cluster-sharding-shutdown-region` and `cluster-leave`
+  tasks; the other cluster phases are yours to fill.
 - **[Kubernetes deployment](/operations/deployment/kubernetes/)** —
   the full PreStop + SIGTERM + grace-period recipe.
 - **[Persistence — Migration](/persistence/migration/overview/)** —

@@ -367,11 +367,15 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   In einer Workload mit vielen Writes kann ein Callback viele Male
   pro Sekunde feuern, und jeder Aufruf läuft im Turn des
-  Replicators.  Debounce oder Throttle im Callback nimmt diese
-  Kosten nicht weg — er läuft trotzdem einmal pro Änderung, auf dem
-  Replicator, und ein Callback, der nur per `tell` an einen Actor
-  weiterreicht, reiht trotzdem eine Nachricht pro Änderung hinter
-  ihm ein.  Subscribe stattdessen den Actor, der die Arbeit macht,
+  Replicators — worauf der Replicator wartet, ist also das, was der
+  Callback tut, bevor er zurückkehrt.  Ein nachlaufender Debounce
+  hält das kurz: Der Callback stellt pro Änderung nur seinen Timer
+  neu, und die Arbeit läuft einmal, nach dem Burst — in einem Timer,
+  außerhalb jedes Actors, darf also keinen Actor-State anfassen.  Ein
+  Callback, der nur per `tell` an einen Actor weiterreicht, hilft
+  nicht: Der Actor wird einmal pro Änderung benachrichtigt, und seine
+  Turns laufen zwischen denen des Replicators auf demselben Thread.
+  Für Arbeit, die Actor-State anfasst, subscribe den Actor selbst,
   wie oben: Er bekommt den neuesten Wert in seinem eigenen Turn, so
   oft er ihn abnimmt, und der Replicator hält für ihn pro Key eine
   Benachrichtigung in der Schwebe.

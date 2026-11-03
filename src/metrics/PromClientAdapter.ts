@@ -31,6 +31,8 @@ import type {
   Counter, CounterOptions, Gauge, GaugeOptions, Histogram, HistogramOptions,
   Labels, LabelValue, MetricSample, MetricsRegistry,
 } from './Metrics.js';
+import { OptionsError } from '../util/OptionsValidator.js';
+import { PROMETHEUS_METRIC_NAME_PATTERN } from './Constants.js';
 import { DEFAULT_HISTOGRAM_BUCKETS, overflowLabelsOf, warnCardinalityOverflow } from './Metrics.js';
 import { DEFAULT_MAX_SERIES_PER_FAMILY } from './MetricsRegistryOptions.js';
 
@@ -139,6 +141,35 @@ type HistogramEntry = EntryBase & {
 type Entry = CounterEntry | GaugeEntry | HistogramEntry;
 
 /**
+ * Refuse a prefix no metric name can start with (#1466).
+ *
+ * prom-client checks a name against the Prometheus grammar when the metric is
+ * registered, and the bridge registers a family the first time the framework
+ * touches it — on an actor's turn, inside the dispatcher.  So an unusable
+ * prefix used to pass here and then fail every framework metric that dispatch
+ * recorded: actors stopped receiving, and a system in that state did not even
+ * finish terminating.  Refused here it fails where it was written, under the
+ * key it came from when `MetricsExtension.enablePromClient` read it from
+ * `actor-ts.metrics.name-prefix`.
+ *
+ * A prefix keeps every valid name valid exactly when it is empty or a valid
+ * name itself: its first character becomes the name's first, and every later
+ * character the grammar allows anywhere.  So the check is the one the
+ * in-process registry holds its own names to.
+ */
+function refuseUnusableNamePrefix(namePrefix: unknown): void {
+  if (namePrefix === undefined || namePrefix === '') return;
+  if (typeof namePrefix === 'string' && PROMETHEUS_METRIC_NAME_PATTERN.test(namePrefix)) return;
+  throw new OptionsError(
+    'PromClientAdapterOptions: namePrefix must be empty or the start of a Prometheus metric name, '
+      + `matching ${String(PROMETHEUS_METRIC_NAME_PATTERN)} (got ${OptionsError.renderValue(namePrefix)})`,
+    'PromClientAdapterOptions',
+    'namePrefix',
+    namePrefix,
+  );
+}
+
+/**
  * Build a {@link MetricsRegistry} backed by the supplied `prom-client`
  * registry, so your /metrics endpoint includes the framework's counters /
  * gauges / histograms next to your existing app metrics — same registry,
@@ -164,6 +195,7 @@ export function promClientRegistry(
 ): MetricsRegistry {
   const settings = options as PromClientAdapterOptionsType;
   new PromClientAdapterOptionsValidator().validate(settings);
+  refuseUnusableNamePrefix(settings.namePrefix);
   const {
     client, registry,
     namePrefix = DEFAULT_PROM_CLIENT_NAME_PREFIX,

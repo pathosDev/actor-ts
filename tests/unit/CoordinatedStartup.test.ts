@@ -16,7 +16,9 @@ import {
   type StartupTaskRegistration,
 } from '../../src/CoordinatedStartupOptions.js';
 import { LogLevel, NoopLogger, type Logger } from '../../src/Logger.js';
+import { setProcessSignalsOverride, type ProcessSignals } from '../../src/runtime/signals/index.js';
 import { OptionsError } from '../../src/util/OptionsValidator.js';
+import type { ProcessSignal } from '../../src/util/ProcessSignal.js';
 import { RecordingLogger } from '../util/RecordingLogger.js';
 
 /**
@@ -847,6 +849,374 @@ describe('CoordinatedStartup — terminate() during startup', () => {
     const error = await rejectionOf(system.whenReady());
     expect(error.message).toContain('abandoned');
     expect(system.extension(CoordinatedStartupId).failure).toBeUndefined();
+  });
+});
+
+/**
+ * The signal backend `runUntilTerminated()` installs its handlers through,
+ * fired by hand: the route a real SIGTERM takes into the pipeline, without
+ * sending the test runner one.
+ */
+class HandDeliveredSignals implements ProcessSignals {
+  readonly runtime = 'Bun';
+  private readonly handlers = new Map<ProcessSignal, Array<() => void>>();
+
+  supports(): boolean { return true; }
+
+  add(signal: ProcessSignal, handler: () => void): void {
+    this.handlers.set(signal, [...(this.handlers.get(signal) ?? []), handler]);
+  }
+
+  remove(signal: ProcessSignal, handler: () => void): void {
+    this.handlers.set(signal, (this.handlers.get(signal) ?? []).filter((installed) => installed !== handler));
+  }
+
+  deliver(signal: ProcessSignal): void {
+    for (const handler of [...(this.handlers.get(signal) ?? [])]) handler();
+  }
+}
+
+/** How `promise` ended, as one comparable string. */
+async function outcomeOf(promise: Promise<unknown>): Promise<string> {
+  try {
+    await promise;
+    return 'resolved';
+  } catch (error) {
+    return `rejected: ${(error as Error).message}`;
+  }
+}
+
+// `terminate()` is not the only way a system goes down while it starts: a
+// SIGTERM runs the pipeline itself, and so does an explicit `run()` or a node
+// that could not join.  A shutdown is what the operator asked for, so the
+// startup it overtakes is abandoned rather than failed — whatever the
+// startup does after the pipeline began.
+describe('CoordinatedStartup — a shutdown pipeline started during startup, by a signal or run()', () => {
+  // Up front, as `terminate()` does: a task waiting inside a long budget has
+  // no business running on while the node unbinds and leaves.
+  test('a SIGTERM aborts the running tasks the moment its pipeline starts, while its first phase is still held', async () => {
+    const signals = new HandDeliveredSignals();
+    setProcessSignalsOverride(signals);
+    try {
+      const logger = new RecordingLogger();
+      const started = deferred();
+      let runningSignal: AbortSignal | undefined;
+      const startupOptions = CoordinatedStartupOptions.create()
+        .withDefaultPhaseTimeoutMs(30_000)
+        .withTasks([
+          task(StartupPhases.PersistenceStart, 'held-open', (signal) => {
+            runningSignal = signal;
+            started.resolve();
+            return new Promise<void>(() => {});
+          }),
+        ]);
+      const system = systemWith(startupOptions, logger, 'startup-signal-up-front');
+      const unbindStarted = deferred();
+      const unbind = deferred();
+      const abortedWhenTheUnbindStarted: boolean[] = [];
+      system.extension(CoordinatedShutdownId).addTask(Phases.BeforeServiceUnbind, 'held-unbind', async () => {
+        abortedWhenTheUnbindStarted.push(runningSignal?.aborted ?? false);
+        unbindStarted.resolve();
+        await unbind.promise;
+      });
+      const running = system.runUntilTerminated(['SIGTERM']);
+      await started.promise;
+
+      signals.deliver('SIGTERM');
+      await unbindStarted.promise;
+
+      // The pipeline's first phase is still held here.
+      expect(abortedWhenTheUnbindStarted).toEqual([true]);
+      expect(runningSignal?.aborted).toBe(true);
+      expect((runningSignal?.reason as Error).message).toContain('abandoned');
+      expect((await rejectionOf(system.whenReady())).message).toContain('abandoned');
+      unbind.resolve();
+      expect(await outcomeOf(running)).toBe('resolved');
+      expect(system.extension(CoordinatedStartupId).failure).toBeUndefined();
+      expect(logger.records.filter((record) => record.level === 'error')).toHaveLength(0);
+    } finally {
+      setProcessSignalsOverride(null);
+    }
+  });
+
+  test('an explicit run() aborts the running tasks the moment it starts, too', async () => {
+    const started = deferred();
+    let runningSignal: AbortSignal | undefined;
+    const startupOptions = CoordinatedStartupOptions.create().withTasks([
+      task(StartupPhases.PersistenceStart, 'held-open', (signal) => {
+        runningSignal = signal;
+        started.resolve();
+        return new Promise<void>(() => {});
+      }),
+    ]);
+    const system = systemWith(startupOptions, new NoopLogger(), 'startup-run-up-front');
+    const abortedWhenThePipelineStarted: boolean[] = [];
+    system.extension(CoordinatedShutdownId).addTask(Phases.BeforeServiceUnbind, 'observe', () => {
+      abortedWhenThePipelineStarted.push(runningSignal?.aborted ?? false);
+    });
+    await started.promise;
+
+    await system.extension(CoordinatedShutdownId).run();
+
+    expect(abortedWhenThePipelineStarted).toEqual([true]);
+    expect((runningSignal?.reason as Error).message).toContain('abandoned');
+  });
+
+  test('a task whose budget runs out after a SIGTERM ends the startup as abandoned, and the process as a shutdown', async () => {
+    const signals = new HandDeliveredSignals();
+    setProcessSignalsOverride(signals);
+    try {
+      const logger = new RecordingLogger();
+      const started = deferred();
+      const startupOptions = CoordinatedStartupOptions.create()
+        .withDefaultPhaseTimeoutMs(100)
+        .withTasks([
+          task(StartupPhases.PersistenceStart, 'slow-connect', () => {
+            started.resolve();
+            return new Promise<void>(() => {});
+          }),
+        ]);
+      const system = systemWith(startupOptions, logger, 'startup-signal-budget');
+      const shutdownReasons: string[] = [];
+      const unbind = deferred();
+      system.extension(CoordinatedShutdownId).addTask(Phases.BeforeServiceUnbind, 'held-unbind', async (reason) => {
+        shutdownReasons.push(reason.name);
+        await unbind.promise;
+      });
+      const running = system.runUntilTerminated(['SIGTERM']);
+      await started.promise;
+
+      signals.deliver('SIGTERM');
+      // The pipeline's first phase is held open, so the task's 100 ms budget
+      // runs out while the system is already going down.
+      const readiness = await rejectionOf(system.whenReady());
+      unbind.resolve();
+
+      expect(readiness.message).toContain('abandoned');
+      expect(await outcomeOf(running)).toBe('resolved');
+      expect(shutdownReasons).toEqual(['ProcessTerminateReason']);
+      expect(system.extension(CoordinatedStartupId).failure).toBeUndefined();
+      expect(logger.records.filter((record) => record.level === 'error')).toHaveLength(0);
+    } finally {
+      setProcessSignalsOverride(null);
+    }
+  });
+
+  test('a phase that finishes after a SIGTERM starts no further phase', async () => {
+    const signals = new HandDeliveredSignals();
+    setProcessSignalsOverride(signals);
+    try {
+      const logger = new RecordingLogger();
+      const started = deferred();
+      const release = deferred();
+      let laterPhaseRan = false;
+      const startupOptions = CoordinatedStartupOptions.create().withTasks([
+        task(StartupPhases.PersistenceStart, 'connect', () => {
+          started.resolve();
+          return release.promise;
+        }),
+        task(StartupPhases.BeforeSystemReady, 'warm-cache', () => { laterPhaseRan = true; }),
+      ]);
+      const system = systemWith(startupOptions, logger, 'startup-signal-boundary');
+      const unbindStarted = deferred();
+      const unbind = deferred();
+      system.extension(CoordinatedShutdownId).addTask(Phases.BeforeServiceUnbind, 'held-unbind', async () => {
+        unbindStarted.resolve();
+        await unbind.promise;
+      });
+      const running = system.runUntilTerminated(['SIGTERM']);
+      await started.promise;
+
+      signals.deliver('SIGTERM');
+      await unbindStarted.promise;
+      // The first phase finishes while the pipeline is running.
+      release.resolve();
+      const readiness = await outcomeOf(system.whenReady());
+      unbind.resolve();
+      await running;
+
+      expect(readiness).toContain('abandoned');
+      expect(laterPhaseRan).toBe(false);
+      expect(logger.records.filter((record) => record.level === 'error')).toHaveLength(0);
+    } finally {
+      setProcessSignalsOverride(null);
+    }
+  });
+
+  test('a last phase that finishes after a SIGTERM does not report the system ready', async () => {
+    const signals = new HandDeliveredSignals();
+    setProcessSignalsOverride(signals);
+    try {
+      const started = deferred();
+      const release = deferred();
+      const startupOptions = CoordinatedStartupOptions.create().withTasks([
+        task(StartupPhases.BeforeSystemReady, 'warm-cache', () => {
+          started.resolve();
+          return release.promise;
+        }),
+      ]);
+      const system = systemWith(startupOptions, new NoopLogger(), 'startup-signal-last-phase');
+      const unbindStarted = deferred();
+      const unbind = deferred();
+      system.extension(CoordinatedShutdownId).addTask(Phases.BeforeServiceUnbind, 'held-unbind', async () => {
+        unbindStarted.resolve();
+        await unbind.promise;
+      });
+      const running = system.runUntilTerminated(['SIGTERM']);
+      await started.promise;
+
+      signals.deliver('SIGTERM');
+      await unbindStarted.promise;
+      release.resolve();
+      const readiness = await outcomeOf(system.whenReady());
+      unbind.resolve();
+      await running;
+
+      expect(readiness).toContain('abandoned');
+      expect(readiness).toContain('"before-system-ready"');
+    } finally {
+      setProcessSignalsOverride(null);
+    }
+  });
+
+  // Asked "has a run ever begun", not "is one in flight": a run that ended and
+  // left the system up — no terminator in its last phase — still told the
+  // node to go.
+  test('a run() that ended and left the system up still ends the startup as abandoned', async () => {
+    const started = deferred();
+    const release = deferred();
+    let laterPhaseRan = false;
+    const startupOptions = CoordinatedStartupOptions.create().withTasks([
+      task(StartupPhases.PersistenceStart, 'connect', () => {
+        started.resolve();
+        return release.promise;
+      }),
+      task(StartupPhases.BeforeSystemReady, 'warm-cache', () => { laterPhaseRan = true; }),
+    ]);
+    const system = systemConfiguredWith('actor-ts.coordinated-shutdown.terminate-actor-system = off', startupOptions);
+    try {
+      await started.promise;
+      await system.extension(CoordinatedShutdownId).run();
+      expect(system.isTerminated).toBe(false);
+
+      release.resolve();
+      const readiness = await outcomeOf(system.whenReady());
+
+      expect(readiness).toContain('abandoned');
+      expect(laterPhaseRan).toBe(false);
+    } finally {
+      await system.terminate();
+    }
+  });
+});
+
+/**
+ * A graph over `system` — whose own startup has no tasks — started by hand,
+ * with the "has a shutdown begun" answer under the test's control.
+ *
+ * The second line behind {@link ActorSystem._abandonStartup}: a run that began
+ * before the graph was running — inside `create`, where there was nothing to
+ * abandon yet — is met at the graph's own steps instead.  Through the system
+ * that run is out of a test's reach, so the graph is driven directly.
+ */
+function startedByHand(system: ActorSystem, startupOptions: CoordinatedStartupOptions) {
+  const startup = new CoordinatedStartup(system, startupOptions);
+  const shutdown = { begun: false };
+  const failures: StartupFailedReason[] = [];
+  startup._start((reason) => { failures.push(reason); }, () => shutdown.begun);
+  return { startup, shutdown, failures };
+}
+
+describe('CoordinatedStartup — a shutdown its first line did not reach is met at the next step', () => {
+  test('a task that fails once a shutdown has begun abandons the startup instead of failing it', async () => {
+    const system = systemWith(CoordinatedStartupOptions.create(), new NoopLogger(), 'second-line-failure');
+    try {
+      const started = deferred();
+      const held = deferred();
+      const startupOptions = CoordinatedStartupOptions.create().withTasks([
+        task(StartupPhases.PersistenceStart, 'connect', () => {
+          started.resolve();
+          return held.promise;
+        }),
+      ]);
+      const { startup, shutdown, failures } = startedByHand(system, startupOptions);
+      await started.promise;
+
+      shutdown.begun = true;
+      held.reject(new Error('connection refused'));
+
+      expect((await rejectionOf(startup.whenReady())).message).toContain('abandoned');
+      expect(failures).toEqual([]);
+      expect(startup.failure).toBeUndefined();
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a phase that finishes once a shutdown has begun starts no further phase', async () => {
+    const system = systemWith(CoordinatedStartupOptions.create(), new NoopLogger(), 'second-line-boundary');
+    try {
+      const started = deferred();
+      const held = deferred();
+      let laterPhaseRan = false;
+      const startupOptions = CoordinatedStartupOptions.create().withTasks([
+        task(StartupPhases.PersistenceStart, 'connect', () => {
+          started.resolve();
+          return held.promise;
+        }),
+        task(StartupPhases.BeforeSystemReady, 'warm-cache', () => { laterPhaseRan = true; }),
+      ]);
+      const { startup, shutdown } = startedByHand(system, startupOptions);
+      await started.promise;
+
+      shutdown.begun = true;
+      held.resolve();
+
+      expect((await rejectionOf(startup.whenReady())).message).toContain('abandoned');
+      expect(laterPhaseRan).toBe(false);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a last phase that finishes once a shutdown has begun does not report ready', async () => {
+    const system = systemWith(CoordinatedStartupOptions.create(), new NoopLogger(), 'second-line-completion');
+    try {
+      const started = deferred();
+      const held = deferred();
+      const startupOptions = CoordinatedStartupOptions.create().withTasks([
+        task(StartupPhases.BeforeSystemReady, 'warm-cache', () => {
+          started.resolve();
+          return held.promise;
+        }),
+      ]);
+      const { startup, shutdown } = startedByHand(system, startupOptions);
+      await started.promise;
+
+      shutdown.begun = true;
+      held.resolve();
+
+      expect((await rejectionOf(startup.whenReady())).message).toContain('abandoned');
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a shutdown that had begun before the graph started lets no task run', async () => {
+    const system = systemWith(CoordinatedStartupOptions.create(), new NoopLogger(), 'second-line-before-start');
+    try {
+      let ran = false;
+      const startupOptions = CoordinatedStartupOptions.create().withTasks([
+        task(StartupPhases.PersistenceStart, 'connect', () => { ran = true; }),
+      ]);
+      const startup = new CoordinatedStartup(system, startupOptions);
+      startup._start(() => {}, () => true);
+
+      expect((await rejectionOf(startup.whenReady())).message).toContain('before its first phase began');
+      expect(ran).toBe(false);
+    } finally {
+      await system.terminate();
+    }
   });
 });
 

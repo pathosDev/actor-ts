@@ -523,6 +523,28 @@ An acquire that takes longer than the lease's TTL can never produce
 a usable win: the strategy keeps arbitrating and decides nothing,
 the same posture as while an acquire is pending.
 
+### When this node leaves
+
+A won arbitration keeps the lease, and the backend renews it for as
+long as the strategy holds it: `decide()` never gives a win back,
+since a cached win is only as good as the lease under it.  Leaving
+does.  `cluster.leave()`, and the leave at once of a node its own
+decision downed or that gave its join up, call the strategy's
+`shutdown()` once the failure-detector tick that asks it has
+stopped.  A won lease is released there and then, so the members
+left behind can take it at their next even split instead of finding
+it held by a node that is gone, and nothing renews it once the node
+has left.  The leave also makes an `acquire()` still on the wire
+unwanted — a third case beside the two above, and their first two
+rules cover it: a win the attempt reports afterwards is dropped and
+released where it lands.  A release that fails is logged and the
+leave goes on; the record then runs out at its TTL.
+
+The strategy decides nothing after it, so a node that joins again
+needs a fresh one.  A strategy selected in configuration is built anew
+by every `Cluster.join`; one built in code has to be built again
+rather than handed to a second join.
+
 ## Picking a strategy
 
 Three questions in order:
@@ -550,6 +572,7 @@ The provider interface is tiny:
 ```ts
 interface DowningProvider {
   decide(view: ClusterPartitionView): DowningDecision;
+  shutdown?(): Promise<void>;         // optional: give back what it holds
 }
 
 type ClusterPartitionView = {
@@ -560,7 +583,11 @@ type ClusterPartitionView = {
 ```
 
 Implement `decide(view) => Set<string>` and return the address
-strings to down.  Empty set means "no decision."
+strings to down.  Empty set means "no decision."  `shutdown()` is
+for a strategy that holds something it has to give back: the cluster
+calls it once when this node leaves, after the last `decide()`, and
+`LeaseMajority` releases its lease there.  A `shutdown()` that throws
+or rejects is logged, and the leave goes on.
 
 Useful for app-specific rules — e.g. "always keep the node
 hosting role=primary," or "if the partition includes the

@@ -811,6 +811,52 @@ Nachrichten an einer halb-verschobenen Entity vorbeisausen.
 Siehe [Rebalance](/de/cluster/sharding/rebalance/) für das
 vollständige Protokoll.
 
+## Den Cluster verlassen
+
+`cluster.leave()` übergibt die Shards dieses Nodes, bevor es
+irgendwem sagt, dass der Node geht, und wartet darauf:
+
+1. Jede Region, die der Node gestartet hat, stoppt ihre Shards und
+   deren Entities.  Jede Entity beendet die Nachricht, die sie gerade
+   bearbeitet — der Schreibvorgang einer persistenten Entity landet —
+   und durchläuft `postStop`; danach meldet die Region dem
+   Koordinator, dass sie weg ist, und der verteilt ihre Shards neu.
+2. Die Koordinatoren des Nodes stoppen nach seinen Regionen, sodass
+   ein Koordinator, der auf einem gehenden Leader noch aktiv ist, das
+   Ende seiner eigenen Regionen mitbekommt und ihre Shards sofort neu
+   verteilt — gemerkte Entities starten auf ihrem neuen Zuhause neu,
+   ohne dass ihnen etwas geschickt wird.
+3. Erst dann wechselt der Node zu `leaving` und benachrichtigt seine
+   Peers.
+
+So verteilt kein Peer einen Shard neu, solange er hier noch läuft: Ein
+Shard hat nie zwei lebende Zuhause, und eine persistente Entity nie
+einen zweiten Schreiber.  Das Warten ist durch das `hand-off-timeout`
+jedes Typs begrenzt.  Eine Region, die bis dahin nicht gestoppt hat —
+eine Entity, die in ihrem Handler hängt, hält sie auf —, wird
+angewiesen, sofort zu stoppen, eine Warnung nennt sie, und das
+Verlassen geht ohne sie weiter; bis sie weg ist, kann diese eine
+Entity noch laufen, wenn ihr neues Zuhause sie startet.
+
+Die Coordinated-Shutdown-Pipeline tut dasselbe in ihrer Phase
+`cluster-sharding-shutdown-region`, vor `cluster-leave`.  Ein Node,
+den seine eigene Downing-Entscheidung entfernt hat, oder einer, der
+seinen Join aufgegeben hat, geht stattdessen sofort und stoppt sein
+Sharding neben dem Abgang: Die Peers, die ihn entfernt haben, warten
+auf keine Übergabe.
+
+Sobald `leave()` aufgelöst ist, sind die Namen der Regionen und
+Koordinatoren wieder frei, sodass ein erneuter Beitritt auf demselben
+`ActorSystem` dieselben Typen über das `sharding` des neuen Clusters
+startet.  Die Fassade des verlassenen Clusters verweigert jeden Start:
+Darüber gestartete Aktoren wären an einen Cluster gebunden, den es
+nicht mehr gibt.
+
+Eine Nachricht, die unterwegs zum gehenden Node ist, während die
+Übergabe läuft, wird nicht zum neuen Zuhause mitgenommen — sie geht
+verloren, wie bei jeder Region, die stoppt.  Die Übergabe bewegt
+Shards, keine Nachrichten im Flug.
+
 ## State über Failover
 
 Sharded Entities unterliegen denselben Neustart-Semantiken wie

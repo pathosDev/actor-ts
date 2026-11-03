@@ -96,10 +96,22 @@ The framework puts work of its own into `persistence-start`: a system
 that wires persistence opens its selected journal, snapshot store and
 durable-state store there, so a store that cannot be opened fails the
 startup like any task — see [opening the stores at
-startup](/persistence/overview/#opening-the-stores-at-startup).
+startup](/persistence/overview/#opening-the-stores-at-startup).  Every
+store that ships with actor-ts reaches its backend as it opens — with
+`auto-create-tables` off, a relational store pings its database and a
+DynamoDB store describes its table — except the object-storage snapshot
+and durable-state stores.  Those have nothing to open ahead of time, so
+a bucket they cannot reach fails their first operation, not the
+startup; so does a store of your own that has no `start()`.
 Turning `autoStart` off in the persistence behaviour — or
 `actor-ts.persistence.auto-start = off` in the configuration — leaves
-them closed until their first operation instead.
+them closed until their first operation instead.  Off in code, it also
+leaves the rest of the `actor-ts.persistence` behaviour block unread
+until something reads it: `create` does not need it, so a mistake in it
+is refused where persistence first reads it rather than by `create`.
+That is what a WorkerMesh worker
+sets, so a worker boots on the main thread's configuration whether or
+not it ever persists.
 
 `system.whenReady()` resolves once the last phase has run.  It is the
 same promise on every call, and already resolved for a system with no
@@ -115,10 +127,16 @@ do not run, the system logs one ERROR line and runs the [coordinated
 shutdown](/fundamentals/coordinated-shutdown/) pipeline with a
 `StartupFailedReason`, and `runUntilTerminated()` then rejects with the
 same error — so a `main` that awaits it exits by itself, non-zero, and
-the orchestrator starts a fresh process.  A `terminate()` while startup
-is still running abandons it instead: the running tasks' signals abort
-and `whenReady()` rejects, but nothing failed, so no shutdown of its own
-runs.
+the orchestrator starts a fresh process.
+
+**A shutdown during startup abandons it instead**, because nothing
+failed: `whenReady()` rejects with an abandonment error, the later
+phases do not run, nothing is logged above debug and no shutdown of its
+own runs — so a SIGTERM while the system starts ends the process as a
+shutdown, not as a failed start.  It happens at once, whatever started
+the shutdown — `terminate()`, a SIGTERM, an explicit `run()` of the
+coordinated-shutdown pipeline: the running tasks' signals abort before
+the pipeline's first phase runs.
 
 The graph is sealed when `create` returns.
 `system.extension(CoordinatedStartupId).addTask(...)` afterwards throws
@@ -146,7 +164,7 @@ The full settings shape:
 | `logLevel` | One of `debug` / `info` / `warn` / `error` / `off`. |
 | `dispatcher` | Custom `Dispatcher`.  Defaults to the one `actor-ts.dispatcher.default` selects — `HybridDispatcher` unless configured; swap in an immediate- or throughput-based one, or `Dispatchers.Hybrid(n)` with another budget, to tune scheduling. |
 | `scheduler` | Custom `Scheduler`.  Defaults to a real-time scheduler; tests inject `ManualScheduler` to control time. |
-| `config` | Either a prebuilt `Config` or a plain object of HOCON overrides.  Layered on top of reference defaults + any `application.conf`. |
+| `config` | Either a prebuilt `Config` or a plain object of HOCON overrides.  Layered on top of reference defaults + any `application.conf`.  Pass a `Config` itself, never a spread of one: `{ ...config }` copies its private fields, not its configuration, and `create` refuses it with a `ConfigError` — as it refuses a class instance (a `Map`, a `Date`, a nested `Config`) anywhere inside the object. |
 | `configFile` | Explicit path to an `application.conf` file.  Overrides the `ACTOR_TS_CONFIG` env var and the CWD lookup. |
 | `profile` | The config [profile](/reference/configuration/#profiles) — the `profiles.<name>` block of `application.conf` and of the secrets file, laid over each file's root.  Overrides the `ACTOR_TS_PROFILE` env var; a name no file defines is refused at startup.  Reaches `system.config` only, not the components that load their own configuration. |
 | `persistence` | Persistence wired at creation.  `plugins` are functions handed the system's `PersistenceExtension` that register backends — `(persistence) => registerSqlitePlugins(persistence)` — and run inside `create`, in the order given, so the plugin the config selects resolves as soon as `create` returns.  A promise one returns is awaited in the `persistence-start` phase of the [startup graph](#starting-up), where a rejection fails the startup; one that throws makes `create` throw.  `journal`, `snapshotStore` and `durableStateStore` are store instances, each winning over the plugin its axis selects.  `behavior` is the persistence behaviour, layered over `actor-ts.persistence` field by field; its `autoStart`, on unless set false, opens the selected stores in `persistence-start`, where a selection nothing registered or a store that cannot open fails the startup — off, they open on first use. |

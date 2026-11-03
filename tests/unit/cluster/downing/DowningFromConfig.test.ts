@@ -7,9 +7,12 @@
  * reference tree instead and read the shipped `off` — a test that asserts
  * nothing and passes.
  */
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import { Config, ConfigError } from '../../../../src/config/Config.js';
 import { _substituteLeaseBackendForTest } from '../../../../src/coordination/LeaseFromConfig.js';
+import type { ConfiguredLeaseOptions } from '../../../../src/coordination/LeaseFromConfig.js';
+import type { Lease } from '../../../../src/coordination/Lease.js';
+import { InMemoryLease, inMemoryLeaseStore } from '../../../../src/coordination/leases/InMemoryLease.js';
 import {
   DEFAULT_SPLIT_BRAIN_RESOLVER_STRATEGY,
   readDowningFromConfig,
@@ -19,9 +22,10 @@ import { KeepOldest } from '../../../../src/cluster/downing/KeepOldest.js';
 import { KeepReferee } from '../../../../src/cluster/downing/KeepReferee.js';
 import { StaticQuorum } from '../../../../src/cluster/downing/StaticQuorum.js';
 import { addrKey } from '../../../../src/cluster/downing/DowningProvider.js';
-import type { ClusterPartitionView } from '../../../../src/cluster/downing/DowningProvider.js';
+import type { ClusterPartitionView, DowningProvider } from '../../../../src/cluster/downing/DowningProvider.js';
 import { Member } from '../../../../src/cluster/Member.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
+import { awaitCondition } from '../../../util/AwaitCondition.js';
 import { expectExactOptions } from '../../../util/ExactOptions.js';
 
 const address = (port: number): NodeAddress => new NodeAddress('sys', 'h', port);
@@ -353,5 +357,106 @@ describe('readDowningFromConfig', () => {
       .toBe('off');
     expect(reference.getBoolean('actor-ts.cluster.split-brain-resolver.active-strategy'))
       .toBe(false);
+  });
+});
+
+describe('a lease-majority provider built from configuration gives its lease back (#1454)', () => {
+  /**
+   * The backend seam builds an `InMemoryLease` from exactly what the
+   * Kubernetes backend would be handed — the name, the owner and the scheduler
+   * the renewal is armed on — so the record lives in the shared store, where a
+   * foreign owner can be asked whether it is free.
+   */
+  const RECORD = 'sys-split-brain-resolver';
+  const handed: ConfiguredLeaseOptions[] = [];
+  let restore: () => void = () => {};
+  beforeEach(() => {
+    inMemoryLeaseStore._clear();
+    handed.length = 0;
+    restore = _substituteLeaseBackendForTest((options, config) => {
+      handed.push(options);
+      return new InMemoryLease(options, config);
+    });
+  });
+  afterEach(() => { restore(); });
+
+  function configuredProvider(): DowningProvider {
+    const configured = Config.parseString(`
+      actor-ts.coordination.lease { backend = kubernetes, ttl = 15s }
+      actor-ts.cluster.split-brain-resolver.active-strategy = lease-majority
+    `);
+    return readDowningFromConfig(configured)!;
+  }
+
+  /** Two members, `sys@h:2` silent, seen from `sys@h:1`: the even split only the lease decides. */
+  const evenSplit = (): ClusterPartitionView => view([member(1), member(2)], [2], 1);
+
+  /** Whether another owner could take the record right now; a record it takes is given straight back. */
+  function foreignOwnerCanTake(): boolean {
+    const now = Date.now();
+    const version = inMemoryLeaseStore.tryAcquire(RECORD, 'foreign-owner', now + 1_000, now);
+    if (version > 0) inMemoryLeaseStore.release(RECORD, 'foreign-owner');
+    return version > 0;
+  }
+
+  async function wonArbitration(provider: DowningProvider): Promise<void> {
+    expect(provider.decide(evenSplit())).toEqual(new Set());
+    await awaitCondition(() => provider.decide(evenSplit()).size > 0, { label: 'the arbitration was won' });
+    expect(provider.decide(evenSplit())).toEqual(new Set(['sys@h:2']));
+  }
+
+  test('shutdown releases a won lease and shuts down the scheduler its renewal runs on', async () => {
+    const provider = configuredProvider();
+    await wonArbitration(provider);
+    expect(foreignOwnerCanTake()).toBe(false);
+    expect(handed).toHaveLength(1);
+    // Spied after the build, which is when the provider hands it over; the
+    // spy calls through, so the scheduler really is shut down.
+    const schedulerShutdown = spyOn(handed[0]!.scheduler, 'shutdown');
+    try {
+      await provider.shutdown?.();
+      expect(schedulerShutdown).toHaveBeenCalledTimes(1);
+    } finally {
+      schedulerShutdown.mockRestore();
+    }
+
+    // Released, not waiting out its TTL: the next owner gets it at once.
+    expect(foreignOwnerCanTake()).toBe(true);
+    expect(provider.decide(evenSplit())).toEqual(new Set());
+  });
+
+  test('a provider shut down before its first decision builds no lease and decides nothing', async () => {
+    const provider = configuredProvider();
+
+    await provider.shutdown?.();
+
+    expect(provider.decide(evenSplit())).toEqual(new Set());
+    expect(handed).toEqual([]);
+  });
+
+  test('a release that fails still leaves nothing armed', async () => {
+    restore();
+    const captured: { scheduler: ConfiguredLeaseOptions['scheduler'] | null } = { scheduler: null };
+    restore = _substituteLeaseBackendForTest((options, config) => {
+      captured.scheduler = options.scheduler;
+      const lease: Lease = new InMemoryLease(options, config);
+      return {
+        acquire: () => lease.acquire(),
+        release: () => Promise.reject(new Error('the lease API is unreachable')),
+        checkAlive: () => lease.checkAlive(),
+        onLost: (handler) => lease.onLost(handler),
+      };
+    });
+    const provider = configuredProvider();
+    await wonArbitration(provider);
+    const schedulerShutdown = spyOn(captured.scheduler!, 'shutdown');
+    try {
+      let failure: unknown = null;
+      await provider.shutdown?.().catch((error: unknown) => { failure = error; });
+      expect((failure as Error).message).toBe('the lease API is unreachable');
+      expect(schedulerShutdown).toHaveBeenCalledTimes(1);
+    } finally {
+      schedulerShutdown.mockRestore();
+    }
   });
 });

@@ -67,6 +67,7 @@ import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import type { LocalActorRef } from '../../../../src/internal/LocalActorRef.js';
 import { Mailbox } from '../../../../src/internal/Mailbox.js';
 import { BoundedMailbox } from '../../../../src/mailbox/BoundedMailbox.js';
+import { BoundedMailboxOptions } from '../../../../src/mailbox/BoundedMailboxOptions.js';
 import { ControlAwareMailbox } from '../../../../src/mailbox/ControlAwareMailbox.js';
 import type { MetricsRegistry } from '../../../../src/metrics/Metrics.js';
 import { MetricsExtensionId } from '../../../../src/metrics/MetricsExtension.js';
@@ -708,5 +709,45 @@ describe("the WebSocket hub's accept and connected ride the control lane (#1431)
     expect((h.hub as LocalActorRef<HubMessage>).getCell()._mailboxForTest()).toBe(supplied!);
     // FIFO: the accept waited behind the whole backlog, as that queue orders everything.
     expect(framesBefore(h.record, x.id, yConnected)).toBe(101);
+  });
+
+  /*
+   * The strict-order hub the WebSocket page tells you to build: a FIFO mailbox
+   * of the hub's own, bounded — because a supplied mailbox is the only bound a
+   * hub then has.  The global default does not reach it, and
+   * `withMailboxCapacity()` cannot be combined with it, so `new Mailbox()`
+   * would leave a hub that was bounded through the default with no bound at
+   * all.  Spawned the way the page writes it, so that shape is compiled too.
+   */
+  test('a hub spawned with withMailbox(() => new BoundedMailbox(…)) keeps arrival order and that bound, and the global default does not reach it', async () => {
+    const system = newSystem('hub-lane-own-bounded-mailbox', 64);
+    const hubMailboxOptions = BoundedMailboxOptions.create()
+      .withCapacity(4)
+      .withOverflow('drop-head');
+    const hubOptions = ActorOptions.create().withMailbox(() => new BoundedMailbox(hubMailboxOptions));
+    const { record, openGate } = newHubRecord();
+    classFormRecord.current = record;
+    const hub = system.spawn(ClassFormHub, 'hub', hubOptions);
+    const h: HubHarness = { system, hub, record, openGate };
+
+    const x = await connect(h);
+    const mailbox = (h.hub as LocalActorRef<HubMessage>).getCell()._mailboxForTest();
+    expect(mailbox).toBeInstanceOf(BoundedMailbox);
+    expect(mailbox).not.toBeInstanceOf(ControlAwareMailbox);
+
+    await parkOn(h, x.socket, 0);
+    for (let n = 1; n <= 10; n++) x.socket.emit(n);
+    wire(h);
+    h.openGate();
+
+    await awaitCondition(() => h.record.events.filter((event) => event.startsWith('connected:')).length === 2, {
+      timeoutMs: 4_000,
+      label: 'the second client was connected',
+    });
+    const yConnected = h.record.events.filter((event) => event.startsWith('connected:'))[1]!;
+    // The mailbox's own bound of 4, not the global 64: drop-head kept the newest four.
+    expect(framesOf(h.record, x.id)).toEqual([0, 7, 8, 9, 10]);
+    // FIFO: the accept waited behind every frame queued before it.
+    expect(framesBefore(h.record, x.id, yConnected)).toBe(5);
   });
 });

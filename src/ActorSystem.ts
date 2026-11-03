@@ -101,7 +101,10 @@ import {
 } from './diagnostics/MessageBoundaryOptions.js';
 import { SerializationExtensionId } from './serialization/SerializationExtension.js';
 import type { ParallelismOptionsType } from './parallelism/ParallelismOptions.js';
-import type { PersistenceBehaviorOptions } from './persistence/PersistenceBehaviorOptions.js';
+import type {
+  PersistenceBehaviorOptions,
+  PersistenceBehaviorOptionsType,
+} from './persistence/PersistenceBehaviorOptions.js';
 import { PersistenceExtensionId, selectsPersistencePlugin } from './persistence/PersistenceExtension.js';
 import type { HttpServerBackend } from './http/backend/HttpServerBackend.js';
 import { DEFAULT_HTTP_BIND_HOST } from './http/Constants.js';
@@ -606,14 +609,38 @@ export class ActorSystem {
     // All before the mesh start and the graph's own start, the two steps
     // below that arm handles, so a plug-in that throws fails `create` before
     // either exists.  A system with neither stays lazy, as it always was.
+    //
+    // `autoStart: false` set in code opts out of the warm-up whatever the file
+    // says, so it is answered here without reading the behaviour block — and
+    // so without validating it, which the warm-up does before it looks at
+    // `autoStart`.  On its own it gives `create` nothing to do: that is the
+    // whole of a WorkerMesh worker's `withPersistence`, and building the
+    // extension for it failed every worker on an invalid block its main
+    // thread never read.  The block is still read, and refused, on first use;
+    // the extension built then still finds the opt-out through
+    // `_explicitPersistenceBehavior`.
     const persistenceOptions = options.persistence;
-    if (persistenceOptions !== undefined || selectsPersistencePlugin(this.config)) {
+    const warmUpOptedOut =
+      (persistenceOptions?.behavior as Partial<PersistenceBehaviorOptionsType> | undefined)?.autoStart === false;
+    const persistenceWorkInCreate = (persistenceOptions?.plugins?.length ?? 0) > 0
+      || persistenceOptions?.journal !== undefined
+      || persistenceOptions?.snapshotStore !== undefined
+      || persistenceOptions?.durableStateStore !== undefined
+      || (!warmUpOptedOut && (persistenceOptions !== undefined || selectsPersistencePlugin(this.config)));
+    if (persistenceWorkInCreate) {
       const persistence = this.extensions.get(PersistenceExtensionId);
+      // Before the plug-ins, which cannot see the instances yet: a plug-in
+      // asks this so it skips refusing a selection code replaces (#1492).
+      persistence._markSetInCode([
+        ...(persistenceOptions?.journal ? ['journal' as const] : []),
+        ...(persistenceOptions?.snapshotStore ? ['snapshotStore' as const] : []),
+        ...(persistenceOptions?.durableStateStore ? ['durableStateStore' as const] : []),
+      ]);
       persistence._runPlugins(persistenceOptions?.plugins ?? []);
       if (persistenceOptions?.journal) persistence.setJournal(persistenceOptions.journal);
       if (persistenceOptions?.snapshotStore) persistence.setSnapshotStore(persistenceOptions.snapshotStore);
       if (persistenceOptions?.durableStateStore) persistence.setDurableStateStore(persistenceOptions.durableStateStore);
-      persistence._prepareWarmUp();
+      if (!warmUpOptedOut) persistence._prepareWarmUp();
     }
 
     // Only when the operator asked for a queue.  Off — the default — this
@@ -642,7 +669,10 @@ export class ActorSystem {
     // The very last step: the startup graph is sealed here, synchronously, so
     // nothing registered after `create` returns is ever part of it — and its
     // first task runs a microtask later, never inside `create` itself.
-    this.coordinatedStartup._start((reason, error) => this.onStartupFailed(reason, error));
+    this.coordinatedStartup._start(
+      (reason, error) => this.onStartupFailed(reason, error),
+      () => this.coordinatedShutdownHasBegun(),
+    );
   }
 
   /**
@@ -1066,6 +1096,20 @@ export class ActorSystem {
   }
 
   /**
+   * Whether a coordinated-shutdown run has ever begun — asked by the startup
+   * graph at each of its steps, the second line behind
+   * {@link _abandonStartup} for a run that began before the graph was
+   * running, and without building the extension, for the reason
+   * {@link coordinatedShutdownRunInProgress} gives.  "Ever", not "in flight":
+   * a run that ended and left the system up — no terminator in its last
+   * phase — still unbound and left.
+   */
+  private coordinatedShutdownHasBegun(): boolean {
+    return this.extensions.has(CoordinatedShutdownId)
+      && this.extensions.get(CoordinatedShutdownId).isRunning;
+  }
+
+  /**
    * Start the run `startRun` asks for — every phase with
    * {@link ActorSystemTerminateReason} for a `terminate()`, with the bootstrap's
    * reason for {@link _terminateFor}, the failure form with a
@@ -1101,6 +1145,22 @@ export class ActorSystem {
   }
 
   /**
+   * @internal Abandon a startup still running — what `CoordinatedShutdown`
+   * calls as a run begins, before its first phase starts.
+   *
+   * `terminate()` abandons the startup before it starts its pipeline, but a
+   * run started any other way — a signal's, an explicit `run()`, a node that
+   * could not join — never passes through `terminate()`.  Left to meet such
+   * a run at its own next step ({@link coordinatedShutdownHasBegun}), a task
+   * waiting inside a thirty-second budget ran on through the unbind and the
+   * leave; asked here, every run aborts the tasks' signals the moment it
+   * begins (#1473).  A no-op once the startup has ended.
+   */
+  _abandonStartup(): void {
+    this.coordinatedStartup._abandon();
+  }
+
+  /**
    * @internal The teardown itself — drain, preludes, stop cascade — behind
    * none of {@link terminate}'s choices.
    *
@@ -1108,8 +1168,9 @@ export class ActorSystem {
    * runs inside a coordinated-shutdown run, where `terminate()` deliberately
    * starts nothing, so it needs a way in that is not `terminate()`.
    *
-   * It abandons a startup still running, as `terminate()` does: a pipeline
-   * started by a signal reaches the system through here and nowhere else.
+   * It abandons a startup still running, as `terminate()` does — a no-op
+   * after a run, which abandoned it as it began ({@link _abandonStartup}),
+   * and the one abandonment a teardown outside any run gets.
    */
   _teardown(): Promise<void> {
     if (this._terminated) return Promise.resolve();
@@ -1613,6 +1674,9 @@ function buildConfig(options: ActorSystemOptionsType): Config {
       ? Config.empty()
       : options.config instanceof Config
         ? options.config
+        // A spread of a `Config`, and a class instance anywhere in the tree,
+        // are refused there, for every route that builds one from an object
+        // (#1473).
         : Config.fromObject(options.config);
   return Config.load({
     appConfPath: options.configFile,

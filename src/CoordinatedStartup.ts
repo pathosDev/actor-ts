@@ -13,7 +13,7 @@ import {
   type StartupTask,
 } from './CoordinatedStartupOptions.js';
 import { extensionId, type Extension, type ExtensionId } from './Extension.js';
-import { armChainedTimeout, unreferencedHostTimers, type Cancellable } from './Scheduler.js';
+import { armChainedTimeout, type Cancellable } from './Scheduler.js';
 import { mergeOptions } from './util/OptionsMerge.js';
 import { OptionsError } from './util/OptionsValidator.js';
 
@@ -89,6 +89,15 @@ type StartupTaskFailure = {
  * While the graph runs, the `startup` readiness check of
  * `healthChecksOf(system)` keeps `/ready` false.
  *
+ * **A shutdown overtakes it.**  A system that begins shutting down while the
+ * graph runs abandons the startup rather than failing it: the running tasks'
+ * signals abort, no further phase starts, `whenReady()` rejects with an
+ * abandonment error, and nothing is logged above debug, so a SIGTERM during
+ * startup ends the process as a shutdown.  It happens before the pipeline's
+ * first phase, whatever started it: `terminate()` abandons before it starts
+ * its pipeline, and every coordinated-shutdown run — a signal's, an explicit
+ * `run()` — does as it begins.
+ *
  * **The budgets are the deployment's to tune.**  `actor-ts.coordinated-startup`
  * carries the default phase budget and a `phases` block of the shutdown
  * block's shape, both under what the options set in code: a phase an option
@@ -113,6 +122,8 @@ export class CoordinatedStartup implements Extension {
   private currentPhase: string | undefined = undefined;
   private failureError: Error | undefined = undefined;
   private abandonment: Error | undefined = undefined;
+  /** Whether a coordinated-shutdown run has begun — what {@link _start} was handed. */
+  private shutdownHasBegun: () => boolean = () => false;
 
   constructor(
     private readonly system: ActorSystem,
@@ -224,10 +235,18 @@ export class CoordinatedStartup implements Extension {
    * starts a microtask later, after the statement that called `create` has
    * finished — a task that refers to the system through the very `const` its
    * registration sits in would otherwise meet that binding before it exists.
+   *
+   * `shutdownHasBegun` answers whether a coordinated-shutdown run has begun —
+   * the second line behind the abandonment a run makes as it begins, asked
+   * at every step the graph takes ({@link abandonedForShutdown}).
    */
-  _start(onFailed: (reason: StartupFailedReason, error: Error) => void): void {
+  _start(
+    onFailed: (reason: StartupFailedReason, error: Error) => void,
+    shutdownHasBegun: () => boolean,
+  ): void {
     if (this.sealed) return;
     this.sealed = true;
+    this.shutdownHasBegun = shutdownHasBegun;
     if (!this.hasTasks) {
       this.completed = true;
       this.resolveReadiness();
@@ -240,21 +259,25 @@ export class CoordinatedStartup implements Extension {
   }
 
   /**
-   * @internal Give up on a startup the system no longer wants: it is being
-   * terminated while the graph still runs.
+   * @internal Give up on a startup the system no longer wants: it began
+   * shutting down while the graph still runs.  `terminate()` calls this,
+   * every coordinated-shutdown run as it begins (through
+   * `ActorSystem._abandonStartup`), the teardown, and the graph itself when
+   * one of its steps meets a run that began before it was running
+   * ({@link abandonedForShutdown}).
    *
    * Every running task's signal aborts, its budget is cleared on the spot, no
    * further phase starts, and {@link whenReady} rejects.  Not a failure — the
-   * caller asked for the system to go — so it is logged at debug and starts no
-   * shutdown of its own.  A no-op when the graph is not running.
+   * system was asked to go — so it is logged at debug and starts no shutdown
+   * of its own.  A no-op when the graph is not running.
    */
   _abandon(): void {
     if (!this.running) return;
     const phase = this.currentPhase;
     const error = new Error(
       phase === undefined
-        ? 'Startup was abandoned: the system was terminated before its first phase began'
-        : `Startup was abandoned: the system was terminated while phase "${phase}" was running`,
+        ? 'Startup was abandoned: the system began shutting down before its first phase began'
+        : `Startup was abandoned: the system began shutting down while phase "${phase}" was running`,
     );
     this.abandonment = error;
     this.running = false;
@@ -269,7 +292,7 @@ export class CoordinatedStartup implements Extension {
   ): Promise<void> {
     await Promise.resolve();
     for (const phase of order) {
-      if (this.abandonment !== undefined) return;
+      if (this.abandonment !== undefined || this.abandonedForShutdown()) return;
       this.currentPhase = phase;
       const failure = await this.runPhase(this.phases.get(phase)!);
       if (this.abandonment !== undefined) return;
@@ -278,10 +301,32 @@ export class CoordinatedStartup implements Extension {
         return;
       }
     }
+    if (this.abandonedForShutdown()) return;
     this.running = false;
     this.currentPhase = undefined;
     this.completed = true;
     this.resolveReadiness();
+  }
+
+  /**
+   * Abandon the run, and answer `true`, when a coordinated-shutdown run has
+   * begun since the run's last step — the second line behind the abandonment
+   * every run makes as it begins.
+   *
+   * That first line finds nothing to abandon when the run began before the
+   * graph was running: inside `create`, ahead of {@link _start}.  The graph
+   * would then go on as if nothing had happened — a task whose budget ran
+   * out failed the startup, logged an ERROR and made `runUntilTerminated()`
+   * reject, so an ordinary shutdown ended the process as a failed start; a
+   * phase that finished started the next one on a system that was going
+   * down.  So every step asks — before a phase, before a failure is
+   * declared, before readiness resolves — and a shutdown that has begun
+   * turns the step into the abandonment the run would have made.
+   */
+  private abandonedForShutdown(): boolean {
+    if (!this.shutdownHasBegun()) return false;
+    this._abandon();
+    return true;
   }
 
   private endWithFailure(
@@ -289,7 +334,7 @@ export class CoordinatedStartup implements Extension {
     failure: StartupTaskFailure,
     onFailed: (reason: StartupFailedReason, error: Error) => void,
   ): void {
-    if (!this.running) return;
+    if (!this.running || this.abandonedForShutdown()) return;
     const error = new Error(
       `Startup task "${failure.task}" in phase "${phase}" failed: ${messageOf(failure.cause)}`,
       { cause: failure.cause },
@@ -340,11 +385,20 @@ export class CoordinatedStartup implements Extension {
   /**
    * Start one task under its phase's budget.
    *
-   * The budget is an unreferenced host timer, armed through the scheduler's
-   * chain so a budget past the ~24.9-day ceiling of one `setTimeout` waits as
-   * long as it says instead of firing at once; it is cleared on every way out.
-   * Not the system's scheduler: a `ManualScheduler` in a test would freeze
-   * every startup budget until somebody advanced it.
+   * The budget is a host timer armed through the scheduler's chain, so a
+   * budget past the ~24.9-day ceiling of one `setTimeout` waits as long as it
+   * says instead of firing at once.  Not the system's scheduler: a
+   * `ManualScheduler` in a test would freeze every startup budget until
+   * somebody advanced it.
+   *
+   * **Referenced.**  The budget is what ends a task that waits on something
+   * holding no handle of its own, and the documented `main` — `await
+   * system.whenReady()` straight after `create` — has nothing else keeping
+   * the process alive: Node ends such a program with "unsettled top-level
+   * await" (status 13) once its loop is empty, so an unreferenced budget never
+   * fired there and the task's failure was never reported (#1473).  It holds
+   * the process for no longer than its task runs: cleared on every way out,
+   * and bounded by the budget itself.
    */
   private launch(entry: RegisteredStartupTask, definition: PhaseDefinition): LaunchedStartupTask {
     const controller = new AbortController();
@@ -353,7 +407,6 @@ export class CoordinatedStartup implements Extension {
       budget: armChainedTimeout(
         () => { controller.abort(new Error(`the phase's ${definition.timeoutMs} ms budget ran out`)); },
         definition.timeoutMs,
-        unreferencedHostTimers,
       ),
     };
     this.inFlight.add(flight);

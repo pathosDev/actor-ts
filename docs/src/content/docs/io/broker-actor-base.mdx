@@ -345,7 +345,7 @@ actor-ts.io.broker.kafka {
     max-delay     = 30s
     factor        = 2
     random-factor = 0.2    # ±20 % jitter; 0 for a deterministic schedule
-    # max-attempts omitted = unlimited (the default); 1 = one attempt, no retry
+    # max-attempts omitted = unlimited (the default); 1 = one reconnect, two connects in all
   }
   circuit-breaker = "kafka"   # a breaker id; none when unset or ""
   outbound-buffer = 1000   # messages held while disconnected; 0 = fail-fast
@@ -362,8 +362,10 @@ Each leaf is the kebab-case of its field with the unit suffix dropped, so a
 duration takes `30s` as readily as a bare millisecond count.  There is no
 HOCON spelling of `reconnect: false`: switching auto-reconnect off entirely
 takes the constructor, and `max-attempts = 1` is the nearest a config file
-gets.  The camelCase spellings these leaves used to have — `initialDelayMs`,
-`outboundBuffer` and the rest — and every block the breaker had before it
+gets.  It still retries once: the count is of reconnects, the first connect is
+not one, and `0` is refused.  The camelCase spellings these leaves used to
+have — `initialDelayMs`, `outboundBuffer` and the rest — and every block the
+breaker had before it
 became an id — `circuitBreaker { … }` and
 `circuit-breaker { failure-threshold, reset }` — are refused with a
 `ConfigError` that names the new key, rather than ignored.  The refusal comes
@@ -432,16 +434,29 @@ What it does to the connect cycle:
   `max-reset-timeout`.
 - **`ignored-error-names`** lists `Error.name` values that never count — a
   driver's transient resolver error, say.
-- **`call-timeout`**, when set, is a deadline on each connect: the attempt is
-  aborted through `abortConnectAttempt`, as the connect deadline below aborts
-  one, and counted as a failure.
+- **`call-timeout`**, when set, is a deadline on each connect, and an attempt
+  that outlasts it counts as a failure.  The WebSocket client, `SseActor` and
+  `TcpSocketActor` abort that attempt through `abortConnectAttempt`, as the
+  connect deadline below aborts one.  No other built-in broker can abort a
+  connect in flight: there the timeout still counts and can open the breaker,
+  but the connect runs until it settles on its own, the next attempt waits for
+  it, and a warning says so.
 
 Actors that name the same id **share one breaker**, and so one verdict: once
-it opens, an actor that never tried is refused too, and one probe after the
-window answers for all of them.  For a fleet of actors on one broker cluster
-that is the point — one probe per window instead of a reconnect burst from
-each.  It is also why two unrelated brokers get two ids: a breaker shared by
-both opens on either's failures and holds both off.
+it opens, an actor that never tried is refused too, and each actor makes at
+most one connect per window.  For a fleet of actors on one broker cluster that
+is the point — one attempt each per window instead of a reconnect burst from
+each.  Whether a single probe answers for all of them depends on how long a
+failing connect takes.  Each actor's wake-up is spread forwards by its
+`randomFactor`, and the half-open breaker admits every attempt that arrives
+before the probe settles.  A connect that fails fast reopens the breaker
+before the next actor wakes, so the rest are refused and one probe decided for
+the fleet; a connect that hangs — a broker that black-holes its traffic — is
+still in flight when the others wake, and each of them probes too.  A
+`call-timeout` bounds how long a hanging probe holds the breaker half-open.
+It is also why two
+unrelated brokers get two ids: a breaker shared by both opens on either's
+failures and holds both off.
 
 Every transition is published as `BrokerCircuitBreakerStateChanged` — actor
 path, endpoint, breaker id and state — by each actor that names the breaker.

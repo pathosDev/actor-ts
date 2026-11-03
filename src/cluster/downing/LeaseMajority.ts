@@ -167,6 +167,9 @@ export class LeaseMajority implements DowningProvider {
    */
   private abandonedAcquireEpoch: number | null = null;
 
+  /** Set once by {@link shutdown}; every decision after it is the empty one. */
+  private stopped = false;
+
   private readonly options: LeaseMajorityOptionsType;
 
   constructor(options: LeaseMajorityOptions) {
@@ -175,6 +178,7 @@ export class LeaseMajority implements DowningProvider {
   }
 
   decide(view: ClusterPartitionView): DowningDecision {
+    if (this.stopped) return new Set();
     const candidates = view.allMembers.filter((m) =>
       (m.status === 'up' || m.status === 'leaving' || m.status === 'unreachable') &&
       (!this.options.role || m.hasRole(this.options.role)),
@@ -271,6 +275,31 @@ export class LeaseMajority implements DowningProvider {
     const myEpoch = this.acquireEpoch;
     void this.runAcquire(myEpoch, surviveSet, downSelfSet);
     return new Set();
+  }
+
+  /**
+   * Stop arbitrating and give back the lease this strategy holds (#1454).
+   *
+   * What a node that leaves owes the members it leaves behind.  A won
+   * arbitration keeps the lease, and the backend renews the record until
+   * something releases it — {@link decide} never does, because a cached win is
+   * only as good as the lease under it (#937).  Without this, a node that left
+   * kept the record for as long as its process ran, and a later even split
+   * among the members still there found it held by a node that was gone: both
+   * halves lost the arbitration and downed themselves.
+   *
+   * An acquire still on the wire is abandoned the way a changed view abandons
+   * one ({@link reset}), so a win it reports after this is undone where it
+   * lands (#600).  The release itself is `Lease.release()`, a no-op for a lease
+   * that is not held, so a strategy that never arbitrated pays one call.  A
+   * release that fails rejects this call; the strategy stays stopped either
+   * way, and decides nothing again.
+   */
+  async shutdown(): Promise<void> {
+    if (this.stopped) return;
+    this.stopped = true;
+    this.reset();
+    await this.options.lease.release();
   }
 
   /* ------------------------------ internals ------------------------------ */

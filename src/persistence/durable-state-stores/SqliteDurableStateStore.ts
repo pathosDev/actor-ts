@@ -32,7 +32,7 @@ export class SqliteDurableStateStore extends RelationalDurableStateStore {
   override readonly storageLocality: StorageLocality = 'node-local';
 
   constructor(options: SqliteDurableStateStoreOptions = {}) {
-    const resolvedOptions = (options as SqliteDurableStateStoreOptionsType);
+    const resolvedOptions = withoutNullDatabase(options as SqliteDurableStateStoreOptionsType);
     new SqliteDurableStateStoreOptionsValidator().validate(resolvedOptions);
     super({
       storeName: 'SqliteDurableStateStore',
@@ -51,4 +51,21 @@ export class SqliteDurableStateStore extends RelationalDurableStateStore {
       ),
     });
   }
+}
+
+/**
+ * `options`, with an untyped `database: null` read as no handle at all
+ * (#1492).
+ *
+ * The path rule and `buildSqliteDatabase` already count `null` — the value a
+ * caller without the declared types passes for "none" — as no handle, so
+ * `null` beside a path opens the path and `null` with no path is refused as a
+ * store given neither.  What is left to this store is ownership: it decides
+ * `ownsPool` and the adapter's close from `database === undefined`, so
+ * without this a store that opened the path itself would leave that database
+ * open on `close()`, as if a caller owned it.
+ */
+function withoutNullDatabase(options: SqliteDurableStateStoreOptionsType): SqliteDurableStateStoreOptionsType {
+  if ((options.database as unknown) !== null) return options;
+  return { ...options, database: undefined };
 }

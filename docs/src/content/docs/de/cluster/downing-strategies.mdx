@@ -562,6 +562,31 @@ einen verwertbaren Gewinn liefern: Die Strategie arbitriert weiter
 und entscheidet nichts — dieselbe Haltung wie bei einem noch
 laufenden Acquire.
 
+### Wenn dieser Node geht
+
+Ein gewonnener Schiedsspruch behält die Lease, und das Backend
+erneuert sie, solange die Strategie sie hält: `decide()` gibt einen
+Gewinn nie zurück, denn ein gecachter Gewinn ist nur so gut wie die
+Lease darunter.  Das Verlassen tut es.  `cluster.leave()` und das
+sofortige Verlassen eines Nodes, den seine eigene Entscheidung
+gedownt hat oder der seinen Join aufgegeben hat, rufen das
+`shutdown()` der Strategie auf, sobald der Failure-Detector-Tick, der
+sie fragt, gestoppt ist.  Eine gewonnene Lease wird dort sofort
+released: Die zurückbleibenden Mitglieder können sie beim nächsten
+Gleichstand nehmen, statt sie bei einem Node vorzufinden, der weg
+ist, und nichts erneuert sie mehr, sobald der Node gegangen ist.  Das
+Verlassen macht auch ein `acquire()` unerwünscht, das noch auf der
+Leitung ist — ein dritter Fall neben den beiden oben, und deren erste
+zwei Regeln decken ihn ab: Ein Gewinn, den der Versuch danach meldet,
+wird verworfen und dort released, wo er ankommt.  Ein Release, das
+fehlschlägt, wird geloggt, und das Verlassen geht weiter; der Eintrag
+läuft dann mit seiner TTL ab.
+
+Danach entscheidet die Strategie nichts mehr, ein Node, der erneut
+beitritt, braucht also eine frische.  Eine in der Konfiguration
+gewählte Strategie baut jeder `Cluster.join` neu; eine im Code gebaute
+muss neu gebaut werden, statt sie einem zweiten Join zu übergeben.
+
 ## Eine Strategie auswählen
 
 Drei Fragen, in dieser Reihenfolge:
@@ -591,6 +616,7 @@ Das Provider-Interface ist winzig:
 ```ts
 interface DowningProvider {
   decide(view: ClusterPartitionView): DowningDecision;
+  shutdown?(): Promise<void>;         // optional: zurückgeben, was sie hält
 }
 
 type ClusterPartitionView = {
@@ -602,7 +628,11 @@ type ClusterPartitionView = {
 
 Implementiere `decide(view) => Set<string>` und gib die
 Adress-Strings zurück, die herabgestuft werden sollen. Leere Menge
-heißt "keine Entscheidung."
+heißt "keine Entscheidung."  `shutdown()` ist für eine Strategie, die
+etwas hält, das sie zurückgeben muss: Der Cluster ruft es einmal auf,
+wenn dieser Node geht, nach dem letzten `decide()`, und
+`LeaseMajority` released dort ihre Lease.  Ein `shutdown()`, das
+wirft oder rejected, wird geloggt, und das Verlassen geht weiter.
 
 Nützlich für app-spezifische Regeln — z. B. "behalte immer den
 Node mit role=primary" oder "wenn die Partition den

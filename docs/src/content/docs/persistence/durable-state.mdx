@@ -194,9 +194,10 @@ journal and snapshot-store blocks and for `actor-ts.persistence` itself, and a
 selector holding no id at all — `null`, a block, a list — fails every axis, not
 only its own.
 
-A selected SQLite store with no path is refused as well, and earlier:
-`registerSqlitePlugins` checks every store the configuration selects when it
-runs, so `create` throws with an error that names
+A selected SQLite store with no path is refused as well, and earlier: when
+`registerSqlitePlugins` runs it checks every store the configuration selects —
+except one that `withPersistence` sets in code, which replaces the selection
+and leaves it unbuilt — so `create` throws with an error that names
 `actor-ts.persistence.durable-state.sqlite.path`.  Give the block a path —
 `":memory:"` for an in-memory database — or hand the plugin a database in code.
 

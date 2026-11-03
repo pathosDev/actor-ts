@@ -129,15 +129,35 @@ also bis zu einen Takt zu früh geschlossen werden. Über `255s` scheitert
 `bind()` mit dem Namen des Keys: mehr hält `Bun.serve` nicht. Auch eine
 untätige HTTP/2-Session wird von ihr geschlossen.
 
+Ein Wert, den du setzt, wird so geschrieben, wie er ist. Kann er einen
+schweigenden Handler vor der `503` der Request-Deadline abschneiden — sein
+frühester Schnitt, einen Takt vor dem Wert, liegt weniger als 2 s hinter der
+Deadline —, nennt `bind()` den Key, den Wert und die Deadline in einer Warnung.
+Unter der eingebauten Deadline von 30 s gilt das für alles bis `32s`: `5s` etwa
+schneidet einen Handler, der nichts geschrieben hat, ab 4 s ab, spätestens nach
+8 s.
+
+Lass ihn positiv. `0` schaltet ihn ab, und unter Hono auf Bun ist er die
+einzige Schranke für einen Request, dessen Body nicht mehr weiterkommt, und für
+eine Verbindung, die zwischen zwei Requests untätig ist, weil keine der anderen
+drei installiert wird: mit `0` bleibt eine solche Verbindung offen, bis der
+Client sie schließt. Eine Verbindung, deren Request-Header nie vollständig
+ankommen, schließt Bun selbst weiterhin, nach etwa 12 s.
+
 Ungesetzt gilt nicht Buns eigenes 10-s-Default, das jeden Request schloss, der
 etwa 12 s schwieg. Das Backend leitet den Wert aus der längsten Request-Deadline
 des Servers ab — `actor-ts.http.request-timeout.deadline`, angehoben auf das
 längste `requestTimeout()` im Routenbaum —, damit die `503` geschrieben wird,
-bevor die Verbindung fällt: **36 s für die eingebaute Deadline von 30 s**. Ab
-einer Deadline von etwa 250 s wird der Timeout bei `255s` gehalten, der sie
-nicht mehr abdeckt, und `bind()` sagt das in einer Warnung. Auf Deno gibt es
-nichts davon: `Deno.serve` hat keinen Idle-Knopf, und `idle-timeout` wird dort
-als nicht installiert gemeldet.
+bevor die Verbindung fällt: **36 s für die eingebaute Deadline von 30 s**. Der
+abgeleitete Wert beträgt `4 × (⌈(deadline + 2 s) / 4⌉ + 1)` Sekunden, ist also
+nicht immer länger als Buns eigener: eine konfigurierte Deadline von 2 s oder
+weniger ergibt 8 s, und weil die konfigurierte Deadline auch ohne
+`requestTimeout()` im Routenbaum zählt, wird ein gewöhnlicher Handler, der
+länger als 4 bis 8 s schweigt, dann ohne Antwort abgeschnitten. Ab einer
+Deadline von etwa 250 s wird der Timeout bei `255s` gehalten, der sie nicht
+mehr abdeckt, und `bind()` sagt das in einer Warnung. Auf Deno gibt es nichts
+davon: `Deno.serve` hat keinen Idle-Knopf, und `idle-timeout` wird dort als
+nicht installiert gemeldet.
 :::
 
 ## Security-Header
@@ -230,6 +250,20 @@ import { Aside } from '@astrojs/starlight/components';
   Langlebige Actors passen nicht.  Nutze sie nur für kurzlebige
   Per-Request-Actor-Muster.
 </Aside>
+
+## WebSockets und abort()
+
+`websocket()`-Routen funktionieren auf jeder Runtime, auf der dieses Backend
+läuft, über Honos eigenen Adapter für jede. Was `abort()` einer Verbindung tut
+— und ein Server-Shutdown, der ihre Sockets kappt —, hängt vom Socket ab, den
+dieser Adapter übergibt. Auf **Bun** (der `ServerWebSocket` von `Bun.serve`)
+und auf **Node** (`@hono/node-ws`, das einen `ws`-Socket übergibt) hat der
+Socket ein hartes Schließen, `abort()` lässt die Verbindung also sofort fallen:
+der Client sieht sie mit `1006` und ohne Close-Frame enden, wie auf den
+Backends Fastify und Express. Auf **Deno** ist der Socket ein gewöhnliches
+`WebSocket`, das kein hartes Schließen kennt, also fällt `abort()` auf einen
+Close-Frame mit seinem Code und seinem Grund zurück. Gemessen auf bun 1.4.2,
+bun 1.4.4, node v26.10.0 und deno 2.6.8.
 
 ## TLS und HTTP/2
 

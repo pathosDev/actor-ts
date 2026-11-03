@@ -367,13 +367,15 @@ describe('readFramingFromConfig', () => {
     expectExactOptions(readFramingFromConfig(config, tcpServer), { kind: 'length-prefixed', maxFrameBytes: 256 });
   });
 
-  test('the field names are not leaves either', () => {
+  test('the field names are not leaves either, and are refused rather than ignored', () => {
     // Nothing camelCase is read: not the retired leaf, and not the field name
-    // a reader of the TypeScript might write instead.
-    const lines = Config.parseString(`${tcp.root} { kind = "lines", maxLineBytes = 64 }`);
-    const prefixed = Config.parseString(`${tcp.root} { kind = "length-prefixed", maxFrameBytes = 64 }`);
-    expectExactOptions(readFramingFromConfig(lines, tcp), { kind: 'lines' });
-    expectExactOptions(readFramingFromConfig(prefixed, tcp), { kind: 'length-prefixed' });
+    // a reader of the TypeScript might write instead — which would leave the
+    // cap at its default, so the block refuses it, naming the leaves it takes.
+    const lines = refusalOf(`${tcp.root} { kind = "lines", maxLineBytes = 64 }`, tcp);
+    expect(lines.message).toContain(`${tcp.root}.maxLineBytes is not a framing leaf`);
+    expect(lines.message).toContain('max-line-bytes');
+    const prefixed = refusalOf(`${tcp.root} { kind = "length-prefixed", maxFrameBytes = 64 }`, tcp);
+    expect(prefixed.message).toContain(`${tcp.root}.maxFrameBytes is not a framing leaf`);
   });
 
   test('the retired table names exactly the two caps, each with its replacement', () => {

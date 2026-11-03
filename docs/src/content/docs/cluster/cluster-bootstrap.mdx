@@ -270,7 +270,7 @@ computed budget:
 | Field | Default | What |
 | --- | --- | --- |
 | `minimumMembers` | 1 | Fewest `up` members — self included — before the cluster counts as ready.  Size it like `requiredContactPoints`: to the replica count. |
-| `timeoutMs` | derived | `await-ready` when set; else `self-election-grace` + 5 s behind stable observation — the budget every node's readiness actually hangs on, winner or not — else a flat 5 s. |
+| `timeoutMs` | derived | `await-ready` when set; else `self-election-grace` + 5 s behind stable observation with `new-cluster-enabled` on — the budget every node's readiness actually hangs on, winner or not — else a flat 5 s. |
 
 ```hocon
 actor-ts.cluster.bootstrap {
@@ -321,11 +321,13 @@ explicitly:
   deadline as `timeoutMs`.
 - **`awaitReady: false` or `0`** — the give-up is the only deadline left
   once `bootstrapCluster` has returned.
-- **Behind stable observation**, a give-up that does not exceed
-  `self-election-grace` + 5 s — the computed budget above — is refused
-  before the join with an `OptionsError` naming both keys.  Every node but
-  the elected one waits out that grace with nothing able to promote it,
-  and would give up on a cluster about to form.
+- **Behind stable observation with `new-cluster-enabled` on**, a give-up
+  that does not exceed `self-election-grace` + 5 s — the computed budget
+  above — is refused before the join with an `OptionsError` naming both
+  keys.  Every node but the elected one waits out that grace with nothing
+  able to promote it, and would give up on a cluster about to form.  With
+  `new-cluster-enabled` off nobody is elected and no grace runs, so no
+  give-up is refused for one.
 
 The give-up's clock starts at the join, so discovery and the stable
 observation run before it.  Set it in HOCON, where every node of the
@@ -382,7 +384,8 @@ Stable observation itself has no switch in the block, and that is a decision
 rather than a gap.  Turning it on changes what `bootstrapCluster` promises
 the code that calls it: every start waits at least `stable-margin`, a start
 whose discovery never settles rejects after `max-wait` instead of joining,
-and the readiness budget grows by the election grace.  Those are properties
+and with `new-cluster-enabled` on the readiness budget grows by the election
+grace.  Those are properties
 of the start-up path an application is written around, so the switch stays
 beside that code (`withStableObservation`), and the five timings are
 configuration because they tune a phase the code has chosen.  What a

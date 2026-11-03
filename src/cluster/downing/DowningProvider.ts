@@ -29,6 +29,24 @@ export interface DowningProvider {
    * wait for stability or more heartbeats".
    */
   decide(view: ClusterPartitionView): DowningDecision;
+
+  /**
+   * Called once when this node leaves its cluster, after the failure-detector
+   * tick that calls {@link decide} has been cancelled: give back whatever the
+   * provider holds, so a node that left keeps no claim and arms nothing.  A
+   * lease-majority resolver releases its lease here (#1454).
+   *
+   * Both ways of leaving call it: `Cluster.leave()`, and the leave at once of a
+   * node its own decision downed or that gave its join up.  Optional, because
+   * a strategy that holds nothing has nothing to give back.  A hook that throws
+   * or rejects is logged, and the leave goes on without it.
+   *
+   * A provider whose hook stops it for good, as `LeaseMajority`'s does, serves
+   * one cluster: a node that joins again needs a fresh one.  A strategy
+   * selected in configuration gets that anyway, since every `Cluster.join`
+   * builds it anew; one built in code has to be built again.
+   */
+  shutdown?(): Promise<void>;
 }
 
 /** Helper — `address.toString()` used as map keys consistently. */

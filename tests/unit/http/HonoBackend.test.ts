@@ -16,7 +16,8 @@ import {
 } from '../../../src/http/Route.js';
 import { entity } from '../../../src/http/Marshalling.js';
 import type { ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
-import { HttpError, Status } from '../../../src/http/Types.js';
+import { HttpError, Status, type HttpRequest } from '../../../src/http/Types.js';
+import { DEFAULT_PRE_ATTACH_BUFFER_LIMITS } from '../../../src/http/websocket/SocketAdapter.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import type { Route } from '../../../src/http/Route.js';
 
@@ -406,5 +407,67 @@ describe('HonoBackend — an out-of-range status is answered, not thrown (#1362)
       const { url } = await startServer(get(() => complete(status, null)));
       expect((await fetch(`${url}/`)).status).toBe(status);
     }
+  });
+});
+
+describe('HonoBackend — a query parameter named __proto__ arrives as an own parameter', () => {
+  // Hono hands the parameters over in a null-prototype record, and the backend
+  // copies them into the request's query.  A parameter named `__proto__` is an
+  // own parameter there like any other, and the query keeps the prototype it
+  // was made with, so it carries exactly the parameters that were sent.  Both
+  // copies are pinned: the route request and the WebSocket upgrade request.
+  // Whether the copy keeps `Object.prototype` or has none is left open.
+  type QueryShape = {
+    readonly own: boolean;
+    readonly value: unknown;
+    readonly prototypeUntouched: boolean;
+    readonly indexZero: unknown;
+    readonly keys: readonly string[];
+  };
+  const shapeOf = (query: HttpRequest['query']): QueryShape => {
+    const prototype: unknown = Object.getPrototypeOf(query);
+    return {
+      own: Object.hasOwn(query, '__proto__'),
+      value: Object.getOwnPropertyDescriptor(query, '__proto__')?.value ?? null,
+      prototypeUntouched: prototype === Object.prototype || prototype === null,
+      indexZero: (query as Record<string, unknown>)['0'] ?? null,
+      keys: Object.keys(query),
+    };
+  };
+  const repeated: QueryShape = { own: true, value: ['a', 'b'], prototypeUntouched: true, indexZero: null, keys: ['__proto__', 'q'] };
+  const single: QueryShape = { own: true, value: 'a', prototypeUntouched: true, indexZero: null, keys: ['__proto__'] };
+
+  test('on a route request, repeated and single', async () => {
+    const { url } = await startServer(get((request) => completeJson(Status.OK, shapeOf(request.query))));
+
+    expect(await (await fetch(`${url}/?__proto__=a&__proto__=b&q=1`)).json()).toEqual(repeated);
+    expect(await (await fetch(`${url}/?__proto__=a`)).json()).toEqual(single);
+  });
+
+  test('on a WebSocket upgrade request, repeated and single', async () => {
+    // The route's authorize hook sees the request the upgrade guard builds,
+    // and answering it ends the exchange before any upgrade.
+    const seen: QueryShape[] = [];
+    const backend = new HonoBackend();
+    backend.registerWebSocket({
+      pattern: '/socket',
+      maxFrameBytes: 1024,
+      preAttachBuffer: DEFAULT_PRE_ATTACH_BUFFER_LIMITS,
+      authorize: async (request) => {
+        seen.push(shapeOf(request.query));
+        return complete(Status.Forbidden, 'no');
+      },
+      onConnection: () => { /* never reached: authorize answers first */ },
+    });
+    const binding = await backend.listen('127.0.0.1', 0);
+    try {
+      const url = `http://${binding.host}:${binding.port}/socket`;
+      expect((await fetch(`${url}?__proto__=a&__proto__=b&q=1`)).status).toBe(Status.Forbidden);
+      expect((await fetch(`${url}?__proto__=a`)).status).toBe(Status.Forbidden);
+    } finally {
+      await binding.unbind();
+    }
+
+    expect(seen).toEqual([repeated, single]);
   });
 });

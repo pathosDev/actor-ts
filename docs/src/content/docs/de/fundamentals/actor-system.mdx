@@ -100,10 +100,24 @@ das Persistenz verdrahtet, öffnet dort sein ausgewähltes Journal,
 seinen Snapshot-Store und seinen Durable-State-Store, also lässt ein
 Store, der sich nicht öffnen lässt, den Start scheitern wie jeder
 Task — siehe [Stores beim Start
-öffnen](/de/persistence/overview/#stores-beim-start-öffnen).
+öffnen](/de/persistence/overview/#stores-beim-start-öffnen).  Jeder
+Store, der mit actor-ts ausgeliefert wird, erreicht sein Backend schon
+beim Öffnen — mit abgeschaltetem `auto-create-tables` pingt ein
+relationaler Store seine Datenbank an, und ein DynamoDB-Store fragt die
+Beschreibung seiner Tabelle ab —, außer dem Object-Storage-Snapshot-Store
+und dem Object-Storage-Durable-State-Store.  Die haben vorab nichts zu
+öffnen, also scheitert an einem Bucket, den sie nicht erreichen, ihre
+erste Operation und nicht der Start; genauso bei einem eigenen Store ohne
+`start()`.
 Schaltest du `autoStart` im Persistence-Verhalten ab — oder setzt
 `actor-ts.persistence.auto-start = off` in der Konfiguration —, bleiben
-sie bis zu ihrer ersten Operation geschlossen.
+sie bis zu ihrer ersten Operation geschlossen.  Im Code abgeschaltet,
+bleibt auch der übrige Behaviour-Block unter `actor-ts.persistence`
+ungelesen, bis etwas ihn liest: `create` braucht ihn nicht, also wird
+ein Fehler darin dort abgelehnt, wo Persistence ihn zuerst liest, und
+nicht von `create`.  Genau das
+setzt ein WorkerMesh-Worker, also startet ein Worker mit der
+Konfiguration des Main-Threads, ob er je etwas persistiert oder nicht.
 
 `system.whenReady()` resolved, sobald die letzte Phase gelaufen ist.
 Es ist bei jedem Aufruf dasselbe Promise und für ein System ohne
@@ -122,10 +136,17 @@ Shutdown](/de/fundamentals/coordinated-shutdown/) mit einem
 `StartupFailedReason` aus, und `runUntilTerminated()` rejected danach
 mit demselben Fehler — eine `main`, die darauf wartet, endet also von
 selbst mit einem Status ungleich null, und der Orchestrator startet
-einen neuen Prozess.  Ein `terminate()`, während der Start noch läuft,
-bricht ihn dagegen ab: die Signale der laufenden Tasks brechen ab und
-`whenReady()` rejected, aber nichts ist fehlgeschlagen, also läuft kein
-eigener Shutdown.
+einen neuen Prozess.
+
+**Ein Shutdown während des Starts bricht ihn dagegen ab**, denn nichts
+ist fehlgeschlagen: `whenReady()` rejected mit einem Abbruchfehler, die
+späteren Phasen laufen nicht, nichts wird oberhalb von debug geloggt,
+und es läuft kein eigener Shutdown — ein SIGTERM, während das System
+startet, beendet den Prozess also als Shutdown und nicht als
+gescheiterten Start.  Das geschieht sofort, was auch immer den
+Shutdown gestartet hat — `terminate()`, ein SIGTERM, ein expliziter
+`run()`-Aufruf der Coordinated-Shutdown-Pipeline: die Signale der
+laufenden Tasks brechen ab, bevor die erste Phase der Pipeline läuft.
 
 Der Graph ist versiegelt, sobald `create` zurückkehrt.
 `system.extension(CoordinatedStartupId).addTask(...)` wirft danach und
@@ -153,7 +174,7 @@ Die vollständige Settings-Form:
 | `logLevel` | Einer von `debug` / `info` / `warn` / `error` / `off`. |
 | `dispatcher` | Eigener `Dispatcher`.  Standardmäßig der, den `actor-ts.dispatcher.default` wählt — `HybridDispatcher`, sofern nichts anderes konfiguriert ist; tausche einen Immediate- oder Throughput-basierten ein oder `Dispatchers.Hybrid(n)` mit einem anderen Budget, um das Scheduling anzupassen. |
 | `scheduler` | Eigener `Scheduler`.  Standardmäßig ein Echtzeit-Scheduler; Tests injizieren `ManualScheduler`, um die Zeit zu kontrollieren. |
-| `config` | Entweder eine vorgefertigte `Config` oder ein einfaches Objekt mit HOCON-Overrides.  Wird über die Referenz-Defaults + einer eventuellen `application.conf` gelegt. |
+| `config` | Entweder eine vorgefertigte `Config` oder ein einfaches Objekt mit HOCON-Overrides.  Wird über die Referenz-Defaults + einer eventuellen `application.conf` gelegt.  Übergib eine `Config` selbst, nie einen Spread davon: `{ ...config }` kopiert ihre privaten Felder, nicht ihre Konfiguration, und `create` lehnt ihn mit einem `ConfigError` ab — so wie eine Klasseninstanz (eine `Map`, ein `Date`, eine verschachtelte `Config`) irgendwo im Objekt. |
 | `configFile` | Expliziter Pfad zu einer `application.conf`-Datei.  Überschreibt die `ACTOR_TS_CONFIG`-Env-Variable und das CWD-Lookup. |
 | `profile` | Das Konfigurations-[Profil](/de/reference/configuration/#profile) — der Block `profiles.<name>` der `application.conf` und der Secrets-Datei, über die Wurzel jeder Datei gelegt.  Überschreibt die `ACTOR_TS_PROFILE`-Env-Variable; ein Name, den keine Datei definiert, wird beim Start abgelehnt.  Erreicht nur `system.config`, nicht die Komponenten, die ihre Konfiguration selbst laden. |
 | `persistence` | Persistenz, beim Erstellen verdrahtet.  `plugins` sind Funktionen, die die `PersistenceExtension` des Systems erhalten und Backends registrieren — `(persistence) => registerSqlitePlugins(persistence)` — und innerhalb von `create` in der angegebenen Reihenfolge laufen, sodass sich das Plugin, das die Konfiguration auswählt, auflösen lässt, sobald `create` zurückkehrt.  Ein Promise, das eines davon zurückgibt, wird in der Phase `persistence-start` des [Startup-Graphen](#hochfahren) abgewartet, wo eine Ablehnung den Start scheitern lässt; eines, das wirft, lässt `create` werfen.  `journal`, `snapshotStore` und `durableStateStore` sind Store-Instanzen, die jeweils Vorrang vor dem Plugin haben, das ihre Achse auswählt.  `behavior` ist das Persistenz-Verhalten, Feld für Feld über `actor-ts.persistence` gelegt; sein `autoStart`, an, solange es nicht auf false gesetzt wird, öffnet die ausgewählten Stores in `persistence-start`, wo eine Auswahl, die niemand registriert hat, oder ein Store, der sich nicht öffnen lässt, den Start scheitern lässt — aus, öffnen sie bei der ersten Verwendung. |

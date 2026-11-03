@@ -560,7 +560,9 @@ function decodeTagged(
       const digits = obj[BIGINT_TAG];
       if (typeof digits !== 'string') throw malformedTag(BIGINT_TAG, 'a string');
       // A string that is not an integer ('abc', '1.5') makes BigInt() throw a
-      // raw SyntaxError — the one tag arm that still escaped untyped (#1449).
+      // raw SyntaxError, so this arm escaped untyped (#1449) — as did an
+      // `__error__` named after an `Object.prototype` member, until
+      // `rebuildError` read its constructor table by own properties.
       // The digits are not echoed: nothing bounds them, a body of digits can
       // run to megabytes, and V8's own message repeats them verbatim, which is
       // also why the engine error is not kept as the cause.

@@ -76,10 +76,13 @@ export type BrokerCommonOptionsType = {
    * growth, jitter, `ignored-error-names` and `onStateChange`.
    *
    * Actors that name the same id share one breaker, and so one verdict: once
-   * it opens, every one of them waits for the same window, and one probe
-   * after it answers for all.  Name one id per broker *cluster*, not per
-   * actor and not one for everything — a breaker shared by two unrelated
-   * brokers opens on either's failures and holds both off.
+   * it opens, every one of them waits for the same window and makes at most
+   * one attempt in it.  One probe answers for all of them only while a failing
+   * connect settles before the next actor wakes; a hanging one is still in
+   * flight, the half-open breaker admits the others too, and each probes.
+   * Name one id per broker *cluster*, not per actor and not one for everything
+   * — a breaker shared by two unrelated brokers opens on either's failures and
+   * holds both off.
    */
   readonly circuitBreaker?: string;
 
@@ -242,9 +245,11 @@ type ReconnectPolicy = Exclude<NonNullable<BrokerCommonOptionsType['reconnect']>
  * `actor-ts.circuit-breaker.<id>`, so a block in its place is refused rather
  * than read.  `random` has no leaf: a function cannot come from HOCON.
  *
- * Note: to *disable* reconnect via HOCON, set the leaf
- * `reconnect.max-attempts = 1` (one connect attempt, no retry).  The
- * boolean `false` form is only supported via the constructor argument.
+ * Note: HOCON cannot *disable* reconnect — the boolean `false` form is only
+ * supported via the constructor argument, and the validator refuses `0`.  The
+ * nearest a config file gets is `reconnect.max-attempts = 1`, which still
+ * retries once: the leaf counts reconnects, and the first connect is not one,
+ * so a connect that keeps failing is tried twice before `BrokerReconnectFailed`.
  */
 export function readBrokerCommonOptionsFromConfig(config: Config, keys: BrokerCommonKeys): BrokerCommonOptionsType {
   const out: { -readonly [K in keyof BrokerCommonOptionsType]: BrokerCommonOptionsType[K] } = {};

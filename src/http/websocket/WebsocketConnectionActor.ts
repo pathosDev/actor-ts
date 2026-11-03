@@ -22,7 +22,12 @@
  */
 import { match } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
-import { WebsocketReadyState, type WebsocketSocketAdapter } from './SocketAdapter.js';
+import {
+  isSendableCloseCode,
+  sendableCloseReason,
+  WebsocketReadyState,
+  type WebsocketSocketAdapter,
+} from './SocketAdapter.js';
 import { WebsocketDecodeError, type WebsocketCodec } from './WebsocketCodec.js';
 import {
   WebsocketConnectionImplementation,
@@ -140,7 +145,7 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
     }
     if (!this.closed) {
       this.closed = true;
-      try { this.d.socket.close(); } catch { /* already closed */ }
+      this.shutSocket();
     }
   }
 
@@ -228,12 +233,45 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
     }
   }
 
+  /**
+   * The hub hears `code` and `reason` as they were asked for; the socket gets
+   * what a close frame can carry — a code it cannot carry becomes 1000, what
+   * `close()` sends when it is given none — see {@link shutSocket}.
+   */
   private closeSocket(code: number, reason: string): void {
     if (this.closed) return;
     this.closed = true;
     if (this.closeInfo === null) this.closeInfo = { code, reason, initiatedBy: 'server' };
-    try { this.d.socket.close(code, reason); } catch { /* already closed */ }
+    this.shutSocket(isSendableCloseCode(code) ? code : 1000, sendableCloseReason(reason));
     this.context.stopSelf();
+  }
+
+  /**
+   * Close the socket, and see that it ends up shut (#1431).
+   *
+   * The callers hand over a code and reason a close frame can carry, because a
+   * transport asked for more does not shut the socket: `ws` throws after it has
+   * already moved the socket to CLOSING — no close frame goes out, no close
+   * timer starts, and the next `close()` returns at once — and Deno's socket
+   * throws without closing at all.  The peer then stays connected and keeps
+   * its `maxConnections` slot, while `postStop` tells the hub it has gone.
+   *
+   * What is left is a `close()` that throws anyway, for a reason of the
+   * transport's own.  `terminate()` still shuts such a socket.  An adapter
+   * without it, as Hono's is under Deno, has nothing left to try, and the
+   * warning is the only trace of a socket that may still be open.
+   */
+  private shutSocket(code?: number, reason?: string): void {
+    const socket = this.d.socket;
+    try {
+      socket.close(code, reason);
+    } catch (err) {
+      if (socket.terminate) {
+        try { socket.terminate(); } catch { /* already gone */ }
+      } else {
+        this.log.warn(`WebsocketConnectionActor ${this.d.id}: close failed and this backend cannot terminate the socket, which may still be open: ${(err as Error).message}`);
+      }
+    }
   }
 
   /**
@@ -251,8 +289,12 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
    *      early, `handleInbound` drops what the transport still delivers, and
    *      `postStop` reports this code and reason, as the server's, once.
    *   2. The socket.  `terminate()` where the adapter has one — the `ws`-backed
-   *      backends: no close frame, and nothing still buffered is sent —
-   *      otherwise `close(code, reason)`, which is what Hono gets.
+   *      backends, and Hono under Bun and Node: no close frame, and nothing
+   *      still buffered is sent — otherwise a close, which is what Hono under
+   *      Deno gets: with `reason` cut to fit a close frame and with `code`, or
+   *      1008 — what `abort()` sends when it is given none — where a close
+   *      frame cannot carry `code`.  Asked for more, Deno's socket refuses the
+   *      close and stays open (see {@link shutSocket}).
    *   3. The actor, through the system lane, which the mailbox serves ahead of
    *      every queued command.  The backlog never gets a turn; stopping drains
    *      it to dead letters.
@@ -265,10 +307,11 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
     this.closed = true;
     this.closeInfo = { code, reason, initiatedBy: 'server' };
     const socket = this.d.socket;
-    try {
-      if (socket.terminate) socket.terminate();
-      else socket.close(code, reason);
-    } catch { /* already closing / closed */ }
+    if (socket.terminate) {
+      try { socket.terminate(); } catch { /* already gone */ }
+    } else {
+      this.shutSocket(isSendableCloseCode(code) ? code : 1008, sendableCloseReason(reason));
+    }
     this.context.stopSelf();
   }
 }

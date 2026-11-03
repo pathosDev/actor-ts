@@ -42,6 +42,30 @@ function coerceWebsocketData(data: unknown): string | Uint8Array {
   return new Uint8Array(0);
 }
 
+/**
+ * The request's query parameters as every backend hands them over: one value
+ * as a string, a repeated parameter as the array of its values.
+ *
+ * Each parameter is defined on the copy rather than assigned to it.  An
+ * assignment runs a parameter named `__proto__` through `Object.prototype`'s
+ * setter instead of creating it, so that one never arrived as a parameter;
+ * defined, it is an own parameter like any other.
+ */
+function honoQueryOf(context: { req: { queries(): unknown } }): Record<string, string | string[] | undefined> {
+  const rawQueries = (context.req.queries() as Record<string, string[]> | undefined) ?? {};
+  const query: Record<string, string | string[] | undefined> = {};
+  for (const [key, values] of Object.entries(rawQueries)) {
+    if (!values) continue;
+    Object.defineProperty(query, key, {
+      value: values.length === 1 ? values[0] : values,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return query;
+}
+
 /** Read the `Content-Length` header off a Hono context as a string, if present. */
 function contentLengthHeader(c: { req: { header(name?: string): unknown } }): string | undefined {
   const cl = c.req.header('content-length');
@@ -106,6 +130,17 @@ export function readBufferedAmount(raw: unknown): number {
     return typeof buffered === 'number' && Number.isFinite(buffered) ? buffered : 0;
   }
   return typeof sock.bufferedAmount === 'number' && Number.isFinite(sock.bufferedAmount) ? sock.bufferedAmount : 0;
+}
+
+/**
+ * The hard close of the runtime's own socket, if it has one: Bun's
+ * `ServerWebSocket` and `@hono/node-ws`'s `ws` `WebSocket` do, and Deno's
+ * standard `WebSocket` does not.  Bound to the socket, so it can be handed on.
+ */
+function terminateOf(raw: unknown): (() => void) | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const socket = raw as { terminate?: unknown };
+  return typeof socket.terminate === 'function' ? (socket.terminate as () => void).bind(raw) : undefined;
 }
 
 /*
@@ -199,6 +234,12 @@ export function honoFetchHandler(app: HonoAppLike): FetchHandler {
  * raised here, naming both the HOCON leaf and the builder method, since either
  * could have set it.  A value is refused rather than clamped: an operator who
  * asked for ten minutes and got four would find out from a cut connection.
+ *
+ * The remedy it names is the ceiling and nothing else — not `0`, which turns
+ * the idle timeout off.  Under Bun that timeout is the one bound this backend
+ * has on a request whose body stops arriving and on a connection left idle,
+ * since `header-timeout`, `request-timeout` and `max-connections` cannot be
+ * installed there, so `0` is no answer to a value that is too long.
  */
 function refuseIdleTimeoutPastCeiling(runner: HonoServerRunner, idleTimeoutMs: number | undefined): void {
   const ceilingMs = runner.idleTimeoutCeilingMs;
@@ -206,7 +247,7 @@ function refuseIdleTimeoutPastCeiling(runner: HonoServerRunner, idleTimeoutMs: n
   throw new OptionsError(
     `HttpServerOptions: ${ConfigKeys.http.server.idleTimeout} (withIdleTimeoutMs in code) is ${idleTimeoutMs} ms, `
       + `longer than the Hono backend can hold on this runtime — at most ${ceilingMs} ms, in whole seconds — `
-      + `and the server would refuse it rather than bind. Set it to ${ceilingMs / 1_000}s or less, or to 0 to disable it.`,
+      + `and the server would refuse it rather than bind. Set it to ${ceilingMs / 1_000}s or less.`,
     'HttpServerOptions',
     'idleTimeoutMs',
     idleTimeoutMs,
@@ -402,6 +443,7 @@ export class HonoBackend implements HttpServerBackend {
         maxHeaderBytes: applied?.maxHeaderBytes === true,
         idleTimeoutMs: applied?.idleTimeoutMs === true,
         ...(applied?.idleTimeoutHeldAtCeilingMs !== undefined ? { idleTimeoutHeldAtCeilingMs: applied.idleTimeoutHeldAtCeilingMs } : {}),
+        ...(applied?.idleTimeoutEarliestCutMs !== undefined ? { idleTimeoutEarliestCutMs: applied.idleTimeoutEarliestCutMs } : {}),
       },
     );
     bridge?.attach?.(server);
@@ -519,6 +561,13 @@ export class HonoBackend implements HttpServerBackend {
         // Enables the backpressure guard in WebsocketConnectionActor on Hono
         // (was a no-op before — the adapter had no bufferedAmount).  WS-4.
         bufferedAmount: () => readBufferedAmount(ws?.raw),
+        // Read when it is asked for, like `readyState`: the socket exists from
+        // `onOpen` on, which is before `onConnection` hands this adapter out.
+        // Absent where the runtime's socket has no hard close (Deno), so
+        // `abort()` and shutdown fall back to `close()` there, as they must.
+        get terminate() {
+          return terminateOf(ws?.raw);
+        },
         remoteAddress: adapted.remoteAddress,
         get protocol() {
           return ws?.protocol;
@@ -548,11 +597,7 @@ export class HonoBackend implements HttpServerBackend {
     try {
       params = (context.req.param() as Record<string, string>) ?? {};
     } catch { /* no match — leave empty */ }
-    const rawQueries = (context.req.queries() as Record<string, string[]>) ?? {};
-    const query: Record<string, string | string[] | undefined> = {};
-    for (const [key, value] of Object.entries(rawQueries)) {
-      if (value) query[key] = value.length === 1 ? value[0] : value;
-    }
+    const query = honoQueryOf(context);
     const remoteAddress = extractHonoRemoteAddress(context);
     return {
       method: 'GET',
@@ -650,13 +695,7 @@ export class HonoBackend implements HttpServerBackend {
       params = (context.req.param() as Record<string, string>) ?? {};
     } catch { /* no match — leave empty */ }
 
-    // Hono returns queries as Record<string, string[]>; flatten single values.
-    const rawQueries = (context.req.queries() as Record<string, string[]>) ?? {};
-    const query: Record<string, string | string[] | undefined> = {};
-    for (const [key, value] of Object.entries(rawQueries)) {
-      if (!value) continue;
-      query[key] = value.length === 1 ? value[0] : value;
-    }
+    const query = honoQueryOf(context);
 
     const remoteAddress = extractHonoRemoteAddress(context);
 

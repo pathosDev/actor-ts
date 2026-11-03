@@ -353,7 +353,7 @@ actor-ts.cluster.failure-detector {
     max-sample-size            = 200     # inter-arrival times kept per peer
     min-std-deviation          = 100ms   # floor, so a very steady peer is not flagged on noise
     acceptable-heartbeat-pause = 3s      # grace added to the last heartbeat before φ rises
-    expected-response-after    = "auto"  # φ's estimate before a peer's first heartbeat
+    expected-response-after    = "auto"  # φ's estimate until a peer's first measured interval
   }
 }
 ```
@@ -400,12 +400,12 @@ Was du vor dem Umschalten wissen solltest:
   Detector auch gegeben wird, aus der Datei oder aus dem Code — und eine
   Dauer entkoppelt die beiden.  Ab dem ersten Frame eines Peers nimmt φ
   diesen Mittelwert mit einer Standardabweichung von einem Viertel davon
-  an (nie unter `min-std-deviation`); der erste Heartbeat setzt die
-  Historie mit derselben Schätzung an, und echte Intervalle waschen sie
-  aus, während sich das Fenster füllt.  Sie beurteilt auch ein Mitglied,
-  das dieser Node über Gossip kennengelernt und nie gehört hat, ab dem
-  Moment seiner Registrierung — wie es der einfache Detector immer schon
-  tut.
+  an (nie unter `min-std-deviation`), bis das erste Heartbeat-Intervall
+  des Peers gemessen ist.  Dieses Intervall ersetzt die Schätzung, die
+  ab da nichts mehr zu sagen hat — eine Dauer ändert also den ersten
+  Kontakt und nichts danach.  Sie beurteilt auch ein Mitglied, das dieser
+  Node über Gossip kennengelernt und nie gehört hat, ab dem Moment seiner
+  Registrierung — wie es der einfache Detector immer schon tut.
 
 ### Was die ausgelieferten Einstellungen tolerieren
 
@@ -419,9 +419,10 @@ von 3 s und `expected-response-after = auto`:
 | `1s` | 4,56 s / 4,70 s | 5,40 s / 5,76 s |
 | `2s` | 5,56 s / 5,70 s | 7,81 s / 8,52 s |
 
-*Gleichmäßige Heartbeats* ist ein Peer, dessen Fenster nur echte
-Intervalle enthält; *erster Kontakt* ist ein Peer, von dem einmal etwas
-kam oder der registriert und nie gehört wurde.  Der einfache Detector
+*Gleichmäßige Heartbeats* ist ein Peer mit einem gemessenen Intervall
+hinter sich — ein pünktliches Intervall liest sich wie ein volles
+Fenster davon; *erster Kontakt* ist ein Peer, von dem einmal etwas kam
+oder der registriert und nie gehört wurde.  Der einfache Detector
 sagt bei jedem Takt 2 s / 5 s.  Das sind die Schwellen des Detectors:
 Der Cluster fragt einmal pro `heartbeat-interval` nach einem Urteil,
 also landet ein angekündigtes Urteil auf dem ersten Detection-Tick nach

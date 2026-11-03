@@ -422,19 +422,31 @@ export abstract class BrokerActor<
   /**
    * Abort an in-flight `connectImplementation` so its own promise rejects.
    *
-   * Called from the connect-deadline timer, and **only** for a subclass that
-   * returned a deadline from {@link connectTimeoutMs}.  Rejecting the original
-   * promise — rather than racing it and walking away — is what keeps the
-   * handles accounted for: a `Promise.race` the deadline wins leaves the
-   * subclass's connect still running, free to assign `this.socket` on top of
-   * whatever the reconnect cycle has opened since.  Here the failure travels
-   * the path a refused connect already takes, and the subclass drops its own
-   * half-open handle on the way out.
+   * Called from two places: the connect-deadline timer, for a subclass that
+   * returned a deadline from {@link connectTimeoutMs}, and the circuit
+   * breaker, when its `call-timeout` gives up on an attempt — the `cause` is a
+   * `CircuitBreakerTimeoutError` then — for any subclass that names a breaker.
+   * Rejecting the original promise — rather than racing it and walking away —
+   * is what keeps the handles accounted for: a `Promise.race` the deadline wins
+   * leaves the subclass's connect still running, free to assign `this.socket`
+   * on top of whatever the reconnect cycle has opened since.  Here the failure
+   * travels the path a refused connect already takes, and the subclass drops
+   * its own half-open handle on the way out.
+   *
+   * Of the built-in brokers, `WebsocketClientActor`, `SseActor` and
+   * `TcpSocketActor` implement it.  Every other one keeps this default, so on
+   * those a breaker's `call-timeout` counts the attempt as a failure and can
+   * open the breaker, but the connect runs until it settles on its own and the
+   * cycle waits for it.  The default says so, naming what elapsed — a broker
+   * with no connect deadline must not be told one passed.
    */
-  protected abortConnectAttempt(_cause: Error): void {
+  protected abortConnectAttempt(cause: Error): void {
+    const elapsed = cause instanceof CircuitBreakerTimeoutError
+      ? 'the circuit breaker\'s call-timeout elapsed'
+      : 'connect deadline elapsed';
     this.log.warn(
-      `${this.constructor.name}: connect deadline elapsed, but this actor cannot abort an `
-      + `in-flight connect — the attempt to ${this.redactedEndpointLabel()} keeps running`,
+      `${this.constructor.name}: ${elapsed}, but this actor cannot abort an in-flight connect — `
+      + `the attempt to ${this.redactedEndpointLabel()} keeps running`,
     );
   }
 
@@ -1005,8 +1017,10 @@ export abstract class BrokerActor<
    * uses — and waited out before the failure goes on, so the subclass has
    * dropped its half-open handles by the time the next attempt tears down.
    * Like the connect deadline, that is only as good as the subclass's abort:
-   * one that cannot abort keeps the cycle waiting on its connect, which is
-   * what it does without a breaker too.
+   * one that cannot abort — every built-in broker but the three
+   * {@link abortConnectAttempt} names — keeps the cycle waiting on its connect,
+   * which is what it does without a breaker too.  The timeout is counted all
+   * the same, so the breaker still opens.
    */
   private async _connectThroughBreaker(
     connect: () => Promise<void>,
@@ -1294,7 +1308,12 @@ export abstract class BrokerActor<
    * by an id has one window, and every actor naming it would wake at its end
    * together and probe together, since half-open admits every concurrent call
    * (#457).  This one spreads each actor's wake-up within that one window, so
-   * the first to wake probes and the rest meet the verdict (#1478).
+   * the first to wake probes, and the rest meet its verdict when it settles
+   * before they wake (#1478).  A probe that is still in flight when the next
+   * actor wakes — a connect that hangs rather than fails — does not hold that
+   * one off: it is admitted too.  What the spread bounds is one attempt per
+   * actor per window, and a single probe for all of them only while a failing
+   * connect is short against the spread.
    */
   private _spreadBreakerWait(remainingMs: number): number {
     const { randomFactor, random } = this._reconnectRandomness();

@@ -90,6 +90,14 @@ Empfangs-Deadline, wo vorher keine war. Setz sie in deiner Config zurück auf
 `0`, um das alte Verhalten herzustellen; `idle-timeout` liefert keinen Wert,
 Fastifys 72 s bleiben also unangetastet.
 
+Unter Deno, das dieses Backend nicht unterstützt, greift keine davon: sein
+`node:http`-Shim nimmt `keepAliveTimeout` und `requestTimeout` an, ohne eines
+davon anzuwenden, und sendet kein Verbindungs-Event, das die Header-Deadline
+oder `max-connections` zählen könnten. Gemessen auf deno 2.6.8 unter
+`idle-timeout = 600ms`: eine Keep-Alive-Verbindung war 3 s nach ihrer Antwort
+noch offen, wo Node und Bun sie nach 1,6 s schlossen. Jede davon wird dort als
+nicht wirksam gemeldet, und `bind()` nennt die gesetzten in einer Warnung.
+
 Auf dem HTTP/2-Listener (`withHttp2()`) erreichen Fastifys 72 s eine untätige
 Session als Fastifys eigener Session-Timer, der die stille Zeit auf der
 Verbindung zählt: er schließt eine untätige Session **auf Node nach 72 s, auf

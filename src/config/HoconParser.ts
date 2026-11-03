@@ -304,21 +304,23 @@ class HoconParser {
    * Writes `value` at `path`, creating intermediate objects as it descends.
    * Every segment reaching here has passed `parseKeySegment`'s prototype
    * guard, which is why the plain `into[key] = …` assignments below are safe.
+   * The value a key already holds is read with {@link ownValue}, for the
+   * reason given there.
    */
   private mergeKeyPath(into: ConfigObject, path: string[], value: ConfigValue): void {
+    const key = path[0]!;
+    const existing = ownValue(into, key);
     if (path.length === 1) {
-      const key = path[0]!;
       if (
-        isPlainObject(into[key]) && isPlainObject(value)
+        isPlainObject(existing) && isPlainObject(value)
       ) {
-        into[key] = deepMerge(into[key] as ConfigObject, value as ConfigObject);
+        into[key] = deepMerge(existing, value);
       } else {
-        into[key] = overrideKeepingPrevious(into[key], value);
+        into[key] = overrideKeepingPrevious(existing, value);
       }
       return;
     }
-    const key = path[0]!;
-    const child = isPlainObject(into[key]) ? (into[key] as ConfigObject) : {};
+    const child = isPlainObject(existing) ? existing : {};
     into[key] = child;
     this.mergeKeyPath(child, path.slice(1), value);
   }
@@ -592,13 +594,30 @@ export function deepMerge(base: ConfigObject, overlay: ConfigObject): ConfigObje
   }
   for (const [key, value] of Object.entries(overlay)) {
     if (isForbiddenConfigKey(key)) continue;
-    if (isPlainObject(value) && isPlainObject(out[key])) {
-      out[key] = deepMerge(out[key] as ConfigObject, value as ConfigObject);
+    const existing = ownValue(out, key);
+    if (isPlainObject(value) && isPlainObject(existing)) {
+      out[key] = deepMerge(existing, value);
     } else {
-      out[key] = overrideKeepingPrevious(out[key], value);
+      out[key] = overrideKeepingPrevious(existing, value);
     }
   }
   return out;
+}
+
+/**
+ * The value `key` already holds on `object`, or `undefined` when it holds none
+ * of its own.
+ *
+ * Both overwrite sites read the value they are about to replace, to merge into
+ * it or to keep it as an optional substitution's fallback.  A config object is
+ * a plain object literal and inherits every `Object.prototype` member, while
+ * `toString`, `valueOf` or `hasOwnProperty` are keys a document may use; read
+ * through the prototype chain, such a key that was not set yet looked set to
+ * the inherited function, and an optional substitution that nothing answered
+ * fell back to that function instead of leaving the key unset.
+ */
+function ownValue(object: ConfigObject, key: string): ConfigValue | undefined {
+  return Object.hasOwn(object, key) ? object[key] : undefined;
 }
 
 /**

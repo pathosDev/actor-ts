@@ -197,9 +197,10 @@ und ein Selektor, der gar keine Id hält — `null`, ein Block, eine Liste —,
 lässt jede Achse scheitern, nicht nur seine eigene.
 
 Ein ausgewählter SQLite-Store ohne Pfad wird ebenfalls abgelehnt, und zwar
-früher: `registerSqlitePlugins` prüft jeden Store, den die Konfiguration
-auswählt, schon beim Registrieren, sodass `create` mit einem Fehler wirft, der
-`actor-ts.persistence.durable-state.sqlite.path` nennt.  Gib dem Block einen
+früher: `registerSqlitePlugins` prüft schon beim Registrieren jeden Store, den
+die Konfiguration auswählt — außer einem, den `withPersistence` im Code setzt,
+der die Auswahl ersetzt und sie ungebaut lässt —, sodass `create` mit einem
+Fehler wirft, der `actor-ts.persistence.durable-state.sqlite.path` nennt.  Gib dem Block einen
 Pfad — `":memory:"` für eine In-Memory-Datenbank — oder übergib dem Plugin im
 Code eine Datenbank.
 

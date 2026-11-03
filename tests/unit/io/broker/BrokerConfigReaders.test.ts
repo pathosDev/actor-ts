@@ -40,6 +40,8 @@ import { readSseOptionsFromConfig, SseActor } from '../../../../src/io/broker/Ss
 import { readTcpServerOptionsFromConfig, TcpServerActor } from '../../../../src/io/broker/TcpServerActor.js';
 import { readTcpSocketOptionsFromConfig, TcpSocketActor } from '../../../../src/io/broker/TcpSocketActor.js';
 import { readUdpSocketOptionsFromConfig, UdpSocketActor } from '../../../../src/io/broker/UdpSocketActor.js';
+import type { TcpFraming } from '../../../../src/io/broker/TcpFraming.js';
+import { OptionsError } from '../../../../src/util/OptionsValidator.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
 import { expectExactOptions } from '../../../util/ExactOptions.js';
 import { createTestActorSystem } from '../../../util/TestActorSystem.js';
@@ -1584,6 +1586,31 @@ describe('readJetStreamOptionsFromConfig', () => {
     const config = Config.parseString(`${root} { ${block} }`);
     expect(() => readJetStreamOptionsFromConfig(config)).toThrow(`Config at "${root}.${leaf}" is not a integer`);
   });
+
+  // A whole number the reader takes and the server cannot: a uint64 sequence
+  // written out in full reads as the nearest double, which is not the number
+  // written and, here, not one a uint64 holds either.  The start refuses it.
+  test('a start-seq past the exact range of a number fails preStart, naming the field', async () => {
+    const started = await startBroker(
+      `${root} {\nservers = ["nats://h:4222"]\nstream { name = "S", subjects = ["s.>"] }\n`
+      + 'consumer { durable = "d", deliver-policy { kind = "by-start-sequence", start-seq = 18446744073709551616 } }\n}',
+      () => new JetStreamActor() as unknown as Actor<never>,
+    );
+    expect(started.failure).toBeInstanceOf(OptionsError);
+    expect((started.failure as OptionsError).field).toBe('consumer.deliverPolicy.startSeq');
+  });
+
+  // An instant a Date holds and the server cannot read: toISOString() writes
+  // the year 10000 as +010000, and RFC 3339 has a four-digit year.
+  test('a start-time past 9999-12-31T23:59:59.999Z fails preStart, naming the field', async () => {
+    const started = await startBroker(
+      `${root} {\nservers = ["nats://h:4222"]\nstream { name = "S", subjects = ["s.>"] }\n`
+      + 'consumer { durable = "d", deliver-policy { kind = "by-start-time", start-time = 253402300800000 } }\n}',
+      () => new JetStreamActor() as unknown as Actor<never>,
+    );
+    expect(started.failure).toBeInstanceOf(OptionsError);
+    expect((started.failure as OptionsError).field).toBe('consumer.deliverPolicy.startTimeMs');
+  });
 });
 
 describe('readJetStreamKeyValueOptionsFromConfig', () => {
@@ -1956,6 +1983,149 @@ describe('the TCP framing caps refuse their retired spellings and read their own
     );
     expect(started.failure).toBeNull();
     expectExactOptions<unknown>(started.options?.['framing'], { kind: cap.kind, [cap.field]: 65_536 });
+  });
+});
+
+/**
+ * Spellings of the two caps that were never leaves, but are what a migration
+ * by hand produces: the old name kebab-cased, and the field kebab-cased with
+ * its unit dropped, which is the rule every duration leaf follows.  Each one
+ * used to be read by nothing and start the actor on the 1 MiB / 16 MiB default.
+ */
+const MISSPELT_FRAMING_CAPS = [
+  { kind: 'length-prefixed', leaf: 'max-frame-len', current: 'max-frame-bytes' },
+  { kind: 'lines', leaf: 'max-line-len', current: 'max-line-bytes' },
+  { kind: 'length-prefixed', leaf: 'max-frame', current: 'max-frame-bytes' },
+  { kind: 'lines', leaf: 'max-line', current: 'max-line-bytes' },
+] as const;
+
+/** Every (TCP block, misspelt cap) pair, flattened for `test.each`. */
+const MISSPELT_FRAMING_CAP_CASES = TCP_BLOCKS.flatMap((block) => MISSPELT_FRAMING_CAPS.map((cap) => ({
+  ...cap, block, label: `${block.name}: framing.${cap.leaf}`,
+})));
+
+/** The leaves a framing block takes, as the refusal of any other one lists them. */
+const FRAMING_LEAVES_LISTED = 'the block takes kind, delimiter, max-line-bytes, max-frame-bytes';
+
+/**
+ * A framing block holds four leaves, so anything else under it is refused by
+ * name rather than dropped (#1443) — a cap misspelt the way a migration by hand
+ * misspells it first among them.  Both caps bound what a peer can make the
+ * actor buffer, and a cap that silently fell back to its default would be the
+ * failure the retired-spelling refusal above exists to prevent, under a
+ * spelling that refusal does not list.
+ */
+describe('a TCP framing block refuses a leaf it does not have, under both roots', () => {
+  test.each(MISSPELT_FRAMING_CAP_CASES)('$label fails preStart, naming the leaf and the four there are', async (cap) => {
+    const { root, required, create } = cap.block;
+    const started = await startBroker(
+      `${root} {\n${required}\nframing { kind = "${cap.kind}", ${cap.leaf} = 64 }\n}`,
+      create,
+    );
+    expect(started.failure).toBeInstanceOf(ConfigError);
+    const message = (started.failure as ConfigError).message;
+    expect(message).toContain(`${root}.framing.${cap.leaf} is not a framing leaf`);
+    expect(message).toContain(FRAMING_LEAVES_LISTED);
+    expect(message).toContain(cap.current);
+  });
+
+  test.each(MISSPELT_FRAMING_CAP_CASES)('$label is refused beside the other kind too', async (cap) => {
+    // The spelling is wrong whichever strategy the block names, so a
+    // length-prefixed cap misspelt under `lines` is refused as well.
+    const { root, required, create } = cap.block;
+    const otherKind = cap.kind === 'lines' ? 'length-prefixed' : 'lines';
+    const started = await startBroker(
+      `${root} {\n${required}\nframing { kind = "${otherKind}", ${cap.leaf} = 64 }\n}`,
+      create,
+    );
+    expect(started.failure).toBeInstanceOf(ConfigError);
+    expect((started.failure as ConfigError).message).toContain(`${root}.framing.${cap.leaf}`);
+  });
+
+  test.each(TCP_BLOCKS)('$name: a leaf no framing has is refused as well', async (block) => {
+    const started = await startBroker(
+      `${block.root} {\n${block.required}\nframing { kind = "lines", max-line-bytes = 64, line-ending = "\\r\\n" }\n}`,
+      block.create,
+    );
+    expect(started.failure).toBeInstanceOf(ConfigError);
+    const message = (started.failure as ConfigError).message;
+    expect(message).toContain(`${block.root}.framing.line-ending is not a framing leaf`);
+    expect(message).toContain(FRAMING_LEAVES_LISTED);
+  });
+
+  test.each(TCP_BLOCKS)('$name: a field name written as a leaf is refused, not read and not ignored', async (block) => {
+    // `maxFrameBytes = 64` is what an operator copying the TypeScript writes;
+    // read by nothing, it would leave the frame cap at its 16 MiB default.
+    const started = await startBroker(
+      `${block.root} {\n${block.required}\nframing { kind = "length-prefixed", maxFrameBytes = 64 }\n}`,
+      block.create,
+    );
+    expect(started.failure).toBeInstanceOf(ConfigError);
+    expect((started.failure as ConfigError).message).toContain(`${block.root}.framing.maxFrameBytes is not a framing leaf`);
+  });
+
+  test.each(TCP_BLOCKS)('$name: the four leaves together still start the actor', async (block) => {
+    const started = await startBroker(
+      `${block.root} {\n${block.required}\n`
+      + 'framing { kind = "lines", delimiter = "|", max-line-bytes = 64, max-frame-bytes = 128 }\n}',
+      block.create,
+    );
+    expect(started.failure).toBeNull();
+    expectExactOptions<unknown>(started.options?.['framing'], { kind: 'lines', delimiter: '|', maxLineBytes: 64 });
+  });
+});
+
+/**
+ * A `kind` outside the three used to be read as `bytes`, so a typo dropped the
+ * framing and its cap together.  The reader hands it on as written and the
+ * options validator refuses it, the same rule a framing built in code meets.
+ */
+describe('a TCP framing kind that does not exist is refused at start, under both roots', () => {
+  test.each(TCP_BLOCKS.flatMap((block) => ['line', 'length_prefixed', 'lengthPrefixed'].map((kind) => ({
+    block, kind, label: `${block.name}: kind = "${kind}"`,
+  }))))('$label fails preStart with an OptionsError naming framing.kind', async ({ block, kind }) => {
+    const started = await startBroker(
+      `${block.root} {\n${block.required}\nframing { kind = "${kind}", max-line-bytes = 64 }\n}`,
+      block.create,
+    );
+    expect(started.failure).toBeInstanceOf(OptionsError);
+    expect((started.failure as OptionsError).field).toBe('framing.kind');
+    expect((started.failure as OptionsError).message).toContain(`"${kind}"`);
+  });
+});
+
+/**
+ * The code route of the same two caps.  A framing object that never met the
+ * compiler's excess-property check — parsed from JSON here, as a plain
+ * JavaScript caller or a cast would hand it over — reaches the actor carrying
+ * a field nothing reads, and used to start it on the default cap.
+ */
+describe('a framing object carrying a retired cap field is refused at start, by both TCP actors', () => {
+  const RETIRED_FIELDS = [
+    { json: '{"kind":"length-prefixed","maxFrameLen":64}', field: 'framing.maxFrameLen', current: 'maxFrameBytes' },
+    { json: '{"kind":"lines","maxLineLen":64}', field: 'framing.maxLineLen', current: 'maxLineBytes' },
+  ] as const;
+  const ACTORS = [
+    {
+      name: 'tcp',
+      create: (target: ActorRef<never>, framing: TcpFraming) =>
+        new TcpSocketActor({ target, host: 'peer.local', port: 7000, framing }) as unknown as Actor<never>,
+    },
+    {
+      name: 'tcp-server',
+      create: (target: ActorRef<never>, framing: TcpFraming) =>
+        new TcpServerActor({ target, bindPort: 7001, framing }) as unknown as Actor<never>,
+    },
+  ] as const;
+
+  test.each(ACTORS.flatMap((actor) => RETIRED_FIELDS.map((retired) => ({
+    ...retired, actor, label: `${actor.name}: ${retired.json}`,
+  }))))('$label fails preStart, naming the field and its replacement', async ({ json, field, current, actor }) => {
+    const framing = JSON.parse(json) as TcpFraming;
+    const started = await startBroker('', (target) => actor.create(target, framing));
+    expect(started.failure).toBeInstanceOf(OptionsError);
+    expect((started.failure as OptionsError).field).toBe(field);
+    expect((started.failure as OptionsError).message).toContain(current);
   });
 });
 

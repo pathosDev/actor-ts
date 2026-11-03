@@ -104,6 +104,43 @@ describe('BunHonoRunner — an explicit idleTimeoutMs reaches Bun.serve in whole
     expect(handle.appliedServeOptions?.idleTimeoutMs).toBe(true);
     expect(handle.appliedServeOptions).not.toHaveProperty('idleTimeoutHeldAtCeilingMs');
   });
+
+  // A set value is written as given, and where its earliest cut — one sweep
+  // before it — lands less than 2 s past the deadline, a silent handler loses
+  // its 503; the runner reports that cut.  27 s is the deadline that tells the
+  // 2 s margin apart: 32 s cuts at 28 s, past the deadline and short of the
+  // margin.
+  test.each([
+    [32_000, 30_000, 28_000],
+    [30_000, 30_000, 28_000],
+    [5_000, 30_000, 4_000],
+    [1, 30_000, 0],
+    [255_000, 300_000, 252_000],
+    [32_000, 27_000, 28_000],
+  ])('idleTimeoutMs %d under a %d ms deadline can cut from %d ms on, and says so', async (idleTimeoutMs, requestDeadlineMs, earliestCutMs) => {
+    const { handle } = await serveWith({ idleTimeoutMs, requestDeadlineMs });
+
+    expect(handle.appliedServeOptions?.idleTimeoutEarliestCutMs).toBe(earliestCutMs);
+    expect(handle.appliedServeOptions).not.toHaveProperty('idleTimeoutHeldAtCeilingMs');
+  });
+
+  test.each([
+    [33_000, 30_000],
+    [36_000, 30_000],
+    [32_000, 26_000],
+    [255_000, 250_000],
+    [0, 30_000],
+  ])('idleTimeoutMs %d under a %d ms deadline lets the 503 win, and says nothing', async (idleTimeoutMs, requestDeadlineMs) => {
+    const { handle } = await serveWith({ idleTimeoutMs, requestDeadlineMs });
+
+    expect(handle.appliedServeOptions).not.toHaveProperty('idleTimeoutEarliestCutMs');
+  });
+
+  test('without a deadline to measure against, a set value says nothing either', async () => {
+    const { handle } = await serveWith({ idleTimeoutMs: 5_000 });
+
+    expect(handle.appliedServeOptions).not.toHaveProperty('idleTimeoutEarliestCutMs');
+  });
 });
 
 describe('BunHonoRunner — unset, the idle timeout is derived from the request deadline', () => {
