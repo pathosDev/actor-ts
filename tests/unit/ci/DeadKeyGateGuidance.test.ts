@@ -35,7 +35,8 @@ import { CONFIG_READER_REGISTRY, UNPUBLISHED_LEAVES } from '../../util/ConfigRea
  *     the same claim, held by `tests/unit/docs/ReferenceConfDeadKeySection.test.ts`;
  *   - what it says keeps `replication.data-centers` out is what does: a
  *     registry entry nobody has written, which the gate's own functions show
- *     would be enough, and not a value the gate lacks;
+ *     would be enough, and not a value the gate lacks — nor do the registry's
+ *     comment and the Cassandra reader's JSDoc give that reason;
  *   - the exceptions to its rule about a reader of another kind are the ones
  *     the gate makes: every getter the gate lets read a leaf of another kind
  *     is named, and nothing else is, asked of the gate itself;
@@ -238,6 +239,42 @@ function retiredWordingIn(passage: string): RegExp[] {
 /** The reasons of {@link RETIRED_DATA_CENTER_REASONS} that `text`'s words match. */
 function dataCenterReasonsIn(text: string): RegExp[] {
   return RETIRED_DATA_CENTER_REASONS.filter((reason) => reason.test(wordsOf(text)));
+}
+
+/**
+ * The two comments that account for `replication.data-centers` beside the
+ * code: the registry's, among the entries the leaf would join, and the
+ * Cassandra journal reader's JSDoc.  Both gave the reason AGENTS.md gave until
+ * #1425, so both are held to the same refusal.  Each is found by words its
+ * account keeps, whatever it goes on to say.
+ */
+const DATA_CENTER_COMMENTS = [
+  { file: 'tests/util/ConfigReaderRegistry.ts', holding: '`replication.data-centers` under both Cassandra blocks' },
+  { file: 'src/persistence/journals/CassandraPluginOptions.ts', holding: '`replication.data-centers` is the one leaf outside the gate' },
+] as const;
+
+/**
+ * The comment paragraph of `file` that holds `words`, its comment markers
+ * dropped and its whitespace collapsed: a run of comment lines, split where a
+ * line holds nothing but its marker.
+ */
+function commentParagraphHolding(file: string, words: string): string {
+  const paragraphs: string[] = [];
+  let open: string[] = [];
+  const close = (): void => {
+    if (open.length > 0) paragraphs.push(open.join(' ').replace(/\s+/g, ' ').trim());
+    open = [];
+  };
+  for (const line of readFileSync(join(REPOSITORY_ROOT, file), 'utf8').split(/\r?\n/)) {
+    const comment = /^\s*(?:\/\/|\/\*\*?|\*\/?)(.*)$/.exec(line);
+    const text = comment?.[1]?.replace(/\*\/\s*$/, '').trim();
+    if (text === undefined || text === '') close();
+    else open.push(text);
+  }
+  close();
+  const holding = paragraphs.filter((paragraph) => paragraph.includes(words));
+  expect(holding, `${file} has no single comment paragraph holding "${words}"`).toHaveLength(1);
+  return holding[0]!;
 }
 
 /** A kind sentence that names its exceptions only to deny them. */
@@ -583,6 +620,13 @@ describe('AGENTS.md describes the dead-key gate as it is (#1425)', () => {
     expect(codeSpansOf(account)).toEqual(expect.arrayContaining(['UNPUBLISHED_LEAVES', 'override', 'contexts']));
     expect(dataCenterReasonsIn(account).map(String), 'AGENTS.md says the gate lacks a value for replication.data-centers')
       .toEqual([]);
+  });
+
+  test('neither comment beside the code gives replication.data-centers the reason AGENTS.md retired', () => {
+    const giving = DATA_CENTER_COMMENTS
+      .map(({ file, holding }) => ({ file, reasons: dataCenterReasonsIn(commentParagraphHolding(file, holding)).map(String) }))
+      .filter(({ reasons }) => reasons.length > 0);
+    expect(giving, 'these say the gate lacks a value for replication.data-centers').toEqual([]);
   });
 
   test('the gate still has keys to change', () => {
