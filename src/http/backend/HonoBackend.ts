@@ -132,6 +132,17 @@ export function readBufferedAmount(raw: unknown): number {
   return typeof sock.bufferedAmount === 'number' && Number.isFinite(sock.bufferedAmount) ? sock.bufferedAmount : 0;
 }
 
+/**
+ * The hard close of the runtime's own socket, if it has one: Bun's
+ * `ServerWebSocket` and `@hono/node-ws`'s `ws` `WebSocket` do, and Deno's
+ * standard `WebSocket` does not.  Bound to the socket, so it can be handed on.
+ */
+function terminateOf(raw: unknown): (() => void) | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const socket = raw as { terminate?: unknown };
+  return typeof socket.terminate === 'function' ? (socket.terminate as () => void).bind(raw) : undefined;
+}
+
 /*
  * Hono is an optional peer dependency — the structural types below describe
  * only the narrow slice of its API we touch, so projects that never touch
@@ -550,6 +561,13 @@ export class HonoBackend implements HttpServerBackend {
         // Enables the backpressure guard in WebsocketConnectionActor on Hono
         // (was a no-op before — the adapter had no bufferedAmount).  WS-4.
         bufferedAmount: () => readBufferedAmount(ws?.raw),
+        // Read when it is asked for, like `readyState`: the socket exists from
+        // `onOpen` on, which is before `onConnection` hands this adapter out.
+        // Absent where the runtime's socket has no hard close (Deno), so
+        // `abort()` and shutdown fall back to `close()` there, as they must.
+        get terminate() {
+          return terminateOf(ws?.raw);
+        },
         remoteAddress: adapted.remoteAddress,
         get protocol() {
           return ws?.protocol;

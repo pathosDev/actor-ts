@@ -78,3 +78,17 @@ describe('idle-timeout = 0 on Hono under Bun is described, not offered (#1487)',
     expect(renderedProse('de/http/middleware/timeout.mdx')).not.toContain('oder `0` für keinen');
   });
 });
+
+describe('the Hono pages say what abort() does on each runtime', () => {
+  // The adapter hard-closes where the runtime's socket can — Bun and Node —
+  // and falls back to a close frame on Deno; `HonoWebsocketTerminate.test.ts`
+  // and smoke case 56 hold the behaviour.
+  test.each([
+    ['http/backends/hono.mdx', 'so `abort()` drops the connection on the spot: the client sees it close with `1006` and no close frame'],
+    ['http/backends/hono.mdx', 'so `abort()` falls back to a close frame carrying its code and reason'],
+    ['de/http/backends/hono.mdx', '`abort()` lässt die Verbindung also sofort fallen: der Client sieht sie mit `1006` und ohne Close-Frame enden'],
+    ['de/http/backends/hono.mdx', 'also fällt `abort()` auf einen Close-Frame mit seinem Code und seinem Grund zurück'],
+  ])('%s', (page, says) => {
+    expect(renderedProse(page)).toContain(says);
+  });
+});

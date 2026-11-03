@@ -239,6 +239,19 @@ import { Aside } from '@astrojs/starlight/components';
   per-request actor patterns only.
 </Aside>
 
+## WebSockets and abort()
+
+`websocket()` routes work on every runtime this backend runs on, through
+Hono's own adapter for each. What a connection's `abort()` — and a server
+shutdown that cuts its sockets — does depends on the socket that adapter hands
+over. On **Bun** (`Bun.serve`'s `ServerWebSocket`) and on **Node**
+(`@hono/node-ws`, which hands over a `ws` socket) the socket has a hard close,
+so `abort()` drops the connection on the spot: the client sees it close with
+`1006` and no close frame, as on the Fastify and Express backends. On **Deno**
+the socket is a standard `WebSocket`, which has no hard close, so `abort()`
+falls back to a close frame carrying its code and reason. Measured on bun 1.4.2,
+bun 1.4.4, node v26.10.0 and deno 2.6.8.
+
 ## TLS and HTTP/2
 
 Set on the server options like every backend
