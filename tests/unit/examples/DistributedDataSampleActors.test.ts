@@ -9,7 +9,7 @@
  * fan-out, and the writes to the actor's own fields that came with it, ran on
  * the replicator's time and outside the actor's mailbox order.  Each now
  * subscribes its own ref and is told a `DistributedDataChanged`, handled on
- * its own turn like any other message.  Three things follow from that, and
+ * its own turn like any other message.  Four things follow from that, and
  * each block pins them:
  *
  *   - the notification is a message in the actor's protocol, so an actor that
@@ -17,6 +17,9 @@
  *   - the replay of a key's current value arrives later, as a message, so the
  *     actor starts from `get(key)` instead, or a session subscribing first
  *     would be told an empty list;
+ *   - the actor writes each change down on its own turn, as the snapshot a
+ *     session subscribing later is told first — the one path the first
+ *     session's seed and the fan-out to sessions already watching both miss;
  *   - a notification queued before a key's last session left still arrives
  *     after the subscription has ended, and has nobody to go to.
  *
@@ -263,7 +266,7 @@ describe('OnlineUsersActor', () => {
     expect(random.messageCount).toBe(0);
   });
 
-  test('a session subscribing to a room whose key already holds users is told them first, not an empty list', async () => {
+  test('the first session subscribing to a room whose key already holds users is told them first, not an empty list', async () => {
     const { node, onlineUsers } = await spawnOnlineUsers('dd-sample-online-b');
     node.data.update<ORSet<string>>(
       usersKey('general'),
@@ -276,6 +279,24 @@ describe('OnlineUsersActor', () => {
     subscribe(onlineUsers, 'general', session);
 
     expect(await session.receiveOne()).toEqual({ kind: 'UsersChanged', room: 'general', users: ['alice'] });
+  });
+
+  test('a session subscribing after a change is told the change, not the users from before it', async () => {
+    // Only a later session reads the snapshot the notification wrote: the
+    // first is seeded from the replica, and one already watching is told the
+    // change from the notification itself.
+    const { node, onlineUsers } = await spawnOnlineUsers('dd-sample-online-e');
+    const first = new TestProbe(node.system);
+    subscribe(onlineUsers, 'general', first);
+    expect(await first.receiveOne()).toEqual({ kind: 'UsersChanged', room: 'general', users: [] });
+
+    onlineUsers.tell({ kind: 'AddToRoom', room: 'general', username: 'alice' });
+    // Told from the same turn that writes the snapshot down.
+    expect(await first.receiveOne()).toEqual({ kind: 'UsersChanged', room: 'general', users: ['alice'] });
+
+    const second = new TestProbe(node.system);
+    subscribe(onlineUsers, 'general', second);
+    expect(await second.receiveOne()).toEqual({ kind: 'UsersChanged', room: 'general', users: ['alice'] });
   });
 
   test('subscribes its own ref once per room, and unsubscribes when the room\'s last session leaves', async () => {
@@ -372,7 +393,7 @@ describe('ReadReceiptsActor', () => {
     expect(random.messageCount).toBe(0);
   });
 
-  test('a session subscribing to a room whose key already holds receipts is told them first', async () => {
+  test('the first session subscribing to a room whose key already holds receipts is told them first', async () => {
     const { node, readReceipts } = await spawnReadReceipts('dd-sample-receipts-b');
     node.data.update<LWWMap<string, number>>(
       receiptsKey('general'),
@@ -385,6 +406,20 @@ describe('ReadReceiptsActor', () => {
     subscribe(readReceipts, 'general', session);
 
     expect(await session.receiveOne()).toEqual({ kind: 'ReceiptsChanged', room: 'general', receipts: { alice: 42 } });
+  });
+
+  test('a session subscribing after a change is told the change, not the receipts from before it', async () => {
+    const { node, readReceipts } = await spawnReadReceipts('dd-sample-receipts-e');
+    const first = new TestProbe(node.system);
+    subscribe(readReceipts, 'general', first);
+    expect(await first.receiveOne()).toEqual({ kind: 'ReceiptsChanged', room: 'general', receipts: {} });
+
+    readReceipts.tell({ kind: 'Update', room: 'general', username: 'alice', ts: 42 });
+    expect(await first.receiveOne()).toEqual({ kind: 'ReceiptsChanged', room: 'general', receipts: { alice: 42 } });
+
+    const second = new TestProbe(node.system);
+    subscribe(readReceipts, 'general', second);
+    expect(await second.receiveOne()).toEqual({ kind: 'ReceiptsChanged', room: 'general', receipts: { alice: 42 } });
   });
 
   test('subscribes its own ref once per room, and unsubscribes when the room\'s last session leaves', async () => {
@@ -469,7 +504,7 @@ describe('VoicePresenceActor', () => {
     expect(online.messageCount).toBe(0);
   });
 
-  test('a session subscribing to a key that already holds users is told them first, not an empty list', async () => {
+  test('the first session subscribing to a key that already holds users is told them first, not an empty list', async () => {
     const { node, voicePresence } = await spawnVoicePresence('dd-sample-presence-b');
     node.data.update<ORSet<string>>(
       ONLINE_USERS_KEY,
@@ -482,6 +517,21 @@ describe('VoicePresenceActor', () => {
     subscribe(voicePresence, ONLINE_USERS_KEY, session);
 
     expect(await session.receiveOne()).toEqual({ kind: 'PresenceChanged', key: ONLINE_USERS_KEY, users: ['alice'] });
+  });
+
+  test('a session subscribing after a change is told the change, not the users from before it', async () => {
+    const { node, voicePresence } = await spawnVoicePresence('dd-sample-presence-e');
+    const key = roomUsersKey('lobby');
+    const first = new TestProbe(node.system);
+    subscribe(voicePresence, key, first);
+    expect(await first.receiveOne()).toEqual({ kind: 'PresenceChanged', key, users: [] });
+
+    voicePresence.tell({ kind: 'Add', key, username: 'alice' });
+    expect(await first.receiveOne()).toEqual({ kind: 'PresenceChanged', key, users: ['alice'] });
+
+    const second = new TestProbe(node.system);
+    subscribe(voicePresence, key, second);
+    expect(await second.receiveOne()).toEqual({ kind: 'PresenceChanged', key, users: ['alice'] });
   });
 
   test('subscribes its own ref once per key, and unsubscribes when the key\'s last session leaves', async () => {
