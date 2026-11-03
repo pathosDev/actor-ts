@@ -181,7 +181,7 @@ takes:
 consumer {
   durable        = "billing-proc"
   deliver-policy { kind = "by-start-sequence", start-seq = 4242 }
-  # or:          { kind = "by-start-time", start-time = 1767225600000 }  # epoch ms
+  # deliver-policy { kind = "by-start-time", start-time = 1767225600000 }  # or this; epoch ms
 }
 ```
 
