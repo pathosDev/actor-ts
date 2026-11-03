@@ -144,9 +144,13 @@ actor-ts.io.broker.mqtt {
 }
 ```
 
-Ein Wert aus der Umgebung wird zuerst als JSON gelesen,
-`ACTOR_TS_MQTT_KEEP_ALIVE=30` ist also die nackte Zahl 30, die `keep-alive`
-als dreißig Millisekunden ablehnt; schreib `30s`.
+Ein Wert aus der Umgebung wird zuerst als JSON gelesen, wo immer er sich als
+JSON parsen lässt.  `ACTOR_TS_MQTT_KEEP_ALIVE=30` ist also die nackte Zahl 30,
+die `keep-alive` als dreißig Millisekunden ablehnt — schreib `30s` —, und eine
+Client-ID oder ein Passwort, das sich wie eine Zahl liest, kommt in der
+Schreibweise dieser Zahl zurück, `1e3` als `1000` und `1.50` als `1.5`.  Einen
+solchen Wert in der Variablen selbst quoten
+(`ACTOR_TS_MQTT_PASSWORD='"1e3"'`) oder im Code setzen.
 
 ### Das Will aus HOCON
 
