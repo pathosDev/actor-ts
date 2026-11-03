@@ -283,15 +283,15 @@ export const DEFAULT_DROP_REPORT_INTERVAL_MS = 30_000;
  * make the one path that matters the one no test can observe.
  *
  * Here rather than in `pattern/Constants.ts`, where it lived first, because
- * `src/http/` holds its deadlines to the same ceiling: `HttpServerOptions`
+ * `src/http/` holds deadlines to the same ceiling: `HttpServerOptions`
  * refuses a `headerTimeoutMs` above it and an `idleTimeoutMs` above it less
  * one second (#870), and the `requestTimeout()` middleware refuses a
  * `deadlineMs` above it (#1463).  `retry` clamps where http refuses, but both
  * answer the same fact about the timer, and a second copy of the number is a
  * coupling nothing checks.  A third answer lives in `Scheduler.ts`:
  * `armChainedTimeout` chains host timers of at most this length, so a delay
- * past it is waited out in full rather than clamped or refused — for the
- * scheduler, the `ask` deadline, `after()`, `gracefulStop`, the `InMemoryCache`
- * sweep, a persistent actor's recovery deadline and an `HttpClient` deadline.
+ * past it is waited out in full rather than clamped or refused.  Which
+ * deadlines take that route is listed in its JSDoc and nowhere else — a copy
+ * kept here fell behind as callers were added.
  */
 export const MAX_TIMER_DELAY_MS = 2_147_483_647;
