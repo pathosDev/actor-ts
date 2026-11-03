@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { describe, expect, test } from 'bun:test';
 import type { ActorSystem } from '../../../src/ActorSystem.js';
 import { CacheExtensionId } from '../../../src/cache/CacheExtension.js';
+import { readPhaseOverrides } from '../../../src/CoordinatedShutdown.js';
 import { Config, ConfigError } from '../../../src/config/Config.js';
 import { ConfigKeys } from '../../../src/config/ConfigKeys.js';
 import { parseHocon } from '../../../src/config/HoconParser.js';
@@ -18,13 +19,14 @@ import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import type { WebsocketServerRef } from '../../../src/http/websocket/WebsocketMessages.js';
 import { websocket } from '../../../src/http/websocket/WebsocketRoute.js';
 import { WebsocketServerActor } from '../../../src/http/websocket/WebsocketServerActor.js';
+import { readDeploymentFromConfig } from '../../../src/internal/Deployment.js';
 import {
   RETIRED_BROKER_CIRCUIT_BREAKER_LEAVES,
   RETIRED_BROKER_COMMON_LEAVES,
 } from '../../../src/io/broker/BrokerOptions.js';
 import { GrpcServerActor } from '../../../src/io/broker/GrpcServerActor.js';
 import { MqttActor } from '../../../src/io/broker/MqttActor.js';
-import { RETIRED_TCP_FRAMING_LEAVES } from '../../../src/io/broker/TcpFraming.js';
+import { readFramingFromConfig, RETIRED_TCP_FRAMING_LEAVES } from '../../../src/io/broker/TcpFraming.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
 import { createTestActorSystem } from '../../util/TestActorSystem.js';
 
@@ -670,5 +672,96 @@ describe('the AGENTS.md naming-lockstep paragraph says so', () => {
     expect(unnamedRenames(comment, codeRenames()), 'renames whose refusal says code moved, which the comment leaves out')
       .toEqual([]);
     expect(comment).not.toMatch(SINGLE_EXCEPTION_CLAIM);
+  });
+});
+
+describe('no comment says the framework detects no unknown key', () => {
+  /**
+   * Blocks that list the leaves they take and refuse any other — what makes
+   * "there is no unknown-key detection" false, and the examples the comments
+   * that replaced it give.  Asked rather than looked for: each reader is
+   * handed its block with a leaf the block does not take.
+   */
+  const ALLOW_LIST_BLOCKS: ReadonlyArray<{ readonly block: string; readonly read: () => unknown }> = [
+    {
+      block: 'a TCP framing block',
+      read: () => readFramingFromConfig(
+        Config.parseString(`${ConfigKeys.io.broker.tcp.framing.root} { kind = lines, no-such-leaf = 1 }`),
+        ConfigKeys.io.broker.tcp.framing,
+      ),
+    },
+    {
+      block: 'an actor-ts.deployment entry',
+      read: () => readDeploymentFromConfig(
+        Config.parseString(`${ConfigKeys.deployment.root} { "/user/orders" { throughput = 5, no-such-leaf = 1 } }`),
+      ),
+    },
+    {
+      block: 'a coordinated-shutdown phase',
+      read: () => readPhaseOverrides(
+        Config.parseString(`${ConfigKeys.coordinatedShutdown.phases} { custom { timeout = 1s, no-such-leaf = 1 } }`),
+        ConfigKeys.coordinatedShutdown.phases,
+      ),
+    },
+  ];
+
+  /** The claim, in the words it was made in. */
+  const ABSENCE_CLAIM = /\bno unknown-key detection\b/i;
+
+  /**
+   * Files that still make the claim, each with where.  An entry fails once its
+   * file stops making it, so the list only shrinks.
+   */
+  const KNOWN_ABSENCE_CLAIMS: Readonly<Record<string, string>> = {
+    'src/coordination/LeaseOptions.ts': 'the comment on rejectAbsentLeaseKeys: "anywhere in this package" (#1443)',
+    'tests/unit/docs/BrokerFenceKeys.test.ts': 'the file comment, about broker samples, beside a TCP framing block that refuses one (#1443)',
+  };
+
+  /** Every `.ts` file under `directory`, outside any `node_modules` a nested manifest installed. */
+  function typescriptFilesUnder(directory: string): string[] {
+    return readdirSync(directory).flatMap((name) => {
+      const path = join(directory, name);
+      if (name === 'node_modules' || path === GENERATED_DIRECTORY) return [];
+      if (statSync(path).isDirectory()) return typescriptFilesUnder(path);
+      return path.endsWith('.ts') ? [path] : [];
+    });
+  }
+
+  /** A file as a reader of its comments sees it: comment leaders dropped, so a claim broken across lines still reads. */
+  function proseOf(file: string): string {
+    return readFileSync(file, 'utf8')
+      .replace(/\r\n/g, '\n')
+      .replace(/\n[ \t]*(?:\*|\/\/)[ \t]?/g, '\n')
+      .replace(/\s+/g, ' ');
+  }
+
+  test.each([...ALLOW_LIST_BLOCKS])('$block refuses a leaf it does not take', ({ read }) => {
+    let refusal: unknown = null;
+    try {
+      read();
+    } catch (e) {
+      refusal = e;
+    }
+    expect(refusal).toBeInstanceOf(ConfigError);
+    expect((refusal as ConfigError).message).toContain('no-such-leaf');
+  });
+
+  test('no file in src/, tests/ or AGENTS.md says there is no unknown-key detection', () => {
+    const self = 'tests/unit/ci/HoconLeafSpelling.test.ts';
+    const files = [
+      ...typescriptFilesUnder(SOURCE_ROOT),
+      ...typescriptFilesUnder(join(REPOSITORY_ROOT, 'tests')),
+      join(REPOSITORY_ROOT, 'AGENTS.md'),
+    ];
+    // Guards the guard: the walk reaches both trees.
+    expect(files.length).toBeGreaterThan(1000);
+    const claiming = files
+      .map((file) => relative(REPOSITORY_ROOT, file).replace(/\\/g, '/'))
+      .filter((file) => file !== self && ABSENCE_CLAIM.test(proseOf(join(REPOSITORY_ROOT, file))));
+    expect(claiming.filter((file) => !(file in KNOWN_ABSENCE_CLAIMS)), 'these say no block detects an unknown key')
+      .toEqual([]);
+    for (const file of Object.keys(KNOWN_ABSENCE_CLAIMS)) {
+      expect(claiming, `${file} no longer makes the claim: drop it from KNOWN_ABSENCE_CLAIMS`).toContain(file);
+    }
   });
 });

@@ -31,10 +31,11 @@ const HOCON_ONLY_RENAME_NOTE =
 /**
  * Refuse a leaf that has been renamed, naming both spellings.
  *
- * There is no unknown-key detection in this package outside the TCP framing
- * block, whose four leaves are an allow-list: an unrecognised leaf sits in the
- * parsed tree read by nobody, `mergeOptions` sees `undefined`
- * for the field, and the built-in default applies.  That is the worst
+ * Most blocks do not detect an unknown key.  A few list the leaves they take
+ * and refuse any other — a TCP `framing` block and an `actor-ts.deployment`
+ * entry among them — but elsewhere an unrecognised leaf sits in the parsed
+ * tree read by nobody, `mergeOptions` sees `undefined` for the field, and the
+ * built-in default applies.  That is the worst
  * available failure mode for a rename, because the leaves that move are the
  * ones an operator sets *on purpose* — `max-frame-bytes`, `max-buffered-bytes`
  * and `max-response-bytes` are security caps the docs tell semi-trusted
