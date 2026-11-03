@@ -181,3 +181,38 @@ describe('a dispatcher budget is an integer from 1 up (#1461)', () => {
     expect(rowOf(path, '| `dispatcher` |')).toContain(clause);
   });
 });
+
+describe('a run for a node that could not join is a failure (#1455, #1500)', () => {
+  // CoordinatedShutdown.exitStatus: a run for a failure exits 1 where
+  // exit-code is 0, and ClusterJoinUnsuccessfulReason reports a failure —
+  // the give-up and a failed Cluster.bootstrap readiness wait or refusal all
+  // run the pipeline with it.  CoordinatedShutdown's own suites pin that.
+  const JOIN_FAILURE = 'a run for a node that could not join (ClusterJoinUnsuccessfulReason: the join give-up, a failed Cluster.bootstrap readiness wait or refusal)';
+
+  test('reference.conf lists it among the runs that exit 1', () => {
+    expect(REFERENCE).toContain(`A run for a failed startup, ${JOIN_FAILURE}, and a run that a phase with recover = false halted, exit 1 where this is 0`);
+  });
+
+  test.each([
+    ['reference/configuration.mdx', 'A run for a failed startup, a run for a node that could not join (`ClusterJoinUnsuccessfulReason`: the join give-up, a failed `Cluster.bootstrap` readiness wait or refusal), and a run that a phase with `recover = false` halts, exit `1` where this is `0`'],
+    ['de/reference/configuration.mdx', 'Ein Lauf für einen fehlgeschlagenen Start, ein Lauf für einen Node, der nicht beitreten konnte (`ClusterJoinUnsuccessfulReason`: das Aufgeben des Joins, ein gescheitertes Readiness-Warten oder eine Ablehnung von `Cluster.bootstrap`), und ein Lauf, den eine Phase mit `recover = false` anhält, enden mit `1`, wo hier `0` steht'],
+  ])('%s says so in the exit-code row', (path, sentence) => {
+    expect(rowOf(path, '| `coordinated-shutdown.exit-code` |')).toContain(sentence);
+  });
+
+  test.each([
+    ['cluster/joining-and-seeds.mdx', 'exits only with `coordinated-shutdown.exit-process = on`, and then never with status `0`'],
+    ['de/cluster/joining-and-seeds.mdx', 'beendet sich nur mit `coordinated-shutdown.exit-process = on`, und dann nie mit Status `0`'],
+  ])('%s says a give-up never exits 0', (path, sentence) => {
+    expect(prose(page(path))).toContain(sentence);
+  });
+
+  test.each([
+    ['fundamentals/actor-system.mdx', 'outside the pipeline, await `system.whenTerminated()` when you need the system down — a task must not', 'starts nothing and resolves at once; await `system.whenTerminated()` when you need the system down.'],
+    ['de/fundamentals/actor-system.mdx', 'außerhalb der Pipeline await `system.whenTerminated()`, wenn du das System unten brauchst — ein Task darf das nicht', 'startet nichts und resolved sofort; await `system.whenTerminated()`, wenn du das System unten brauchst.'],
+  ])('%s keeps a pipeline task from awaiting whenTerminated()', (path, sentence, retired) => {
+    const text = prose(page(path));
+    expect(text).toContain(sentence);
+    expect(text).not.toContain(retired);
+  });
+});

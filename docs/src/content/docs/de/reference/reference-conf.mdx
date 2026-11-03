@@ -3030,11 +3030,14 @@ actor-ts {
     exit-process = false   # call process.exit once a run ends, completed or halted
     # Status that exit carries.  Only consulted when exit-process is on; a
     # value outside 0-255 is a ConfigError at startup rather than a code the
-    # operating system silently truncates.  A run for a failed startup, and
-    # a run that a phase with recover = false halted, exit 1 where this is
-    # 0, so neither reads as a clean stop.  A halted run exits at the halt,
-    # with the halt logged at error first: nothing after the exit runs, so
-    # it takes the place of the teardown the halt would otherwise get.
+    # operating system silently truncates.  A run for a failed startup, a
+    # run for a node that could not join (ClusterJoinUnsuccessfulReason: the
+    # join give-up, a failed Cluster.bootstrap readiness wait or refusal),
+    # and a run that a phase with recover = false halted, exit 1 where this
+    # is 0, so none of them reads as a clean stop.  A halted run exits at
+    # the halt, with the halt logged at error first: nothing after the exit
+    # runs, so it takes the place of the teardown the halt would otherwise
+    # get.
     exit-code = 0
 
     # Framework components register their own teardown in the pipeline: the

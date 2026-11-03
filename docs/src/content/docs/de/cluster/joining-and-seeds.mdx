@@ -333,7 +333,9 @@ Ein paar Details regeln die Ränder:
 - **`leave()` kommt zuerst**, also stoppt die Seed-Schleife auch mit
   `coordinated-shutdown.auto-register-tasks = off`. Worin der Lauf endet,
   entscheidet die Pipeline: Das Actor-System endet standardmäßig, und der
-  Prozess beendet sich nur mit `coordinated-shutdown.exit-process = on`.
+  Prozess beendet sich nur mit `coordinated-shutdown.exit-process = on`,
+  und dann nie mit Status `0` — siehe
+  [Task-Semantik](/de/fundamentals/coordinated-shutdown/#task-semantik).
 - **Auch ein Readiness-Warten richtet sich danach**: Ein `awaitReady()`, das
   noch aussteht, wenn der Join aufgibt, lehnt sofort mit einem
   `ClusterReadyTimeoutError` ab, der den Schlüssel nennt, statt seine eigene

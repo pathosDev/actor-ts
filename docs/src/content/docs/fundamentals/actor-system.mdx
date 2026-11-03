@@ -428,8 +428,11 @@ await system.terminate({ runCoordinatedShutdown: true });
 Every phase runs first, with `ActorSystemTerminateReason`, and the
 promise resolves once the pipeline has finished and the system is down.
 A `terminate()` that lands while a run is already in flight — from one
-of its tasks, say — starts nothing and resolves at once; await
-`system.whenTerminated()` when you need the system down.
+of its tasks, say — starts nothing and resolves at once; outside the
+pipeline, await `system.whenTerminated()` when you need the system down
+— a task must not: the teardown it would wait for runs in the last phase,
+so the wait holds the task's own phase for its whole budget (see
+[Calling `system.terminate()` directly](/fundamentals/coordinated-shutdown/#common-pitfalls)).
 
 import { Aside } from '@astrojs/starlight/components';
 
