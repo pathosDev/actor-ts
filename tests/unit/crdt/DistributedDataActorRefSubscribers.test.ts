@@ -398,6 +398,29 @@ describe('replay, repetition and unsubscribe', () => {
     expect(changedValues(journal)).toEqual([1]);
   });
 
+  test('and the first call\'s function ends it as well: a repeated subscription is bound to the one it repeats', async () => {
+    // The other order of the case above.  A repeated `subscribe` holds the
+    // registration the first call made rather than a fresh one of its own;
+    // if it took a fresh one, the first call's function would name a
+    // registration no slot holds any more, end nothing, and leave the actor
+    // subscribed after the only function its owner kept.
+    const node = await startNode('ddata-ref-u', 49_021);
+    const data = node.system.extension(DistributedDataId).start(node);
+    const journal: string[] = [];
+    const subscriber = node.system.spawn(() => new Subscriber(journal, newControl()), 'subscriber');
+    const unsubscribeFirst = data.subscribe<GCounter>(KEY, subscriber);
+    data.subscribe<GCounter>(KEY, subscriber);
+
+    data.update<GCounter>(KEY, GCounter.empty, (counter) => counter.increment(data.selfReplicaId(), 1));
+    await settled(data, subscriber, journal);
+    expect(changedValues(journal)).toEqual([1]);
+
+    unsubscribeFirst();
+    data.update<GCounter>(KEY, GCounter.empty, (counter) => counter.increment(data.selfReplicaId(), 1));
+    await settled(data, subscriber, journal);
+    expect(changedValues(journal)).toEqual([1]);
+  });
+
   test('unsubscribing stops delivery, and a notification already queued still arrives as it was', async () => {
     const node = await startNode('ddata-ref-g', 48_861);
     const data = node.system.extension(DistributedDataId).start(node);
