@@ -155,7 +155,9 @@ innerhalb einer 1500-Byte-Ethernet-MTU, mit Platz für einen Tunnel-Header.
 Ein höherer Wert funktioniert im LAN und fragmentiert still, sobald der
 Verkehr durch irgendetwas Gekapseltes läuft.  Der Wert ist eine Bytegröße
 wie jeder andere Größen-Key — `8K` und `8192` meinen dasselbe — und muss
-eine ganze Zahl von Bytes zwischen 512 und 65467 ergeben.
+eine ganze Zahl von Bytes zwischen 512 und 65467 ergeben: Eine Größe mit
+Einheit wird vorher auf das nächste Byte gerundet, `1420.5B` ist also 1421,
+ein Bruch ohne Einheit wird abgelehnt.
 
 ### Sicherheit der Feldnamen
 
