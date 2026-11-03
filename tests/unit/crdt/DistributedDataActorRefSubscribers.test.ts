@@ -44,6 +44,7 @@ import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import type { WireMessage } from '../../../src/cluster/Protocol.js';
 import { RemoteActorRef } from '../../../src/cluster/RemoteActorRef.js';
+import type { Dispatcher } from '../../../src/Dispatcher.js';
 import type { LocalActorRef } from '../../../src/internal/LocalActorRef.js';
 import { LogLevel, NoopLogger, type Logger } from '../../../src/Logger.js';
 import { ActorRestarted, DeadLetter } from '../../../src/SystemMessages.js';
@@ -777,6 +778,42 @@ describe('a bounded subscriber', () => {
     gate.open();
     await drained(subscriber, journal);
     expect(changedValues(journal)).toEqual([1, 3]);
+  });
+});
+
+describe('a subscriber whose dispatcher runs its turn inside the post', () => {
+  test('is still told every change, because its release is in place before the hand-over', async () => {
+    // A third-party `Dispatcher` may run a unit at once, on the caller's
+    // stack.  Then the subscriber's turn — and the hand-over that fires the
+    // release — runs inside the replicator's post, before `postSignalEnvelope`
+    // has returned.  A release held only after the enqueue is not there yet:
+    // it never fires, the slot waits on it for ever, every later change is
+    // written into a notification the actor has already handled, and it is
+    // never told anything again.  And the replicator marks the slot before it
+    // posts, so the release that fires inside the post finds the mark to clear.
+    const node = await startNode('ddata-ref-t', 49_011);
+    const data = node.system.extension(DistributedDataId).start(node);
+    const journal: string[] = [];
+    const synchronous: Dispatcher = {
+      id: 'synchronous-test-dispatcher',
+      execute(task) { void task(); },
+    };
+    const synchronousOptions = ActorOptions.create<SubscriberMessage>().withDispatcher(synchronous);
+    const subscriber = node.system.spawn(
+      () => new Subscriber(journal, newControl(), [KEY]),
+      'subscriber',
+      synchronousOptions,
+    ) as LocalActorRef<SubscriberMessage>;
+    await awaitCondition(() => journal.includes(`subscribed:${KEY}`), { label: 'the subscriber subscribed itself' });
+
+    for (let update = 1; update <= 3; update++) {
+      data.update<GCounter>(KEY, GCounter.empty, (counter) => counter.increment(data.selfReplicaId(), 1));
+      await settled(data, subscriber, journal);
+    }
+
+    expect(changedValues(journal)).toEqual([1, 2, 3]);
+    // Every release fired at its hand-over, and the cell holds none.
+    expect(subscriber.getCell()._pendingReleasesForTest()).toBeNull();
   });
 });
 

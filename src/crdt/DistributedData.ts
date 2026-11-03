@@ -1558,6 +1558,9 @@ class DistributedDataActor extends Actor<ActorMessage> {
     }
     const notification = new DistributedDataChanged(key, value);
     const replicator = this.self;
+    // Marked before the post, not after it: a dispatcher may run the
+    // subscriber's turn inside the post, and the release that fires there has
+    // to find the mark it clears.
     slot.queued = notification;
     try {
       slot.cell.postSignalEnvelope({ message: notification, sender: null }, () => {
