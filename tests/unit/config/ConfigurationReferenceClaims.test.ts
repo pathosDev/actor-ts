@@ -96,3 +96,21 @@ describe('the shard-region readiness check through a leader change (#1465)', () 
     expect(REFERENCE).toContain('A refusal lasts until the counts agree or the leader changes, which lifts it until the next coordinator decides');
   });
 });
+
+describe('the bootstrap\'s election budget needs new-cluster-enabled (#1500)', () => {
+  // With new-cluster-enabled off the join plan carries no self-election grace
+  // (ClusterBootstrap.ts: selfElection 'never'), so neither the computed
+  // await-ready budget nor the give-up refusal is grace-based there.
+  test('reference.conf names the condition for the give-up refusal and the computed budget', () => {
+    expect(REFERENCE).not.toContain('and behind stable observation it must exceed');
+    expect(REFERENCE).toContain('behind stable observation with new-cluster-enabled on it must exceed self-election-grace + 5s, or the bootstrap refuses it');
+    expect(REFERENCE).toContain('default: self-election-grace + 5s behind stable observation with new-cluster-enabled on, 5s otherwise');
+  });
+
+  test.each([
+    ['reference/configuration.mdx', '(`self-election-grace + 5s` behind stable observation with `new-cluster-enabled` on, `5s` otherwise)'],
+    ['de/reference/configuration.mdx', '(`self-election-grace + 5s` hinter der Stable Observation mit `new-cluster-enabled` an, sonst `5s`)'],
+  ])('%s names the condition in the await-ready row', (path, clause) => {
+    expect(prose(page(path))).toContain(clause);
+  });
+});
