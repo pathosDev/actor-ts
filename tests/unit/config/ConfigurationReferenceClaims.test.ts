@@ -216,3 +216,36 @@ describe('a run for a node that could not join is a failure (#1455, #1500)', () 
     expect(text).not.toContain(retired);
   });
 });
+
+describe('a WorkerMesh pool and the secrets file (#1546)', () => {
+  // WorkerMeshProfile.test.ts pins the mesh half ('a profile selected in code
+  // reaches the workers, whatever ACTOR_TS_PROFILE names'), ConfigProfiles
+  // the file half ('a ./secrets.conf nothing named says it was read from the
+  // working directory').
+  test.each([
+    [
+      'reference/configuration.mdx',
+      '`KubernetesLease` and `WorkerCluster.spawn`, and the exported',
+      'A `WorkerMesh` hands its worker pool the main system\'s `system.config`, and its workers select no profile of their own: they run with the values the main system\'s profile produced.',
+      'including the worker pool a `WorkerMesh` starts',
+    ],
+    [
+      'de/reference/configuration.mdx',
+      '`KubernetesLease` und `WorkerCluster.spawn` sowie die',
+      'Ein `WorkerMesh` übergibt seinem Worker-Pool die `system.config` des Main-Systems, und seine Worker wählen kein eigenes Profil: Sie laufen mit den Werten, die das Profil des Main-Systems ergeben hat.',
+      'samt dem Worker-Pool, den ein `WorkerMesh` startet',
+    ],
+  ])('%s no longer counts the mesh pool among the components that see only ACTOR_TS_PROFILE', (path, listed, meshSentence, retired) => {
+    const text = prose(page(path));
+    expect(text).toContain(listed);
+    expect(text).toContain(meshSentence);
+    expect(text).not.toContain(retired);
+  });
+
+  test.each([
+    ['reference/configuration.mdx', 'A file that is there is read on every start, so a `secrets.conf` in the working directory that belongs to another tool stops startup: the `ConfigError` names the file and why it was read — move such a file, or name the right one with `ACTOR_TS_SECRETS_CONF`.'],
+    ['de/reference/configuration.mdx', 'Eine Datei, die da ist, wird bei jedem Start gelesen — eine `secrets.conf` im Arbeitsverzeichnis, die zu einem anderen Werkzeug gehört, hält den Start also an: Der `ConfigError` nennt die Datei und den Grund, aus dem sie gelesen wurde; verschiebe eine solche Datei oder nenne die richtige mit `ACTOR_TS_SECRETS_CONF`.'],
+  ])('%s says a foreign secrets.conf stops startup, and how to get past it', (path, sentence) => {
+    expect(prose(page(path))).toContain(sentence);
+  });
+});

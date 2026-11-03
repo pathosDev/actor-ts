@@ -3960,14 +3960,16 @@ const system = ActorSystem.create('my-app', actorSystemOptions);
 `withProfile` erreicht die Konfiguration des Systems, das damit gebaut
 wird, also `system.config`.  Einige Komponenten lesen die Konfiguration
 selbst, wenn ihnen kein System und keine `Config` übergeben wird:
-`ClusterClient`, `InMemoryLease`, `KubernetesLease` und `WorkerCluster` —
-samt dem Worker-Pool, den ein `WorkerMesh` startet — sowie die
-exportierten Helfer `read…OptionsFromConfig`, wenn sie ohne `Config`
-aufgerufen werden, darunter `readMessageBoundaryOptionsFromConfig`,
+`ClusterClient`, `InMemoryLease`, `KubernetesLease` und `WorkerCluster.spawn`
+sowie die exportierten Helfer `read…OptionsFromConfig`, wenn sie ohne
+`Config` aufgerufen werden, darunter `readMessageBoundaryOptionsFromConfig`,
 `readLeaseOptionsFromConfig`, `readKubernetesLeaseOptionsFromConfig` und
 `readOffloadPoolOptionsFromConfig`.  Sie rufen `Config.load()` auf und
 sehen ein Profil nur über `ACTOR_TS_PROFILE` — setze die Variable, wenn
-du sie verwendest, oder übergib ihnen `system.config`.
+du sie verwendest, oder übergib ihnen `system.config`.  Ein `WorkerMesh`
+übergibt seinem Worker-Pool die `system.config` des Main-Systems, und seine
+Worker wählen kein eigenes Profil: Sie laufen mit den Werten, die das Profil
+des Main-Systems ergeben hat.
 
 ## Secrets-Datei
 
@@ -3988,7 +3990,11 @@ Es ist die erste hiervon, die gesetzt ist: die Umgebungsvariable
 `ACTOR_TS_SECRETS_CONF`, dann `secrets.conf` im Arbeitsverzeichnis — mit
 `secretsConfPath` vor beiden, wenn du `Config.load` selbst aufrufst.  Eine
 Datei, die nicht da ist, ist eine leere Schicht und kein Fehler; ein
-Deployment ohne sie braucht also nichts.  Sie teilt sich genau wie die
+Deployment ohne sie braucht also nichts.  Eine Datei, die da ist, wird bei
+jedem Start gelesen — eine `secrets.conf` im Arbeitsverzeichnis, die zu einem
+anderen Werkzeug gehört, hält den Start also an: Der `ConfigError` nennt die
+Datei und den Grund, aus dem sie gelesen wurde; verschiebe eine solche Datei
+oder nenne die richtige mit `ACTOR_TS_SECRETS_CONF`.  Sie teilt sich genau wie die
 Anwendungsdatei in eine Wurzel und `profiles`, und dasselbe Profil wird
 über ihre Wurzel gelegt.
 

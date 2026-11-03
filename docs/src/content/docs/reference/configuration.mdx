@@ -3716,13 +3716,15 @@ const system = ActorSystem.create('my-app', actorSystemOptions);
 `withProfile` reaches the configuration of the system it builds,
 `system.config`.  A few components read the configuration themselves when
 no system or `Config` is handed to them: `ClusterClient`, `InMemoryLease`,
-`KubernetesLease` and `WorkerCluster` — including the worker pool a
-`WorkerMesh` starts — and the exported `read…OptionsFromConfig` helpers
-called without a `Config`, `readMessageBoundaryOptionsFromConfig`,
-`readLeaseOptionsFromConfig`, `readKubernetesLeaseOptionsFromConfig` and
-`readOffloadPoolOptionsFromConfig` among them.  They call `Config.load()`
-and see a profile only through `ACTOR_TS_PROFILE` — set the variable when
-you use them, or hand them `system.config`.
+`KubernetesLease` and `WorkerCluster.spawn`, and the exported
+`read…OptionsFromConfig` helpers called without a `Config`,
+`readMessageBoundaryOptionsFromConfig`, `readLeaseOptionsFromConfig`,
+`readKubernetesLeaseOptionsFromConfig` and `readOffloadPoolOptionsFromConfig`
+among them.  They call `Config.load()` and see a profile only through
+`ACTOR_TS_PROFILE` — set the variable when you use them, or hand them
+`system.config`.  A `WorkerMesh` hands its worker pool the main system's
+`system.config`, and its workers select no profile of their own: they run
+with the values the main system's profile produced.
 
 ## Secrets file
 
@@ -3742,7 +3744,11 @@ It is the first of these that is set: the `ACTOR_TS_SECRETS_CONF`
 environment variable, then `secrets.conf` in the working directory —
 with `secretsConfPath` ahead of both when you call `Config.load`
 yourself.  A file that is not there is an empty layer, not an error, so a
-deployment without one needs nothing.  It splits into a root and
+deployment without one needs nothing.  A file that is there is read on every
+start, so a `secrets.conf` in the working directory that belongs to another
+tool stops startup: the `ConfigError` names the file and why it was read —
+move such a file, or name the right one with `ACTOR_TS_SECRETS_CONF`.  It
+splits into a root and
 `profiles` exactly as the application file does, and the same profile is
 laid over its root.
 
