@@ -82,6 +82,20 @@ slow, or that left between the map snapshot and the fan-out, contributes
 `entityCount: 0` rather than failing the whole call.  You get a complete
 shard list with one conservative count, not an exception.
 
+### How long a query waits
+
+`shards()` and `shardRefFor()` wait `actor-ts.sharding.shard-region-query-timeout`
+(5 s), or what `withShardRegionQueryTimeoutMs` gave the type, or a
+`timeoutMs` you pass as the last argument.  The region keeps a waiting query
+for a minute, or for `actor-ts.actor.ask-timeout` or the type's query timeout
+when either is longer — it cannot see a per-call `timeoutMs`.  So a
+`timeoutMs` above that lifetime is not waited out in full: an answer that
+arrives after it reaches nobody, and the call fails with `AskTimeoutError`
+when its own `timeoutMs` runs out.  For `shards()` that includes the
+coordinator's partial answer, which comes after 0.6 × `timeoutMs` when a
+region is slow.  To wait longer than a minute, raise the type's query
+timeout rather than the argument; the lifetime rises with it.
+
 ## A ref to one shard
 
 ```ts
