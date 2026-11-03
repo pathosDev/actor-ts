@@ -734,12 +734,10 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
   checked and then dropped is refused just the same as one that is kept, so
   a reader that only throws on the new value leaves the leaf unread. A
   reader that takes the leaf as another kind than it ships as — a size
-  where a duration ships — fails it, with two exceptions the gate does not
-  catch yet: a size or a duration that ships as a bare count is changed to
-  another bare count, which `getInt` and `getNumber` read as readily as its
-  own accessor; and a fraction's wrong-kind value is a duration, which
-  `getBytes` refuses as readily as the fraction's own accessor, so
-  `getBytes` reads a fraction unremarked.
+  where a duration ships, an integer where a size ships as a bare count —
+  fails it, with one exception the gate does not catch yet: a fraction's
+  wrong-kind value is a duration, which `getBytes` refuses as readily as the
+  fraction's own accessor, so `getBytes` reads a fraction unremarked.
 
   Registering is what makes a reader count. A new block's reader is an
   entry in that registry, naming the suite whose `expectExactOptions` cases
@@ -774,7 +772,12 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
   written yet.
 
   **The gate proves a read, not the wiring.** It cannot see whether the
-  runtime calls the reader or keeps its answer:
+  runtime calls a reader or keeps its answer, with one exception inside the
+  registry: a sub-reader that another registered reader calls — a sink's
+  delivery block, the cluster's downing provider and split-brain window —
+  counts only where that caller answers to the same leaf, and its entry
+  names those callers in `calledBy`, which the gate checks against the
+  direct calls in `src/`. Beyond the registry,
   `tests/unit/config/ConsumersReadThroughRegisteredReaders.test.ts` pins the
   consumers that have read a key directly to their readers, while a
   consumer that calls its reader and still reads a key beside it, and
