@@ -68,7 +68,10 @@ import { GrpcServerActor } from '../../../src/io/broker/GrpcServerActor.js';
  * root's own leaves in a HOCON fence, in both languages — so "see the
  * per-protocol pages for the keys" holds for every root.  The two languages
  * publish the same HOCON, fence for fence, since a German sample is copied as
- * often as an English one.
+ * often as an English one — the same *code*: comment prose may be translated,
+ * as AGENTS.md allows for every fence but the reference-conf one, which
+ * `ReferenceConfDocs` holds byte for byte.  A commented-out field is code
+ * written as a comment, so it has to match like a live one.
  *
  * What this cannot see: HOCON in a fence not tagged `hocon`; a key named in
  * comment prose, or commented out with `:` (`# max-connection: 5`), by the rule
@@ -292,6 +295,51 @@ function keysIn(fence: HoconFence): FenceKey[] {
     commentedOut.scan(uncommented, line, true, out);
   }
   return out;
+}
+
+/**
+ * `text` up to its trailing comment: the first `#` or `//` outside a quoted
+ * string and a `${…}` substitution, as HOCON reads it.
+ */
+function codeBeforeComment(text: string): string {
+  let index = 0;
+  while (index < text.length) {
+    const character = text[index]!;
+    if (character === '"') {
+      index++;
+      while (index < text.length && text[index] !== '"') index += text[index] === '\\' ? 2 : 1;
+      index++;
+    } else if (character === '$' && text[index + 1] === '{') {
+      const end = text.indexOf('}', index);
+      index = end < 0 ? text.length : end + 1;
+    } else if (character === '#' || (character === '/' && text[index + 1] === '/')) {
+      return text.slice(0, index).trimEnd();
+    } else {
+      index++;
+    }
+  }
+  return text.trimEnd();
+}
+
+/**
+ * The code of a fence, what the two languages have to share: every line with
+ * its trailing comment cut off, comment prose dropped, and a commented-out
+ * field kept — under one `#`, since the marker is not what a reader copies.
+ * Blank lines go too, so a comment translated into more lines or fewer
+ * changes nothing.
+ */
+function hoconCodeOf(fence: HoconFence): string[] {
+  return fence.body.flatMap((text) => {
+    if (!COMMENT_LINE.test(text)) return [codeBeforeComment(text)];
+    const uncommented = text.replace(COMMENT_MARKERS, '');
+    if (!COMMENTED_OUT_FIELD.test(uncommented) && !COMMENTED_OUT_CLOSE.test(uncommented)) return [];
+    return [`# ${codeBeforeComment(uncommented).trim()}`];
+  }).filter((line) => line.trim() !== '');
+}
+
+/** What a page publishes as HOCON, fence by fence — each fence's code, as {@link hoconCodeOf} reads it. */
+function publishedHoconCode(page: string, text: string): string[] {
+  return hoconFencesIn(page, text).map((fence) => hoconCodeOf(fence).join('\n'));
 }
 
 /** Every leaf the parser finds in `tree`, a substitution being a leaf. */
@@ -522,6 +570,42 @@ describe('every key the io pages publish under actor-ts.io.broker is one a reade
     ])).toEqual([]);
   });
 
+  test('the languages are compared on their code: comment prose may be translated, a commented-out field may not', () => {
+    const english = [
+      '# Every connection the server accepts counts.',
+      'actor-ts.io.broker.tcp-server {',
+      '  keep-alive      = 45s        # the default; 0 = off',
+      '  // limits',
+      '  # max-connections = 1024',
+      '  password = "s3cr#t"   // the # in the string is not a comment',
+      '}',
+    ];
+    const page = (prose: string, lines: ReadonlyArray<string>): string => [prose, '', '```hocon', ...lines, '```', ''].join('\n');
+    const englishCode = publishedHoconCode('probe.mdx', page('Every connection counts.', english));
+    const sameCodeAsEnglish = (lines: ReadonlyArray<string>): boolean =>
+      JSON.stringify(publishedHoconCode('de/probe.mdx', page('Jede Verbindung zählt.', lines))) === JSON.stringify(englishCode);
+    const englishWith = (from: string, to: string): string[] => english.map((line) => (line === from ? to : line));
+
+    // Translated prose in each place a comment can sit, one comment spread
+    // over two lines and another dropped — the code is untouched.
+    expect(sameCodeAsEnglish([
+      '# Jede Verbindung, die der Server annimmt,',
+      '# zählt mit.',
+      'actor-ts.io.broker.tcp-server {',
+      '  keep-alive      = 45s        # der Default; 0 = aus',
+      '  # max-connections = 1024',
+      '  password = "s3cr#t"   // das # im String ist kein Kommentar',
+      '}',
+    ])).toBe(true);
+
+    // Code is code wherever it sits: a value, a key, a commented-out field,
+    // and what follows a `#` inside a string.
+    expect(sameCodeAsEnglish(englishWith('  keep-alive      = 45s        # the default; 0 = off', '  keep-alive      = 46s        # the default; 0 = off'))).toBe(false);
+    expect(sameCodeAsEnglish(englishWith('  keep-alive      = 45s        # the default; 0 = off', '  keep-alive-time = 45s        # the default; 0 = off'))).toBe(false);
+    expect(sameCodeAsEnglish(englishWith('  # max-connections = 1024', '  # max-connections = 2048'))).toBe(false);
+    expect(sameCodeAsEnglish(englishWith('  password = "s3cr#t"   // the # in the string is not a comment', '  password = "s3cr#x"   // the # in the string is not a comment'))).toBe(false);
+  });
+
   test('a fragment is read under the one root its page opens, and fails on a page that opens two', () => {
     const one = brokerFencesOf('one.mdx', [
       '```hocon', 'actor-ts.io.broker.jetstream { acknowledgment-timeout = 45s }', '```',
@@ -638,11 +722,11 @@ describe('every key the io pages publish under actor-ts.io.broker is one a reade
     ({ page, text }) => {
       const mirror = IO_PAGES.get(LANGUAGES[1])!.find((candidate) => candidate.page === `de/${page}`);
       expect(mirror, `${page} has no German mirror`).toBeDefined();
-      const bodies = (fences: ReadonlyArray<HoconFence>): string[] => fences.map((fence) => fence.body.join('\n'));
       expect(
-        bodies(hoconFencesIn(`de/${page}`, mirror?.text ?? '')),
-        'the code of a HOCON sample is identical in both languages; only the prose around it is translated.',
-      ).toEqual(bodies(hoconFencesIn(page, text)));
+        publishedHoconCode(`de/${page}`, mirror?.text ?? ''),
+        'the code of a HOCON sample is identical in both languages; its comment prose may be translated, '
+        + 'a commented-out field may not.',
+      ).toEqual(publishedHoconCode(page, text));
     },
   );
 });
