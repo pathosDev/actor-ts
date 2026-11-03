@@ -203,17 +203,26 @@ type Fence = {
   readonly code: string;
 };
 
-/** Every fenced block, indented ones inside an `<Aside>` included. */
+/** The markers of a blockquote, nested ones included, in front of a line. */
+const BLOCKQUOTE = /^[ \t]*(?:>[ \t]?)+/;
+
+/**
+ * Every fenced block, indented ones inside an `<Aside>` included, and ones in
+ * a blockquote — read without the quote's markers, so a sample quoted on a
+ * page is held to the same rules.
+ */
 function fencesOf(page: string): Fence[] {
   const lines = page.split('\n');
   const fences: Fence[] = [];
-  let opener: { readonly marker: string; readonly line: number } | null = null;
+  let opener: { readonly marker: string; readonly line: number; readonly quoted: boolean } | null = null;
   let block: string[] = [];
-  for (const [index, line] of lines.entries()) {
+  for (const [index, written] of lines.entries()) {
+    const quoted = BLOCKQUOTE.test(written);
+    const line = opener === null ? written.replace(BLOCKQUOTE, '') : opener.quoted ? written.replace(BLOCKQUOTE, '') : written;
     const marker = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
     if (opener === null) {
       if (marker) {
-        opener = { marker: marker[1]!, line: index + 1 };
+        opener = { marker: marker[1]!, line: index + 1, quoted };
         block = [line];
       }
       continue;
@@ -652,7 +661,7 @@ function proseOf(page: string, text: string): string {
       kept.push('');
       continue;
     }
-    const marker = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
+    const marker = /^\s*(`{3,}|~{3,})(.*)$/.exec(line.replace(BLOCKQUOTE, ''));
     if (fence === null && marker) {
       fence = marker[1]!;
       kept.push('');
@@ -1085,6 +1094,14 @@ describe('the page rules hold on pages made to break them (#1473)', () => {
     expect(routeProblems('english', overview(['Prose.'], [ts(route)]))).toEqual([`the plugins route at line 9 is not under "${headings.backends}"`]);
     expect(startupLinkProblems('english', overview([ts(route)], [ts(route)])))
       .toEqual([`"${headings.startup}" does not link "${headings.backendsAnchor}"`]);
+  });
+
+  test('a fence inside a blockquote is a fence like any other, and its code is no prose', () => {
+    const quoted = page('> Note:', `> ${ts('registerPostgresPlugins(system.extension(PersistenceExtensionId));').split('\n').join('\n> ')}`);
+    expect(fencesOf(quoted).flatMap((fence) => wiringProblems(fence)))
+      .toEqual(['line 4: registerPostgresPlugins(...) is not inside the plugins array of a withPersistence(...) call']);
+    expect(proseOf('fixture.mdx', page('> Opened at startup.', `> ${ts('// the tables are created on first use').split('\n').join('\n> ')}`)))
+      .not.toContain('first use');
   });
 
   test('the census finds a registering fence on any page, at any depth, in either language, and skips the generated tree', () => {
