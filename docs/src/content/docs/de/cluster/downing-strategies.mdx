@@ -582,6 +582,11 @@ wird verworfen und dort released, wo er ankommt.  Ein Release, das
 fehlschlägt, wird geloggt, und das Verlassen geht weiter; der Eintrag
 läuft dann mit seiner TTL ab.
 
+Danach entscheidet die Strategie nichts mehr, ein Node, der erneut
+beitritt, braucht also eine frische.  Eine in der Konfiguration
+gewählte Strategie baut jeder `Cluster.join` neu; eine im Code gebaute
+muss neu gebaut werden, statt sie einem zweiten Join zu übergeben.
+
 ## Eine Strategie auswählen
 
 Drei Fragen, in dieser Reihenfolge:

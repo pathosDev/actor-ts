@@ -40,6 +40,11 @@ export interface DowningProvider {
    * node its own decision downed or that gave its join up.  Optional, because
    * a strategy that holds nothing has nothing to give back.  A hook that throws
    * or rejects is logged, and the leave goes on without it.
+   *
+   * A provider whose hook stops it for good, as `LeaseMajority`'s does, serves
+   * one cluster: a node that joins again needs a fresh one.  A strategy
+   * selected in configuration gets that anyway, since every `Cluster.join`
+   * builds it anew; one built in code has to be built again.
    */
   shutdown?(): Promise<void>;
 }

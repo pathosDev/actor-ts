@@ -540,6 +540,11 @@ rules cover it: a win the attempt reports afterwards is dropped and
 released where it lands.  A release that fails is logged and the
 leave goes on; the record then runs out at its TTL.
 
+The strategy decides nothing after it, so a node that joins again
+needs a fresh one.  A strategy selected in configuration is built anew
+by every `Cluster.join`; one built in code has to be built again
+rather than handed to a second join.
+
 ## Picking a strategy
 
 Three questions in order:
