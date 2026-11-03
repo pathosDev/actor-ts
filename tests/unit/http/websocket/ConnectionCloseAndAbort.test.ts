@@ -63,6 +63,7 @@ import type { WebsocketServerRef } from '../../../../src/http/websocket/Websocke
 import { DEFAULT_WEBSOCKET_POLICY, type ResolvedWebsocketPolicy } from '../../../../src/http/websocket/WebsocketPolicy.js';
 import { WebsocketServerActor } from '../../../../src/http/websocket/WebsocketServerActor.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
+import { RecordingLogger } from '../../../util/RecordingLogger.js';
 
 type PingMessage = { readonly kind: 'ping'; readonly n: number };
 /** Answered with a reply and a close, in that order, in one hub turn. */
@@ -209,6 +210,99 @@ class StaleStateSocket extends TerminableSocket {
 class FailingBufferSocket extends HandshakeSocket {
   bufferedAmount(): number {
     throw new Error('the send buffer could not be read');
+  }
+}
+
+const encoder = new TextEncoder();
+
+/**
+ * The codes `ws` lets into a close frame (8.21.3, `isValidStatusCode`):
+ * 1000–1014 except 1004, 1005 and 1006, and 3000–4999.
+ */
+function wsAcceptsCloseCode(code: number): boolean {
+  return (code >= 1000 && code <= 1014 && code !== 1004 && code !== 1005 && code !== 1006)
+    || (code >= 3000 && code <= 4999);
+}
+
+/**
+ * `close()` the way the `ws` package does it (8.21.3): `WebSocket.close` moves
+ * the socket to CLOSING, then `Sender.close` throws — a TypeError for a code
+ * no close frame may carry, a RangeError for a reason over 123 bytes.  So no
+ * close frame goes out, no close timer starts, and the next `close()` returns
+ * at once: nothing will ever raise the close event.  No `terminate`, which is
+ * the adapter the Hono backend builds on Node.
+ */
+class WsCloseSocket extends HandshakeSocket {
+  /** The close frame that went out, if one did — what the peer answers. */
+  private sent: { readonly code: number | undefined; readonly reason: string | undefined } | null = null;
+
+  override close(code?: number, reason?: string): void {
+    if (this.state !== WebsocketReadyState.OPEN) return;
+    this.state = WebsocketReadyState.CLOSING;
+    if (code !== undefined && !wsAcceptsCloseCode(code)) {
+      this.calls.push(`close threw:${code}`);
+      throw new TypeError('First argument must be a valid error code number');
+    }
+    if (reason !== undefined && encoder.encode(reason).length > 123) {
+      this.calls.push(`close threw:${encoder.encode(reason).length} bytes`);
+      throw new RangeError('The message must not be greater than 123 bytes');
+    }
+    this.calls.push(`close:${code}:${reason}`);
+    this.sent = { code, reason };
+  }
+
+  /** The peer answers the close frame, if one went out, and the transport raises its close event. */
+  peerAnswersClose(): void {
+    if (this.sent === null) return;
+    this.raiseClose(this.sent.code ?? 1005, this.sent.reason ?? '');
+  }
+}
+
+/** {@link WsCloseSocket} with `terminate`, as the Fastify and Express backends build it. */
+class TerminableWsCloseSocket extends WsCloseSocket {
+  terminate(): void {
+    if (this.state === WebsocketReadyState.CLOSED) return;
+    this.calls.push('terminate');
+    this.raiseClose(1006, '');
+  }
+}
+
+/**
+ * `close()` the way a WHATWG `WebSocket` does it — Deno's, which the Hono
+ * backend wraps there: a reason over 123 bytes throws a SyntaxError before
+ * anything changes, so the socket stays OPEN.  A server-side socket may send
+ * any code there, so only the reason is checked.  No `terminate`.
+ */
+class WhatwgCloseSocket extends HandshakeSocket {
+  override close(code?: number, reason?: string): void {
+    if (reason !== undefined && encoder.encode(reason).length > 123) {
+      this.calls.push(`close threw:${encoder.encode(reason).length} bytes`);
+      throw new DOMException('The close reason may not be longer than 123 bytes', 'SyntaxError');
+    }
+    super.close(code, reason);
+  }
+}
+
+/**
+ * A transport that refuses a close it has no complaint about, after moving to
+ * CLOSING the way `ws` does — whatever made it, the socket is left open with
+ * nothing to finish the close.
+ */
+class RefusingCloseSocket extends HandshakeSocket {
+  override close(code?: number, reason?: string): void {
+    if (this.state !== WebsocketReadyState.OPEN) return;
+    this.state = WebsocketReadyState.CLOSING;
+    this.calls.push(`close threw:${code}:${reason}`);
+    throw new Error('the transport refused the close');
+  }
+}
+
+/** {@link RefusingCloseSocket} with `terminate`. */
+class TerminableRefusingCloseSocket extends RefusingCloseSocket {
+  terminate(): void {
+    if (this.state === WebsocketReadyState.CLOSED) return;
+    this.calls.push('terminate');
+    this.raiseClose(1006, '');
   }
 }
 
@@ -359,10 +453,11 @@ type Harness = {
   readonly stopConnectionActor: (connection: WebsocketConnection<ServerMessage>) => Promise<void>;
 };
 
-function harness(name: string): Harness {
+/** `logger` records what the system logs at warn and above; without one, nothing is logged. */
+function harness(name: string, logger?: RecordingLogger): Harness {
   const systemOptions = ActorSystemOptions.create()
-    .withLogger(new NoopLogger())
-    .withLogLevel(LogLevel.Off);
+    .withLogger(logger ?? new NoopLogger())
+    .withLogLevel(logger === undefined ? LogLevel.Off : LogLevel.Warn);
   const system = ActorSystem.create(name, systemOptions);
   systems.push(system);
   const state: HubState = { events: [], connections: [] };
@@ -911,5 +1006,149 @@ describe('abort() on a connection that is no longer open does nothing (#1431)', 
     await h.sentinel('after-the-abort');
     expect(h.events).toEqual([`connected:${connection.id}`, disconnected, 'sentinel:after-the-abort']);
     expect(socket.calls).toEqual([]);
+  });
+});
+
+/*
+ * A close frame carries a code from a fixed set and at most 123 bytes of
+ * reason (RFC 6455 §5.5, §7.4).  Asked for more, `ws` throws after it has
+ * started closing and Deno's socket throws before, and either way nothing
+ * shuts the socket: the peer stays connected and keeps its `maxConnections`
+ * slot while the hub hears it leave.  The sockets above reproduce each
+ * transport's own `close()`; the real transports are in
+ * `CloseArgumentsOnBackends.test.ts` and the Node and Deno smoke run.
+ */
+describe('a close that asks for more than a close frame carries still shuts the socket and gives its slot back (#1431)', () => {
+  /** One connection per route: a second one is admitted only once the first has given its slot back. */
+  const onePolicy: ResolvedWebsocketPolicy = { ...DEFAULT_WEBSOCKET_POLICY, maxConnections: 1 };
+  /** 100 two-byte characters: 200 bytes, and byte 123 falls inside one of them. */
+  const longReason = 'é'.repeat(100);
+  /** The longest prefix of {@link longReason} a close frame carries: 61 characters, 122 bytes. */
+  const longReasonAsSent = 'é'.repeat(61);
+
+  const expectSlotBack = async (h: Harness): Promise<void> => {
+    const { socket } = await h.connect(new HandshakeSocket(), onePolicy);
+    expect(socket.calls).toEqual([]);
+  };
+
+  test('abort() with a reserved code, where close() is all the backend has: 1008 goes out, and the hub hears the code it was given', async () => {
+    const h = harness('ws-abort-reserved-code');
+    const { connection, socket } = await h.connect(new WsCloseSocket(), onePolicy);
+
+    await h.runOnHubTurn('abort', () => connection.abort(1006, 'rate limited'));
+    expect(socket.calls).toEqual(['close:1008:rate limited']);
+
+    socket.peerAnswersClose();
+    const disconnected = `disconnected:${connection.id}:1006:rate limited:server`;
+    await awaitCondition(() => h.events.includes(disconnected), {
+      timeoutMs: 4_000,
+      label: 'the hub heard the abort',
+    });
+    await expectSlotBack(h);
+  });
+
+  test('abort() with a reason over 123 bytes, where close() is all the backend has: the reason is cut between two characters', async () => {
+    const h = harness('ws-abort-long-reason');
+    const { connection, socket } = await h.connect(new WsCloseSocket(), onePolicy);
+
+    await h.runOnHubTurn('abort', () => connection.abort(1008, longReason));
+    expect(socket.calls).toEqual([`close:1008:${longReasonAsSent}`]);
+
+    socket.peerAnswersClose();
+    const disconnected = `disconnected:${connection.id}:1008:${longReason}:server`;
+    await awaitCondition(() => h.events.includes(disconnected), {
+      timeoutMs: 4_000,
+      label: 'the hub heard the abort',
+    });
+    await expectSlotBack(h);
+  });
+
+  test('abort() with a reason over 123 bytes, where close() refuses it before anything changes', async () => {
+    const h = harness('ws-abort-long-reason-whatwg');
+    const { connection, socket } = await h.connect(new WhatwgCloseSocket(), onePolicy);
+
+    await h.runOnHubTurn('abort', () => connection.abort(1008, longReason));
+    expect(socket.calls).toEqual([`close:1008:${longReasonAsSent}`]);
+    expect(socket.readyState).toBe(WebsocketReadyState.CLOSING);
+
+    socket.peerClosed(1008, longReasonAsSent);
+    const disconnected = `disconnected:${connection.id}:1008:${longReason}:server`;
+    await awaitCondition(() => h.events.includes(disconnected), {
+      timeoutMs: 4_000,
+      label: 'the hub heard the abort',
+    });
+    await expectSlotBack(h);
+  });
+
+  test('close() with a reserved code: 1000 goes out, and the hub hears the code it was given', async () => {
+    const h = harness('ws-close-reserved-code');
+    const { connection, socket } = await h.connect(new TerminableWsCloseSocket(), onePolicy);
+
+    connection.close(1006, 'bye');
+    const disconnected = `disconnected:${connection.id}:1006:bye:server`;
+    await awaitCondition(() => h.events.includes(disconnected), {
+      timeoutMs: 4_000,
+      label: 'the hub heard the close',
+    });
+    expect(socket.calls).toEqual(['close:1000:bye']);
+
+    socket.peerAnswersClose();
+    await expectSlotBack(h);
+  });
+
+  test('close() with a reason over 123 bytes: the reason is cut between two characters', async () => {
+    const h = harness('ws-close-long-reason');
+    const { connection, socket } = await h.connect(new TerminableWsCloseSocket(), onePolicy);
+
+    connection.close(4000, longReason);
+    const disconnected = `disconnected:${connection.id}:4000:${longReason}:server`;
+    await awaitCondition(() => h.events.includes(disconnected), {
+      timeoutMs: 4_000,
+      label: 'the hub heard the close',
+    });
+    expect(socket.calls).toEqual([`close:4000:${longReasonAsSent}`]);
+
+    socket.peerAnswersClose();
+    await expectSlotBack(h);
+  });
+
+  test('a reason of exactly 123 bytes goes out whole, and a four-byte character that does not fit is left out whole', async () => {
+    const h = harness('ws-close-reason-boundaries');
+    const exact = await h.connect(new WsCloseSocket());
+    const astral = await h.connect(new WsCloseSocket());
+
+    await h.runOnHubTurn('abort-both', () => {
+      exact.connection.abort(1008, 'x'.repeat(123));
+      // 31 four-byte characters, 124 bytes: the last one does not fit.
+      astral.connection.abort(1008, '\u{1F600}'.repeat(31));
+    });
+    expect(exact.socket.calls).toEqual([`close:1008:${'x'.repeat(123)}`]);
+    expect(astral.socket.calls).toEqual([`close:1008:${'\u{1F600}'.repeat(30)}`]);
+  });
+
+  test('a close() the transport refuses anyway is followed by terminate(), and the slot comes back', async () => {
+    const h = harness('ws-close-refused-terminate');
+    const { connection, socket } = await h.connect(new TerminableRefusingCloseSocket(), onePolicy);
+
+    connection.close(1000, 'bye');
+    const disconnected = `disconnected:${connection.id}:1000:bye:server`;
+    await awaitCondition(() => h.events.includes(disconnected), {
+      timeoutMs: 4_000,
+      label: 'the hub heard the close',
+    });
+    expect(socket.calls).toEqual(['close threw:1000:bye', 'terminate']);
+    await expectSlotBack(h);
+  });
+
+  test('without terminate, a close() the transport refuses anyway is logged — the socket may still be open', async () => {
+    const logger = new RecordingLogger();
+    const h = harness('ws-abort-refused-logged', logger);
+    const { connection, socket } = await h.connect(new RefusingCloseSocket());
+
+    await h.runOnHubTurn('abort', () => connection.abort(1008, 'rate limited'));
+    expect(socket.calls).toEqual(['close threw:1008:rate limited']);
+    const warnings = logger.records.filter((record) => record.level === 'warn' && record.message.includes(connection.id));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]!.message).toContain('the transport refused the close');
   });
 });

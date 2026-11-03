@@ -612,6 +612,19 @@ the peer sent before the abort that are already queued for the hub reach
 Its code defaults to 1008, policy violation, where `close()`'s defaults
 to 1000.
 
+A close frame carries a code from a fixed set and at most 123 bytes of
+reason, and both methods send only that.  A code outside 1000–1014 and
+3000–4999, or one of the codes reserved for reporting a close (1004,
+1005, 1006), goes out as the method's own default — 1000 for `close()`,
+1008 for `abort()` — and a longer reason is cut to 123 UTF-8 bytes,
+between two characters.  `onClientDisconnected` still reports the code
+and reason you passed.  Handed straight to the transport, either one
+left the socket open on some backends while the hub was told it had
+closed: the `ws` package refuses the close after it has already started
+it, and Deno's socket refuses it outright.  Should a backend's close
+fail anyway, the socket is hard-closed where the backend can; where it
+cannot, a warning names the connection.
+
 `isOpen` reads `false` as soon as `close()` or `abort()` returns — after
 `close()`, before the socket has actually shut — so `broadcast` and your
 own `if (client.isOpen)` checks stop selecting a peer you have already

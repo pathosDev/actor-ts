@@ -657,6 +657,20 @@ Verbindung, die nicht mehr offen ist — nach `close()`, nach einem früheren
 erste Entscheidung über einen Socket bleibt stehen.  Sein Code ist
 standardmäßig 1008 (Policy Violation), der von `close()` 1000.
 
+Ein Close-Frame trägt einen Code aus einer festen Menge und höchstens 123
+Byte Begründung, und beide Methoden senden nur das.  Ein Code außerhalb
+von 1000–1014 und 3000–4999 oder einer der Codes, die dem Melden eines
+Close vorbehalten sind (1004, 1005, 1006), geht als Standardcode der
+jeweiligen Methode hinaus — 1000 bei `close()`, 1008 bei `abort()` —, und
+eine längere Begründung wird auf 123 UTF-8-Byte gekürzt, zwischen zwei
+Zeichen.  `onClientDisconnected` meldet weiterhin den Code und die
+Begründung, die du übergeben hast.  Direkt an den Transport gereicht, ließ
+beides den Socket auf manchen Backends offen, während der Hub hörte, er
+sei geschlossen: Das `ws`-Paket verweigert das Close, nachdem es schon
+damit begonnen hat, und Denos Socket verweigert es von vornherein.  Schlägt
+das Close eines Backends dennoch fehl, wird der Socket hart geschlossen, wo
+das Backend es kann; wo nicht, nennt eine Warnung die Verbindung.
+
 `isOpen` liest `false`, sobald `close()` oder `abort()` zurückkehrt — nach
 `close()` noch bevor der Socket tatsächlich zu ist.  `broadcast` und deine
 eigenen `if (client.isOpen)`-Prüfungen wählen damit keinen Peer mehr aus,
