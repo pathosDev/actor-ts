@@ -3177,7 +3177,10 @@ is set to two non-empty values instead, which a reader has to tell apart.  A
 reader that only
 refuses the new value does not count, because a value checked and then
 dropped is refused just the same; one that takes the leaf as another kind
-than it ships as — a size where a duration ships — fails it.  A key this
+than it ships as — a size where a duration ships, an integer where a size
+ships as a bare count — fails it, except a fraction read as a size: its
+wrong-kind value is a duration, which `getBytes` refuses as readily as the
+fraction's own accessor, so `getBytes` reads a fraction unremarked.  A key this
 file carries only as a comment has no value to change, so the test
 introduces it at a value the registry gives and changes it to a second, and
 a reader has to answer the two differently.  That is what tells a read from
@@ -3214,8 +3217,8 @@ application picks — a named cache, a breaker id — is not changed itself: it
 is read by the same reader as the default block, with keys composed under
 the name, so the test covers the reader through the default block and the
 per-block tests cover the composition.  And two documented settings sit
-outside it, each with its reason beside the registry:
-`coordinated-shutdown.phases`, which the shutdown extension folds into its
-phase graph itself, so no registered reader answers to it, and the
-Cassandra blocks' `replication.data-centers`, a list of objects the test
-has no second value for.
+outside it: `coordinated-shutdown.phases`, which the shutdown extension folds
+into its phase graph itself, so no registered reader answers to it, and the
+Cassandra blocks' `replication.data-centers`, which waits only for its
+registry entry: a second list as the entry's override and a context selecting
+`network-topology-strategy` would bring it in.

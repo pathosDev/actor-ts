@@ -3182,7 +3182,11 @@ nicht leere Werte gesetzt, die ein Leser unterscheiden muss.  Ein Leser, der
 den neuen Wert nur ablehnt, zählt
 nicht, denn ein Wert, der geprüft und dann verworfen wird, wird genauso
 abgelehnt; einer, der das Blatt als eine andere Art liest, als es
-ausgeliefert wird — eine Größe, wo eine Dauer steht —, lässt es durchfallen.
+ausgeliefert wird — eine Größe, wo eine Dauer steht, eine Ganzzahl, wo eine
+Größe als bloße Zahl steht —, lässt es durchfallen, außer bei einem Bruch,
+der als Größe gelesen wird: Sein Wert der falschen Art ist eine Dauer, die
+`getBytes` genauso ablehnt wie der eigene Accessor des Bruchs; `getBytes`
+liest einen Bruch also unbemerkt.
 Ein Key, den diese Datei nur als Kommentar führt, hat keinen Wert zum
 Ändern; der Test führt ihn deshalb mit einem Wert aus der Registry ein und
 ändert ihn auf einen zweiten, und ein Leser muss auf beide verschieden
@@ -3223,9 +3227,9 @@ Pfad einen Namen enthält, den die Anwendung wählt — ein benannter Cache,
 eine Breaker-Id —, wird selbst nicht geändert: Ihn liest derselbe Leser wie
 den Default-Block, mit Keys, die unter dem Namen zusammengesetzt werden; der
 Test deckt den Leser also über den Default-Block ab und die Tests pro Block
-das Zusammensetzen.  Und zwei dokumentierte Settings bleiben außerhalb,
-jedes mit seiner Begründung neben der Registry:
+das Zusammensetzen.  Und zwei dokumentierte Settings bleiben außerhalb:
 `coordinated-shutdown.phases`, das die Shutdown-Extension selbst in ihren
 Phasengraphen einbaut, sodass kein registrierter Leser darauf antwortet, und
-`replication.data-centers` der Cassandra-Blöcke, eine Liste von Objekten,
-für die der Test keinen zweiten Wert hat.
+`replication.data-centers` der Cassandra-Blöcke, dem nur sein Eintrag in der
+Registry fehlt: eine zweite Liste als Override des Eintrags und ein Kontext,
+der `network-topology-strategy` wählt, brächten ihn hinein.
