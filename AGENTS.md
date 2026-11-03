@@ -734,7 +734,12 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
   checked and then dropped is refused just the same as one that is kept, so
   a reader that only throws on the new value leaves the leaf unread. A
   reader that takes the leaf as another kind than it ships as — a size
-  where a duration ships — fails it.
+  where a duration ships — fails it, with two exceptions the gate does not
+  catch yet: a size or a duration that ships as a bare count is changed to
+  another bare count, which `getInt` and `getNumber` read as readily as its
+  own accessor; and a fraction's wrong-kind value is a duration, which
+  `getBytes` refuses as readily as the fraction's own accessor, so
+  `getBytes` reads a fraction unremarked.
 
   Registering is what makes a reader count. A new block's reader is an
   entry in that registry, naming the suite whose `expectExactOptions` cases
