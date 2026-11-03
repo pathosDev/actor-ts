@@ -172,6 +172,39 @@ describe('a deployment entry bounds the actors its key matches (#868)', () => {
     expect(mailboxOf(outside)).not.toBeInstanceOf(BoundedMailbox);
   });
 
+  test('an exact key below the first level bounds the actor at that path, and not its namesake under /user', async () => {
+    // Every other exact key in this file is one level deep, where an address
+    // built from the actor's name alone would read the same as one built from
+    // its path.  Three levels and a top-level actor of the same name tell the
+    // two apart.
+    const system = systemWith('deployment-exact-nested', {
+      deployment: { '/user/top/level/other': { 'mailbox-capacity': 3, 'mailbox-overflow': 'reject' } },
+    });
+    const gate = newGate();
+
+    class Level extends Actor<number> {
+      override preStart(): void { this.context.spawn(() => new Latched(gate), 'other'); }
+      override onReceive(): void {}
+    }
+    class Top extends Actor<number> {
+      override preStart(): void { this.context.spawn(Level, 'level'); }
+      override onReceive(): void {}
+    }
+
+    const top = system.spawn(Top, 'top');
+    const namesake = system.spawn(() => new Latched(gate), 'other');
+    const topCell = cellOf(top);
+    await awaitCondition(
+      () => topCell.children.length === 1 && cellOf(topCell.children[0]!).children.length === 1,
+      { label: 'top spawned level, and level spawned other' },
+    );
+    const nested = cellOf(topCell.children[0]!).children[0] as ActorRef<number>;
+    expect(nested.path.toString()).toEndWith('/user/top/level/other');
+
+    expectRejectingBoundOf(nested, 3, aNumber);
+    expect(mailboxOf(namesake)).not.toBeInstanceOf(BoundedMailbox);
+  });
+
   test('mailbox-capacity = 0 exempts the matched actor from a global bound its sibling keeps', () => {
     const system = systemWith('deployment-exempt', {
       mailbox: { default: { capacity: 4, overflow: 'reject' } },
@@ -426,6 +459,36 @@ describe('a declaring actor keeps its entry bound on the control-aware queue (#8
     expectRejectingBoundOf(declaring, 3, aNumber);
     // A control message is neither counted nor refused by the full bound.
     declaring.tell(-1);
+  });
+
+  test('a framework actor that declares control messages gets the control-aware queue unbounded, whatever the entry says', async () => {
+    // The queue is swapped at first start, and the swap looks the entry up a
+    // second time.  The provenance rule has to hold there as well as in the
+    // constructor: a framework actor that declares control messages — the
+    // DevTools hub is one — must not take a bound from `/**` or `/system/**`
+    // on its way to the control-aware queue.
+    const everything = { 'mailbox-capacity': 2, 'mailbox-overflow': 'reject' };
+    const system = systemWith('deployment-control-lane-framework', {
+      deployment: { '/**': everything, '/system/**': everything },
+    });
+    const gate = newGate();
+    const built: { instance: DeclaringLatched | null } = { instance: null };
+    const framework = system._spawnSystemActor(
+      () => (built.instance = new DeclaringLatched(gate)),
+      SystemGroups.delivery,
+      'control-probe',
+    );
+    await awaitCondition(() => built.instance?.started === true, { label: 'the declaring framework actor started' });
+
+    expect(mailboxOf(framework)).toBeInstanceOf(ControlAwareMailbox);
+    // Park it on message 0, so everything after it has to queue.
+    framework.tell(0);
+    await awaitCondition(() => (mailboxOf(framework) as Mailbox<number>).size === 0, {
+      label: 'the framework actor took message 0',
+    });
+    // A bound of 2 would refuse the third of these at the sender.
+    for (let index = 1; index <= 8; index++) framework.tell(index);
+    expect((mailboxOf(framework) as Mailbox<number>).size).toBe(8);
   });
 });
 
