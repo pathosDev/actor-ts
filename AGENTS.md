@@ -734,7 +734,10 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
   checked and then dropped is refused just the same as one that is kept, so
   a reader that only throws on the new value leaves the leaf unread. A
   reader that takes the leaf as another kind than it ships as — a size
-  where a duration ships — fails it.
+  where a duration ships, an integer where a size ships as a bare count —
+  fails it, with one exception the gate does not catch yet: a fraction's
+  wrong-kind value is a duration, which `getBytes` refuses as readily as the
+  fraction's own accessor, so `getBytes` reads a fraction unremarked.
 
   Registering is what makes a reader count. A new block's reader is an
   entry in that registry, naming the suite whose `expectExactOptions` cases
@@ -757,14 +760,24 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
   A knowingly-unimplemented key goes in the test's `KNOWN_DEAD_KEYS` with
   the issue that will remove it, and an empty list means none: an entry
   fails once a reader reads its key. Adding a key nothing reads is not an
-  option. Two documented settings stay outside the gate, each with its
-  reason beside the registry: `coordinated-shutdown.phases`, which the
-  shutdown extension folds into its phase graph itself, so no registered
-  reader answers to it, and the Cassandra blocks' `replication.data-centers`
-  list of objects, which the gate has no second value for.
+  option. Two documented settings stay outside the gate:
+  `coordinated-shutdown.phases`, which the shutdown extension folds into its
+  phase graph itself, so no registered reader answers to it, and the
+  Cassandra blocks' `replication.data-centers`, which is a gap in the
+  registry rather than a limit of the gate. A list of objects is no
+  obstacle: an `UNPUBLISHED_LEAVES` entry whose `override` gives the second
+  list, and `contexts` on the two Cassandra readers selecting
+  `network-topology-strategy` — they refuse data centers under any other
+  class, and a refusal is not a read — would bring it in. Neither has been
+  written yet.
 
   **The gate proves a read, not the wiring.** It cannot see whether the
-  runtime calls the reader or keeps its answer:
+  runtime calls a reader or keeps its answer, with one exception inside the
+  registry: a sub-reader that another registered reader calls — a sink's
+  delivery block, the cluster's downing provider and split-brain window —
+  counts only where that caller answers to the same leaf, and its entry
+  names those callers in `calledBy`, which the gate checks against the
+  direct calls in `src/`. Beyond the registry,
   `tests/unit/config/ConsumersReadThroughRegisteredReaders.test.ts` pins the
   consumers that have read a key directly to their readers, while a
   consumer that calls its reader and still reads a key beside it, and
@@ -903,12 +916,14 @@ Further rules:
   is first read — a broker actor's `preStart`, a gRPC server's start, the first
   `HttpExtension` access, the `bind()` of a server with a WebSocket route,
   `cache(name)` — not up front at `ActorSystem.create`, so a block nothing reads
-  is never checked. The TCP framing caps are the one rename that moved
-  TypeScript fields as well (`maxLineBytes` / `maxFrameBytes`); their table
-  passes `rejectRetiredLeaves` a note saying so — every other table keeps the
-  default, which tells the operator no code change is needed. Multi-arg sugar
-  is fine when the field still matches the stem (`withCredentials(u, p)` → field
-  `credentials`; `withCircuitBreaker(f, r)` → field `circuitBreaker`).
+  is never checked. Where a rename moved TypeScript as well, its table passes
+  `rejectRetiredLeaves` a note saying what changed in code: the TCP framing
+  caps, whose fields became `maxLineBytes` / `maxFrameBytes`, and the broker
+  breaker, whose numbers became an id that `circuitBreaker` holds and
+  `withCircuitBreaker(id)` takes. Every other table keeps the default, which
+  tells the operator no code change is needed. Multi-arg sugar is fine when
+  the field still matches the stem (`withCredentials(u, p)` → field
+  `credentials`).
 - **An optional fourth export, `XOptionsValidator`**, when the options have
   fields with real constraints (ports, positive durations/counts, byte sizes,
   enums, non-empty strings/arrays, URLs, cross-field rules). It `extends
