@@ -65,6 +65,14 @@ actor-ts.io.broker.nats {
 }
 ```
 
+Ein Wert aus der Umgebung wird zuerst als JSON gelesen, wo immer er sich als
+JSON parsen lässt.  Ein Passwort oder Token, das sich wie eine Zahl liest, kommt
+in der Schreibweise dieser Zahl zurück — `1e3` als `1000`, `1.50` als `1.5`, ein
+zwanzigstelliges gerundet —, und eines, das sich wie `null` oder eine Liste
+liest, lässt den Start scheitern; ein schlichtes `12345` bleibt unverändert.
+Einen solchen Wert in der Variablen selbst quoten
+(`ACTOR_TS_NATS_PASSWORD='"1e3"'`) oder im Code setzen.
+
 Benutzer und Passwort in einem `servers`-Eintrag
 (`nats://user:secret@nats-1:4222`) sind **keine** Zugangsdaten: nats.js
 schickt sie nie mit, und sie können dazu führen, dass es Host oder Port des
