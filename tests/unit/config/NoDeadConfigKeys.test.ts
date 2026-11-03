@@ -25,6 +25,7 @@ import {
   entryLabel,
   READERS_OUTSIDE_THE_REGISTRY,
   UNPUBLISHED_LEAVES,
+  type ReaderEntry,
 } from '../../util/ConfigReaderRegistry.js';
 
 /**
@@ -73,7 +74,13 @@ import {
  *     green.  `ConsumersReadThroughRegisteredReaders.test.ts` pins the
  *     consumers that have done so to their readers; a consumer that calls its
  *     reader and still reads one key beside it, and wiring, stay with each
- *     subsystem's binding tests.
+ *     subsystem's binding tests.  Between two registered readers it does: a
+ *     sub-reader that another registered reader calls — a sink's delivery
+ *     block, the cluster's downing provider and split-brain window — counts
+ *     only where that caller answers to the same leaf, so a caller that stops
+ *     calling it or drops its answer fails the leaf.  Each such entry names
+ *     its callers in `calledBy`, which is checked against the direct calls in
+ *     `src/`; a call made through a helper in between is not seen.
  *   - that the value is right.  The exact-object suite each registry entry
  *     names covers that.
  *   - keys `reference.conf` documents only in a comment.  A gate that
@@ -205,14 +212,20 @@ function literalAt(path: string): ConfigValue {
   return node;
 }
 
-const probes: readonly ConfigProbe[] = CONFIG_READER_REGISTRY.flatMap((entry) => [
-  { label: entryLabel(entry), read: entry.read },
-  ...(entry.contexts ?? []).map((context): ConfigProbe => ({
-    label: `${entryLabel(entry)} [${context.name}]`,
-    read: entry.read,
-    overlay: context.overlay,
-  })),
-]);
+/** The registry entry each probe runs, by the label it reports under. */
+const entryOfProbe = new Map<string, ReaderEntry>();
+const probes: readonly ConfigProbe[] = CONFIG_READER_REGISTRY.flatMap((entry) => {
+  const ofEntry: ConfigProbe[] = [
+    { label: entryLabel(entry), read: entry.read },
+    ...(entry.contexts ?? []).map((context): ConfigProbe => ({
+      label: `${entryLabel(entry)} [${context.name}]`,
+      read: entry.read,
+      overlay: context.overlay,
+    })),
+  ];
+  for (const probe of ofEntry) entryOfProbe.set(probe.label, entry);
+  return ofEntry;
+});
 const baselines = probes.map((probe) => baselineOf(probe, reference));
 const secondAnswers = new Map(baselines.map((baseline) => [baseline.probe.label, runProbe(baseline.probe, baseline.config)]));
 
@@ -279,6 +292,30 @@ function offKindMessage(verdict: LeafVerdict): string {
     + 'member), declare it in KIND_DECLARATIONS in tests/util/ConfigPerturbation.ts with the reason.';
 }
 
+/**
+ * The sub-reader probes that observe a leaf while no probe of a reader that
+ * calls them at runtime does.  Run on its own, a sub-reader answers whether
+ * or not its caller still calls it and keeps what it returns, so only an
+ * observation through the caller shows that the runtime reads the leaf.
+ */
+function observedOnlyThroughASubReader(verdict: LeafVerdict): string[] {
+  return verdict.observedBy.filter((label) => {
+    const callers = entryOfProbe.get(label)?.calledBy;
+    return callers !== undefined
+      && !verdict.observedBy.some((other) => callers.includes(entryOfProbe.get(other)!.name));
+  });
+}
+
+function subReaderOnlyMessage(verdict: LeafVerdict, subReaders: readonly string[]): string {
+  const { leaf, kind } = verdict.perturbation;
+  const callers = [...new Set(subReaders.flatMap((label) => entryOfProbe.get(label)!.calledBy!))];
+  return `${leaf} (${kind}, ${shippedAs(verdict.perturbation)}) is read by ${subReaders.join(', ')}, and by none of `
+    + `${callers.join(', ')}, which ${callers.length === 1 ? 'calls' : 'call'} it at runtime: the sub-reader answers `
+    + 'when it is run on its own, but the '
+    + 'runtime reads the leaf only through its caller, which no longer calls it or drops what it returns. Hand the '
+    + 'answer on in the caller, or give the caller\'s entry the contexts the sub-reader is observed under.';
+}
+
 describe('reference.conf has no dead keys', () => {
   test('the reference config actually parses into leaves', () => {
     // Guards the guard: a parser change that yielded nothing would make
@@ -305,6 +342,8 @@ describe('reference.conf has no dead keys', () => {
 
     expect(verdict.kindMismatches, kindMismatchMessage(verdict)).toEqual([]);
     expect(verdict.observedBy.length, unreadMessage(verdict)).toBeGreaterThan(0);
+    const subReaders = observedOnlyThroughASubReader(verdict);
+    expect(subReaders, subReaderOnlyMessage(verdict, subReaders)).toEqual([]);
   });
 
   test.each(gatedLeaves)('%s is read with an accessor of its kind', (leaf) => {
@@ -415,6 +454,42 @@ describe('the reader registry', () => {
     for (const name of [...registered, ...READERS_OUTSIDE_THE_REGISTRY.keys()]) {
       expect(exported, `${name} is listed but no longer exported from src/`).toContain(name);
     }
+  });
+
+  test('every sub-reader names exactly the registered readers that call it in src/', () => {
+    // `calledBy` is what holds a sub-reader's leaves to its caller, so a
+    // sub-reader registered without it would be held to nothing, and a stale
+    // entry to a caller that no longer calls it.  A call counts when it sits
+    // in the top-level function of another registered reader; one made
+    // through a helper in between is not seen.
+    const registered = new Set(CONFIG_READER_REGISTRY.map((entry) => entry.name));
+    const called = new Map<string, Set<string>>();
+    for (const file of sourceFiles(join(REPOSITORY_ROOT, 'src'))) {
+      const code = codeOf(readFileSync(file, 'utf8'));
+      const functions = [...code.matchAll(/^(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*[<(]/gm)]
+        .map((declaration) => ({ name: declaration[1]!, at: declaration.index! }));
+      for (const callee of registered) {
+        for (const call of code.matchAll(new RegExp(`\\b${callee}\\s*\\(`, 'g'))) {
+          const caller = functions.filter((candidate) => candidate.at < call.index!).at(-1)?.name;
+          if (caller === undefined || caller === callee || !registered.has(caller)) continue;
+          called.set(callee, (called.get(callee) ?? new Set()).add(caller));
+        }
+      }
+    }
+    const declared = new Map<string, Set<string>>();
+    for (const entry of CONFIG_READER_REGISTRY) {
+      for (const caller of entry.calledBy ?? []) declared.set(entry.name, (declared.get(entry.name) ?? new Set()).add(caller));
+    }
+    const sorted = (relation: ReadonlyMap<string, ReadonlySet<string>>): Record<string, string[]> =>
+      Object.fromEntries([...relation].map(([callee, callers]) => [callee, [...callers].sort()]));
+
+    expect(called.size, 'the call scan found no registered reader calling another: it no longer matches the source')
+      .toBeGreaterThan(2);
+    expect(
+      sorted(declared),
+      'calledBy does not match the calls in src/: give each registered reader another one calls the names of its '
+      + 'callers, and drop the ones that no longer call it',
+    ).toEqual(sorted(called));
   });
 
   test('every override and kind declaration is a leaf the gate perturbs, and changes what it would infer', () => {

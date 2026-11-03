@@ -181,6 +181,16 @@ export type ReaderEntry = {
   readonly suite: string;
   /** Branches the reference config does not select, each run as a probe of its own. */
   readonly contexts?: readonly ReaderContext[];
+  /**
+   * The registered readers that call this one at runtime and hand its answer
+   * on — set on a sub-reader, which is run on its own as well so that its
+   * leaves keep their kind checks.  A leaf a sub-reader observes must also be
+   * observed through one of these: on its own, the sub-reader keeps its leaves
+   * green after the caller stops calling it or drops what it returned, and
+   * then nothing reads them at runtime (#1425).  The gate checks the list
+   * against the calls in `src/`, so it cannot fall behind them.
+   */
+  readonly calledBy?: readonly string[];
 };
 
 /**
@@ -220,6 +230,18 @@ const systemReaders: readonly ReaderEntry[] = [
 /** The sinks with a `delivery` block — every one but the console, which writes synchronously. */
 const DELIVERING_SINKS = ['file', 'gelf', 'otlp', 'loki', 'parseable', 'seq', 'splunk', 'syslog'] as const;
 
+/** The reader that hands each sink's root to `readDeliveryOptionsFromConfig` and keeps its answer. */
+const DELIVERY_CALLERS: Readonly<Record<(typeof DELIVERING_SINKS)[number], string>> = {
+  file: 'readFileSinkOptionsFromConfig',
+  gelf: 'readGelfSinkOptionsFromConfig',
+  otlp: 'readOtlpSinkOptionsFromConfig',
+  loki: 'readLokiSinkOptionsFromConfig',
+  parseable: 'readParseableSinkOptionsFromConfig',
+  seq: 'readSeqSinkOptionsFromConfig',
+  splunk: 'readSplunkSinkOptionsFromConfig',
+  syslog: 'readSyslogSinkOptionsFromConfig',
+};
+
 const loggerReaders: readonly ReaderEntry[] = [
   { name: 'readLoggerLevelFromConfig', read: readLoggerLevelFromConfig, suite: LOGGER_SUITE },
   { name: 'readLoggerCloseTimeoutFromConfig', read: readLoggerCloseTimeoutFromConfig, suite: CORE_SUITE },
@@ -241,12 +263,14 @@ const loggerReaders: readonly ReaderEntry[] = [
   { name: 'readSplunkSinkOptionsFromConfig', read: readSplunkSinkOptionsFromConfig, suite: LOGGER_SUITE },
   { name: 'isSyslogSinkEnabled', read: isSyslogSinkEnabled, suite: LOGGER_SUITE },
   { name: 'readSyslogSinkOptionsFromConfig', read: readSyslogSinkOptionsFromConfig, suite: LOGGER_SUITE },
-  // One shared reader, handed each sink's block root by that sink's reader.
+  // One shared reader, handed each sink's block root by that sink's reader —
+  // the root no runtime path supplies once that reader stops calling it.
   ...DELIVERING_SINKS.map((sink): ReaderEntry => ({
     name: 'readDeliveryOptionsFromConfig',
     variant: sink,
     read: (config) => readDeliveryOptionsFromConfig(config, `actor-ts.logger.sinks.${sink}`),
     suite: LOGGER_SUITE,
+    calledBy: [DELIVERY_CALLERS[sink]],
   })),
 ];
 
@@ -332,46 +356,56 @@ const diagnosticsReaders: readonly ReaderEntry[] = [
 
 /* ----------------------------- actor-ts.cluster ----------------------------- */
 
+/**
+ * The split-brain strategies, each selected over the reference's
+ * `active-strategy = off`, under which no strategy's own leaves are read at
+ * all.  `readDowningFromConfig` reads them, and so does the cluster reader
+ * that calls it: run under the same branches, it has to answer to the same
+ * leaves, or it no longer hands the downing provider on.
+ */
+const DOWNING_STRATEGY_CONTEXTS: readonly ReaderContext[] = [
+  { name: 'keep-majority', overlay: { 'actor-ts.cluster.split-brain-resolver.active-strategy': 'keep-majority' } },
+  { name: 'keep-oldest', overlay: { 'actor-ts.cluster.split-brain-resolver.active-strategy': 'keep-oldest' } },
+  {
+    name: 'static-quorum',
+    overlay: {
+      'actor-ts.cluster.split-brain-resolver.active-strategy': 'static-quorum',
+      // Comment-only in reference.conf, and required: without it the
+      // strategy refuses to build and the context reads nothing.
+      'actor-ts.cluster.split-brain-resolver.static-quorum.quorum-size': 3,
+    },
+  },
+  {
+    name: 'keep-referee',
+    overlay: {
+      'actor-ts.cluster.split-brain-resolver.active-strategy': 'keep-referee',
+      // Required as quorum-size is above, and another address than the
+      // unpublished leaf's own, so setting that leaf changes the answer.
+      'actor-ts.cluster.split-brain-resolver.keep-referee.referee-address': 'sys@h:2',
+    },
+  },
+];
+
 const clusterReaders: readonly ReaderEntry[] = [
   {
     name: 'readClusterOptionsFromConfig',
     read: readClusterOptionsFromConfig,
     suite: 'tests/unit/cluster/ClusterConfigDefaults.test.ts',
+    contexts: DOWNING_STRATEGY_CONTEXTS,
   },
   { name: 'isRemoteTlsRequested', read: isRemoteTlsRequested, suite: 'tests/unit/cluster/ClusterConfigDefaults.test.ts' },
   {
     name: 'readDowningFromConfig',
     read: readDowningFromConfig,
     suite: 'tests/unit/cluster/downing/DowningFromConfig.test.ts',
-    // reference.conf ships `active-strategy = off`, under which no strategy's
-    // own leaves are read at all.
-    contexts: [
-      { name: 'keep-majority', overlay: { 'actor-ts.cluster.split-brain-resolver.active-strategy': 'keep-majority' } },
-      { name: 'keep-oldest', overlay: { 'actor-ts.cluster.split-brain-resolver.active-strategy': 'keep-oldest' } },
-      {
-        name: 'static-quorum',
-        overlay: {
-          'actor-ts.cluster.split-brain-resolver.active-strategy': 'static-quorum',
-          // Comment-only in reference.conf, and required: without it the
-          // strategy refuses to build and the context reads nothing.
-          'actor-ts.cluster.split-brain-resolver.static-quorum.quorum-size': 3,
-        },
-      },
-      {
-        name: 'keep-referee',
-        overlay: {
-          'actor-ts.cluster.split-brain-resolver.active-strategy': 'keep-referee',
-          // Required as quorum-size is above, and another address than the
-          // unpublished leaf's own, so setting that leaf changes the answer.
-          'actor-ts.cluster.split-brain-resolver.keep-referee.referee-address': 'sys@h:2',
-        },
-      },
-    ],
+    contexts: DOWNING_STRATEGY_CONTEXTS,
+    calledBy: ['readClusterOptionsFromConfig'],
   },
   {
     name: 'readSplitBrainResolverOptionsFromConfig',
     read: readSplitBrainResolverOptionsFromConfig,
     suite: 'tests/unit/cluster/SplitBrainStabilityWindow.test.ts',
+    calledBy: ['readClusterOptionsFromConfig'],
   },
   {
     name: 'readClusterBootstrapDefaultsFromConfig',
