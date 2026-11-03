@@ -340,14 +340,17 @@ import { Aside } from '@astrojs/starlight/components';
   dd.subscribe<GCounter>('hits', hitsReporter);
   ```
   In a high-write workload, a callback can fire many times per
-  second, and every call runs on the replicator's turn.
-  Debouncing or throttling inside the callback does not take that
-  cost away — it still runs once per change, on the replicator, and
-  a callback that only `tell`s an actor still queues one message per
-  change behind it.  Subscribe the actor that does the work instead,
-  as above: it is told the latest value on its own turn, as often as
-  it takes them, and the replicator keeps one notification per key
-  in flight for it.
+  second, and every call runs on the replicator's turn, so what it
+  does before it returns is what the replicator waits for.  A
+  trailing debounce keeps that short: the callback only re-arms its
+  timer per change, and the work runs once, after the burst — on a
+  timer, outside any actor, so it must not touch actor state.  A
+  callback that only `tell`s an actor does not help: the actor is
+  told once per change, and its turns run between the replicator's
+  on the same thread.  For work that touches actor state, subscribe
+  the actor itself, as above: it is told the latest value on its own
+  turn, as often as it takes them, and the replicator keeps one
+  notification per key in flight for it.
 </Aside>
 
 <Aside type="caution" title="Subscriptions are local">
