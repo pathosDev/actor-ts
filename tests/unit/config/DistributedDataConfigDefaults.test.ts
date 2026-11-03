@@ -3,9 +3,14 @@ import { Config } from '../../../src/config/Config.js';
 import { ConfigKeys } from '../../../src/config/ConfigKeys.js';
 import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import {
+  DistributedDataOptions,
   DistributedDataOptionsValidator,
   readDistributedDataOptionsFromConfig,
+  type DistributedDataOptionsBuilder,
+  type DistributedDataOptionsType,
 } from '../../../src/crdt/DistributedDataOptions.js';
+import { InMemoryDurableStateStore } from '../../../src/persistence/durable-state-stores/InMemoryDurableStateStore.js';
+import { OptionsBuilder } from '../../../src/util/OptionsBuilder.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { expectExactOptions } from '../../util/ExactOptions.js';
 
@@ -209,5 +214,66 @@ describe('DistributedDataOptionsValidator over config-sourced values', () => {
 
   test('an unset optional always passes', () => {
     expect(() => new DistributedDataOptionsValidator().validate({})).not.toThrow();
+  });
+});
+
+/**
+ * The code route to the same fields (#856).  A builder is its settings — each
+ * `withX` writes one own field — so every setter is called here on a fresh
+ * builder and the whole bag is read back.
+ *
+ * `withQuorumTimeout` is the route the quorum page shows, and nothing called
+ * it.  Wired to `maxQuorumTimeout`, its neighbour, it passed every suite: the
+ * ceiling clamps the 5 s default to the very number the deadline should have
+ * been, so the one observable a quorum test reads came out the same.
+ */
+type DistributedDataSetter = Extract<keyof DistributedDataOptionsBuilder, `with${string}`>;
+
+const DISTRIBUTED_DATA_SETTERS: ReadonlyArray<readonly [DistributedDataSetter, keyof DistributedDataOptionsType, unknown]> = [
+  ['withGossipInterval', 'gossipInterval', 250],
+  ['withQuorumTimeout', 'quorumTimeout', 2_000],
+  ['withMaxPendingQuorumRequests', 'maxPendingQuorumRequests', 32],
+  ['withMaxQuorumTimeout', 'maxQuorumTimeout', 4_000],
+  ['withMaxGossipBytes', 'maxGossipBytes', 512 * 1024],
+  ['withLogDataSizeExceeding', 'logDataSizeExceeding', 64 * 1024],
+  ['withDurableKeys', 'durableKeys', ['cart-42', 'session-*']],
+  ['withDurableStore', 'durableStore', new InMemoryDurableStateStore()],
+];
+
+/** Every `with…` method on the builder's prototype chain, above the shared mechanics. */
+function setterNamesOf(builder: object): string[] {
+  const names: string[] = [];
+  for (
+    let prototype: object | null = Object.getPrototypeOf(builder) as object | null;
+    prototype !== null && prototype !== OptionsBuilder.prototype;
+    prototype = Object.getPrototypeOf(prototype) as object | null
+  ) {
+    names.push(...Object.getOwnPropertyNames(prototype).filter((name) => name.startsWith('with')));
+  }
+  return names.sort();
+}
+
+/** The fields a builder holds — its own enumerable properties, which is all a spread copies. */
+const fieldsOf = (builder: object): Record<string, unknown> => ({ ...builder });
+
+describe('DistributedDataOptions — each withX sets its own field and nothing else', () => {
+  for (const [setter, field, value] of DISTRIBUTED_DATA_SETTERS) {
+    test(`${setter} sets ${field} alone, and returns the builder`, () => {
+      const builder = DistributedDataOptions.create();
+
+      expect(Reflect.apply(builder[setter], builder, [value])).toBe(builder);
+      expectExactOptions(fieldsOf(builder), { [field]: value });
+    });
+  }
+
+  test('the quorum page sample sets the default deadline, not the ceiling', () => {
+    const distributedDataOptions = DistributedDataOptions.create().withQuorumTimeout(2_000);
+
+    expectExactOptions(fieldsOf(distributedDataOptions), { quorumTimeout: 2_000 });
+  });
+
+  test('the table names every setter the builder has', () => {
+    expect(setterNamesOf(DistributedDataOptions.create()))
+      .toEqual(DISTRIBUTED_DATA_SETTERS.map(([setter]) => setter).sort());
   });
 });

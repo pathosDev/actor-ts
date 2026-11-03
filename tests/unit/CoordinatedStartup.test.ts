@@ -460,6 +460,28 @@ describe('CoordinatedStartup — actor-ts.coordinated-startup', () => {
     }
   });
 
+  test('a phase the configuration declares without a timeout takes the merged default budget, from the file or from code', async () => {
+    // The cases that declare one set no default anywhere, so the merged
+    // default and the built-in one are the same 30 s, and a declared phase
+    // that ignored both settings passed them.  Each system here moves the
+    // default off the built-in value: one through the file, one through code
+    // over the file.
+    const hocon = `
+      actor-ts.coordinated-startup.default-phase-timeout = 12s
+      actor-ts.coordinated-startup.phases.warm-caches { depends-on = ["persistence-start"] }
+    `;
+    const fromFile = systemConfiguredWith(hocon);
+    const startupOptions = CoordinatedStartupOptions.create().withDefaultPhaseTimeoutMs(5_000);
+    const fromCode = systemConfiguredWith(hocon, startupOptions);
+    try {
+      expect(fromFile.extension(CoordinatedStartupId).phaseDefinition('warm-caches')?.timeoutMs).toBe(12_000);
+      expect(fromCode.extension(CoordinatedStartupId).phaseDefinition('warm-caches')?.timeoutMs).toBe(5_000);
+    } finally {
+      await fromFile.terminate();
+      await fromCode.terminate();
+    }
+  });
+
   test('phases.persistence-start.timeout from the configuration bounds that phase', async () => {
     let observedSignal: AbortSignal | undefined;
     const startupOptions = CoordinatedStartupOptions.create().withTasks([
