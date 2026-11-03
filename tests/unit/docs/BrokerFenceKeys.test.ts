@@ -208,13 +208,17 @@ const DECLARED_PATHS: ReadonlySet<string> = new Set([
 /* ------------------------------ the fences ------------------------------ */
 
 /**
- * The opening fence of a HOCON sample — indented ones included, as in
- * `HoconFenceKeys`, and ones carrying a title, which would otherwise be a way
- * past both guards.
+ * The opening fence of a HOCON sample, in every form a Markdown page can open
+ * one — the same set `HoconFenceKeys` reads: indented; inside a blockquote,
+ * once {@link BLOCKQUOTE} is off the line; with backticks or tildes, three or
+ * more; with the language in any case; and carrying a title, which would
+ * otherwise be a way past both guards.
  */
-const HOCON_FENCE_OPEN = /^[ \t]*```hocon(?:[ \t].*)?$/;
-/** Any fence delimiter; the first one after an opening fence closes it. */
-const FENCE_DELIMITER = /^[ \t]*```/;
+const HOCON_FENCE_OPEN = /^[ \t]*(`{3,}|~{3,})[ \t]*hocon(?:[ \t].*)?$/i;
+/** A line that can close a fence: a bare run of backticks or tildes. */
+const FENCE_CLOSE = /^[ \t]*(`{3,}|~{3,})[ \t]*$/;
+/** The markers of a blockquote, nested ones included, in front of a line. */
+const BLOCKQUOTE = /^[ \t]*(?:>[ \t]?)+/;
 
 type HoconFence = {
   /** The page, relative to the docs root. */
@@ -224,18 +228,27 @@ type HoconFence = {
   readonly body: ReadonlyArray<string>;
 };
 
-/** Every HOCON fence on `page`, in order. */
+/**
+ * Every HOCON fence on `page`, in order, its lines without blockquote markers.
+ * A fence closes the way Markdown closes it, on a bare run of its own
+ * character at least as long as the one it opened with.
+ */
 function hoconFencesIn(page: string, text: string): HoconFence[] {
   const out: HoconFence[] = [];
-  let open: { readonly line: number; readonly body: string[] } | undefined;
+  let open: { readonly line: number; readonly marker: string; readonly body: string[] } | undefined;
   for (const [index, line] of text.split(/\r?\n/).entries()) {
+    const unquoted = line.replace(BLOCKQUOTE, '');
     if (open === undefined) {
-      if (HOCON_FENCE_OPEN.test(line)) open = { line: index + 1, body: [] };
-    } else if (FENCE_DELIMITER.test(line)) {
+      const marker = HOCON_FENCE_OPEN.exec(unquoted)?.[1];
+      if (marker !== undefined) open = { line: index + 1, marker, body: [] };
+      continue;
+    }
+    const close = FENCE_CLOSE.exec(unquoted);
+    if (close !== null && close[1]![0] === open.marker[0] && close[1]!.length >= open.marker.length) {
       out.push({ page, line: open.line, body: open.body });
       open = undefined;
     } else {
-      open.body.push(line);
+      open.body.push(unquoted);
     }
   }
   return out;
@@ -666,6 +679,19 @@ describe('every key the io pages publish under actor-ts.io.broker is one a reade
       'actor-ts.io.broker.sse.headers { x-anything-at-all = "1" }',
       'actor-ts.http.server.port = 8080',
     ])).toEqual([]);
+  });
+
+  test.each<[string, (body: ReadonlyArray<string>) => string[]]>([
+    ['a tilde fence', (body) => ['~~~hocon', ...body, '~~~']],
+    ['a four-backtick fence', (body) => ['````hocon', ...body, '````']],
+    ['a four-backtick fence around a three-backtick line', (body) => ['````hocon', '```', ...body, '````']],
+    ['an uppercase language', (body) => ['```HOCON title="application.conf"', ...body, '```']],
+    ['a fence in a blockquote', (body) => ['> ```hocon', ...body.map((line) => `> ${line}`), '> ```']],
+  ])('%s is read like any other HOCON fence', (_form, page) => {
+    // No io page writes one of these today, so a finder that missed it would
+    // leave a misspelt key in it unchecked with every page test green.
+    const fences = hoconFencesIn('probe.mdx', ['Some prose.', '', ...page(['actor-ts.io.broker.udp {', '  bind-prot = 1', '}']), ''].join('\n'));
+    expect(fences.flatMap((fence) => unreadKeys(keysIn(fence))).map((key) => key.path)).toEqual(['actor-ts.io.broker.udp.bind-prot']);
   });
 
   test('the languages are compared on their code: comment prose may be translated, a commented-out field may not', () => {
