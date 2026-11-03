@@ -13,10 +13,11 @@ export type ControlAwareMailboxOptionsType<T> = {
    * any other answer, classes it ordinary, which is where it would have been
    * on any other mailbox: the predicate runs synchronously inside the
    * **sender's** `tell`, and a sender is a bystander to the receiver's mailbox
-   * configuration.  `PoisonPill` and `Kill` reach it too — `ActorRef.stop()`
-   * and `.kill()` post them as user messages, and neither has a field to
-   * match on — so a predicate written for the actor's own protocol meets them
-   * on the framework's own shutdown path.
+   * configuration.  `PoisonPill` and `Kill` reach the predicate too —
+   * `ActorRef.stop()` and `.kill()` post them as user messages, and neither
+   * has a field to match on — so a predicate written for the actor's own
+   * protocol meets them on the framework's own shutdown path.  A throw is
+   * reported all the same: see {@link onControlError}.
    *
    * Keep it to a check of the message's shape.  A message that is control
    * overtakes everything ordinary already queued, its own sender's earlier
@@ -67,6 +68,33 @@ export type ControlAwareMailboxOptionsType<T> = {
    * publish.
    */
   readonly deadLetterDrops?: boolean;
+  /**
+   * Optional hook fired each time {@link isControl} throws, after the message
+   * has been classed ordinary for it (#1431) — this mailbox's counterpart of
+   * `PriorityMailboxOptionsType.onPriorityError` (#733).
+   *
+   * Worth wiring, because the containment makes the failure quiet: a predicate
+   * that throws on every message — a method handed over without its `this` is
+   * the usual one — turns this mailbox into a plain FIFO queue, and every
+   * message still arrives.  `cause` is what the predicate threw; `message` is
+   * the message it threw on, often `PoisonPill` or `Kill`, which `stop()` and
+   * `kill()` post as ordinary user messages.
+   *
+   * Unset, the mailbox logs the first throw, at warn, and none after it: the
+   * predicate runs on every enqueue, and a line per message is a log nobody
+   * can read.  The line names the error's class and the message's class, never
+   * the error's text or the message itself — an exhaustive matcher's error
+   * quotes the value it could not match, and a message is application data.
+   * It goes to the console, because a mailbox does not know which actor owns
+   * it; this hook is how to send it anywhere else.  A hook that is given
+   * replaces that line.
+   *
+   * **Record and return.**  It runs on the sender's stack, and one that throws
+   * puts back the escape the containment exists to prevent — the contract
+   * {@link onDrop} has too.  An answer that is not `true` is not a failure and
+   * does not reach it: it classes the message ordinary, as documented.
+   */
+  readonly onControlError?: (cause: unknown, message: T) => void;
 };
 
 /**
@@ -107,6 +135,11 @@ export class ControlAwareMailboxOptionsBuilder<T> extends OptionsBuilder<Control
   /** Dead-letter each dropped envelope instead of only counting it.  Default `false`. */
   withDeadLetterDrops(deadLetterDrops: boolean): this {
     return this.set('deadLetterDrops', deadLetterDrops);
+  }
+
+  /** Hook fired each time `isControl` throws (for diagnostics).  Unset, the first throw is logged once. */
+  withOnControlError(onControlError: (cause: unknown, message: T) => void): this {
+    return this.set('onControlError', onControlError);
   }
 }
 

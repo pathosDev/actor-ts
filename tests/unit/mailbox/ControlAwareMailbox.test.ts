@@ -15,7 +15,7 @@
  * last group runs the mailbox under a real actor, where the death-watch order
  * and the drop telemetry are what a caller actually observes.
  */
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import { match, P } from 'ts-pattern';
 import { Actor } from '../../../src/Actor.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
@@ -497,6 +497,115 @@ describe('the predicate runs on the sender\'s stack and cannot escape it (#1431)
 
 /* -------------------------------- validation ------------------------------- */
 
+/**
+ * The usual way a predicate throws on every message: a method handed over
+ * without its instance.  The mailbox calls it as its own method, so `this` is
+ * the mailbox, which has no `controlPrefixes`, and reading through it throws a
+ * TypeError.  A fresh class per call, so no two cases share a predicate.
+ */
+const unboundIsControl = (): ((message: string) => boolean) => {
+  class Classifier {
+    private readonly controlPrefixes: ReadonlySet<string> = new Set(['control']);
+
+    isControl(message: string): boolean {
+      return this.controlPrefixes.has(message.split('-')[0]!);
+    }
+  }
+  return new Classifier().isControl;
+};
+
+/** The warn lines a mailbox's default report wrote, out of everything `console.warn` was handed. */
+const controlErrorLines = (warned: { readonly mock: { readonly calls: ReadonlyArray<ReadonlyArray<unknown>> } }): string[] =>
+  warned.mock.calls.map((call) => String(call[0])).filter((line) => line.includes('isControl'));
+
+describe('a predicate that throws is reported, not silent (#1431)', () => {
+  test('onControlError hears each throw, with what was thrown and the message, which is still queued as ordinary', () => {
+    const heard: Array<{ readonly cause: unknown; readonly message: string }> = [];
+    const mailboxOptions = ControlAwareMailboxOptions.create<string>()
+      .withIsControl(unboundIsControl())
+      .withOnControlError((cause, message) => { heard.push({ cause, message }); });
+    const mailbox = new ControlAwareMailbox(mailboxOptions);
+
+    mailbox.enqueue(ordinary('control-1'));
+    mailbox.enqueueSignal(signal('control-2'));
+    mailbox.prependUser([ordinary('control-0')]);
+
+    expect(heard.map((entry) => entry.message)).toEqual(['control-1', 'control-2', 'control-0']);
+    expect(heard.every((entry) => entry.cause instanceof TypeError)).toBe(true);
+    expect(deliveryOrder(mailbox)).toEqual(['control-0', 'control-1', 'control-2']);
+  });
+
+  test('without onControlError the first throw is logged once, at warn and by class — never the message or what was thrown', () => {
+    const warned = spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      // The error quotes the message, the way an exhaustive matcher's does.
+      const mailbox = new ControlAwareMailbox<string>({
+        isControl: (message) => { throw new Error(`cannot classify ${message}`); },
+      });
+      mailbox.enqueue(ordinary('payload-1'));
+      mailbox.enqueue(ordinary('payload-2'));
+      mailbox.enqueueSignal(signal('payload-3'));
+
+      const lines = controlErrorLines(warned);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('isControl threw on a message of class string (thrown: Error)');
+      expect(lines[0]).toContain('onControlError');
+      expect(lines[0]).not.toContain('payload');
+      expect(deliveryOrder(mailbox)).toEqual(['payload-1', 'payload-2', 'payload-3']);
+    } finally {
+      warned.mockRestore();
+    }
+  });
+
+  test('the once is per mailbox: a second one with the same predicate logs its own first throw', () => {
+    const warned = spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const isControlUnbound = unboundIsControl();
+      const first = new ControlAwareMailbox<string>({ isControl: isControlUnbound });
+      const second = new ControlAwareMailbox<string>({ isControl: isControlUnbound });
+      first.enqueue(ordinary('control-1'));
+      first.enqueue(ordinary('control-2'));
+      second.enqueue(ordinary('control-3'));
+      second.enqueue(ordinary('control-4'));
+
+      expect(controlErrorLines(warned)).toHaveLength(2);
+    } finally {
+      warned.mockRestore();
+    }
+  });
+
+  test('an onControlError that is given is the whole report: nothing is logged', () => {
+    const warned = spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      let heard = 0;
+      const mailbox = new ControlAwareMailbox<string>({
+        isControl: unboundIsControl(),
+        onControlError: () => { heard += 1; },
+      });
+      mailbox.enqueue(ordinary('control-1'));
+      mailbox.enqueue(ordinary('control-2'));
+
+      expect(heard).toBe(2);
+      expect(controlErrorLines(warned)).toEqual([]);
+    } finally {
+      warned.mockRestore();
+    }
+  });
+
+  test('a predicate that answers, whatever it answers, is not reported', () => {
+    let heard = 0;
+    const mailbox = new ControlAwareMailbox<string>({
+      isControl: (message) => (message === 'odd' ? (undefined as unknown as boolean) : isControl(message)),
+      onControlError: () => { heard += 1; },
+    });
+    mailbox.enqueue(ordinary('odd'));
+    mailbox.enqueue(ordinary('control-1'));
+
+    expect(heard).toBe(0);
+    expect(deliveryOrder(mailbox)).toEqual(['control-1', 'odd']);
+  });
+});
+
 describe('construction validates the options (#1431)', () => {
   const rejected = (options: Partial<ControlAwareMailboxOptionsType<string>>): OptionsError => {
     try {
@@ -772,24 +881,34 @@ describe('under a real actor (#1431)', () => {
   });
 
   test('a predicate that throws on PoisonPill costs neither the tell nor the stop', async () => {
-    actorProbe = newActorProbe();
-    const system = startSystem('1431-contained');
-    const actorOptions = ActorOptions.create<ParkedMessage>()
-      .withMailbox(() => new ControlAwareMailbox<ParkedMessage>({ isControl: exhaustiveIsUrgent }));
-    const actor = system.spawn(ParkingActor, 'actor', actorOptions);
-    await park(actor);
+    const warned = spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      actorProbe = newActorProbe();
+      const system = startSystem('1431-contained');
+      const actorOptions = ActorOptions.create<ParkedMessage>()
+        .withMailbox(() => new ControlAwareMailbox<ParkedMessage>({ isControl: exhaustiveIsUrgent }));
+      const actor = system.spawn(ParkingActor, 'actor', actorOptions);
+      await park(actor);
 
-    expect(() => actor.tell({ kind: 'work', index: 0 })).not.toThrow();
-    // `stop()` posts `PoisonPill`, which the predicate's exhaustive match throws
-    // on: contained, it is ordinary and keeps its place behind the work.
-    expect(() => actor.stop()).not.toThrow();
-    expect(() => actor.tell({ kind: 'urgent', index: 0 })).not.toThrow();
+      expect(() => actor.tell({ kind: 'work', index: 0 })).not.toThrow();
+      // `stop()` posts `PoisonPill`, which the predicate's exhaustive match throws
+      // on: contained, it is ordinary and keeps its place behind the work.
+      expect(() => actor.stop()).not.toThrow();
+      expect(() => actor.tell({ kind: 'urgent', index: 0 })).not.toThrow();
 
-    actorProbe.gate.open();
-    await awaitCondition(() => actorProbe.stopped.value, {
-      timeoutMs: 4_000,
-      label: 'the actor drained its queue and stopped',
-    });
-    expect(actorProbe.seen).toEqual(['urgent:0', 'work:0']);
+      actorProbe.gate.open();
+      await awaitCondition(() => actorProbe.stopped.value, {
+        timeoutMs: 4_000,
+        label: 'the actor drained its queue and stopped',
+      });
+      expect(actorProbe.seen).toEqual(['urgent:0', 'work:0']);
+      // Contained is not silent: with no onControlError given, the throw is
+      // logged — once, and by class, so the line says what to handle.
+      const lines = warned.mock.calls.map((call) => String(call[0])).filter((line) => line.includes('isControl'));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain('on a message of class PoisonPill');
+    } finally {
+      warned.mockRestore();
+    }
   });
 });

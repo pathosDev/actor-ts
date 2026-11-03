@@ -43,16 +43,24 @@ export interface WebsocketConnection<TOut> extends ActorRef<TOut> {
    * it: the close is queued behind those frames, so a reply followed by
    * `close()` reaches the peer first.  No mailbox bound can shed it.
    * {@link abort} is the close that does not wait.
+   *
+   * The close frame carries what a close frame can: a `code` outside
+   * 1000–1014 and 3000–4999, or one of the codes reserved for reporting a
+   * close (1004, 1005, 1006), goes out as 1000, and a `reason` over 123 UTF-8
+   * bytes is cut to fit, between two characters.  `onClientDisconnected` still
+   * reports the `code` and `reason` given here.
    */
   close(code?: number, reason?: string): void;
   /**
    * Drop this connection now (1008 by default).  Frames still queued for it
    * are never written, and the socket is shut before this returns:
    * hard-closed where the backend can, so the peer sees the connection drop
-   * without a close frame, otherwise closed with `code` and `reason`.  The hub
-   * still gets exactly one `onClientDisconnected`, carrying this `code` and
-   * `reason` with `initiatedBy: 'server'`.  Does nothing on a connection that
-   * is no longer open.
+   * without a close frame, otherwise closed with `code` and `reason` — made
+   * to fit a close frame the way {@link close} does it, with 1008 in place of
+   * a code a close frame cannot carry.  The hub still gets exactly one
+   * `onClientDisconnected`, carrying this `code` and `reason` with
+   * `initiatedBy: 'server'`.  Does nothing on a connection that is no longer
+   * open.
    */
   abort(code?: number, reason?: string): void;
   /**

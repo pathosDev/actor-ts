@@ -737,6 +737,31 @@ durch.  Gewöhnlich ist dabei nicht nur die sichere Antwort, sondern die
 richtige — es ist die Klasse, die die Nachricht auf jeder anderen Mailbox
 gehabt hätte.
 
+Eingehegt heißt nicht stumm.  Ein Prädikat, das bei jeder Nachricht wirft —
+meist eine Methode, die ohne ihre Instanz übergeben wurde —, macht aus der
+Mailbox eine schlichte FIFO-Queue, während jede Nachricht weiter ankommt;
+deshalb loggt die Mailbox den ersten Wurf auf warn.  Einmal pro Mailbox,
+weil das Prädikat bei jedem `tell` läuft; und nur mit Klassennamen — der
+Klasse der Nachricht, bei der es geworfen hat, und der dessen, was es
+geworfen hat, nie mit der Nachricht oder dem Text des Fehlers, denn der
+Fehler eines erschöpfenden Matchers zitiert den Wert, den er nicht zuordnen
+konnte.  Um jeden Wurf zu sehen oder ihn an deinen eigenen Logger zu geben,
+übergib `onControlError`:
+
+```ts
+const ingestMailboxOptions = ControlAwareMailboxOptions.create<IngestCommand>()
+  .withIsControl(isControl)
+  .withOnControlError((cause) => {
+    log.warn(`isControl threw: ${String(cause)}`);
+  });
+```
+
+`cause` ist, was das Prädikat geworfen hat.  Ein Hook, den du übergibst,
+ersetzt die Log-Zeile, und es gilt dieselbe Regel wie bei
+`onPriorityError`: **Aufzeichnen und zurückkehren** — er läuft auf dem Stack
+des Senders.  Eine Antwort, die nicht `true` ist, ist kein Fehler und
+erreicht den Hook nie; sie macht die Nachricht gewöhnlich, wie oben.
+
 <Aside type="caution" title="Eine Control-Nachricht überholt die früheren Nachrichten ihres eigenen Senders">
   Control zuerst ist eine Eigenschaft der Queue, nicht jedes einzelnen
   Senders.  Eine Control-Nachricht, die derselbe Sender *nach*

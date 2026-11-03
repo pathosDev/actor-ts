@@ -494,3 +494,87 @@ describe('WebsocketServerActor default onSelfMessage (#1442)', () => {
     }
   });
 });
+
+/* ----------------- a forged accept that carries options ----------------- */
+
+/**
+ * A `RecordingServer` that also counts its starts: a restart tears down every
+ * connection the hub has spawned, and is otherwise invisible from outside.
+ */
+class StartCountingServer extends RecordingServer {
+  constructor(rec: Rec, private readonly starts: { count: number }) {
+    super(rec);
+  }
+
+  override preStart(): void {
+    this.starts.count += 1;
+  }
+}
+
+/*
+ * The accept command carries the options its connection actor is spawned with
+ * (#1432), built by the wiring layer from the route's policy.  So a body that
+ * spells `websocket-accept` and brings options of its own is the obvious thing
+ * for a peer to send: a capacity no bound accepts, or a policy with no
+ * capacity beside it, makes `context.spawn` throw on the hub's stack.  The hub
+ * honours an accept only when its `actor` is a function, which no decoded body
+ * can carry, so these are declined as dead letters and their options are
+ * never read.  Told locally: a body a remote node addresses to the hub's path
+ * arrives as exactly this, a plain object with the peer's keys as its own.
+ */
+describe('a forged accept that carries options is declined, and the hub keeps running (#1432)', () => {
+  const forgedAccepts: ReadonlyArray<{ readonly label: string; readonly body: Readonly<Record<string, unknown>> }> = [
+    {
+      label: 'a capacity no bound accepts',
+      body: { kind: 'websocket-accept', actor: 0, name: 'forged-capacity', options: { mailboxCapacity: -1 } },
+    },
+    {
+      label: 'an overflow policy with no capacity beside it',
+      body: { kind: 'websocket-accept', actor: 0, name: 'forged-overflow', options: { mailboxOverflow: 'drop-head' } },
+    },
+  ];
+
+  for (const forged of forgedAccepts) {
+    test(`options with ${forged.label}: a dead letter naming the hub, no restart, and the real connection still served`, async () => {
+      const kit = TestKit.create('ws-hub-forged-accept', TestKitOptions.create()
+        .withLogger(new NoopLogger())
+        .withLogLevel(LogLevel.Off));
+      try {
+        const probe = kit.createTestProbe();
+        kit.system.eventStream.subscribe(probe, DeadLetter);
+        const rec: Rec = { events: [], connections: [], childCounts: [] };
+        const starts = { count: 0 };
+        const hub = kit.system.spawn(() => new StartCountingServer(rec, starts), 'hub') as WebsocketServerRef<Out, In>;
+        const sock = new MockSocket();
+        wire(kit.system, hub, sock);
+        await awaitCondition(() => rec.events.some((event) => event.startsWith('connect:')), {
+          timeoutMs: 4_000,
+          label: 'the real connection was registered',
+        });
+
+        // The marker is declined the same way, after the forged body: once it
+        // is a dead letter, the hub has handled the body one way or the other.
+        hub.tell(forged.body as never);
+        hub.tell('marker' as never);
+
+        const letters: DeadLetter[] = [];
+        while (!letters.some((letter) => letter.message === 'marker')) {
+          letters.push(await probe.receiveOne(2_000) as DeadLetter);
+        }
+        expect({ starts: starts.count, declined: letters.map((letter) => letter.message) })
+          .toEqual({ starts: 1, declined: [forged.body, 'marker'] });
+        expect(letters.map((letter) => letter.recipient.path.toString())).toEqual([hub.path.toString(), hub.path.toString()]);
+
+        sock.emit(JSON.stringify({ kind: 'ping', n: 9 }));
+        await awaitCondition(() => sock.textSent.some((text) => text.includes('"n":9')), {
+          timeoutMs: 4_000,
+          label: 'the real connection was answered',
+        });
+        expect(sock.closeCalls).toEqual([]);
+        expect(starts.count).toBe(1);
+      } finally {
+        await kit.system.terminate();
+      }
+    });
+  }
+});

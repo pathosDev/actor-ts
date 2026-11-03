@@ -36,15 +36,66 @@ export const WebsocketReadyState = {
   CLOSED: 3,
 } as const;
 
+/**
+ * The longest reason a close frame carries, in UTF-8 bytes: a control frame's
+ * payload is at most 125 bytes (RFC 6455 §5.5), and the first two are the
+ * code.
+ */
+const MAX_CLOSE_REASON_BYTES = 123;
+
+/**
+ * Whether a close frame may carry `code` (RFC 6455 §7.4): 1000–1014 except the
+ * codes reserved for *reporting* a close, which are never sent — 1004, 1005
+ * and 1006, with 1015 outside the range already — and 3000–4999, the range
+ * left to libraries and applications.
+ *
+ * What a transport does with any other code is its own affair, and none of it
+ * shuts the socket the way the caller meant (#1431).  `ws` throws, after it has
+ * already moved the socket to CLOSING, so nothing finishes the close; Bun's own
+ * socket replaces 1005 and 1006 with an empty close frame, and the peer never
+ * reads the others as they were sent.
+ */
+export function isSendableCloseCode(code: number): boolean {
+  if (!Number.isInteger(code)) return false;
+  if (code >= 3000 && code <= 4999) return true;
+  return code >= 1000 && code <= 1014 && code !== 1004 && code !== 1005 && code !== 1006;
+}
+
+/**
+ * `reason`, cut to the longest prefix a close frame carries (#1431).
+ *
+ * Measured in UTF-8 bytes, which is what goes on the wire, and cut between two
+ * characters rather than at byte 123.  A cut through a multi-byte character
+ * leaves bytes that are not UTF-8, and a peer that checks fails the connection
+ * with 1007 instead of reading the close — which is what Bun 1.4.2's own cut
+ * at byte 123 produced.  `ws` and Deno's socket throw on a longer reason
+ * instead.  A lone surrogate counts as the three bytes of the U+FFFD every
+ * encoder writes for it.
+ */
+export function sendableCloseReason(reason: string): string {
+  let bytes = 0;
+  let end = 0;
+  for (const character of reason) {
+    const codePoint = character.codePointAt(0)!;
+    const width = codePoint < 0x80 ? 1 : codePoint < 0x800 ? 2 : codePoint < 0x10000 ? 3 : 4;
+    if (bytes + width > MAX_CLOSE_REASON_BYTES) return reason.slice(0, end);
+    bytes += width;
+    end += character.length;
+  }
+  return reason;
+}
+
 export interface WebsocketSocketAdapter {
   send(data: string | Uint8Array): void;
   close(code?: number, reason?: string): void;
   /**
    * Hard-kill without a close handshake: the peer sees the connection drop,
-   * with no close frame.  Two callers — shutdown
-   * (`ConnectionTracker.terminateAll`) and `WebsocketConnection.abort()`
-   * (#1431) — and both fall back to `close()` where it is absent, as it is on
-   * Hono.
+   * with no close frame.  Three callers — shutdown
+   * (`ConnectionTracker.terminateAll`), `WebsocketConnection.abort()`, and the
+   * connection actor when a `close()` throws, which `ws` does after it has
+   * already moved the socket to CLOSING, so nothing else would shut it
+   * (#1431).  Absent on Hono, where the first two fall back to `close()` and
+   * the third has nothing left to try.
    */
   terminate?(): void;
   /** Single-shot listener attach — see {@link WebsocketListeners}. */
