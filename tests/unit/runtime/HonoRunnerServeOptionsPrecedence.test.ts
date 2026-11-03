@@ -193,4 +193,19 @@ describe('DenoHonoRunner — serveOptions go in beneath the runner\'s own fields
     expect(bag.cert).toBeUndefined();
     expect(bag.key).toBeUndefined();
   });
+
+  // The other spellings `Deno.serve` has had for its TLS material, and the
+  // unix-socket `path` that takes the listener off host and port.  Measured on
+  // deno 2.6.8: `certFile`/`keyFile` make serve() throw ("Unsupported
+  // 'certFile' / 'keyFile' options provided"), with typed tls or without;
+  // `certChain`/`privateKey` are ignored; `path` throws on Windows and listens
+  // on the socket elsewhere.  One case per name, with tls and without.
+  for (const name of ['certFile', 'keyFile', 'certChain', 'privateKey', 'path'] as const) {
+    test(`a bag ${name} never reaches Deno.serve, with tls or without`, async () => {
+      const bagValue = `the bag's ${name}`;
+
+      expect((await denoServe({ serveOptions: { [name]: bagValue } })).bag).not.toHaveProperty(name);
+      expect((await denoServe({ tls: TLS, serveOptions: { [name]: bagValue } })).bag).not.toHaveProperty(name);
+    });
+  }
 });

@@ -24,13 +24,12 @@ export class DenoHonoRunner implements HonoServerRunner {
     const ac = new AbortController();
     // `serveOptions` goes in first, beneath everything the runner writes: the
     // `signal` is the one `stop(false)` aborts, and a bag that replaced it
-    // would leave a non-graceful stop with nothing to stop.  Its own `cert`
-    // and `key` are dropped rather than merely outranked, because whether the
-    // socket speaks TLS at all is `tls`'s to say, set or unset (#1486).
-    const { cert: _cert, key: _key, ...tuning } = (options.serveOptions ?? {}) as DenoListenerShape;
+    // would leave a non-graceful stop with nothing to stop.  Whatever in it
+    // would decide the listener's TLS or move it off host and port is dropped
+    // rather than merely outranked — see {@link DENO_LISTENER_SHAPE_KEYS}.
     const server = deno.serve(
       {
-        ...tuning,
+        ...withoutListenerShape(options.serveOptions),
         hostname: options.host,
         port: options.port,
         signal: ac.signal,
@@ -121,10 +120,29 @@ function denoArityHandler(fetch: FetchHandler): FetchHandler {
 }
 
 /** The `Deno.serve` members only the typed `tls` may set — never a `serveOptions` bag. */
-type DenoListenerShape = {
-  readonly cert?: unknown;
-  readonly key?: unknown;
-};
+/**
+ * The `Deno.serve` members a `serveOptions` bag may not set, because the typed
+ * members decide them, set or unset (#1486).
+ *
+ * **TLS** is `tls`'s to decide: `cert` and `key`, and the other spellings
+ * `Deno.serve` has had for its material.  Measured on deno 2.6.8, a bag
+ * `certFile` or `keyFile` makes `serve()` throw ("Unsupported 'certFile' /
+ * 'keyFile' options provided"), with typed `tls` or without, so a bag could
+ * stop the listener from binding; `certChain` and `privateKey` are ignored
+ * there, and are reserved so that stays true on a release that reads them.
+ *
+ * **Where it listens** is `host`'s and `port`'s: `path` moves the listener onto
+ * a unix socket — on Windows `serve()` throws instead.
+ */
+const DENO_LISTENER_SHAPE_KEYS: ReadonlySet<string> = new Set([
+  'cert', 'key', 'certFile', 'keyFile', 'certChain', 'privateKey',
+  'path',
+]);
+
+/** A caller's `serveOptions` without the members {@link DENO_LISTENER_SHAPE_KEYS} reserves. */
+function withoutListenerShape(serveOptions: object | undefined): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(serveOptions ?? {}).filter(([name]) => !DENO_LISTENER_SHAPE_KEYS.has(name)));
+}
 
 interface DenoHttpServer {
   readonly finished: Promise<void>;
