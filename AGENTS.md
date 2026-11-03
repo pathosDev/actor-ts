@@ -757,11 +757,16 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
   A knowingly-unimplemented key goes in the test's `KNOWN_DEAD_KEYS` with
   the issue that will remove it, and an empty list means none: an entry
   fails once a reader reads its key. Adding a key nothing reads is not an
-  option. Two documented settings stay outside the gate, each with its
-  reason beside the registry: `coordinated-shutdown.phases`, which the
-  shutdown extension folds into its phase graph itself, so no registered
-  reader answers to it, and the Cassandra blocks' `replication.data-centers`
-  list of objects, which the gate has no second value for.
+  option. Two documented settings stay outside the gate:
+  `coordinated-shutdown.phases`, which the shutdown extension folds into its
+  phase graph itself, so no registered reader answers to it, and the
+  Cassandra blocks' `replication.data-centers`, which is a gap in the
+  registry rather than a limit of the gate. A list of objects is no
+  obstacle: an `UNPUBLISHED_LEAVES` entry whose `override` gives the second
+  list, and `contexts` on the two Cassandra readers selecting
+  `network-topology-strategy` — they refuse data centers under any other
+  class, and a refusal is not a read — would bring it in. Neither has been
+  written yet.
 
   **The gate proves a read, not the wiring.** It cannot see whether the
   runtime calls the reader or keeps its answer:

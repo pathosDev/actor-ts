@@ -1,9 +1,16 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
+import { Config } from '../../../src/config/Config.js';
+import { ConfigKeys } from '../../../src/config/ConfigKeys.js';
 import { isPlainObject, parseHocon } from '../../../src/config/HoconParser.js';
 import type { ConfigObject } from '../../../src/config/HoconParser.js';
 import { REFERENCE_CONF } from '../../../src/config/Reference.js';
+import {
+  readCassandraJournalOptionsFromConfig,
+  readCassandraSnapshotStoreOptionsFromConfig,
+} from '../../../src/persistence/journals/CassandraPluginOptions.js';
+import { baselineOf, introductionFor, observeLeaf } from '../../util/ConfigPerturbation.js';
 import { CONFIG_READER_REGISTRY, UNPUBLISHED_LEAVES } from '../../util/ConfigReaderRegistry.js';
 
 /**
@@ -25,6 +32,9 @@ import { CONFIG_READER_REGISTRY, UNPUBLISHED_LEAVES } from '../../util/ConfigRea
  *   - the settings it calls outside the gate are outside it, so the sentence
  *     has to go once a change brings one in — the reference.conf page makes
  *     the same claim, held by `tests/unit/docs/ReferenceConfDeadKeySection.test.ts`;
+ *   - what it says keeps `replication.data-centers` out is what does: a
+ *     registry entry nobody has written, which the gate's own functions show
+ *     would be enough, and not a value the gate lacks;
  *   - no passage about the gate describes the text search it replaced, no
  *     passage anywhere keeps the old constants rule — by its title or in other
  *     words — and the constants rule names what does catch a moved reader.
@@ -104,6 +114,61 @@ const GATE_FILES = [
 
 /** The settings the registry keeps outside the gate, each with its reason, as the rule spells them. */
 const OUTSIDE_THE_GATE = ['coordinated-shutdown.phases', 'replication.data-centers'] as const;
+
+/**
+ * The sub-paragraph of the `ConfigKeys` rule that names `span`, whitespace
+ * collapsed: narrower than the rule's whole passage, which names the gate's
+ * tables in other paragraphs and would answer for this one.
+ */
+function ruleParagraphNaming(span: string): string {
+  const paragraph = guide
+    .split(/\n[ \t]*\n/)
+    .map((part) => part.replace(/\s+/g, ' ').trim())
+    .find((part) => part.includes(span) && keysRule().includes(part));
+  expect(paragraph, `the ConfigKeys rule no longer names ${span}`).toBeDefined();
+  return paragraph!;
+}
+
+/**
+ * The two Cassandra blocks whose `replication.data-centers` the rule keeps
+ * outside the gate, each with its reader and the leaf that selects the
+ * replication class the data centers are read under.
+ */
+const DATA_CENTER_BLOCKS = [
+  {
+    block: 'journal',
+    read: (config: Config): unknown => readCassandraJournalOptionsFromConfig(config),
+    leaf: ConfigKeys.persistence.journal.cassandra.replicationDataCenters,
+    selector: ConfigKeys.persistence.journal.cassandra.replicationClass,
+  },
+  {
+    block: 'snapshot store',
+    read: (config: Config): unknown => readCassandraSnapshotStoreOptionsFromConfig(config),
+    leaf: ConfigKeys.persistence.snapshotStore.cassandra.replicationDataCenters,
+    selector: ConfigKeys.persistence.snapshotStore.cassandra.replicationClass,
+  },
+] as const;
+
+/** A Cassandra reader's answer with the data centers it read dropped: the reader the gate must not count. */
+function withoutDataCenters(options: unknown): unknown {
+  const { replication } = options as { readonly replication?: object };
+  return replication === undefined ? options : { ...(options as object), replication: { ...replication, dataCenters: undefined } };
+}
+
+/**
+ * Reasons that say the gate lacks a value for `replication.data-centers` —
+ * the one the rule gave, the registry's, and the shapes either would take
+ * reworded, and the plain denial that it is a gap.  The gate has the value: an
+ * entry's `override` is the second list, and the entry is what nobody has
+ * written.
+ */
+const RETIRED_DATA_CENTER_REASONS: readonly RegExp[] = [
+  /\b(?:no|not an?|isn't an?) gap\b/i,
+  /\bno (?:second|other|further) value\b/i,
+  /\bno value to (?:introduce|change|perturb)\b/i,
+  /\bperturbs? (?:only )?a list of strings\b/i,
+  /\bcannot (?:be )?(?:chang|perturb|introduc|var)\w*/i,
+];
 
 /**
  * How AGENTS.md described the gate while it searched source text, in words
@@ -214,6 +279,46 @@ describe('AGENTS.md describes the dead-key gate as it is (#1425)', () => {
     expect(named.length).toBeGreaterThan(0);
     expect(gated, 'AGENTS.md says the gate leaves these out, and it changes them now: drop them from that sentence')
       .toEqual([]);
+  });
+
+  test('replication.data-centers needs only an entry: given an override and a context, the gate observes it', () => {
+    // What the rule's sentence rests on, asked of the gate's own functions.
+    // Without an override the gate's second list is the first with a word
+    // appended, which the reader refuses; with one, a reader run under
+    // network-topology-strategy answers the two lists differently, a reader
+    // that drops the data centers does not, and without the context the reader
+    // refuses the leaf — so a context is needed as well, and nothing else is.
+    const reference = Config.parseString(REFERENCE_CONF);
+    const first = [{ name: 'dc1', 'replication-factor': 3 }];
+    const second = { value: [{ name: 'dc1', 'replication-factor': 2 }], reason: 'a second list of data centers' };
+    for (const { block, read, leaf, selector } of DATA_CENTER_BLOCKS) {
+      const networkTopology = { [selector]: 'network-topology-strategy' };
+      const keeps = baselineOf({ label: `${block} under network-topology-strategy`, read, overlay: networkTopology }, reference);
+      const drops = baselineOf({
+        label: `${block} dropping its data centers`,
+        read: (config) => withoutDataCenters(read(config)),
+        overlay: networkTopology,
+      }, reference);
+      const unselected = baselineOf({ label: `${block} under the default class`, read }, reference);
+
+      const inferred = observeLeaf(introductionFor(leaf, first, 'a list of data centers'), [keeps]);
+      expect(inferred.observedBy, `${block}: the gate's own second list is one the reader takes now`).toEqual([]);
+
+      const verdict = observeLeaf(introductionFor(leaf, first, 'a list of data centers', second), [keeps, drops, unselected]);
+      expect(verdict.observedBy, `${block}: only the reader that keeps the data centers answers to them`)
+        .toEqual([keeps.probe.label]);
+      expect(verdict.refusedBy.some((refusal) => refusal.startsWith(`${unselected.probe.label}:`)),
+        `${block}: the reader takes data centers without the context that selects their class`).toBe(true);
+    }
+  });
+
+  test('it calls replication.data-centers a gap and names what would close it, not a value the gate lacks', () => {
+    const account = ruleParagraphNaming('`replication.data-centers`');
+    expect(account).toMatch(/\bgap\b/i);
+    expect(codeSpansOf(account)).toEqual(expect.arrayContaining(['UNPUBLISHED_LEAVES', 'override', 'contexts']));
+    for (const reason of RETIRED_DATA_CENTER_REASONS) {
+      expect(wordsOf(account), 'AGENTS.md says the gate lacks a value for replication.data-centers').not.toMatch(reason);
+    }
   });
 
   test('the gate still has keys to change', () => {
