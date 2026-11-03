@@ -14,9 +14,8 @@ import { DEFAULT_ASK_TIMEOUT_MS } from './util/Constants.js';
 import { SETTLE_MAX_TURNS } from './Constants.js';
 import { DEFAULT_SCATTER_GATHER_TIMEOUT_MS, MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATHER_MS } from './ScatterGatherOptions.js';
 import { OptionsError } from './util/OptionsValidator.js';
-import { Config, ConfigError } from './config/Config.js';
+import { Config } from './config/Config.js';
 import { ConfigKeys } from './config/ConfigKeys.js';
-import type { ConfigObject } from './config/HoconParser.js';
 import {
   ActorSystemTerminateReason,
   CoordinatedShutdownId,
@@ -1675,41 +1674,15 @@ function buildConfig(options: ActorSystemOptionsType): Config {
       ? Config.empty()
       : options.config instanceof Config
         ? options.config
-        : Config.fromObject(refuseSpreadConfig(options.config));
+        // A spread of a `Config`, and a class instance anywhere in the tree,
+        // are refused there, for every route that builds one from an object
+        // (#1473).
+        : Config.fromObject(options.config);
   return Config.load({
     appConfPath: options.configFile,
     profile: options.profile,
     overrides: userLayer,
   });
-}
-
-/**
- * `overrides`, unless it is a spread of a `Config` — `{ ...config }`, of this
- * copy's `Config` or another's, with or without keys beside it.
- *
- * `Config.fromObject` tells a `Config` from a tree by a brand on the
- * prototype, and a spread copies own keys only: what it holds is the
- * instance's private fields.  Read as a tree, every key the configuration set
- * landed under `tree.*`, where nothing reads it, and the system came up as
- * `default` on the reference defaults — the #1425 defect, reached through the
- * very spread a migration note had suggested (#1473).  Recognised as an
- * ordinary object — what a spread always makes — carrying every own field a
- * `Config` has, read off a live one so the check follows the class; one of
- * those names alone is an ordinary key.  An instance is left to
- * `Config.fromObject`, which refuses another copy's `Config` with its own
- * message.
- */
-function refuseSpreadConfig(overrides: ConfigObject): ConfigObject {
-  if (Object.getPrototypeOf(overrides) !== Object.prototype) return overrides;
-  const configFields = Object.keys(Config.empty());
-  if (configFields.length === 0 || !configFields.every((field) => Object.hasOwn(overrides, field))) {
-    return overrides;
-  }
-  throw new ConfigError(
-    'ActorSystemOptions.withConfig was given a spread of a Config ({ ...config }).  A spread copies the '
-    + 'instance\'s private fields, not its configuration, so the system would start as if it had been given '
-    + 'none.  Pass the Config itself — withConfig(config) — or a plain object of configuration keys.',
-  );
 }
 
 /*

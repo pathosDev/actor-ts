@@ -144,6 +144,13 @@ export class Config {
    * layers and the secret paths the boot dump withholds are private to the
    * copy that built it: reading only its tree could print a secrets-file value
    * in clear text.
+   *
+   * The same defect had two more routes, closed here for every caller —
+   * `ActorSystemOptions.withConfig` and `Config.load({ overrides })` among
+   * them (#1473).  A spread of a `Config` (`{ ...config }`) passes the
+   * plain-object test, because the brand sits on the prototype a spread does
+   * not copy, and is refused by name; and a class instance below the top
+   * level is refused, naming its path, as one at the top level is.
    */
   static fromObject(obj: unknown): Config {
     if (obj === undefined || obj === null) return Config.empty();
@@ -166,7 +173,15 @@ export class Config {
         + 'the own fields of a class instance are not a configuration tree',
       );
     }
-    return new Config(cloneTree(obj as ConfigObject));
+    if (isSpreadConfig(obj)) {
+      throw new ConfigError(
+        'A spread of a Config ({ ...config }) was passed in (ActorSystemOptions.withConfig, LoadOptions.overrides '
+        + 'or Config.fromObject).  A spread copies the instance\'s private fields, not its configuration, so it '
+        + 'would be read as if no configuration had been given.  Pass the Config itself, or a plain object of '
+        + 'configuration keys.',
+      );
+    }
+    return new Config(cloneTree(obj as ConfigObject, []));
   }
 
   /**
@@ -601,20 +616,66 @@ function requireFinite(path: string, expected: NumericAccessorKind, value: numbe
  * `JSON.parse('{"__proto__":{…}}')` yields an *own* `__proto__` that
  * `Object.entries` reports and the plain `out[key] = …` below would hand to the
  * inherited setter — re-parenting the fresh tree.
+ *
+ * `path` is where `obj` sits, and given one, every block below the top is held
+ * to the rule `Config.fromObject` holds the top to (#1473): a class instance
+ * is refused, naming the path, rather than read as a tree.  `toJSON` passes
+ * none — its tree came out of a parse or a clone and holds no instance.
  */
-function cloneTree(obj: ConfigObject): ConfigObject {
+function cloneTree(obj: ConfigObject, path?: ReadonlyArray<string>): ConfigObject {
   const out: ConfigObject = {};
   for (const [key, value] of Object.entries(obj)) {
     if (isForbiddenConfigKey(key)) continue;
+    const at = path === undefined ? undefined : [...path, key];
     if (Array.isArray(value)) {
-      out[key] = value.map(x => (isPlainObject(x) ? cloneTree(x as ConfigObject) : x)) as ConfigValue[];
-    } else if (isPlainObject(value)) {
-      out[key] = cloneTree(value as ConfigObject);
+      out[key] = value.map((x) => {
+        if (at !== undefined) refuseNestedInstance(x, at);
+        return isPlainObject(x) ? cloneTree(x as ConfigObject, at) : x;
+      }) as ConfigValue[];
     } else {
-      out[key] = value;
+      if (at !== undefined) refuseNestedInstance(value, at);
+      out[key] = isPlainObject(value) ? cloneTree(value as ConfigObject, at) : value;
     }
   }
   return out;
+}
+
+/**
+ * Throw when `value`, found at `path` below the top of a tree handed to
+ * `Config.fromObject`, is a class instance rather than a block or a leaf.
+ *
+ * The top level has been refused since #1425, and the same defect lived one
+ * level down: `{ 'actor-ts': config }` read the `Config`'s private fields as
+ * `actor-ts.tree.…`, a `Map` came out an empty block, and a `Date` became a
+ * leaf no reader can use — each accepted without a word.  A `Config` here,
+ * this copy's or another's, gets the instance message too: a nested one is
+ * never merged, so its layers and secret paths would be lost all the same.
+ */
+function refuseNestedInstance(value: unknown, path: ReadonlyArray<string>): void {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return;
+  if (isSubstitution(value) || hasPlainPrototype(value)) return;
+  throw new ConfigError(
+    `Config.fromObject found an instance of ${constructorNameOf(value)} at ${path.join('.')}: `
+    + 'the own fields of a class instance are not a configuration tree.  Give that key a plain object or a '
+    + 'plain value, or build a Config from the block and merge it.',
+  );
+}
+
+/**
+ * Whether `value` is a spread of a `Config` — `{ ...config }`, of this copy's
+ * `Config` or another's, with or without keys beside it (#1473).
+ *
+ * The brand {@link CONFIG_BRAND} sits on the prototype, so a spread, which
+ * copies own keys only, loses it and passes every other plain-object test,
+ * carrying the instance's private fields instead of its configuration: read
+ * as a tree, the system started as if it had been given none — the #1425
+ * defect by the route that change's migration note had advised.  Recognised
+ * as carrying every own field a `Config` has, read off a live one so the
+ * check follows the class; one of those names alone is an ordinary key.
+ */
+function isSpreadConfig(value: object): boolean {
+  const configFields = Object.keys(Config.empty());
+  return configFields.length > 0 && configFields.every((field) => Object.hasOwn(value, field));
 }
 
 /** A `Config` that `instanceof` does not recognise: one built by another copy of actor-ts. */

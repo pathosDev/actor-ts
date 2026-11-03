@@ -64,6 +64,7 @@ describe('ActorSystemOptions.withConfig and a spread of a Config', () => {
     const config = Config.parseString(NAMED);
     const outcome = await outcomeOfCreating({ ...config, 'actor-ts': { 'system': { 'log-level': 'info' } } } as ConfigObject);
     expect(outcome).toStartWith('ConfigError: ');
+    expect(outcome).toContain('spread of a Config');
   });
 
   test('the refusal is a ConfigError thrown by create', () => {
