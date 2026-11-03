@@ -45,7 +45,10 @@ import { CONFIG_READER_REGISTRY, UNPUBLISHED_LEAVES } from '../../util/ConfigRea
  *
  * What it cannot see is what the prose means: the checks refuse the old
  * claims and the plainest denials, and a sentence asserting the opposite in
- * other words still keeps them green.  What the gate counts
+ * other words still keeps them green.  Each pattern they refuse is exercised
+ * here too, on a passage kept in this file that it alone refuses — AGENTS.md
+ * is clean, so its own passages exercise none of them, and a pattern deleted
+ * would otherwise leave every check green.  What the gate counts
  * as a read is pinned where it is decided, in
  * `tests/util/ConfigPerturbation.test.ts`.
  */
@@ -76,7 +79,12 @@ function keysRule(): string {
 }
 
 /** Every passage about the dead-key gate, wherever in AGENTS.md it sits. */
-const gatePassages = passages.filter((passage) => /NoDeadConfigKeys|dead-key/i.test(passage));
+const gatePassages = passages.filter(isGatePassage);
+
+/** Whether a passage is about the dead-key gate. */
+function isGatePassage(passage: string): boolean {
+  return /NoDeadConfigKeys|dead-key/i.test(passage);
+}
 
 /** The passages of the *Constants* subsection, up to the next heading. */
 function constantsSection(): string[] {
@@ -211,6 +219,94 @@ const RETIRED_CONFIG_KEYS_WORDS: readonly RegExp[] = [
  * AGENTS.md says "the same file" and "substring" about other things.
  */
 const RETIRED_SEARCH_WORDS: readonly RegExp[] = [/sub-?string/i, /same[\s-]file/i];
+
+/**
+ * The retired wording a passage carries: each pattern that applies where the
+ * passage stands — the old claims anywhere, the search's vocabulary where the
+ * gate is the subject, the old constants rule's words where `ConfigKeys` is
+ * named — and that the passage's words match.
+ */
+function retiredWordingIn(passage: string): RegExp[] {
+  const applicable = [
+    ...RETIRED_CLAIMS,
+    ...(isGatePassage(passage) ? RETIRED_SEARCH_WORDS : []),
+    ...(passage.includes('`ConfigKeys`') ? RETIRED_CONFIG_KEYS_WORDS : []),
+  ];
+  return applicable.filter((pattern) => pattern.test(wordsOf(passage)));
+}
+
+/** The reasons of {@link RETIRED_DATA_CENTER_REASONS} that `text`'s words match. */
+function dataCenterReasonsIn(text: string): RegExp[] {
+  return RETIRED_DATA_CENTER_REASONS.filter((reason) => reason.test(wordsOf(text)));
+}
+
+/** A kind sentence that names its exceptions only to deny them. */
+const KIND_EXCEPTION_DENIAL = /\b(?:without|no) exceptions?\b/i;
+
+/*
+ * Passages the retired-wording checks must refuse.  AGENTS.md is clean, so its
+ * own passages exercise none of the patterns, and any one could be deleted
+ * with every check on AGENTS.md still green; these are refused the same way an
+ * AGENTS.md passage is.
+ */
+
+/** The shapes the old constants rule came back in: its title over the new body, restated naming the gate, restated without. */
+const RETIRED_CONSTANTS_RULE_SHAPES: readonly string[] = [
+  '- **Constants move, `ConfigKeys` reads do not.** The dead-key gate watches what the registered readers answer, '
+    + 'not which file writes an accessor, so moving a read changes nothing it checks while a registered reader still makes it.',
+  '- **Constants move, `ConfigKeys` reads do not.** Relocating a `ConfigKeys` read out of the file that names its group '
+    + 'breaks the dead-key gate, even when behaviour is identical.',
+  '- **Constants move, `ConfigKeys` reads do not.** Keep each `ConfigKeys` read in the file that names its group: a read '
+    + 'moved elsewhere fails the config check even when behaviour is identical.',
+];
+
+/**
+ * One passage per pattern of the three lists, each worded so that its pattern
+ * alone refuses it — the search's words inside a passage that names the gate,
+ * the constants rule's inside one that names `ConfigKeys` — so deleting any
+ * single pattern leaves a passage through.
+ */
+const ONE_RETIRED_WORDING_EACH: readonly string[] = [
+  'A key in `reference.conf` must be read by something in `src/`.',
+  'The check matches `ConfigKeys.` paths in the source.',
+  'Relocating a reader breaks the build.',
+  '- **Constants move, `ConfigKeys` reads do not.**',
+  'Keep each read in the file that names its group.',
+  'Moving a `ConfigKeys` accessor breaks the build even when behaviour is identical.',
+  'A `ConfigKeys` read moved to another file fails the check.',
+  'The dead-key gate finds a key by substring.',
+  'The dead-key gate wants each read in the same file as its key.',
+];
+
+/** One passage per reason of {@link RETIRED_DATA_CENTER_REASONS}, each refused by its reason alone. */
+const ONE_DATA_CENTER_REASON_EACH: readonly string[] = [
+  'The list of objects is no gap.',
+  'A list of objects, which the gate has no second value for.',
+  'There is no value to introduce.',
+  'The gate perturbs a list of strings.',
+  'A list the gate cannot change.',
+];
+
+/**
+ * Hold a list of patterns to its passages: each passage refused by exactly one
+ * pattern, and each pattern refusing exactly one passage.  A pattern deleted,
+ * or narrowed until it matches nothing, leaves its passage refused by none; a
+ * pattern added without a passage of its own refuses none.
+ */
+function expectOnePatternEach(
+  patterns: readonly RegExp[],
+  passagesOfTheirOwn: readonly string[],
+  refusalsOf: (passage: string) => readonly RegExp[],
+): void {
+  const refusals = passagesOfTheirOwn.map(refusalsOf);
+  passagesOfTheirOwn.forEach((passage, index) => {
+    expect(refusals[index]!.map(String), `"${passage}" is to be refused by one pattern alone`).toHaveLength(1);
+  });
+  for (const pattern of patterns) {
+    expect(refusals.filter((refused) => refused.includes(pattern)).length, `${pattern} refuses no passage of its own`)
+      .toBe(1);
+  }
+}
 
 function leafPaths(tree: ConfigObject, prefix = ''): string[] {
   const out: string[] = [];
@@ -410,7 +506,7 @@ describe('AGENTS.md describes the dead-key gate as it is (#1425)', () => {
 
     const sentence = kindSentence();
     // Naming the getters is not enough when the sentence says they fail.
-    expect(sentence, 'the kind sentence denies the exceptions it names').not.toMatch(/\b(?:without|no) exceptions?\b/i);
+    expect(sentence, 'the kind sentence denies the exceptions it names').not.toMatch(KIND_EXCEPTION_DENIAL);
     const { named, unassigned } = namedExceptions(sentence);
     expect(unassigned, 'the kind sentence names a getter before saying which exception it belongs to').toEqual([]);
     const leftOut = bareCountsStayBare() ? KIND_EXCEPTIONS[0] : undefined;
@@ -504,9 +600,8 @@ describe('AGENTS.md describes the dead-key gate as it is (#1425)', () => {
     const account = ruleParagraphNaming('`replication.data-centers`');
     expect(account).toMatch(/\bgap\b/i);
     expect(codeSpansOf(account)).toEqual(expect.arrayContaining(['UNPUBLISHED_LEAVES', 'override', 'contexts']));
-    for (const reason of RETIRED_DATA_CENTER_REASONS) {
-      expect(wordsOf(account), 'AGENTS.md says the gate lacks a value for replication.data-centers').not.toMatch(reason);
-    }
+    expect(dataCenterReasonsIn(account).map(String), 'AGENTS.md says the gate lacks a value for replication.data-centers')
+      .toEqual([]);
   });
 
   test('the gate still has keys to change', () => {
@@ -520,16 +615,26 @@ describe('AGENTS.md describes the dead-key gate as it is (#1425)', () => {
     expect(gatePassages).toContain(keysRule());
     expect(gatePassages.filter((passage) => constantsSection().includes(passage)).length).toBeGreaterThan(0);
     for (const passage of passages) {
-      const refused = [
-        ...RETIRED_CLAIMS,
-        ...(gatePassages.includes(passage) ? RETIRED_SEARCH_WORDS : []),
-        ...(passage.includes('`ConfigKeys`') ? RETIRED_CONFIG_KEYS_WORDS : []),
-      ];
-      for (const claim of refused) {
-        expect(wordsOf(passage), `AGENTS.md still describes the gate's old text search: ${passage.slice(0, 90)}…`)
-          .not.toMatch(claim);
-      }
+      expect(retiredWordingIn(passage).map(String), `AGENTS.md still describes the gate's old text search: ${passage.slice(0, 90)}…`)
+        .toEqual([]);
     }
+  });
+
+  test('the retired wording it is held to is refused, every pattern on a passage of its own', () => {
+    for (const shape of RETIRED_CONSTANTS_RULE_SHAPES) {
+      expect(retiredWordingIn(shape).length, `the retired-wording check lets this through: ${shape.slice(0, 90)}…`)
+        .toBeGreaterThan(0);
+    }
+    expectOnePatternEach(
+      [...RETIRED_CLAIMS, ...RETIRED_SEARCH_WORDS, ...RETIRED_CONFIG_KEYS_WORDS],
+      ONE_RETIRED_WORDING_EACH,
+      retiredWordingIn,
+    );
+  });
+
+  test('the reasons and the denial the data-center and kind checks refuse are refused, each on a passage of its own', () => {
+    expectOnePatternEach(RETIRED_DATA_CENTER_REASONS, ONE_DATA_CENTER_REASON_EACH, dataCenterReasonsIn);
+    expect('A reader of another kind fails it without exception.').toMatch(KIND_EXCEPTION_DENIAL);
   });
 
   test('the constants rule names what catches a moved reader', () => {
