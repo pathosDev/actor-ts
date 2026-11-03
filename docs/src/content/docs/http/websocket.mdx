@@ -512,8 +512,25 @@ its turn behind every frame queued before it.  It still cannot be shed —
 it takes the lane a death-watch `Terminated` takes, which `drop-head`,
 `drop-new`, `reject` and a `PriorityMailbox` all leave alone — but
 `onClientConnected` is an ordinary message there, and a bound built into
-that mailbox can drop it.  To keep strict arrival order for everything,
-spawn the hub with `withMailbox(() => new Mailbox())`.
+that mailbox can drop it.
+
+To keep strict arrival order for everything, give the hub a FIFO mailbox of
+its own — and bound it, because the hub is the actor its peers feed:
+
+```ts
+const chatMailboxOptions = BoundedMailboxOptions.create()
+  .withCapacity(1_024)
+  .withOverflow('drop-head');
+const chatOptions = ActorOptions.create().withMailbox(() => new BoundedMailbox(chatMailboxOptions));
+const chat = system.spawn(ChatRoom, 'chat', chatOptions);
+```
+
+A mailbox you supply brings its own bound, and no other bound reaches it:
+`ActorOptions` refuses `withMailboxCapacity()` beside `withMailbox()`, and
+neither `actor-ts.mailbox.default.capacity` nor an `actor-ts.deployment`
+entry applies to it.  `withMailbox(() => new Mailbox())` keeps the order
+too, but unbounded — a hub that was bounded through the global default
+loses that bound without a word.
 
 The hub is not the only queue in play.  Each connection has a mailbox of
 its own — the internal connection actor's — and `connection.tell`,

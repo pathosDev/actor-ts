@@ -548,9 +548,27 @@ eingereiht wurde.  Verworfen werden kann es trotzdem nicht — es nimmt die
 Spur eines `Terminated` der Death-Watch, die `drop-head`, `drop-new`,
 `reject` und eine `PriorityMailbox` alle unangetastet lassen —, aber
 `onClientConnected` ist dort eine gewöhnliche Nachricht, und eine Grenze,
-die in diese Mailbox eingebaut ist, kann es verwerfen.  Für strikte
-Ankunftsreihenfolge bei allem spawnst du den Hub mit
-`withMailbox(() => new Mailbox())`.
+die in diese Mailbox eingebaut ist, kann es verwerfen.
+
+Für strikte Ankunftsreihenfolge bei allem gibst du dem Hub eine eigene
+FIFO-Mailbox — und begrenzt sie, denn der Hub ist der Actor, den seine
+Peers füttern:
+
+```ts
+const chatMailboxOptions = BoundedMailboxOptions.create()
+  .withCapacity(1_024)
+  .withOverflow('drop-head');
+const chatOptions = ActorOptions.create().withMailbox(() => new BoundedMailbox(chatMailboxOptions));
+const chat = system.spawn(ChatRoom, 'chat', chatOptions);
+```
+
+Eine Mailbox, die du mitgibst, bringt ihre eigene Grenze mit, und keine
+andere Grenze erreicht sie: `ActorOptions` lehnt `withMailboxCapacity()`
+neben `withMailbox()` ab, und weder `actor-ts.mailbox.default.capacity`
+noch ein Eintrag unter `actor-ts.deployment` gilt für sie.
+`withMailbox(() => new Mailbox())` hält die Reihenfolge ebenfalls, aber
+unbegrenzt — ein Hub, der über den globalen Standard begrenzt war, verliert
+diese Grenze, ohne dass es irgendwo steht.
 
 Der Hub ist nicht die einzige Queue im Spiel.  Jede Verbindung hat eine
 eigene Mailbox — die des internen Connection-Actors —, und
