@@ -291,9 +291,12 @@ it may still land.  That is safe — the throw skips the state fold
 and leaves `lastSequenceNr` untouched, so the restart re-reads the
 true head — but a non-replayable side effect in the handler has
 already run.  A `ReplicatedEventSourcedActor` is the exception: a
-timed-out write that lands is folded by that replica at its next
-restart and never reaches its peers, because only a successful
-`persist` broadcasts — see [replicated event
+timed-out write that lands is never folded live and never reaches
+its peers, because only a successful `persist` folds and broadcasts.
+A later recovery folds it only if it replays it — a snapshot taken
+after the landing counts the event as covered, so a recovery from
+that snapshot never folds it, while a full replay does — see
+[replicated event
 sourcing](/persistence/replicated-event-sourcing/overview/#when-the-stores-are-down).
 
 Related knobs, same block:

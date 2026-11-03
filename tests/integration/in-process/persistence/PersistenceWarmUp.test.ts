@@ -26,13 +26,23 @@ import {
   POSTGRES_DURABLE_STATE_PLUGIN_ID,
   POSTGRES_JOURNAL_PLUGIN_ID,
   POSTGRES_SNAPSHOT_PLUGIN_ID,
+  ObjectStorageDurableStateStore,
+  ObjectStorageSnapshotStore,
   RegisterCassandraPluginsOptions,
   RegisterPostgresPluginsOptions,
   registerCassandraPlugins,
   registerPostgresPlugins,
+  type DurableStateStore,
+  type ObjectStorageBackend,
   type PersistencePlugin,
+  type SnapshotStore,
 } from '../../../../src/persistence/index.js';
 import type { PgClientLike, PgQueryResult } from '../../../../src/persistence/journals/PostgresClient.js';
+import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
+import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
+import { OptionsError } from '../../../../src/util/OptionsValidator.js';
+import { runWorkerMeshNode, type WorkerMeshInitData } from '../../../../src/worker/WorkerMeshBootstrap.js';
+import type { WorkerNodeContext } from '../../../../src/worker/WorkerNode.js';
 import { FakeCassandraClient } from './FakeCassandraClient.js';
 import { FakePgPool } from './FakePgPool.js';
 
@@ -537,6 +547,133 @@ describe('behavior autoStart false', () => {
       await system.whenReady();
       expect(persistence.journal).toBe(journal);
       expect(journal.starts).toBe(0);
+    } finally {
+      await system.terminate();
+    }
+  });
+});
+
+/**
+ * `autoStart: false` set in code is the whole of what a WorkerMesh worker
+ * passes to `withPersistence` — its opt-out from opening the main thread's
+ * selection, which it inherits without the code that registered it.  Being a
+ * `withPersistence` option, it used to build the extension inside `create` all
+ * by itself, and the warm-up read and validated the whole behaviour block
+ * before it looked at `autoStart`: one invalid `actor-ts.persistence` value in
+ * the shared configuration failed every worker's bootstrap, while the main
+ * thread, which never touched persistence, was created without a word.
+ */
+describe('autoStart false set in code asks nothing of the behaviour block inside create', () => {
+  /** The configuration the main thread and its workers share: one invalid behaviour value. */
+  const INVALID_BEHAVIOR: ConfigObject = { 'actor-ts': { persistence: { 'max-concurrent-recoveries': -1 } } };
+
+  test('a mesh worker boots on a configuration whose behaviour block is invalid, as its main thread does', async () => {
+    const main = ActorSystem.create('warm-up-invalid-behavior-main', quietOptions(INVALID_BEHAVIOR));
+    const address = new NodeAddress('warm-up-invalid-behavior-worker', '127.0.0.1', 2552);
+    const init: WorkerMeshInitData = {
+      kind: 'worker-mesh-init',
+      config: INVALID_BEHAVIOR,
+      secretPaths: [],
+      seeds: [],
+      roles: [],
+      modules: [],
+    };
+    const context = {
+      self: address,
+      systemName: 'warm-up-invalid-behavior-worker',
+      transport: new InMemoryTransport(address),
+      initData: init,
+      ready: () => {},
+    } as unknown as WorkerNodeContext<WorkerMeshInitData>;
+    try {
+      expect(main.extensions.has(PersistenceExtensionId)).toBe(false);
+      const { system: worker } = await runWorkerMeshNode(context, async () => ({}));
+      try {
+        await worker.whenReady();
+        expect(worker.extensions.has(PersistenceExtensionId)).toBe(false);
+        // Not dropped, only not asked for: the first use reads the block, as
+        // it would on the main thread.
+        expect(() => worker.extension(PersistenceExtensionId).behavior).toThrow(OptionsError);
+      } finally {
+        await worker.terminate();
+      }
+    } finally {
+      await main.terminate();
+    }
+  }, 20_000);
+
+  test('plug-ins passed beside it still run inside create, and the block is still read only on first use', async () => {
+    const registeredJournalId = 'test.journal.registered-in-create';
+    const journal = new StartCountingJournal();
+    const behavior = PersistenceBehaviorOptions.create().withAutoStart(false);
+    const plugin: PersistencePlugin = (persistence) => { persistence.registerJournal(registeredJournalId, () => journal); };
+    const configuration: ConfigObject = {
+      'actor-ts': {
+        persistence: { 'max-concurrent-recoveries': -1, journal: { plugin: registeredJournalId } },
+      },
+    };
+    const systemOptions = quietOptions(configuration).withPersistence({ plugins: [plugin], behavior });
+    const system = ActorSystem.create('warm-up-off-with-plugins', systemOptions);
+    try {
+      await system.whenReady();
+      expect(system.extensions.has(PersistenceExtensionId)).toBe(true);
+      expect(system.extension(CoordinatedStartupId).hasTasks).toBe(false);
+      expect(system.extension(PersistenceExtensionId).journal).toBe(journal);
+      expect(journal.starts).toBe(0);
+      expect(() => system.extension(PersistenceExtensionId).behavior).toThrow(OptionsError);
+    } finally {
+      await system.terminate();
+    }
+  });
+});
+
+/** An object-storage backend that answers every call the way an unreachable bucket does. */
+class UnreachableObjectStorageBackend implements ObjectStorageBackend {
+  calls = 0;
+
+  put(): Promise<never> { return this.refuse(); }
+
+  get(): Promise<never> { return this.refuse(); }
+
+  delete(): Promise<never> { return this.refuse(); }
+
+  list(): Promise<never> { return this.refuse(); }
+
+  private refuse(): Promise<never> {
+    this.calls++;
+    return Promise.reject(new Error(REFUSED));
+  }
+}
+
+/**
+ * The stores the warm-up cannot reach ahead of time.  Every other store in the
+ * repository reaches its backend when it opens — a relational or DynamoDB
+ * store with `auto-create-tables` off sends a ping or describes its table —
+ * but the object-storage snapshot and durable-state stores have no `start()`,
+ * so a bucket they cannot reach is met by their first operation, never by the
+ * startup.  `fundamentals/actor-system.mdx` says so; this keeps the sentence
+ * true.
+ */
+describe('the object-storage stores have nothing to open at startup', () => {
+  test('over an unreachable bucket the startup succeeds and asks nothing, and the first operation fails', async () => {
+    const snapshotBackend = new UnreachableObjectStorageBackend();
+    const durableStateBackend = new UnreachableObjectStorageBackend();
+    const snapshotStore = new ObjectStorageSnapshotStore({ backend: snapshotBackend });
+    const durableStateStore = new ObjectStorageDurableStateStore({ backend: durableStateBackend });
+    const systemOptions = quietOptions().withPersistence({ snapshotStore, durableStateStore });
+    const system = ActorSystem.create('warm-up-object-storage', systemOptions);
+    try {
+      await system.whenReady();
+      await aMacrotaskLater();
+      // Read through the contracts, where `start()` is the optional eager open.
+      const asSnapshotStore: SnapshotStore = snapshotStore;
+      const asDurableStateStore: DurableStateStore = durableStateStore;
+      expect(asSnapshotStore.start).toBeUndefined();
+      expect(asDurableStateStore.start).toBeUndefined();
+      expect(snapshotBackend.calls + durableStateBackend.calls).toBe(0);
+
+      expect((await rejectionOf(snapshotStore.loadLatest('first-use'))).message).toContain(REFUSED);
+      expect((await rejectionOf(durableStateStore.load('first-use'))).message).toContain(REFUSED);
     } finally {
       await system.terminate();
     }

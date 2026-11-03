@@ -99,11 +99,19 @@ import { VectorClock, type VectorClockData } from './replicated/VectorClock.js';
  *     serialized append chain that issue introduces, not around the racing
  *     call.
  *   - **What a timed-out local append did.**  `call-timeout` gives up
- *     without cancelling, so the append may still land — and then this
- *     replica folds the event at its next restart while no peer ever
- *     receives it, because only a successful `persist` broadcasts.  There is
- *     no ambiguous-outcome policy yet; a response lost after the store
- *     committed diverges the same way with no breaker involved.
+ *     without cancelling, so the append may still land.  Nothing folds or
+ *     broadcasts the event then — only a successful `persist` does either —
+ *     so no peer ever receives it, and this replica's journal holds an event
+ *     its state does not show.  Whether a later recovery folds it depends on
+ *     where that recovery starts.  The landing moves the journal position a
+ *     snapshot records past it — the uncancelled append and the next one
+ *     both advance `_journalSeq` — so a snapshot taken after it counts the
+ *     event as covered, and a recovery from that snapshot never folds it.
+ *     A full replay does: no snapshot, or `snapshot-is-optional` falling
+ *     back when the snapshot store does not answer.  The recovered state
+ *     therefore depends on whether that snapshot was read.  There is no
+ *     ambiguous-outcome policy yet; a response lost after the store
+ *     committed takes the same route with no breaker involved.
  *
  * A refused `persist` still consumes the `seqAtReplica` it was minted with.
  * Peers already accept a gap (see `_envelopeRejection`), and the vector clock
@@ -754,10 +762,12 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
    *     not asked.
    *   - `CircuitBreakerTimeoutError` — the call outlived
    *     `actor-ts.circuit-breaker.<journal-breaker>.call-timeout`.  The
-   *     timeout gives up; it does not cancel, so the append may still land —
-   *     and then this replica folds the event at its next recovery while no
-   *     peer ever receives it, because only a successful `persist`
-   *     broadcasts.
+   *     timeout gives up; it does not cancel, so the append may still land.
+   *     No peer ever receives such an event, because only a successful
+   *     `persist` broadcasts, and this replica folds it only at a recovery
+   *     that replays it: a snapshot taken after it landed already counts it
+   *     as covered — see "What a timed-out local append did" in the class
+   *     description.
    *
    * On either, nothing is folded and nothing is broadcast, and the
    * `seqAtReplica` the event was minted with stays used — see the body.

@@ -253,11 +253,20 @@ einem Timeout doch noch landet.
 
 **Ein Append, der in das Timeout lief, kann trotzdem landen.**  Das
 `call-timeout` gibt auf; es bricht nicht ab.  Erreicht der
-Schreibvorgang das Journal doch, faltet diese Replica das Event bei
-ihrem nächsten Neustart, während kein Peer es je bekommt — denn nur ein
-erfolgreiches `persist` verteilt.  Ein Store, der festschreibt und die
-Antwort auf dem Rückweg verliert, bewirkt dasselbe ganz ohne Breaker,
-und noch repariert nichts diese Divergenz.
+Schreibvorgang das Journal doch, faltet und verteilt nichts das Event —
+beides tut nur ein erfolgreiches `persist` —, also bekommt es kein Peer
+je, und das Journal dieser Replica enthält ein Event, das ihr Zustand
+nicht zeigt.  Ob eine spätere Recovery es faltet, hängt davon ab, wo
+sie beginnt.  Die Landung schiebt die Journal-Position, die ein
+Snapshot festhält, über das Event hinaus; ein danach aufgenommener
+Snapshot zählt das Event also als abgedeckt, und eine Recovery aus
+diesem Snapshot faltet es nie.  Ein vollständiges Replay tut es — ohne
+Snapshot, oder wenn `snapshot-is-optional` auf das Journal ausweicht,
+weil der Snapshot Store nicht antwortete —, der wiederhergestellte
+Zustand der Replica hängt also davon ab, ob dieser Snapshot gelesen
+wurde.  Ein Store, der festschreibt und die Antwort auf dem Rückweg
+verliert, nimmt denselben Weg ganz ohne Breaker, und noch repariert
+nichts diese Divergenz.
 
 **Die Recovery ist geschützt wie die eines `PersistentActor`.**  Sie
 wartet auf eine von `max-concurrent-recoveries` Freigaben, liest den

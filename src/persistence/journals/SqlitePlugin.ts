@@ -90,12 +90,15 @@ export const SQLITE_DURABLE_STATE_PLUGIN_ID = 'actor-ts.persistence.durable-stat
  * names the key, the code route and `":memory:"`, the explicit in-memory
  * database.  Inside `ActorSystem.create` that is `create` throwing, before
  * anything opens.
- * Keyed on the selection because only a selected store is ever built: the
+ * Keyed on the selection because only a selected store can be built: the
  * registry resolves a factory for the id a selector names, so an unselected
  * root never becomes a store, and requiring a path for one would make every
  * application that selects only some of the three name a database it never
- * opens.  A store constructed directly still meets the same rule in its
- * constructor.
+ * opens.  A selected store that `withPersistence` sets in code is never built
+ * either — the instance is the explicit layer over the selection — so its
+ * root is skipped the same way, and a pathless selection it replaces is not
+ * refused (#1492).  A store constructed directly still meets the same rule in
+ * its constructor.
  *
  * It returns nothing: the durable-state store is a registered factory like
  * the other two, reached through `ext.durableStateStore` (or simply by leaving
@@ -132,13 +135,20 @@ export function registerSqlitePlugins(
 
   // A selected root is merged now, so its validator can refuse it before
   // anything opens.  Any other root is merged inside its factory, which runs
-  // only for a store something resolves, so its block is never read.
+  // only for a store something resolves, so its block is never read — and so
+  // is a selected root whose store `withPersistence` sets in code: that store
+  // is the explicit layer over the selection, which is then never built
+  // (#1492).
   const selection = selectionOf(ext.config);
-  const journalOptions = selection?.journal === SQLITE_JOURNAL_PLUGIN_ID ? mergeJournalOptions() : undefined;
+  const journalOptions = selection?.journal === SQLITE_JOURNAL_PLUGIN_ID && !ext._isSetInCode('journal')
+    ? mergeJournalOptions()
+    : undefined;
   const snapshotStoreOptions = selection?.snapshotStore === SQLITE_SNAPSHOT_PLUGIN_ID
+    && !ext._isSetInCode('snapshotStore')
     ? mergeSnapshotStoreOptions()
     : undefined;
   const durableStateStoreOptions = selection?.durableState === SQLITE_DURABLE_STATE_PLUGIN_ID
+    && !ext._isSetInCode('durableStateStore')
     ? mergeDurableStateStoreOptions()
     : undefined;
 

@@ -443,9 +443,14 @@ breaker belongs in the serialized append chain #958 introduces.  A
 recovery that fails — past `recovery-timeout`, or refused by a
 breaker — fails `preStart`, because the class has no
 `onRecoveryFailure`.  And a timed-out write is **not** safe by
-construction there: if it lands, the replica folds the event at its
-next restart while no peer ever received it, because only a
-successful `persist` broadcasts.
+construction there: if it lands, nothing folds or broadcasts the
+event — only a successful `persist` does either — so no peer ever
+receives it, and the replica's journal holds an event its state does
+not show.  Whether a later recovery folds it depends on where that
+recovery starts: a snapshot taken after the landing counts the event
+as covered, so a recovery from that snapshot never folds it, while a
+full replay — no snapshot, or `snapshot-is-optional` falling back to
+the journal — does.
 
 [`DurableStateActor`](/persistence/durable-state/) is outside all of
 this: none of these settings reaches a durable-state store, whether

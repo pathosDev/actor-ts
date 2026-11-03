@@ -407,6 +407,9 @@ export class CoordinatedShutdown implements Extension {
    * that could not join — makes the run one for a failure, which
    * `exit-process` never exits `0` after; passed to a run already under way,
    * it marks that run so too, as {@link _runForFailure} does.
+   *
+   * A startup the system is still running is abandoned as the run begins,
+   * before its first phase — the same abandonment `terminate()` makes (#1473).
    */
   run(reason: Reason = UnknownReason.instance): Promise<void> {
     // Ahead of the in-flight check: a failure reported while a run is under
@@ -426,6 +429,12 @@ export class CoordinatedShutdown implements Extension {
       resolveRun = resolve;
       rejectRun = reject;
     });
+    // Before the first phase, whoever started the run: a startup still
+    // running is abandoned the way `terminate()` abandons it, so its tasks'
+    // signals abort now rather than after the unbind and the leave (#1473).
+    // After the run is visible, so a task aborted here that asks whether one
+    // is in flight finds it.
+    this.system._abandonStartup();
     this._run(reason).then(resolveRun, rejectRun);
     return this._runPromise;
   }
