@@ -154,6 +154,23 @@ function expectCrossings(actual: Crossings, unreachable: number, down: number): 
   expect(actual.down).toBeLessThanOrEqual(down + 10);
 }
 
+/**
+ * The crossings after `intervals` on-time intervals at the shipped settings —
+ * a 500 ms cadence and the 3 s pause — measured from the last heartbeat, with
+ * `estimate` as the first-contact estimate.  `intervals = 0` is first contact:
+ * one heartbeat, nothing measured yet.
+ */
+function crossingsAfterCleanIntervals(estimate: number | 'auto', intervals: number): Crossings {
+  const cadenceMs = 500;
+  const detectorOptions = PhiAccrualOptions.create()
+    .withHeartbeatIntervalMs(cadenceMs)
+    .withExpectedResponseAfterMs(estimate);
+  const fd = new PhiAccrualFailureDetector(detectorOptions);
+  const peer = addr(40);
+  for (let beat = 0; beat <= intervals; beat++) fd.heartbeat(peer, beat * cadenceMs);
+  return crossingsAfter(fd, peer, intervals * cadenceMs);
+}
+
 describe('expected-response-after: what φ assumes before it has a history (#1451)', () => {
   test('takes a positive duration or the word auto, and nothing else', () => {
     for (const refused of [0, -500, Number.NaN, Number.POSITIVE_INFINITY]) {
@@ -173,9 +190,11 @@ describe('expected-response-after: what φ assumes before it has a history (#145
     expect(() => new PhiAccrualFailureDetector(durationOptions)).not.toThrow();
   });
 
-  test('one heartbeat seeds the history with E ± E/4: mean E, deviation a quarter of it', () => {
+  test('one heartbeat leaves the estimate in place: mean E, deviation a quarter of it', () => {
     // auto follows the cadence, so E = 500 ms and the deviation is 125 ms —
     // above the 100 ms floor, which only a cadence under 400 ms would reach.
+    // A first heartbeat has nothing to be measured from, so it changes the
+    // origin of the silence and nothing else.
     const detectorOptions = PhiAccrualOptions.create()
       .withHeartbeatIntervalMs(500)
       .withAcceptableHeartbeatPauseMs(0);
@@ -198,10 +217,12 @@ describe('expected-response-after: what φ assumes before it has a history (#145
     expectCrossings(crossingsAfter(fd, peer, 0), 1_202, 1_380);
   });
 
-  test('the seeds are samples, and real ones wash them out', () => {
-    // Two heartbeats a cadence apart: [375, 625, 500] — σ ≈ 102 ms, so the
-    // window is already almost the floor's.  A pre-sample prior that vanished
-    // at the first real interval would read 1 062 / 1 204 here instead.
+  test('the first measured interval replaces the estimate', () => {
+    // Two heartbeats a cadence apart: one real interval of 500 ms, which has
+    // no deviation of its own, so the floor's 100 ms applies — the reading a
+    // clean series gives at any length.  Seeding the window with E ± E/4
+    // instead read 1 073 / 1 219 here, and kept the estimate in the window
+    // until 200 real intervals had pushed it out.
     const detectorOptions = PhiAccrualOptions.create()
       .withHeartbeatIntervalMs(500)
       .withAcceptableHeartbeatPauseMs(0);
@@ -210,7 +231,39 @@ describe('expected-response-after: what φ assumes before it has a history (#145
     fd.heartbeat(peer, 0);
     fd.heartbeat(peer, 500);
 
-    expectCrossings(crossingsAfter(fd, peer, 500), 1_073, 1_219);
+    expectCrossings(crossingsAfter(fd, peer, 500), 1_062, 1_204);
+  });
+
+  test('a decoupled estimate reaches no further than the first measured interval', () => {
+    // The key is the mean φ assumes *before* a peer has a history, and a
+    // decoupled value has to stop mattering once one exists.  Seeded into the
+    // window, it went on shaping verdicts for max-sample-size heartbeats —
+    // 100 s at the shipped cadence — and not even monotonically: at E = 2 s
+    // one on-time interval read 9 083 ms against 7 807 ms at first contact,
+    // and a hundred still read 4 762 against 4 062.  E = 200 ms, a stricter
+    // first contact, read *more* lenient than the history alone after it.
+    const reference = (intervals: number): Crossings => crossingsAfterCleanIntervals('auto', intervals);
+    for (const intervals of [1, 2, 10, 100, 199]) {
+      for (const estimate of [200, 2_000, 5_000]) {
+        expect(crossingsAfterCleanIntervals(estimate, intervals), `E = ${estimate} ms after ${intervals} interval(s)`)
+          .toEqual(reference(intervals));
+      }
+    }
+    // The history alone, at any length: the clean-series reading.
+    expectCrossings(reference(1), 4_062, 4_204);
+    // And before it the estimate is what φ judges by — the control that keeps
+    // the equalities above from holding because E was ignored throughout.
+    expectCrossings(crossingsAfterCleanIntervals(2_000, 0), 7_807, 8_518);
+    expectCrossings(crossingsAfterCleanIntervals(200, 0), 3_762, 3_904);
+  });
+
+  test('an on-time heartbeat never leaves φ more lenient than first contact', () => {
+    for (const estimate of ['auto', 2_000, 5_000] as const) {
+      const firstContact = crossingsAfterCleanIntervals(estimate, 0);
+      const afterOne = crossingsAfterCleanIntervals(estimate, 1);
+      expect(afterOne.unreachable, `E = ${estimate}`).toBeLessThanOrEqual(firstContact.unreachable);
+      expect(afterOne.down, `E = ${estimate}`).toBeLessThanOrEqual(firstContact.down);
+    }
   });
 
   test('a number decouples the estimate from the cadence; auto is the cadence', () => {
@@ -275,7 +328,7 @@ describe('expected-response-after: what φ assumes before it has a history (#145
 });
 
 describe('the tolerance the shipped settings give (#1452)', () => {
-  /** A clean series at the shipped 500 ms cadence: 40 beats, so the history is real samples, not the seeds. */
+  /** A clean series at the shipped 500 ms cadence: 40 beats, so φ judges by the history, not the estimate. */
   function afterCleanSeries(fd: PhiAccrualFailureDetector, peer: NodeAddress): number {
     const beats = 40;
     for (let beat = 0; beat <= beats; beat++) fd.heartbeat(peer, beat * 500);
@@ -293,7 +346,7 @@ describe('the tolerance the shipped settings give (#1452)', () => {
   });
 
   test('first contact: one heartbeat reads unreachable after ~4 202 ms and down after ~4 380 ms', () => {
-    // σ₀ = E/4 = 125 ms rather than the floor: the seeded E ± E/4.
+    // σ₀ = E/4 = 125 ms rather than the floor: nothing measured yet, so the estimate.
     const fd = new PhiAccrualFailureDetector();
     const peer = addr(21);
     fd.heartbeat(peer, 0);
@@ -328,8 +381,8 @@ describe('the tolerance the shipped settings give (#1452)', () => {
     [2_000, 5_562, 5_704, 7_807, 8_518],
   ] as const)('the table on failure-detector.mdx, %d ms cadence', (cadenceMs, steadyUnreachable, steadyDown, firstUnreachable, firstDown) => {
     // Every cell the page publishes, so a changed default turns this red
-    // instead of leaving the page quoting the old one.  "Steady" is a window
-    // of real intervals only — 250 beats push the two seeds out of 200 slots.
+    // instead of leaving the page quoting the old one.  "Steady" is a full
+    // window of real intervals — 250 beats over 200 slots.
     const cadenceOptions = PhiAccrualOptions.create().withHeartbeatIntervalMs(cadenceMs);
     const steady = new PhiAccrualFailureDetector(cadenceOptions);
     const first = new PhiAccrualFailureDetector(cadenceOptions);

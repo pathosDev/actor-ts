@@ -96,9 +96,10 @@ export class PhiAccrualFailureDetector implements FailureDetectorLike {
   get interval(): number { return this.options.heartbeatIntervalMs; }
 
   /**
-   * Peer is now known.  No sample added until the first heartbeat, but the
-   * silence is measured from `now` until something arrives.  A no-op for a
-   * peer already known, so a late registration never moves an origin.
+   * Peer is now known.  No sample is added until a heartbeat interval is
+   * measured, but the silence is measured from `now` until something arrives.
+   * A no-op for a peer already known, so a late registration never moves an
+   * origin.
    */
   register(peer: NodeAddress, now: number = this.clock.now()): void {
     const key = peer.toString();
@@ -107,26 +108,24 @@ export class PhiAccrualFailureDetector implements FailureDetectorLike {
 
   /**
    * A heartbeat frame arrived: one inter-arrival sample, measured from the
-   * previous heartbeat.
+   * previous heartbeat.  The first heartbeat has nothing to be measured from,
+   * so it adds no sample and only becomes the origin of the next one.
    *
-   * The first heartbeat has nothing to be measured from, so it seeds the
-   * history with the configured estimate instead: E − E/4 and E + E/4, whose
-   * mean is E and whose deviation is E/4.  Seeded rather than kept as a
-   * separate prior, so real intervals wash the estimate out at the rate the
-   * window turns over instead of replacing it outright at the first one — a
-   * single real sample has no deviation at all, and judging a peer by the
-   * floor alone after one interval is the over-eager first contact the
-   * estimate is there to prevent (#1451).
+   * The estimate is not written into the window (#1451).  Seeded there as
+   * E − E/4 and E + E/4, it stayed until `maxSampleSize` real intervals had
+   * pushed it out — 100 s at the shipped cadence — so a decoupled estimate
+   * shaped verdicts long past first contact, and not monotonically: one
+   * on-time interval far from E widened the deviation, so φ read more lenient
+   * after it than before it, and a stricter estimate than the cadence read
+   * more lenient than the history alone.  A single interval has no deviation
+   * of its own and is judged at the {@link PhiAccrualOptionsType.minStdDeviationMs}
+   * floor, which is also how a clean series of any length is judged; the
+   * floor and {@link PhiAccrualOptionsType.acceptableHeartbeatPauseMs} are
+   * what bound that reading, as they do in steady state.
    */
   heartbeat(peer: NodeAddress, now: number = this.clock.now()): void {
     const state = this.stateOf(peer);
-    if (state.lastHeartbeatAt !== undefined) {
-      this.record(state, now - state.lastHeartbeatAt);
-    } else {
-      const spread = this.expectedResponseMs / 4;
-      this.record(state, this.expectedResponseMs - spread);
-      this.record(state, this.expectedResponseMs + spread);
-    }
+    if (state.lastHeartbeatAt !== undefined) this.record(state, now - state.lastHeartbeatAt);
     state.lastHeartbeatAt = now;
     state.lastHeardAt = now;
   }
@@ -176,11 +175,13 @@ export class PhiAccrualFailureDetector implements FailureDetectorLike {
 
   /**
    * What the silence is judged against: the history once there is one, and
-   * before the first heartbeat the same estimate the history is seeded with —
-   * mean E, deviation E/4 — so the verdict does not jump when it arrives.
-   * The floor applies to both — it is what keeps a very steady peer from
-   * being flagged on noise, and at a short cadence a quarter of the estimate
-   * falls below it.
+   * until then the configured estimate — mean E, deviation E/4 — from the
+   * peer's first frame, or its registration, to its first measured interval.
+   * The first heartbeat changes only the origin of the silence, so the
+   * verdict does not jump when it arrives; the first measured interval
+   * replaces the estimate outright (#1451).  The floor applies to both — it
+   * is what keeps a very steady peer from being flagged on noise, and at a
+   * short cadence a quarter of the estimate falls below it.
    */
   private distributionOf(state: PeerState): { readonly mean: number; readonly deviation: number } {
     const floor = this.options.minStdDeviationMs;
