@@ -6,6 +6,7 @@ import type { Lease } from '../../coordination/Lease.js';
 import { checkLeaseConfiguration, configuredLeaseFor } from '../../coordination/LeaseFromConfig.js';
 import { rejectAbsentLeaseKeys } from '../../coordination/LeaseOptions.js';
 import type { AbsentLeaseKeys } from '../../coordination/LeaseOptions.js';
+import { Scheduler } from '../../Scheduler.js';
 import { OptionsError } from '../../util/OptionsValidator.js';
 import type { NodeAddress } from '../NodeAddress.js';
 import type { ClusterPartitionView, DowningDecision, DowningProvider } from './DowningProvider.js';
@@ -214,7 +215,9 @@ function leaseMajority(config: Config): DowningProvider {
     config,
     `${ConfigKeys.cluster.splitBrainResolver.activeStrategy} = lease-majority`,
   );
-  return new LeaseMajorityFromConfig((self) => configured.build({ kind: 'split-brain-resolver' }, self));
+  return new LeaseMajorityFromConfig(
+    (self, scheduler) => configured.build({ kind: 'split-brain-resolver' }, self, scheduler),
+  );
 }
 
 /**
@@ -226,18 +229,49 @@ function leaseMajority(config: Config): DowningProvider {
  * strategy is assembled there, once, and every decision after it is the plain
  * `LeaseMajority`'s: a wrapper rather than a change to `LeaseMajority`, whose
  * contract — a lease passed in, ready to use — stays what code relies on.
+ *
+ * The lease renews on a scheduler this provider owns, because nothing else can
+ * stop it: the provider is built from a config alone, with no system in reach,
+ * and the scheduler `ConfiguredLease.build` would otherwise make belongs to
+ * nobody — after a leave and a terminate it went on renewing the record and
+ * held the process open (#1454).  {@link shutdown} releases the lease and then
+ * shuts that scheduler down, so whatever the backend's release did, nothing
+ * this provider armed outlives it.
  */
 class LeaseMajorityFromConfig implements DowningProvider {
   private strategy: LeaseMajority | null = null;
+  private stopped = false;
+  private readonly renewalScheduler = new Scheduler();
 
-  constructor(private readonly leaseFor: (self: NodeAddress) => Lease) {}
+  constructor(private readonly leaseFor: (self: NodeAddress, scheduler: Scheduler) => Lease) {}
 
   decide(view: ClusterPartitionView): DowningDecision {
+    // Checked before the build: a provider shut down before its first decision
+    // must not build — and start renewing — a lease nobody will release.
+    if (this.stopped) return new Set();
     if (this.strategy === null) {
-      const leaseMajorityOptions = LeaseMajorityOptions.create().withLease(this.leaseFor(view.self));
+      const lease = this.leaseFor(view.self, this.renewalScheduler);
+      const leaseMajorityOptions = LeaseMajorityOptions.create().withLease(lease);
       this.strategy = new LeaseMajority(leaseMajorityOptions);
     }
     return this.strategy.decide(view);
+  }
+
+  /**
+   * Release the lease if the strategy holds one, then shut the renewal's
+   * scheduler down in a `finally`.  A release that succeeds has already
+   * stopped the backend's renewal; the shutdown is what still disarms it when
+   * the release fails.  Every decision after it is the empty one.  See
+   * `LeaseMajority.shutdown`.
+   */
+  async shutdown(): Promise<void> {
+    if (this.stopped) return;
+    this.stopped = true;
+    try {
+      await this.strategy?.shutdown();
+    } finally {
+      this.renewalScheduler.shutdown();
+    }
   }
 }
 
