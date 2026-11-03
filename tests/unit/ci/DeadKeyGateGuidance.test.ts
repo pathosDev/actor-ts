@@ -25,8 +25,9 @@ import { CONFIG_READER_REGISTRY, UNPUBLISHED_LEAVES } from '../../util/ConfigRea
  *   - the settings it calls outside the gate are outside it, so the sentence
  *     has to go once a change brings one in — the reference.conf page makes
  *     the same claim, held by `tests/unit/docs/ReferenceConfDeadKeySection.test.ts`;
- *   - no passage about the gate describes the text search it replaced, and
- *     the constants rule names what does catch a moved reader.
+ *   - no passage about the gate describes the text search it replaced, no
+ *     passage anywhere keeps the old constants rule — by its title or in other
+ *     words — and the constants rule names what does catch a moved reader.
  *
  * What it cannot see is the prose itself: a sentence asserting the opposite
  * of what the gate does keeps every check here green.  What the gate counts
@@ -108,11 +109,31 @@ const OUTSIDE_THE_GATE = ['coordinated-shutdown.phases', 'replication.data-cente
  * How AGENTS.md described the gate while it searched source text, in words
  * specific enough to refuse anywhere in the file — a passage that keeps the
  * old claim without naming the gate is refused too.
+ *
+ * The old constants rule is refused by its title as well as by its body.  The
+ * title alone, over the body that replaced it, still tells an agent to keep a
+ * read where it is, and it is the first thing a skimming reader takes in; the
+ * body is refused by where it put the read — in the file that names its group
+ * — so a rewording that keeps the place keeps failing.
  */
 const RETIRED_CLAIMS: readonly RegExp[] = [
   /read by something in `src\/`/i,
   /matches `ConfigKeys\./i,
-  /relocat\w* (?:a|the) reader breaks/i,
+  /relocat\w* (?:a|the) (?:`ConfigKeys` )?read/i,
+  /constants move\W+(?:but\s+)?`?ConfigKeys`? reads (?:do not|don't|stay)/i,
+  /\bfile (?:that names|which names|naming) its (?:`ConfigKeys` )?group\b/i,
+];
+
+/**
+ * The old constants rule's own wording, refused in any passage that names
+ * `ConfigKeys`: elsewhere it is plain English that may describe another rule.
+ * The second is the claim with the place left vague — a read that fails for
+ * having moved to another file — where the rule that replaced it says a read
+ * fails only once no registered reader makes it.
+ */
+const RETIRED_CONFIG_KEYS_WORDS: readonly RegExp[] = [
+  /even when behaviou?r is identical/i,
+  /\breads? (?:moved|relocated) (?:elsewhere|to another file|out of (?:the|its) file)\b[^.;]*\b(?:fail|break)/i,
 ];
 
 /**
@@ -206,7 +227,11 @@ describe('AGENTS.md describes the dead-key gate as it is (#1425)', () => {
     expect(gatePassages).toContain(keysRule());
     expect(gatePassages.filter((passage) => constantsSection().includes(passage)).length).toBeGreaterThan(0);
     for (const passage of passages) {
-      const refused = gatePassages.includes(passage) ? [...RETIRED_CLAIMS, ...RETIRED_SEARCH_WORDS] : RETIRED_CLAIMS;
+      const refused = [
+        ...RETIRED_CLAIMS,
+        ...(gatePassages.includes(passage) ? RETIRED_SEARCH_WORDS : []),
+        ...(passage.includes('`ConfigKeys`') ? RETIRED_CONFIG_KEYS_WORDS : []),
+      ];
       for (const claim of refused) {
         expect(wordsOf(passage), `AGENTS.md still describes the gate's old text search: ${passage.slice(0, 90)}…`)
           .not.toMatch(claim);
