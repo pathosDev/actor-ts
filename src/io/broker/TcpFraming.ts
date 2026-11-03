@@ -303,9 +303,9 @@ const FRAMING_FIELD_RENAME_NOTE =
  * than by either caller, so every root this reader is pointed at gets the
  * refusal and no caller can read the block without it.
  *
- * So are the spellings a migration by hand produces, which were never leaves —
- * see {@link MISSPELT_TCP_FRAMING_LEAVES}: each would leave a cap at its
- * default as surely as the retired spelling.
+ * So is every other leaf the block does not have — see
+ * {@link rejectUnknownFramingLeaves}: a cap spelt any other way would leave its
+ * default in force as surely as the retired spelling.
  *
  * A `kind` outside the three is handed on as written rather than read as
  * `bytes`, which dropped the framing and its cap together on a typo.  The
@@ -320,7 +320,7 @@ const FRAMING_FIELD_RENAME_NOTE =
  */
 export function readFramingFromConfig(config: Config, keys: TcpFramingKeys): TcpFraming {
   rejectRetiredLeaves(config, keys.root, RETIRED_TCP_FRAMING_LEAVES, FRAMING_FIELD_RENAME_NOTE);
-  rejectMisspeltFramingLeaves(config, keys.root);
+  rejectUnknownFramingLeaves(config, keys);
   const kind = config.getString(keys.kind) as TcpFraming['kind'];
   if (kind === 'lines') {
     const framing: { -readonly [K in keyof LinesFraming]: LinesFraming[K] } = { kind };
@@ -339,33 +339,28 @@ export function readFramingFromConfig(config: Config, keys: TcpFramingKeys): Tcp
 }
 
 /**
- * Spellings of the two caps that were never leaves, relative to a framing
- * block's root, each mapped to the leaf it means.
+ * Refuse any leaf under the framing block other than the four `keys` names,
+ * listing the four.
  *
- * They are what migrating the retired spellings by hand produces: the old name
- * kebab-cased, and the field kebab-cased with its unit dropped — the rule every
- * duration leaf follows, and one the caps, as sizes, do not.  Read by nothing,
- * each would start the actor on the default cap — 16 MiB for a frame — with
- * the lower one its operator wrote nowhere in force, exactly what refusing
- * the retired spellings exists to prevent.  Kept apart from
- * {@link RETIRED_TCP_FRAMING_LEAVES} because none of them was ever renamed,
- * and the refusal must not say otherwise.
+ * The block is small and closed, so an allow-list is exact where a list of
+ * known mistakes is not: there is one way to spell each cap and any number of
+ * ways to misspell it.  A migration by hand produces the likeliest — the old
+ * names kebab-cased (`max-frame-len`), the fields with their unit dropped
+ * (`max-frame`, the rule every duration leaf follows and the caps, as sizes,
+ * do not), the field names themselves (`maxFrameBytes`) — and read by nothing,
+ * each would start the actor on the default cap, 16 MiB for a frame, with the
+ * lower one its operator wrote nowhere in force.  The four are taken from
+ * `keys`, so a leaf the block gains is allowed the day `ConfigKeys` declares
+ * it.
  */
-const MISSPELT_TCP_FRAMING_LEAVES: Readonly<Record<string, string>> = {
-  'max-line-len': 'max-line-bytes',
-  'max-frame-len': 'max-frame-bytes',
-  'max-line': 'max-line-bytes',
-  'max-frame': 'max-frame-bytes',
-};
-
-/** Refuse a cap written as one of {@link MISSPELT_TCP_FRAMING_LEAVES}, naming the leaf it means. */
-function rejectMisspeltFramingLeaves(config: Config, root: string): void {
-  for (const [misspelt, leaf] of Object.entries(MISSPELT_TCP_FRAMING_LEAVES)) {
-    const path = `${root}.${misspelt}`;
-    if (!config.hasPath(path)) continue;
+function rejectUnknownFramingLeaves(config: Config, keys: TcpFramingKeys): void {
+  const leaves = [keys.kind, keys.delimiter, keys.maxLineBytes, keys.maxFrameBytes]
+    .map((path) => path.slice(keys.root.length + 1));
+  for (const leaf of Object.keys(config.getObject(keys.root))) {
+    if (leaves.includes(leaf)) continue;
     throw new ConfigError(
-      `${path} is not a framing leaf — the cap is ${root}.${leaf}.  Read by nothing, it would leave the `
-      + 'default cap in force, so it is refused rather than ignored.',
+      `${keys.root}.${leaf} is not a framing leaf — the block takes ${leaves.join(', ')}.  Read by nothing, `
+      + 'it would leave a default in force, so it is refused rather than ignored.',
     );
   }
 }

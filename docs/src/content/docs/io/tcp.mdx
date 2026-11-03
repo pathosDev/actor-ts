@@ -74,11 +74,13 @@ suffix — `idle-timeout`, `connect-timeout` and `keep-alive`, so `90s` and a
 bare millisecond count read alike — and the two framing caps are sizes that
 keep theirs: `max-line-bytes` and `max-frame-bytes`, where `64K` is 65 536
 bytes.  A `framing` block names its `kind`, and only that strategy's leaves
-take effect.  A cap written any of the ways a migration by hand writes it —
-the old `maxLineLen` / `maxFrameLen`, `max-frame-len`, or `max-frame` with
-the unit dropped, and their line twins — stops the actor at start with a
-`ConfigError` naming the leaf it means, rather than leaving the default cap in
-force.  `target` names an actor and has no leaf.  The
+take effect.  Those four leaves are all it takes: any other one stops the
+actor at start with a `ConfigError` that names it and lists the four, rather
+than leaving a cap at its default.  That covers every way a migration by hand
+spells a cap — `max-frame-len`, `max-frame` with the unit dropped, the field
+name `maxFrameBytes`, and their line twins — and the old `maxLineLen` /
+`maxFrameLen` are refused naming their replacement.  `target` names an actor
+and has no leaf.  The
 reconnect, circuit-breaker and outbound-buffer leaves every broker shares go
 under the same root — see
 [BrokerActor base](/io/broker-actor-base/#reconnect-with-backoff).

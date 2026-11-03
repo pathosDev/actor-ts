@@ -74,13 +74,14 @@ Einheitensuffix — `idle-timeout`, `connect-timeout` und `keep-alive` nehmen
 `90s` also genauso wie eine bloße Millisekundenzahl —, und die beiden
 Framing-Limits sind Größen, die ihres behalten: `max-line-bytes` und
 `max-frame-bytes`, bei denen `64K` 65 536 Bytes bedeutet.  Ein `framing`-Block
-nennt seine `kind`, und nur die Blätter dieser Strategie wirken.  Ein Limit in
-einer der Schreibweisen, die eine Migration von Hand hervorbringt — die alten
-`maxLineLen` / `maxFrameLen`, `max-frame-len` oder `max-frame` ohne Einheit,
-und ihre Zeilen-Gegenstücke —, stoppt den Actor beim Start mit einem
-`ConfigError`, der das gemeinte Blatt nennt, statt das Default-Limit in Kraft
-zu lassen.  `target` benennt
-einen Actor und hat kein Blatt.  Die Reconnect-, Circuit-Breaker- und
+nennt seine `kind`, und nur die Blätter dieser Strategie wirken.  Mehr als diese
+vier Blätter nimmt er nicht: Jedes andere stoppt den Actor beim Start mit einem
+`ConfigError`, der es nennt und die vier aufzählt, statt ein Limit auf seinem
+Default zu lassen.  Das deckt jede Schreibweise ab, die eine Migration von Hand
+für ein Limit hervorbringt — `max-frame-len`, `max-frame` ohne Einheit, den
+Feldnamen `maxFrameBytes` und ihre Zeilen-Gegenstücke —, und die alten
+`maxLineLen` / `maxFrameLen` werden mit dem Namen ihres Nachfolgers abgelehnt.
+`target` benennt einen Actor und hat kein Blatt.  Die Reconnect-, Circuit-Breaker- und
 Outbound-Buffer-Blätter, die sich alle Broker teilen, gehören unter denselben
 Root — siehe
 [BrokerActor-Basis](/de/io/broker-actor-base/#reconnect-mit-backoff).

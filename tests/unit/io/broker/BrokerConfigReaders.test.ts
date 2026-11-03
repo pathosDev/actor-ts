@@ -2004,15 +2004,19 @@ const MISSPELT_FRAMING_CAP_CASES = TCP_BLOCKS.flatMap((block) => MISSPELT_FRAMIN
   ...cap, block, label: `${block.name}: framing.${cap.leaf}`,
 })));
 
+/** The leaves a framing block takes, as the refusal of any other one lists them. */
+const FRAMING_LEAVES_LISTED = 'the block takes kind, delimiter, max-line-bytes, max-frame-bytes';
+
 /**
- * A cap misspelt the way a migration by hand misspells it is refused by name
- * rather than dropped (#1443): both caps bound what a peer can make the actor
- * buffer, and a cap that silently fell back to its default would be the
+ * A framing block holds four leaves, so anything else under it is refused by
+ * name rather than dropped (#1443) — a cap misspelt the way a migration by hand
+ * misspells it first among them.  Both caps bound what a peer can make the
+ * actor buffer, and a cap that silently fell back to its default would be the
  * failure the retired-spelling refusal above exists to prevent, under a
  * spelling that refusal does not list.
  */
-describe('a TCP framing block refuses a misspelt cap, under both roots', () => {
-  test.each(MISSPELT_FRAMING_CAP_CASES)('$label fails preStart, naming the leaf and the cap it means', async (cap) => {
+describe('a TCP framing block refuses a leaf it does not have, under both roots', () => {
+  test.each(MISSPELT_FRAMING_CAP_CASES)('$label fails preStart, naming the leaf and the four there are', async (cap) => {
     const { root, required, create } = cap.block;
     const started = await startBroker(
       `${root} {\n${required}\nframing { kind = "${cap.kind}", ${cap.leaf} = 64 }\n}`,
@@ -2021,7 +2025,8 @@ describe('a TCP framing block refuses a misspelt cap, under both roots', () => {
     expect(started.failure).toBeInstanceOf(ConfigError);
     const message = (started.failure as ConfigError).message;
     expect(message).toContain(`${root}.framing.${cap.leaf} is not a framing leaf`);
-    expect(message).toContain(`${root}.framing.${cap.current}`);
+    expect(message).toContain(FRAMING_LEAVES_LISTED);
+    expect(message).toContain(cap.current);
   });
 
   test.each(MISSPELT_FRAMING_CAP_CASES)('$label is refused beside the other kind too', async (cap) => {
@@ -2035,6 +2040,28 @@ describe('a TCP framing block refuses a misspelt cap, under both roots', () => {
     );
     expect(started.failure).toBeInstanceOf(ConfigError);
     expect((started.failure as ConfigError).message).toContain(`${root}.framing.${cap.leaf}`);
+  });
+
+  test.each(TCP_BLOCKS)('$name: a leaf no framing has is refused as well', async (block) => {
+    const started = await startBroker(
+      `${block.root} {\n${block.required}\nframing { kind = "lines", max-line-bytes = 64, line-ending = "\\r\\n" }\n}`,
+      block.create,
+    );
+    expect(started.failure).toBeInstanceOf(ConfigError);
+    const message = (started.failure as ConfigError).message;
+    expect(message).toContain(`${block.root}.framing.line-ending is not a framing leaf`);
+    expect(message).toContain(FRAMING_LEAVES_LISTED);
+  });
+
+  test.each(TCP_BLOCKS)('$name: a field name written as a leaf is refused, not read and not ignored', async (block) => {
+    // `maxFrameBytes = 64` is what an operator copying the TypeScript writes;
+    // read by nothing, it would leave the frame cap at its 16 MiB default.
+    const started = await startBroker(
+      `${block.root} {\n${block.required}\nframing { kind = "length-prefixed", maxFrameBytes = 64 }\n}`,
+      block.create,
+    );
+    expect(started.failure).toBeInstanceOf(ConfigError);
+    expect((started.failure as ConfigError).message).toContain(`${block.root}.framing.maxFrameBytes is not a framing leaf`);
   });
 
   test.each(TCP_BLOCKS)('$name: the four leaves together still start the actor', async (block) => {
