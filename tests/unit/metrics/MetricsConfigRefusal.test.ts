@@ -104,6 +104,24 @@ describe('a refused actor-ts.metrics value (#1466)', () => {
     expect(errorsLogged(logger)).toHaveLength(1);
   });
 
+  test.each(['"app-"', '5', '"a,b:c/d@e"'])('a configured name-prefix = %s no metric name can start with is refused under its key, and logged once', (written) => {
+    const logger = new RecordingLogger();
+    const system = systemWith(`actor-ts.metrics.name-prefix = ${written}`, logger);
+    const metrics = system.extension(MetricsExtensionId);
+    // Never touched: the prefix is refused before the bridge reaches prom-client.
+    const untouchedClient = {} as never;
+    const untouchedRegistry = {} as never;
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const refusal = refusalOf(() => metrics.enablePromClient({ client: untouchedClient, registry: untouchedRegistry }));
+      expect(refusal).toBeInstanceOf(OptionsError);
+      expect(refusal.message).toStartWith('actor-ts.metrics.name-prefix: ');
+    }
+
+    expect(metrics.isEnabled()).toBe(false);
+    expect(errorsLogged(logger)).toHaveLength(1);
+  });
+
   test('a bad cap passed in code is refused under its field, as before, and logs nothing', () => {
     const logger = new RecordingLogger();
     const system = systemWith('', logger);
