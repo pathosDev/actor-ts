@@ -129,6 +129,14 @@ also bis zu einen Takt zu früh geschlossen werden. Über `255s` scheitert
 `bind()` mit dem Namen des Keys: mehr hält `Bun.serve` nicht. Auch eine
 untätige HTTP/2-Session wird von ihr geschlossen.
 
+Ein Wert, den du setzt, wird so geschrieben, wie er ist. Kann er einen
+schweigenden Handler vor der `503` der Request-Deadline abschneiden — sein
+frühester Schnitt, einen Takt vor dem Wert, liegt weniger als 2 s hinter der
+Deadline —, nennt `bind()` den Key, den Wert und die Deadline in einer Warnung.
+Unter der eingebauten Deadline von 30 s gilt das für alles bis `32s`: `5s` etwa
+schneidet einen Handler, der nichts geschrieben hat, ab 4 s ab, spätestens nach
+8 s.
+
 Lass ihn positiv. `0` schaltet ihn ab, und unter Hono auf Bun ist er die
 einzige Schranke für einen Request, dessen Body nicht mehr weiterkommt, und für
 eine Verbindung, die zwischen zwei Requests untätig ist, weil keine der anderen

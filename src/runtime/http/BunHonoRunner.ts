@@ -76,6 +76,7 @@ export class BunHonoRunner implements HonoServerRunner {
         maxHeaderBytes: false,
         idleTimeoutMs: options.idleTimeoutMs !== undefined,
         ...(idle.heldAtCeilingMs !== undefined ? { idleTimeoutHeldAtCeilingMs: idle.heldAtCeilingMs } : {}),
+        ...(idle.earliestCutMs !== undefined ? { idleTimeoutEarliestCutMs: idle.earliestCutMs } : {}),
       },
       async stop(graceful: boolean): Promise<void> { server.stop(!graceful); },
     };
@@ -137,13 +138,25 @@ export const BUN_IDLE_SWEEP_SECONDS = 4;
  */
 const IDLE_CUT_MARGIN_SECONDS = 2;
 
-/** What {@link bunIdleTimeoutOf} decided: the `idleTimeout` to write, if any, and whether a derived one fell short. */
+/** What {@link bunIdleTimeoutOf} decided: the `idleTimeout` to write, if any, and whether it falls short of the deadline. */
 type BunIdleTimeout = {
   /** `Bun.serve`'s `idleTimeout`, or `undefined` to leave Bun's own default (10 s). */
   readonly seconds?: number;
   /** Set when a derived value was held at the ceiling, too short for the deadline it came from — the ceiling, in ms. */
   readonly heldAtCeilingMs?: number;
+  /** Set when a set value can cut a silent handler before the deadline's `503` — its earliest cut, in ms. */
+  readonly earliestCutMs?: number;
 };
+
+/**
+ * The earliest moment, in milliseconds after a connection fell silent, at
+ * which `Bun.serve` can close it under an `idleTimeout` of `seconds`: the value
+ * is held as `ceil(seconds / 4)` sweeps, and the cut comes on the sweep that
+ * completes them — so one sweep before the last.
+ */
+function earliestCutMsOf(seconds: number): number {
+  return BUN_IDLE_SWEEP_SECONDS * 1_000 * (Math.ceil(seconds / BUN_IDLE_SWEEP_SECONDS) - 1);
+}
 
 /**
  * The `idleTimeout` this runner writes into `Bun.serve` (#1487).
@@ -154,7 +167,12 @@ type BunIdleTimeout = {
  * "never close" and throws on a fraction: 1–999 ms has to become 1 s.  A value
  * that rounds past {@link BUN_MAX_IDLE_TIMEOUT_SECONDS} is refused here, before
  * `Bun.serve` is called — the backend refuses it first, by the key's name, so
- * this is the guard for a caller that reaches the runner directly.
+ * this is the guard for a caller that reaches the runner directly.  A set value
+ * is the deployment's to choose and is written as given, but where
+ * `requestDeadlineMs` is known and the value's earliest cut lands less than
+ * {@link IDLE_CUT_MARGIN_SECONDS} past it, a handler that writes nothing loses
+ * its `503` — `32` under the built-in 30 s deadline cuts from 28 s on — so the
+ * earliest cut is returned for the backend to report.  `0` never cuts.
  *
  * **Unset**, it is derived from `requestDeadlineMs`.  Bun's bound is the whole
  * connection, and a request whose handler has written nothing counts as idle,
@@ -186,7 +204,11 @@ export function bunIdleTimeoutOf(options: Pick<HonoServeOptions, 'idleTimeoutMs'
           + `${BUN_MAX_IDLE_TIMEOUT_SECONDS} — at most ${BUN_MAX_IDLE_TIMEOUT_SECONDS * 1_000} ms.`,
       );
     }
-    return { seconds };
+    if (seconds === 0 || requestDeadlineMs === undefined || !Number.isFinite(requestDeadlineMs) || requestDeadlineMs < 0) {
+      return { seconds };
+    }
+    const earliestCutMs = earliestCutMsOf(seconds);
+    return earliestCutMs >= requestDeadlineMs + IDLE_CUT_MARGIN_SECONDS * 1_000 ? { seconds } : { seconds, earliestCutMs };
   }
   if (requestDeadlineMs === undefined) return {};
   if (!Number.isFinite(requestDeadlineMs) || requestDeadlineMs < 0) {
@@ -196,8 +218,7 @@ export function bunIdleTimeoutOf(options: Pick<HonoServeOptions, 'idleTimeoutMs'
   const neededMs = requestDeadlineMs + IDLE_CUT_MARGIN_SECONDS * 1_000;
   const derived = BUN_IDLE_SWEEP_SECONDS * (Math.ceil(neededMs / sweepMs) + 1);
   const seconds = Math.min(derived, BUN_MAX_IDLE_TIMEOUT_SECONDS);
-  const earliestCutMs = sweepMs * (Math.ceil(seconds / BUN_IDLE_SWEEP_SECONDS) - 1);
-  return earliestCutMs >= neededMs ? { seconds } : { seconds, heldAtCeilingMs: seconds * 1_000 };
+  return earliestCutMsOf(seconds) >= neededMs ? { seconds } : { seconds, heldAtCeilingMs: seconds * 1_000 };
 }
 
 /**

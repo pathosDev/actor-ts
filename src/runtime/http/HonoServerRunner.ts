@@ -141,6 +141,15 @@ export type HonoAppliedServeOptions = {
    * it onto its report and `bind()` names the deadline it cannot cover.
    */
   readonly idleTimeoutHeldAtCeilingMs?: number;
+  /**
+   * Present only when {@link HonoServeOptions.idleTimeoutMs} was set, the
+   * runtime holds it as whole-connection inactivity, and the earliest moment
+   * it can close a silent connection lands too soon after
+   * {@link HonoServeOptions.requestDeadlineMs} for the `503` to go out first:
+   * that moment, in milliseconds.  The backend carries it onto its report and
+   * `bind()` names the value and the deadline.
+   */
+  readonly idleTimeoutEarliestCutMs?: number;
 };
 
 export interface HonoServerHandle {

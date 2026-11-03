@@ -478,6 +478,22 @@ export type ServerOptionsReport = {
    * with no response.  Setting `idle-timeout` is the way out.
    */
   readonly idleTimeoutHeldAtCeilingMs?: number;
+  /**
+   * Present only where the deployment set the idle timeout and the runtime
+   * holds it as whole-connection inactivity that can cut a handler before the
+   * request deadline has been answered: the earliest moment, in milliseconds
+   * after a connection fell silent, at which it can be closed.
+   *
+   * Hono under Bun is again the one such pair (#1487).  `Bun.serve` checks
+   * idleness on a 4 s sweep, so a value of `X` seconds cuts a handler that has
+   * written nothing from one sweep before `X` on, and a cut less than 2 s past
+   * the deadline closes the connection before its `503` goes out — measured on
+   * bun 1.4.2, `idle-timeout = 32s` under the built-in 30 s deadline closed
+   * three requests of eight without a byte at 28.5–29.5 s.  `bind()` names the
+   * key, the value and the deadline in a warning; the value derived when the
+   * key is unset never needs one.
+   */
+  readonly idleTimeoutEarliestCutMs?: number;
 };
 
 /**
@@ -527,6 +543,8 @@ export type BuiltInServerOptions = {
   readonly idleTimeoutMs?: boolean;
   /** See {@link ServerOptionsReport.idleTimeoutHeldAtCeilingMs}. */
   readonly idleTimeoutHeldAtCeilingMs?: number;
+  /** See {@link ServerOptionsReport.idleTimeoutEarliestCutMs}. */
+  readonly idleTimeoutEarliestCutMs?: number;
   /**
    * The built-in fields reported `false` above that hold for one protocol of
    * an HTTP/2 listener — Fastify's header cap under Node, held for HTTP/1.1.
@@ -559,6 +577,7 @@ export function serverOptionsReportOf(
     // written after `listen()` — `Bun.serve`'s, on the Hono backend (#1487).
     ...(builtIn.idleTimeoutMs === true ? { idleTimeoutMs: true } : {}),
     ...(builtIn.idleTimeoutHeldAtCeilingMs !== undefined ? { idleTimeoutHeldAtCeilingMs: builtIn.idleTimeoutHeldAtCeilingMs } : {}),
+    ...(builtIn.idleTimeoutEarliestCutMs !== undefined ? { idleTimeoutEarliestCutMs: builtIn.idleTimeoutEarliestCutMs } : {}),
     // Every shipped backend holds a set body cap: an untouched one adopts it
     // and one built with a different cap was refused before it bound.
     ...(options?.maxContentLength !== undefined ? { maxContentLength: true } : {}),

@@ -432,6 +432,7 @@ export class HonoBackend implements HttpServerBackend {
         maxHeaderBytes: applied?.maxHeaderBytes === true,
         idleTimeoutMs: applied?.idleTimeoutMs === true,
         ...(applied?.idleTimeoutHeldAtCeilingMs !== undefined ? { idleTimeoutHeldAtCeilingMs: applied.idleTimeoutHeldAtCeilingMs } : {}),
+        ...(applied?.idleTimeoutEarliestCutMs !== undefined ? { idleTimeoutEarliestCutMs: applied.idleTimeoutEarliestCutMs } : {}),
       },
     );
     bridge?.attach?.(server);

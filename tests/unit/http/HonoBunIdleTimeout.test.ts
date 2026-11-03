@@ -288,6 +288,29 @@ describe('Hono under Bun — unset, the idle timeout is derived from the longest
   }, 30_000);
 });
 
+describe('Hono under Bun — a set idle-timeout below what the deadline needs is said, and does what it says', () => {
+  test('idle-timeout = 5s, the configuration reference\'s example: bind() warns, and a 10 s handler is cut without a byte from 4 s on', async () => {
+    // The warning claims a cut from 4 s on under the built-in 30 s deadline;
+    // the handler shows it, cut on the sweep that completes five seconds —
+    // between 4 and 8 s.
+    const HANDLER_MS = 10_000;
+    const { binding, warnings } = await bindHonoRecording(
+      // Deliberately slow: the handler's own duration is what is under test.
+      () => get(() => new Promise<HttpResponse>((resolve) => setTimeout(() => resolve(complete(Status.OK, 'late')), HANDLER_MS))),
+      'actor-ts.http.server.idle-timeout = 5s',
+    );
+
+    const cut = warnings.filter((warning) => warning.includes('can be cut from'));
+    expect(cut).toHaveLength(1);
+    expect(cut[0]).toContain('cut from 4000 ms on');
+
+    const answer = await exchange(binding, '/', HANDLER_MS + 4_000);
+    expect(answer.status, `the handler ended after ${Math.round(answer.afterMs)} ms`).toBe('closed without a byte');
+    expect(answer.afterMs).toBeGreaterThanOrEqual(ONE_SWEEP_MS - SLACK_MS);
+    expect(answer.afterMs).toBeLessThan(2 * ONE_SWEEP_MS + SLACK_MS);
+  }, 20_000);
+});
+
 describe('Hono under Bun — a fallback or websocket route\'s requestTimeout() counts like an HTTP route\'s', () => {
   // Bun closes a connection whose handler has written nothing for the idle
   // timeout, and a fallback or an upgrade request is such a request as much as

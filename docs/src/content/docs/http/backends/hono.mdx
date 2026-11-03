@@ -122,6 +122,13 @@ a 4 s sweep, so a connection can be closed up to one sweep early. Above `255s`
 it fails `bind()`, naming the key: `Bun.serve` holds no more. An idle HTTP/2
 session is closed by it too.
 
+A value you set is written as given. Where it can cut a silent handler before
+the request deadline's `503` — its earliest cut, one sweep before the value,
+lands less than 2 s past the deadline — `bind()` names the key, the value and
+the deadline in a warning. Under the built-in 30 s deadline that is anything up
+to `32s`: `5s`, say, cuts a handler that has written nothing from 4 s on, at the
+latest by 8 s.
+
 Keep it positive. `0` turns it off, and on Hono under Bun it is the only bound
 on a request whose body stops arriving and on a connection left idle between
 requests, since none of the other three is installed: with `0` such a
