@@ -480,6 +480,27 @@ describe('PersistentFSM — stateTimeout (#65)', () => {
     }
   });
 
+  test('a command of kind _timeout is no transition — the timeout stays the timer\'s to fire', async () => {
+    // `_timeout` sits in a state's entry beside the transitions, but it holds
+    // the state timeout, not a transition.  A command of that kind has no
+    // transition, so it must not run the timeout's event ahead of the timer.
+    const { sys, journal } = buildSystem('fsm-timeout-key-command');
+    try {
+      // A window no run reaches, so nothing but a command could move the state.
+      const ref = sys.spawn(() => new PaymentFsm('pay-timeout-key', 60_000), 'pay');
+      ref.tell({ kind: 'authorize', amount: 100 });
+      ref.tell({ kind: '_timeout' } as unknown as PayCommand);
+      const after = await ref.ask<FsmStateData<PayState, PayData>>({ kind: 'getState' }, 1_000,);
+
+      expect(after.state).toBe('authorized');
+      const events = await journal.read('pay-timeout-key', 0);
+      expect(events.map((e) => (e.event as { kind: string }).kind))
+        .toEqual(['authorized']);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
   test('recovery re-arms the timer relative to wall-clock at recovery completion', async () => {
     // Persist `authorized` in one ActorSystem, restart, give the new
     // FSM enough time post-recovery for its fresh timer to fire.
