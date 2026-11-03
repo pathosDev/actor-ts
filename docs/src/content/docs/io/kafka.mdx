@@ -64,6 +64,35 @@ interface KafkaOptionsType extends BrokerCommonOptionsType {
 The `BrokerCommonOptionsType` parent gives you reconnect, buffer,
 breaker — see [BrokerActor base](/io/broker-actor-base/).
 
+### The connection, the consumer and the topics, from HOCON
+
+The same settings come from HOCON, under `actor-ts.io.broker.kafka`, below
+explicit options and above the built-in defaults:
+
+```hocon
+actor-ts.io.broker.kafka {
+  brokers   = ["kafka-1:9092", "kafka-2:9092"]   # a list, even for one broker
+  client-id = "my-app"
+  ssl       = false                              # the default; certificate material is code-only
+  sasl {                                         # all three leaves, once the block is there
+    mechanism = "scram-sha-256"                  # "plain", "scram-sha-256" or "scram-sha-512"
+    username  = "my-app"
+    password  = ${?ACTOR_TS_KAFKA_PASSWORD}
+  }
+  consumer {
+    group-id       = "my-app-orders"             # no consumer without one
+    from-beginning = false                       # the default
+    commit-mode    = "auto"                      # the default; or "manual"
+    commit-timeout = 30s                         # the default; manual mode only
+  }
+  topics = ["orders", "payments"]
+}
+```
+
+`brokers` and `topics` are lists, and `commit-timeout` is a duration, so `30s`
+and `30000` mean the same.  Leaving `group-id` unset leaves the actor a
+producer only.
+
 ### The producer block, from HOCON
 
 Idempotence and auto-topic-creation are cluster policy more than application

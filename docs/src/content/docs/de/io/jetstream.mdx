@@ -139,10 +139,18 @@ Setze `consumer`, um eine dauerhafte Subscription zu binden.
 
 Welchen Stream ein Actor besitzt und welches Durable er bindet, ist
 Deployment-Gestalt und keine Anwendungslogik — beide Gruppen sind deshalb
-unter `actor-ts.io.broker.jetstream` lesbar, ebenso die Ack-Wait-Obergrenze:
+unter `actor-ts.io.broker.jetstream` lesbar, ebenso die Verbindung, so
+geschrieben wie auf der [NATS-Seite](/de/io/nats/), und die
+Ack-Wait-Obergrenze:
 
 ```hocon
 actor-ts.io.broker.jetstream {
+  servers  = ["nats://nats-1:4222", "nats://nats-2:4222"]   # a list, even for one server
+  name     = "billing"
+  user     = "billing"
+  password = ${?ACTOR_TS_NATS_PASSWORD}
+  # token  = ${?ACTOR_TS_NATS_TOKEN}   # instead of user and password
+
   acknowledgment-timeout = 45s
 
   stream {
@@ -178,7 +186,7 @@ jeder Wert, den ein HOCON-Schlüssel annimmt:
 consumer {
   durable        = "billing-proc"
   deliver-policy { kind = "by-start-sequence", start-seq = 4242 }
-  # or:          { kind = "by-start-time", start-time = 1767225600000 }  # epoch ms
+  # deliver-policy { kind = "by-start-time", start-time = 1767225600000 }  # or this; epoch ms
 }
 ```
 

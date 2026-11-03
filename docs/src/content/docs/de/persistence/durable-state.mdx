@@ -196,6 +196,11 @@ Journal- und den Snapshot-Store-Block und für `actor-ts.persistence` selbst,
 und ein Selektor, der gar keine Id hält — `null`, ein Block, eine Liste —,
 lässt jede Achse scheitern, nicht nur seine eigene.
 
+Ein vertippter Schlüssel wird nicht abgelehnt, weil niemand ihn liest.
+`plugn = "…"` im Block lässt `plugin` auf der In-Memory-Id, die
+`reference.conf` mitbringt, also startet das System ohne Fehler und ohne
+Warnung mit dem In-Memory-Store, genau als wäre nichts ausgewählt.
+
 Ein ausgewählter SQLite-Store ohne Pfad wird ebenfalls abgelehnt, und zwar
 früher: `registerSqlitePlugins` prüft schon beim Registrieren jeden Store, den
 die Konfiguration auswählt — außer einem, den `withPersistence` im Code setzt,

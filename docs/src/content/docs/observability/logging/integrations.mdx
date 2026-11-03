@@ -152,7 +152,8 @@ because retrying cannot make it smaller; send it over TCP instead.
 a LAN and starts silently fragmenting the moment traffic crosses anything
 encapsulated.  It is a byte size like every other size leaf — `8K` and
 `8192` mean the same — and has to come to a whole number of bytes between
-512 and 65467.
+512 and 65467: a size written with a unit is rounded to the nearest byte
+first, so `1420.5B` is 1421, and a bare fraction is refused.
 
 ### Field-name safety
 

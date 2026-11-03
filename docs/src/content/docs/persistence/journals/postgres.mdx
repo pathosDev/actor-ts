@@ -76,6 +76,13 @@ registered before `create` returns, and the ones the configuration selects
 open as part of the startup: a database the node cannot reach fails the
 startup rather than the first persisted message — see [opening the stores
 at startup](/persistence/overview/#opening-the-stores-at-startup).
+That holds with `autoCreateTables` off too, since the open then sends a
+`SELECT 1` where it would have run the DDL, and while the boot-time open is
+on, the default: with the boot-time open turned off, the failure moves to the
+store's first operation.  It holds for these stores, not for every axis: an
+object-storage snapshot or durable-state store selected beside them, or a store
+of your own without `start()`, has nothing to open ahead of time and fails its
+first operation instead.
 `registerPostgresPlugins` also **returns** the durable-state store, for a
 caller that would rather wire it by hand; a plug-in keeps it by assigning
 the result, `(persistence) => { postgres = registerPostgresPlugins(persistence, registerOptions); }`.

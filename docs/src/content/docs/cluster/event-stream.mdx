@@ -80,9 +80,10 @@ or by an `EventKey` works across nodes out of the box — which is also the
 shape the project's own [message conventions](/fundamentals/messages/) ask
 for.
 
-A **class** channel cannot travel on its own. Only the value's tag crosses
-the wire, so an instance arrives on the far side as a plain object that
-matches no `instanceof`. Name it first:
+A **class** channel cannot travel on its own. The wire format tags the
+built-in types it restores — a `Date`, a `Map` — and no user class, so an
+instance crosses as its fields alone and arrives on the far side as a plain
+object that matches no `instanceof`. Name it first:
 
 ```ts
 class ShipmentEvent {
