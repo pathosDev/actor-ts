@@ -18,8 +18,13 @@ import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import type { WebsocketServerRef } from '../../../src/http/websocket/WebsocketMessages.js';
 import { websocket } from '../../../src/http/websocket/WebsocketRoute.js';
 import { WebsocketServerActor } from '../../../src/http/websocket/WebsocketServerActor.js';
+import {
+  RETIRED_BROKER_CIRCUIT_BREAKER_LEAVES,
+  RETIRED_BROKER_COMMON_LEAVES,
+} from '../../../src/io/broker/BrokerOptions.js';
 import { GrpcServerActor } from '../../../src/io/broker/GrpcServerActor.js';
 import { MqttActor } from '../../../src/io/broker/MqttActor.js';
+import { RETIRED_TCP_FRAMING_LEAVES } from '../../../src/io/broker/TcpFraming.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
 import { createTestActorSystem } from '../../util/TestActorSystem.js';
 
@@ -37,7 +42,10 @@ import { createTestActorSystem } from '../../util/TestActorSystem.js';
  * nothing checks there: each block refuses an old spelling only where it is
  * first read, so one that nothing reads is never refused at all.
  *
- * So this file checks both against the code, and pins the paragraph to the
+ * So this file checks both against the code — "not up front" over every entry
+ * of every retired-leaf table `src/` declares, read from the source, since a
+ * sample lets a check at `ActorSystem.create` through for every spelling
+ * outside it — and pins the paragraph to the
  * same list of refusal sites the behavior tests run, the way
  * `WorkflowHygiene` pins the publish paragraph to the spellings it reads: a
  * change to either side fails here until the other moves with it.
@@ -274,6 +282,125 @@ const REFUSAL_SITES: ReadonlyArray<RefusalSite> = [
   },
 ];
 
+/** A retired-leaf table as `src/` declares it, read off its literal. */
+type RetiredTable = {
+  readonly name: string;
+  readonly file: string;
+  readonly entries: Readonly<Record<string, string>>;
+};
+
+/** A table's declaration: each is a flat map of string literals, so the first `}` ends it. */
+const RETIRED_TABLE_DECLARATION = /\bconst (RETIRED_\w+): RetiredLeaves = \{([^}]*)\};/g;
+
+/** One entry of a table: a quoted or bare key, and the quoted spelling that replaced it. */
+const RETIRED_TABLE_ENTRY = /^(?:'([^']+)'|([A-Za-z_$][\w$]*))\s*:\s*'([^']+)',?$/;
+
+/**
+ * Every retired-leaf table `src/` declares.  Most are private to the module
+ * whose reader checks them, so they are read from the source rather than
+ * imported; the three that are exported are compared with their parse, and so
+ * is every broker's own table, so a parser that misreads one fails there.
+ */
+function retiredTables(): RetiredTable[] {
+  return sourceFiles(SOURCE_ROOT).flatMap((file) => {
+    const text = readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
+    return [...text.matchAll(RETIRED_TABLE_DECLARATION)].map((declaration) => {
+      const entries: Record<string, string> = {};
+      const lines = declaration[2]!.split('\n').map((line) => line.trim()).filter((line) => line !== '' && !line.startsWith('//'));
+      for (const line of lines) {
+        const entry = line.match(RETIRED_TABLE_ENTRY);
+        if (entry === null) {
+          throw new Error(`${relative(SOURCE_ROOT, file)}: ${declaration[1]} has an entry this test cannot read: ${line}`);
+        }
+        entries[entry[1] ?? entry[2]!] = entry[3]!;
+      }
+      return { name: declaration[1]!, file, entries };
+    });
+  });
+}
+
+/** What a running broker actor is asked here: its block root and its own retired table. */
+type BrokerPrototype = {
+  configKey(): string;
+  retiredLeaves(): Readonly<Record<string, string>>;
+};
+
+/**
+ * Every broker actor class `src/` exports, with its block root and its own
+ * table.  Both methods return constants, so a bare prototype answers them as a
+ * constructed actor would — no options, no transport.  A class counts when it
+ * has both, which `BrokerActor` itself does not: its `configKey` is abstract.
+ */
+async function brokerBlocks(): Promise<Array<{ readonly name: string; readonly root: string; readonly own: Readonly<Record<string, string>> }>> {
+  const blocks: Array<{ readonly name: string; readonly root: string; readonly own: Readonly<Record<string, string>> }> = [];
+  for (const file of sourceFiles(SOURCE_ROOT)) {
+    if (!/\bextends BrokerActor\b/.test(readFileSync(file, 'utf8'))) continue;
+    const module = await import(pathToFileURL(file).href) as Record<string, unknown>;
+    for (const [name, value] of Object.entries(module)) {
+      if (typeof value !== 'function') continue;
+      const prototype = (value as { readonly prototype?: Partial<BrokerPrototype> }).prototype;
+      if (typeof prototype?.configKey !== 'function' || typeof prototype.retiredLeaves !== 'function') continue;
+      const probe = Object.create(prototype) as BrokerPrototype;
+      blocks.push({ name, root: probe.configKey(), own: probe.retiredLeaves() });
+    }
+  }
+  return blocks;
+}
+
+/** The two tables `BrokerActor` checks under every broker's root, beside the broker's own. */
+const SHARED_BROKER_TABLES = {
+  RETIRED_BROKER_COMMON_LEAVES,
+  RETIRED_BROKER_CIRCUIT_BREAKER_LEAVES,
+} as const;
+
+/**
+ * Where each table no broker returns from `retiredLeaves()` is checked: the
+ * roots its reader hands `rejectRetiredLeaves`.  The cache's table is checked
+ * under a named block as well, which `cache(name)` reads with the default
+ * block's reader; `orders` stands for any name.  A table missing here fails
+ * the pin below, so a new one has to say where it is checked.
+ */
+const OTHER_TABLE_ROOTS: Readonly<Record<string, readonly string[]>> = {
+  RETIRED_IN_MEMORY_CACHE_LEAVES: [ConfigKeys.cache.inMemoryOptions.root, `${ConfigKeys.cache.root}.orders.in-memory`],
+  RETIRED_HTTP_CLIENT_LEAVES: [ConfigKeys.http.client.root],
+  RETIRED_WEBSOCKET_LEAVES: [ConfigKeys.http.websocket.root],
+  RETIRED_GRPC_SERVER_LEAVES: [ConfigKeys.io.broker.grpc.server.root],
+  RETIRED_TCP_FRAMING_LEAVES: [ConfigKeys.io.broker.tcp.framing.root, ConfigKeys.io.broker.tcpServer.framing.root],
+};
+
+/**
+ * Every retired spelling of every table, at every root it is checked under —
+ * each broker's own table and the two shared ones under the broker's root,
+ * every other table under the roots above — with the tables it was built
+ * from, so the test can say which table it could not place.
+ */
+async function everyRetiredSpelling(): Promise<{
+  readonly paths: readonly string[];
+  readonly tables: readonly RetiredTable[];
+  readonly placed: ReadonlySet<string>;
+}> {
+  const tables = retiredTables();
+  const tableNamed = (name: string): RetiredTable | undefined => tables.find((table) => table.name === name);
+  const placed = new Set<string>(Object.keys(SHARED_BROKER_TABLES));
+  const paths: string[] = [];
+  for (const { name, root, own } of await brokerBlocks()) {
+    const ownTable = tables.find((table) => Bun.deepEquals(table.entries, own, true));
+    if (Object.keys(own).length > 0) {
+      expect(ownTable, `${name}.retiredLeaves() returns a table no declaration in src/ parses to`).toBeDefined();
+      placed.add(ownTable!.name);
+    }
+    const leaves = { ...RETIRED_BROKER_COMMON_LEAVES, ...RETIRED_BROKER_CIRCUIT_BREAKER_LEAVES, ...own };
+    paths.push(...Object.keys(leaves).map((leaf) => `${root}.${leaf}`));
+  }
+  for (const [name, roots] of Object.entries(OTHER_TABLE_ROOTS)) {
+    const table = tableNamed(name);
+    expect(table, `${name} is placed here, and src/ declares no such table`).toBeDefined();
+    placed.add(name);
+    paths.push(...roots.flatMap((root) => Object.keys(table!.entries).map((leaf) => `${root}.${leaf}`)));
+  }
+  return { paths, tables, placed };
+}
+
 async function errorOf(run: () => Promise<unknown>): Promise<unknown> {
   try {
     await run();
@@ -296,10 +423,49 @@ describe('a retired spelling is refused where its block is first read', () => {
     }
   });
 
-  test('nothing checks up front: a system holding every one of them at once starts', async () => {
-    const hocon = REFUSAL_SITES.map((site) => site.hocon).join('\n');
+  test('every retired-leaf table src/ declares is read as declared', () => {
+    const tables = retiredTables();
+    const parsed = new Map(tables.map((table) => [table.name, table.entries]));
+    // The exported tables are the parser's check: a misread one differs from its import.
+    const exported = { ...SHARED_BROKER_TABLES, RETIRED_TCP_FRAMING_LEAVES };
+    for (const [name, table] of Object.entries(exported)) {
+      expect(parsed.get(name), `${name} as parsed from src/`).toEqual({ ...table });
+    }
+    expect(parsed.size, 'two tables share a name').toBe(tables.length);
+    for (const table of tables) {
+      expect(Object.keys(table.entries).length, `${table.name} parsed to no entries`).toBeGreaterThan(0);
+    }
+  });
+
+  test('nothing checks up front: a system holding every retired spelling of every table at once starts', async () => {
+    // Every entry of every table at every root it is checked under, not a
+    // sample: a check at ActorSystem.create that refused any one of them
+    // would fail here, where a check of a spelling outside a sample would not.
+    const { paths, tables, placed } = await everyRetiredSpelling();
+    expect(
+      tables.map((table) => table.name).filter((name) => !placed.has(name)),
+      'a retired-leaf table this test does not place under the root it is checked at',
+    ).toEqual([]);
+    expect(paths).toEqual(expect.arrayContaining(REFUSAL_SITES.map((site) => site.retired)));
+    // Guards the guard: the shared tables sit under every broker's root, and
+    // the cache's table under a named block too — the two parts a shorter
+    // list would drop, and with them a check of those spellings at create.
+    const brokers = await brokerBlocks();
+    expect(brokers.length).toBeGreaterThan(10);
+    for (const { root } of brokers) {
+      for (const shared of Object.values(SHARED_BROKER_TABLES)) {
+        expect(paths).toEqual(expect.arrayContaining(Object.keys(shared).map((leaf) => `${root}.${leaf}`)));
+      }
+    }
+    expect(paths.filter((path) => path.startsWith(`${ConfigKeys.cache.root}.orders.in-memory.`)).length).toBeGreaterThan(0);
+
+    const hocon = paths.map((path) => `${path} = 1`).join('\n');
     const system = createTestActorSystem({ name: 'hocon-leaf-spelling-all', config: Config.parseString(hocon) });
-    await system.terminate();
+    try {
+      for (const path of paths) expect(system.config.hasPath(path), `${path} did not reach the system config`).toBe(true);
+    } finally {
+      await system.terminate();
+    }
   });
 });
 
