@@ -175,3 +175,14 @@ export const MAXIMUM_ECHOED_CORS_HEADERS_LENGTH = 1024;
  * already saying what it means.
  */
 export const DEFAULT_HTTP_BIND_HOST = '127.0.0.1';
+
+/**
+ * The shortest `max-age`, in seconds, that `actor-ts.http.hsts.max-age` may
+ * set: one day.  A pin shorter than that has lapsed before a visitor comes
+ * back the next day, so a file that set it would switch HSTS off in all but
+ * name — and `0` switches it off outright (RFC 6797 §6.1.1).  A day still
+ * leaves every stage of hstspreload.org's ramp-up from one week on to the
+ * file; its five-minute first stage, the one meant for backing out quickly,
+ * is a decision for code (`withMaxAge(300)`), as is any value below this.
+ */
+export const MINIMUM_CONFIGURED_HSTS_MAX_AGE_SECONDS = 86_400;
