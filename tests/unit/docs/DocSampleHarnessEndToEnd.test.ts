@@ -351,6 +351,20 @@ const ONE_DIAGNOSTIC = "tmp/elsewhere.ts(1,7): error TS2322: Type 'string' is no
 /** STATUS_STACK_BUFFER_OVERRUN, the exit a process killed for want of commit memory reports on Windows. */
 const KILLED_ON_WINDOWS = -1073740791;
 
+/**
+ * A configuration TypeScript refuses, in the shape TypeScript 7 prints it —
+ * measured with a `baseUrl` left in a tsconfig.  It reports this and nothing
+ * else: no fence is checked at all.
+ */
+const REJECTED_CONFIGURATION = [
+  "tmp/doc-samples-out/tsconfig.json(1,40): error TS5102: Option 'baseUrl' has been removed. Please remove it from your configuration.",
+  '  Use \'"paths": {"*": ["./*"]}\' instead.',
+  '',
+].join('\n');
+
+/** The project file itself missing — reported without a location. */
+const MISSING_PROJECT = "error TS5058: The specified path does not exist: 'tmp/doc-samples-out/tsconfig.json'.\n";
+
 function fakeCompilerIn(directory: string, fake: FakeCompiler): void {
   mkdirSync(directory, { recursive: true });
   writeFileSync(join(directory, 'output.txt'), fake.output, 'utf8');
@@ -418,6 +432,8 @@ describe('a compiler that did not run to completion fails the harness', () => {
     { name: 'crash-after-a-diagnostic', output: `${ONE_DIAGNOSTIC}${OUT_OF_MEMORY}`, status: 2 },
     { name: 'silent-failure', output: '', status: 1 },
     { name: 'killed', output: '', status: 0, signal: 'SIGKILL' },
+    { name: 'configuration-rejected', output: REJECTED_CONFIGURATION, status: 1 },
+    { name: 'project-not-found', output: MISSING_PROJECT, status: 1 },
   ])('$name: exit 2, and the run says the compiler did not finish instead of passing the fence', (fake) => {
     const ended = runAgainst(fake);
     expect(ended.stdout, 'a run that trusted the dead compiler prints OK').not.toContain('OK —');

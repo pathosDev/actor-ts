@@ -710,10 +710,10 @@ export function exportsPaths(manifest, toRoot = '..') {
     // real distance up to the repository root rather than a hardcoded `..`, so
     // `--out` can point anywhere.  TypeScript 7 removed `baseUrl` outright
     // (TS5102), and a `baseUrl` left in place is a configuration error — which
-    // aborts the run before a single semantic diagnostic is produced, so the
-    // check reports only parse errors and looks like it passed.  That failure
-    // mode is silent enough to be worth the note, and getting `toRoot` wrong
-    // has the same shape: every specifier becomes TS2307 at once.
+    // aborts the run before a single semantic diagnostic is produced.  The run
+    // used to report that as a pass; `CONFIGURATION_DIAGNOSTIC` now ends it
+    // with exit 2.  Getting `toRoot` wrong is louder: every specifier becomes
+    // TS2307 at once.
     paths[specifier] = [declaration.replace(/^\.\/dist\//, `${toRoot}/src/`).replace(/\.d\.ts$/, '.ts')];
   }
   return paths;
@@ -736,6 +736,16 @@ const ANY_DIAGNOSTIC = /\berror TS\d+:/;
  * continuation lines are indented, so neither can begin like this.
  */
 const RUNTIME_CRASH = /^(?:fatal error:|panic:|goroutine \d+ \[|FATAL ERROR:|runtime: )/m;
+
+/**
+ * A diagnostic about the compile's configuration rather than its program: one
+ * located in a tsconfig, or a compiler-option error (`TS5xxx`) printed without
+ * a location.  TypeScript stops at a configuration it refuses — measured: a
+ * `baseUrl` left in place yields its `TS5102` and not one semantic diagnostic
+ * — so the compile finished, but it checked no fence.  The diagnostic names a
+ * file that is no fence, so the run used to drop it and print `OK`.
+ */
+const CONFIGURATION_DIAGNOSTIC = /^(?:.*[\\/])?tsconfig[^\\/()]*\.json\(\d+,\d+\):\s+error TS\d+:|^error TS5\d{3}:/m;
 
 /** The exits of a compile that finished: clean, diagnostics without output, diagnostics with output. */
 const COMPLETED_STATUSES = new Set([0, 1, 2]);
@@ -767,6 +777,7 @@ function incompleteCompile(result, output) {
   if (result.status !== 0 && !ANY_DIAGNOSTIC.test(output)) {
     return `it exited with status ${result.status} without reporting a single diagnostic`;
   }
+  if (CONFIGURATION_DIAGNOSTIC.test(output)) return 'it refused its configuration, so it checked no fence';
   return null;
 }
 
