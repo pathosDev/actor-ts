@@ -900,12 +900,15 @@ const persistenceUnpublishedLeaves: ReadonlyArray<readonly [string, UnpublishedL
   [ConfigKeys.persistence.journal.cassandra.consistency, { value: 6, reason: DRIVER_CONSISTENCY }],
   [ConfigKeys.persistence.journal.cassandra.serialConsistency, { value: 9, reason: DRIVER_CONSISTENCY }],
   [ConfigKeys.persistence.snapshotStore.cassandra.consistency, { value: 6, reason: DRIVER_CONSISTENCY }],
-  // `replication.data-centers` under both Cassandra blocks stays outside: a list
-  // of `{ name, replication-factor }` objects, read only when `replication.class`
-  // is network-topology-strategy. The gate's list kind perturbs a list of
-  // strings, so there is no value to introduce, and a context would also have to
-  // select the class, because the reader refuses data centers under
-  // simple-strategy and a refusal is not a read.
+  // `replication.data-centers` under both Cassandra blocks is not gated yet: a
+  // list of `{ name, replication-factor }` objects, read only when
+  // `replication.class` is network-topology-strategy. It needs an
+  // UNPUBLISHED_LEAVES entry whose `override` is a second list — the list kind's
+  // inferred one appends a word, which the reader refuses — and a context
+  // selecting network-topology-strategy on both Cassandra readers, because the
+  // reader refuses data centers under simple-strategy and a refusal is not a
+  // read. DeadKeyGateGuidance shows those two would be enough; nobody has
+  // written them.
   ...(['journal', 'snapshot-store', 'durable-state'] as const).flatMap((store) =>
     (['read-capacity-units', 'write-capacity-units'] as const).map((leaf) =>
       [`actor-ts.persistence.${store}.dynamodb.provisioned-throughput.${leaf}`, {
