@@ -14,8 +14,9 @@ import { GrpcServerActor } from '../../../src/io/broker/GrpcServerActor.js';
  * `HoconFenceKeys` holds the same fences to a spelling, and a spelling is all
  * it can see: `max-connection` for `max-connections`, a listener's leaf written
  * into the client's block, a shared leaf under the one root whose actor has
- * none — each of them is kebab-case.  This package has no unknown-key
- * detection, so an operator who copies such a sample gets a setting nothing
+ * none — each of them is kebab-case.  Outside a TCP `framing` block, which
+ * refuses a leaf it does not take, nothing under a broker's root detects an
+ * unknown key, so an operator who copies such a sample gets a setting nothing
  * reads and nothing reports.  The readers address their leaves through
  * `ConfigKeys.io.broker`, and `BrokerConfigCompleteness` and
  * `BrokerPathsNamedInSource` hold them to it, so the paths declared there —
@@ -64,11 +65,16 @@ import { GrpcServerActor } from '../../../src/io/broker/GrpcServerActor.js';
  *
  * `reference/configuration.mdx` lists every broker subtree with the page that
  * publishes its keys.  Each root `ConfigKeys` declares has a row there, each
- * row is a root, and the page a row names publishes at least one of that
- * root's own leaves in a HOCON fence, in both languages — so "see the
- * per-protocol pages for the keys" holds for every root.  The two languages
+ * row is a root, and the page a row names publishes every one of that root's
+ * own leaves in a HOCON fence, in both languages — so "see the per-protocol
+ * pages for the keys" holds for every root — except the leaves
+ * `KNOWN_UNPUBLISHED_LEAVES` lists, each with the issue that owes it.  The
+ * list can only shrink: an entry a page now publishes fails.  The two languages
  * publish the same HOCON, fence for fence, since a German sample is copied as
- * often as an English one.
+ * often as an English one — the same *code*: comment prose may be translated,
+ * as AGENTS.md allows for every fence but the reference-conf one, which
+ * `ReferenceConfDocs` holds byte for byte.  A commented-out field is code
+ * written as a comment, so it has to match like a live one.
  *
  * What this cannot see: HOCON in a fence not tagged `hocon`; a key named in
  * comment prose, or commented out with `:` (`# max-connection: 5`), by the rule
@@ -132,6 +138,66 @@ const APPLICATION_DATA_BLOCKS: ReadonlyMap<string, string> = new Map([
   [ConfigKeys.io.broker.sse.headers, 'its keys are the HTTP header names the request sends, read as one block'],
 ]);
 
+/**
+ * A root's own leaves: every path its `ConfigKeys` group declares, the group's
+ * blocks left out — a nested `root` is the block a fence opens, not a setting.
+ */
+function ownLeavesOf(group: KeyTree): string[] {
+  return Object.entries(group).flatMap(([name, value]) => {
+    if (name === 'root') return [];
+    return typeof value === 'string' ? [value] : ownLeavesOf(value);
+  });
+}
+
+/**
+ * Own leaves that the page a root's row names does not publish yet, each
+ * with the issue that owes it.
+ *
+ * The configuration page sends the reader to a root's page "for the keys",
+ * and until #1443's verification that meant only "at least one of them": the
+ * Kafka page published 2 of its 13 leaves.  Every leaf is checked now, and a
+ * leaf a page still owes is listed here rather than passed in silence.
+ * Checked in both directions, as `HoconFenceKeys`' exemptions are — an entry
+ * whose leaf a page now publishes fails — so the list can only shrink, and
+ * each reason has to name an issue.
+ */
+const KNOWN_UNPUBLISHED_LEAVES: ReadonlyMap<string, string> = new Map<string, string>([
+  ...unpublished('#1443: io/email-bridge.mdx shows the IMAP block without these two', [
+    'email-bridge.imap.move-to-mailbox', 'email-bridge.imap.disable-idle',
+  ]),
+  ...unpublished('#1443: io/jetstream.mdx shows no connection leaf, and `start-time` only in comment prose', [
+    'jetstream.servers', 'jetstream.token', 'jetstream.user', 'jetstream.password', 'jetstream.name',
+    'jetstream.consumer.deliver-policy.start-time',
+  ]),
+  ...unpublished('#1443: io/jetstream-kv.mdx shows only `servers`, `bucket` and `history` for the key-value bucket', [
+    'jetstream-key-value.token', 'jetstream-key-value.user', 'jetstream-key-value.password', 'jetstream-key-value.name',
+    'jetstream-key-value.time-to-live', 'jetstream-key-value.storage', 'jetstream-key-value.replicas',
+    'jetstream-key-value.max-value-bytes', 'jetstream-key-value.create',
+  ]),
+  ...unpublished('#1443: io/jetstream-kv.mdx shows only `servers`, `bucket` and `max-object-bytes` for the object store', [
+    'jetstream-object-store.token', 'jetstream-object-store.user', 'jetstream-object-store.password',
+    'jetstream-object-store.name', 'jetstream-object-store.description', 'jetstream-object-store.storage',
+    'jetstream-object-store.replicas', 'jetstream-object-store.create',
+  ]),
+  ...unpublished('#1443: io/kafka.mdx shows only the producer block', [
+    'kafka.brokers', 'kafka.client-id', 'kafka.ssl', 'kafka.sasl.mechanism', 'kafka.sasl.username', 'kafka.sasl.password',
+    'kafka.consumer.group-id', 'kafka.consumer.from-beginning', 'kafka.consumer.commit-mode', 'kafka.consumer.commit-timeout',
+    'kafka.topics',
+  ]),
+  ...unpublished('#1443: io/mqtt.mdx shows only the will block', [
+    'mqtt.broker-url', 'mqtt.client-id', 'mqtt.credentials.username', 'mqtt.credentials.password', 'mqtt.qos',
+    'mqtt.clean-session', 'mqtt.keep-alive', 'mqtt.protocol-version',
+  ]),
+  ...unpublished("#1443: io/tcp.mdx says the listener's framing takes the client's leaves, and shows two of them under it", [
+    'tcp-server.framing.delimiter', 'tcp-server.framing.max-frame-bytes',
+  ]),
+]);
+
+/** The entries of {@link KNOWN_UNPUBLISHED_LEAVES} for some leaves under `actor-ts.io.broker`, all with one reason. */
+function unpublished(reason: string, leaves: ReadonlyArray<string>): Array<[string, string]> {
+  return leaves.map((leaf) => [`actor-ts.io.broker.${leaf}`, reason]);
+}
+
 /** Every path a fence may publish under {@link NAMESPACE}. */
 const DECLARED_PATHS: ReadonlySet<string> = new Set([
   ...pathsOf(ConfigKeys.io as unknown as KeyTree),
@@ -143,13 +209,17 @@ const DECLARED_PATHS: ReadonlySet<string> = new Set([
 /* ------------------------------ the fences ------------------------------ */
 
 /**
- * The opening fence of a HOCON sample — indented ones included, as in
- * `HoconFenceKeys`, and ones carrying a title, which would otherwise be a way
- * past both guards.
+ * The opening fence of a HOCON sample, in every form a Markdown page can open
+ * one — the same set `HoconFenceKeys` reads: indented; inside a blockquote,
+ * once {@link BLOCKQUOTE} is off the line; with backticks or tildes, three or
+ * more; with the language in any case; and carrying a title, which would
+ * otherwise be a way past both guards.
  */
-const HOCON_FENCE_OPEN = /^[ \t]*```hocon(?:[ \t].*)?$/;
-/** Any fence delimiter; the first one after an opening fence closes it. */
-const FENCE_DELIMITER = /^[ \t]*```/;
+const HOCON_FENCE_OPEN = /^[ \t]*(`{3,}|~{3,})[ \t]*hocon(?:[ \t].*)?$/i;
+/** A line that can close a fence: a bare run of backticks or tildes. */
+const FENCE_CLOSE = /^[ \t]*(`{3,}|~{3,})[ \t]*$/;
+/** The markers of a blockquote, nested ones included, in front of a line. */
+const BLOCKQUOTE = /^[ \t]*(?:>[ \t]?)+/;
 
 type HoconFence = {
   /** The page, relative to the docs root. */
@@ -159,18 +229,27 @@ type HoconFence = {
   readonly body: ReadonlyArray<string>;
 };
 
-/** Every HOCON fence on `page`, in order. */
+/**
+ * Every HOCON fence on `page`, in order, its lines without blockquote markers.
+ * A fence closes the way Markdown closes it, on a bare run of its own
+ * character at least as long as the one it opened with.
+ */
 function hoconFencesIn(page: string, text: string): HoconFence[] {
   const out: HoconFence[] = [];
-  let open: { readonly line: number; readonly body: string[] } | undefined;
+  let open: { readonly line: number; readonly marker: string; readonly body: string[] } | undefined;
   for (const [index, line] of text.split(/\r?\n/).entries()) {
+    const unquoted = line.replace(BLOCKQUOTE, '');
     if (open === undefined) {
-      if (HOCON_FENCE_OPEN.test(line)) open = { line: index + 1, body: [] };
-    } else if (FENCE_DELIMITER.test(line)) {
+      const marker = HOCON_FENCE_OPEN.exec(unquoted)?.[1];
+      if (marker !== undefined) open = { line: index + 1, marker, body: [] };
+      continue;
+    }
+    const close = FENCE_CLOSE.exec(unquoted);
+    if (close !== null && close[1]![0] === open.marker[0] && close[1]!.length >= open.marker.length) {
       out.push({ page, line: open.line, body: open.body });
       open = undefined;
     } else {
-      open.body.push(line);
+      open.body.push(unquoted);
     }
   }
   return out;
@@ -292,6 +371,51 @@ function keysIn(fence: HoconFence): FenceKey[] {
     commentedOut.scan(uncommented, line, true, out);
   }
   return out;
+}
+
+/**
+ * `text` up to its trailing comment: the first `#` or `//` outside a quoted
+ * string and a `${…}` substitution, as HOCON reads it.
+ */
+function codeBeforeComment(text: string): string {
+  let index = 0;
+  while (index < text.length) {
+    const character = text[index]!;
+    if (character === '"') {
+      index++;
+      while (index < text.length && text[index] !== '"') index += text[index] === '\\' ? 2 : 1;
+      index++;
+    } else if (character === '$' && text[index + 1] === '{') {
+      const end = text.indexOf('}', index);
+      index = end < 0 ? text.length : end + 1;
+    } else if (character === '#' || (character === '/' && text[index + 1] === '/')) {
+      return text.slice(0, index).trimEnd();
+    } else {
+      index++;
+    }
+  }
+  return text.trimEnd();
+}
+
+/**
+ * The code of a fence, what the two languages have to share: every line with
+ * its trailing comment cut off, comment prose dropped, and a commented-out
+ * field kept — under one `#`, since the marker is not what a reader copies.
+ * Blank lines go too, so a comment translated into more lines or fewer
+ * changes nothing.
+ */
+function hoconCodeOf(fence: HoconFence): string[] {
+  return fence.body.flatMap((text) => {
+    if (!COMMENT_LINE.test(text)) return [codeBeforeComment(text)];
+    const uncommented = text.replace(COMMENT_MARKERS, '');
+    if (!COMMENTED_OUT_FIELD.test(uncommented) && !COMMENTED_OUT_CLOSE.test(uncommented)) return [];
+    return [`# ${codeBeforeComment(uncommented).trim()}`];
+  }).filter((line) => line.trim() !== '');
+}
+
+/** What a page publishes as HOCON, fence by fence — each fence's code, as {@link hoconCodeOf} reads it. */
+function publishedHoconCode(page: string, text: string): string[] {
+  return hoconFencesIn(page, text).map((fence) => hoconCodeOf(fence).join('\n'));
 }
 
 /** Every leaf the parser finds in `tree`, a substitution being a leaf. */
@@ -431,6 +555,42 @@ function unreadIn(lines: ReadonlyArray<string>): string[] {
   return unreadKeys(keysIn(fenceOf(lines))).map((key) => key.path);
 }
 
+/**
+ * The own leaves of `group` that no fence on `page` publishes — live or
+ * commented out, since either shows the reader the key.  A fence on another
+ * page does not count: the configuration page sends the reader to this one.
+ */
+function leavesNotPublishedOn(page: string, group: KeyTree, fences: ReadonlyArray<BrokerFence>): string[] {
+  const published = new Set(fences.filter((fence) => fence.page === page).flatMap((fence) => fence.keys.map((key) => key.path)));
+  return ownLeavesOf(group).filter((leaf) => !published.has(leaf));
+}
+
+/** How one root's page stands against the allow-list. */
+type PublicationProblems = {
+  /** Leaves the page does not publish and the list does not name. */
+  readonly unlisted: ReadonlyArray<string>;
+  /** Leaves the list names that the page publishes now. */
+  readonly stale: ReadonlyArray<string>;
+  /** The page publishes none of the root's leaves at all. */
+  readonly nothingPublished: boolean;
+};
+
+function publicationProblems(leaves: ReadonlyArray<string>, missing: ReadonlyArray<string>, known: ReadonlyMap<string, string>): PublicationProblems {
+  return {
+    unlisted: missing.filter((leaf) => !known.has(leaf)),
+    stale: leaves.filter((leaf) => known.has(leaf) && !missing.includes(leaf)),
+    nothingPublished: missing.length === leaves.length,
+  };
+}
+
+/** What is wrong with an allow-list of unpublished leaves: entries that name no own leaf, or no issue. */
+function allowListProblems(known: ReadonlyMap<string, string>, leaves: ReadonlySet<string>): string[] {
+  return [...known].flatMap(([leaf, reason]) => [
+    ...(leaves.has(leaf) ? [] : [`${leaf} is no own leaf of any broker root`]),
+    ...(/#\d+/.test(reason) ? [] : [`${leaf}: its reason names no issue`]),
+  ]);
+}
+
 /* -------------------------------- tests --------------------------------- */
 
 describe('every key the io pages publish under actor-ts.io.broker is one a reader reads', () => {
@@ -520,6 +680,55 @@ describe('every key the io pages publish under actor-ts.io.broker is one a reade
       'actor-ts.io.broker.sse.headers { x-anything-at-all = "1" }',
       'actor-ts.http.server.port = 8080',
     ])).toEqual([]);
+  });
+
+  test.each<[string, (body: ReadonlyArray<string>) => string[]]>([
+    ['a tilde fence', (body) => ['~~~hocon', ...body, '~~~']],
+    ['a four-backtick fence', (body) => ['````hocon', ...body, '````']],
+    ['a four-backtick fence around a three-backtick line', (body) => ['````hocon', '```', ...body, '````']],
+    ['an uppercase language', (body) => ['```HOCON title="application.conf"', ...body, '```']],
+    ['a fence in a blockquote', (body) => ['> ```hocon', ...body.map((line) => `> ${line}`), '> ```']],
+  ])('%s is read like any other HOCON fence', (_form, page) => {
+    // No io page writes one of these today, so a finder that missed it would
+    // leave a misspelt key in it unchecked with every page test green.
+    const fences = hoconFencesIn('probe.mdx', ['Some prose.', '', ...page(['actor-ts.io.broker.udp {', '  bind-prot = 1', '}']), ''].join('\n'));
+    expect(fences.flatMap((fence) => unreadKeys(keysIn(fence))).map((key) => key.path)).toEqual(['actor-ts.io.broker.udp.bind-prot']);
+  });
+
+  test('the languages are compared on their code: comment prose may be translated, a commented-out field may not', () => {
+    const english = [
+      '# Every connection the server accepts counts.',
+      'actor-ts.io.broker.tcp-server {',
+      '  keep-alive      = 45s        # the default; 0 = off',
+      '  // limits',
+      '  # max-connections = 1024',
+      '  password = "s3cr#t"   // the # in the string is not a comment',
+      '}',
+    ];
+    const page = (prose: string, lines: ReadonlyArray<string>): string => [prose, '', '```hocon', ...lines, '```', ''].join('\n');
+    const englishCode = publishedHoconCode('probe.mdx', page('Every connection counts.', english));
+    const sameCodeAsEnglish = (lines: ReadonlyArray<string>): boolean =>
+      JSON.stringify(publishedHoconCode('de/probe.mdx', page('Jede Verbindung zählt.', lines))) === JSON.stringify(englishCode);
+    const englishWith = (from: string, to: string): string[] => english.map((line) => (line === from ? to : line));
+
+    // Translated prose in each place a comment can sit, one comment spread
+    // over two lines and another dropped — the code is untouched.
+    expect(sameCodeAsEnglish([
+      '# Jede Verbindung, die der Server annimmt,',
+      '# zählt mit.',
+      'actor-ts.io.broker.tcp-server {',
+      '  keep-alive      = 45s        # der Default; 0 = aus',
+      '  # max-connections = 1024',
+      '  password = "s3cr#t"   // das # im String ist kein Kommentar',
+      '}',
+    ])).toBe(true);
+
+    // Code is code wherever it sits: a value, a key, a commented-out field,
+    // and what follows a `#` inside a string.
+    expect(sameCodeAsEnglish(englishWith('  keep-alive      = 45s        # the default; 0 = off', '  keep-alive      = 46s        # the default; 0 = off'))).toBe(false);
+    expect(sameCodeAsEnglish(englishWith('  keep-alive      = 45s        # the default; 0 = off', '  keep-alive-time = 45s        # the default; 0 = off'))).toBe(false);
+    expect(sameCodeAsEnglish(englishWith('  # max-connections = 1024', '  # max-connections = 2048'))).toBe(false);
+    expect(sameCodeAsEnglish(englishWith('  password = "s3cr#t"   // the # in the string is not a comment', '  password = "s3cr#x"   // the # in the string is not a comment'))).toBe(false);
   });
 
   test('a fragment is read under the one root its page opens, and fails on a page that opens two', () => {
@@ -617,32 +826,73 @@ describe('every key the io pages publish under actor-ts.io.broker is one a reade
     language,
     languageName: language.language,
   }))))(
-    '$root publishes its own keys on the page the $languageName configuration page names',
+    '$root publishes every one of its own leaves on the page the $languageName configuration page names',
     ({ root, group, language }) => {
       const page = brokerTableOf(language).get(root);
       expect(page, `${language.configurationPage} has no row for ${root}`).toBeDefined();
-      const ownLeaves = new Set(pathsOf(group).filter((path) => path !== root));
-      const published = BROKER_FENCES
-        .filter((fence) => fence.page === page)
-        .flatMap((fence) => fence.keys.filter((key) => ownLeaves.has(key.path)));
+      const leaves = ownLeavesOf(group);
+      expect(leaves.length, `${root} declares no leaf of its own`).toBeGreaterThan(0);
+      const problems = publicationProblems(leaves, leavesNotPublishedOn(page ?? '', group, BROKER_FENCES), KNOWN_UNPUBLISHED_LEAVES);
       expect(
-        published.length,
-        `${page} publishes none of ${root}'s own keys in a HOCON fence, while ${language.configurationPage} `
+        problems.unlisted,
+        `${page} publishes none of these leaves of ${root} in a HOCON fence, while ${language.configurationPage} `
         + 'sends the reader there for them.',
-      ).toBeGreaterThan(0);
+      ).toEqual([]);
+      expect(problems.stale, `${page} publishes these leaves now — drop them from KNOWN_UNPUBLISHED_LEAVES.`).toEqual([]);
+      expect(
+        problems.nothingPublished,
+        `${page} publishes none of ${root}'s own leaves at all, so its row on ${language.configurationPage} points nowhere.`,
+      ).toBe(false);
     },
   );
+
+  test('a leaf a page owes is listed or fails, a listed leaf the page publishes fails, and so does a page that publishes nothing', () => {
+    const leaves = ['probe.a', 'probe.b', 'probe.c'];
+    const known = new Map([['probe.b', '#1443'], ['probe.c', '#1443']]);
+    expect(publicationProblems(leaves, ['probe.b'], known)).toEqual({ unlisted: [], stale: ['probe.c'], nothingPublished: false });
+    expect(publicationProblems(leaves, ['probe.a', 'probe.b', 'probe.c'], known)).toEqual({ unlisted: ['probe.a'], stale: [], nothingPublished: true });
+    expect(publicationProblems(leaves, ['probe.b', 'probe.c'], known)).toEqual({ unlisted: [], stale: [], nothingPublished: false });
+  });
+
+  test('KNOWN_UNPUBLISHED_LEAVES names own leaves of the broker roots, each with the issue that owes it', () => {
+    const leaves = new Set(BROKER_BLOCKS.flatMap((block) => ownLeavesOf(block.group)));
+    expect(allowListProblems(KNOWN_UNPUBLISHED_LEAVES, leaves)).toEqual([]);
+    // And what it would refuse.
+    expect(allowListProblems(new Map([
+      ['actor-ts.io.broker.kafka.topic', '#1443: a misspelt leaf'],
+      ['actor-ts.io.broker.kafka.brokers', 'no reason anybody could follow up'],
+    ]), leaves)).toEqual([
+      'actor-ts.io.broker.kafka.topic is no own leaf of any broker root',
+      'actor-ts.io.broker.kafka.brokers: its reason names no issue',
+    ]);
+  });
+
+  test('a leaf is published only by a fence on the page a row names, live or commented out, and a block is no leaf', () => {
+    const group: KeyTree = {
+      root: 'actor-ts.io.broker.probe',
+      host: 'actor-ts.io.broker.probe.host',
+      port: 'actor-ts.io.broker.probe.port',
+      tls: { root: 'actor-ts.io.broker.probe.tls', enabled: 'actor-ts.io.broker.probe.tls.enabled' },
+    };
+    const fences = [
+      ...brokerFencesOf('io/probe.mdx', ['```hocon', 'actor-ts.io.broker.probe {', '  host = "h"', '  # tls { enabled = true }', '}', '```'].join('\n')),
+      ...brokerFencesOf('io/elsewhere.mdx', ['```hocon', 'actor-ts.io.broker.probe.port = 1', '```'].join('\n')),
+    ];
+    expect(ownLeavesOf(group)).toEqual(['actor-ts.io.broker.probe.host', 'actor-ts.io.broker.probe.port', 'actor-ts.io.broker.probe.tls.enabled']);
+    expect(leavesNotPublishedOn('io/probe.mdx', group, fences)).toEqual(['actor-ts.io.broker.probe.port']);
+    expect(leavesNotPublishedOn('io/elsewhere.mdx', group, fences)).toEqual(['actor-ts.io.broker.probe.host', 'actor-ts.io.broker.probe.tls.enabled']);
+  });
 
   test.each(IO_PAGES.get(LANGUAGES[0])!.map(({ page, text }) => ({ page, text })))(
     '$page and its German mirror publish the same HOCON',
     ({ page, text }) => {
       const mirror = IO_PAGES.get(LANGUAGES[1])!.find((candidate) => candidate.page === `de/${page}`);
       expect(mirror, `${page} has no German mirror`).toBeDefined();
-      const bodies = (fences: ReadonlyArray<HoconFence>): string[] => fences.map((fence) => fence.body.join('\n'));
       expect(
-        bodies(hoconFencesIn(`de/${page}`, mirror?.text ?? '')),
-        'the code of a HOCON sample is identical in both languages; only the prose around it is translated.',
-      ).toEqual(bodies(hoconFencesIn(page, text)));
+        publishedHoconCode(`de/${page}`, mirror?.text ?? ''),
+        'the code of a HOCON sample is identical in both languages; its comment prose may be translated, '
+        + 'a commented-out field may not.',
+      ).toEqual(publishedHoconCode(page, text));
     },
   );
 });
