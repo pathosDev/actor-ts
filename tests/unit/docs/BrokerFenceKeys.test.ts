@@ -14,8 +14,9 @@ import { GrpcServerActor } from '../../../src/io/broker/GrpcServerActor.js';
  * `HoconFenceKeys` holds the same fences to a spelling, and a spelling is all
  * it can see: `max-connection` for `max-connections`, a listener's leaf written
  * into the client's block, a shared leaf under the one root whose actor has
- * none — each of them is kebab-case.  This package has no unknown-key
- * detection, so an operator who copies such a sample gets a setting nothing
+ * none — each of them is kebab-case.  Outside a TCP `framing` block, which
+ * refuses a leaf it does not take, nothing under a broker's root detects an
+ * unknown key, so an operator who copies such a sample gets a setting nothing
  * reads and nothing reports.  The readers address their leaves through
  * `ConfigKeys.io.broker`, and `BrokerConfigCompleteness` and
  * `BrokerPathsNamedInSource` hold them to it, so the paths declared there —
