@@ -57,14 +57,13 @@ export class SqliteDurableStateStore extends RelationalDurableStateStore {
  * `options`, with an untyped `database: null` read as no handle at all
  * (#1492).
  *
- * The path rule and `buildSqliteDatabase` take any `database` other than
- * `undefined` for a pre-opened handle, so `null` — the value a caller without
- * the declared types passes for "none" — stood in for a valid path beside it:
- * the store opened nothing, handed `null` on, and failed its first operation
- * with a `TypeError`, where before the rule it opened the path.  Read as
- * absent, `null` beside a path opens the path, the store owns and closes the
- * database it opened, and `null` with no path is refused as a store given
- * neither.
+ * The path rule and `buildSqliteDatabase` already count `null` — the value a
+ * caller without the declared types passes for "none" — as no handle, so
+ * `null` beside a path opens the path and `null` with no path is refused as a
+ * store given neither.  What is left to this store is ownership: it decides
+ * `ownsPool` and the adapter's close from `database === undefined`, so
+ * without this a store that opened the path itself would leave that database
+ * open on `close()`, as if a caller owned it.
  */
 function withoutNullDatabase(options: SqliteDurableStateStoreOptionsType): SqliteDurableStateStoreOptionsType {
   if ((options.database as unknown) !== null) return options;
