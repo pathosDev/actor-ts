@@ -99,7 +99,7 @@ describe('the HOCON the MQTT and TCP pages publish configures what they say (#14
     environment({
       ACTOR_TS_MQTT_BROKER_URL: 'mqtts://mqtt.example.com:8883',
       ACTOR_TS_MQTT_CLIENT_ID: 'my-app',
-      ACTOR_TS_MQTT_USERNAME: 'my-app',
+      ACTOR_TS_MQTT_USERNAME: 'my-user',
       ACTOR_TS_MQTT_PASSWORD: 'secret',
       ACTOR_TS_MQTT_QOS: '1',
       ACTOR_TS_MQTT_CLEAN_SESSION: 'false',
@@ -110,7 +110,7 @@ describe('the HOCON the MQTT and TCP pages publish configures what they say (#14
     expect(options).toEqual({
       brokerUrl: 'mqtts://mqtt.example.com:8883',
       clientId: 'my-app',
-      credentials: { username: 'my-app', password: 'secret' },
+      credentials: { username: 'my-user', password: 'secret' },
       qos: 1,
       cleanSession: false,
       keepAlive: 30,
