@@ -352,6 +352,14 @@ returns a promise is awaited by the startup too, so a registration
 that fails late fails the startup rather than the first persisted
 message.
 
+Such a plug-in still registers a selected backend before its first
+`await`.  The selected stores are resolved inside `create`, right
+after the plug-ins have been called, so a factory registered after an
+`await` is not there yet and the startup fails with an `Unknown … plugin`
+error naming the id.  What the stores need once they open — a probe, a key fetched from a
+vault — may come after it: the stores open only once the promise has
+settled.
+
 Writing your own?  `Journal.read()` is the method replay holds to
 its contract: the events it returns must be ascending by sequence
 number, contiguous, and inside the requested window.  `delete()`
@@ -488,6 +496,14 @@ service never uses — a durable-state plug-in selected in an
 `application.conf` it shares with services that do — so a mistake
 there fails this startup too: point that axis back at the in-memory
 store for this service, or turn the boot-time open off as shown below.
+The mistakes that fail it are the ones the selection reads: an id
+nothing registered, a value written where the axis's block belongs
+(`actor-ts.persistence.journal = "…"`), and a selected store that
+cannot open.  A misspelt key is not one of them.  Nothing reads
+`plugn = "…"` or a `jornal` block, so the axis keeps the in-memory
+store `reference.conf` selects and the system starts on it with no
+error and no warning — and a journal kept in memory has lost its
+events by the next restart.
 
 Nothing in the framework closes the stores it resolved
 ([#388](https://github.com/pathosDev/actor-ts/issues/388)), and a

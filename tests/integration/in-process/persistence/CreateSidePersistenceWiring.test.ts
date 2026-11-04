@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions, ActorSystemOptionsBuilder } from '../../../../src/ActorSystemOptions.js';
+import { InMemoryCache } from '../../../../src/cache/InMemoryCache.js';
 import { bootstrapCluster } from '../../../../src/cluster/ClusterBootstrap.js';
 import { ClusterBootstrapOptions } from '../../../../src/cluster/ClusterBootstrapOptions.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
@@ -10,6 +11,8 @@ import { CoordinatedShutdownId, Phases, type Reason } from '../../../../src/Coor
 import { CoordinatedStartupId, StartupFailedReason, StartupPhases } from '../../../../src/CoordinatedStartup.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import {
+  CachedSnapshotStore,
+  CachedSnapshotStoreOptions,
   InMemoryDurableStateStore,
   InMemoryJournal,
   InMemorySnapshotStore,
@@ -45,6 +48,9 @@ const DURABLE_STATE_ID = 'test.durable-state.create-side';
 
 /** The task name the extension registers a plug-in's promise under. */
 const PLUGINS_TASK = 'persistence-plugins';
+
+/** The task that opens the selected stores, and fails the startup when one did not resolve inside `create`. */
+const WARM_UP_TASK = 'persistence-warm-up';
 
 type Stores = {
   readonly journal: Journal;
@@ -444,6 +450,149 @@ describe('a selected plug-in nothing registered', () => {
         expect(resolve).toThrow(`actor-ts.persistence.${axis}.plugin`);
       }
     } finally {
+      await system.terminate();
+    }
+  });
+});
+
+/**
+ * An async plug-in that registers the selected backend: on which side of its
+ * first `await` (#1473).  `create` resolves the selected stores once the
+ * plug-ins have run up to their first `await`, so a registration before it is
+ * in the registry by then and one after it is not, however soon it follows.
+ */
+describe('a selected backend an async plug-in registers', () => {
+  test('before its first await is the store every axis resolves to', async () => {
+    const stores = freshStores();
+    const plugin: PersistencePlugin = async (persistence) => {
+      registerAll(persistence, stores);
+      await Promise.resolve();
+    };
+    const systemOptions = selectingAllThree().withPersistence({ plugins: [plugin] });
+    const system = ActorSystem.create('create-side-registered-before-await', systemOptions);
+    try {
+      await system.whenReady();
+      const persistence = system.extension(PersistenceExtensionId);
+      expect(persistence.journal).toBe(stores.journal);
+      expect(persistence.snapshotStore).toBe(stores.snapshotStore);
+      expect(persistence.durableStateStore).toBe(stores.durableStateStore);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('after its first await fails the startup with Unknown journal plugin', async () => {
+    let registeredLate = false;
+    const plugin: PersistencePlugin = async (persistence) => {
+      await Promise.resolve();
+      registerAll(persistence, freshStores());
+      registeredLate = true;
+    };
+    const systemOptions = selectingAllThree().withPersistence({ plugins: [plugin] });
+    const system = ActorSystem.create('create-side-registered-after-await', systemOptions);
+    try {
+      const error = await rejectionOf(system.whenReady());
+      // Not vacuous: the plug-in did register the selected ids, after `create`
+      // had already resolved them.
+      expect(registeredLate).toBe(true);
+      expect(error.message).toContain(`Unknown journal plugin '${JOURNAL_ID}'`);
+      expect(error.message).toContain(`"${WARM_UP_TASK}"`);
+      expect(error.message).toContain(`"${StartupPhases.PersistenceStart}"`);
+      await system.whenTerminated();
+      expect(system.isTerminated).toBe(true);
+    } finally {
+      await stopped(system);
+    }
+  });
+});
+
+/**
+ * A store set in code over one the selected plug-in already built (#1473).
+ *
+ * Registering a factory drops the store the replaced factory built, and only
+ * that one: the extension remembers which plug-in id each store came from,
+ * and the setters clear that record, so their store stays.  Every case of
+ * `ExplicitStorePrecedence` sets its store before anything was resolved, when
+ * the record is still empty — the setters' half of the rule was held by
+ * nothing.  Here the store is built first, which is the default state of a
+ * system wired with plug-ins (the warm-up resolves the selected stores inside
+ * `create`), and also the decorator route the snapshot cache documents: read
+ * the store the configuration selected, wrap it, set the wrapper back.
+ */
+describe('a store set in code over one the selected plug-in built', () => {
+  test('stays through a later registration of the selected id, on every axis', async () => {
+    const built = freshStores();
+    const systemOptions = selectingAllThree().withPersistence({
+      plugins: [(persistence) => { registerAll(persistence, built); }],
+    });
+    const system = ActorSystem.create('create-side-set-over-built', systemOptions);
+    try {
+      await system.whenReady();
+      const persistence = system.extension(PersistenceExtensionId);
+      // Not vacuous: each axis holds what its selected factory built, so each
+      // remembers the id it came from when the store in code replaces it.
+      expect(persistence.journal).toBe(built.journal);
+      expect(persistence.snapshotStore).toBe(built.snapshotStore);
+      expect(persistence.durableStateStore).toBe(built.durableStateStore);
+      const inCode = freshStores();
+      persistence.setJournal(inCode.journal);
+      persistence.setSnapshotStore(inCode.snapshotStore);
+      persistence.setDurableStateStore(inCode.durableStateStore);
+
+      registerAll(persistence, freshStores());
+
+      expect(persistence.journal).toBe(inCode.journal);
+      expect(persistence.snapshotStore).toBe(inCode.snapshotStore);
+      expect(persistence.durableStateStore).toBe(inCode.durableStateStore);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('configure() keeps its stores the same way', async () => {
+    const built = freshStores();
+    const systemOptions = selectingAllThree().withPersistence({
+      plugins: [(persistence) => { registerAll(persistence, built); }],
+    });
+    const system = ActorSystem.create('create-side-configured-over-built', systemOptions);
+    try {
+      await system.whenReady();
+      const persistence = system.extension(PersistenceExtensionId);
+      expect(persistence.journal).toBe(built.journal);
+      expect(persistence.snapshotStore).toBe(built.snapshotStore);
+      expect(persistence.durableStateStore).toBe(built.durableStateStore);
+      const inCode = freshStores();
+      persistence.configure(inCode);
+
+      registerAll(persistence, freshStores());
+
+      expect(persistence.journal).toBe(inCode.journal);
+      expect(persistence.snapshotStore).toBe(inCode.snapshotStore);
+      expect(persistence.durableStateStore).toBe(inCode.durableStateStore);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('the selected snapshot store, wrapped in a CachedSnapshotStore and set back, stays the wrapper', async () => {
+    const built = freshStores();
+    const systemOptions = selectingAllThree().withPersistence({
+      plugins: [(persistence) => { registerAll(persistence, built); }],
+    });
+    const system = ActorSystem.create('create-side-wrapped-over-built', systemOptions);
+    const cache = new InMemoryCache();
+    try {
+      await system.whenReady();
+      const persistence = system.extension(PersistenceExtensionId);
+      const cachedOptions = CachedSnapshotStoreOptions.create().withCache(cache);
+      const cached = new CachedSnapshotStore(persistence.snapshotStore, cachedOptions);
+      persistence.setSnapshotStore(cached);
+
+      persistence.registerSnapshotStore(SNAPSHOT_STORE_ID, () => new InMemorySnapshotStore());
+
+      expect(persistence.snapshotStore).toBe(cached);
+    } finally {
+      await cache.close();
       await system.terminate();
     }
   });

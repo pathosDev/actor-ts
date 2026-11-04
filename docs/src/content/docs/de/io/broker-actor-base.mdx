@@ -156,9 +156,16 @@ systemweiten `EventStream`, der keinen Autorisierungsbegriff kennt
 Reconnect-Schleife publiziert sie bei jedem Backoff-Tick erneut,
 über die gesamte Dauer eines Ausfalls. Eine zusammengesetzte
 Server-Liste behält ihre Gestalt und verliert jede Credential
-(`nats://***@a:4222,nats://***@b:4222`), ein Label ohne Credential
-kommt unverändert zurück. Rufe `redactedEndpointLabel()` auch in
-deinen eigenen Log-Zeilen auf.
+(`nats://***@a:4222,nats://***@b:4222`). Ein Label, das nie eine
+Credential trug, kommt nur dann unverändert zurück, wenn es kein `?`,
+`#` oder `@` enthält: Hinter dem ersten `?` oder `#` wird nichts
+gezeigt, und ein `@` irgendwo hinter einem Host lässt sich nicht von
+einem Passwort unterscheiden, das ein `/` enthält, also endet
+`amqp://rabbit:5671/orders@eu` bei `amqp://***`. Eine URL mit einem
+Web-Schema (`http`, `https`, `ws`, `wss`) wird außerdem so
+ausgegeben, wie ihr Parse sie normalisiert —
+`ws://Broker.Example:80/feed` als `ws://broker.example/feed`. Rufe
+`redactedEndpointLabel()` auch in deinen eigenen Log-Zeilen auf.
 
 `onReceive` ist **versiegelt** — die Basisklasse besitzt die Methode, damit
 sie `Terminated` abfangen kann, bevor deine Dispatch-Tabelle es sieht.

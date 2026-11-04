@@ -300,9 +300,14 @@ export abstract class BrokerActor<
    * `imap://… + smtp://…` pair never reaches the URL parser: the helper
    * parses only a value that is unambiguously one URL, and splits anything
    * else at its commas and masks each entry by scan, a scheme-less
-   * `user:password@host` included (#1458).  A label that never
-   * carried a credential (`tcp://host:port`, `<unknown>`) comes back
-   * unchanged, so this is a no-op wherever there is nothing to hide.
+   * `user:password@host` included (#1458).  A label that never carried a
+   * credential (`tcp://host:port`, `<unknown>`) comes back unchanged only
+   * when it holds no `?`, `#` or `@`: nothing behind the first `?` or `#` is
+   * kept, and an `@` past a host cannot be told from a password holding a
+   * `/`, so `amqp://rabbit:5671/orders@eu` comes back as `amqp://***`.  A URL
+   * with a web scheme (`http`, `https`, `ws`, `wss`) comes back as its parse
+   * normalises it — `ws://Broker.Example:80/feed` as
+   * `ws://broker.example/feed`.
    */
   protected redactedEndpointLabel(): string {
     return redactedUrlLabel(this.endpointLabel());

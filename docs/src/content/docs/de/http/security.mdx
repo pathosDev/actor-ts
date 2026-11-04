@@ -278,7 +278,10 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
   Requests und eine HTTP/2-Session ohne offenen Stream; beide liefern
   keinen Wert, es ist also nichts begrenzt, bis du es sagst. **Diese Werte erreichen eine Verbindung
   über einen `node:http`-Server**: Fastify, Express und Hono-auf-Node tragen sie,
-  Hono auf Bun trägt nur `idle-timeout`, Hono auf Deno keinen — die Tabelle steht in der
+  Hono auf Bun trägt nur `idle-timeout` — dort ist es also die einzige
+  Schranke für einen Request, dessen Body nicht mehr weiterkommt, und für eine
+  untätige Verbindung, und mit `0` bleibt eine solche Verbindung offen, bis der
+  Client sie schließt —, Hono auf Deno keinen — die Tabelle steht in der
   [Konfigurationsreferenz](/de/reference/configuration/). Wo es eines nicht
   kann, sagt `bind()` es: jede Schranke, die du gesetzt hast und die laut
   Meldung des Backends nicht wirkt, wird beim Binden des Servers in einer

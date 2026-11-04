@@ -498,8 +498,9 @@ actor-ts {
     # clock when it calls Cluster.join, once its seeds are resolved.  There it
     # composes with bootstrap.await-ready below -- whichever fires first ends
     # the start with ClusterReadyTimeoutError, both tearing down with
-    # ClusterJoinUnsuccessfulReason -- and behind stable observation it must
-    # exceed self-election-grace + 5s, or the bootstrap refuses it.  A
+    # ClusterJoinUnsuccessfulReason -- and behind stable observation with
+    # new-cluster-enabled on it must exceed self-election-grace + 5s, or the
+    # bootstrap refuses it.  A
     # positive value shorter than seed-retry-interval is refused.
     shutdown-after-unsuccessful-join = 0s
 
@@ -617,7 +618,10 @@ actor-ts {
     #   app-version = \${?APP_VERSION}
     #
     # A literal goes in quotes: an unquoted 1.0 is a number, and reads back
-    # as "1".
+    # as "1".  An environment value is read as JSON first, so APP_VERSION=1.10
+    # reads back as "1.1" and 2.0 as "2" -- releases 1.1 and 1.10 print the
+    # same label; quote such a value inside the variable (APP_VERSION='"1.10"').
+    # A version with a second dot (1.2.3) or a letter (v1.10) is unchanged.
 
     # Per-role thresholds compose with the one above as an AND: the global
     # count and every configured role's count must be met.  Counted over the
@@ -776,8 +780,9 @@ actor-ts {
         max-sample-size = 200        # inter-arrival times kept per peer
         min-std-deviation = 100ms    # floor, so a very steady peer is not flagged on noise
         acceptable-heartbeat-pause = 3s   # grace added to the last heartbeat before phi rises
-        # The mean phi assumes before a peer's first heartbeat, with a deviation
-        # of a quarter of it.  auto = heartbeat-interval above, so a tuned
+        # The mean phi assumes until a peer's first heartbeat interval is
+        # measured, with a deviation of a quarter of it.  auto =
+        # heartbeat-interval above, so a tuned
         # cadence carries it along; a duration decouples the two.
         expected-response-after = "auto"
       }
@@ -850,8 +855,9 @@ actor-ts {
 
       # await-ready ships no value on purpose -- a key that is always present
       # could not express "unset", and unset is what selects the computed
-      # default: self-election-grace + 5s behind stable observation, 5s
-      # otherwise (#1086).  Set a duration to pin the budget regardless:
+      # default: self-election-grace + 5s behind stable observation with
+      # new-cluster-enabled on, 5s otherwise (#1086).  Set a duration to pin
+      # the budget regardless:
       #
       #   await-ready = 30s
     }
@@ -1027,8 +1033,11 @@ actor-ts {
     # per-call timeoutMs still wins, and max-quorum-timeout below clamps this
     # exactly as it clamps that.  Its own key rather than actor.ask-timeout,
     # which moves ActorRef.ask -- a different wait from how long this replica
-    # holds a pending slot for its peers to answer.  Positive: 0 would arm no
-    # timer, and a request waiting on a silent replica would never settle.
+    # holds a pending slot for its peers to answer.  Positive: 0 cannot mean
+    # off.  The replicator arms it like any other deadline, so it expires at
+    # the next timer tick -- a write fails there and a read settles for what
+    # this replica alone holds -- unless every replica it waits on has
+    # already answered.
     quorum-timeout = 5s
 
     max-pending-quorum-requests = 1000
@@ -1546,7 +1555,9 @@ actor-ts {
     #     disagree on purpose: 72s on Fastify, so the server outlives a load
     #     balancer's idle window and the balancer never posts a request onto a
     #     socket that is closing, against node:http's 5s on Express and
-    #     Hono-on-Node.  Set a duration to make them agree, or 0 to disable it.
+    #     Hono-on-Node.  Set a duration to make them agree, or 0 to disable it
+    #     -- which on the Hono backend under Bun leaves a stalled body
+    #     unbounded, below.
     #     On the Hono backend under Bun it is Bun.serve's own idleTimeout, a
     #     wider bound: whole-connection inactivity, so a handler that writes
     #     nothing for that long, a long poll or a sparse SSE stream is cut
@@ -1556,6 +1567,12 @@ actor-ts {
     #     Bun's own 10s but derived from the longest request deadline --
     #     http.request-timeout, raised to the longest requestTimeout() in the
     #     routes -- so the 503 is written first: 36s for the built-in 30s.
+    #     There it is also the only bound on a request whose body stops
+    #     arriving and on a connection idle between requests -- none of the
+    #     other timeouts is installed -- so 0 leaves such a connection open
+    #     until the client closes it.  A value whose earliest cut lands less
+    #     than 2s past the deadline makes bind() warn: the 5s below cuts a
+    #     handler that has written nothing from 4s on.
     #
     #       idle-timeout = 5s
     #
@@ -1660,9 +1677,11 @@ actor-ts {
     #
     # max-age is in SECONDS, as a bare integer rather than a duration string:
     # the header carries seconds, and a duration would be read as
-    # milliseconds.  max-age = 0 is refused with a ConfigError -- it tells
-    # every browser to forget the pin, so switching HSTS off is code-only
-    # (withMaxAge(0)).
+    # milliseconds.  Here a max-age below 86400 (one day) is refused with a
+    # ConfigError naming the key and the floor: 0 tells every browser to
+    # forget the pin, and a shorter pin than a day has lapsed before a
+    # visitor comes back the next day.  Code may still set any value
+    # (withMaxAge(...)).
     hsts {
       max-age             = 15552000  # 180 days
       include-sub-domains = on
@@ -2052,8 +2071,12 @@ actor-ts {
     journal {
       plugin = "actor-ts.persistence.journal.in-memory"
 
-      # Local SQLite journal.  registerSqlitePlugins(ext) makes this id real;
-      # the block below is what that call reads when it is given no options.
+      # Local SQLite journal.  registerSqlitePlugins, run through the plugins
+      # slot, makes this id real:
+      #   withPersistence({ plugins: [
+      #     (persistence) => registerSqlitePlugins(persistence),
+      #   ] })
+      # The block below is what that call reads when it is given no options.
       # Explicit SqliteJournalOptions always win over anything here.
       sqlite {
         # Database file, or ":memory:" for an in-memory database private to
@@ -2072,8 +2095,12 @@ actor-ts {
         busy-timeout = 1s             # lock wait before SQLITE_BUSY; 0 fails fast
       }
 
-      # PostgreSQL journal.  registerPostgresPlugins(ext) makes this id real;
-      # the block below is what that call reads when it is given no options.
+      # PostgreSQL journal.  registerPostgresPlugins, run through the plugins
+      # slot, makes this id real:
+      #   withPersistence({ plugins: [
+      #     (persistence) => registerPostgresPlugins(persistence),
+      #   ] })
+      # The block below is what that call reads when it is given no options.
       # Explicit PostgresJournalOptions always win over anything here.
       #
       # The five relational journals below share one implementation, so they
@@ -2093,8 +2120,11 @@ actor-ts {
         auto-create-tables = on       # CREATE TABLE IF NOT EXISTS when the store opens (see auto-start)
         # The connection's tuning -- typed leaves, each deliberately unset:
         #   absence leaves the driver's own default (pg 8.23 over pg-pool 3.14),
-        #   which is the only value that keeps tracking it.  A bad value is
-        #   refused with an OptionsError when the store is built.
+        #   which is the only value that keeps tracking it.  Each is read when
+        #   the store is built: a value of the wrong kind fails that read with
+        #   a ConfigError naming the leaf (a duration that does not parse, with
+        #   an error naming only the value), and one out of range is then
+        #   refused with an OptionsError.
         # max-pool-size -- connections the pool holds; pg-pool's max, default 10.
         # idle-timeout -- how long an idle connection stays open; pg-pool's
         #   idleTimeoutMillis, default 10s.
@@ -2138,7 +2168,8 @@ actor-ts {
       # SQL Server journal -- see the postgres block above.
       mssql {
         # A connection string, "Server=host,1433;Database=app;…".  An mssql://
-        #   url is refused when the store is built: node-mssql has parsed none
+        #   url passes the read like any other string and is refused with an
+        #   OptionsError when the store is built: node-mssql has parsed none
         #   since its 8.0 and reads one as no server at all.  A url that
         #   switches TLS verification off (TrustServerCertificate set to
         #   anything but false) is refused with a ConfigError.
@@ -2193,8 +2224,12 @@ actor-ts {
         auto-create-tables = on
       }
 
-      # MongoDB journal.  registerMongoPlugins(ext) makes this id real; the
-      # block below is what that call reads when a field is left unset.
+      # MongoDB journal.  registerMongoPlugins, run through the plugins slot,
+      # makes this id real:
+      #   withPersistence({ plugins: [
+      #     (persistence) => registerMongoPlugins(persistence),
+      #   ] })
+      # The block below is what that call reads when a field is left unset.
       # Explicit MongoJournalOptions always win over anything here.
       #
       # Mongo names its containers COLLECTIONS, so the leaves say collection and
@@ -2207,8 +2242,11 @@ actor-ts {
         auto-create-indexes = on      # the unique index is what refuses a duplicate append
         # The client's tuning -- typed leaves, each deliberately unset: absence
         #   leaves the driver's own default (mongodb 6 and 7 alike), which is
-        #   the only value that keeps tracking it.  A bad value is refused with
-        #   an OptionsError when the store is built.
+        #   the only value that keeps tracking it.  Each is read when the store
+        #   is built: a value of the wrong kind fails that read with a
+        #   ConfigError naming the leaf (a duration that does not parse, with an
+        #   error naming only the value), and one out of range is then refused
+        #   with an OptionsError.
         # max-pool-size -- connections the client holds open to one server;
         #   maxPoolSize, default 100.
         # min-pool-size -- connections it keeps open ahead of use; minPoolSize,
@@ -2242,8 +2280,11 @@ actor-ts {
         # The client's retry and timeout settings -- typed leaves, each
         #   deliberately unset: absence leaves the SDK's own resolution (an
         #   AWS_* environment variable, then the shared config file, then its
-        #   default), which a shipped value would overrule.  A bad value is
-        #   refused with an OptionsError when the store is built.
+        #   default), which a shipped value would overrule.  Each is read when
+        #   the store is built: a value of the wrong kind fails that read with
+        #   a ConfigError naming the leaf (a duration that does not parse, with
+        #   an error naming only the value), and one out of range is then
+        #   refused with an OptionsError.
         # max-attempts -- attempts per request, the first included;
         #   maxAttempts, default 3 (AWS_MAX_ATTEMPTS while unset).
         # retry-mode -- standard or adaptive; retryMode, default standard
@@ -2271,11 +2312,15 @@ actor-ts {
         auto-create-tables = on       # CreateTable when the store opens (see auto-start); an existing table is fine
       }
 
-      # Cassandra / ScyllaDB journal.  registerCassandraPlugins(ext) makes this
-      # id real.  The widest block in the family: Cassandra is reached by a seed
-      # list rather than a URL, and its schema is four tables rather than one
-      # plus a derived name, because a wide-column store has no join to derive
-      # one with.
+      # Cassandra / ScyllaDB journal.  registerCassandraPlugins, run through
+      # the plugins slot, makes this id real:
+      #   withPersistence({ plugins: [
+      #     (persistence) => registerCassandraPlugins(persistence),
+      #   ] })
+      # The widest block in the family: Cassandra is reached by a seed list
+      # rather than a URL, and its schema is four tables rather than one plus a
+      # derived name, because a wide-column store has no join to derive one
+      # with.
       cassandra {
         contact-points = []           # [] = not set; e.g. ["10.0.0.1", "10.0.0.2"]
         keyspace = ""                 # "" = not set; required at the point of use
@@ -2460,8 +2505,13 @@ actor-ts {
 
       # Object-storage snapshot store -- S3-compatible or local filesystem.
       # This block also configures the durable-state store that the same
-      # registerObjectStoragePlugins() call returns: the two share ONE
-      # backend, so the settings are declared once here rather than twice.
+      # registerObjectStoragePlugins call registers, run through the plugins
+      # slot:
+      #   withPersistence({ plugins: [
+      #     (persistence) => registerObjectStoragePlugins(persistence),
+      #   ] })
+      # The two share ONE backend, so the settings are declared once here
+      # rather than twice.
       # Explicit ObjectStoragePluginOptions always win over anything below.
       object-storage {
         backend = ""                  # "" | filesystem | s3 -- "" leaves the backend to code
@@ -2797,9 +2847,10 @@ actor-ts {
     #   two, and it fails until this node's region for the type is registered
     #   with the coordinator: while no region runs for it (never started here,
     #   or stopped), while the coordinator refuses it over number-of-shards, and
-    #   from a start, a leader change or an eviction until the acknowledgment.
-    #   A refused node stays out of rotation until the counts agree or a leader
-    #   change reaches a coordinator that accepts it.
+    #   from a start, an eviction or a lapsed refusal until the acknowledgment;
+    #   a leader change alone keeps it green.  A refusal lasts until the counts
+    #   agree or the leader changes, which lifts it until the next coordinator
+    #   decides.
     # [] gates on nothing.  There is no timeout and no window after which the
     #   check stops failing: it is a set read, and a refused region is exactly
     #   what it has to keep reporting.
@@ -2998,11 +3049,14 @@ actor-ts {
     exit-process = false   # call process.exit once a run ends, completed or halted
     # Status that exit carries.  Only consulted when exit-process is on; a
     # value outside 0-255 is a ConfigError at startup rather than a code the
-    # operating system silently truncates.  A run for a failed startup, and
-    # a run that a phase with recover = false halted, exit 1 where this is
-    # 0, so neither reads as a clean stop.  A halted run exits at the halt,
-    # with the halt logged at error first: nothing after the exit runs, so
-    # it takes the place of the teardown the halt would otherwise get.
+    # operating system silently truncates.  A run for a failed startup, a
+    # run for a node that could not join (ClusterJoinUnsuccessfulReason: the
+    # join give-up, a failed Cluster.bootstrap readiness wait or refusal),
+    # and a run that a phase with recover = false halted, exit 1 where this
+    # is 0, so none of them reads as a clean stop.  A halted run exits at
+    # the halt, with the halt logged at error first: nothing after the exit
+    # runs, so it takes the place of the teardown the halt would otherwise
+    # get.
     exit-code = 0
 
     # Framework components register their own teardown in the pipeline: the

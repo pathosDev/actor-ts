@@ -194,6 +194,11 @@ journal and snapshot-store blocks and for `actor-ts.persistence` itself, and a
 selector holding no id at all — `null`, a block, a list — fails every axis, not
 only its own.
 
+A misspelt key is not refused, because nothing reads it.  `plugn = "…"` in the
+block leaves `plugin` at the in-memory id `reference.conf` ships, so the system
+starts on the in-memory store with no error and no warning, exactly as if
+nothing had been selected.
+
 A selected SQLite store with no path is refused as well, and earlier: when
 `registerSqlitePlugins` runs it checks every store the configuration selects —
 except one that `withPersistence` sets in code, which replaces the selection

@@ -36,7 +36,8 @@ import { describe, expect, test } from 'bun:test';
  * The three `http/middleware/*` pages put their HOCON inside indented blocks.
  * A scan anchored at column 0 reports those pages clean — eight lines per
  * language — while correctly finding every other page, so it looks like it
- * works.  Anchor on `/^[ \t]*```hocon/`.
+ * works.  Anchor after leading whitespace, as {@link HOCON_FENCE_OPEN} does —
+ * and after a blockquote's `>` markers, for the same reason.
  */
 
 const DOCS_ROOT = join(import.meta.dir, '..', '..', '..', 'docs', 'src', 'content', 'docs');
@@ -75,23 +76,42 @@ const GENERATED_DIRECTORY = 'api';
 const KNOWN_CAMEL_CASE_PAGES: ReadonlyMap<string, string> = new Map<string, string>();
 
 /**
- * The opening fence of a HOCON sample — indented ones included, see above, and
- * ones carrying a title or other meta after the language, which would otherwise
- * be a way past this guard.  The same opening `BrokerFenceKeys` reads.
+ * The opening fence of a HOCON sample, in every form a Markdown page can open
+ * one: indented, see above; inside a blockquote, once {@link BLOCKQUOTE} is off
+ * the line; with backticks or tildes, three or more; with the language in any
+ * case; and carrying a title or other meta after the language.  Each of these
+ * was a way past this guard while it matched only ```` ```hocon ```` (#1405).
  */
-const HOCON_FENCE_OPEN = /^[ \t]*```hocon(?:[ \t].*)?$/;
-/** Any fence delimiter; the first one after an opening fence closes it. */
-const FENCE_DELIMITER = /^[ \t]*```/;
-/** A leading HOCON comment marker, so a commented-out key is still scanned. */
-const COMMENT_MARKER = /^[ \t]*#+[ \t]?/;
+const HOCON_FENCE_OPEN = /^[ \t]*(`{3,}|~{3,})[ \t]*hocon(?:[ \t].*)?$/i;
+/** A line that can close a fence: a bare run of backticks or tildes. */
+const FENCE_CLOSE = /^[ \t]*(`{3,}|~{3,})[ \t]*$/;
+/** The markers of a blockquote, nested ones included, in front of a line. */
+const BLOCKQUOTE = /^[ \t]*(?:>[ \t]?)+/;
+/** A leading HOCON comment marker, either spelling, so a commented-out key is still scanned. */
+const COMMENT_MARKER = /^[ \t]*(?:#+|\/\/+)[ \t]?/;
+/** One segment of a key path: a bare name, or a quoted one — a quoted segment may hold dots. */
+const KEY_SEGMENT = String.raw`(?:"[^"\n]*"|[A-Za-z_][A-Za-z0-9_-]*)`;
 /**
- * A name in key position: at the start of the line, or after `{`, `,` or
- * whitespace, and immediately followed by `=`, `:` or `{`.  Dotted paths are
- * one token so `a.b.camelCase = 1` is judged on its last segment.
+ * A key path in key position: at the start of the line, or after `{`, `,` or
+ * whitespace, and followed by `=`, `+=`, `:` or `{`.  The whole dotted path is
+ * one token and every word of it is judged, so neither a camelCase block in
+ * the middle of a path nor a quoted segment is a way past.
  */
-const KEY_POSITION = /(?:^|[{,\s])([A-Za-z_][A-Za-z0-9_.-]*)[ \t]*(?:=|:|\{)/g;
-/** The spelling being retired: a lowercase run followed by a capital. */
-const CAMEL_CASE = /^[a-z]+[A-Z]/;
+const KEY_POSITION = new RegExp(String.raw`(?:^|[{,\s])(${KEY_SEGMENT}(?:\.${KEY_SEGMENT})*)[ \t]*(?:\+?=|:|\{)`, 'g');
+/**
+ * A quoted string that is a value — one no key separator follows — blanked
+ * before the scan, so `mode = "fooBar = 1"` publishes no key.
+ */
+const VALUE_STRING = /"[^"\n]*"(?![ \t]*(?:\+?=|:|\{|\.))/g;
+/**
+ * The spelling being retired: a word that begins in lowercase and turns
+ * uppercase — `maxConnections`, `http2Enabled`, the tail of `max-lineLen`.  A
+ * word is what stands between non-alphanumerics, so the hyphen and the dot
+ * start a new one.  A PascalCase word is not matched: comment prose puts type
+ * names in key position (`its ActorSystem: local refs`), six times on the
+ * reference-conf page alone.
+ */
+const CAMEL_CASE_WORD = /(?:^|[^A-Za-z0-9])([a-z][a-z0-9]*[A-Z][A-Za-z0-9]*)/g;
 
 type FenceKeyViolation = {
   readonly page: string;
@@ -113,26 +133,33 @@ function docsPages(directory: string, topLevel = true): string[] {
   return out;
 }
 
-/** The camelCase keys in `page`'s HOCON fences, with the line each sits on. */
+/**
+ * The camelCase keys in `page`'s HOCON fences, with the line each sits on.
+ *
+ * A fence closes on a bare run of its own character at least as long as the
+ * one it opened with, as Markdown closes it — so a ```` ``` ```` line inside a
+ * ```` ```` ```` or `~~~` fence is a line of the sample, not its end.
+ */
 function camelCaseKeysIn(page: string, text: string): FenceKeyViolation[] {
   const out: FenceKeyViolation[] = [];
-  let inFence = false;
+  let opener: string | null = null;
   const lines = text.split(/\r?\n/);
   for (const [index, line] of lines.entries()) {
-    if (!inFence) {
-      if (HOCON_FENCE_OPEN.test(line)) inFence = true;
+    const unquoted = line.replace(BLOCKQUOTE, '');
+    if (opener === null) {
+      opener = HOCON_FENCE_OPEN.exec(unquoted)?.[1] ?? null;
       continue;
     }
-    if (FENCE_DELIMITER.test(line)) {
-      inFence = false;
+    const close = FENCE_CLOSE.exec(unquoted);
+    if (close !== null && close[1]![0] === opener[0] && close[1]!.length >= opener.length) {
+      opener = null;
       continue;
     }
-    const scanned = line.replace(COMMENT_MARKER, '');
+    const scanned = unquoted.replace(COMMENT_MARKER, '').replace(VALUE_STRING, '""');
     for (const match of scanned.matchAll(KEY_POSITION)) {
-      const key = match[1]!;
-      const leaf = key.slice(key.lastIndexOf('.') + 1);
-      if (CAMEL_CASE.test(leaf)) {
-        out.push({ page, line: index + 1, key: leaf, text: line.trim() });
+      const path = match[1]!.replace(/"/g, ' ');
+      for (const word of path.matchAll(CAMEL_CASE_WORD)) {
+        out.push({ page, line: index + 1, key: word[1]!, text: line.trim() });
       }
     }
   }
@@ -169,6 +196,39 @@ describe('HOCON samples in the docs use kebab-case keys', () => {
       ['```hocon', '# Override per actor with ActorOptions.withThroughput().', 'max-entries = 1', '```'].join('\n'),
     );
     expect(proseOnly).toEqual([]);
+  });
+
+  test.each<[string, readonly string[], readonly string[]]>([
+    ['a quoted key', ['```hocon', '"maxConnections" = 10', '```'], ['maxConnections']],
+    ['a quoted segment of a dotted path', ['```hocon', 'actor-ts.io.broker.tcp.framing."maxLineLen" = 64K', '```'], ['maxLineLen']],
+    ['a quoted key that holds the dots', ['```hocon', '"actor-ts.http.client.maxResponseBytes" = 8M', '```'], ['maxResponseBytes']],
+    ['an append', ['```hocon', 'actor-ts.cluster.seedNodes += "tcp://10.0.0.1:2552"', '```'], ['seedNodes']],
+    ['a numeral before the capital', ['```hocon', 'actor-ts.http.server.http2Enabled = true', '```'], ['http2Enabled']],
+    ['a camelCase tail after a hyphen', ['```hocon', 'max-lineLen = 1', '```'], ['lineLen']],
+    ['a camelCase block in the middle of a path', ['```hocon', 'actor-ts.io.brokerOptions.tcp.port = 1', '```'], ['brokerOptions']],
+    ['a tilde fence', ['~~~hocon', 'maxConnections = 10', '~~~'], ['maxConnections']],
+    ['a four-backtick fence', ['````hocon', 'maxConnections = 10', '````'], ['maxConnections']],
+    ['a four-backtick fence around a three-backtick line', ['````hocon', '```', 'maxConnections = 10', '````'], ['maxConnections']],
+    ['a tilde fence around a backtick line', ['~~~hocon', '```', 'maxConnections = 10', '~~~'], ['maxConnections']],
+    ['an uppercase language', ['```HOCON', 'maxConnections = 10', '```'], ['maxConnections']],
+    ['a fence in a blockquote', ['> ```hocon', '> maxConnections = 10', '> ```'], ['maxConnections']],
+    ['a fence in a nested blockquote', ['> > ~~~hocon title="application.conf"', '> > # cleanupMs = 60000', '> > ~~~'], ['cleanupMs']],
+  ])('%s is scanned like any other', (_form, lines, keys) => {
+    // No page writes any of these today — which is why each needs a case of
+    // its own: a scan that missed one would stay green over the whole tree.
+    expect(camelCaseKeysIn('probe', lines.join('\n')).map((v) => v.key)).toEqual([...keys]);
+  });
+
+  test('a value, however it is spelt, is not a key', () => {
+    const sample = (line: string): string[] => camelCaseKeysIn('probe', ['```hocon', line, '```'].join('\n')).map((v) => v.key);
+    expect(sample('mode = "fooBar"')).toEqual([]);
+    expect(sample('statement = "SELECT * FROM events WHERE pageSize = 10"')).toEqual([]);
+    expect(sample('names = ["fooBar", "bazQux"]')).toEqual([]);
+    expect(sample('label = "retries: maxAttempts: 3"')).toEqual([]);
+    // Type names in comment prose sit in key position too, and are not keys.
+    expect(sample('# Honoured by every ref that can reach its ActorSystem: local refs')).toEqual([]);
+    // Text after the fence is prose again.
+    expect(camelCaseKeysIn('probe', ['~~~hocon', 'max-entries = 1', '~~~', 'maxEntries: the option field'].join('\n'))).toEqual([]);
   });
 
   test('a fence carrying a title or other meta after the language is still scanned', () => {

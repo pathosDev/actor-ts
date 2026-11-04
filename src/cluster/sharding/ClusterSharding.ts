@@ -550,9 +550,20 @@ export class ClusterSharding {
    * (5 s out of the box), or to whatever `withShardRegionQueryTimeoutMs`
    * this type was started with — an explicit argument still wins over both.
    *
+   * A `timeoutMs` longer than the region's lifetime for a waiting query is not
+   * waited out in full.  The region cannot see a per-call wait, so it forgets
+   * an unanswered query after a minute, or after `actor-ts.actor.ask-timeout`
+   * or this type's query timeout when either is longer (#1436).  An answer
+   * that arrives later reaches nobody — and that includes the coordinator's
+   * partial answer, which comes after 0.6 × `timeoutMs` when a region is
+   * slow — so the call fails with `AskTimeoutError` once its own `timeoutMs`
+   * runs out.  To wait longer, raise this type's query timeout instead, which
+   * raises the lifetime with it.
+   *
    * @throws if no region for `typeName` has been started on this node, or if
    *   the coordinator does not answer within `timeoutMs` (`AskTimeoutError`) —
-   *   which is what a leader election in flight looks like from here.
+   *   which is what a leader election in flight looks like from here — or
+   *   answers only after the region stopped waiting (above).
    */
   async shards<TMessage = unknown>(
     typeName: string,
@@ -688,13 +699,19 @@ export class ClusterSharding {
    * `replyTo`, or use {@link shards} for the cluster-wide picture.
    *
    * `timeoutMs` defaults to `actor-ts.sharding.shard-region-query-timeout`,
-   * exactly as {@link shards} does.
+   * exactly as {@link shards} does, and the same lifetime bounds it: a
+   * `timeoutMs` longer than a minute — or than `actor-ts.actor.ask-timeout` or
+   * this type's query timeout, when either is longer — is not waited out in
+   * full.  A placement reported after the region forgot the caller reaches
+   * nobody, and the call fails with `AskTimeoutError` once its own `timeoutMs`
+   * runs out (#1436).
    *
    * @throws if no region for `typeName` has been started on this node; a
    *   `RangeError`, at once, if `shardId` is not an integer in
    *   `0..numShards - 1` — no coordinator places such a shard, so there is
    *   nothing to wait for (#1436); or if the shard cannot be placed within
-   *   `timeoutMs` (`AskTimeoutError`).
+   *   `timeoutMs` (`AskTimeoutError`), or only after the region stopped
+   *   waiting (above).
    */
   async shardRefFor<TMessage = unknown>(
     typeName: string,

@@ -183,10 +183,11 @@ class ChainedTimeout implements Cancellable {
  * behind a `TimeoutOverflowWarning`, Deno wraps it modulo 2^32 without a word —
  * 2^31 ms fires at once there, 2^32 + 300 ms after 300 ms (bun 1.4.2, node
  * 26.10, deno 2.6.8).  `retry` clamps to the ceiling (#771) and the HTTP server
- * refuses deadlines past it; a scheduled task, an `ask` deadline or an
- * `HttpClient` deadline may be any length a caller asks for, so neither answer
- * fits there.  Clamping would fire weeks early, refusing would break calls that
- * work today, and a chain is the one shape that does what was asked.
+ * refuses a header or idle deadline past it; a scheduled task, an `ask`
+ * deadline or an `HttpClient` deadline may be any length a caller asks for, so
+ * neither answer fits there.  Clamping would fire weeks early, refusing would
+ * break calls that work today, and a chain is the one shape that does what was
+ * asked.
  *
  * Returns a {@link Cancellable}, which is also what lets `AskResponseRef` hold
  * one in the slot it keeps for a scheduler's handle.  Not on any barrel: its
@@ -194,8 +195,9 @@ class ChainedTimeout implements Cancellable {
  * scheduler, `gracefulStop`'s budget for a ref it cannot watch, the
  * `InMemoryCache` sweep, a persistent actor's recovery deadline, an
  * `HttpClient` deadline, a circuit breaker's call timeout, the phase
- * budgets of coordinated startup and coordinated shutdown, and a
- * `ClusterClient`'s ask and connect deadlines.
+ * budgets of coordinated startup and coordinated shutdown, a
+ * `ClusterClient`'s ask and connect deadlines, and an HTTP/2 server's session
+ * idle timeout and per-stream request deadline.
  */
 export function armChainedTimeout(
   callback: () => void,

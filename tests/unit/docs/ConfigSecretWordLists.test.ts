@@ -97,6 +97,11 @@ const CODE_SPAN_LIST = new RegExp(
 const isSecretWordList = (spans: readonly string[]): boolean =>
   spans.includes('password') && spans.includes('secret');
 
+/** The lists of the secret words in some lines of a page — what the census and the exactly-one check both count. */
+function secretWordLists(lines: readonly string[]): string[][] {
+  return codeSpanLists(proseOf(lines)).filter(isSecretWordList);
+}
+
 /**
  * Every word `CONFIG_SECRET_PATTERN` accepts, in the singular — the reading
  * `TroubleshootingConfigDump.test.ts` uses: each accepted word is a
@@ -127,8 +132,7 @@ function pagesUnder(directory: string): string[] {
 }
 
 const listingPages = pagesUnder(DOCUMENTATION_ROOT)
-  .filter((page) => codeSpanLists(proseOf(readFileSync(join(DOCUMENTATION_ROOT, page), 'utf8').split(/\r?\n/)))
-    .some(isSecretWordList))
+  .filter((page) => secretWordLists(readFileSync(join(DOCUMENTATION_ROOT, page), 'utf8').split(/\r?\n/)).length > 0)
   .sort();
 
 describe('every page listing the secret words lists the ones the pattern accepts (found while #1546)', () => {
@@ -142,8 +146,7 @@ describe('every page listing the secret words lists the ones the pattern accepts
 
   for (const { page, heading } of PINNED) {
     test(`${page.split(sep).join('/')} lists them under ${heading}`, () => {
-      const lists = codeSpanLists(proseOf(sectionOf(readFileSync(join(DOCUMENTATION_ROOT, page), 'utf8'), heading)))
-        .filter(isSecretWordList);
+      const lists = secretWordLists(sectionOf(readFileSync(join(DOCUMENTATION_ROOT, page), 'utf8'), heading));
       // Exactly one, so a stale list left beside a corrected one fails
       // rather than letting either pass.
       expect(lists, 'one list of the secret words in the section').toHaveLength(1);
@@ -153,5 +156,60 @@ describe('every page listing the secret words lists the ones the pattern accepts
 
   test('no page lists them without being pinned', () => {
     expect(listingPages).toEqual([...PINNED.map(({ page }) => page), ...PINNED_ELSEWHERE].sort());
+  });
+});
+
+/**
+ * The list reading itself, against every way a page could write the words.
+ * The checks above pass on today's pages however narrowly a list is read, so
+ * these hold the reading to its word: put back the reading fb32723f began
+ * with, "`a`, `b` or `c`" and `oder` only, and the census and the exactly-one
+ * check go blind to a stale list written any other way again — while every
+ * page check stays green.
+ */
+describe('the census and the exactly-one check read a list of the words however it is joined (#1546)', () => {
+  const words = ['password', 'passphrase', 'passwd', 'secret', 'token', 'key', 'credential', 'auth'];
+  const spans = words.map((word) => `\`${word}\``);
+  const joined = (separator: string, last = separator): string =>
+    `${spans.slice(0, -1).join(separator)}${last}${spans.at(-1)!}`;
+
+  test.each([
+    ['commas and "or"', [`withheld when a word is ${joined(', ', ' or ')}.`]],
+    ['commas and "and"', [`Older releases withheld ${joined(', ', ' and ')} only.`]],
+    ['a serial comma before "and"', [`withheld: ${joined(', ', ', and ')}.`]],
+    ['"and" alone', [`withheld: ${joined(' and ')}.`]],
+    ['"nor"', [`neither ${joined(', ', ' nor ')} is printed.`]],
+    ['"plus"', [`withheld: ${joined(', ', ' plus ')}.`]],
+    ['commas and "oder"', [`zurückgehalten, wenn ein Wort ${joined(', ', ' oder ')} ist.`]],
+    ['commas and "und"', [`Ältere Versionen hielten ${joined(', ', ' und ')} zurück.`]],
+    ['commas and "sowie"', [`zurückgehalten: ${joined(', ', ' sowie ')}.`]],
+    ['commas alone', [`withheld: ${joined(', ')}.`]],
+    ['slashes', [`withheld: ${joined(' / ')}.`]],
+    ['the cells of a table row', [`| withheld | ${joined(' | ')} |`]],
+    ['a bulleted list', ['The dump withholds:', '', ...spans.map((span) => `- ${span}`)]],
+    ['a numbered list', ['The dump withholds:', '', ...spans.map((span, index) => `${String(index + 1)}. ${span}`)]],
+    ['a list wrapped across lines', [`withheld when a word is ${spans.slice(0, 4).join(', ')},`, `${joined(', ', ' and ').split(', ').slice(4).join(', ')}.`]],
+  ])('a list joined by %s is one list of the eight words', (_joiner, lines) => {
+    const lists = secretWordLists(lines);
+    expect(lists).toHaveLength(1);
+    expect([...lists[0]!].sort()).toEqual([...words].sort());
+  });
+
+  test('a stale list beside the corrected one is a second list, whatever joins it', () => {
+    const section = [
+      `A value is withheld when a word of its key is ${joined(', ', ' or ')}.`,
+      `Older releases withheld ${spans.filter((span) => span !== '`passwd`').join(', ').replace(/, (`auth`)$/, ' and $1')} only.`,
+    ];
+    expect(secretWordLists(section)).toHaveLength(2);
+  });
+
+  test('what does not read as a list of the words', () => {
+    // A sentence between two spans is no joiner, a list without `secret` is
+    // some other list, and a list a reader never sees — inside a fence or an
+    // MDX comment — is not on the page.
+    expect(secretWordLists(['`password` is withheld. So is `secret`.'])).toEqual([]);
+    expect(secretWordLists(['It reads `password`, `username` and `host`.'])).toEqual([]);
+    expect(secretWordLists(['```text', joined(', ', ' and '), '```'])).toEqual([]);
+    expect(secretWordLists([`{/* ${joined(', ', ' and ')} */}`])).toEqual([]);
   });
 });

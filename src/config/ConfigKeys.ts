@@ -742,9 +742,11 @@ export const ConfigKeys = {
      * defaults themselves.
      *
      * `max-age` is a count of SECONDS, read with `getInt` — `getDuration`
-     * would read `180d` as milliseconds and send a 1000x pin.  `max-age = 0`
-     * is refused with a `ConfigError` naming the key: it tells every browser
-     * to forget the pin, so switching HSTS off stays code-only.
+     * would read `180d` as milliseconds and send a 1000x pin.  A `max-age`
+     * below a day (`MINIMUM_CONFIGURED_HSTS_MAX_AGE_SECONDS`, 86400) is
+     * refused with a `ConfigError` naming the key and the floor: `0` has every
+     * browser forget the pin, and a shorter one lapses before a visitor comes
+     * back the next day.  Code may still set a value below it, `0` included.
      *
      * It governs that middleware only.  The `hsts` field of the
      * `securityHeaders()` bundle and of `withSecurityHeaders(...)` is code-only.

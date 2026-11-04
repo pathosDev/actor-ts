@@ -359,6 +359,15 @@ zurück, wartet der Start auch darauf, sodass eine Registrierung, die
 spät scheitert, den Start scheitern lässt statt erst die erste
 persistierte Nachricht.
 
+Ein ausgewähltes Backend registriert so ein Plug-in trotzdem vor
+seinem ersten `await`.  Die ausgewählten Stores werden innerhalb von
+`create` aufgelöst, direkt nachdem die Plug-ins aufgerufen wurden,
+also ist eine Factory, die nach einem `await` registriert wird, noch
+nicht da, und der Start scheitert mit einem `Unknown … plugin`-Fehler,
+der die Id nennt.  Was die Stores brauchen, sobald sie öffnen — eine
+Probe, ein Schlüssel aus einem Vault —, darf danach kommen: Die Stores
+öffnen erst, wenn das Promise erledigt ist.
+
 Du schreibst ein eigenes?  `Journal.read()` ist die Methode, deren
 Vertrag der Replay einfordert: Die zurückgegebenen Events müssen
 nach Sequenznummer aufsteigen, lückenlos sein und im angefragten
@@ -510,6 +519,14 @@ einer `application.conf`, die er mit Services teilt, die es nutzen —,
 also lässt ein Fehler dort auch diesen Start scheitern: Stell diese
 Achse für diesen Service zurück auf den In-Memory-Store, oder schalte
 das Öffnen beim Start ab, wie unten gezeigt.
+Scheitern lassen ihn die Fehler, die die Auswahl liest: eine Id, die
+niemand registriert hat, ein Wert dort, wo der Block der Achse hingehört
+(`actor-ts.persistence.journal = "…"`), und ein ausgewählter Store, der
+nicht öffnen kann.  Ein vertippter Schlüssel gehört nicht dazu.  Niemand
+liest `plugn = "…"` oder einen `jornal`-Block, also behält die Achse den
+In-Memory-Store, den `reference.conf` auswählt, und das System startet
+damit, ohne Fehler und ohne Warnung — und ein Journal im Speicher hat
+seine Events beim nächsten Neustart verloren.
 
 Nichts im Framework schließt die Stores, die es aufgelöst hat
 ([#388](https://github.com/pathosDev/actor-ts/issues/388)), und ein

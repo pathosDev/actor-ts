@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn, type Mock } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -23,6 +23,27 @@ import type { LogSink, LogSinkContext } from '../../../src/logging/LogSink.js';
 import type { OtelLogRecord, OtelLogsApiLike } from '../../../src/tracing/OtelLogsAdapter.js';
 import * as OtelLogsAdapterOptionsModule from '../../../src/tracing/OtelLogsAdapterOptions.js';
 import { DEFAULT_OTEL_LOGGER_NAME, OtelLogsAdapterOptions } from '../../../src/tracing/OtelLogsAdapterOptions.js';
+// Each sink class and its options reader as a module namespace, so a test can
+// watch what `buildLoggerFromConfig` calls and constructs.
+import * as ConsoleSinkModule from '../../../src/logging/ConsoleSink.js';
+import * as ConsoleSinkOptionsModule from '../../../src/logging/ConsoleSinkOptions.js';
+import * as FileSinkModule from '../../../src/logging/FileSink.js';
+import * as FileSinkOptionsModule from '../../../src/logging/FileSinkOptions.js';
+import * as GelfSinkModule from '../../../src/logging/GelfSink.js';
+import * as GelfSinkOptionsModule from '../../../src/logging/GelfSinkOptions.js';
+import * as LokiSinkModule from '../../../src/logging/LokiSink.js';
+import * as LokiSinkOptionsModule from '../../../src/logging/LokiSinkOptions.js';
+import * as OtlpHttpSinkModule from '../../../src/logging/OtlpHttpSink.js';
+import * as OtlpHttpSinkOptionsModule from '../../../src/logging/OtlpHttpSinkOptions.js';
+import * as ParseableSinkModule from '../../../src/logging/ParseableSink.js';
+import * as ParseableSinkOptionsModule from '../../../src/logging/ParseableSinkOptions.js';
+import * as SeqSinkModule from '../../../src/logging/SeqSink.js';
+import * as SeqSinkOptionsModule from '../../../src/logging/SeqSinkOptions.js';
+import * as SplunkSinkModule from '../../../src/logging/SplunkSink.js';
+import * as SplunkSinkOptionsModule from '../../../src/logging/SplunkSinkOptions.js';
+import * as SyslogSinkModule from '../../../src/logging/SyslogSink.js';
+import * as SyslogSinkOptionsModule from '../../../src/logging/SyslogSinkOptions.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 /**
  * How the sinks reach — and leave — a running system: construction
@@ -649,6 +670,160 @@ describe('every sink block builds its sink from HOCON alone', () => {
         expect(sinks[0]!.minLevel).toBe(LogLevel.Error);
       } finally {
         await system.terminate();
+      }
+    });
+  }
+});
+
+/**
+ * Spies on the `new` a module's class export is built with, and builds it all
+ * the same.  bun's spy on a class export calls the class without `new`, which
+ * a class refuses, so the spy constructs the class it replaced; and it is
+ * typed as a plain function, because `spyOn` types a class export as nothing
+ * callable.
+ */
+function spyOnConstruction<Arguments extends unknown[], Instance>(
+  namespace: object,
+  exportName: string,
+  original: new (...args: Arguments) => Instance,
+): Mock<(...args: Arguments) => Instance> {
+  const seam = namespace as Record<string, (...args: Arguments) => Instance>;
+  return spyOn(seam, exportName).mockImplementation((...args: Arguments) => new original(...args));
+}
+
+/** One sink branch of `buildLoggerFromConfig`: the reader it calls and the class it builds, each by its module. */
+type SinkWiringCase = {
+  readonly block: string;
+  readonly readerModule: object;
+  readonly readerName: string;
+  readonly sinkModule: object;
+  readonly sinkClass: new (options: never) => LogSink;
+  /** The leaves set beyond `enabled`, `min-level` and the required ones, so the reader answers with every field it has. */
+  readonly everyLeaf: string;
+  /** The fields that answer carries, so a field the config stopped setting is noticed rather than passed by default. */
+  readonly answerFields: readonly string[];
+};
+
+/** The unpublished half of every delivery block, and the overflow only the file sink ships. */
+const DELIVERY_TEMPLATE = 'delivery { max-retries = 4, min-backoff = 300ms, max-backoff = 12s, random-factor = 0.4 }';
+const NETWORK_DELIVERY = `${DELIVERY_TEMPLATE}\ndelivery.overflow = "drop-head"`;
+
+const SINK_WIRING_CASES: readonly SinkWiringCase[] = [
+  {
+    block: 'console', readerModule: ConsoleSinkOptionsModule, readerName: 'readConsoleSinkOptionsFromConfig',
+    sinkModule: ConsoleSinkModule, sinkClass: ConsoleSink, everyLeaf: '',
+    answerFields: ['format', 'minLevel', 'stream'],
+  },
+  {
+    block: 'file', readerModule: FileSinkOptionsModule, readerName: 'readFileSinkOptionsFromConfig',
+    sinkModule: FileSinkModule, sinkClass: FileSink, everyLeaf: DELIVERY_TEMPLATE,
+    answerFields: ['compressRotated', 'delivery', 'directory', 'extension', 'format', 'maxAgeMs', 'maxFileBytes',
+      'maxFiles', 'minLevel', 'prefix', 'rotateInterval'],
+  },
+  {
+    block: 'gelf', readerModule: GelfSinkOptionsModule, readerName: 'readGelfSinkOptionsFromConfig',
+    sinkModule: GelfSinkModule, sinkClass: GelfSink,
+    everyLeaf: `url = "http://127.0.0.1:12201/gelf"\nhost-name = "wiring-host"\n${NETWORK_DELIVERY}`,
+    answerFields: ['compression', 'delivery', 'host', 'hostName', 'maxChunkBytes', 'minLevel', 'port', 'protocol',
+      'requestTimeoutMs', 'url'],
+  },
+  {
+    block: 'loki', readerModule: LokiSinkOptionsModule, readerName: 'readLokiSinkOptionsFromConfig',
+    sinkModule: LokiSinkModule, sinkClass: LokiSink,
+    everyLeaf: `tenant-id = "wiring-tenant"\nlabels.service = "wiring"\n${NETWORK_DELIVERY}`,
+    answerFields: ['delivery', 'format', 'labels', 'minLevel', 'requestTimeoutMs', 'structuredMetadata', 'tenantId', 'url'],
+  },
+  {
+    block: 'otlp', readerModule: OtlpHttpSinkOptionsModule, readerName: 'readOtlpSinkOptionsFromConfig',
+    sinkModule: OtlpHttpSinkModule, sinkClass: OtlpHttpSink,
+    everyLeaf: `service-name = "wiring-service"\n${NETWORK_DELIVERY}`,
+    answerFields: ['delivery', 'gzip', 'minLevel', 'requestTimeoutMs', 'scopeName', 'serviceName', 'url'],
+  },
+  {
+    block: 'parseable', readerModule: ParseableSinkOptionsModule, readerName: 'readParseableSinkOptionsFromConfig',
+    sinkModule: ParseableSinkModule, sinkClass: ParseableSink,
+    // Basic auth rather than api-key: the two are refused together.
+    everyLeaf: `stream = "wiring"\nusername = "wiring"\npassword = "wiring-secret"\n${NETWORK_DELIVERY}`,
+    answerFields: ['delivery', 'minLevel', 'password', 'requestTimeoutMs', 'stream', 'url', 'username'],
+  },
+  {
+    block: 'seq', readerModule: SeqSinkOptionsModule, readerName: 'readSeqSinkOptionsFromConfig',
+    sinkModule: SeqSinkModule, sinkClass: SeqSink,
+    everyLeaf: `api-key = "wiring-key"\n${NETWORK_DELIVERY}`,
+    answerFields: ['apiKey', 'delivery', 'minLevel', 'requestTimeoutMs', 'url'],
+  },
+  {
+    block: 'splunk', readerModule: SplunkSinkOptionsModule, readerName: 'readSplunkSinkOptionsFromConfig',
+    sinkModule: SplunkSinkModule, sinkClass: SplunkSink,
+    everyLeaf: `index = "wiring"\nhost-name = "wiring-host"\n${NETWORK_DELIVERY}`,
+    answerFields: ['delivery', 'hostName', 'index', 'minLevel', 'requestTimeoutMs', 'source', 'sourcetype', 'token', 'url'],
+  },
+  {
+    block: 'syslog', readerModule: SyslogSinkOptionsModule, readerName: 'readSyslogSinkOptionsFromConfig',
+    sinkModule: SyslogSinkModule, sinkClass: SyslogSink,
+    everyLeaf: `app-name = "wiring-app"\nhost-name = "wiring-host"\n${NETWORK_DELIVERY}`,
+    answerFields: ['appName', 'delivery', 'facility', 'framing', 'host', 'hostName', 'minLevel', 'port', 'transport'],
+  },
+];
+
+/**
+ * The case above shows that each block builds its own sink class at its own
+ * min-level, and a branch that hands the sink only that much — `minLevel`,
+ * `url`, a token — passes it as well as one that hands over everything: an
+ * OTLP branch keeping minLevel, url, serviceName and gzip and dropping
+ * scopeName, requestTimeoutMs and the delivery block stayed green, and so did
+ * Loki, Parseable, Seq and Splunk branches keeping minLevel, url and token
+ * (#1425).  So each branch is run with its block set throughout, and what the
+ * sink was constructed with is compared, as an exact object, with what its
+ * reader returned on that call.
+ */
+describe('every sink branch hands its sink everything its reader returned', () => {
+  let directory = '';
+
+  beforeEach(() => {
+    recordPosts();
+    directory = mkdtempSync(join(tmpdir(), 'logger-wiring-whole-'));
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    // As above: only once mkdtempSync assigned it.
+    if (directory !== '') rmSync(directory, { recursive: true, force: true });
+    directory = '';
+  });
+
+  it('covers every sink block the reference ships', () => {
+    expect(SINK_WIRING_CASES.map((wiring) => wiring.block).sort())
+      .toEqual(SINK_BLOCK_CASES.map((sinkCase) => sinkCase.block).sort());
+  });
+
+  for (const wiring of SINK_WIRING_CASES) {
+    it(`actor-ts.logger.sinks.${wiring.block} builds its ${wiring.sinkClass.name} with ${wiring.readerName}'s whole answer`, async () => {
+      const blockCase = SINK_BLOCK_CASES.find((sinkCase) => sinkCase.block === wiring.block)!;
+      const leaves = ['enabled = true', 'min-level = "error"', blockCase.requiredLeaves(directory), wiring.everyLeaf]
+        .filter((leaf) => leaf !== '')
+        .join('\n');
+      const systemOptions = ActorSystemOptions.create()
+        .withConfig(Config.parseString(`actor-ts.logger.sinks.${wiring.block} {\n${leaves}\n}`));
+      const reader = spyOn(wiring.readerModule as Record<string, (config: Config) => object>, wiring.readerName);
+      const construction = spyOnConstruction(wiring.sinkModule, wiring.sinkClass.name, wiring.sinkClass);
+      let system: ActorSystem | undefined;
+      try {
+        system = ActorSystem.create(`wiring-whole-${wiring.block}`, systemOptions);
+        expect(reader).toHaveBeenCalledTimes(1);
+        expect(construction).toHaveBeenCalledTimes(1);
+        const answer = reader.mock.results[0]!.value as object;
+        // Read after the sink was built, so a branch that edits the answer it
+        // was handed shows here as well as a reader whose fields changed.
+        expect(
+          Object.keys(answer).sort(),
+          `${wiring.readerName}'s answer, as the sink got it, carries other fields than this case sets`,
+        ).toEqual([...wiring.answerFields].sort());
+        expectExactOptions(construction.mock.calls[0]![0] as object, answer);
+        expect(sinksOf(system.log)[0]).toBeInstanceOf(wiring.sinkClass);
+      } finally {
+        reader.mockRestore();
+        construction.mockRestore();
+        await system?.terminate();
       }
     });
   }

@@ -312,6 +312,9 @@ export type ClusterBootstrapOptionsType = {
    * The application version this node states to its peers — see
    * `ClusterOptionsType.appVersion`.  Unset, `actor-ts.cluster.app-version`
    * answers, which is the usual home for it (`app-version = ${?APP_VERSION}`).
+   * A value from the environment is read as JSON first, so an unquoted
+   * `APP_VERSION=1.10` reaches the peers as `1.1`; quote such a value inside
+   * the variable (`APP_VERSION='"1.10"'`), or set it in code.
    */
   readonly appVersion?: ClusterOptionsType['appVersion'];
 

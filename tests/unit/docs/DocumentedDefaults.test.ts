@@ -296,7 +296,8 @@ import { DEFAULT_ENTITY_RESTART_BACKOFF_MAX_MS, DEFAULT_ENTITY_RESTART_BACKOFF_M
  *     and `string`, `bool` and `list` another value of their own;
  *   - for the four numeric kinds, the values the labelled getter refuses must
  *     be refused, and taken by no reader: a fraction for `int`, a duration
- *     for `int` and `number`, a size for `duration`, a duration for `bytes`.
+ *     and a size for `int` and `number`, a size for `duration`, a duration
+ *     for `bytes`.
  *     This half is what tells `int` from `number` on a whole literal, which
  *     the literal cannot: `1.0` parses as `1`.
  *
@@ -1658,10 +1659,16 @@ const IN_KIND: Readonly<Record<DefaultKind, ValueOfKind>> = {
  * The values each numeric kind's getter refuses and a neighbouring getter
  * takes, which a bare literal cannot tell apart.  The other three kinds have
  * none; `DefaultKind` says what that leaves unchecked.
+ *
+ * `int` and `number` get a size as well as a duration (#1438).  With only the
+ * duration, a `getBytes` reader passed every `number` row: it takes the
+ * positive half's fraction, rounding it, and refuses a duration exactly as
+ * `getNumber` does, so a bytes row relabelled `number` was caught by nothing
+ * but the value read, and not even that where the literal is a bare count.
  */
 const OFF_KIND: Readonly<Record<DefaultKind, (literal: ConfigValue | undefined) => readonly ConfigValue[]>> = {
-  int: (literal) => [wholeOf(literal) + 0.5, `${wholeOf(literal) + 1}s`],
-  number: (literal) => [`${wholeOf(literal) + 1}s`],
+  int: (literal) => [wholeOf(literal) + 0.5, `${wholeOf(literal) + 1}s`, `${wholeOf(literal) + 1}KiB`],
+  number: (literal) => [`${wholeOf(literal) + 1}s`, `${wholeOf(literal) + 1}KiB`],
   duration: (literal) => [`${Math.trunc(quantityOf(literal, parseDuration) / 1_000) + 1}KiB`],
   bytes: (literal) => [`${Math.trunc(quantityOf(literal, parseSize) / 1_024) + 1}s`],
   string: () => [],

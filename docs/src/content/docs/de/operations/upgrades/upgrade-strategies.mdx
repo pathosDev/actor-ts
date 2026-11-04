@@ -86,6 +86,15 @@ der Mitglieder lesen, die noch auf dem alten Release sind, statt als
 Vermutung. Das Label ist rein informativ: nichts platziert, routet oder downt
 danach, und ein Node, der keines nennt, erscheint einfach ohne.
 
+Ein Wert aus der Umgebung wird zuerst als JSON gelesen, wo immer er sich als
+JSON parsen lässt.  Eine Version, die sich wie eine Zahl liest, kommt in der
+Schreibweise dieser Zahl zurück — `1.10` als `1.1`, `2.0` als `2`, `1e3` als
+`1000` —, die Releases `1.1` und `1.10` tragen also dasselbe Label, und eine,
+die sich wie `null` oder eine Liste liest, lässt den Start scheitern; eine
+Version mit einem zweiten Punkt (`1.2.3`) oder einem Buchstaben (`v1.10`)
+bleibt unverändert.  Einen solchen Wert in der Variablen selbst quoten
+(`APP_VERSION='"1.10"'`) oder im Code mit `withAppVersion(...)` setzen.
+
 Das Label gehört zu dem Lauf, der es nennt. Ein Node, der ohne Label neu
 startet — zurückgerollt auf ein Release, das keines setzt, oder ohne
 `APP_VERSION` deployt —, erscheint ohne, nie mit dem Label des Laufs davor:

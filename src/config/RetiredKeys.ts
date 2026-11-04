@@ -19,9 +19,11 @@ export type RetiredLeaves = Readonly<Record<string, string>>;
 
 /**
  * What the refusal says about the operator's code unless the table says
- * otherwise: true of a rename that moved only the HOCON spelling, which every
- * table is but the TCP framing caps' — those fields were renamed in code as
- * well, so that table passes a note of its own.
+ * otherwise: true of a rename that moved only the HOCON spelling.  A rename
+ * that moved TypeScript too has its table pass a note of its own saying what
+ * changed — the TCP framing caps' (`maxLineBytes`, `maxFrameBytes`) and the
+ * broker breaker's (`circuitBreaker`, `withCircuitBreaker`), whose numbers
+ * became an id.
  */
 const HOCON_ONLY_RENAME_NOTE =
   'The TypeScript field names and builder methods are unchanged, so no code change is needed.';
@@ -29,10 +31,11 @@ const HOCON_ONLY_RENAME_NOTE =
 /**
  * Refuse a leaf that has been renamed, naming both spellings.
  *
- * There is no unknown-key detection in this package outside the TCP framing
- * block, whose four leaves are an allow-list: an unrecognised leaf sits in the
- * parsed tree read by nobody, `mergeOptions` sees `undefined`
- * for the field, and the built-in default applies.  That is the worst
+ * Most blocks do not detect an unknown key.  A few list the leaves they take
+ * and refuse any other — a TCP `framing` block and an `actor-ts.deployment`
+ * entry among them — but elsewhere an unrecognised leaf sits in the parsed
+ * tree read by nobody, `mergeOptions` sees `undefined` for the field, and the
+ * built-in default applies.  That is the worst
  * available failure mode for a rename, because the leaves that move are the
  * ones an operator sets *on purpose* — `max-frame-bytes`, `max-buffered-bytes`
  * and `max-response-bytes` are security caps the docs tell semi-trusted

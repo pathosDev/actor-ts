@@ -252,12 +252,17 @@ export const EVENT_LOOP_KEEPALIVE_INTERVAL_MS = 3_600_000;
  * nests one level per hop and is legal.  A callback whose publish leads back to
  * its own channel nests without end, calling itself once per level until the
  * stack overflows; an actor subscriber cannot do that, because its mailbox
- * takes the delivery off the stack.  Past this depth the nested `publish` still
- * reaches the observer and every actor subscriber, which add no depth, and
- * calls no callback; the bus says so once, at warn.
+ * takes the delivery off the stack.  Once a cascade reaches this depth, nothing
+ * it publishes from then on reaches a callback; the observer and every actor
+ * subscriber, which add no depth, still receive it, and the bus says so once
+ * per cut cascade, at warn.
  *
- * Sixteen is far past any chain of channels a design builds on purpose, and it
- * stops a loop after sixteen redundant calls — long before the stack is at
- * risk.
+ * Sixteen is far past any chain of channels a design builds on purpose.
+ * Reaching it cuts the cascade it is reached in, so a loop through one
+ * callback stops after sixteen calls, and every other callback the loop's
+ * events reach adds at most one call per level of it — long before the stack
+ * is at risk.  A publish starts one cascade for each callback that wants it,
+ * each cut on its own: k callbacks that each publish back onto the channel
+ * they share cost one publish k * (16 + 15 * (k - 1)) calls and k warnings.
  */
 export const MAX_EVENT_STREAM_CALLBACK_DEPTH = 16;

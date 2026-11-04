@@ -94,11 +94,17 @@ the `durable-state.plugin` key now selects like the other two — so the ones th
 configuration selects open as part of the startup: a deployment the node cannot
 reach fails the startup rather than the first persisted message — see [opening
 the stores at startup](/persistence/overview/#opening-the-stores-at-startup).
-That holds however a store is set up.  Each open sends one `{ ping: 1 }` before
-it creates any index — with `auto-create-indexes` off as well, over a client you
-handed over, and for the durable-state store, which creates no index at all —
-and a refused ping fails the open with an error naming the store.  The ping
-needs no privilege, reads nothing and creates nothing.
+That holds however a store is set up, as long as the boot-time open is on, the
+default.  Each open sends one `{ ping: 1 }` before it creates any index — with
+`auto-create-indexes` off as well, over a client you handed over, and for the
+durable-state store, which creates no index at all — and a refused ping fails
+the open with an error naming the store.  The ping needs no privilege, reads
+nothing and creates nothing.  It goes through the database handle's `command`,
+which the driver's handle always has; a stand-in handed over without one is not
+pinged.  It holds for these stores, not for every axis: an object-storage
+snapshot or durable-state store selected beside them, or a store of your own
+without `start()`, has nothing to open ahead of time and fails its first
+operation instead.
 The returned `durableStateStore` still works and still yields the same instance;
 it is simply built when it is first asked for rather than at registration, so a
 caller who prefers to hand it to `DurableStateActor` in code can carry on doing

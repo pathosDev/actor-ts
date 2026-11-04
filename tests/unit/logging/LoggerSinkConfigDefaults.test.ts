@@ -95,6 +95,7 @@ import {
   readSyslogSinkOptionsFromConfig,
   type SyslogSinkOptionsType,
 } from '../../../src/logging/SyslogSinkOptions.js';
+import { inferKind, KIND_DECLARATIONS, type LeafKind } from '../../util/ConfigPerturbation.js';
 import { expectExactOptions } from '../../util/ExactOptions.js';
 
 /**
@@ -605,6 +606,28 @@ describe('every published sink leaf reaches its own field, and nothing else move
       .filter((leafCase) => Object.is(readPath(shipped[leafCase.sink], leafCase.lands), leafCase.value))
       .map(pathOf);
     expect(inert).toEqual([]);
+  });
+
+  test('every duration or size row is written with a unit of its own kind', () => {
+    // What the note on LeafCase promises, and what the table once broke: the
+    // GELF max-chunk-bytes row was the bare 8192, which `getInt`, `getNumber`
+    // and `getBytes` all read alike, so the suite stayed green under a reader
+    // that switched between them (#1425).  The kind is the leaf's own — the
+    // reference literal's, or its declaration where the literal is a bare
+    // count — and the row's spelling has to show that same kind.
+    const shippedTree = reference.toJSON();
+    const kindOf = (leafCase: LeafCase): LeafKind =>
+      KIND_DECLARATIONS.get(pathOf(leafCase))?.kind
+        ?? inferKind(readPath(shippedTree, pathOf(leafCase)) as Parameters<typeof inferKind>[0]);
+    const quantityRows = LEAVES.filter((leafCase) => kindOf(leafCase) === 'duration' || kindOf(leafCase) === 'size');
+    expect(quantityRows.length, 'no row is a duration or a size: the kind lookup reads nothing').toBeGreaterThan(5);
+    const unitless = quantityRows
+      .filter((leafCase) => {
+        const written = Config.parseString(`row = ${leafCase.hocon}`).toJSON()['row'];
+        return typeof written !== 'string' || inferKind(written) !== kindOf(leafCase);
+      })
+      .map((leafCase) => `${pathOf(leafCase)} = ${leafCase.hocon} (${kindOf(leafCase)})`);
+    expect(unitless).toEqual([]);
   });
 
   for (const leafCase of LEAVES) {

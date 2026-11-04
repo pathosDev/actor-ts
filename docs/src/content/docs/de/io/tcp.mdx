@@ -274,7 +274,9 @@ actor-ts.io.broker.tcp-server {
   max-connections = 1024       # admission cap; unset = unlimited
   framing {
     kind           = "lines"
+    delimiter      = ${?ACTOR_TS_TCP_SERVER_DELIMITER}            # lines only; unset = "\n"
     max-line-bytes = 64K
+    # max-frame-bytes = ${?ACTOR_TS_TCP_SERVER_MAX_FRAME_BYTES}   # length-prefixed only; unset = 16M
   }
 }
 ```

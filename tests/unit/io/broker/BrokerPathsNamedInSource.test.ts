@@ -11,8 +11,10 @@ import { brokerCommonKeysUnder } from '../../../../src/io/broker/BrokerOptions.j
  * The broker files name their HOCON blocks in prose — each options builder's
  * header says which root the HOCON layer of its merge is read from — and an
  * operator copies that spelling into an application.conf.  Nothing else holds
- * the prose to `ConfigKeys`, and this package has no unknown-key detection, so
- * a stale spelling costs a block that nothing reads and nothing reports:
+ * the prose to `ConfigKeys`, and nothing refuses a block no reader opens — the
+ * few blocks that refuse a leaf they do not take, a TCP `framing` block among
+ * them, do so only once their root is read — so a stale spelling costs a
+ * block that nothing reads and nothing reports:
  * `RedisStreamsOptions.ts` named the Redis Streams root by its `ConfigKeys`
  * accessor, `redisStreams`, from the day it was written, while every reader
  * read `redis-streams` (#1443).

@@ -135,10 +135,17 @@ must be positive.
 
 Which stream an actor owns and which durable it binds is deployment shape, not
 application logic, so both groups are readable under
-`actor-ts.io.broker.jetstream` — as is the ack-wait ceiling:
+`actor-ts.io.broker.jetstream` — as are the connection, the way the
+[NATS page](/io/nats/) spells it, and the ack-wait ceiling:
 
 ```hocon
 actor-ts.io.broker.jetstream {
+  servers  = ["nats://nats-1:4222", "nats://nats-2:4222"]   # a list, even for one server
+  name     = "billing"
+  user     = "billing"
+  password = ${?ACTOR_TS_NATS_PASSWORD}
+  # token  = ${?ACTOR_TS_NATS_TOKEN}   # instead of user and password
+
   acknowledgment-timeout = 45s
 
   stream {
@@ -174,7 +181,7 @@ takes:
 consumer {
   durable        = "billing-proc"
   deliver-policy { kind = "by-start-sequence", start-seq = 4242 }
-  # or:          { kind = "by-start-time", start-time = 1767225600000 }  # epoch ms
+  # deliver-policy { kind = "by-start-time", start-time = 1767225600000 }  # or this; epoch ms
 }
 ```
 

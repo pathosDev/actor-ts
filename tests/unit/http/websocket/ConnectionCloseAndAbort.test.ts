@@ -97,8 +97,9 @@ const BURST = 200;
  *
  * `close()` moves it to CLOSING and the close event waits for the peer's
  * answer, so a frame the peer had already sent can still be delivered after
- * the server closed.  No `terminate` — the shape of the Hono adapter, which
- * cannot hard-close a socket.
+ * the server closed.  No `terminate` — the shape of the Hono adapter on Deno,
+ * whose standard `WebSocket` cannot hard-close; on Bun and Node the adapter
+ * hands on the runtime socket's own `terminate`.
  */
 class HandshakeSocket implements WebsocketSocketAdapter {
   /** Every call the connection actor made on this socket, in order. */
@@ -229,8 +230,9 @@ function wsAcceptsCloseCode(code: number): boolean {
  * the socket to CLOSING, then `Sender.close` throws — a TypeError for a code
  * no close frame may carry, a RangeError for a reason over 123 bytes.  So no
  * close frame goes out, no close timer starts, and the next `close()` returns
- * at once: nothing will ever raise the close event.  No `terminate`, which is
- * the adapter the Hono backend builds on Node.
+ * at once: nothing will ever raise the close event.  No `terminate`: `ws`
+ * behind an adapter that offers `close()` alone, as the Hono backend on Node
+ * did until it handed on the socket's own `terminate` (#1431).
  */
 class WsCloseSocket extends HandshakeSocket {
   /** The close frame that went out, if one did — what the peer answers. */

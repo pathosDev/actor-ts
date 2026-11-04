@@ -86,6 +86,21 @@ steuert `entityCount: 0` bei, statt den ganzen Aufruf scheitern zu
 lassen. Du bekommst eine vollständige Shard-Liste mit einer
 konservativen Zahl, keine Exception.
 
+### Wie lange eine Abfrage wartet
+
+`shards()` und `shardRefFor()` warten `actor-ts.sharding.shard-region-query-timeout`
+(5 s), oder was `withShardRegionQueryTimeoutMs` dem Typ mitgegeben hat, oder
+ein `timeoutMs`, das du als letztes Argument übergibst. Die Region behält eine
+wartende Abfrage eine Minute lang, oder so lange wie `actor-ts.actor.ask-timeout`
+oder der Query-Timeout des Typs, wenn einer davon länger ist — ein `timeoutMs`
+pro Aufruf sieht sie nicht. Ein `timeoutMs` über dieser Lebensdauer wird also
+nicht voll ausgewartet: Eine Antwort, die danach eintrifft, erreicht niemanden,
+und der Aufruf scheitert mit `AskTimeoutError`, wenn sein eigenes `timeoutMs`
+abläuft. Bei `shards()` gilt das auch für die Teilantwort des Koordinators, die
+nach 0,6 × `timeoutMs` kommt, wenn eine Region langsam ist. Wer länger als eine
+Minute warten will, erhöht den Query-Timeout des Typs statt des Arguments; die
+Lebensdauer steigt mit.
+
 ## Eine Ref auf einen Shard
 
 ```ts

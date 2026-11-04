@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
@@ -104,6 +104,23 @@ function namesTheOwner(address: RepositoryAddress): boolean {
   return address.owner.toLowerCase() === REPOSITORY_OWNER.toLowerCase();
 }
 
+/**
+ * Every file under `directory`, the generated tree at its top left out, by a
+ * listing that shares no code with {@link contentFiles}: one recursive
+ * `readdirSync`.  The walk is held to it in both directions, because the
+ * floors below could not hold it: a walk that skipped every `persistence`
+ * directory read 420 of 508 pages and 210 of 254 German ones, and left the 40
+ * owner links under them unread — the section #1430 had just corrected —
+ * while clearing every floor.  An exemption written as a directory skip, the
+ * edit that would route around this guard without a word, fails here instead.
+ */
+function listedFiles(directory: string): readonly string[] {
+  return readdirSync(directory, { recursive: true, encoding: 'utf8' })
+    .map((path) => path.split(/[\\/]/).join('/'))
+    .filter((path) => path.split('/')[0] !== GENERATED_DIRECTORY)
+    .filter((path) => statSync(join(directory, path)).isFile());
+}
+
 function contentFiles(directory: string, prefix = ''): readonly string[] {
   const found: string[] = [];
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -193,9 +210,18 @@ describe('links into this repository name its owner', () => {
         writeFileSync(join(root, file), '# page\n');
       }
       expect([...contentFiles(root)].sort()).toEqual(['de/api/handwritten.md', 'guide.markdown', 'index.mdx', 'notes/stub.mdown']);
+      // The listing the real tree is held to below follows the same rule.
+      expect([...listedFiles(root)].sort()).toEqual(['de/api/handwritten.md', 'guide.markdown', 'index.mdx', 'notes/stub.mdown']);
     } finally {
       if (root !== '') rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  test('the walk read every file of the real content tree, in every section and both languages', () => {
+    const walked = new Set(contentPages);
+    const listed = new Set(listedFiles(CONTENT_ROOT));
+    expect([...listed].filter((page) => !walked.has(page)), 'files under the content root the walk never read').toEqual([]);
+    expect([...walked].filter((page) => !listed.has(page)), 'files the walk read that the listing does not hold').toEqual([]);
   });
 
   test('the owner constant is the repository the package manifest names', () => {
