@@ -7,7 +7,9 @@ import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { ConfigError } from '../../../src/config/Config.js';
 import type { ConfigObject } from '../../../src/config/HoconParser.js';
+import { CoordinatedStartupId } from '../../../src/CoordinatedStartup.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { PersistenceExtensionId } from '../../../src/persistence/PersistenceExtension.js';
 import { runWorkerMeshNode, type WorkerMeshInitData } from '../../../src/worker/WorkerMeshBootstrap.js';
 import type { WorkerNodeContext } from '../../../src/worker/WorkerNode.js';
 
@@ -36,7 +38,48 @@ async function rejectionOf(promise: Promise<unknown>): Promise<Error> {
   throw new Error('expected the promise to reject, and it resolved');
 }
 
+/** The init frame a WorkerMesh worker receives, carrying its main thread's effective `config`. */
+function workerContextOver(name: string, config: ConfigObject): WorkerNodeContext<WorkerMeshInitData> {
+  const address = new NodeAddress(name, '127.0.0.1', 2552);
+  const init: WorkerMeshInitData = {
+    kind: 'worker-mesh-init',
+    config,
+    secretPaths: [],
+    seeds: [],
+    roles: [],
+    modules: [],
+  };
+  return {
+    self: address,
+    systemName: name,
+    transport: new InMemoryTransport(address),
+    initData: init,
+    ready: () => {},
+  } as unknown as WorkerNodeContext<WorkerMeshInitData>;
+}
+
 describe('the refusal on every route that builds a system from the file (#1729)', () => {
+  test('a WorkerMesh worker over a valid file that selects a plug-in its main thread wires builds no persistence inside create', async () => {
+    // The deferral the refusal must not disturb: the worker inherits the
+    // selection without the plug-in, so building the extension there would
+    // fail every worker on a file its main thread runs on.
+    const selecting: ConfigObject = {
+      'actor-ts': { persistence: { journal: { plugin: 'acme.persistence.journal' } } },
+    };
+    const { system: worker } = await runWorkerMeshNode(
+      workerContextOver('valid-selection-mesh-worker', selecting),
+      async () => ({}),
+    );
+    try {
+      await worker.whenReady();
+
+      expect(worker.extensions.has(PersistenceExtensionId)).toBe(false);
+      expect(worker.extension(CoordinatedStartupId).hasTasks).toBe(false);
+    } finally {
+      await worker.terminate();
+    }
+  }, 20_000);
+
   test('Cluster.bootstrap: the system it creates fails its startup, naming the key', async () => {
     const name = 'unknown-key-bootstrap';
     // No port is bound: the in-memory transport carries the join.
