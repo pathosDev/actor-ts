@@ -1264,6 +1264,10 @@ describe('with exit-process on, a run for a node that could not join never exits
 
   test.each([
     ['ActorSystemTerminateReason', ActorSystemTerminateReason.instance],
+    // A node its own downing decision stands down is a clean stop too (#1456):
+    // a supervisor that restarts only after a failure leaves it down, which the
+    // coordinated-shutdown guide says.
+    ['ClusterDowningReason', ClusterDowningReason.instance],
     ['ClusterLeavingReason', ClusterLeavingReason.instance],
     ['ProcessTerminateReason', new ProcessTerminateReason('SIGTERM')],
     ['UnknownReason', UnknownReason.instance],

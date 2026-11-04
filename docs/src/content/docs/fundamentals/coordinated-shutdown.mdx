@@ -515,6 +515,27 @@ refused, so the node never sees a `MemberDown` or a `SelfRemoved` for itself,
 and subscribing to either is no way to stand it down
 ([issue #940](https://github.com/pathosDev/actor-ts/issues/940)).
 
+A node the switch stands down ends its process the way a clean stop does.
+With `exit-process = on`, the run exits with `exit-code`, which ships as `0`:
+a downing is none of the failures that never exit `0` — a failed startup, a
+node that could not join, a run that a phase halts, which exits `1` here as
+well.  Left at `exit-process = off`, the process ends the way your `main`
+ends once `runUntilTerminated()` resolves: with `0`, for the production main
+below.  So a supervisor that restarts a process only after a failure —
+systemd's `Restart=on-failure`, as the
+[systemd unit](/operations/deployment/process-manager/#systemd) sets it —
+does not bring the node back.  Two ways do:
+
+- **Restart whatever the status**: `Restart=always`, or the same policy of
+  another supervisor.
+- **A non-zero `exit-code`**, with `exit-process = on`.  That status is not
+  the downing's alone: every run `exit-process` ends exits with it, whatever
+  its reason — a signal's run and the run of a `system.terminate()` that
+  runs the pipeline as much as this one — and the runs for a failure exit
+  with it instead of `1`.  A supervisor then reads every stop as a failure,
+  and the status no longer tells a failed start, a failed join or a halted
+  run from an orderly stop.
+
 ## What runs after `coordinatedShutdown.run()` completes
 
 By the time the promise resolves:

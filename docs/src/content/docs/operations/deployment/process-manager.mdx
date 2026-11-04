@@ -48,7 +48,7 @@ sudo journalctl -u actor-ts -f
 
 | Directive | Purpose |
 | --- | --- |
-| `Restart=on-failure` | Auto-restart on non-zero exit.  Combined with `RestartSec=10s` for backoff. |
+| `Restart=on-failure` | Auto-restart on non-zero exit.  Combined with `RestartSec=10s` for backoff.  A node that its own downing decision stands down (`run-coordinated-shutdown-when-down = on`) exits with status `0` as shipped, so this leaves it down; [when the cluster downs this node](/fundamentals/coordinated-shutdown/#when-the-cluster-downs-this-node) has the two ways out. |
 | `TimeoutStopSec=60s` | How long systemd waits after SIGTERM before SIGKILL.  Sized to match coordinated-shutdown phase budget. |
 | `KillSignal=SIGTERM` | The graceful-shutdown signal.  Triggers
   the framework's coordinated-shutdown hooks. |

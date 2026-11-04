@@ -548,6 +548,29 @@ abgelehnt, also sieht der Knoten nie ein `MemberDown` oder ein `SelfRemoved`
 für sich selbst, und beides zu abonnieren ist kein Weg, ihn herunterzufahren
 ([Issue #940](https://github.com/pathosDev/actor-ts/issues/940)).
 
+Ein Knoten, den der Schalter herunterfährt, beendet seinen Prozess so, wie
+ein sauberer Stopp es tut.  Mit `exit-process = on` endet der Lauf mit
+`exit-code`, der als `0` ausgeliefert wird: Ein Downing ist keiner der
+Fehlschläge, die nie mit `0` enden — ein fehlgeschlagener Start, ein Knoten,
+der nicht beitreten konnte, ein Lauf, den eine Phase anhält, der auch hier
+mit `1` endet.  Beim Default `exit-process = off` endet der Prozess so, wie
+dein `main` endet, sobald `runUntilTerminated()` auflöst: mit `0`, bei der
+Produktions-Main unten.  Ein Supervisor, der einen Prozess nur nach einem
+Fehlschlag neu startet — systemds `Restart=on-failure`, wie die
+[systemd-Unit](/de/operations/deployment/process-manager/#systemd) es
+setzt —, holt den Knoten also nicht zurück.  Zwei Wege tun es:
+
+- **Neustart unabhängig vom Status**: `Restart=always` oder dieselbe Policy
+  eines anderen Supervisors.
+- **Ein `exit-code` ungleich null**, mit `exit-process = on`.  Dieser Status
+  gehört nicht dem Downing allein: Jeder Lauf, den `exit-process` beendet,
+  endet mit ihm, gleich aus welchem Grund — der Lauf eines Signals und der
+  eines `system.terminate()`, das die Pipeline ausführt, genauso wie dieser
+  —, und die Läufe für einen Fehlschlag enden mit ihm statt mit `1`.  Ein
+  Supervisor liest dann jeden Stopp als Fehlschlag, und der Status
+  unterscheidet einen gescheiterten Start, einen gescheiterten Join oder einen
+  angehaltenen Lauf nicht mehr von einem geordneten Stopp.
+
 ## Was nach `coordinatedShutdown.run()`-Abschluss läuft
 
 Bis das Promise resolved:
