@@ -53,15 +53,31 @@ const PAGES: readonly PageClaim[] = [
 ];
 
 /**
- * The warnings the pages carried until #1729, in both languages, and the
+ * The warnings the pages carried until #1729, in both languages; the
  * overview's sentence that with the boot-time open off every mistake above it
- * fails the first operation instead — which a key nothing reads no longer does.
+ * fails the first operation instead — which a key nothing reads no longer does;
+ * and the exception it then named for the open turned off in code with nothing
+ * else of persistence there, which has none now either.
  */
 const RETIRED_WARNINGS: readonly RegExp[] = [
   /misspelt key is not (?:one of them|refused)/i,
   /vertippter Schlüssel (?:gehört nicht dazu|wird nicht abgelehnt)/i,
   /— the mistakes above then fail that operation/,
   /— die Fehler oben lassen dann diese Operation/,
+  /\bone exception is a system that turns the switch off in code\b/i,
+  /\bDie eine Ausnahme ist ein System, das den Schalter im Code abschaltet\b/,
+];
+
+/** The overview's claim that the opt-out in code with nothing else of persistence is no exception, in each language. */
+const NO_EXCEPTION_CLAIMS: ReadonlyArray<{ readonly page: string; readonly claim: string }> = [
+  {
+    page: 'docs/src/content/docs/persistence/overview.mdx',
+    claim: 'over a valid file it builds nothing of persistence inside `create`, and over a file with such a key its startup fails',
+  },
+  {
+    page: 'docs/src/content/docs/de/persistence/overview.mdx',
+    claim: 'Über einer gültigen Datei baut es innerhalb von `create` nichts von der Persistence auf, und über einer Datei mit einem solchen Schlüssel scheitert sein Start',
+  },
 ];
 
 /** The overview's claim that the boot-time open off does not exempt the key, in each language. */
@@ -110,6 +126,10 @@ describe('the persistence pages say a key nothing reads fails the startup (#1729
     expect(prose(readFileSync(join(REPOSITORY_ROOT, page), 'utf8'))).toContain(claim);
   });
 
+  test.each([...NO_EXCEPTION_CLAIMS])('$page says the opt-out in code with nothing else is no exception', ({ page, claim }) => {
+    expect(prose(readFileSync(join(REPOSITORY_ROOT, page), 'utf8'))).toContain(claim);
+  });
+
   test('the retired-warning patterns refuse the sentences they were written against', () => {
     // Guards the guard: a pattern narrowed until it matches nothing would
     // leave the case above green over pages that still say it.
@@ -121,8 +141,14 @@ describe('the persistence pages say a key nothing reads fails the startup (#1729
       .toMatch(RETIRED_WARNINGS[2]!);
     expect('bis die erste Operation danach fragt — die Fehler oben lassen dann diese Operation scheitern statt des Starts')
       .toMatch(RETIRED_WARNINGS[3]!);
+    expect('refusing the key opens none.  The one exception is a system that turns the switch off in code and sets no store')
+      .toMatch(RETIRED_WARNINGS[4]!);
+    expect('öffnet keinen.  Die eine Ausnahme ist ein System, das den Schalter im Code abschaltet und dort weder einen Store')
+      .toMatch(RETIRED_WARNINGS[5]!);
     // And none of them refuses the sentences that replaced them.
     expect('— the other mistakes above then fail that operation').not.toMatch(RETIRED_WARNINGS[2]!);
     expect('— die übrigen Fehler oben lassen dann diese Operation').not.toMatch(RETIRED_WARNINGS[3]!);
+    expect('That includes a system that turns the switch off in code and sets no store').not.toMatch(RETIRED_WARNINGS[4]!);
+    expect('Das gilt auch für ein System, das den Schalter im Code abschaltet').not.toMatch(RETIRED_WARNINGS[5]!);
   });
 });

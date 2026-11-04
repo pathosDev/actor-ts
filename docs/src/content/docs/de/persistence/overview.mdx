@@ -573,13 +573,13 @@ registriertes Plug-in wird dann noch gefunden.  Ein Schlüssel unter
 `actor-ts.persistence`, den nichts liest, lässt den Start trotzdem
 scheitern, mit dem Schalter in der Datei oder im Code abgeschaltet und
 mit jedem Store im Code gesetzt: Der Schalter entscheidet, wann die
-Stores öffnen, und den Schlüssel abzulehnen öffnet keinen.  Die eine
-Ausnahme ist ein System, das den Schalter im Code abschaltet und dort
-weder einen Store noch ein Plug-in setzt, also die ganze Persistence
-eines `WorkerMesh`-Workers: Es baut innerhalb von `create` nichts von
-der Persistence auf, also lehnt der erste Store, nach dem es fragt, den
-Schlüssel ab, und der Haupt-Thread, dessen Konfiguration die Worker
-erben, lehnt ihn bei seinem eigenen Start ab.  Die Worker eines `WorkerMesh` laufen immer
+Stores öffnen, und den Schlüssel abzulehnen öffnet keinen.  Das gilt
+auch für ein System, das den Schalter im Code abschaltet und dort weder
+einen Store noch ein Plug-in setzt, also die ganze Persistence eines
+`WorkerMesh`-Workers: Über einer gültigen Datei baut es innerhalb von
+`create` nichts von der Persistence auf, und über einer Datei mit einem
+solchen Schlüssel scheitert sein Start, ebenso wie der Start des
+Haupt-Threads, dessen Konfiguration die Worker erben.  Die Worker eines `WorkerMesh` laufen immer
 mit abgeschaltetem `autoStart`, was auch immer die Konfiguration sagt,
 die sie erben — siehe
 [Parallelität](/de/fundamentals/parallelism/).

@@ -546,14 +546,14 @@ startup — and a plug-in registered after `create` is still found then.
 A key under `actor-ts.persistence` that nothing reads still fails the
 startup, with the switch off in the file or in code and with every
 store set in code: the switch decides when the stores open, and
-refusing the key opens none.  The one exception is a system that turns
-the switch off in code and sets no store and no plug-in there, the
-whole of a `WorkerMesh` worker's persistence: it builds nothing of
-persistence inside `create`, so the first store it asks for refuses the
-key, and the main thread whose configuration the workers inherit
-refuses it at its own startup.  The workers of a `WorkerMesh` always
-run with it off, whatever the configuration they inherit says — see
-[Parallelism](/fundamentals/parallelism/).
+refusing the key opens none.  That includes a system that turns the
+switch off in code and sets no store and no plug-in there, the whole of
+a `WorkerMesh` worker's persistence: over a valid file it builds
+nothing of persistence inside `create`, and over a file with such a key
+its startup fails, as does the startup of the main thread whose
+configuration the workers inherit.  The workers of a `WorkerMesh`
+always run with it off, whatever the configuration they inherit says —
+see [Parallelism](/fundamentals/parallelism/).
 
 ## When NOT to persist
 
