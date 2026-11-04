@@ -504,6 +504,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `replication.data-centers` list stay outside, each with its reason written
   beside the registry.
 
+  The gate holds a sub-reader to the reader that calls it, and compares a
+  leaf that ships empty at two values. A leaf read by a sink's delivery
+  block, the cluster's downing provider or its split-brain window counts
+  only where the sink's or the cluster's own reader answers to it as well,
+  so a caller that stops handing on what its sub-reader returned fails the
+  leaf; each such registry entry names its callers, and the gate checks that
+  list against the calls in `src/`. A leaf that ships as an empty string,
+  list or object is set to two non-empty values of the same length, which a
+  reader has to tell apart, so one that keeps only whether a value is set no
+  longer passes. A duration or size shipped as a bare count, such as the
+  in-memory cache's `time-to-live`, is set with its unit, so a reader that
+  switched to `getInt` or `getNumber` fails it, and a fraction is also set
+  to a size, so a reader that takes one with `getBytes` fails it too.
+
   The `reference.conf` page's *No dead keys* section, in both languages, now
   describes the gate as it is — a leaf reachable from `ConfigKeys`, and
   read, proven by a registered reader answering differently once the leaf
@@ -519,7 +533,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   entry, `contexts`, `PERTURBATION_OVERRIDES`, `UNPUBLISHED_LEAVES`), and
   replaces the constants rule that kept a `ConfigKeys` read beside its
   constant; `tests/unit/ci/DeadKeyGateGuidance.test.ts` holds both passages
-  to the gate.
+  to the gate. It also says what keeps the Cassandra blocks'
+  `replication.data-centers` outside the gate — a registry entry with a
+  second list as its override, and contexts selecting
+  `network-topology-strategy` on the two Cassandra readers, which nobody has
+  written yet — which readers of another kind fail a leaf, and that
+  `calledBy` is the one place inside the registry where the gate checks
+  wiring. `DeadKeyGateGuidance` asks the gate's own functions about each of
+  these claims, so a claim goes stale only by failing; it holds the
+  registry's comment and the Cassandra options' JSDoc to the same
+  data-centers reason, and refuses the old constants rule by its title as
+  well as by its wording.
 
 - **The documented-defaults check holds each row's kind label to the reader
   that takes the key** (#1438). Every row is set through each registered
@@ -551,9 +575,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   called, so a factory registered after an `await` comes too late for them
   and the startup fails with an `Unknown … plugin` error. Work the stores
   need once they open, such as a key fetched from a vault, may follow it,
-  because they open only once the promise has settled.
-  `ClusterBootstrapOptions.withPersistence` takes them too, and the slot
-  gains `durableStateStore` beside `journal` and `snapshotStore`; each
+  because they open only once the promise has settled. `reference.conf`'s
+  comments on the SQLite, PostgreSQL, MongoDB, Cassandra and object-storage
+  blocks, and the reference-conf page in both languages, show this
+  registration, where they used to suggest a bare `register*Plugins(ext)`
+  call. `ClusterBootstrapOptions.withPersistence` takes them too, and the
+  slot gains `durableStateStore` beside `journal` and `snapshotStore`; each
   instance wins over the plugin its axis selects.
 
   `withPersistence` also takes `behavior`, the persistence behaviour set in
@@ -8695,6 +8722,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   a sample is wrong. The compiler's output buffer is raised from 1 MiB to 64
   MiB, past which the output used to be cut and parsed only as far as the
   cut.
+
+- **Every broker page publishes all of its root's leaves in a HOCON fence,
+  as the configuration page's table promises** (#1443). In both languages,
+  the Kafka, JetStream, JetStream key-value and object-store, email bridge
+  and MQTT pages gained the leaves they were missing — among them Kafka's
+  `brokers`, `client-id`, `ssl`, `sasl` and `consumer` leaves, the JetStream
+  blocks' `servers` and credentials, and MQTT's whole connection — and the
+  TCP page shows the listener's framing `delimiter` and `max-frame-bytes`.
+  The MQTT sample takes each leaf from the environment and says what that
+  costs: a value from the environment is read as JSON first, so
+  `ACTOR_TS_MQTT_KEEP_ALIVE=30` is refused as thirty milliseconds where
+  `30s` is meant, and a client id or password that reads as a number comes
+  back in that number's own spelling unless it is quoted inside the
+  variable.
 
 ### Removed
 
