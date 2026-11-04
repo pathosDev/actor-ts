@@ -1,13 +1,15 @@
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
-import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
+import { ActorSystemOptions, type ActorSystemOptionsBuilder } from '../../../src/ActorSystemOptions.js';
 import { Config, ConfigError } from '../../../src/config/Config.js';
+import { CoordinatedStartupId } from '../../../src/CoordinatedStartup.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { InMemoryDurableStateStore } from '../../../src/persistence/durable-state-stores/InMemoryDurableStateStore.js';
 import { InMemoryJournal } from '../../../src/persistence/journals/InMemoryJournal.js';
 import { PersistenceBehaviorOptions } from '../../../src/persistence/PersistenceBehaviorOptions.js';
 import { PersistenceExtensionId, type PersistencePlugin } from '../../../src/persistence/PersistenceExtension.js';
 import { InMemorySnapshotStore } from '../../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 
 /**
  * #1425 — a persistence selection the configuration got wrong, met the way an
@@ -57,6 +59,43 @@ async function rejectionOf(promise: Promise<unknown>): Promise<Error> {
 async function stopped(system: ActorSystem): Promise<void> {
   await system.terminate();
   await system.whenTerminated();
+}
+
+/** `ActorSystem.create`, which must not throw: a refused key is the startup's to report. */
+function createdWithout(name: string, systemOptions: ActorSystemOptionsBuilder): ActorSystem {
+  let system: ActorSystem | undefined;
+  expect(() => { system = ActorSystem.create(name, systemOptions); }).not.toThrow();
+  return system!;
+}
+
+/**
+ * That `system`'s startup failed on the refusal of `key` and took the system
+ * down on its own — the failure path every route shares (#1729).
+ */
+async function expectStartupRefusing(system: ActorSystem, key: string): Promise<void> {
+  const error = await rejectionOf(system.whenReady());
+  expect(error.message).toContain('"persistence-warm-up"');
+  expect(error.cause).toBeInstanceOf(ConfigError);
+  expect((error.cause as Error).message).toStartWith(`Config at "${key}" is not a key `);
+  await system.whenTerminated();
+  expect(system.isTerminated).toBe(true);
+}
+
+/** A store of each kind, set in code: with all three in place no axis reads the selection. */
+function everyStoreInCode(): { journal: InMemoryJournal; snapshotStore: InMemorySnapshotStore; durableStateStore: InMemoryDurableStateStore } {
+  return {
+    journal: new InMemoryJournal(),
+    snapshotStore: new InMemorySnapshotStore(),
+    durableStateStore: new InMemoryDurableStateStore(),
+  };
+}
+
+/** Quiet options over `hocon`, as {@link systemOver} builds them, for a case that adds persistence in code. */
+function quietOptionsOver(hocon: string): ActorSystemOptionsBuilder {
+  return ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off)
+    .withConfig(Config.parseString(hocon));
 }
 
 type NoIdSelectorCase = {
@@ -359,31 +398,66 @@ describe('a key under actor-ts.persistence that no reader takes fails the startu
     }
   });
 
-  test('a file with the boot-time open off starts, and the first store asked for refuses the key', async () => {
-    // Off, nothing is resolved until the first operation asks — the same
-    // place a selector holding no id is refused then.
-    const system = systemOver(
-      'unknown-persistence-key-auto-start-off',
+  test('a file with the boot-time open off still fails the startup on the key', async () => {
+    // The switch decides when the stores open, and refusing the key opens
+    // none, so off is no reason to start on a file with a key nothing reads.
+    const systemOptions = quietOptionsOver(
       'actor-ts.persistence { auto-start = off, journal.plugn = "actor-ts.persistence.journal.sqlite" }',
     );
+    const system = createdWithout('unknown-persistence-key-auto-start-off', systemOptions);
     try {
-      await system.whenReady();
-
-      expect(() => system.extension(PersistenceExtensionId).journal)
-        .toThrow('Config at "actor-ts.persistence.journal.plugn" is not a key ');
+      await expectStartupRefusing(system, 'actor-ts.persistence.journal.plugn');
     } finally {
       await stopped(system);
     }
   });
 
-  test('autoStart false set in code, a WorkerMesh worker\'s whole withPersistence, defers the refusal to first use', async () => {
-    // A worker inherits its main thread's file, which refuses the key in its
-    // own startup; the worker refuses it where it first resolves a store.
-    const systemOptions = ActorSystemOptions.create()
-      .withLogger(new NoopLogger())
-      .withLogLevel(LogLevel.Off)
-      .withConfig(Config.parseString('actor-ts.persistence.jornal { plugin = "actor-ts.persistence.journal.sqlite" }'))
-      .withPersistence({ behavior: PersistenceBehaviorOptions.create().withAutoStart(false) });
+  test('every store set in code with the boot-time open off in the file still fails the startup on the key', async () => {
+    const systemOptions = quietOptionsOver('actor-ts.persistence { auto-start = off, recovery-timout = 5s }')
+      .withPersistence(everyStoreInCode());
+    const system = createdWithout('unknown-persistence-key-every-store-auto-start-off', systemOptions);
+    try {
+      await expectStartupRefusing(system, 'actor-ts.persistence.recovery-timout');
+    } finally {
+      await stopped(system);
+    }
+  });
+
+  test('every store set in code with autoStart false set in code still fails the startup on the key', async () => {
+    const behavior = PersistenceBehaviorOptions.create().withAutoStart(false);
+    const systemOptions = quietOptionsOver('actor-ts.persistence.recovery-timout = 5s')
+      .withPersistence({ ...everyStoreInCode(), behavior });
+    const system = createdWithout('unknown-persistence-key-every-store-auto-start-false', systemOptions);
+    try {
+      await expectStartupRefusing(system, 'actor-ts.persistence.recovery-timout');
+    } finally {
+      await stopped(system);
+    }
+  });
+
+  test('plug-ins passed with autoStart false set in code still fail the startup on the key', async () => {
+    const behavior = PersistenceBehaviorOptions.create().withAutoStart(false);
+    const plugin: PersistencePlugin = (persistence) => {
+      persistence.registerJournal('acme.persistence.journal', () => new InMemoryJournal());
+    };
+    const systemOptions = quietOptionsOver('actor-ts.persistence.jornal { plugin = "acme.persistence.journal" }')
+      .withPersistence({ plugins: [plugin], behavior });
+    const system = createdWithout('unknown-persistence-key-plugins-auto-start-false', systemOptions);
+    try {
+      await expectStartupRefusing(system, 'actor-ts.persistence.jornal');
+    } finally {
+      await stopped(system);
+    }
+  });
+
+  test('autoStart false set in code and nothing else, a WorkerMesh worker\'s whole withPersistence, defers the refusal to first use', async () => {
+    // The one shape that builds no persistence inside `create` at all, so no
+    // startup task can carry the refusal.  A worker inherits its main
+    // thread's file, which refuses the key in its own startup; the worker
+    // refuses it where it first resolves a store.
+    const behavior = PersistenceBehaviorOptions.create().withAutoStart(false);
+    const systemOptions = quietOptionsOver('actor-ts.persistence.jornal { plugin = "actor-ts.persistence.journal.sqlite" }')
+      .withPersistence({ behavior });
     const system = ActorSystem.create('unknown-persistence-key-auto-start-false-in-code', systemOptions);
     try {
       await system.whenReady();
@@ -449,6 +523,40 @@ describe('what the refusal leaves alone (#1729)', () => {
 
       expect(system.extension(PersistenceExtensionId).journal).toBe(journal);
       expect(tableRead).toBe('events');
+    } finally {
+      await stopped(system);
+    }
+  });
+
+  test.each([
+    { name: 'autoStart false set in code', hocon: '', autoStartInCode: false as boolean | undefined },
+    { name: 'the boot-time open off in the file', hocon: 'actor-ts.persistence.auto-start = off', autoStartInCode: undefined },
+  ])('every store set in code with $name, over a file with no such key, adds no startup task', async ({ hocon, autoStartInCode }) => {
+    const behavior = autoStartInCode === undefined
+      ? undefined
+      : PersistenceBehaviorOptions.create().withAutoStart(autoStartInCode);
+    const systemOptions = quietOptionsOver(hocon).withPersistence({ ...everyStoreInCode(), behavior });
+    const system = createdWithout('every-store-in-code-auto-start-off-no-such-key', systemOptions);
+    try {
+      expect(system.extension(CoordinatedStartupId).hasTasks).toBe(false);
+      await system.whenReady();
+    } finally {
+      await stopped(system);
+    }
+  });
+
+  test('autoStart false set in code still asks nothing of the behaviour block inside create', async () => {
+    // The refusal reads the names under actor-ts.persistence, not the values:
+    // an invalid value is still refused on first use, as before (#1473).
+    const behavior = PersistenceBehaviorOptions.create().withAutoStart(false);
+    const systemOptions = quietOptionsOver('actor-ts.persistence.max-concurrent-recoveries = -1')
+      .withPersistence({ ...everyStoreInCode(), behavior });
+    const system = createdWithout('auto-start-false-invalid-behaviour-value', systemOptions);
+    try {
+      await system.whenReady();
+
+      expect(system.extension(CoordinatedStartupId).hasTasks).toBe(false);
+      expect(() => system.extension(PersistenceExtensionId).behavior).toThrow(OptionsError);
     } finally {
       await stopped(system);
     }

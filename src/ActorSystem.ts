@@ -610,15 +610,20 @@ export class ActorSystem {
     // below that arm handles, so a plug-in that throws fails `create` before
     // either exists.  A system with neither stays lazy, as it always was.
     //
-    // `autoStart: false` set in code opts out of the warm-up whatever the file
-    // says, so it is answered here without reading the behaviour block — and
-    // so without validating it, which the warm-up does before it looks at
+    // `autoStart: false` set in code opts out of opening the stores whatever
+    // the file says, so it is answered without reading the behaviour block —
+    // and so without validating it, which the warm-up does before it looks at
     // `autoStart`.  On its own it gives `create` nothing to do: that is the
     // whole of a WorkerMesh worker's `withPersistence`, and building the
     // extension for it failed every worker on an invalid block its main
     // thread never read.  The block is still read, and refused, on first use;
     // the extension built then still finds the opt-out through
-    // `_explicitPersistenceBehavior`.
+    // `_explicitPersistenceBehavior`.  An extension built here for other
+    // reasons — stores or plug-ins in code — still prepares the warm-up under
+    // the opt-out, which answers it from that explicit layer: a key under
+    // `actor-ts.persistence` that no reader takes fails the startup whatever
+    // `autoStart` says (#1729), and with every store set in code nothing else
+    // would ever read the file's persistence block.
     const persistenceOptions = options.persistence;
     const warmUpOptedOut =
       (persistenceOptions?.behavior as Partial<PersistenceBehaviorOptionsType> | undefined)?.autoStart === false;
@@ -640,7 +645,7 @@ export class ActorSystem {
       if (persistenceOptions?.journal) persistence.setJournal(persistenceOptions.journal);
       if (persistenceOptions?.snapshotStore) persistence.setSnapshotStore(persistenceOptions.snapshotStore);
       if (persistenceOptions?.durableStateStore) persistence.setDurableStateStore(persistenceOptions.durableStateStore);
-      if (!warmUpOptedOut) persistence._prepareWarmUp();
+      persistence._prepareWarmUp();
     }
 
     // Only when the operator asked for a queue.  Off — the default — this

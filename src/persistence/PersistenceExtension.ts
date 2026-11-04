@@ -504,7 +504,8 @@ export class PersistenceExtension implements Extension {
    * than as a configuration error naming the field.  A system that builds the
    * extension inside `create` reads it there too, for `autoStart` (see
    * {@link _prepareWarmUp}), so a mistake in the block fails `create` with
-   * that error.
+   * that error — unless `autoStart: false` is set in code, which answers that
+   * question without the block.
    */
   get behavior(): PersistenceBehaviorOptionsType {
     if (this._behavior) return this._behavior;
@@ -824,7 +825,8 @@ export class PersistenceExtension implements Extension {
   /**
    * @internal Resolve the selected journal, snapshot store and durable-state
    * store now and, unless the behaviour's `autoStart` is off, add the startup
-   * task that opens them — called once, by the `ActorSystem` constructor,
+   * task that opens them — or, whatever it is, the task that fails on a key
+   * nothing reads — called once, by the `ActorSystem` constructor,
    * after the plug-ins have run and the instances set in code are in place,
    * and before it seals the startup graph.
    *
@@ -849,10 +851,19 @@ export class PersistenceExtension implements Extension {
    *
    * No task at all when nothing has anything to open — the in-memory stores
    * have no `start()` — so such a system is ready the moment the graph starts.
+   *
+   * **A key nothing reads fails the startup whatever `autoStart` says**
+   * (#1729).  The switch decides when the stores open, and refusing a key
+   * opens none, so the refusal becomes the task's failure with the boot-time
+   * open off too, in the file or in code — and with every store set in code,
+   * where no axis would ever read the selection.  Hence the `ActorSystem`
+   * constructor calls this whatever the code opt-out says; see
+   * {@link warmUpResolution} for how it is answered without reading the
+   * behaviour block.
    */
   _prepareWarmUp(): void {
-    if (!this.behavior.autoStart) return;
-    const resolution = this.resolveSelectedStores();
+    const resolution = this.warmUpResolution();
+    if (resolution === undefined) return;
     const opening = resolution.stores.filter((entry) => entry.store.start !== undefined);
     if (resolution.failure === undefined && opening.length === 0) return;
     const registrations = this.pluginRegistrations;
@@ -869,23 +880,34 @@ export class PersistenceExtension implements Extension {
   }
 
   /**
-   * The stores the three axes resolve to now, journal first, and the first
-   * lookup that failed — after which nothing more is built, because the
-   * startup is going down anyway.  Through the getters, so the warm-up opens
-   * the very instances every later caller is handed.
+   * What the warm-up has to do: `undefined` when it opens nothing, otherwise
+   * the stores to open and the first failure.
    *
-   * A key under `actor-ts.persistence` that no reader takes is refused before
-   * any of them (#1729), and here as well as in the getters: an axis whose
-   * store is set in code reads no selection, and with every one set in code
-   * no getter would ask, while the behaviour keys beside the selectors are in
-   * force for every persistent actor all the same.
+   * In this order.  `autoStart` first, because reading the behaviour block
+   * validates it and a mistake there fails `create` itself, as it always has
+   * — except under `autoStart: false` set in code, which is answered from the
+   * explicit layer alone so that the block is still read only on first use
+   * (#1473).  Then a key under `actor-ts.persistence` that no reader takes
+   * (#1729), refused whatever `autoStart` said: it is a failure with no store
+   * to open.  Then, with `autoStart` on, the selected stores.
    */
-  private resolveSelectedStores(): SelectedStores {
+  private warmUpResolution(): SelectedStores | undefined {
+    const autoStart = this.explicitBehavior.autoStart === false ? false : this.behavior.autoStart;
     try {
       refuseUnknownPersistenceKeys(this.system.config);
     } catch (error) {
       return { stores: [], failure: error };
     }
+    return autoStart ? this.resolveSelectedStores() : undefined;
+  }
+
+  /**
+   * The stores the three axes resolve to now, journal first, and the first
+   * lookup that failed — after which nothing more is built, because the
+   * startup is going down anyway.  Through the getters, so the warm-up opens
+   * the very instances every later caller is handed.
+   */
+  private resolveSelectedStores(): SelectedStores {
     const stores: StoreToOpen[] = [];
     const axes: ReadonlyArray<() => StoreToOpen> = [
       () => ({ axis: 'journal', store: this.journal, pluginId: this.journalBuiltFrom }),
