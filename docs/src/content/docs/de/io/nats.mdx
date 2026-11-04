@@ -67,9 +67,11 @@ actor-ts.io.broker.nats {
 
 Ein Wert aus der Umgebung wird zuerst als JSON gelesen, wo immer er sich als
 JSON parsen lässt.  Ein Passwort oder Token, das sich wie eine Zahl liest, kommt
-in der Schreibweise dieser Zahl zurück — `1e3` als `1000`, `1.50` als `1.5`, ein
-zwanzigstelliges gerundet —, und eines, das sich wie `null` oder eine Liste
-liest, lässt den Start scheitern; ein schlichtes `12345` bleibt unverändert.
+in der Schreibweise dieser Zahl zurück — `1e3` als `1000`, `1.50` als `1.5` und
+eine ganze Zahl jenseits von `Number.MAX_SAFE_INTEGER` womöglich mit anderen
+letzten Ziffern (`20261104123456789` als `20261104123456788`) —, und eines, das
+sich wie `null`, eine Liste oder ein Objekt liest, lässt den Start mit einem
+`ConfigError` scheitern; ein schlichtes `12345` bleibt unverändert.
 Einen solchen Wert in der Variablen selbst quoten
 (`ACTOR_TS_NATS_PASSWORD='"1e3"'`) oder im Code setzen.
 

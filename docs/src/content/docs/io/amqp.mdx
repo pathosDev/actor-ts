@@ -76,9 +76,12 @@ actor-ts.io.broker.amqp {
 The URL carries the credentials, which is why the sample takes it from the
 environment rather than from the file.  A value from the environment is read
 as JSON first wherever it parses as JSON; an `amqp://` URL never does, so it
-arrives as written.  A value that does — a number in another spelling, `null`,
-a list — would arrive changed or stop the start: quote it inside the
-variable, or set it in code.
+arrives as written.  A value that does would arrive changed or stop the start:
+one that reads as a number comes back in that number's own spelling — `1e3`
+as `1000`, and a whole number past `Number.MAX_SAFE_INTEGER` possibly with
+other last digits (`20261104123456789` as `20261104123456788`) — and one that
+reads as `null`, a list or an object stops the start with a `ConfigError`.
+Quote such a value inside the variable, or set it in code.
 
 `bindings` and `tls` have no leaf: a
 binding names the actor its queue delivers to, and TLS material is a private

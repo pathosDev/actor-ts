@@ -67,9 +67,10 @@ actor-ts.io.broker.nats {
 
 A value from the environment is read as JSON first wherever it parses as JSON.
 A password or token that reads as a number comes back in that number's own
-spelling — `1e3` as `1000`, `1.50` as `1.5`, a twenty-digit one rounded — and
-one that reads as `null` or a list stops the start; a plain `12345` is
-unchanged.  Quote such a value inside the variable
+spelling — `1e3` as `1000`, `1.50` as `1.5`, and a whole number past
+`Number.MAX_SAFE_INTEGER` possibly with other last digits (`20261104123456789`
+as `20261104123456788`) — and one that reads as `null`, a list or an object
+stops the start with a `ConfigError`; a plain `12345` is unchanged.  Quote such a value inside the variable
 (`ACTOR_TS_NATS_PASSWORD='"1e3"'`), or set it in code.
 
 A user and password written into a `servers` entry
