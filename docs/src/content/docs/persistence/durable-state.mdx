@@ -194,10 +194,16 @@ journal and snapshot-store blocks and for `actor-ts.persistence` itself, and a
 selector holding no id at all — `null`, a block, a list — fails every axis, not
 only its own.
 
-A misspelt key is not refused, because nothing reads it.  `plugn = "…"` in the
-block leaves `plugin` at the in-memory id `reference.conf` ships, so the system
-starts on the in-memory store with no error and no warning, exactly as if
-nothing had been selected.
+A misspelt key is refused as well, naming the full key.  `plugn = "…"` in the
+block is read by nothing, and it used to leave `plugin` at the in-memory id
+`reference.conf` ships, so the system started on the in-memory store with no
+error and no warning, exactly as if nothing had been selected.  It now fails the
+startup with a `ConfigError` naming `actor-ts.persistence.durable-state.plugn`,
+and so does any other value in the block beside `plugin` — a plug-in's setting
+written a level too high among them — and any key directly under
+`actor-ts.persistence` that the framework does not read.  Correct the spelling,
+or move the setting into its plug-in's block.  A misspelt leaf inside a plug-in's
+own block is that plug-in's to refuse.
 
 A selected SQLite store with no path is refused as well, and earlier: when
 `registerSqlitePlugins` runs it checks every store the configuration selects —

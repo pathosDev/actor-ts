@@ -38,6 +38,7 @@ import {
   type PersistenceOptionSupport,
 } from './PersistenceCapabilities.js';
 import type { PersistenceOptions } from './PersistenceOptions.js';
+import { refuseUnknownPersistenceKeys } from './PersistenceUnknownKeys.js';
 import type { SnapshotStore } from './SnapshotStore.js';
 import { InMemorySnapshotStore } from './snapshot-stores/InMemorySnapshotStore.js';
 import { readInMemorySnapshotStoreOptionsFromConfig } from './snapshot-stores/InMemorySnapshotStoreOptions.js';
@@ -503,7 +504,8 @@ export class PersistenceExtension implements Extension {
    * than as a configuration error naming the field.  A system that builds the
    * extension inside `create` reads it there too, for `autoStart` (see
    * {@link _prepareWarmUp}), so a mistake in the block fails `create` with
-   * that error.
+   * that error — unless `autoStart: false` is set in code, which answers that
+   * question without the block.
    */
   get behavior(): PersistenceBehaviorOptionsType {
     if (this._behavior) return this._behavior;
@@ -823,7 +825,8 @@ export class PersistenceExtension implements Extension {
   /**
    * @internal Resolve the selected journal, snapshot store and durable-state
    * store now and, unless the behaviour's `autoStart` is off, add the startup
-   * task that opens them — called once, by the `ActorSystem` constructor,
+   * task that opens them — or, whatever it is, the task that fails on a key
+   * nothing reads — called once, by the `ActorSystem` constructor,
    * after the plug-ins have run and the instances set in code are in place,
    * and before it seals the startup graph.
    *
@@ -848,10 +851,19 @@ export class PersistenceExtension implements Extension {
    *
    * No task at all when nothing has anything to open — the in-memory stores
    * have no `start()` — so such a system is ready the moment the graph starts.
+   *
+   * **A key nothing reads fails the startup whatever `autoStart` says**
+   * (#1729).  The switch decides when the stores open, and refusing a key
+   * opens none, so the refusal becomes the task's failure with the boot-time
+   * open off too, in the file or in code — and with every store set in code,
+   * where no axis would ever read the selection.  Hence the `ActorSystem`
+   * constructor calls this whatever the code opt-out says; see
+   * {@link warmUpResolution} for how it is answered without reading the
+   * behaviour block.
    */
   _prepareWarmUp(): void {
-    if (!this.behavior.autoStart) return;
-    const resolution = this.resolveSelectedStores();
+    const resolution = this.warmUpResolution();
+    if (resolution === undefined) return;
     const opening = resolution.stores.filter((entry) => entry.store.start !== undefined);
     if (resolution.failure === undefined && opening.length === 0) return;
     const registrations = this.pluginRegistrations;
@@ -865,6 +877,28 @@ export class PersistenceExtension implements Extension {
         await Promise.all(opening.map((entry) => openAtStartup(entry)));
       },
     );
+  }
+
+  /**
+   * What the warm-up has to do: `undefined` when it opens nothing, otherwise
+   * the stores to open and the first failure.
+   *
+   * In this order.  `autoStart` first, because reading the behaviour block
+   * validates it and a mistake there fails `create` itself, as it always has
+   * — except under `autoStart: false` set in code, which is answered from the
+   * explicit layer alone so that the block is still read only on first use
+   * (#1473).  Then a key under `actor-ts.persistence` that no reader takes
+   * (#1729), refused whatever `autoStart` said: it is a failure with no store
+   * to open.  Then, with `autoStart` on, the selected stores.
+   */
+  private warmUpResolution(): SelectedStores | undefined {
+    const autoStart = this.explicitBehavior.autoStart === false ? false : this.behavior.autoStart;
+    try {
+      refuseUnknownPersistenceKeys(this.system.config);
+    } catch (error) {
+      return { stores: [], failure: error };
+    }
+    return autoStart ? this.resolveSelectedStores() : undefined;
   }
 
   /**
@@ -1118,15 +1152,29 @@ export class PersistenceExtension implements Extension {
   }
 
   private currentJournalPluginId(): string {
-    return readPersistencePluginIdsFromConfig(this.system.config).journal;
+    return this.selection().journal;
   }
 
   private currentSnapshotPluginId(): string {
-    return readPersistencePluginIdsFromConfig(this.system.config).snapshotStore;
+    return this.selection().snapshotStore;
   }
 
   private currentDurableStatePluginId(): string {
-    return readPersistencePluginIdsFromConfig(this.system.config).durableState;
+    return this.selection().durableState;
+  }
+
+  /**
+   * The selection, as every axis resolves it: a refusal of any key under
+   * `actor-ts.persistence` that no reader takes (#1729), then the three
+   * selectors.  The refusal passes over the selectors themselves and over a
+   * value standing where a block belongs, so those are still refused by the
+   * reader, with messages of their own.  Whichever axis resolves first
+   * refuses the key, for the reason a selector holding no id fails every axis:
+   * it is a mistake in the file whichever store is used.
+   */
+  private selection(): PersistencePluginIds {
+    refuseUnknownPersistenceKeys(this.system.config);
+    return readPersistencePluginIdsFromConfig(this.system.config);
   }
 }
 
@@ -1176,6 +1224,13 @@ export type PersistencePluginIds = {
  * block, a list — or a value in place of a block is refused by whichever axis
  * resolves first rather than only by its own: it is a mistake in the file
  * whichever store the application uses.
+ *
+ * A key beside the selectors that nothing reads — `journal.plugn`, a `jornal`
+ * block — is not refused here but by {@link refuseUnknownPersistenceKeys},
+ * which the extension and the startup run ahead of every read they make of
+ * this (#1729).  Asked on its own, this answers for the selectors alone, which
+ * is what the per-block cases that write an axis block without a `plugin`
+ * field rely on.
  */
 export function readPersistencePluginIdsFromConfig(config: Config): PersistencePluginIds {
   const keys = ConfigKeys.persistence;
@@ -1234,13 +1289,14 @@ function holdsBlock(config: Config, path: string): boolean {
  * inside `create`, so that a selection made in configuration alone is
  * resolved, and its stores opened, as part of the startup (#1473).
  *
- * A selector that holds no id at all, or a value where a block belongs,
- * answers yes: it is a mistake the resolution names, and naming it at startup
- * is the point.
+ * A selector that holds no id at all, a value where a block belongs, or a key
+ * under `actor-ts.persistence` that no reader takes (#1729) answers yes: it is
+ * a mistake the resolution names, and naming it at startup is the point.
  */
 export function selectsPersistencePlugin(config: Config): boolean {
   let selected: PersistencePluginIds;
   try {
+    refuseUnknownPersistenceKeys(config);
     selected = readPersistencePluginIdsFromConfig(config);
   } catch {
     return true;
@@ -1249,6 +1305,29 @@ export function selectsPersistencePlugin(config: Config): boolean {
   return selected.journal !== keys.journal.inMemory
     || selected.snapshotStore !== keys.snapshotStore.inMemory.root
     || selected.durableState !== keys.durableState.inMemory;
+}
+
+/**
+ * @internal Whether `config` holds a key under `actor-ts.persistence` that no
+ * reader takes — whether {@link refuseUnknownPersistenceKeys} refuses it, and
+ * nothing more (#1729).
+ *
+ * What the `ActorSystem` constructor asks when `autoStart: false` set in code
+ * would otherwise keep persistence out of `create`: a key nothing reads still
+ * builds the extension there, so its refusal is the startup's failure as it is
+ * on every other route, while a valid file under that opt-out builds nothing,
+ * as before.  Deliberately not {@link selectsPersistencePlugin}, which also
+ * answers yes for a valid selection — the very file a WorkerMesh worker
+ * inherits without the plug-ins its main thread registered.
+ */
+export function holdsUnknownPersistenceKey(config: Config): boolean {
+  try {
+    refuseUnknownPersistenceKeys(config);
+    return false;
+  } catch (error) {
+    if (error instanceof ConfigError) return true;
+    throw error;
+  }
 }
 
 /**
