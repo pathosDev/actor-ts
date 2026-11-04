@@ -3679,15 +3679,19 @@ der Größenordnung auseinander — `16MB` ist 4,63 % kleiner als `16M`, bei `T`
 ist der dezimale Wert 9,05 % kleiner — eine Obergrenze in der ungewollten
 Form ist also eine Obergrenze an der falschen Stelle.
 
-Anders als eine Duration nimmt eine Size **kein Vorzeichen**, und eine
-bloße Zahl muss eine ganze Anzahl Bytes sein: `-1K` und `1.5` sind beide
-`Invalid size`.  Ein Bruchteil *mit* Einheit ist dagegen in Ordnung und
-rundet auf das nächste Byte, `1.5K` sind also 1536.
+Anders als eine Duration nimmt eine Size **kein Vorzeichen** — `-1K` ist
+`Invalid size` — und sie muss eine ganze Anzahl Bytes ergeben.  Ein
+Bruchteil *mit* Einheit ist in Ordnung, wenn er das tut, `1.5K` sind also
+1536, und wird abgelehnt, wenn nicht: `1.1K` sind 1126,4 Bytes und scheitern
+als `Invalid size: 1.1K is not a whole number of bytes`.  Eine bloße Zahl
+muss selbst ganz sein, ob als String oder als Zahl geschrieben: `"1.5"` ist
+`Invalid size`, und `1.5` wird unter Nennung des Keys abgelehnt, an dem es
+steht, als `Config at "..." is not a whole number of bytes (got 1.5)`.
 
 Dieselben zwei Ablehnungen gelten, mit den für Sizes buchstabierten
 Meldungen: `Unknown size unit "..." in ...` für eine Einheit, die nicht in
 der Tabelle steht — `constructor` eingeschlossen, aus dem Grund oben — und
-`Invalid size: ...` für alles, was keine endliche Byte-Anzahl ergibt.
+`Invalid size: ...` für alles, was keine endliche, ganze Byte-Anzahl ergibt.
 
 ### Environment-Substitution
 
