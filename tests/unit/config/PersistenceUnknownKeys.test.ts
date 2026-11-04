@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { Config, ConfigError } from '../../../src/config/Config.js';
 import { ConfigKeys } from '../../../src/config/ConfigKeys.js';
 import type { ConfigObject, ConfigValue } from '../../../src/config/HoconParser.js';
+import { holdsUnknownPersistenceKey } from '../../../src/persistence/PersistenceExtension.js';
 import { refuseUnknownPersistenceKeys } from '../../../src/persistence/PersistenceUnknownKeys.js';
 
 /**
@@ -211,5 +212,38 @@ describe('what the check accepts comes from ConfigKeys, not a list beside it (#1
     expect(() => refuseUnknownPersistenceKeys(config))
       .toThrow('Config at "actor-ts.persistence.journal.selector" is not a key the journal block takes');
     expect(() => refuseUnknownPersistenceKeys(config, renamed)).not.toThrow();
+  });
+});
+
+/**
+ * The question the `ActorSystem` constructor asks under `autoStart: false` set
+ * in code, before it decides to build persistence inside `create` (#1729).
+ * Exactly the check's answer: a yes for anything else would build the
+ * extension under an opt-out for a file the refusal has nothing to say about.
+ */
+describe('holdsUnknownPersistenceKey answers whether the check refuses, and nothing more (#1729)', () => {
+  test.each([
+    'actor-ts.persistence.journal.plugn = "x"',
+    'actor-ts.persistence.jornal { plugin = "x" }',
+    'actor-ts.persistence.recovery-timout = 5s',
+  ])('yes for a key the check refuses: %s', (hocon) => {
+    expect(holdsUnknownPersistenceKey(Config.parseString(hocon).withFallback(reference))).toBe(true);
+  });
+
+  test.each([
+    '',
+    'actor-ts.persistence.journal.plugin = "actor-ts.persistence.journal.sqlite"',
+    'actor-ts.persistence.journal.my-plugin { tabel = "events" }',
+    'actor-ts.persistence.max-concurrent-recoveries = -1',
+  ])('no for a file the check accepts: "%s"', (hocon) => {
+    expect(holdsUnknownPersistenceKey(Config.parseString(hocon).withFallback(reference))).toBe(false);
+  });
+
+  test.each([
+    'actor-ts.persistence.journal = "actor-ts.persistence.journal.sqlite"',
+    'actor-ts.persistence.durable-state.plugin = null',
+    'actor-ts.persistence = "postgres"',
+  ])('no for a mistake the selection reader refuses instead: %s', (hocon) => {
+    expect(holdsUnknownPersistenceKey(Config.parseString(hocon).withFallback(reference))).toBe(false);
   });
 });
