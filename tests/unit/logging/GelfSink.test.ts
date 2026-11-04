@@ -354,9 +354,12 @@ describe('actor-ts.logger.sinks.gelf.max-chunk-bytes', () => {
   });
 
   it('still refuses a fractional count, naming it', () => {
-    // An integer getter refuses it while reading; a byte-size getter hands a
-    // bare number through as it is, so the validator has to.
-    expect(() => new GelfSink(chunkBytesFrom('1420.5'))).toThrow(/max-chunk-bytes|maxChunkBytes/);
+    // The byte-size getter refuses it while reading, as the integer getter it
+    // replaced did; it used to hand a bare number through as it was, and left
+    // the refusal to the validator.
+    expect(() => chunkBytesFrom('1420.5')).toThrow(
+      'Config at "actor-ts.logger.sinks.gelf.max-chunk-bytes" is not a whole number of bytes (got 1420.5)',
+    );
   });
 
   it('refuses a size past the datagram limit, whatever unit it is written in', () => {

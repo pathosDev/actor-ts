@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { Config } from '../../../src/config/Config.js';
+import { Config, ConfigError } from '../../../src/config/Config.js';
 import { parseSize } from '../../../src/config/Size.js';
 
 describe('parseSize', () => {
@@ -89,12 +89,14 @@ describe('parseSize', () => {
     expect(parseSize(1420)).toBe(1420);
   });
 
-  test('Config.getBytes refuses a fraction written with a unit, and hands a bare one on as it is', () => {
-    // A bare number never reaches parseSize, so only a unit-less fraction
-    // arrives at a whole-bytes check as a fraction.
+  test('Config.getBytes refuses a fraction with a unit and a bare one alike, naming the key of the bare one', () => {
+    // A bare number never reaches parseSize, so getBytes checks it itself —
+    // and can name the key, which the parser never sees.  It used to hand the
+    // bare fraction on as it was.
     const config = Config.parseString('with-unit = 1420.5B\nbare = 1420.5');
     expect(() => config.getBytes('with-unit')).toThrow('Invalid size: 1420.5B is not a whole number of bytes');
-    expect(config.getBytes('bare')).toBe(1420.5);
+    expect(() => config.getBytes('bare')).toThrow(ConfigError);
+    expect(() => config.getBytes('bare')).toThrow('Config at "bare" is not a whole number of bytes (got 1420.5)');
   });
 
   test('rejects empty / malformed / unknown units', () => {

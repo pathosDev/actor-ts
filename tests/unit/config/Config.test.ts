@@ -357,19 +357,33 @@ describe('Config refuses a non-finite number, duration or size (#1513)', () => {
 
   // The other direction, and the one that catches an over-broad fix: routing
   // the numeric branch through `parseDuration` / `parseSize` instead of
-  // checking it would also start *refusing*, because `parseSize` takes only a
-  // whole number of bytes (#1728).  Every finite numeric value has to come
-  // back exactly as it went in.
-  test('a finite numeric value is returned unchanged, fractions included', () => {
+  // checking it would change what comes back.  Every finite duration and
+  // number has to come back exactly as it went in, fractions included, and so
+  // does every size that is a whole number of bytes.
+  test('a finite numeric value is returned unchanged, a fraction included wherever it is no size', () => {
     const config = Config.fromObject({ whole: 1_500, fraction: 1.7, negative: -500, zero: 0 });
     expect(config.getDuration('whole')).toBe(1_500);
     expect(config.getDuration('fraction')).toBe(1.7);
     expect(config.getDuration('negative')).toBe(-500);
     expect(config.getBytes('whole')).toBe(1_500);
-    expect(config.getBytes('fraction')).toBe(1.7);
     expect(config.getBytes('zero')).toBe(0);
     expect(config.getNumber('fraction')).toBe(1.7);
     expect(config.getNumber('zero')).toBe(0);
+  });
+
+  // A size is a whole number of bytes (#1728), and a bare number never reaches
+  // `parseSize`, so `getBytes` checks it itself — where, unlike the parser, it
+  // knows the key.  It used to hand a bare fraction back as it was.
+  test('getBytes refuses a bare fraction, from code and from HOCON alike, naming the key', () => {
+    const fromCode = Config.fromObject({ fraction: 1.7 });
+    expect(() => fromCode.getBytes('fraction')).toThrow(ConfigError);
+    expect(() => fromCode.getBytes('fraction')).toThrow('Config at "fraction" is not a whole number of bytes (got 1.7)');
+    const fromHocon = Config.parseString('a.max-bytes = 10.5');
+    expect(() => fromHocon.getBytes('a.max-bytes')).toThrow(
+      'Config at "a.max-bytes" is not a whole number of bytes (got 10.5)',
+    );
+    // A whole number written with a decimal point is a whole number of bytes.
+    expect(Config.parseString('a = 1420.0').getBytes('a')).toBe(1_420);
   });
 
   test('the string branches keep the messages #785 gave them', () => {

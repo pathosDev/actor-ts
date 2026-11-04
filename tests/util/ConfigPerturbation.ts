@@ -50,10 +50,10 @@ import { parseSize } from '../../src/config/Size.js';
  * though: a bare integer reads the same through `getInt`, `getNumber`,
  * `getDuration` and `getBytes`.  So each leaf with a kind a getter checks
  * also gets an **off-kind** value — one its own accessor refuses and the
- * accessor it is most easily confused with accepts (a fraction for an
- * integer, a size for a duration, a duration for a size) — and a reader that
- * *accepts* that value and answers differently reads the leaf with the wrong
- * accessor.
+ * accessor it is most easily confused with accepts (a fraction and a byte
+ * count for an integer, a size for a duration, a duration for a size) — and a
+ * reader that *accepts* that value and answers differently reads the leaf with
+ * the wrong accessor.
  */
 
 /** What a leaf's literal (or its {@link KIND_DECLARATIONS} entry) says it is. */
@@ -93,8 +93,8 @@ export type LeafPerturbation = {
   readonly secondValue?: ConfigValue;
   /**
    * Values its own accessor refuses, each one a getter of another kind takes;
-   * absent for kinds no getter checks.  A fraction has two, because no one
-   * spelling is taken by both `getDuration` and `getBytes`.
+   * absent for kinds no getter checks.  An integer and a fraction have two,
+   * because no one spelling is taken by both `getDuration` and `getBytes`.
    */
   readonly offKindValues?: readonly ConfigValue[];
   /** Why {@link value} was not inferred, when it was not. */
@@ -381,17 +381,21 @@ function objectValue(literal: ConfigObject): ConfigObject {
 
 /**
  * Values the leaf's own accessor refuses, each spelled in a kind it is easily
- * confused with, or none when no getter checks the kind.  Usually one; a
- * fraction gets two, because `getDuration` and `getBytes` both take a bare
- * fraction and no one spelling is taken by both.
+ * confused with, or none when no getter checks the kind.  Usually one; an
+ * integer and a fraction get two, because no one spelling is taken by both
+ * `getDuration` and `getBytes`: the one takes a fraction and a time unit, the
+ * other only a whole number of bytes.
  */
 function offKindValues(kind: LeafKind, value: ConfigValue): readonly ConfigValue[] {
   return match(kind)
     .returnType<readonly ConfigValue[]>()
-    // `getInt` refuses a fraction; `getNumber`, `getDuration`, `getBytes`
-    // and `getString` all take one — `getBytes` because a bare number never
-    // reaches the size parser, which is what wants a whole number of bytes.
-    .with('integer', () => [(value as number) + 0.5])
+    // `getInt` refuses both.  `getNumber`, `getDuration` and `getString` take
+    // the fraction, which `getBytes` refuses since a size is a whole number of
+    // bytes (#1728); `getBytes` takes the count spelled in bytes, which
+    // `getNumber` and `getDuration` refuse.  The count's magnitude, as a size
+    // takes no sign: it still differs from the literal as the in-kind count
+    // does.
+    .with('integer', () => [(value as number) + 0.5, `${Math.abs(value as number)}B`])
     // `getNumber` refuses a unit.  `getDuration` takes a time unit and
     // `getBytes` a byte unit, neither the other's, so a fraction gets one of
     // each; `getString` takes both.  The byte one is the whole part of the
