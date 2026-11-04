@@ -38,6 +38,7 @@ import {
   type PersistenceOptionSupport,
 } from './PersistenceCapabilities.js';
 import type { PersistenceOptions } from './PersistenceOptions.js';
+import { refuseUnknownPersistenceKeys } from './PersistenceUnknownKeys.js';
 import type { SnapshotStore } from './SnapshotStore.js';
 import { InMemorySnapshotStore } from './snapshot-stores/InMemorySnapshotStore.js';
 import { readInMemorySnapshotStoreOptionsFromConfig } from './snapshot-stores/InMemorySnapshotStoreOptions.js';
@@ -872,8 +873,19 @@ export class PersistenceExtension implements Extension {
    * lookup that failed — after which nothing more is built, because the
    * startup is going down anyway.  Through the getters, so the warm-up opens
    * the very instances every later caller is handed.
+   *
+   * A key under `actor-ts.persistence` that no reader takes is refused before
+   * any of them (#1729), and here as well as in the getters: an axis whose
+   * store is set in code reads no selection, and with every one set in code
+   * no getter would ask, while the behaviour keys beside the selectors are in
+   * force for every persistent actor all the same.
    */
   private resolveSelectedStores(): SelectedStores {
+    try {
+      refuseUnknownPersistenceKeys(this.system.config);
+    } catch (error) {
+      return { stores: [], failure: error };
+    }
     const stores: StoreToOpen[] = [];
     const axes: ReadonlyArray<() => StoreToOpen> = [
       () => ({ axis: 'journal', store: this.journal, pluginId: this.journalBuiltFrom }),
@@ -1118,15 +1130,29 @@ export class PersistenceExtension implements Extension {
   }
 
   private currentJournalPluginId(): string {
-    return readPersistencePluginIdsFromConfig(this.system.config).journal;
+    return this.selection().journal;
   }
 
   private currentSnapshotPluginId(): string {
-    return readPersistencePluginIdsFromConfig(this.system.config).snapshotStore;
+    return this.selection().snapshotStore;
   }
 
   private currentDurableStatePluginId(): string {
-    return readPersistencePluginIdsFromConfig(this.system.config).durableState;
+    return this.selection().durableState;
+  }
+
+  /**
+   * The selection, as every axis resolves it: a refusal of any key under
+   * `actor-ts.persistence` that no reader takes (#1729), then the three
+   * selectors.  The refusal passes over the selectors themselves and over a
+   * value standing where a block belongs, so those are still refused by the
+   * reader, with messages of their own.  Whichever axis resolves first
+   * refuses the key, for the reason a selector holding no id fails every axis:
+   * it is a mistake in the file whichever store is used.
+   */
+  private selection(): PersistencePluginIds {
+    refuseUnknownPersistenceKeys(this.system.config);
+    return readPersistencePluginIdsFromConfig(this.system.config);
   }
 }
 
@@ -1176,6 +1202,13 @@ export type PersistencePluginIds = {
  * block, a list — or a value in place of a block is refused by whichever axis
  * resolves first rather than only by its own: it is a mistake in the file
  * whichever store the application uses.
+ *
+ * A key beside the selectors that nothing reads — `journal.plugn`, a `jornal`
+ * block — is not refused here but by {@link refuseUnknownPersistenceKeys},
+ * which the extension and the startup run ahead of every read they make of
+ * this (#1729).  Asked on its own, this answers for the selectors alone, which
+ * is what the per-block cases that write an axis block without a `plugin`
+ * field rely on.
  */
 export function readPersistencePluginIdsFromConfig(config: Config): PersistencePluginIds {
   const keys = ConfigKeys.persistence;
@@ -1234,13 +1267,14 @@ function holdsBlock(config: Config, path: string): boolean {
  * inside `create`, so that a selection made in configuration alone is
  * resolved, and its stores opened, as part of the startup (#1473).
  *
- * A selector that holds no id at all, or a value where a block belongs,
- * answers yes: it is a mistake the resolution names, and naming it at startup
- * is the point.
+ * A selector that holds no id at all, a value where a block belongs, or a key
+ * under `actor-ts.persistence` that no reader takes (#1729) answers yes: it is
+ * a mistake the resolution names, and naming it at startup is the point.
  */
 export function selectsPersistencePlugin(config: Config): boolean {
   let selected: PersistencePluginIds;
   try {
+    refuseUnknownPersistenceKeys(config);
     selected = readPersistencePluginIdsFromConfig(config);
   } catch {
     return true;

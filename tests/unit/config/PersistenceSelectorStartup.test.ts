@@ -5,6 +5,7 @@ import { Config, ConfigError } from '../../../src/config/Config.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { InMemoryDurableStateStore } from '../../../src/persistence/durable-state-stores/InMemoryDurableStateStore.js';
 import { InMemoryJournal } from '../../../src/persistence/journals/InMemoryJournal.js';
+import { PersistenceBehaviorOptions } from '../../../src/persistence/PersistenceBehaviorOptions.js';
 import { PersistenceExtensionId, type PersistencePlugin } from '../../../src/persistence/PersistenceExtension.js';
 import { InMemorySnapshotStore } from '../../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
 
@@ -19,7 +20,8 @@ import { InMemorySnapshotStore } from '../../../src/persistence/snapshot-stores/
  * covers, and that each failure is the reader's own refusal naming the key to
  * correct: the lookup's `Unknown … plugin` error names the selector too, so a
  * case that asked only for the key would pass for a reader that read garbage
- * as an id.
+ * as an id.  Since #1729 that includes a key under `actor-ts.persistence`
+ * that nothing reads, which until then left the axis in memory without a word.
  */
 
 /** A quiet system over `hocon`, laid over reference.conf as a deployment's own file is. */
@@ -245,6 +247,224 @@ describe('a selected id reaches the lookup as written (#1425)', () => {
       const error = await rejectionOf(system.whenReady());
 
       expect(error.message).toContain(`Unknown journal plugin '${padded}'`);
+    } finally {
+      await stopped(system);
+    }
+  });
+});
+
+type UnknownKeyCase = {
+  readonly name: string;
+  readonly hocon: string;
+  /** The full key the refusal names. */
+  readonly key: string;
+};
+
+/**
+ * Keys under `actor-ts.persistence` that no reader takes (#1729), at the two
+ * levels the framework reads itself: directly under `actor-ts.persistence`,
+ * where the axis blocks and the behaviour keys go, and directly in an axis
+ * block, where its `plugin` selector goes beside the blocks of its plug-ins.
+ * Read by nothing, each left the axis on the store `reference.conf` selects —
+ * a journal kept in memory, with no error and no log line even at debug — and
+ * the startup reported ready.
+ */
+const UNKNOWN_KEYS: UnknownKeyCase[] = [
+  {
+    name: 'a misspelt journal selector',
+    hocon: 'actor-ts.persistence.journal.plugn = "actor-ts.persistence.journal.sqlite"',
+    key: 'actor-ts.persistence.journal.plugn',
+  },
+  {
+    name: 'a misspelt journal block',
+    hocon: 'actor-ts.persistence.jornal { plugin = "actor-ts.persistence.journal.sqlite" }',
+    key: 'actor-ts.persistence.jornal',
+  },
+  {
+    name: 'a misspelt behaviour key',
+    hocon: 'actor-ts.persistence.recovery-timout = 5s',
+    key: 'actor-ts.persistence.recovery-timout',
+  },
+  {
+    name: 'a plug-in setting written straight into the durable-state block',
+    hocon: 'actor-ts.persistence.durable-state.table = "state"',
+    key: 'actor-ts.persistence.durable-state.table',
+  },
+  {
+    name: 'a plug-in\'s id written as a value where its block belongs',
+    hocon: 'actor-ts.persistence.snapshot-store.sqlite = "/var/lib/app/snapshots.db"',
+    key: 'actor-ts.persistence.snapshot-store.sqlite',
+  },
+  {
+    name: 'a plug-in block written beside the axes rather than inside one',
+    hocon: 'actor-ts.persistence.my-plugin { table = "events" }',
+    key: 'actor-ts.persistence.my-plugin',
+  },
+];
+
+describe('a key under actor-ts.persistence that no reader takes fails the startup, naming it (#1729)', () => {
+  test.each(UNKNOWN_KEYS)('$name fails the startup naming $key', async ({ hocon, key }) => {
+    const system = systemOver('unknown-persistence-key', hocon);
+    try {
+      const error = await rejectionOf(system.whenReady());
+
+      expect(error.message).toContain('"persistence-warm-up"');
+      expect(error.cause).toBeInstanceOf(ConfigError);
+      const refusal = (error.cause as Error).message;
+      expect(refusal).toStartWith(`Config at "${key}" is not a key `);
+      // Says what to do, not only what is wrong.
+      expect(refusal).toContain('correct the spelling, or move a plug-in\'s settings into its block');
+    } finally {
+      await stopped(system);
+    }
+  });
+
+  test.each(UNKNOWN_KEYS)('$name fails all three axes', async ({ hocon, key }) => {
+    const system = systemOver('unknown-persistence-key-every-axis', hocon);
+    const extension = system.extension(PersistenceExtensionId);
+    try {
+      const refusal = `Config at "${key}" is not a key `;
+
+      expect(() => extension.journal).toThrow(refusal);
+      expect(() => extension.snapshotStore).toThrow(refusal);
+      expect(() => extension.durableStateStore).toThrow(refusal);
+      await rejectionOf(system.whenReady());
+    } finally {
+      await stopped(system);
+    }
+  });
+
+  test('a system that sets every store in code still has the key refused at startup', async () => {
+    // No axis reads the selection then, but the behaviour keys beside it are
+    // in force for every persistent actor, so a misspelt one is still a key
+    // read by nothing.
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig(Config.parseString('actor-ts.persistence.recovery-timout = 5s'))
+      .withPersistence({
+        journal: new InMemoryJournal(),
+        snapshotStore: new InMemorySnapshotStore(),
+        durableStateStore: new InMemoryDurableStateStore(),
+      });
+    const system = ActorSystem.create('unknown-persistence-key-every-store-in-code', systemOptions);
+    try {
+      const error = await rejectionOf(system.whenReady());
+
+      expect(error.message).toContain('"persistence-warm-up"');
+      expect(error.cause).toBeInstanceOf(ConfigError);
+      expect((error.cause as Error).message).toStartWith('Config at "actor-ts.persistence.recovery-timout" is not a key ');
+    } finally {
+      await stopped(system);
+    }
+  });
+
+  test('a file with the boot-time open off starts, and the first store asked for refuses the key', async () => {
+    // Off, nothing is resolved until the first operation asks — the same
+    // place a selector holding no id is refused then.
+    const system = systemOver(
+      'unknown-persistence-key-auto-start-off',
+      'actor-ts.persistence { auto-start = off, journal.plugn = "actor-ts.persistence.journal.sqlite" }',
+    );
+    try {
+      await system.whenReady();
+
+      expect(() => system.extension(PersistenceExtensionId).journal)
+        .toThrow('Config at "actor-ts.persistence.journal.plugn" is not a key ');
+    } finally {
+      await stopped(system);
+    }
+  });
+
+  test('autoStart false set in code, a WorkerMesh worker\'s whole withPersistence, defers the refusal to first use', async () => {
+    // A worker inherits its main thread's file, which refuses the key in its
+    // own startup; the worker refuses it where it first resolves a store.
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig(Config.parseString('actor-ts.persistence.jornal { plugin = "actor-ts.persistence.journal.sqlite" }'))
+      .withPersistence({ behavior: PersistenceBehaviorOptions.create().withAutoStart(false) });
+    const system = ActorSystem.create('unknown-persistence-key-auto-start-false-in-code', systemOptions);
+    try {
+      await system.whenReady();
+
+      expect(system.extensions.has(PersistenceExtensionId)).toBe(false);
+      expect(() => system.extension(PersistenceExtensionId).durableStateStore)
+        .toThrow('Config at "actor-ts.persistence.jornal" is not a key ');
+    } finally {
+      await stopped(system);
+    }
+  });
+});
+
+describe('what the refusal leaves alone (#1729)', () => {
+  test('a configuration with nothing under actor-ts.persistence starts, and builds no persistence inside create', async () => {
+    // Only reference.conf under it, as an application without a file has:
+    // nothing is refused, so nothing is selected and the extension stays lazy.
+    const system = systemOver('nothing-under-persistence', '');
+    try {
+      await system.whenReady();
+
+      expect(system.extensions.has(PersistenceExtensionId)).toBe(false);
+      expect(system.extension(PersistenceExtensionId).journal).toBeInstanceOf(InMemoryJournal);
+    } finally {
+      await stopped(system);
+    }
+  });
+
+  test('a configuration that only selects a registered plug-in starts on it', async () => {
+    const journal = new InMemoryJournal();
+    const pluginId = 'acme.persistence.journal';
+    const system = systemWithPluginOver(
+      'selects-a-registered-plugin',
+      `actor-ts.persistence.journal.plugin = "${pluginId}"`,
+      (persistence) => { persistence.registerJournal(pluginId, () => journal); },
+    );
+    try {
+      await system.whenReady();
+
+      expect(system.extension(PersistenceExtensionId).journal).toBe(journal);
+    } finally {
+      await stopped(system);
+    }
+  });
+
+  test('a third-party plug-in\'s block inside an axis is its own: selected, the plug-in reads it', async () => {
+    const pluginId = 'actor-ts.persistence.journal.my-plugin';
+    const journal = new InMemoryJournal();
+    let tableRead: string | undefined;
+    const plugin: PersistencePlugin = (persistence) => {
+      persistence.registerJournal(pluginId, (system) => {
+        tableRead = system.config.getString(`${pluginId}.table`);
+        return journal;
+      });
+    };
+    const system = systemWithPluginOver(
+      'third-party-plugin-block',
+      `actor-ts.persistence.journal { plugin = "${pluginId}", my-plugin { table = "events" } }`,
+      plugin,
+    );
+    try {
+      await system.whenReady();
+
+      expect(system.extension(PersistenceExtensionId).journal).toBe(journal);
+      expect(tableRead).toBe('events');
+    } finally {
+      await stopped(system);
+    }
+  });
+
+  test('a misspelt leaf inside a plug-in\'s block is the plug-in\'s to refuse, not the framework\'s', async () => {
+    // Nothing selects the plug-in, so nothing reads its block: the framework
+    // checks the keys it reads itself and leaves a plug-in's block to it.
+    const system = systemOver(
+      'misspelt-leaf-in-a-plugin-block',
+      'actor-ts.persistence.journal.my-plugin { tabel = "events" }',
+    );
+    try {
+      await system.whenReady();
+
+      expect(system.extension(PersistenceExtensionId).journal).toBeInstanceOf(InMemoryJournal);
     } finally {
       await stopped(system);
     }
