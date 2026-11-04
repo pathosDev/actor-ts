@@ -5884,6 +5884,29 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `1420.5B`, `1126B` for `1.1K`), and round a computed number yourself
   before passing it to `parseSize`.
 
+- **BREAKING — A key under `actor-ts.persistence` that no reader takes now
+  fails the startup** (#1729). `actor-ts.persistence.journal.plugn = "…"` or
+  a misspelt `actor-ts.persistence.jornal { … }` block was ignored, which
+  left the axis on the in-memory store `reference.conf` selects while the
+  startup reported ready, and a journal kept in memory lost its events on
+  the next restart. The startup now fails with a `ConfigError` that names
+  the full key and says to correct the spelling or to move a plug-in's
+  settings into its block. The check covers the keys directly under
+  `actor-ts.persistence` and the values directly in a `journal`,
+  `snapshot-store` or `durable-state` block beside its `plugin`; a plug-in's
+  own block inside an axis, a third-party plug-in's included, is left to
+  that plug-in. What it accepts is derived from `ConfigKeys`, so every key
+  the framework reads there is accepted. It fails the startup on every
+  route, `ActorSystem.create` and `Cluster.bootstrap` alike, with the
+  boot-time open off in the file or in code and with every store set in
+  code. A `WorkerMesh` worker over such a file fails its own startup as its
+  main thread does, while a valid file under the opt-out still builds
+  nothing of persistence inside `create`.
+
+  **Migration.** Correct the misspelt key, or move a plug-in's settings into
+  its block under the axis it serves,
+  `actor-ts.persistence.<axis>.<plug-in> { … }`.
+
 
 ### Fixed
 
