@@ -1,6 +1,7 @@
 /**
  * What an environment value that parses as JSON becomes, held to the pages
- * whose environment samples warn about it (#1443).
+ * whose environment samples warn about it: the AMQP, MQTT and NATS pages
+ * (#1443) and the upgrade guide's `APP_VERSION` (#843).
  *
  * `${?VAR}` hands the variable's text to `JSON.parse` first and keeps the raw
  * string only when that fails (`src/config/HoconParser.ts`), and every leaf
@@ -15,6 +16,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
+import { readClusterOptionsFromConfig } from '../../../src/cluster/ClusterOptions.js';
 import { Config, ConfigError } from '../../../src/config/Config.js';
 import { readAmqpOptionsFromConfig } from '../../../src/io/broker/AmqpActor.js';
 import { readMqttOptionsFromConfig } from '../../../src/io/broker/MqttActor.js';
@@ -101,8 +103,31 @@ const PAGES: readonly Page[] = [
   },
 ];
 
+/** The upgrade guide's label, which `Cluster.join` reads from the same kind of substitution. */
+const UPGRADE_PAGES: readonly Page[] = [
+  {
+    english: 'operations/upgrades/upgrade-strategies.mdx',
+    german: 'de/operations/upgrades/upgrade-strategies.mdx',
+    leaves: [{
+      name: 'app-version',
+      variable: 'APP_VERSION',
+      hocon: 'actor-ts.cluster.app-version = ${?APP_VERSION}',
+      read: (config) => readClusterOptionsFromConfig(config).appVersion,
+    }],
+  },
+];
+
 describe('an environment value that parses as JSON, as the io pages describe it (#1443)', () => {
-  for (const page of PAGES) {
+  pinPages(PAGES);
+});
+
+describe('an environment value that parses as JSON, as the upgrade guide describes it for APP_VERSION (#843)', () => {
+  pinPages(UPGRADE_PAGES);
+});
+
+/** Each page's leaves held to their reader, and the page in both languages to what the reader returns. */
+function pinPages(pages: readonly Page[]): void {
+  for (const page of pages) {
     for (const leaf of page.leaves) {
       test(`${page.english} ${leaf.name}: null, a list or an object stops the start with a ConfigError`, () => {
         for (const value of ['null', '[1,2]', '{"a":1}', '{}']) {
@@ -131,4 +156,4 @@ describe('an environment value that parses as JSON, as the io pages describe it 
       expect(german).toContain('wie `null`, eine Liste oder ein Objekt liest, lässt den Start mit einem `ConfigError` scheitern');
     });
   }
-});
+}
