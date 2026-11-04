@@ -686,10 +686,12 @@ and reaches the peers as `"1"`.
 A value from the environment is read as JSON first wherever it parses as
 JSON.  A version that reads as a number comes back in that number's own
 spelling — `1.10` as `1.1`, `2.0` as `2`, `1e3` as `1000` — so releases `1.1`
-and `1.10` print the same label, and one that reads as `null` or a list stops
-the start; a version with a second dot (`1.2.3`) or a letter (`v1.10`) is
-unchanged.  Quote such a value inside the variable (`APP_VERSION='"1.10"'`),
-or set it in code with `withAppVersion(...)`.
+and `1.10` print the same label, a whole number past `Number.MAX_SAFE_INTEGER`
+can come back with other last digits (`20261104123456789` as
+`20261104123456788`), and one that reads as `null`, a list or an object stops
+the start with a `ConfigError`; a version with a second dot (`1.2.3`) or a
+letter (`v1.10`) is unchanged.  Quote such a value inside the variable
+(`APP_VERSION='"1.10"'`), or set it in code with `withAppVersion(...)`.
 
 A label is 1 to 64 visible ASCII characters — no whitespace and no control
 character, because every peer prints it — and `Cluster.join` refuses one that
@@ -3448,14 +3450,19 @@ only the bare `B` suffix is decimal.  The two diverge as they scale — `16MB`
 is 4.63 % smaller than `16M`, and at `T` the decimal value is 9.05 % smaller
 — so a cap written in the unintended one is a cap in the wrong place.
 
-Unlike a duration, a size takes **no sign**, and a bare number must be a
-whole count of bytes: `-1K` and `1.5` are both `Invalid size`.  A fraction
-*with* a unit is fine and rounds to the nearest byte, so `1.5K` is 1536.
+Unlike a duration, a size takes **no sign** — `-1K` is `Invalid size` — and
+it has to come to a whole number of bytes.  A fraction *with* a unit is fine
+when it does, so `1.5K` is 1536, and refused when it does not: `1.1K` is
+1126.4 bytes, and fails as
+`Invalid size: 1.1K is not a whole number of bytes`.  A bare number has to
+be whole itself, whether it is written as a string or as a number: `"1.5"`
+is `Invalid size`, and `1.5` is refused naming the key it is set at, as
+`Config at "..." is not a whole number of bytes (got 1.5)`.
 
 The same two refusals apply, with the messages spelled for sizes:
 `Unknown size unit "..." in ...` for a unit that is not in the table —
 `constructor` included, for the reason above — and `Invalid size: ...` for
-anything that does not come out a finite byte count.
+anything that does not come out a finite, whole byte count.
 
 ### Environment substitution
 

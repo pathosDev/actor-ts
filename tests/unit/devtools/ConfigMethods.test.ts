@@ -115,19 +115,24 @@ describe('ConfigMethods', () => {
     const system = newSystem('cfg-secret', {
       'actor-ts': {
         persistence: {
-          postgres: { password: 'hunter2', 'connection-string': 'postgres://x' },
+          journal: {
+            postgres: { password: 'hunter2', 'connection-string': 'postgres://x' },
+          },
         },
       },
     });
+    // A started system, not one whose startup refused the fixture: a key
+    // under actor-ts.persistence that no reader takes fails it (#1729).
+    await system.whenReady();
     const { server, invoke } = fakeServer();
     new ConfigMethods(system).install(server);
 
     const result = await invoke();
     // By key, not by value: a password that happens to look ordinary is
     // still a password, and the key is what names it.
-    expect(resolve(result, 'actor-ts.persistence.postgres.password').value)
+    expect(resolve(result, 'actor-ts.persistence.journal.postgres.password').value)
       .toBe(CONFIG_REDACTED);
-    expect(resolve(result, 'actor-ts.persistence.postgres.connection-string').value)
+    expect(resolve(result, 'actor-ts.persistence.journal.postgres.connection-string').value)
       .toBe('postgres://x');
   });
 

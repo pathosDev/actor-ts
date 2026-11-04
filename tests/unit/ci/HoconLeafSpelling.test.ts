@@ -27,6 +27,7 @@ import {
 import { GrpcServerActor } from '../../../src/io/broker/GrpcServerActor.js';
 import { MqttActor } from '../../../src/io/broker/MqttActor.js';
 import { readFramingFromConfig, RETIRED_TCP_FRAMING_LEAVES } from '../../../src/io/broker/TcpFraming.js';
+import { refuseUnknownPersistenceKeys } from '../../../src/persistence/PersistenceUnknownKeys.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
 import { createTestActorSystem } from '../../util/TestActorSystem.js';
 
@@ -727,8 +728,10 @@ describe('no comment says the framework detects no unknown key', () => {
   /**
    * Blocks that list the leaves they take and refuse any other — what makes
    * "there is no unknown-key detection" false, and the examples the comments
-   * that replaced it give.  Asked rather than looked for: each reader is
-   * handed its block with a leaf the block does not take.
+   * that replaced it give, beside `actor-ts.persistence` and its axis blocks,
+   * which refuse a key no reader takes at startup (#1729).  Asked rather than
+   * looked for: each reader is handed its block with a leaf the block does
+   * not take.
    */
   const ALLOW_LIST_BLOCKS: ReadonlyArray<{ readonly block: string; readonly read: () => unknown }> = [
     {
@@ -749,6 +752,16 @@ describe('no comment says the framework detects no unknown key', () => {
       read: () => readPhaseOverrides(
         Config.parseString(`${ConfigKeys.coordinatedShutdown.phases} { custom { timeout = 1s, no-such-leaf = 1 } }`),
         ConfigKeys.coordinatedShutdown.phases,
+      ),
+    },
+    {
+      block: 'the actor-ts.persistence block',
+      read: () => refuseUnknownPersistenceKeys(Config.parseString('actor-ts.persistence { no-such-leaf = 1 }')),
+    },
+    {
+      block: 'a persistence axis block',
+      read: () => refuseUnknownPersistenceKeys(
+        Config.parseString('actor-ts.persistence.durable-state { plugin = "x", no-such-leaf = 1 }'),
       ),
     },
   ];

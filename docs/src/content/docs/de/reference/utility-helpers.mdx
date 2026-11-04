@@ -502,7 +502,17 @@ jeder Frame eines Scoped Package trägt ein `@` — oder die nächste Logzeile n
 für ein Passwort gehalten, während ein aus einer Datei gelesenes Secret
 weiterhin vollständig maskiert wird: Ein Zeilenumbruch, auf den ein `@` folgt,
 etwa ein abschließender Zeilenumbruch vor dem `@`, gehört zur Userinfo, und
-ebenso ein Secret, das über mehrere Zeilen umbrochen ist.
+ebenso ein Secret, das über mehrere Zeilen umbrochen ist. Die Regel gibt zwei
+Formen von Secrets auf, und keine davon wird vollständig maskiert. Ein
+Leerzeichen oder Tab nach einem Zeilenumbruch beendet den Scan, bevor er das
+`@` erreicht, also kommt `'amqp://user:pa\n ss@rabbit'` unverändert zurück,
+und ein `@` vor einem Zeilenumbruch beendet die Userinfo dort, also kommt
+`'amqp://user:p@ss\nword@rabbit'` als `'amqp://***@ss\nword@rabbit'` zurück
+und behält `ss` und `word`. `redactedUrlLabel` verbirgt beide in einem Wert,
+den es aus seinem Parse neu aufbaut — einer URL ohne `,` und ohne zweites
+`://` vor einem `?` oder `#` —, aber nicht in jedem Wert, den es stattdessen
+maskiert: So kommt `'nats://a:b@h1,nats://u:pa\n ss@h2'` als
+`'nats://***@h1,nats://u:pa\n ss@h2'` zurück.
 
 Eine URL, die die Laufzeit bereits geparst hat, braucht diese Vermutung nicht.
 Für die URL, an die eine Anfrage ging, oder ein dagegen aufgelöstes
@@ -541,9 +551,9 @@ nats.js annehmen — kommt als `***@host` zurück, und eine kommagetrennte Liste
 behält jeden Eintrag, jeweils mit maskierter Userinfo.
 
 Das Label maskiert jede Userinfo so wie der Scan — bis zum letzten `@` vor dem
-nächsten `://` — und zeigt kein Credential, das das Label von v0.17.0
-verborgen hat. Daraus folgen drei Fälle, jeder gegen eine Kopie des
-veröffentlichten Labels geprüft:
+nächsten `://` — und zeigt, außer bei den beiden mehrzeiligen Formen oben,
+kein Credential, das das Label von v0.17.0 verborgen hat. Daraus folgen drei
+Fälle, jeder gegen eine Kopie des veröffentlichten Labels geprüft:
 
 - **Ein `@` hinter dem Host benennt keinen Host.**
   `https://user:pass@hooks.example/notify?to=ops@example.com` ist eine URL für

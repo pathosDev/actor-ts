@@ -727,11 +727,14 @@ für HOCON eine Zahl und erreicht die Peers als `"1"`.
 Ein Wert aus der Umgebung wird zuerst als JSON gelesen, wo immer er sich als
 JSON parsen lässt.  Eine Version, die sich wie eine Zahl liest, kommt in der
 Schreibweise dieser Zahl zurück — `1.10` als `1.1`, `2.0` als `2`, `1e3` als
-`1000` —, die Releases `1.1` und `1.10` tragen also dasselbe Label, und eine,
-die sich wie `null` oder eine Liste liest, lässt den Start scheitern; eine
-Version mit einem zweiten Punkt (`1.2.3`) oder einem Buchstaben (`v1.10`)
-bleibt unverändert.  Einen solchen Wert in der Variablen selbst quoten
-(`APP_VERSION='"1.10"'`) oder im Code mit `withAppVersion(...)` setzen.
+`1000` —, die Releases `1.1` und `1.10` tragen also dasselbe Label, eine ganze
+Zahl jenseits von `Number.MAX_SAFE_INTEGER` kann mit anderen letzten Ziffern
+zurückkommen (`20261104123456789` als `20261104123456788`), und eine, die sich
+wie `null`, eine Liste oder ein Objekt liest, lässt den Start mit einem
+`ConfigError` scheitern; eine Version mit einem zweiten Punkt (`1.2.3`) oder
+einem Buchstaben (`v1.10`) bleibt unverändert.  Einen solchen Wert in der
+Variablen selbst quoten (`APP_VERSION='"1.10"'`) oder im Code mit
+`withAppVersion(...)` setzen.
 
 Ein Label besteht aus 1 bis 64 sichtbaren ASCII-Zeichen — ohne Leerzeichen
 und ohne Steuerzeichen, weil jeder Peer es ausgibt —, und `Cluster.join`
@@ -3679,15 +3682,19 @@ der Größenordnung auseinander — `16MB` ist 4,63 % kleiner als `16M`, bei `T`
 ist der dezimale Wert 9,05 % kleiner — eine Obergrenze in der ungewollten
 Form ist also eine Obergrenze an der falschen Stelle.
 
-Anders als eine Duration nimmt eine Size **kein Vorzeichen**, und eine
-bloße Zahl muss eine ganze Anzahl Bytes sein: `-1K` und `1.5` sind beide
-`Invalid size`.  Ein Bruchteil *mit* Einheit ist dagegen in Ordnung und
-rundet auf das nächste Byte, `1.5K` sind also 1536.
+Anders als eine Duration nimmt eine Size **kein Vorzeichen** — `-1K` ist
+`Invalid size` — und sie muss eine ganze Anzahl Bytes ergeben.  Ein
+Bruchteil *mit* Einheit ist in Ordnung, wenn er das tut, `1.5K` sind also
+1536, und wird abgelehnt, wenn nicht: `1.1K` sind 1126,4 Bytes und scheitern
+als `Invalid size: 1.1K is not a whole number of bytes`.  Eine bloße Zahl
+muss selbst ganz sein, ob als String oder als Zahl geschrieben: `"1.5"` ist
+`Invalid size`, und `1.5` wird unter Nennung des Keys abgelehnt, an dem es
+steht, als `Config at "..." is not a whole number of bytes (got 1.5)`.
 
 Dieselben zwei Ablehnungen gelten, mit den für Sizes buchstabierten
 Meldungen: `Unknown size unit "..." in ...` für eine Einheit, die nicht in
 der Tabelle steht — `constructor` eingeschlossen, aus dem Grund oben — und
-`Invalid size: ...` für alles, was keine endliche Byte-Anzahl ergibt.
+`Invalid size: ...` für alles, was keine endliche, ganze Byte-Anzahl ergibt.
 
 ### Environment-Substitution
 

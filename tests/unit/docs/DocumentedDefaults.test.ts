@@ -1661,10 +1661,13 @@ const IN_KIND: Readonly<Record<DefaultKind, ValueOfKind>> = {
  * none; `DefaultKind` says what that leaves unchecked.
  *
  * `int` and `number` get a size as well as a duration (#1438).  With only the
- * duration, a `getBytes` reader passed every `number` row: it takes the
- * positive half's fraction, rounding it, and refuses a duration exactly as
+ * duration, a `getBytes` reader passed every `number` row: it took the
+ * positive half's fraction as it was, and refuses a duration exactly as
  * `getNumber` does, so a bytes row relabelled `number` was caught by nothing
  * but the value read, and not even that where the literal is a bare count.
+ * A size is a whole number of bytes now (#1728), so `getBytes` refuses that
+ * fraction as the wrong kind too; the size here is a whole count of KiB for
+ * the same reason.
  */
 const OFF_KIND: Readonly<Record<DefaultKind, (literal: ConfigValue | undefined) => readonly ConfigValue[]>> = {
   int: (literal) => [wholeOf(literal) + 0.5, `${wholeOf(literal) + 1}s`, `${wholeOf(literal) + 1}KiB`],

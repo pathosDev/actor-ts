@@ -188,6 +188,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `terminate-actor-system` is off; the halt is logged at error. A decision
   that downs only peers leaves the node running.
 
+  A node the switch stands down exits as a clean stop does: with
+  `coordinated-shutdown.exit-process` on, the run exits with `exit-code`,
+  which ships as `0`, so a supervisor that restarts only after a failure,
+  systemd's `Restart=on-failure` among them, leaves it down. The
+  coordinated-shutdown guide names the two ways out, `Restart=always` or a
+  non-zero `exit-code`, and says that a non-zero `exit-code` is the status
+  of every run `exit-process` ends, a signal's and an opted-in
+  `terminate()`'s included, and the failures' instead of `1`; the
+  process-manager guide's systemd unit, which restarts on failure only, says
+  the same on its `Restart=on-failure` row.
+
 - **The startup graph's budgets and the boot-time open of the persistence
   stores can be set from configuration** (#1473).
   `actor-ts.coordinated-startup` carries `default-phase-timeout` (30s, the
@@ -5856,6 +5867,46 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   example `actor-ts.persistence.journal.plugin = "…"`, instead of a value in
   place of the block.
 
+- **BREAKING — A size has to come to a whole number of bytes** (#1728).
+  `parseSize` and `Config.getBytes` refuse one that does not, where they
+  rounded it to the nearest byte or, for a bare number, handed it back as it
+  was: `1420.5B` read as 1421, `1.1K` as 1126 and `0.4B` as 0, which several
+  caps read as "no cap", and a bare `10.5` as 10.5. A size string now fails
+  with `Invalid size: 1.1K is not a whole number of bytes`, a number passed
+  to `parseSize` from code the same way, and a bare number from HOCON or a
+  code-supplied config with a `ConfigError` that names the key. A fraction
+  that comes to whole bytes stays legal, so `1.5K` is 1536, and whether it
+  does is decided on the decimal as written: `1.001KB` is 1001 bytes
+  although its floating-point product is not whole. The `Infinity` that
+  `max-decompressed-bytes` documents as "no cap" is unchanged.
+
+  **Migration.** Write every size as a whole number of bytes (`1421B` for
+  `1420.5B`, `1126B` for `1.1K`), and round a computed number yourself
+  before passing it to `parseSize`.
+
+- **BREAKING — A key under `actor-ts.persistence` that no reader takes now
+  fails the startup** (#1729). `actor-ts.persistence.journal.plugn = "…"` or
+  a misspelt `actor-ts.persistence.jornal { … }` block was ignored, which
+  left the axis on the in-memory store `reference.conf` selects while the
+  startup reported ready, and a journal kept in memory lost its events on
+  the next restart. The startup now fails with a `ConfigError` that names
+  the full key and says to correct the spelling or to move a plug-in's
+  settings into its block. The check covers the keys directly under
+  `actor-ts.persistence` and the values directly in a `journal`,
+  `snapshot-store` or `durable-state` block beside its `plugin`; a plug-in's
+  own block inside an axis, a third-party plug-in's included, is left to
+  that plug-in. What it accepts is derived from `ConfigKeys`, so every key
+  the framework reads there is accepted. It fails the startup on every
+  route, `ActorSystem.create` and `Cluster.bootstrap` alike, with the
+  boot-time open off in the file or in code and with every store set in
+  code. A `WorkerMesh` worker over such a file fails its own startup as its
+  main thread does, while a valid file under the opt-out still builds
+  nothing of persistence inside `create`.
+
+  **Migration.** Correct the misspelt key, or move a plug-in's settings into
+  its block under the axis it serves,
+  `actor-ts.persistence.<axis>.<plug-in> { … }`.
+
 
 ### Fixed
 
@@ -6394,10 +6445,10 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   starts any registry it held. A shard the coordinator moved elsewhere while
   it declined keeps the entity it was busy with.
 
-- **A `sharding.GetShardStats` told to a shard without a usable `replyTo`
-  threw inside the shard, and the restart that followed stopped every entity
-  of that shard while the region went on counting them** (#1437). The shard
-  now declines such a query through `Actor.unhandled` instead.
+- **A `sharding.GetShardStats` is answered only through a usable `replyTo`**
+  (#1437). The shard answers it when its `replyTo` has a callable `tell`,
+  `equals` and `path`, whatever copy of the module minted it, and declines
+  it through `Actor.unhandled` otherwise.
 
 - **A message that reached a shard while its entity was passivating
   cooperatively was replayed into the next incarnation without its sender,
@@ -6576,9 +6627,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **The GELF sink's `max-chunk-bytes` is read as a byte size** (#1425). It
   was read as a plain integer, so `8K` failed at startup where every other
   byte-size key takes a unit; `8K` and `8192` now mean the same. A chunk
-  size that is a bare fraction is refused, from HOCON and from code alike,
-  because the chunker slices the payload on it; one written with a unit is
-  rounded to the nearest byte first, so `1420.5B` is read as 1421.
+  size that is not a whole number of bytes is refused, from HOCON and from
+  code alike, because the chunker slices the payload on it: a bare `1420.5`
+  and `1420.5B` alike (#1728).
 
   `reference.conf` now publishes the default with its unit, as `1420B`
   (#1438).
@@ -9040,7 +9091,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   only up to the first space or tab, so a stack frame or the next line of a
   log is left alone, while a secret read from a file is still masked whole,
   whether a trailing newline lands in front of the `@` or the secret is
-  wrapped over lines. An error with nothing to mask comes back as itself
+  wrapped over lines. Two shapes of secret are given up, and neither is
+  masked whole: a space or a tab after a line break ends the scan before it
+  reaches the `@`, so `amqp://user:pa\n ss@rabbit` comes back unchanged, and
+  an `@` in front of a line break ends the userinfo there, so
+  `amqp://user:p@ss\nword@rabbit` comes back as
+  `amqp://***@ss\nword@rabbit`; v0.17.0 masked both. `redactedUrlLabel`
+  hides both in a value it rebuilds from its parse, but not in every value
+  it masks instead, such as a joined server list. The utility-helpers
+  reference says so. An error with nothing to mask comes back as itself
   rather than a copy, and a `DOMException` is copied as one, so its `name`
   and `code` still answer.
 
@@ -10942,6 +11001,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   Read from HOCON such a kind used to become `bytes`, dropping the framing
   and its size cap on a typo, and built in code it was framed as
   `length-prefixed` on the default 16 MiB cap.
+
+- **A query parameter named `__proto__` stays an own parameter of
+  `request.query` on the Express and Hono backends** (#1449). Express keeps
+  it with its single value or its array of values, and Hono hands it to a
+  handler like any other parameter, on route requests and WebSocket upgrade
+  requests alike. `queryParam` and `pathParam` answer only for the
+  parameters a request carries: a name that was neither sent nor bound is
+  `undefined`, or a missing path parameter, never a member the record
+  inherits such as `constructor` or `toString`.
 
 ## [0.17.0] — 2026-08-29
 

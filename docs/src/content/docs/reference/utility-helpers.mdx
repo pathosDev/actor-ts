@@ -480,7 +480,16 @@ first space or tab. So the next frame of a stack trace — every frame of a
 scoped package carries an `@` — or the next line of a log is never taken for a
 password, while a secret read from a file is still masked whole: a line break
 that an `@` follows, such as a trailing newline in front of the `@`, is part
-of the userinfo, and so is a secret wrapped over several lines.
+of the userinfo, and so is a secret wrapped over several lines. The rule gives
+up two shapes of secret, and neither is masked whole. A space or a tab after a
+line break ends the scan before it reaches the `@`, so
+`'amqp://user:pa\n ss@rabbit'` comes back unchanged, and an `@` in front of a
+line break ends the userinfo there, so `'amqp://user:p@ss\nword@rabbit'` comes
+back as `'amqp://***@ss\nword@rabbit'`, which keeps `ss` and `word`.
+`redactedUrlLabel` hides both in a value it rebuilds from its parse — one URL,
+with no `,` and no second `://` in front of a `?` or `#` — but not in every
+value it masks instead: `'nats://a:b@h1,nats://u:pa\n ss@h2'` comes back as
+`'nats://***@h1,nats://u:pa\n ss@h2'`.
 
 A URL the runtime has already parsed needs no such guess. For the one a
 request went to, or a redirect target resolved against it,
@@ -518,8 +527,9 @@ as `***@host`, and a comma-joined list keeps every entry, each with its
 userinfo masked.
 
 The label masks every userinfo the way the scan does — to the last `@` before
-the next `://` — and shows no credential that the v0.17.0 label kept out.
-Three cases follow, each held against a copy of the released label:
+the next `://` — and, but for the two multi-line shapes above, shows no
+credential that the v0.17.0 label kept out. Three cases follow, each held
+against a copy of the released label:
 
 - **An `@` past the host names no host.**
   `https://user:pass@hooks.example/notify?to=ops@example.com` is a URL for
