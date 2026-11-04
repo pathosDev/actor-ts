@@ -389,13 +389,16 @@ function offKindValues(kind: LeafKind, value: ConfigValue): readonly ConfigValue
   return match(kind)
     .returnType<readonly ConfigValue[]>()
     // `getInt` refuses a fraction; `getNumber`, `getDuration`, `getBytes`
-    // and `getString` all take one, `getBytes` unchanged: only a size written
-    // with a unit is rounded.
+    // and `getString` all take one — `getBytes` because a bare number never
+    // reaches the size parser, which is what wants a whole number of bytes.
     .with('integer', () => [(value as number) + 0.5])
     // `getNumber` refuses a unit.  `getDuration` takes a time unit and
     // `getBytes` a byte unit, neither the other's, so a fraction gets one of
-    // each; `getString` takes both.
-    .with('fraction', () => [`${String(value)}s`, `${String(value)}KiB`])
+    // each; `getString` takes both.  The byte one is the whole part of the
+    // magnitude plus one, in KiB: a size has to come to whole bytes and takes
+    // no sign (#1728), and counted in bytes it could read as the literal it
+    // was nudged from — 1 is nudged down to 0.9, and `1B` is 1.
+    .with('fraction', () => [`${String(value)}s`, `${Math.trunc(Math.abs(value as number)) + 1}KiB`])
     // `getDuration` refuses a byte unit and `getBytes` a time unit, each
     // spelled so the other cannot read it (`KiB`, `s`) — unlike `m`.
     .with('duration', () => [inUnit(value, 'KiB')])

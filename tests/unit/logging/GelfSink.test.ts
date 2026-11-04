@@ -348,6 +348,11 @@ describe('actor-ts.logger.sinks.gelf.max-chunk-bytes', () => {
     expectExactOptions(chunkBytesFrom('1420'), { maxChunkBytes: 1_420 });
   });
 
+  it('refuses a size with a unit that does not come to a whole number of bytes, naming it', () => {
+    // It used to be rounded first, so 1420.5B reached the validator as 1421.
+    expect(() => chunkBytesFrom('1420.5B')).toThrow('Invalid size: 1420.5B is not a whole number of bytes');
+  });
+
   it('still refuses a fractional count, naming it', () => {
     // An integer getter refuses it while reading; a byte-size getter hands a
     // bare number through as it is, so the validator has to.

@@ -357,9 +357,9 @@ describe('Config refuses a non-finite number, duration or size (#1513)', () => {
 
   // The other direction, and the one that catches an over-broad fix: routing
   // the numeric branch through `parseDuration` / `parseSize` instead of
-  // checking it would also start *rounding*, because `parseSize` rounds to the
-  // nearest byte.  Every finite numeric value has to come back exactly as it
-  // went in.
+  // checking it would also start *refusing*, because `parseSize` takes only a
+  // whole number of bytes (#1728).  Every finite numeric value has to come
+  // back exactly as it went in.
   test('a finite numeric value is returned unchanged, fractions included', () => {
     const config = Config.fromObject({ whole: 1_500, fraction: 1.7, negative: -500, zero: 0 });
     expect(config.getDuration('whole')).toBe(1_500);

@@ -180,7 +180,7 @@ describe('perturbationFor — the off-kind values', () => {
     expect(offKinds(7)).toEqual([8.5]);                // getNumber, getDuration, getBytes
     expect(offKinds('5s')).toEqual(['6KiB']);          // getBytes
     expect(offKinds('1MiB')).toEqual(['2s']);          // getDuration
-    expect(offKinds(0.2)).toEqual(['0.3s', '0.3KiB']); // getDuration, then getBytes
+    expect(offKinds(0.2)).toEqual(['0.3s', '1KiB']);   // getDuration, then getBytes
     expect(offKinds([])).toEqual(['perturbed']);       // getString
     expect(offKinds({ 'rsp:': 7000 })).toEqual(['perturbed']); // getString
   });
@@ -193,8 +193,28 @@ describe('perturbationFor — the off-kind values', () => {
     const config = Config.parseString(`as-duration = ${String(asDuration)}\nas-size = ${String(asSize)}`);
     expect(config.getDuration('as-duration')).toBe(300);
     expect(() => config.getBytes('as-duration')).toThrow(/Unknown size unit/);
-    expect(config.getBytes('as-size')).toBe(Math.round(0.3 * 1024));
+    expect(config.getBytes('as-size')).toBe(1024);
     expect(() => config.getDuration('as-size')).toThrow(/Unknown duration unit/);
+  });
+
+  test('the byte one is whole and unsigned, and reads differently from the literal it is set over', () => {
+    // `0.3KiB` is 307.2 bytes, which `getBytes` refuses (#1728), and a sign
+    // no size parser reads; either way the value would stand in for nothing.
+    // A phi threshold is a fraction shipped as a whole 8, and a backoff factor
+    // one shipped as 1 and nudged down to 0.9: the count stays clear of both.
+    const cases: ReadonlyArray<readonly [string, ConfigValue, number]> = [
+      ['x', 0.2, 1_024],
+      ['x', -2.5, 3 * 1_024],
+      ['actor-ts.cluster.failure-detector.phi.unreachable-threshold', 8, 9 * 1_024],
+      ['actor-ts.circuit-breaker.default.backoff-factor', 1, 1_024],
+    ];
+    for (const [leaf, literal, bytes] of cases) {
+      const asSize = perturbationFor(leaf, literal).offKindValues!.at(-1)!;
+      expect(asSize, `${leaf} = ${String(literal)}`).toMatch(/^\d+(?:B|KiB)$/);
+      const read = Config.parseString(`a = ${String(asSize)}`).getBytes('a');
+      expect(read, `${leaf} = ${String(literal)}`).toBe(bytes);
+      expect(read, `${leaf} = ${String(literal)}`).not.toBe(literal);
+    }
   });
 
   test('a string has none: every accessor of a string takes any string', () => {
@@ -220,7 +240,7 @@ describe('the override and declaration tables', () => {
 
   test('a declared kind replaces the inferred one', () => {
     const factor = perturbationFor('actor-ts.circuit-breaker.default.backoff-factor', 1);
-    expect(factor).toMatchObject({ kind: 'fraction', value: 0.9, offKindValues: ['0.9s', '0.9KiB'] });
+    expect(factor).toMatchObject({ kind: 'fraction', value: 0.9, offKindValues: ['0.9s', '1KiB'] });
     const timeToLive = perturbationFor('actor-ts.cache.in-memory.time-to-live', 0);
     expect(timeToLive).toMatchObject({ kind: 'duration', value: '1ms', offKindValues: ['1KiB'] });
     const documentBytes = perturbationFor('actor-ts.serialization.read-constraints.max-document-bytes', 0);
