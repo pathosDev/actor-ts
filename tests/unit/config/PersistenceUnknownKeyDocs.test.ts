@@ -52,10 +52,28 @@ const PAGES: readonly PageClaim[] = [
   { page: 'docs/src/content/docs/de/persistence/durable-state.mdx', refused: DURABLE_STATE_KEYS, remedy: 'Korrigiere die Schreibweise' },
 ];
 
-/** The warnings the pages carried until #1729, in both languages. */
+/**
+ * The warnings the pages carried until #1729, in both languages, and the
+ * overview's sentence that with the boot-time open off every mistake above it
+ * fails the first operation instead — which a key nothing reads no longer does.
+ */
 const RETIRED_WARNINGS: readonly RegExp[] = [
   /misspelt key is not (?:one of them|refused)/i,
   /vertippter Schlüssel (?:gehört nicht dazu|wird nicht abgelehnt)/i,
+  /— the mistakes above then fail that operation/,
+  /— die Fehler oben lassen dann diese Operation/,
+];
+
+/** The overview's claim that the boot-time open off does not exempt the key, in each language. */
+const SWITCH_OFF_CLAIMS: ReadonlyArray<{ readonly page: string; readonly claim: string }> = [
+  {
+    page: 'docs/src/content/docs/persistence/overview.mdx',
+    claim: 'A key under `actor-ts.persistence` that nothing reads still fails the startup, with the switch off in the file or in code and with every store set in code',
+  },
+  {
+    page: 'docs/src/content/docs/de/persistence/overview.mdx',
+    claim: 'Ein Schlüssel unter `actor-ts.persistence`, den nichts liest, lässt den Start trotzdem scheitern, mit dem Schalter in der Datei oder im Code abgeschaltet und mit jedem Store im Code gesetzt',
+  },
 ];
 
 describe('the persistence pages say a key nothing reads fails the startup (#1729)', () => {
@@ -88,6 +106,10 @@ describe('the persistence pages say a key nothing reads fails the startup (#1729
     },
   );
 
+  test.each([...SWITCH_OFF_CLAIMS])('$page says the boot-time open off does not exempt the key', ({ page, claim }) => {
+    expect(prose(readFileSync(join(REPOSITORY_ROOT, page), 'utf8'))).toContain(claim);
+  });
+
   test('the retired-warning patterns refuse the sentences they were written against', () => {
     // Guards the guard: a pattern narrowed until it matches nothing would
     // leave the case above green over pages that still say it.
@@ -95,5 +117,12 @@ describe('the persistence pages say a key nothing reads fails the startup (#1729
     expect('A misspelt key is not refused, because nothing reads it.').toMatch(RETIRED_WARNINGS[0]!);
     expect('Ein vertippter Schlüssel gehört nicht dazu.').toMatch(RETIRED_WARNINGS[1]!);
     expect('Ein vertippter Schlüssel wird nicht abgelehnt, weil niemand ihn liest.').toMatch(RETIRED_WARNINGS[1]!);
+    expect('Off, nothing is resolved or opened until the first operation asks — the mistakes above then fail that operation rather than the startup')
+      .toMatch(RETIRED_WARNINGS[2]!);
+    expect('bis die erste Operation danach fragt — die Fehler oben lassen dann diese Operation scheitern statt des Starts')
+      .toMatch(RETIRED_WARNINGS[3]!);
+    // And none of them refuses the sentences that replaced them.
+    expect('— the other mistakes above then fail that operation').not.toMatch(RETIRED_WARNINGS[2]!);
+    expect('— die übrigen Fehler oben lassen dann diese Operation').not.toMatch(RETIRED_WARNINGS[3]!);
   });
 });

@@ -541,10 +541,18 @@ actor-ts.persistence.auto-start = off
 ```
 
 Off, nothing is resolved or opened until the first operation asks —
-the mistakes above then fail that operation rather than the startup —
-and a plug-in registered after `create` is still found then.  The
-workers of a `WorkerMesh` always run with it off, whatever the
-configuration they inherit says — see
+the other mistakes above then fail that operation rather than the
+startup — and a plug-in registered after `create` is still found then.
+A key under `actor-ts.persistence` that nothing reads still fails the
+startup, with the switch off in the file or in code and with every
+store set in code: the switch decides when the stores open, and
+refusing the key opens none.  The one exception is a system that turns
+the switch off in code and sets no store and no plug-in there, the
+whole of a `WorkerMesh` worker's persistence: it builds nothing of
+persistence inside `create`, so the first store it asks for refuses the
+key, and the main thread whose configuration the workers inherit
+refuses it at its own startup.  The workers of a `WorkerMesh` always
+run with it off, whatever the configuration they inherit says — see
 [Parallelism](/fundamentals/parallelism/).
 
 ## When NOT to persist

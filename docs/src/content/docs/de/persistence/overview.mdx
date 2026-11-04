@@ -567,9 +567,19 @@ actor-ts.persistence.auto-start = off
 ```
 
 Abgeschaltet wird nichts aufgelöst oder geöffnet, bis die erste
-Operation danach fragt — die Fehler oben lassen dann diese Operation
-scheitern statt des Starts —, und ein nach `create` registriertes
-Plug-in wird dann noch gefunden.  Die Worker eines `WorkerMesh` laufen immer
+Operation danach fragt — die übrigen Fehler oben lassen dann diese
+Operation scheitern statt des Starts —, und ein nach `create`
+registriertes Plug-in wird dann noch gefunden.  Ein Schlüssel unter
+`actor-ts.persistence`, den nichts liest, lässt den Start trotzdem
+scheitern, mit dem Schalter in der Datei oder im Code abgeschaltet und
+mit jedem Store im Code gesetzt: Der Schalter entscheidet, wann die
+Stores öffnen, und den Schlüssel abzulehnen öffnet keinen.  Die eine
+Ausnahme ist ein System, das den Schalter im Code abschaltet und dort
+weder einen Store noch ein Plug-in setzt, also die ganze Persistence
+eines `WorkerMesh`-Workers: Es baut innerhalb von `create` nichts von
+der Persistence auf, also lehnt der erste Store, nach dem es fragt, den
+Schlüssel ab, und der Haupt-Thread, dessen Konfiguration die Worker
+erben, lehnt ihn bei seinem eigenen Start ab.  Die Worker eines `WorkerMesh` laufen immer
 mit abgeschaltetem `autoStart`, was auch immer die Konfiguration sagt,
 die sie erben — siehe
 [Parallelität](/de/fundamentals/parallelism/).
