@@ -149,6 +149,40 @@ const PAGES: readonly Page[] = [
   },
 ];
 
+type SupervisorPage = {
+  readonly path: string;
+  /** The clause the `Restart=on-failure` row carries, given the shipped `exit-code`. */
+  readonly clause: (shippedExitCode: number) => string;
+  /** The link from that row to the section above. */
+  readonly link: string;
+};
+
+/**
+ * The repository's own systemd unit is the supervisor the section warns about:
+ * it restarts on failure only, so its row says what that does to a downed node.
+ */
+const SUPERVISOR_PAGES: readonly SupervisorPage[] = [
+  {
+    path: 'operations/deployment/process-manager.mdx',
+    clause: (shippedExitCode) => `exits with status \`${shippedExitCode}\` as shipped, so this leaves it down`,
+    link: '(/fundamentals/coordinated-shutdown/#when-the-cluster-downs-this-node)',
+  },
+  {
+    path: 'de/operations/deployment/process-manager.mdx',
+    clause: (shippedExitCode) => `endet wie ausgeliefert mit Status \`${shippedExitCode}\`, und das lässt ihn unten`,
+    link: '(/de/fundamentals/coordinated-shutdown/#wenn-der-cluster-diesen-knoten-downt)',
+  },
+];
+
+/** The table row of `relative` that explains a directive, MDX comments cut. */
+function directiveRow(relative: string, directive: string): string | undefined {
+  return readFileSync(join(DOCS_ROOT, relative), 'utf8')
+    .replace(/\r\n/g, '\n')
+    .replace(/\{\/\*[\s\S]*?\*\/\}/g, '')
+    .split('\n')
+    .find((line) => line.startsWith(`| \`${directive}\` |`));
+}
+
 describe('a node its own downing decision stands down exits as a clean stop does (#1456)', () => {
   const shippedExitCode = Config.loadReference().getInt(ConfigKeys.coordinatedShutdown.exitCode);
 
@@ -182,6 +216,15 @@ describe('a node its own downing decision stands down exits as a clean stop does
       for (const clause of page.clauses({ shippedExitCode, haltedStatus: haltedStatus!, failureStatus: failureStatus! })) {
         expect(prose).toContain(clause);
       }
+    });
+  }
+
+  for (const page of SUPERVISOR_PAGES) {
+    test(`${page.path} says on its Restart=on-failure row that a downed node stays down`, () => {
+      const row = directiveRow(page.path, 'Restart=on-failure');
+      expect(row).toBeDefined();
+      expect(row!).toContain(page.clause(shippedExitCode));
+      expect(row!).toContain(page.link);
     });
   }
 });
