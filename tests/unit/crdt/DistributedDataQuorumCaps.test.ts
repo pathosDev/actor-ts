@@ -336,9 +336,9 @@ describe('DistributedData default quorum deadline (#856)', () => {
   }, 10_000);
 
   test('quorum-timeout = 0 is refused at start, naming the field', async () => {
-    // A deadline of zero arms no timer, so a request waiting on a silent
-    // replica would never settle.  Validated on the merged settings, which is
-    // what makes the HOCON-only spelling reach the check at all.
+    // A deadline of 0 is armed like any other, so it would expire nearly every
+    // request at the next timer tick.  Validated on the merged settings, which
+    // is what makes the HOCON-only spelling reach the check at all.
     const a = await twoNodeCluster('deadline-zero', 47_411, {
       'actor-ts': { 'distributed-data': { 'quorum-timeout': '0s' } },
     });

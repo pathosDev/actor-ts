@@ -381,7 +381,12 @@ export type ClusterOptionsType = {
    * ({@link isAppVersion}) every peer applies to the label it receives.
    *
    * Configurable as `actor-ts.cluster.app-version`, which ships comment-only;
-   * the usual form is `app-version = ${?APP_VERSION}`.
+   * the usual form is `app-version = ${?APP_VERSION}`.  A value from the
+   * environment is read as JSON first, so a version that reads as a number
+   * comes back in that number's own spelling — `APP_VERSION=1.10` as `1.1`,
+   * `2.0` as `2` — and releases `1.1` and `1.10` print the same label.  Quote
+   * such a value inside the variable (`APP_VERSION='"1.10"'`), or set it in
+   * code with `withAppVersion(...)`.
    */
   readonly appVersion?: string;
   /**
@@ -1639,7 +1644,10 @@ export function resolveAdvertisedPort(
  *
  * `appVersion` is in on the same footing (#843): the deployment knows the
  * release it is rolling out, so `app-version = ${?APP_VERSION}` is one line
- * that is correct on every node, old and new alike.
+ * that is correct on every node, old and new alike — once a version that
+ * reads as a number is quoted inside the variable (`APP_VERSION='"1.10"'`),
+ * since a value from the environment is read as JSON first and an unquoted
+ * `1.10` reaches the peers as `1.1`.
  *
  * `downing` used to be in that sentence beside `transport`, and is not any
  * more (#838).  It is an object too, but the difference is that HOCON does not

@@ -35,7 +35,8 @@ import { CONFIG_READER_REGISTRY, UNPUBLISHED_LEAVES } from '../../util/ConfigRea
  *     the same claim, held by `tests/unit/docs/ReferenceConfDeadKeySection.test.ts`;
  *   - what it says keeps `replication.data-centers` out is what does: a
  *     registry entry nobody has written, which the gate's own functions show
- *     would be enough, and not a value the gate lacks;
+ *     would be enough, and not a value the gate lacks — nor do the registry's
+ *     comment and the Cassandra reader's JSDoc give that reason;
  *   - the exceptions to its rule about a reader of another kind are the ones
  *     the gate makes: every getter the gate lets read a leaf of another kind
  *     is named, and nothing else is, asked of the gate itself;
@@ -240,6 +241,42 @@ function dataCenterReasonsIn(text: string): RegExp[] {
   return RETIRED_DATA_CENTER_REASONS.filter((reason) => reason.test(wordsOf(text)));
 }
 
+/**
+ * The two comments that account for `replication.data-centers` beside the
+ * code: the registry's, among the entries the leaf would join, and the
+ * Cassandra journal reader's JSDoc.  Both gave the reason AGENTS.md gave until
+ * #1425, so both are held to the same refusal.  Each is found by words its
+ * account keeps, whatever it goes on to say.
+ */
+const DATA_CENTER_COMMENTS = [
+  { file: 'tests/util/ConfigReaderRegistry.ts', holding: '`replication.data-centers` under both Cassandra blocks' },
+  { file: 'src/persistence/journals/CassandraPluginOptions.ts', holding: '`replication.data-centers` is the one leaf outside the gate' },
+] as const;
+
+/**
+ * The comment paragraph of `file` that holds `words`, its comment markers
+ * dropped and its whitespace collapsed: a run of comment lines, split where a
+ * line holds nothing but its marker.
+ */
+function commentParagraphHolding(file: string, words: string): string {
+  const paragraphs: string[] = [];
+  let open: string[] = [];
+  const close = (): void => {
+    if (open.length > 0) paragraphs.push(open.join(' ').replace(/\s+/g, ' ').trim());
+    open = [];
+  };
+  for (const line of readFileSync(join(REPOSITORY_ROOT, file), 'utf8').split(/\r?\n/)) {
+    const comment = /^\s*(?:\/\/|\/\*\*?|\*\/?)(.*)$/.exec(line);
+    const text = comment?.[1]?.replace(/\*\/\s*$/, '').trim();
+    if (text === undefined || text === '') close();
+    else open.push(text);
+  }
+  close();
+  const holding = paragraphs.filter((paragraph) => paragraph.includes(words));
+  expect(holding, `${file} has no single comment paragraph holding "${words}"`).toHaveLength(1);
+  return holding[0]!;
+}
+
 /** A kind sentence that names its exceptions only to deny them. */
 const KIND_EXCEPTION_DENIAL = /\b(?:without|no) exceptions?\b/i;
 
@@ -365,9 +402,11 @@ type KindGap = {
 };
 
 /**
- * The exceptions the kind sentence has words for, each with the gaps it
- * covers.  A gap neither covers fails the test outright: the sentence has no
- * words for it, so the sentence and this list grow together.
+ * The exceptions the kind sentence would name, each with the words it would
+ * name it by and the gaps it covers.  The gate leaves none of these gaps
+ * today, so the sentence names no exception; one that comes back fails the
+ * test until the sentence names it, and a gap neither covers fails it
+ * outright, so the sentence and this list grow together.
  */
 const KIND_EXCEPTIONS = [
   {
@@ -420,22 +459,6 @@ function scanKinds(): { readonly gaps: readonly KindGap[]; readonly caught: read
   return { gaps, caught };
 }
 
-/**
- * Whether the gate still changes a size or a duration that ships as a bare
- * count to another bare count, which `getInt` and `getNumber` read as well as
- * the leaf's own accessor.  The kind sentence names no such exception: it is
- * written for the gate that changes such a leaf to a value carrying its unit
- * (`1ms`, `1B`) instead (#1425).  While a gate without that is the one under
- * test, the bare-count gaps are left out of the comparison; with it, there
- * are none to leave out, and the comparison is whole.
- */
-function bareCountsStayBare(): boolean {
-  return gatePerturbations().some((perturbation) =>
-    (perturbation.kind === 'duration' || perturbation.kind === 'size')
-    && typeof (perturbation.introducedAs ?? perturbation.literal) === 'number'
-    && typeof perturbation.value === 'number');
-}
-
 /** The `ConfigKeys` rule's sentence about a reader of another kind, with the sentence after it. */
 function kindSentence(): string {
   const sentences = keysRule().split(/(?<=[.!?])\s+(?=[A-Z*`])/);
@@ -445,15 +468,55 @@ function kindSentence(): string {
 }
 
 /**
+ * The words a kind sentence can open its exceptions with: the noun, and the
+ * preposition the reference-conf pages used ("fails it, except a fraction read
+ * as a size").  Read for the noun alone, a sentence that opened its exception
+ * with the preposition had no getter counted from it, and passed while naming
+ * an exception the gate no longer makes.
+ */
+const EXCEPTION_WORDS: readonly RegExp[] = [/\bexceptions?\b/i, /\bexcept\b/i];
+
+/** The words of {@link EXCEPTION_WORDS} that `text` uses. */
+function exceptionWordsIn(text: string): RegExp[] {
+  return EXCEPTION_WORDS.filter((word) => word.test(text));
+}
+
+/** Where the first word of {@link EXCEPTION_WORDS} stands in `sentence`, or -1. */
+function firstExceptionWord(sentence: string): number {
+  const positions = EXCEPTION_WORDS.map((word) => sentence.search(word)).filter((position) => position !== -1);
+  return positions.length === 0 ? -1 : Math.min(...positions);
+}
+
+/**
+ * One passage per word of {@link EXCEPTION_WORDS}, each opening its exception
+ * with that word alone and naming a getter after the exception's own words,
+ * with the exception the getter has to be counted under.  A word deleted, or
+ * narrowed until it matches nothing, leaves its passage counting no getter.
+ */
+const ONE_EXCEPTION_WORD_EACH: ReadonlyArray<{ readonly passage: string; readonly exception: string; readonly getter: string }> = [
+  {
+    passage: 'A reader of another kind fails it, with one exception: a fraction read as a size, through `getBytes`.',
+    exception: 'fraction',
+    getter: 'getBytes',
+  },
+  {
+    passage: 'A reader of another kind fails it, except a size shipped as a bare count and read with `getInt`.',
+    exception: 'bare count',
+    getter: 'getInt',
+  },
+];
+
+/**
  * The getters the kind sentence names as exceptions, by the exception whose
- * words come last before each: everything from the word "exception" on, so a
- * getter the sentence names as an example of what fails is not counted.
- * Getters named before any exception's words come back as unassigned.
+ * words come last before each: everything from the first word an exception
+ * opens with on ({@link EXCEPTION_WORDS}), so a getter the sentence names as
+ * an example of what fails is not counted.  Getters named before any
+ * exception's words come back as unassigned.
  */
 function namedExceptions(sentence: string): { readonly named: ReadonlyArray<ReadonlySet<string>>; readonly unassigned: readonly string[] } {
   const named = KIND_EXCEPTIONS.map(() => new Set<string>());
   const unassigned: string[] = [];
-  const at = sentence.search(/\bexceptions?\b/i);
+  const at = firstExceptionWord(sentence);
   if (at === -1) return { named, unassigned };
   let current = -1;
   for (const token of sentence.slice(at).matchAll(/`(get[A-Z]\w*)`|\bbare count\b|\b[Ff]ractions?\b/g)) {
@@ -509,19 +572,18 @@ describe('AGENTS.md describes the dead-key gate as it is (#1425)', () => {
     expect(sentence, 'the kind sentence denies the exceptions it names').not.toMatch(KIND_EXCEPTION_DENIAL);
     const { named, unassigned } = namedExceptions(sentence);
     expect(unassigned, 'the kind sentence names a getter before saying which exception it belongs to').toEqual([]);
-    const leftOut = bareCountsStayBare() ? KIND_EXCEPTIONS[0] : undefined;
     KIND_EXCEPTIONS.forEach((exception, index) => {
-      const letThrough = exception === leftOut
-        ? []
-        : [...new Set(gaps.filter(exception.covers).map((gap) => gap.accessor))].sort();
+      const letThrough = [...new Set(gaps.filter(exception.covers).map((gap) => gap.accessor))].sort();
       expect(
         [...named[index]!].sort(),
         `the getters the kind sentence names after "${exception.words.source}" are the ones the gate lets through there`,
       ).toEqual(letThrough);
     });
     if (gaps.length === 0) {
-      expect(sentence, 'the gate lets no reader of another kind through, and the sentence still names an exception')
-        .not.toMatch(/\bexceptions?\b/i);
+      expect(
+        exceptionWordsIn(sentence).map(String),
+        'the gate lets no reader of another kind through, and the sentence still names an exception',
+      ).toEqual([]);
     }
   });
 
@@ -604,6 +666,13 @@ describe('AGENTS.md describes the dead-key gate as it is (#1425)', () => {
       .toEqual([]);
   });
 
+  test('neither comment beside the code gives replication.data-centers the reason AGENTS.md retired', () => {
+    const giving = DATA_CENTER_COMMENTS
+      .map(({ file, holding }) => ({ file, reasons: dataCenterReasonsIn(commentParagraphHolding(file, holding)).map(String) }))
+      .filter(({ reasons }) => reasons.length > 0);
+    expect(giving, 'these say the gate lacks a value for replication.data-centers').toEqual([]);
+  });
+
   test('the gate still has keys to change', () => {
     // Guards the guard: an empty key list would make every setting "outside".
     expect(gatedKeys.length).toBeGreaterThan(400);
@@ -635,6 +704,18 @@ describe('AGENTS.md describes the dead-key gate as it is (#1425)', () => {
   test('the reasons and the denial the data-center and kind checks refuse are refused, each on a passage of its own', () => {
     expectOnePatternEach(RETIRED_DATA_CENTER_REASONS, ONE_DATA_CENTER_REASON_EACH, dataCenterReasonsIn);
     expect('A reader of another kind fails it without exception.').toMatch(KIND_EXCEPTION_DENIAL);
+  });
+
+  test('either word an exception opens with counts its getter, under the exception the passage names', () => {
+    expectOnePatternEach(EXCEPTION_WORDS, ONE_EXCEPTION_WORD_EACH.map(({ passage }) => passage), exceptionWordsIn);
+    for (const { passage, exception, getter } of ONE_EXCEPTION_WORD_EACH) {
+      const index = KIND_EXCEPTIONS.findIndex((candidate) => candidate.words.test(exception));
+      expect(index, `"${exception}" names no entry of KIND_EXCEPTIONS`).toBeGreaterThan(-1);
+      const { named, unassigned } = namedExceptions(passage);
+      expect(unassigned, `"${passage}" names a getter before its exception`).toEqual([]);
+      expect(named.map((getters) => [...getters]), `"${passage}" counts ${getter} under "${exception}" alone`)
+        .toEqual(KIND_EXCEPTIONS.map((_, position) => (position === index ? [getter] : [])));
+    }
   });
 
   test('the constants rule names what catches a moved reader', () => {

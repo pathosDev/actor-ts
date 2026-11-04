@@ -141,6 +141,10 @@ describe('the published reason for refusing quorum-timeout = 0 (#856)', () => {
     ['de/distributed-data/quorum-reads-writes.mdx', page('de/distributed-data/quorum-reads-writes.mdx'), 'Die Frist ist unabhängig vom Gossip-Intervall', 'sie liefe also beim nächsten Timer-Tick ab: Ein Write scheiterte dort, und ein Read begnügte sich mit dem, was diese Replika allein hält, sofern nicht jede Replika schon geantwortet hätte'],
     ['the quorumTimeout JSDoc', source('src/crdt/DistributedDataOptions.ts'), 'Deadline in ms for an `updateAsync` / `getAsync` whose call names no `timeoutMs`', 'it expires at the next timer tick — a write fails there and a read settles for what this replica alone holds — unless every replica it waits on has already answered'],
     ['the validator\'s comment', source('src/crdt/DistributedDataOptions.ts'), 'Positive, where the ceiling below is non-negative', 'it would expire nearly every quorum request at the next timer tick'],
+    // Two test comments kept the false mechanism after the pages dropped it;
+    // each is found by its test's title, which a reverted comment keeps.
+    ['DistributedDataConfigDefaults\' comment on the refusal', source('tests/unit/config/DistributedDataConfigDefaults.test.ts'), 'takes a positive default quorum deadline and refuses 0', 'a deadline of 0 is armed like any other, so it would expire nearly every request at the next timer tick'],
+    ['DistributedDataQuorumCaps\' comment on the refusal', source('tests/unit/crdt/DistributedDataQuorumCaps.test.ts'), 'quorum-timeout = 0 is refused at start, naming the field', 'A deadline of 0 is armed like any other, so it would expire nearly every request at the next timer tick'],
   ])('%s gives the reason the replicator bears out', (_where, text, opening, reason) => {
     const passage = passageOf(prose(text), opening);
     expect(passage).toContain(reason);

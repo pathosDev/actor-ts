@@ -91,8 +91,12 @@ export type LeafPerturbation = {
    * leaf only when it answers the two differently.
    */
   readonly secondValue?: ConfigValue;
-  /** A value its own accessor refuses; absent for kinds no getter checks. */
-  readonly offKindValue?: ConfigValue;
+  /**
+   * Values its own accessor refuses, each one a getter of another kind takes;
+   * absent for kinds no getter checks.  A fraction has two, because no one
+   * spelling is taken by both `getDuration` and `getBytes`.
+   */
+  readonly offKindValues?: readonly ConfigValue[];
   /** Why {@link value} was not inferred, when it was not. */
   readonly reason?: string;
 };
@@ -376,25 +380,30 @@ function objectValue(literal: ConfigObject): ConfigObject {
 }
 
 /**
- * A value the leaf's own accessor refuses, spelled in the kind it is most
- * easily confused with, or `undefined` when no getter checks the kind.
+ * Values the leaf's own accessor refuses, each spelled in a kind it is easily
+ * confused with, or none when no getter checks the kind.  Usually one; a
+ * fraction gets two, because `getDuration` and `getBytes` both take a bare
+ * fraction and no one spelling is taken by both.
  */
-function offKindValue(kind: LeafKind, value: ConfigValue): ConfigValue | undefined {
+function offKindValues(kind: LeafKind, value: ConfigValue): readonly ConfigValue[] {
   return match(kind)
-    .returnType<ConfigValue | undefined>()
+    .returnType<readonly ConfigValue[]>()
     // `getInt` refuses a fraction; `getNumber`, `getDuration`, `getBytes`
-    // (rounding it) and `getString` all take one.
-    .with('integer', () => (value as number) + 0.5)
-    // `getNumber` refuses a unit; `getDuration` and `getString` take one.
-    .with('fraction', () => `${String(value)}s`)
+    // and `getString` all take one, `getBytes` unchanged: only a size written
+    // with a unit is rounded.
+    .with('integer', () => [(value as number) + 0.5])
+    // `getNumber` refuses a unit.  `getDuration` takes a time unit and
+    // `getBytes` a byte unit, neither the other's, so a fraction gets one of
+    // each; `getString` takes both.
+    .with('fraction', () => [`${String(value)}s`, `${String(value)}KiB`])
     // `getDuration` refuses a byte unit and `getBytes` a time unit, each
     // spelled so the other cannot read it (`KiB`, `s`) — unlike `m`.
-    .with('duration', () => inUnit(value, 'KiB'))
-    .with('size', () => inUnit(value, 's'))
+    .with('duration', () => [inUnit(value, 'KiB')])
+    .with('size', () => [inUnit(value, 's')])
     // `getObject` refuses a word as `getBoolean` and `getStringList` do;
     // `getString` takes one.
-    .with('boolean', 'switch', 'list', 'object', () => PERTURBATION_WORD)
-    .with('text', () => undefined)
+    .with('boolean', 'switch', 'list', 'object', () => [PERTURBATION_WORD])
+    .with('text', () => [])
     .exhaustive();
 }
 
@@ -473,8 +482,8 @@ function withSecondValue(perturbation: LeafPerturbation, override?: Perturbation
 }
 
 function withOffKind(perturbation: LeafPerturbation): LeafPerturbation {
-  const offKind = offKindValue(perturbation.kind, perturbation.value);
-  return offKind === undefined ? perturbation : { ...perturbation, offKindValue: offKind };
+  const offKind = offKindValues(perturbation.kind, perturbation.value);
+  return offKind.length === 0 ? perturbation : { ...perturbation, offKindValues: offKind };
 }
 
 /* ------------------------------ Observation ------------------------------ */
@@ -584,7 +593,7 @@ export type LeafVerdict = {
   readonly refusedBy: readonly string[];
   /** Probes that refused the in-kind or the introduced value as the wrong kind, with the getter's message. */
   readonly kindMismatches: readonly string[];
-  /** Probes that took the off-kind value and answered differently. */
+  /** Probes that took an off-kind value and answered differently, each named once. */
   readonly offKindAcceptedBy: readonly string[];
 };
 
@@ -599,18 +608,19 @@ type LeafConfigs = {
   readonly inKind: Config;
   /** The baseline with an empty leaf's second value; absent for a leaf that does not start empty. */
   readonly second?: Config;
-  readonly offKind?: Config;
+  /** The baseline with each off-kind value; empty for a kind no getter checks. */
+  readonly offKind: readonly Config[];
 };
 
 function leafConfigsOver(perturbation: LeafPerturbation, config: Config): LeafConfigs {
-  const { leaf, introducedAs, value, secondValue, offKindValue } = perturbation;
+  const { leaf, introducedAs, value, secondValue, offKindValues } = perturbation;
   const introduced = introducedAs === undefined ? undefined : withOverlay(config, { [leaf]: introducedAs });
   const before = introduced ?? config;
   return {
     ...(introduced === undefined ? {} : { introduced }),
     inKind: withOverlay(before, { [leaf]: value }),
     ...(secondValue === undefined ? {} : { second: withOverlay(before, { [leaf]: secondValue }) }),
-    ...(offKindValue === undefined ? {} : { offKind: withOverlay(before, { [leaf]: offKindValue }) }),
+    offKind: (offKindValues ?? []).map((offKindValue) => withOverlay(before, { [leaf]: offKindValue })),
   };
 }
 
@@ -662,10 +672,11 @@ export function observeLeaf(perturbation: LeafPerturbation, baselines: readonly 
       if (second.kind === 'threw') recordRefusal(label, second.error);
       else if (changed(second, outcome)) observedBy.push(label);
     }
-    if (leafConfigs.offKind) {
-      const offKind = runProbe(baseline.probe, leafConfigs.offKind);
-      if (offKind.kind === 'returned' && changed(offKind, before)) offKindAcceptedBy.push(label);
-    }
+    const tookAnOffKindValue = leafConfigs.offKind.some((offKindConfig) => {
+      const offKind = runProbe(baseline.probe, offKindConfig);
+      return offKind.kind === 'returned' && changed(offKind, before);
+    });
+    if (tookAnOffKindValue) offKindAcceptedBy.push(label);
   }
   return { perturbation, observedBy, refusedBy, kindMismatches, offKindAcceptedBy };
 }

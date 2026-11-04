@@ -160,38 +160,14 @@ function ownLeavesOf(group: KeyTree): string[] {
  * Checked in both directions, as `HoconFenceKeys`' exemptions are — an entry
  * whose leaf a page now publishes fails — so the list can only shrink, and
  * each reason has to name an issue.
+ *
+ * Empty since #1443: every root's page publishes all of its own leaves.  The
+ * list stays as the place a leaf a page owes in future goes, written as
+ * `...unpublished('#NNN: what the page lacks', [leaves])`.  Such an entry
+ * still has to name an own leaf and an issue, and it fails once its page
+ * publishes the leaf.
  */
-const KNOWN_UNPUBLISHED_LEAVES: ReadonlyMap<string, string> = new Map<string, string>([
-  ...unpublished('#1443: io/email-bridge.mdx shows the IMAP block without these two', [
-    'email-bridge.imap.move-to-mailbox', 'email-bridge.imap.disable-idle',
-  ]),
-  ...unpublished('#1443: io/jetstream.mdx shows no connection leaf, and `start-time` only in comment prose', [
-    'jetstream.servers', 'jetstream.token', 'jetstream.user', 'jetstream.password', 'jetstream.name',
-    'jetstream.consumer.deliver-policy.start-time',
-  ]),
-  ...unpublished('#1443: io/jetstream-kv.mdx shows only `servers`, `bucket` and `history` for the key-value bucket', [
-    'jetstream-key-value.token', 'jetstream-key-value.user', 'jetstream-key-value.password', 'jetstream-key-value.name',
-    'jetstream-key-value.time-to-live', 'jetstream-key-value.storage', 'jetstream-key-value.replicas',
-    'jetstream-key-value.max-value-bytes', 'jetstream-key-value.create',
-  ]),
-  ...unpublished('#1443: io/jetstream-kv.mdx shows only `servers`, `bucket` and `max-object-bytes` for the object store', [
-    'jetstream-object-store.token', 'jetstream-object-store.user', 'jetstream-object-store.password',
-    'jetstream-object-store.name', 'jetstream-object-store.description', 'jetstream-object-store.storage',
-    'jetstream-object-store.replicas', 'jetstream-object-store.create',
-  ]),
-  ...unpublished('#1443: io/kafka.mdx shows only the producer block', [
-    'kafka.brokers', 'kafka.client-id', 'kafka.ssl', 'kafka.sasl.mechanism', 'kafka.sasl.username', 'kafka.sasl.password',
-    'kafka.consumer.group-id', 'kafka.consumer.from-beginning', 'kafka.consumer.commit-mode', 'kafka.consumer.commit-timeout',
-    'kafka.topics',
-  ]),
-  ...unpublished('#1443: io/mqtt.mdx shows only the will block', [
-    'mqtt.broker-url', 'mqtt.client-id', 'mqtt.credentials.username', 'mqtt.credentials.password', 'mqtt.qos',
-    'mqtt.clean-session', 'mqtt.keep-alive', 'mqtt.protocol-version',
-  ]),
-  ...unpublished("#1443: io/tcp.mdx says the listener's framing takes the client's leaves, and shows two of them under it", [
-    'tcp-server.framing.delimiter', 'tcp-server.framing.max-frame-bytes',
-  ]),
-]);
+const KNOWN_UNPUBLISHED_LEAVES: ReadonlyMap<string, string> = new Map<string, string>([]);
 
 /** The entries of {@link KNOWN_UNPUBLISHED_LEAVES} for some leaves under `actor-ts.io.broker`, all with one reason. */
 function unpublished(reason: string, leaves: ReadonlyArray<string>): Array<[string, string]> {

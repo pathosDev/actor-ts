@@ -49,6 +49,9 @@ const DURABLE_STATE_ID = 'test.durable-state.create-side';
 /** The task name the extension registers a plug-in's promise under. */
 const PLUGINS_TASK = 'persistence-plugins';
 
+/** The task that opens the selected stores, and fails the startup when one did not resolve inside `create`. */
+const WARM_UP_TASK = 'persistence-warm-up';
+
 type Stores = {
   readonly journal: Journal;
   readonly snapshotStore: SnapshotStore;
@@ -448,6 +451,57 @@ describe('a selected plug-in nothing registered', () => {
       }
     } finally {
       await system.terminate();
+    }
+  });
+});
+
+/**
+ * An async plug-in that registers the selected backend: on which side of its
+ * first `await` (#1473).  `create` resolves the selected stores once the
+ * plug-ins have run up to their first `await`, so a registration before it is
+ * in the registry by then and one after it is not, however soon it follows.
+ */
+describe('a selected backend an async plug-in registers', () => {
+  test('before its first await is the store every axis resolves to', async () => {
+    const stores = freshStores();
+    const plugin: PersistencePlugin = async (persistence) => {
+      registerAll(persistence, stores);
+      await Promise.resolve();
+    };
+    const systemOptions = selectingAllThree().withPersistence({ plugins: [plugin] });
+    const system = ActorSystem.create('create-side-registered-before-await', systemOptions);
+    try {
+      await system.whenReady();
+      const persistence = system.extension(PersistenceExtensionId);
+      expect(persistence.journal).toBe(stores.journal);
+      expect(persistence.snapshotStore).toBe(stores.snapshotStore);
+      expect(persistence.durableStateStore).toBe(stores.durableStateStore);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('after its first await fails the startup with Unknown journal plugin', async () => {
+    let registeredLate = false;
+    const plugin: PersistencePlugin = async (persistence) => {
+      await Promise.resolve();
+      registerAll(persistence, freshStores());
+      registeredLate = true;
+    };
+    const systemOptions = selectingAllThree().withPersistence({ plugins: [plugin] });
+    const system = ActorSystem.create('create-side-registered-after-await', systemOptions);
+    try {
+      const error = await rejectionOf(system.whenReady());
+      // Not vacuous: the plug-in did register the selected ids, after `create`
+      // had already resolved them.
+      expect(registeredLate).toBe(true);
+      expect(error.message).toContain(`Unknown journal plugin '${JOURNAL_ID}'`);
+      expect(error.message).toContain(`"${WARM_UP_TASK}"`);
+      expect(error.message).toContain(`"${StartupPhases.PersistenceStart}"`);
+      await system.whenTerminated();
+      expect(system.isTerminated).toBe(true);
+    } finally {
+      await stopped(system);
     }
   });
 });

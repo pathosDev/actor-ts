@@ -2091,8 +2091,12 @@ actor-ts {
     journal {
       plugin = "actor-ts.persistence.journal.in-memory"
 
-      # Local SQLite journal.  registerSqlitePlugins(ext) makes this id real;
-      # the block below is what that call reads when it is given no options.
+      # Local SQLite journal.  registerSqlitePlugins, run through the plugins
+      # slot, makes this id real:
+      #   withPersistence({ plugins: [
+      #     (persistence) => registerSqlitePlugins(persistence),
+      #   ] })
+      # The block below is what that call reads when it is given no options.
       # Explicit SqliteJournalOptions always win over anything here.
       sqlite {
         # Database file, or ":memory:" for an in-memory database private to
@@ -2111,8 +2115,12 @@ actor-ts {
         busy-timeout = 1s             # lock wait before SQLITE_BUSY; 0 fails fast
       }
 
-      # PostgreSQL journal.  registerPostgresPlugins(ext) makes this id real;
-      # the block below is what that call reads when it is given no options.
+      # PostgreSQL journal.  registerPostgresPlugins, run through the plugins
+      # slot, makes this id real:
+      #   withPersistence({ plugins: [
+      #     (persistence) => registerPostgresPlugins(persistence),
+      #   ] })
+      # The block below is what that call reads when it is given no options.
       # Explicit PostgresJournalOptions always win over anything here.
       #
       # The five relational journals below share one implementation, so they
@@ -2236,8 +2244,12 @@ actor-ts {
         auto-create-tables = on
       }
 
-      # MongoDB journal.  registerMongoPlugins(ext) makes this id real; the
-      # block below is what that call reads when a field is left unset.
+      # MongoDB journal.  registerMongoPlugins, run through the plugins slot,
+      # makes this id real:
+      #   withPersistence({ plugins: [
+      #     (persistence) => registerMongoPlugins(persistence),
+      #   ] })
+      # The block below is what that call reads when a field is left unset.
       # Explicit MongoJournalOptions always win over anything here.
       #
       # Mongo names its containers COLLECTIONS, so the leaves say collection and
@@ -2320,11 +2332,15 @@ actor-ts {
         auto-create-tables = on       # CreateTable when the store opens (see auto-start); an existing table is fine
       }
 
-      # Cassandra / ScyllaDB journal.  registerCassandraPlugins(ext) makes this
-      # id real.  The widest block in the family: Cassandra is reached by a seed
-      # list rather than a URL, and its schema is four tables rather than one
-      # plus a derived name, because a wide-column store has no join to derive
-      # one with.
+      # Cassandra / ScyllaDB journal.  registerCassandraPlugins, run through
+      # the plugins slot, makes this id real:
+      #   withPersistence({ plugins: [
+      #     (persistence) => registerCassandraPlugins(persistence),
+      #   ] })
+      # The widest block in the family: Cassandra is reached by a seed list
+      # rather than a URL, and its schema is four tables rather than one plus a
+      # derived name, because a wide-column store has no join to derive one
+      # with.
       cassandra {
         contact-points = []           # [] = not set; e.g. ["10.0.0.1", "10.0.0.2"]
         keyspace = ""                 # "" = not set; required at the point of use
@@ -2509,8 +2525,13 @@ actor-ts {
 
       # Object-storage snapshot store -- S3-compatible or local filesystem.
       # This block also configures the durable-state store that the same
-      # registerObjectStoragePlugins() call returns: the two share ONE
-      # backend, so the settings are declared once here rather than twice.
+      # registerObjectStoragePlugins call registers, run through the plugins
+      # slot:
+      #   withPersistence({ plugins: [
+      #     (persistence) => registerObjectStoragePlugins(persistence),
+      #   ] })
+      # The two share ONE backend, so the settings are declared once here
+      # rather than twice.
       # Explicit ObjectStoragePluginOptions always win over anything below.
       object-storage {
         backend = ""                  # "" | filesystem | s3 -- "" leaves the backend to code
@@ -3183,10 +3204,8 @@ den neuen Wert nur ablehnt, zählt
 nicht, denn ein Wert, der geprüft und dann verworfen wird, wird genauso
 abgelehnt; einer, der das Blatt als eine andere Art liest, als es
 ausgeliefert wird — eine Größe, wo eine Dauer steht, eine Ganzzahl, wo eine
-Größe als bloße Zahl steht —, lässt es durchfallen, außer bei einem Bruch,
-der als Größe gelesen wird: Sein Wert der falschen Art ist eine Dauer, die
-`getBytes` genauso ablehnt wie der eigene Accessor des Bruchs; `getBytes`
-liest einen Bruch also unbemerkt.
+Größe als bloße Zahl steht, eine Größe, wo ein Bruch steht —, lässt es
+durchfallen.
 Ein Key, den diese Datei nur als Kommentar führt, hat keinen Wert zum
 Ändern; der Test führt ihn deshalb mit einem Wert aus der Registry ein und
 ändert ihn auf einen zweiten, und ein Leser muss auf beide verschieden
