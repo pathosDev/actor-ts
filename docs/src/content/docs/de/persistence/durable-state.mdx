@@ -196,10 +196,17 @@ Journal- und den Snapshot-Store-Block und für `actor-ts.persistence` selbst,
 und ein Selektor, der gar keine Id hält — `null`, ein Block, eine Liste —,
 lässt jede Achse scheitern, nicht nur seine eigene.
 
-Ein vertippter Schlüssel wird nicht abgelehnt, weil niemand ihn liest.
-`plugn = "…"` im Block lässt `plugin` auf der In-Memory-Id, die
-`reference.conf` mitbringt, also startet das System ohne Fehler und ohne
-Warnung mit dem In-Memory-Store, genau als wäre nichts ausgewählt.
+Ein vertippter Schlüssel wird ebenfalls abgelehnt und mit vollem Namen genannt.
+`plugn = "…"` im Block liest niemand, und früher ließ es `plugin` auf der
+In-Memory-Id, die `reference.conf` mitbringt, also startete das System ohne
+Fehler und ohne Warnung mit dem In-Memory-Store, genau als wäre nichts
+ausgewählt.  Jetzt lässt es den Start mit einem `ConfigError` scheitern, der
+`actor-ts.persistence.durable-state.plugn` nennt, und ebenso jeder andere Wert
+im Block neben `plugin` — darunter eine Einstellung eines Plug-ins, eine Ebene
+zu hoch geschrieben — und jeder Schlüssel direkt unter `actor-ts.persistence`,
+den das Framework nicht liest.  Korrigiere die Schreibweise, oder verschiebe die
+Einstellung in den Block ihres Plug-ins.  Ein vertipptes Leaf im eigenen Block
+eines Plug-ins abzulehnen ist Sache dieses Plug-ins.
 
 Ein ausgewählter SQLite-Store ohne Pfad wird ebenfalls abgelehnt, und zwar
 früher: `registerSqlitePlugins` prüft schon beim Registrieren jeden Store, den

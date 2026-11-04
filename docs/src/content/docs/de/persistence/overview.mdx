@@ -519,14 +519,25 @@ einer `application.conf`, die er mit Services teilt, die es nutzen —,
 also lässt ein Fehler dort auch diesen Start scheitern: Stell diese
 Achse für diesen Service zurück auf den In-Memory-Store, oder schalte
 das Öffnen beim Start ab, wie unten gezeigt.
-Scheitern lassen ihn die Fehler, die die Auswahl liest: eine Id, die
-niemand registriert hat, ein Wert dort, wo der Block der Achse hingehört
-(`actor-ts.persistence.journal = "…"`), und ein ausgewählter Store, der
-nicht öffnen kann.  Ein vertippter Schlüssel gehört nicht dazu.  Niemand
-liest `plugn = "…"` oder einen `jornal`-Block, also behält die Achse den
-In-Memory-Store, den `reference.conf` auswählt, und das System startet
-damit, ohne Fehler und ohne Warnung — und ein Journal im Speicher hat
-seine Events beim nächsten Neustart verloren.
+Scheitern lassen ihn die Fehler in dem, was die Auswahl liest — eine Id,
+die niemand registriert hat, ein Wert dort, wo der Block der Achse
+hingehört (`actor-ts.persistence.journal = "…"`), ein ausgewählter
+Store, der nicht öffnen kann — und ein Schlüssel unter
+`actor-ts.persistence`, den gar nichts liest.  `plugn = "…"` im
+Journal-Block oder ein `jornal`-Block daneben lässt den Start mit einem
+`ConfigError` scheitern, der den vollen Schlüssel nennt,
+`actor-ts.persistence.journal.plugn` oder `actor-ts.persistence.jornal`.
+Als nicht gesetzt gelesen, ließ er die Achse früher auf dem
+In-Memory-Store, den `reference.conf` auswählt, ohne Fehler und ohne
+Warnung, und ein Journal im Speicher hatte seine Events beim nächsten
+Neustart verloren.  Korrigiere die Schreibweise, oder verschiebe die
+Einstellungen eines Plug-ins in seinen Block.  Das Framework prüft die
+beiden Ebenen, die es selbst liest: Direkt unter `actor-ts.persistence`
+stehen die drei Achsen-Blöcke und die Verhaltensschlüssel, direkt in einem
+Achsen-Block steht sein `plugin` neben den Blöcken seiner Plug-ins.  Den
+Block eines Plug-ins — `actor-ts.persistence.journal.my-plugin { … }`,
+auch den eines fremden — überlässt es dem Plug-in, das ihn liest; ein
+vertipptes Leaf darin abzulehnen ist Sache dieses Plug-ins.
 
 Nichts im Framework schließt die Stores, die es aufgelöst hat
 ([#388](https://github.com/pathosDev/actor-ts/issues/388)), und ein
@@ -556,8 +567,9 @@ actor-ts.persistence.auto-start = off
 ```
 
 Abgeschaltet wird nichts aufgelöst oder geöffnet, bis die erste
-Operation danach fragt, und ein nach `create` registriertes Plug-in
-wird dann noch gefunden.  Die Worker eines `WorkerMesh` laufen immer
+Operation danach fragt — die Fehler oben lassen dann diese Operation
+scheitern statt des Starts —, und ein nach `create` registriertes
+Plug-in wird dann noch gefunden.  Die Worker eines `WorkerMesh` laufen immer
 mit abgeschaltetem `autoStart`, was auch immer die Konfiguration sagt,
 die sie erben — siehe
 [Parallelität](/de/fundamentals/parallelism/).

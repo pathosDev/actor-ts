@@ -496,14 +496,24 @@ service never uses — a durable-state plug-in selected in an
 `application.conf` it shares with services that do — so a mistake
 there fails this startup too: point that axis back at the in-memory
 store for this service, or turn the boot-time open off as shown below.
-The mistakes that fail it are the ones the selection reads: an id
-nothing registered, a value written where the axis's block belongs
-(`actor-ts.persistence.journal = "…"`), and a selected store that
-cannot open.  A misspelt key is not one of them.  Nothing reads
-`plugn = "…"` or a `jornal` block, so the axis keeps the in-memory
-store `reference.conf` selects and the system starts on it with no
-error and no warning — and a journal kept in memory has lost its
-events by the next restart.
+The mistakes that fail it are the ones in what the selection reads —
+an id nothing registered, a value written where the axis's block
+belongs (`actor-ts.persistence.journal = "…"`), a selected store that
+cannot open — and a key under `actor-ts.persistence` that nothing
+reads at all.  `plugn = "…"` in the journal block, or a `jornal` block
+beside it, fails the startup with a `ConfigError` naming the full key,
+`actor-ts.persistence.journal.plugn` or `actor-ts.persistence.jornal`.
+Read as unset, it used to leave the axis on the in-memory store
+`reference.conf` selects, with no error and no warning, and a journal
+kept in memory had lost its events by the next restart.  Correct the
+spelling, or move a plug-in's settings into its block.  The framework
+checks the two levels it reads itself: directly under
+`actor-ts.persistence` go the three axis blocks and the behaviour
+keys, and directly in an axis block goes its `plugin` beside the
+blocks of its plug-ins.  A plug-in's block —
+`actor-ts.persistence.journal.my-plugin { … }`, a third-party one
+included — is left to the plug-in that reads it, so a misspelt leaf
+inside it is that plug-in's to refuse.
 
 Nothing in the framework closes the stores it resolved
 ([#388](https://github.com/pathosDev/actor-ts/issues/388)), and a
@@ -530,7 +540,8 @@ leaf `reference.conf` ships as `on`; a setting made in code wins over it:
 actor-ts.persistence.auto-start = off
 ```
 
-Off, nothing is resolved or opened until the first operation asks,
+Off, nothing is resolved or opened until the first operation asks —
+the mistakes above then fail that operation rather than the startup —
 and a plug-in registered after `create` is still found then.  The
 workers of a `WorkerMesh` always run with it off, whatever the
 configuration they inherit says — see
