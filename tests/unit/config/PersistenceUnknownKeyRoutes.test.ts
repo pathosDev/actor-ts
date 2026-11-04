@@ -8,7 +8,6 @@ import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { ConfigError } from '../../../src/config/Config.js';
 import type { ConfigObject } from '../../../src/config/HoconParser.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
-import { PersistenceExtensionId } from '../../../src/persistence/PersistenceExtension.js';
 import { runWorkerMeshNode, type WorkerMeshInitData } from '../../../src/worker/WorkerMeshBootstrap.js';
 import type { WorkerNodeContext } from '../../../src/worker/WorkerNode.js';
 
@@ -67,10 +66,12 @@ describe('the refusal on every route that builds a system from the file (#1729)'
     }
   });
 
-  test('a WorkerMesh worker boots on its main thread\'s file, and refuses the key where it first resolves a store', async () => {
-    // The main thread reads the file and refuses it at its own startup; the
-    // worker inherits the file without the plug-ins and opens nothing at its
-    // startup (#1473), so the refusal comes where it first asks for a store.
+  test('a WorkerMesh worker over its main thread\'s file fails its own startup on the key, as its main thread does', async () => {
+    // The worker inherits the file without the plug-ins and opens no store at
+    // its startup (#1473), but a key nothing reads still builds the extension
+    // inside `create`, so the refusal fails the worker's startup and takes it
+    // down, the same failure its main thread reports.  The bootstrap itself
+    // does not wait for the startup, as `Cluster.bootstrap` does not.
     const main = ActorSystem.create(
       'unknown-key-mesh-main',
       ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off).withConfig(MISSPELT),
@@ -97,10 +98,13 @@ describe('the refusal on every route that builds a system from the file (#1729)'
 
       const { system: worker } = await runWorkerMeshNode(context, async () => ({}));
       try {
-        await worker.whenReady();
+        const workerFailure = await rejectionOf(worker.whenReady());
 
-        expect(worker.extensions.has(PersistenceExtensionId)).toBe(false);
-        expect(() => worker.extension(PersistenceExtensionId).journal).toThrow(REFUSAL);
+        expect(workerFailure.message).toContain('"persistence-warm-up"');
+        expect(workerFailure.cause).toBeInstanceOf(ConfigError);
+        expect((workerFailure.cause as Error).message).toStartWith(REFUSAL);
+        await worker.whenTerminated();
+        expect(worker.isTerminated).toBe(true);
       } finally {
         await worker.terminate();
       }

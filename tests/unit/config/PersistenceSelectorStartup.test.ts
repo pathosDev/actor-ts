@@ -459,21 +459,16 @@ describe('a key under actor-ts.persistence that no reader takes fails the startu
     }
   });
 
-  test('autoStart false set in code and nothing else, a WorkerMesh worker\'s whole withPersistence, defers the refusal to first use', async () => {
-    // The one shape that builds no persistence inside `create` at all, so no
-    // startup task can carry the refusal.  A worker inherits its main
-    // thread's file, which refuses the key in its own startup; the worker
-    // refuses it where it first resolves a store.
+  test('autoStart false set in code and nothing else, a WorkerMesh worker\'s whole withPersistence, still fails the startup on the key', async () => {
+    // The one shape that builds no persistence inside `create` on a valid
+    // file.  On a file holding a key nothing reads it builds the extension
+    // after all, so the refusal is the startup's failure like everywhere else.
     const behavior = PersistenceBehaviorOptions.create().withAutoStart(false);
     const systemOptions = quietOptionsOver('actor-ts.persistence.jornal { plugin = "actor-ts.persistence.journal.sqlite" }')
       .withPersistence({ behavior });
-    const system = ActorSystem.create('unknown-persistence-key-auto-start-false-in-code', systemOptions);
+    const system = createdWithout('unknown-persistence-key-auto-start-false-in-code', systemOptions);
     try {
-      await system.whenReady();
-
-      expect(system.extensions.has(PersistenceExtensionId)).toBe(false);
-      expect(() => system.extension(PersistenceExtensionId).durableStateStore)
-        .toThrow('Config at "actor-ts.persistence.jornal" is not a key ');
+      await expectStartupRefusing(system, 'actor-ts.persistence.jornal');
     } finally {
       await stopped(system);
     }
@@ -553,6 +548,27 @@ describe('what the refusal leaves alone (#1729)', () => {
       expect(system.extension(CoordinatedStartupId).hasTasks).toBe(false);
       await system.whenReady();
       expect(journal.starts).toBe(0);
+    } finally {
+      await stopped(system);
+    }
+  });
+
+  test.each([
+    { name: 'a plug-in selected', hocon: 'actor-ts.persistence.journal.plugin = "actor-ts.persistence.journal.sqlite"' },
+    { name: 'an invalid behaviour value', hocon: 'actor-ts.persistence.max-concurrent-recoveries = -1' },
+    { name: 'nothing at all', hocon: '' },
+  ])('autoStart false set in code and nothing else, over a valid file with $name, builds no persistence inside create', async ({ hocon }) => {
+    // The deferral a WorkerMesh worker relies on: its main thread wires the
+    // plug-ins its file selects, the worker inherits the file without them.
+    // Only a key nothing reads builds the extension here (#1729).
+    const behavior = PersistenceBehaviorOptions.create().withAutoStart(false);
+    const systemOptions = quietOptionsOver(hocon).withPersistence({ behavior });
+    const system = createdWithout('auto-start-false-alone-valid-file', systemOptions);
+    try {
+      await system.whenReady();
+
+      expect(system.extensions.has(PersistenceExtensionId)).toBe(false);
+      expect(system.extension(CoordinatedStartupId).hasTasks).toBe(false);
     } finally {
       await stopped(system);
     }

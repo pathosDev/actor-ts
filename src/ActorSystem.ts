@@ -105,7 +105,7 @@ import type {
   PersistenceBehaviorOptions,
   PersistenceBehaviorOptionsType,
 } from './persistence/PersistenceBehaviorOptions.js';
-import { PersistenceExtensionId, selectsPersistencePlugin } from './persistence/PersistenceExtension.js';
+import { holdsUnknownPersistenceKey, PersistenceExtensionId, selectsPersistencePlugin } from './persistence/PersistenceExtension.js';
 import type { HttpServerBackend } from './http/backend/HttpServerBackend.js';
 import { DEFAULT_HTTP_BIND_HOST } from './http/Constants.js';
 import { HttpExtensionId, type ServerBuilder } from './http/HttpExtension.js';
@@ -613,17 +613,21 @@ export class ActorSystem {
     // `autoStart: false` set in code opts out of opening the stores whatever
     // the file says, so it is answered without reading the behaviour block —
     // and so without validating it, which the warm-up does before it looks at
-    // `autoStart`.  On its own it gives `create` nothing to do: that is the
-    // whole of a WorkerMesh worker's `withPersistence`, and building the
-    // extension for it failed every worker on an invalid block its main
-    // thread never read.  The block is still read, and refused, on first use;
-    // the extension built then still finds the opt-out through
-    // `_explicitPersistenceBehavior`.  An extension built here for other
-    // reasons — stores or plug-ins in code — still prepares the warm-up under
-    // the opt-out, which answers it from that explicit layer: a key under
+    // `autoStart`.  On its own, over a valid file, it gives `create` nothing
+    // to do: that is the whole of a WorkerMesh worker's `withPersistence`, and
+    // building the extension for it failed every worker on an invalid block
+    // its main thread never read.  The block is still read, and refused, on
+    // first use; the extension built then still finds the opt-out through
+    // `_explicitPersistenceBehavior`.  Under the opt-out the warm-up is still
+    // prepared, answered from that explicit layer, because a key under
     // `actor-ts.persistence` that no reader takes fails the startup whatever
-    // `autoStart` says (#1729), and with every store set in code nothing else
-    // would ever read the file's persistence block.
+    // `autoStart` says (#1729): with stores or plug-ins in code it is built
+    // for those anyway, and with nothing else in code it is built for exactly
+    // that key — asked through `holdsUnknownPersistenceKey`, not
+    // `selectsPersistencePlugin`, whose yes for a valid selection is the file
+    // a worker inherits without the plug-ins that selection needs.  A worker
+    // over such a file therefore fails its own startup, as its main thread
+    // does.
     const persistenceOptions = options.persistence;
     const warmUpOptedOut =
       (persistenceOptions?.behavior as Partial<PersistenceBehaviorOptionsType> | undefined)?.autoStart === false;
@@ -631,7 +635,8 @@ export class ActorSystem {
       || persistenceOptions?.journal !== undefined
       || persistenceOptions?.snapshotStore !== undefined
       || persistenceOptions?.durableStateStore !== undefined
-      || (!warmUpOptedOut && (persistenceOptions !== undefined || selectsPersistencePlugin(this.config)));
+      || (!warmUpOptedOut && (persistenceOptions !== undefined || selectsPersistencePlugin(this.config)))
+      || (warmUpOptedOut && holdsUnknownPersistenceKey(this.config));
     if (persistenceWorkInCreate) {
       const persistence = this.extensions.get(PersistenceExtensionId);
       // Before the plug-ins, which cannot see the instances yet: a plug-in

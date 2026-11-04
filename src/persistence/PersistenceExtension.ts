@@ -1308,6 +1308,29 @@ export function selectsPersistencePlugin(config: Config): boolean {
 }
 
 /**
+ * @internal Whether `config` holds a key under `actor-ts.persistence` that no
+ * reader takes — whether {@link refuseUnknownPersistenceKeys} refuses it, and
+ * nothing more (#1729).
+ *
+ * What the `ActorSystem` constructor asks when `autoStart: false` set in code
+ * would otherwise keep persistence out of `create`: a key nothing reads still
+ * builds the extension there, so its refusal is the startup's failure as it is
+ * on every other route, while a valid file under that opt-out builds nothing,
+ * as before.  Deliberately not {@link selectsPersistencePlugin}, which also
+ * answers yes for a valid selection — the very file a WorkerMesh worker
+ * inherits without the plug-ins its main thread registered.
+ */
+export function holdsUnknownPersistenceKey(config: Config): boolean {
+  try {
+    refuseUnknownPersistenceKeys(config);
+    return false;
+  } catch (error) {
+    if (error instanceof ConfigError) return true;
+    throw error;
+  }
+}
+
+/**
  * Open one store for the warm-up, and say which it was when it cannot be
  * opened.  The store's own error says what went wrong — a refused connection,
  * a missing driver — but not which of the three stores hit it, and with up to
