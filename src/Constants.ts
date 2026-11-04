@@ -128,12 +128,20 @@ export const DEFAULT_PHASE_TIMEOUT_MS = 5_000;
  *
  * `0` because the pipeline running to the end *is* the success case: the
  * phases were walked, the tasks were given their budget, and a task that
- * overran was logged.  A run for a failed startup, and a run a phase with
- * `recover = false` halted, are not that case, and exit `1` where this is
- * `0`.  A non-zero value is for a deployment that wants the
- * supervisor to tell an orderly stop apart from a planned one — a Kubernetes
- * `preStop` drain that must not be mistaken for a crash loop, say — which is
- * why the value is configurable at all rather than being the literal it was.
+ * overran was logged.  A run for a failed startup, a run for a node that
+ * could not join, and a run a phase with `recover = false` halted are not
+ * that case, and exit `1` where this is `0`.  A node that its own downing
+ * decision stands down is that case, and exits with this.
+ *
+ * A non-zero value is the status of every run `exit-process` ends, whatever
+ * its reason, and the failures exit with it instead of `1`, so it no longer
+ * tells a failed run from an orderly stop.  What a value other than `1` does
+ * tell apart is an exit through the pipeline from a crash outside it, which
+ * exits `1` on an uncaught error or reports the signal that killed it.  And a
+ * supervisor that restarts only after a failure reads every stop as one,
+ * which brings back a node its own downing decision stood down.  Those two
+ * are the reasons to set one, and why the value is configurable at all
+ * rather than being the literal it was.
  *
  * Not an options default, for the same reason as
  * {@link DEFAULT_PHASE_TIMEOUT_MS}: `CoordinatedShutdown` has no `XOptions`
