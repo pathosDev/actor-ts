@@ -6394,10 +6394,10 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   starts any registry it held. A shard the coordinator moved elsewhere while
   it declined keeps the entity it was busy with.
 
-- **A `sharding.GetShardStats` told to a shard without a usable `replyTo`
-  threw inside the shard, and the restart that followed stopped every entity
-  of that shard while the region went on counting them** (#1437). The shard
-  now declines such a query through `Actor.unhandled` instead.
+- **A `sharding.GetShardStats` is answered only through a usable `replyTo`**
+  (#1437). The shard answers it when its `replyTo` has a callable `tell`,
+  `equals` and `path`, whatever copy of the module minted it, and declines
+  it through `Actor.unhandled` otherwise.
 
 - **A message that reached a shard while its entity was passivating
   cooperatively was replayed into the next incarnation without its sender,
@@ -10942,6 +10942,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   Read from HOCON such a kind used to become `bytes`, dropping the framing
   and its size cap on a typo, and built in code it was framed as
   `length-prefixed` on the default 16 MiB cap.
+
+- **A query parameter named `__proto__` stays an own parameter of
+  `request.query` on the Express and Hono backends** (#1449). Express keeps
+  it with its single value or its array of values, and Hono hands it to a
+  handler like any other parameter, on route requests and WebSocket upgrade
+  requests alike. `queryParam` and `pathParam` answer only for the
+  parameters a request carries: a name that was neither sent nor bound is
+  `undefined`, or a missing path parameter, never a member the record
+  inherits such as `constructor` or `toString`.
 
 ## [0.17.0] — 2026-08-29
 
