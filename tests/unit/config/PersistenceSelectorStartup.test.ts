@@ -81,6 +81,15 @@ async function expectStartupRefusing(system: ActorSystem, key: string): Promise<
   expect(system.isTerminated).toBe(true);
 }
 
+/** A journal that counts its opens — what the warm-up calls when it opens the stores. */
+class StartCountingJournal extends InMemoryJournal {
+  starts = 0;
+
+  async start(): Promise<void> {
+    this.starts++;
+  }
+}
+
 /** A store of each kind, set in code: with all three in place no axis reads the selection. */
 function everyStoreInCode(): { journal: InMemoryJournal; snapshotStore: InMemorySnapshotStore; durableStateStore: InMemoryDurableStateStore } {
   return {
@@ -535,11 +544,15 @@ describe('what the refusal leaves alone (#1729)', () => {
     const behavior = autoStartInCode === undefined
       ? undefined
       : PersistenceBehaviorOptions.create().withAutoStart(autoStartInCode);
-    const systemOptions = quietOptionsOver(hocon).withPersistence({ ...everyStoreInCode(), behavior });
+    // A journal that can be opened, so a warm-up that opened the stores under
+    // the switch would show as a task and a start.
+    const journal = new StartCountingJournal();
+    const systemOptions = quietOptionsOver(hocon).withPersistence({ ...everyStoreInCode(), journal, behavior });
     const system = createdWithout('every-store-in-code-auto-start-off-no-such-key', systemOptions);
     try {
       expect(system.extension(CoordinatedStartupId).hasTasks).toBe(false);
       await system.whenReady();
+      expect(journal.starts).toBe(0);
     } finally {
       await stopped(system);
     }
