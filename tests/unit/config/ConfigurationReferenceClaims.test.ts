@@ -339,6 +339,39 @@ describe('app-version = ${?APP_VERSION} and a version that reads as a number (#8
     expect(() => appVersionFrom('null')).toThrow(ConfigError);
   });
 
+  // A JSON number is a double, so a whole number past MAX_SAFE_INTEGER comes
+  // back as the nearest one a double holds — the same number for 2^53 itself,
+  // other last digits for 2^53 + 1 — and an object is no string any more than
+  // null or a list is.
+  const PAST_SAFE_INTEGERS = '20261104123456789';
+
+  test('a whole number past MAX_SAFE_INTEGER can come back with other last digits, and null, a list or an object stops the start', () => {
+    expect(Number.isSafeInteger(Number(PAST_SAFE_INTEGERS))).toBe(false);
+    expect(appVersionFrom(PAST_SAFE_INTEGERS)).toBe('20261104123456788');
+    expect(appVersionFrom(String(2 ** 53))).toBe(String(2 ** 53));
+    expect(appVersionFrom(`${String(2 ** 53).slice(0, -1)}3`)).toBe(String(2 ** 53));
+    for (const value of ['null', '[1]', '["a"]', '{"a":1}', '{}']) {
+      expect(() => appVersionFrom(value), value).toThrow(ConfigError);
+    }
+  });
+
+  test.each([
+    [
+      'reference/configuration.mdx',
+      (read: string) => `a whole number past \`Number.MAX_SAFE_INTEGER\` can come back with other last digits (\`${PAST_SAFE_INTEGERS}\` as \`${read}\`)`,
+      'and one that reads as `null`, a list or an object stops the start with a `ConfigError`;',
+    ],
+    [
+      'de/reference/configuration.mdx',
+      (read: string) => `eine ganze Zahl jenseits von \`Number.MAX_SAFE_INTEGER\` kann mit anderen letzten Ziffern zurückkommen (\`${PAST_SAFE_INTEGERS}\` als \`${read}\`)`,
+      'und eine, die sich wie `null`, eine Liste oder ein Objekt liest, lässt den Start mit einem `ConfigError` scheitern;',
+    ],
+  ])('%s says a large number can change its digits and an object stops the start', (path, digits, stops) => {
+    const text = prose(page(path));
+    expect(text).toContain(digits(appVersionFrom(PAST_SAFE_INTEGERS)!));
+    expect(text).toContain(stops);
+  });
+
   test('reference.conf says so beside the substitution form', () => {
     expect(REFERENCE).toContain('An environment value is read as JSON first, so APP_VERSION=1.10 reads back as "1.1" and 2.0 as "2" -- releases 1.1 and 1.10 print the same label; quote such a value inside the variable (APP_VERSION=\'"1.10"\').');
   });

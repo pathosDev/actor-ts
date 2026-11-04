@@ -727,11 +727,14 @@ für HOCON eine Zahl und erreicht die Peers als `"1"`.
 Ein Wert aus der Umgebung wird zuerst als JSON gelesen, wo immer er sich als
 JSON parsen lässt.  Eine Version, die sich wie eine Zahl liest, kommt in der
 Schreibweise dieser Zahl zurück — `1.10` als `1.1`, `2.0` als `2`, `1e3` als
-`1000` —, die Releases `1.1` und `1.10` tragen also dasselbe Label, und eine,
-die sich wie `null` oder eine Liste liest, lässt den Start scheitern; eine
-Version mit einem zweiten Punkt (`1.2.3`) oder einem Buchstaben (`v1.10`)
-bleibt unverändert.  Einen solchen Wert in der Variablen selbst quoten
-(`APP_VERSION='"1.10"'`) oder im Code mit `withAppVersion(...)` setzen.
+`1000` —, die Releases `1.1` und `1.10` tragen also dasselbe Label, eine ganze
+Zahl jenseits von `Number.MAX_SAFE_INTEGER` kann mit anderen letzten Ziffern
+zurückkommen (`20261104123456789` als `20261104123456788`), und eine, die sich
+wie `null`, eine Liste oder ein Objekt liest, lässt den Start mit einem
+`ConfigError` scheitern; eine Version mit einem zweiten Punkt (`1.2.3`) oder
+einem Buchstaben (`v1.10`) bleibt unverändert.  Einen solchen Wert in der
+Variablen selbst quoten (`APP_VERSION='"1.10"'`) oder im Code mit
+`withAppVersion(...)` setzen.
 
 Ein Label besteht aus 1 bis 64 sichtbaren ASCII-Zeichen — ohne Leerzeichen
 und ohne Steuerzeichen, weil jeder Peer es ausgibt —, und `Cluster.join`

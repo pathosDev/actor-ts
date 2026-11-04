@@ -686,10 +686,12 @@ and reaches the peers as `"1"`.
 A value from the environment is read as JSON first wherever it parses as
 JSON.  A version that reads as a number comes back in that number's own
 spelling — `1.10` as `1.1`, `2.0` as `2`, `1e3` as `1000` — so releases `1.1`
-and `1.10` print the same label, and one that reads as `null` or a list stops
-the start; a version with a second dot (`1.2.3`) or a letter (`v1.10`) is
-unchanged.  Quote such a value inside the variable (`APP_VERSION='"1.10"'`),
-or set it in code with `withAppVersion(...)`.
+and `1.10` print the same label, a whole number past `Number.MAX_SAFE_INTEGER`
+can come back with other last digits (`20261104123456789` as
+`20261104123456788`), and one that reads as `null`, a list or an object stops
+the start with a `ConfigError`; a version with a second dot (`1.2.3`) or a
+letter (`v1.10`) is unchanged.  Quote such a value inside the variable
+(`APP_VERSION='"1.10"'`), or set it in code with `withAppVersion(...)`.
 
 A label is 1 to 64 visible ASCII characters — no whitespace and no control
 character, because every peer prints it — and `Cluster.join` refuses one that
