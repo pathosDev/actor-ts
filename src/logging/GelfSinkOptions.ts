@@ -157,8 +157,9 @@ export class GelfSinkOptionsValidator extends OptionsValidator<GelfSinkOptionsTy
     this.positiveInt('requestTimeoutMs');
     // Below 512 a chunk is more header than payload; above 65467 the
     // datagram cannot carry the UDP and IP headers as well.  Whole bytes
-    // only: the chunker slices the payload on this number, and HOCON reads
-    // it as a byte size, which hands a bare `1420.5` through as it is.
+    // only: the chunker slices the payload on this number.  HOCON reads it
+    // as a byte size, which refuses one that is not whole already; this is
+    // what refuses one passed in code.
     const maxChunkBytes = s.maxChunkBytes;
     if (
       maxChunkBytes !== undefined

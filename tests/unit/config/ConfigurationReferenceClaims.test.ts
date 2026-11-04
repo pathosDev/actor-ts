@@ -24,8 +24,10 @@ import { readClusterOptionsFromConfig } from '../../../src/cluster/ClusterOption
 import { Config, ConfigError } from '../../../src/config/Config.js';
 import { ConfigKeys } from '../../../src/config/ConfigKeys.js';
 import { REFERENCE_CONF } from '../../../src/config/Reference.js';
+import { parseSize } from '../../../src/config/Size.js';
 import { Dispatchers } from '../../../src/Dispatcher.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { readGelfSinkOptionsFromConfig } from '../../../src/logging/GelfSinkOptions.js';
 import { MsSqlJournalOptionsValidator } from '../../../src/persistence/journals/MsSqlJournalOptions.js';
 import { readMsSqlJournalOptionsFromConfig } from '../../../src/persistence/journals/MsSqlPluginOptions.js';
 import { PostgresJournalOptionsValidator } from '../../../src/persistence/journals/PostgresJournalOptions.js';
@@ -337,6 +339,39 @@ describe('app-version = ${?APP_VERSION} and a version that reads as a number (#8
     expect(() => appVersionFrom('null')).toThrow(ConfigError);
   });
 
+  // A JSON number is a double, so a whole number past MAX_SAFE_INTEGER comes
+  // back as the nearest one a double holds — the same number for 2^53 itself,
+  // other last digits for 2^53 + 1 — and an object is no string any more than
+  // null or a list is.
+  const PAST_SAFE_INTEGERS = '20261104123456789';
+
+  test('a whole number past MAX_SAFE_INTEGER can come back with other last digits, and null, a list or an object stops the start', () => {
+    expect(Number.isSafeInteger(Number(PAST_SAFE_INTEGERS))).toBe(false);
+    expect(appVersionFrom(PAST_SAFE_INTEGERS)).toBe('20261104123456788');
+    expect(appVersionFrom(String(2 ** 53))).toBe(String(2 ** 53));
+    expect(appVersionFrom(`${String(2 ** 53).slice(0, -1)}3`)).toBe(String(2 ** 53));
+    for (const value of ['null', '[1]', '["a"]', '{"a":1}', '{}']) {
+      expect(() => appVersionFrom(value), value).toThrow(ConfigError);
+    }
+  });
+
+  test.each([
+    [
+      'reference/configuration.mdx',
+      (read: string) => `a whole number past \`Number.MAX_SAFE_INTEGER\` can come back with other last digits (\`${PAST_SAFE_INTEGERS}\` as \`${read}\`)`,
+      'and one that reads as `null`, a list or an object stops the start with a `ConfigError`;',
+    ],
+    [
+      'de/reference/configuration.mdx',
+      (read: string) => `eine ganze Zahl jenseits von \`Number.MAX_SAFE_INTEGER\` kann mit anderen letzten Ziffern zurückkommen (\`${PAST_SAFE_INTEGERS}\` als \`${read}\`)`,
+      'und eine, die sich wie `null`, eine Liste oder ein Objekt liest, lässt den Start mit einem `ConfigError` scheitern;',
+    ],
+  ])('%s says a large number can change its digits and an object stops the start', (path, digits, stops) => {
+    const text = prose(page(path));
+    expect(text).toContain(digits(appVersionFrom(PAST_SAFE_INTEGERS)!));
+    expect(text).toContain(stops);
+  });
+
   test('reference.conf says so beside the substitution form', () => {
     expect(REFERENCE).toContain('An environment value is read as JSON first, so APP_VERSION=1.10 reads back as "1.1" and 2.0 as "2" -- releases 1.1 and 1.10 print the same label; quote such a value inside the variable (APP_VERSION=\'"1.10"\').');
   });
@@ -481,5 +516,113 @@ describe('a failed Cluster.bootstrap readiness wait (#1500)', () => {
     ['de/cluster/cluster-bootstrap.mdx', 'Das Scheitern wird auf Error geloggt, bevor dieser Lauf beginnt — unter `exit-process = on` beendet der Lauf den Prozess, bevor die Ablehnung den Aufrufer erreichen kann —, und der Lauf endet nie mit `0`: Mit `exit-code = 0` endet er mit `1`.'],
   ])('%s says it is logged first and never exits 0', (path, sentence) => {
     expect(prose(page(path))).toContain(sentence);
+  });
+});
+
+describe('a size that is not a whole number of bytes, and the refusals the pages quote (#1728)', () => {
+  /** What `read` throws, as its message. */
+  function refusalOf(read: () => unknown): string {
+    try {
+      read();
+    } catch (error) {
+      return (error as Error).message;
+    }
+    throw new Error('the read was expected to be refused, and it answered');
+  }
+
+  /** The words a message opens with, before its colon: `Invalid size` of `Invalid size: -1K`. */
+  function headOf(message: string): string {
+    return message.slice(0, message.indexOf(':'));
+  }
+
+  const chunkBytesKey = `${ConfigKeys.logger.sinks.gelf}.max-chunk-bytes`;
+  const chunkBytesAt = (value: string) => (): unknown =>
+    readGelfSinkOptionsFromConfig(Config.parseString(`${chunkBytesKey} = ${value}`));
+
+  // A page quotes a refusal with "..." where the reader's own key, unit or
+  // input goes, so each quote below is the code's message with that part
+  // replaced — never a second copy of the words.
+  const notWhole = refusalOf(() => parseSize('1.1K'));
+  const bareFraction = refusalOf(() => Config.parseString('a = 1.5').getBytes('a')).replace('"a"', '"..."');
+  const unknownUnit = refusalOf(() => parseSize('1constructor'))
+    .replace('"constructor"', '"..."')
+    .replace(/1constructor$/, '...');
+  const signed = headOf(refusalOf(() => parseSize('-1K')));
+  const bareString = headOf(refusalOf(() => parseSize('1.5')));
+  const malformed = `${headOf(refusalOf(() => parseSize('abc')))}: ...`;
+  const chunkWithUnit = refusalOf(chunkBytesAt('1420.5B'));
+  const bytesOfOnePointOneK = 1.1 * parseSize('1K');
+
+  /** Every refusal a page may quote: the messages above, whole, or the head they share. */
+  const QUOTABLE = new Set([notWhole, bareFraction, unknownUnit, signed, bareString, malformed, chunkWithUnit]);
+
+  /** The prose of `path` from the sentence opening with `from` to the one ending with `to`. */
+  function sectionOf(path: string, from: string, to: string): string {
+    const text = prose(page(path));
+    const start = text.indexOf(from);
+    const end = text.indexOf(to, start);
+    expect(start, `${path} lost the sentence opening with "${from}"`).toBeGreaterThan(-1);
+    expect(end, `${path} lost the sentence ending with "${to}"`).toBeGreaterThan(start);
+    return text.slice(start, end + to.length);
+  }
+
+  const PAGES: ReadonlyArray<readonly [string, string, string, readonly string[]]> = [
+    [
+      'reference/configuration.mdx',
+      'Unlike a duration, a size takes **no sign**',
+      'finite, whole byte count.',
+      [
+        `\`-1K\` is \`${signed}\``,
+        `so \`1.5K\` is ${parseSize('1.5K')},`,
+        `\`1.1K\` is ${bytesOfOnePointOneK} bytes, and fails as \`${notWhole}\`.`,
+        `\`"1.5"\` is \`${bareString}\`, and \`1.5\` is refused naming the key it is set at, as \`${bareFraction}\`.`,
+        `\`${unknownUnit}\` for a unit that is not in the table`,
+        `\`${malformed}\` for anything that does not come out a finite, whole byte count.`,
+      ],
+    ],
+    [
+      'de/reference/configuration.mdx',
+      'Anders als eine Duration nimmt eine Size **kein Vorzeichen**',
+      'keine endliche, ganze Byte-Anzahl ergibt.',
+      [
+        `\`-1K\` ist \`${signed}\``,
+        `\`1.5K\` sind also ${parseSize('1.5K')},`,
+        `\`1.1K\` sind ${String(bytesOfOnePointOneK).replace('.', ',')} Bytes und scheitern als \`${notWhole}\`.`,
+        `\`"1.5"\` ist \`${bareString}\`, und \`1.5\` wird unter Nennung des Keys abgelehnt, an dem es steht, als \`${bareFraction}\`.`,
+        `\`${unknownUnit}\` für eine Einheit, die nicht in der Tabelle steht`,
+        `\`${malformed}\` für alles, was keine endliche, ganze Byte-Anzahl ergibt.`,
+      ],
+    ],
+    [
+      'observability/logging/integrations.mdx',
+      '`max-chunk-bytes` defaults to 1420',
+      'with an error that names the key.',
+      [`\`1420.5B\` fails as \`${chunkWithUnit}\`, and \`1420.5\` with an error that names the key.`],
+    ],
+    [
+      'de/observability/logging/integrations.mdx',
+      '`max-chunk-bytes` ist standardmäßig 1420',
+      'mit einem Fehler, der den Key nennt.',
+      [`\`1420.5B\` scheitert als \`${chunkWithUnit}\`, und \`1420.5\` mit einem Fehler, der den Key nennt.`],
+    ],
+  ];
+
+  test('the bare fraction a GELF page says names its key does name it', () => {
+    expect(refusalOf(chunkBytesAt('1420.5'))).toContain(`"${chunkBytesKey}"`);
+  });
+
+  test.each(PAGES)('%s quotes the refusals of a size that is not whole as the code words them', (path, from, to, claims) => {
+    const section = sectionOf(path, from, to);
+    for (const claim of claims) expect(section).toContain(claim);
+  });
+
+  test.each(PAGES)('%s quotes no size refusal the code does not give', (path, from, to) => {
+    const quoted = [...sectionOf(path, from, to).matchAll(/`([^`]+)`/g)]
+      .map((span) => span[1]!)
+      .filter((span) => /^(?:Invalid size|Unknown size unit|Config at)/.test(span));
+    expect(quoted.length, `${path} quotes no refusal at all; the section anchors have drifted`).toBeGreaterThan(0);
+    for (const span of quoted) {
+      expect(QUOTABLE.has(span), `${path} quotes "${span}", which is no refusal the code gives`).toBe(true);
+    }
   });
 });

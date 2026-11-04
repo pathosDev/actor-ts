@@ -382,10 +382,24 @@ export class Config {
     throw typeError(path, 'duration', value);
   }
 
-  /** Byte count. */
+  /**
+   * Byte count: a whole number of bytes.
+   *
+   * A bare number never reaches `parseSize`, which refuses a size that is not
+   * whole, so the number branch checks it here — where, unlike the parser, it
+   * can name the key.  It used to hand a bare `10.5` back as it was (#1728).
+   * The check comes after `requireFinite` and passes `Infinity`, the size that
+   * function lets through at the one key documenting it as "no cap".
+   */
   getBytes(path: string): number {
     const value = this.requireValue(path);
-    if (typeof value === 'number') return requireFinite(path, 'size', value);
+    if (typeof value === 'number') {
+      const bytes = requireFinite(path, 'size', value);
+      if (Number.isFinite(bytes) && !Number.isInteger(bytes)) {
+        throw new ConfigError(`Config at "${path}" is not a whole number of bytes (got ${bytes})`);
+      }
+      return bytes;
+    }
     if (typeof value === 'string') return parseSize(value);
     throw typeError(path, 'size', value);
   }

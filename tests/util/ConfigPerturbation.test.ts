@@ -157,9 +157,11 @@ describe('perturbationFor — the off-kind values', () => {
   }
 
   test('each is refused by the leaf\'s own accessor', () => {
+    const [integerAsNumber, integerAsSize] = offKinds(7)!;
     const [fractionAsDuration, fractionAsSize] = offKinds(0.2)!;
     const config = Config.parseString(`
-      integer = ${String(offKind(7))}
+      integer-as-number = ${String(integerAsNumber)}
+      integer-as-size = ${String(integerAsSize)}
       duration = ${String(offKind('5s'))}
       size = ${String(offKind('1MiB'))}
       fraction-as-duration = ${String(fractionAsDuration)}
@@ -167,7 +169,8 @@ describe('perturbationFor — the off-kind values', () => {
       switch = ${String(offKind('off'))}
       object = ${String(offKind({ 'rsp:': 7000 }))}
     `);
-    expect(() => config.getInt('integer')).toThrow(ConfigError);
+    expect(() => config.getInt('integer-as-number')).toThrow(ConfigError);
+    expect(() => config.getInt('integer-as-size')).toThrow(ConfigError);
     expect(() => config.getDuration('duration')).toThrow(/Unknown duration unit/);
     expect(() => config.getBytes('size')).toThrow(/Unknown size unit/);
     expect(() => config.getNumber('fraction-as-duration')).toThrow(ConfigError);
@@ -177,10 +180,10 @@ describe('perturbationFor — the off-kind values', () => {
   });
 
   test('and taken by the accessors they are most easily confused with', () => {
-    expect(offKinds(7)).toEqual([8.5]);                // getNumber, getDuration, getBytes
+    expect(offKinds(7)).toEqual([8.5, '8B']);          // getNumber and getDuration, then getBytes
     expect(offKinds('5s')).toEqual(['6KiB']);          // getBytes
     expect(offKinds('1MiB')).toEqual(['2s']);          // getDuration
-    expect(offKinds(0.2)).toEqual(['0.3s', '0.3KiB']); // getDuration, then getBytes
+    expect(offKinds(0.2)).toEqual(['0.3s', '1KiB']);   // getDuration, then getBytes
     expect(offKinds([])).toEqual(['perturbed']);       // getString
     expect(offKinds({ 'rsp:': 7000 })).toEqual(['perturbed']); // getString
   });
@@ -193,8 +196,48 @@ describe('perturbationFor — the off-kind values', () => {
     const config = Config.parseString(`as-duration = ${String(asDuration)}\nas-size = ${String(asSize)}`);
     expect(config.getDuration('as-duration')).toBe(300);
     expect(() => config.getBytes('as-duration')).toThrow(/Unknown size unit/);
-    expect(config.getBytes('as-size')).toBe(Math.round(0.3 * 1024));
+    expect(config.getBytes('as-size')).toBe(1024);
     expect(() => config.getDuration('as-size')).toThrow(/Unknown duration unit/);
+  });
+
+  test('an integer has the same pair: a fraction for getNumber and getDuration, a byte count for getBytes', () => {
+    // A size is a whole number of bytes (#1728), so `getBytes` refuses the
+    // fraction it once took, and a reader taking an integer as a size would
+    // pass on the fraction alone.
+    const [asNumber, asSize] = offKinds(7)!;
+    const config = Config.parseString(`as-number = ${String(asNumber)}\nas-size = ${String(asSize)}`);
+    expect(config.getNumber('as-number')).toBe(8.5);
+    expect(config.getDuration('as-number')).toBe(8.5);
+    expect(() => config.getBytes('as-number')).toThrow(ConfigError);
+    expect(config.getBytes('as-size')).toBe(8);
+    expect(() => config.getNumber('as-size')).toThrow(ConfigError);
+    expect(() => config.getDuration('as-size')).toThrow(/Unknown duration unit/);
+  });
+
+  test('the byte one is whole and unsigned, and reads differently from the literal it is set over', () => {
+    // `0.3KiB` is 307.2 bytes, which `getBytes` refuses (#1728), and a sign
+    // no size parser reads; either way the value would stand in for nothing.
+    // An integer's is its in-kind count, so it differs from the literal as
+    // that does.  A phi threshold is a fraction shipped as a whole 8, and a
+    // backoff factor one shipped as 1 and nudged down to 0.9: a fraction's
+    // count stays clear of both.
+    const cases: ReadonlyArray<readonly [string, ConfigValue, number]> = [
+      ['x', 7, 8],
+      ['x', 0, 1],
+      ['x', -1, 0],
+      ['x', -3, 2],
+      ['x', 0.2, 1_024],
+      ['x', -2.5, 3 * 1_024],
+      ['actor-ts.cluster.failure-detector.phi.unreachable-threshold', 8, 9 * 1_024],
+      ['actor-ts.circuit-breaker.default.backoff-factor', 1, 1_024],
+    ];
+    for (const [leaf, literal, bytes] of cases) {
+      const asSize = perturbationFor(leaf, literal).offKindValues!.at(-1)!;
+      expect(asSize, `${leaf} = ${String(literal)}`).toMatch(/^\d+(?:B|KiB)$/);
+      const read = Config.parseString(`a = ${String(asSize)}`).getBytes('a');
+      expect(read, `${leaf} = ${String(literal)}`).toBe(bytes);
+      expect(read, `${leaf} = ${String(literal)}`).not.toBe(literal);
+    }
   });
 
   test('a string has none: every accessor of a string takes any string', () => {
@@ -208,7 +251,7 @@ describe('the override and declaration tables', () => {
     expect(level.value).toBe('debug');
     expect(level.reason).toMatch(/maps an unknown level name/);
     const size = perturbationFor('actor-ts.offload-pool.size', 'auto');
-    expect(size).toMatchObject({ kind: 'integer', value: 3, offKindValues: [3.5] });
+    expect(size).toMatchObject({ kind: 'integer', value: 3, offKindValues: [3.5, '3B'] });
   });
 
   test('an override of an empty literal names its own second value, since no word is surely another member', () => {
@@ -220,7 +263,7 @@ describe('the override and declaration tables', () => {
 
   test('a declared kind replaces the inferred one', () => {
     const factor = perturbationFor('actor-ts.circuit-breaker.default.backoff-factor', 1);
-    expect(factor).toMatchObject({ kind: 'fraction', value: 0.9, offKindValues: ['0.9s', '0.9KiB'] });
+    expect(factor).toMatchObject({ kind: 'fraction', value: 0.9, offKindValues: ['0.9s', '1KiB'] });
     const timeToLive = perturbationFor('actor-ts.cache.in-memory.time-to-live', 0);
     expect(timeToLive).toMatchObject({ kind: 'duration', value: '1ms', offKindValues: ['1KiB'] });
     const documentBytes = perturbationFor('actor-ts.serialization.read-constraints.max-document-bytes', 0);
@@ -267,7 +310,7 @@ describe('the override and declaration tables', () => {
       literal: undefined,
       introducedAs: 3,
       value: 4,
-      offKindValues: [4.5],
+      offKindValues: [4.5, '4B'],
       reason: 'documented as a template',
     });
     expect(introductionFor('a.min-backoff', '250ms', 'r'))
@@ -286,7 +329,7 @@ describe('the override and declaration tables', () => {
     expect(certFile).toMatchObject({ kind: 'text', introducedAs: '/tls/a.pem', value: '/tls/b.pem' });
     expect(certFile.reason).toMatch(/another fixture/);
     const count = introductionFor('a.count', 'auto', 'comment-only', { value: 3, reason: 'the count arm of auto-or-a-count' });
-    expect(count).toMatchObject({ kind: 'integer', introducedAs: 'auto', value: 3, offKindValues: [3.5] });
+    expect(count).toMatchObject({ kind: 'integer', introducedAs: 'auto', value: 3, offKindValues: [3.5, '3B'] });
   });
 
   test('every entry gives its reason', () => {
@@ -415,18 +458,46 @@ describe('observeLeaf — what counts as a read', () => {
     expect(rightAccessor.offKindAcceptedBy).toEqual([]);
   });
 
-  test('a fraction read with getBytes or getDuration is a read, and an off-kind acceptance', () => {
-    // Both getters take a bare fraction, so both answer to the in-kind value
-    // and only an off-kind value can tell them from `getNumber`.  With the
-    // duration as its one off-kind value, `getBytes` refused it as readily as
-    // `getNumber` does, and a reader of a fraction as a size passed (#1425).
+  test('an integer read with getBytes is a read, and an off-kind acceptance of the byte count', () => {
+    // `getBytes` takes every in-kind count, and since a size is a whole number
+    // of bytes (#1728) it refuses the fraction too, so the byte count is the
+    // one value that tells it from `getInt`.  Without it the reader passed.
+    const asSize = verdict('a.count', 7, (config) => ({ count: config.getBytes('a.count') }));
+    expect(asSize.observedBy).toEqual(['probe']);
+    expect(asSize.kindMismatches).toEqual([]);
+    expect(asSize.offKindAcceptedBy).toEqual(['probe']);
+  });
+
+  test('a fraction shipped whole and read with getBytes is refused as the wrong kind, and takes the byte count', () => {
+    // A phi threshold ships as a whole 8 but is a fraction, so a `getBytes`
+    // reader answers the literal; the in-kind 8.1 is refused as no size, and
+    // the whole count of KiB is taken.  Either fails the leaf on its own.
+    const leaf = 'actor-ts.cluster.failure-detector.phi.unreachable-threshold';
+    const shipped = Config.parseString(`${leaf} = 8`);
+    const observe = (read: (config: Config) => number) =>
+      observeLeaf(perturbationFor(leaf, 8), [baselineOf({ label: 'probe', read: (config) => ({ threshold: read(config) }) }, shipped)]);
+    const asSize = observe((config) => config.getBytes(leaf));
+    expect(asSize.observedBy).toEqual([]);
+    expect(asSize.kindMismatches).toEqual([`probe: Config at "${leaf}" is not a whole number of bytes (got 8.1)`]);
+    expect(asSize.offKindAcceptedBy).toEqual(['probe']);
+    const asNumber = observe((config) => config.getNumber(leaf));
+    expect(asNumber.observedBy).toEqual(['probe']);
+    expect(asNumber.kindMismatches).toEqual([]);
+    expect(asNumber.offKindAcceptedBy).toEqual([]);
+  });
+
+  test('a fraction read with getDuration is a read and an off-kind acceptance; read with getBytes, the wrong kind', () => {
+    // `getDuration` takes a bare fraction, so it answers to the in-kind value
+    // and only an off-kind value can tell it from `getNumber`.  `getBytes`
+    // took one too until a size had to be a whole number of bytes (#1728);
+    // it now refuses the fraction the leaf is introduced at.
     const factor = (read: (config: Config) => number): ConfigProbe['read'] =>
       (config) => ({ factor: config.hasPath('a.factor') ? read(config) : undefined });
     const observe = (read: (config: Config) => number) =>
       observeLeaf(introductionFor('a.factor', 0.5, 'a fraction'), [baselineOf({ label: 'probe', read: factor(read) }, reference)]);
     const asSize = observe((config) => config.getBytes('a.factor'));
-    expect(asSize.observedBy).toEqual(['probe']);
-    expect(asSize.offKindAcceptedBy).toEqual(['probe']);
+    expect(asSize.observedBy).toEqual([]);
+    expect(asSize.kindMismatches).toEqual(['probe: Config at "a.factor" is not a whole number of bytes (got 0.5)']);
     const asDuration = observe((config) => config.getDuration('a.factor'));
     expect(asDuration.observedBy).toEqual(['probe']);
     expect(asDuration.offKindAcceptedBy).toEqual(['probe']);

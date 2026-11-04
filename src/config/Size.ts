@@ -6,6 +6,8 @@
  *   parseSize("1KiB") → 1024          // binary (IEC)
  *   parseSize(2048)   → 2048          // already a number
  *   parseSize("2048") → 2048          // bare number → bytes
+ *   parseSize("1.5K") → 1536          // a fraction that comes to whole bytes
+ *   parseSize("1.1K") → throws        // 1126.4 bytes: a size is whole bytes
  *
  * Recognised units:
  *   B / byte / bytes
@@ -61,32 +63,78 @@ const BYTE_UNITS: Readonly<Record<string, number>> = Object.freeze(
 );
 
 /**
- * The postcondition every caller of {@link parseSize} is entitled to — the
- * byte-count twin of `finiteDuration` in `Duration.ts`, and there for the same
- * reason: the guard used to cover only a numeric argument, so a `NaN` or
- * `Infinity` produced by the arithmetic reached a cap comparison intact, where
- * it fails open rather than loudly (#785).
+ * The longest fraction any unit can still make a whole number of bytes: 2^-50
+ * of a pebibyte is one byte, and written out it has fifty decimals.
+ *
+ * A fraction of `f` decimals, the last of them not 0, is `F / 10^f` with `F`
+ * not divisible by both 2 and 5.  Times a unit `2^a · 5^b` that is whole only
+ * when `f <= a` or `f <= b`, and the deepest power of either in
+ * {@link BYTE_UNITS} is the 2^50 of `PiB`.  Beyond this length the answer is
+ * known without the exact arithmetic, whose cost would otherwise grow with a
+ * config value of any length.
  */
-function finiteBytes(bytes: number, input: string | number): number {
+const MAX_WHOLE_FRACTION_DIGITS = 50;
+
+/**
+ * The postcondition every caller of {@link parseSize} is entitled to: a finite,
+ * whole number of bytes.
+ *
+ * Finite is the byte-count twin of `finiteDuration` in `Duration.ts`, there for
+ * the same reason: the guard used to cover only a numeric argument, so a `NaN`
+ * or `Infinity` produced by the arithmetic reached a cap comparison intact,
+ * where it fails open rather than loudly (#785).  Whole because a size used to
+ * be rounded to the nearest byte, so a slip quietly became another size —
+ * `1420.5B` was 1421, and `0.4B` was 0, which several caps read as "no cap"
+ * (#1728).
+ */
+function wholeBytes(bytes: number, input: string | number): number {
   if (!Number.isFinite(bytes)) throw new Error(`Invalid size: ${input}`);
+  if (!Number.isInteger(bytes)) throw notWhole(input);
   return bytes;
 }
 
+function notWhole(input: string | number): Error {
+  return new Error(`Invalid size: ${input} is not a whole number of bytes`);
+}
+
+/**
+ * The bytes `whole.fraction` of `unit` comes to, refused when that is not a
+ * whole number.
+ *
+ * Decided on the decimal as written, not on the double it parses to, since the
+ * double misses both ways: `1.001KB` multiplies out to 1000.9999999999999
+ * though it is 1001 bytes, and `1.0000000000000001K` to exactly 1024 though it
+ * is not whole.  Only the fraction needs exact arithmetic — the whole part
+ * times the unit is whole already — and {@link MAX_WHOLE_FRACTION_DIGITS}
+ * bounds it.  Trailing zeros are dropped by hand: `/0+$/` backtracks over every
+ * run of zeros that does not end the string.
+ */
+function bytesOf(whole: string, fraction: string, unit: number, input: string): number {
+  let end = fraction.length;
+  while (end > 0 && fraction.charCodeAt(end - 1) === 0x30) end--;
+  if (end === 0) return wholeBytes(Number(whole) * unit, input);
+  if (end > MAX_WHOLE_FRACTION_DIGITS) throw notWhole(input);
+  const scaled = BigInt(fraction.slice(0, end)) * BigInt(unit);
+  const scale = 10n ** BigInt(end);
+  if (scaled % scale !== 0n) throw notWhole(input);
+  return wholeBytes(Number(whole) * unit + Number(scaled / scale), input);
+}
+
 export function parseSize(input: string | number): number {
-  if (typeof input === 'number') return finiteBytes(Math.round(input), input);
+  if (typeof input === 'number') return wholeBytes(input, input);
   const trimmed = input.trim();
   if (trimmed === '') throw new Error('Invalid size: empty string');
   // Bare number ⇒ bytes.  Still checked: a literal long enough to overflow a
   // double parses cleanly and comes back `Infinity`.
-  if (/^\d+$/.test(trimmed)) return finiteBytes(parseInt(trimmed, 10), input);
-  const match = trimmed.match(/^(\d+(?:\.\d+)?)\s*([A-Za-z]+)$/);
+  if (/^\d+$/.test(trimmed)) return wholeBytes(parseInt(trimmed, 10), input);
+  const match = trimmed.match(/^(\d+)(?:\.(\d+))?\s*([A-Za-z]+)$/);
   if (!match) throw new Error(`Invalid size: ${input}`);
-  const [, quantity, unitRaw] = match;
+  const [, whole, fraction = '', unitRaw] = match;
   const unit = unitRaw!.toLowerCase();
   // Positive — "is it declared here" — rather than a list of names to refuse;
   // see the note on the same guard in `Duration.ts`.
   if (!Object.hasOwn(BYTE_UNITS, unit)) {
     throw new Error(`Unknown size unit "${unitRaw}" in ${input}`);
   }
-  return finiteBytes(Math.round(parseFloat(quantity!) * BYTE_UNITS[unit]), input);
+  return bytesOf(whole!, fraction, BYTE_UNITS[unit], input);
 }
