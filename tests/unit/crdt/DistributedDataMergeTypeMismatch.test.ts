@@ -194,6 +194,27 @@ describe('DistributedData: a gossip entry of another CRDT kind', () => {
     expect(kindWarnings(node, 'totals', 'GCounter', 'LWWRegister')).toHaveLength(1);
   });
 
+  test('inside an ORMap entry the held map has removed still leaves the held map in place', async () => {
+    const node = await startNode('ddata-kind-nested-removed', 46_809);
+    const data = node.cluster.system.extension(DistributedDataId).start(node.cluster);
+    const self = data.selfReplicaId();
+    // A removed entry keeps its value, and `ORMap.merge` still pairs it with
+    // the other side's entry under the same id.
+    await data.updateAsync<ORMap<string, GCounter>>('totals', ORMap.empty,
+      (map) => map.put(self, 'k', GCounter.empty().increment(self, 1)).remove('k'));
+    const held = encoded(data.get('totals'));
+
+    const peer = await wirePeer('ddata-kind-nested-removed-peer', 46_810);
+    const otherMap = ORMap.empty<string, LWWRegister<string>>()
+      .put('elsewhere', 'k', LWWRegister.empty<string>().assign('elsewhere', 'v'));
+    gossip(peer, node.cluster.selfAddress, { totals: otherMap.toJSON() });
+    await handledSoFar(peer, node, data, 'marker');
+
+    expect(node.restarts()).toBe(0);
+    expect(encoded(data.get('totals'))).toBe(held);
+    expect(kindWarnings(node, 'totals', 'GCounter', 'LWWRegister')).toHaveLength(1);
+  });
+
   test('inside an ORMap entry is not taken over by an empty register there either', async () => {
     const node = await startNode('ddata-kind-nested-register', 46_807);
     const data = node.cluster.system.extension(DistributedDataId).start(node.cluster);
