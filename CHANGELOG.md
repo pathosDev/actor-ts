@@ -8872,14 +8872,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `redactedUrlLabel`: scheme, host and path, with the userinfo, the query
   and the fragment dropped.
 
-- **Under the new default the failure detector no longer reclaims
-  gossip-introduced phantom members** (#1426). A phantom is never heard
-  from, so it is declared down and parked at unreachable, holding a live
-  member-map slot until a strategy or an operator removes it;
-  `actor-ts.cluster.max-members` is now the whole bound on that residue, not
-  only on the burst, so lower it where the legitimate node count is known.
-  Under `auto-down = on` the reclaim lasts only while no other node gossips
-  the phantom back, because that route deletes without a tombstone.
+- **`actor-ts.cluster.max-members` is the whole bound on gossip-introduced
+  phantom members** (#1426). A phantom is never heard from, so the failure
+  detector declares it down. Under the default `auto-down = on` it then
+  deletes it at `down-after`, but without a tombstone, so a node that still
+  carries the phantom gossips it straight back; with a split-brain strategy
+  configured, or `auto-down = off`, it parks it at unreachable, where it
+  holds a live member-map slot until a strategy or an operator removes it.
+  Either way `max-members` bounds the residue, not only the burst, so lower
+  it where the legitimate node count is known.
 
 - **A gossip frame no longer refreshes the failure-detector state of the
   member its payload names** (#939). Liveness is credited to the
