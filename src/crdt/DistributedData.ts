@@ -175,6 +175,65 @@ function withDefaultKeyForRefusedElements(identity: CrdtIdentityFunction): CrdtI
   };
 }
 
+/* ============================ kind conflicts =========================== */
+
+/**
+ * The two CRDT kinds that keep a pair of values from merging.  `nested` says
+ * the disagreement sits inside an `ORMap` entry both values hold, and the kinds
+ * are then that entry's.
+ */
+type CrdtKindConflict = {
+  readonly held: string;
+  readonly received: string;
+  readonly nested: boolean;
+};
+
+/**
+ * Whether `received` can be merged into `held`, and if not, which kinds stand
+ * in the way.
+ *
+ * `merge` takes an argument of its own kind and does not check that it got
+ * one.  Given another kind, most merges throw, an empty `LWWRegister` returns
+ * the other value whatever it is, and a few pairs return a value whose own
+ * `toJSON` throws — so the question has to be asked before merging; catching
+ * afterwards would still let the silent cases through.
+ *
+ * `ORMap` is the one kind that holds other CRDTs, and its merge pairs up the
+ * entries both sides hold by id, removed ones included.  The check descends
+ * into exactly those pairs, through the encoded form because that is where
+ * the removed entries are visible.  Two values of one class of any other kind
+ * cannot disagree, which keeps the path every ordinary merge takes to a single
+ * comparison with no encoding.
+ */
+function crdtKindConflict(held: Crdt<any>, received: Crdt<any>): CrdtKindConflict | null {
+  if (held.constructor === received.constructor && !(held instanceof ORMap)) return null;
+  return encodedKindConflict(held.toJSON(), received.toJSON(), false);
+}
+
+function encodedKindConflict(held: unknown, received: unknown, nested: boolean): CrdtKindConflict | null {
+  const heldKind = encodedKind(held);
+  const receivedKind = encodedKind(received);
+  if (heldKind !== receivedKind) return { held: heldKind, received: receivedKind, nested };
+  if (heldKind !== 'ORMap') return null;
+  const heldValues = (held as ORMapJson).values;
+  const receivedValues = (received as ORMapJson).values;
+  for (const id of Object.keys(heldValues)) {
+    if (!Object.hasOwn(receivedValues, id)) continue;
+    const conflict = encodedKindConflict(heldValues[id], receivedValues[id], true);
+    if (conflict !== null) return conflict;
+  }
+  return null;
+}
+
+/** The `kind` an encoded CRDT names, or `unknown` for a value that names none. */
+function encodedKind(encoded: unknown): string {
+  if (typeof encoded === 'object' && encoded !== null) {
+    const kind = (encoded as { readonly kind?: unknown }).kind;
+    if (typeof kind === 'string') return kind;
+  }
+  return 'unknown';
+}
+
 /**
  * Empty-CRDT factory.  Callers pass this to `update(key, factory, mutator)`
  * so the extension can materialize a brand-new CRDT for a key that
@@ -1126,6 +1185,23 @@ class DistributedDataActor extends Actor<ActorMessage> {
    */
   private droppedFrames = 0;
   /**
+   * Values this replica did not merge because they were of another CRDT kind
+   * than the value they would have joined.  A running total for the warn
+   * line, for the reason {@link droppedFrames} is one.
+   */
+  private droppedKindConflicts = 0;
+  /**
+   * Per key, when its last kind-conflict warning went out.
+   *
+   * Per key because the condition is: two replicas that disagree on a key's
+   * kind disagree on every gossip round for as long as both hold it, so one
+   * such key would otherwise write a line per round forever, and a single
+   * quiet period for all keys would hide every key but the first.  An entry
+   * exists only for a key this replica holds or asked a quorum read for, and
+   * {@link onDelete} drops it with the value.
+   */
+  private readonly lastKindConflictWarnAtMs = new Map<string, number>();
+  /**
    * Per-key element identity, learned from the `factory` that `update`
    * already carries — `null` once a key is known to be on the default.
    *
@@ -1269,8 +1345,14 @@ class DistributedDataActor extends Actor<ActorMessage> {
           // kept everything the previous instance merged, and the record trails
           // it by any save still in flight — setting it rolled the replica back
           // to an older value and told every subscriber so (found while #1468).
+          // A record entry of another kind than the view's value is dropped
+          // like any other value that cannot be merged, and the rest of the
+          // record still loads.
           const current = this.view.state.get(key);
-          this.applyMerged(key, current ?? null, current ? current.merge(crdt) : crdt);
+          const merged = current === undefined
+            ? crdt
+            : this.mergeOrKeep(key, current, crdt, 'the durable record');
+          if (merged !== null) this.applyMerged(key, current ?? null, merged);
         }
       } catch (err) {
         this.log.warn(`DistributedData: durable load failed`, err);
@@ -1395,7 +1477,10 @@ class DistributedDataActor extends Actor<ActorMessage> {
   private countDroppedFrame(): void {
     metricsOf(this.system).counter(
       'distributed_data_dropped_values_total', {},
-      { help: 'Peer-supplied CRDT values this replica refused to decode.' },
+      {
+        help: 'CRDT values this replica dropped: peer-supplied ones it could not decode, '
+          + 'and any of another CRDT kind than the value it holds for the key.',
+      },
     ).inc();
   }
 
@@ -1734,7 +1819,13 @@ class DistributedDataActor extends Actor<ActorMessage> {
     const incoming = this.decodeOrDrop(message.value, message.key, peer);
     if (incoming === null) return;
     const current = this.view.state.get(message.key);
-    const merged = current ? current.merge(incoming) : incoming;
+    const merged = current === undefined
+      ? incoming
+      : this.mergeOrKeep(message.key, current, incoming, peer.toString());
+    // Not merged, so not acknowledged — the answer an undecodable value gets
+    // too: the writer's quorum must not count a replica the write never
+    // reached.
+    if (merged === null) return;
     this.applyMerged(message.key, current ?? null, merged);
     // The ack goes back down the connection the request arrived on.  It used
     // to go to whatever address the payload named, so a peer could make this
@@ -1796,8 +1887,12 @@ class DistributedDataActor extends Actor<ActorMessage> {
       // A garbled response counts as an answer — the peer replied, it just
       // replied with something unusable.  Dropping the value rather than the
       // whole response keeps the quorum from stalling on one bad replica.
+      // A value of another kind than the read has so far is unusable in the
+      // same way, and is dropped the same way.
       if (incoming !== null) {
-        pending.merged = pending.merged ? pending.merged.merge(incoming) : incoming;
+        pending.merged = pending.merged === undefined
+          ? incoming
+          : this.mergeOrKeep(pending.key, pending.merged, incoming, peer.toString()) ?? pending.merged;
       }
     }
     if (pending.responses.size >= pending.required) {
@@ -1809,8 +1904,17 @@ class DistributedDataActor extends Actor<ActorMessage> {
       // latest state to this replica without waiting for gossip.
       if (pending.merged) {
         const current = this.view.state.get(pending.key);
-        this.applyMerged(pending.key, current ?? null,
-          current ? current.merge(pending.merged) : pending.merged);
+        const merged = current === undefined
+          ? pending.merged
+          : this.mergeOrKeep(pending.key, current, pending.merged, 'a quorum read');
+        if (merged === null) {
+          // The key gained a value of another kind while the read was out,
+          // and that value stays.  The read answers with it, so what it
+          // resolves to and what `get` returns next agree on the kind.
+          pending.resolve(current);
+          return;
+        }
+        this.applyMerged(pending.key, current ?? null, merged);
       }
       pending.resolve(pending.merged);
     }
@@ -1821,7 +1925,9 @@ class DistributedDataActor extends Actor<ActorMessage> {
     // outgrows the view.  Nothing is lost by it: a peer that re-introduces
     // the key gossips it under whatever identity it holds, and the next
     // `update` relearns and re-keys — the same repair a durable reload gets.
+    // The kind-conflict quiet period goes with it for the same reason.
     this.identities.delete(message.key);
+    this.lastKindConflictWarnAtMs.delete(message.key);
     if (this.view.state.delete(message.key)) {
       // Notify subscribers with a best-effort signal — we synthesise
       // a fresh CRDT via the most-recently-seen factory.  Since we
@@ -1841,7 +1947,10 @@ class DistributedDataActor extends Actor<ActorMessage> {
       const incoming = this.decodeOrDrop(json, key, peer);
       if (incoming === null) continue;
       const current = this.view.state.get(key);
-      const merged = current ? current.merge(incoming) : incoming;
+      const merged = current === undefined
+        ? incoming
+        : this.mergeOrKeep(key, current, incoming, peer.toString());
+      if (merged === null) continue;
       this.applyMerged(key, current ?? null, merged);
     }
   }
@@ -1874,6 +1983,57 @@ class DistributedDataActor extends Actor<ActorMessage> {
       );
       return null;
     }
+  }
+
+  /**
+   * Merge `received` into `held`, or drop it when the two are of different
+   * CRDT kinds — `null` then, and `held` stays what the key keeps.
+   *
+   * The counterpart of {@link decodeOrDrop} for a value that decodes fine but
+   * cannot join the one it meets: two kinds have no merge, and `merge` handed
+   * one anyway either throws inside the replicator, which restarts it, or
+   * quietly replaces the held value with a value of the other kind.  Keeping
+   * the held value is the one answer that changes nothing; the value dropped
+   * is the other replica's to keep, and it is re-offered every round for as
+   * long as the two disagree, which is what {@link reportKindConflict} is
+   * rate-limited against.
+   *
+   * `source` names where `received` came from, for the warning.
+   */
+  private mergeOrKeep(key: string, held: Crdt<any>, received: Crdt<any>, source: string): Crdt<any> | null {
+    const conflict = crdtKindConflict(held, received);
+    if (conflict === null) return held.merge(received);
+    this.reportKindConflict(key, conflict, source);
+    return null;
+  }
+
+  /**
+   * Count a value {@link mergeOrKeep} dropped, and say so at most once per
+   * key per {@link GOSSIP_SKIP_WARN_INTERVAL_MS}.
+   *
+   * That quiet period is borrowed rather than given a constant of its own
+   * because its reasoning is this condition's too: it is found again on every
+   * gossip round for as long as the key exists, so logged per occurrence it
+   * would be a line a round forever.  The running total travels in the line,
+   * and every drop is counted in `distributed_data_dropped_values_total`.
+   *
+   * The time comes from the system's clock, so a test can say a quiet period
+   * has passed.
+   */
+  private reportKindConflict(key: string, conflict: CrdtKindConflict, source: string): void {
+    this.droppedKindConflicts++;
+    this.countDroppedFrame();
+    const now = this.system.clock.now();
+    const lastWarnAtMs = this.lastKindConflictWarnAtMs.get(key);
+    if (lastWarnAtMs !== undefined && now - lastWarnAtMs < GOSSIP_SKIP_WARN_INTERVAL_MS) return;
+    this.lastKindConflictWarnAtMs.set(key, now);
+    const where = conflict.nested ? ' in an ORMap entry both hold' : '';
+    this.log.warn(
+      `DistributedData: kept the value held for "${key}" and dropped the one from ${source}: `
+      + `it is a ${conflict.received} where the held value is a ${conflict.held}${where}, `
+      + `and values of different CRDT kinds cannot be merged `
+      + `(${this.droppedKindConflicts} dropped so far)`,
+    );
   }
 
   /**
