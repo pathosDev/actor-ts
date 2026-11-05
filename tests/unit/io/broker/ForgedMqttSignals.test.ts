@@ -27,6 +27,7 @@ import { match } from 'ts-pattern';
 import type { ActorRef } from '../../../../src/ActorRef.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import { DeadLetter } from '../../../../src/SystemMessages.js';
+import { structuredCloneProblem } from '../../../../src/diagnostics/MessageBoundaryCheck.js';
 import { MessageBoundaryOptions } from '../../../../src/diagnostics/MessageBoundaryOptions.js';
 import {
   MqttActor,
@@ -45,6 +46,7 @@ import {
   type MqttQos,
 } from '../../../../src/io/broker/MqttMessages.js';
 import { MqttOptions } from '../../../../src/io/broker/MqttOptions.js';
+import { JsonSerializer } from '../../../../src/serialization/JsonSerializer.js';
 import { TestKit } from '../../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../../src/testkit/TestKitOptions.js';
 import type { TestProbe } from '../../../../src/testkit/TestProbe.js';
@@ -359,6 +361,16 @@ describe('the mark', () => {
       const marks = Object.getOwnPropertySymbols(signal);
       expect([kind, marks.length]).toEqual([kind, 1]);
       expect([kind, Symbol.keyFor(marks[0]!)]).toEqual([kind, undefined]);
+    }
+  });
+
+  // The inbound signal is left out: its `MqttPayload` is a class instance,
+  // which the structured-clone check reports whatever the mark is.
+  test('adds nothing the message boundary check reports, in its clone or its serializer round trip', () => {
+    const serializer = new JsonSerializer();
+    for (const [kind, signal] of signals().filter(([name]) => name !== 'mqtt-inbound')) {
+      expect(structuredCloneProblem(signal), kind).toBeNull();
+      expect(() => serializer.fromBinary(serializer.toBinary(signal), ''), kind).not.toThrow();
     }
   });
 });
