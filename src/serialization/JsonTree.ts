@@ -51,6 +51,12 @@ const BIDIRECTIONAL_MAP_TAG = '__bidirectionalmap__';
  */
 const BIDIRECTIONAL_MULTI_MAP_TAG = '__bidirectionalmultimap__';
 const BIGINT_TAG = '__bigint__';
+/**
+ * The one spelling the encoder writes into a `__bigint__`, `String(value)`: a
+ * minus sign only below zero, then decimal digits without a leading zero, `0`
+ * itself aside.  `String(-0n)` is `'0'`, so `-0` is not among them.
+ */
+const CANONICAL_BIGINT_PATTERN = /^(?:0|-?[1-9][0-9]*)$/;
 /** Non-finite numbers and `-0` — plain JSON silently turns them into `null` / `0`. */
 const NUMBER_TAG = '__number__';
 /**
@@ -639,28 +645,28 @@ function decodeTagged(
  * bound is on the string, which is what the parse pays for, so a padded
  * spelling of an admitted value can still be too long.
  *
+ * Only the spelling the encoder writes is parsed at all
+ * ({@link CANONICAL_BIGINT_PATTERN}).  `BigInt()` reads far more — `''` as
+ * `0n`, whitespace, a `+`, hex, octal and binary prefixes, leading zeros —
+ * and not the same set on every engine: Bun returns `0n` for a lone `-` or
+ * `+`, where Node throws.  Checked before the parse, the pattern also leaves
+ * `BigInt()` nothing to throw on, which is how a string such as 'abc' once
+ * escaped this tag untyped (#1449).
+ *
  * A digit count is coarser than the range, so the parsed value is checked
  * too, the way a tag 3 stores it: as `-1 - n` below zero, which keeps
- * `-2^8192` in and `2^8192` out, as in CBOR.
- *
- * A string that is not an integer ('abc', '1.5') makes `BigInt()` throw a raw
- * SyntaxError, so this tag used to escape untyped (#1449) — as did an
- * `__error__` named after an `Object.prototype` member, until `rebuildError`
- * read its constructor table by own properties.  No refusal echoes the
- * digits: even bounded they run to thousands, and V8's own message repeats
- * them verbatim, which is also why the engine error is not kept as the cause.
+ * `-2^8192` in and `2^8192` out, as in CBOR.  No refusal echoes the digits:
+ * even bounded they run to thousands.
  */
 function decodeBigint(digits: string): bigint {
   const signLength = digits.startsWith('-') ? 1 : 0;
   if (digits.length - signLength > MAX_BIGINT_DIGITS) {
     throw malformedTag(BIGINT_TAG, `at most ${MAX_BIGINT_DIGITS} digits`);
   }
-  let value: bigint;
-  try {
-    value = BigInt(digits);
-  } catch {
+  if (!CANONICAL_BIGINT_PATTERN.test(digits)) {
     throw malformedTag(BIGINT_TAG, 'a decimal integer string');
   }
+  const value = BigInt(digits);
   if (outsideBignumRange(value)) {
     throw malformedTag(BIGINT_TAG, `an integer from ${bignumRange()}`);
   }
