@@ -326,6 +326,36 @@ describe('HOCON properties — substitutions read the tree', () => {
       { numRuns: RUNS },
     );
   });
+
+  /**
+   * A chain of aliases resolves whatever order its links are declared in
+   * (#1748): `link0 = ${link1}`, `link1 = ${link2}`, …, and the last link holds
+   * the value, so every link must read that value.  The links are the only
+   * keys of the document, so none can collide with another.
+   */
+  test('a chain of aliases resolves to its last link in every declaration order', () => {
+    const style: RenderStyle = {
+      assignment: '=', separator: 'newline', explicitRootBraces: false,
+      objectShorthand: false, comments: false, indentation: '',
+    };
+    const chain = fc.integer({ min: 1, max: 6 }).chain((links) => fc.record({
+      value: primitiveArbitrary,
+      order: fc.shuffledSubarray([...Array(links + 1).keys()], { minLength: links + 1 }),
+    }));
+    fc.assert(
+      fc.property(chain, ({ value, order }) => {
+        const last = order.length - 1;
+        const source = order
+          .map((link) => link === last
+            ? renderRoot({ [`link${link}`]: value }, style)
+            : `link${link} = \${link${link + 1}}`)
+          .join('\n');
+        const resolved = resolveSubstitutions(parseHocon(source), {});
+        for (let link = 0; link <= last; link++) expect(resolved[`link${link}`]).toStrictEqual(value);
+      }),
+      { numRuns: RUNS },
+    );
+  });
 });
 
 describe('HOCON properties — the refusals hold', () => {

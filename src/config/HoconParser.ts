@@ -438,83 +438,244 @@ class HoconParser {
 
 /* ========================= Substitution resolution ========================= */
 
+/**
+ * Resolve every substitution in `obj` — against the tree first, then the
+ * environment.  An optional substitution that finds neither leaves its key
+ * out, or falls back to the value its assignment replaced.
+ *
+ * Resolution is by demand rather than by pass: a substitution whose target is
+ * itself a substitution resolves that target first, so a chain resolves in any
+ * declaration order (#1748).  The fixed-point loop this replaced re-walked the
+ * whole tree up to eight times and still could not follow a chain — the
+ * lookup met the unresolved target and reported a miss, so the required form
+ * threw and the optional form fell through to the environment, or dropped the
+ * key.  A chain that leads back to itself is a cycle, and refused as one.
+ *
+ * What a substitution resolves to is final.  A value read from the environment
+ * is data from then on: nothing walks it again, so nothing inside it is
+ * resolved as config.
+ */
 export function resolveSubstitutions(
   obj: ConfigObject,
   env: Record<string, string | undefined> = getProcessEnv(),
 ): ConfigObject {
-  let current = walk(obj, obj, env) as ConfigObject;
-  // Second pass — some substitutions resolve to other substitutions.
-  // Iterate to a fixed point.
-  let prev = JSON.stringify(current);
-  for (let i = 0; i < 8; i++) {
-    const next = walk(current, current, env) as ConfigObject;
-    const snap = JSON.stringify(next);
-    if (snap === prev) return next;
-    prev = snap;
-    current = next;
-  }
-  return current;
+  return new SubstitutionResolver(obj, env).resolveRoot();
 }
 
 function getProcessEnv(): Record<string, string | undefined> {
   return typeof process !== 'undefined' && process.env ? process.env : {};
 }
 
-function walk(
-  node: ConfigValue,
-  root: ConfigObject,
-  env: Record<string, string | undefined>,
-): ConfigValue {
-  // Exhaustive over the ConfigValue shape.  Type-guard arms via
-  // `.when()` because Substitution and plain-ConfigObject share the
-  // `typeof === 'object'` family — the helpers know how to tell them
-  // apart and we lean on them rather than reimplement the discriminator.
-  return match(node)
-    .when(isSubstitution, (sub) => resolveOne(sub, root, env))
-    .when((value): value is ConfigValue[] => Array.isArray(value), (arr) => arr.map(value => walk(value, root, env)))
-    .when(isPlainObject, (obj) => {
-      const out: ConfigObject = {};
-      for (const [key, value] of Object.entries(obj)) {
-        if (isForbiddenConfigKey(key)) continue;
-        out[key] = walk(value, root, env);
-      }
-      return out;
-    })
-    .otherwise((primitive) => primitive);
-}
+/**
+ * One resolution of one parsed tree.
+ *
+ * `undefined` stands for "resolved to nothing" throughout — an optional
+ * substitution with no answer — exactly as it did in the tree the old walk
+ * returned, so `stripUndefined` and every caller keep their meaning.
+ */
+class SubstitutionResolver {
+  /** Resolved fields by `pathKey`; a stored `undefined` is a field that resolved to nothing. */
+  private readonly resolved = new Map<string, ConfigValue | undefined>();
+  /** The fields whose resolution is under way, outermost first — what names a cycle. */
+  private readonly resolving: Array<readonly string[]> = [];
 
-function resolveOne(
-  sub: Substitution,
-  root: ConfigObject,
-  env: Record<string, string | undefined>,
-): ConfigValue {
-  const fromTree = lookup(root, sub.path);
-  if (fromTree !== undefined) return fromTree as ConfigValue;
-  // ENV variable name is the path with dots turned into underscores, uppercased.
-  const envName = sub.path;
-  const envNameUpperCase = sub.path.replace(/\./g, '_').toUpperCase();
-  const fromEnv = readOwnEnvironmentEntry(env, envName)
-    ?? readOwnEnvironmentEntry(env, envNameUpperCase);
-  if (fromEnv !== undefined) {
-    // Try to interpret as JSON first (so `${FOO}` can be a number/boolean/obj);
-    // fall back to the raw string.
+  constructor(
+    private readonly root: ConfigObject,
+    private readonly env: Record<string, string | undefined>,
+  ) {}
+
+  resolveRoot(): ConfigObject {
+    return this.resolveObject(this.root, [], true);
+  }
+
+  /**
+   * The resolved value of the field at `path`, whose unresolved value is
+   * `node` — memoised, so a field a lookup already resolved is not resolved a
+   * second time when the walk reaches it.
+   */
+  private resolveField(path: readonly string[], node: ConfigValue | undefined): ConfigValue | undefined {
+    const key = pathKey(path);
+    if (this.resolved.has(key)) return this.resolved.get(key);
+    const open = this.resolving.findIndex((entry) => pathKey(entry) === key);
+    if (open >= 0) {
+      const cycle = [...this.resolving.slice(open), path].map((entry) => entry.join('.'));
+      throw new Error(`Substitution cycle: ${cycle.join(' -> ')}`);
+    }
+    this.resolving.push(path);
+    let value: ConfigValue | undefined;
     try {
-      const parsed = JSON.parse(fromEnv);
-      if (parsed !== null && typeof parsed === 'object') return parsed as ConfigValue;
-      return parsed as ConfigValue;
+      value = this.resolveNode(node, path, true);
+    } finally {
+      this.resolving.pop();
+    }
+    this.resolved.set(key, value);
+    return value;
+  }
+
+  /**
+   * `addressable` says whether `node` is the tree's own value at `path`.  Only
+   * then are its fields resolved through `resolveField`, where a lookup can
+   * meet them: an object inside a list, or the value an optional substitution
+   * replaced, is reachable by no path, so its fields resolve in place.
+   */
+  private resolveNode(node: ConfigValue | undefined, path: readonly string[], addressable: boolean): ConfigValue | undefined {
+    if (node === undefined) return undefined;
+    return match(node)
+      .when(isSubstitution, (substitution) => this.resolveSubstitution(substitution, path))
+      .when((value): value is ConfigValue[] => Array.isArray(value), (list) => this.resolveList(list, path))
+      .when(isPlainObject, (object) => this.resolveObject(object, path, addressable))
+      .otherwise((primitive) => primitive);
+  }
+
+  private resolveObject(object: ConfigObject, path: readonly string[], addressable: boolean): ConfigObject {
+    const out: ConfigObject = {};
+    for (const [key, child] of Object.entries(object)) {
+      if (isForbiddenConfigKey(key)) continue;
+      const childPath = [...path, key];
+      const value = addressable
+        ? this.resolveField(childPath, child)
+        : this.resolveNode(child, childPath, false);
+      if (value !== undefined) out[key] = value;
+    }
+    return out;
+  }
+
+  /** A list is one field: its elements share its path, and one that resolves to nothing drops out. */
+  private resolveList(list: readonly ConfigValue[], path: readonly string[]): ConfigValue[] {
+    const out: ConfigValue[] = [];
+    for (const element of list) {
+      const value = this.resolveNode(element, path, false);
+      if (value !== undefined) out.push(value);
+    }
+    return out;
+  }
+
+  /**
+   * The tree, then the environment, then — for the optional form — the value
+   * the assignment replaced.
+   *
+   * A field that names itself, `pod.ip = ${?pod.ip}`, skips the tree: its own
+   * value there is the very substitution being resolved, so the environment
+   * answers, and then what the assignment replaced.  That is what the old walk
+   * did too — it met the unresolved marker and moved on — so it is kept rather
+   * than refused as a cycle.  The replaced value resolves at the same path, in
+   * the same frame, so `x = 1`, `x = ${?x}`, `x = ${?x}` is no cycle either.
+   */
+  private resolveSubstitution(substitution: Substitution, path: readonly string[]): ConfigValue | undefined {
+    const target = substitution.path.split('.');
+    if (!samePath(target, path)) {
+      const fromTree = this.lookupTree(target);
+      if (fromTree !== undefined) return fromTree;
+    }
+    const fromEnvironment = this.lookupEnvironment(substitution.path);
+    if (fromEnvironment !== undefined) return fromEnvironment;
+    if (substitution.optional) {
+      return substitution.previous === undefined
+        ? undefined
+        : this.resolveNode(substitution.previous, path, false);
+    }
+    throw new Error(`Unresolved substitution: \${${substitution.path}}`);
+  }
+
+  /**
+   * The resolved value at `target`, reading the tree's **own** properties only,
+   * or `undefined` when the tree has none.
+   *
+   * The `Object.hasOwn` guard is what keeps `${toString}` from splicing a
+   * native function into the resolved config: without it the descent reads
+   * straight through to `Object.prototype`, every member of which answers a
+   * lookup.  A blocklist cannot close that hole — `isForbiddenConfigKey` names
+   * three keys, while the prototype chain is open-ended (engine and host
+   * additions land there too) — so the guard is stated positively instead.  It
+   * also keeps the fallback to the environment open: a hit here short-circuits
+   * it, so a shadowed `${?toString}` could never reach `env` at all (#589).
+   *
+   * The two checks are not redundant.  `Object.hasOwn` misses an *own*
+   * `__proto__` — `JSON.parse('{"__proto__":…}')` produces exactly that, and a
+   * caller may hand us such a tree — which is what `isForbiddenConfigKey` is
+   * still here for.  A forbidden segment is a miss rather than an error:
+   * `parseSubstitution` refuses those with a source position, so reaching here
+   * means the path was built in code, where an optional substitution should
+   * just miss.
+   *
+   * A substitution met on the way — `b = ${a.k}` with `a = ${?OBJ}` — is
+   * resolved, and the descent goes on in its value, which is data.
+   */
+  private lookupTree(target: readonly string[]): ConfigValue | undefined {
+    let node: ConfigValue | undefined = this.root;
+    for (let depth = 0; depth < target.length; depth++) {
+      const segment = target[depth]!;
+      if (isForbiddenConfigKey(segment)) return undefined;
+      if (isSubstitution(node)) {
+        const resolved = this.resolveField(target.slice(0, depth), node);
+        return readData(resolved, target.slice(depth));
+      }
+      if (!isPlainObject(node) || !Object.hasOwn(node, segment)) return undefined;
+      node = node[segment];
+    }
+    return this.resolveField(target, node);
+  }
+
+  /**
+   * The variable named by the path, else by the path upper-cased with its
+   * dots turned into underscores — read as JSON where it parses as JSON, so
+   * `${FOO}` can be a number, a boolean, a list or an object, and as the raw
+   * string where it does not.
+   */
+  private lookupEnvironment(path: string): ConfigValue | undefined {
+    const raw = readOwnEnvironmentEntry(this.env, path)
+      ?? readOwnEnvironmentEntry(this.env, path.replace(/\./g, '_').toUpperCase());
+    if (raw === undefined) return undefined;
+    try {
+      return withoutForbiddenKeys(JSON.parse(raw));
     } catch {
-      return fromEnv;
+      return raw;
     }
   }
-  if (sub.optional) {
-    // Nothing answered: fall back to what this assignment replaced, if
-    // anything.  The previous value may itself be an optional substitution
-    // (`x = 1`, `x = ${?A}`, `x = ${?B}`), so it is walked, not returned.
-    return sub.previous === undefined
-      ? undefined as unknown as ConfigValue
-      : walk(sub.previous, root, env);
+}
+
+/**
+ * A path as one map key.  JSON rather than `join('.')`, because a quoted key
+ * may hold a dot of its own: `a."b.c"` and `a.b.c` are different fields.
+ */
+function pathKey(path: readonly string[]): string {
+  return JSON.stringify(path);
+}
+
+function samePath(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((segment, index) => segment === right[index]);
+}
+
+/** Descend into a resolved value — own properties of plain objects only, as `lookupTree` does. */
+function readData(value: ConfigValue | undefined, rest: readonly string[]): ConfigValue | undefined {
+  let current = value;
+  for (const segment of rest) {
+    if (isForbiddenConfigKey(segment)) return undefined;
+    if (!isPlainObject(current) || !Object.hasOwn(current, segment)) return undefined;
+    current = (current as ConfigObject)[segment];
   }
-  throw new Error(`Unresolved substitution: \${${sub.path}}`);
+  return current;
+}
+
+/**
+ * A value decoded from the environment, with every forbidden key dropped at
+ * every depth.
+ *
+ * `JSON.parse` makes an own `__proto__` an ordinary property, which a later
+ * plain copy would hand to the prototype setter.  The walk this resolver
+ * replaced dropped such keys in passing, on its second pass over the tree;
+ * nothing walks a resolved value now, so the copy is made here, once.
+ */
+function withoutForbiddenKeys(value: unknown): ConfigValue {
+  if (Array.isArray(value)) return value.map(withoutForbiddenKeys);
+  if (typeof value === 'object' && value !== null) {
+    const out: ConfigObject = {};
+    for (const [key, entry] of Object.entries(value)) {
+      if (!isForbiddenConfigKey(key)) out[key] = withoutForbiddenKeys(entry);
+    }
+    return out;
+  }
+  return value as ConfigValue;
 }
 
 /**
@@ -531,42 +692,6 @@ function readOwnEnvironmentEntry(
   name: string,
 ): string | undefined {
   return Object.hasOwn(env, name) ? env[name] : undefined;
-}
-
-/**
- * Resolve a dotted path against the tree, reading **own** properties only.
- *
- * The `Object.hasOwn` guard is what keeps `${toString}` from splicing a native
- * function into the resolved config: without it the descent reads straight
- * through to `Object.prototype`, every member of which answers a lookup.  A
- * blocklist cannot close that hole — `isForbiddenConfigKey` names three keys,
- * while the prototype chain is open-ended (engine and host additions land there
- * too) — so the guard is stated positively instead.  It also restores the
- * fallback in `resolveOne`: a hit here short-circuits the environment lookup,
- * so a shadowed `${?toString}` could never reach `env` at all.
- *
- * The two checks are not redundant.  `Object.hasOwn` misses an *own* `__proto__`
- * — `JSON.parse('{"__proto__":…}')` produces exactly that, and `resolveOne`
- * hands us the caller's unfiltered object as `root` — which is what
- * `isForbiddenConfigKey` is still here for.  Order matters as well: the
- * `isPlainObject` guard must run first so arrays and not-yet-resolved
- * `Substitution` markers still short-circuit before any property read.
- */
-function lookup(obj: ConfigObject, path: string): ConfigValue | undefined {
-  const parts = path.split('.');
-  let cur: ConfigValue | undefined = obj;
-  for (const part of parts) {
-    // Treated as "not found" rather than an error: `parseSubstitution` already
-    // rejects these with a source position, so reaching here means the path was
-    // built in code, where an optional substitution should just miss.
-    if (isForbiddenConfigKey(part)) return undefined;
-    if (!isPlainObject(cur)) return undefined;
-    if (!Object.hasOwn(cur, part)) return undefined;
-    cur = (cur as ConfigObject)[part];
-    if (cur === undefined) return undefined;
-    if (isSubstitution(cur)) return undefined; // not resolved yet
-  }
-  return cur;
 }
 
 /* ================================ Utilities =============================== */

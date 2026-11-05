@@ -3726,6 +3726,16 @@ Ein Key, den `reference.conf` nur als Kommentar trägt — `remote.tcp.host` und
 keine Schicht darunter: Ein nicht gesetztes `${?ENV}` lässt ihn ungesetzt, und
 der eigene Fallback des Readers greift.
 
+Eine Substitution darf einen Key nennen, dessen Wert selbst eine Substitution
+ist.  Die Kette löst sich in jeder Reihenfolge ihrer Zeilen auf, und ein Key,
+den die Datei definiert, schlägt an jedem Glied die Umgebung:
+`api.url = ${db.url}` mit `db.url = ${db.host}` liest den Host aus der Datei,
+auch wenn eine Variable `DB_URL` gesetzt ist.  Eine Kette, die zu ihrem
+Anfang zurückführt, wird als `Substitution cycle: a -> b -> a` abgelehnt, die
+optionale Form eingeschlossen.  Ein Key, der sich selbst nennt —
+`pod.ip = ${?pod.ip}` —, ist kein Zyklus: Er liest die Umgebung und danach den
+Wert, den er ersetzt hat.
+
 ### Includes werden nicht unterstützt
 
 ```hocon

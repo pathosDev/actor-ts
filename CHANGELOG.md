@@ -8807,6 +8807,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   replicator; ten such failures in a minute stopped it for good. A modifier
   that returns something other than a CRDT is reported the same way.
 
+- **A substitution whose target is itself a substitution resolves, in any
+  declaration order** (#1748). `b = 1`, `a = ${b}`, `x = ${a}` threw
+  `Unresolved substitution: ${a}` whichever order the lines came in, and the
+  optional form `x = ${?a}` fell through to the environment or dropped the
+  key without a word: the resolver re-walked the tree to a fixed point, and
+  its lookup took a target it had not resolved yet for a miss. A target now
+  resolves on demand. So a key the source defines wins over the environment
+  at every link of a chain, and `api.url = ${db.url}` with
+  `db.url = ${db.host}` reads the file's host even with `DB_URL` set. This
+  holds in every file `Config.load` reads and in each active profile.
+
+  A chain that leads back to where it started is refused as
+  `Substitution cycle: a -> b -> a`. An optional cycle used to resolve to
+  nothing in silence and is refused too. A key that names itself —
+  `pod.ip = ${?pod.ip}` — is no cycle: it still reads the environment and
+  then the value it replaced. A value that resolves to nothing now drops out
+  at every depth — inside a nested list or an object in a list — instead of
+  leaving an `undefined` behind.
+
 ### Removed
 
 - **BREAKING — `OtelLoggerAdapterOptions` is gone: `otelLogger(options)` now

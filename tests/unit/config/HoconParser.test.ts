@@ -510,3 +510,104 @@ describe('substitutions read own properties only (#589)', () => {
       .toEqual({ toString: 'mine', x: 'mine' });
   });
 });
+
+/**
+ * A substitution whose target is itself a substitution (#1748).
+ *
+ * The resolver used to re-walk the tree to a fixed point, and its lookup
+ * reported an unresolved target as a miss — so a chain threw in its required
+ * form and resolved to the wrong value, or to nothing, in its optional one.
+ * These cases are the issue's own, plus the cycle a chain can close and the
+ * self-reference it must not mistake for one.
+ */
+describe('substitution chains (#1748)', () => {
+  // A fresh object, so prototype pollution would show as an inherited property.
+  const probe = () => ({}) as Record<string, unknown>;
+
+  test('a chain resolves in any declaration order', () => {
+    expect(Config.parseString('b = 1\na = ${b}\nx = ${a}').getNumber('x')).toBe(1);
+    expect(Config.parseString('x = ${a}\na = ${b}\nb = 1').getNumber('x')).toBe(1);
+    expect(Config.parseString('p { b = 1 }\np.a = ${p.b}\nq = ${p.a}').getNumber('q')).toBe(1);
+    expect(Config.parseString('d = ${c}\nc = ${b}\nb = ${a}\na = "end"').getString('d')).toBe('end');
+  });
+
+  test('the optional form takes the value its target resolves to', () => {
+    const dropped = Config.parseString('b = 1\na = ${b}\nx = ${?a}');
+    expect(dropped.hasPath('x')).toBe(true);
+    expect(dropped.getNumber('x')).toBe(1);
+    expect(Config.parseString('b = 1\na = ${b}\nx = 0\nx = ${?a}').getNumber('x')).toBe(1);
+  });
+
+  test('a key the source defines wins over the environment, through a chain as well', () => {
+    const environment = { DB_URL: 'from-environment' };
+    const viaChain = resolveSubstitutions(
+      parseHocon('db.host = "db-1"\ndb.url = ${db.host}\napi.url = ${db.url}'),
+      environment,
+    );
+    expect((viaChain['api'] as Record<string, unknown>)['url']).toBe('db-1');
+    const direct = resolveSubstitutions(parseHocon('db.url = "db-1"\napi.url = ${db.url}'), environment);
+    expect((direct['api'] as Record<string, unknown>)['url']).toBe('db-1');
+  });
+
+  test('a chain whose source is an unset optional substitution resolves to nothing', () => {
+    expect(resolveSubstitutions(parseHocon('a = ${?V}\nb = ${a}'), { V: 's3cret' }))
+      .toEqual({ a: 's3cret', b: 's3cret' });
+    expect(stripUndefined(resolveSubstitutions(parseHocon('a = ${?V}\nb = ${?a}'), {}))).toEqual({});
+    expect(() => resolveSubstitutions(parseHocon('a = ${?V}\nb = ${a}'), {}))
+      .toThrow('Unresolved substitution: ${a}');
+  });
+
+  test('a cycle is refused, and the error names it', () => {
+    expect(() => resolveSubstitutions(parseHocon('a = ${b}\nb = ${a}'), {}))
+      .toThrow('Substitution cycle: a -> b -> a');
+    expect(() => resolveSubstitutions(parseHocon('a = ${b}\nb = ${c}\nc = ${a}'), {}))
+      .toThrow('Substitution cycle: a -> b -> c -> a');
+    // An object that contains a reference to itself is a cycle too.
+    expect(() => resolveSubstitutions(parseHocon('a { b = ${a} }'), {}))
+      .toThrow('Substitution cycle: a -> a.b -> a');
+  });
+
+  test('an optional cycle is refused as well, rather than vanishing', () => {
+    // Before #1748 this resolved to `{}` without a word.
+    expect(() => resolveSubstitutions(parseHocon('a = ${?b}\nb = ${?a}'), {}))
+      .toThrow('Substitution cycle: a -> b -> a');
+  });
+
+  test('a field that names itself is no cycle: the environment answers, then the value it replaced', () => {
+    expect(resolveSubstitutions(parseHocon('pod.ip = ${?pod.ip}'), { POD_IP: '10.0.0.5' }))
+      .toEqual({ pod: { ip: '10.0.0.5' } });
+    expect(stripUndefined(resolveSubstitutions(parseHocon('pod.ip = ${?pod.ip}'), {}))).toEqual({ pod: {} });
+    expect(resolveSubstitutions(parseHocon('x = 1\nx = ${?x}'), {})).toEqual({ x: 1 });
+    expect(resolveSubstitutions(parseHocon('x = 1\nx = ${?x}\nx = ${?x}'), {})).toEqual({ x: 1 });
+    expect(resolveSubstitutions(parseHocon('x = 1\nx = ${?x}'), { X: '7' })).toEqual({ x: 7 });
+  });
+
+  test('a path into a value read from the environment reads that value', () => {
+    expect(resolveSubstitutions(parseHocon('a = ${?OBJ}\nb = ${a.k}'), { OBJ: '{"k":5}' }))
+      .toEqual({ a: { k: 5 }, b: 5 });
+  });
+
+  test('a value read from the environment is final: nothing inside it is resolved', () => {
+    const marker = JSON.stringify({ __substitution: true, path: 'OTHER', optional: false });
+    const resolved = resolveSubstitutions(parseHocon('x = ${V}'), { V: marker, OTHER: 'other-value' });
+    expect(JSON.stringify(resolved)).not.toContain('other-value');
+    expect((resolved['x'] as Record<string, unknown>)['path']).toBe('OTHER');
+  });
+
+  test('an own __proto__ in a value read from the environment is dropped at every depth', () => {
+    const resolved = resolveSubstitutions(parseHocon('x = ${V}\ny = ${W}'), {
+      V: '{"__proto__":{"envPwned":1},"ok":2}',
+      W: '[{"__proto__":{"envListPwned":1},"a":1}]',
+    });
+    expect(resolved).toEqual({ x: { ok: 2 }, y: [{ a: 1 }] });
+    expect(Object.hasOwn(resolved['x'] as object, '__proto__')).toBe(false);
+    expect(Object.hasOwn((resolved['y'] as object[])[0]!, '__proto__')).toBe(false);
+    expect(probe().envPwned).toBeUndefined();
+    expect(probe().envListPwned).toBeUndefined();
+  });
+
+  test('a value that resolves to nothing drops out at every depth', () => {
+    // Strict: `toEqual` would let an `[undefined]` pass for `[]`.
+    expect(resolveSubstitutions(parseHocon('x = [[${?N}], {y = ${?N}}]'), {})).toStrictEqual({ x: [[], {}] });
+  });
+});

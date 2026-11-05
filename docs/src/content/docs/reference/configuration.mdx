@@ -3492,6 +3492,15 @@ line above relies on.  A key `reference.conf` carries only as a comment —
 `discovery.config.seeds` and others — has no layer below it, so an unset
 `${?ENV}` leaves it unset and the reader's own fallback applies.
 
+A substitution may name a key whose value is itself a substitution.  The
+chain resolves whatever order its lines come in, and a key the file defines
+wins over the environment at every link, so `api.url = ${db.url}` with
+`db.url = ${db.host}` reads the file's host even when a `DB_URL` variable is
+set.  A chain that leads back to where it started is refused as a
+`Substitution cycle: a -> b -> a`, the optional form included.  A key that
+names itself — `pod.ip = ${?pod.ip}` — is no cycle: it reads the environment
+and then the value it replaced.
+
 ### Includes are not supported
 
 ```hocon
