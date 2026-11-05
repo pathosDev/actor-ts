@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
+import fc from 'fast-check';
 import {
   decodeJsonTree,
   encodeJsonTree,
@@ -212,12 +213,12 @@ describe('JsonTree — literal escape and decode tightening', () => {
     expect(() => decodeJsonTree({ __bigint__: '1.5' })).toThrow(SerializationError);
   });
 
-  // Nothing bounds the bigint payload — a body of digits can run to megabytes —
-  // so the message names what the tag expected rather than echoing what it got.
+  // The message names what the tag expected rather than echoing what it got.
   // V8's own message for the same failure repeats the whole string, which is
-  // why the engine error is not kept as the cause either.
+  // why the engine error is not kept as the cause either.  The string stays
+  // inside the digit bound (see the next block), so it reaches BigInt().
   test('an unparsable __bigint__ names the tag and does not echo the digits', () => {
-    const digits = `${'9'.repeat(10_000)}.5`;
+    const digits = `${'9'.repeat(2_000)}.5`;
     let thrown: unknown;
     try {
       decodeJsonTree({ __bigint__: digits });
@@ -229,6 +230,91 @@ describe('JsonTree — literal escape and decode tightening', () => {
     expect(error.message).toBe('Malformed __bigint__ tag: expected a decimal integer string');
     expect(error.message).not.toContain('99999');
     expect('cause' in error).toBe(false);
+  });
+});
+
+/**
+ * Parsing a decimal string costs more than linear time in its length, and the
+ * walker is reached by request bodies, cluster frames and journal rows alike,
+ * so the digit string of a `__bigint__` is bounded before `BigInt()` sees it.
+ * The bound is the decimal length of the widest integers the CBOR codec's
+ * bignum cap admits — 1024 bytes of magnitude, `-2^8192` up to `2^8192 - 1` —
+ * which is 2467 digits at both ends (#967).
+ */
+describe('JsonTree — the __bigint__ digit bound', () => {
+  const largest = (1n << 8192n) - 1n;
+  const smallest = -(1n << 8192n);
+  const LENGTH_REFUSAL = 'Malformed __bigint__ tag: expected at most 2467 digits';
+
+  function thrownBy(action: () => unknown): unknown {
+    try {
+      action();
+    } catch (e) {
+      return e;
+    }
+    return undefined;
+  }
+
+  test('both ends of the range carry 2467 digits and round-trip', () => {
+    expect(largest.toString()).toHaveLength(2467);
+    // A minus sign and 2467 digits: 2^8192 is no longer than 2^8192 - 1.
+    expect(smallest.toString()).toHaveLength(1 + 2467);
+    for (const value of [largest, smallest]) {
+      expect(rt(value)).toBe(value);
+      expect(decodeJsonTree(JSON.parse(JSON.stringify(encodeJsonTree(value))))).toBe(value);
+    }
+  });
+
+  test('one digit more is refused before BigInt() parses anything', () => {
+    const spy = spyOn(globalThis, 'BigInt');
+    try {
+      // The spy does see the decoder's own call — without this, the "never
+      // called" below would also hold for a spy that observes nothing.
+      expect(decodeJsonTree({ __bigint__: '12345' })).toBe(12345n);
+      expect(spy).toHaveBeenCalledTimes(1);
+      spy.mockClear();
+
+      const tooLong = [
+        '1'.repeat(2468),
+        `-${'1'.repeat(2468)}`,
+        // In range as a value, but the string is what BigInt() pays for.
+        `0${largest.toString()}`,
+      ];
+      for (const digits of tooLong) {
+        const error = thrownBy(() => decodeJsonTree({ __bigint__: digits }));
+        expect(error).toBeInstanceOf(SerializationError);
+        expect((error as Error).message).toBe(LENGTH_REFUSAL);
+      }
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test('four million digits are refused in well under 50 ms', () => {
+    const tag = { __bigint__: '9'.repeat(4_000_000) };
+    const started = performance.now();
+    const error = thrownBy(() => decodeJsonTree(tag));
+    const elapsed = performance.now() - started;
+    expect(error).toBeInstanceOf(SerializationError);
+    expect(elapsed).toBeLessThan(50);
+  });
+
+  test('the refusal names the bound, not the digits, and keeps no cause', () => {
+    const error = thrownBy(() => decodeJsonTree({ __bigint__: '9'.repeat(100_000) }));
+    expect(error).toBeInstanceOf(SerializationError);
+    expect((error as Error).message).toBe(LENGTH_REFUSAL);
+    expect('cause' in (error as Error)).toBe(false);
+  });
+
+  test('the encoder still writes every bigint the decoder accepts', () => {
+    for (const value of [largest, smallest, largest - 1n, smallest + 1n, 0n, -1n]) {
+      expect(encodeJsonTree(value)).toEqual({ __bigint__: value.toString() });
+      expect(rt(value)).toBe(value);
+    }
+    fc.assert(fc.property(fc.bigInt({ min: smallest, max: largest }), (value) => {
+      expect(decodeJsonTree(JSON.parse(JSON.stringify(encodeJsonTree(value))))).toBe(value);
+    }));
   });
 });
 

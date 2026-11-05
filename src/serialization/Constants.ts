@@ -37,6 +37,20 @@ export const MAX_NESTING_DEPTH = 256;
 export const MAX_BIGNUM_BYTES = 1024;
 
 /**
+ * Ceiling on the digits of a JSON tree `__bigint__` tag, a leading minus sign
+ * aside: the decimal twin of {@link MAX_BIGNUM_BYTES}.  It is the length of
+ * the widest magnitude that cap admits, `2^8192 - 1` written out — 2467
+ * digits — and `-2^8192`, the other end of the CBOR range, is as long.
+ *
+ * Here the cap is the fix rather than a backstop.  The JSON tree hands the
+ * string to `BigInt()`, and parsing a decimal string costs more than linear
+ * time in its length: measured on Bun 1.4.2, a million digits took a third of
+ * a second and four million almost two.  So the string is measured before
+ * anything parses it.
+ */
+export const MAX_BIGINT_DIGITS: number = ((1n << BigInt(MAX_BIGNUM_BYTES * 8)) - 1n).toString().length;
+
+/**
  * First id a user-defined serializer may claim; 1..99 belong to the
  * built-ins.  The shipped schema serializers reject anything below it at
  * construction: an id is a wire contract that outlives the process, so a

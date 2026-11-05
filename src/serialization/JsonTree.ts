@@ -1,6 +1,7 @@
 import { BidirectionalMap } from '../util/BidirectionalMap.js';
 import { BidirectionalMultiMap } from '../util/BidirectionalMultiMap.js';
 import { ownedBytes } from './ByteViews.js';
+import { MAX_BIGINT_DIGITS } from './Constants.js';
 import { DEFAULT_MAX_NESTING_DEPTH } from './ReadConstraintsOptions.js';
 import { binaryBytesOf, binaryKindOf, rebuildBinaryView, rebuildError } from './RichTypes.js';
 import { SerializationError } from './Serializer.js';
@@ -559,18 +560,7 @@ function decodeTagged(
     case BIGINT_TAG: {
       const digits = obj[BIGINT_TAG];
       if (typeof digits !== 'string') throw malformedTag(BIGINT_TAG, 'a string');
-      // A string that is not an integer ('abc', '1.5') makes BigInt() throw a
-      // raw SyntaxError, so this arm escaped untyped (#1449) — as did an
-      // `__error__` named after an `Object.prototype` member, until
-      // `rebuildError` read its constructor table by own properties.
-      // The digits are not echoed: nothing bounds them, a body of digits can
-      // run to megabytes, and V8's own message repeats them verbatim, which is
-      // also why the engine error is not kept as the cause.
-      try {
-        return BigInt(digits);
-      } catch {
-        throw malformedTag(BIGINT_TAG, 'a decimal integer string');
-      }
+      return decodeBigint(digits);
     }
     case NUMBER_TAG: {
       switch (obj[NUMBER_TAG]) {
@@ -619,6 +609,35 @@ function decodeTagged(
       // Includes SERIALIZED_TAG: the PayloadCodec interprets that framing at
       // the root before this walker runs — anywhere else it is plain data.
       return NOT_TAGGED;
+  }
+}
+
+/**
+ * The string is measured before anything parses it.  `BigInt()` costs more
+ * than linear time in the length of a decimal string, and this walker is
+ * reached by request bodies, cluster frames and journal rows alike, so the
+ * digits are held to {@link MAX_BIGINT_DIGITS} — the decimal length of the
+ * widest magnitude the CBOR codec's bignum cap admits.  A leading minus sign
+ * does not count against it: `-2^8192`, that range's other end, has as many
+ * digits as `2^8192 - 1`.  The bound is on the string, which is what the parse
+ * pays for, so a padded spelling of an admitted value can still be too long.
+ *
+ * A string that is not an integer ('abc', '1.5') makes `BigInt()` throw a raw
+ * SyntaxError, so this tag used to escape untyped (#1449) — as did an
+ * `__error__` named after an `Object.prototype` member, until `rebuildError`
+ * read its constructor table by own properties.  Neither refusal echoes the
+ * digits: even bounded they run to thousands, and V8's own message repeats
+ * them verbatim, which is also why the engine error is not kept as the cause.
+ */
+function decodeBigint(digits: string): bigint {
+  const signLength = digits.startsWith('-') ? 1 : 0;
+  if (digits.length - signLength > MAX_BIGINT_DIGITS) {
+    throw malformedTag(BIGINT_TAG, `at most ${MAX_BIGINT_DIGITS} digits`);
+  }
+  try {
+    return BigInt(digits);
+  } catch {
+    throw malformedTag(BIGINT_TAG, 'a decimal integer string');
   }
 }
 
