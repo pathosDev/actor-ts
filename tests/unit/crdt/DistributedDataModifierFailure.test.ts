@@ -16,6 +16,7 @@ import { Cluster } from '../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../src/cluster/ClusterOptions.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
+import type { DistributedDataHandle } from '../../../src/crdt/DistributedData.js';
 import { DistributedDataId, GCounter } from '../../../src/crdt/index.js';
 import { ActorRestarted } from '../../../src/SystemMessages.js';
 import { assertCompletesWithin } from '../../util/AsyncAssertions.js';
@@ -55,14 +56,22 @@ async function startNode(name: string, port: number): Promise<Node> {
   return { cluster, log, restarts: () => restarts };
 }
 
-/** What `promise` rejected with; fails the test when it resolves or does not settle. */
-async function rejectionOf(promise: Promise<unknown>, label: string): Promise<unknown> {
+/**
+ * What `promise` rejected with; fails the test when it resolves or does not
+ * settle.  Returns only once the replicator has answered a later read, so a
+ * restart that followed the rejection is already counted: the replicator
+ * handles its own restart before its next message.
+ */
+async function rejectionOf(
+  data: DistributedDataHandle, promise: Promise<unknown>, label: string,
+): Promise<unknown> {
   const outcome = promise.then(
     () => ({ resolved: true as const, reason: undefined }),
     (reason: unknown) => ({ resolved: false as const, reason }),
   );
   const settled = await assertCompletesWithin(outcome, 2_000, label);
   if (settled.resolved) throw new Error(`${label}: resolved instead of rejecting`);
+  await assertCompletesWithin(data.getAsync('hits', { consistency: 'local' }), 2_000, 'a later read was answered');
   return settled.reason;
 }
 
@@ -87,6 +96,7 @@ describe('DistributedData: an update whose modifier throws', () => {
 
     const failure = new Error('modifier failed');
     const rejection = await rejectionOf(
+      data,
       data.updateAsync<GCounter>('hits', GCounter.empty, () => { throw failure; }),
       'the failed update settled',
     );
@@ -128,6 +138,7 @@ describe('DistributedData: an update whose modifier returns something that is no
     const held = encoded(data.get('hits'));
 
     const rejection = await rejectionOf(
+      data,
       data.updateAsync<GCounter>('hits', GCounter.empty, () => undefined as unknown as GCounter),
       'the failed update settled',
     );
@@ -145,6 +156,7 @@ describe('DistributedData: an update whose factory throws', () => {
 
     const failure = new Error('factory failed');
     const rejection = await rejectionOf(
+      data,
       data.updateAsync<GCounter>('fresh', () => { throw failure; }, (c) => c),
       'the failed update settled',
     );

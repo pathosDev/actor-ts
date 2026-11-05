@@ -447,6 +447,9 @@ describe('DistributedData: an update whose modifier fails on a held value of ano
       2_000,
       'the update settled',
     );
+    // A restart that followed the rejection would be counted by the time a
+    // later message is answered: the replicator handles its restart first.
+    await data.getAsync('cart', { consistency: 'local' });
 
     expect(outcome).toBeInstanceOf(TypeError);
     expect(node.restarts()).toBe(0);
