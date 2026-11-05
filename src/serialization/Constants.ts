@@ -37,18 +37,29 @@ export const MAX_NESTING_DEPTH = 256;
 export const MAX_BIGNUM_BYTES = 1024;
 
 /**
+ * The widest magnitude a {@link MAX_BIGNUM_BYTES}-byte bignum holds,
+ * `2^8192 - 1`.  A CBOR tag 2 carries `n` and a tag 3 carries `-1 - n`, so the
+ * integers the CBOR codec takes run from `-2^8192` to `2^8192 - 1`.  The JSON
+ * tree holds a decoded `__bigint__` to the same magnitude, measured the same
+ * way, so the two codecs accept the same integers.
+ */
+export const MAX_BIGNUM_MAGNITUDE: bigint = (1n << BigInt(MAX_BIGNUM_BYTES * 8)) - 1n;
+
+/**
  * Ceiling on the digits of a JSON tree `__bigint__` tag, a leading minus sign
  * aside: the decimal twin of {@link MAX_BIGNUM_BYTES}.  It is the length of
- * the widest magnitude that cap admits, `2^8192 - 1` written out — 2467
- * digits — and `-2^8192`, the other end of the CBOR range, is as long.
+ * {@link MAX_BIGNUM_MAGNITUDE} written out — 2467 digits — and `-2^8192`, the
+ * other end of the CBOR range, is as long.
  *
  * Here the cap is the fix rather than a backstop.  The JSON tree hands the
  * string to `BigInt()`, and parsing a decimal string costs more than linear
  * time in its length: measured on Bun 1.4.2, a million digits took a third of
  * a second and four million almost two.  So the string is measured before
- * anything parses it.
+ * anything parses it.  A digit count is coarser than the range — 2467 digits
+ * reach about nine times past `2^8192` — so the parsed value is checked
+ * against the magnitude as well.
  */
-export const MAX_BIGINT_DIGITS: number = ((1n << BigInt(MAX_BIGNUM_BYTES * 8)) - 1n).toString().length;
+export const MAX_BIGINT_DIGITS: number = MAX_BIGNUM_MAGNITUDE.toString().length;
 
 /**
  * First id a user-defined serializer may claim; 1..99 belong to the

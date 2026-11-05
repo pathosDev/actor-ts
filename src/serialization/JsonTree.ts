@@ -1,7 +1,7 @@
 import { BidirectionalMap } from '../util/BidirectionalMap.js';
 import { BidirectionalMultiMap } from '../util/BidirectionalMultiMap.js';
 import { ownedBytes } from './ByteViews.js';
-import { MAX_BIGINT_DIGITS } from './Constants.js';
+import { MAX_BIGINT_DIGITS, MAX_BIGNUM_BYTES, MAX_BIGNUM_MAGNITUDE } from './Constants.js';
 import { DEFAULT_MAX_NESTING_DEPTH } from './ReadConstraintsOptions.js';
 import { binaryBytesOf, binaryKindOf, rebuildBinaryView, rebuildError } from './RichTypes.js';
 import { SerializationError } from './Serializer.js';
@@ -613,19 +613,24 @@ function decodeTagged(
 }
 
 /**
- * The string is measured before anything parses it.  `BigInt()` costs more
+ * A `__bigint__` is held to the integers the CBOR codec's bignum cap admits,
+ * `-2^8192` to `2^8192 - 1`, so the two codecs accept the same values — and
+ * its string is measured before anything parses it.  `BigInt()` costs more
  * than linear time in the length of a decimal string, and this walker is
  * reached by request bodies, cluster frames and journal rows alike, so the
- * digits are held to {@link MAX_BIGINT_DIGITS} — the decimal length of the
- * widest magnitude the CBOR codec's bignum cap admits.  A leading minus sign
- * does not count against it: `-2^8192`, that range's other end, has as many
- * digits as `2^8192 - 1`.  The bound is on the string, which is what the parse
- * pays for, so a padded spelling of an admitted value can still be too long.
+ * digits are first held to {@link MAX_BIGINT_DIGITS}, the decimal length of
+ * that range's ends; a leading minus sign does not count against it.  The
+ * bound is on the string, which is what the parse pays for, so a padded
+ * spelling of an admitted value can still be too long.
+ *
+ * A digit count is coarser than the range, so the parsed value is checked
+ * too, the way a tag 3 stores it: as `-1 - n` below zero, which keeps
+ * `-2^8192` in and `2^8192` out, as in CBOR.
  *
  * A string that is not an integer ('abc', '1.5') makes `BigInt()` throw a raw
  * SyntaxError, so this tag used to escape untyped (#1449) — as did an
  * `__error__` named after an `Object.prototype` member, until `rebuildError`
- * read its constructor table by own properties.  Neither refusal echoes the
+ * read its constructor table by own properties.  No refusal echoes the
  * digits: even bounded they run to thousands, and V8's own message repeats
  * them verbatim, which is also why the engine error is not kept as the cause.
  */
@@ -634,11 +639,17 @@ function decodeBigint(digits: string): bigint {
   if (digits.length - signLength > MAX_BIGINT_DIGITS) {
     throw malformedTag(BIGINT_TAG, `at most ${MAX_BIGINT_DIGITS} digits`);
   }
+  let value: bigint;
   try {
-    return BigInt(digits);
+    value = BigInt(digits);
   } catch {
     throw malformedTag(BIGINT_TAG, 'a decimal integer string');
   }
+  if ((value < 0n ? -1n - value : value) > MAX_BIGNUM_MAGNITUDE) {
+    const bits = MAX_BIGNUM_BYTES * 8;
+    throw malformedTag(BIGINT_TAG, `an integer from -2^${bits} to 2^${bits} - 1`);
+  }
+  return value;
 }
 
 function decodeError(inner: unknown, context: DecodeContext, depth: number): Error {

@@ -1,8 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { CborDecoder, CborEncoder } from '../../../src/serialization/CborCodec.js';
+import { CborDecodeError, CborDecoder, CborEncoder } from '../../../src/serialization/CborCodec.js';
 import { CborSerializer } from '../../../src/serialization/CborSerializer.js';
+import { MAX_BIGNUM_BYTES } from '../../../src/serialization/Constants.js';
 import { decodeJsonTree, encodeJsonTree, TYPE_TAGS } from '../../../src/serialization/JsonTree.js';
 import { JsonSerializer } from '../../../src/serialization/JsonSerializer.js';
+import { SerializationError } from '../../../src/serialization/Serializer.js';
 import { BidirectionalMap } from '../../../src/util/BidirectionalMap.js';
 import { BidirectionalMultiMap } from '../../../src/util/BidirectionalMultiMap.js';
 
@@ -205,6 +207,48 @@ describe('Rich-type parity — both codecs refuse the same values', () => {
     expect(viaCbor({ left: shared, right: shared }))
       .toStrictEqual(viaJsonTree({ left: shared, right: shared }));
   });
+});
+
+/**
+ * CBOR caps a bignum's magnitude at `MAX_BIGNUM_BYTES`.  A tag 2 carries `n`
+ * and a tag 3 carries `-1 - n`, so the integers it takes run from `-2^bits` to
+ * `2^bits - 1`, and the JSON tree holds its `__bigint__` values to the same
+ * range (#967).  Each value goes through its codec's own encoder, which writes
+ * any width, so a refusal here is the decoder's — the side a peer's payload
+ * meets.
+ */
+describe('Rich-type parity — both codecs take the same bigint range', () => {
+  const bits = MAX_BIGNUM_BYTES * 8;
+  const limit = 1n << BigInt(bits);
+  const widestDigits = (limit - 1n).toString().length;
+
+  /** Each codec refuses with its own error type; anything else fails the test. */
+  const decodes = (roundTrip: (value: unknown) => unknown, value: bigint): boolean => {
+    let decoded: unknown;
+    try {
+      decoded = roundTrip(value);
+    } catch (e) {
+      if (e instanceof SerializationError || e instanceof CborDecodeError) return false;
+      throw e;
+    }
+    expect(decoded).toBe(value);
+    return true;
+  };
+
+  const cases: ReadonlyArray<readonly [string, bigint, boolean]> = [
+    [`2^${bits} - 1, the largest`, limit - 1n, true],
+    [`-2^${bits}, the smallest`, -limit, true],
+    [`2^${bits}, one past the largest`, limit, false],
+    [`-2^${bits} - 1, one past the smallest`, -limit - 1n, false],
+    [`10^${widestDigits} - 1, no longer than the largest`, 10n ** BigInt(widestDigits) - 1n, false],
+  ];
+
+  for (const [what, value, accepted] of cases) {
+    test(`${what}: ${accepted ? 'accepted' : 'refused'} by both`, () => {
+      expect(decodes(viaJsonTree, value)).toBe(accepted);
+      expect(decodes(viaCbor, value)).toBe(accepted);
+    });
+  }
 });
 
 describe('Rich-type parity — through the public serializers', () => {

@@ -239,7 +239,8 @@ describe('JsonTree — literal escape and decode tightening', () => {
  * so the digit string of a `__bigint__` is bounded before `BigInt()` sees it.
  * The bound is the decimal length of the widest integers the CBOR codec's
  * bignum cap admits — 1024 bytes of magnitude, `-2^8192` up to `2^8192 - 1` —
- * which is 2467 digits at both ends (#967).
+ * which is 2467 digits at both ends, and the parsed value is then held to that
+ * range, so the two codecs accept the same integers (#967).
  */
 describe('JsonTree — the __bigint__ digit bound', () => {
   const largest = (1n << 8192n) - 1n;
@@ -298,6 +299,21 @@ describe('JsonTree — the __bigint__ digit bound', () => {
     const elapsed = performance.now() - started;
     expect(error).toBeInstanceOf(SerializationError);
     expect(elapsed).toBeLessThan(50);
+  });
+
+  // 2467 digits reach up to 10^2467 - 1, about nine times 2^8192.  The digit
+  // bound only keeps the parse cheap; the value is then held to the CBOR
+  // range itself, whose negative end is one further out than its positive
+  // one because a tag 3 carries -1 - n.
+  test('a value past either end is refused even when it has no more digits', () => {
+    const outside = [largest + 1n, smallest - 1n, 10n ** 2467n - 1n, -(10n ** 2467n - 1n)];
+    for (const value of outside) {
+      expect(value.toString().replace('-', '').length).toBeLessThanOrEqual(2467);
+      const error = thrownBy(() => decodeJsonTree({ __bigint__: value.toString() }));
+      expect(error).toBeInstanceOf(SerializationError);
+      expect((error as Error).message)
+        .toBe('Malformed __bigint__ tag: expected an integer from -2^8192 to 2^8192 - 1');
+    }
   });
 
   test('the refusal names the bound, not the digits, and keeps no cause', () => {
