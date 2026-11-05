@@ -125,12 +125,13 @@ async function handledSoFar(peer: WirePeer, node: Node, data: DistributedDataHan
   });
 }
 
-/** The warnings that name `key` together with both CRDT kinds. */
+/** The warnings that name `key` and both CRDT kinds, each in its role. */
 function kindWarnings(node: Node, key: string, held: string, received: string): string[] {
   return node.log.records
     .filter((record) => record.level === 'warn')
     .map((record) => record.message)
-    .filter((message) => message.includes(`"${key}"`) && message.includes(held) && message.includes(received));
+    .filter((message) => message.includes(`"${key}"`)
+      && message.includes(`it is a ${received} where the held value is a ${held}`));
 }
 
 function encoded(value: { toJSON(): unknown } | undefined): string {
@@ -157,6 +158,7 @@ describe('DistributedData: a gossip entry of another CRDT kind', () => {
     // Two values dropped, one line about them: the second arrived inside the
     // first one's quiet period.
     expect(kindWarnings(node, 'hits', 'GCounter', 'ORSet')).toHaveLength(1);
+    expect(kindWarnings(node, 'hits', 'GCounter', 'ORSet')[0]).not.toContain('ORMap entry');
     expect(registry.counter('distributed_data_dropped_values_total').value).toBe(2);
   });
 
@@ -179,8 +181,11 @@ describe('DistributedData: a gossip entry of another CRDT kind', () => {
     const node = await startNode('ddata-kind-nested', 46_805);
     const data = node.cluster.system.extension(DistributedDataId).start(node.cluster);
     const self = data.selfReplicaId();
+    // The held map has an entry the other lacks, so it is the larger of the two.
     await data.updateAsync<ORMap<string, GCounter>>('totals', ORMap.empty,
-      (map) => map.put(self, 'k', GCounter.empty().increment(self, 1)));
+      (map) => map
+        .put(self, 'k', GCounter.empty().increment(self, 1))
+        .put(self, 'j', GCounter.empty().increment(self, 1)));
     const held = encoded(data.get('totals'));
 
     const peer = await wirePeer('ddata-kind-nested-peer', 46_806);
@@ -192,6 +197,7 @@ describe('DistributedData: a gossip entry of another CRDT kind', () => {
     expect(node.restarts()).toBe(0);
     expect(encoded(data.get('totals'))).toBe(held);
     expect(kindWarnings(node, 'totals', 'GCounter', 'LWWRegister')).toHaveLength(1);
+    expect(kindWarnings(node, 'totals', 'GCounter', 'LWWRegister')[0]).toContain('in an ORMap entry both hold');
   });
 
   test('inside an ORMap entry the held map has removed still leaves the held map in place', async () => {
@@ -213,6 +219,7 @@ describe('DistributedData: a gossip entry of another CRDT kind', () => {
     expect(node.restarts()).toBe(0);
     expect(encoded(data.get('totals'))).toBe(held);
     expect(kindWarnings(node, 'totals', 'GCounter', 'LWWRegister')).toHaveLength(1);
+    expect(kindWarnings(node, 'totals', 'GCounter', 'LWWRegister')[0]).toContain('in an ORMap entry both hold');
   });
 
   test('inside an ORMap entry is not taken over by an empty register there either', async () => {
@@ -231,6 +238,24 @@ describe('DistributedData: a gossip entry of another CRDT kind', () => {
 
     expect(encoded(data.get('slots'))).toBe(held);
     expect(kindWarnings(node, 'slots', 'LWWRegister', 'GCounter')).toHaveLength(1);
+    expect(kindWarnings(node, 'slots', 'LWWRegister', 'GCounter')[0]).toContain('in an ORMap entry both hold');
+  });
+});
+
+describe('DistributedData: the kind check over ORMap entries', () => {
+  test('finds each map\'s entry table, removed entries included, where it reads it', () => {
+    // The check pairs entries from the maps' own tables.  Were the table to
+    // move, it would fall back to encoding both maps on every merge: still
+    // right, at about three times the cost of the merge alone.
+    const map = ORMap.empty<string, GCounter>()
+      .put('r', 'k', GCounter.empty().increment('r', 1))
+      .remove('k');
+    const table = (map as unknown as { readonly entries?: unknown }).entries;
+
+    expect(table).toBeInstanceOf(Map);
+    const entries = [...(table as ReadonlyMap<string, { readonly value: unknown }>).values()];
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.value).toBeInstanceOf(GCounter);
   });
 });
 

@@ -200,14 +200,68 @@ type CrdtKindConflict = {
  *
  * `ORMap` is the one kind that holds other CRDTs, and its merge pairs up the
  * entries both sides hold by id, removed ones included.  The check descends
- * into exactly those pairs, through the encoded form because that is where
- * the removed entries are visible.  Two values of one class of any other kind
- * cannot disagree, which keeps the path every ordinary merge takes to a single
- * comparison with no encoding.
+ * into exactly those pairs, read from the two maps' entry tables.  No public
+ * accessor shows a removed entry; the encoded form does, but encoding both
+ * maps on every merge measured at about twice the cost of the merge itself
+ * for 1 000 and 10 000 entries, where walking the tables adds a few percent.
+ * A map whose table is not where {@link ormapEntryTable} looks, and two
+ * values of one kind built from different class objects, take the encoded
+ * form instead — slower, never wrong.  Two values of one class of any other
+ * kind cannot disagree, which keeps the path every ordinary merge takes to a
+ * single comparison.
  */
-function crdtKindConflict(held: Crdt<any>, received: Crdt<any>): CrdtKindConflict | null {
-  if (held.constructor === received.constructor && !(held instanceof ORMap)) return null;
-  return encodedKindConflict(held.toJSON(), received.toJSON(), false);
+function crdtKindConflict(held: Crdt<any>, received: Crdt<any>, nested = false): CrdtKindConflict | null {
+  if (held.constructor === received.constructor) {
+    if (!(held instanceof ORMap)) return null;
+    const conflict = entryTableKindConflict(held, received as ORMap<unknown, Crdt<any>>);
+    if (conflict !== undefined) return conflict;
+  }
+  return encodedKindConflict(held.toJSON(), received.toJSON(), nested);
+}
+
+/**
+ * The kind conflict among the entries two ORMaps both hold, or `null` — and
+ * `undefined` when either entry table is not where it is expected, so the
+ * caller asks the encoded form instead.
+ *
+ * It walks the smaller table and looks each id up in the larger one, which
+ * finds the same pairs as walking either.
+ */
+function entryTableKindConflict(
+  held: ORMap<unknown, Crdt<any>>,
+  received: ORMap<unknown, Crdt<any>>,
+): CrdtKindConflict | null | undefined {
+  const heldTable = ormapEntryTable(held);
+  const receivedTable = ormapEntryTable(received);
+  if (heldTable === null || receivedTable === null) return undefined;
+  const heldIsSmaller = heldTable.size <= receivedTable.size;
+  const [smaller, larger] = heldIsSmaller ? [heldTable, receivedTable] : [receivedTable, heldTable];
+  for (const [id, entry] of smaller) {
+    const counterpart = larger.get(id);
+    if (counterpart === undefined) continue;
+    const conflict = heldIsSmaller
+      ? crdtKindConflict(entry.value, counterpart.value, true)
+      : crdtKindConflict(counterpart.value, entry.value, true);
+    if (conflict !== null) return conflict;
+  }
+  return null;
+}
+
+/**
+ * An ORMap's entry table — every entry it holds by id, removed ones included
+ * — or `null` when it is not where this looks.
+ *
+ * `ORMap` keeps the table private and offers no accessor that includes
+ * removed entries, so this reads it by name, and falls back rather than
+ * fails when it is gone.  `DistributedDataMergeTypeMismatch.test.ts` checks
+ * the table is still there, so the walk cannot quietly turn into an encode of
+ * both maps on every merge.
+ */
+function ormapEntryTable(
+  map: ORMap<unknown, Crdt<any>>,
+): ReadonlyMap<string, { readonly value: Crdt<any> }> | null {
+  const table = (map as unknown as { readonly entries?: unknown }).entries;
+  return table instanceof Map ? table as ReadonlyMap<string, { readonly value: Crdt<any> }> : null;
 }
 
 function encodedKindConflict(held: unknown, received: unknown, nested: boolean): CrdtKindConflict | null {
