@@ -603,9 +603,9 @@ type SharedView = {
   listeners: Map<string, Map<SubscriberCallback, SubscriberCallbackRegistration>>;
   /**
    * Per key, per subscriber path, the actor subscriptions.  Held here with the
-   * listeners rather than on the actor: a mutator that throws restarts the
-   * replicator, the restart builds a new instance, and only the view outlives
-   * it — the watches the cell holds survive too, so the two stay in step.
+   * listeners rather than on the actor: a failure restarts the replicator, the
+   * restart builds a new instance, and only the view outlives it — the
+   * watches the cell holds survive too, so the two stay in step.
    */
   subscriberSlots: Map<string, Map<string, SubscriberSlot>>;
   /** Per subscriber path, every key it holds a slot for. */
@@ -1738,9 +1738,8 @@ class DistributedDataActor extends Actor<ActorMessage> {
     // Before the read, not after: learning the identity can replace the
     // stored value with a re-keyed copy of itself.
     this.learnIdentity(message.key, message.factory);
-    const current = this.view.state.get(message.key) ?? message.factory();
-    const next = message.mutator(current);
-    this.applyMerged(message.key, current, next);
+    const next = this.applyModifier(message);
+    if (next === null) return;
     if (!message.quorum) return;
 
     // Quorum write: self-vote counts as the first ack.  If only self
@@ -1788,6 +1787,48 @@ class DistributedDataActor extends Actor<ActorMessage> {
     for (const peer of peers) {
       this.cluster.transport.send(peer.address, wire as unknown as WireMessage);
     }
+  }
+
+  /**
+   * Run the caller's factory and modifier and apply what they return — or,
+   * when either throws, report the failure to the caller and return `null`,
+   * with the key keeping the value it holds.
+   *
+   * Both are the caller's code, and a modifier can fail on the value it is
+   * handed as well as on its own.  A throw used to escape into the
+   * replicator: the update went down with the failed message, so an
+   * `updateAsync` never settled, and the replicator restarted — and the
+   * restart budget turns ten of those a minute into a stopped replicator.
+   * The failure is the caller's, so it goes to the caller: a quorum update's
+   * promise rejects with it, and an update nobody awaits is logged once, at
+   * error, naming the key.
+   *
+   * Applying is part of the guarded step because a modifier that returns
+   * something other than a CRDT fails there, in the encoding `applyMerged`
+   * does before it stores anything — the same failure, reported the same way.
+   */
+  private applyModifier(message: UpdateMessage): Crdt<any> | null {
+    try {
+      const current = this.view.state.get(message.key) ?? message.factory();
+      const next = message.mutator(current);
+      this.applyMerged(message.key, current, next);
+      return next;
+    } catch (e) {
+      this.reportFailedUpdate(message, e);
+      return null;
+    }
+  }
+
+  private reportFailedUpdate(message: UpdateMessage, failure: unknown): void {
+    if (message.quorum !== undefined) {
+      message.quorum.reject(failure as Error);
+      return;
+    }
+    this.log.error(
+      `DistributedData: the update of "${message.key}" failed in its factory or modifier `
+      + `and was not applied; the key keeps the value it had`,
+      failure,
+    );
   }
 
   private onRead(message: ReadMessage): void {

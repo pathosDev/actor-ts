@@ -416,6 +416,62 @@ describe('DistributedData: the warning about a value of another CRDT kind', () =
   });
 });
 
+describe('DistributedData: an update whose modifier fails on a held value of another CRDT kind', () => {
+  /** A key holding a GCounter, and an update written for an ORSet. */
+  async function heldOfAnotherKind(name: string, port: number): Promise<{
+    readonly node: Node;
+    readonly data: DistributedDataHandle;
+    readonly held: string;
+    readonly addToSet: () => Promise<void>;
+    readonly addToSetUnawaited: () => void;
+  }> {
+    const node = await startNode(name, port);
+    const data = node.cluster.system.extension(DistributedDataId).start(node.cluster);
+    const peer = await wirePeer(`${name}-peer`, port + 1);
+    // The key holds a value of another kind than the update's factory makes.
+    gossip(peer, node.cluster.selfAddress, { cart: GCounter.empty().increment('elsewhere', 1).toJSON() });
+    await awaitCondition(() => data.get('cart') !== undefined, { label: 'the key holds a value' });
+    const self = data.selfReplicaId();
+    const addToSet = (): Promise<void> =>
+      data.updateAsync<ORSet<string>>('cart', () => ORSet.empty<string>(), (set) => set.add(self, 'x'));
+    const addToSetUnawaited = (): void =>
+      data.update<ORSet<string>>('cart', () => ORSet.empty<string>(), (set) => set.add(self, 'x'));
+    return { node, data, held: encoded(data.get('cart')), addToSet, addToSetUnawaited };
+  }
+
+  test('is rejected, and the replicator keeps running with the held value', async () => {
+    const { node, data, held, addToSet } = await heldOfAnotherKind('ddata-kind-modifier', 46_871);
+
+    const outcome = await assertCompletesWithin(
+      addToSet().then(() => 'resolved', (reason: unknown) => reason),
+      2_000,
+      'the update settled',
+    );
+
+    expect(outcome).toBeInstanceOf(TypeError);
+    expect(node.restarts()).toBe(0);
+    expect(encoded(data.get('cart'))).toBe(held);
+  });
+
+  test('twelve in a row never use up the restart budget, and each is logged once', async () => {
+    const { node, data, addToSetUnawaited } = await heldOfAnotherKind('ddata-kind-modifier-budget', 46_881);
+    // Ten restarts a minute is the supervisor's budget; an eleventh failure
+    // would stop the replicator, and the update below would never be handled.
+    for (let round = 0; round < 12; round++) addToSetUnawaited();
+
+    // An update written for the kind the key holds still goes through.
+    await assertCompletesWithin(
+      data.updateAsync<GCounter>('cart', GCounter.empty, (c) => c.increment(data.selfReplicaId(), 2)),
+      2_000,
+      'an update of the held kind settled',
+    );
+    expect(data.get<GCounter>('cart')?.value()).toBe(3);
+    expect(node.restarts()).toBe(0);
+    const errors = node.log.records.filter((record) => record.level === 'error' && record.message.includes('"cart"'));
+    expect(errors).toHaveLength(12);
+  });
+});
+
 describe('DistributedData: an update whose modifier returns another CRDT kind', () => {
   test('replaces the value without restarting the replicator', async () => {
     const node = await startNode('ddata-kind-local', 46_861);
