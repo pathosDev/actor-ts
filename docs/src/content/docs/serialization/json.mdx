@@ -158,6 +158,27 @@ Journal and snapshot rows are deliberately exempt.  Those bytes were written by
 actor-ts itself, so a tightened ceiling there would turn recoverable history
 into unreadable history.
 
+One bound is not configurable, and it holds for every encode and every decode,
+journal and snapshot rows included: a `bigint` travels only within the range
+the CBOR serializer's 1 KiB bignum cap admits, `-2^8192` to `2^8192 - 1`, so
+the two serializers carry the same integers.  An integer outside it is refused
+where it is written — `toBinary` throws, `persist()` rejects without storing
+anything, a remote `tell` drops that one message and logs it — rather than
+becoming a row the next recovery fails on.  A document that carries one anyway
+is refused when it is read.  The digit string is measured before it is parsed
+— at most 2467 digits, the length of `2^8192 - 1`, after an optional minus sign
+— because parsing decimal digits costs more than linear time in their count:
+measured on Bun 1.4, a million digits took a third of a second and four
+million almost two.  Only the spelling the encoder writes into a `__bigint__`
+is parsed at all, a minus sign only below zero and then decimal digits without
+a leading zero, so `+5`, `007`, `-0`, whitespace and hex are refused on every
+runtime alike.  The parsed value is then held to the range itself, since 2467
+digits reach about nine times past it.  Every refusal is a
+`SerializationError`, and the cost that remains grows only in step with the
+document, which `max-document-bytes` bounds.  An integer wider than 8192 bits
+travels as a string field; check its length before your own code hands it to
+`BigInt()`.
+
 ## When to switch to something else
 
 ```

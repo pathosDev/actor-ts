@@ -8788,6 +8788,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   back in that number's own spelling unless it is quoted inside the
   variable.
 
+- **A DistributedData replicator restart no longer freezes the durable
+  record.** A restart while a durable save was still in flight — a modifier
+  that threw caused one until this release — used to build a second writer
+  of the replica's durable record: the save still out from before the
+  restart then landed past the revision the new writer had loaded, every
+  later save failed the optimistic-concurrency check with a "durable save
+  failed" warning, and the next start lost every write made since the
+  restart. One writer and its save coalescing now outlive a restart, and
+  `DurableDistributedDataStore.load` no longer moves the cached revision
+  backwards when a save of its own lands while it reads.
+
+- **A DistributedData update whose factory or modifier throws now fails only
+  that update.** `updateAsync` rejects with the error it threw, an update
+  nobody awaits logs it once at error naming the key, and the key keeps the
+  value it had. The throw used to escape into the replicator, where it went
+  down with the message — an `updateAsync` never settled — and restarted the
+  replicator; ten such failures in a minute stopped it for good. A modifier
+  that returns something other than a CRDT is reported the same way.
+
 ### Removed
 
 - **BREAKING — `OtelLoggerAdapterOptions` is gone: `otelLogger(options)` now
@@ -11011,6 +11030,53 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   parameters a request carries: a name that was neither sent nor bound is
   `undefined`, or a missing path parameter, never a member the record
   inherits such as `constructor` or `toString`.
+
+- **An `MqttActor` or a `WebsocketClientActor` no longer takes a decoded
+  message body for one of its own signals** (#1431). Both actors dispatched
+  their internal signals on `kind` alone, and an actor at a `/user` path
+  receives whatever a remote node addresses to it, so a body such as
+  `{ kind: 'mqtt-connected' }` ran the handler of the signal it spelled.
+  Forged `mqtt-inbound`, `mqtt-connected` and `mqtt-disconnected` bodies
+  handed the peer's message to `onMessage` and to every fan-out target on a
+  matching filter, failing and restarting the actor (a broker disconnect and
+  reconnect) as soon as a handler read the payload, or ran `onConnected` or
+  `onDisconnected` with no change to the connection. Forged
+  `websocket-client-inbound`, `websocket-client-invalid`,
+  `websocket-client-connected` and `websocket-client-disconnected` bodies
+  ran `onMessage`, `onInvalidMessage`, `onConnected` or `onDisconnected`
+  with the peer's values, so a client that sends on connect sent again. Each
+  signal now has to carry a mark that only the framework's own signal
+  constructors set, a property keyed by a module-private symbol that no
+  decoder can produce, so such a body reaches `onSelfMessage` and is
+  declined as a dead letter. The commands are unchanged: `publish`,
+  `subscribe` and `unsubscribe` on an `MqttActor`, and `websocketSend(...)`
+  on a client, still work for anyone who holds the ref. It is the
+  requirement the WebSocket hub's signals already carry.
+
+- **BREAKING — A `bigint` now crosses either serializer only within
+  `-2^8192` to `2^8192 - 1`, checked before anything is parsed or written**
+  (#967). The JSON tree decoder takes three steps. It refuses a `__bigint__`
+  digit string longer than 2467 digits (a leading minus sign aside) without
+  parsing it. It parses only the spelling the encoder writes, a minus sign
+  only below zero and then decimal digits without a leading zero, so `''`,
+  `-`, `+5`, `007`, `-0`, whitespace and hex are refused on every runtime
+  alike (Bun's `BigInt()` used to read a lone `-` as `0n`). It refuses a
+  parsed value outside the range. `JsonSerializer`, the cluster wire and the
+  persistence payload codec therefore accept exactly what the CBOR codec's 1
+  KiB bignum cap admits. Both encoders refuse the same range where a value
+  is written: `toBinary` throws, `persist()` rejects without storing
+  anything, and a remote `tell` drops that one message and logs it. Before,
+  a SQLite journal kept such a row, and every later recovery of that entity
+  failed on it. Parsing a decimal string costs more than linear time in its
+  length, and nothing bounded it: measured on Bun 1.4.2, a
+  four-million-digit tag in a request body held the decode for almost two
+  seconds. Every refusal is a `SerializationError` (a `CborEncodeError` from
+  the CBOR encoder), and none echoes the digits.
+
+  **Migration.** Carry an integer wider than 8192 bits as a decimal string
+  field and convert it with `BigInt()` after checking its length (CBOR caps
+  bignums at the same 8192 bits), and write a `__bigint__` by hand only as
+  `String(value)` would.
 
 ## [0.17.0] — 2026-08-29
 

@@ -1,6 +1,7 @@
 import { BidirectionalMap } from '../util/BidirectionalMap.js';
 import { BidirectionalMultiMap } from '../util/BidirectionalMultiMap.js';
 import { ownedBytes } from './ByteViews.js';
+import { MAX_BIGINT_DIGITS, MAX_BIGNUM_BYTES, MAX_BIGNUM_MAGNITUDE } from './Constants.js';
 import { DEFAULT_MAX_NESTING_DEPTH } from './ReadConstraintsOptions.js';
 import { binaryBytesOf, binaryKindOf, rebuildBinaryView, rebuildError } from './RichTypes.js';
 import { SerializationError } from './Serializer.js';
@@ -50,6 +51,12 @@ const BIDIRECTIONAL_MAP_TAG = '__bidirectionalmap__';
  */
 const BIDIRECTIONAL_MULTI_MAP_TAG = '__bidirectionalmultimap__';
 const BIGINT_TAG = '__bigint__';
+/**
+ * The one spelling the encoder writes into a `__bigint__`, `String(value)`: a
+ * minus sign only below zero, then decimal digits without a leading zero, `0`
+ * itself aside.  `String(-0n)` is `'0'`, so `-0` is not among them.
+ */
+const CANONICAL_BIGINT_PATTERN = /^(?:0|-?[1-9][0-9]*)$/;
 /** Non-finite numbers and `-0` — plain JSON silently turns them into `null` / `0`. */
 const NUMBER_TAG = '__number__';
 /**
@@ -202,7 +209,7 @@ function encodeNode(value: unknown, context: EncodeContext, allowToJson: boolean
   }
   if (value === null) return null;
   if (typeof value === 'number') return encodeNumber(value);
-  if (typeof value === 'bigint') return { [BIGINT_TAG]: value.toString() };
+  if (typeof value === 'bigint') return encodeBigint(value, context);
   if (value instanceof Date) return { [DATE_TAG]: value.toISOString() };
   if (value instanceof Uint8Array) return { [BYTES_TAG]: toBase64(value) };
   // Ahead of the `Map` branch on purpose.  `BidirectionalMap` only implements
@@ -248,6 +255,22 @@ function encodeNumber(value: number): unknown {
   if (value === -Infinity) return { [NUMBER_TAG]: '-infinity' };
   if (Object.is(value, -0)) return { [NUMBER_TAG]: '-0' };
   return value;
+}
+
+/**
+ * Both decoders refuse an integer outside `-2^8192` to `2^8192 - 1` — this
+ * walker's {@link decodeBigint} and the CBOR codec's bignum cap — so the
+ * encoder refuses it too.  Written, it would be a journal row every recovery
+ * fails on, or a frame the receiving peer answers by closing the connection.
+ * Refused here, the error reaches whoever called `persist()`, `tell` or
+ * `toBinary` while they can still act on it.  The message names the range
+ * and the path, never the digits.
+ */
+function encodeBigint(value: bigint, context: EncodeContext): unknown {
+  if (outsideBignumRange(value)) {
+    throw new SerializationError(`bigint outside ${bignumRange()} at ${formatPath(context.path)}`);
+  }
+  return { [BIGINT_TAG]: value.toString() };
 }
 
 function enterContainer(container: object, context: EncodeContext): void {
@@ -559,18 +582,7 @@ function decodeTagged(
     case BIGINT_TAG: {
       const digits = obj[BIGINT_TAG];
       if (typeof digits !== 'string') throw malformedTag(BIGINT_TAG, 'a string');
-      // A string that is not an integer ('abc', '1.5') makes BigInt() throw a
-      // raw SyntaxError, so this arm escaped untyped (#1449) — as did an
-      // `__error__` named after an `Object.prototype` member, until
-      // `rebuildError` read its constructor table by own properties.
-      // The digits are not echoed: nothing bounds them, a body of digits can
-      // run to megabytes, and V8's own message repeats them verbatim, which is
-      // also why the engine error is not kept as the cause.
-      try {
-        return BigInt(digits);
-      } catch {
-        throw malformedTag(BIGINT_TAG, 'a decimal integer string');
-      }
+      return decodeBigint(digits);
     }
     case NUMBER_TAG: {
       switch (obj[NUMBER_TAG]) {
@@ -620,6 +632,45 @@ function decodeTagged(
       // the root before this walker runs — anywhere else it is plain data.
       return NOT_TAGGED;
   }
+}
+
+/**
+ * A `__bigint__` is held to the integers the CBOR codec's bignum cap admits,
+ * `-2^8192` to `2^8192 - 1`, so the two codecs accept the same values — and
+ * its string is measured before anything parses it.  `BigInt()` costs more
+ * than linear time in the length of a decimal string, and this walker is
+ * reached by request bodies, cluster frames and journal rows alike, so the
+ * digits are first held to {@link MAX_BIGINT_DIGITS}, the decimal length of
+ * that range's ends; a leading minus sign does not count against it.  The
+ * bound is on the string, which is what the parse pays for, so a padded
+ * spelling of an admitted value can still be too long.
+ *
+ * Only the spelling the encoder writes is parsed at all
+ * ({@link CANONICAL_BIGINT_PATTERN}).  `BigInt()` reads far more — `''` as
+ * `0n`, whitespace, a `+`, hex, octal and binary prefixes, leading zeros —
+ * and not the same set on every engine: Bun returns `0n` for a lone `-` or
+ * `+`, where Node throws.  Checked before the parse, the pattern also leaves
+ * `BigInt()` nothing to throw on, which is how a string such as 'abc' once
+ * escaped this tag untyped (#1449).
+ *
+ * A digit count is coarser than the range, so the parsed value is checked
+ * too, the way a tag 3 stores it: as `-1 - n` below zero, which keeps
+ * `-2^8192` in and `2^8192` out, as in CBOR.  No refusal echoes the digits:
+ * even bounded they run to thousands.
+ */
+function decodeBigint(digits: string): bigint {
+  const signLength = digits.startsWith('-') ? 1 : 0;
+  if (digits.length - signLength > MAX_BIGINT_DIGITS) {
+    throw malformedTag(BIGINT_TAG, `at most ${MAX_BIGINT_DIGITS} digits`);
+  }
+  if (!CANONICAL_BIGINT_PATTERN.test(digits)) {
+    throw malformedTag(BIGINT_TAG, 'a decimal integer string');
+  }
+  const value = BigInt(digits);
+  if (outsideBignumRange(value)) {
+    throw malformedTag(BIGINT_TAG, `an integer from ${bignumRange()}`);
+  }
+  return value;
 }
 
 function decodeError(inner: unknown, context: DecodeContext, depth: number): Error {
@@ -697,6 +748,21 @@ function defineOwnProperty(target: Record<string, unknown>, key: string, value: 
 
 function malformedTag(tag: string, expected: string): SerializationError {
   return new SerializationError(`Malformed ${tag} tag: expected ${expected}`);
+}
+
+/**
+ * Whether `value` lies outside the integers both codecs carry, measured the
+ * way a CBOR tag 3 stores a negative — as `-1 - n` — which is why the
+ * negative end, `-2^8192`, is one further out than the positive one.
+ */
+function outsideBignumRange(value: bigint): boolean {
+  return (value < 0n ? -1n - value : value) > MAX_BIGNUM_MAGNITUDE;
+}
+
+/** That range written out for a message: `-2^8192 to 2^8192 - 1`. */
+function bignumRange(): string {
+  const bits = MAX_BIGNUM_BYTES * 8;
+  return `-2^${bits} to 2^${bits} - 1`;
 }
 
 function formatPath(path: ReadonlyArray<string | number>): string {

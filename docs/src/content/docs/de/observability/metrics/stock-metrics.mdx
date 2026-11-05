@@ -397,7 +397,7 @@ und winzig, die fünf Familien tragen also insgesamt acht Serien bei:
 | `distributed_data_quorum_pending` | gauge | — | Quorum-Reads und -Writes, die auf dieser Replika gerade auf Peer-Antworten warten. |
 | `distributed_data_quorum_timeouts_total` | counter | `operation` | Quorum-Requests, die ihre Deadline erreichten, bevor genug Replikas antworteten. |
 | `distributed_data_quorum_rejected_total` | counter | `operation` | Quorum-Requests, die abgelehnt wurden, weil `max-pending-quorum-requests` erreicht war. |
-| `distributed_data_dropped_values_total` | counter | — | Von Peers gelieferte CRDT-Werte, die diese Replika nicht dekodieren wollte. |
+| `distributed_data_dropped_values_total` | counter | — | CRDT-Werte, die diese Replika verworfen hat: von Peers gelieferte, die sie nicht dekodieren konnte, und solche einer anderen CRDT-Art als der Wert, den sie für den Key hält. |
 | `distributed_data_gossip_skipped_keys_total` | counter | `reason` | Lokale Keys, die ein Gossip-Frame nicht tragen konnte — über dem Frame-Budget oder nicht serialisierbar. |
 
 `operation` ist `write` oder `read` — diese beiden Werte und keine
@@ -413,8 +413,10 @@ anderen. `reason` ist `oversize` oder `unserialisable`, ebenso.
   rechtzeitig. Siehe
   [Quorum-Reads und -Writes](/de/distributed-data/quorum-reads-writes/).
 - `distributed_data_dropped_values_total` ist gar kein Tuning-Signal —
-  ein Peer schickt Payloads, die diese Replika nicht dekodieren kann,
-  also ein kaputter oder feindlicher Knoten.
+  es zählt Werte, die diese Replika nicht verwenden konnte: Payloads, die
+  sie nicht dekodieren kann, also ein kaputter oder feindlicher Knoten,
+  und Werte einer anderen CRDT-Art als der, die sie für den Key hält,
+  also zwei Replikas, die sich über die Art des Keys uneinig sind.
 - `distributed_data_gossip_skipped_keys_total{reason="oversize"}` über
   null heißt, dass ein Key **nicht konvergiert**: seine eigene Kodierung
   überschreitet `max-gossip-bytes` (oder das Wire-Cap, auf das es

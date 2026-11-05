@@ -366,7 +366,7 @@ and tiny, so the five families contribute eight series in total:
 | `distributed_data_quorum_pending` | gauge | — | Quorum reads and writes currently awaiting peer replies on this replica. |
 | `distributed_data_quorum_timeouts_total` | counter | `operation` | Quorum requests that hit their deadline before enough replicas replied. |
 | `distributed_data_quorum_rejected_total` | counter | `operation` | Quorum requests refused because `max-pending-quorum-requests` was reached. |
-| `distributed_data_dropped_values_total` | counter | — | Peer-supplied CRDT values this replica refused to decode. |
+| `distributed_data_dropped_values_total` | counter | — | CRDT values this replica dropped: peer-supplied ones it could not decode, and any of another CRDT kind than the value it holds for the key. |
 | `distributed_data_gossip_skipped_keys_total` | counter | `reason` | Local keys a gossip frame could not carry — over the frame budget, or unserialisable. |
 
 `operation` is `write` or `read` — those two values and no others.
@@ -382,8 +382,10 @@ and tiny, so the five families contribute eight series in total:
   in time.  See
   [Quorum reads and writes](/distributed-data/quorum-reads-writes/).
 - `distributed_data_dropped_values_total` is not a tuning signal at all
-  — a peer is sending payloads this replica cannot decode, which means a
-  broken or hostile node.
+  — it counts values this replica could not use: payloads it cannot
+  decode, which means a broken or hostile node, and values of another
+  CRDT kind than the one it holds for the key, which means two replicas
+  disagree on what the key is.
 - `distributed_data_gossip_skipped_keys_total{reason="oversize"}` above
   zero means a key is **not converging**: its own encoding exceeds
   `max-gossip-bytes` (or the wire cap it is clamped to), and one key's

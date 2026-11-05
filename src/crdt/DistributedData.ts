@@ -175,6 +175,119 @@ function withDefaultKeyForRefusedElements(identity: CrdtIdentityFunction): CrdtI
   };
 }
 
+/* ============================ kind conflicts =========================== */
+
+/**
+ * The two CRDT kinds that keep a pair of values from merging.  `nested` says
+ * the disagreement sits inside an `ORMap` entry both values hold, and the kinds
+ * are then that entry's.
+ */
+type CrdtKindConflict = {
+  readonly held: string;
+  readonly received: string;
+  readonly nested: boolean;
+};
+
+/**
+ * Whether `received` can be merged into `held`, and if not, which kinds stand
+ * in the way.
+ *
+ * `merge` takes an argument of its own kind and does not check that it got
+ * one.  Given another kind, most merges throw, an empty `LWWRegister` returns
+ * the other value whatever it is, and a few pairs return a value whose own
+ * `toJSON` throws — so the question has to be asked before merging; catching
+ * afterwards would still let the silent cases through.
+ *
+ * `ORMap` is the one kind that holds other CRDTs, and its merge pairs up the
+ * entries both sides hold by id, removed ones included.  The check descends
+ * into exactly those pairs, read from the two maps' entry tables.  No public
+ * accessor shows a removed entry; the encoded form does, but encoding both
+ * maps on every merge measured at about twice the cost of the merge itself
+ * for 1 000 and 10 000 entries, where walking the tables adds a few percent.
+ * A map whose table is not where {@link ormapEntryTable} looks, and two
+ * values of one kind built from different class objects, take the encoded
+ * form instead — slower, never wrong.  Two values of one class of any other
+ * kind cannot disagree, which keeps the path every ordinary merge takes to a
+ * single comparison.
+ */
+function crdtKindConflict(held: Crdt<any>, received: Crdt<any>, nested = false): CrdtKindConflict | null {
+  if (held.constructor === received.constructor) {
+    if (!(held instanceof ORMap)) return null;
+    const conflict = entryTableKindConflict(held, received as ORMap<unknown, Crdt<any>>);
+    if (conflict !== undefined) return conflict;
+  }
+  return encodedKindConflict(held.toJSON(), received.toJSON(), nested);
+}
+
+/**
+ * The kind conflict among the entries two ORMaps both hold, or `null` — and
+ * `undefined` when either entry table is not where it is expected, so the
+ * caller asks the encoded form instead.
+ *
+ * It walks the smaller table and looks each id up in the larger one, which
+ * finds the same pairs as walking either.
+ */
+function entryTableKindConflict(
+  held: ORMap<unknown, Crdt<any>>,
+  received: ORMap<unknown, Crdt<any>>,
+): CrdtKindConflict | null | undefined {
+  const heldTable = ormapEntryTable(held);
+  const receivedTable = ormapEntryTable(received);
+  if (heldTable === null || receivedTable === null) return undefined;
+  const heldIsSmaller = heldTable.size <= receivedTable.size;
+  const [smaller, larger] = heldIsSmaller ? [heldTable, receivedTable] : [receivedTable, heldTable];
+  for (const [id, entry] of smaller) {
+    const counterpart = larger.get(id);
+    if (counterpart === undefined) continue;
+    const conflict = heldIsSmaller
+      ? crdtKindConflict(entry.value, counterpart.value, true)
+      : crdtKindConflict(counterpart.value, entry.value, true);
+    if (conflict !== null) return conflict;
+  }
+  return null;
+}
+
+/**
+ * An ORMap's entry table — every entry it holds by id, removed ones included
+ * — or `null` when it is not where this looks.
+ *
+ * `ORMap` keeps the table private and offers no accessor that includes
+ * removed entries, so this reads it by name, and falls back rather than
+ * fails when it is gone.  `DistributedDataMergeTypeMismatch.test.ts` checks
+ * the table is still there, so the walk cannot quietly turn into an encode of
+ * both maps on every merge.
+ */
+function ormapEntryTable(
+  map: ORMap<unknown, Crdt<any>>,
+): ReadonlyMap<string, { readonly value: Crdt<any> }> | null {
+  const table = (map as unknown as { readonly entries?: unknown }).entries;
+  return table instanceof Map ? table as ReadonlyMap<string, { readonly value: Crdt<any> }> : null;
+}
+
+function encodedKindConflict(held: unknown, received: unknown, nested: boolean): CrdtKindConflict | null {
+  const heldKind = encodedKind(held);
+  const receivedKind = encodedKind(received);
+  if (heldKind !== receivedKind) return { held: heldKind, received: receivedKind, nested };
+  if (heldKind !== 'ORMap') return null;
+  const heldValues = (held as ORMapJson).values;
+  const receivedValues = (received as ORMapJson).values;
+  for (const id of Object.keys(heldValues)) {
+    if (!Object.hasOwn(receivedValues, id)) continue;
+    const conflict = encodedKindConflict(heldValues[id], receivedValues[id], true);
+    if (conflict !== null) return conflict;
+  }
+  return null;
+}
+
+/** The `kind` an encoded CRDT names, or `unknown` for a value that names none. */
+function encodedKind(encoded: unknown): string {
+  if (typeof encoded === 'object' && encoded !== null) {
+    const kind = (encoded as { readonly kind?: unknown }).kind;
+    if (typeof kind === 'string') return kind;
+  }
+  return 'unknown';
+}
+
 /**
  * Empty-CRDT factory.  Callers pass this to `update(key, factory, mutator)`
  * so the extension can materialize a brand-new CRDT for a key that
@@ -343,6 +456,16 @@ export class DistributedData implements Extension {
       listeners: new Map(),
       subscriberSlots: new Map(),
       subscribers: new Map(),
+      durable: resolvedOptions.durableStore
+        ? {
+            store: new DurableDistributedDataStore(
+              resolvedOptions.durableStore,
+              cluster.selfAddress.toString(),
+            ),
+            saveInFlight: false,
+            dirty: false,
+          }
+        : null,
     };
     const ref = this.system._spawnSystemActor(
       () => new DistributedDataActor({ cluster, options: resolvedOptions, view }),
@@ -534,13 +657,42 @@ type SharedView = {
   listeners: Map<string, Map<SubscriberCallback, SubscriberCallbackRegistration>>;
   /**
    * Per key, per subscriber path, the actor subscriptions.  Held here with the
-   * listeners rather than on the actor: a mutator that throws restarts the
-   * replicator, the restart builds a new instance, and only the view outlives
-   * it — the watches the cell holds survive too, so the two stay in step.
+   * listeners rather than on the actor: a failure restarts the replicator, the
+   * restart builds a new instance, and only the view outlives it — the
+   * watches the cell holds survive too, so the two stay in step.
    */
   subscriberSlots: Map<string, Map<string, SubscriberSlot>>;
   /** Per subscriber path, every key it holds a slot for. */
   subscribers: Map<string, SubscriberEntry>;
+  /**
+   * The replica's durable writer, or `null` without a `durableStore`.  Held
+   * here for the reason the actor subscriptions are: a restart builds a new
+   * replicator, and only the view outlives it.
+   *
+   * On the actor, the restart built a second writer of the one record.  The
+   * new one loaded the record — and its revision — while the old one's save
+   * was still out; that save then landed past the revision the new writer
+   * held, so every save the new writer made failed the optimistic-concurrency
+   * check, the record froze, and the next start lost every write made since
+   * the restart.  One writer tracks one revision, and a save still out across
+   * a restart is the one a change made meanwhile waits behind.
+   */
+  durable: DurableWriter | null;
+};
+
+/**
+ * One replica's durable record and the coalescing of its saves — see
+ * {@link SharedView.durable} for why it outlives the replicator.
+ */
+type DurableWriter = {
+  readonly store: DurableDistributedDataStore;
+  /**
+   * Set while a save is in flight.  A change meanwhile sets {@link dirty}
+   * instead of starting a second save, and the one in flight starts the
+   * catch-up when it settles.
+   */
+  saveInFlight: boolean;
+  dirty: boolean;
 };
 
 /**
@@ -1105,14 +1257,8 @@ class DistributedDataActor extends Actor<ActorMessage> {
   private readonly maxPendingQuorumRequests: number;
   /** `0` disables the ceiling. */
   private readonly maxQuorumTimeoutMs: number;
-  private readonly durable: DurableDistributedDataStore | null;
   private gossipTimer: Cancellable | null = null;
   private unsubscribeCluster: (() => void) | null = null;
-  /** Set while a durable save is in flight; subsequent changes set
-   *  `_durableDirty = true` so the in-flight save is followed by a
-   *  catch-up save instead of multiple overlapping saves. */
-  private durableSaveInFlight = false;
-  private durableDirty = false;
   /** Outstanding quorum-write requests, keyed by pendingId. */
   private readonly pendingWrites = new Map<string, PendingWrite>();
   /** Outstanding quorum-read requests, keyed by pendingId. */
@@ -1125,6 +1271,23 @@ class DistributedDataActor extends Actor<ActorMessage> {
    * without a metrics backend being wired up at all.
    */
   private droppedFrames = 0;
+  /**
+   * Values this replica did not merge because they were of another CRDT kind
+   * than the value they would have joined.  A running total for the warn
+   * line, for the reason {@link droppedFrames} is one.
+   */
+  private droppedKindConflicts = 0;
+  /**
+   * Per key, when its last kind-conflict warning went out.
+   *
+   * Per key because the condition is: two replicas that disagree on a key's
+   * kind disagree on every gossip round for as long as both hold it, so one
+   * such key would otherwise write a line per round forever, and a single
+   * quiet period for all keys would hide every key but the first.  An entry
+   * exists only for a key this replica holds or asked a quorum read for, and
+   * {@link onDelete} drops it with the value.
+   */
+  private readonly lastKindConflictWarnAtMs = new Map<string, number>();
   /**
    * Per-key element identity, learned from the `factory` that `update`
    * already carries — `null` once a key is known to be on the default.
@@ -1179,7 +1342,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
   /**
    * Key patterns the durable record is narrowed to — empty means every key.
    *
-   * Held even when {@link durable} is `null`, so `preStart` can say that a
+   * Held even when {@link SharedView.durable} is `null`, so `preStart` can say that a
    * whitelist was configured for a persistence layer that is not running.
    */
   private readonly durableKeys: readonly string[];
@@ -1200,12 +1363,6 @@ class DistributedDataActor extends Actor<ActorMessage> {
     this.logDataSizeExceeding =
       options.options.logDataSizeExceeding ?? DEFAULT_LOG_DATA_SIZE_EXCEEDING_BYTES;
     this.durableKeys = options.options.durableKeys ?? [];
-    this.durable = options.options.durableStore
-      ? new DurableDistributedDataStore(
-          options.options.durableStore,
-          options.cluster.selfAddress.toString(),
-        )
-      : null;
   }
 
   /**
@@ -1238,7 +1395,8 @@ class DistributedDataActor extends Actor<ActorMessage> {
     // data: an operator who wrote it believes those keys survive a restart.
     // `durableStore` has no HOCON spelling, so the two halves are configured
     // in different places and can only disagree here.
-    if (!this.durable && this.durableKeys.length > 0) {
+    const durable = this.view.durable;
+    if (durable === null && this.durableKeys.length > 0) {
       this.log.warn(
         `DistributedData: actor-ts.distributed-data.durable-keys names `
         + `${this.durableKeys.length} key pattern(s) but no durableStore is configured, so `
@@ -1246,7 +1404,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
       );
     }
 
-    if (this.durable) {
+    if (durable !== null) {
       // Load + populate the in-memory view BEFORE accepting any
       // user-issued updates.  Subscribers registered after preStart
       // will see the recovered values via the handle's replay
@@ -1262,15 +1420,21 @@ class DistributedDataActor extends Actor<ActorMessage> {
         // costs a closure and keeps the call site correct rather than merely
         // adequate, which is why it stays.  It is not, however, load-bearing
         // for the reload: removing it changes nothing observable.
-        const loaded = await this.durable.load((key) => this.identityFor(key));
+        const loaded = await durable.store.load((key) => this.identityFor(key));
         for (const [key, crdt] of loaded) {
           // Merged into the view rather than set over it.  On a first start
           // the view is empty and the two are the same; on a restart the view
           // kept everything the previous instance merged, and the record trails
           // it by any save still in flight — setting it rolled the replica back
           // to an older value and told every subscriber so (found while #1468).
+          // A record entry of another kind than the view's value is dropped
+          // like any other value that cannot be merged, and the rest of the
+          // record still loads.
           const current = this.view.state.get(key);
-          this.applyMerged(key, current ?? null, current ? current.merge(crdt) : crdt);
+          const merged = current === undefined
+            ? crdt
+            : this.mergeOrKeep(key, current, crdt, 'the durable record');
+          if (merged !== null) this.applyMerged(key, current ?? null, merged);
         }
       } catch (err) {
         this.log.warn(`DistributedData: durable load failed`, err);
@@ -1395,7 +1559,10 @@ class DistributedDataActor extends Actor<ActorMessage> {
   private countDroppedFrame(): void {
     metricsOf(this.system).counter(
       'distributed_data_dropped_values_total', {},
-      { help: 'Peer-supplied CRDT values this replica refused to decode.' },
+      {
+        help: 'CRDT values this replica dropped: peer-supplied ones it could not decode, '
+          + 'and any of another CRDT kind than the value it holds for the key.',
+      },
     ).inc();
   }
 
@@ -1625,9 +1792,8 @@ class DistributedDataActor extends Actor<ActorMessage> {
     // Before the read, not after: learning the identity can replace the
     // stored value with a re-keyed copy of itself.
     this.learnIdentity(message.key, message.factory);
-    const current = this.view.state.get(message.key) ?? message.factory();
-    const next = message.mutator(current);
-    this.applyMerged(message.key, current, next);
+    const next = this.applyModifier(message);
+    if (next === null) return;
     if (!message.quorum) return;
 
     // Quorum write: self-vote counts as the first ack.  If only self
@@ -1675,6 +1841,48 @@ class DistributedDataActor extends Actor<ActorMessage> {
     for (const peer of peers) {
       this.cluster.transport.send(peer.address, wire as unknown as WireMessage);
     }
+  }
+
+  /**
+   * Run the caller's factory and modifier and apply what they return — or,
+   * when either throws, report the failure to the caller and return `null`,
+   * with the key keeping the value it holds.
+   *
+   * Both are the caller's code, and a modifier can fail on the value it is
+   * handed as well as on its own.  A throw used to escape into the
+   * replicator: the update went down with the failed message, so an
+   * `updateAsync` never settled, and the replicator restarted — and the
+   * restart budget turns ten of those a minute into a stopped replicator.
+   * The failure is the caller's, so it goes to the caller: a quorum update's
+   * promise rejects with it, and an update nobody awaits is logged once, at
+   * error, naming the key.
+   *
+   * Applying is part of the guarded step because a modifier that returns
+   * something other than a CRDT fails there, in the encoding `applyMerged`
+   * does before it stores anything — the same failure, reported the same way.
+   */
+  private applyModifier(message: UpdateMessage): Crdt<any> | null {
+    try {
+      const current = this.view.state.get(message.key) ?? message.factory();
+      const next = message.mutator(current);
+      this.applyMerged(message.key, current, next);
+      return next;
+    } catch (e) {
+      this.reportFailedUpdate(message, e);
+      return null;
+    }
+  }
+
+  private reportFailedUpdate(message: UpdateMessage, failure: unknown): void {
+    if (message.quorum !== undefined) {
+      message.quorum.reject(failure as Error);
+      return;
+    }
+    this.log.error(
+      `DistributedData: the update of "${message.key}" failed in its factory or modifier `
+      + `and was not applied; the key keeps the value it had`,
+      failure,
+    );
   }
 
   private onRead(message: ReadMessage): void {
@@ -1734,7 +1942,13 @@ class DistributedDataActor extends Actor<ActorMessage> {
     const incoming = this.decodeOrDrop(message.value, message.key, peer);
     if (incoming === null) return;
     const current = this.view.state.get(message.key);
-    const merged = current ? current.merge(incoming) : incoming;
+    const merged = current === undefined
+      ? incoming
+      : this.mergeOrKeep(message.key, current, incoming, peer.toString());
+    // Not merged, so not acknowledged — the answer an undecodable value gets
+    // too: the writer's quorum must not count a replica the write never
+    // reached.
+    if (merged === null) return;
     this.applyMerged(message.key, current ?? null, merged);
     // The ack goes back down the connection the request arrived on.  It used
     // to go to whatever address the payload named, so a peer could make this
@@ -1796,8 +2010,12 @@ class DistributedDataActor extends Actor<ActorMessage> {
       // A garbled response counts as an answer — the peer replied, it just
       // replied with something unusable.  Dropping the value rather than the
       // whole response keeps the quorum from stalling on one bad replica.
+      // A value of another kind than the read has so far is unusable in the
+      // same way, and is dropped the same way.
       if (incoming !== null) {
-        pending.merged = pending.merged ? pending.merged.merge(incoming) : incoming;
+        pending.merged = pending.merged === undefined
+          ? incoming
+          : this.mergeOrKeep(pending.key, pending.merged, incoming, peer.toString()) ?? pending.merged;
       }
     }
     if (pending.responses.size >= pending.required) {
@@ -1809,8 +2027,17 @@ class DistributedDataActor extends Actor<ActorMessage> {
       // latest state to this replica without waiting for gossip.
       if (pending.merged) {
         const current = this.view.state.get(pending.key);
-        this.applyMerged(pending.key, current ?? null,
-          current ? current.merge(pending.merged) : pending.merged);
+        const merged = current === undefined
+          ? pending.merged
+          : this.mergeOrKeep(pending.key, current, pending.merged, 'a quorum read');
+        if (merged === null) {
+          // The key gained a value of another kind while the read was out,
+          // and that value stays.  The read answers with it, so what it
+          // resolves to and what `get` returns next agree on the kind.
+          pending.resolve(current);
+          return;
+        }
+        this.applyMerged(pending.key, current ?? null, merged);
       }
       pending.resolve(pending.merged);
     }
@@ -1821,7 +2048,9 @@ class DistributedDataActor extends Actor<ActorMessage> {
     // outgrows the view.  Nothing is lost by it: a peer that re-introduces
     // the key gossips it under whatever identity it holds, and the next
     // `update` relearns and re-keys — the same repair a durable reload gets.
+    // The kind-conflict quiet period goes with it for the same reason.
     this.identities.delete(message.key);
+    this.lastKindConflictWarnAtMs.delete(message.key);
     if (this.view.state.delete(message.key)) {
       // Notify subscribers with a best-effort signal — we synthesise
       // a fresh CRDT via the most-recently-seen factory.  Since we
@@ -1841,7 +2070,10 @@ class DistributedDataActor extends Actor<ActorMessage> {
       const incoming = this.decodeOrDrop(json, key, peer);
       if (incoming === null) continue;
       const current = this.view.state.get(key);
-      const merged = current ? current.merge(incoming) : incoming;
+      const merged = current === undefined
+        ? incoming
+        : this.mergeOrKeep(key, current, incoming, peer.toString());
+      if (merged === null) continue;
       this.applyMerged(key, current ?? null, merged);
     }
   }
@@ -1874,6 +2106,57 @@ class DistributedDataActor extends Actor<ActorMessage> {
       );
       return null;
     }
+  }
+
+  /**
+   * Merge `received` into `held`, or drop it when the two are of different
+   * CRDT kinds — `null` then, and `held` stays what the key keeps.
+   *
+   * The counterpart of {@link decodeOrDrop} for a value that decodes fine but
+   * cannot join the one it meets: two kinds have no merge, and `merge` handed
+   * one anyway either throws inside the replicator, which restarts it, or
+   * quietly replaces the held value with a value of the other kind.  Keeping
+   * the held value is the one answer that changes nothing; the value dropped
+   * is the other replica's to keep, and it is re-offered every round for as
+   * long as the two disagree, which is what {@link reportKindConflict} is
+   * rate-limited against.
+   *
+   * `source` names where `received` came from, for the warning.
+   */
+  private mergeOrKeep(key: string, held: Crdt<any>, received: Crdt<any>, source: string): Crdt<any> | null {
+    const conflict = crdtKindConflict(held, received);
+    if (conflict === null) return held.merge(received);
+    this.reportKindConflict(key, conflict, source);
+    return null;
+  }
+
+  /**
+   * Count a value {@link mergeOrKeep} dropped, and say so at most once per
+   * key per {@link GOSSIP_SKIP_WARN_INTERVAL_MS}.
+   *
+   * That quiet period is borrowed rather than given a constant of its own
+   * because its reasoning is this condition's too: it is found again on every
+   * gossip round for as long as the key exists, so logged per occurrence it
+   * would be a line a round forever.  The running total travels in the line,
+   * and every drop is counted in `distributed_data_dropped_values_total`.
+   *
+   * The time comes from the system's clock, so a test can say a quiet period
+   * has passed.
+   */
+  private reportKindConflict(key: string, conflict: CrdtKindConflict, source: string): void {
+    this.droppedKindConflicts++;
+    this.countDroppedFrame();
+    const now = this.system.clock.now();
+    const lastWarnAtMs = this.lastKindConflictWarnAtMs.get(key);
+    if (lastWarnAtMs !== undefined && now - lastWarnAtMs < GOSSIP_SKIP_WARN_INTERVAL_MS) return;
+    this.lastKindConflictWarnAtMs.set(key, now);
+    const where = conflict.nested ? ' in an ORMap entry both hold' : '';
+    this.log.warn(
+      `DistributedData: kept the value held for "${key}" and dropped the one from ${source}: `
+      + `it is a ${conflict.received} where the held value is a ${conflict.held}${where}, `
+      + `and values of different CRDT kinds cannot be merged `
+      + `(${this.droppedKindConflicts} dropped so far)`,
+    );
   }
 
   /**
@@ -2050,26 +2333,32 @@ class DistributedDataActor extends Actor<ActorMessage> {
 
   /**
    * Fire a durable save off the actor mailbox.  Coalesces overlapping
-   * requests: if a save is already in flight, we mark `durableDirty`
+   * requests: if a save is already in flight, we mark the writer dirty
    * and the in-flight save's `.finally` handler kicks off a follow-up.
    * Net effect: a burst of mutations produces 1-2 disk writes, not N.
+   *
+   * Everything this touches is in the shared view, the writer included, so
+   * the follow-up is right even when the `.finally` runs on an instance a
+   * restart has since replaced: it saves the same view through the same
+   * writer the new instance would have used.
    */
   private scheduleDurableSave(): void {
-    if (!this.durable) return;
-    if (this.durableSaveInFlight) {
-      this.durableDirty = true;
+    const writer = this.view.durable;
+    if (writer === null) return;
+    if (writer.saveInFlight) {
+      writer.dirty = true;
       return;
     }
-    this.durableSaveInFlight = true;
+    writer.saveInFlight = true;
     const snapshot = this.durableSnapshot();
-    void this.durable.save(snapshot)
+    void writer.store.save(snapshot)
       .catch((err) => {
         this.log.warn(`DistributedData: durable save failed`, err);
       })
       .finally(() => {
-        this.durableSaveInFlight = false;
-        if (this.durableDirty) {
-          this.durableDirty = false;
+        writer.saveInFlight = false;
+        if (writer.dirty) {
+          writer.dirty = false;
           this.scheduleDurableSave();
         }
       });

@@ -209,7 +209,33 @@ export type MqttCommand<T = unknown> =
  * plain objects — dispatch is a single uniform `kind` switch, never
  * `instanceof`.  Users never construct or match these; the base class
  * fans them out to `onMessage` / `onConnected` / `onDisconnected`.
+ *
+ * The `kind` names a signal but does not make one: each also carries
+ * {@link MQTT_SIGNAL}, which only the constructors below set, and the
+ * dispatch asks for both (see {@link isMqttSignal}).
  */
+
+/**
+ * The mark every internal signal carries — the part of one that a decoded
+ * message body cannot have.
+ *
+ * An `MqttActor` sits at an ordinary `/user` path, so what a remote node
+ * addresses to that path reaches its mailbox as a plain object with the
+ * peer's keys as its own, `kind` among them.  A decoder produces string keys
+ * only, so a symbol-keyed property is out of its reach, and a plain
+ * `Symbol()` — never `Symbol.for()`, whose registry anyone holding the
+ * description can read — is out of reach of every module but this one.
+ *
+ * A symbol *key*, not a symbol value under a string key: the message
+ * boundary check (#1386) clones a message and round-trips it through the
+ * serializer, both of which skip symbol keys and both of which would report a
+ * symbol value, although a signal never leaves the process.  The signal
+ * types do not mention the mark; nothing outside this module builds one.
+ */
+const MQTT_SIGNAL = Symbol('MqttActor.signal');
+
+/** A signal as the constructors below build it. */
+type MarkedSignal = { readonly [MQTT_SIGNAL]: true };
 
 /** A message arrived on a subscribed topic. */
 export type MqttInboundSignal<T = unknown> = {
@@ -235,15 +261,31 @@ export type MqttSignal<T = unknown> =
 
 /** @internal Construct the inbound signal (delivered to the actor's own mailbox). */
 export function mqttInboundSignal<T = unknown>(message: MqttMessage<T>): MqttInboundSignal<T> {
-  return { kind: 'mqtt-inbound', message };
+  const signal: MqttInboundSignal<T> & MarkedSignal = { kind: 'mqtt-inbound', message, [MQTT_SIGNAL]: true };
+  return signal;
 }
 /** @internal Construct the connected signal. */
 export function mqttConnectedSignal(): MqttConnectedSignal {
-  return { kind: 'mqtt-connected' };
+  const signal: MqttConnectedSignal & MarkedSignal = { kind: 'mqtt-connected', [MQTT_SIGNAL]: true };
+  return signal;
 }
 /** @internal Construct the disconnected signal. */
 export function mqttDisconnectedSignal(cause?: Error): MqttDisconnectedSignal {
-  return { kind: 'mqtt-disconnected', cause };
+  const signal: MqttDisconnectedSignal & MarkedSignal = { kind: 'mqtt-disconnected', cause, [MQTT_SIGNAL]: true };
+  return signal;
+}
+
+/**
+ * @internal Whether `signal` was built by one of the constructors above.
+ *
+ * `MqttActor`'s dispatch asks this before every signal arm, so a body that
+ * merely spells a signal's `kind` — every decoded body does, if it spells one
+ * at all — matches none of them and reaches `onSelfMessage`, whose default
+ * declines it as a dead letter.  The requirement #1431 put on the WebSocket
+ * hub's signals.
+ */
+export function isMqttSignal(signal: object): boolean {
+  return (signal as Partial<MarkedSignal>)[MQTT_SIGNAL] === true;
 }
 
 /**

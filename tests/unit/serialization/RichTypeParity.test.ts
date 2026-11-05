@@ -1,8 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { CborDecoder, CborEncoder } from '../../../src/serialization/CborCodec.js';
+import { CborDecodeError, CborDecoder, CborEncodeError, CborEncoder } from '../../../src/serialization/CborCodec.js';
 import { CborSerializer } from '../../../src/serialization/CborSerializer.js';
+import { MAX_BIGNUM_BYTES } from '../../../src/serialization/Constants.js';
 import { decodeJsonTree, encodeJsonTree, TYPE_TAGS } from '../../../src/serialization/JsonTree.js';
 import { JsonSerializer } from '../../../src/serialization/JsonSerializer.js';
+import { SerializationError } from '../../../src/serialization/Serializer.js';
 import { BidirectionalMap } from '../../../src/util/BidirectionalMap.js';
 import { BidirectionalMultiMap } from '../../../src/util/BidirectionalMultiMap.js';
 
@@ -205,6 +207,86 @@ describe('Rich-type parity — both codecs refuse the same values', () => {
     expect(viaCbor({ left: shared, right: shared }))
       .toStrictEqual(viaJsonTree({ left: shared, right: shared }));
   });
+});
+
+/**
+ * CBOR caps a bignum's magnitude at `MAX_BIGNUM_BYTES`.  A tag 2 carries `n`
+ * and a tag 3 carries `-1 - n`, so the integers it takes run from `-2^bits` to
+ * `2^bits - 1`, and the JSON tree holds its `__bigint__` values to the same
+ * range (#967) — on both sides.  The two encoders refuse what the two decoders
+ * refuse, so nothing is written that cannot be read back.  The decoders are
+ * fed payloads built by hand, the way a peer could send them, so their own
+ * refusal is pinned rather than hidden behind the encoder's.
+ */
+describe('Rich-type parity — both codecs take the same bigint range', () => {
+  const bits = MAX_BIGNUM_BYTES * 8;
+  const limit = 1n << BigInt(bits);
+  const widestDigits = (limit - 1n).toString().length;
+
+  /** A tag 2 / tag 3 bignum written out by hand, at any width. */
+  const cborBignum = (value: bigint): Uint8Array => {
+    const magnitude = value < 0n ? -1n - value : value;
+    const hex = magnitude.toString(16);
+    const even = hex.length % 2 === 0 ? hex : `0${hex}`;
+    const bytes: number[] = [];
+    for (let index = 0; index < even.length; index += 2) {
+      bytes.push(Number.parseInt(even.slice(index, index + 2), 16));
+    }
+    // Every case here is 1024 or 1025 bytes: major type 2, two-byte length.
+    expect(bytes.length).toBeGreaterThanOrEqual(0x100);
+    const tag = value < 0n ? 0xc3 : 0xc2;
+    return Uint8Array.from([tag, 0x59, bytes.length >> 8, bytes.length & 0xff, ...bytes]);
+  };
+
+  /** Whether the encoder wrote it.  Only its own refusal type counts as a refusal. */
+  const writes = (encode: () => unknown, refusal: new (...args: never[]) => Error): boolean => {
+    try {
+      encode();
+      return true;
+    } catch (e) {
+      if (e instanceof refusal) return false;
+      throw e;
+    }
+  };
+
+  /** Whether the decoder gave the value back.  Only its own refusal type counts. */
+  const reads = (
+    decode: () => unknown,
+    refusal: new (...args: never[]) => Error,
+    value: bigint,
+  ): boolean => {
+    let decoded: unknown;
+    try {
+      decoded = decode();
+    } catch (e) {
+      if (e instanceof refusal) return false;
+      throw e;
+    }
+    expect(decoded).toBe(value);
+    return true;
+  };
+
+  const cases: ReadonlyArray<readonly [string, bigint, boolean]> = [
+    [`2^${bits} - 1, the largest`, limit - 1n, true],
+    [`-2^${bits}, the smallest`, -limit, true],
+    [`2^${bits}, one past the largest`, limit, false],
+    [`-2^${bits} - 1, one past the smallest`, -limit - 1n, false],
+    [`10^${widestDigits} - 1, no longer than the largest`, 10n ** BigInt(widestDigits) - 1n, false],
+  ];
+
+  for (const [what, value, accepted] of cases) {
+    test(`${what}: ${accepted ? 'written and read' : 'refused'} by both codecs, on both sides`, () => {
+      expect(writes(() => encodeJsonTree(value), SerializationError)).toBe(accepted);
+      expect(writes(() => cborEncoder.encode(value), CborEncodeError)).toBe(accepted);
+      expect(reads(() => decodeJsonTree({ __bigint__: value.toString() }), SerializationError, value))
+        .toBe(accepted);
+      expect(reads(() => cborDecoder.decode(cborBignum(value)), CborDecodeError, value)).toBe(accepted);
+      if (accepted) {
+        expect(viaJsonTree(value)).toBe(value);
+        expect(viaCbor(value)).toBe(value);
+      }
+    });
+  }
 });
 
 describe('Rich-type parity — through the public serializers', () => {

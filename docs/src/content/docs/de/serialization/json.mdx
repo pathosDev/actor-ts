@@ -167,6 +167,30 @@ Journal- und Snapshot-Zeilen sind bewusst ausgenommen.  Diese Bytes hat actor-ts
 selbst geschrieben; eine verschärfte Grenze würde dort wiederherstellbare
 Historie in unlesbare verwandeln.
 
+Eine Grenze ist nicht konfigurierbar, und sie gilt für jede Kodierung und jede
+Dekodierung, Journal- und Snapshot-Zeilen eingeschlossen: Ein `bigint` reist
+nur in dem Bereich, den die 1-KiB-Bignum-Grenze des CBOR-Serializers zulässt,
+`-2^8192` bis `2^8192 - 1`, sodass beide Serializer dieselben Integer
+transportieren.  Ein Integer außerhalb davon wird dort abgelehnt, wo er
+geschrieben wird — `toBinary` wirft, `persist()` scheitert, ohne etwas zu
+speichern, ein entferntes `tell` verwirft genau diese Nachricht und
+protokolliert es —, statt zu einer Zeile zu werden, an der die nächste Recovery
+scheitert.  Ein Dokument, das trotzdem einen enthält, wird beim Lesen
+abgelehnt.  Die Ziffernfolge wird gemessen, bevor sie geparst wird — höchstens
+2467 Ziffern, die Länge von `2^8192 - 1`, nach einem optionalen Minuszeichen —,
+weil das Parsen von Dezimalziffern mehr als linear mit ihrer Anzahl kostet: Auf
+Bun 1.4 gemessen brauchte eine Million Ziffern eine Drittelsekunde und vier
+Millionen fast zwei.  Geparst wird überhaupt nur die Schreibweise, die der
+Encoder in ein `__bigint__` schreibt — ein Minuszeichen nur unter null, dann
+Dezimalziffern ohne führende Null —, sodass `+5`, `007`, `-0`, Leerraum und
+Hex auf jeder Runtime gleichermaßen abgelehnt werden.  Danach wird der geparste
+Wert am Bereich selbst gemessen, denn 2467 Ziffern reichen etwa neunmal
+darüber hinaus.  Jede Ablehnung ist ein `SerializationError`, und die
+verbleibenden Kosten wachsen nur im Gleichschritt mit dem Dokument, das
+`max-document-bytes` begrenzt.  Ein Integer, der breiter als 8192 Bit ist,
+reist als String-Feld; prüfe seine Länge, bevor dein eigener Code ihn an
+`BigInt()` übergibt.
+
 ## Wann auf etwas anderes wechseln
 
 ```
