@@ -402,6 +402,16 @@ export class DistributedData implements Extension {
       listeners: new Map(),
       subscriberSlots: new Map(),
       subscribers: new Map(),
+      durable: resolvedOptions.durableStore
+        ? {
+            store: new DurableDistributedDataStore(
+              resolvedOptions.durableStore,
+              cluster.selfAddress.toString(),
+            ),
+            saveInFlight: false,
+            dirty: false,
+          }
+        : null,
     };
     const ref = this.system._spawnSystemActor(
       () => new DistributedDataActor({ cluster, options: resolvedOptions, view }),
@@ -600,6 +610,35 @@ type SharedView = {
   subscriberSlots: Map<string, Map<string, SubscriberSlot>>;
   /** Per subscriber path, every key it holds a slot for. */
   subscribers: Map<string, SubscriberEntry>;
+  /**
+   * The replica's durable writer, or `null` without a `durableStore`.  Held
+   * here for the reason the actor subscriptions are: a restart builds a new
+   * replicator, and only the view outlives it.
+   *
+   * On the actor, the restart built a second writer of the one record.  The
+   * new one loaded the record — and its revision — while the old one's save
+   * was still out; that save then landed past the revision the new writer
+   * held, so every save the new writer made failed the optimistic-concurrency
+   * check, the record froze, and the next start lost every write made since
+   * the restart.  One writer tracks one revision, and a save still out across
+   * a restart is the one a change made meanwhile waits behind.
+   */
+  durable: DurableWriter | null;
+};
+
+/**
+ * One replica's durable record and the coalescing of its saves — see
+ * {@link SharedView.durable} for why it outlives the replicator.
+ */
+type DurableWriter = {
+  readonly store: DurableDistributedDataStore;
+  /**
+   * Set while a save is in flight.  A change meanwhile sets {@link dirty}
+   * instead of starting a second save, and the one in flight starts the
+   * catch-up when it settles.
+   */
+  saveInFlight: boolean;
+  dirty: boolean;
 };
 
 /**
@@ -1164,14 +1203,8 @@ class DistributedDataActor extends Actor<ActorMessage> {
   private readonly maxPendingQuorumRequests: number;
   /** `0` disables the ceiling. */
   private readonly maxQuorumTimeoutMs: number;
-  private readonly durable: DurableDistributedDataStore | null;
   private gossipTimer: Cancellable | null = null;
   private unsubscribeCluster: (() => void) | null = null;
-  /** Set while a durable save is in flight; subsequent changes set
-   *  `_durableDirty = true` so the in-flight save is followed by a
-   *  catch-up save instead of multiple overlapping saves. */
-  private durableSaveInFlight = false;
-  private durableDirty = false;
   /** Outstanding quorum-write requests, keyed by pendingId. */
   private readonly pendingWrites = new Map<string, PendingWrite>();
   /** Outstanding quorum-read requests, keyed by pendingId. */
@@ -1255,7 +1288,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
   /**
    * Key patterns the durable record is narrowed to — empty means every key.
    *
-   * Held even when {@link durable} is `null`, so `preStart` can say that a
+   * Held even when {@link SharedView.durable} is `null`, so `preStart` can say that a
    * whitelist was configured for a persistence layer that is not running.
    */
   private readonly durableKeys: readonly string[];
@@ -1276,12 +1309,6 @@ class DistributedDataActor extends Actor<ActorMessage> {
     this.logDataSizeExceeding =
       options.options.logDataSizeExceeding ?? DEFAULT_LOG_DATA_SIZE_EXCEEDING_BYTES;
     this.durableKeys = options.options.durableKeys ?? [];
-    this.durable = options.options.durableStore
-      ? new DurableDistributedDataStore(
-          options.options.durableStore,
-          options.cluster.selfAddress.toString(),
-        )
-      : null;
   }
 
   /**
@@ -1314,7 +1341,8 @@ class DistributedDataActor extends Actor<ActorMessage> {
     // data: an operator who wrote it believes those keys survive a restart.
     // `durableStore` has no HOCON spelling, so the two halves are configured
     // in different places and can only disagree here.
-    if (!this.durable && this.durableKeys.length > 0) {
+    const durable = this.view.durable;
+    if (durable === null && this.durableKeys.length > 0) {
       this.log.warn(
         `DistributedData: actor-ts.distributed-data.durable-keys names `
         + `${this.durableKeys.length} key pattern(s) but no durableStore is configured, so `
@@ -1322,7 +1350,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
       );
     }
 
-    if (this.durable) {
+    if (durable !== null) {
       // Load + populate the in-memory view BEFORE accepting any
       // user-issued updates.  Subscribers registered after preStart
       // will see the recovered values via the handle's replay
@@ -1338,7 +1366,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
         // costs a closure and keeps the call site correct rather than merely
         // adequate, which is why it stays.  It is not, however, load-bearing
         // for the reload: removing it changes nothing observable.
-        const loaded = await this.durable.load((key) => this.identityFor(key));
+        const loaded = await durable.store.load((key) => this.identityFor(key));
         for (const [key, crdt] of loaded) {
           // Merged into the view rather than set over it.  On a first start
           // the view is empty and the two are the same; on a restart the view
@@ -2210,26 +2238,32 @@ class DistributedDataActor extends Actor<ActorMessage> {
 
   /**
    * Fire a durable save off the actor mailbox.  Coalesces overlapping
-   * requests: if a save is already in flight, we mark `durableDirty`
+   * requests: if a save is already in flight, we mark the writer dirty
    * and the in-flight save's `.finally` handler kicks off a follow-up.
    * Net effect: a burst of mutations produces 1-2 disk writes, not N.
+   *
+   * Everything this touches is in the shared view, the writer included, so
+   * the follow-up is right even when the `.finally` runs on an instance a
+   * restart has since replaced: it saves the same view through the same
+   * writer the new instance would have used.
    */
   private scheduleDurableSave(): void {
-    if (!this.durable) return;
-    if (this.durableSaveInFlight) {
-      this.durableDirty = true;
+    const writer = this.view.durable;
+    if (writer === null) return;
+    if (writer.saveInFlight) {
+      writer.dirty = true;
       return;
     }
-    this.durableSaveInFlight = true;
+    writer.saveInFlight = true;
     const snapshot = this.durableSnapshot();
-    void this.durable.save(snapshot)
+    void writer.store.save(snapshot)
       .catch((err) => {
         this.log.warn(`DistributedData: durable save failed`, err);
       })
       .finally(() => {
-        this.durableSaveInFlight = false;
-        if (this.durableDirty) {
-          this.durableDirty = false;
+        writer.saveInFlight = false;
+        if (writer.dirty) {
+          writer.dirty = false;
           this.scheduleDurableSave();
         }
       });
