@@ -36,6 +36,7 @@ import {
 } from './WebsocketClientOptions.js';
 import type { WebsocketClientOptions, WebsocketClientOptionsType } from './WebsocketClientOptions.js';
 import {
+  isWebsocketClientSignal,
   websocketClientConnected,
   websocketClientDisconnected,
   websocketClientInbound,
@@ -170,7 +171,9 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
   /**
    * App-level message told to this actor's ref — your `TSelf` — or anything
    * else none of the client's own kinds matched, which includes a body a
-   * remote node addressed to this path.
+   * remote node addressed to this path, even one that spells a signal's
+   * `kind`: a signal also needs the mark only its constructor sets
+   * (`isWebsocketClientSignal`).
    *
    * A `Terminated` from a `context.watch` of your own no longer arrives here —
    * `BrokerActor` intercepts it and offers `onTerminated` instead (#709).
@@ -227,13 +230,24 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     // is an open type parameter, and ts-pattern cannot build a `Pattern<>` for
     // a union that still contains one.  `.otherwise` is reached exactly when
     // none of our kinds hit, i.e. for an app-level `TSelf` message.
+    //
+    // A signal arm also requires the mark only the signal constructors set
+    // (`isWebsocketClientSignal`), so a body that merely spells a signal's
+    // kind — what a remote node's message to this path decodes to — is not one
+    // of our kinds and lands in `.otherwise` too.  `websocket-client-send`
+    // needs no mark: it is the documented command `websocketSend` builds for
+    // anyone who holds the ref.
     const envelope = command as WebsocketClientSend<TOut> | WebsocketClientSignal<TIn>;
     return match(envelope)
       .with({ kind: 'websocket-client-send' }, (c) => this.onWebsocketClientSend(c))
-      .with({ kind: 'websocket-client-inbound' }, (c) => this.onWebsocketClientInbound(c))
-      .with({ kind: 'websocket-client-invalid' }, (c) => this.onWebsocketClientInvalid(c))
-      .with({ kind: 'websocket-client-connected' }, () => this.onWebsocketClientConnected())
-      .with({ kind: 'websocket-client-disconnected' }, (c) => this.onWebsocketClientDisconnected(c))
+      .with({ kind: 'websocket-client-inbound' }, (c) => isWebsocketClientSignal(c), (c) =>
+        this.onWebsocketClientInbound(c))
+      .with({ kind: 'websocket-client-invalid' }, (c) => isWebsocketClientSignal(c), (c) =>
+        this.onWebsocketClientInvalid(c))
+      .with({ kind: 'websocket-client-connected' }, (c) => isWebsocketClientSignal(c), () =>
+        this.onWebsocketClientConnected())
+      .with({ kind: 'websocket-client-disconnected' }, (c) => isWebsocketClientSignal(c), (c) =>
+        this.onWebsocketClientDisconnected(c))
       .otherwise(() => this.onSelfMessage(command as TSelf));
   }
 
