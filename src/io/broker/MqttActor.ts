@@ -16,6 +16,7 @@ import { MqttOptionsValidator } from './MqttOptions.js';
 import type { MqttOptions, MqttOptionsType } from './MqttOptions.js';
 import {
   MqttPayload,
+  isMqttSignal,
   mqttConnectedSignal,
   mqttDisconnectedSignal,
   mqttInboundSignal,
@@ -144,7 +145,8 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   /**
    * App-level message told to this actor's ref — your `TSelf` — or anything
    * else none of the actor's own kinds matched, which includes a body a remote
-   * node addressed to this path.
+   * node addressed to this path, even one that spells a signal's `kind`: a
+   * signal also needs the mark only its constructor sets (`isMqttSignal`).
    *
    * A `Terminated` from a `context.watch` of your own no longer arrives here —
    * `BrokerActor` intercepts it and offers `onTerminated` instead (#709).
@@ -245,11 +247,17 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     // is an open type parameter, and ts-pattern cannot build a `Pattern<>` for
     // a union that still contains one.  `.otherwise` is reached exactly when
     // none of our kinds hit, i.e. for an app-level `TSelf` message.
+    //
+    // A signal arm also requires the mark only the signal constructors set
+    // (`isMqttSignal`), so a body that merely spells a signal's kind — what a
+    // remote node's message to this path decodes to — is not one of our kinds
+    // and lands in `.otherwise` too.  The commands need no mark: they are this
+    // actor's public protocol, open to anyone who holds the ref.
     const envelope = command as MqttCommand<T> | MqttSignal<T>;
     return match(envelope)
-      .with({ kind: 'mqtt-inbound' }, (m) => this.onMqttInbound(m))
-      .with({ kind: 'mqtt-connected' }, () => this.onMqttConnected())
-      .with({ kind: 'mqtt-disconnected' }, (m) => this.onMqttDisconnected(m))
+      .with({ kind: 'mqtt-inbound' }, (m) => isMqttSignal(m), (m) => this.onMqttInbound(m))
+      .with({ kind: 'mqtt-connected' }, (m) => isMqttSignal(m), () => this.onMqttConnected())
+      .with({ kind: 'mqtt-disconnected' }, (m) => isMqttSignal(m), (m) => this.onMqttDisconnected(m))
       .with({ kind: 'publish' }, (m) => this.onPublish(m))
       .with({ kind: 'subscribe' }, (m) => this.onSubscribe(m))
       .with({ kind: 'unsubscribe' }, (m) => this.onUnsubscribe(m))
