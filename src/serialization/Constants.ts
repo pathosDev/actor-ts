@@ -41,7 +41,8 @@ export const MAX_BIGNUM_BYTES = 1024;
  * `2^8192 - 1`.  A CBOR tag 2 carries `n` and a tag 3 carries `-1 - n`, so the
  * integers the CBOR codec takes run from `-2^8192` to `2^8192 - 1`.  The JSON
  * tree holds a decoded `__bigint__` to the same magnitude, measured the same
- * way, so the two codecs accept the same integers.
+ * way, so the two codecs accept the same integers — and both encoders refuse
+ * to write past it, so neither writes a value that a decoder refuses.
  */
 export const MAX_BIGNUM_MAGNITUDE: bigint = (1n << BigInt(MAX_BIGNUM_BYTES * 8)) - 1n;
 

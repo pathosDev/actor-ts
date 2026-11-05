@@ -203,7 +203,7 @@ function encodeNode(value: unknown, context: EncodeContext, allowToJson: boolean
   }
   if (value === null) return null;
   if (typeof value === 'number') return encodeNumber(value);
-  if (typeof value === 'bigint') return { [BIGINT_TAG]: value.toString() };
+  if (typeof value === 'bigint') return encodeBigint(value, context);
   if (value instanceof Date) return { [DATE_TAG]: value.toISOString() };
   if (value instanceof Uint8Array) return { [BYTES_TAG]: toBase64(value) };
   // Ahead of the `Map` branch on purpose.  `BidirectionalMap` only implements
@@ -249,6 +249,22 @@ function encodeNumber(value: number): unknown {
   if (value === -Infinity) return { [NUMBER_TAG]: '-infinity' };
   if (Object.is(value, -0)) return { [NUMBER_TAG]: '-0' };
   return value;
+}
+
+/**
+ * Both decoders refuse an integer outside `-2^8192` to `2^8192 - 1` — this
+ * walker's {@link decodeBigint} and the CBOR codec's bignum cap — so the
+ * encoder refuses it too.  Written, it would be a journal row every recovery
+ * fails on, or a frame the receiving peer answers by closing the connection.
+ * Refused here, the error reaches whoever called `persist()`, `tell` or
+ * `toBinary` while they can still act on it.  The message names the range
+ * and the path, never the digits.
+ */
+function encodeBigint(value: bigint, context: EncodeContext): unknown {
+  if (outsideBignumRange(value)) {
+    throw new SerializationError(`bigint outside ${bignumRange()} at ${formatPath(context.path)}`);
+  }
+  return { [BIGINT_TAG]: value.toString() };
 }
 
 function enterContainer(container: object, context: EncodeContext): void {
@@ -645,9 +661,8 @@ function decodeBigint(digits: string): bigint {
   } catch {
     throw malformedTag(BIGINT_TAG, 'a decimal integer string');
   }
-  if ((value < 0n ? -1n - value : value) > MAX_BIGNUM_MAGNITUDE) {
-    const bits = MAX_BIGNUM_BYTES * 8;
-    throw malformedTag(BIGINT_TAG, `an integer from -2^${bits} to 2^${bits} - 1`);
+  if (outsideBignumRange(value)) {
+    throw malformedTag(BIGINT_TAG, `an integer from ${bignumRange()}`);
   }
   return value;
 }
@@ -727,6 +742,21 @@ function defineOwnProperty(target: Record<string, unknown>, key: string, value: 
 
 function malformedTag(tag: string, expected: string): SerializationError {
   return new SerializationError(`Malformed ${tag} tag: expected ${expected}`);
+}
+
+/**
+ * Whether `value` lies outside the integers both codecs carry, measured the
+ * way a CBOR tag 3 stores a negative — as `-1 - n` — which is why the
+ * negative end, `-2^8192`, is one further out than the positive one.
+ */
+function outsideBignumRange(value: bigint): boolean {
+  return (value < 0n ? -1n - value : value) > MAX_BIGNUM_MAGNITUDE;
+}
+
+/** That range written out for a message: `-2^8192 to 2^8192 - 1`. */
+function bignumRange(): string {
+  const bits = MAX_BIGNUM_BYTES * 8;
+  return `-2^${bits} to 2^${bits} - 1`;
 }
 
 function formatPath(path: ReadonlyArray<string | number>): string {

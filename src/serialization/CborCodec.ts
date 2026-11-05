@@ -28,7 +28,7 @@
  * put in a map or an array can be mistaken for one.
  */
 
-import { MAX_BIGNUM_BYTES, MAX_NESTING_DEPTH } from './Constants.js';
+import { MAX_BIGNUM_BYTES, MAX_BIGNUM_MAGNITUDE, MAX_NESTING_DEPTH } from './Constants.js';
 import {
   defaultReadConstraintsOptions,
   ReadConstraintsOptionsValidator,
@@ -466,9 +466,18 @@ export class CborEncoder {
   private writeBigInt(value: bigint): void {
     // Use RFC 8949 bignum tags so the decoder can reconstruct a bigint.
     const positive = value >= 0n;
-    const absVal = positive ? value : -value - 1n;
+    const magnitude = positive ? value : -value - 1n;
+    // The decoder refuses a magnitude past MAX_BIGNUM_BYTES, and the JSON tree
+    // refuses the same integers, so writing one would produce bytes nothing
+    // reads back: a journal row every recovery fails on.  Refused before
+    // anything is written, where the caller can still act on it, and named by
+    // its range rather than its digits.
+    if (magnitude > MAX_BIGNUM_MAGNITUDE) {
+      const bits = MAX_BIGNUM_BYTES * 8;
+      throw new CborEncodeError(`Cannot encode a bigint outside -2^${bits} to 2^${bits} - 1`);
+    }
     this.writeTag(positive ? TAG_UNSIGNED_BIGNUM : TAG_NEGATIVE_BIGNUM);
-    const bytes = bigIntToBytes(absVal);
+    const bytes = bigIntToBytes(magnitude);
     this.writeHeader(2, bytes.length);
     for (const byte of bytes) this.chunks.push(byte);
   }

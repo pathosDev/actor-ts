@@ -332,6 +332,21 @@ describe('JsonTree — the __bigint__ digit bound', () => {
       expect(decodeJsonTree(JSON.parse(JSON.stringify(encodeJsonTree(value))))).toBe(value);
     }));
   });
+
+  // Written, a value past either end is a journal row every recovery fails
+  // on, or a frame the receiving peer answers by closing the connection.
+  // Refused at encode, the error reaches whoever called persist(), tell or
+  // toBinary while they can still act on it.
+  test('a bigint past either end is refused when it is written, wherever it sits', () => {
+    for (const value of [largest + 1n, smallest - 1n, 10n ** 3000n]) {
+      const nested = thrownBy(() => encodeJsonTree({ ledger: [value] }));
+      expect(nested).toBeInstanceOf(SerializationError);
+      expect((nested as Error).message).toBe('bigint outside -2^8192 to 2^8192 - 1 at $.ledger[0]');
+      const root = thrownBy(() => encodeJsonTree(value, { undefinedValues: 'omit' }));
+      expect(root).toBeInstanceOf(SerializationError);
+      expect((root as Error).message).toBe('bigint outside -2^8192 to 2^8192 - 1 at $');
+    }
+  });
 });
 
 describe('JsonTree — backward compatibility with plain JSON', () => {
