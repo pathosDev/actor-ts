@@ -370,9 +370,11 @@ describe('DistributedData: a durable record with another CRDT kind for a held ke
       },
     });
 
-    // A modifier that throws restarts the replicator, and the restarted one
-    // reloads the record into the view it kept.
-    data.update<GCounter>('other', GCounter.empty, () => { throw new Error('modifier failed'); });
+    // A message outside the replicator's protocol fails it, its supervisor
+    // restarts it, and the restarted one reloads the record into the view it
+    // kept.
+    const replicator = await node.cluster.system.actorSelection('/system/cluster/crdt/data').resolveOne();
+    replicator.tell({ kind: 'not-a-replicator-message' } as never);
     await awaitCondition(() => node.restarts() === 1, { label: 'the replicator restarted' });
     // Handled after the restarted instance's preStart, reload included.
     await data.getAsync('hits', { consistency: 'local' });

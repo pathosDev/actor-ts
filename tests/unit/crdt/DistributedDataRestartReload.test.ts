@@ -6,13 +6,15 @@
  * the actor subscriptions live in it — but `preStart` ran its durable reload
  * as though the view were empty: `applyMerged(key, null, loaded)` set every
  * key to the record's value outright.  The record trails the view whenever a
- * save is still in flight, so a mutator that threw at the wrong moment rolled
- * the replica back to an older value, and told every subscriber that older
- * value as a change.  A CRDT has a right answer for two values of one key, and
- * it is the merge.
+ * save is still in flight, so a restart at the wrong moment rolled the
+ * replica back to an older value, and told every subscriber that older value
+ * as a change.  A CRDT has a right answer for two values of one key, and it is
+ * the merge.
  *
  * The store here holds its writes on a gate the test opens, which is the "save
- * still in flight" a slow store produces.
+ * still in flight" a slow store produces.  The tests restart the replicator by
+ * sending it a message outside its protocol, which fails it the way any
+ * failure would, so its supervisor restarts it.
  *
  * The same restart used to leave two writers of the durable record.  The
  * store wrapper was built per actor instance, so the restarted replicator
@@ -122,6 +124,16 @@ async function startNode(name: string, port: number, log?: Logger): Promise<Clus
 
 const KEY = 'hits';
 
+/**
+ * Fail the replicator with a message outside its protocol, so that its
+ * supervisor restarts it and the restarted instance runs its preStart —
+ * durable reload included — again.
+ */
+async function failReplicator(system: ActorSystem): Promise<void> {
+  const replicator = await system.actorSelection('/system/cluster/crdt/data').resolveOne();
+  replicator.tell({ kind: 'not-a-replicator-message' } as never);
+}
+
 describe('a replicator restart with a durable store', () => {
   test('merges the reloaded record into the view instead of rolling the view back to it', async () => {
     const node = await startNode('ddata-reload-a', 48_961);
@@ -148,7 +160,7 @@ describe('a replicator restart with a durable store', () => {
       data.subscribe<GCounter>(KEY, (counter) => seen.push(counter.value()));
       expect(seen).toEqual([2]);
 
-      data.update<GCounter>('other', GCounter.empty, () => { throw new Error('mutator failed'); });
+      await failReplicator(node.system);
       await awaitCondition(
         () => restarts.some((event) => event.actor.path.toString().endsWith('/cluster/crdt/data')),
         { label: 'the replicator restarted' },
@@ -194,10 +206,10 @@ function increment(replica: Replica): void {
   replica.data.update<GCounter>(KEY, GCounter.empty, (counter) => counter.increment(self, 1));
 }
 
-/** A modifier that throws restarts the replicator; resolves once the restarted one has handled a message. */
+/** Restart the replicator through its supervisor; resolves once the restarted one has handled a message. */
 async function restartReplicator(replica: Replica): Promise<void> {
   const before = replica.restarts();
-  replica.data.update<GCounter>('other', GCounter.empty, () => { throw new Error('modifier failed'); });
+  await failReplicator(replica.cluster.system);
   await awaitCondition(() => replica.restarts() === before + 1, { label: 'the replicator restarted' });
   // Handled after the restarted instance's preStart, reload included.
   await replica.data.getAsync(KEY, { consistency: 'local' });
@@ -292,7 +304,7 @@ describe('a replicator restart while a durable save is still out', () => {
     // is held until the save from before the restart has landed.
     const loading = newGate();
     store.loadGate = loading;
-    replica.data.update<GCounter>('other', GCounter.empty, () => { throw new Error('modifier failed'); });
+    await failReplicator(replica.cluster.system);
     await awaitCondition(() => store.waitingLoads === 1, { label: 'the reload read the record and is waiting' });
     pending.open();
     store.gate = null;
