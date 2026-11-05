@@ -158,6 +158,20 @@ Journal and snapshot rows are deliberately exempt.  Those bytes were written by
 actor-ts itself, so a tightened ceiling there would turn recoverable history
 into unreadable history.
 
+One bound is not configurable, and it holds for every decode, journal and
+snapshot rows included: a `__bigint__` decodes only within the range the CBOR
+serializer's 1 KiB bignum cap admits, `-2^8192` to `2^8192 - 1`, so the two
+serializers accept the same integers.  The digit string is measured before it
+is parsed — at most 2467 digits, the length of `2^8192 - 1`, after an optional
+minus sign — because parsing decimal digits costs more than linear time in
+their count: measured on Bun 1.4, a million digits took a third of a second and
+four million almost two.  The parsed value is then held to the range itself,
+since 2467 digits reach about nine times past it.  Either refusal is a
+`SerializationError` naming the tag, and the cost that remains grows only in
+step with the document, which `max-document-bytes` bounds.  An integer wider
+than 8192 bits travels as a string field; check its length before your own code
+hands it to `BigInt()`.
+
 ## When to switch to something else
 
 ```
