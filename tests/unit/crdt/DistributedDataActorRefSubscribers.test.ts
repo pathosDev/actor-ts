@@ -617,7 +617,7 @@ describe('death watch and restarts', () => {
     }
   });
 
-  test('a replicator restarted by a throwing mutator keeps the subscription, and its death watch', async () => {
+  test('a replicator restarted by its supervisor keeps the subscription, and its death watch', async () => {
     // Without a durable store, so the restart's own preStart reloads nothing.
     const node = await startNode('ddata-ref-j', 48_891);
     const data = node.system.extension(DistributedDataId).start(node);
@@ -640,7 +640,9 @@ describe('death watch and restarts', () => {
       await settled(data, subscriber, journal);
       expect(changedValues(journal)).toEqual([1]);
 
-      data.update<GCounter>(OTHER_KEY, GCounter.empty, () => { throw new Error('mutator failed'); });
+      // A message outside the replicator's protocol fails it, and its supervisor restarts it.
+      (await node.system.actorSelection('/system/cluster/crdt/data').resolveOne())
+        .tell({ kind: 'not-a-replicator-message' } as never);
       await awaitCondition(
         () => restarts.some((event) => event.actor.path.toString().endsWith('/cluster/crdt/data')),
         { label: 'the replicator restarted' },

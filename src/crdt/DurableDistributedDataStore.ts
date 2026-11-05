@@ -70,7 +70,13 @@ export class DurableDistributedDataStore {
     for (const [key, json] of Object.entries(option.value.state.entries)) {
       out.set(key, decodeCrdt(json, identityFor(key)));
     }
-    this.revision = option.value.revision;
+    // Never backwards.  A load can read the record before a save of this
+    // writer lands and return after it — a replicator restart reloads while
+    // the previous instance's save is still out — and adopting the older
+    // revision then fails every later save on the concurrency check.  The
+    // revision of one record only grows, so the larger of the two is the
+    // record's.
+    this.revision = Math.max(this.revision, option.value.revision);
     return out;
   }
 
@@ -82,7 +88,8 @@ export class DurableDistributedDataStore {
    * Throws if the underlying store rejects the write (concurrency
    * conflict — but in practice we're the only writer per replica
    * because the `DistributedDataActor` serialises mutations on its
-   * own mailbox).
+   * own mailbox, and keeps one instance of this class across its
+   * restarts, so one object tracks the record's revision).
    */
   async save(map: ReadonlyMap<string, Crdt<any>>): Promise<void> {
     // Same reason as `gossipTick`: assigning into an object literal loses the
