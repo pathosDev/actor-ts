@@ -1,6 +1,7 @@
 import type { Config } from '../../config/Config.js';
 import { ConfigError } from '../../config/Config.js';
 import { OptionsError } from '../../util/OptionsValidator.js';
+import { asUrlParserReadsIt } from '../../util/StripCharacters.js';
 import { readStoreString } from '../StoreConfig.js';
 
 /**
@@ -110,17 +111,6 @@ export type ConnectionStringPair = {
 const normalised = (text: string): string => text.trim().toLowerCase();
 
 /**
- * The two input normalisations of WHATWG URL parsing, which a URL-shaped
- * connection string goes through before its query is read: leading and
- * trailing C0 controls and spaces are stripped, and ASCII tab and newline are
- * removed wherever they stand.  Skipping them would let HOCON's `\t` or
- * `\u0001` escapes hide a switch from this module while the driver still
- * sees it.
- */
-const asUrlParserReadsIt = (url: string): string =>
-  url.replace(/^[\x00-\x20]+|[\x00-\x20]+$/g, '').replace(/[\t\n\r]/g, '');
-
-/**
  * The query pairs of a URL-shaped connection string, decoded as
  * `URLSearchParams` decodes them — which is what pg-connection-string and
  * mongodb-connection-string-url both do with `new URL(...).searchParams`.
@@ -132,6 +122,10 @@ const asUrlParserReadsIt = (url: string): string =>
  * never less.
  */
 export function urlQueryPairs(url: string): ConnectionStringPair[] {
+  // A URL-shaped connection string goes through WHATWG's two input
+  // normalisations before its query is read; skipping them would let HOCON's
+  // `\t` or `\u0001` escapes hide a switch from this module while the driver
+  // still sees it.
   const text = asUrlParserReadsIt(url);
   const queryStart = text.indexOf('?');
   if (queryStart < 0) return [];

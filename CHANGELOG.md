@@ -9047,6 +9047,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **Three configuration parsers no longer take quadratic time on a hostile
+  value** (#1792, CodeQL `js/polynomial-redos`). The HOCON number literal
+  (`\d+\.?\d*`) split a digit run two ways at every position, and the WHATWG
+  pre-parse normalisation behind the worker-entry rule (#1515) and the
+  connection-string inspection retried an unanchored `[\x00-\x20]+$` from
+  every position of an interior run of controls: 7.7 s, 2.7 s and 2.1 s on a
+  value of 40 000 characters. Each input is operator configuration — a HOCON
+  source, a worker-entry specifier, a journal URL — so the exposure was a
+  slow startup, not a remote denial of service. The literal is respelled
+  without the ambiguity and accepts the same language; the normalisation is a
+  linear scan, `asUrlParserReadsIt` in `src/util/StripCharacters.ts`.
+
 - **`HttpClient` no longer propagates the credential of a request URL in the
   error the runtime's `fetch` throws** (#1458). On Node, `fetch` refuses a
   URL with a userinfo outright, and its `TypeError` named the URL, password
