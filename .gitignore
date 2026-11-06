@@ -96,6 +96,14 @@ tmp/
 # root, or from an example's own directory — so the rule matches at any depth.
 secrets.conf
 
+# The `.env` file `Config.load` reads beside the config files (#1785), for the
+# same reason and at any depth.  Its local variants follow the convention the
+# runtimes share; a sample a project ships goes under another name
+# (`example.env`).
+.env
+.env.local
+.env.*.local
+
 # DevTools UI toolchain and build scratch (#483).  `node_modules/` is the
 # nested Angular install, deliberately not hoisted into the root tree;
 # `.angular-build/` feeds the generated embedded module

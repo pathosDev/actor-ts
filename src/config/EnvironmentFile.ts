@@ -40,7 +40,7 @@ const QUOTES: ReadonlySet<string> = new Set(['"', "'", '`']);
  */
 export function parseEnvironmentFile(text: string): Record<string, string> {
   const variables: Record<string, string> = Object.create(null);
-  const source = (text.startsWith('﻿') ? text.slice(1) : text).replace(/\r\n?/g, NEWLINE);
+  const source = (text.startsWith('\uFEFF') ? text.slice(1) : text).replace(/\r\n?/g, NEWLINE);
   let at = 0;
   while (at < source.length) {
     const lineEnd = endOfLine(source, at);

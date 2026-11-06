@@ -3593,7 +3593,10 @@ over the merged tree.  A `${my.port}` in `shared-cluster.conf` whose
 `my.port` only `application.conf` defines fails at the first `parseFile`
 with `Unresolved substitution` — where a real `include` would have
 produced one document and resolved it.  A value the base file refers to
-has to live in the base file or in the environment.
+has to live in the base file or in the environment.  Shared defaults are
+what the [project reference.conf](#the-project-referenceconf) is for:
+`Config.load` resolves it before `application.conf`, and
+`application.conf` may refer to its keys.
 
 The parser says all of this when it meets an `include`, quoting the line
 and the target, so a config ported from Akka or Pekko fails with an
@@ -3667,37 +3670,108 @@ Missing keys throw unless you check first with `hasPath`.
 
 ```
 1. REFERENCE_CONF                           ← bundled defaults
-2. one application file — the first of these that is set:
-     `configFile` setting  ›  ACTOR_TS_CONFIG env var  ›  ./application.conf (CWD)
+2. the project's reference.conf — the first of these that is set:
+     referenceConfPath  ›  ACTOR_TS_REFERENCE_CONFIG env var  ›  ./reference.conf (CWD)
 3. that file's profiles.<profile> block     ← when a profile is active
-4. one secrets file — the first of these that is set:
-     ACTOR_TS_SECRETS_CONF env var  ›  ./secrets.conf (CWD)
+4. one application file — the first of these that is set:
+     `configFile` setting  ›  ACTOR_TS_CONFIG env var  ›  ./application.conf (CWD)
 5. that file's profiles.<profile> block     ← when a profile is active
-6. constructor `config: { ... }`            ← code-level override
-7. constructor field overrides              ← explicit fields beat config
+6. one secrets file — the first of these that is set:
+     ACTOR_TS_SECRETS_CONF env var  ›  ./secrets.conf (CWD)
+7. that file's profiles.<profile> block     ← when a profile is active
+8. constructor `config: { ... }`            ← code-level override
+9. constructor field overrides              ← explicit fields beat config
    (logLevel, dispatcher, scheduler, …)
+
+beside them, not a layer — a .env file: environmentFilePath  ›  ACTOR_TS_ENV_FILE  ›  ./.env (CWD)
 ```
 
-Each layer overlays on top of the previous.  Layer 7 (constructor
-fields) always wins for the fields it covers; everything else
-flows through the HOCON merge.  The profile is `withProfile(name)`,
+Each layer overlays on top of the previous, key by key.  Layer 9
+(constructor fields) always wins for the fields it covers; everything
+else flows through the HOCON merge.  The profile is `withProfile(name)`,
 then the `ACTOR_TS_PROFILE` environment variable, then none — see
-[Profiles](#profiles).  Layer 4 is optional and works like layer 2: the
-first of its candidates that is set decides, and a path with no file
-behind it is an empty layer.  `Config.load` callers name it with
-`secretsConfPath`, ahead of the variable — see [Secrets
-file](#secrets-file).
+[Profiles](#profiles).  Layers 2, 4 and 6 are optional files: for each,
+the first of its candidates that is set decides, a path with no file
+behind it is an empty layer, and `false` for a path option reads no
+such file at all.  `Config.load` callers name them with
+`referenceConfPath`, `appConfPath` and `secretsConfPath`, ahead of the
+variables — see [The project reference.conf](#the-project-referenceconf)
+and [Secrets file](#secrets-file).
 
-Layer 2 is a single file.  `configFile`, `ACTOR_TS_CONFIG` and the CWD
-lookup are three ways of naming it, tried in that order, and the first
-one that is *set* decides — a `configFile` or `ACTOR_TS_CONFIG` that
+A file's substitutions read its own keys, then the layers already
+resolved beneath it, then the real environment, then the variables of
+the [.env file](#environment-files).  So `application.conf` may build on
+a key the project `reference.conf` sets, while a lower file never sees a
+higher one — there is no late binding.
+
+Each of layers 2, 4 and 6 is a single file.  The option, the variable
+and the CWD lookup are three ways of naming it, tried in that order, and
+the first one that is *set* decides — an option or a variable that
 points at a file which does not exist loads nothing, rather than moving
 on to the next candidate ([issue
 #996](https://github.com/pathosDev/actor-ts/issues/996) is about saying so
-at startup).  `ACTOR_TS_CONFIG` holds a path, never inline HOCON; a value
-that is not the path of an existing file is treated the same way.  To
-layer several files, compose them in code as [Includes are not
+at startup).  A variable that is set but empty counts as not set.  The
+variables hold a path, never inline HOCON; a value that is not the path
+of an existing file is treated the same way.  To layer further files,
+compose them in code as [Includes are not
 supported](#includes-are-not-supported) shows.
+
+### The project reference.conf
+
+```hocon
+# reference.conf — the project's defaults, committed with the code
+my-app {
+  pool-size = 4
+  db.host = "localhost"
+  db.url = "postgres://"${my-app.db.host}"/app"
+}
+```
+
+The bundled `reference.conf` holds the framework's defaults; a project
+keeps its own in a `reference.conf` of its own, next to the code, and
+lets `application.conf` override single keys of it per deployment.  It
+may set framework keys too — a project-wide `actor-ts.dispatcher`, say —
+and carries profiles like the other files.  It is read from the working
+directory unless `referenceConfPath`, `withReferenceConfigFile` or
+`ACTOR_TS_REFERENCE_CONFIG` names another file.
+
+### Environment files
+
+```text
+# .env — git-ignored, beside the application
+DB_PASSWORD=s3cret
+REDIS_URL="redis://:s3cret@cache:6379"
+```
+
+A `.env` file supplies variables to the substitutions of every file the
+loader reads — `${DB_PASSWORD}` in `application.conf` or in the secrets
+file.  It is read from the working directory unless
+`environmentFilePath`, `withEnvironmentFile` or the real
+`ACTOR_TS_ENV_FILE` names another one, and `false` reads none.  The real
+environment always wins over it, an empty value in it counts as unset,
+and it never writes `process.env`, so child processes do not inherit it.
+It may itself name the other files and the profile (`ACTOR_TS_CONFIG=…`,
+`ACTOR_TS_PROFILE=…`), as the real environment can.
+
+The grammar is Node's `--env-file` one: `KEY=value`, an optional
+`export`, quoted values in `'`, `"` or `` ` `` that may span lines (a
+PEM key fits), `\n` read as a line break inside double quotes only, and
+`#` starting a comment — a value with a `#` in it goes in quotes.
+`$VAR` is kept as written, never expanded.  A directory called `.env` —
+a Python virtual environment often is one — is no file.
+
+<Aside type="caution" title="Bun reads ./.env itself, with other rules">
+Bun loads a `./.env` into `process.env` before the loader runs, and it
+expands `$VAR` in every value — inside single quotes too.  Measured with
+Bun 1.4.2: `HASH=$2b$10$abc` becomes the empty string and
+`REF='x$A'` becomes `x1`.  Since the real environment wins, a variable
+Bun loaded is read the way Bun read it — and an empty one counts as not
+set, so a bcrypt hash would silently fall through to the next source.
+On Bun, write a `$` in a `.env` value as `\$`, keep such a file under
+another name and point `ACTOR_TS_ENV_FILE` at it, or start Bun with
+`--no-env-file`.  Node and Deno load nothing on their own, so there the
+loader's reading is the only one.
+</Aside>
 
 ### Where the built-in default lives
 
@@ -3800,12 +3874,11 @@ const system = ActorSystem.create('my-app', actorSystemOptions);
   `db.internal` under `production` and `localhost` without a profile.  An
   inactive profile is never resolved, so a variable only production needs
   may be unset on a laptop.
-- **A profile may read the root of its own file and the environment —
-  nothing else.**  Substitutions still resolve per file
-  ([#1071](https://github.com/pathosDev/actor-ts/issues/1071)), so a
-  profile of `application.conf` cannot read a key only `reference.conf`
-  or the secrets file sets, and a substitution that reads the `profiles`
-  block is refused by name.
+- **A profile reads the root of its own file, the layers beneath it and
+  the environment — never a layer above.**  A profile of
+  `application.conf` can read a key the bundled or the project
+  `reference.conf` sets, but not one only the secrets file sets, and a
+  substitution that reads the `profiles` block is refused by name.
 - **`staging = ${profiles.production}` copies a whole profile,
   verbatim.**  A later delta does not merge into the copy: a
   `profiles.staging.my-app.pool-size = 8` after it replaces the copied

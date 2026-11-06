@@ -956,11 +956,13 @@ actor-ts {
     #
     # A ClusterClient is standalone -- it holds no ActorSystem, so unlike every
     # other block here there is no system.config to read it from.  It is loaded
-    # with the same chain ActorSystem.create uses (ACTOR_TS_CONFIG, then
-    # ./application.conf, then these defaults), which is what makes a client
-    # built with no options at all a configurable thing rather than a broken
-    # one.  The receptionist half below is asymmetric on purpose: it runs
-    # inside a system, so it reads that system's config and loads nothing.
+    # with the same chain ActorSystem.create uses (a project reference.conf,
+    # application.conf and secrets.conf over these defaults, each named by its
+    # ACTOR_TS_* variable or found in the working directory, and a .env beside
+    # them), which is what makes a client built with no options at all a
+    # configurable thing rather than a broken one.  The receptionist half
+    # below is asymmetric on purpose: it runs inside a system, so it reads
+    # that system's config and loads nothing.
     #
     # Three options stay code-only and have no leaf here.  client-identity is
     # a security decision, not a packaging one -- the per-client half of the

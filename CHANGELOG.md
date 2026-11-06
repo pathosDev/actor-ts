@@ -4341,6 +4341,33 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   not supported, and each is now refused with an error naming it rather than
   mis-parsed or reported as `Expected a key`.
 
+- **A project `reference.conf` and a `.env` file in `Config.load`** (#1785).
+  A project keeps its own defaults — for its own keys and for framework keys
+  — in a `reference.conf` of its own, between the bundled defaults and
+  `application.conf`, and `application.conf` overrides single keys of it per
+  deployment. It is found through `LoadOptions.referenceConfPath`, then
+  `ACTOR_TS_REFERENCE_CONFIG`, then `./reference.conf`, carries profiles
+  like the other files, and a missing one is an empty layer.
+
+  A `.env` file supplies variables to the substitutions of every file the
+  loader reads, behind the real environment: `${DB_PASSWORD}` in
+  `application.conf` finds a `DB_PASSWORD=…` line when the process was
+  started without one. It is found through
+  `LoadOptions.environmentFilePath`, then the real `ACTOR_TS_ENV_FILE`, then
+  `./.env`; it may name the other files and the profile itself; an empty
+  value in it counts as unset; and it never writes `process.env`, so child
+  processes do not inherit it. The grammar is Node's `--env-file` one, on
+  all three runtimes — a parser of its own, because Deno has no
+  `util.parseEnv` — so `$VAR` is kept as written, and a directory called
+  `.env` (a Python virtual environment) counts as no file.
+
+  Every file option of `LoadOptions` now also takes `false`, which reads no
+  such file at all. The layers record where the project `reference.conf` and
+  the `.env` file were looked for and whether they were found, and which
+  environment variables supplied each leaf of each file's layer. A
+  byte-order mark at the start of a config file is dropped instead of
+  failing the parse with `Expected a key`.
+
 ### Changed
 
 - **BREAKING — With `actor-ts.coordinated-shutdown.exit-process` on, a run
@@ -5964,6 +5991,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
   **Migration.** Separate list elements with commas, put a space before a
   field that shares a line, and quote URLs.
+
+- **BREAKING — A config file's substitutions read the layers beneath it**
+  (#1785). Each file used to resolve on its own (#1071, kept by #1546), so a
+  secrets file could not refer to a key the application file sets. Now a
+  file's substitutions read its own keys, then the layers already resolved
+  beneath it, then the real environment, then the `.env` file. So
+  `application.conf` may build on a key the project `reference.conf` sets, a
+  profile may read `actor-ts.*` defaults, and a field that names itself
+  (`path = ${path}":/extra"`) extends the value beneath. It is downward
+  only: a lower file never sees a higher one, so there is no late binding,
+  and an unset optional override still drops out of its layer rather than
+  copying the value beneath. A key of a layer beneath now also wins over the
+  environment variable a substitution's path would otherwise fall back to:
+  `x = ${?actor-ts.system.name}` reads `"default"` where it used to drop
+  out.
+
+  **Migration.** A substitution that relied on falling through to an
+  environment variable named like a key the layers beneath set gets that
+  key's value now; rename the variable or the path.
+
+  An empty `ACTOR_TS_CONFIG=` or `ACTOR_TS_SECRETS_CONF=` counts as unset,
+  as an empty `ACTOR_TS_PROFILE` already did: the file in the working
+  directory is read. It used to be taken as the path `""`, which read no
+  file. To read none, pass `false` for the path.
 
 
 ### Fixed

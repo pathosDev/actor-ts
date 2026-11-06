@@ -1,11 +1,53 @@
 /**
- * Names `Config.load` reads its two optional layers by (#1546).
+ * Names `Config.load` reads its files and layers by (#1546, #1785).
  *
  * Kept internal: none of them is re-exported from a barrel, because each is
  * a spelling an operator types into a file or an environment, and the
  * documentation is where those are published.  Like every `Constants.ts`,
  * this file imports nothing from its own subsystem.
  */
+
+/**
+ * The environment variable naming the application file when the code did
+ * not — `LoadOptions.appConfPath` and `withConfigFile` outrank it, and
+ * {@link DEFAULT_APPLICATION_CONF_FILENAME} in the working directory applies
+ * when neither is set.
+ */
+export const APPLICATION_CONF_ENVIRONMENT_VARIABLE = 'ACTOR_TS_CONFIG';
+
+/** The application file `Config.load` looks for in the working directory when nothing names one. */
+export const DEFAULT_APPLICATION_CONF_FILENAME = 'application.conf';
+
+/**
+ * The environment variable naming the project's own `reference.conf` when the
+ * code did not (#1785) — `LoadOptions.referenceConfPath` and
+ * `withReferenceConfigFile` outrank it.
+ */
+export const REFERENCE_CONF_ENVIRONMENT_VARIABLE = 'ACTOR_TS_REFERENCE_CONFIG';
+
+/**
+ * The project `reference.conf` `Config.load` looks for in the working
+ * directory when nothing names one: the project's defaults, over the bundled
+ * `reference.conf` and under `application.conf`.  Optional: no file is an
+ * empty layer.
+ */
+export const DEFAULT_REFERENCE_CONF_FILENAME = 'reference.conf';
+
+/**
+ * The environment variable naming the `.env` file when the code did not —
+ * `LoadOptions.environmentFilePath` and `withEnvironmentFile` outrank it.
+ *
+ * Read from the real environment only, never from a `.env` file: a file
+ * cannot name itself.
+ */
+export const ENVIRONMENT_FILE_ENVIRONMENT_VARIABLE = 'ACTOR_TS_ENV_FILE';
+
+/**
+ * The `.env` file `Config.load` looks for in the working directory when
+ * nothing names one.  Its variables answer substitutions behind the real
+ * environment; `process.env` is never written.
+ */
+export const DEFAULT_ENVIRONMENT_FILENAME = '.env';
 
 /**
  * The root key of an application or secrets file that holds its profiles —
