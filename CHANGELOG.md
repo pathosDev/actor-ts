@@ -4391,6 +4391,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — the minimum supported Bun is 1.4.0; `engines.bun` was
+  `>=1.3.0`** (#1793). Bun 1.3.x does not deliver runtime behaviour the
+  framework relies on — the details are in a security advisory — and the
+  `smoke (bun-floor)` leg, which runs every smoke case on the floor, now pins
+  1.4.0, where all of them pass. **Migration:** upgrade Bun to 1.4.0 or newer
+  (`bun upgrade`); a Docker image on `oven/bun:1.3` moves to `oven/bun:1.4`.
+  Nothing changes in code. The MongoDB page no longer advises `mongodb@^6` for
+  Bun 1.3; the peer range stays `^6 || ^7`.
+
 - **BREAKING — With `actor-ts.coordinated-shutdown.exit-process` on, a run
   that a phase with `recover = false` halts now exits the process too, with
   a status that never reads as a clean stop** (#1455). It exits with
@@ -6076,6 +6085,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **`idle-timeout` and `request-timeout` on the Express and Fastify backends
+  are reported in effect on Deno 2.7.13 and later, where they hold; they were
+  reported not in effect on every Deno** (#1793). Deno's `node:http` applies
+  `keepAliveTimeout` and `requestTimeout` from 2.7.13 on — an idle keep-alive
+  connection closed at 1.6 s and a stalled body was answered at 30 s, as on
+  Node — while 2.6.8 through 2.7.12 apply neither, so `bind()` warned about two
+  bounds that held. The report now follows the Deno release, and below 2.7.13
+  says not in effect as before. The Express and Fastify pages say so (EN + DE).
+  Fastify's HTTP/2 listener, which Deno serves from 2.7.13 on, still refuses to
+  bind under `max-header-bytes` there: Deno's server ignores the cap.
 
 - **The DevTools config panel attributes a key that holds a dot — quoted in
   HOCON, `"stripe.live"` — to the layer that set it; it reported every such

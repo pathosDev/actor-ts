@@ -8,21 +8,24 @@ import {
   applyServerOptions,
   type HttpServerBackend,
   type NodeHttpServerLike,
+  nodeHttpTimeoutsApply,
   type ServerBinding,
 } from '../../../src/http/backend/HttpServerBackend.js';
+import { DENO_NODE_HTTP_TIMEOUTS_SINCE } from '../../../src/http/Constants.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import { HttpServerOptions } from '../../../src/http/HttpServerOptions.js';
 import { completeText, get, path } from '../../../src/http/Route.js';
 import { LogLevel } from '../../../src/Logger.js';
-import { setRuntimeOverride } from '../../../src/runtime/Detect.js';
+import { runtimeVersion, setRuntimeOverride } from '../../../src/runtime/Detect.js';
 import { RecordingLogger } from '../../util/RecordingLogger.js';
 
 /**
- * `idle-timeout` and `request-timeout` on Deno report themselves not in effect.
+ * `idle-timeout` and `request-timeout` on a Deno before 2.7.13 report
+ * themselves not in effect.
  *
  * Both are properties written onto the `node:http` server after `listen()` —
  * `keepAliveTimeout` and `requestTimeout` — and Deno's `node:http` shim accepts
- * both and applies neither.  Measured on deno 2.6.8 with Express and Fastify
+ * both and applied neither until deno 2.7.13 (#1793).  Measured on deno 2.6.8 with Express and Fastify
  * under `idle-timeout = 600ms` and `request-timeout = 2s`: a keep-alive
  * connection was still open 3 s after its response, and a body announced at
  * 10 bytes that stopped after 1 was still open after 40 s with no `408` — while
@@ -33,7 +36,10 @@ import { RecordingLogger } from '../../util/RecordingLogger.js';
  * Driven through the runtime seam, since `bun test` runs on Bun: the real
  * runtime's behaviour is the measurement above and smoke case
  * `55-node-http-timeouts-on-deno.mjs`, and this pins what the report and
- * `bind()` make of it — the shape `HeaderDeadlineOnDeno.test.ts` has.
+ * `bind()` make of it — the shape `HeaderDeadlineOnDeno.test.ts` has.  The
+ * seam forces the runtime and not its version, and a forced Deno under Bun
+ * reads as the oldest release, so the cases below are the pre-2.7.13 answer;
+ * which release answers which is pinned on {@link nodeHttpTimeoutsApply}.
  */
 
 const IDLE_TIMEOUT_LEAF = 'actor-ts.http.server.idle-timeout';
@@ -82,7 +88,26 @@ const backends = [
   ['fastify', (): HttpServerBackend => new FastifyBackend()],
 ] as const;
 
-describe('idle-timeout and request-timeout on Deno report themselves not in effect', () => {
+describe('which Deno applies keepAliveTimeout and requestTimeout (#1793)', () => {
+  test('a Deno before 2.7.13 applies neither, and 2.7.13 and every later one both', () => {
+    // deno 2.6.8 … 2.7.12 held an idle connection past 4 s; 2.7.13 … 2.9.8 closed it at 1.6 s.
+    expect(DENO_NODE_HTTP_TIMEOUTS_SINCE).toBe('2.7.13');
+    for (const version of ['2.6.8', '2.7.0', '2.7.12']) expect(nodeHttpTimeoutsApply('deno', version)).toBe(false);
+    for (const version of ['2.7.13', '2.7.14', '2.8.0', '2.9.8', '3.0.0']) expect(nodeHttpTimeoutsApply('deno', version)).toBe(true);
+  });
+
+  test('Node and Bun apply both, whatever their version says', () => {
+    expect(nodeHttpTimeoutsApply('node', '24.0.0')).toBe(true);
+    expect(nodeHttpTimeoutsApply('bun', '1.3.0')).toBe(true);
+  });
+
+  test('a Deno forced under another runtime reads as the oldest release, so its report stays the cautious one', () => {
+    expect(runtimeVersion('deno')).toBe('0.0.0');
+    expect(nodeHttpTimeoutsApply('deno')).toBe(false);
+  });
+});
+
+describe('idle-timeout and request-timeout on a Deno before 2.7.13 report themselves not in effect', () => {
   test('applyServerOptions reports both not in effect on Deno, and the 0 opt-outs in effect', async () => {
     setRuntimeOverride('deno');
     const report = applyServerOptions(await listening(createHttpServer()), { idleTimeoutMs: 600, requestTimeoutMs: 2_000 });

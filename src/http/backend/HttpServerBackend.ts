@@ -1,7 +1,7 @@
 import { ConfigKeys } from '../../config/ConfigKeys.js';
-import { detectRuntime, type RuntimeKind } from '../../runtime/Detect.js';
+import { detectRuntime, runtimeVersion, type RuntimeKind, versionAtLeast } from '../../runtime/Detect.js';
 import { armChainedTimeout, type Cancellable, type HostTimers, unreferencedHostTimers } from '../../Scheduler.js';
-import { DEFAULT_HTTP_MAX_BODY_BYTES, DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
+import { DEFAULT_HTTP_MAX_BODY_BYTES, DEFAULT_WEBSOCKET_MAX_FRAME_BYTES, DENO_NODE_HTTP_TIMEOUTS_SINCE } from '../Constants.js';
 import type { HttpServerOptionsType } from '../HttpServerOptions.js';
 import type { HttpMethod, HttpRequest, HttpResponse } from '../Types.js';
 import type { PreAttachBufferLimits, WebsocketSocketAdapter } from '../websocket/SocketAdapter.js';
@@ -611,6 +611,20 @@ export function headerCapReachesHttp2Streams(runtime: RuntimeKind = detectRuntim
   return runtime === 'bun';
 }
 
+/**
+ * Whether a `node:http` server on this runtime applies `keepAliveTimeout` and
+ * `requestTimeout` — the properties `idle-timeout` and `request-timeout`
+ * become on the Express and Fastify servers.  Node and Bun do; Deno's shim
+ * accepts both and applied neither before {@link DENO_NODE_HTTP_TIMEOUTS_SINCE}
+ * (#1793), where both started to hold as they do on Node.
+ */
+export function nodeHttpTimeoutsApply(
+  runtime: RuntimeKind = detectRuntime(),
+  version: string = runtimeVersion(runtime),
+): boolean {
+  return runtime !== 'deno' || versionAtLeast(version, DENO_NODE_HTTP_TIMEOUTS_SINCE);
+}
+
 const NOTHING_IN_EFFECT: ListenServerOptionsReport = Object.freeze({
   idleTimeoutMs: false,
   headerTimeoutMs: false,
@@ -741,10 +755,11 @@ export function applyServerOptions(
   // halves — and are reported as such rather than as in effect.  A set `0`
   // asks for no bound, which every protocol honours.
   const http1Unbounded = typeof server.updateSettings === 'function' && detectRuntime() === 'bun';
-  // Deno's node:http shim accepts `keepAliveTimeout` and `requestTimeout` and
-  // applies neither, so a value above `0` is written and reported not in
-  // effect there; `0` asks for no bound, which arming nothing honours.
-  const timeoutsIgnored = detectRuntime() === 'deno';
+  // Deno's node:http shim accepted `keepAliveTimeout` and `requestTimeout`
+  // and applied neither before DENO_NODE_HTTP_TIMEOUTS_SINCE, so there a value
+  // above `0` is written and reported not in effect; `0` asks for no bound,
+  // which arming nothing honours.
+  const timeoutsIgnored = !nodeHttpTimeoutsApply();
   const heldForOneProtocol: { -readonly [Field in ProtocolHeldBound]?: ListenerProtocol } = {};
   if (options.idleTimeoutMs !== undefined) {
     server.keepAliveTimeout = options.idleTimeoutMs;
