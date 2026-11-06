@@ -17,7 +17,7 @@ services:
     # introduced in SQL Server 2016.  Pinned to the cumulative update
     # `2022-latest` resolved to when the pin was written (#1597).  Dependabot
     # reads the CU number as part of the tag's suffix and so will not propose
-    # the next one — this pin moves by hand, like MinIO's.
+    # the next one — this pin moves by hand, like Silo's.
     image: mcr.microsoft.com/mssql/server:2022-CU27-ubuntu-22.04
     environment:
       ACCEPT_EULA: "Y"

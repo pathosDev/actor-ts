@@ -1,15 +1,22 @@
-# MinIO live-integration suite (B.2 / #20).
+# S3 live-integration suite (B.2 / #20), against Silo.
 #
-# Brings up a MinIO container + a runner container that exercises
-# `S3ObjectStorageBackend` against the live S3 API.  MinIO is the
-# primary S3-compatible target because:
+# Brings up a Silo container + a runner container that exercises
+# `S3ObjectStorageBackend` against the live S3 API.  Silo
+# (https://github.com/pgsty/silo) is PGSTY's fork of MinIO, and the
+# suite runs against it because:
 #   - It boots in ~1-2s vs LocalStack's 10-15s, so CI minutes stay tight.
-#   - Its S3 implementation is the closest to AWS spec — fewer
-#     quirks-by-MinIO-only than R2 / B2.
-#   - MinIO's own registry, quay.io/minio/minio, still publishes the
-#     image.  Docker Hub's minio/minio repository was removed in
-#     2026-09 (the pull fails with "access denied", the API answers
-#     404), which took the nightly run down before a test ran (#1531).
+#   - It carries MinIO's S3 implementation, the closest to AWS spec —
+#     fewer store-specific quirks than R2 / B2.
+#   - MinIO itself can no longer be pulled.  Docker Hub's minio/minio
+#     repository was removed in 2026-09 (#1531), and quay.io/minio/minio,
+#     which #1531 moved to, has answered every pull with 401
+#     "unauthorized" since about 2026-09-24 (#1795).  Both took the
+#     nightly run down before a test ran.
+#
+# Silo keeps MinIO's configuration surface: the `MINIO_*` environment
+# variables, port 9000, the `server` command (the image's entrypoint
+# maps it onto the `silo` binary) and the `/minio/health/live` path.
+# So the only MinIO-era names left below are ones Silo still reads.
 #
 # Run locally:
 #   bun run test:integration:broker s3
@@ -22,39 +29,39 @@
 name: actor-ts-integration-s3
 
 services:
-  # MinIO server — single node, single drive (no HA, this is a test).
+  # Silo server — single node, single drive (no HA, this is a test).
   # `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` are the credentials the
   # runner uses.  Bucket creation is handled by an init-step in the
   # runner itself (it's `bun`-side code so cleanups stay co-located
   # with the test, not split across compose hooks).
-  minio:
-    # Pinned, unlike the other brokers, which track `:latest` so that
-    # an upstream regression surfaces on the night it ships.  For MinIO
-    # nothing ships any more: quay's `latest` has been an alias of this
-    # release (digest sha256:14cea493…) since 2025-09-07, and every tag
-    # published after it is a `.hotfix.*` rebuild of an older release
-    # line.  A pin says what is actually being tested; a `latest` that
-    # cannot move would only claim to.  Move it deliberately, and run
-    # the suite when you do (#1531).
-    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+  silo:
+    # Pinned to a release, like every image here (#1597).  Silo tags
+    # releases the way MinIO did, `RELEASE.<timestamp>`, which
+    # Dependabot's `docker-compose` entry does not read as a version, so
+    # it will not propose the next one: this pin moves by hand.  Docker
+    # Hub publishes the release tag as a multi-arch index (digest
+    # sha256:7bb2aff6… at 2026-10-26).  Move it deliberately, and run the
+    # suite when you do (#1795).
+    image: pgsty/silo:RELEASE.2026-10-26T00-00-00Z
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: siloadmin
+      MINIO_ROOT_PASSWORD: siloadmin
       # Built-in (test-only) KMS — required for the SSE-AES256
-      # scenario.  MinIO since ~2025-mid refuses Server-Side
-      # Encryption PUTs (even plain AES256) unless a KMS backend
-      # is configured.  Old MinIO releases accepted SSE without
-      # KMS; pinning :latest surfaces that policy change.
+      # scenario.  MinIO since ~2025-mid, and Silo with it, refuses
+      # Server-Side Encryption PUTs (even plain AES256) unless a KMS
+      # backend is configured.
       # Format: `<keyname>:<base64-secret>` where the secret is
       # 32 bytes base64-encoded.  Same string every run so re-runs
       # can read back previously-encrypted objects (test bucket
       # is wiped between runs anyway, but the KMS state isn't).
       MINIO_KMS_SECRET_KEY: "actor-ts-test-key:bnRH3F1Y5GMrXBpKBNZK0sxa3LqDOdSnLOULOGT5fXw="
     healthcheck:
-      # MinIO's readiness URL.  We don't strictly need it (the runner
-      # `waitForPort`s on 9000), but it gives docker compose visibility
-      # into whether the broker is up before the runner starts trying.
+      # Silo's liveness URL — still under MinIO's reserved `minio`
+      # prefix.  We don't strictly need it (the runner `waitForPort`s on
+      # 9000), but it gives docker compose visibility into whether the
+      # store is up before the runner starts trying.  The image ships a
+      # static `curl` for exactly this.
       test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
       interval: 2s
       timeout: 2s
@@ -62,9 +69,9 @@ services:
     networks:
       s3net: {}
 
-  # The runner — builds the test image, blocks until MinIO is ready,
+  # The runner — builds the test image, blocks until Silo is ready,
   # then runs every scenario.  `depends_on` with `condition:
-  # service_healthy` ensures the runner waits for MinIO to report
+  # service_healthy` ensures the runner waits for Silo to report
   # ready before it starts.  The runner also has its own
   # `waitForPort` as belts-and-braces for runtimes where compose's
   # healthcheck propagation isn't reliable (Bun on Windows + Docker
@@ -74,16 +81,16 @@ services:
       context: ../../../..
       dockerfile: tests/integration/brokers/s3/Dockerfile.runner
     depends_on:
-      minio:
+      silo:
         condition: service_healthy
     environment:
-      # Endpoint inside the compose bridge — MinIO is reachable via
+      # Endpoint inside the compose bridge — Silo is reachable via
       # its service name, not localhost.  `forcePathStyle` matters
-      # for MinIO because virtual-host-style requires DNS for
-      # `bucket.minio` which we'd have to wire up separately.
-      S3_ENDPOINT: http://minio:9000
-      S3_ACCESS_KEY: minioadmin
-      S3_SECRET_KEY: minioadmin
+      # because virtual-host-style requires DNS for `bucket.silo`
+      # which we'd have to wire up separately.
+      S3_ENDPOINT: http://silo:9000
+      S3_ACCESS_KEY: siloadmin
+      S3_SECRET_KEY: siloadmin
       S3_BUCKET: actor-ts-test
       S3_REGION: us-east-1
       S3_FORCE_PATH_STYLE: "true"

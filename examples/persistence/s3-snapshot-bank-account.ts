@@ -20,8 +20,9 @@
  *
  *   bun run examples/persistence/s3-snapshot-bank-account.ts
  *
- * Pointing at MinIO:
- *   docker run --rm -p 9000:9000 minio/minio server /data
+ * Pointing at MinIO — or Silo, its fork, which keeps the same port,
+ * command and `minioadmin` default credentials:
+ *   docker run --rm -p 9000:9000 pgsty/silo:RELEASE.2026-10-26T00-00-00Z server /data
  *   ACTOR_TS_S3=minio bun run examples/persistence/s3-snapshot-bank-account.ts
  */
 import { match, P } from 'ts-pattern';

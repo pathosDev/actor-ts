@@ -1,6 +1,6 @@
 # RabbitMQ live-integration suite (B.5 / #23).
 #
-# RabbitMQ takes ~10s to boot — slower than MinIO/Mosquitto but the
+# RabbitMQ takes ~10s to boot — slower than Silo/Mosquitto but the
 # de-facto AMQP 0.9.1 reference broker.  The compose file pins a
 # specific 3.x release (alpine variant for smaller pulls).
 #

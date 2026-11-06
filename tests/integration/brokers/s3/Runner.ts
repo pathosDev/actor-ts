@@ -1,7 +1,7 @@
 /**
  * S3 broker runner (B.2 / #20).
  *
- * Boots MinIO, ensures the test bucket exists, then runs every
+ * Boots Silo, ensures the test bucket exists, then runs every
  * scenario in `scenarios/` sequentially.  Mirrors the shape of
  * `tests/integration/Controller.ts` (#313) — small, dependency-free,
  * exit 0 / exit 1.
@@ -32,13 +32,13 @@ function requireEnv(name: string): string {
 }
 
 async function ensureBucket(context: S3Context): Promise<void> {
-  // Create the bucket via a direct PUT to MinIO — the SDK helper
-  // exists too, but we want this runner self-contained.  MinIO
+  // Create the bucket via a direct PUT to Silo — the SDK helper
+  // exists too, but we want this runner self-contained.  Silo
   // returns 200/409 (already exists), both acceptable.
   const url = `${context.endpoint}/${context.bucket}`;
-  // MinIO uses HTTP basic auth for the management plane only when
-  // signed requests are set up; for default credentials a path-style
-  // PUT with empty body to the bucket URL just works — MinIO infers
+  // Silo, like MinIO before it, uses HTTP basic auth for the
+  // management plane only when signed requests are set up; for default credentials a path-style
+  // PUT with empty body to the bucket URL just works — Silo infers
   // root creds from the well-known constants.  For consistency we
   // sign with the SDK by issuing a no-op put.
   // Simplest path: use the SDK's S3Client to issue CreateBucket.
@@ -77,12 +77,12 @@ async function main(): Promise<void> {
     forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
   };
 
-  // Block until MinIO is accepting connections.  The compose
+  // Block until Silo is accepting connections.  The compose
   // healthcheck does the same thing, but this guards against the
   // healthcheck-propagation race on Docker Desktop + Bun on Windows.
   const url = new URL(context.endpoint);
   await waitForPort(url.hostname, Number(url.port || '9000'), {
-    description: 'MinIO S3 API',
+    description: 'Silo S3 API',
     deadlineMs: 30_000,
   });
 

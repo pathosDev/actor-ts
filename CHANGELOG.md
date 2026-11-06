@@ -7942,6 +7942,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   file says to move the pin on purpose and run the suite when doing so. The
   local `docker run` recipe in the in-process S3 test follows.
 
+- **The S3 integration suite runs against Silo, `pgsty/silo` on Docker Hub,
+  pinned to `RELEASE.2026-10-26T00-00-00Z`** (#1795). The quay pin above
+  stopped pulling around 2026-09-24 — quay answers 401 "unauthorized" — so
+  the `integration-brokers` S3 job went red before a test ran on every run
+  since, and with Docker Hub's `minio/minio` already gone there was no MinIO
+  registry left. Silo is PGSTY's fork of MinIO and keeps its configuration
+  surface — the `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` /
+  `MINIO_KMS_SECRET_KEY` variables, port 9000, the `server` command and the
+  `/minio/health/live` path — so the scenarios are unchanged; the compose
+  service and the job are renamed `silo` / `Silo (s3)`. Like MinIO's, the
+  `RELEASE.<timestamp>` tag is not a version Dependabot reads, so the pin
+  moves by hand. The local `docker run` recipes in the in-process S3 test and
+  `examples/persistence/s3-snapshot-bank-account.ts` follow.
+
 - **`KubernetesLease`'s `operation-timeout` holds through a stalled TLS
   handshake** (#1529). The lease client bounded each API-server request with
   `https.request`'s `timeout` option — a *socket* timeout that Bun 1.4.2

@@ -1,7 +1,7 @@
 name: integration-brokers
 
 # Live broker integration suites — Phase B from the test-coverage
-# audit.  Each suite brings up a real broker in Docker (MinIO,
+# audit.  Each suite brings up a real broker in Docker (Silo,
 # Mosquitto, Redpanda, RabbitMQ, NATS, Redis, gRPC echo, k3s) and
 # runs scenarios against the live socket.  Matrix-parallel so wall
 # clock ≈ wall clock of the slowest suite (Kafka, ~30s), not the
@@ -81,7 +81,7 @@ jobs:
         # added without a leg here is a red test rather than a suite that
         # silently never runs.
         broker:
-          - { dir: s3,            image: "MinIO" }
+          - { dir: s3,            image: "Silo" }
           - { dir: mqtt,          image: "Mosquitto" }
           - { dir: kafka,         image: "Redpanda" }
           - { dir: amqp,          image: "RabbitMQ" }

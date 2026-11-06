@@ -1,4 +1,4 @@
-# Runner image for the MinIO/S3 live-integration suite (B.2 / #20).
+# Runner image for the S3 (Silo) live-integration suite (B.2 / #20).
 #
 # Identical shape across all eight broker runners — see
 # tests/integration/brokers/README.md for the full rationale on the
