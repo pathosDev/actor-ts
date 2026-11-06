@@ -3507,6 +3507,29 @@ set.  A chain that leads back to where it started is refused as a
 names itself — `pod.ip = ${?pod.ip}` — is no cycle: it reads the environment
 and then the value it replaced.
 
+### Empty values
+
+```hocon
+host =                  # nothing after it — no assignment, host keeps its value
+host = ${?DB_HOST}      # DB_HOST unset or empty — host keeps its value
+host = ${DB_HOST}       # DB_HOST unset or empty — the start fails
+host = ""               # an explicitly empty string
+roles = []              # an explicitly empty list
+```
+
+An assignment with nothing after its `=` or `:` is no assignment: the key
+keeps what an earlier line of the same file gave it, and across files the
+layer below shows through.  That holds before a comma, before the closing
+`}`, before a comment and at the end of the file.  To set a key to empty,
+write `""` or `[]`.
+
+A value may still go on the line after its key, as JSON lays it out
+(`"timeout":` then `10s`), as long as that line does not itself start a
+field: a line that reads `name = …`, `name: …`, `name { …` or
+`include "…"` is the next field, and the assignment above it has no value.
+So an unquoted value that looks like a field — `localhost:2552` — belongs
+on the same line as its key.
+
 ### Includes are not supported
 
 ```hocon

@@ -5924,6 +5924,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   blank a key gets the key's default now. Set the key to `""` in the file
   instead, which still means empty, or give the variable a value.
 
+- **BREAKING — An unquoted value on the line after its key is read as a
+  value only when that line does not look like a field** (#1786). The line
+  after `key =` is the next field when it reads `name = …`, `name: …`,
+  `name { …`, `name += …` or `include "…"`. So `host =` followed by
+  `localhost:2552` used to set `host` and now reads as a field `localhost`
+  with the value `2552`, because no parser can tell that from an assignment
+  left empty on purpose.
+
+  **Migration.** Write the value on the same line as its key
+  (`host = localhost:2552`), or quote it.
+
 
 ### Fixed
 
@@ -8842,6 +8853,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   then the value it replaced. A value that resolves to nothing now drops out
   at every depth — inside a nested list or an object in a list — instead of
   leaving an `undefined` behind.
+
+- **A key with nothing after its `=` or `:` no longer takes the next line as
+  its value** (#1786). The parser skipped line breaks before reading a
+  value, and an unquoted value runs to the end of its line, so `a =`
+  followed by `b = 1` parsed to `{ a: "b = 1" }`: `b` was gone, and `a = 1`,
+  `a =`, `b = 2` lost both. `a { x = }` threw `Expected a value`. Such an
+  assignment is now no assignment — the key keeps what an earlier line gave
+  it, and across files the layer below shows through — before a comma, a
+  closing `}`, a comment or the end of the file. `""` and `[]` stay the
+  explicit ways to set a key to empty, and a value on the line after its key
+  still works where that line does not start a field, as JSON lays out
+  `"a":` then `1`. A forbidden key or an `include` on the next line is still
+  refused where it stands rather than taken for a value.
 
 ### Removed
 

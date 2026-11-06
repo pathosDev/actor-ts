@@ -16,6 +16,8 @@
  *     specification requires.
  *   - Substitutions: `${foo.bar}` (required) and `${?foo.bar}` (optional).
  *     Resolved against the parsed tree first, then the environment.
+ *   - An assignment with no value (`key =`) is no assignment: the key keeps
+ *     what it held — see `assignsNoValue`.
  *
  * Features intentionally left out (rare in practice, can be added later):
  *   - Array and string concatenation (`a += [x]`, `"hi " ${name}`).
@@ -124,6 +126,13 @@ class HoconParser {
       let value: ConfigValue;
       if (char === '=' || char === ':') {
         this.pos++;
+        if (this.assignsNoValue(terminator)) {
+          // An assignment with nothing after it is no assignment (#1786): the
+          // key keeps what it held, and the line after it is read as the field
+          // it is rather than as this key's value.
+          this.skipSeparator();
+          continue;
+        }
         this.skipInsignificant();
         value = this.parseValue();
       } else if (char === '{') {
@@ -344,6 +353,74 @@ class HoconParser {
       if (char === '/' && this.src[this.pos + 1] === '/') { this.skipToEol(); continue; }
       break;
     }
+  }
+
+  /**
+   * Whether the `=` or `:` just consumed is followed by no value (#1786).
+   *
+   * On its own line the answer is plain: a `,`, the field list's closing `}`
+   * or the end of input means nothing was written.  Across a line break it is
+   * not, because JSON puts a value on the line after its key (`"a":` then
+   * `1`) and that layout has to keep working.  So the next significant text
+   * decides: the end of input, the closing `}`, or the start of another field
+   * means this assignment has no value; anything else is its value.
+   *
+   * Leaves the position after the inline whitespace either way, which is where
+   * both callers continue.
+   */
+  private assignsNoValue(terminator: '}' | null): boolean {
+    this.skipInsignificantInline();
+    const char = this.peekChar();
+    if (char === undefined || char === ',' || char === '}') return true;
+    if (char !== '\n') return false;
+    const lineEnd = this.pos;
+    this.skipInsignificant();
+    const next = this.peekChar();
+    const noValue = next === undefined || (terminator !== null && next === terminator) || this.startsField();
+    this.pos = lineEnd;
+    return noValue;
+  }
+
+  /**
+   * Whether a field starts at the current position: a key path followed by
+   * `=`, `:`, `{` or `+=`, or the `include` directive.
+   *
+   * A scanner over the source rather than a trial `parseKeyPath`, for two
+   * reasons.  The key parser throws, and a lookahead that caught its errors
+   * would read a forbidden key on the next line (`__proto__ = 1`) as this
+   * key's value instead of letting the refusal fire where the field is
+   * parsed.  And `include "file"` is a field position too — taking it for a
+   * value would turn the directive into a string and its refusal would never
+   * be reached.  `+=` is unsupported, but it is a field all the same, and
+   * counting it as one keeps its own error message.
+   */
+  private startsField(): boolean {
+    let at = this.pos;
+    const segment = (): boolean => {
+      while (this.src[at] === ' ' || this.src[at] === '\t') at++;
+      if (this.src[at] === '"') {
+        at++;
+        while (at < this.src.length && this.src[at] !== '"' && this.src[at] !== '\n') {
+          at += this.src[at] === '\\' ? 2 : 1;
+        }
+        if (this.src[at] !== '"') return false;
+        at++;
+        return true;
+      }
+      const start = at;
+      while (at < this.src.length && /[A-Za-z0-9_\-]/.test(this.src[at]!)) at++;
+      return at > start;
+    };
+    const keyStart = at;
+    if (!segment()) return false;
+    if (this.src.slice(keyStart, at) === 'include' && /^[ \t]+"/.test(this.src.slice(at))) return true;
+    while (this.src[at] === '.') {
+      at++;
+      if (!segment()) return false;
+    }
+    while (this.src[at] === ' ' || this.src[at] === '\t') at++;
+    const after = this.src[at];
+    return after === '=' || after === ':' || after === '{' || (after === '+' && this.src[at + 1] === '=');
   }
 
   private skipSeparator(): void {

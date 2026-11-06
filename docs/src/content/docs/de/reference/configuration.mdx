@@ -3743,6 +3743,29 @@ optionale Form eingeschlossen.  Ein Key, der sich selbst nennt —
 `pod.ip = ${?pod.ip}` —, ist kein Zyklus: Er liest die Umgebung und danach den
 Wert, den er ersetzt hat.
 
+### Leere Werte
+
+```hocon
+host =                  # nichts dahinter — keine Zuweisung, host behält seinen Wert
+host = ${?DB_HOST}      # DB_HOST nicht gesetzt oder leer — host behält seinen Wert
+host = ${DB_HOST}       # DB_HOST nicht gesetzt oder leer — der Start scheitert
+host = ""               # ein ausdrücklich leerer String
+roles = []              # eine ausdrücklich leere Liste
+```
+
+Eine Zuweisung, nach deren `=` oder `:` nichts steht, ist keine Zuweisung:
+Der Key behält, was ihm eine frühere Zeile derselben Datei gegeben hat, und
+über Dateien hinweg scheint die Schicht darunter durch.  Das gilt vor einem
+Komma, vor der schließenden `}`, vor einem Kommentar und am Dateiende.  Um
+einen Key zu leeren, schreib `""` oder `[]`.
+
+Ein Wert darf weiterhin in der Zeile nach seinem Key stehen, wie JSON es
+anordnet (`"timeout":` und darunter `10s`), solange diese Zeile nicht selbst
+ein Feld beginnt: Eine Zeile der Form `name = …`, `name: …`, `name { …` oder
+`include "…"` ist das nächste Feld, und die Zuweisung darüber hat keinen
+Wert.  Ein unquoted Wert, der wie ein Feld aussieht — `localhost:2552` —,
+gehört deshalb in dieselbe Zeile wie sein Key.
+
 ### Includes werden nicht unterstützt
 
 ```hocon

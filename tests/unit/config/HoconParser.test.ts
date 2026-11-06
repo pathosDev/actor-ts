@@ -663,3 +663,57 @@ describe('an empty environment variable counts as unset (#1787)', () => {
     }
   });
 });
+
+/**
+ * An assignment with nothing after its `=` or `:` (#1786).
+ *
+ * The parser skipped newlines before reading a value, and an unquoted value
+ * runs to the end of its line, so the next line became this key's string —
+ * `a =` then `b = 1` parsed to `{ a: "b = 1" }`, losing `b`.  Now such an
+ * assignment is no assignment: the key keeps what it held.
+ */
+describe('an assignment without a value (#1786)', () => {
+  test('is no assignment: the next line is read as the field it is', () => {
+    expect(parseHocon('a =\nb = 1')).toStrictEqual({ b: 1 });
+    expect(parseHocon('a :\nb = 1')).toStrictEqual({ b: 1 });
+    expect(parseHocon('a = # comment\nb = 1')).toStrictEqual({ b: 1 });
+    expect(parseHocon('a = // comment\nb = 1')).toStrictEqual({ b: 1 });
+    expect(parseHocon('a.b =\nc = 1')).toStrictEqual({ c: 1 });
+  });
+
+  test('keeps the value an earlier line of the same source set', () => {
+    expect(parseHocon('a = 1\na =\nb = 2')).toStrictEqual({ a: 1, b: 2 });
+    expect(Config.parseString('a { x = 1 }\na { x = }').getNumber('a.x')).toBe(1);
+  });
+
+  test('ends at a comma, a closing brace or the end of input', () => {
+    expect(parseHocon('a { x = }')).toStrictEqual({ a: {} });
+    expect(parseHocon('a = , b = 1')).toStrictEqual({ b: 1 });
+    expect(parseHocon('a = 1, b =, c = 3')).toStrictEqual({ a: 1, c: 3 });
+    expect(parseHocon('a =')).toStrictEqual({});
+    expect(parseHocon('x {\n  a =\n\n  # nothing here\n}')).toStrictEqual({ x: {} });
+  });
+
+  test('a value on the next line that does not start a field is still the value', () => {
+    // JSON's own layout, and an unquoted value written below its key.
+    expect(parseHocon('{\n  "a":\n    [1, 2],\n  "b":\n    "s"\n}')).toStrictEqual({ a: [1, 2], b: 's' });
+    expect(parseHocon('a =\n  foo\nb = 2')).toStrictEqual({ a: 'foo', b: 2 });
+    expect(parseHocon('a =\n  { x = 1 }')).toStrictEqual({ a: { x: 1 } });
+  });
+
+  test('a field on the next line is a field, whatever its key looks like', () => {
+    expect(parseHocon('a =\n  "quoted.key": 1')).toStrictEqual({ 'quoted.key': 1 });
+    expect(parseHocon('a =\nb { c = 1 }')).toStrictEqual({ b: { c: 1 } });
+  });
+
+  test('the refusals on the next line still fire, rather than being read as a value', () => {
+    expect(() => parseHocon('a =\n__proto__ = 1')).toThrow(/Refusing "__proto__"/);
+    expect(() => parseHocon('a =\ninclude "f.conf"')).toThrow(/`include "f\.conf"` is not supported/);
+    expect(() => parseHocon('a =\nb += [1]')).toThrow(/after key "b"/);
+  });
+
+  test('an empty string and an empty list stay the explicit ways to set a key to empty', () => {
+    expect(parseHocon('a = 1\na = ""')).toStrictEqual({ a: '' });
+    expect(parseHocon('a = [1]\na = []')).toStrictEqual({ a: [] });
+  });
+});

@@ -258,6 +258,45 @@ describe('HOCON properties — declaring a key twice merges', () => {
       { numRuns: RUNS },
     );
   });
+
+  /**
+   * An assignment with nothing after it is no assignment (#1786), so a line
+   * `key =` for any key of the document — inserted before any line, in either
+   * assignment style — leaves the parsed model exactly as it was.  The keys
+   * blanked are the model's own, at its root, so each one has a value the
+   * blank line could take away if it were read as an assignment.
+   */
+  test('a blank assignment of an existing key, anywhere in the document, changes nothing', () => {
+    const style: RenderStyle = {
+      assignment: '=', separator: 'newline', explicitRootBraces: false,
+      objectShorthand: false, comments: false, indentation: '',
+    };
+    fc.assert(
+      fc.property(
+        modelArbitrary.filter((model) => Object.keys(model).length > 0),
+        fc.integer({ min: 0, max: 99 }),
+        fc.integer({ min: 0, max: 99 }),
+        fc.constantFrom('=', ':'),
+        (model, keyPick, linePick, assignment) => {
+          const keys = Object.keys(model);
+          const blank = `${renderKey(keys[keyPick % keys.length]!)} ${assignment}`;
+          const lines = renderRoot(model, style).split('\n');
+          // Only in front of a top-level field, or at the end: inside a
+          // multi-line object a root key would be a different, nested key.
+          // With no indentation, a top-level field is a line that starts with
+          // a key character rather than a closing brace or a value.
+          const boundaries = [
+            ...lines.flatMap((line, index) => (/^["A-Za-z0-9_-]/.test(line) ? [index] : [])),
+            lines.length,
+          ];
+          const at = boundaries[linePick % boundaries.length]!;
+          const source = [...lines.slice(0, at), blank, ...lines.slice(at)].join('\n');
+          expect(parseHocon(source)).toStrictEqual(parseHocon(lines.join('\n')));
+        },
+      ),
+      { numRuns: RUNS },
+    );
+  });
 });
 
 describe('HOCON properties — substitutions read the tree', () => {
