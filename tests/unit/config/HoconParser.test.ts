@@ -286,6 +286,8 @@ describe('isPlainObject', () => {
     expect(isPlainObject(null)).toBe(false);
     expect(isPlainObject('x')).toBe(false);
     expect(isPlainObject({ __substitution: true, path: 'a', optional: false })).toBe(false);
+    // A concatenation is a value too: merged key by key it would be two strings spliced field-wise.
+    expect(isPlainObject({ __concatenation: true, pieces: ['a'], optional: false })).toBe(false);
   });
 });
 
@@ -715,5 +717,125 @@ describe('an assignment without a value (#1786)', () => {
   test('an empty string and an empty list stay the explicit ways to set a key to empty', () => {
     expect(parseHocon('a = 1\na = ""')).toStrictEqual({ a: '' });
     expect(parseHocon('a = [1]\na = []')).toStrictEqual({ a: [] });
+  });
+});
+
+/**
+ * String value concatenation (#537): simple pieces on one line — quoted
+ * strings, substitutions and unquoted runs — joined into one string.  The
+ * concatenation of objects and lists, `+=` and triple-quoted strings stay
+ * unimplemented, but each is refused with its own message rather than
+ * mis-parsed.
+ */
+describe('string value concatenation (#537)', () => {
+  const environment = { H: 'db', P: '5432', X: 'prod', PW: 's3cr3t' };
+  const resolve = (source: string, env: Record<string, string> = environment) =>
+    resolveSubstitutions(parseHocon(source), env);
+
+  test('joins quoted strings, substitutions and unquoted runs into one string', () => {
+    expect(resolve('url = "redis://:"${PW}"@host:6379"')).toStrictEqual({ url: 'redis://:s3cr3t@host:6379' });
+    expect(resolve('address = ${H}:${P}')).toStrictEqual({ address: 'db:5432' });
+    expect(resolve('name = app-${X}')).toStrictEqual({ name: 'app-prod' });
+    expect(resolve('a = "p-"${X}"-s"')).toStrictEqual({ a: 'p-prod-s' });
+  });
+
+  test('keeps the whitespace between pieces, and trims only the ends of the value', () => {
+    expect(resolve('a = ${X} suffix text')).toStrictEqual({ a: 'prod suffix text' });
+    expect(resolve('a =   ${H}   ${P}   # comment')).toStrictEqual({ a: 'db   5432' });
+  });
+
+  test('a single piece keeps its type', () => {
+    expect(parseHocon('a = 30\nb = true\nc = null\nd = 2 minutes')).toStrictEqual({ a: 30, b: true, c: null, d: '2 minutes' });
+    expect(resolve('n = ${P}')).toStrictEqual({ n: 5432 });
+  });
+
+  test('a variable joins in as the text it holds, not as its JSON reading', () => {
+    const env = { BIG: '123456789012345678901234', QUOTED: '"x"', LIST: '[1,2]' };
+    expect(resolve('a = "pw="${BIG}', env)).toStrictEqual({ a: 'pw=123456789012345678901234' });
+    expect(resolve('a = "v="${QUOTED}', env)).toStrictEqual({ a: 'v="x"' });
+    expect(resolve('a = "v="${LIST}', env)).toStrictEqual({ a: 'v=[1,2]' });
+    // Alone, the same variables keep their JSON reading (D-M6).
+    expect(resolve('a = ${QUOTED}', env)).toStrictEqual({ a: 'x' });
+  });
+
+  test('a value from the tree joins in as HOCON writes it, and an object or a list is refused', () => {
+    expect(resolve('n = 30\na = ${n}s')).toStrictEqual({ n: 30, a: '30s' });
+    expect(resolve('h = ${H}\nu = ${h}":"${P}')).toStrictEqual({ h: 'db', u: 'db:5432' });
+    expect(() => resolve('o { k = 1 }\na = "v"${o}')).toThrow('Cannot join ${o} into a string at a: it resolves to an object');
+    expect(() => resolve('l = [1]\na = "v"${l}')).toThrow('Cannot join ${l} into a string at a: it resolves to a list');
+  });
+
+  test('an optional substitution that finds nothing adds nothing', () => {
+    expect(resolve('u = "redis://:"${?NOPE}"@host"')).toStrictEqual({ u: 'redis://:@host' });
+    expect(resolve('x = [ ${?H}":"${?P} ]')).toStrictEqual({ x: ['db:5432'] });
+  });
+
+  test('a concatenation of optional substitutions only behaves like one optional substitution', () => {
+    expect(stripUndefined(resolve('a = ${?A}${?B}', {}))).toStrictEqual({});
+    expect(resolve('a = 1\na = ${?A}${?B}', {})).toStrictEqual({ a: 1 });
+    expect(resolve('a = 1\na = ${?A} ${?B}', { B: 'b' })).toStrictEqual({ a: ' b' });
+    expect(resolve('x = [ ${?A} ${?B} ]', {})).toStrictEqual({ x: [] });
+  });
+
+  test('a required substitution in a concatenation still has to resolve', () => {
+    expect(() => resolve('a = "x"${NOPE}', {})).toThrow('Unresolved substitution: ${NOPE}');
+  });
+
+  test('a cycle through a concatenation is refused', () => {
+    expect(() => resolve('a = "x"${b}\nb = "y"${a}', {})).toThrow('Substitution cycle: a -> b -> a');
+  });
+
+  test('substitutions inside quotes stay text, and so do quotes inside an unquoted run', () => {
+    expect(resolve('a = "${X}"')).toStrictEqual({ a: '${X}' });
+    expect(parseHocon('a = foo"bar"\nb = say "hi" now')).toStrictEqual({ a: 'foo"bar"', b: 'say "hi" now' });
+  });
+
+  test('a field after whitespace on the same line still ends the value', () => {
+    expect(resolve('a = "x" b = 1')).toStrictEqual({ a: 'x', b: 1 });
+    expect(resolve('a = ${X} b = 1')).toStrictEqual({ a: 'prod', b: 1 });
+    expect(parseHocon('a { b = 1 } c = 2')).toStrictEqual({ a: { b: 1 }, c: 2 });
+  });
+
+  test('pieces without a comma between them are one list element', () => {
+    expect(parseHocon('x = ["a" "b"]')).toStrictEqual({ x: ['a b'] });
+    expect(parseHocon('x = [1 2 3]')).toStrictEqual({ x: ['1 2 3'] });
+    expect(parseHocon('x = ["a", "b"]')).toStrictEqual({ x: ['a', 'b'] });
+  });
+
+  test('three quotes in a row open a triple-quoted string, even when they are two empty strings', () => {
+    // Found by the concatenation property: `${X}""""` is refused.  HOCON reads
+    // any `"""` as the start of a multi-line string, so `""""` is not two
+    // empty strings to it, and the refusal is the right answer here.
+    expect(() => parseHocon('a = ${X}""""')).toThrow(/Triple-quoted strings are not supported/);
+    expect(() => parseHocon('a = """"')).toThrow(/Triple-quoted strings are not supported/);
+    // Two empty strings with something between them are two pieces.
+    expect(parseHocon('a = "" ""')).toStrictEqual({ a: ' ' });
+    expect(resolveSubstitutions(parseHocon('a = ""${X}""'), { X: 'x' })).toStrictEqual({ a: 'x' });
+  });
+
+  test('what concatenation does not support is refused, naming what it is', () => {
+    expect(() => parseHocon('a = """x"""')).toThrow(/Triple-quoted strings are not supported \(#537\)/);
+    expect(() => parseHocon('a = {x = 1} {y = 2}')).toThrow(/Concatenating an object with another value is not supported/);
+    expect(() => parseHocon('a = [1] [2]')).toThrow(/Concatenating a list with another value is not supported/);
+    expect(() => parseHocon('x = [{a = 1} {b = 2}]')).toThrow(/Concatenating an object with another value/);
+    expect(() => parseHocon('a = "x" {y = 2}')).toThrow(/Concatenating a string with an object is not supported/);
+    expect(() => parseHocon('a = "x" [2]')).toThrow(/Concatenating a string with a list is not supported/);
+    // The profile-merging form the configuration reference names (#537).
+    expect(() => parseHocon('staging = ${production} { a = 1 }'))
+      .toThrow(/Concatenating a substitution with an object is not supported \(#537\)/);
+  });
+
+  test('an unquoted URL is refused instead of being cut at its "//"', () => {
+    // `//` starts a comment, so this used to read as the string "http:".
+    expect(() => parseHocon('a = http://x')).toThrow(/put it in quotes/);
+    expect(() => parseHocon('a = redis://:${PW}@host')).toThrow(/put it in quotes/);
+    expect(parseHocon('a = "http://x"')).toStrictEqual({ a: 'http://x' });
+    expect(parseHocon('a = 1 // a comment')).toStrictEqual({ a: 1 });
+  });
+
+  test('two documents concatenated still equal the two merged, concatenations included', () => {
+    const base = 'a = 1\nb { c = "x" }';
+    const overlay = 'a = ${?A}"-"${?B}\nb.c = ${?C}${?D}';
+    expect(parseHocon(`${base}\n${overlay}`)).toStrictEqual(deepMerge(parseHocon(base), parseHocon(overlay)));
   });
 });

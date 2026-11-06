@@ -4323,6 +4323,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   ./`application.conf` and the profile `ACTOR_TS_PROFILE` names, so hand it
   `system.config` whenever a system is in scope.
 
+- **String value concatenation in HOCON** (#537). Quoted strings,
+  substitutions and unquoted text next to each other on one line make one
+  string: `url = "redis://:"${REDIS_PASSWORD}"@cache:6379"`,
+  `address = ${HOST}":"${PORT}`, `name = app-${STAGE}`. A secret can go into
+  a connection URL without the whole URL living in one variable. The spaces
+  between pieces are kept, a field after a space still starts a new field,
+  and a single piece keeps its type, so `port = ${PORT}` is still a number.
+
+  Inside a string a variable joins in as the text it holds — a password of
+  digits stays digits — while a lone `${X}` keeps its JSON-first reading. A
+  key of the file joins in as HOCON writes it, and one that holds an object
+  or a list is refused. An unset `${?X}` inside a string adds nothing, and a
+  string made only of unset optional substitutions is no value, so the
+  earlier value or the layer below shows through. `${` inside quotes stays
+  text. Joining objects or lists, `+=` and triple-quoted strings are still
+  not supported, and each is now refused with an error naming it rather than
+  mis-parsed or reported as `Expected a key`.
+
 ### Changed
 
 - **BREAKING — With `actor-ts.coordinated-shutdown.exit-process` on, a run
@@ -5934,6 +5952,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
   **Migration.** Write the value on the same line as its key
   (`host = localhost:2552`), or quote it.
+
+- **BREAKING — Values side by side on one line without a comma are one
+  string, and an unquoted URL is refused** (#537). With string
+  concatenation, `["a" "b"]` and `[ ${A} ${B} ]` are one list element
+  (`"a b"`) where they were two; `[{a = 1} {b = 2}]` and `[[1] [2]]` are
+  refused instead of read as two elements; and `a = "x"b = 1` with no space
+  is the one string `xb = 1`. An unquoted value with `://` in it is refused:
+  `//` starts a comment, so `url = http://host` used to read as the string
+  `http:`.
+
+  **Migration.** Separate list elements with commas, put a space before a
+  field that shares a line, and quote URLs.
 
 
 ### Fixed

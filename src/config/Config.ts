@@ -13,9 +13,11 @@ import {
   type ConfigObject,
   type ConfigValue,
   deepMerge,
+  isConcatenation,
   isForbiddenConfigKey,
   isPlainObject,
   isSubstitution,
+  isUnresolved,
   parseHocon,
   resolveSubstitutions,
   stripUndefined,
@@ -667,7 +669,7 @@ function cloneTree(obj: ConfigObject, path?: ReadonlyArray<string>): ConfigObjec
  */
 function refuseNestedInstance(value: unknown, path: ReadonlyArray<string>): void {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return;
-  if (isSubstitution(value) || hasPlainPrototype(value)) return;
+  if (isUnresolved(value) || hasPlainPrototype(value)) return;
   throw new ConfigError(
     `Config.fromObject found an instance of ${constructorNameOf(value)} at ${path.join('.')}: `
     + 'the own fields of a class instance are not a configuration tree.  Give that key a plain object or a '
@@ -1016,6 +1018,13 @@ function profilesReferenceIn(value: ConfigValue | undefined): string | null {
     if (value.path === PROFILES_ROOT_KEY || value.path.startsWith(`${PROFILES_ROOT_KEY}.`)) return value.path;
     return profilesReferenceIn(value.previous);
   }
+  if (isConcatenation(value)) {
+    for (const piece of value.pieces) {
+      const reference = typeof piece === 'string' ? null : profilesReferenceIn(piece);
+      if (reference !== null) return reference;
+    }
+    return profilesReferenceIn(value.previous);
+  }
   const children = Array.isArray(value) ? value : isPlainObject(value) ? Object.values(value) : [];
   for (const child of children) {
     const reference = profilesReferenceIn(child);
@@ -1030,6 +1039,7 @@ function describeValue(value: ConfigValue | undefined): string {
   if (value === null) return 'null';
   if (Array.isArray(value)) return 'a list';
   if (isSubstitution(value)) return `\${${value.path}}`;
+  if (isConcatenation(value)) return 'a string built from substitutions';
   return `a ${typeof value}`;
 }
 

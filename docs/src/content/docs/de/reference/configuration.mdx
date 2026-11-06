@@ -3766,6 +3766,45 @@ ein Feld beginnt: Eine Zeile der Form `name = …`, `name: …`, `name { …` od
 Wert.  Ein unquoted Wert, der wie ein Feld aussieht — `localhost:2552` —,
 gehört deshalb in dieselbe Zeile wie sein Key.
 
+### Wert-Konkatenation
+
+```hocon
+url     = "redis://:"${REDIS_PASSWORD}"@cache:6379"   # ein String
+address = ${HOST}":"${PORT}                          # "db:5432"
+name    = app-${STAGE}                               # "app-prod"
+seeds   = [ ${?SEED_HOST}":"${?SEED_PORT} ]          # ein Element
+```
+
+Quoted Strings, Substitutionen und unquoted Text, die in einer Zeile
+nebeneinander stehen, ergeben einen String.  Die Leerzeichen zwischen den
+Stücken bleiben erhalten, `${A} ${B}` ist also beide Werte mit einem
+Leerzeichen dazwischen, und ein Feld nach einem Leerzeichen beginnt weiterhin
+ein neues Feld (`a = "x" b = 1`).  Ein einzelnes Stück behält seinen Typ:
+`port = ${PORT}` ist eine Zahl, wenn `PORT` eine enthält.
+
+In einem String trägt eine Variable den Text bei, den sie enthält.  Allein
+liest `${X}` eine Variable zuerst als JSON, `PORT=2552` ergibt also eine Zahl
+und `FLAGS=[1,2]` eine Liste; in einem String würde das ein Passwort aus
+Ziffern in eine Zahl in Exponentenschreibweise verwandeln, deshalb geschieht
+es dort nicht.  Ein Key der Datei fließt so ein, wie HOCON ihn schreibt —
+`30`, `true` —, und ein Key, der ein Objekt oder eine Liste enthält, lässt
+sich nicht in einen String einfügen.
+
+Ein nicht gesetztes `${?X}` in einem String fügt nichts hinzu.  Ein String,
+der nur aus optionalen Substitutionen besteht, von denen keine gesetzt ist,
+ist gar kein Wert, sodass der frühere Wert oder die Schicht darunter
+durchscheint — wie bei einem einzelnen `${?X}`.
+
+`${` in Anführungszeichen ist Text, keine Substitution: `"${X}"` sind die fünf
+Zeichen, die dort stehen.  Und weil `//` einen Kommentar beginnt, gehört eine
+URL in Anführungszeichen — `url = http://host` wird abgelehnt, wo es früher
+als `http:` gelesen wurde.
+
+Nicht unterstützt und mit einem Fehler abgelehnt, der das sagt: Objekte oder
+Listen zusammenfügen (`{ a = 1 } { b = 2 }`, `[1] [2]`, `${base} { … }`),
+`+=` und Strings in dreifachen Anführungszeichen
+([#537](https://github.com/pathosDev/actor-ts/issues/537)).
+
 ### Includes werden nicht unterstützt
 
 ```hocon

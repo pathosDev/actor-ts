@@ -30,9 +30,11 @@ import { parseSize } from '../../../src/config/Size.js';
  * for three different reasons — worth separating, because only one of them is
  * a gap that might close:
  *
- *  1. Array and string concatenation (`a += [x]`, `"hi " ${name}`) and
- *     triple-quoted strings are unimplemented and tracked (#537,
- *     `src/config/HoconParser.ts:17-19`).
+ *  1. Object and list concatenation (`{a = 1} {b = 2}`, `a += [x]`) and
+ *     triple-quoted strings are unimplemented and tracked (#537, the header
+ *     of `src/config/HoconParser.ts`).  String concatenation is implemented and
+ *     has a property of its own; the renderer still quotes every string, so a
+ *     value it writes is always one piece.
  *  2. `include` is NOT in that category.  It is a deliberate, permanent
  *     refusal with its own diagnostic (`src/config/HoconParser.ts:21-23`,
  *     `:119-124`, `:373-386`) — resolving one would let a config source name
@@ -362,6 +364,47 @@ describe('HOCON properties — substitutions read the tree', () => {
         const resolved = resolveSubstitutions(parseHocon(source), {});
         expect(resolved['port']).toStrictEqual(value);
       }),
+      { numRuns: RUNS },
+    );
+  });
+
+  /**
+   * A string cut into pieces and written back as a concatenation is the
+   * string again (#537): each piece becomes a quoted string or a variable,
+   * written next to each other with no space, and the resolved value is the
+   * pieces joined.  The variables hold the pieces verbatim, so a piece that
+   * reads as JSON — a number, `true` — must still join in as its text.
+   *
+   * Two quoted pieces in a row are written as one: `"a""b"` is fine, but an
+   * empty one next to another quote makes `"""`, which HOCON reads as a
+   * triple-quoted string and this parser refuses (found by this property; the
+   * plain case beside it pins the refusal).
+   */
+  test('a string written as a concatenation of its pieces resolves to the string', () => {
+    const pieceArbitrary = fc.oneof(
+      fc.string({ maxLength: 6 }),
+      fc.constantFrom('42', 'true', 'null', '1e5', '"q"', '[1]', ' ', '://'),
+    );
+    fc.assert(
+      fc.property(
+        fc.array(fc.record({ text: pieceArbitrary, fromVariable: fc.boolean() }), { minLength: 2, maxLength: 6 }),
+        (pieces) => {
+          const environment: Record<string, string> = {};
+          const written: string[] = [];
+          let quoted: string | null = null;
+          for (const [index, { text, fromVariable }] of pieces.entries()) {
+            // An empty variable counts as unset (#1787), so an empty piece is written quoted.
+            if (!fromVariable || text === '') { quoted = (quoted ?? '') + text; continue; }
+            if (quoted !== null) { written.push(JSON.stringify(quoted)); quoted = null; }
+            environment[`PIECE_${index}`] = text;
+            written.push(`\${PIECE_${index}}`);
+          }
+          if (quoted !== null) written.push(JSON.stringify(quoted));
+          const source = written.join('');
+          const resolved = resolveSubstitutions(parseHocon(`a = ${source}`), environment);
+          expect(resolved['a']).toBe(pieces.map(({ text }) => text).join(''));
+        },
+      ),
       { numRuns: RUNS },
     );
   });

@@ -3530,6 +3530,40 @@ field: a line that reads `name = …`, `name: …`, `name { …` or
 So an unquoted value that looks like a field — `localhost:2552` — belongs
 on the same line as its key.
 
+### Value concatenation
+
+```hocon
+url     = "redis://:"${REDIS_PASSWORD}"@cache:6379"   # one string
+address = ${HOST}":"${PORT}                          # "db:5432"
+name    = app-${STAGE}                               # "app-prod"
+seeds   = [ ${?SEED_HOST}":"${?SEED_PORT} ]          # one element
+```
+
+Quoted strings, substitutions and unquoted text written next to each other
+on one line make one string.  The spaces between the pieces are kept, so
+`${A} ${B}` is the two values with a space between them, and a field that
+follows after a space still starts a new field (`a = "x" b = 1`).  A single
+piece keeps its type: `port = ${PORT}` is a number when `PORT` holds one.
+
+Inside a string, a variable joins in as the text it holds.  On its own,
+`${X}` reads a variable as JSON first, so `PORT=2552` gives a number and
+`FLAGS=[1,2]` a list; inside a string that would turn a password of digits
+into a number in exponent notation, so it does not.  A key of the file joins
+in as HOCON writes it — `30`, `true` — and a key that holds an object or a
+list cannot be joined into a string.
+
+An unset `${?X}` inside a string adds nothing.  A string made of optional
+substitutions only, none of them set, is no value at all, so the earlier
+value or the layer below shows through — as for a single `${?X}`.
+
+`${` inside quotes is text, not a substitution: `"${X}"` is the five
+characters it shows.  And because `//` starts a comment, a URL goes in
+quotes — `url = http://host` is refused, where it used to read as `http:`.
+
+Not supported, and refused with an error that says so: joining objects or
+lists (`{ a = 1 } { b = 2 }`, `[1] [2]`, `${base} { … }`), `+=`, and
+triple-quoted strings ([#537](https://github.com/pathosDev/actor-ts/issues/537)).
+
 ### Includes are not supported
 
 ```hocon

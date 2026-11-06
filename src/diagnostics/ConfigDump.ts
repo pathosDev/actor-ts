@@ -1,5 +1,5 @@
 import type { Config, ConfigLayers } from '../config/Config.js';
-import type { ConfigObject, ConfigValue } from '../config/HoconParser.js';
+import { type ConfigObject, type ConfigValue, isPlainObject } from '../config/HoconParser.js';
 import {
   CONFIG_NEVER_REDACTED_PATHS,
   CONFIG_REDACTED,
@@ -244,7 +244,7 @@ export function withUrlCredentialsMasked(value: ConfigValue): ConfigValue {
     const masked = value.map(withUrlCredentialsMasked);
     return masked.some((element, index) => element !== value[index]) ? masked : value;
   }
-  if (typeof value === 'object' && value !== null) {
+  if (isPlainObject(value)) {
     const fields = Object.entries(value);
     const masked = fields.map(([key, field]) => [key, withUrlCredentialsMasked(field)] as const);
     return masked.some(([, field], index) => field !== fields[index]![1])
@@ -502,8 +502,5 @@ function pathOf(segments: readonly string[]): string {
 }
 
 function isBranch(value: ConfigValue): value is ConfigObject {
-  return typeof value === 'object'
-    && value !== null
-    && !Array.isArray(value)
-    && !('__substitution' in value);
+  return isPlainObject(value);
 }

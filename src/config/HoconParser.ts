@@ -18,19 +18,22 @@
  *     Resolved against the parsed tree first, then the environment.
  *   - An assignment with no value (`key =`) is no assignment: the key keeps
  *     what it held — see `assignsNoValue`.
+ *   - String value concatenation: simple pieces on one line joined into one
+ *     string, `"redis://:"${PASSWORD}"@host"` — see `parseSimpleValue`.
  *
- * Features intentionally left out (rare in practice, can be added later):
- *   - Array and string concatenation (`a += [x]`, `"hi " ${name}`).
+ * Features left out (#537), each refused with its own message rather than
+ * mis-parsed:
+ *   - Object and list concatenation (`{a = 1} {b = 2}`, `[1] [2]`) and `+=`.
  *   - Triple-quoted multi-line strings.
  *
- * `include` is a different case from those two: it is not merely unimplemented
+ * `include` is a different case from those: it is not merely unimplemented
  * but deliberately refused, and it says so — see `includeNotSupported`.  Compose
  * several sources in code instead, with `Config.parseFile(…).merge(…)`.
  */
 import { match } from 'ts-pattern';
 
 export type ConfigPrimitive = string | number | boolean | null;
-export type ConfigValue = ConfigPrimitive | ConfigValue[] | ConfigObject | Substitution;
+export type ConfigValue = ConfigPrimitive | ConfigValue[] | ConfigObject | Substitution | Concatenation;
 export type ConfigObject = { [key: string]: ConfigValue };
 
 export type Substitution = {
@@ -51,6 +54,37 @@ export type Substitution = {
 
 export function isSubstitution(value: unknown): value is Substitution {
   return typeof value === 'object' && value !== null && (value as Substitution).__substitution === true;
+}
+
+/**
+ * A string built from pieces on one line, at least one of them a
+ * substitution: `"redis://:"${PASSWORD}"@host"`, `${HOST}:${PORT}`,
+ * `app-${STAGE}` (#537).  The text pieces are kept as written, whitespace
+ * between pieces included, and the substitutions are joined in as text when
+ * the tree resolves.  A concatenation with no substitution is a plain string
+ * already at parse time and never becomes one of these.
+ */
+export type Concatenation = {
+  readonly __concatenation: true;
+  readonly pieces: ReadonlyArray<string | Substitution>;
+  /**
+   * True when every piece is an optional substitution or whitespace, so the
+   * whole may resolve to nothing — `${?A}${?B}` with neither set.  Such a
+   * concatenation behaves like an optional substitution: it carries the value
+   * its assignment replaced, and falls back to it.
+   */
+  readonly optional: boolean;
+  /** As on {@link Substitution}: the value this assignment replaced, kept only when `optional`. */
+  readonly previous?: ConfigValue;
+};
+
+export function isConcatenation(value: unknown): value is Concatenation {
+  return typeof value === 'object' && value !== null && (value as Concatenation).__concatenation === true;
+}
+
+/** A value the resolver still has to replace — a substitution, or a concatenation holding one. */
+export function isUnresolved(value: unknown): value is Substitution | Concatenation {
+  return isSubstitution(value) || isConcatenation(value);
 }
 
 /**
@@ -159,11 +193,109 @@ class HoconParser {
     this.skipInsignificant();
     const char = this.peekChar();
     if (char === undefined) throw this.error('Unexpected end of input in value');
-    if (char === '{') return this.parseObject();
-    if (char === '[') return this.parseArray();
-    if (char === '"') return this.parseQuotedString();
-    if (char === '$' && this.src[this.pos + 1] === '{') return this.parseSubstitution();
-    return this.parseLiteralOrUnquoted();
+    if (char === '{') return this.refuseConcatenationAfter(this.parseObject(), 'an object');
+    if (char === '[') return this.refuseConcatenationAfter(this.parseArray(), 'a list');
+    return this.parseSimpleValue();
+  }
+
+  /**
+   * A value made of simple pieces on one line — quoted strings, substitutions
+   * and unquoted runs — joined into one string (#537), the way HOCON's value
+   * concatenation does it: `"redis://:"${PASSWORD}"@host"`, `${HOST}:${PORT}`,
+   * `app-${STAGE}`.
+   *
+   * A single piece keeps its own type, so `30`, `true`, `null` and a lone
+   * `${PORT}` read as before.  Pieces never span a line, and whitespace between
+   * them is kept, as the specification has it.  Two things end a value besides
+   * a terminator: whitespace followed by the start of another field, which is
+   * how `a = "x" b = 1` was always read, and an object or a list, which is
+   * refused — concatenating those is not implemented, and reading
+   * `"a" {b = 1}` as a string would be a silent wrong answer.
+   *
+   * An unquoted run stops at `${` only, and a quote opens a string only where
+   * a piece begins — so `say "hi" now` and `foo"bar"` stay the unquoted
+   * strings they were.  That is also why `${` inside quotes is not a
+   * substitution: the specification keeps substitutions out of quoted text.
+   */
+  private parseSimpleValue(): ConfigValue {
+    const pieces: Array<{ readonly text: string; readonly unquoted: boolean } | Substitution> = [];
+    while (true) {
+      const char = this.peekChar();
+      if (char === '"') {
+        // Any run of three quotes opens a multi-line string in HOCON — `""""`
+        // included, which the specification does not read as two empty
+        // strings.  Refused rather than read as `""` and `"` and the rest.
+        if (this.src.startsWith('"""', this.pos)) throw this.error('Triple-quoted strings are not supported (#537)');
+        pieces.push({ text: this.parseQuotedString(), unquoted: false });
+      } else if (char === '$' && this.src[this.pos + 1] === '{') {
+        pieces.push(this.parseSubstitution());
+      } else {
+        pieces.push({ text: this.parseUnquotedRun(), unquoted: true });
+      }
+      const pieceEnd = this.pos;
+      while (this.peekChar() === ' ' || this.peekChar() === '\t') this.pos++;
+      const gap = this.src.slice(pieceEnd, this.pos);
+      if (this.endsSimpleValue()) { this.pos = pieceEnd; break; }
+      const next = this.peekChar();
+      if (next === '{' || next === '[') {
+        const before = isSubstitution(pieces[pieces.length - 1]) ? 'a substitution' : 'a string';
+        throw this.error(`Concatenating ${before} with ${next === '{' ? 'an object' : 'a list'} is not supported (#537)`);
+      }
+      if (gap !== '' && this.startsField()) { this.pos = pieceEnd; break; }
+      if (gap !== '') pieces.push({ text: gap, unquoted: false });
+    }
+    return this.valueOfPieces(pieces);
+  }
+
+  /** The value a sequence of pieces stands for — see {@link parseSimpleValue}. */
+  private valueOfPieces(
+    pieces: ReadonlyArray<{ readonly text: string; readonly unquoted: boolean } | Substitution>,
+  ): ConfigValue {
+    if (pieces.length === 1) {
+      const only = pieces[0]!;
+      if (isSubstitution(only)) return only;
+      return only.unquoted ? this.literalOf(only.text.trim()) : only.text;
+    }
+    // The run in front of the first piece was trimmed by the caller's skip; a
+    // trailing unquoted run loses its trailing whitespace, as a single one does.
+    const last = pieces[pieces.length - 1]!;
+    const trimmed = pieces.map((piece) =>
+      piece === last && !isSubstitution(piece) && piece.unquoted ? { ...piece, text: piece.text.trimEnd() } : piece);
+    if (!trimmed.some(isSubstitution)) {
+      return trimmed.map((piece) => (piece as { readonly text: string }).text).join('');
+    }
+    const folded: Array<string | Substitution> = [];
+    for (const piece of trimmed) {
+      if (isSubstitution(piece)) { folded.push(piece); continue; }
+      const previous = folded[folded.length - 1];
+      if (typeof previous === 'string') folded[folded.length - 1] = previous + piece.text;
+      else folded.push(piece.text);
+    }
+    const optional = folded.every((piece) =>
+      typeof piece === 'string' ? piece.trim() === '' : piece.optional);
+    return { __concatenation: true, pieces: folded.filter((piece) => piece !== ''), optional };
+  }
+
+  /** Whether the value being read ends here: a line break, a separator, a terminator, a comment or the end. */
+  private endsSimpleValue(): boolean {
+    const char = this.peekChar();
+    if (char === undefined || char === '\n' || char === '\r' || char === ',' || char === '}' || char === ']') return true;
+    return char === '#' || (char === '/' && this.src[this.pos + 1] === '/');
+  }
+
+  /**
+   * `value`, after refusing anything but the end of the value behind it on
+   * the same line.  `{a = 1} {b = 2}` would be an object concatenation and
+   * `[1] [2]` a list concatenation; neither is implemented, and the parser
+   * used to fail on them with an unrelated "Expected a key".
+   */
+  private refuseConcatenationAfter<T extends ConfigValue>(value: T, what: string): T {
+    const end = this.pos;
+    while (this.peekChar() === ' ' || this.peekChar() === '\t') this.pos++;
+    const followed = !this.endsSimpleValue() && !(this.pos > end && this.startsField());
+    if (followed) throw this.error(`Concatenating ${what} with another value is not supported (#537)`);
+    this.pos = end;
+    return value;
   }
 
   private parseObject(): ConfigObject {
@@ -246,18 +378,38 @@ class HoconParser {
     return { __substitution: true, path, optional };
   }
 
-  /** Parse a literal (true/false/null/number) or an unquoted string. */
-  private parseLiteralOrUnquoted(): ConfigValue {
-    // Collect characters until a value terminator.
+  /**
+   * An unquoted run: everything up to a line break, a separator, a
+   * terminator, a comment or `${` — untrimmed, because whitespace in front of
+   * a following piece belongs to the string (`host ${PORT}`).
+   *
+   * Deliberately permissive, as it always was: `localhost:2552`,
+   * `2 minutes` and `C:\logs` are one run each.  Two things the old scanner
+   * did silently it now refuses.  `//` starts a comment, so `a = http://x`
+   * read as the string `http:`; a `//` right behind a `:` is a URL with its
+   * scheme cut off, and is refused with the advice to quote it.
+   */
+  private parseUnquotedRun(): string {
     const start = this.pos;
     while (!this.isAtEnd()) {
       const char = this.src[this.pos]!;
       if (char === '\n' || char === ',' || char === '}' || char === ']' || char === '#') break;
-      if (char === '/' && this.src[this.pos + 1] === '/') break;
+      if (char === '$' && this.src[this.pos + 1] === '{') break;
+      if (char === '/' && this.src[this.pos + 1] === '/') {
+        if (this.pos > start && this.src[this.pos - 1] === ':') {
+          throw this.error('A URL in an unquoted value reads as a comment from its "//" on — put it in quotes');
+        }
+        break;
+      }
       this.pos++;
     }
-    const raw = this.src.slice(start, this.pos).trim();
-    if (raw === '') throw this.error('Expected a value');
+    const run = this.src.slice(start, this.pos);
+    if (run.trim() === '') throw this.error('Expected a value');
+    return run;
+  }
+
+  /** A single unquoted piece as a literal — `true`, `false`, `null`, a number — or the string it is. */
+  private literalOf(raw: string): ConfigValue {
     if (raw === 'true') return true;
     if (raw === 'false') return false;
     if (raw === 'null') return null;
@@ -265,8 +417,6 @@ class HoconParser {
       const numberValue = Number(raw);
       if (Number.isFinite(numberValue)) return numberValue;
     }
-    // Unquoted string — HOCON treats it literally.  Embedded substitutions
-    // are only supported inside quoted strings for this minimal parser.
     return raw;
   }
 
@@ -602,6 +752,7 @@ class SubstitutionResolver {
     if (node === undefined) return undefined;
     return match(node)
       .when(isSubstitution, (substitution) => this.resolveSubstitution(substitution, path))
+      .when(isConcatenation, (concatenation) => this.resolveConcatenation(concatenation, path))
       .when((value): value is ConfigValue[] => Array.isArray(value), (list) => this.resolveList(list, path))
       .when(isPlainObject, (object) => this.resolveObject(object, path, addressable))
       .otherwise((primitive) => primitive);
@@ -641,14 +792,20 @@ class SubstitutionResolver {
    * than refused as a cycle.  The replaced value resolves at the same path, in
    * the same frame, so `x = 1`, `x = ${?x}`, `x = ${?x}` is no cycle either.
    */
-  private resolveSubstitution(substitution: Substitution, path: readonly string[]): ConfigValue | undefined {
+  private resolveSubstitution(
+    substitution: Substitution,
+    path: readonly string[],
+    reading: EnvironmentReading = 'value',
+  ): ConfigValue | undefined {
     const target = substitution.path.split('.');
     if (!samePath(target, path)) {
       const fromTree = this.lookupTree(target);
       if (fromTree !== undefined) return fromTree;
     }
     const fromEnvironment = this.lookupEnvironment(substitution.path);
-    if (fromEnvironment !== EMPTY_VARIABLE && fromEnvironment !== undefined) return fromEnvironment;
+    if (fromEnvironment !== EMPTY_VARIABLE && fromEnvironment !== undefined) {
+      return reading === 'text' ? fromEnvironment : environmentValueOf(fromEnvironment);
+    }
     if (substitution.optional) {
       return substitution.previous === undefined
         ? undefined
@@ -660,6 +817,40 @@ class SubstitutionResolver {
       ? ` — the environment variable that would answer it is set but empty, which counts as not set`
       : '';
     throw new Error(`Unresolved substitution: \${${substitution.path}}${reason}`);
+  }
+
+  /**
+   * The string a concatenation stands for (#537), or `undefined` when it is
+   * made of optional substitutions only and none of them answers.
+   *
+   * A variable contributes the text it holds, not its JSON reading.  JSON
+   * first gives a lone `${PORT}` a number; inside a string it would turn
+   * `PASSWORD=123456789012345678901234` into `1.2345678901234569e+23` and a
+   * quoted `"x"` into `x`.  A value from the tree joins in as HOCON writes it
+   * — a number as its digits, `true`, `null` — and an object or a list is
+   * refused: string concatenation is for simple values only.  An optional
+   * substitution that finds nothing adds nothing, as the specification has
+   * it; when no piece answers at all, the concatenation falls back to the
+   * value its assignment replaced, the way an optional substitution does.
+   */
+  private resolveConcatenation(concatenation: Concatenation, path: readonly string[]): ConfigValue | undefined {
+    let text = '';
+    let answered = false;
+    for (const piece of concatenation.pieces) {
+      if (typeof piece === 'string') { text += piece; continue; }
+      const value = this.resolveSubstitution(piece, path, 'text');
+      if (value === undefined) continue;
+      if (typeof value === 'object' && value !== null) {
+        const what = Array.isArray(value) ? 'a list' : 'an object';
+        throw new Error(`Cannot join \${${piece.path}} into a string at ${path.join('.')}: it resolves to ${what}`);
+      }
+      text += String(value);
+      answered = true;
+    }
+    if (answered || !concatenation.optional) return text;
+    return concatenation.previous === undefined
+      ? undefined
+      : this.resolveNode(concatenation.previous, path, false);
   }
 
   /**
@@ -691,7 +882,7 @@ class SubstitutionResolver {
     for (let depth = 0; depth < target.length; depth++) {
       const segment = target[depth]!;
       if (isForbiddenConfigKey(segment)) return undefined;
-      if (isSubstitution(node)) {
+      if (isUnresolved(node)) {
         const resolved = this.resolveField(target.slice(0, depth), node);
         return readData(resolved, target.slice(depth));
       }
@@ -702,10 +893,10 @@ class SubstitutionResolver {
   }
 
   /**
-   * The variable named by the path, else by the path upper-cased with its
-   * dots turned into underscores — read as JSON where it parses as JSON, so
-   * `${FOO}` can be a number, a boolean, a list or an object, and as the raw
-   * string where it does not.
+   * The text of the variable named by the path, else by the path upper-cased
+   * with its dots turned into underscores.  A lone `${FOO}` reads it as JSON
+   * where it parses as JSON, so it can be a number, a boolean, a list or an
+   * object ({@link environmentValueOf}); a concatenation takes the text.
    *
    * A variable that is set but empty answers nothing (#1787).  `PORT=` in a
    * shell, `environment: [PORT]` in a compose file and an empty line of an
@@ -717,17 +908,28 @@ class SubstitutionResolver {
    * of the two carries a value answers.  {@link EMPTY_VARIABLE} tells the
    * caller that only empty ones were found, so the error can say so.
    */
-  private lookupEnvironment(path: string): ConfigValue | typeof EMPTY_VARIABLE | undefined {
+  private lookupEnvironment(path: string): string | typeof EMPTY_VARIABLE | undefined {
     const exact = readOwnEnvironmentEntry(this.env, path);
     const upperCase = readOwnEnvironmentEntry(this.env, path.replace(/\./g, '_').toUpperCase());
     const raw = exact !== undefined && exact !== '' ? exact : upperCase;
     if (raw === undefined) return exact === '' ? EMPTY_VARIABLE : undefined;
     if (raw === '') return EMPTY_VARIABLE;
-    try {
-      return withoutForbiddenKeys(JSON.parse(raw));
-    } catch {
-      return raw;
-    }
+    return raw;
+  }
+}
+
+/**
+ * How a substitution reads a variable: `'value'` is JSON first, for a lone
+ * `${X}`; `'text'` is the string as it is set, for a piece of a concatenation.
+ */
+type EnvironmentReading = 'value' | 'text';
+
+/** A variable's text read as JSON where it parses as JSON, and as the raw string where it does not. */
+function environmentValueOf(raw: string): ConfigValue {
+  try {
+    return withoutForbiddenKeys(JSON.parse(raw));
+  } catch {
+    return raw;
   }
 }
 
@@ -794,7 +996,7 @@ function readOwnEnvironmentEntry(
 /* ================================ Utilities =============================== */
 
 export function isPlainObject(value: unknown): value is ConfigObject {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) && !isSubstitution(value);
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && !isUnresolved(value);
 }
 
 /**
@@ -864,7 +1066,7 @@ function ownValue(object: ConfigObject, key: string): ConfigValue | undefined {
  * to the base's only after that — the order the concatenated document has.
  */
 function overrideKeepingPrevious(existing: ConfigValue | undefined, incoming: ConfigValue): ConfigValue {
-  if (!isSubstitution(incoming) || !incoming.optional || existing === undefined) return incoming;
+  if (!isUnresolved(incoming) || !incoming.optional || existing === undefined) return incoming;
   return {
     ...incoming,
     previous: incoming.previous === undefined
