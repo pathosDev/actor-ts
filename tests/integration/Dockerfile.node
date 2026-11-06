@@ -31,7 +31,7 @@
 # `lib/Partition.ts` shells out to).  `slim` would also work and
 # would save ~50 MB; sticking with the full `debian` for the more-
 # standard userland (less surprise debugging container internals).
-FROM oven/bun:1.4-debian@sha256:4f6e31d1a54d6a3dd312daef655fc998101b5043d52e12592ac293ef04b9bc73
+FROM oven/bun:1.4-debian@sha256:93d5032fe06d163427822dc1598f420363759bb18155c9cc90eb1be05a64a19e
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
