@@ -4,9 +4,9 @@
     "net10.0": {
       "Akka": {
         "type": "Direct",
-        "requested": "[1.5.71, )",
-        "resolved": "1.5.71",
-        "contentHash": "HMeKCZeOYzv5sqRq0mNPFqaV3QAn3XbiwCMJbkFbqjT4TouuKPX6OPfv6TG55M8mXic8u330S9zwCtIaeJFzqQ==",
+        "requested": "[1.5.74, )",
+        "resolved": "1.5.74",
+        "contentHash": "u3XpbJM5smkloGlpldQ5mSIv3ob1nvVtFLb9lJaHeFmUlBeXnQL922KWGu3T7GvDeEOmJ9NoEj0krkEUZ4jv7w==",
         "dependencies": {
           "Akka.Analyzers": "0.3.3",
           "Microsoft.Extensions.ObjectPool": "6.0.36",
