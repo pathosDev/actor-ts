@@ -3671,19 +3671,19 @@ Missing keys throw unless you check first with `hasPath`.
 ```
 1. REFERENCE_CONF                           ← bundled defaults
 2. the project's reference.conf — the first of these that is set:
-     referenceConfPath  ›  ACTOR_TS_REFERENCE_CONFIG env var  ›  ./reference.conf (CWD)
+     `referenceConfigFile` setting  ›  ACTOR_TS_REFERENCE_CONFIG env var  ›  ./reference.conf (CWD)
 3. that file's profiles.<profile> block     ← when a profile is active
 4. one application file — the first of these that is set:
      `configFile` setting  ›  ACTOR_TS_CONFIG env var  ›  ./application.conf (CWD)
 5. that file's profiles.<profile> block     ← when a profile is active
 6. one secrets file — the first of these that is set:
-     ACTOR_TS_SECRETS_CONF env var  ›  ./secrets.conf (CWD)
+     `secretsFile` setting  ›  ACTOR_TS_SECRETS_CONF env var  ›  ./secrets.conf (CWD)
 7. that file's profiles.<profile> block     ← when a profile is active
 8. constructor `config: { ... }`            ← code-level override
 9. constructor field overrides              ← explicit fields beat config
    (logLevel, dispatcher, scheduler, …)
 
-beside them, not a layer — a .env file: environmentFilePath  ›  ACTOR_TS_ENV_FILE  ›  ./.env (CWD)
+beside them, not a layer — a .env file: `environmentFile` setting  ›  ACTOR_TS_ENV_FILE  ›  ./.env (CWD)
 ```
 
 Each layer overlays on top of the previous, key by key.  Layer 9
@@ -3693,10 +3693,13 @@ then the `ACTOR_TS_PROFILE` environment variable, then none — see
 [Profiles](#profiles).  Layers 2, 4 and 6 are optional files: for each,
 the first of its candidates that is set decides, a path with no file
 behind it is an empty layer, and `false` for a path option reads no
-such file at all.  `Config.load` callers name them with
-`referenceConfPath`, `appConfPath` and `secretsConfPath`, ahead of the
-variables — see [The project reference.conf](#the-project-referenceconf)
-and [Secrets file](#secrets-file).
+such file at all.  The settings, on `ActorSystemOptions`, are
+`withReferenceConfigFile`, `withConfigFile` and `withSecretsFile`, and
+`withEnvironmentFile` for the `.env`; `Config.load` callers pass
+`referenceConfPath`, `appConfPath`, `secretsConfPath` and
+`environmentFilePath` instead — see [The project
+reference.conf](#the-project-referenceconf) and [Secrets
+file](#secrets-file).
 
 A file's substitutions read its own keys, then the layers already
 resolved beneath it, then the real environment, then the variables of
@@ -3914,17 +3917,26 @@ my-app.db {
 profiles.production.my-app.db.password = ${?PRODUCTION_DB_PASSWORD}
 ```
 
-It is the first of these that is set: the `ACTOR_TS_SECRETS_CONF`
-environment variable, then `secrets.conf` in the working directory —
-with `secretsConfPath` ahead of both when you call `Config.load`
-yourself.  A file that is not there is an empty layer, not an error, so a
+It is the first of these that is set: `withSecretsFile(path)` on
+`ActorSystemOptions`, the `ACTOR_TS_SECRETS_CONF` environment variable,
+then `secrets.conf` in the working directory — `secretsConfPath` takes
+the setting's place when you call `Config.load` yourself, and `false`
+reads no secrets file.
+
+```ts
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+
+const actorSystemOptions = ActorSystemOptions.create().withSecretsFile('/run/secrets/orders.conf');
+const system = ActorSystem.create('orders', actorSystemOptions);
+```
+
+A file that is not there is an empty layer, not an error, so a
 deployment without one needs nothing.  A file that is there is read on every
 start, so a `secrets.conf` in the working directory that belongs to another
 tool stops startup: the `ConfigError` names the file and why it was read —
-move such a file, or name the right one with `ACTOR_TS_SECRETS_CONF`.  It
-splits into a root and
-`profiles` exactly as the application file does, and the same profile is
-laid over its root.
+move such a file, or name the right one with `withSecretsFile` or
+`ACTOR_TS_SECRETS_CONF`.  It splits into a root and `profiles` exactly as
+the application file does, and the same profile is laid over its root.
 
 **Every value it sets is withheld** from the config dump and the
 DevTools panel, whatever its key is called — `my-app.db.user` above

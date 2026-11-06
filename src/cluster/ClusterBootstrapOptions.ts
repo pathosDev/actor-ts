@@ -94,8 +94,11 @@ export const DEFAULT_NEW_CLUSTER_ENABLED = true;
  * application decides in code: the node's identity, its membership, how
  * failures are handled, the join's deadline and where the logs go.  What
  * HOCON cannot express (a dispatcher instance, a scheduler, startup tasks)
- * needs `ActorSystem.create` + `Cluster.join`; the config profile, which no
- * file can select for itself, still answers to `ACTOR_TS_PROFILE`.
+ * needs `ActorSystem.create` + `Cluster.join`.  The config profile, which no
+ * file can select for itself, still answers to `ACTOR_TS_PROFILE`, and the
+ * project `reference.conf`, the secrets file and the `.env` file answer to
+ * `ACTOR_TS_REFERENCE_CONFIG`, `ACTOR_TS_SECRETS_CONF` and `ACTOR_TS_ENV_FILE`
+ * (#1769).
  */
 export type ClusterBootstrapOptionsType = {
   /* ----------------------------- System -------------------------------- */
@@ -455,7 +458,7 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
     return this.set('config', config);
   }
 
-  /** Config file path forwarded to `ActorSystem.create`. */
+  /** Config file path forwarded to `ActorSystem.create`; `false` reads no application file. */
   withConfigFile(configFile: NonNullable<ClusterBootstrapOptionsType['configFile']>): this {
     return this.set('configFile', configFile);
   }

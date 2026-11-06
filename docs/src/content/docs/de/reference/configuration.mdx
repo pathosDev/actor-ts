@@ -3920,19 +3920,19 @@ Fehlende Keys werfen, es sei denn, Du prüfst zuerst mit `hasPath`.
 ```
 1. REFERENCE_CONF                           ← gebündelte Defaults
 2. die reference.conf des Projekts — die erste hiervon, die gesetzt ist:
-     referenceConfPath  ›  ENV-Var ACTOR_TS_REFERENCE_CONFIG  ›  ./reference.conf (CWD)
+     `referenceConfigFile`-Setting  ›  ENV-Var ACTOR_TS_REFERENCE_CONFIG  ›  ./reference.conf (CWD)
 3. deren Block profiles.<profil>            ← wenn ein Profil aktiv ist
 4. eine Anwendungsdatei — die erste hiervon, die gesetzt ist:
      `configFile`-Setting  ›  ENV-Var ACTOR_TS_CONFIG  ›  ./application.conf (CWD)
 5. deren Block profiles.<profil>            ← wenn ein Profil aktiv ist
 6. eine Secrets-Datei — die erste hiervon, die gesetzt ist:
-     ENV-Var ACTOR_TS_SECRETS_CONF  ›  ./secrets.conf (CWD)
+     `secretsFile`-Setting  ›  ENV-Var ACTOR_TS_SECRETS_CONF  ›  ./secrets.conf (CWD)
 7. deren Block profiles.<profil>            ← wenn ein Profil aktiv ist
 8. Konstruktor `config: { ... }`            ← Code-Level-Override
 9. Konstruktor-Feld-Overrides               ← explizite Felder schlagen Config
    (logLevel, dispatcher, scheduler, …)
 
-daneben, keine Schicht — eine .env-Datei: environmentFilePath  ›  ACTOR_TS_ENV_FILE  ›  ./.env (CWD)
+daneben, keine Schicht — eine .env-Datei: `environmentFile`-Setting  ›  ACTOR_TS_ENV_FILE  ›  ./.env (CWD)
 ```
 
 Jede Schicht überlagert die vorherige, Key für Key.  Schicht 9
@@ -3942,10 +3942,12 @@ alles andere fließt durch den HOCON-Merge.  Das Profil ist
 keines — siehe [Profile](#profile).  Die Schichten 2, 4 und 6 sind
 optionale Dateien: Für jede entscheidet der erste gesetzte Kandidat, ein
 Pfad, hinter dem keine Datei liegt, ist eine leere Schicht, und `false`
-als Pfad-Option liest gar keine solche Datei.  Wer `Config.load` selbst
-aufruft, benennt sie mit `referenceConfPath`, `appConfPath` und
-`secretsConfPath`, noch vor den Variablen — siehe [Die reference.conf des
-Projekts](#die-referenceconf-des-projekts) und
+als Pfad-Option liest gar keine solche Datei.  Die Settings sind, auf
+`ActorSystemOptions`, `withReferenceConfigFile`, `withConfigFile` und
+`withSecretsFile`, für die `.env` `withEnvironmentFile`; wer `Config.load`
+selbst aufruft, übergibt stattdessen `referenceConfPath`, `appConfPath`,
+`secretsConfPath` und `environmentFilePath` — siehe [Die reference.conf
+des Projekts](#die-referenceconf-des-projekts) und
 [Secrets-Datei](#secrets-datei).
 
 Die Substitutionen einer Datei lesen ihre eigenen Keys, dann die
@@ -4178,17 +4180,27 @@ my-app.db {
 profiles.production.my-app.db.password = ${?PRODUCTION_DB_PASSWORD}
 ```
 
-Es ist die erste hiervon, die gesetzt ist: die Umgebungsvariable
-`ACTOR_TS_SECRETS_CONF`, dann `secrets.conf` im Arbeitsverzeichnis — mit
-`secretsConfPath` vor beiden, wenn du `Config.load` selbst aufrufst.  Eine
-Datei, die nicht da ist, ist eine leere Schicht und kein Fehler; ein
+Es ist die erste hiervon, die gesetzt ist: `withSecretsFile(path)` auf
+`ActorSystemOptions`, die Umgebungsvariable `ACTOR_TS_SECRETS_CONF`, dann
+`secrets.conf` im Arbeitsverzeichnis — wer `Config.load` selbst aufruft,
+übergibt statt des Settings `secretsConfPath`, und `false` liest keine
+Secrets-Datei.
+
+```ts
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+
+const actorSystemOptions = ActorSystemOptions.create().withSecretsFile('/run/secrets/orders.conf');
+const system = ActorSystem.create('orders', actorSystemOptions);
+```
+
+Eine Datei, die nicht da ist, ist eine leere Schicht und kein Fehler; ein
 Deployment ohne sie braucht also nichts.  Eine Datei, die da ist, wird bei
 jedem Start gelesen — eine `secrets.conf` im Arbeitsverzeichnis, die zu einem
 anderen Werkzeug gehört, hält den Start also an: Der `ConfigError` nennt die
 Datei und den Grund, aus dem sie gelesen wurde; verschiebe eine solche Datei
-oder nenne die richtige mit `ACTOR_TS_SECRETS_CONF`.  Sie teilt sich genau wie die
-Anwendungsdatei in eine Wurzel und `profiles`, und dasselbe Profil wird
-über ihre Wurzel gelegt.
+oder nenne die richtige mit `withSecretsFile` oder `ACTOR_TS_SECRETS_CONF`.
+Sie teilt sich genau wie die Anwendungsdatei in eine Wurzel und `profiles`,
+und dasselbe Profil wird über ihre Wurzel gelegt.
 
 **Jeder Wert, den sie setzt, wird zurückgehalten** — im
 Konfigurations-Dump wie im DevTools-Panel, egal wie sein Key heißt, oben

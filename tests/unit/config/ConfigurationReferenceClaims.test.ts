@@ -258,8 +258,8 @@ describe('a WorkerMesh pool and the secrets file (#1546)', () => {
   });
 
   test.each([
-    ['reference/configuration.mdx', 'A file that is there is read on every start, so a `secrets.conf` in the working directory that belongs to another tool stops startup: the `ConfigError` names the file and why it was read — move such a file, or name the right one with `ACTOR_TS_SECRETS_CONF`.'],
-    ['de/reference/configuration.mdx', 'Eine Datei, die da ist, wird bei jedem Start gelesen — eine `secrets.conf` im Arbeitsverzeichnis, die zu einem anderen Werkzeug gehört, hält den Start also an: Der `ConfigError` nennt die Datei und den Grund, aus dem sie gelesen wurde; verschiebe eine solche Datei oder nenne die richtige mit `ACTOR_TS_SECRETS_CONF`.'],
+    ['reference/configuration.mdx', 'A file that is there is read on every start, so a `secrets.conf` in the working directory that belongs to another tool stops startup: the `ConfigError` names the file and why it was read — move such a file, or name the right one with `withSecretsFile` or `ACTOR_TS_SECRETS_CONF`.'],
+    ['de/reference/configuration.mdx', 'Eine Datei, die da ist, wird bei jedem Start gelesen — eine `secrets.conf` im Arbeitsverzeichnis, die zu einem anderen Werkzeug gehört, hält den Start also an: Der `ConfigError` nennt die Datei und den Grund, aus dem sie gelesen wurde; verschiebe eine solche Datei oder nenne die richtige mit `withSecretsFile` oder `ACTOR_TS_SECRETS_CONF`.'],
   ])('%s says a foreign secrets.conf stops startup, and how to get past it', (path, sentence) => {
     expect(prose(page(path))).toContain(sentence);
   });

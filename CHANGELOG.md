@@ -4368,6 +4368,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   byte-order mark at the start of a config file is dropped instead of
   failing the parse with `Expected a key`.
 
+- **`ActorSystemOptions` names every file the loader reads:
+  `withSecretsFile`, `withReferenceConfigFile` and `withEnvironmentFile`**
+  (#1769, #1785). Beside `withConfigFile`, a system names its secrets file,
+  its project `reference.conf` and its `.env` file in code, each ahead of
+  its `ACTOR_TS_*` variable; with an option unset the chain applies as
+  before. A file named with `withSecretsFile` is the secrets layer — its
+  keys are attributed to `secrets` and withheld by the boot dump and the
+  DevTools panel — and a `secrets.conf` in the working directory is not read
+  beside it, which `withConfig(Config.load({ secretsConfPath }))` could not
+  do: that put every key in the overrides layer and still read
+  `./secrets.conf`. All four take `false`, `withConfigFile` included, which
+  reads no such file. `Cluster.bootstrap` forwards `configFile` as before,
+  `false` now too, and leaves the other three to their variables.
+
+  A `WorkerMesh` worker reads exactly the files its main thread read. The
+  main thread hands every worker the path it looked at for each of the four,
+  or `false`, so a `${VAR}` that only a `.env` named in code answers
+  resolves in a worker as well, and a file an `ACTOR_TS_*` variable names
+  can neither add keys to a worker nor stop one when the main thread was
+  given another (#1546).
+
 ### Changed
 
 - **BREAKING — With `actor-ts.coordinated-shutdown.exit-process` on, a run
@@ -6015,6 +6036,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   as an empty `ACTOR_TS_PROFILE` already did: the file in the working
   directory is read. It used to be taken as the path `""`, which read no
   file. To read none, pass `false` for the path.
+
+- **BREAKING — `WorkerMeshInitData.configFile` may be `false`** (#1785). The
+  init frame a `WorkerMesh` worker receives names each file its main thread
+  read — `configFile`, and now `referenceConfigFile`, `secretsFile` and
+  `environmentFile` — with `false` where the main thread read none, so a
+  worker started from `withConfigFile(false)` does not fall back to
+  `ACTOR_TS_CONFIG` or `./application.conf`.
+
+  **Migration.** A worker bootstrap of your own that reads the frame instead
+  of calling `runWorkerMeshNode` hands the four fields to the matching
+  `ActorSystemOptions` methods as they are; `false` is a value they take.
 
 
 ### Fixed

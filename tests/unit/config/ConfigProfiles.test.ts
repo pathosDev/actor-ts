@@ -338,7 +338,7 @@ describe('Config.load — a file that cannot be loaded names itself and why it w
     expect((thrown as ConfigError).message).toBe(
       `The secrets file ${resolve(directory, 'secrets.conf')} could not be loaded: HOCON parse error at line 2, `
       + 'col 10: Expected \'=\' or \':\' after key "listen".  Config.load read it because it is secrets.conf in the '
-      + 'working directory, which is read whenever neither LoadOptions.secretsConfPath nor ACTOR_TS_SECRETS_CONF '
+      + 'working directory, which is read whenever neither withSecretsFile / LoadOptions.secretsConfPath nor ACTOR_TS_SECRETS_CONF '
       + 'names another file — if that one is not this application\'s, move it, or name the right one.',
     );
     // The parser's own error stays reachable.
@@ -355,7 +355,7 @@ describe('Config.load — a file that cannot be loaded names itself and why it w
     expect((fromVariable as ConfigError).message).toEndWith('Config.load read it because ACTOR_TS_SECRETS_CONF names it.');
 
     const fromOption = thrownBy(() => load({ ...base, secretsConfPath: path }));
-    expect((fromOption as ConfigError).message).toEndWith('Config.load read it because LoadOptions.secretsConfPath names it.');
+    expect((fromOption as ConfigError).message).toEndWith('Config.load read it because withSecretsFile / LoadOptions.secretsConfPath names it.');
   });
 
   test('so does the application file, found in the working directory or named', () => {

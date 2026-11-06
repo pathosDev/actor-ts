@@ -147,7 +147,7 @@ export class WorkerMesh {
     const cluster = await Cluster.join(system, clusterOptions);
 
     const modules = (Array.isArray(resolved.module) ? resolved.module : [resolved.module]) as ReadonlyArray<URL | string>;
-    const configFile = system.config._sources()?.applicationPath ?? null;
+    const layers = system.config._sources();
     const initData: WorkerMeshInitData = {
       kind: 'worker-mesh-init',
       // The effective config, not the file: builder-set values on this side
@@ -157,9 +157,16 @@ export class WorkerMesh {
       // …and which of its values the secrets file set, which the plain tree
       // cannot say, so the worker's boot dump withholds them too (#1546).
       secretPaths: secretLayerPaths(system.config),
-      // …and where this side looked for its application file, so a worker
-      // reads that one rather than whichever the environment names (#1546).
-      ...(configFile === null ? {} : { configFile }),
+      // …and where this side looked for each of its files, so a worker reads
+      // those rather than whichever the environment names (#1546, #1785) —
+      // `false` where it looked nowhere, so that a `withConfigFile(false)` is
+      // not undone by a file the worker finds on its own.
+      ...(layers === null ? {} : {
+        configFile: layers.applicationPath ?? false,
+        referenceConfigFile: layers.projectReferencePath ?? false,
+        secretsFile: layers.secretsPath ?? false,
+        environmentFile: layers.environmentFilePath ?? false,
+      }),
       seeds: [mainAddress.toString()],
       roles: [...(resolved.workerRoles ?? DEFAULT_MESH_WORKER_ROLES)],
       modules: modules.map((module) => (module instanceof URL ? module.href : module)),

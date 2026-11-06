@@ -293,8 +293,8 @@ describe('ConfigMethods', () => {
       .withConfigFile(applicationPath)
       .withProfile('production')
       .withConfig({ 'my-app': { 'set-by-code': 'x' } });
-    // ActorSystemOptions names no secrets file, so the variable does — read
-    // once, in the constructor.
+    // The variable names the secrets file here — read once, in the
+    // constructor; `withSecretsFile` is the next case.
     const system = withVariable('ACTOR_TS_SECRETS_CONF', secretsPath, () =>
       ActorSystem.create('cfg-five-sources', systemOptions));
     systems.push(system);
@@ -316,6 +316,30 @@ describe('ConfigMethods', () => {
       expect(JSON.stringify(result)).not.toContain('s3cr3t');
       expect(result.profile).toBe('production');
       expect(result.secretsPath).toBe(secretsPath);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('attributes to secrets and withholds what a file named with withSecretsFile set (#1769)', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'actor-ts-config-methods-'));
+    const secretsPath = join(directory, 'vault.conf');
+    writeFileSync(secretsPath, 'my-app.endpoint-value = "s3cr3t-endpoint"\n', 'utf8');
+    try {
+      const systemOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withConfigFile(join(directory, 'application.conf'))
+        .withSecretsFile(secretsPath);
+      const system = ActorSystem.create('cfg-secrets-file-option', systemOptions);
+      systems.push(system);
+      const { server, invoke } = fakeServer();
+      new ConfigMethods(system).install(server);
+      const result = await invoke();
+
+      expect(resolve(result, 'my-app.endpoint-value').source).toBe('secrets');
+      expect(resolve(result, 'my-app.endpoint-value').value).toBe(CONFIG_REDACTED);
+      expect(result.secretsPath).toBe(secretsPath);
+      expect(JSON.stringify(result)).not.toContain('s3cr3t-endpoint');
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

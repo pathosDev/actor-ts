@@ -280,7 +280,7 @@ export class Config {
     const processVariables = processEnvironment();
     const selectedEnvironmentFile = selectedFile(
       'environment file',
-      { name: 'LoadOptions.environmentFilePath', value: options.environmentFilePath },
+      { name: 'withEnvironmentFile / LoadOptions.environmentFilePath', value: options.environmentFilePath },
       { name: ENVIRONMENT_FILE_ENVIRONMENT_VARIABLE, value: processVariables[ENVIRONMENT_FILE_ENVIRONMENT_VARIABLE] },
       DEFAULT_ENVIRONMENT_FILENAME,
     );
@@ -296,7 +296,7 @@ export class Config {
     const reference = Config.loadReference();
     const selectedProjectReference = selectedFile(
       'project reference file',
-      { name: 'LoadOptions.referenceConfPath', value: options.referenceConfPath },
+      { name: 'withReferenceConfigFile / LoadOptions.referenceConfPath', value: options.referenceConfPath },
       { name: REFERENCE_CONF_ENVIRONMENT_VARIABLE, value: variable(REFERENCE_CONF_ENVIRONMENT_VARIABLE) },
       DEFAULT_REFERENCE_CONF_FILENAME,
     );
@@ -308,7 +308,7 @@ export class Config {
     );
     const selectedSecrets = selectedFile(
       'secrets file',
-      { name: 'LoadOptions.secretsConfPath', value: options.secretsConfPath },
+      { name: 'withSecretsFile / LoadOptions.secretsConfPath', value: options.secretsConfPath },
       { name: SECRETS_CONF_ENVIRONMENT_VARIABLE, value: variable(SECRETS_CONF_ENVIRONMENT_VARIABLE) },
       DEFAULT_SECRETS_CONF_FILENAME,
     );

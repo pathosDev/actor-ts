@@ -1,15 +1,22 @@
 /**
- * `Config.load` with a project `reference.conf` and a `.env` file (#1785).
+ * `Config.load` with a project `reference.conf` and a `.env` file (#1785),
+ * and the `ActorSystemOptions` that name its files (#1769).
  *
- * Every case uses files in a fresh directory, named through `LoadOptions` or
- * an `ACTOR_TS_*` variable, and clears those variables around itself — a
- * file of the same name in the working directory must never answer.
+ * Every case uses files in a fresh directory, named through `LoadOptions`,
+ * `ActorSystemOptions` or an `ACTOR_TS_*` variable, and clears those
+ * variables around itself — a file of the same name in the working directory
+ * must never answer.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'bun:test';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystemOptions, type ActorSystemOptionsBuilder } from '../../../src/ActorSystemOptions.js';
 import { Config, ConfigError, type LoadOptions } from '../../../src/config/Config.js';
+import { configDumpLines, resolveConfigLeaves } from '../../../src/diagnostics/ConfigDump.js';
+import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { createTestActorSystem } from '../../util/TestActorSystem.js';
 
 const directories: string[] = [];
 afterEach(() => {
@@ -125,7 +132,7 @@ describe('Config.load — the project reference.conf (#1785)', () => {
     const directory = directoryWith({ 'reference.conf': 'server {\n  listen 80;\n}\n' });
     expect(() => load(filesOf(directory))).toThrow(
       new RegExp(`The project reference file .*reference\\.conf could not be loaded: HOCON parse error.*`
-        + 'Config\\.load read it because LoadOptions\\.referenceConfPath names it\\.'),
+        + 'Config\\.load read it because withReferenceConfigFile / LoadOptions\\.referenceConfPath names it\\.'),
     );
   });
 });
@@ -326,5 +333,154 @@ describe('Config.load — which variables supplied each leaf (#1788)', () => {
     const config = load(filesOf(directory));
     expect(config.getString('my-app.dsn')).toBe('postgres://app:pw@db/app');
     expect(variablesOf(config, 'secrets')).toStrictEqual({ 'my-app.dsn': ['DB_PASSWORD'] });
+  });
+});
+
+describe('ActorSystemOptions — naming the files in code (#1769, #1785)', () => {
+  const systems: ActorSystem[] = [];
+  afterEach(async () => {
+    for (const system of systems.splice(0)) await system.terminate();
+  });
+
+  const quiet = (): ActorSystemOptionsBuilder => ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+
+  /**
+   * Quiet options naming every file of `directory` — absent unless a case
+   * writes it — so nothing in the working directory answers.  A case names
+   * its own file on top, which replaces the one named here.
+   */
+  const namingFilesOf = (directory: string): ActorSystemOptionsBuilder => quiet()
+    .withReferenceConfigFile(join(directory, 'reference.conf'))
+    .withConfigFile(join(directory, 'application.conf'))
+    .withSecretsFile(join(directory, 'secrets.conf'))
+    .withEnvironmentFile(join(directory, '.env'));
+
+  /** A system built with the load variables cleared and `variables` set. */
+  const systemOf = (
+    systemOptions: ActorSystemOptionsBuilder,
+    variables: Readonly<Record<string, string | undefined>> = {},
+  ): ActorSystem => {
+    const system = withEnvironment(variables, () => ActorSystem.create('config-layers', systemOptions));
+    systems.push(system);
+    return system;
+  };
+
+  test('withSecretsFile names the secrets file, ahead of ACTOR_TS_SECRETS_CONF', () => {
+    const directory = directoryWith({
+      'vault.conf': 'my-app.db.password = "from-the-option"',
+      'other.conf': 'my-app.db.password = "from-the-variable"\nmy-app.only-in-the-other-file = 1',
+    });
+    const systemOptions = namingFilesOf(directory).withSecretsFile(join(directory, 'vault.conf'));
+    const system = systemOf(systemOptions, { ACTOR_TS_SECRETS_CONF: join(directory, 'other.conf') });
+    expect(system.config.getString('my-app.db.password')).toBe('from-the-option');
+    expect(system.config.hasPath('my-app.only-in-the-other-file')).toBe(false);
+    expect(system.config._sources()!.secretsPath).toBe(join(directory, 'vault.conf'));
+  });
+
+  test('with withSecretsFile unset, ACTOR_TS_SECRETS_CONF still names the file', () => {
+    const directory = directoryWith({ 'other.conf': 'my-app.db.password = "from-the-variable"' });
+    const systemOptions = quiet()
+      .withReferenceConfigFile(false)
+      .withConfigFile(false)
+      .withEnvironmentFile(false);
+    const system = systemOf(systemOptions, { ACTOR_TS_SECRETS_CONF: join(directory, 'other.conf') });
+    expect(system.config.getString('my-app.db.password')).toBe('from-the-variable');
+  });
+
+  test('the keys of the file it names are attributed to secrets and withheld in the boot dump', () => {
+    const directory = directoryWith({ 'vault.conf': 'my-app.endpoint-value = "s3cr3t"' });
+    const system = systemOf(namingFilesOf(directory).withSecretsFile(join(directory, 'vault.conf')));
+    const leaf = resolveConfigLeaves(system.config).find((candidate) => candidate.path === 'my-app.endpoint-value');
+    expect(leaf?.layer).toBe('secrets');
+    const text = configDumpLines(system.config);
+    expect(text).toContain('my-app.endpoint-value = <redacted>  [secrets]');
+    expect(text).not.toContain('s3cr3t');
+  });
+
+  test('a secrets.conf in the working directory is not read when withSecretsFile names another', () => {
+    // Another tool's file, which would stop startup with a parse error if it were read.
+    const directory = directoryWith({
+      'secrets.conf': 'server {\n  listen 80;\n}\n',
+      'vault.conf': 'my-app.token = "from-the-option"',
+    });
+    const systemOptions = quiet()
+      .withReferenceConfigFile(false)
+      .withConfigFile(false)
+      .withEnvironmentFile(false)
+      .withSecretsFile(join(directory, 'vault.conf'));
+    const previous = process.cwd();
+    // Synchronous from chdir to restore, so nothing else in this file runs in between.
+    process.chdir(directory);
+    try {
+      expect(systemOf(systemOptions).config.getString('my-app.token')).toBe('from-the-option');
+    } finally {
+      process.chdir(previous);
+    }
+  });
+
+  test('withReferenceConfigFile and withEnvironmentFile name their files, ahead of the variables', () => {
+    const directory = directoryWith({
+      'defaults.conf': 'my-app.pool-size = 4\nmy-app.password = ${CONFIG_LAYERS_PASSWORD}',
+      'other-defaults.conf': 'my-app.pool-size = 99\nmy-app.password = "from-the-other-file"',
+      'app.env': 'CONFIG_LAYERS_PASSWORD=from-the-named-env-file\n',
+      'other.env': 'CONFIG_LAYERS_PASSWORD=from-the-variable-env-file\n',
+    });
+    const systemOptions = namingFilesOf(directory)
+      .withReferenceConfigFile(join(directory, 'defaults.conf'))
+      .withEnvironmentFile(join(directory, 'app.env'));
+    const system = systemOf(systemOptions, {
+      ACTOR_TS_REFERENCE_CONFIG: join(directory, 'other-defaults.conf'),
+      ACTOR_TS_ENV_FILE: join(directory, 'other.env'),
+      CONFIG_LAYERS_PASSWORD: undefined,
+    });
+    expect(system.config.getInt('my-app.pool-size')).toBe(4);
+    expect(system.config.getString('my-app.password')).toBe('from-the-named-env-file');
+  });
+
+  /** One file per option in `directory`, each named by its variable as well. */
+  const filesEveryVariableNames = (): Record<string, string> => {
+    const directory = directoryWith({
+      'reference.conf': 'my-app.from-reference = 1',
+      'application.conf': 'my-app.from-application = 1',
+      'secrets.conf': 'my-app.from-secrets = 1',
+      'vars.env': 'CONFIG_LAYERS_VALUE=1\n',
+    });
+    return {
+      ACTOR_TS_REFERENCE_CONFIG: join(directory, 'reference.conf'),
+      ACTOR_TS_CONFIG: join(directory, 'application.conf'),
+      ACTOR_TS_SECRETS_CONF: join(directory, 'secrets.conf'),
+      ACTOR_TS_ENV_FILE: join(directory, 'vars.env'),
+    };
+  };
+
+  const expectNoFileRead = (system: ActorSystem): void => {
+    for (const key of ['from-reference', 'from-application', 'from-secrets']) {
+      expect(system.config.hasPath(`my-app.${key}`)).toBe(false);
+    }
+    const layers = system.config._sources()!;
+    expect([layers.projectReferencePath, layers.applicationPath, layers.secretsPath, layers.environmentFilePath])
+      .toStrictEqual([null, null, null, null]);
+  };
+
+  test('false reads no such file, whatever the variables name', () => {
+    const systemOptions = quiet()
+      .withReferenceConfigFile(false)
+      .withConfigFile(false)
+      .withSecretsFile(false)
+      .withEnvironmentFile(false);
+    expectNoFileRead(systemOf(systemOptions, filesEveryVariableNames()));
+  });
+
+  test('createTestActorSystem forwards the four file options, false included', () => {
+    const system = withEnvironment(filesEveryVariableNames(), () => createTestActorSystem({
+      referenceConfigFile: false,
+      configFile: false,
+      secretsFile: false,
+      environmentFile: false,
+    }));
+    systems.push(system);
+    expectNoFileRead(system);
   });
 });

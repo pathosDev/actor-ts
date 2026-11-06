@@ -37,13 +37,23 @@ export type WorkerMeshInitData = {
    */
   readonly secretPaths: ReadonlyArray<string>;
   /**
-   * Where the main thread looked for its application file — named in code,
-   * by `ACTOR_TS_CONFIG` or `./application.conf` — found there or not, and
-   * absent when it looked nowhere (#1546).  The worker's own load reads that
-   * path, so a key only another file sets cannot reach a worker and not its
-   * main thread.
+   * Where the main thread looked for each of its files — named in code, by an
+   * `ACTOR_TS_*` variable, or the default in the working directory — found
+   * there or not, and `false` where it looked nowhere (#1546, #1785).  The
+   * worker's own load reads exactly these.  So a key only another file sets
+   * cannot reach a worker and not its main thread, a required `${X}` that only
+   * a `.env` named in code answers resolves in the worker as well, and a stray
+   * file an environment variable names cannot break a worker whose main
+   * thread was given another.  Absent when the sender did not say, which
+   * leaves the worker to its own chain.
    */
-  readonly configFile?: string;
+  readonly configFile?: string | false;
+  /** The main thread's project `reference.conf`, as for `configFile`. */
+  readonly referenceConfigFile?: string | false;
+  /** The main thread's secrets file, as for `configFile`. */
+  readonly secretsFile?: string | false;
+  /** The main thread's `.env` file, as for `configFile`. */
+  readonly environmentFile?: string | false;
   /** The main thread's address — the one seed every worker dials. */
   readonly seeds: ReadonlyArray<string>;
   readonly roles: ReadonlyArray<string>;
@@ -122,15 +132,19 @@ export async function runWorkerMeshNode(
   // produced — so the worker selects none (#1546).  Left to the environment,
   // its load would apply `ACTOR_TS_PROFILE` a second time, to whichever file
   // it found, and refuse a profile defined only in a file the main thread was
-  // given in code.  The file it reads is the main thread's too: the tree
-  // overrides every key that file sets, and a different file could add keys
-  // the main thread never saw.
+  // given in code.  The files it reads are the main thread's too: the tree
+  // overrides every key those files set, but a different file could add keys
+  // the main thread never saw, and their substitutions resolve against the
+  // main thread's `.env` (#1785).
   const systemOptions = ActorSystemOptions.create()
     .withConfig(Config._withSecretPaths(init.config, init.secretPaths))
     .withProfile('')
     .withParallelism(workerParallelism)
     .withPersistence({ behavior: workerPersistenceBehavior });
   if (init.configFile !== undefined) systemOptions.withConfigFile(init.configFile);
+  if (init.referenceConfigFile !== undefined) systemOptions.withReferenceConfigFile(init.referenceConfigFile);
+  if (init.secretsFile !== undefined) systemOptions.withSecretsFile(init.secretsFile);
+  if (init.environmentFile !== undefined) systemOptions.withEnvironmentFile(init.environmentFile);
   const system = ActorSystem.create(context.systemName, systemOptions);
   const clusterOptions = ClusterOptions.create()
     .withHost(context.self.host)

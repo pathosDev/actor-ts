@@ -73,7 +73,7 @@ export const PROFILE_ENVIRONMENT_VARIABLE = 'ACTOR_TS_PROFILE';
 
 /**
  * The environment variable naming the secrets file when the code did not —
- * `LoadOptions.secretsConfPath` outranks it, and
+ * `LoadOptions.secretsConfPath` and `withSecretsFile` outrank it, and
  * {@link DEFAULT_SECRETS_CONF_FILENAME} in the working directory is what
  * applies when neither is set.
  */
@@ -81,8 +81,8 @@ export const SECRETS_CONF_ENVIRONMENT_VARIABLE = 'ACTOR_TS_SECRETS_CONF';
 
 /**
  * The secrets file `Config.load` looks for in the working directory when
- * neither `LoadOptions.secretsConfPath` nor
- * {@link SECRETS_CONF_ENVIRONMENT_VARIABLE} names one.  Optional: a missing
- * file is an empty layer, so a deployment without secrets needs nothing.
+ * nothing names one — no `LoadOptions.secretsConfPath`, no `withSecretsFile`
+ * and no {@link SECRETS_CONF_ENVIRONMENT_VARIABLE}.  Optional: a missing file
+ * is an empty layer, so a deployment without secrets needs nothing.
  */
 export const DEFAULT_SECRETS_CONF_FILENAME = 'secrets.conf';

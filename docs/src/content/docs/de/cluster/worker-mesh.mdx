@@ -131,16 +131,20 @@ an.  Das Main-System hat eines angewendet, als es seine Konfiguration lud,
 und die Werte, die es gewählt hat, stehen im Baum, mit dem die Worker
 laufen — `ACTOR_TS_PROFILE` wird also kein zweites Mal angewendet, auf eine
 Datei, die ein Worker finden könnte und die nicht die sein muss, die der
-Main-Thread im Code bekommen hat.  Die Anwendungsdatei, die der eigene Load
-eines Workers liest, ist die seines Main-Threads, ob mit `withConfigFile`
-benannt oder über `ACTOR_TS_CONFIG` bzw. `./application.conf` gefunden: Der
-Baum überschreibt jeden Key, den diese Datei setzt, und eine andere Datei
-könnte Keys hinzufügen, die der Main-Thread nie gesehen hat.  Er liest auch
-die [Secrets-Datei](/de/reference/configuration/#secrets-datei), die der Load
-des Main-Systems gelesen hat — `ACTOR_TS_SECRETS_CONF` oder `./secrets.conf` im
-Arbeitsverzeichnis —, eine Datei dort, die sich nicht laden lässt, hält also
-schon das Main-System an, bevor ein Worker startet, mit einem Fehler, der die
-Datei nennt und den Grund, aus dem sie gelesen wurde.
+Main-Thread im Code bekommen hat.  Die Dateien, die der eigene Load eines
+Workers liest, sind die seines Main-Threads — die Anwendungsdatei, die
+`reference.conf` des Projekts, die
+[Secrets-Datei](/de/reference/configuration/#secrets-datei) und die `.env` —,
+ob im Code benannt (`withConfigFile`, `withReferenceConfigFile`,
+`withSecretsFile`, `withEnvironmentFile`), über ihre `ACTOR_TS_*`-Variablen
+oder im Arbeitsverzeichnis gefunden, und eine Datei, die der Main-Thread mit
+`false` nicht lesen sollte, liest auch kein Worker.  Der Baum überschreibt
+jeden Key, den diese Dateien setzen, aber eine andere Datei könnte Keys
+hinzufügen, die der Main-Thread nie gesehen hat, und ein `${VAR}`, das nur
+die `.env` des Main-Threads beantwortet, ließe einen Worker nicht starten.
+Eine Datei, die sich nicht laden lässt, hält schon das Main-System an, bevor
+ein Worker startet, mit einem Fehler, der die Datei nennt und den Grund, aus
+dem sie gelesen wurde.
 
 | Option | Was |
 | --- | --- |

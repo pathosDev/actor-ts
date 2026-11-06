@@ -125,14 +125,18 @@ own.  The main system applied one when it loaded its configuration, and the
 values it selected are in the tree the workers run with, so
 `ACTOR_TS_PROFILE` is not applied a second time — to a file a worker could
 find, which need not be the one the main thread was given in code.  The
-application file a worker's own load reads is its main thread's, whether
-named with `withConfigFile` or found through `ACTOR_TS_CONFIG` or
-`./application.conf`: the tree overrides every key that file sets, and
-another file could add keys the main thread never saw.  It also reads the
-[secrets file](/reference/configuration/#secrets-file) the main system's load
-read — `ACTOR_TS_SECRETS_CONF`, or `./secrets.conf` in the working directory —
-so a file there that cannot be loaded stops the main system before any worker
-starts, with an error naming the file and why it was read.
+files a worker's own load reads are its main thread's — the application
+file, the project `reference.conf`, the
+[secrets file](/reference/configuration/#secrets-file) and the `.env` —
+whether named in code (`withConfigFile`, `withReferenceConfigFile`,
+`withSecretsFile`, `withEnvironmentFile`), through their `ACTOR_TS_*`
+variables or found in the working directory, and a file the main thread
+was told not to read with `false` is not read in a worker either.  The
+tree overrides every key those files set, but another file could add keys
+the main thread never saw, and a `${VAR}` only the main thread's `.env`
+answers would leave a worker unable to start.  A file that cannot be
+loaded stops the main system before any worker starts, with an error
+naming the file and why it was read.
 
 | Option | What |
 | --- | --- |

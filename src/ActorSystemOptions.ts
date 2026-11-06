@@ -84,17 +84,40 @@ export type ActorSystemOptionsType = {
    * Application config.  Accepts:
    *   - a prebuilt `Config` (highest precedence layered on top of reference);
    *   - a plain JS object of overrides (converted via Config.fromObject);
-   *   - omitted — reference defaults + `application.conf` in CWD are used.
+   *   - omitted — the files `Config.load` finds (see `configFile` and its
+   *     siblings) over the bundled reference defaults are used.
    * Constructor options (`logger`, `logLevel`, `dispatcher`) still win
    * over anything in config — they are explicit code overrides.
    */
   readonly config?: Config | ConfigObject;
-  /** Explicit path to `application.conf`; overrides `ACTOR_TS_CONFIG` + CWD lookup. */
-  readonly configFile?: string;
   /**
-   * The config profile — the `profiles.<profile>` block of `application.conf`
-   * and of the secrets file, laid over each file's root (#1546).  Overrides
-   * `ACTOR_TS_PROFILE`; a name neither file defines is refused at startup.
+   * Explicit path to `application.conf`; overrides `ACTOR_TS_CONFIG` + CWD
+   * lookup.  `false` reads no application file.
+   */
+  readonly configFile?: string | false;
+  /**
+   * Explicit path to the project's own `reference.conf` — its defaults, over
+   * the bundled ones and under `application.conf` (#1785).  Overrides
+   * `ACTOR_TS_REFERENCE_CONFIG` + CWD lookup; `false` reads none.
+   */
+  readonly referenceConfigFile?: string | false;
+  /**
+   * Explicit path to the secrets file (#1769).  Overrides
+   * `ACTOR_TS_SECRETS_CONF` + CWD lookup; its keys are attributed to `secrets`
+   * and withheld by the config dump and DevTools.  `false` reads none.
+   */
+  readonly secretsFile?: string | false;
+  /**
+   * Explicit path to the `.env` file whose variables answer substitutions
+   * behind the real environment (#1785).  Overrides `ACTOR_TS_ENV_FILE` + CWD
+   * lookup; `false` reads none.
+   */
+  readonly environmentFile?: string | false;
+  /**
+   * The config profile — the `profiles.<profile>` block of each file the
+   * loader reads, the project `reference.conf`, `application.conf` and the
+   * secrets file, laid over each file's root (#1546, #1785).  Overrides
+   * `ACTOR_TS_PROFILE`; a name no file defines is refused at startup.
    *
    * Reaches `system.config` only.  The few components that read the
    * configuration without a system — `ClusterClient`, `InMemoryLease`,
@@ -262,14 +285,29 @@ export class ActorSystemOptionsBuilder<T extends ActorSystemOptionsType = ActorS
     return this.set('config' as keyof T, config as T[keyof T]);
   }
 
-  /** Explicit path to `application.conf` (overrides `ACTOR_TS_CONFIG` + CWD lookup). */
-  withConfigFile(configFile: string): this {
+  /** Explicit path to `application.conf` (overrides `ACTOR_TS_CONFIG` + CWD lookup); `false` reads none. */
+  withConfigFile(configFile: string | false): this {
     return this.set('configFile' as keyof T, configFile as T[keyof T]);
   }
 
+  /** Explicit path to the project's `reference.conf` (overrides `ACTOR_TS_REFERENCE_CONFIG` + CWD lookup); `false` reads none. */
+  withReferenceConfigFile(referenceConfigFile: string | false): this {
+    return this.set('referenceConfigFile' as keyof T, referenceConfigFile as T[keyof T]);
+  }
+
+  /** Explicit path to the secrets file (overrides `ACTOR_TS_SECRETS_CONF` + CWD lookup); `false` reads none. */
+  withSecretsFile(secretsFile: string | false): this {
+    return this.set('secretsFile' as keyof T, secretsFile as T[keyof T]);
+  }
+
+  /** Explicit path to the `.env` file (overrides `ACTOR_TS_ENV_FILE` + CWD lookup); `false` reads none. */
+  withEnvironmentFile(environmentFile: string | false): this {
+    return this.set('environmentFile' as keyof T, environmentFile as T[keyof T]);
+  }
+
   /**
-   * The config profile laid over `application.conf` and the secrets file
-   * (overrides `ACTOR_TS_PROFILE`).  An empty name selects none, whatever the
+   * The config profile laid over each file the loader reads (overrides
+   * `ACTOR_TS_PROFILE`).  An empty name selects none, whatever the
    * environment says.
    */
   withProfile(profile: string): this {
