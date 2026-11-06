@@ -1,3 +1,4 @@
+import { versionAtLeast } from '../Detect.js';
 import type {
   FetchHandler,
   HonoServeOptions,
@@ -228,13 +229,7 @@ export function bunIdleTimeoutOf(options: Pick<HonoServeOptions, 'idleTimeoutMs'
  * upgrade --canary` users would expect.
  */
 export function bunSupportsHttp2(version: string): boolean {
-  const parse = (text: string): number[] =>
-    text.split('-')[0]!.split('.').slice(0, 3).map((field) => Number.parseInt(field, 10) || 0);
-  const [major = 0, minor = 0, patch = 0] = parse(version);
-  const [sinceMajor = 0, sinceMinor = 0, sincePatch = 0] = parse(BUN_HTTP2_SINCE);
-  if (major !== sinceMajor) return major > sinceMajor;
-  if (minor !== sinceMinor) return minor > sinceMinor;
-  return patch >= sincePatch;
+  return versionAtLeast(version, BUN_HTTP2_SINCE);
 }
 
 interface BunServer {

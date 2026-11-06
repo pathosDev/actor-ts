@@ -203,7 +203,7 @@ während einer, der es nicht tut, auf demselben Port weiterhin HTTP/1.1
 bekommt.  Deno handelt h2 aus, sobald TLS an ist, und hat dafür keinen
 Schalter; dort dokumentiert `http2` also die Absicht statt zu entscheiden.
 `Bun.serve` kennt `http2` seit Bun 1.4.1, die Runtime-Untergrenze liegt bei
-1.3.0: auf einem älteren Bun wird die Einstellung beim Binden abgelehnt
+1.4.0: auf einem älteren Bun wird die Einstellung beim Binden abgelehnt
 statt ignoriert, weil die Alternative HTTP/1.1 unter einer Einstellung
 wäre, die etwas anderes sagt.  Client-Zertifikate (`requestClientCert`)
 werden auf Bun und Node von jedem Backend geprüft; auf Deno lehnt jedes

@@ -4,20 +4,25 @@
  *
  * Both are properties written onto the `node:http` server after `listen()` —
  * `keepAliveTimeout` and `requestTimeout`.  Node and Bun apply them; Deno's
- * `node:http` shim accepts both and applies neither.  Measured on deno 2.6.8
- * under `idle-timeout = 600ms` and `request-timeout = 2s`, with Express and with
- * Fastify: a keep-alive connection was still open 3 s after its response, and a
- * stalled body still open after 40 s with no `408`, while the report said both
- * were in effect and `bind()` warned about nothing.  `bun test` runs on Bun,
- * so only this case sees the real Deno.  Each runtime's outcome is asserted:
+ * `node:http` shim accepted both and applied neither until deno 2.7.13.
+ * Measured on deno 2.6.8 under `idle-timeout = 600ms` and
+ * `request-timeout = 2s`, with Express and with Fastify: a keep-alive
+ * connection was still open 3 s after its response, and a stalled body still
+ * open after 40 s with no `408`, while the report said both were in effect and
+ * `bind()` warned about nothing.  From 2.7.13 on Deno closes both as Node does
+ * (#1793).  `bun test` runs on Bun, so only this case sees the real Deno.
+ * Each runtime's outcome is asserted:
  *
  *   - **Bun and Node** — both reported in effect, nothing warned, and an idle
  *     keep-alive connection closed within 3 s of its response (1.6 s measured:
  *     the 600 ms plus the second Node adds to `keepAliveTimeout`).
- *   - **Deno** — both reported not in effect, one warning at `bind()` naming
- *     both keys, and the idle connection still open after 3 s — the reason
- *     the report says so.  The stalled-body half is not waited out here: it
- *     needs the 30 s sweep on the other runtimes to tell the two apart.
+ *   - **Deno** — whichever release runs, the report must say what the
+ *     connection does, so the idle close is measured first and is the probe:
+ *     closed within 3 s, and both must be reported in effect with nothing
+ *     warned; still open, and both must be reported not in effect, with one
+ *     warning at `bind()` naming both keys.  The two halves moved in one Deno
+ *     release, so the idle close answers for the stalled body too, which is
+ *     not waited out here: it needs the 30 s sweep to tell the two apart.
  *
  * The client is `node:net`, which all three runtimes provide.  The socket is
  * destroyed and every timer cleared on every path, the server unbound and the
@@ -28,7 +33,7 @@
 import { connect } from 'node:net';
 
 export const name = 'node:http timeouts on deno';
-export const description = 'the Express and Fastify backends report idle-timeout and request-timeout in effect on Bun and Node, where an idle connection closes, and not in effect on Deno, where bind() names both and the connection stays open';
+export const description = 'the Express and Fastify backends report idle-timeout and request-timeout in effect on Bun and Node, where an idle connection closes, and on Deno exactly as its release behaves: in effect where the connection closes, not in effect where it stays open, with bind() naming both';
 
 const IDLE_TIMEOUT_MS = 600;
 const REQUEST_TIMEOUT_MS = 2_000;
@@ -123,15 +128,17 @@ async function checkBackend({ actorTs, runtime, http, backend, backendInstance }
     const naming = warnings.filter((warning) => warning.includes(IDLE_TIMEOUT_LEAF) || warning.includes(REQUEST_TIMEOUT_LEAF));
 
     if (runtime === 'deno') {
-      if (report?.idleTimeoutMs !== false || report?.requestTimeoutMs !== false) {
-        throw new Error(`${backend} reports idle-timeout ${JSON.stringify(report?.idleTimeoutMs)} and request-timeout ${JSON.stringify(report?.requestTimeoutMs)} on Deno, whose node:http shim applies neither — it must say not in effect`);
-      }
-      if (naming.length !== 1 || !naming[0].includes(IDLE_TIMEOUT_LEAF) || !naming[0].includes(REQUEST_TIMEOUT_LEAF)) {
-        throw new Error(`${backend} on Deno: bind() must name both keys in one warning, logged ${JSON.stringify(warnings)}`);
-      }
       const closedAfterMs = await idleCloseAfterResponse(binding.port, WINDOW_MS);
-      if (closedAfterMs !== null) {
-        throw new Error(`Deno closed an idle ${backend} connection ${closedAfterMs} ms after its response under idle-timeout = ${IDLE_TIMEOUT_MS}ms, which it reports not in effect — the report or this case is wrong`);
+      const applied = closedAfterMs !== null;
+      const said = `Deno ${applied ? `closed an idle ${backend} connection ${closedAfterMs} ms after its response` : `held an idle ${backend} connection open ${WINDOW_MS} ms after its response`} under idle-timeout = ${IDLE_TIMEOUT_MS}ms`;
+      if (report?.idleTimeoutMs !== applied || report?.requestTimeoutMs !== applied) {
+        throw new Error(`${said}, but ${backend} reports idle-timeout ${JSON.stringify(report?.idleTimeoutMs)} and request-timeout ${JSON.stringify(report?.requestTimeoutMs)} — both must be ${applied}`);
+      }
+      if (applied && naming.length !== 0) {
+        throw new Error(`${said}, but bind() warned about bounds that hold: ${JSON.stringify(naming)}`);
+      }
+      if (!applied && (naming.length !== 1 || !naming[0].includes(IDLE_TIMEOUT_LEAF) || !naming[0].includes(REQUEST_TIMEOUT_LEAF))) {
+        throw new Error(`${said}: bind() must name both keys in one warning, logged ${JSON.stringify(warnings)}`);
       }
       return;
     }

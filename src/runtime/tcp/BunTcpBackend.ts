@@ -80,7 +80,11 @@ export class BunTcpBackend implements TcpBackend {
     if (options.signal !== undefined) return this.cancellable.connect(options);
     const bun = (globalThis as { Bun?: BunGlobal }).Bun;
     if (!bun) throw new Error('BunTcpBackend: globalThis.Bun is not defined');
-    return dialNatively(bun, options);
+    // Only a verifying TLS dial checks the peer's identity itself, and it needs
+    // the check in hand before the handshake reports — the handler is synchronous.
+    const verifies = options.tls !== undefined && (options.tls.rejectUnauthorized ?? true);
+    const checkIdentity = verifies ? (await import('node:tls')).checkServerIdentity : undefined;
+    return dialNatively(bun, options, checkIdentity);
   }
 }
 
@@ -102,13 +106,20 @@ type NativeDialState = 'dialing' | 'open' | 'failed';
  * followed by `open` and `close`.  Given a `handshake` handler, Bun runs `open`
  * at the TCP connect and reports the handshake, verdict included, on its own;
  * so a TLS dial opens on that report and a plaintext one on `open`.  The
- * verdict already folds in the caller's `rejectUnauthorized`, so a peer that
- * could not be verified is a success exactly when the caller opted out of
- * verifying it.
+ * verdict is meant to fold in the caller's `rejectUnauthorized`, so that a
+ * peer that could not be verified is a success exactly when the caller opted
+ * out of verifying it.
+ *
+ * A verifying dial does not rest on that one flag (#1793): it opens only on a
+ * success that carries no authorization error and whose peer certificate
+ * passes `checkServerIdentity` for the name the handshake was made for — the
+ * checks `node:tls` makes itself.  Where the runtime's verdict is right, they
+ * agree with it; they cost one certificate read per dial.
  */
 function dialNatively(
   bun: BunGlobal,
   options: { host: string; port: number; tls?: TlsTransportOptionsType; handlers: TcpSocketHandlers },
+  checkIdentity?: CheckServerIdentity,
 ): Promise<TcpSocketLike> {
   const { handlers, tls } = options;
   const target = `${options.host}:${options.port}`;
@@ -151,15 +162,17 @@ function dialNatively(
       socket: socketHandlers,
     };
     if (tls !== undefined) {
-      socketHandlers.handshake = (s: BunSocketNative, success: boolean, authorizationError: Error | null) => {
-        if (success) open(s);
-        else fail(s, authorizationError ?? new Error(`the TLS handshake with ${target} failed`));
+      const serverName = tls.serverName ?? options.host;
+      socketHandlers.handshake = (s: BunSocketNative, success: boolean, authorizationError: Error | null | undefined) => {
+        const refusal = handshakeRefusal(s, success, authorizationError, serverName, checkIdentity);
+        if (refusal === undefined) open(s);
+        else fail(s, refusal ?? new Error(`the TLS handshake with ${target} failed`));
       };
       connectOptions.tls = {
         ca: tls.ca,
         cert: tls.cert,
         key: tls.key,
-        serverName: tls.serverName ?? options.host,
+        serverName,
         rejectUnauthorized: tls.rejectUnauthorized ?? true,
       };
     }
@@ -170,6 +183,28 @@ function dialNatively(
       (error: unknown) => { fail(undefined, error); },
     );
   });
+}
+
+/** `node:tls`'s `checkServerIdentity`: `undefined` when the certificate names the host, the error otherwise. */
+type CheckServerIdentity = (hostname: string, certificate: never) => Error | undefined;
+
+/**
+ * Why a native TLS handshake must not open the dial — `undefined` when it may,
+ * `null` when it failed without saying why.  Without `checkIdentity` the
+ * caller opted out of verification, and Bun's own verdict decides.
+ */
+export function handshakeRefusal(
+  socket: BunSocketNative,
+  success: boolean,
+  authorizationError: Error | null | undefined,
+  serverName: string,
+  checkIdentity: CheckServerIdentity | undefined,
+): Error | null | undefined {
+  // Bun hands `undefined` as well as `null` for "no error"; either must not read as "may open".
+  const error = authorizationError ?? null;
+  if (checkIdentity === undefined) return success ? undefined : error;
+  if (!success || error !== null) return error;
+  return checkIdentity(serverName, (socket.getPeerCertificate?.() ?? {}) as never) ?? undefined;
 }
 
 interface BunSocketNative {

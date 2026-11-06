@@ -15,8 +15,8 @@
 export type RuntimeKind = 'bun' | 'node' | 'deno';
 
 type GlobalShape = {
-  readonly Bun?: { nanoseconds?: () => number } & Record<string, unknown>;
-  readonly Deno?: Record<string, unknown>;
+  readonly Bun?: { nanoseconds?: () => number; version?: string } & Record<string, unknown>;
+  readonly Deno?: { version?: { deno?: string } } & Record<string, unknown>;
   readonly process?: { versions?: { node?: string; bun?: string; deno?: string } };
   readonly performance?: { now(): number };
 };
@@ -60,6 +60,38 @@ export function highResNow(): number {
   // Last-resort: Date.now() has ms resolution.  Any benchmark running in
   // such a degraded environment deserves what it gets.
   return Date.now() * 1_000_000;
+}
+
+/**
+ * The version of `runtime` this process runs on, as that runtime spells it —
+ * or `'0.0.0'` when it is not the runtime actually running.  That case is a
+ * test that forced another runtime with {@link setRuntimeOverride}, and the
+ * oldest version is the answer that makes every capability gate keyed on it
+ * fall back to what the oldest release of that runtime can do.
+ */
+export function runtimeVersion(runtime: RuntimeKind = detectRuntime()): string {
+  const found = runtime === 'bun'
+    ? globalScope.Bun?.version
+    : runtime === 'deno'
+      ? globalScope.Deno?.version?.deno
+      : globalScope.Bun === undefined && globalScope.Deno === undefined ? globalScope.process?.versions?.node : undefined;
+  return found ?? '0.0.0';
+}
+
+/**
+ * Whether a `major.minor.patch` version string is at or past `since`.  A
+ * pre-release or build suffix after `-` is ignored, and a field that does not
+ * parse reads as 0.  It answers capability gates for releases this project
+ * measured, which are plain triples.
+ */
+export function versionAtLeast(version: string, since: string): boolean {
+  const parse = (text: string): number[] =>
+    text.split('-')[0]!.split('.').slice(0, 3).map((field) => Number.parseInt(field, 10) || 0);
+  const [major = 0, minor = 0, patch = 0] = parse(version);
+  const [sinceMajor = 0, sinceMinor = 0, sincePatch = 0] = parse(since);
+  if (major !== sinceMajor) return major > sinceMajor;
+  if (minor !== sinceMinor) return minor > sinceMinor;
+  return patch >= sincePatch;
 }
 
 /**

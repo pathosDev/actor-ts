@@ -90,13 +90,15 @@ built this backend or you did. Two of Fastify's own defaults differ from
 there previously was none. Set it back to `0` in your config to restore the old
 behaviour; `idle-timeout` ships no value, so Fastify's 72 s is untouched.
 
-None of them holds under Deno, which this backend does not support: its
-`node:http` shim accepts `keepAliveTimeout` and `requestTimeout` without
-applying either, and emits no connection event for the header deadline or
-`max-connections` to count. Measured on deno 2.6.8 under `idle-timeout = 600ms`:
-a keep-alive connection was still open 3 s after its response, where Node and
-Bun closed it at 1.6 s. Each is reported not in effect there, and `bind()`
-names the ones you set in a warning.
+Under Deno, which this backend does not support, the header deadline and
+`max-connections` never hold: its `node:http` shim emits no connection event
+for them to count. `idle-timeout` and `request-timeout` hold from deno 2.7.13
+on, as on Node; before it the shim accepts `keepAliveTimeout` and
+`requestTimeout` without applying either. Measured on deno 2.6.8 under
+`idle-timeout = 600ms`: a keep-alive connection was still open 3 s after its
+response, where deno 2.7.13, Node and Bun closed it at 1.6 s. Each one that
+does not hold is reported not in effect, and `bind()` names the ones you set in
+a warning.
 
 On the HTTP/2 listener (`withHttp2()`) Fastify's 72 s reaches an idle session
 as Fastify's own session timer, which counts quiet time on the connection: it

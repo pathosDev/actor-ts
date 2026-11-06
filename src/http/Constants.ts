@@ -186,3 +186,15 @@ export const DEFAULT_HTTP_BIND_HOST = '127.0.0.1';
  * is a decision for code (`withMaxAge(300)`), as is any value below this.
  */
 export const MINIMUM_CONFIGURED_HSTS_MAX_AGE_SECONDS = 86_400;
+
+/**
+ * The first Deno whose `node:http` applies `keepAliveTimeout` and
+ * `requestTimeout` (#1793).  Measured under `idle-timeout = 600ms` and
+ * `request-timeout = 2s`: deno 2.6.8, 2.7.0, 2.7.7, 2.7.11 and 2.7.12 held an
+ * idle keep-alive connection open past 4 s and a stalled body past 40 s;
+ * 2.7.13, 2.7.14, 2.8.0 and 2.9.8 closed the first at 1.6 s and the second at
+ * 30 s — Node's sweep, answered `400` on 2.7.13 and `408` from 2.8.0 on.  The
+ * same release first builds `node:http2`'s `createSecureServer`, and its
+ * HTTP/1.1 fallback holds both too.  Below it both are reported not in effect.
+ */
+export const DENO_NODE_HTTP_TIMEOUTS_SINCE = '2.7.13';

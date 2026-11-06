@@ -354,7 +354,7 @@ const internalModules: readonly InternalModule[] = [
   },
   {
     modulePath: ['runtime', 'Detect.ts'],
-    valueExports: ['detectRuntime', 'hasBun', 'hasDeno', 'highResNow', 'setRuntimeOverride'],
+    valueExports: ['detectRuntime', 'hasBun', 'hasDeno', 'highResNow', 'runtimeVersion', 'setRuntimeOverride', 'versionAtLeast'],
   },
   {
     // The per-path deployment layer (#868) is configured in HOCON only: its

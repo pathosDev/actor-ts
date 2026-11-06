@@ -20,11 +20,15 @@
  *   - **The binding report says which protocol a bound holds for.**  On Bun
  *     idle-timeout and request-timeout hold for HTTP/2 only; on Node the
  *     header cap holds for HTTP/1.1 only — and bind() warns in those words.
+ *     On Deno the server holds no header cap at all, so a set
+ *     max-header-bytes refuses the bind, and the two timeouts are in effect.
  *
  * Skipped where the runtime cannot build `node:http2`'s `createSecureServer`,
- * which Fastify serves HTTP/2 from — Deno 2.6.8 answers `ERR_NOT_IMPLEMENTED`,
- * and Fastify on Deno is not a supported pair — and the skip names the
- * runtime's own answer.  Every binding, session and stream is released on
+ * which Fastify serves HTTP/2 from — deno 2.6.8 answers `ERR_NOT_IMPLEMENTED`;
+ * 2.7.13 is the first that serves from one — and the skip names the runtime's
+ * own answer.  Fastify on Deno is not a supported
+ * pair, which is the reason it is held to what it says rather than skipped
+ * once it binds (#1793).  Every binding, session and stream is released on
  * every path.
  */
 import { readFile } from 'node:fs/promises';
@@ -246,6 +250,55 @@ export async function run({ actorTs, runtime, loadEntry }) {
   await reportLeg({ actorTs, HttpExtensionId, HttpServerOptions, routes, cert, key, ca }, runtime);
 }
 
+/**
+ * The report leg on Deno, whose `node:http2` secure server has no
+ * `maxHeaderSize` and ignores the option — a 4 KiB header was answered `200`
+ * over its HTTP/1.1 fallback under a 1 KiB cap on deno 2.9.8, where Node
+ * answered `431` — so a set max-header-bytes must refuse the bind, naming the
+ * key, rather than bind uncapped.  Without it, idle-timeout and
+ * request-timeout must read in effect with nothing warned: from deno 2.7.13,
+ * the first release that builds this server at all, both hold on its HTTP/1.1
+ * fallback as on Node (1.7 s idle close, `408` at 30 s), and the two legs
+ * above hold them over HTTP/2.
+ */
+async function denoReportLeg({ actorTs, HttpExtensionId, HttpServerOptions, routes, cert, key }) {
+  const { ActorSystem, ActorSystemOptions, LogLevel } = actorTs;
+  const bindUnder = async (server) => {
+    const { logger, warnings } = recordingLogger(LogLevel);
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(logger)
+      .withLogLevel(LogLevel.Info)
+      .withConfig({ 'actor-ts': { http: { backend: 'fastify', server } } });
+    const system = ActorSystem.create('smoke-http2-report', systemOptions);
+    let binding;
+    try {
+      const serverOptions = HttpServerOptions.create().withTls({ cert, key }).withHttp2();
+      binding = await system.extension(HttpExtensionId)
+        .newServerAt('127.0.0.1', 0)
+        .withServerOptions(serverOptions)
+        .bind(routes);
+      return { report: binding.serverOptionsReport, said: warnings() };
+    } catch (e) {
+      return { refused: e };
+    } finally {
+      if (binding) await binding.unbind().catch(() => {});
+      await system.terminate();
+    }
+  };
+  const capped = await bindUnder({ 'idle-timeout': '800ms', 'request-timeout': '20s', 'max-header-bytes': 1024 });
+  if (!capped.refused || !capped.refused.message.includes('max-header-bytes')) {
+    throw new Error(`the HTTP/2 listener bound under max-header-bytes on deno, whose server holds no header cap — it must refuse, naming the key${capped.refused ? `; it refused with: ${capped.refused.message}` : ''}`);
+  }
+  const uncapped = await bindUnder({ 'idle-timeout': '800ms', 'request-timeout': '20s' });
+  if (uncapped.refused) throw new Error(`the HTTP/2 listener did not bind on deno without max-header-bytes: ${uncapped.refused.message}`);
+  const actual = { idleTimeoutMs: uncapped.report?.idleTimeoutMs, requestTimeoutMs: uncapped.report?.requestTimeoutMs, held: uncapped.report?.heldForOneProtocol ?? {} };
+  const expected = { idleTimeoutMs: true, requestTimeoutMs: true, held: {} };
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(`the HTTP/2 listener's report on deno is ${JSON.stringify(actual)}, not ${JSON.stringify(expected)}`);
+  }
+  if (uncapped.said.length !== 0) throw new Error(`bind() warned on deno about bounds that hold: ${JSON.stringify(uncapped.said)}`);
+}
+
 /** Collects what the system logged, children included — the shape the unit suites use for bind()'s warnings. */
 function recordingLogger(LogLevel) {
   const records = [];
@@ -272,7 +325,12 @@ function recordingLogger(LogLevel) {
  * for HTTP/1.1 only.  Before the report said so, every one of these read "in
  * effect" and bind() said nothing.
  */
-async function reportLeg({ actorTs, HttpExtensionId, HttpServerOptions, routes, cert, key, ca }, runtime) {
+async function reportLeg(context, runtime) {
+  if (runtime === 'deno') {
+    await denoReportLeg(context);
+    return;
+  }
+  const { actorTs, HttpExtensionId, HttpServerOptions, routes, cert, key, ca } = context;
   const { ActorSystem, ActorSystemOptions, LogLevel } = actorTs;
   const { logger, warnings } = recordingLogger(LogLevel);
   const systemOptions = ActorSystemOptions.create()

@@ -194,7 +194,7 @@ offered — and with it a client that speaks h2 negotiates it while one that
 does not still gets HTTP/1.1 on the same port.  Deno negotiates h2 whenever
 TLS is on and has no knob for it, so there `http2` records intent rather
 than deciding.  `Bun.serve` learned `http2` in Bun 1.4.1, and the runtime
-floor is 1.3.0: on an older Bun the setting is refused at bind rather than
+floor is 1.4.0: on an older Bun the setting is refused at bind rather than
 ignored, since the alternative is HTTP/1.1 served under a setting that
 says otherwise.  Client-certificate verification (`requestClientCert`) is
 enforced on Bun and Node by every backend; on Deno every backend refuses it
