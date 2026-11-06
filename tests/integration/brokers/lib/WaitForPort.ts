@@ -4,7 +4,7 @@
  * Every live-integration broker suite has the same setup-time shape:
  * `docker compose up -d <broker>` returns IMMEDIATELY but the broker
  * itself may need ~1-30 seconds to be ready (Kafka brokers, RabbitMQ
- * — the slow ones; MinIO, Redis — fast).  Trying to connect before
+ * — the slow ones; Silo, Redis — fast).  Trying to connect before
  * the broker is listening produces a flaky ECONNREFUSED race that
  * shows up as 10% of CI runs failing on the first scenario.
  *
@@ -16,7 +16,7 @@
  *
  * Use it from every broker scenario's `beforeAll` / setup function:
  *
- *   await waitForPort('localhost', 9000, { description: 'MinIO API' });
+ *   await waitForPort('localhost', 9000, { description: 'Silo API' });
  */
 import { connect } from 'node:net';
 
@@ -25,7 +25,7 @@ export type WaitForPortOptions = {
   readonly deadlineMs?: number;
   /** Sleep between connection attempts (default 250ms). */
   readonly intervalMs?: number;
-  /** Friendly description for the error message ("MinIO API", "Kafka broker"). */
+  /** Friendly description for the error message ("Silo API", "Kafka broker"). */
   readonly description?: string;
 };
 
@@ -89,7 +89,7 @@ export function waitForPort(
 /**
  * Convenience wrapper that polls an HTTP endpoint for a 2xx/3xx
  * response.  Used by brokers that have a separate readiness URL
- * (MinIO `/minio/health/live`, RabbitMQ `/api/healthchecks/node`).
+ * (Silo `/minio/health/live`, RabbitMQ `/api/healthchecks/node`).
  * Falls back to `waitForPort` semantics when the URL is unreachable.
  */
 export async function waitForHttp(

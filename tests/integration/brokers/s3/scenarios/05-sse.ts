@@ -1,5 +1,5 @@
 /**
- * Server-side encryption — verify MinIO accepts the SSE-AES256
+ * Server-side encryption — verify Silo accepts the SSE-AES256
  * header our adapter emits.  KMS (`aws:kms`) testing requires
  * MinIO Enterprise's KMS endpoint, which isn't available in the
  * open-source server; that path is exercised against AWS proper in
@@ -21,7 +21,7 @@ export const scenario: BrokerScenario<S3Context> = {
       // PUT with SSE — adapter sets ServerSideEncryption=AES256.
       await store.put(key, body, { sse: 'AES256' });
 
-      // GET round-trips the bytes — MinIO decrypts transparently on
+      // GET round-trips the bytes — Silo decrypts transparently on
       // read, no client-side change required.
       const got = await store.get(key);
       if (got.isNone()) throw new Error('GET after SSE PUT returned None');

@@ -4,8 +4,8 @@
  * the SERVER actually rejects on the expected condition.  MinIO
  * has supported `If-None-Match: *` PUT since the 2024-08
  * S3-spec update; older MinIO releases would return 501.  The
- * compose file pins `RELEASE.2025-09-07T16-13-09Z`, which is well
- * past that — and when the pin moves, this scenario is exactly
+ * compose file pins Silo `RELEASE.2026-10-26T00-00-00Z`, a fork of
+ * MinIO well past that — and when the pin moves, this scenario is exactly
  * where a regression should show up.
  */
 import { ObjectStorageConcurrencyError } from '../../../../../src/persistence/object-storage/ObjectStorageBackend.js';

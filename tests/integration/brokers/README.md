@@ -32,7 +32,7 @@ tests/integration/brokers/
 │   └── persistence-contract/     # the contract's per-store scenario modules
 ├── package.json                  # test-only dep manifest, see below
 ├── README.md                     # ← this file
-├── s3/                           # B.2 — MinIO (Closes #20, refs #297)
+├── s3/                           # B.2 — Silo, a MinIO fork (Closes #20, refs #297, #1795)
 ├── mqtt/                         # B.3 — Mosquitto (Closes #21)
 ├── kafka/                        # B.4 — Redpanda (Closes #22)
 ├── amqp/                         # B.5 — RabbitMQ (Closes #23)
@@ -188,7 +188,7 @@ You need Docker (Desktop on macOS/Windows, Engine on Linux).
 Nothing else.  One suite, named by its directory here:
 
 ```bash
-bun run test:integration:broker s3             # MinIO + S3ObjectStorageBackend
+bun run test:integration:broker s3             # Silo + S3ObjectStorageBackend
 bun run test:integration:broker mqtt           # Mosquitto + MqttActor
 bun run test:integration:broker kafka          # Redpanda + KafkaActor
 bun run test:integration:broker amqp           # RabbitMQ + AmqpActor
@@ -255,8 +255,8 @@ digest — each is the release `latest` pointed at when it was written,
 so the switch changed what is tested exactly once, for libsql-server,
 whose `latest` on ghcr.io is a main-branch build rather than a release.
 
-Two pins Dependabot cannot follow and that move by hand, like MinIO's
-(#1531): `mcr.microsoft.com/mssql/server:2022-CU<n>-ubuntu-22.04` (the
+Two pins Dependabot cannot follow and that move by hand, like Silo's
+(#1795): `mcr.microsoft.com/mssql/server:2022-CU<n>-ubuntu-22.04` (the
 cumulative-update number sits in what Dependabot treats as the tag's
 suffix) and `yugabytedb/yugabyte:<version>-b<n>` (the build suffix
 changes per release).  The runner base image is pinned to the *digest*
