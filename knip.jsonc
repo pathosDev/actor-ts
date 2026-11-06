@@ -79,6 +79,13 @@
     "ws"
   ],
 
+  // A system tool, not a package: `MongoCaFileHandshake.test.ts` spawns
+  // `openssl` to mint its CA fixture, behind a capability probe
+  // (`spawnSync('openssl', ['version'])` → `describe.skip` without it). knip
+  // reads a spawned bare command as a binary some manifest should declare, and
+  // none can (#1791).
+  "ignoreBinaries": ["openssl"],
+
   "rules": {
     // OFF — fights the project rather than finding problems:
     //
