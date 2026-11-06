@@ -46,3 +46,26 @@ export function stripSurrounding(value: string, character: string): string {
   while (end > start && value.charCodeAt(end - 1) === code) end--;
   return start === 0 && end === length ? value : value.slice(start, end);
 }
+
+/** C0 control or space — the set WHATWG URL parsing strips from both ends. */
+const isControlOrSpace = (code: number): boolean => code <= 0x20;
+
+/**
+ * `value` as the WHATWG URL parser reads it before it looks at anything:
+ * leading and trailing C0 controls and spaces stripped, and every ASCII tab,
+ * LF and CR removed wherever it stands.
+ *
+ * The regex spelling, `/^[\x00-\x20]+|[\x00-\x20]+$/g`, is the
+ * {@link stripSurrounding} defect again on a character class: the trailing
+ * half is unanchored at its start, so an interior run of controls is retried
+ * from every position — 2 s for 40 000 of them, and both callers take a
+ * value from configuration (#1792).  The interior removal is one character
+ * class with no quantifier, so it stays a regex.
+ */
+export function asUrlParserReadsIt(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && isControlOrSpace(value.charCodeAt(start))) start++;
+  while (end > start && isControlOrSpace(value.charCodeAt(end - 1))) end--;
+  return value.slice(start, end).replace(/[\t\n\r]/g, '');
+}

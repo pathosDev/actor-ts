@@ -413,7 +413,9 @@ class HoconParser {
     if (raw === 'true') return true;
     if (raw === 'false') return false;
     if (raw === 'null') return null;
-    if (/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(raw)) {
+    // `\d+(?:\.\d*)?`, not `\d+\.?\d*`: the latter splits a digit run two ways
+    // at every position and took 7.7 s on 40 000 zeros (#1792).
+    if (/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(raw)) {
       const numberValue = Number(raw);
       if (Number.isFinite(numberValue)) return numberValue;
     }

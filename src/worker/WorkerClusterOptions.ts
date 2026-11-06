@@ -6,6 +6,7 @@ import type { WorkerBackend } from '../runtime/worker/index.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { mergeOptions } from '../util/OptionsMerge.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
+import { asUrlParserReadsIt } from '../util/StripCharacters.js';
 import type { WorkerBroker } from './WorkerBroker.js';
 import type { RestartPolicy } from './WorkerCluster.js';
 
@@ -429,21 +430,6 @@ export function parseBootstrapUrl(bootstrap: URL | string | undefined): URL | un
 const SCHEME_RELATIVE_FILE_URL = /^file:(?!\/)/i;
 
 /**
- * Leading and trailing C0-or-space, and every interior tab, LF and CR — the
- * two removals WHATWG performs on the input *before* anything looks at the
- * scheme.
- *
- * Measured across all 128 ASCII code points on bun 1.4.2 rather than read off
- * the specification: prepending or appending any of U+0000–U+0020 to
- * `file:worker.js` still yields `file:///worker.js`, and of the interior
- * positions exactly U+0009, U+000A and U+000D vanish.  Nothing else does:
- * a non-breaking space (U+00A0) in front of `file:worker.js` leaves a scheme
- * the parser rejects outright, so that string is refused by the
- * "must be an absolute URL" rule and needs no handling here.
- */
-const URL_STRIPPED_BEFORE_PARSE = /^[\u0000-\u0020]+|[\u0000-\u0020]+$|[\t\n\r]/g;
-
-/**
  * The specifier as {@link SCHEME_RELATIVE_FILE_URL} must read it.
  *
  * The rule is stated over the string because the spelling survives nowhere
@@ -458,9 +444,20 @@ const URL_STRIPPED_BEFORE_PARSE = /^[\u0000-\u0020]+|[\u0000-\u0020]+$|[\t\n\r]/
  * ordinary case for the deployment knob this guards.  The scheme and host
  * rules were never bypassable this way — they read the parsed `URL` — so this
  * closes the one rule that does not (#1515).
+ *
+ * The removals are leading and trailing C0-or-space and every interior tab,
+ * LF and CR — measured across all 128 ASCII code points on bun 1.4.2 rather
+ * than read off the specification: prepending or appending any of
+ * U+0000–U+0020 to `file:worker.js` still yields `file:///worker.js`, and of
+ * the interior positions exactly U+0009, U+000A and U+000D vanish.  Nothing
+ * else does: a non-breaking space (U+00A0) in front of `file:worker.js`
+ * leaves a scheme the parser rejects outright, so that string is refused by
+ * the "must be an absolute URL" rule and needs no handling here.  The shared
+ * helper does them in linear time; the regex that stood here was quadratic on
+ * an interior run of controls (#1792).
  */
 function asTheUrlParserReadsIt(specifier: string): string {
-  return specifier.replace(URL_STRIPPED_BEFORE_PARSE, '');
+  return asUrlParserReadsIt(specifier);
 }
 
 /**
