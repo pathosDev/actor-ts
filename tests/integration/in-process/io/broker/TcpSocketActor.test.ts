@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { createServer, Socket, type Server } from 'node:net';
+import { createServer, Socket, type Server, type SetKeepAliveOptions } from 'node:net';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
@@ -433,12 +433,18 @@ async function recordLivenessCalls(body: () => Promise<void>): Promise<SocketLiv
   const socketTimeout: number[] = [];
   const originalKeepAlive = Socket.prototype.setKeepAlive;
   const originalSetTimeout = Socket.prototype.setTimeout;
+  // `@types/node` 24.19 added an options-object overload, so the patch takes
+  // both call shapes and forwards whichever one the caller used.
   Socket.prototype.setKeepAlive = function patched(
-    this: Socket, enable?: boolean, initialDelay?: number,
+    this: Socket, enableOrOptions?: boolean | SetKeepAliveOptions, ...rest: number[]
   ): Socket {
-    keepAlive.push([enable ?? false, initialDelay ?? 0]);
-    return originalKeepAlive.call(this, enable, initialDelay);
-  };
+    if (typeof enableOrOptions === 'object') {
+      keepAlive.push([enableOrOptions.enable ?? false, enableOrOptions.initialDelay ?? 0]);
+    } else {
+      keepAlive.push([enableOrOptions ?? false, rest[0] ?? 0]);
+    }
+    return Reflect.apply(originalKeepAlive, this, [enableOrOptions, ...rest]) as Socket;
+  } as typeof Socket.prototype.setKeepAlive;
   Socket.prototype.setTimeout = function patched(
     this: Socket, timeout: number, callback?: () => void,
   ): Socket {
