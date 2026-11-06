@@ -477,9 +477,9 @@ type Attribution = {
  * it also set the path.
  *
  * Highest first: the merge resolves the same way, so this cannot disagree
- * with the tree it is describing.  "Below" is counted in the six layers, not
- * the five names, so a secrets-profile key over the secrets root's value of
- * the same key reports that it displaced one.
+ * with the tree it is describing.  "Below" is counted in the eight layers,
+ * not the six names, so a secrets-profile key over the secrets root's value
+ * of the same key reports that it displaced one.
  *
  * Asked by `segments`, never by a dotted path: a quoted key holding a dot is
  * one key, and a dotted path would ask every layer about two (#1546).

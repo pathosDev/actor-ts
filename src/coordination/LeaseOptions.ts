@@ -255,8 +255,10 @@ const ABSENT_COORDINATION_LEASE_KEYS: AbsentLeaseKeys = {
  * Unset, `config` is loaded here, for the reason
  * `readWorkerClusterOptionsFromConfig` loads its own: a lease built in
  * application code may have no `ActorSystem` in scope to read `system.config`
- * from.  {@link Config.load} is the chain `ActorSystem.create` uses, honouring
- * `ACTOR_TS_CONFIG` and `./application.conf`.  Where there is a system — the
+ * from.  {@link Config.load} is the chain `ActorSystem.create` uses — the
+ * project `reference.conf`, `application.conf`, the secrets file and a `.env`,
+ * each named by its `ACTOR_TS_*` variable or found in the working directory
+ * (#1785).  Where there is a system — the
  * framework building a lease from this block, or code that passes the config
  * to the lease constructor — it is that system's config instead.
  *

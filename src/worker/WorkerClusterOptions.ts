@@ -573,8 +573,9 @@ export function checkWorkerModuleUrl(specifier: URL | string): WorkerModuleUrlRe
  * **`bootstrap` stays out of HOCON on purpose** — it is absent from
  * `ConfigKeys` and from `reference.conf`, and #883 publishing the other nine
  * did not change that.  It names a module the runtime will *execute*, and a
- * config file is a wider surface than the call site: `ACTOR_TS_CONFIG` and a
- * dropped-in `application.conf` both feed {@link Config.load}, so a leaf here
+ * config file is a wider surface than the call site: `ACTOR_TS_CONFIG`, a
+ * dropped-in `application.conf` or `reference.conf`, and a `.env` all feed
+ * {@link Config.load}, so a leaf here
  * would let something other than the application's own source decide which
  * code a worker runs.  {@link WorkerClusterOptionsValidator} constrains the
  * scheme precisely because that decision has teeth (#776).
@@ -591,8 +592,10 @@ export type WorkerClusterConfigDefaults = Pick<
  * config readers this one loads the config itself: {@link WorkerCluster.spawn}
  * is a static with no `ActorSystem` in scope — the workers each build their
  * own system *after* spawning — so there is no `system.config` to read.
- * {@link Config.load} is the same chain `ActorSystem.create` uses, honouring
- * `ACTOR_TS_CONFIG` and `./application.conf`.
+ * {@link Config.load} is the same chain `ActorSystem.create` uses: the
+ * project `reference.conf`, `application.conf` and the secrets file, each
+ * named by its `ACTOR_TS_*` variable or found in the working directory, and a
+ * `.env` beside them (#1785).
  */
 export function readWorkerClusterOptionsFromConfig(
   config: Config = Config.load(),

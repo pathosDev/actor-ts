@@ -305,8 +305,9 @@ export class KubernetesLeaseOptionsValidator extends LeaseOptionsValidator<Kuber
  *
  * `apiServerUrl`, `authToken` and `caCert` are deliberately absent and have no
  * keys at all. Two of them are a bearer token and a private trust anchor, and a
- * config file is the wrong place for either: `ACTOR_TS_CONFIG` and a dropped-in
- * `application.conf` both feed {@link Config.load}, the merged config is
+ * config file is the wrong place for either: `ACTOR_TS_CONFIG`, a dropped-in
+ * `application.conf` or `reference.conf`, and a `.env` all feed
+ * {@link Config.load}, the merged config is
  * readable from the DevTools config panel, and a token in a file that gets
  * committed is the failure this issue exists to prevent. The path keys are the
  * supported way to move that half of the configuration out of code —

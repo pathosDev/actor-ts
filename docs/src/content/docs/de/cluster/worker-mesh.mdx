@@ -194,7 +194,8 @@ Main-Threads übergeben wird, nicht mitreist.
 
 <Aside type="note" title="Warum das Actor-Modul kein Config-Key ist">
   `withModule` benennt Code, den die Worker *ausführen*.  Eine Config-Datei
-  — `ACTOR_TS_CONFIG`, eine hineingelegte `application.conf` — ist eine
+  — `ACTOR_TS_CONFIG`, eine hineingelegte `application.conf` oder
+  `reference.conf` — ist eine
   breitere Angriffsfläche als die Aufrufstelle, und ein Key dort ließe
   etwas anderes als den eigenen Quellcode der Anwendung entscheiden,
   welcher Code auf einem Thread läuft.  Dieselbe Regel hält `bootstrap`
@@ -384,12 +385,14 @@ hat keinen Key, weil es Identität des einzelnen Aufrufs ist, und `backend`
 sowie `onWorkerPermanentlyDown`, weil sie lebende Objekte sind, die eine Datei
 nicht ausdrücken kann.  `bootstrap` wird bewusst zurückgehalten: Es benennt ein
 Modul, das die Runtime *ausführt*, und `ACTOR_TS_CONFIG` oder eine abgelegte
-`application.conf` sind eine breitere Angriffsfläche als die Aufrufstelle.
+`application.conf` oder `reference.conf` sind eine breitere Angriffsfläche als
+die Aufrufstelle.
 
 `spawn` ist ein Static ohne `ActorSystem` im Scope und lädt die Config-Kette
 daher selbst, sofern ihm keine `Config` übergeben wird: dieselbe, die
-`ActorSystem.create` verwendet, inklusive `ACTOR_TS_CONFIG`,
-`./application.conf` und des Profils, das `ACTOR_TS_PROFILE` nennt.  Dieser
+`ActorSystem.create` verwendet, inklusive der Dateien, die die
+`ACTOR_TS_*`-Variablen nennen oder das Arbeitsverzeichnis enthält, einer
+`.env` und des Profils, das `ACTOR_TS_PROFILE` nennt.  Dieser
 Load sieht keine Datei und kein Profil, die ein System im Code bekommen hat,
 und lehnt ein Profil ab, das nur dort definiert ist — ist ein System im Scope,
 übergib deshalb seine Konfiguration als zweites Argument,

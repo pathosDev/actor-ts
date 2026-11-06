@@ -11295,6 +11295,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   key that does not name one still prints, as do the query-string,
   `Server=…;Password=…` and scheme-less `user:password@host` forms.
 
+- **The working directory now decides more of the configuration on Node and
+  Deno** (#1785). `Config.load` reads a `./reference.conf` and a `./.env`
+  beside `./application.conf` and `./secrets.conf`, and a `.env` may name
+  the other files and the profile (`ACTOR_TS_CONFIG=…`,
+  `ACTOR_TS_PROFILE=…`). On Bun a `./.env` already reached `process.env`
+  before any code ran; on Node and Deno a file dropped into the working
+  directory now does the same for the config. Whoever can write a file there
+  can therefore change what a system is configured with, as they already
+  could with an `application.conf`. A deployment that does not trust its
+  working directory names every file in code — `withReferenceConfigFile`,
+  `withConfigFile`, `withSecretsFile`, `withEnvironmentFile`, each also
+  taking `false` to read none — or runs from a directory it controls. On
+  Deno, a narrow `--allow-read` has to name the four files, or say `false`
+  for the ones it does not ship, and `--allow-env` every variable a `${VAR}`
+  reads; the Deno runtime page lists both.
+
 ## [0.17.0] — 2026-08-29
 
 ### Added

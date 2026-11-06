@@ -392,7 +392,7 @@ describe('configDumpLines — the text the dump writes', () => {
   });
 });
 
-describe('six layers, five names, and the secrets file (#1546)', () => {
+describe('the layers, their names, and the secrets file (#1546)', () => {
   /**
    * An application file and a secrets file, each with a production profile.
    *
@@ -440,7 +440,7 @@ describe('six layers, five names, and the secrets file (#1546)', () => {
     return /\[([^\]]*)\]$/.exec(line)![1]!;
   };
 
-  test('every key names one of five layers — a secrets-profile key reports as secrets', () => {
+  test('every key names the layer it came from — a secrets-profile key reports as secrets', () => {
     const text = profiledDump({ 'my-app': { 'from-code': 'x' } });
 
     expect(originOf(text, 'actor-ts.dispatcher.throughput')).toBe('reference');
@@ -483,7 +483,7 @@ describe('six layers, five names, and the secrets file (#1546)', () => {
     expect(head).toContain(`, ${STOCK_WITHHELD.length} redacted by key name, 4 redacted from a secrets file,`);
   });
 
-  test('the header prints the profile and both files, and says which one was not there', () => {
+  test('the header prints the profile and the application and secrets files, and says which one was not there', () => {
     inDirectory({ 'application.conf': 'profiles.production {}' }, (directory) => {
       const application = join(directory, 'application.conf');
       const secrets = join(directory, 'secrets.conf');

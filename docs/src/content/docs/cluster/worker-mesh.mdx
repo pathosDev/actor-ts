@@ -184,7 +184,8 @@ holds on every thread, while a cap passed to the main thread's own
 
 <Aside type="note" title="Why the actor module is not a config key">
   `withModule` names code the workers will *execute*.  A config file —
-  `ACTOR_TS_CONFIG`, a dropped-in `application.conf` — is a wider surface
+  `ACTOR_TS_CONFIG`, a dropped-in `application.conf` or `reference.conf` —
+  is a wider surface
   than the call site, and a key there would let something other than the
   application's own source decide which code runs on a thread.  The same
   rule keeps `bootstrap` out of `actor-ts.worker-cluster`.  Everything
@@ -368,12 +369,13 @@ duration literal instead.  `initData` has no key because it is per-call
 identity, and `backend` and `onWorkerPermanentlyDown` because they are live
 objects a file cannot express.  `bootstrap` is held back deliberately: it names
 a module the runtime will *execute*, and `ACTOR_TS_CONFIG` or a dropped-in
-`application.conf` is a wider surface than the call site.
+`application.conf` or `reference.conf` is a wider surface than the call site.
 
 `spawn` is a static with no `ActorSystem` in scope, so unless it is handed a
 `Config` it loads the config chain itself: the same one `ActorSystem.create`
-uses, honouring `ACTOR_TS_CONFIG`, `./application.conf` and the profile
-`ACTOR_TS_PROFILE` names.  That load cannot see a file or a profile a system
+uses, honouring the files the `ACTOR_TS_*` variables name or the working
+directory holds, a `.env`, and the profile `ACTOR_TS_PROFILE` names.  That
+load cannot see a file or a profile a system
 was given in code, and refuses a profile defined only there — so when a
 system is in scope, pass its configuration as the second argument,
 `WorkerCluster.spawn(workerOptions, system.config)`, as `WorkerMesh` does.  A

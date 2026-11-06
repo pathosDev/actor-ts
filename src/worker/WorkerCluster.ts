@@ -208,8 +208,9 @@ export class WorkerCluster {
    *   because `spawn` is a static with no system in scope to borrow one from.
    *
    *   Hand it `system.config` whenever a system is in scope.  A load of its
-   *   own sees only what the environment says — `ACTOR_TS_CONFIG` or
-   *   `./application.conf`, and the profile `ACTOR_TS_PROFILE` names — so a
+   *   own sees only what the environment says — the files the `ACTOR_TS_*`
+   *   variables name or the working directory holds, and the profile
+   *   `ACTOR_TS_PROFILE` names — so a
    *   file or a profile the system was given in code is invisible to it, and
    *   a profile defined only in that file is refused (#1546).  `WorkerMesh`
    *   hands in its main system's config for exactly that reason.

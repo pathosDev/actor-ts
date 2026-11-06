@@ -197,11 +197,14 @@ actor-ts {
 }
 ```
 
-The framework loads it automatically when present.  ENV substitution
-(`${?ENV_NAME}`) works as the HOCON spec defines — values pulled
-from the environment fall back to the default when unset.  One file
-can carry several environments as [profiles](/reference/configuration/#profiles),
-and credentials belong in the optional
+The framework loads it automatically when present, over a
+[`reference.conf` of the project's own](/reference/configuration/#the-project-referenceconf)
+when there is one.  ENV substitution (`${?ENV_NAME}`) works as the
+HOCON spec defines — values pulled from the environment fall back to
+the default when unset — and a [`.env` file](/reference/configuration/#environment-files)
+beside it can supply them.  One file can carry several environments
+as [profiles](/reference/configuration/#profiles), and credentials
+belong in the optional
 [secrets file](/reference/configuration/#secrets-file) beside it.  See
 [Configuration](/reference/configuration/) for every key
 the framework reads.

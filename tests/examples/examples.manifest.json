@@ -67,6 +67,11 @@
       "expect": "SEED NODES      : [\"10.0.0.1:2552\"]"
     },
     { "file": "examples/config/hello-config.ts", "expect": "http backend" },
+    {
+      "file": "examples/config/layers.ts",
+      "note": "The expected line needs every layer at once: the .env file named in code answers the required ${DB_PASSWORD} (without it the load throws and nothing prints), the concatenation reads it and the project reference.conf beneath, and the dump withholds the whole URL by the variable it came from rather than only masking its userinfo. A DB_PASSWORD in the developer's shell wins over the file and changes nothing the line says.",
+      "expect": "my-app.db.url = <redacted>  [application, from $DB_PASSWORD]"
+    },
 
     {
       "file": "examples/coordination/k8s-lease-singleton.ts",

@@ -276,7 +276,7 @@ describe('ConfigMethods', () => {
     }
   });
 
-  test('attributes a key to one of five sources and withholds what the secrets file set (#1546)', async () => {
+  test('attributes a key to its source and withholds what the secrets file set (#1546)', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'actor-ts-config-methods-'));
     const applicationPath = join(directory, 'application.conf');
     const secretsPath = join(directory, 'secrets.conf');
@@ -307,7 +307,7 @@ describe('ConfigMethods', () => {
       expect(resolve(result, 'my-app.set-by-application').source).toBe('application');
       expect(resolve(result, 'my-app.set-by-profile').source).toBe('profile');
       expect(resolve(result, 'my-app.endpoint-value').source).toBe('secrets');
-      // Six layers, five names: the secrets file's profile reports as secrets.
+      // More layers than names: the secrets file's profile reports as secrets.
       expect(resolve(result, 'my-app.set-by-sealed-profile').source).toBe('secrets');
       expect(resolve(result, 'my-app.set-by-sealed-profile').overridden).toBe(true);
       expect(resolve(result, 'my-app.set-by-code').source).toBe('override');

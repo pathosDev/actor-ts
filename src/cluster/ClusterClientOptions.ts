@@ -163,8 +163,10 @@ export type ClusterClientConfigDefaults = Partial<Pick<
  * config readers, this one loads the config itself: `new ClusterClient(...)`
  * is standalone — the client is by definition outside the cluster, holds no
  * `ActorSystem`, and therefore has no `system.config` above it.
- * {@link Config.load} is the same chain `ActorSystem.create` uses, honouring
- * `ACTOR_TS_CONFIG` and `./application.conf`.
+ * {@link Config.load} is the same chain `ActorSystem.create` uses: the
+ * project `reference.conf`, `application.conf` and the secrets file, each
+ * named by its `ACTOR_TS_*` variable or found in the working directory, and a
+ * `.env` beside them (#1785).
  *
  * The `config` parameter is the seam that keeps that honest: a test (or a
  * caller that wants a client immune to whatever `application.conf` happens to

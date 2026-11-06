@@ -7,7 +7,7 @@ actor-ts verwendet **HOCON** zur Konfiguration — eine Obermenge von
 JSON, die in JVM-Config-Dateien üblich ist, mit Substitutionen,
 Durations und Sizes.  ([`include`-Direktiven werden
 abgelehnt](#includes-werden-nicht-unterstützt) — setze die Quellen im
-Code zusammen.)  Fünf Schichten, von oben nach unten aufgelöst:
+Code zusammen.)  Sechs Schichten, von oben nach unten aufgelöst:
 
 1. **Konstruktor-Argumente** an `ActorSystem.create(name, settings)`
    — explizite Felder wie `logger` oder `logLevel`, die jeden Key
@@ -19,12 +19,16 @@ Code zusammen.)  Fünf Schichten, von oben nach unten aufgelöst:
 4. **Die Anwendungsdatei** — `application.conf` im Projekt-Root, oder
    ein expliziter Pfad via `configFile`, mit ihrem aktiven Profil
    ([Profile](#profile)).
-5. **Reference-Defaults** — im Framework gebündelt als
+5. **Die Defaults des Projekts** — seine eigene `reference.conf`,
+   optional, mit ihrem aktiven Profil
+   ([Die reference.conf des Projekts](#die-referenceconf-des-projekts)).
+6. **Reference-Defaults** — im Framework gebündelt als
    `REFERENCE_CONF` (siehe `src/config/Reference.ts`).
 
-Alles, was nicht in Schicht 1 bis 4 spezifiziert ist, fällt auf
-den Reference-Default zurück.  [Ladereihenfolge](#ladereihenfolge)
-schreibt die ganze Kette aus.
+Alles, was nicht in Schicht 1 bis 5 spezifiziert ist, fällt auf
+den gebündelten Default zurück, und ein `${VAR}` in jeder der Dateien
+darf neben der Umgebung auch eine [.env-Datei](#env-dateien) lesen.
+[Ladereihenfolge](#ladereihenfolge) schreibt die ganze Kette aus.
 
 Diese Seite erklärt, was die einzelnen Keys *tun*.  Die vollständige
 Liste — jede Einstellung, die das Framework mitbringt, wörtlich aus der

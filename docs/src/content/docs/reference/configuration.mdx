@@ -6,7 +6,7 @@ description: Every HOCON key the framework reads, grouped by module — defaults
 actor-ts uses **HOCON** for configuration — a superset of JSON
 common in JVM config files, with substitutions, durations and
 sizes.  ([`include` directives are refused](#includes-are-not-supported)
-— compose the sources in code.)  Five layers, resolved highest-first:
+— compose the sources in code.)  Six layers, resolved highest-first:
 
 1. **Constructor arguments** to `ActorSystem.create(name, settings)`
    — explicit fields such as `logger` or `logLevel`, which beat any key.
@@ -17,12 +17,15 @@ sizes.  ([`include` directives are refused](#includes-are-not-supported)
 4. **The application file** — `application.conf` at the project root,
    or an explicit path via `configFile`, with its active profile
    ([Profiles](#profiles)).
-5. **Reference defaults** — bundled in the framework as
+5. **The project's defaults** — its own `reference.conf`, optional, with
+   its active profile ([The project reference.conf](#the-project-referenceconf)).
+6. **Reference defaults** — bundled in the framework as
    `REFERENCE_CONF` (see `src/config/Reference.ts`).
 
-Anything not specified in layers 1 to 4 falls through to the
-reference default.  [Loading order](#loading-order) spells out the
-whole chain.
+Anything not specified in layers 1 to 5 falls through to the
+bundled default, and a `${VAR}` in any of the files may read a
+[.env file](#environment-files) as well as the environment.
+[Loading order](#loading-order) spells out the whole chain.
 
 This page explains what each key *does*.  For the exhaustive list —
 every setting the framework ships, verbatim from the bundled file — see

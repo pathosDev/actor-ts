@@ -94,7 +94,8 @@ actor-ts.coordination.lease {
 Explizite Optionen gewinnen weiterhin, dann dieser Block, dann die eingebauten
 Defaults.  Ein im Code gebauter Lease hat womöglich kein `ActorSystem` in
 Reichweite, deshalb lädt der Konstruktor die Config-Kette selbst —
-`ACTOR_TS_CONFIG` und `./application.conf` werden genauso berücksichtigt wie
+die Dateien, die die `ACTOR_TS_*`-Variablen nennen oder das
+Arbeitsverzeichnis enthält, und eine `.env` werden genauso berücksichtigt wie
 bei `ActorSystem.create` —, es sei denn, du übergibst ihm eine `Config`:
 `new KubernetesLease(options, system.config)` liest diese und sonst nichts,
 Overrides eingeschlossen.

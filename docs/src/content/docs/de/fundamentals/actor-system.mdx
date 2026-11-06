@@ -207,10 +207,13 @@ actor-ts {
 }
 ```
 
-Das Framework lädt sie automatisch, wenn vorhanden.  ENV-Substitution
-(`${?ENV_NAME}`) funktioniert wie in der HOCON-Spec definiert — aus
-der Umgebung gezogene Werte fallen auf den Default zurück, wenn sie
-nicht gesetzt sind.  Eine Datei kann mehrere Umgebungen als
+Das Framework lädt sie automatisch, wenn vorhanden, über einer
+[eigenen `reference.conf` des Projekts](/de/reference/configuration/#die-referenceconf-des-projekts),
+wenn es eine gibt.  ENV-Substitution (`${?ENV_NAME}`) funktioniert wie
+in der HOCON-Spec definiert — aus der Umgebung gezogene Werte fallen
+auf den Default zurück, wenn sie nicht gesetzt sind —, und eine
+[`.env`-Datei](/de/reference/configuration/#env-dateien) daneben kann sie
+liefern.  Eine Datei kann mehrere Umgebungen als
 [Profile](/de/reference/configuration/#profile) tragen, und Credentials
 gehören in die optionale [Secrets-Datei](/de/reference/configuration/#secrets-datei)
 daneben.  Siehe [Konfiguration](/de/reference/configuration/)
