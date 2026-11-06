@@ -4323,6 +4323,72 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   ./`application.conf` and the profile `ACTOR_TS_PROFILE` names, so hand it
   `system.config` whenever a system is in scope.
 
+- **String value concatenation in HOCON** (#537). Quoted strings,
+  substitutions and unquoted text next to each other on one line make one
+  string: `url = "redis://:"${REDIS_PASSWORD}"@cache:6379"`,
+  `address = ${HOST}":"${PORT}`, `name = app-${STAGE}`. A secret can go into
+  a connection URL without the whole URL living in one variable. The spaces
+  between pieces are kept, a field after a space still starts a new field,
+  and a single piece keeps its type, so `port = ${PORT}` is still a number.
+
+  Inside a string a variable joins in as the text it holds — a password of
+  digits stays digits — while a lone `${X}` keeps its JSON-first reading. A
+  key of the file joins in as HOCON writes it, and one that holds an object
+  or a list is refused. An unset `${?X}` inside a string adds nothing, and a
+  string made only of unset optional substitutions is no value, so the
+  earlier value or the layer below shows through. `${` inside quotes stays
+  text. Joining objects or lists, `+=` and triple-quoted strings are still
+  not supported, and each is now refused with an error naming it rather than
+  mis-parsed or reported as `Expected a key`.
+
+- **A project `reference.conf` and a `.env` file in `Config.load`** (#1785).
+  A project keeps its own defaults — for its own keys and for framework keys
+  — in a `reference.conf` of its own, between the bundled defaults and
+  `application.conf`, and `application.conf` overrides single keys of it per
+  deployment. It is found through `LoadOptions.referenceConfPath`, then
+  `ACTOR_TS_REFERENCE_CONFIG`, then `./reference.conf`, carries profiles
+  like the other files, and a missing one is an empty layer.
+
+  A `.env` file supplies variables to the substitutions of every file the
+  loader reads, behind the real environment: `${DB_PASSWORD}` in
+  `application.conf` finds a `DB_PASSWORD=…` line when the process was
+  started without one. It is found through
+  `LoadOptions.environmentFilePath`, then the real `ACTOR_TS_ENV_FILE`, then
+  `./.env`; it may name the other files and the profile itself; an empty
+  value in it counts as unset; and it never writes `process.env`, so child
+  processes do not inherit it. The grammar is Node's `--env-file` one, on
+  all three runtimes — a parser of its own, because Deno has no
+  `util.parseEnv` — so `$VAR` is kept as written, and a directory called
+  `.env` (a Python virtual environment) counts as no file.
+
+  Every file option of `LoadOptions` now also takes `false`, which reads no
+  such file at all. The layers record where the project `reference.conf` and
+  the `.env` file were looked for and whether they were found, and which
+  environment variables supplied each leaf of each file's layer. A
+  byte-order mark at the start of a config file is dropped instead of
+  failing the parse with `Expected a key`.
+
+- **`ActorSystemOptions` names every file the loader reads:
+  `withSecretsFile`, `withReferenceConfigFile` and `withEnvironmentFile`**
+  (#1769, #1785). Beside `withConfigFile`, a system names its secrets file,
+  its project `reference.conf` and its `.env` file in code, each ahead of
+  its `ACTOR_TS_*` variable; with an option unset the chain applies as
+  before. A file named with `withSecretsFile` is the secrets layer — its
+  keys are attributed to `secrets` and withheld by the boot dump and the
+  DevTools panel — and a `secrets.conf` in the working directory is not read
+  beside it, which `withConfig(Config.load({ secretsConfPath }))` could not
+  do: that put every key in the overrides layer and still read
+  `./secrets.conf`. All four take `false`, `withConfigFile` included, which
+  reads no such file. `Cluster.bootstrap` forwards `configFile` as before,
+  `false` now too, and leaves the other three to their variables.
+
+  A `WorkerMesh` worker reads exactly the files its main thread read. The
+  main thread hands every worker the path it looked at for each of the four,
+  or `false`, so a `${VAR}` that only a `.env` named in code answers
+  resolves in a worker as well, and a file an `ACTOR_TS_*` variable names
+  can neither add keys to a worker nor stop one when the main thread was
+  given another (#1546).
+
 ### Changed
 
 - **BREAKING — With `actor-ts.coordinated-shutdown.exit-process` on, a run
@@ -4889,10 +4955,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`ActorSystemOptions.withConfig`, `LoadOptions.overrides`) is refused at
   startup instead of being merged. `DEVTOOLS_PROTOCOL_VERSION` is now 2,
   because the source of a `config.resolved` entry widened from three layer
-  names to five, so a DevTools client and server one version apart refuse
-  each other at the handshake. `WorkerMeshInitData`, exported from
-  `actor-ts/worker`, gains the required `secretPaths` field and an optional
-  `configFile`.
+  names to six (`profile`, `secrets`, and `project-reference` for the
+  project's own `reference.conf`, #1785), so a DevTools client and server
+  one version apart refuse each other at the handshake.
+  `WorkerMeshInitData`, exported from `actor-ts/worker`, gains the required
+  `secretPaths` field and an optional `configFile`.
 
   **Migration.** Rename a root profiles key of your own (keys below the root
   such as `my-app.profiles` are unaffected), move profile blocks out of
@@ -5600,20 +5667,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   again.
 
 - **BREAKING — The dump withholds a value when any whole word of the key's
-  name is `password`, `passphrase`, `passwd`, `secret`, `token`, `key`,
-  `credential` or `auth` — singular or plural, in any path segment and
-  wherever in the name it stands, so a branch named `credentials` withholds
-  everything beneath it (#867).**
+  name is `password`, `passphrase`, `passwd`, `pass`, `secret`, `token`,
+  `key`, `credential`, `auth` or `authorization` — singular or plural, in
+  any path segment and wherever in the name it stands, so a branch named
+  `credentials` withholds everything beneath it (#867, #1759).**
 
   So `auth-header`, `secret-value` and `api-key-id` are withheld as well as
   `api-key`. A name is cut into words at every character that is not a
-  letter or a digit and at camelCase humps, so `passivation-idle` holds no
-  `pass` and `keyspace` no `key`, and a value drawn from HOCON's boolean
-  vocabulary is never withheld whatever its key is called. The rule errs
-  toward withholding: an application's `token-bucket-size` or `key-prefix`
-  prints as `<redacted>`, while the keys `reference.conf` ships that read
-  that way — `cluster.receptionist.max-subscribers-per-key`, the redis and
-  memcached `key-prefix`, the Kubernetes lease's `token-path` and
+  letter or a digit, at camelCase humps and in front of a digit after a
+  letter, so `password2` holds `password` while `passivation-idle` holds no
+  `pass` and `keyspace` no `key`. A credential word glued onto another
+  counts too — `pgpassword`, `clientsecret`, `ghtoken` — save `key`, `pass`
+  and `auth`, which end ordinary words: of the `…key` compounds `apikey`,
+  `accesskey`, `secretkey` and `privatekey` are read and `sshkey` is not,
+  and `pwd` counts beside another word of the key's path (`mysql-pwd`,
+  `db.pwd`); only a variable called just `PWD`, a shell's working directory,
+  does not (#1759). A value drawn from HOCON's boolean vocabulary is never
+  withheld whatever its key is called. The rule errs toward withholding: an
+  application's `token-bucket-size` or `key-prefix` prints as `<redacted>`,
+  while the keys `reference.conf` ships that read that way —
+  `cluster.receptionist.max-subscribers-per-key`, the redis and memcached
+  `key-prefix`, the Kubernetes lease's `token-path` and
   `token-reload-interval`, and the object-storage `kms-key-id` — are
   exempted by full path, so a stock configuration withholds twelve keys,
   every one a credential slot. It is the same list and the same rule the
@@ -5623,15 +5697,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the panel cannot reach a log file instead.
 
   Redaction by key name is a heuristic and it is the weaker half of the
-  guarantee: by the time the tree is merged, a `${?DATABASE_PASSWORD}` is an
-  ordinary string, so a secret in a key called `dsn` or `connection-string`
-  is printed in full unless it is the userinfo of a URL, which both
-  renderers mask by value under any key name (#1458). Both
-  `configuration.mdx` pages and `troubleshooting.mdx` say so in as many
-  words, a test pins the gap open so that sentence cannot rot, and the key
-  ships `off` because the defence that does not depend on a guess is not
-  printing the tree. Values are JSON-encoded, so a newline inside one cannot
-  forge a line of the dump it is part of.
+  guarantee: a secret written out under a key called `dsn` or
+  `connection-string` is printed in full unless it is the userinfo of a URL,
+  which both renderers mask by value under any key name (#1458), or a
+  credential-named variable supplied it (#1788). Both `configuration.mdx`
+  pages and `troubleshooting.mdx` say so in as many words, a test pins the
+  gap open so that sentence cannot rot, and the key ships `off` because the
+  defence that does not depend on a guess is not printing the tree. Values
+  are JSON-encoded, so a newline inside one cannot forge a line of the dump
+  it is part of.
 
   `CONFIG_SECRET_PATTERN`, `CONFIG_NEVER_REDACTED_PATHS` and
   `CONFIG_REDACTED` live in `src/util/Constants.ts` and are on the
@@ -5658,6 +5732,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `coordination.lease.kubernetes.token-*` and
   `management.auth-protect-health` — none of which is a credential; a stock
   configuration now withholds twelve keys instead of thirty-one.
+
+  `CONFIG_SECRET_PATTERN` reads the ten words; the glued spellings are
+  `CONFIG_SECRET_COMPOUND_PATTERN` and
+  `CONFIG_SECRET_WORDS_IN_LONGER_NAMES`, exported beside it from
+  `actor-ts/util` and the DevTools protocol (#1759). The 0.17.0 DevTools
+  panel matched the words anywhere in the path, which withheld `passivation`
+  and `keyspace` but also `password2` and `apikey`; the whole-word rule
+  alone would have printed those two, and the glued spellings keep them
+  withheld.
 - **Three object-storage suites state the budget their temp-tree hooks run
   under, instead of inheriting one nobody chose** (#290, #1282).
 
@@ -5906,6 +5989,90 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   **Migration.** Correct the misspelt key, or move a plug-in's settings into
   its block under the axis it serves,
   `actor-ts.persistence.<axis>.<plug-in> { … }`.
+
+- **BREAKING — An environment variable that is set but empty counts as not
+  set** (#1787). `PORT=` in a shell, `environment: [PORT]` in a compose file
+  and an empty line of an env file all spell "unset", and `Config.load`
+  already read an empty `ACTOR_TS_PROFILE` that way. A substitution did not:
+  `port = 2552` followed by `port = ${?PORT}` with `PORT` empty set the key
+  to `""`, losing the default, and a required `port = ${PORT}` was satisfied
+  by nothing. Now the optional form resolves to nothing, so the earlier
+  value or the layer below shows through, and the required form fails with
+  `Unresolved substitution: ${PORT}` and the reason that the variable is set
+  but empty. An empty value under the path's own spelling no longer hides
+  the upper-cased one either. A value that is not empty keeps its reading,
+  JSON first.
+
+  **Migration.** A deployment that set a variable to nothing in order to
+  blank a key gets the key's default now. Set the key to `""` in the file
+  instead, which still means empty, or give the variable a value.
+
+- **BREAKING — An unquoted value on the line after its key is read as a
+  value only when that line does not look like a field** (#1786). The line
+  after `key =` is the next field when it reads `name = …`, `name: …`,
+  `name { …`, `name += …` or `include "…"`. So `host =` followed by
+  `localhost:2552` used to set `host` and now reads as a field `localhost`
+  with the value `2552`, because no parser can tell that from an assignment
+  left empty on purpose.
+
+  **Migration.** Write the value on the same line as its key
+  (`host = localhost:2552`), or quote it.
+
+- **BREAKING — Values side by side on one line without a comma are one
+  string, and an unquoted URL is refused** (#537). With string
+  concatenation, `["a" "b"]` and `[ ${A} ${B} ]` are one list element
+  (`"a b"`) where they were two; `[{a = 1} {b = 2}]` and `[[1] [2]]` are
+  refused instead of read as two elements; and `a = "x"b = 1` with no space
+  is the one string `xb = 1`. An unquoted value with `://` in it is refused:
+  `//` starts a comment, so `url = http://host` used to read as the string
+  `http:`.
+
+  **Migration.** Separate list elements with commas, put a space before a
+  field that shares a line, and quote URLs.
+
+- **BREAKING — A config file's substitutions read the layers beneath it**
+  (#1785). Each file used to resolve on its own (#1071, kept by #1546), so a
+  secrets file could not refer to a key the application file sets. Now a
+  file's substitutions read its own keys, then the layers already resolved
+  beneath it, then the real environment, then the `.env` file. So
+  `application.conf` may build on a key the project `reference.conf` sets, a
+  profile may read `actor-ts.*` defaults, and a field that names itself
+  (`path = ${path}":/extra"`) extends the value beneath. It is downward
+  only: a lower file never sees a higher one, so there is no late binding,
+  and an unset optional override still drops out of its layer rather than
+  copying the value beneath. A key of a layer beneath now also wins over the
+  environment variable a substitution's path would otherwise fall back to:
+  `x = ${?actor-ts.system.name}` reads `"default"` where it used to drop
+  out.
+
+  **Migration.** A substitution that relied on falling through to an
+  environment variable named like a key the layers beneath set gets that
+  key's value now; rename the variable or the path.
+
+  An empty `ACTOR_TS_CONFIG=` or `ACTOR_TS_SECRETS_CONF=` counts as unset,
+  as an empty `ACTOR_TS_PROFILE` already did: the file in the working
+  directory is read. It used to be taken as the path `""`, which read no
+  file. To read none, pass `false` for the path.
+
+  On Deno, a narrow `--allow-read` that names `./application.conf` and
+  `./secrets.conf` alone now stops startup: the loader also reads
+  `./reference.conf` and `./.env`, and Deno refuses a read it was not
+  granted instead of reporting no file, so `Config.load` throws a
+  `ConfigError` naming the file (measured on Deno 2.6.8). **Migration.** Add
+  the two files to `--allow-read`, or pass `false` for the ones a deployment
+  never ships (`withReferenceConfigFile(false)`,
+  `withEnvironmentFile(false)`).
+
+- **BREAKING — `WorkerMeshInitData.configFile` may be `false`** (#1785). The
+  init frame a `WorkerMesh` worker receives names each file its main thread
+  read — `configFile`, and now `referenceConfigFile`, `secretsFile` and
+  `environmentFile` — with `false` where the main thread read none, so a
+  worker started from `withConfigFile(false)` does not fall back to
+  `ACTOR_TS_CONFIG` or `./application.conf`.
+
+  **Migration.** A worker bootstrap of your own that reads the frame instead
+  of calling `runWorkerMeshNode` hands the four fields to the matching
+  `ActorSystemOptions` methods as they are; `false` is a value they take.
 
 
 ### Fixed
@@ -8807,6 +8974,38 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   replicator; ten such failures in a minute stopped it for good. A modifier
   that returns something other than a CRDT is reported the same way.
 
+- **A substitution whose target is itself a substitution resolves, in any
+  declaration order** (#1748). `b = 1`, `a = ${b}`, `x = ${a}` threw
+  `Unresolved substitution: ${a}` whichever order the lines came in, and the
+  optional form `x = ${?a}` fell through to the environment or dropped the
+  key without a word: the resolver re-walked the tree to a fixed point, and
+  its lookup took a target it had not resolved yet for a miss. A target now
+  resolves on demand. So a key the source defines wins over the environment
+  at every link of a chain, and `api.url = ${db.url}` with
+  `db.url = ${db.host}` reads the file's host even with `DB_URL` set. This
+  holds in every file `Config.load` reads and in each active profile.
+
+  A chain that leads back to where it started is refused as
+  `Substitution cycle: a -> b -> a`. An optional cycle used to resolve to
+  nothing in silence and is refused too. A key that names itself —
+  `pod.ip = ${?pod.ip}` — is no cycle: it still reads the environment and
+  then the value it replaced. A value that resolves to nothing now drops out
+  at every depth — inside a nested list or an object in a list — instead of
+  leaving an `undefined` behind.
+
+- **A key with nothing after its `=` or `:` no longer takes the next line as
+  its value** (#1786). The parser skipped line breaks before reading a
+  value, and an unquoted value runs to the end of its line, so `a =`
+  followed by `b = 1` parsed to `{ a: "b = 1" }`: `b` was gone, and `a = 1`,
+  `a =`, `b = 2` lost both. `a { x = }` threw `Expected a value`. Such an
+  assignment is now no assignment — the key keeps what an earlier line gave
+  it, and across files the layer below shows through — before a comma, a
+  closing `}`, a comment or the end of the file. `""` and `[]` stay the
+  explicit ways to set a key to empty, and a value on the line after its key
+  still works where that line does not start a field, as JSON lays out
+  `"a":` then `1`. A forbidden key or an `include` on the next line is still
+  refused where it stands rather than taken for a value.
+
 ### Removed
 
 - **BREAKING — `OtelLoggerAdapterOptions` is gone: `otelLogger(options)` now
@@ -9258,8 +9457,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   cut, so a truncation cannot leave part of a password behind, and the
   dump's header counts the masked values beside the keys withheld by name. A
   stock configuration prints exactly what it printed before. What neither
-  rule sees still prints: a bare password under a key that does not name
-  one, a query-string credential, SQL Server's `Server=…;Password=…` form
+  rule sees still prints: a bare password written out under a key that does
+  not name one (one a credential-named variable supplied is withheld,
+  #1788), a query-string credential, SQL Server's `Server=…;Password=…` form
   and memcached's scheme-less `user:password@host` server list.
 
   Both renderers now also read the fields of an object inside a list, which
@@ -11077,6 +11277,48 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   field and convert it with `BigInt()` after checking its length (CBOR caps
   bignums at the same 8192 bits), and write a `__bigint__` by hand only as
   `String(value)` would.
+
+- **The config dump and DevTools withhold a value a credential-named
+  environment variable supplied, whatever its key is called** (#1788,
+  severity low). `my-app.dsn = ${DB_PASSWORD}` printed the password in full
+  in the boot dump, in `configDumpLines` and in DevTools' `config.resolved`
+  answer: every rule read the key, and the merged tree no longer said where
+  a value came from. The loader now records, per leaf, the variables whose
+  values make it up — read directly, through a reference to another key or
+  as a piece of a concatenation, out of the real environment or a `.env`
+  file — and both renderers withhold a leaf when one of those names reads as
+  a credential by the rule a key is read by, in whichever layer read it, a
+  code override that replaced the key included. Code overrides record their
+  own (`Config.parseString` and `Config.parseFile`, kept through `merge` and
+  `withFallback`), and a `WorkerMesh` worker receives them beside the tree
+  as `WorkerMeshInitData.variables`, so its dump withholds the same keys.
+
+  Every dump line now names the variables behind its value, withheld or not
+  (`[application, from $DB_HOST]`), and the header counts the keys withheld
+  by variable name apart from the other reasons and names the project
+  `reference.conf` and the `.env` file it looked for. A `config.resolved`
+  entry carries the names as `variables`, and the answer `referencePath` and
+  `environmentFilePath` beside `secretsPath`; the panel names the bundled
+  file `reference.conf (actor-ts)` and the project's own `reference.conf`,
+  and shows the variables in a row's tooltip. A password written out under a
+  key that does not name one still prints, as do the query-string,
+  `Server=…;Password=…` and scheme-less `user:password@host` forms.
+
+- **The working directory now decides more of the configuration on Node and
+  Deno** (#1785). `Config.load` reads a `./reference.conf` and a `./.env`
+  beside `./application.conf` and `./secrets.conf`, and a `.env` may name
+  the other files and the profile (`ACTOR_TS_CONFIG=…`,
+  `ACTOR_TS_PROFILE=…`). On Bun a `./.env` already reached `process.env`
+  before any code ran; on Node and Deno a file dropped into the working
+  directory now does the same for the config. Whoever can write a file there
+  can therefore change what a system is configured with, as they already
+  could with an `application.conf`. A deployment that does not trust its
+  working directory names every file in code — `withReferenceConfigFile`,
+  `withConfigFile`, `withSecretsFile`, `withEnvironmentFile`, each also
+  taking `false` to read none — or runs from a directory it controls. On
+  Deno, a narrow `--allow-read` has to name the four files, or say `false`
+  for the ones it does not ship, and `--allow-env` every variable a `${VAR}`
+  reads; the Deno runtime page lists both.
 
 ## [0.17.0] — 2026-08-29
 

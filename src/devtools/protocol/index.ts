@@ -125,6 +125,8 @@ export type { SendMessageParameters, SendMessageResult } from './SendFrames.js';
 export {
   CONFIG_REDACTED,
   CONFIG_SECRET_PATTERN,
+  CONFIG_SECRET_COMPOUND_PATTERN,
+  CONFIG_SECRET_WORDS_IN_LONGER_NAMES,
   CONFIG_NEVER_REDACTED_PATHS,
 } from './ConfigFrames.js';
 export type {

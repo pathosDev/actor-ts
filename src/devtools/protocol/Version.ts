@@ -26,7 +26,11 @@
  * names to five, adding `profile` and `secrets`.  Additive as it looks, it
  * is a type change by the rule above: a version-1 UI maps a source through
  * a table keyed by the three names it knows, and would render the two new
- * ones as nothing.
+ * ones as nothing.  The sixth, `project-reference` (#1785), joined before
+ * version 2 was released, so no client ever saw five as the final word; the
+ * entry's `variables` and the answer's `referencePath` and
+ * `environmentFilePath` came with it, optional fields and so additive.  A
+ * release cut between them would have needed version 3.
  *
  * **Pinned** as a literal by `tests/unit/config/DevToolsProtocolVersion.test.ts`,
  * which also checks that the embedded UI bundle says hello with this number —

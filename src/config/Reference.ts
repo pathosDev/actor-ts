@@ -420,15 +420,18 @@ actor-ts {
     # every key with the layer it came from -- the answer to "why is this
     # setting not what I wrote".  Off because a few hundred lines nobody
     # asked for is a behaviour change, and because the dump prints the tree.
-    # Two rules keep credentials out of it, and both are heuristics.  A key
-    # is withheld when its name, or the name of a branch above it, reads as
-    # password, passphrase, secret, token, key, credential or auth: api-key
-    # is, key-prefix and passivation are not.  And the user:password part of
-    # a URL is masked whatever its key is called.  A bare password under a
-    # key that does not name one, a credential in a query string, a
-    # "Server=...;Password=..." connection string and a scheme-less
-    # user:password@host server list still print.  Read the level note under
-    # debug below -- this one is info, so it needs no second switch.
+    # Four rules keep credentials out of it, and three are heuristics.  Every
+    # value the secrets file sets is withheld.  So is a value whose key, or
+    # a branch above it, reads as a credential -- password, passwd, pass,
+    # secret, token, key, auth and the like, glued onto another word too:
+    # api-key and pgpassword are, key-prefix and passivation are not -- and
+    # a value an environment variable named that way supplied, DB_PASSWORD
+    # say.  And the user:password part of a URL is masked whatever its key
+    # is called.  A bare password written out under a key that does not
+    # name one, a credential in a query string, a "Server=...;Password=..."
+    # connection string and a scheme-less user:password@host server list
+    # still print.  Read the level note under debug below -- this one is
+    # info, so it needs no second switch.
     log-config-on-start = off
 
     # Traces the framework emits at DEBUG.  Two switches, not one: the key
@@ -936,11 +939,13 @@ actor-ts {
     #
     # A ClusterClient is standalone -- it holds no ActorSystem, so unlike every
     # other block here there is no system.config to read it from.  It is loaded
-    # with the same chain ActorSystem.create uses (ACTOR_TS_CONFIG, then
-    # ./application.conf, then these defaults), which is what makes a client
-    # built with no options at all a configurable thing rather than a broken
-    # one.  The receptionist half below is asymmetric on purpose: it runs
-    # inside a system, so it reads that system's config and loads nothing.
+    # with the same chain ActorSystem.create uses (a project reference.conf,
+    # application.conf and secrets.conf over these defaults, each named by its
+    # ACTOR_TS_* variable or found in the working directory, and a .env beside
+    # them), which is what makes a client built with no options at all a
+    # configurable thing rather than a broken one.  The receptionist half
+    # below is asymmetric on purpose: it runs inside a system, so it reads
+    # that system's config and loads nothing.
     #
     # Three options stay code-only and have no leaf here.  client-identity is
     # a security decision, not a packaging one -- the per-client half of the

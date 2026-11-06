@@ -46,6 +46,12 @@
     @if (loaded.secretsPath; as secretsPath) {
       Secrets read from <code>{{ secretsPath }}</code>; their values are withheld.
     }
+    @if (loaded.referencePath; as referencePath) {
+      Project defaults read from <code>{{ referencePath }}</code>.
+    }
+    @if (loaded.environmentFilePath; as environmentFilePath) {
+      Variables read from <code>{{ environmentFilePath }}</code>.
+    }
   </p>
 }
 

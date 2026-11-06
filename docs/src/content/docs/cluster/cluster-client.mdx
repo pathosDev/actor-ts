@@ -116,8 +116,10 @@ configuration, and the client's own nature is why: it is by
 definition *outside* the cluster, so it holds no `ActorSystem`
 and there is no `system.config` above it to read.  The
 constructor therefore loads the config itself — the same chain
-`ActorSystem.create` uses, honouring `ACTOR_TS_CONFIG` and
-`./application.conf`.  Precedence is the usual one: explicit
+`ActorSystem.create` uses: the project `reference.conf`,
+`application.conf`, the secrets file and a `.env`, each named by its
+`ACTOR_TS_*` variable or found in the working directory.  Precedence
+is the usual one: explicit
 options beat the file, the file beats the built-in defaults.
 
 Pass a `Config` as the second argument to pin what it reads, so

@@ -5,8 +5,8 @@
 <p align="center">
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml"><img alt="build workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml/badge.svg?branch=main"/></a>
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml"><img alt="tests workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml/badge.svg?branch=main"/></a>
-  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-13095%20of%2013095-22c55e?style=flat-square&logo=bun"/></a>
-  <a href="#"><img alt="coverage" src="https://img.shields.io/badge/coverage-~94%25-22c55e?style=flat-square"/></a>
+  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-22180%20of%2022180-22c55e?style=flat-square&logo=bun"/></a>
+  <a href="#"><img alt="coverage" src="https://img.shields.io/badge/coverage-~96%25-22c55e?style=flat-square"/></a>
 </p>
 
 <p align="center">
@@ -28,7 +28,7 @@
 > the actor-model stack (actors, supervision, cluster, sharding, persistence,
 > HTTP) to TypeScript, running on Bun, Node.js, and Deno.  Large parts were
 > written with AI pair-programming and **have not been battle-tested in
-> production**.  Test coverage is good (~13095 tests, ~94 % line) but the
+> production**.  Test coverage is good (~22180 tests, ~96 % line) but the
 > surface area is enormous.  **Do not deploy this to anything that matters
 > yet.**  Use it to learn, to prototype, to benchmark ideas — not to handle
 > real money, users, or data.
@@ -115,9 +115,12 @@ A short tour of what's in the box:
   configurable thing (or a plain object), with values validated once on the
   merged settings (builder / object / HOCON alike) — a bad port, timeout, or
   URL throws an `OptionsError` at startup, not deep in a later code path.
-  Configuration loads in layers — `reference.conf`, `application.conf`, an
-  optional profile and a `secrets.conf` — and the opt-in boot dump and the
-  DevTools panel name the layer every value came from, secrets withheld.
+  Configuration loads in layers — the bundled `reference.conf`, the
+  project's own `reference.conf`, `application.conf`, an optional profile
+  and a `secrets.conf` — with `${VAR}` read from the environment or a
+  `.env` file on all three runtimes, and the opt-in boot dump and the
+  DevTools panel name the layer and the variable every value came from,
+  secrets withheld.
 - **Utility primitives + helpers** — `Option<T>`, `Try<T>`, `Either<L, R>` and
   `Lazy<T>` for Scala-style ergonomics; `BidirectionalMap<K, V>`, a `Map` that
   also answers `value → key` and keeps the inverse in step for you, and

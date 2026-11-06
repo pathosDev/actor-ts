@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
-import { DEFAULT_SECRETS_CONF_FILENAME } from '../../../src/config/Constants.js';
+import { DEFAULT_ENVIRONMENT_FILENAME, DEFAULT_SECRETS_CONF_FILENAME } from '../../../src/config/Constants.js';
 
 /**
  * The repository ignores the secrets file `Config.load` reads by default
@@ -61,5 +61,23 @@ describe('the default secrets file stays out of version control — #1546', () =
     // What a broader pattern — `*.conf` — would take along: the sample
     // `application.conf` beside the examples has to stay addable.
     expect(ruleFor('examples/config/application.conf')).toBeNull();
+  });
+});
+
+describe('the default .env file stays out of version control — #1785', () => {
+  test.each([
+    [DEFAULT_ENVIRONMENT_FILENAME],
+    [`examples/config/${DEFAULT_ENVIRONMENT_FILENAME}`],
+  ])('%s is ignored by the root .gitignore, by name', (path) => {
+    const rule = ruleFor(path);
+    expect(rule, `${path} is not ignored`).not.toBeNull();
+    const [source, line, pattern] = rule!.split(':');
+    expect(source).toBe('.gitignore');
+    expect(Number(line)).toBeGreaterThan(0);
+    expect(pattern).toBe(DEFAULT_ENVIRONMENT_FILENAME);
+  });
+
+  test('a sample env file under another name stays addable', () => {
+    expect(ruleFor('examples/config/layers/example.env')).toBeNull();
   });
 });

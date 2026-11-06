@@ -133,14 +133,11 @@ type Ledger = Readonly<Record<string, Readonly<Record<string, LedgerEntry>>>>;
  */
 const LEDGER: Ledger = {
   'src/config/Config.ts': {
-    existsSync: {
-      mentions: 2,
-      reason: 'the HOCON config chain is resolved once at startup, before any actor exists; '
-        + '`Config.parseFile` is a synchronous API by contract.',
-    },
     readFileSync: {
       mentions: 2,
-      reason: 'same startup chain — the config files are read before the system that would run on them.',
+      reason: 'the HOCON config chain is resolved once at startup, before any actor exists, and the config '
+        + 'files are read before the system that would run on them; `Config.parseFile` is a synchronous API by '
+        + 'contract.  The existence check that stood in front of the read is gone (#1785): the read decides.',
     },
   },
   'src/devtools/UiAssetRoutes.ts': {

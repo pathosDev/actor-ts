@@ -36,7 +36,7 @@ For a non-trivial actor system going to production:
 □ Metrics exposed via Prometheus or OTel
 □ Log aggregation hooked up (structured logging via withFields/MDC)
 □ TLS enabled on the cluster transport
-□ Secrets via env vars, NOT in application.conf
+□ Secrets via env vars, a .env or the secrets file, NOT in application.conf
 □ Kubernetes manifests with PreStop hook + grace period
 □ Tracing optional but configured if multi-actor flows exist
 □ Runbook for "actor X keeps crashing" / "cluster won't form"

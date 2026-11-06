@@ -113,8 +113,9 @@ export class InMemoryLease implements Lease {
 
   /**
    * @param config Where `actor-ts.coordination.lease` is read from.  Unset
-   *   loads the chain `ActorSystem.create` uses — `ACTOR_TS_CONFIG`, then
-   *   `./application.conf`, then the reference — which is all a lease built
+   *   loads the chain `ActorSystem.create` uses — the files the `ACTOR_TS_*`
+   *   variables name or the working directory holds, then the reference —
+   *   which is all a lease built
    *   with no system in scope can do.  Where a system is in scope pass
    *   `system.config`: it carries the overrides `withConfig(…)` and
    *   `withConfigFile(…)` added, which a second load never sees, and a handed

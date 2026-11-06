@@ -32,8 +32,10 @@ function directoryWith(files: Readonly<Record<string, string>>): string {
   return directory;
 }
 
-/** The three variables `Config.load` reads, so a case can clear them all. */
-const LOAD_VARIABLES = ['ACTOR_TS_CONFIG', 'ACTOR_TS_PROFILE', 'ACTOR_TS_SECRETS_CONF'] as const;
+/** The variables `Config.load` reads, so a case can clear them all. */
+const LOAD_VARIABLES = [
+  'ACTOR_TS_CONFIG', 'ACTOR_TS_PROFILE', 'ACTOR_TS_SECRETS_CONF', 'ACTOR_TS_REFERENCE_CONFIG', 'ACTOR_TS_ENV_FILE',
+] as const;
 
 /**
  * Run `body` with the load variables cleared and `variables` set on top,
@@ -60,10 +62,15 @@ function withEnvironment<T>(variables: Readonly<Record<string, string | undefine
 /** `Config.load` with the load variables cleared. */
 const load = (options: LoadOptions): Config => withEnvironment({}, () => Config.load(options));
 
-/** Paths to the two files of `directory`, whichever of them exist. */
+/**
+ * Paths to the files of `directory`, whichever of them exist — every file
+ * `Config.load` reads, so none is taken from the working directory.
+ */
 const filesOf = (directory: string): LoadOptions => ({
   appConfPath: join(directory, 'application.conf'),
   secretsConfPath: join(directory, 'secrets.conf'),
+  referenceConfPath: join(directory, 'reference.conf'),
+  environmentFilePath: join(directory, '.env'),
 });
 
 /** One key per layer, each set by its own layer and by every layer below it. */
@@ -331,7 +338,7 @@ describe('Config.load — a file that cannot be loaded names itself and why it w
     expect((thrown as ConfigError).message).toBe(
       `The secrets file ${resolve(directory, 'secrets.conf')} could not be loaded: HOCON parse error at line 2, `
       + 'col 10: Expected \'=\' or \':\' after key "listen".  Config.load read it because it is secrets.conf in the '
-      + 'working directory, which is read whenever neither LoadOptions.secretsConfPath nor ACTOR_TS_SECRETS_CONF '
+      + 'working directory, which is read whenever neither withSecretsFile / LoadOptions.secretsConfPath nor ACTOR_TS_SECRETS_CONF '
       + 'names another file — if that one is not this application\'s, move it, or name the right one.',
     );
     // The parser's own error stays reachable.
@@ -348,7 +355,7 @@ describe('Config.load — a file that cannot be loaded names itself and why it w
     expect((fromVariable as ConfigError).message).toEndWith('Config.load read it because ACTOR_TS_SECRETS_CONF names it.');
 
     const fromOption = thrownBy(() => load({ ...base, secretsConfPath: path }));
-    expect((fromOption as ConfigError).message).toEndWith('Config.load read it because LoadOptions.secretsConfPath names it.');
+    expect((fromOption as ConfigError).message).toEndWith('Config.load read it because withSecretsFile / LoadOptions.secretsConfPath names it.');
   });
 
   test('so does the application file, found in the working directory or named', () => {
@@ -422,22 +429,36 @@ describe('Config.load — how a file with a profile resolves its substitutions',
     expect(config._sources()!.applicationProfile.hasPath('my-app.port')).toBe(false);
   });
 
-  test('each file still resolves alone (#1071): the secrets file cannot read the application file', () => {
+  test('a file reads the layers beneath it (#1785): the secrets file reads the application file', () => {
+    // #1546 kept each file resolving alone (#1071); a file now also reads the
+    // layers already resolved beneath it — downward only.
     const directory = directoryWith({
       'application.conf': 'my-app.host = "db.internal"',
       'secrets.conf': 'my-app.dsn-host = ${my-app.host}',
     });
 
-    expect(() => load(filesOf(directory))).toThrow('Unresolved substitution: ${my-app.host}');
+    const config = load(filesOf(directory));
+    expect(config.getString('my-app.dsn-host')).toBe('db.internal');
+    // The value is the secrets file's own: the application layer does not gain it.
+    expect(config._sources()!.secrets.hasPath('my-app.dsn-host')).toBe(true);
+    expect(config._sources()!.application.hasPath('my-app.dsn-host')).toBe(false);
   });
 
-  test('nor can a profile read reference.conf (#1071)', () => {
+  test('and a profile reads reference.conf (#1785)', () => {
     const directory = directoryWith({
       'application.conf': 'profiles.production.my-app.system = ${actor-ts.system.name}',
     });
 
-    expect(() => load({ ...filesOf(directory), profile: 'production' }))
-      .toThrow('Unresolved substitution: ${actor-ts.system.name}');
+    expect(load({ ...filesOf(directory), profile: 'production' }).getString('my-app.system')).toBe('default');
+  });
+
+  test('never upward: the application file cannot read the secrets file', () => {
+    const directory = directoryWith({
+      'application.conf': 'my-app.copy = ${my-app.password}',
+      'secrets.conf': 'my-app.password = "s3cret"',
+    });
+
+    expect(() => load(filesOf(directory))).toThrow('Unresolved substitution: ${my-app.password}');
   });
 
   /**

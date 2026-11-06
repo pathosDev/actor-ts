@@ -165,8 +165,11 @@ The full settings shape:
 | `dispatcher` | Custom `Dispatcher`.  Defaults to the one `actor-ts.dispatcher.default` selects — `HybridDispatcher` unless configured; swap in an immediate- or throughput-based one, or `Dispatchers.Hybrid(n)` with another budget, to tune scheduling.  A budget is an integer from `1` up: `Dispatchers.Hybrid(0)` is refused with an `OptionsError` when it is built, and with `actor-ts.dispatcher.default = throughput` a configured `throughput` of `0` fails `ActorSystem.create` the same way. |
 | `scheduler` | Custom `Scheduler`.  Defaults to a real-time scheduler; tests inject `ManualScheduler` to control time. |
 | `config` | Either a prebuilt `Config` or a plain object of HOCON overrides.  Layered on top of reference defaults + any `application.conf`.  Pass a `Config` itself, never a spread of one: `{ ...config }` copies its private fields, not its configuration, and `create` refuses it with a `ConfigError` — as it refuses a class instance (a `Map`, a `Date`, a nested `Config`) anywhere inside the object. |
-| `configFile` | Explicit path to an `application.conf` file.  Overrides the `ACTOR_TS_CONFIG` env var and the CWD lookup. |
-| `profile` | The config [profile](/reference/configuration/#profiles) — the `profiles.<name>` block of `application.conf` and of the secrets file, laid over each file's root.  Overrides the `ACTOR_TS_PROFILE` env var; a name no file defines is refused at startup.  Reaches `system.config` only, not the components that load their own configuration. |
+| `configFile` | Explicit path to an `application.conf` file.  Overrides the `ACTOR_TS_CONFIG` env var and the CWD lookup; `false` reads no application file. |
+| `referenceConfigFile` | Explicit path to the [project's own `reference.conf`](/reference/configuration/#the-project-referenceconf) — its defaults, over the bundled ones and under `application.conf`.  Overrides the `ACTOR_TS_REFERENCE_CONFIG` env var and the CWD lookup; `false` reads none. |
+| `secretsFile` | Explicit path to the [secrets file](/reference/configuration/#secrets-file), every value of which the config dump and the DevTools panel withhold.  Overrides the `ACTOR_TS_SECRETS_CONF` env var and the CWD lookup; `false` reads none. |
+| `environmentFile` | Explicit path to the [`.env` file](/reference/configuration/#environment-files) whose variables answer `${VAR}` behind the real environment.  Overrides the `ACTOR_TS_ENV_FILE` env var and the CWD lookup; `false` reads none. |
+| `profile` | The config [profile](/reference/configuration/#profiles) — the `profiles.<name>` block of each file the loader reads, the project `reference.conf`, `application.conf` and the secrets file, laid over each file's root.  Overrides the `ACTOR_TS_PROFILE` env var; a name no file defines is refused at startup.  Reaches `system.config` only, not the components that load their own configuration. |
 | `persistence` | Persistence wired at creation.  `plugins` are functions handed the system's `PersistenceExtension` that register backends — `(persistence) => registerSqlitePlugins(persistence)` — and run inside `create`, in the order given, so the plugin the config selects resolves as soon as `create` returns.  A promise one returns is awaited in the `persistence-start` phase of the [startup graph](#starting-up), where a rejection fails the startup; one that throws makes `create` throw.  `journal`, `snapshotStore` and `durableStateStore` are store instances, each winning over the plugin its axis selects.  `behavior` is the persistence behaviour, layered over `actor-ts.persistence` field by field; its `autoStart`, on unless set false, opens the selected stores in `persistence-start`, where a selection nothing registered or a store that cannot open fails the startup — off, they open on first use. |
 | `coordinatedStartup` | The startup graph — tasks the system runs in phases as the last step of `create`, awaited through `system.whenReady()`.  See [Starting up](#starting-up). |
 
@@ -194,11 +197,14 @@ actor-ts {
 }
 ```
 
-The framework loads it automatically when present.  ENV substitution
-(`${?ENV_NAME}`) works as the HOCON spec defines — values pulled
-from the environment fall back to the default when unset.  One file
-can carry several environments as [profiles](/reference/configuration/#profiles),
-and credentials belong in the optional
+The framework loads it automatically when present, over a
+[`reference.conf` of the project's own](/reference/configuration/#the-project-referenceconf)
+when there is one.  ENV substitution (`${?ENV_NAME}`) works as the
+HOCON spec defines — values pulled from the environment fall back to
+the default when unset — and a [`.env` file](/reference/configuration/#environment-files)
+beside it can supply them.  One file can carry several environments
+as [profiles](/reference/configuration/#profiles), and credentials
+belong in the optional
 [secrets file](/reference/configuration/#secrets-file) beside it.  See
 [Configuration](/reference/configuration/) for every key
 the framework reads.

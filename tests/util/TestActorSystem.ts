@@ -59,7 +59,11 @@ export function createTestActorSystem(options: TestActorSystemOptions = {}): Act
   if (rest.dispatcher !== undefined) builder.withDispatcher(rest.dispatcher);
   if (rest.scheduler !== undefined) builder.withScheduler(rest.scheduler);
   if (rest.config !== undefined) builder.withConfig(rest.config);
+  // `!== undefined`, not truthiness: `false` is a choice — read no such file.
   if (rest.configFile !== undefined) builder.withConfigFile(rest.configFile);
+  if (rest.referenceConfigFile !== undefined) builder.withReferenceConfigFile(rest.referenceConfigFile);
+  if (rest.secretsFile !== undefined) builder.withSecretsFile(rest.secretsFile);
+  if (rest.environmentFile !== undefined) builder.withEnvironmentFile(rest.environmentFile);
   if (rest.persistence !== undefined) builder.withPersistence(rest.persistence);
   return ActorSystem.create(name, builder);
 }

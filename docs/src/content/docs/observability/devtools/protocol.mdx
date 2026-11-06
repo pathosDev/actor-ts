@@ -46,10 +46,13 @@ The full surface — including the streams and methods whose panels are
 still being built — was declared up front, so each panel that lands is a
 pure addition.  The version has moved once: **version 2** changed the type
 of an existing field, the `source` of every `config.resolved` entry, from
-three layer names to five — `profile` and `secrets` came with config
+three layer names to six — `profile` and `secrets` came with config
 profiles and the secrets file
-([#1546](https://github.com/pathosDev/actor-ts/issues/1546)).  A UI and a
-server one version apart are refused at the handshake.
+([#1546](https://github.com/pathosDev/actor-ts/issues/1546)), and
+`project-reference` with the project's own `reference.conf`
+([#1785](https://github.com/pathosDev/actor-ts/issues/1785)) before
+version 2 was released.  A UI and a server one version apart are refused at
+the handshake.
 </Aside>
 
 ## Handshake

@@ -6,7 +6,7 @@ description: Every HOCON key the framework reads, grouped by module — defaults
 actor-ts uses **HOCON** for configuration — a superset of JSON
 common in JVM config files, with substitutions, durations and
 sizes.  ([`include` directives are refused](#includes-are-not-supported)
-— compose the sources in code.)  Five layers, resolved highest-first:
+— compose the sources in code.)  Six layers, resolved highest-first:
 
 1. **Constructor arguments** to `ActorSystem.create(name, settings)`
    — explicit fields such as `logger` or `logLevel`, which beat any key.
@@ -17,12 +17,15 @@ sizes.  ([`include` directives are refused](#includes-are-not-supported)
 4. **The application file** — `application.conf` at the project root,
    or an explicit path via `configFile`, with its active profile
    ([Profiles](#profiles)).
-5. **Reference defaults** — bundled in the framework as
+5. **The project's defaults** — its own `reference.conf`, optional, with
+   its active profile ([The project reference.conf](#the-project-referenceconf)).
+6. **Reference defaults** — bundled in the framework as
    `REFERENCE_CONF` (see `src/config/Reference.ts`).
 
-Anything not specified in layers 1 to 4 falls through to the
-reference default.  [Loading order](#loading-order) spells out the
-whole chain.
+Anything not specified in layers 1 to 5 falls through to the
+bundled default, and a `${VAR}` in any of the files may read a
+[.env file](#environment-files) as well as the environment.
+[Loading order](#loading-order) spells out the whole chain.
 
 This page explains what each key *does*.  For the exhaustive list —
 every setting the framework ships, verbatim from the bundled file — see
@@ -209,14 +212,22 @@ record, because an operator who asked for a config dump asked for output.
 
 **What the config dump redacts, and what it does not.**  A value is withheld
 when **any whole word** of its key is `password`, `passphrase`, `passwd`,
-`secret`, `token`, `key`, `credential` or `auth`, singular or plural — so
-`cache.redis.password` and an `api-key` print as `<redacted>`, and so does
-every key beneath a branch named `credentials`.  Any word, wherever it stands
-in the name: an `auth-header` carries a bearer token although it ends on
-`header`.  And whole words only — a name is cut into words at every character
-that is not a letter or a digit and at each camelCase hump, so
-`passivation-idle` holds no `pass` and `keyspace` no `key`.  A value whose
-name holds such a word whole is withheld even when it is tuning: a
+`pass`, `secret`, `token`, `key`, `credential`, `auth` or `authorization`,
+singular or plural — so `cache.redis.password` and an `api-key` print as
+`<redacted>`, and so does every key beneath a branch named `credentials`.
+Any word, wherever it stands in the name: an `auth-header` carries a bearer
+token although it ends on `header`.  And whole words only — a name is cut
+into words at every character that is not a letter or a digit, at each
+camelCase hump and in front of a digit after a letter, so `passivation-idle`
+holds no `pass` and `keyspace` no `key`, while `password2` holds the word it
+numbers.  Glued onto another word those words count as well
+(`pgpassword`, `clientsecret`, `ghtoken`), all but `key`, `pass` and `auth`,
+which end too many ordinary words; of the `…key` names `apikey`,
+`accesskey`, `secretkey` and `privatekey` count, and `pwd` counts beside
+another word of the key's path, as in `mysql-pwd` or `db.pwd` — only a
+variable called just `PWD`, a shell's working directory, does not.
+An `sshkey` is not read.  A value whose name holds such a word is withheld
+even when it is tuning: a
 `token-bucket-size` of your own prints as `<redacted>`, and only the keys
 `reference.conf` ships, such as `cluster.receptionist.max-subscribers-per-key`
 and `cache.redis.key-prefix`, are exempted by name.  A value that is a
@@ -243,15 +254,24 @@ withheld by name.  The key rule also reads the fields of an object inside
 a list, which is one key: in `upstreams = [ { host = "db-1", password =
 "…" } ]` the `password` prints as `"<redacted>"` and the `host` as written.
 
-The key rule is a heuristic over names, and it is the weakest of the three.
-What none of them can see is printed in full: a bare password
-outside the secrets file, under a key that does not name one — by the
-time the merged tree exists, a
-`${?DATABASE_PASSWORD}` has resolved into an ordinary string with nothing left
-to say where it came from — a credential in a query string (`?password=…`,
-`?authToken=…`), SQL Server's `Server=…;Password=…` connection string, and
-memcached's scheme-less
-`user:password@host:11211` server list.
+**A value an environment variable supplied is withheld when the variable's
+name names a credential,** by the same rule a key is read by, whatever the
+key is called: `my-app.dsn = ${DB_PASSWORD}` prints as `<redacted>`, and
+so does a key that refers to it and a string built from it.  That holds for
+a variable from the real environment and from the [.env
+file](#environment-files) alike, in whichever layer read it — a code
+override that replaced the key included — and in a `WorkerMesh` worker's
+dump.  Every line names the variables behind its value, withheld or not —
+`my-app.db.host = "db-1"  [application, from $DB_HOST]` — and the header
+counts these keys apart from the other two reasons.
+
+The key rule is a heuristic over names, and it is the weakest of the four.
+What none of them can see is printed in full: a bare password written out
+under a key that does not name one, outside the secrets file and not taken
+from a credential-named variable; a credential in a query string
+(`?password=…`, `?authToken=…`); SQL Server's `Server=…;Password=…`
+connection string; and memcached's scheme-less `user:password@host:11211`
+server list.
 Nor is the list widened further: `seed` would redact `cluster.seed-nodes`, and
 a dump whose ordinary keys read `<redacted>` is a dump nobody reads.  So treat
 the output as sensitive, keep the key `off` outside an investigation, and
@@ -3476,6 +3496,12 @@ fallback-port = ${?ENV_PORT}          # … replaced only when ENV_PORT is set
 
 Use `${?ENV}` for optional, `${ENV}` for required.
 
+A variable that is set but empty counts as not set — `PORT=` in a shell,
+`environment: [PORT]` in a compose file and an empty line of an env file all
+mean "unset".  `${?PORT}` then resolves to nothing and the default shows
+through, and `${PORT}` fails with an error saying the variable is set but
+empty.  To set a key to an empty string, write `""` in the file.
+
 There is no default-if-unset form.  Everything between the braces is the
 path, so `${ENV_PORT:-2552}` is looked up as a key named `ENV_PORT:-2552`
 and fails as an unresolved substitution, and `${?ENV_PORT:-2552}` is
@@ -3491,6 +3517,72 @@ line above relies on.  A key `reference.conf` carries only as a comment —
 `remote.tcp.host` and `port`, the `advertised-*` pair,
 `discovery.config.seeds` and others — has no layer below it, so an unset
 `${?ENV}` leaves it unset and the reader's own fallback applies.
+
+A substitution may name a key whose value is itself a substitution.  The
+chain resolves whatever order its lines come in, and a key the file defines
+wins over the environment at every link, so `api.url = ${db.url}` with
+`db.url = ${db.host}` reads the file's host even when a `DB_URL` variable is
+set.  A chain that leads back to where it started is refused as a
+`Substitution cycle: a -> b -> a`, the optional form included.  A key that
+names itself — `pod.ip = ${?pod.ip}` — is no cycle: it reads the environment
+and then the value it replaced.
+
+### Empty values
+
+```hocon
+host =                  # nothing after it — no assignment, host keeps its value
+host = ${?DB_HOST}      # DB_HOST unset or empty — host keeps its value
+host = ${DB_HOST}       # DB_HOST unset or empty — the start fails
+host = ""               # an explicitly empty string
+roles = []              # an explicitly empty list
+```
+
+An assignment with nothing after its `=` or `:` is no assignment: the key
+keeps what an earlier line of the same file gave it, and across files the
+layer below shows through.  That holds before a comma, before the closing
+`}`, before a comment and at the end of the file.  To set a key to empty,
+write `""` or `[]`.
+
+A value may still go on the line after its key, as JSON lays it out
+(`"timeout":` then `10s`), as long as that line does not itself start a
+field: a line that reads `name = …`, `name: …`, `name { …` or
+`include "…"` is the next field, and the assignment above it has no value.
+So an unquoted value that looks like a field — `localhost:2552` — belongs
+on the same line as its key.
+
+### Value concatenation
+
+```hocon
+url     = "redis://:"${REDIS_PASSWORD}"@cache:6379"   # one string
+address = ${HOST}":"${PORT}                          # "db:5432"
+name    = app-${STAGE}                               # "app-prod"
+seeds   = [ ${?SEED_HOST}":"${?SEED_PORT} ]          # one element
+```
+
+Quoted strings, substitutions and unquoted text written next to each other
+on one line make one string.  The spaces between the pieces are kept, so
+`${A} ${B}` is the two values with a space between them, and a field that
+follows after a space still starts a new field (`a = "x" b = 1`).  A single
+piece keeps its type: `port = ${PORT}` is a number when `PORT` holds one.
+
+Inside a string, a variable joins in as the text it holds.  On its own,
+`${X}` reads a variable as JSON first, so `PORT=2552` gives a number and
+`FLAGS=[1,2]` a list; inside a string that would turn a password of digits
+into a number in exponent notation, so it does not.  A key of the file joins
+in as HOCON writes it — `30`, `true` — and a key that holds an object or a
+list cannot be joined into a string.
+
+An unset `${?X}` inside a string adds nothing.  A string made of optional
+substitutions only, none of them set, is no value at all, so the earlier
+value or the layer below shows through — as for a single `${?X}`.
+
+`${` inside quotes is text, not a substitution: `"${X}"` is the five
+characters it shows.  And because `//` starts a comment, a URL goes in
+quotes — `url = http://host` is refused, where it used to read as `http:`.
+
+Not supported, and refused with an error that says so: joining objects or
+lists (`{ a = 1 } { b = 2 }`, `[1] [2]`, `${base} { … }`), `+=`, and
+triple-quoted strings ([#537](https://github.com/pathosDev/actor-ts/issues/537)).
 
 ### Includes are not supported
 
@@ -3521,7 +3613,10 @@ over the merged tree.  A `${my.port}` in `shared-cluster.conf` whose
 `my.port` only `application.conf` defines fails at the first `parseFile`
 with `Unresolved substitution` — where a real `include` would have
 produced one document and resolved it.  A value the base file refers to
-has to live in the base file or in the environment.
+has to live in the base file or in the environment.  Shared defaults are
+what the [project reference.conf](#the-project-referenceconf) is for:
+`Config.load` resolves it before `application.conf`, and
+`application.conf` may refer to its keys.
 
 The parser says all of this when it meets an `include`, quoting the line
 and the target, so a config ported from Akka or Pekko fails with an
@@ -3595,37 +3690,111 @@ Missing keys throw unless you check first with `hasPath`.
 
 ```
 1. REFERENCE_CONF                           ← bundled defaults
-2. one application file — the first of these that is set:
-     `configFile` setting  ›  ACTOR_TS_CONFIG env var  ›  ./application.conf (CWD)
+2. the project's reference.conf — the first of these that is set:
+     `referenceConfigFile` setting  ›  ACTOR_TS_REFERENCE_CONFIG env var  ›  ./reference.conf (CWD)
 3. that file's profiles.<profile> block     ← when a profile is active
-4. one secrets file — the first of these that is set:
-     ACTOR_TS_SECRETS_CONF env var  ›  ./secrets.conf (CWD)
+4. one application file — the first of these that is set:
+     `configFile` setting  ›  ACTOR_TS_CONFIG env var  ›  ./application.conf (CWD)
 5. that file's profiles.<profile> block     ← when a profile is active
-6. constructor `config: { ... }`            ← code-level override
-7. constructor field overrides              ← explicit fields beat config
+6. one secrets file — the first of these that is set:
+     `secretsFile` setting  ›  ACTOR_TS_SECRETS_CONF env var  ›  ./secrets.conf (CWD)
+7. that file's profiles.<profile> block     ← when a profile is active
+8. constructor `config: { ... }`            ← code-level override
+9. constructor field overrides              ← explicit fields beat config
    (logLevel, dispatcher, scheduler, …)
+
+beside them, not a layer — a .env file: `environmentFile` setting  ›  ACTOR_TS_ENV_FILE  ›  ./.env (CWD)
 ```
 
-Each layer overlays on top of the previous.  Layer 7 (constructor
-fields) always wins for the fields it covers; everything else
-flows through the HOCON merge.  The profile is `withProfile(name)`,
+Each layer overlays on top of the previous, key by key.  Layer 9
+(constructor fields) always wins for the fields it covers; everything
+else flows through the HOCON merge.  The profile is `withProfile(name)`,
 then the `ACTOR_TS_PROFILE` environment variable, then none — see
-[Profiles](#profiles).  Layer 4 is optional and works like layer 2: the
-first of its candidates that is set decides, and a path with no file
-behind it is an empty layer.  `Config.load` callers name it with
-`secretsConfPath`, ahead of the variable — see [Secrets
+[Profiles](#profiles).  Layers 2, 4 and 6 are optional files: for each,
+the first of its candidates that is set decides, a path with no file
+behind it is an empty layer, and `false` for a path option reads no
+such file at all.  The settings, on `ActorSystemOptions`, are
+`withReferenceConfigFile`, `withConfigFile` and `withSecretsFile`, and
+`withEnvironmentFile` for the `.env`; `Config.load` callers pass
+`referenceConfPath`, `appConfPath`, `secretsConfPath` and
+`environmentFilePath` instead — see [The project
+reference.conf](#the-project-referenceconf) and [Secrets
 file](#secrets-file).
 
-Layer 2 is a single file.  `configFile`, `ACTOR_TS_CONFIG` and the CWD
-lookup are three ways of naming it, tried in that order, and the first
-one that is *set* decides — a `configFile` or `ACTOR_TS_CONFIG` that
+A file's substitutions read its own keys, then the layers already
+resolved beneath it, then the real environment, then the variables of
+the [.env file](#environment-files).  So `application.conf` may build on
+a key the project `reference.conf` sets, while a lower file never sees a
+higher one — there is no late binding.
+
+Each of layers 2, 4 and 6 is a single file.  The option, the variable
+and the CWD lookup are three ways of naming it, tried in that order, and
+the first one that is *set* decides — an option or a variable that
 points at a file which does not exist loads nothing, rather than moving
 on to the next candidate ([issue
 #996](https://github.com/pathosDev/actor-ts/issues/996) is about saying so
-at startup).  `ACTOR_TS_CONFIG` holds a path, never inline HOCON; a value
-that is not the path of an existing file is treated the same way.  To
-layer several files, compose them in code as [Includes are not
+at startup).  A variable that is set but empty counts as not set.  The
+variables hold a path, never inline HOCON; a value that is not the path
+of an existing file is treated the same way.  To layer further files,
+compose them in code as [Includes are not
 supported](#includes-are-not-supported) shows.
+
+### The project reference.conf
+
+```hocon
+# reference.conf — the project's defaults, committed with the code
+my-app {
+  pool-size = 4
+  db.host = "localhost"
+  db.url = "postgres://"${my-app.db.host}"/app"
+}
+```
+
+The bundled `reference.conf` holds the framework's defaults; a project
+keeps its own in a `reference.conf` of its own, next to the code, and
+lets `application.conf` override single keys of it per deployment.  It
+may set framework keys too — a project-wide `actor-ts.dispatcher`, say —
+and carries profiles like the other files.  It is read from the working
+directory unless `referenceConfPath`, `withReferenceConfigFile` or
+`ACTOR_TS_REFERENCE_CONFIG` names another file.
+
+### Environment files
+
+```text
+# .env — git-ignored, beside the application
+DB_PASSWORD=s3cret
+REDIS_URL="redis://:s3cret@cache:6379"
+```
+
+A `.env` file supplies variables to the substitutions of every file the
+loader reads — `${DB_PASSWORD}` in `application.conf` or in the secrets
+file.  It is read from the working directory unless
+`environmentFilePath`, `withEnvironmentFile` or the real
+`ACTOR_TS_ENV_FILE` names another one, and `false` reads none.  The real
+environment always wins over it, an empty value in it counts as unset,
+and it never writes `process.env`, so child processes do not inherit it.
+It may itself name the other files and the profile (`ACTOR_TS_CONFIG=…`,
+`ACTOR_TS_PROFILE=…`), as the real environment can.
+
+The grammar is Node's `--env-file` one: `KEY=value`, an optional
+`export`, quoted values in `'`, `"` or `` ` `` that may span lines (a
+PEM key fits), `\n` read as a line break inside double quotes only, and
+`#` starting a comment — a value with a `#` in it goes in quotes.
+`$VAR` is kept as written, never expanded.  A directory called `.env` —
+a Python virtual environment often is one — is no file.
+
+<Aside type="caution" title="Bun reads ./.env itself, with other rules">
+Bun loads a `./.env` into `process.env` before the loader runs, and it
+expands `$VAR` in every value — inside single quotes too.  Measured with
+Bun 1.4.2: `HASH=$2b$10$abc` becomes the empty string and
+`REF='x$A'` becomes `x1`.  Since the real environment wins, a variable
+Bun loaded is read the way Bun read it — and an empty one counts as not
+set, so a bcrypt hash would silently fall through to the next source.
+On Bun, write a `$` in a `.env` value as `\$`, keep such a file under
+another name and point `ACTOR_TS_ENV_FILE` at it, or start Bun with
+`--no-env-file`.  Node and Deno load nothing on their own, so there the
+loader's reading is the only one.
+</Aside>
 
 ### Where the built-in default lives
 
@@ -3728,12 +3897,11 @@ const system = ActorSystem.create('my-app', actorSystemOptions);
   `db.internal` under `production` and `localhost` without a profile.  An
   inactive profile is never resolved, so a variable only production needs
   may be unset on a laptop.
-- **A profile may read the root of its own file and the environment —
-  nothing else.**  Substitutions still resolve per file
-  ([#1071](https://github.com/pathosDev/actor-ts/issues/1071)), so a
-  profile of `application.conf` cannot read a key only `reference.conf`
-  or the secrets file sets, and a substitution that reads the `profiles`
-  block is refused by name.
+- **A profile reads the root of its own file, the layers beneath it and
+  the environment — never a layer above.**  A profile of
+  `application.conf` can read a key the bundled or the project
+  `reference.conf` sets, but not one only the secrets file sets, and a
+  substitution that reads the `profiles` block is refused by name.
 - **`staging = ${profiles.production}` copies a whole profile,
   verbatim.**  A later delta does not merge into the copy: a
   `profiles.staging.my-app.pool-size = 8` after it replaces the copied
@@ -3769,17 +3937,26 @@ my-app.db {
 profiles.production.my-app.db.password = ${?PRODUCTION_DB_PASSWORD}
 ```
 
-It is the first of these that is set: the `ACTOR_TS_SECRETS_CONF`
-environment variable, then `secrets.conf` in the working directory —
-with `secretsConfPath` ahead of both when you call `Config.load`
-yourself.  A file that is not there is an empty layer, not an error, so a
+It is the first of these that is set: `withSecretsFile(path)` on
+`ActorSystemOptions`, the `ACTOR_TS_SECRETS_CONF` environment variable,
+then `secrets.conf` in the working directory — `secretsConfPath` takes
+the setting's place when you call `Config.load` yourself, and `false`
+reads no secrets file.
+
+```ts
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+
+const actorSystemOptions = ActorSystemOptions.create().withSecretsFile('/run/secrets/orders.conf');
+const system = ActorSystem.create('orders', actorSystemOptions);
+```
+
+A file that is not there is an empty layer, not an error, so a
 deployment without one needs nothing.  A file that is there is read on every
 start, so a `secrets.conf` in the working directory that belongs to another
 tool stops startup: the `ConfigError` names the file and why it was read —
-move such a file, or name the right one with `ACTOR_TS_SECRETS_CONF`.  It
-splits into a root and
-`profiles` exactly as the application file does, and the same profile is
-laid over its root.
+move such a file, or name the right one with `withSecretsFile` or
+`ACTOR_TS_SECRETS_CONF`.  It splits into a root and `profiles` exactly as
+the application file does, and the same profile is laid over its root.
 
 **Every value it sets is withheld** from the config dump and the
 DevTools panel, whatever its key is called — `my-app.db.user` above

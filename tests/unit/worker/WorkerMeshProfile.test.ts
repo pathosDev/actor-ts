@@ -7,7 +7,10 @@
  * and each worker's own system used to call `Config.load()` for themselves,
  * which applies `ACTOR_TS_PROFILE` to `ACTOR_TS_CONFIG` or `./application.conf`
  * — not necessarily the file the main thread was given in code — and so
- * refused a mesh whose profile was defined only in that file.
+ * refused a mesh whose profile was defined only in that file.  The files a
+ * worker reads are its main thread's for the same reason: the application
+ * file (#1546) and, since #1785, the project `reference.conf`, the secrets
+ * file and the `.env` — `false` included.
  *
  * Runs the production `WorkerMesh` and bootstrap on the in-process rig of
  * `WorkerMesh.test.ts`: real cluster nodes, no OS thread.  The fake workers
@@ -22,6 +25,7 @@ import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions, type ActorSystemOptionsBuilder } from '../../../src/ActorSystemOptions.js';
 import type { Cluster } from '../../../src/cluster/Cluster.js';
 import { Config } from '../../../src/config/Config.js';
+import { configDumpLines } from '../../../src/diagnostics/ConfigDump.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { WorkerCluster } from '../../../src/worker/WorkerCluster.js';
 import { WorkerClusterOptions } from '../../../src/worker/WorkerClusterOptions.js';
@@ -50,8 +54,10 @@ function fileWith(name: string, lines: ReadonlyArray<string>): string {
   return path;
 }
 
-/** The three variables `Config.load` reads, cleared around every case. */
-const LOAD_VARIABLES = ['ACTOR_TS_CONFIG', 'ACTOR_TS_PROFILE', 'ACTOR_TS_SECRETS_CONF'] as const;
+/** The variables `Config.load` reads, cleared around every case. */
+const LOAD_VARIABLES = [
+  'ACTOR_TS_CONFIG', 'ACTOR_TS_PROFILE', 'ACTOR_TS_SECRETS_CONF', 'ACTOR_TS_REFERENCE_CONFIG', 'ACTOR_TS_ENV_FILE',
+] as const;
 
 /**
  * Run `body` with the load variables cleared and `variables` set on top,
@@ -59,7 +65,7 @@ const LOAD_VARIABLES = ['ACTOR_TS_CONFIG', 'ACTOR_TS_PROFILE', 'ACTOR_TS_SECRETS
  * suite nor a case before this one decides what a load sees.
  */
 async function withEnvironment(
-  variables: Readonly<Record<string, string>>,
+  variables: Readonly<Record<string, string | undefined>>,
   body: () => Promise<void>,
 ): Promise<void> {
   const names = [...new Set([...LOAD_VARIABLES, ...Object.keys(variables)])];
@@ -194,6 +200,93 @@ describe('a WorkerMesh under a profile (#1546)', () => {
         // A key only the other file sets is the tell: the main thread's tree
         // overrides every key it has, so nothing else could show the read.
         expect(worker!.hasPath('my-app.only-in-the-variable-file')).toBe(false);
+      });
+    });
+  }, 20_000);
+});
+
+describe('a WorkerMesh worker reads the files its main thread read (#1769, #1785)', () => {
+  test('a .env named in code answers a required substitution in the worker as well', async () => {
+    const environmentPath = fileWith('app.env', ['MESH_FILES_TOKEN=from-the-named-file']);
+    const applicationPath = fileWith('application.conf', ['my-app.token = ${MESH_FILES_TOKEN}']);
+    // Left to its own chain, the worker would find no `.env` and refuse the
+    // substitution — which only the file named in code answers.
+    await withEnvironment({ MESH_FILES_TOKEN: undefined }, async () => {
+      const systemOptions = mainSystemOptions()
+        .withConfigFile(applicationPath)
+        .withEnvironmentFile(environmentPath);
+      await withMesh('mesh-files-environment', systemOptions, 1, (main, workerConfigs) => {
+        expect(main.config.getString('my-app.token')).toBe('from-the-named-file');
+        expect(workerConfigs.map((config) => config.getString('my-app.token'))).toEqual(['from-the-named-file']);
+        expect(workerConfigs[0]!._sources()!.environmentFilePath).toBe(environmentPath);
+      });
+    });
+  }, 20_000);
+
+  test('a secrets file named in code is the one a worker reads, not the one ACTOR_TS_SECRETS_CONF names', async () => {
+    const secretsPath = fileWith('vault.conf', ['my-app.db.endpoint-value = "from-the-option"']);
+    // Another tool's file: a worker that read it would not start.
+    const strayPath = fileWith('secrets.conf', ['server {', '  listen 80;', '}']);
+    await withEnvironment({ ACTOR_TS_SECRETS_CONF: strayPath }, async () => {
+      const systemOptions = mainSystemOptions().withSecretsFile(secretsPath);
+      await withMesh('mesh-files-secrets', systemOptions, 1, (main, workerConfigs) => {
+        const [worker] = workerConfigs;
+        expect(worker!.getString('my-app.db.endpoint-value')).toBe('from-the-option');
+        expect(worker!._sources()!.secretsPath).toBe(secretsPath);
+        expect(configDumpLines(worker!)).not.toContain('from-the-option');
+      });
+    });
+  }, 20_000);
+
+  test('a project reference.conf named in code is the one a worker reads', async () => {
+    const referencePath = fileWith('defaults.conf', ['my-app.pool-size = 4']);
+    const variablePath = fileWith('reference.conf', [
+      'my-app.pool-size = 99',
+      'my-app.only-in-the-variable-file = "stray"',
+    ]);
+    await withEnvironment({ ACTOR_TS_REFERENCE_CONFIG: variablePath }, async () => {
+      const systemOptions = mainSystemOptions().withReferenceConfigFile(referencePath);
+      await withMesh('mesh-files-reference', systemOptions, 1, (main, workerConfigs) => {
+        expect(main.config.hasPath('my-app.only-in-the-variable-file')).toBe(false);
+        const [worker] = workerConfigs;
+        expect(worker!.getInt('my-app.pool-size')).toBe(4);
+        expect(worker!.hasPath('my-app.only-in-the-variable-file')).toBe(false);
+      });
+    });
+  }, 20_000);
+
+  test('false travels as false: a worker reads no file its main thread was told not to read', async () => {
+    const variablePath = fileWith('application.conf', ['my-app.only-in-the-variable-file = "stray"']);
+    await withEnvironment({ ACTOR_TS_CONFIG: variablePath }, async () => {
+      const systemOptions = mainSystemOptions().withConfigFile(false);
+      await withMesh('mesh-files-false', systemOptions, 1, (main, workerConfigs) => {
+        expect(main.config.hasPath('my-app.only-in-the-variable-file')).toBe(false);
+        const [worker] = workerConfigs;
+        expect(worker!.hasPath('my-app.only-in-the-variable-file')).toBe(false);
+        expect(worker!._sources()!.applicationPath).toBeNull();
+      });
+    });
+  }, 20_000);
+});
+
+describe('a WorkerMesh worker withholds what a credential-named variable supplied on its main thread (#1788)', () => {
+  test('a value the main thread\'s code overrides read out of one is withheld in the worker\'s dump too', async () => {
+    // In no file a worker could read again: only the variables the main
+    // thread hands over say where the value came from.
+    await withEnvironment({ MESH_DB_PASSWORD: 'hunter2-from-the-environment' }, async () => {
+      const systemOptions = mainSystemOptions()
+        .withConfigFile(false)
+        .withConfig(Config.parseString([
+          'actor-ts.cluster.gossip-interval = 25ms',
+          'my-app.dsn = ${MESH_DB_PASSWORD}',
+        ].join('\n')));
+      await withMesh('mesh-variables', systemOptions, 1, (main, workerConfigs) => {
+        expect(configDumpLines(main.config)).toContain('my-app.dsn = <redacted>  [override, from $MESH_DB_PASSWORD]');
+        const [worker] = workerConfigs;
+        expect(worker!.getString('my-app.dsn')).toBe('hunter2-from-the-environment');
+        const dump = configDumpLines(worker!);
+        expect(dump).toContain('my-app.dsn = <redacted>  [override, from $MESH_DB_PASSWORD]');
+        expect(dump).not.toContain('hunter2');
       });
     });
   }, 20_000);

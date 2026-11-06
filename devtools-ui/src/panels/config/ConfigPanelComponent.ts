@@ -17,21 +17,28 @@ import type {
 /**
  * Source → the semantic colour token that carries its meaning.
  *
- * Five sources and four tokens (#1546).  A profile shares the application
- * file's token, being a block of that same file; the secrets file takes the
- * idle one, since every value it set reaches the panel withheld.
+ * Six sources and four tokens (#1546, #1785).  The project's own
+ * `reference.conf` shares the bundled one's token, being defaults as well; a
+ * profile shares the application file's, being a block of that same file;
+ * the secrets file takes the idle one, since every value it set reaches the
+ * panel withheld.
  */
 const SOURCE_TOKENS: Readonly<Record<ConfigSource, string>> = {
   reference: 'dt-state--ok',
+  'project-reference': 'dt-state--ok',
   application: 'dt-state--warn',
   profile: 'dt-state--warn',
   secrets: 'dt-state--pending',
   override: 'dt-state--error',
 };
 
-/** Source → what it is called in the file it came from. */
+/**
+ * Source → what it is called in the file it came from.  Two files are called
+ * `reference.conf`, so the one bundled with the package says so.
+ */
 const SOURCE_LABELS: Readonly<Record<ConfigSource, string>> = {
-  reference: 'reference.conf',
+  reference: 'reference.conf (actor-ts)',
+  'project-reference': 'reference.conf',
   application: 'application.conf',
   profile: 'profile',
   secrets: 'secrets.conf',
@@ -43,9 +50,10 @@ const SOURCE_LABELS: Readonly<Record<ConfigSource, string>> = {
  *
  * A merged tree answers "what is this setting now".  The question that
  * brings someone here is "why is it not what I wrote", so every key
- * carries the layer that won — bundled default, `application.conf`, its
- * active profile, the secrets file, or a code override — and whether it
- * displaced a lower one.
+ * carries the layer that won — bundled default, the project's own
+ * `reference.conf`, `application.conf`, its active profile, the secrets file,
+ * or a code override — whether it displaced a lower one, and the environment
+ * variables its value came from.
  *
  * Configuration is fixed when the system is built, so this is read once
  * rather than polled.  There is nothing to watch change.
@@ -105,8 +113,13 @@ export class ConfigPanelComponent {
   protected titleOf(entry: ResolvedConfigEntry): string {
     const from = `from ${SOURCE_LABELS[entry.source]}`;
     const displaced = entry.overridden ? ', overriding a lower layer' : '';
+    // The answer to "why is it withheld" when the key's name does not say:
+    // the variable that supplied it does (#1788).
+    const variables = entry.variables !== undefined && entry.variables.length > 0
+      ? `, supplied by ${entry.variables.map((name) => `$${name}`).join(', ')}`
+      : '';
     const cut = entry.truncated ? ' (value truncated)' : '';
-    return `${entry.path} — ${from}${displaced}${cut}`;
+    return `${entry.path} — ${from}${displaced}${variables}${cut}`;
   }
 
   protected onFilter(event: Event): void {

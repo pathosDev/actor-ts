@@ -175,8 +175,11 @@ Die vollständige Settings-Form:
 | `dispatcher` | Eigener `Dispatcher`.  Standardmäßig der, den `actor-ts.dispatcher.default` wählt — `HybridDispatcher`, sofern nichts anderes konfiguriert ist; tausche einen Immediate- oder Throughput-basierten ein oder `Dispatchers.Hybrid(n)` mit einem anderen Budget, um das Scheduling anzupassen.  Ein Budget ist eine ganze Zahl ab `1`: `Dispatchers.Hybrid(0)` wird beim Bau mit einem `OptionsError` abgelehnt, und mit `actor-ts.dispatcher.default = throughput` lässt ein konfiguriertes `throughput` von `0` `ActorSystem.create` ebenso scheitern. |
 | `scheduler` | Eigener `Scheduler`.  Standardmäßig ein Echtzeit-Scheduler; Tests injizieren `ManualScheduler`, um die Zeit zu kontrollieren. |
 | `config` | Entweder eine vorgefertigte `Config` oder ein einfaches Objekt mit HOCON-Overrides.  Wird über die Referenz-Defaults + einer eventuellen `application.conf` gelegt.  Übergib eine `Config` selbst, nie einen Spread davon: `{ ...config }` kopiert ihre privaten Felder, nicht ihre Konfiguration, und `create` lehnt ihn mit einem `ConfigError` ab — so wie eine Klasseninstanz (eine `Map`, ein `Date`, eine verschachtelte `Config`) irgendwo im Objekt. |
-| `configFile` | Expliziter Pfad zu einer `application.conf`-Datei.  Überschreibt die `ACTOR_TS_CONFIG`-Env-Variable und das CWD-Lookup. |
-| `profile` | Das Konfigurations-[Profil](/de/reference/configuration/#profile) — der Block `profiles.<name>` der `application.conf` und der Secrets-Datei, über die Wurzel jeder Datei gelegt.  Überschreibt die `ACTOR_TS_PROFILE`-Env-Variable; ein Name, den keine Datei definiert, wird beim Start abgelehnt.  Erreicht nur `system.config`, nicht die Komponenten, die ihre Konfiguration selbst laden. |
+| `configFile` | Expliziter Pfad zu einer `application.conf`-Datei.  Überschreibt die `ACTOR_TS_CONFIG`-Env-Variable und das CWD-Lookup; `false` liest keine Anwendungsdatei. |
+| `referenceConfigFile` | Expliziter Pfad zur [eigenen `reference.conf` des Projekts](/de/reference/configuration/#die-referenceconf-des-projekts) — seinen Defaults, über den gebündelten und unter `application.conf`.  Überschreibt die `ACTOR_TS_REFERENCE_CONFIG`-Env-Variable und das CWD-Lookup; `false` liest keine. |
+| `secretsFile` | Expliziter Pfad zur [Secrets-Datei](/de/reference/configuration/#secrets-datei), deren Werte der Konfigurations-Dump und das DevTools-Panel allesamt zurückhalten.  Überschreibt die `ACTOR_TS_SECRETS_CONF`-Env-Variable und das CWD-Lookup; `false` liest keine. |
+| `environmentFile` | Expliziter Pfad zur [`.env`-Datei](/de/reference/configuration/#env-dateien), deren Variablen `${VAR}` hinter der echten Umgebung beantworten.  Überschreibt die `ACTOR_TS_ENV_FILE`-Env-Variable und das CWD-Lookup; `false` liest keine. |
+| `profile` | Das Konfigurations-[Profil](/de/reference/configuration/#profile) — der Block `profiles.<name>` jeder Datei, die der Loader liest, der `reference.conf` des Projekts, der `application.conf` und der Secrets-Datei, über die Wurzel jeder Datei gelegt.  Überschreibt die `ACTOR_TS_PROFILE`-Env-Variable; ein Name, den keine Datei definiert, wird beim Start abgelehnt.  Erreicht nur `system.config`, nicht die Komponenten, die ihre Konfiguration selbst laden. |
 | `persistence` | Persistenz, beim Erstellen verdrahtet.  `plugins` sind Funktionen, die die `PersistenceExtension` des Systems erhalten und Backends registrieren — `(persistence) => registerSqlitePlugins(persistence)` — und innerhalb von `create` in der angegebenen Reihenfolge laufen, sodass sich das Plugin, das die Konfiguration auswählt, auflösen lässt, sobald `create` zurückkehrt.  Ein Promise, das eines davon zurückgibt, wird in der Phase `persistence-start` des [Startup-Graphen](#hochfahren) abgewartet, wo eine Ablehnung den Start scheitern lässt; eines, das wirft, lässt `create` werfen.  `journal`, `snapshotStore` und `durableStateStore` sind Store-Instanzen, die jeweils Vorrang vor dem Plugin haben, das ihre Achse auswählt.  `behavior` ist das Persistenz-Verhalten, Feld für Feld über `actor-ts.persistence` gelegt; sein `autoStart`, an, solange es nicht auf false gesetzt wird, öffnet die ausgewählten Stores in `persistence-start`, wo eine Auswahl, die niemand registriert hat, oder ein Store, der sich nicht öffnen lässt, den Start scheitern lässt — aus, öffnen sie bei der ersten Verwendung. |
 | `coordinatedStartup` | Der Startup-Graph — Tasks, die das System in Phasen als letzten Schritt von `create` ausführt, abzuwarten über `system.whenReady()`.  Siehe [Hochfahren](#hochfahren). |
 
@@ -204,10 +207,13 @@ actor-ts {
 }
 ```
 
-Das Framework lädt sie automatisch, wenn vorhanden.  ENV-Substitution
-(`${?ENV_NAME}`) funktioniert wie in der HOCON-Spec definiert — aus
-der Umgebung gezogene Werte fallen auf den Default zurück, wenn sie
-nicht gesetzt sind.  Eine Datei kann mehrere Umgebungen als
+Das Framework lädt sie automatisch, wenn vorhanden, über einer
+[eigenen `reference.conf` des Projekts](/de/reference/configuration/#die-referenceconf-des-projekts),
+wenn es eine gibt.  ENV-Substitution (`${?ENV_NAME}`) funktioniert wie
+in der HOCON-Spec definiert — aus der Umgebung gezogene Werte fallen
+auf den Default zurück, wenn sie nicht gesetzt sind —, und eine
+[`.env`-Datei](/de/reference/configuration/#env-dateien) daneben kann sie
+liefern.  Eine Datei kann mehrere Umgebungen als
 [Profile](/de/reference/configuration/#profile) tragen, und Credentials
 gehören in die optionale [Secrets-Datei](/de/reference/configuration/#secrets-datei)
 daneben.  Siehe [Konfiguration](/de/reference/configuration/)

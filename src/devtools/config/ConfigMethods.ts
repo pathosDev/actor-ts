@@ -3,9 +3,10 @@
  *
  * A merged HOCON tree answers "what is this setting now".  The question
  * that actually brings someone here is "why is it not what I wrote", and
- * that needs the layer as well as the value — the bundled default won,
- * `application.conf` won, its active profile won, the secrets file won, or a
- * code override won.
+ * that needs the layer as well as the value — the bundled default won, the
+ * project's own `reference.conf` won, `application.conf` won, its active
+ * profile won, the secrets file won, or a code override won — and, as often,
+ * the environment variable that supplied it.
  *
  * A pull, not a stream: configuration is fixed when the system is built,
  * so there is nothing to push.  It is read once per panel open.
@@ -56,6 +57,8 @@ export class ConfigMethods {
       applicationPath: layers?.applicationFound === true ? layers.applicationPath : null,
       profile: layers?.profile ?? null,
       secretsPath: layers?.secretsFound === true ? layers.secretsPath : null,
+      referencePath: layers?.projectReferenceFound === true ? layers.projectReferencePath : null,
+      environmentFilePath: layers?.environmentFileFound === true ? layers.environmentFilePath : null,
       attributed: attributedConfigLeaves(config),
     };
   }
@@ -63,11 +66,15 @@ export class ConfigMethods {
 
 function entryFor(leaf: ResolvedConfigLeaf): ResolvedConfigEntry {
   const { path, layer: source, displaced: overridden } = leaf;
+  // Names only, and only when there are any: a field added to an entry is
+  // optional, and a few hundred empty lists would be all most answers carry.
+  const variables = leaf.variables.length > 0 ? { variables: leaf.variables } : {};
   if (leaf.secret) {
     // Withheld by PATH rather than by value: a password that happens to
-    // look ordinary is still a password, and the key's name — or the
-    // secrets file holding the key — is what says so.
-    return { path, value: CONFIG_REDACTED, source, overridden, truncated: false };
+    // look ordinary is still a password, and the key's name — the secrets
+    // file holding the key, or the variable that supplied it — is what says
+    // so.
+    return { path, value: CONFIG_REDACTED, source, overridden, truncated: false, ...variables };
   }
   // Withheld and masked before the size caps, never after: a cut through the
   // middle of a userinfo leaves no `@` for the mask to anchor on, and the
@@ -75,5 +82,5 @@ function entryFor(leaf: ResolvedConfigLeaf): ResolvedConfigEntry {
   // (#1458).  A credential-named field inside a list goes first, so the mask
   // only ever sees what is going to be shown.
   const wire = toWireValue(withUrlCredentialsMasked(withCredentialFieldsWithheld(leaf.value)));
-  return { path, value: wire.value, source, overridden, truncated: wire.truncated };
+  return { path, value: wire.value, source, overridden, truncated: wire.truncated, ...variables };
 }

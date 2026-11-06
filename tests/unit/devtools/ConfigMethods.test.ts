@@ -276,7 +276,7 @@ describe('ConfigMethods', () => {
     }
   });
 
-  test('attributes a key to one of five sources and withholds what the secrets file set (#1546)', async () => {
+  test('attributes a key to its source and withholds what the secrets file set (#1546)', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'actor-ts-config-methods-'));
     const applicationPath = join(directory, 'application.conf');
     const secretsPath = join(directory, 'secrets.conf');
@@ -293,8 +293,8 @@ describe('ConfigMethods', () => {
       .withConfigFile(applicationPath)
       .withProfile('production')
       .withConfig({ 'my-app': { 'set-by-code': 'x' } });
-    // ActorSystemOptions names no secrets file, so the variable does — read
-    // once, in the constructor.
+    // The variable names the secrets file here — read once, in the
+    // constructor; `withSecretsFile` is the next case.
     const system = withVariable('ACTOR_TS_SECRETS_CONF', secretsPath, () =>
       ActorSystem.create('cfg-five-sources', systemOptions));
     systems.push(system);
@@ -307,7 +307,7 @@ describe('ConfigMethods', () => {
       expect(resolve(result, 'my-app.set-by-application').source).toBe('application');
       expect(resolve(result, 'my-app.set-by-profile').source).toBe('profile');
       expect(resolve(result, 'my-app.endpoint-value').source).toBe('secrets');
-      // Six layers, five names: the secrets file's profile reports as secrets.
+      // More layers than names: the secrets file's profile reports as secrets.
       expect(resolve(result, 'my-app.set-by-sealed-profile').source).toBe('secrets');
       expect(resolve(result, 'my-app.set-by-sealed-profile').overridden).toBe(true);
       expect(resolve(result, 'my-app.set-by-code').source).toBe('override');
@@ -319,6 +319,84 @@ describe('ConfigMethods', () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  test('attributes to secrets and withholds what a file named with withSecretsFile set (#1769)', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'actor-ts-config-methods-'));
+    const secretsPath = join(directory, 'vault.conf');
+    writeFileSync(secretsPath, 'my-app.endpoint-value = "s3cr3t-endpoint"\n', 'utf8');
+    try {
+      const systemOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withConfigFile(join(directory, 'application.conf'))
+        .withSecretsFile(secretsPath);
+      const system = ActorSystem.create('cfg-secrets-file-option', systemOptions);
+      systems.push(system);
+      const { server, invoke } = fakeServer();
+      new ConfigMethods(system).install(server);
+      const result = await invoke();
+
+      expect(resolve(result, 'my-app.endpoint-value').source).toBe('secrets');
+      expect(resolve(result, 'my-app.endpoint-value').value).toBe(CONFIG_REDACTED);
+      expect(result.secretsPath).toBe(secretsPath);
+      expect(JSON.stringify(result)).not.toContain('s3cr3t-endpoint');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('withholds what a credential-named variable supplied, and names the variables behind each entry (#1788)', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'actor-ts-config-methods-'));
+    writeFileSync(join(directory, '.env'), 'METHODS_DB_PASSWORD=hunter2\nMETHODS_DB_HOST=db-1\n', 'utf8');
+    writeFileSync(join(directory, 'reference.conf'), 'my-app.pool-size = 4\n', 'utf8');
+    writeFileSync(join(directory, 'application.conf'), [
+      'my-app.dsn = "host="${METHODS_DB_HOST}" password="${METHODS_DB_PASSWORD}',
+      'my-app.db-host = ${METHODS_DB_HOST}',
+    ].join('\n'), 'utf8');
+    try {
+      const systemOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withReferenceConfigFile(join(directory, 'reference.conf'))
+        .withConfigFile(join(directory, 'application.conf'))
+        .withSecretsFile(false)
+        .withEnvironmentFile(join(directory, '.env'));
+      const system = ActorSystem.create('cfg-variables', systemOptions);
+      systems.push(system);
+      const { server, invoke } = fakeServer();
+      new ConfigMethods(system).install(server);
+      const result = await invoke();
+
+      expect(resolve(result, 'my-app.dsn')).toMatchObject({
+        source: 'application',
+        value: CONFIG_REDACTED,
+        variables: ['METHODS_DB_HOST', 'METHODS_DB_PASSWORD'],
+      });
+      expect(resolve(result, 'my-app.db-host')).toMatchObject({ value: 'db-1', variables: ['METHODS_DB_HOST'] });
+      // A key no variable supplied carries no list at all, not an empty one.
+      expect(Object.hasOwn(resolve(result, 'my-app.pool-size'), 'variables')).toBe(false);
+      expect(resolve(result, 'my-app.pool-size').source).toBe('project-reference');
+      expect(result.referencePath).toBe(join(directory, 'reference.conf'));
+      expect(result.environmentFilePath).toBe(join(directory, '.env'));
+      expect(JSON.stringify(result)).not.toContain('hunter2');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('reports no project reference.conf and no .env file when it read neither (#1785)', async () => {
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withReferenceConfigFile(join(tmpdir(), 'actor-ts-no-such-reference.conf'))
+      .withEnvironmentFile(false);
+    const system = ActorSystem.create('cfg-no-reference', systemOptions);
+    systems.push(system);
+    const { server, invoke } = fakeServer();
+    new ConfigMethods(system).install(server);
+    const result = await invoke();
+
+    // "Read from": a path looked at and not found is no path here.
+    expect(result.referencePath).toBeNull();
+    expect(result.environmentFilePath).toBeNull();
   });
 
   test('withholds and attributes a secrets-file key quoted because it holds a dot (#1546)', async () => {

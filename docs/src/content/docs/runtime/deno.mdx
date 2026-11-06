@@ -109,8 +109,26 @@ For most actor-ts apps:
 For production, narrow to specific allowances:
 
 ```bash
-deno run --allow-net=:2552,:8080 --allow-env=ACTOR_TS_* main.ts
+deno run --allow-net=:2552,:8080 \
+  --allow-read=./reference.conf,./application.conf,./secrets.conf,./.env \
+  --allow-env=ACTOR_TS_*,DB_PASSWORD main.ts
 ```
+
+A narrow grant has to name what the config loader touches, because a
+missing grant is no missing file to Deno — it is a refusal:
+
+- **`--allow-read`** — the four files `Config.load` looks for: the
+  project `reference.conf`, `application.conf`, the secrets file and the
+  `.env` file, in the working directory or wherever an `ACTOR_TS_*`
+  variable or the code names them.  A file you never ship can stay out of
+  the list only if the code says `false` for it
+  (`withReferenceConfigFile(false)` and its siblings); otherwise startup
+  fails with a `ConfigError` naming the file it was refused.
+- **`--allow-env`** — the `ACTOR_TS_*` names the loader reads, and every
+  variable a `${VAR}` in those files names.  Deno grants the environment
+  variable by variable, so one left out is refused when the substitution
+  reads it, even when only the `.env` file holds it.  Measured on Deno
+  2.6.8.
 
 ## Deno Deploy
 

@@ -121,8 +121,10 @@ des Frameworks, und die Natur des Clients ist der Grund: er ist
 per Definition *außerhalb* des Clusters, hält also kein
 `ActorSystem` und hat kein `system.config` über sich, aus dem er
 lesen könnte. Der Konstruktor lädt die Config deshalb selbst —
-dieselbe Kette, die `ActorSystem.create` benutzt, samt
-`ACTOR_TS_CONFIG` und `./application.conf`. Die Reihenfolge ist
+dieselbe Kette, die `ActorSystem.create` benutzt: die
+`reference.conf` des Projekts, die `application.conf`, die
+Secrets-Datei und eine `.env`, jede über ihre `ACTOR_TS_*`-Variable
+benannt oder im Arbeitsverzeichnis gefunden. Die Reihenfolge ist
 die übliche: explizite Optionen schlagen die Datei, die Datei
 schlägt die eingebauten Defaults.
 

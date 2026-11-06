@@ -1,22 +1,32 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { ConfigKeys } from './ConfigKeys.js';
 import {
+  APPLICATION_CONF_ENVIRONMENT_VARIABLE,
+  DEFAULT_APPLICATION_CONF_FILENAME,
+  DEFAULT_ENVIRONMENT_FILENAME,
+  DEFAULT_REFERENCE_CONF_FILENAME,
   DEFAULT_SECRETS_CONF_FILENAME,
+  ENVIRONMENT_FILE_ENVIRONMENT_VARIABLE,
   PROFILE_ENVIRONMENT_VARIABLE,
   PROFILES_ROOT_KEY,
+  REFERENCE_CONF_ENVIRONMENT_VARIABLE,
   SECRETS_CONF_ENVIRONMENT_VARIABLE,
 } from './Constants.js';
+import { parseEnvironmentFile } from './EnvironmentFile.js';
 import { parseDuration } from './Duration.js';
 import {
   type ConfigObject,
   type ConfigValue,
   deepMerge,
+  isConcatenation,
   isForbiddenConfigKey,
   isPlainObject,
   isSubstitution,
+  isUnresolved,
   parseHocon,
+  resolveLayer,
   resolveSubstitutions,
   stripUndefined,
 } from './HoconParser.js';
@@ -25,6 +35,9 @@ import { parseSize } from './Size.js';
 
 /** The carried secret paths of every config that carries none — shared, never written. */
 const NO_SECRET_PATHS: ReadonlySet<string> = new Set();
+
+/** The variables of every config whose leaves no variable supplied — shared, never written. */
+const NO_VARIABLES: ReadonlyMap<string, ReadonlySet<string>> = new Map();
 
 /**
  * What every `Config` carries, whichever copy of actor-ts built it.
@@ -58,7 +71,8 @@ const CONFIG_BRAND: unique symbol = Symbol.for('actor-ts.config');
  * lookup in each, in precedence order, and cannot disagree with the merge
  * — a precomputed map is a second answer to the same question.
  *
- * Six of them, lowest first: the bundled reference, the application file's
+ * Eight of them, lowest first: the bundled reference, the project's own
+ * `reference.conf` and its active profile (#1785), the application file's
  * root and its active profile, the secrets file's root and its active
  * profile, and the code overrides (#1546).  The two layers of one file are
  * resolved in the same pass as the file itself — the profile laid over the
@@ -69,6 +83,10 @@ const CONFIG_BRAND: unique symbol = Symbol.for('actor-ts.config');
 export type ConfigLayers = {
   /** `reference.conf`, bundled with the package. */
   readonly reference: Config;
+  /** The project's own `reference.conf` — its root — or empty when there was none (#1785). */
+  readonly projectReference: Config;
+  /** The project `reference.conf`'s `profiles.<profile>` block, or empty. */
+  readonly projectReferenceProfile: Config;
   /** The application file's root — all of it but `profiles` — or empty when there was none. */
   readonly application: Config;
   /** The application file's `profiles.<profile>` block, or empty when it has none or no profile is active. */
@@ -91,9 +109,30 @@ export type ConfigLayers = {
   readonly secretsPath: string | null;
   /** True when a file existed at `secretsPath` and was read. */
   readonly secretsFound: boolean;
+  /** Where the project `reference.conf` was looked for, or `null` when `false` switched it off. */
+  readonly projectReferencePath: string | null;
+  /** True when a file existed at `projectReferencePath` and was read. */
+  readonly projectReferenceFound: boolean;
+  /** Where the `.env` file was looked for, or `null` when `false` switched it off. */
+  readonly environmentFilePath: string | null;
+  /** True when a file existed at `environmentFilePath` and was read. */
+  readonly environmentFileFound: boolean;
+  /**
+   * For each layer above, by its key in this object: leaf path
+   * (`pathKey`-encoded) → the environment variables that supplied the leaf's
+   * value in that layer (#1788).  The config dump withholds a value one of
+   * them names a credential, in any layer.
+   */
+  readonly variables: Readonly<Partial<Record<VariableLayerName, ReadonlyMap<string, ReadonlySet<string>>>>>;
   /** The active profile, or `null` when none was selected. */
   readonly profile: string | null;
 };
+
+/** The layers of {@link ConfigLayers} a file's substitutions can fill from the environment. */
+export type VariableLayerName =
+  | 'projectReference' | 'projectReferenceProfile'
+  | 'application' | 'applicationProfile'
+  | 'secrets' | 'secretsProfile';
 
 export class Config {
   private constructor(private readonly tree: ConfigObject) {}
@@ -116,6 +155,21 @@ export class Config {
    */
   private carriedSecretPaths: ReadonlySet<string> = NO_SECRET_PATHS;
 
+  /**
+   * Leaf path, the leaf's keys as a JSON array, → the names of the environment
+   * variables whose values make up the leaf (#1788).
+   *
+   * Recorded where this config's own substitutions resolved — `parseString`
+   * and `parseFile`; kept through `merge` and `withFallback` as the union of
+   * both sides; carried in by {@link _withSecretPaths} for a tree that left a
+   * load as plain data; and, on what {@link load} returns, the union over
+   * every layer it merged, so a loaded config passed back in as overrides
+   * keeps it.  A sub-tree read with `getConfig` or `atPath` has none.  Both
+   * renderers of the configuration withhold a leaf a credential-named
+   * variable supplied, and name the variables behind every leaf.
+   */
+  private ownVariables: ReadonlyMap<string, ReadonlySet<string>> = NO_VARIABLES;
+
   /** The brand — see {@link CONFIG_BRAND}.  On the prototype, so it is never an own key. */
   get [CONFIG_BRAND](): true { return true; }
 
@@ -124,8 +178,8 @@ export class Config {
   static empty(): Config { return new Config({}); }
 
   static parseString(source: string): Config {
-    const parsed = parseHocon(source);
-    return new Config(stripUndefined(resolveSubstitutions(parsed)));
+    const resolved = resolveLayer(parseHocon(source));
+    return new Config(stripUndefined(resolved.tree)).withOwnVariables(resolved.variablesByPath);
   }
 
   static parseFile(path: string): Config {
@@ -198,11 +252,25 @@ export class Config {
    * survive `postMessage`, and its own `load` may not see the file the main
    * thread read: code can name that file in a way no environment variable
    * carries into the worker.  So the paths travel beside the tree.
+   *
+   * `variables` does the same for the variables behind each leaf (#1788),
+   * keyed as {@link _variables} keys them: the tree says nothing about a
+   * value having come out of `${DB_PASSWORD}`, and a value the main thread's
+   * code overrides read out of one is in no file a worker could read again.
    */
-  static _withSecretPaths(tree: unknown, secretPaths: Iterable<string>): Config {
+  static _withSecretPaths(
+    tree: unknown,
+    secretPaths: Iterable<string>,
+    variables: Readonly<Record<string, ReadonlyArray<string>>> = {},
+  ): Config {
     const config = Config.fromObject(tree);
     config.carriedSecretPaths = new Set(secretPaths);
-    return config;
+    const carried = new Map<string, ReadonlySet<string>>();
+    for (const [path, names] of Object.entries(variables)) {
+      // A frame is data: anything but a list of names is no record at all.
+      if (Array.isArray(names)) carried.set(path, new Set(names.filter((name) => typeof name === 'string')));
+    }
+    return config.withOwnVariables(carried);
   }
 
   /**
@@ -215,59 +283,107 @@ export class Config {
    *   4. The application file's active profile.
    *   5. `application.conf` resolved via `appConfPath` → `process.env.ACTOR_TS_CONFIG`
    *      → `./application.conf` in CWD.
-   *   6. `reference.conf` bundled with this package.
+   *   6. The project `reference.conf`'s active profile.
+   *   7. The project's own `reference.conf`, resolved via `referenceConfPath` →
+   *      `process.env.ACTOR_TS_REFERENCE_CONFIG` → `./reference.conf` in CWD
+   *      (#1785).
+   *   8. `reference.conf` bundled with this package.
    *
    * The profile is `profile` → `process.env.ACTOR_TS_PROFILE` → none, and a
-   * name neither file defines is refused rather than read as "no overlay".
-   * Both files are optional: a path with no file behind it is an empty layer.
-   * A file that is there and cannot be loaded is refused naming the file and
-   * what made `load` read it — `./secrets.conf` is read from the working
-   * directory whenever nothing names a secrets file.
+   * name no file defines is refused rather than read as "no overlay".  Every
+   * file is optional: a path with no file behind it is an empty layer, and
+   * `false` for a path reads no such file at all.  A file that is there and
+   * cannot be loaded is refused naming the file and what made `load` read it
+   * — the files in the working directory are read whenever nothing names
+   * others.
    *
-   * Each file is resolved on its own, as before (#1071), with its active
-   * profile laid over its root *before* its substitutions resolve — so an
-   * alias in the root follows the profile, and an inactive profile is never
-   * resolved at all.  Environment variables are consulted during that
-   * resolution, not as a separate layer.
+   * Substitutions read, in order: the file's own keys, with its active
+   * profile laid over its root *before* they resolve — so an alias in the root
+   * follows the profile, and an inactive profile is never resolved at all —
+   * then the resolved layers beneath it, then the real environment, then the
+   * variables of a `.env` file (#1785).  Downward only: `application.conf` may
+   * read a key the project `reference.conf` sets, but a lower file never sees
+   * a higher one, so there is no late binding and each layer still holds
+   * exactly what its file produced.  The `.env` file is found through the
+   * option, then the real `ACTOR_TS_ENV_FILE`, then `./.env`, and may itself
+   * name the other files and the profile; it never writes `process.env`.
    */
   static load(options: LoadOptions = {}): Config {
-    const environment = processEnvironment();
+    const processVariables = processEnvironment();
+    const selectedEnvironmentFile = selectedFile(
+      'environment file',
+      { name: 'withEnvironmentFile / LoadOptions.environmentFilePath', value: options.environmentFilePath },
+      { name: ENVIRONMENT_FILE_ENVIRONMENT_VARIABLE, value: processVariables[ENVIRONMENT_FILE_ENVIRONMENT_VARIABLE] },
+      DEFAULT_ENVIRONMENT_FILENAME,
+    );
+    const environmentFileText = selectedEnvironmentFile.path === undefined
+      ? null
+      : readSelectedFile(selectedEnvironmentFile, selectedEnvironmentFile.path, true);
+    const fileVariables = environmentFileText === null ? {} : parseEnvironmentFile(environmentFileText);
+    const environment = [processVariables, fileVariables];
+    // The names `load` itself reads go through the same chain, so a `.env`
+    // can name the files and the profile as the real environment can.
+    const variable = (name: string): string | undefined => firstNonEmpty(environment, name);
+
     const reference = Config.loadReference();
+    const selectedProjectReference = selectedFile(
+      'project reference file',
+      { name: 'withReferenceConfigFile / LoadOptions.referenceConfPath', value: options.referenceConfPath },
+      { name: REFERENCE_CONF_ENVIRONMENT_VARIABLE, value: variable(REFERENCE_CONF_ENVIRONMENT_VARIABLE) },
+      DEFAULT_REFERENCE_CONF_FILENAME,
+    );
     const selectedApplication = selectedFile(
       'application file',
       { name: 'withConfigFile / LoadOptions.appConfPath', value: options.appConfPath },
-      { name: 'ACTOR_TS_CONFIG', value: environment.ACTOR_TS_CONFIG },
-      'application.conf',
+      { name: APPLICATION_CONF_ENVIRONMENT_VARIABLE, value: variable(APPLICATION_CONF_ENVIRONMENT_VARIABLE) },
+      DEFAULT_APPLICATION_CONF_FILENAME,
     );
     const selectedSecrets = selectedFile(
       'secrets file',
-      { name: 'LoadOptions.secretsConfPath', value: options.secretsConfPath },
-      { name: SECRETS_CONF_ENVIRONMENT_VARIABLE, value: environment[SECRETS_CONF_ENVIRONMENT_VARIABLE] },
+      { name: 'withSecretsFile / LoadOptions.secretsConfPath', value: options.secretsConfPath },
+      { name: SECRETS_CONF_ENVIRONMENT_VARIABLE, value: variable(SECRETS_CONF_ENVIRONMENT_VARIABLE) },
       DEFAULT_SECRETS_CONF_FILENAME,
     );
+    const projectReferencePath = selectedProjectReference.path;
     const applicationPath = selectedApplication.path;
     const secretsPath = selectedSecrets.path;
-    const profile = selectedProfile(options.profile, environment[PROFILE_ENVIRONMENT_VARIABLE]);
+    const profile = selectedProfile(options.profile, variable(PROFILE_ENVIRONMENT_VARIABLE));
+    const projectReferenceFile = readProfiledFile(selectedProjectReference);
     const applicationFile = readProfiledFile(selectedApplication);
     const secretsFile = readProfiledFile(selectedSecrets);
     if (profile !== null) {
       requireDefinedProfile(profile, [
+        { description: 'project reference file', path: projectReferencePath, file: projectReferenceFile },
         { description: 'application file', path: applicationPath, file: applicationFile },
         { description: 'secrets file', path: secretsPath, file: secretsFile },
       ]);
     }
-    const application = resolveProfiledFile(applicationFile, applicationPath, profile?.name ?? null);
-    const secrets = resolveProfiledFile(secretsFile, secretsPath, profile?.name ?? null);
+    const profileName = profile?.name ?? null;
+
+    // Bottom up: each file resolves against the layers already resolved
+    // beneath it, and the provenance of those layers travels with what a
+    // substitution reads out of them.
+    const beneath = new LayersBeneath(reference.tree);
+    const projectReference = resolveProfiledFile(
+      projectReferenceFile, projectReferencePath, profileName, beneath.scope(environment),
+    );
+    beneath.add(projectReference);
+    const application = resolveProfiledFile(applicationFile, applicationPath, profileName, beneath.scope(environment));
+    beneath.add(application);
+    const secrets = resolveProfiledFile(secretsFile, secretsPath, profileName, beneath.scope(environment));
     const overrides = Config.overridesLayer(options.overrides);
     // Build from reference up, with each layer overriding the last.  A file's
     // two layers arrive already merged — its profile over its root — because
     // they were resolved as one document.
     const merged = reference
+      .merge(new Config(projectReference.effective))
       .merge(new Config(application.effective))
       .merge(new Config(secrets.effective))
       .merge(overrides);
     merged.layers = {
       reference,
+      projectReference: new Config(projectReference.root),
+      projectReferenceProfile: new Config(projectReference.profile),
       application: new Config(application.root),
       applicationProfile: new Config(application.profile),
       secrets: new Config(secrets.root),
@@ -277,8 +393,29 @@ export class Config {
       applicationFound: applicationFile !== null,
       secretsPath: secretsPath ?? null,
       secretsFound: secretsFile !== null,
-      profile: profile?.name ?? null,
+      projectReferencePath: projectReferencePath ?? null,
+      projectReferenceFound: projectReferenceFile !== null,
+      environmentFilePath: selectedEnvironmentFile.path ?? null,
+      environmentFileFound: environmentFileText !== null,
+      variables: {
+        projectReference: projectReference.rootVariables,
+        projectReferenceProfile: projectReference.profileVariables,
+        application: application.rootVariables,
+        applicationProfile: application.profileVariables,
+        secrets: secrets.rootVariables,
+        secretsProfile: secrets.profileVariables,
+      },
+      profile: profileName,
     };
+    // Every layer's, so a loaded config passed back in as the overrides of
+    // another load — or handed to a worker — still says which variables
+    // supplied its leaves, in whichever layer they did.
+    merged.withOwnVariables(unionOfVariables([
+      projectReference.rootVariables, projectReference.profileVariables,
+      application.rootVariables, application.profileVariables,
+      secrets.rootVariables, secrets.profileVariables,
+      overrides.ownVariables,
+    ]));
     return merged;
   }
 
@@ -437,12 +574,14 @@ export class Config {
    * keys that only exist in `other` are filled in.
    */
   withFallback(other: Config): Config {
-    return new Config(deepMerge(other.tree, this.tree));
+    return new Config(deepMerge(other.tree, this.tree))
+      .withOwnVariables(unionOfVariables([other.ownVariables, this.ownVariables]));
   }
 
   /** Inverse of withFallback — layer `overlay` on top. */
   merge(overlay: Config): Config {
-    return new Config(deepMerge(this.tree, overlay.tree));
+    return new Config(deepMerge(this.tree, overlay.tree))
+      .withOwnVariables(unionOfVariables([this.ownVariables, overlay.ownVariables]));
   }
 
   /** Wrap the tree under the given path: `{a:{b:1}}`.atPath("x.y") → `{x:{y:{a:{b:1}}}}`. */
@@ -474,6 +613,20 @@ export class Config {
    * the two renderers withhold.
    */
   _secretPaths(): ReadonlySet<string> { return this.carriedSecretPaths; }
+
+  /**
+   * The variables behind each leaf — see {@link ownVariables}.
+   *
+   * @internal  Read by `src/diagnostics/ConfigDump.ts`, and by `WorkerMesh`,
+   * which hands them to its workers beside the tree.
+   */
+  _variables(): ReadonlyMap<string, ReadonlySet<string>> { return this.ownVariables; }
+
+  /** This config, recording `variables` as its own — see {@link ownVariables}. */
+  private withOwnVariables(variables: ReadonlyMap<string, ReadonlySet<string>>): this {
+    this.ownVariables = variables.size === 0 ? NO_VARIABLES : variables;
+    return this;
+  }
 
   toJSON(): ConfigObject {
     return cloneTree(this.tree);
@@ -518,15 +671,31 @@ export class Config {
 }
 
 export type LoadOptions = {
-  /** The application file, ahead of `ACTOR_TS_CONFIG` and `./application.conf`. */
-  readonly appConfPath?: string;
+  /**
+   * The application file, ahead of `ACTOR_TS_CONFIG` and `./application.conf`.
+   * `false` reads no application file at all.
+   */
+  readonly appConfPath?: string | false;
+  /**
+   * The project's own `reference.conf` — its defaults, over the bundled ones
+   * and under the application file — ahead of `ACTOR_TS_REFERENCE_CONFIG` and
+   * `./reference.conf` (#1785).  Optional: a path with no file behind it is
+   * an empty layer.  `false` reads none.
+   */
+  readonly referenceConfPath?: string | false;
   /**
    * The secrets file, ahead of `ACTOR_TS_SECRETS_CONF` and `./secrets.conf`.
    * Optional as the application file is: a path with no file behind it is an
    * empty layer, so a deployment that keeps no secrets in a file needs
-   * nothing (#1546).
+   * nothing (#1546).  `false` reads none.
    */
-  readonly secretsConfPath?: string;
+  readonly secretsConfPath?: string | false;
+  /**
+   * The `.env` file whose variables answer substitutions behind the real
+   * environment, ahead of `ACTOR_TS_ENV_FILE` and `./.env` (#1785).  Optional;
+   * `false` reads none.
+   */
+  readonly environmentFilePath?: string | false;
   /**
    * The active profile, ahead of `ACTOR_TS_PROFILE`.  A name neither file
    * defines under `profiles` is refused.  An empty string selects no profile
@@ -667,7 +836,7 @@ function cloneTree(obj: ConfigObject, path?: ReadonlyArray<string>): ConfigObjec
  */
 function refuseNestedInstance(value: unknown, path: ReadonlyArray<string>): void {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return;
-  if (isSubstitution(value) || hasPlainPrototype(value)) return;
+  if (isUnresolved(value) || hasPlainPrototype(value)) return;
   throw new ConfigError(
     `Config.fromObject found an instance of ${constructorNameOf(value)} at ${path.join('.')}: `
     + 'the own fields of a class instance are not a configuration tree.  Give that key a plain object or a '
@@ -722,16 +891,44 @@ function constructorNameOf(value: object): string {
 }
 
 /**
- * The one read of a config file — `parseFile`'s, and each of the two files
+ * The one read of a config file — `parseFile`'s, and each of the files
  * `load` reads.
  *
  * Synchronous by contract, and ledgered as such in `NoSyncWorkInHandlers`:
  * the configuration is read at startup, before the system that would run on
- * it exists.  One function rather than a read per caller, so the secrets file
- * adds a file to that startup chain without adding a site to the ledger.
+ * it exists.  One function rather than a read per caller, so a file added to
+ * that startup chain adds no site to the ledger.
+ *
+ * A byte-order mark is dropped.  An editor on Windows may write one, and the
+ * parser read it as part of the first key: `Expected a key` at line 1, col 1.
  */
 function readConfigFile(path: string): string {
-  return readFileSync(path, 'utf8');
+  const text = readFileSync(path, 'utf8');
+  return text.startsWith('\uFEFF') ? text.slice(1) : text;
+}
+
+/**
+ * The text of a file `load` reads if it is there, or `null` when nothing is
+ * at `path` — an empty layer, not an error.
+ *
+ * The read itself decides, rather than an existence check in front of it:
+ * one call, and no window in which the file can go between the check and the
+ * read.  `ENOENT` and `ENOTDIR` mean nothing is there.  A directory at the
+ * path means nothing is there only where `directoryIsAbsent` says so — the
+ * `.env` file, because a Python virtual environment is commonly a directory
+ * called `.env`, and a project with one beside it would otherwise fail every
+ * start.  For a config file a directory stays an error: it was named, or
+ * found, as a file.
+ */
+function readOptionalConfigFile(path: string, directoryIsAbsent: boolean): string | null {
+  try {
+    return readConfigFile(path);
+  } catch (error) {
+    const code = (error as { readonly code?: unknown }).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return null;
+    if (directoryIsAbsent && code === 'EISDIR') return null;
+    throw error;
+  }
 }
 
 function pathInWorkingDirectory(fileName: string): string | undefined {
@@ -769,7 +966,8 @@ function selectedProfile(option: string | undefined, variable: string | undefine
 /** A way to name one of `load`'s files, and what a message calls it. */
 type FileSelector = {
   readonly name: string;
-  readonly value: string | undefined;
+  /** A path; `false` from an option switches the file off; empty or absent falls through. */
+  readonly value: string | false | undefined;
 };
 
 /** A file `load` reads for one layer, and what chose it. */
@@ -797,10 +995,19 @@ function selectedFile(
   variable: FileSelector,
   fileName: string,
 ): SelectedFile {
-  // `!= null`, as the `??` chain this replaced: a null from an untyped caller
-  // falls through exactly as an absent value does.
-  if (option.value != null) return { description, path: option.value, selectedBy: `${option.name} names it` };
-  if (variable.value != null) return { description, path: variable.value, selectedBy: `${variable.name} names it` };
+  // `false` from code reads no such file at all — the way a mesh worker, or a
+  // test, keeps a stray file in the working directory out of its load.
+  if (option.value === false) return { description, path: undefined, selectedBy: `${option.name} is false` };
+  // An empty option falls through like an absent one, as an empty profile
+  // already means none.  `!= null` also lets a null from an untyped caller
+  // fall through.  The variable arrives through `firstNonEmpty`, which has
+  // already read an empty one as unset (#1787).
+  if (option.value != null && option.value !== '') {
+    return { description, path: option.value, selectedBy: `${option.name} names it` };
+  }
+  if (typeof variable.value === 'string') {
+    return { description, path: variable.value, selectedBy: `${variable.name} names it` };
+  }
   return {
     description,
     path: pathInWorkingDirectory(fileName),
@@ -811,24 +1018,45 @@ function selectedFile(
 }
 
 /**
- * The parsed text of one of `load`'s files, or a refusal naming the file and
- * why it was read.
+ * The text of one of `load`'s files, `null` when nothing is at its path, or
+ * a refusal naming the file and why it was read.
  *
- * The parser's own message says where in the text it stopped, not in which
- * file, and `load` reads two on every start.  Only the read and the parse are
- * wrapped: a refusal of the file's profiles names the file already.
+ * Wrapped, because a read error and the parser's message both say what went
+ * wrong but not in which file, and `load` reads several on every start.
+ * Shared by the HOCON files and the `.env` file, so all of them are refused
+ * the same way.
  */
-function parseSelectedFile(selected: SelectedFile, path: string): ConfigObject {
+function readSelectedFile(selected: SelectedFile, path: string, directoryIsAbsent = false): string | null {
   try {
-    return parseHocon(readConfigFile(path));
+    return readOptionalConfigFile(path, directoryIsAbsent);
   } catch (error) {
-    throw new ConfigError(
-      `The ${selected.description} ${path} could not be loaded: `
-      + `${error instanceof Error ? error.message : String(error)}.  `
-      + `Config.load read it because ${selected.selectedBy}.`,
-      { cause: error },
-    );
+    throw refusalOf(selected, path, error);
   }
+}
+
+/**
+ * The parsed text of one of `load`'s HOCON files, `null` when nothing is at
+ * its path, or a refusal naming the file and why it was read.  Only the read
+ * and the parse are wrapped: a refusal of the file's profiles names the file
+ * already.
+ */
+function parseSelectedFile(selected: SelectedFile, path: string): ConfigObject | null {
+  const text = readSelectedFile(selected, path);
+  if (text === null) return null;
+  try {
+    return parseHocon(text);
+  } catch (error) {
+    throw refusalOf(selected, path, error);
+  }
+}
+
+function refusalOf(selected: SelectedFile, path: string, error: unknown): ConfigError {
+  return new ConfigError(
+    `The ${selected.description} ${path} could not be loaded: `
+    + `${error instanceof Error ? error.message : String(error)}.  `
+    + `Config.load read it because ${selected.selectedBy}.`,
+    { cause: error },
+  );
 }
 
 /** One file `load` read, parsed and split, before any substitution is resolved. */
@@ -844,7 +1072,7 @@ type ProfiledFile = {
 
 /**
  * Parse the file at `path` and split its `profiles` block off, or `null` when
- * there is no file — an empty layer, not an error, for both files.
+ * there is no file — an empty layer, not an error, for every one of them.
  *
  * Every profile is checked to be a block here, the active one or not, so a
  * broken production profile fails the first run anywhere rather than the
@@ -853,8 +1081,9 @@ type ProfiledFile = {
  */
 function readProfiledFile(selected: SelectedFile): ProfiledFile | null {
   const path = selected.path;
-  if (path === undefined || !existsSync(path)) return null;
+  if (path === undefined) return null;
   const parsed = parseSelectedFile(selected, path);
+  if (parsed === null) return null;
   const root: ConfigObject = {};
   for (const [key, value] of Object.entries(parsed)) {
     if (key !== PROFILES_ROOT_KEY) root[key] = value;
@@ -946,6 +1175,10 @@ type ResolvedProfiledFile = {
   readonly root: ConfigObject;
   /** The active profile's own keys, resolved in the same pass. */
   readonly profile: ConfigObject;
+  /** Leaf path (`pathKey`-encoded) → the variables that supplied it in the root (#1788). */
+  readonly rootVariables: ReadonlyMap<string, ReadonlySet<string>>;
+  /** The same for the active profile's keys. */
+  readonly profileVariables: ReadonlyMap<string, ReadonlySet<string>>;
 };
 
 /**
@@ -968,8 +1201,9 @@ function resolveProfiledFile(
   file: ProfiledFile | null,
   path: string | undefined,
   profile: string | null,
+  scope: ResolutionScope,
 ): ResolvedProfiledFile {
-  if (file === null) return { effective: {}, root: {}, profile: {} };
+  if (file === null) return { effective: {}, root: {}, profile: {}, rootVariables: new Map(), profileVariables: new Map() };
   const overlay = profile === null ? {} : (file.profiles.get(profile) ?? {});
   refuseProfilesReference(file.root, path);
   refuseProfilesReference(overlay, path);
@@ -977,7 +1211,7 @@ function resolveProfiledFile(
     ...deepMerge(file.root, overlay),
     [PROFILES_ROOT_KEY]: { root: file.root, profile: overlay },
   };
-  const resolved = resolveSubstitutions(scratch);
+  const { tree: resolved, variablesByPath } = resolveLayer(scratch, scope);
   const parts = resolved[PROFILES_ROOT_KEY] as ConfigObject;
   const effective: ConfigObject = {};
   for (const [key, value] of Object.entries(resolved)) {
@@ -987,7 +1221,107 @@ function resolveProfiledFile(
     effective: stripUndefined(effective),
     root: stripUndefined(parts['root'] as ConfigObject),
     profile: stripUndefined(parts['profile'] as ConfigObject),
+    rootVariables: variablesUnder(variablesByPath, [PROFILES_ROOT_KEY, 'root']),
+    profileVariables: variablesUnder(variablesByPath, [PROFILES_ROOT_KEY, 'profile']),
   };
+}
+
+/**
+ * The value `name` has in the first of `sources` that holds one that is not
+ * empty — how `load` reads the names it uses itself, with the same rule a
+ * substitution follows (#1787).
+ */
+function firstNonEmpty(sources: ReadonlyArray<Readonly<Record<string, string | undefined>>>, name: string): string | undefined {
+  for (const source of sources) {
+    const value = Object.hasOwn(source, name) ? source[name] : undefined;
+    if (value !== undefined && value !== '') return value;
+  }
+  return undefined;
+}
+
+/**
+ * The resolved layers beneath the file `load` resolves next: their merged
+ * tree, which a substitution reads when the file has no such key, and which
+ * variables supplied each of its leaves, which such a read carries along
+ * (#1785, #1788).  Lowest layer first, so a higher layer's provenance for a
+ * path replaces a lower one's, as its value does in the merge.
+ */
+class LayersBeneath {
+  private tree: ConfigObject;
+  private readonly variables = new Map<string, ReadonlySet<string>>();
+
+  constructor(bundledReference: ConfigObject) {
+    this.tree = bundledReference;
+  }
+
+  add(file: ResolvedProfiledFile): void {
+    this.tree = deepMerge(this.tree, file.effective);
+    // The profile wins over the root within a file, so it is laid on last.
+    for (const layer of [file.rootVariables, file.profileVariables]) {
+      for (const [key, names] of layer) this.variables.set(key, names);
+    }
+  }
+
+  scope(environment: ReadonlyArray<Readonly<Record<string, string | undefined>>>): ResolutionScope {
+    const tree = this.tree;
+    const variables = new Map(this.variables);
+    return {
+      environment,
+      fallback: tree,
+      fallbackVariables: (path) => variables.get(JSON.stringify(path)) ?? [],
+    };
+  }
+}
+
+/** What a file's substitutions may read besides the file itself (#1785). */
+type ResolutionScope = {
+  /** The real environment first, then the `.env` file's variables. */
+  readonly environment: ReadonlyArray<Readonly<Record<string, string | undefined>>>;
+  /** The resolved layers beneath this file, merged — read only, never merged into the file's layers. */
+  readonly fallback: ConfigObject;
+  /** Which variables supplied a path of {@link fallback}, in the layers beneath. */
+  readonly fallbackVariables: (path: readonly string[]) => Iterable<string>;
+};
+
+/**
+ * The entries of `variables` under `prefix`, re-rooted at it — the provenance
+ * of one part of `resolveProfiledFile`'s scratch tree, as its own layer's.
+ */
+function variablesUnder(
+  variables: ReadonlyMap<string, ReadonlySet<string>>,
+  prefix: readonly string[],
+): ReadonlyMap<string, ReadonlySet<string>> {
+  const out = new Map<string, ReadonlySet<string>>();
+  for (const [key, names] of variables) {
+    const path = JSON.parse(key) as string[];
+    if (path.length > prefix.length && prefix.every((segment, index) => path[index] === segment)) {
+      out.set(JSON.stringify(path.slice(prefix.length)), names);
+    }
+  }
+  return out;
+}
+
+/**
+ * Every path any of `maps` records, with the names all of them record for it
+ * (#1788).  A union and not an overlay: a leaf a higher layer replaced still
+ * names the variable a lower one read, because whether the value that won
+ * is the secret is not something the renderers can know — they withhold by
+ * any layer, as they do for the secrets file.
+ */
+function unionOfVariables(
+  maps: ReadonlyArray<ReadonlyMap<string, ReadonlySet<string>>>,
+): ReadonlyMap<string, ReadonlySet<string>> {
+  const filled = maps.filter((map) => map.size > 0);
+  if (filled.length <= 1) return filled[0] ?? NO_VARIABLES;
+  const out = new Map<string, Set<string>>();
+  for (const map of filled) {
+    for (const [path, names] of map) {
+      const into = out.get(path) ?? new Set<string>();
+      for (const name of names) into.add(name);
+      out.set(path, into);
+    }
+  }
+  return out;
 }
 
 /**
@@ -1016,6 +1350,13 @@ function profilesReferenceIn(value: ConfigValue | undefined): string | null {
     if (value.path === PROFILES_ROOT_KEY || value.path.startsWith(`${PROFILES_ROOT_KEY}.`)) return value.path;
     return profilesReferenceIn(value.previous);
   }
+  if (isConcatenation(value)) {
+    for (const piece of value.pieces) {
+      const reference = typeof piece === 'string' ? null : profilesReferenceIn(piece);
+      if (reference !== null) return reference;
+    }
+    return profilesReferenceIn(value.previous);
+  }
   const children = Array.isArray(value) ? value : isPlainObject(value) ? Object.values(value) : [];
   for (const child of children) {
     const reference = profilesReferenceIn(child);
@@ -1030,6 +1371,7 @@ function describeValue(value: ConfigValue | undefined): string {
   if (value === null) return 'null';
   if (Array.isArray(value)) return 'a list';
   if (isSubstitution(value)) return `\${${value.path}}`;
+  if (isConcatenation(value)) return 'a string built from substitutions';
   return `a ${typeof value}`;
 }
 
