@@ -1,11 +1,11 @@
 <!--
   Single-route SvelteKit app: switches between the login form and
   the chat view based on `chat.phase`.  All state lives in the
-  shared runes-backed store under `$lib/chat.svelte.ts`.
+  shared runes-backed store under `#lib/chat.svelte.ts`.
 -->
 <script lang="ts">
-  import { chat } from '$lib/chat.svelte';
-  import { isDirectMessageRoom, type RoomName } from '$lib/protocol';
+  import { chat } from '#lib/chat.svelte.js';
+  import { isDirectMessageRoom, type RoomName } from '#lib/protocol.js';
 
   let username = $state('');
   let password = $state('');
