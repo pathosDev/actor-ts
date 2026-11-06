@@ -3708,6 +3708,13 @@ fallback-port = ${?ENV_PORT}          # … nur ersetzt, wenn ENV_PORT gesetzt i
 
 Verwende `${?ENV}` für optional, `${ENV}` für required.
 
+Eine Variable, die gesetzt, aber leer ist, zählt als nicht gesetzt — `PORT=`
+in einer Shell, `environment: [PORT]` in einer Compose-Datei und eine leere
+Zeile einer Env-Datei bedeuten alle „nicht gesetzt“.  `${?PORT}` löst sich
+dann zu nichts auf und der Default scheint durch, und `${PORT}` scheitert mit
+einem Fehler, der sagt, dass die Variable gesetzt, aber leer ist.  Um einen
+Key auf einen leeren String zu setzen, schreib `""` in die Datei.
+
 Eine Default-falls-nicht-gesetzt-Form gibt es nicht.  Alles zwischen den
 Klammern ist der Pfad: `${ENV_PORT:-2552}` wird als Key namens
 `ENV_PORT:-2552` nachgeschlagen und scheitert als unaufgelöste

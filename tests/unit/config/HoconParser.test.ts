@@ -611,3 +611,55 @@ describe('substitution chains (#1748)', () => {
     expect(resolveSubstitutions(parseHocon('x = [[${?N}], {y = ${?N}}]'), {})).toStrictEqual({ x: [[], {}] });
   });
 });
+
+/**
+ * An environment variable that is set but empty (#1787).
+ *
+ * `PORT=` in a shell, `environment: [PORT]` in a compose file and an empty
+ * line of an env file all spell "unset".  As a value it replaced the default
+ * an optional substitution falls back to, and it satisfied a required one with
+ * nothing in it.
+ */
+describe('an empty environment variable counts as unset (#1787)', () => {
+  test('an optional substitution keeps the value it would have replaced', () => {
+    expect(resolveSubstitutions(parseHocon('port = 2552\nport = ${?PORT}'), { PORT: '' }))
+      .toEqual({ port: 2552 });
+    expect(stripUndefined(resolveSubstitutions(parseHocon('port = ${?PORT}'), { PORT: '' }))).toEqual({});
+  });
+
+  test('a required substitution fails, saying the variable is set but empty', () => {
+    expect(() => resolveSubstitutions(parseHocon('port = ${PORT}'), { PORT: '' }))
+      .toThrow('Unresolved substitution: ${PORT} — the environment variable that would answer it is set but empty');
+    // A variable that is missing altogether keeps the plain message.
+    expect(() => resolveSubstitutions(parseHocon('port = ${PORT}'), {}))
+      .toThrow(/^Unresolved substitution: \$\{PORT\}$/);
+  });
+
+  test('an empty variable in a chain of optional overrides falls through to the next', () => {
+    expect(resolveSubstitutions(parseHocon('x = 1\nx = ${?A}\nx = ${?B}'), { A: '7', B: '' }))
+      .toEqual({ x: 7 });
+    expect(resolveSubstitutions(parseHocon('x = 1\nx = ${?A}\nx = ${?B}'), { A: '', B: '' }))
+      .toEqual({ x: 1 });
+  });
+
+  test('an empty value under one spelling does not hide the other', () => {
+    expect(resolveSubstitutions(parseHocon('a = ${?pod.ip}'), { 'pod.ip': '', POD_IP: '10.0.0.5' }))
+      .toEqual({ a: '10.0.0.5' });
+  });
+
+  test('a value that is not empty keeps its reading — JSON first', () => {
+    expect(resolveSubstitutions(parseHocon('a = ${?A}\nb = ${?B}\nc = ${?C}'), { A: ' ', B: '0', C: '""' }))
+      .toEqual({ a: ' ', b: 0, c: '' });
+  });
+
+  test('Config.parseString reads the process environment the same way', () => {
+    const saved = process.env['ACTOR_TS_EMPTY_PROBE'];
+    process.env['ACTOR_TS_EMPTY_PROBE'] = '';
+    try {
+      expect(Config.parseString('port = 2552\nport = ${?ACTOR_TS_EMPTY_PROBE}').getNumber('port')).toBe(2552);
+    } finally {
+      if (saved === undefined) delete process.env['ACTOR_TS_EMPTY_PROBE'];
+      else process.env['ACTOR_TS_EMPTY_PROBE'] = saved;
+    }
+  });
+});

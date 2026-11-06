@@ -5907,6 +5907,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   its block under the axis it serves,
   `actor-ts.persistence.<axis>.<plug-in> { … }`.
 
+- **BREAKING — An environment variable that is set but empty counts as not
+  set** (#1787). `PORT=` in a shell, `environment: [PORT]` in a compose file
+  and an empty line of an env file all spell "unset", and `Config.load`
+  already read an empty `ACTOR_TS_PROFILE` that way. A substitution did not:
+  `port = 2552` followed by `port = ${?PORT}` with `PORT` empty set the key
+  to `""`, losing the default, and a required `port = ${PORT}` was satisfied
+  by nothing. Now the optional form resolves to nothing, so the earlier
+  value or the layer below shows through, and the required form fails with
+  `Unresolved substitution: ${PORT}` and the reason that the variable is set
+  but empty. An empty value under the path's own spelling no longer hides
+  the upper-cased one either. A value that is not empty keeps its reading,
+  JSON first.
+
+  **Migration.** A deployment that set a variable to nothing in order to
+  blank a key gets the key's default now. Set the key to `""` in the file
+  instead, which still means empty, or give the variable a value.
+
 
 ### Fixed
 

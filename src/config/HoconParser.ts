@@ -466,6 +466,9 @@ function getProcessEnv(): Record<string, string | undefined> {
   return typeof process !== 'undefined' && process.env ? process.env : {};
 }
 
+/** What {@link SubstitutionResolver.lookupEnvironment} answers when the only variables it found are empty. */
+const EMPTY_VARIABLE: unique symbol = Symbol('empty environment variable');
+
 /**
  * One resolution of one parsed tree.
  *
@@ -568,13 +571,18 @@ class SubstitutionResolver {
       if (fromTree !== undefined) return fromTree;
     }
     const fromEnvironment = this.lookupEnvironment(substitution.path);
-    if (fromEnvironment !== undefined) return fromEnvironment;
+    if (fromEnvironment !== EMPTY_VARIABLE && fromEnvironment !== undefined) return fromEnvironment;
     if (substitution.optional) {
       return substitution.previous === undefined
         ? undefined
         : this.resolveNode(substitution.previous, path, false);
     }
-    throw new Error(`Unresolved substitution: \${${substitution.path}}`);
+    // The prefix stays the same whichever way the lookup missed: callers
+    // match on it, and only the reason after it differs.
+    const reason = fromEnvironment === EMPTY_VARIABLE
+      ? ` — the environment variable that would answer it is set but empty, which counts as not set`
+      : '';
+    throw new Error(`Unresolved substitution: \${${substitution.path}}${reason}`);
   }
 
   /**
@@ -621,11 +629,23 @@ class SubstitutionResolver {
    * dots turned into underscores — read as JSON where it parses as JSON, so
    * `${FOO}` can be a number, a boolean, a list or an object, and as the raw
    * string where it does not.
+   *
+   * A variable that is set but empty answers nothing (#1787).  `PORT=` in a
+   * shell, `environment: [PORT]` in a compose file and an empty line of an
+   * env file are how those spell "unset", and `Config.load` already reads an
+   * empty `ACTOR_TS_PROFILE` that way.  Taken as a value, it replaced the
+   * default an optional substitution was written to fall back to, and it
+   * satisfied a required one with nothing in it.  An empty value under the
+   * path's own spelling does not hide the upper-cased one either: whichever
+   * of the two carries a value answers.  {@link EMPTY_VARIABLE} tells the
+   * caller that only empty ones were found, so the error can say so.
    */
-  private lookupEnvironment(path: string): ConfigValue | undefined {
-    const raw = readOwnEnvironmentEntry(this.env, path)
-      ?? readOwnEnvironmentEntry(this.env, path.replace(/\./g, '_').toUpperCase());
-    if (raw === undefined) return undefined;
+  private lookupEnvironment(path: string): ConfigValue | typeof EMPTY_VARIABLE | undefined {
+    const exact = readOwnEnvironmentEntry(this.env, path);
+    const upperCase = readOwnEnvironmentEntry(this.env, path.replace(/\./g, '_').toUpperCase());
+    const raw = exact !== undefined && exact !== '' ? exact : upperCase;
+    if (raw === undefined) return exact === '' ? EMPTY_VARIABLE : undefined;
+    if (raw === '') return EMPTY_VARIABLE;
     try {
       return withoutForbiddenKeys(JSON.parse(raw));
     } catch {

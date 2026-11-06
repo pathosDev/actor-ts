@@ -3476,6 +3476,12 @@ fallback-port = ${?ENV_PORT}          # … replaced only when ENV_PORT is set
 
 Use `${?ENV}` for optional, `${ENV}` for required.
 
+A variable that is set but empty counts as not set — `PORT=` in a shell,
+`environment: [PORT]` in a compose file and an empty line of an env file all
+mean "unset".  `${?PORT}` then resolves to nothing and the default shows
+through, and `${PORT}` fails with an error saying the variable is set but
+empty.  To set a key to an empty string, write `""` in the file.
+
 There is no default-if-unset form.  Everything between the braces is the
 path, so `${ENV_PORT:-2552}` is looked up as a key named `ENV_PORT:-2552`
 and fails as an unresolved substitution, and `${?ENV_PORT:-2552}` is
