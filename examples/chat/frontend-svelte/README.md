@@ -38,7 +38,7 @@ src/
     ├── +layout.svelte       ← root layout
     ├── +layout.ts           ← `ssr = false` + `prerender = true`
     └── +page.svelte         ← single-route app (login + chat split)
-svelte.config.js             ← adapter-static + base path /static/svelte
+vite.config.ts               ← sveltekit({...}): adapter-static + base path /static/svelte
 scripts/copy-build.mjs       ← build/ → ../static/svelte/
 ```
 

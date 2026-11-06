@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { voice } from '$lib/voice.svelte';
+  import { voice } from '#lib/voice.svelte.js';
 
   let usernameInput = $state('');
   let passwordInput = $state('');
