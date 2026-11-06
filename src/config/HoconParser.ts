@@ -686,15 +686,85 @@ export function resolveSubstitutions(
   obj: ConfigObject,
   env: Record<string, string | undefined> = getProcessEnv(),
 ): ConfigObject {
-  return new SubstitutionResolver(obj, env).resolveRoot();
+  return new SubstitutionResolver(obj, { environment: [env] }).resolveRoot().tree;
 }
 
 function getProcessEnv(): Record<string, string | undefined> {
   return typeof process !== 'undefined' && process.env ? process.env : {};
 }
 
+/** A source of variables a substitution may read, by name. */
+export type EnvironmentSource = Readonly<Record<string, string | undefined>>;
+
+/** What {@link resolveLayer} resolves a tree against, besides the tree itself. */
+export type ResolveLayerOptions = {
+  /**
+   * Variables, in order: for each name the first source that holds a value
+   * that is not empty answers (#1787).  `Config.load` passes the real
+   * environment first and a `.env` file's entries after it (#1785), so a
+   * variable the process was started with always wins.
+   *
+   * Sources rather than one merged record: Deno grants environment access
+   * per variable, so copying `process.env` would ask for all of them.
+   */
+  readonly environment?: ReadonlyArray<EnvironmentSource>;
+  /**
+   * The resolved layers beneath this one, merged — what a substitution reads
+   * when the tree has no such key (#1785).  Read only, and never merged into
+   * the result: a substitution that finds nothing still leaves its key out,
+   * so the layer below shows through and the attribution by layer stays
+   * true.
+   */
+  readonly fallback?: ConfigObject;
+  /**
+   * Which variables supplied the value at a path of {@link fallback} — the
+   * provenance a value found there carries into this layer.
+   */
+  readonly fallbackVariables?: (path: readonly string[]) => Iterable<string>;
+};
+
+/** A resolved tree, and which variables supplied the value of each of its leaves. */
+export type ResolvedLayer = {
+  readonly tree: ConfigObject;
+  /**
+   * Leaf path (`pathKey`-encoded) → the names of the variables whose values
+   * make up the leaf's value: read directly, through a reference to another
+   * key, or as a piece of a concatenation.  A list is one leaf.  A leaf whose
+   * value no variable supplied has no entry.
+   */
+  readonly variablesByPath: ReadonlyMap<string, ReadonlySet<string>>;
+};
+
+/**
+ * Resolve one layer of a configuration — {@link resolveSubstitutions} with the
+ * environment as ordered sources, the layers beneath as a read-only fallback,
+ * and the provenance of every leaf in the answer (#1785, #1788).
+ */
+export function resolveLayer(tree: ConfigObject, options: ResolveLayerOptions = {}): ResolvedLayer {
+  return new SubstitutionResolver(tree, options).resolveRoot();
+}
+
 /** What {@link SubstitutionResolver.lookupEnvironment} answers when the only variables it found are empty. */
 const EMPTY_VARIABLE: unique symbol = Symbol('empty environment variable');
+
+/**
+ * Which variables supplied a resolved value, by leaf: the key is the leaf's
+ * path *relative to the value* (`pathKey`-encoded, `[]` for the value itself),
+ * the entry the names behind it.  Carried with every value the resolver
+ * returns, so a value that moves — through a reference, into a string, out of
+ * a layer below — takes what it came from along.
+ */
+type Provenance = ReadonlyMap<string, ReadonlySet<string>>;
+
+const NO_PROVENANCE: Provenance = new Map();
+
+/** A resolved value — `undefined` for "nothing" — and the variables behind its leaves. */
+type Resolved = {
+  readonly value: ConfigValue | undefined;
+  readonly provenance: Provenance;
+};
+
+const NOTHING: Resolved = { value: undefined, provenance: NO_PROVENANCE };
 
 /**
  * One resolution of one parsed tree.
@@ -704,18 +774,22 @@ const EMPTY_VARIABLE: unique symbol = Symbol('empty environment variable');
  * returned, so `stripUndefined` and every caller keep their meaning.
  */
 class SubstitutionResolver {
-  /** Resolved fields by `pathKey`; a stored `undefined` is a field that resolved to nothing. */
-  private readonly resolved = new Map<string, ConfigValue | undefined>();
+  /** Resolved fields by `pathKey`; a stored `undefined` value is a field that resolved to nothing. */
+  private readonly resolved = new Map<string, Resolved>();
   /** The fields whose resolution is under way, outermost first — what names a cycle. */
   private readonly resolving: Array<readonly string[]> = [];
+  private readonly environment: ReadonlyArray<EnvironmentSource>;
 
   constructor(
     private readonly root: ConfigObject,
-    private readonly env: Record<string, string | undefined>,
-  ) {}
+    private readonly options: ResolveLayerOptions,
+  ) {
+    this.environment = options.environment ?? [getProcessEnv()];
+  }
 
-  resolveRoot(): ConfigObject {
-    return this.resolveObject(this.root, [], true);
+  resolveRoot(): ResolvedLayer {
+    const { value, provenance } = this.resolveObject(this.root, [], true);
+    return { tree: value as ConfigObject, variablesByPath: provenance };
   }
 
   /**
@@ -723,23 +797,24 @@ class SubstitutionResolver {
    * `node` — memoised, so a field a lookup already resolved is not resolved a
    * second time when the walk reaches it.
    */
-  private resolveField(path: readonly string[], node: ConfigValue | undefined): ConfigValue | undefined {
+  private resolveField(path: readonly string[], node: ConfigValue | undefined): Resolved {
     const key = pathKey(path);
-    if (this.resolved.has(key)) return this.resolved.get(key);
+    const known = this.resolved.get(key);
+    if (known !== undefined) return known;
     const open = this.resolving.findIndex((entry) => pathKey(entry) === key);
     if (open >= 0) {
       const cycle = [...this.resolving.slice(open), path].map((entry) => entry.join('.'));
       throw new Error(`Substitution cycle: ${cycle.join(' -> ')}`);
     }
     this.resolving.push(path);
-    let value: ConfigValue | undefined;
+    let result: Resolved;
     try {
-      value = this.resolveNode(node, path, true);
+      result = this.resolveNode(node, path, true);
     } finally {
       this.resolving.pop();
     }
-    this.resolved.set(key, value);
-    return value;
+    this.resolved.set(key, result);
+    return result;
   }
 
   /**
@@ -748,67 +823,82 @@ class SubstitutionResolver {
    * meet them: an object inside a list, or the value an optional substitution
    * replaced, is reachable by no path, so its fields resolve in place.
    */
-  private resolveNode(node: ConfigValue | undefined, path: readonly string[], addressable: boolean): ConfigValue | undefined {
-    if (node === undefined) return undefined;
+  private resolveNode(node: ConfigValue | undefined, path: readonly string[], addressable: boolean): Resolved {
+    if (node === undefined) return NOTHING;
     return match(node)
       .when(isSubstitution, (substitution) => this.resolveSubstitution(substitution, path))
       .when(isConcatenation, (concatenation) => this.resolveConcatenation(concatenation, path))
       .when((value): value is ConfigValue[] => Array.isArray(value), (list) => this.resolveList(list, path))
       .when(isPlainObject, (object) => this.resolveObject(object, path, addressable))
-      .otherwise((primitive) => primitive);
+      .otherwise((primitive): Resolved => ({ value: primitive, provenance: NO_PROVENANCE }));
   }
 
-  private resolveObject(object: ConfigObject, path: readonly string[], addressable: boolean): ConfigObject {
+  private resolveObject(object: ConfigObject, path: readonly string[], addressable: boolean): Resolved {
     const out: ConfigObject = {};
+    const provenance = new Map<string, ReadonlySet<string>>();
     for (const [key, child] of Object.entries(object)) {
       if (isForbiddenConfigKey(key)) continue;
       const childPath = [...path, key];
-      const value = addressable
+      const resolved = addressable
         ? this.resolveField(childPath, child)
         : this.resolveNode(child, childPath, false);
-      if (value !== undefined) out[key] = value;
+      if (resolved.value === undefined) continue;
+      out[key] = resolved.value;
+      for (const [relative, variables] of resolved.provenance) {
+        provenance.set(pathKey([key, ...JSON.parse(relative) as string[]]), variables);
+      }
     }
-    return out;
-  }
-
-  /** A list is one field: its elements share its path, and one that resolves to nothing drops out. */
-  private resolveList(list: readonly ConfigValue[], path: readonly string[]): ConfigValue[] {
-    const out: ConfigValue[] = [];
-    for (const element of list) {
-      const value = this.resolveNode(element, path, false);
-      if (value !== undefined) out.push(value);
-    }
-    return out;
+    return { value: out, provenance };
   }
 
   /**
-   * The tree, then the environment, then — for the optional form — the value
-   * the assignment replaced.
+   * A list is one field and one leaf: its elements share its path, one that
+   * resolves to nothing drops out, and the variables behind any element are
+   * the list's.
+   */
+  private resolveList(list: readonly ConfigValue[], path: readonly string[]): Resolved {
+    const out: ConfigValue[] = [];
+    const variables = new Set<string>();
+    for (const element of list) {
+      const resolved = this.resolveNode(element, path, false);
+      if (resolved.value === undefined) continue;
+      out.push(resolved.value);
+      for (const names of resolved.provenance.values()) for (const name of names) variables.add(name);
+    }
+    return { value: out, provenance: variables.size === 0 ? NO_PROVENANCE : new Map([[pathKey([]), variables]]) };
+  }
+
+  /**
+   * The tree, then the layers beneath, then the environment, then — for the
+   * optional form — the value the assignment replaced.
    *
    * A field that names itself, `pod.ip = ${?pod.ip}`, skips the tree: its own
-   * value there is the very substitution being resolved, so the environment
-   * answers, and then what the assignment replaced.  That is what the old walk
-   * did too — it met the unresolved marker and moved on — so it is kept rather
-   * than refused as a cycle.  The replaced value resolves at the same path, in
-   * the same frame, so `x = 1`, `x = ${?x}`, `x = ${?x}` is no cycle either.
+   * value there is the very substitution being resolved.  The layers beneath
+   * answer first then, which is how an override in `application.conf` builds
+   * on the key the project's `reference.conf` sets; then the environment, then
+   * what the assignment replaced.  The replaced value resolves at the same
+   * path, in the same frame, so `x = 1`, `x = ${?x}`, `x = ${?x}` is no cycle.
    */
   private resolveSubstitution(
     substitution: Substitution,
     path: readonly string[],
     reading: EnvironmentReading = 'value',
-  ): ConfigValue | undefined {
+  ): Resolved {
     const target = substitution.path.split('.');
     if (!samePath(target, path)) {
       const fromTree = this.lookupTree(target);
-      if (fromTree !== undefined) return fromTree;
+      if (fromTree.value !== undefined) return fromTree;
     }
+    const fromFallback = this.lookupFallback(target);
+    if (fromFallback.value !== undefined) return fromFallback;
     const fromEnvironment = this.lookupEnvironment(substitution.path);
     if (fromEnvironment !== EMPTY_VARIABLE && fromEnvironment !== undefined) {
-      return reading === 'text' ? fromEnvironment : environmentValueOf(fromEnvironment);
+      const value = reading === 'text' ? fromEnvironment.raw : environmentValueOf(fromEnvironment.raw);
+      return { value, provenance: everyLeafFrom(value, fromEnvironment.name) };
     }
     if (substitution.optional) {
       return substitution.previous === undefined
-        ? undefined
+        ? NOTHING
         : this.resolveNode(substitution.previous, path, false);
     }
     // The prefix stays the same whichever way the lookup missed: callers
@@ -820,8 +910,8 @@ class SubstitutionResolver {
   }
 
   /**
-   * The string a concatenation stands for (#537), or `undefined` when it is
-   * made of optional substitutions only and none of them answers.
+   * The string a concatenation stands for (#537), or nothing when it is made
+   * of optional substitutions only and none of them answers.
    *
    * A variable contributes the text it holds, not its JSON reading.  JSON
    * first gives a lone `${PORT}` a number; inside a string it would turn
@@ -832,13 +922,17 @@ class SubstitutionResolver {
    * substitution that finds nothing adds nothing, as the specification has
    * it; when no piece answers at all, the concatenation falls back to the
    * value its assignment replaced, the way an optional substitution does.
+   *
+   * The string is one leaf, made of every piece's variables.
    */
-  private resolveConcatenation(concatenation: Concatenation, path: readonly string[]): ConfigValue | undefined {
+  private resolveConcatenation(concatenation: Concatenation, path: readonly string[]): Resolved {
     let text = '';
     let answered = false;
+    const variables = new Set<string>();
     for (const piece of concatenation.pieces) {
       if (typeof piece === 'string') { text += piece; continue; }
-      const value = this.resolveSubstitution(piece, path, 'text');
+      const resolved = this.resolveSubstitution(piece, path, 'text');
+      const value = resolved.value;
       if (value === undefined) continue;
       if (typeof value === 'object' && value !== null) {
         const what = Array.isArray(value) ? 'a list' : 'an object';
@@ -846,16 +940,19 @@ class SubstitutionResolver {
       }
       text += String(value);
       answered = true;
+      for (const names of resolved.provenance.values()) for (const name of names) variables.add(name);
     }
-    if (answered || !concatenation.optional) return text;
+    if (answered || !concatenation.optional) {
+      return { value: text, provenance: variables.size === 0 ? NO_PROVENANCE : new Map([[pathKey([]), variables]]) };
+    }
     return concatenation.previous === undefined
-      ? undefined
+      ? NOTHING
       : this.resolveNode(concatenation.previous, path, false);
   }
 
   /**
    * The resolved value at `target`, reading the tree's **own** properties only,
-   * or `undefined` when the tree has none.
+   * or nothing when the tree has none.
    *
    * The `Object.hasOwn` guard is what keeps `${toString}` from splicing a
    * native function into the resolved config: without it the descent reads
@@ -877,44 +974,70 @@ class SubstitutionResolver {
    * A substitution met on the way — `b = ${a.k}` with `a = ${?OBJ}` — is
    * resolved, and the descent goes on in its value, which is data.
    */
-  private lookupTree(target: readonly string[]): ConfigValue | undefined {
+  private lookupTree(target: readonly string[]): Resolved {
     let node: ConfigValue | undefined = this.root;
     for (let depth = 0; depth < target.length; depth++) {
       const segment = target[depth]!;
-      if (isForbiddenConfigKey(segment)) return undefined;
+      if (isForbiddenConfigKey(segment)) return NOTHING;
       if (isUnresolved(node)) {
-        const resolved = this.resolveField(target.slice(0, depth), node);
-        return readData(resolved, target.slice(depth));
+        return within(this.resolveField(target.slice(0, depth), node), target.slice(depth));
       }
-      if (!isPlainObject(node) || !Object.hasOwn(node, segment)) return undefined;
-      node = node[segment];
+      if (!isPlainObject(node) || !Object.hasOwn(node, segment)) return NOTHING;
+      node = (node as ConfigObject)[segment];
     }
     return this.resolveField(target, node);
   }
 
   /**
-   * The text of the variable named by the path, else by the path upper-cased
-   * with its dots turned into underscores.  A lone `${FOO}` reads it as JSON
-   * where it parses as JSON, so it can be a number, a boolean, a list or an
-   * object ({@link environmentValueOf}); a concatenation takes the text.
-   *
-   * A variable that is set but empty answers nothing (#1787).  `PORT=` in a
-   * shell, `environment: [PORT]` in a compose file and an empty line of an
-   * env file are how those spell "unset", and `Config.load` already reads an
-   * empty `ACTOR_TS_PROFILE` that way.  Taken as a value, it replaced the
-   * default an optional substitution was written to fall back to, and it
-   * satisfied a required one with nothing in it.  An empty value under the
-   * path's own spelling does not hide the upper-cased one either: whichever
-   * of the two carries a value answers.  {@link EMPTY_VARIABLE} tells the
-   * caller that only empty ones were found, so the error can say so.
+   * The value at `target` in the resolved layers beneath, with the variables
+   * that supplied it there (#1785).  Already resolved, so it is data: read
+   * with the same own-property guard as the tree, and never walked again.
    */
-  private lookupEnvironment(path: string): string | typeof EMPTY_VARIABLE | undefined {
-    const exact = readOwnEnvironmentEntry(this.env, path);
-    const upperCase = readOwnEnvironmentEntry(this.env, path.replace(/\./g, '_').toUpperCase());
-    const raw = exact !== undefined && exact !== '' ? exact : upperCase;
-    if (raw === undefined) return exact === '' ? EMPTY_VARIABLE : undefined;
-    if (raw === '') return EMPTY_VARIABLE;
-    return raw;
+  private lookupFallback(target: readonly string[]): Resolved {
+    const fallback = this.options.fallback;
+    if (fallback === undefined) return NOTHING;
+    const value = readData(fallback, target);
+    if (value === undefined) return NOTHING;
+    const variablesOf = this.options.fallbackVariables;
+    if (variablesOf === undefined) return { value, provenance: NO_PROVENANCE };
+    const provenance = new Map<string, ReadonlySet<string>>();
+    for (const leaf of leafPaths(value)) {
+      const names = new Set(variablesOf([...target, ...leaf]));
+      if (names.size > 0) provenance.set(pathKey(leaf), names);
+    }
+    return { value, provenance };
+  }
+
+  /**
+   * The text of the variable named by the path, else by the path upper-cased
+   * with its dots turned into underscores, and which name answered.  A lone
+   * `${FOO}` reads it as JSON where it parses as JSON, so it can be a number,
+   * a boolean, a list or an object ({@link environmentValueOf}); a
+   * concatenation takes the text.
+   *
+   * The sources are asked in order, and for each name the first one that
+   * holds a value that is not empty answers.  A variable that is set but
+   * empty answers nothing (#1787).  `PORT=` in a shell, `environment: [PORT]`
+   * in a compose file and an empty line of an env file are how those spell
+   * "unset", and `Config.load` already reads an empty `ACTOR_TS_PROFILE` that
+   * way.  Taken as a value, it replaced the default an optional substitution
+   * was written to fall back to, and it satisfied a required one with nothing
+   * in it.  An empty variable does not hide a later source, nor the
+   * upper-cased spelling: whichever carries a value answers.
+   * {@link EMPTY_VARIABLE} tells the caller that only empty ones were found,
+   * so the error can say so.
+   */
+  private lookupEnvironment(path: string): { readonly name: string; readonly raw: string } | typeof EMPTY_VARIABLE | undefined {
+    let sawEmpty = false;
+    for (const name of [path, path.replace(/\./g, '_').toUpperCase()]) {
+      for (const source of this.environment) {
+        const raw = readOwnEnvironmentEntry(source, name);
+        if (raw === undefined) continue;
+        if (raw === '') { sawEmpty = true; continue; }
+        return { name, raw };
+      }
+    }
+    return sawEmpty ? EMPTY_VARIABLE : undefined;
   }
 }
 
@@ -931,6 +1054,43 @@ function environmentValueOf(raw: string): ConfigValue {
   } catch {
     return raw;
   }
+}
+
+/**
+ * `resolved` narrowed to what lies at `rest` inside its value, with the
+ * provenance of that part.  A leaf at or below `rest` keeps its variables,
+ * re-rooted; a leaf above it — the whole value came from one variable, say —
+ * gives its variables to the part, since the part is made of it.
+ */
+function within(resolved: Resolved, rest: readonly string[]): Resolved {
+  const value = readData(resolved.value, rest);
+  if (value === undefined) return NOTHING;
+  const provenance = new Map<string, Set<string>>();
+  const add = (leaf: readonly string[], variables: ReadonlySet<string>): void => {
+    const key = pathKey(leaf);
+    const into = provenance.get(key) ?? new Set<string>();
+    for (const name of variables) into.add(name);
+    provenance.set(key, into);
+  };
+  for (const [relative, variables] of resolved.provenance) {
+    const leaf = JSON.parse(relative) as string[];
+    if (samePath(leaf.slice(0, rest.length), rest)) add(leaf.slice(rest.length), variables);
+    else if (samePath(rest.slice(0, leaf.length), leaf)) add([], variables);
+  }
+  return { value, provenance };
+}
+
+/** Every leaf of `value` — a list is one — tagged as supplied by the variable `name`. */
+function everyLeafFrom(value: ConfigValue, name: string): Provenance {
+  const names = new Set([name]);
+  return new Map(leafPaths(value).map((leaf) => [pathKey(leaf), names]));
+}
+
+/** The paths of the leaves of `value`, relative to it; a non-object value is its own leaf at `[]`. */
+function leafPaths(value: ConfigValue): string[][] {
+  if (!isPlainObject(value)) return [[]];
+  return Object.entries(value).flatMap(([key, child]) =>
+    isForbiddenConfigKey(key) ? [] : leafPaths(child).map((rest) => [key, ...rest]));
 }
 
 /**
