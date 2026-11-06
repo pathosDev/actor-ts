@@ -120,9 +120,10 @@ export const PATH_TRAVERSAL_SEGMENTS: ReadonlySet<string> = new Set(['.', '..'])
 export const MAXIMUM_DRAW_ATTEMPTS = 1_000;
 
 /**
- * The words a config key uses to say that its value is a credential — the
- * test behind every value withheld *by name* from a rendered merged tree,
- * DevTools' `config.resolved` pull (#553) and the boot dump
+ * The words a config key uses to say that its value is a credential — and the
+ * environment variable that supplied the value, read by the same rule
+ * (#1788) — the test behind every value withheld *by name* from a rendered
+ * merged tree, DevTools' `config.resolved` pull (#553) and the boot dump
  * `actor-ts.diagnostics.log-config-on-start` turns on (#867).
  *
  * It lives here rather than in `devtools/protocol/ConfigFrames.ts` because a
@@ -156,14 +157,19 @@ export const MAXIMUM_DRAW_ATTEMPTS = 1_000;
  *
  * **It is a heuristic, and it is the weakest part of the guarantee.**  It
  * catches `password`, `api-key`, `secret`, `auth-token`, `auth-header`,
- * `credentials`, and every key beneath a branch one of those names.  It
- * cannot catch a secret whose key does not say so — a `dsn`, a
- * `connection-string`, a `uri`: the merged tree is a tree of strings, and by
- * the time it exists a `${?DATABASE_PASSWORD}` has resolved into a value with
- * nothing left in it to say what it is.  Where the value came from can say
- * so, though: both renderers withhold every value the secrets file sets,
- * whatever its key is called — decided by the layer the loader kept, not by
- * this pattern (#1546).  Reading every word errs toward withholding: an
+ * `credentials`, and every key beneath a branch one of those names.  A digit
+ * after a word is cut off before the word is read, so `password2` counts, and
+ * {@link CONFIG_SECRET_COMPOUND_PATTERN} and
+ * {@link CONFIG_SECRET_WORDS_IN_LONGER_NAMES} add the glued spellings —
+ * `pgpassword`, `apikey`, `db.pwd` (#1759).  It cannot catch a secret
+ * whose key does not say so — a `dsn`, a `connection-string`, a `uri`.  Where
+ * the value came from can say so, though: both renderers withhold every value
+ * the secrets file sets, whatever its key is called — decided by the layer
+ * the loader kept, not by this pattern (#1546) — and every value a variable
+ * supplied whose *name* this rule reads as a credential, through a reference
+ * to another key or as a piece of a concatenation too, so
+ * `dsn = ${DATABASE_PASSWORD}` is withheld by its variable (#1788).  Reading
+ * every word errs toward withholding: an
  * application's `kms-key-id` or `token-bucket-size` is withheld although it
  * names a key or sizes a bucket rather than holding a credential.  The keys
  * `reference.conf` ships that read that way are exempted by full path in
@@ -175,12 +181,13 @@ export const MAXIMUM_DRAW_ATTEMPTS = 1_000;
  * `diagnostics/ConfigDump.ts` masks it by value in both renderers (#1458),
  * and this pattern is not widened to `url` or `dsn` to reach it.  Outside
  * the secrets file — in `application.conf`, say, or the code's overrides —
- * what none of these rules sees still prints: a bare password under a key
- * that does not name one, a credential in a query string, SQL Server's
- * `Server=…;Password=…` form and memjs's scheme-less `user:pass@host` list.
- * The defences that do not depend on a guess are keeping credentials in the
- * secrets file and not printing the tree, which is why both renderers are
- * opt-in and the boot dump ships `off`.
+ * what none of these rules sees still prints: a bare password written out
+ * under a key that does not name one, a credential in a query string, SQL
+ * Server's `Server=…;Password=…` form and memjs's scheme-less
+ * `user:pass@host` list, each unless a variable named like a credential
+ * supplied it.  The defences that do not depend on a guess are keeping
+ * credentials in the secrets file and not printing the tree, which is why
+ * both renderers are opt-in and the boot dump ships `off`.
  *
  * Deliberately not widened past these words.  `seed` would redact
  * `cluster.seed-nodes`, `id` would redact half the file, and a dump whose
@@ -188,7 +195,33 @@ export const MAXIMUM_DRAW_ATTEMPTS = 1_000;
  * which costs more than the word would have bought.
  */
 export const CONFIG_SECRET_PATTERN =
-  /^(?:pass(?:word|phrase|wd)|secret|token|key|credential|auth)s?$/i;
+  /^(?:pass(?:word|phrase|wd)?|secret|token|key|credential|auth(?:orization)?)s?$/i;
+
+/**
+ * A credential word glued onto another word — `pgpassword`, `clientsecret`,
+ * `ghtoken`, `apitoken` — and the four `…key` compounds that name one,
+ * `apikey`, `accesskey`, `secretkey` and `privatekey` (#1759).
+ *
+ * A second pattern beside {@link CONFIG_SECRET_PATTERN} rather than a looser
+ * first one, because a cut into words cannot reach these: `PGPASSWORD` is one
+ * word to any rule that does not already know it.  Only the stems that end no
+ * ordinary word take a prefix — `password`, `passwd`, `passphrase`, `secret`,
+ * `token`, `credential` and `authorization`.  `key`, `pass` and `auth` do
+ * not, because `monkey`, `turkey`, `compass`, `bypass` and `oauth` end on
+ * them, so of the `…key` names only the four spelled out here are read and an
+ * `sshkey` still prints.  Applied, like that pattern, to one word at a time.
+ */
+export const CONFIG_SECRET_COMPOUND_PATTERN =
+  /^(?:[a-z]+(?:pass(?:word|phrase|wd)|secret|token|credential|authorization)|(?:api|access|secret|private)key)s?$/i;
+
+/**
+ * Words that name a credential unless they are the whole name — `pwd` in
+ * `MYSQL_PWD`, `db-pwd` or `db.pwd`, a key's name being its whole path
+ * (#1759).  A variable called just `PWD` is the one every POSIX shell sets to
+ * its working directory, and a dump that withheld a path read out of it would
+ * be withholding noise.
+ */
+export const CONFIG_SECRET_WORDS_IN_LONGER_NAMES: ReadonlySet<string> = new Set(['pwd']);
 
 /**
  * Keys this project ships that {@link CONFIG_SECRET_PATTERN} reads wrong,

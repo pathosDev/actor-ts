@@ -36,6 +36,9 @@ import { parseSize } from './Size.js';
 /** The carried secret paths of every config that carries none — shared, never written. */
 const NO_SECRET_PATHS: ReadonlySet<string> = new Set();
 
+/** The variables of every config whose leaves no variable supplied — shared, never written. */
+const NO_VARIABLES: ReadonlyMap<string, ReadonlySet<string>> = new Map();
+
 /**
  * What every `Config` carries, whichever copy of actor-ts built it.
  *
@@ -152,6 +155,21 @@ export class Config {
    */
   private carriedSecretPaths: ReadonlySet<string> = NO_SECRET_PATHS;
 
+  /**
+   * Leaf path, the leaf's keys as a JSON array, → the names of the environment
+   * variables whose values make up the leaf (#1788).
+   *
+   * Recorded where this config's own substitutions resolved — `parseString`
+   * and `parseFile`; kept through `merge` and `withFallback` as the union of
+   * both sides; carried in by {@link _withSecretPaths} for a tree that left a
+   * load as plain data; and, on what {@link load} returns, the union over
+   * every layer it merged, so a loaded config passed back in as overrides
+   * keeps it.  A sub-tree read with `getConfig` or `atPath` has none.  Both
+   * renderers of the configuration withhold a leaf a credential-named
+   * variable supplied, and name the variables behind every leaf.
+   */
+  private ownVariables: ReadonlyMap<string, ReadonlySet<string>> = NO_VARIABLES;
+
   /** The brand — see {@link CONFIG_BRAND}.  On the prototype, so it is never an own key. */
   get [CONFIG_BRAND](): true { return true; }
 
@@ -160,8 +178,8 @@ export class Config {
   static empty(): Config { return new Config({}); }
 
   static parseString(source: string): Config {
-    const parsed = parseHocon(source);
-    return new Config(stripUndefined(resolveSubstitutions(parsed)));
+    const resolved = resolveLayer(parseHocon(source));
+    return new Config(stripUndefined(resolved.tree)).withOwnVariables(resolved.variablesByPath);
   }
 
   static parseFile(path: string): Config {
@@ -234,11 +252,25 @@ export class Config {
    * survive `postMessage`, and its own `load` may not see the file the main
    * thread read: code can name that file in a way no environment variable
    * carries into the worker.  So the paths travel beside the tree.
+   *
+   * `variables` does the same for the variables behind each leaf (#1788),
+   * keyed as {@link _variables} keys them: the tree says nothing about a
+   * value having come out of `${DB_PASSWORD}`, and a value the main thread's
+   * code overrides read out of one is in no file a worker could read again.
    */
-  static _withSecretPaths(tree: unknown, secretPaths: Iterable<string>): Config {
+  static _withSecretPaths(
+    tree: unknown,
+    secretPaths: Iterable<string>,
+    variables: Readonly<Record<string, ReadonlyArray<string>>> = {},
+  ): Config {
     const config = Config.fromObject(tree);
     config.carriedSecretPaths = new Set(secretPaths);
-    return config;
+    const carried = new Map<string, ReadonlySet<string>>();
+    for (const [path, names] of Object.entries(variables)) {
+      // A frame is data: anything but a list of names is no record at all.
+      if (Array.isArray(names)) carried.set(path, new Set(names.filter((name) => typeof name === 'string')));
+    }
+    return config.withOwnVariables(carried);
   }
 
   /**
@@ -375,6 +407,15 @@ export class Config {
       },
       profile: profileName,
     };
+    // Every layer's, so a loaded config passed back in as the overrides of
+    // another load — or handed to a worker — still says which variables
+    // supplied its leaves, in whichever layer they did.
+    merged.withOwnVariables(unionOfVariables([
+      projectReference.rootVariables, projectReference.profileVariables,
+      application.rootVariables, application.profileVariables,
+      secrets.rootVariables, secrets.profileVariables,
+      overrides.ownVariables,
+    ]));
     return merged;
   }
 
@@ -533,12 +574,14 @@ export class Config {
    * keys that only exist in `other` are filled in.
    */
   withFallback(other: Config): Config {
-    return new Config(deepMerge(other.tree, this.tree));
+    return new Config(deepMerge(other.tree, this.tree))
+      .withOwnVariables(unionOfVariables([other.ownVariables, this.ownVariables]));
   }
 
   /** Inverse of withFallback — layer `overlay` on top. */
   merge(overlay: Config): Config {
-    return new Config(deepMerge(this.tree, overlay.tree));
+    return new Config(deepMerge(this.tree, overlay.tree))
+      .withOwnVariables(unionOfVariables([this.ownVariables, overlay.ownVariables]));
   }
 
   /** Wrap the tree under the given path: `{a:{b:1}}`.atPath("x.y") → `{x:{y:{a:{b:1}}}}`. */
@@ -570,6 +613,20 @@ export class Config {
    * the two renderers withhold.
    */
   _secretPaths(): ReadonlySet<string> { return this.carriedSecretPaths; }
+
+  /**
+   * The variables behind each leaf — see {@link ownVariables}.
+   *
+   * @internal  Read by `src/diagnostics/ConfigDump.ts`, and by `WorkerMesh`,
+   * which hands them to its workers beside the tree.
+   */
+  _variables(): ReadonlyMap<string, ReadonlySet<string>> { return this.ownVariables; }
+
+  /** This config, recording `variables` as its own — see {@link ownVariables}. */
+  private withOwnVariables(variables: ReadonlyMap<string, ReadonlySet<string>>): this {
+    this.ownVariables = variables.size === 0 ? NO_VARIABLES : variables;
+    return this;
+  }
 
   toJSON(): ConfigObject {
     return cloneTree(this.tree);
@@ -1239,6 +1296,29 @@ function variablesUnder(
     const path = JSON.parse(key) as string[];
     if (path.length > prefix.length && prefix.every((segment, index) => path[index] === segment)) {
       out.set(JSON.stringify(path.slice(prefix.length)), names);
+    }
+  }
+  return out;
+}
+
+/**
+ * Every path any of `maps` records, with the names all of them record for it
+ * (#1788).  A union and not an overlay: a leaf a higher layer replaced still
+ * names the variable a lower one read, because whether the value that won
+ * is the secret is not something the renderers can know — they withhold by
+ * any layer, as they do for the secrets file.
+ */
+function unionOfVariables(
+  maps: ReadonlyArray<ReadonlyMap<string, ReadonlySet<string>>>,
+): ReadonlyMap<string, ReadonlySet<string>> {
+  const filled = maps.filter((map) => map.size > 0);
+  if (filled.length <= 1) return filled[0] ?? NO_VARIABLES;
+  const out = new Map<string, Set<string>>();
+  for (const map of filled) {
+    for (const [path, names] of map) {
+      const into = out.get(path) ?? new Set<string>();
+      for (const name of names) into.add(name);
+      out.set(path, into);
     }
   }
   return out;

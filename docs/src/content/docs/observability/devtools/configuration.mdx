@@ -1,6 +1,6 @@
 ---
 title: Configuration
-description: Every resolved HOCON key, its effective value, and which layer put it there — the bundled default, application.conf, its active profile, the secrets file, or a code override.
+description: Every resolved HOCON key, its effective value, and which layer put it there — the bundled default, the project's reference.conf, application.conf, its active profile, the secrets file, or a code override — and the environment variables behind it.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -13,10 +13,11 @@ and that needs the layer as well as the value.
 | --- | --- |
 | **key** | Full dotted path, e.g. `actor-ts.cluster.seed-nodes` |
 | **value** | The effective value, after the merge |
-| **from** | Which layer won: `reference.conf`, `application.conf`, `profile`, `secrets.conf`, or `code` |
+| **from** | Which layer won: `reference.conf (actor-ts)`, `reference.conf`, `application.conf`, `profile`, `secrets.conf`, or `code` |
 
 Hover a row for the whole story: the layer, whether it displaced a lower
-one, and whether the value was truncated for the wire.
+one, the environment variables its value came from, and whether the value
+was truncated for the wire.
 
 **Changed from defaults only** hides everything still at its bundled
 value, which is usually all but a handful of keys. If that leaves the
@@ -24,31 +25,38 @@ table empty, the panel says so — nothing overriding the defaults is a
 worthwhile answer in itself, and a different one from "no key matches
 that filter".
 
-## The five layers
+## The six layers
 
 Precedence, highest first:
 
 1. **`code`** — what you passed as `ActorSystemOptions.config`.
 2. **`secrets.conf`** — the [secrets file](/reference/configuration/#secrets-file),
-   from `ACTOR_TS_SECRETS_CONF`, then `./secrets.conf`, together with its
-   active profile.  Every value it set arrives withheld.
+   from `withSecretsFile`, then `ACTOR_TS_SECRETS_CONF`, then
+   `./secrets.conf`, together with its active profile.  Every value it set
+   arrives withheld.
 3. **`profile`** — the `profiles.<name>` block of `application.conf` for
    the active [profile](/reference/configuration/#profiles), chosen by
    `withProfile`, then `ACTOR_TS_PROFILE`.
 4. **`application.conf`** — resolved from `configFile`, then
    `ACTOR_TS_CONFIG`, then `./application.conf`.
-5. **`reference.conf`** — bundled with the package.
+5. **`reference.conf`** — the project's
+   [own](/reference/configuration/#the-project-referenceconf), from
+   `withReferenceConfigFile`, then `ACTOR_TS_REFERENCE_CONFIG`, then
+   `./reference.conf`, together with its active profile.
+6. **`reference.conf (actor-ts)`** — bundled with the package.
 
-The loader merges six layers and the panel names five: a key the secrets
+The loader merges eight layers and the panel names six: a key the secrets
 file's active profile set shows as `secrets.conf`, because what matters
-about it is that it is a secret.  **Changed from defaults only** treats
-all four layers above `reference.conf` as changes.
+about it is that it is a secret, and one the project `reference.conf`'s
+profile set shows as `reference.conf`.  **Changed from defaults only**
+treats all five layers above `reference.conf (actor-ts)` as changes.
 
 The panel names where `application.conf` was read from, or says none was
 found. That distinction matters more than it looks: *my file is being
 ignored* and *my file says something else* are different problems, and
 the path is what separates them.  When a profile is active it is named
-too, and so is the secrets file when one was read.
+too, and so are the secrets file, the project `reference.conf` and the
+`.env` file whose variables answered substitutions, when one was read.
 
 <Aside type="note" title="Code options are not HOCON">
 Per-consumer options — `MqttOptions.create().withQos(1)`, and every other
@@ -61,23 +69,36 @@ that.  What it shows is the HOCON resolution, exactly.
 ## Secrets
 
 A value whose **key** names a secret — any whole word of it, or of a key
-above it, being `password`, `passphrase`, `passwd`, `secret`, `token`, `key`,
-`credential` or `auth`, wherever in the name the word stands — is replaced
-with `<redacted>` before it leaves the process. By key rather than by value,
-because a password that happens to look ordinary is still a password and
-the key is what names it. A name is cut into words at every character that
-is not a letter or a digit and at each camelCase hump. So `api-key`,
-`auth-header` and a `token-bucket-size` of your own are withheld while
-`passivation-idle` and `keyspace` are shown; the keys `reference.conf` ships
-that only read like a credential, such as `cache.redis.key-prefix`, are
-exempted by name, and a boolean is never withheld whatever it is called.
-The fields of an object inside a list are read the same way,
-since a list is one key: in `upstreams = [ { host = "db-1", password =
-"…" } ]` only the `password` arrives withheld.
+above it, being `password`, `passphrase`, `passwd`, `pass`, `secret`,
+`token`, `key`, `credential`, `auth` or `authorization`, wherever in the name
+the word stands — is replaced with `<redacted>` before it leaves the process.
+By key rather than by value, because a password that happens to look
+ordinary is still a password and the key is what names it. A name is cut
+into words at every character that is not a letter or a digit, at each
+camelCase hump and in front of a digit after a letter, and those words count
+glued onto another too (`pgpassword`, `clientsecret`) — all but `key`,
+`pass` and `auth`, of which `apikey`, `accesskey`, `secretkey` and
+`privatekey` are read by name, as is `pwd` beside another word of the key's
+path, `mysql-pwd` or `db.pwd`.
+So `api-key`, `password2`, `auth-header` and a `token-bucket-size` of your
+own are withheld while `passivation-idle` and `keyspace` are shown; the keys
+`reference.conf` ships that only read like a credential, such as
+`cache.redis.key-prefix`, are exempted by name, and a boolean is never
+withheld whatever it is called. The fields of an object inside a list are
+read the same way, since a list is one key: in
+`upstreams = [ { host = "db-1", password = "…" } ]` only the `password`
+arrives withheld.
+
+A value an environment variable supplied is withheld when the variable's
+name reads as a credential by that same rule, whatever its key is called:
+`my-app.dsn = ${DB_PASSWORD}`, a key that refers to it and a string built
+from it all arrive withheld.  Every entry carries the names of the
+variables behind its value, withheld or not, and the row's tooltip shows
+them.
 
 A value the secrets file set is withheld whatever its key is called — also
-when a higher layer overrides the key, and in a `WorkerMesh` worker, whose
-whole configuration arrives as code overrides.
+when a higher layer overrides the key.  Both hold in a `WorkerMesh` worker,
+whose whole configuration arrives as code overrides.
 
 A URL is the one thing masked by value, under any key: the userinfo of
 every `scheme://user:password@host` in a value — and in each element of a
@@ -88,12 +109,12 @@ a cut can never leave half a password behind.
 written. The userinfo runs to the last `@` before the next `://`, so a
 password with an unescaped `/`, `?` or `#` in it is masked whole, and so is
 everything in front of an `@` further on, in a path or a query of a URL that
-holds no credential. What none of the three sees — the key rule, the
-secrets file, the URL mask — is shown as it is: a bare
-password outside the secrets file under a key that does not name one, a
-credential in a query string
-(`?authToken=…`), SQL Server's `Server=…;Password=…` form and memcached's
-scheme-less `user:password@host` server list.
+holds no credential. What none of the four sees — the key rule, the
+variable rule, the secrets file, the URL mask — is shown as it is: a bare
+password written out under a key that does not name one, outside the
+secrets file; a credential in a query string (`?authToken=…`); SQL Server's
+`Server=…;Password=…` form; and memcached's scheme-less `user:password@host`
+server list.
 
 That is a blunt instrument on purpose. A configuration tree still says a
 great deal about a deployment even redacted — hosts, ports, seed nodes,

@@ -269,6 +269,29 @@ describe('a WorkerMesh worker reads the files its main thread read (#1769, #1785
   }, 20_000);
 });
 
+describe('a WorkerMesh worker withholds what a credential-named variable supplied on its main thread (#1788)', () => {
+  test('a value the main thread\'s code overrides read out of one is withheld in the worker\'s dump too', async () => {
+    // In no file a worker could read again: only the variables the main
+    // thread hands over say where the value came from.
+    await withEnvironment({ MESH_DB_PASSWORD: 'hunter2-from-the-environment' }, async () => {
+      const systemOptions = mainSystemOptions()
+        .withConfigFile(false)
+        .withConfig(Config.parseString([
+          'actor-ts.cluster.gossip-interval = 25ms',
+          'my-app.dsn = ${MESH_DB_PASSWORD}',
+        ].join('\n')));
+      await withMesh('mesh-variables', systemOptions, 1, (main, workerConfigs) => {
+        expect(configDumpLines(main.config)).toContain('my-app.dsn = <redacted>  [override, from $MESH_DB_PASSWORD]');
+        const [worker] = workerConfigs;
+        expect(worker!.getString('my-app.dsn')).toBe('hunter2-from-the-environment');
+        const dump = configDumpLines(worker!);
+        expect(dump).toContain('my-app.dsn = <redacted>  [override, from $MESH_DB_PASSWORD]');
+        expect(dump).not.toContain('hunter2');
+      });
+    });
+  }, 20_000);
+});
+
 describe('WorkerCluster.spawn and the config it is handed (#1546)', () => {
   test('the worker-cluster block comes from that config, with no load of its own', async () => {
     // A load of its own would refuse: the variable names a profile no file defines.

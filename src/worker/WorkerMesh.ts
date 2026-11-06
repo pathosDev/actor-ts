@@ -9,7 +9,7 @@ import {
   type PortLike,
 } from '../cluster/transports/MessageChannelTransport.js';
 import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
-import { secretLayerPaths } from '../diagnostics/ConfigDump.js';
+import { leafVariables, secretLayerPaths } from '../diagnostics/ConfigDump.js';
 import { availableParallelism } from '../runtime/Parallelism.js';
 import { OptionsError } from '../util/OptionsValidator.js';
 import { MetricsRelay } from './MetricsRelay.js';
@@ -157,6 +157,10 @@ export class WorkerMesh {
       // …and which of its values the secrets file set, which the plain tree
       // cannot say, so the worker's boot dump withholds them too (#1546).
       secretPaths: secretLayerPaths(system.config),
+      // …and which variables supplied each value, so a worker's dump
+      // withholds what a credential-named one supplied here — out of a file
+      // or out of code overrides no worker reads again (#1788).
+      variables: leafVariables(system.config),
       // …and where this side looked for each of its files, so a worker reads
       // those rather than whichever the environment names (#1546, #1785) —
       // `false` where it looked nowhere, so that a `withConfigFile(false)` is

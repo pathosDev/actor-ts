@@ -2,23 +2,27 @@
  * The `config.resolved` pull (#553) — every HOCON key, its effective
  * value, and which layer put it there.
  *
- * "Why is this setting not what I wrote?" is a question with five
- * possible answers — the bundled default won, `application.conf` won, the
- * active profile won, the secrets file won, or a code override won — and a
- * merged tree alone cannot tell you which.  So the panel reports the source
- * per key rather than only the value.
+ * "Why is this setting not what I wrote?" is a question with six possible
+ * answers — the bundled default won, the project's own `reference.conf` won,
+ * `application.conf` won, the active profile won, the secrets file won, or a
+ * code override won — and a merged tree alone cannot tell you which.  So the
+ * panel reports the source per key rather than only the value, and the
+ * environment variables that supplied it.
  */
 
 /**
  * Which layer a key's effective value came from.
  *
- * Five names for the six layers `Config.load` merges (#1546): a key the
- * secrets file's active profile set is reported as `secrets`, because what
- * a reader needs to know about it is that it came from the secrets file —
- * its value is withheld either way — not which block of that file held it.
- * Widened from three names in protocol version 2.
+ * Six names for the eight layers `Config.load` merges (#1546, #1785): a key
+ * the secrets file's active profile set is reported as `secrets`, because
+ * what a reader needs to know about it is that it came from the secrets file
+ * — its value is withheld either way — not which block of that file held it,
+ * and the project `reference.conf`'s profile reports as `project-reference`
+ * the same way.  `reference` is the `reference.conf` bundled with actor-ts.
+ * Widened from three names in protocol version 2, and to six before that
+ * version was released.
  */
-export type ConfigSource = 'reference' | 'application' | 'profile' | 'secrets' | 'override';
+export type ConfigSource = 'reference' | 'project-reference' | 'application' | 'profile' | 'secrets' | 'override';
 
 /** One resolved key. */
 export type ResolvedConfigEntry = {
@@ -43,6 +47,14 @@ export type ResolvedConfigEntry = {
   readonly overridden: boolean;
   /** True when the value was cut to fit the wire limits. */
   readonly truncated: boolean;
+  /**
+   * The environment variables whose values make up the effective value, by
+   * name, sorted (#1788) — read directly, through a reference to another
+   * key, or as a piece of a concatenation.  Absent when no variable supplied
+   * it.  Names only: a value one of them names as a credential arrives as
+   * {@link CONFIG_REDACTED}, and this is what says why.
+   */
+  readonly variables?: ReadonlyArray<string>;
 };
 
 /** What `config.resolved` answers. */
@@ -67,6 +79,16 @@ export type ResolvedConfigResult = {
    */
   readonly secretsPath?: string | null;
   /**
+   * Where the project's own `reference.conf` was read from, or `null` when
+   * none was read (#1785) — "read from", like {@link applicationPath}.
+   */
+  readonly referencePath?: string | null;
+  /**
+   * Where the `.env` file whose variables answered substitutions was read
+   * from, or `null` when none was read (#1785).
+   */
+  readonly environmentFilePath?: string | null;
+  /**
    * False when this config was not built by `Config.load` and so has no
    * layers to attribute against — every entry is then reported as
    * `reference`, which would be a guess rather than an answer.
@@ -75,10 +97,11 @@ export type ResolvedConfigResult = {
 };
 
 /**
- * The key-name rule that redacts a value before it leaves the process, its
- * exemptions, and what a withheld value is replaced with.
+ * The key-name rule that redacts a value before it leaves the process — its
+ * whole words, its glued spellings and the words it reads only inside a
+ * longer name — its exemptions, and what a withheld value is replaced with.
  *
- * Re-exported rather than declared: all three now also guard the boot config
+ * Re-exported rather than declared: all five now also guard the boot config
  * dump (#867), which is core and imports nothing from `src/devtools/`, so
  * the declarations live in `src/util/Constants.ts` — the one tier two
  * subsystems may share.  The names stay here because `<redacted>` is wire
@@ -90,10 +113,14 @@ export type ResolvedConfigResult = {
  * one it expected to be missing is not.  Neither explains every missing
  * value, though: a value the secrets file set is withheld whatever its key
  * is called (#1546), and arrives with `source: 'secrets'` — or `'override'`,
- * when code replaced a key the secrets file had set.
+ * when code replaced a key the secrets file had set — and a value a variable
+ * named by this rule supplied arrives with that variable among its
+ * `variables` (#1788).
  */
 export {
   CONFIG_REDACTED,
   CONFIG_SECRET_PATTERN,
+  CONFIG_SECRET_COMPOUND_PATTERN,
+  CONFIG_SECRET_WORDS_IN_LONGER_NAMES,
   CONFIG_NEVER_REDACTED_PATHS,
 } from '../../util/Constants.js';

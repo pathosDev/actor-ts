@@ -3,7 +3,9 @@ import { type ConfigObject, type ConfigValue, isPlainObject } from '../config/Ho
 import {
   CONFIG_NEVER_REDACTED_PATHS,
   CONFIG_REDACTED,
+  CONFIG_SECRET_COMPOUND_PATTERN,
   CONFIG_SECRET_PATTERN,
+  CONFIG_SECRET_WORDS_IN_LONGER_NAMES,
 } from '../util/Constants.js';
 import { redactUrlCredentials } from '../util/RedactUrlCredentials.js';
 
@@ -25,41 +27,78 @@ const HOCON_BOOLEAN_WORDS: ReadonlySet<string> = new Set([
 /**
  * Which layer's value survived the merge for one key.
  *
- * Five names for the six layers `Config.load` merges (#1546) — see
+ * Six names for the eight layers `Config.load` merges (#1546, #1785) — see
  * {@link LAYERS_LOWEST_FIRST} for which name each layer is reported under.
+ * `reference` is the `reference.conf` bundled with actor-ts,
+ * `project-reference` the project's own.
  *
- * The same five names `ConfigSource` carries in the DevTools protocol, and
+ * The same six names `ConfigSource` carries in the DevTools protocol, and
  * deliberately a second declaration rather than an import: that one is wire
  * vocabulary a client validates against and this one is a local rendering
  * detail, so they are free to move apart.  They are structurally identical
  * today, which is what lets `ConfigMethods` assign one to the other without a
  * mapping table.
  */
-export type ConfigLayerName = 'reference' | 'application' | 'profile' | 'secrets' | 'override';
+export type ConfigLayerName = 'reference' | 'project-reference' | 'application' | 'profile' | 'secrets' | 'override';
 
-/** One layer `Config.load` merged, and the name it is reported under. */
+/** One layer `Config.load` merged, the name it is reported under, and the variables behind its leaves. */
 type NamedLayer = {
   readonly name: ConfigLayerName;
   readonly of: (layers: ConfigLayers) => Config;
+  /**
+   * Which variables supplied each leaf of the layer, keyed as
+   * `Config._variables` keys them (#1788).  The bundled reference records
+   * none, since it holds no live substitution.
+   */
+  readonly variables: (layers: ConfigLayers) => ReadonlyMap<string, ReadonlySet<string>>;
 };
 
+/** The variables of a layer that recorded none. */
+const NO_VARIABLES: ReadonlyMap<string, ReadonlySet<string>> = new Map();
+
 /**
- * The six layers in merge order, lowest first, each with its reported name.
+ * The eight layers in merge order, lowest first, each with its reported name.
  *
- * Six layers, five names: the secrets file's active profile is reported as
- * `secrets`, as its root is.  What a reader needs to know about such a key is
- * that it came out of the secrets file — its value is withheld either way —
- * and the profile that put it there is in the header.  The application
- * file's profile keeps a name of its own, because there it is the answer to
- * "why is this not what my file's root says".
+ * Eight layers, six names: the secrets file's active profile is reported as
+ * `secrets`, as its root is, and the project `reference.conf`'s profile as
+ * `project-reference`.  What a reader needs to know about such a key is the
+ * file it came out of — a secrets value is withheld either way — and the
+ * profile that put it there is in the header.  The application file's
+ * profile keeps a name of its own, because there it is the answer to "why is
+ * this not what my file's root says".
  */
 const LAYERS_LOWEST_FIRST: ReadonlyArray<NamedLayer> = [
-  { name: 'reference', of: (layers) => layers.reference },
-  { name: 'application', of: (layers) => layers.application },
-  { name: 'profile', of: (layers) => layers.applicationProfile },
-  { name: 'secrets', of: (layers) => layers.secrets },
-  { name: 'secrets', of: (layers) => layers.secretsProfile },
-  { name: 'override', of: (layers) => layers.overrides },
+  { name: 'reference', of: (layers) => layers.reference, variables: () => NO_VARIABLES },
+  {
+    name: 'project-reference',
+    of: (layers) => layers.projectReference,
+    variables: (layers) => layers.variables.projectReference ?? NO_VARIABLES,
+  },
+  {
+    name: 'project-reference',
+    of: (layers) => layers.projectReferenceProfile,
+    variables: (layers) => layers.variables.projectReferenceProfile ?? NO_VARIABLES,
+  },
+  {
+    name: 'application',
+    of: (layers) => layers.application,
+    variables: (layers) => layers.variables.application ?? NO_VARIABLES,
+  },
+  {
+    name: 'profile',
+    of: (layers) => layers.applicationProfile,
+    variables: (layers) => layers.variables.applicationProfile ?? NO_VARIABLES,
+  },
+  { name: 'secrets', of: (layers) => layers.secrets, variables: (layers) => layers.variables.secrets ?? NO_VARIABLES },
+  {
+    name: 'secrets',
+    of: (layers) => layers.secretsProfile,
+    variables: (layers) => layers.variables.secretsProfile ?? NO_VARIABLES,
+  },
+  // Code overrides record their own: a `Config.parseString` resolved its
+  // substitutions, a loaded config passed back in kept every layer's, and a
+  // WorkerMesh worker's copy of its main thread's tree carried them along.
+  { name: 'override', of: (layers) => layers.overrides, variables: (layers) => layers.overrides._variables() },
 ];
 
 /** One leaf of the merged tree, with the layer that put it there. */
@@ -95,8 +134,21 @@ export type ResolvedConfigLeaf = {
    */
   readonly inSecretsFile: boolean;
   /**
-   * True when the value is withheld: {@link inSecretsFile}, or
-   * {@link namesSecretConfigValue} read the key as a credential.
+   * The environment variables behind the winning layer's value, sorted — read
+   * directly, through a reference to another key, or as a piece of a
+   * concatenation (#1788).  Empty when no variable supplied it.
+   */
+  readonly variables: ReadonlyArray<string>;
+  /**
+   * True when a variable whose name {@link wordsNameCredential} reads as a
+   * credential supplied this key in **any** layer, not only the one that won
+   * — for the reason {@link heldBySecretsLayer} gives (#1788).
+   */
+  readonly fromCredentialVariable: boolean;
+  /**
+   * True when the value is withheld: {@link inSecretsFile},
+   * {@link fromCredentialVariable}, or {@link namesSecretConfigValue} read the
+   * key as a credential.
    */
   readonly secret: boolean;
 };
@@ -128,18 +180,27 @@ export function resolveConfigLeaves(config: Config): ResolvedConfigLeaf[] {
   for (const [segments, value] of leaves(config.toJSON())) {
     const path = pathOf(segments);
     const attribution: Attribution = layers === null
-      ? { layer: 'reference', displaced: false }
+      ? { layer: 'reference', displaced: false, variables: variablesAt([config._variables()], segments) }
       : attributionOf(layers, segments);
     const inSecretsFile = layers === null
       ? config._secretPaths().has(path)
       : heldBySecretsLayer(layers, segments, path);
+    // Every layer's variables, not the winner's: a worker's `override` wins
+    // every leaf, and a key the code replaced may still hold what the file
+    // read out of `${DB_PASSWORD}` for all this can tell.
+    const everyLayer = layers === null
+      ? [config._variables()]
+      : LAYERS_LOWEST_FIRST.map((layer) => layer.variables(layers));
+    const fromCredentialVariable = variablesAt(everyLayer, segments).some(variableNamesCredential);
     out.push({
       path,
       value,
       layer: attribution.layer,
       displaced: attribution.displaced,
+      variables: attribution.variables,
       inSecretsFile,
-      secret: inSecretsFile || namesSecretConfigValue(segments, path, value),
+      fromCredentialVariable,
+      secret: inSecretsFile || fromCredentialVariable || namesSecretConfigValue(segments, path, value),
     });
   }
   out.sort((left, right) => left.path.localeCompare(right.path));
@@ -168,21 +229,25 @@ export function resolveConfigLeaves(config: Config): ResolvedConfigLeaf[] {
  * — see {@link pathOf}.
  *
  * The header states what the body cannot: how many keys were withheld, and
- * why — their name, or the secrets file holding them — how many of the lists
- * it does print had a credential field withheld, how many of the values it
- * does print had a URL's credentials masked, the active profile, the two
- * files it looked for and whether each was there, and whether the layer
- * column is an answer or the unattributed fallback.
+ * why — their name, the secrets file holding them, or the variable that
+ * supplied them — how many of the lists it does print had a credential field
+ * withheld, how many of the values it does print had a URL's credentials
+ * masked, the active profile, the four files it looked for and whether each
+ * was there, and whether the layer column is an answer or the unattributed
+ * fallback.  A line names the variables behind its value, withheld or not:
+ * "why is this not what my file says" is as often an exported variable as a
+ * layer.
  */
 export function configDumpLines(config: Config): string {
   const entries = resolveConfigLeaves(config);
   const attributed = attributedConfigLeaves(config);
   const layers = config._sources();
-  // A key in the secrets file is counted there even when its name says
-  // `password` too: the file is the stronger of the two reasons, and each
-  // withheld key is counted once.
-  const redactedByName = entries.filter((entry) => entry.secret && !entry.inSecretsFile).length;
+  // Each withheld key is counted once, under the strongest reason it has:
+  // the secrets file, then a credential-named variable, then its own name.
   const redactedFromSecrets = entries.filter((entry) => entry.inSecretsFile).length;
+  const redactedByVariable = entries.filter((entry) => entry.fromCredentialVariable && !entry.inSecretsFile).length;
+  const redactedByName = entries
+    .filter((entry) => entry.secret && !entry.inSecretsFile && !entry.fromCredentialVariable).length;
   // A withheld key is never shown, so nothing in it is withheld or masked
   // again.  The two value-side counts are per kind of hiding: a list with a
   // withheld field AND a masked URL is in both, since each says something
@@ -195,16 +260,23 @@ export function configDumpLines(config: Config): string {
   const head = `configuration in effect — ${entries.length} keys`
     + `, ${redactedByName} redacted by key name`
     + `, ${redactedFromSecrets} redacted from a secrets file`
+    + `, ${redactedByVariable} redacted by variable name`
     + `, ${withheldFields} with credential fields withheld`
     + `, ${masked} with URL credentials masked`
     + `; profile: ${layers?.profile ?? '(none)'}`
     + `; application.conf: ${fileLabel(layers?.applicationPath ?? null, layers?.applicationFound ?? false)}`
     + `; secrets.conf: ${fileLabel(layers?.secretsPath ?? null, layers?.secretsFound ?? false)}`
+    + `; reference.conf: ${fileLabel(layers?.projectReferencePath ?? null, layers?.projectReferenceFound ?? false)}`
+    + `; environment file: ${fileLabel(layers?.environmentFilePath ?? null, layers?.environmentFileFound ?? false)}`
     + (attributed ? '' : '; layers unavailable, every key shown as reference');
 
   const body = entries.map((entry, index) => {
     const value = entry.secret ? CONFIG_REDACTED : JSON.stringify(shown[index]);
-    const origin = entry.displaced ? `${entry.layer}, overrides a lower layer` : entry.layer;
+    const origin = [
+      entry.layer,
+      ...(entry.displaced ? ['overrides a lower layer'] : []),
+      ...(entry.variables.length > 0 ? [`from ${entry.variables.map(variableLabel).join(', ')}`] : []),
+    ].join(', ');
     return `  ${entry.path} = ${value}  [${origin}]`;
   });
 
@@ -282,7 +354,9 @@ function fieldsWithheldBelow(value: ConfigValue, underCredential: boolean): Conf
   if (isBranch(value)) {
     const fields = Object.entries(value);
     const withheld = fields.map(
-      ([name, field]) => [name, fieldsWithheldBelow(field, underCredential || namesCredential(name))] as const,
+      // A field never stands alone: the key the list sits under is part of
+      // its name, so `pwd` here is `db.upstreams.pwd` and counts.
+      ([name, field]) => [name, fieldsWithheldBelow(field, underCredential || wordsNameCredential(wordsOf(name), true))] as const,
     );
     return withheld.some(([, field], index) => field !== fields[index]![1])
       ? Object.fromEntries(withheld)
@@ -313,21 +387,25 @@ function fieldsWithheldBelow(value: ConfigValue, underCredential: boolean): Conf
  * 2. A value that is a boolean carries nothing — see
  *    {@link HOCON_BOOLEAN_WORDS}.  This is the only say the value has in
  *    whether a key is withheld; everything else is decided by the name.
- * 3. **Every word of every segment** of the path is read — see
- *    {@link namesCredential}.  Every segment because a branch named
+ * 3. **Every word of every segment** of the path is read, as one name — see
+ *    {@link wordsNameCredential}.  Every segment because a branch named
  *    `credentials` or `secrets` declares its whole subtree — dropping to the
- *    leaf alone would print `my-app.secrets.stripe` in full.
+ *    leaf alone would print `my-app.secrets.stripe` in full — and one name
+ *    because a key's name is its whole path: `db.pwd` is not a lone `pwd`.
  */
 function namesSecretConfigValue(segments: readonly string[], path: string, value: ConfigValue): boolean {
   if (CONFIG_NEVER_REDACTED_PATHS.has(path)) return false;
   if (statesOnlyABoolean(value)) return false;
-  return segments.some(namesCredential);
+  return wordsNameCredential(segments.flatMap(wordsOf), false);
 }
 
 /**
- * Whether one key names a credential — a segment of a path, or the name of a
- * field in an object inside a list.  One function for both, so the two places
- * a key name is read cannot come to read it differently.
+ * Whether the words of one name say it is a credential — a key, all of its
+ * path; the name of a field in an object inside a list; or the name of an
+ * environment variable that supplied a value (#1788).  One function for all
+ * three, so the places a name is read cannot come to read it differently.
+ * `besideOtherWords` says the name is part of a longer one even when its own
+ * words are few: a field's name goes on from the key the list sits under.
  *
  * **Any** whole word of the name, wherever it stands (#867).  Reading only
  * the word a name ends on looked like grammar — `api-key` is a key,
@@ -340,9 +418,24 @@ function namesSecretConfigValue(segments: readonly string[], path: string, value
  * that way are named in {@link CONFIG_NEVER_REDACTED_PATHS}.  *Whole* words
  * still, so `passivation` is not `pass` and `keyspace` is not `key` — what a
  * substring test could not tell apart.
+ *
+ * Three spellings a cut into words cannot reach are read as well (#1759): a
+ * credential word glued onto another, `pgpassword` or `apikey` — see
+ * {@link CONFIG_SECRET_COMPOUND_PATTERN} — a word numbered by a digit,
+ * `password2`, which {@link wordsOf} separates, and `pwd` anywhere but as the
+ * whole name — `db.pwd`, `MYSQL_PWD` — see
+ * {@link CONFIG_SECRET_WORDS_IN_LONGER_NAMES}.  `MYSQL_PWD` and `mysql-pwd`
+ * cannot come to be read differently, because there is one rule and not two.
  */
-function namesCredential(name: string): boolean {
-  return wordsOf(name).some((word) => CONFIG_SECRET_PATTERN.test(word));
+function wordsNameCredential(words: readonly string[], besideOtherWords: boolean): boolean {
+  return words.some((word) => CONFIG_SECRET_PATTERN.test(word) || CONFIG_SECRET_COMPOUND_PATTERN.test(word))
+    || ((besideOtherWords || words.length > 1)
+      && words.some((word) => CONFIG_SECRET_WORDS_IN_LONGER_NAMES.has(word)));
+}
+
+/** Whether an environment variable's name names a credential — {@link wordsNameCredential} over its words. */
+function variableNamesCredential(name: string): boolean {
+  return wordsNameCredential(wordsOf(name), false);
 }
 
 /** True when `value` can only be one of HOCON's two boolean states. */
@@ -363,15 +456,20 @@ function wordsOf(segment: string): string[] {
   return segment
     .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    // A digit ends the word before it, so `password2` and `apiKey2` read as
+    // the word they number (#1759).  Never the other way round: `s3`, `http2`
+    // and `d1` become words that name nothing.
+    .replace(/([A-Za-z])([0-9])/g, '$1 $2')
     .split(/[^A-Za-z0-9]+/)
     .filter((word) => word !== '')
     .map((word) => word.toLowerCase());
 }
 
-/** Which layer won one key, and whether a layer below it also set the key. */
+/** Which layer won one key, whether a layer below it also set the key, and the variables behind the winner's value. */
 type Attribution = {
   readonly layer: ConfigLayerName;
   readonly displaced: boolean;
+  readonly variables: ReadonlyArray<string>;
 };
 
 /**
@@ -392,9 +490,36 @@ function attributionOf(layers: ConfigLayers, segments: readonly string[]): Attri
     if (!winner.of(layers)._hasPathSegments(segments)) continue;
     const displaced = LAYERS_LOWEST_FIRST.slice(0, index)
       .some((lower) => lower.of(layers)._hasPathSegments(segments));
-    return { layer: winner.name, displaced };
+    return { layer: winner.name, displaced, variables: variablesAt([winner.variables(layers)], segments) };
   }
-  return { layer: 'reference', displaced: false };
+  return { layer: 'reference', displaced: false, variables: [] };
+}
+
+/**
+ * The names `maps` record for the leaf `segments` lead to, each once, sorted.
+ *
+ * Looked up by the keys as a JSON array, the way the resolver recorded them:
+ * a quoted key holding a dot is one key, and a dotted path would look up two.
+ */
+function variablesAt(
+  maps: ReadonlyArray<ReadonlyMap<string, ReadonlySet<string>>>,
+  segments: readonly string[],
+): string[] {
+  const key = JSON.stringify(segments);
+  const names = new Set<string>();
+  for (const map of maps) for (const name of map.get(key) ?? []) names.add(name);
+  return [...names].sort();
+}
+
+/**
+ * A variable as a dump line names it — `$DB_HOST`, and a name that is not
+ * a plain one JSON-encoded behind the `$`.  A quoted substitution path looks
+ * its variable up quotes and all, so a name can hold whatever the quotes do —
+ * a `]` or a `, from $…` that would read as the line's own — and encoding
+ * keeps it one name, as a value is kept one value.
+ */
+function variableLabel(name: string): string {
+  return /^[A-Za-z0-9_.-]+$/.test(name) ? `$${name}` : `$${JSON.stringify(name)}`;
 }
 
 /**
@@ -442,6 +567,20 @@ function heldBySecretsLayer(layers: ConfigLayers, segments: readonly string[], p
  */
 export function secretLayerPaths(config: Config): string[] {
   return resolveConfigLeaves(config).filter((leaf) => leaf.inSecretsFile).map((leaf) => leaf.path);
+}
+
+/**
+ * The variables behind each leaf of `config` that one supplied, in any of its
+ * layers, keyed as `Config._variables` keys them — what WorkerMesh hands each
+ * worker beside the tree and {@link secretLayerPaths} (#1788).
+ *
+ * A worker's tree arrives as one overrides object, and a value the main
+ * thread's code overrides read out of `${DB_PASSWORD}` is in no file the
+ * worker could read again — so without these its dump could neither withhold
+ * that value nor say where any value came from.
+ */
+export function leafVariables(config: Config): Record<string, string[]> {
+  return Object.fromEntries([...config._variables()].map(([path, names]) => [path, [...names].sort()]));
 }
 
 /** A file the loader looked for, as the dump header names it. */

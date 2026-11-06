@@ -209,14 +209,22 @@ record, because an operator who asked for a config dump asked for output.
 
 **What the config dump redacts, and what it does not.**  A value is withheld
 when **any whole word** of its key is `password`, `passphrase`, `passwd`,
-`secret`, `token`, `key`, `credential` or `auth`, singular or plural — so
-`cache.redis.password` and an `api-key` print as `<redacted>`, and so does
-every key beneath a branch named `credentials`.  Any word, wherever it stands
-in the name: an `auth-header` carries a bearer token although it ends on
-`header`.  And whole words only — a name is cut into words at every character
-that is not a letter or a digit and at each camelCase hump, so
-`passivation-idle` holds no `pass` and `keyspace` no `key`.  A value whose
-name holds such a word whole is withheld even when it is tuning: a
+`pass`, `secret`, `token`, `key`, `credential`, `auth` or `authorization`,
+singular or plural — so `cache.redis.password` and an `api-key` print as
+`<redacted>`, and so does every key beneath a branch named `credentials`.
+Any word, wherever it stands in the name: an `auth-header` carries a bearer
+token although it ends on `header`.  And whole words only — a name is cut
+into words at every character that is not a letter or a digit, at each
+camelCase hump and in front of a digit after a letter, so `passivation-idle`
+holds no `pass` and `keyspace` no `key`, while `password2` holds the word it
+numbers.  Glued onto another word those words count as well
+(`pgpassword`, `clientsecret`, `ghtoken`), all but `key`, `pass` and `auth`,
+which end too many ordinary words; of the `…key` names `apikey`,
+`accesskey`, `secretkey` and `privatekey` count, and `pwd` counts beside
+another word of the key's path, as in `mysql-pwd` or `db.pwd` — only a
+variable called just `PWD`, a shell's working directory, does not.
+An `sshkey` is not read.  A value whose name holds such a word is withheld
+even when it is tuning: a
 `token-bucket-size` of your own prints as `<redacted>`, and only the keys
 `reference.conf` ships, such as `cluster.receptionist.max-subscribers-per-key`
 and `cache.redis.key-prefix`, are exempted by name.  A value that is a
@@ -243,15 +251,24 @@ withheld by name.  The key rule also reads the fields of an object inside
 a list, which is one key: in `upstreams = [ { host = "db-1", password =
 "…" } ]` the `password` prints as `"<redacted>"` and the `host` as written.
 
-The key rule is a heuristic over names, and it is the weakest of the three.
-What none of them can see is printed in full: a bare password
-outside the secrets file, under a key that does not name one — by the
-time the merged tree exists, a
-`${?DATABASE_PASSWORD}` has resolved into an ordinary string with nothing left
-to say where it came from — a credential in a query string (`?password=…`,
-`?authToken=…`), SQL Server's `Server=…;Password=…` connection string, and
-memcached's scheme-less
-`user:password@host:11211` server list.
+**A value an environment variable supplied is withheld when the variable's
+name names a credential,** by the same rule a key is read by, whatever the
+key is called: `my-app.dsn = ${DB_PASSWORD}` prints as `<redacted>`, and
+so does a key that refers to it and a string built from it.  That holds for
+a variable from the real environment and from the [.env
+file](#environment-files) alike, in whichever layer read it — a code
+override that replaced the key included — and in a `WorkerMesh` worker's
+dump.  Every line names the variables behind its value, withheld or not —
+`my-app.db.host = "db-1"  [application, from $DB_HOST]` — and the header
+counts these keys apart from the other two reasons.
+
+The key rule is a heuristic over names, and it is the weakest of the four.
+What none of them can see is printed in full: a bare password written out
+under a key that does not name one, outside the secrets file and not taken
+from a credential-named variable; a credential in a query string
+(`?password=…`, `?authToken=…`); SQL Server's `Server=…;Password=…`
+connection string; and memcached's scheme-less `user:password@host:11211`
+server list.
 Nor is the list widened further: `seed` would redact `cluster.seed-nodes`, and
 a dump whose ordinary keys read `<redacted>` is a dump nobody reads.  So treat
 the output as sensitive, keep the key `off` outside an investigation, and

@@ -37,6 +37,15 @@ export type WorkerMeshInitData = {
    */
   readonly secretPaths: ReadonlyArray<string>;
   /**
+   * The environment variables behind each leaf of `config` that one supplied
+   * on the main thread, in any of its layers, keyed by the leaf's keys as a
+   * JSON array (#1788).  The tree says nothing about a value having come out
+   * of `${DB_PASSWORD}`, and one the main thread's code overrides read is in
+   * no file the worker could read again — so its dump withholds by these, and
+   * names them, as the main thread's does.  Absent when none supplied one.
+   */
+  readonly variables?: Readonly<Record<string, ReadonlyArray<string>>>;
+  /**
    * Where the main thread looked for each of its files — named in code, by an
    * `ACTOR_TS_*` variable, or the default in the working directory — found
    * there or not, and `false` where it looked nowhere (#1546, #1785).  The
@@ -137,7 +146,7 @@ export async function runWorkerMeshNode(
   // the main thread never saw, and their substitutions resolve against the
   // main thread's `.env` (#1785).
   const systemOptions = ActorSystemOptions.create()
-    .withConfig(Config._withSecretPaths(init.config, init.secretPaths))
+    .withConfig(Config._withSecretPaths(init.config, init.secretPaths, init.variables))
     .withProfile('')
     .withParallelism(workerParallelism)
     .withPersistence({ behavior: workerPersistenceBehavior });

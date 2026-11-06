@@ -215,16 +215,24 @@ einen Konfigurations-Dump anfordert, hat um Ausgabe gebeten.
 
 **Was der Dump schwärzt und was nicht.**  Ein Wert wird zurückgehalten, wenn
 **irgendein ganzes Wort** seines Keys `password`, `passphrase`, `passwd`,
-`secret`, `token`, `key`, `credential` oder `auth` lautet, im Singular wie im
-Plural — `cache.redis.password` und ein `api-key` erscheinen also als
-`<redacted>`, und ebenso jeder Key unterhalb eines Zweigs namens
-`credentials`.  Irgendein Wort, egal an welcher Stelle im Namen: ein
+`pass`, `secret`, `token`, `key`, `credential`, `auth` oder `authorization`
+lautet, im Singular wie im Plural — `cache.redis.password` und ein `api-key`
+erscheinen also als `<redacted>`, und ebenso jeder Key unterhalb eines Zweigs
+namens `credentials`.  Irgendein Wort, egal an welcher Stelle im Namen: ein
 `auth-header` trägt ein Bearer-Token, obwohl er auf `header` endet.  Und nur
 ganze Wörter — ein Name wird an jedem Zeichen, das weder Buchstabe noch Ziffer
-ist, und an jedem camelCase-Höcker in Wörter zerlegt, also enthält
-`passivation-idle` kein `pass` und `keyspace` kein `key`.  Ein Wert, dessen
-Name ein solches Wort als ganzes enthält, wird auch dann zurückgehalten, wenn
-er Tuning ist: eine eigene `token-bucket-size` erscheint als `<redacted>`, und
+ist, an jedem camelCase-Höcker und vor einer Ziffer nach einem Buchstaben in
+Wörter zerlegt, also enthält `passivation-idle` kein `pass` und `keyspace`
+kein `key`, `password2` dagegen das Wort, das es nummeriert.  An ein anderes
+Wort geklebt zählen diese Wörter ebenso (`pgpassword`, `clientsecret`,
+`ghtoken`), bis auf `key`, `pass` und `auth`, auf die zu viele gewöhnliche
+Wörter enden; von den Namen auf `…key` zählen `apikey`, `accesskey`,
+`secretkey` und `privatekey`, und `pwd` zählt neben einem anderen Wort des
+Key-Pfads, wie in `mysql-pwd` oder `db.pwd` — nur eine Variable, die bloß
+`PWD` heißt, das Arbeitsverzeichnis einer Shell, nicht.  Ein `sshkey`
+wird nicht erkannt.  Ein Wert, dessen Name ein solches Wort enthält, wird auch
+dann zurückgehalten, wenn er Tuning ist: eine eigene `token-bucket-size`
+erscheint als `<redacted>`, und
 nur die Keys, die `reference.conf` mitbringt, etwa
 `cluster.receptionist.max-subscribers-per-key` und `cache.redis.key-prefix`,
 sind namentlich ausgenommen.  Ein Wert, der ein Boolean ist, wird nie
@@ -252,15 +260,25 @@ Felder eines Objekts in einer Liste, die ein einziger Key ist: in
 `upstreams = [ { host = "db-1", password = "…" } ]` erscheint `password`
 als `"<redacted>"` und `host` so, wie er geschrieben wurde.
 
-Die Key-Regel ist eine Heuristik über Namen und die schwächste der drei.
-Was keine von ihnen sieht, wird vollständig gedruckt: ein
-nacktes Passwort außerhalb der Secrets-Datei unter einem Key, der keines
-benennt — wenn der
-zusammengeführte Baum existiert, ist ein `${?DATABASE_PASSWORD}` längst zu
-einer gewöhnlichen Zeichenkette aufgelöst, der man ihre Herkunft nicht mehr
-ansieht —, Zugangsdaten in einem Query-String (`?password=…`,
-`?authToken=…`), der Connection-String von SQL Server in der Form
-`Server=…;Password=…` und die schemalose Server-Liste `user:password@host:11211` von Memcached.
+**Ein Wert, den eine Umgebungsvariable geliefert hat, wird zurückgehalten,
+wenn der Name der Variable Zugangsdaten benennt,** nach derselben Regel, nach
+der ein Key gelesen wird, egal wie der Key heißt:
+`my-app.dsn = ${DB_PASSWORD}` erscheint als `<redacted>`, und ebenso ein Key,
+der auf ihn verweist, und eine Zeichenkette, die aus ihm gebaut ist.  Das gilt für eine
+Variable aus der echten Umgebung wie aus der [.env-Datei](#env-dateien), in
+welcher Schicht sie auch gelesen wurde — auch wenn ein Code-Override den Key
+ersetzt hat — und im Dump eines `WorkerMesh`-Workers.  Jede Zeile nennt die
+Variablen hinter ihrem Wert, ob zurückgehalten oder nicht —
+`my-app.db.host = "db-1"  [application, from $DB_HOST]` —, und die Kopfzeile
+zählt diese Keys getrennt von den beiden anderen Gründen.
+
+Die Key-Regel ist eine Heuristik über Namen und die schwächste der vier.
+Was keine von ihnen sieht, wird vollständig gedruckt: ein ausgeschriebenes
+nacktes Passwort unter einem Key, der keines benennt, außerhalb der
+Secrets-Datei und nicht aus einer Variable, deren Name Zugangsdaten nennt;
+Zugangsdaten in einem Query-String (`?password=…`, `?authToken=…`); der
+Connection-String von SQL Server in der Form `Server=…;Password=…`; und die
+schemalose Server-Liste `user:password@host:11211` von Memcached.
 Und die Liste wird nicht weiter
 gefasst: `seed` würde `cluster.seed-nodes` schwärzen, und ein Dump, dessen
 gewöhnliche Keys `<redacted>` lauten, wird nicht mehr gelesen.  Behandle die

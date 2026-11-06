@@ -136,12 +136,13 @@ const listingPages = pagesUnder(DOCUMENTATION_ROOT)
   .sort();
 
 describe('every page listing the secret words lists the ones the pattern accepts (found while #1546)', () => {
-  test('the pattern still reads as the eight words the pages name', () => {
+  test('the pattern still reads as the ten words the pages name', () => {
     // Guards the guard: a reading of the pattern that found nothing would
-    // make every list below compare equal to an empty one.
-    expect(wordsThePatternAccepts()).toEqual(
-      ['auth', 'credential', 'key', 'passphrase', 'passwd', 'password', 'secret', 'token'],
-    );
+    // make every list below compare equal to an empty one.  `pass` and
+    // `authorization` joined the eight with #1759.
+    expect(wordsThePatternAccepts()).toEqual([
+      'auth', 'authorization', 'credential', 'key', 'pass', 'passphrase', 'passwd', 'password', 'secret', 'token',
+    ]);
   });
 
   for (const { page, heading } of PINNED) {

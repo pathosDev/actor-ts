@@ -560,14 +560,20 @@ actor-ts {
 `log-config-on-start` ist der erste Griff, wenn eine Einstellung nicht das
 tut, was du geschrieben hast.  Es schreibt den **zusammengeführten** Baum —
 jeden Key, sortiert, jeweils mit der Schicht, die gewonnen hat (`reference`,
-`application`, `profile`, `secrets` oder `override`), und ob sie eine tiefere
-verdrängt hat.  So sehen „meine `application.conf` wird ignoriert“ und „meine
-`application.conf` sagt etwas anderes“ nicht länger gleich aus.  `profile` ist
-der Block des aktiven Profils in der Anwendungsdatei, `secrets` die
+`project-reference`, `application`, `profile`, `secrets` oder `override`), ob
+sie eine tiefere verdrängt hat und aus welchen Umgebungsvariablen sein Wert
+stammt.  So sehen „meine `application.conf` wird ignoriert“ und „meine
+`application.conf` sagt etwas anderes“ nicht länger gleich aus.  `reference`
+ist die mit actor-ts gebündelte `reference.conf`, `project-reference` die
+[eigene deines Projekts](/de/reference/configuration/#die-referenceconf-des-projekts)
+samt ihrem aktiven Profil, `profile` der Block des aktiven Profils in der
+Anwendungsdatei, `secrets` die
 [Secrets-Datei](/de/reference/configuration/#secrets-datei) samt ihrem eigenen
 aktiven Profil, und `override` das, was dein Code übergeben hat.  Die
-Kopfzeile nennt das aktive Profil und beide Dateien, nach denen gesucht wurde,
-und sagt, wenn eine davon fehlte — was den ersten Fall schon allein klärt.  Ein
+Kopfzeile nennt das aktive Profil und die vier Dateien, nach denen gesucht
+wurde — die `reference.conf` des Projekts, die `application.conf`, die
+Secrets-Datei und die `.env`-Datei —, und sagt, wenn eine davon fehlte — was
+den ersten Fall schon allein klärt.  Ein
 Key, der einen Punkt enthält — etwa ein Hostname —, steht in doppelten
 Anführungszeichen, so wie HOCON ihn schreibt: `webhooks."hooks.example.com"`
 ist ein Key, `webhooks.hooks.example.com` wären vier.  Ein Ausschnitt, mit
@@ -577,8 +583,10 @@ aktivem `production`:
   actor-ts.diagnostics.log-config-on-start = "on"  [application, overrides a lower layer]
   actor-ts.diagnostics.log-dead-letters = 10  [reference]
   my-app.auth-header = <redacted>  [application]
+  my-app.db.dsn = <redacted>  [application, from $DB_PASSWORD]
   my-app.db.host = "db.internal"  [profile, overrides a lower layer]
   my-app.db.password = <redacted>  [secrets]
+  my-app.db.pool-size = 8  [project-reference]
   my-app.db.user = <redacted>  [override, overrides a lower layer]
   my-app.payments.api-key = <redacted>  [application]
   my-app.upstreams = [{"host":"db-1","password":"<redacted>"}]  [application]
@@ -586,17 +594,28 @@ aktivem `production`:
 
 Zwei Dinge, bevor du diesen Eintrag in ein Ticket kopierst.  Es ist ein
 `info`-Eintrag, braucht also keinen zweiten Schalter — aber er **druckt deine
-Konfiguration**, und drei Regeln entscheiden, was er zurückhält.  Ein Wert
+Konfiguration**, und vier Regeln entscheiden, was er zurückhält.  Ein Wert
 wird zurückgehalten, wenn irgendein ganzes Wort seines *Key-Namens* — des Keys
 selbst oder eines Zweigs darüber, egal an welcher Stelle im Namen das Wort
-steht — `password`, `passphrase`, `passwd`, `secret`, `token`, `key`,
-`credential` oder `auth` lautet, im Singular wie im Plural, und der Wert kein
-Boolean ist: der `auth-header` und der `api-key` oben.  Ein Name wird
-an jedem Zeichen, das weder Buchstabe noch Ziffer ist, und an jedem
-camelCase-Höcker in Wörter zerlegt, also enthält `apiKey` das Wort `key` und
-`passivation-idle` kein `pass`.  Jeder Wert, den die Secrets-Datei setzt, wird
-zurückgehalten, egal wie sein Key heißt — auch nachdem eine höhere Schicht den
-Key überschrieben hat, wie beim `user` oben, und im Dump eines
+steht — `password`, `passphrase`, `passwd`, `pass`, `secret`, `token`, `key`,
+`credential`, `auth` oder `authorization` lautet, im Singular wie im Plural,
+und der Wert kein Boolean ist: der `auth-header` und der `api-key` oben.  Ein
+Name wird an jedem Zeichen, das weder Buchstabe noch Ziffer ist, an jedem
+camelCase-Höcker und vor einer Ziffer nach einem Buchstaben in Wörter
+zerlegt, also enthält `apiKey` das Wort `key`, `password2` das Wort, das es
+nummeriert, und `passivation-idle` kein `pass`.  An ein anderes Wort geklebt
+(`pgpassword`, `clientsecret`, `ghtoken`) zählen diese Wörter auch, bis auf
+`key`, `pass` und `auth`, auf die gewöhnliche Wörter enden; von den Namen auf
+`…key` zählen `apikey`, `accesskey`, `secretkey` und `privatekey`, und `pwd`
+zählt neben einem anderen Wort des Key-Pfads, wie in `mysql-pwd` oder
+`db.pwd` — nur eine Variable, die bloß `PWD` heißt, das Arbeitsverzeichnis
+einer Shell, nicht.  Ein Wert, den eine Umgebungsvariable
+geliefert hat, wird zurückgehalten, wenn ihr Name nach derselben Regel
+Zugangsdaten benennt, egal wie sein Key heißt: der `dsn` oben, gebaut aus
+`${DB_PASSWORD}` aus einer `.env`-Datei, und jeder Wert, der auf ihn
+verweist.  Jeder Wert, den die Secrets-Datei setzt, wird zurückgehalten, egal
+wie sein Key heißt — auch nachdem eine höhere Schicht den Key überschrieben
+hat, wie beim `user` oben.  Beides gilt auch im Dump eines
 `WorkerMesh`-Workers.  Und eine Liste ist ein einziger Key, also werden die
 Objekte darin Feld für Feld nach der ersten Regel gelesen: ihr `password`
 erscheint als `"<redacted>"`, der Rest der Liste wie geschrieben.
@@ -604,9 +623,8 @@ Nach dem Wert maskiert wird allein die Userinfo einer URL:
 `redis://default:s3cret@redis.example:6379` erscheint unter jedem Key als
 `redis://***@redis.example:6379`, `dsn` und `connection-string`
 eingeschlossen.  Jedes andere Geheimnis außerhalb der Secrets-Datei, unter
-einem Key, der keines benennt, steht vollständig da — ein nacktes Passwort in
-einem `dsn` (wenn der Baum zusammengeführt ist, ist ein
-`${?DATABASE_PASSWORD}` eine gewöhnliche Zeichenkette), ein `?password=` oder
+einem Key und aus einer Variable, die keines benennen, steht vollständig da —
+ein ausgeschrieben nacktes Passwort in einem `dsn`, ein `?password=` oder
 `?authToken=` im Query-String, die Form `Server=…;Password=…` von SQL Server
 und die schemalose Server-Liste `user:password@host` von Memcached.
 Gewöhnliche Tuning-Werte werden *nicht* zurückgehalten, bloß weil sie eines

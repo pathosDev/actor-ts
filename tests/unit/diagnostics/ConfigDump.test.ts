@@ -9,10 +9,9 @@
  * smaller can state it.
  *
  * **What still prints is pinned deliberately.**  Withholding is by key name,
- * because a `${?DATABASE_PASSWORD}` has resolved to a plain string long
- * before the merged tree exists and nothing is left to say it was a secret —
- * unless it came out of the secrets file, whose every value is withheld
- * whatever its key is called (#1546).
+ * by the secrets file, whose every value is withheld whatever its key is
+ * called (#1546), and by the variable a value came out of when that
+ * variable's name names a credential (#1788).
  * One kind of secret says so in the value itself: the userinfo of a URL,
  * which `scheme://user:password@host` marks by syntax, so that is masked
  * under any key name (#1458).  Everything neither rule can see — a bare
@@ -122,7 +121,9 @@ describe('configDumpLines — the text the dump writes', () => {
     // until the pages say so too.
     const text = configDumpLines(layered({
       'my-app': {
-        // A `${?DATABASE_PASSWORD}` that resolved into a key called `dsn`.
+        // A password written out under a key called `dsn`.  The same value
+        // read out of `${DATABASE_PASSWORD}` is withheld by its variable —
+        // the case after this one (#1788).
         database: { dsn: 'hunter2' },
         ingest: {
           endpoint: 'https://logs.example/ingest?authToken=hunter3',
@@ -141,6 +142,24 @@ describe('configDumpLines — the text the dump writes', () => {
     expect(printed(text, 'my-app.mssql.connection-string'))
       .toBe('"Server=db,1433;Database=app;User Id=sa;Password=hunter5"');
     expect(printed(text, 'my-app.memcached.servers')).toBe('"memuser:hunter6@cache:11211,cache-2:11211"');
+  });
+
+  test('the same password read out of a credential-named variable is withheld — the remainder shrank (#1788)', () => {
+    const variable = 'CONFIG_DUMP_DATABASE_PASSWORD';
+    const previous = process.env[variable];
+    process.env[variable] = 'hunter2';
+    try {
+      const text = configDumpLines(Config.load({
+        appConfPath: 'no-such-application.conf',
+        overrides: Config.parseString(`my-app.database.dsn = \${${variable}}`),
+      }));
+
+      expect(text).toContain(`my-app.database.dsn = <redacted>  [override, from $${variable}]`);
+      expect(text).not.toContain('hunter2');
+    } finally {
+      if (previous === undefined) delete process.env[variable];
+      else process.env[variable] = previous;
+    }
   });
 
   test('only the userinfo goes: scheme, host, port, path and query print as written', () => {
@@ -243,9 +262,10 @@ describe('configDumpLines — the text the dump writes', () => {
   });
 
   test('a URL substituted from the environment is masked — ${?REDIS_URL} through Config.load', () => {
-    // The route the redis block's own reference.conf comment recommends, and
-    // the reason a value cannot be judged by where it came from: once the file
-    // is parsed, the substitution is an ordinary string in the merged tree.
+    // The route the redis block's own reference.conf comment recommends.  The
+    // line names the variable it came from (#1788), and a variable called
+    // `…_REDIS_URL` names no credential, so the value is shown — with the
+    // userinfo masked, which the URL says by syntax.
     const variable = 'ACTOR_TS_TEST_1458_REDIS_URL';
     const directory = mkdtempSync(join(tmpdir(), 'actor-ts-config-dump-'));
     const path = join(directory, 'application.conf');
@@ -256,7 +276,7 @@ describe('configDumpLines — the text the dump writes', () => {
       const text = configDumpLines(Config.load({ appConfPath: path }));
 
       expect(text).toContain('actor-ts.cache.redis.url = "redis://***@redis.example:6379/0"'
-        + '  [application, overrides a lower layer]');
+        + `  [application, overrides a lower layer, from $${variable}]`);
       expect(text).not.toContain('hunter2');
     } finally {
       if (previous === undefined) delete process.env[variable];
@@ -307,7 +327,7 @@ describe('configDumpLines — the text the dump writes', () => {
 
     expect(head).toContain(
       `, ${STOCK_WITHHELD.length + 1} redacted by key name, 0 redacted from a secrets file,`
-      + ' 0 with credential fields withheld, 2 with URL credentials masked;',
+      + ' 0 redacted by variable name, 0 with credential fields withheld, 2 with URL credentials masked;',
     );
   });
 
@@ -326,7 +346,7 @@ describe('configDumpLines — the text the dump writes', () => {
 
     expect(head).toContain(
       `, ${STOCK_WITHHELD.length} redacted by key name, 0 redacted from a secrets file,`
-      + ' 2 with credential fields withheld, 2 with URL credentials masked;',
+      + ' 0 redacted by variable name, 2 with credential fields withheld, 2 with URL credentials masked;',
     );
     expect(text).not.toContain('hunter');
   });
@@ -692,6 +712,161 @@ const STOCK_URL_KEYS: readonly string[] = [
   'actor-ts.persistence.snapshot-store.postgres.url',
 ];
 
+describe('withheld by the variable that supplied the value (#1788)', () => {
+  /**
+   * `Config.load` over `files` in a fresh directory, every file named, so no
+   * file in the working directory answers.  The variables come from the
+   * `.env` among them, under names no shell sets.
+   */
+  const dumpOf = (files: Readonly<Record<string, string>>, overrides?: Config): string => {
+    const directory = mkdtempSync(join(tmpdir(), 'actor-ts-config-dump-variables-'));
+    try {
+      for (const [name, content] of Object.entries(files)) writeFileSync(join(directory, name), content, 'utf8');
+      return configDumpLines(Config.load({
+        referenceConfPath: join(directory, 'reference.conf'),
+        appConfPath: join(directory, 'application.conf'),
+        secretsConfPath: join(directory, 'secrets.conf'),
+        environmentFilePath: join(directory, '.env'),
+        ...(overrides === undefined ? {} : { overrides }),
+      }));
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  };
+
+  const ENVIRONMENT_FILE = 'CONFIG_DUMP_DB_PASSWORD=hunter2\nCONFIG_DUMP_DB_HOST=db-1\n';
+
+  test('a value a credential-named variable supplied is withheld whatever its key is called', () => {
+    const text = dumpOf({ '.env': ENVIRONMENT_FILE, 'application.conf': 'my-app.db = ${CONFIG_DUMP_DB_PASSWORD}' });
+
+    expect(text).toContain('my-app.db = <redacted>  [application, from $CONFIG_DUMP_DB_PASSWORD]');
+    expect(text).not.toContain('hunter2');
+    expect(text.split('\n')[0]!).toContain(', 1 redacted by variable name,');
+  });
+
+  test('so are a key that refers to it and a string built from it', () => {
+    const text = dumpOf({
+      '.env': ENVIRONMENT_FILE,
+      'application.conf': [
+        'my-app.db.value = ${CONFIG_DUMP_DB_PASSWORD}',
+        'my-app.copy = ${my-app.db.value}',
+        'my-app.dsn = "host=db user=app password="${CONFIG_DUMP_DB_PASSWORD}',
+      ].join('\n'),
+    });
+
+    for (const path of ['my-app.db.value', 'my-app.copy', 'my-app.dsn']) {
+      expect(text).toContain(`${path} = <redacted>  [application, from $CONFIG_DUMP_DB_PASSWORD]`);
+    }
+    expect(text).not.toContain('hunter2');
+    expect(text.split('\n')[0]!).toContain(', 3 redacted by variable name,');
+  });
+
+  test('and a value a higher file read out of a lower one, which the lower one took from the variable', () => {
+    const text = dumpOf({
+      '.env': ENVIRONMENT_FILE,
+      'reference.conf': 'my-app.db.value = ${CONFIG_DUMP_DB_PASSWORD}',
+      'application.conf': 'my-app.dsn = "postgres://app:"${my-app.db.value}"@db/app"',
+    });
+
+    expect(text).toContain('my-app.db.value = <redacted>  [project-reference, from $CONFIG_DUMP_DB_PASSWORD]');
+    expect(text).toContain('my-app.dsn = <redacted>  [application, from $CONFIG_DUMP_DB_PASSWORD]');
+    expect(text).not.toContain('hunter2');
+  });
+
+  test('a variable that names no credential is shown, and named', () => {
+    const text = dumpOf({ '.env': ENVIRONMENT_FILE, 'application.conf': 'my-app.db.host = ${CONFIG_DUMP_DB_HOST}' });
+
+    expect(text).toContain('my-app.db.host = "db-1"  [application, from $CONFIG_DUMP_DB_HOST]');
+    expect(text.split('\n')[0]!).toContain(', 0 redacted by variable name,');
+  });
+
+  test('withheld in any layer: code that replaced the key does not bring the value back', () => {
+    // Whether the value that won is the secret is not something the dump can
+    // know, so it errs the way the secrets file does.
+    const text = dumpOf(
+      { '.env': ENVIRONMENT_FILE, 'application.conf': 'my-app.db = ${CONFIG_DUMP_DB_PASSWORD}' },
+      Config.fromObject({ 'my-app': { db: 'replaced-in-code' } }),
+    );
+
+    expect(text).toContain('my-app.db = <redacted>  [override, overrides a lower layer]');
+    expect(text).not.toContain('replaced-in-code');
+  });
+
+  test('code overrides composed with merge and withFallback keep the variables of both sides', () => {
+    const variable = 'CONFIG_DUMP_COMPOSED_TOKEN';
+    const previous = process.env[variable];
+    process.env[variable] = 'hunter2';
+    try {
+      const fromVariable = Config.parseString(`my-app.merged = \${${variable}}`);
+      const plain = Config.parseString('my-app.plain = 1');
+      for (const overrides of [plain.merge(fromVariable), fromVariable.merge(plain), plain.withFallback(fromVariable)]) {
+        const text = configDumpLines(Config.load({ appConfPath: 'no-such-application.conf', overrides }));
+        expect(text).toContain(`my-app.merged = <redacted>  [override, from $${variable}]`);
+        expect(text).toContain('my-app.plain = 1  [override]');
+      }
+    } finally {
+      if (previous === undefined) delete process.env[variable];
+      else process.env[variable] = previous;
+    }
+  });
+
+  test('a loaded config passed back in as overrides keeps the variables of every layer it read', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'actor-ts-config-dump-variables-'));
+    try {
+      writeFileSync(join(directory, '.env'), ENVIRONMENT_FILE, 'utf8');
+      writeFileSync(join(directory, 'reference.conf'), 'my-app.db = ${CONFIG_DUMP_DB_PASSWORD}', 'utf8');
+      const loaded = Config.load({
+        referenceConfPath: join(directory, 'reference.conf'),
+        appConfPath: false,
+        secretsConfPath: false,
+        environmentFilePath: join(directory, '.env'),
+      });
+      const text = configDumpLines(Config.load({ appConfPath: 'no-such-application.conf', overrides: loaded }));
+
+      expect(text).toContain('my-app.db = <redacted>  [override, from $CONFIG_DUMP_DB_PASSWORD]');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('a variable whose name is not a plain one is named JSON-encoded, so it cannot pass for the line', () => {
+    // A quoted substitution path looks its variable up quotes and all, so the
+    // name can hold whatever the quotes do — here a `]` and a `, from`.
+    const text = dumpOf({
+      '.env': '"db], from $NOTHING"=db-2\n',
+      'application.conf': 'my-app.db.host = ${"db], from $NOTHING"}',
+    });
+
+    expect(text).toContain(`my-app.db.host = "db-2"  [application, from $${JSON.stringify('"db], from $NOTHING"')}]`);
+  });
+
+  test('the project reference.conf and its profile report as project-reference, and the header names it and the .env file', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'actor-ts-config-dump-variables-'));
+    try {
+      writeFileSync(join(directory, 'reference.conf'), [
+        'my-app { pool-size = 4, mode = "root" }',
+        'profiles.production.my-app.mode = "production"',
+      ].join('\n'), 'utf8');
+      const text = configDumpLines(Config.load({
+        referenceConfPath: join(directory, 'reference.conf'),
+        appConfPath: join(directory, 'application.conf'),
+        secretsConfPath: false,
+        environmentFilePath: join(directory, '.env'),
+        profile: 'production',
+      }));
+      const head = text.split('\n')[0]!;
+
+      expect(text).toContain('my-app.pool-size = 4  [project-reference]');
+      expect(text).toContain('my-app.mode = "production"  [project-reference, overrides a lower layer]');
+      expect(head).toContain(`; reference.conf: ${join(directory, 'reference.conf')};`);
+      expect(head).toContain(`; environment file: ${join(directory, '.env')} (not found)`);
+      expect(head).toContain('; secrets.conf: (none)');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('every stock key that takes a URL, audited in one pass (#1458)', () => {
   test('the list above is every stock leaf named url, base-url or endpoint', () => {
     const text = configDumpLines(layered({}));
@@ -849,6 +1024,79 @@ describe('which key names count as naming a secret', () => {
 
     for (const line of bodyOf(text).filter((one) => one.path.startsWith('my-app.'))) {
       expect(line.value).toBe(CONFIG_REDACTED);
+    }
+  });
+
+  /**
+   * Spellings a cut into words cannot reach (#1759): a word numbered by a
+   * digit, a credential word glued onto another, the four `…key` compounds,
+   * `authorization`, `pass` alone, and `pwd` — beside another word of its
+   * segment, and as a segment of its own, because a key's name is its whole
+   * path: `my-app.pwd` is no lone `pwd`.
+   */
+  const GLUED_AND_NUMBERED = [
+    'password2', 'secret1', 'apiKey2', 'db-password1', 'apikey', 'apitoken', 'accesskey', 'secretkey',
+    'privatekey', 'authorization', 'pgpassword', 'clientsecret', 'ghtoken', 'mysql-pwd', 'pwd', 'pass',
+  ] as const;
+
+  /**
+   * What the widened rule must still print: words that only end on a
+   * credential word, and the gap it names, `sshkey`.  A lone `pwd` — a
+   * shell's working directory — can only be a variable's whole name, which
+   * the variable-name case below asserts.
+   */
+  const STILL_PRINTED = [
+    'monkey', 'turkey', 'keyspace', 'passivation-idle', 'compass', 'bypass', 'oauth', 'path', 'sshkey',
+  ] as const;
+
+  test('a pwd field of an object inside a list is withheld: its name goes on from the key (#1759)', () => {
+    const text = configDumpLines(layered({ 'my-app': { upstreams: [{ host: 'db-1', pwd: 'hunter2' }] } }));
+
+    expect(printed(text, 'my-app.upstreams')).toBe('[{"host":"db-1","pwd":"<redacted>"}]');
+  });
+
+  test('a credential word numbered, glued onto another, or spelled pwd beside another word (#1759)', () => {
+    const text = configDumpLines(layered({
+      'my-app': Object.fromEntries(GLUED_AND_NUMBERED.map((name) => [name, `value-of-${name}`])),
+    }));
+
+    for (const name of GLUED_AND_NUMBERED) expect(printed(text, `my-app.${name}`)).toBe(CONFIG_REDACTED);
+    expect(text).not.toContain('value-of-');
+  });
+
+  test('the widened rule still prints what only ends on a credential word (#1759)', () => {
+    const text = configDumpLines(layered({
+      'my-app': Object.fromEntries(STILL_PRINTED.map((name) => [name, `value-of-${name}`])),
+    }));
+
+    for (const name of STILL_PRINTED) expect(printed(text, `my-app.${name}`)).toBe(`"value-of-${name}"`);
+  });
+
+  test('a variable name is read by the same rule as a key (#1759, #1788)', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'actor-ts-config-dump-variable-names-'));
+    const credentialNamed = ['PGPASSWORD', 'MYSQL_PWD', 'REDIS_PASS', 'APIKEY', 'CLIENTSECRET', 'GHTOKEN', 'DB_PASSWORD2'];
+    const plainNamed = ['CONFIG_DUMP_PORT', 'CONFIG_DUMP_MONKEY', 'CONFIG_DUMP_PATH', 'PWD'];
+    try {
+      writeFileSync(join(directory, '.env'), [...credentialNamed, ...plainNamed].map((name) => `${name}=from-${name}`).join('\n'));
+      writeFileSync(join(directory, 'application.conf'), [...credentialNamed, ...plainNamed]
+        .map((name, index) => `my-app.value-${index} = \${${name}}`).join('\n'));
+      const config = Config.load({
+        referenceConfPath: false,
+        appConfPath: join(directory, 'application.conf'),
+        secretsConfPath: false,
+        environmentFilePath: join(directory, '.env'),
+      });
+      const leaves = new Map(resolveConfigLeaves(config).map((leaf) => [leaf.path, leaf]));
+
+      [...credentialNamed, ...plainNamed].forEach((name, index) => {
+        const leaf = leaves.get(`my-app.value-${index}`)!;
+        // A variable the shell running the suite sets wins over the file; the
+        // name is what counts, so only the name is asserted.
+        expect(leaf.variables).toEqual([name]);
+        expect(leaf.secret, name).toBe(credentialNamed.includes(name));
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 });

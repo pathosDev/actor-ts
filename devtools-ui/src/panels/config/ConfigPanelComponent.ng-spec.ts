@@ -54,6 +54,8 @@ describe('ConfigPanelComponent', () => {
       attributed?: boolean;
       profile?: string | null;
       secretsPath?: string | null;
+      referencePath?: string | null;
+      environmentFilePath?: string | null;
     } = {},
   ): Promise<void> {
     FakeTapSocket.latest.respondTo('config.resolved', {
@@ -62,6 +64,8 @@ describe('ConfigPanelComponent', () => {
       attributed: extras.attributed ?? true,
       profile: extras.profile ?? null,
       secretsPath: extras.secretsPath ?? null,
+      referencePath: extras.referencePath ?? null,
+      environmentFilePath: extras.environmentFilePath ?? null,
     });
     await Promise.resolve();
     await Promise.resolve();
@@ -102,27 +106,33 @@ describe('ConfigPanelComponent', () => {
     mount();
     await answer([
       entry({ path: 'a.default', source: 'reference' }),
+      entry({ path: 'a.from-project-defaults', source: 'project-reference' }),
       entry({ path: 'a.from-file', source: 'application' }),
       entry({ path: 'a.from-profile', source: 'profile' }),
       entry({ path: 'a.from-secrets', source: 'secrets', value: '<redacted>' }),
       entry({ path: 'a.from-code', source: 'override' }),
     ]);
 
-    expect(rows()).toHaveLength(5);
-    expect(rows()[0]!.textContent).toContain('reference.conf');
-    expect(rows()[1]!.textContent).toContain('application.conf');
-    expect(rows()[2]!.textContent).toContain('profile');
-    expect(rows()[3]!.textContent).toContain('secrets.conf');
-    expect(rows()[4]!.textContent).toContain('code');
+    expect(rows()).toHaveLength(6);
+    // Two files are called reference.conf; the bundled one says whose it is.
+    expect(rows()[0]!.textContent).toContain('reference.conf (actor-ts)');
+    expect(rows()[1]!.textContent).toContain('reference.conf');
+    expect(rows()[1]!.textContent).not.toContain('(actor-ts)');
+    expect(rows()[2]!.textContent).toContain('application.conf');
+    expect(rows()[3]!.textContent).toContain('profile');
+    expect(rows()[4]!.textContent).toContain('secrets.conf');
+    expect(rows()[5]!.textContent).toContain('code');
   });
 
-  it('marks each of the five sources with a state token (#1546)', async () => {
-    // Four tokens for five sources: a profile shares the application file's,
-    // being a block of that file, and the secrets file takes the idle one,
-    // its values being withheld.
+  it('marks each of the six sources with a state token (#1546, #1785)', async () => {
+    // Four tokens for six sources: the project's own reference.conf shares
+    // the bundled one's, both being defaults; a profile shares the
+    // application file's, being a block of that file; and the secrets file
+    // takes the idle one, its values being withheld.
     mount();
     await answer([
       entry({ path: 'a.default', source: 'reference' }),
+      entry({ path: 'a.from-project-defaults', source: 'project-reference' }),
       entry({ path: 'a.from-file', source: 'application' }),
       entry({ path: 'a.from-profile', source: 'profile' }),
       entry({ path: 'a.from-secrets', source: 'secrets' }),
@@ -131,10 +141,11 @@ describe('ConfigPanelComponent', () => {
 
     const tokens = rows().map((row) => row.querySelector('.dt-state')!.className);
     expect(tokens[0]).toContain('dt-state--ok');
-    expect(tokens[1]).toContain('dt-state--warn');
+    expect(tokens[1]).toContain('dt-state--ok');
     expect(tokens[2]).toContain('dt-state--warn');
-    expect(tokens[3]).toContain('dt-state--pending');
-    expect(tokens[4]).toContain('dt-state--error');
+    expect(tokens[3]).toContain('dt-state--warn');
+    expect(tokens[4]).toContain('dt-state--pending');
+    expect(tokens[5]).toContain('dt-state--error');
   });
 
   it('names the active profile and the secrets file it read (#1546)', async () => {
@@ -156,11 +167,41 @@ describe('ConfigPanelComponent', () => {
     expect(text()).not.toContain('Secrets read from');
   });
 
+  it('names the project reference.conf and the .env file it read (#1785)', async () => {
+    mount();
+    await answer([entry()], {
+      applicationPath: '/srv/app/application.conf',
+      referencePath: '/srv/app/reference.conf',
+      environmentFilePath: '/srv/app/.env',
+    });
+    expect(text()).toContain('Project defaults read from /srv/app/reference.conf');
+    expect(text()).toContain('Variables read from /srv/app/.env');
+
+    TestBed.resetTestingModule();
+    FakeTapSocket.reset();
+    mount();
+    await answer([entry()], { applicationPath: '/srv/app/application.conf' });
+    expect(text()).not.toContain('Project defaults read from');
+    expect(text()).not.toContain('Variables read from');
+  });
+
   it('says in the row title when a key displaced a lower layer', async () => {
     mount();
     await answer([entry({ source: 'override', overridden: true })]);
 
     expect(rows()[0]!.getAttribute('title')).toContain('overriding a lower layer');
+  });
+
+  it('names in the row title the variables a value came from (#1788)', async () => {
+    mount();
+    await answer([
+      entry({ path: 'my-app.dsn', source: 'application', value: '<redacted>', variables: ['DB_PASSWORD'] }),
+      entry({ path: 'my-app.port', source: 'application', value: 8080 }),
+    ]);
+
+    // Why a key whose name says nothing is withheld: the variable does.
+    expect(rows()[0]!.getAttribute('title')).toContain('supplied by $DB_PASSWORD');
+    expect(rows()[1]!.getAttribute('title')).not.toContain('supplied by');
   });
 
   it('filters to what differs from the defaults', async () => {

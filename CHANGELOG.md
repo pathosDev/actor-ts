@@ -4955,10 +4955,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`ActorSystemOptions.withConfig`, `LoadOptions.overrides`) is refused at
   startup instead of being merged. `DEVTOOLS_PROTOCOL_VERSION` is now 2,
   because the source of a `config.resolved` entry widened from three layer
-  names to five, so a DevTools client and server one version apart refuse
-  each other at the handshake. `WorkerMeshInitData`, exported from
-  `actor-ts/worker`, gains the required `secretPaths` field and an optional
-  `configFile`.
+  names to six (`profile`, `secrets`, and `project-reference` for the
+  project's own `reference.conf`, #1785), so a DevTools client and server
+  one version apart refuse each other at the handshake.
+  `WorkerMeshInitData`, exported from `actor-ts/worker`, gains the required
+  `secretPaths` field and an optional `configFile`.
 
   **Migration.** Rename a root profiles key of your own (keys below the root
   such as `my-app.profiles` are unaffected), move profile blocks out of
@@ -5666,20 +5667,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   again.
 
 - **BREAKING — The dump withholds a value when any whole word of the key's
-  name is `password`, `passphrase`, `passwd`, `secret`, `token`, `key`,
-  `credential` or `auth` — singular or plural, in any path segment and
-  wherever in the name it stands, so a branch named `credentials` withholds
-  everything beneath it (#867).**
+  name is `password`, `passphrase`, `passwd`, `pass`, `secret`, `token`,
+  `key`, `credential`, `auth` or `authorization` — singular or plural, in
+  any path segment and wherever in the name it stands, so a branch named
+  `credentials` withholds everything beneath it (#867, #1759).**
 
   So `auth-header`, `secret-value` and `api-key-id` are withheld as well as
   `api-key`. A name is cut into words at every character that is not a
-  letter or a digit and at camelCase humps, so `passivation-idle` holds no
-  `pass` and `keyspace` no `key`, and a value drawn from HOCON's boolean
-  vocabulary is never withheld whatever its key is called. The rule errs
-  toward withholding: an application's `token-bucket-size` or `key-prefix`
-  prints as `<redacted>`, while the keys `reference.conf` ships that read
-  that way — `cluster.receptionist.max-subscribers-per-key`, the redis and
-  memcached `key-prefix`, the Kubernetes lease's `token-path` and
+  letter or a digit, at camelCase humps and in front of a digit after a
+  letter, so `password2` holds `password` while `passivation-idle` holds no
+  `pass` and `keyspace` no `key`. A credential word glued onto another
+  counts too — `pgpassword`, `clientsecret`, `ghtoken` — save `key`, `pass`
+  and `auth`, which end ordinary words: of the `…key` compounds `apikey`,
+  `accesskey`, `secretkey` and `privatekey` are read and `sshkey` is not,
+  and `pwd` counts beside another word of the key's path (`mysql-pwd`,
+  `db.pwd`); only a variable called just `PWD`, a shell's working directory,
+  does not (#1759). A value drawn from HOCON's boolean vocabulary is never
+  withheld whatever its key is called. The rule errs toward withholding: an
+  application's `token-bucket-size` or `key-prefix` prints as `<redacted>`,
+  while the keys `reference.conf` ships that read that way —
+  `cluster.receptionist.max-subscribers-per-key`, the redis and memcached
+  `key-prefix`, the Kubernetes lease's `token-path` and
   `token-reload-interval`, and the object-storage `kms-key-id` — are
   exempted by full path, so a stock configuration withholds twelve keys,
   every one a credential slot. It is the same list and the same rule the
@@ -5689,15 +5697,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the panel cannot reach a log file instead.
 
   Redaction by key name is a heuristic and it is the weaker half of the
-  guarantee: by the time the tree is merged, a `${?DATABASE_PASSWORD}` is an
-  ordinary string, so a secret in a key called `dsn` or `connection-string`
-  is printed in full unless it is the userinfo of a URL, which both
-  renderers mask by value under any key name (#1458). Both
-  `configuration.mdx` pages and `troubleshooting.mdx` say so in as many
-  words, a test pins the gap open so that sentence cannot rot, and the key
-  ships `off` because the defence that does not depend on a guess is not
-  printing the tree. Values are JSON-encoded, so a newline inside one cannot
-  forge a line of the dump it is part of.
+  guarantee: a secret written out under a key called `dsn` or
+  `connection-string` is printed in full unless it is the userinfo of a URL,
+  which both renderers mask by value under any key name (#1458), or a
+  credential-named variable supplied it (#1788). Both `configuration.mdx`
+  pages and `troubleshooting.mdx` say so in as many words, a test pins the
+  gap open so that sentence cannot rot, and the key ships `off` because the
+  defence that does not depend on a guess is not printing the tree. Values
+  are JSON-encoded, so a newline inside one cannot forge a line of the dump
+  it is part of.
 
   `CONFIG_SECRET_PATTERN`, `CONFIG_NEVER_REDACTED_PATHS` and
   `CONFIG_REDACTED` live in `src/util/Constants.ts` and are on the
@@ -5724,6 +5732,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `coordination.lease.kubernetes.token-*` and
   `management.auth-protect-health` — none of which is a credential; a stock
   configuration now withholds twelve keys instead of thirty-one.
+
+  `CONFIG_SECRET_PATTERN` reads the ten words; the glued spellings are
+  `CONFIG_SECRET_COMPOUND_PATTERN` and
+  `CONFIG_SECRET_WORDS_IN_LONGER_NAMES`, exported beside it from
+  `actor-ts/util` and the DevTools protocol (#1759). The 0.17.0 DevTools
+  panel matched the words anywhere in the path, which withheld `passivation`
+  and `keyspace` but also `password2` and `apikey`; the whole-word rule
+  alone would have printed those two, and the glued spellings keep them
+  withheld.
 - **Three object-storage suites state the budget their temp-tree hooks run
   under, instead of inheriting one nobody chose** (#290, #1282).
 
@@ -9431,8 +9448,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   cut, so a truncation cannot leave part of a password behind, and the
   dump's header counts the masked values beside the keys withheld by name. A
   stock configuration prints exactly what it printed before. What neither
-  rule sees still prints: a bare password under a key that does not name
-  one, a query-string credential, SQL Server's `Server=…;Password=…` form
+  rule sees still prints: a bare password written out under a key that does
+  not name one (one a credential-named variable supplied is withheld,
+  #1788), a query-string credential, SQL Server's `Server=…;Password=…` form
   and memcached's scheme-less `user:password@host` server list.
 
   Both renderers now also read the fields of an object inside a list, which
@@ -11250,6 +11268,32 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   field and convert it with `BigInt()` after checking its length (CBOR caps
   bignums at the same 8192 bits), and write a `__bigint__` by hand only as
   `String(value)` would.
+
+- **The config dump and DevTools withhold a value a credential-named
+  environment variable supplied, whatever its key is called** (#1788,
+  severity low). `my-app.dsn = ${DB_PASSWORD}` printed the password in full
+  in the boot dump, in `configDumpLines` and in DevTools' `config.resolved`
+  answer: every rule read the key, and the merged tree no longer said where
+  a value came from. The loader now records, per leaf, the variables whose
+  values make it up — read directly, through a reference to another key or
+  as a piece of a concatenation, out of the real environment or a `.env`
+  file — and both renderers withhold a leaf when one of those names reads as
+  a credential by the rule a key is read by, in whichever layer read it, a
+  code override that replaced the key included. Code overrides record their
+  own (`Config.parseString` and `Config.parseFile`, kept through `merge` and
+  `withFallback`), and a `WorkerMesh` worker receives them beside the tree
+  as `WorkerMeshInitData.variables`, so its dump withholds the same keys.
+
+  Every dump line now names the variables behind its value, withheld or not
+  (`[application, from $DB_HOST]`), and the header counts the keys withheld
+  by variable name apart from the other reasons and names the project
+  `reference.conf` and the `.env` file it looked for. A `config.resolved`
+  entry carries the names as `variables`, and the answer `referencePath` and
+  `environmentFilePath` beside `secretsPath`; the panel names the bundled
+  file `reference.conf (actor-ts)` and the project's own `reference.conf`,
+  and shows the variables in a row's tooltip. A password written out under a
+  key that does not name one still prints, as do the query-string,
+  `Server=…;Password=…` and scheme-less `user:password@host` forms.
 
 ## [0.17.0] — 2026-08-29
 

@@ -30,9 +30,10 @@ import { CONFIG_SECRET_PATTERN } from '../../../src/util/Constants.js';
  *   `reference.conf` ships.  A fence of any other kind fails, and so does a
  *   `<pre>` or `<Code>` block, so a second excerpt has nowhere to sit unbound
  *   — one that contradicted the rules used to pass beside the bound one;
- * - together the excerpts show every layer and each of the three rules that
+ * - together the excerpts show every layer and each of the four rules that
  *   withhold a value: by key name — from a word that is not the last of the
- *   name too — by the secrets file, and by field name inside a list.
+ *   name too — by the secrets file, by the variable that supplied the value
+ *   (#1788), and by field name inside a list.
  *
  * What this cannot see is the prose around those spans: a sentence asserting
  * the opposite of a rule keeps every check here green.  Nor can it see a layer
@@ -59,16 +60,25 @@ const PAGES = [
 
 /**
  * A key in every layer, so the dump has a line under each name: the
- * application file's root and its `production` profile, the secrets file's
- * root and its `production` profile, and the code's overrides above them all
- * — which replace a key the secrets file set, the case where withholding by
- * the winning layer would print it.  `reference.conf` is there on its own.
- * `auth-header` is withheld by a word of its name that is not the last one.
+ * project's own `reference.conf`, the application file's root and its
+ * `production` profile, the secrets file's root and its `production`
+ * profile, and the code's overrides above them all — which replace a key the
+ * secrets file set, the case where withholding by the winning layer would
+ * print it.  The bundled `reference.conf` is there on its own.
+ * `auth-header` is withheld by a word of its name that is not the last one,
+ * and `db.dsn` by the variable its value was built from, read out of the
+ * `.env` file — a real `DB_PASSWORD` in the environment wins and changes
+ * nothing the dump prints, since the line is withheld either way.
  */
+const PROJECT_REFERENCE_CONF = 'my-app.db.pool-size = 8';
+
+const ENVIRONMENT_FILE = 'DB_PASSWORD=s3cr3t-from-the-env-file\n';
+
 const APPLICATION_CONF = [
   'actor-ts.diagnostics.log-config-on-start = on',
   'my-app {',
   '  auth-header = "Bearer eyJhbGciOiJIUzI1NiJ9.e30.sig"',
+  '  db.dsn = "host=db.internal user=app password="${DB_PASSWORD}',
   '  db.host = "localhost"',
   '  payments.api-key = "pk_live_123"',
   '  upstreams = [ { host = "db-1", password = "hunter2" } ]',
@@ -96,9 +106,13 @@ beforeAll(() => {
   directory = created;
   writeFileSync(join(created, 'application.conf'), APPLICATION_CONF);
   writeFileSync(join(created, 'secrets.conf'), SECRETS_CONF);
+  writeFileSync(join(created, 'reference.conf'), PROJECT_REFERENCE_CONF);
+  writeFileSync(join(created, '.env'), ENVIRONMENT_FILE);
   const config = Config.load({
     appConfPath: join(created, 'application.conf'),
     secretsConfPath: join(created, 'secrets.conf'),
+    referenceConfPath: join(created, 'reference.conf'),
+    environmentFilePath: join(created, '.env'),
     profile: 'production',
     overrides: Config.parseString('my-app.db.user = "migrator"'),
   });
@@ -112,11 +126,20 @@ afterAll(() => {
   if (directory !== undefined) rmSync(directory, { recursive: true, force: true });
 });
 
-/** The origin column of one dump line — `[secrets]` or `[profile, overrides a lower layer]` — as its layer name. */
+/**
+ * The origin column of one dump line — `[secrets]`, `[profile, overrides a
+ * lower layer]` or `[application, from $DB_PASSWORD]` — as its layer name.
+ */
 const layerOf = (line: string): string => {
-  const origin = /\[([a-z]+)(?:, overrides a lower layer)?\]$/.exec(line);
+  const origin = /\[([a-z-]+)(?:, overrides a lower layer)?(?:, from [^\]]+)?\]$/.exec(line);
   expect(origin, `no origin column in: ${line}`).not.toBeNull();
   return origin![1]!;
+};
+
+/** The variables a dump line names behind its value — `DB_PASSWORD` of `[application, from $DB_PASSWORD]`. */
+const variablesOf = (line: string): string[] => {
+  const from = /, from ([^\]]+)\]$/.exec(line);
+  return from === null ? [] : from[1]!.split(', ').map((name) => name.replace(/^\$/, ''));
 };
 
 /** The lines of the `## ` section headed exactly `heading`. */
@@ -276,7 +299,7 @@ const lastWordOf = (path: string): string => {
 describe('the troubleshooting page describes the config dump the code prints — #1546', () => {
   test('the fixture fills every layer the dump can name', () => {
     expect([...new Set(dumpBody.map(layerOf))].sort())
-      .toEqual(['application', 'override', 'profile', 'reference', 'secrets']);
+      .toEqual(['application', 'override', 'profile', 'project-reference', 'reference', 'secrets']);
   });
 
   for (const { language, page, heading } of PAGES) {
@@ -332,9 +355,16 @@ describe('the troubleshooting page describes the config dump the code prints —
       expect([...new Set(sample.map(layerOf))].sort()).toEqual([...new Set(dumpBody.map(layerOf))].sort());
       const withheld = sample.filter((line) => / = <redacted> {2}\[/.test(line));
       // By the secrets file: a key whose name says nothing about a credential,
-      // withheld although a layer above the file won it — the one case a rule
-      // keyed on the winning layer would print.
-      expect(withheld.some((line) => layerOf(line) !== 'secrets' && namesNoCredential(pathOf(line))))
+      // and no credential-named variable behind it, withheld although a layer
+      // above the file won it — the one case a rule keyed on the winning layer
+      // would print.
+      expect(withheld.some((line) => layerOf(line) !== 'secrets' && namesNoCredential(pathOf(line))
+        && variablesOf(line).every(namesNoCredential)))
+        .toBe(true);
+      // By variable name: a key whose name says nothing about a credential,
+      // withheld because a variable whose name does supplied it (#1788).
+      expect(withheld.some((line) => namesNoCredential(pathOf(line))
+        && !variablesOf(line).every(namesNoCredential)))
         .toBe(true);
       // By key name: a credential-named key from a layer other than the secrets file.
       expect(withheld.some((line) => layerOf(line) !== 'secrets' && !namesNoCredential(pathOf(line))))
