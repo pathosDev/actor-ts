@@ -6054,6 +6054,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   directory is read. It used to be taken as the path `""`, which read no
   file. To read none, pass `false` for the path.
 
+  On Deno, a narrow `--allow-read` that names `./application.conf` and
+  `./secrets.conf` alone now stops startup: the loader also reads
+  `./reference.conf` and `./.env`, and Deno refuses a read it was not
+  granted instead of reporting no file, so `Config.load` throws a
+  `ConfigError` naming the file (measured on Deno 2.6.8). **Migration.** Add
+  the two files to `--allow-read`, or pass `false` for the ones a deployment
+  never ships (`withReferenceConfigFile(false)`,
+  `withEnvironmentFile(false)`).
+
 - **BREAKING — `WorkerMeshInitData.configFile` may be `false`** (#1785). The
   init frame a `WorkerMesh` worker receives names each file its main thread
   read — `configFile`, and now `referenceConfigFile`, `secretsFile` and
