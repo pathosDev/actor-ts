@@ -16,21 +16,21 @@
     "lint:audit": "bun audit --audit-level=high"
   },
   "dependencies": {
-    "@astrojs/markdown-remark": "^7.3.1",
-    "@astrojs/mdx": "^8.0.2",
-    "@astrojs/starlight": "^0.42.4",
+    "@astrojs/markdown-remark": "^7.3.5",
+    "@astrojs/mdx": "^8.1.2",
+    "@astrojs/starlight": "^0.42.8",
     "@fontsource-variable/inter": "^5.3.0",
     "@fontsource/jetbrains-mono": "^5.3.0",
-    "astro": "^7.3.5",
+    "astro": "^7.4.5",
     "country-flag-icons": "^1.6.20",
     "sharp": "^0.35.4",
-    "starlight-typedoc": "^0.23.1",
+    "starlight-typedoc": "^0.23.2",
     "typedoc": "^0.28.20",
-    "typedoc-plugin-markdown": "^4.13.1"
+    "typedoc-plugin-markdown": "^4.14.1"
   },
   "devDependencies": {
-    "@types/node": "^24.13.3",
-    "playwright": "^1.63.0",
+    "@types/node": "^24.19.2",
+    "playwright": "^1.64.1",
     "rehype-mermaid": "^3.0.0"
   }
 }
