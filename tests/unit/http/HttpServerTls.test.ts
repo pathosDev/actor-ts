@@ -368,7 +368,7 @@ describe('Hono runners — the socket terminates TLS and negotiates h2 (#1522)',
     expect(oversized.status).toBe(431);
   });
 
-  // `Bun.serve` learned `http2` in 1.4.1 and the `engines` floor is 1.3.0.
+  // `Bun.serve` learned `http2` in 1.4.1 and the `engines` floor is 1.4.0.
   // On an older Bun the option would be ignored and HTTP/1.1 served under a
   // setting that says otherwise, so the runner refuses there.  The version
   // read is a pure function, pinned on both sides of the line, and the

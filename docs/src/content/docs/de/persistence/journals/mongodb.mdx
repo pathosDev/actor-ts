@@ -23,7 +23,7 @@ Es ist das erste Document-Store-Backend und braucht kein Replica Set: siehe
 beide unterstützt:
 
 ```bash
-bun add mongodb@^7   # oder mongodb@^6 — siehe den Hinweis unten, wenn du auf Bun 1.3 bist
+bun add mongodb@^7   # oder mongodb@^6
 ```
 
 import { Aside } from '@astrojs/starlight/components';
@@ -36,10 +36,10 @@ import { Aside } from '@astrojs/starlight/components';
   wirft genau das auf Bun 1.3.0 und importiert auf 1.4.2 sauber; v6 importiert
   auf beiden sauber, ebenso auf Node und Deno.
 
-  Dieses Projekt pinnt für seine eigene CI Bun 1.4, `engines` lässt aber
-  weiterhin 1.3 zu — deshalb lautet die Peer-Range `^6 || ^7` statt nur v7.
-  **Pinne `^6`, wenn du auf Bun 1.3 läufst**; sonst ist v7 das, was die
-  Live-Integrationssuite ausübt.
+  Die `engines`-Untergrenze ist Bun 1.4.0, jedes unterstützte Bun importiert
+  v7 also, und v7 ist das, was die Live-Integrationssuite ausübt.  Die
+  Peer-Range bleibt `^6 || ^7`; v6 stammt aus der Zeit, als die Untergrenze
+  bei 1.3 lag.
 </Aside>
 
 Das Framework importiert den Treiber erst, wenn ein MongoDB-Store öffnet — beim

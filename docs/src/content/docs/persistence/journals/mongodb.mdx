@@ -23,7 +23,7 @@ It is the first document-store backend, and it needs no replica set: see
 supported:
 
 ```bash
-bun add mongodb@^7   # or mongodb@^6 — see the note below if you are on Bun 1.3
+bun add mongodb@^7   # or mongodb@^6
 ```
 
 import { Aside } from '@astrojs/starlight/components';
@@ -36,10 +36,9 @@ import { Aside } from '@astrojs/starlight/components';
   exactly that on Bun 1.3.0 and imports cleanly on 1.4.2; v6 imports cleanly
   on both, and on Node and Deno.
 
-  This project pins Bun 1.4 for its own CI, but `engines` still admits 1.3,
-  which is why the peer range is `^6 || ^7` rather than v7 alone.  **Pin `^6`
-  if you run on Bun 1.3**; otherwise v7 is what the live integration suite
-  exercises.
+  The `engines` floor is Bun 1.4.0, so every supported Bun imports v7, which
+  is what the live integration suite exercises.  The peer range stays
+  `^6 || ^7`; v6 dates from when the floor was 1.3.
 </Aside>
 
 The framework imports the driver only when a MongoDB store opens — at startup,
