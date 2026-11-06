@@ -121,7 +121,7 @@ export { safeStringify } from './SafeStringify.js';
 // Linear-time end-stripping.  The regex spelling of this is quadratic on a
 // value a remote peer chooses (#1198), which is the reason it is a function
 // at all rather than a one-liner at each site.
-export { stripTrailing, stripSurrounding } from './StripCharacters.js';
+export { stripTrailing, stripSurrounding, asUrlParserReadsIt } from './StripCharacters.js';
 
 export { TokenBucket } from './TokenBucket.js';
 export type { TokenBucketOptions } from './TokenBucket.js';
