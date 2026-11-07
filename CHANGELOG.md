@@ -9081,6 +9081,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **A promotion can no longer choose the roles of the node it promotes**
+  (#1104). While a node is `joining` or `weakly-up`, a claim about its own
+  record is accepted when it says `up`, because the leader's promotion has to
+  arrive from outside — and that exception asks nothing of the sender. The
+  record was then merged wholesale, so a single gossip frame from an address
+  the node had never heard of promoted it with roles of the sender's choosing
+  (`["worker"]` became `["shard-host","singleton-host"]`), which is what shard
+  placement, singleton hosting, routing and downing quorums are computed from,
+  and the node gossiped the substituted set onward as its own. The node's own
+  roles now join the facts it keeps over any record about itself (address
+  incarnation, storage identities, configuration facts, app version), and so
+  does the absence of a `removedAt`. A genuine leader promotion carries the
+  roles the node gossiped and lands unchanged. The exception still does not
+  require standing from the sender: the frame carrying a joiner's promotion is
+  routinely from a peer it has not merged yet, and any stranger can grant
+  itself standing one frame earlier by announcing itself `up`.
+
 - **Three configuration parsers no longer take quadratic time on a hostile
   value** (#1792, CodeQL `js/polynomial-redos`). The HOCON number literal
   (`\d+\.?\d*`) split a digit run two ways at every position, and the WHATWG

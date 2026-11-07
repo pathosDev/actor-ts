@@ -722,8 +722,15 @@ Regeln:
   ist die Beförderung von `joining`/`weakly-up` nach `up` — die
   muss von außen kommen, weil sie die Entscheidung des Leaders
   ist, und sie anzunehmen ist harmlos, denn ein joinender
-  Knoten will ohnehin `up` werden. Alles andere über den
-  eigenen Record entscheiden wir selbst.
+  Knoten will ohnehin `up` werden. Harmlos ist sie, weil sie
+  *nur* den Status transportieren kann: Die Beförderung fragt
+  nichts über ihren Absender, also behält dieser Knoten seine
+  eigenen Rollen, Inkarnation, Storage-Identitäten,
+  Konfigurationsfakten und App-Version, egal was der Record sagt.
+  Vor #1104 kamen die Rollen aus dem Record, ein einziges Frame
+  eines Fremden im Joining-Fenster bestimmte also, was dieser
+  Knoten hostet und platziert. Alles andere über den eigenen
+  Record entscheiden wir selbst.
 - **Aussagen über Dritte brauchen einen Absender mit Standing.**
   Etwas über einen *anderen* Knoten zu behaupten setzt voraus,
   dass der Peer der Verbindung ein Member ist, den dieser
