@@ -25,9 +25,17 @@
  * has not merged yet, and the one thing a stranger can always do is announce
  * *itself* as `up` (`subject.equals(from)`), which would grant it that standing
  * one frame later.  A standing rule would delay legitimate promotions and stop
- * no attacker.  What makes the forged promotion harmless is that it can carry
- * nothing but the status — a node that is `joining` is already trying to
- * become `up`.
+ * no attacker.  What keeps the forged promotion cheap is that the status is
+ * the one field of this node's own it can set — a node that is `joining` is
+ * already trying to become `up`.  The roles, `removedAt`, the store identities
+ * and the configuration facts are taken from what this node itself knows, and
+ * a node that knows none of the last two carries none rather than the
+ * stranger's.
+ *
+ * Not pinned here, and not closed: the record's **version** is still taken as
+ * sent, bounded only by the #114 skew cap (`maxVersionSkewMs`), so a stranger
+ * can push this node's version up to that bound.  Clamping it is tracked in
+ * #1797.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
@@ -81,7 +89,11 @@ function quietSystem(systemName: string): ActorSystem {
  * seeds, so nothing promotes the node and it stays in `joining` — the window
  * the exception is open in.
  */
-async function startJoiningNode(systemName: string, port: number): Promise<NodeHandle> {
+async function startJoiningNode(
+  systemName: string,
+  port: number,
+  checkedPaths?: ReadonlyArray<string>,
+): Promise<NodeHandle> {
   const address = new NodeAddress(systemName, '10.0.110.1', port);
   const system = quietSystem(systemName);
   const clusterOptions = ClusterOptions.create()
@@ -94,6 +106,9 @@ async function startJoiningNode(systemName: string, port: number): Promise<NodeH
       heartbeatIntervalMs: 60_000, unreachableAfterMs: 120_000, downAfterMs: 240_000,
     })
     .withGossipIntervalMs(60_000);
+  if (checkedPaths !== undefined) {
+    clusterOptions.withConfigurationCompatibilityCheckedPaths([...checkedPaths]);
+  }
   const cluster = await Cluster.join(system, clusterOptions);
   const node = { system, cluster, address };
   nodes.push(node);
@@ -166,6 +181,77 @@ describe('#1104 — a stranger\'s promotion cannot choose this node\'s roles', (
     }]);
     expect(selfRecord(node)?.status).toBe('up');
     expect(selfRecord(node)?.removedAt).toBeUndefined();
+  });
+});
+
+describe('#1104 — a stranger\'s promotion cannot name this node\'s stores or settings', () => {
+  // `withLocalSelfIdentity` used to fall back to the promotion's claims when
+  // this node had none of its own.  A node with no persistence then stored a
+  // stranger's journal as its own and gossiped it onward, and a peer with a
+  // real journal spent its once-per-kind mismatch report on that fiction.
+
+  test('a node that resolved no store identities does not adopt the promotion\'s', async () => {
+    const node = await startJoiningNode('own-promotion-identities', 9_814);
+    expect(selfRecord(node)?.storageIdentities).toBeUndefined();
+
+    const stranger = new NodeAddress('own-promotion-identities', '10.0.110.66', 9_866);
+    gossipFrom(node.cluster, stranger, [{
+      address: node.address.toJSON(),
+      status: 'up',
+      version: Date.now() + 1_000,
+      roles: ['worker'],
+      storageIdentities: { journal: 'postgres://evil/journal' },
+    }]);
+
+    const self = selfRecord(node);
+    expect(self?.status).toBe('up');
+    expect(self?.storageIdentities).toBeUndefined();
+    expect(node.cluster.selfMember()?.storageIdentities).toBeUndefined();
+    // What matters to every peer: the node does not state the stranger's journal.
+    expect(internals(node.cluster).memberDataForGossip(self!).storageIdentities).toBeUndefined();
+  });
+
+  test('a node that has published an identity keeps it over the promotion\'s (#1358)', async () => {
+    // The case the old `??` fallback was written for, still held without it:
+    // what this node published wins, whatever the promotion says.
+    const node = await startJoiningNode('own-promotion-identities-held', 9_815);
+    node.cluster.publishStorageIdentity('journal', 'postgres://ours/journal');
+
+    const stranger = new NodeAddress('own-promotion-identities-held', '10.0.110.66', 9_866);
+    gossipFrom(node.cluster, stranger, [{
+      address: node.address.toJSON(),
+      status: 'up',
+      version: Date.now() + 1_000,
+      roles: ['worker'],
+      storageIdentities: { journal: 'postgres://evil/journal', snapshotStore: 'postgres://evil/snapshots' },
+    }]);
+
+    const self = selfRecord(node);
+    expect(self?.status).toBe('up');
+    expect(self?.storageIdentities).toEqual({ journal: 'postgres://ours/journal' });
+    expect(internals(node.cluster).memberDataForGossip(self!).storageIdentities)
+      .toEqual({ journal: 'postgres://ours/journal' });
+  });
+
+  test('a node that publishes no configuration facts does not adopt the promotion\'s', async () => {
+    // `checked-paths` empty: the constructor publishes nothing, which is the
+    // one state in which the old fallback reached the facts at all.
+    const node = await startJoiningNode('own-promotion-facts', 9_816, []);
+    expect(internals(node.cluster).memberDataForGossip(selfRecord(node)!).configurationFacts).toBeUndefined();
+
+    const stranger = new NodeAddress('own-promotion-facts', '10.0.110.66', 9_866);
+    gossipFrom(node.cluster, stranger, [{
+      address: node.address.toJSON(),
+      status: 'up',
+      version: Date.now() + 1_000,
+      roles: ['worker'],
+      configurationFacts: { 'actor-ts.remote.max-frame-bytes': '1' },
+    }]);
+
+    const self = selfRecord(node);
+    expect(self?.status).toBe('up');
+    expect(self?.configurationFacts).toBeUndefined();
+    expect(internals(node.cluster).memberDataForGossip(self!).configurationFacts).toBeUndefined();
   });
 });
 

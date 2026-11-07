@@ -3920,6 +3920,12 @@ export class Cluster {
    * local record for the same reason: the only status a claim about this node
    * may set is `up`, and a tombstone timestamp belongs to no `up` record.
    *
+   * What a promotion still carries is the status and the record's
+   * **version**, which is taken as sent — bounded by the #114 skew cap
+   * ({@link admitsVersion}, `maxVersionSkewMs`) and by nothing else, so a
+   * stranger can still push this node's version up to that bound.  Clamping it
+   * is tracked in #1797; this method deliberately leaves it alone.
+   *
    * Substituting the local address is the one incarnation comparison that needs
    * no distributed agreement, because it only ever discards a peer's claim in
    * favour of a fact this node owns.  It is not a refusal: the promotion still
@@ -3932,8 +3938,18 @@ export class Cluster {
     // the same reason (#1358): they are a fact this node owns.  A leader
     // promoting us from a view that predates our publication would otherwise
     // merge a self record without them — wholesale, per the rule above — and
-    // wipe what only this node can know.
-    const ownIdentities = this.selfStorageIdentitiesSnapshot() ?? member.storageIdentities;
+    // wipe what only this node can know.  Taken outright rather than with
+    // `??`, and that half matters as much (#1104): a node that has resolved
+    // nothing yet — no persistence, or a store still starting — would
+    // otherwise store the promotion's claims as its own, and since
+    // `memberDataForGossip` stamps only a defined snapshot, gossip them onward
+    // too.  A peer with a real journal would then report a mismatch for a
+    // database this node never named and spend its once-per-kind latch on it,
+    // so the genuine divergence that came later would go unreported.  Nothing
+    // is lost by refusing the fallback: an identity resolved after the
+    // promotion goes through `publishStorageIdentity` and rides every outgoing
+    // self record from then on.
+    const ownIdentities = this.selfStorageIdentitiesSnapshot();
     // The configuration facts are the same kind of thing one field over
     // (#844): what this node resolved for itself, which no peer is in a
     // position to restate.  A promotion merged wholesale from a view that
@@ -3945,8 +3961,12 @@ export class Cluster {
     // correct either way.  Worth stating precisely rather than overclaiming —
     // the field is read by operators and by the DevTools tap, and a self
     // record that contradicts the frames the same node is sending is its own
-    // kind of wrong.
-    const ownFacts = this.selfConfigurationFactsSnapshot() ?? member.configurationFacts;
+    // kind of wrong.  Taken outright, like the identities above: the
+    // constructor publishes the framework's own facts before the first frame,
+    // so a fallback could only ever fill an empty set — `checked-paths` set to
+    // nothing, or only to names the application has not published yet — with
+    // a peer's, and those are claims this node never made.
+    const ownFacts = this.selfConfigurationFactsSnapshot();
     // The app version is the plainest of the three (#843): fixed for the life
     // of this incarnation and known before the first frame, so a peer's record
     // about it is an echo of ours or wrong.  Taken outright rather than with
@@ -3958,7 +3978,7 @@ export class Cluster {
       && ownFacts === member.configurationFacts
       && ownAppVersion === member.appVersion
       && ownRemovedAt === member.removedAt
-      && sameRoles(member.roles, this.selfRoles)) {
+      && sameRoles(this.selfRoles, member.roles)) {
       return member;
     }
     return new Member(
