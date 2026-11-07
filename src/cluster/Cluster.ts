@@ -1682,6 +1682,16 @@ export class Cluster {
    * must not be.  The line names the most recent destination, escaped, since
    * it may be a stranger's choice; the commonest one is a node that has just
    * left.
+   *
+   * The interval is measured on `system.clock`, not the wall clock, so it
+   * follows whatever scheduler the system runs on.  Under a `ManualScheduler`
+   * the first refusal is still logged — the last-report mark starts at
+   * negative infinity, not zero, and virtual time may well start at zero —
+   * and later ones fold, counted, into the next line once the test advances
+   * the clock past the interval.  A test that never advances it sees one line
+   * and the counter, which is the honest reading of "nothing has elapsed".
+   * `EnvelopeTrust.report` folds the same way on the wall clock; it is a
+   * counted entry of the wall-clock ratchet (#1424) and moves with the rest.
    */
   private reportOutboundRefusal(to: NodeAddress, kind: string): void {
     const frame = kind === 'envelope' ? 'envelope' : 'wire';

@@ -29,7 +29,10 @@ import type { MemberData, WireMessage } from '../../../src/cluster/Protocol.js';
 import { decodeRefs, type WireActorRef } from '../../../src/cluster/RefCodec.js';
 import { RemoteActorRef } from '../../../src/cluster/RemoteActorRef.js';
 import { InMemoryTransport, type Transport } from '../../../src/cluster/Transport.js';
+import { OUTBOUND_REFUSAL_REPORT_INTERVAL_MS } from '../../../src/cluster/Constants.js';
+import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
 import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
+import { RecordingLogger } from '../../util/RecordingLogger.js';
 
 /** What the actor under test is asked to do with the ref it is handed. */
 type UseCommand = { readonly kind: 'reply' | 'watch'; readonly target: ActorRef<unknown> };
@@ -269,5 +272,43 @@ describe('a marker is validated as a node address (#936)', () => {
     const node = await startNode('wire-ref-valid', 'h', 47_421, new InMemoryTransport(new NodeAddress('wire-ref-valid', 'h', 47_421)));
     const decoded = decodeRefs(marker({ system: 's', host: 'elsewhere', port: 2552 }), node.cluster);
     expect(decoded).toBeInstanceOf(RemoteActorRef);
+  });
+});
+
+describe('a refusal is reported on the system clock (#936)', () => {
+  test('under a ManualScheduler the first refusal logs and the rest fold until the clock advances', async () => {
+    const scheduler = new ManualScheduler();
+    const logger = new RecordingLogger();
+    const address = new NodeAddress('wire-ref-clock', 'h', 47_441);
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(logger)
+      .withLogLevel(LogLevel.Debug)
+      .withScheduler(scheduler);
+    const system = ActorSystem.create('wire-ref-clock', systemOptions);
+    const clusterOptions = ClusterOptions.create()
+      .withHost('h')
+      .withPort(47_441)
+      .withTransport(new InMemoryTransport(address));
+    const cluster = await Cluster.join(system, clusterOptions);
+    nodes.push({ system, cluster, address });
+    const stranger = new RemoteActorRef(new NodeAddress('s', '169.254.169.254', 80), '/user/x', cluster);
+    const refusals = (): string[] => logger.records
+      .filter((record) => record.level === 'warn' && record.message.includes('refused to send'))
+      .map((record) => record.message);
+
+    stranger.tell('first');
+    expect(refusals()).toHaveLength(1);
+    expect(refusals()[0]).toContain('refused to send 1 frame(s)');
+
+    stranger.tell('second');
+    stranger.tell('third');
+    scheduler.advance(OUTBOUND_REFUSAL_REPORT_INTERVAL_MS - 1);
+    stranger.tell('fourth');
+    expect(refusals()).toHaveLength(1);
+
+    scheduler.advance(1);
+    stranger.tell('fifth');
+    expect(refusals()).toHaveLength(2);
+    expect(refusals()[1]).toContain('refused to send 4 frame(s)');
   });
 });
