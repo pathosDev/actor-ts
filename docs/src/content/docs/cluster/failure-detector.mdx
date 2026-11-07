@@ -118,17 +118,26 @@ The contract a detector implements says the same thing in two methods:
 `heardFrom` is a frame of any kind, `heartbeat` a heartbeat frame.
 
 Both count only for a peer this node **watches**: a member that is
-not a tombstone, or one of its configured seeds. A frame from anyone
-else is still handled — it can admit its sender, for one — but it
-creates no detector state. The detector is only ever asked about
-members, and the connection identity a frame arrives under is the
-peer's own claim without mTLS, so crediting every frame let one peer
-grow the detector by an entry per name it claimed, past the
-`max-members` cap the member map holds (#1103). A joiner loses
-nothing by it: the frame that admits it registers it, which starts
-its silence clock at the same instant the credit used to. Seeds are
-watched from the first dial, so a seed that answers late is judged
-on its answer rather than on the silence before it.
+not a tombstone, or one of its configured seeds that is not one
+either. A frame from anyone else is still handled — it can admit its
+sender, for one — but it creates no detector state. The detector is
+only ever asked about members, and the connection identity a frame
+arrives under is the peer's own claim without mTLS, so crediting
+every frame let one peer grow the detector by an entry per name it
+claimed, past the `max-members` cap the member map holds (#1103).
+
+A member's entry starts when the member is admitted, by whichever
+route admits it, and ends when it leaves the live set: when this
+node stores it as a tombstone — by its own decision or because a
+gossiped record says so — or deletes it from the membership table.
+So every live member is watched, the detector holds nothing beyond
+the live members and the seeds, and a member that comes back after
+being removed is judged from its return rather than on the silence
+of its previous run. A joiner loses nothing by it: the frame that
+admits it registers it, which starts its silence clock at the same
+instant the credit used to. Seeds are watched from the first dial,
+so a seed that answers late is judged on its answer rather than on
+the silence before it.
 
 ## What the detector decides — and doesn't
 

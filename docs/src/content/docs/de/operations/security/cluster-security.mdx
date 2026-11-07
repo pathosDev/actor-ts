@@ -704,8 +704,14 @@ Mitgliederliste an ihrer Grenze stand: 500 Namen hinterließen 502
 Einträge neben 3 Mitgliedern, beim φ-Accrual-Detector jeder mit einem
 eigenen Probenfenster. Lebenszeichen erreichen den Detector jetzt nur
 noch für ein Mitglied, das kein Tombstone ist, oder für einen
-konfigurierten Seed, seine Größe folgt also der Mitgliederliste
-(#1103).
+konfigurierten Seed, der ebenfalls keiner ist. Jeder Weg, der ein
+Mitglied aufnimmt, meldet es an, und jeder Weg, der es aus den
+lebenden Mitgliedern nimmt, vergisst seinen Eintrag — ein Tombstone,
+den dieser Knoten selbst erzeugt, ein Tombstone, den ein gegossipter
+Eintrag bringt, und ein Löschen aus der Mitgliederliste
+gleichermaßen. Der Detector hält also einen Eintrag pro lebendem
+Mitglied und höchstens einen pro Seed, begrenzt durch `max-members`
+und die Seed-Liste (#1103).
 
 :::note[Die Reihenfolge, in der das gelandet ist, hat gezählt]
 Früher war die `down → delete`-Kaskade des Failure Detectors das,
