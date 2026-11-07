@@ -117,6 +117,19 @@ What a frame from a peer *counts for* depends on the question:
 The contract a detector implements says the same thing in two methods:
 `heardFrom` is a frame of any kind, `heartbeat` a heartbeat frame.
 
+Both count only for a peer this node **watches**: a member that is
+not a tombstone, or one of its configured seeds. A frame from anyone
+else is still handled — it can admit its sender, for one — but it
+creates no detector state. The detector is only ever asked about
+members, and the connection identity a frame arrives under is the
+peer's own claim without mTLS, so crediting every frame let one peer
+grow the detector by an entry per name it claimed, past the
+`max-members` cap the member map holds (#1103). A joiner loses
+nothing by it: the frame that admits it registers it, which starts
+its silence clock at the same instant the credit used to. Seeds are
+watched from the first dial, so a seed that answers late is judged
+on its answer rather than on the silence before it.
+
 ## What the detector decides — and doesn't
 
 The detector returns `'healthy'` / `'unreachable'` / `'down'`.

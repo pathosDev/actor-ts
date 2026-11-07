@@ -691,6 +691,18 @@ schon am Längen-Präfix — der Knoten wirft sich selbst aus dem
 Cluster, während er noch läuft, lange bevor irgendwo der
 Speicher ausgeht.
 
+Der Failure Detector unterliegt derselben Grenze. Er hält Zustand pro
+Peer und legte diesen früher für jede Verbindungsidentität an, unter
+der ein Frame ankam — ohne mTLS ein Name, den der Peer in seinem
+`hello` selbst wählt. Ein Peer, der sich unter immer neuen Namen
+verband, ließ ihn um einen Eintrag pro Namen wachsen, während die
+Mitgliederliste an ihrer Grenze stand: 500 Namen hinterließen 502
+Einträge neben 3 Mitgliedern, beim φ-Accrual-Detector jeder mit einem
+eigenen Probenfenster. Lebenszeichen erreichen den Detector jetzt nur
+noch für ein Mitglied, das kein Tombstone ist, oder für einen
+konfigurierten Seed, seine Größe folgt also der Mitgliederliste
+(#1103).
+
 :::note[Die Reihenfolge, in der das gelandet ist, hat gezählt]
 Früher war die `down → delete`-Kaskade des Failure Detectors das,
 was Phantom-Mitglieder in *lebenden* Status auf Sekunden begrenzte.

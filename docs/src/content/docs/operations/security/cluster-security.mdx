@@ -641,6 +641,16 @@ the connection on the length prefix — the node evicts itself from
 the cluster while still running, long before anything runs out of
 memory.
 
+The failure detector is held to the same bound. It keeps state per
+peer, and it used to create that state for every connection identity
+a frame arrived under — without mTLS, a name the peer picks in its
+`hello`. A peer reconnecting under fresh names grew it by an entry per
+name while the member map held at its cap: 500 names left 502 entries
+beside 3 members, each carrying a sample window under the φ-accrual
+detector. Liveness now reaches the detector only for a member that is
+not a tombstone or a configured seed, so its size follows the member
+map (#1103).
+
 :::note[The order these landed in mattered]
 The failure detector's `down → delete` cascade used to be what
 bounded phantom *live* members to seconds. That deletion is now

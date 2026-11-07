@@ -9081,6 +9081,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **The cluster's failure detector no longer creates an entry for every
+  connection identity a frame arrives under** (#1103). `handleWire` credited
+  liveness for each frame before dispatching it, and the heartbeat handler
+  added a sample for each heartbeat frame, so an address the detector had
+  never seen got an entry — and only a member's removal ever forgets one.
+  Without mTLS the identity is whatever the peer's `hello` claimed, so one
+  peer reconnecting under fresh names grew the detector without bound past
+  the `max-members` cap the member map holds: 500 names left 502 entries
+  beside 3 members, each carrying a `max-sample-size` window under the
+  φ-accrual detector. Liveness now reaches the detector only for a peer the
+  node watches — a member that is not a tombstone, or a configured seed — and
+  every other frame is still dispatched. A joiner is registered by the frame
+  that admits it, which starts its silence clock where the credit used to; a
+  seed is watched from the first dial, so one that answers late is not read
+  `unreachable` on admission.
+
 - **Three configuration parsers no longer take quadratic time on a hostile
   value** (#1792, CodeQL `js/polynomial-redos`). The HOCON number literal
   (`\d+\.?\d*`) split a digit run two ways at every position, and the WHATWG
