@@ -113,7 +113,7 @@ import type {
 import { decodeRefs, encodeRefs } from './RefCodec.js';
 import { RemoteActorRef } from './RemoteActorRef.js';
 import { RemoteWatcher } from './RemoteWatcher.js';
-import { sanitizeWireKindForLog, sanitizeWireLogContext } from './WireValidation.js';
+import { sanitizeNodeAddressForLog, sanitizeWireKindForLog, sanitizeWireLogContext } from './WireValidation.js';
 import { holdsConnectionTo, InMemoryTransport, TcpTransport, type Transport } from './Transport.js';
 import type {
   ClusterPartitionView,
@@ -1710,7 +1710,7 @@ export class Cluster {
     this.outboundRefusalsSuppressed = 0;
     this.log.warn(
       `refused to send ${count} frame(s) to an address that is neither a member nor a connected peer `
-      + `— most recently ${sanitizeWireKindForLog(kind)} to ${sanitizeWireKindForLog(to.toString())}`,
+      + `— most recently ${sanitizeWireKindForLog(kind)} to ${sanitizeNodeAddressForLog(to)}`,
     );
   }
 

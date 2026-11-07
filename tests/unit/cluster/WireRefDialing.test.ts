@@ -275,7 +275,7 @@ describe('a marker is validated as a node address (#936)', () => {
   });
 });
 
-describe('a refusal is reported on the system clock (#936)', () => {
+describe('how a refusal is reported (#936)', () => {
   test('under a ManualScheduler the first refusal logs and the rest fold until the clock advances', async () => {
     const scheduler = new ManualScheduler();
     const logger = new RecordingLogger();
@@ -310,5 +310,31 @@ describe('a refusal is reported on the system clock (#936)', () => {
     stranger.tell('fifth');
     expect(refusals()).toHaveLength(2);
     expect(refusals()[1]).toContain('refused to send 4 frame(s)');
+  });
+
+  test('the line names the host and port however long the system name, escaped', async () => {
+    const logger = new RecordingLogger();
+    const address = new NodeAddress('wire-ref-render', 'h', 47_451);
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(logger)
+      .withLogLevel(LogLevel.Debug);
+    const system = ActorSystem.create('wire-ref-render', systemOptions);
+    const clusterOptions = ClusterOptions.create()
+      .withHost('h')
+      .withPort(47_451)
+      .withTransport(new InMemoryTransport(address));
+    const cluster = await Cluster.join(system, clusterOptions);
+    nodes.push({ system, cluster, address });
+    // A system name is the marker author's free choice: long enough to push the
+    // host off a single clipped string, with a forged record and an `@` that
+    // would make the line name a different host.
+    const systemName = `${'s'.repeat(300)}@10.9.9.9:22\r\nWARN forged`;
+    new RemoteActorRef(new NodeAddress(systemName, '169.254.169.254', 80), '/user/x', cluster).tell('m');
+
+    const line = logger.records.find((record) => record.message.includes('refused to send'))?.message ?? '';
+    expect(line).toContain('@169.254.169.254:80');
+    expect(line).not.toMatch(/[\r\n]/);
+    expect(line).not.toContain('@10.9.9.9');
+    expect(line.length).toBeLessThan(1_000);
   });
 });

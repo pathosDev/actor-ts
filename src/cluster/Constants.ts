@@ -578,6 +578,18 @@ export const MAX_REPORTED_CONFIGURATION_MISMATCHES = 32;
 export const MAX_LOGGED_WIRE_KIND_LENGTH = 64;
 
 /**
+ * How many characters of each part of a node address — system name, host,
+ * port — reach a log line when the address may be a peer's choice (#936).
+ *
+ * Per part rather than over the rendered `system@host:port`, because the host
+ * and port are what an operator acts on and the system name comes first: one
+ * bound over the whole string let a long system name push both off the end of
+ * the line.  253 is the longest DNS name, so a real host is never clipped, and
+ * three parts at this bound still keep the line finite.
+ */
+export const MAX_LOGGED_ADDRESS_PART_LENGTH = 253;
+
+/**
  * How often each `EnvelopeTrust` refusal reason may reach the log, whatever
  * the refusal rate (#877).
  *
