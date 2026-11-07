@@ -114,7 +114,7 @@ import { decodeRefs, encodeRefs } from './RefCodec.js';
 import { RemoteActorRef } from './RemoteActorRef.js';
 import { RemoteWatcher } from './RemoteWatcher.js';
 import { sanitizeWireKindForLog, sanitizeWireLogContext } from './WireValidation.js';
-import { InMemoryTransport, TcpTransport, type Transport } from './Transport.js';
+import { holdsConnectionTo, InMemoryTransport, TcpTransport, type Transport } from './Transport.js';
 import type {
   ClusterPartitionView,
   DowningProvider,
@@ -1645,11 +1645,14 @@ export class Cluster {
    *   of a message body.  A tombstone is a node that has left, so nothing
    *   should be sent to it — and it would otherwise be the one kind of member a
    *   stranger can mint by gossiping a `removed` record about an address.
-   * - **A peer the transport is already connected to.**  Sending over an
-   *   existing connection dials nothing, and it covers the reply to a node
-   *   this one has not admitted yet — during a join a member can learn of this
-   *   node before this node learns of it.  Asked only when the first rule says
-   *   no, because `peers()` builds a list and this is the send path.
+   * - **A node the transport already holds a connection to**, acked or still
+   *   dialling ({@link Transport.holdsConnectionTo}).  Sending over an existing
+   *   connection dials nothing, and it covers two sends to a node this one has
+   *   not admitted yet: the reply to a member that learnt of this node first —
+   *   during a join that is the usual order — and a `tell` to a seed straight
+   *   after `Cluster.join` resolves, which `TcpTransport` queues on the
+   *   connection the join opened until its handshake lands.  `peers()` lists
+   *   acked connections only, so asking it dropped that `tell`.
    *
    * The gate is here rather than inside `Transport.send` on purpose: the
    * transport has no view of membership, and the core protocol has to dial
@@ -1662,7 +1665,7 @@ export class Cluster {
   private mayAddress(to: NodeAddress, kind: string): boolean {
     const member = this.members.get(to.toString());
     if (member !== undefined && member.status !== 'removed') return true;
-    if (this.transport.peers().some((peer) => peer.equals(to))) return true;
+    if (holdsConnectionTo(this.transport, to)) return true;
     this.reportOutboundRefusal(to, kind);
     return false;
   }

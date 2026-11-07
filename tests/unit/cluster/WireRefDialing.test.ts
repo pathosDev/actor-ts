@@ -70,8 +70,14 @@ afterEach(async () => {
   closers = [];
 });
 
-/** A single-node cluster, its own leader, with every background timer pushed far out. */
-async function startNode(systemName: string, host: string, port: number, transport?: Transport): Promise<NodeHandle> {
+/** A cluster node with every background timer pushed far out — its own leader unless `seeds` names one. */
+async function startNode(
+  systemName: string,
+  host: string,
+  port: number,
+  transport?: Transport,
+  seeds: readonly NodeAddress[] = [],
+): Promise<NodeHandle> {
   const address = new NodeAddress(systemName, host, port);
   const systemOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
@@ -83,6 +89,7 @@ async function startNode(systemName: string, host: string, port: number, transpo
     .withFailureDetector({ heartbeatIntervalMs: 60_000, unreachableAfterMs: 120_000, downAfterMs: 240_000 })
     .withGossipIntervalMs(60_000);
   if (transport !== undefined) clusterOptions.withTransport(transport);
+  if (seeds.length > 0) clusterOptions.withSeeds(seeds.map((seed) => seed.toString()));
   const cluster = await Cluster.join(system, clusterOptions);
   const node = { system, cluster, address };
   nodes.push(node);
@@ -202,6 +209,26 @@ describe('which destinations a decoded ref can still reach (#936)', () => {
 
     await awaitCondition(() => sent.includes(`envelope → ${peer.toString()}`), {
       label: 'the reply left for the connected peer', timeoutMs: 2_000,
+    });
+  });
+
+  test('a seed is reached straight after join, while its connection is still handshaking', async () => {
+    // `Cluster.join` resolves before the seed is a member here and before the
+    // connection the join opened has seen its `hello-ack`; `TcpTransport`
+    // queues a frame on that connection and flushes it on the ack.  A gate
+    // that asked `peers()` — acked connections only — dropped this `tell`.
+    const seed = await startNode('wire-ref-handshake', '127.0.0.1', 47_431);
+    const received: unknown[] = [];
+    class Receiver extends Actor<unknown> {
+      override onReceive(message: unknown): void { received.push(message); }
+    }
+    seed.system.spawn(Receiver, 'receiver');
+    const joiner = await startNode('wire-ref-handshake', '127.0.0.1', 47_432, undefined, [seed.address]);
+
+    new RemoteActorRef(seed.address, '/user/receiver', joiner.cluster).tell('right after join');
+
+    await awaitCondition(() => received.includes('right after join'), {
+      label: 'the seed received the tell', timeoutMs: 3_000,
     });
   });
 
