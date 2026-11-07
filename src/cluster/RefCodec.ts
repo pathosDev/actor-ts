@@ -115,10 +115,26 @@ function registerAskResponseRef(ref: AskResponseRef, cluster: Cluster): void {
   ref._onSettled(unregister);
 }
 
+/**
+ * Rebuild the ref a marker describes, or `Nobody` for one that names no
+ * valid node.
+ *
+ * The address is a claim of the sender's, so it goes through
+ * {@link NodeAddress.fromJSON} — the validation every other wire address gets —
+ * rather than the raw constructor (#936).  A marker that does not validate is
+ * not an error worth failing the whole envelope over: the rest of the body may
+ * be fine, and `Nobody` is what an unusable ref already decodes to.
+ *
+ * Validating the shape does not make the address safe to *dial*.  The ref is
+ * built lazily and the decision is taken where it is used, in
+ * `Cluster._sendEnvelope` / `_sendWire`: a ref to a member this node learns of
+ * a moment later stays usable, and one to a node that never becomes a member
+ * is never dialled.
+ */
 function decodeSingleRef(wire: WireActorRef, cluster: Cluster): ActorRef {
-  if (wire.path === 'nobody' || !wire.host || !wire.port || !wire.system) {
-    return Nobody;
-  }
+  if (wire.path === 'nobody') return Nobody;
+  const targetNode = addressOf(wire);
+  if (targetNode === null) return Nobody;
   const self = cluster.selfAddress;
   // Same node: hand back the local ref.  Actors that no longer exist fall
   // through to Nobody rather than constructing a dangling RemoteActorRef
@@ -127,8 +143,18 @@ function decodeSingleRef(wire: WireActorRef, cluster: Cluster): ActorRef {
     const segs = parsePathSegments(wire.path);
     return cluster.system._resolvePath(segs).getOrElse(Nobody);
   }
-  const targetNode = new NodeAddress(wire.system, wire.host, wire.port);
   return new RemoteActorRef(targetNode, wire.path, cluster);
+}
+
+/** The marker's node, validated, or `null` when it names none. */
+function addressOf(wire: WireActorRef): NodeAddress | null {
+  const { system, host, port } = wire;
+  if (system === undefined || host === undefined || port === undefined) return null;
+  try {
+    return NodeAddress.fromJSON({ systemName: system, host, port });
+  } catch {
+    return null;
+  }
 }
 
 type RefEncoder = (ref: ActorRef) => WireActorRef;

@@ -37,7 +37,7 @@ type Rig = {
   emit(event: ClusterEvent): void;
 };
 
-function rig(options: { untrusted?: boolean } = {}): Rig {
+function rig(options: { untrusted?: boolean; refuse?: (to: NodeAddress) => boolean } = {}): Rig {
   const systemOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
   const system = ActorSystem.create('rw', systemOptions);
   const sent: Sent[] = [];
@@ -47,8 +47,14 @@ function rig(options: { untrusted?: boolean } = {}): Rig {
     system,
     selfAddress: SELF,
     _envelopeTrust: new EnvelopeTrust(system, log, options.untrusted ?? false, []),
-    _sendWire(to: NodeAddress, message: WireMessage): void { sent.push({ to, message }); },
-    _sendEnvelope(): void { /* a RemoteActorRef is only ever an address here */ },
+    _sendWire(to: NodeAddress, message: WireMessage): boolean {
+      // A refusal is what `Cluster.mayAddress` does: nothing leaves.
+      if (options.refuse?.(to) === true) return false;
+      sent.push({ to, message });
+      return true;
+    },
+    // A RemoteActorRef is only ever an address here.
+    _sendEnvelope(): boolean { return true; },
     subscribe(listener: (event: ClusterEvent) => void): () => void {
       listeners.push(listener);
       return () => { listeners.splice(listeners.indexOf(listener), 1); };
@@ -161,6 +167,37 @@ describe('RemoteWatcher — watcher side', () => {
       expect(a.terminations[0]!.existenceConfirmed).toBe(false);
       expect(a.terminations[0]!.addressTerminated).toBe(false);
     }
+  });
+
+  test('a watch the cluster refuses to send keeps no entry and is answered at once (#936)', async () => {
+    // The node a decoded ref names is neither a member nor a connected peer,
+    // so `_sendWire` drops the `watch` frame.  An entry kept for it could never
+    // be answered — no reply comes back and no membership event names it.
+    const stranger = new NodeAddress('s', '169.254.169.254', 80);
+    const r = rig({ refuse: (to) => to.equals(stranger) });
+    let instance: Recorder | null = null;
+    const watcher = r.system.spawn(() => (instance = new Recorder()), 'watcher');
+    const subject = remote(r, 'actor-ts://s/user/x', stranger);
+    watcher.tell({ kind: 'watch', subject });
+    expect(r.watcher.watch(watcher, subject)).toBe(true);
+    await awaitCondition(() => instance?.terminations.length === 1, { timeoutMs: 4_000, label: 'refusal answered' });
+    expect(instance!.terminations[0]!.actor).toBe(subject);
+    expect(instance!.terminations[0]!.existenceConfirmed).toBe(false);
+    expect(instance!.terminations[0]!.addressTerminated).toBe(false);
+    expect(r.sent).toEqual([]);
+
+    // Nothing was kept: losing that node, or an answer naming it, notifies no
+    // one, so the next Terminated is the one a second refused watch produces.
+    watcher.tell({ kind: 'watch', subject });
+    r.emit(new MemberRemoved(new Member(stranger, 'up', 1, new Set())));
+    r.watcher.onWatchTerminated(stranger, {
+      kind: 'watch-terminated', watcher: watcher.path.toString(), watchee: 'actor-ts://s/user/x', existenceConfirmed: true,
+    });
+    r.watcher.watch(watcher, subject);
+    await awaitCondition(() => instance?.terminations.length === 2, { timeoutMs: 4_000, label: 'second refusal answered' });
+    expect(instance!.terminations[1]!.existenceConfirmed).toBe(false);
+    expect(instance!.terminations[1]!.addressTerminated).toBe(false);
+    expect(r.sent).toEqual([]);
   });
 
   test('a subject that is not a remote ref is refused, so the cell can say so', () => {

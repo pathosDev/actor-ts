@@ -1,6 +1,6 @@
 import type { NodeAddress } from '../cluster/NodeAddress.js';
 import type { WireMessage } from '../cluster/Protocol.js';
-import type { Transport, WireHandler } from '../cluster/Transport.js';
+import { holdsConnectionTo, type Transport, type WireHandler } from '../cluster/Transport.js';
 import type { Scheduler } from '../Scheduler.js';
 import {
   DEFAULT_TRANSPORT_DROP_PROBABILITY,
@@ -159,6 +159,9 @@ export class FaultyTransport implements Transport {
   disconnect(peer: NodeAddress): void { this.inner.disconnect(peer); }
 
   peers(): NodeAddress[] { return this.inner.peers(); }
+
+  /** The inner transport's answer — a fault drops or delays a frame, it does not open a link. */
+  holdsConnectionTo(peer: NodeAddress): boolean { return holdsConnectionTo(this.inner, peer); }
 
   /**
    * Release every frame this link is holding, in a permuted order.

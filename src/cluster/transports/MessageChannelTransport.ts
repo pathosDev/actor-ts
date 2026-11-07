@@ -203,6 +203,19 @@ export class MessageChannelTransport implements Transport {
   }
 
   /**
+   * A node this transport has heard from — the same set {@link peers} lists.
+   *
+   * There is no per-peer connection to hold: every frame goes out over the one
+   * port, and the broker behind it routes by `to`.  So the closest honest
+   * reading of "a connection this transport already holds" is a peer the
+   * broker has already delivered from, which keeps `Cluster`'s outbound gate
+   * (#936) answering here exactly as it did when it asked {@link peers}.
+   */
+  holdsConnectionTo(peer: NodeAddress): boolean {
+    return this.knownPeers.has(peer.toString());
+  }
+
+  /**
    * How many frames this transport has refused, per reason, since it was
    * built — a diagnostic snapshot like {@link peers}, and the number the
    * folded log line is a sample of.

@@ -66,6 +66,12 @@ export class MultiNodeTransport implements Transport {
       .map((k) => NodeAddressConstructor.parse(k));
   }
 
+  /** As `InMemoryTransport`'s: registered and not this one — nothing here is dialled. */
+  holdsConnectionTo(peer: NodeAddress): boolean {
+    const key = peer.toString();
+    return key !== this.self.toString() && MultiNodeTransport.registry.has(key);
+  }
+
   /* ---------------------------- partition controls --------------------------- */
 
   /** Block all outgoing traffic from this transport to `peer`. */

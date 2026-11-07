@@ -70,6 +70,35 @@ export interface Transport {
   disconnect(peer: NodeAddress): void;
   /** Peers currently connected (either inbound or outbound). */
   peers(): NodeAddress[];
+  /**
+   * Whether `send(peer, …)` would go out over a connection this transport
+   * already holds — acked, or still dialling and handshaking — rather than
+   * open a new one.
+   *
+   * `Cluster` asks it before a payload frame leaves for a node that is not a
+   * member (#936): sending over a held connection dials nothing, while a send
+   * to anything else would make this node connect to an address that may have
+   * come out of a message body.  {@link peers} cannot answer it, because it
+   * lists acked connections only, and a `tell` to a seed straight after
+   * `Cluster.join` resolves is queued on a connection that is still in its
+   * handshake.
+   *
+   * Optional so a custom transport keeps compiling; `Cluster` falls back to
+   * {@link peers} for one that does not implement it, which refuses a send in
+   * that window instead of queueing it.  The exported `holdsConnectionTo`
+   * function below is the one place that fallback is written.
+   */
+  holdsConnectionTo?(peer: NodeAddress): boolean;
+}
+
+/**
+ * Ask `transport` whether a send to `peer` would reuse a connection it holds,
+ * falling back to {@link Transport.peers} for a transport that cannot say —
+ * shared by `Cluster`'s outbound gate and the decorators that wrap a transport.
+ */
+export function holdsConnectionTo(transport: Transport, peer: NodeAddress): boolean {
+  if (transport.holdsConnectionTo !== undefined) return transport.holdsConnectionTo(peer);
+  return transport.peers().some((connected) => connected.equals(peer));
 }
 
 /* ============================== TCP Transport ============================= */
@@ -374,6 +403,15 @@ export class TcpTransport implements Transport {
     const out: NodeAddress[] = [];
     for (const connection of new Set(this.byPeer.values())) if (connection.peer) out.push(connection.peer);
     return out;
+  }
+
+  /**
+   * The lookup {@link send} makes before it falls back to dialling, under the
+   * same key — so a connection still dialling or handshaking counts, which is
+   * what {@link peers} cannot see.
+   */
+  holdsConnectionTo(peer: NodeAddress): boolean {
+    return !this.stopped && this.byPeer.has(peer.toString());
   }
 
   /* --------------------------- internals -------------------------------- */
@@ -1197,5 +1235,16 @@ export class InMemoryTransport implements Transport {
     return Array.from(InMemoryTransport.registry.keys())
       .filter(k => k !== this.self.toString())
       .map(k => NodeAddress.parse(k));
+  }
+
+  /**
+   * Every started transport in the registry is one hop away and nothing is
+   * dialled, so "held" means what {@link peers} lists: registered, and not this
+   * one.  An address nobody registered — the stranger a hostile ref names — is
+   * not.
+   */
+  holdsConnectionTo(peer: NodeAddress): boolean {
+    const key = peer.toString();
+    return key !== this.self.toString() && InMemoryTransport.registry.has(key);
   }
 }

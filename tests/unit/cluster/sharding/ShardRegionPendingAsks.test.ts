@@ -128,8 +128,8 @@ const isShardEnvelope = (body: unknown): body is ShardEnvelope =>
 
 /**
  * Record what the node hands its transport.  The node the envelopes are
- * addressed to has no process behind it, and `InMemoryTransport.send` drops a
- * frame for an address nobody listens on, so the send is where it is seen.
+ * addressed to has no process behind it — only a transport that drops what
+ * it is handed — so the send is where it is seen.
  */
 function recordEnvelopes(transport: InMemoryTransport): void {
   const send = transport.send.bind(transport);
@@ -253,12 +253,17 @@ type Harness = {
 };
 
 let running: { cluster: Cluster; system: ActorSystem } | null = null;
+let remoteListener: InMemoryTransport | null = null;
 
 afterEach(async () => {
   if (running) {
     await running.cluster.leave().catch(() => { /* teardown is best-effort */ });
     await running.system.terminate().catch(() => { /* teardown is best-effort */ });
     running = null;
+  }
+  if (remoteListener) {
+    await remoteListener.shutdown();
+    remoteListener = null;
   }
   answers.clear();
   coordinatorFrames = [];
@@ -348,9 +353,14 @@ async function startRegion(options: HarnessOptions): Promise<Harness> {
     region.tell(authenticated(home));
   };
 
-  // The other node of the remote cases: a member nobody runs, so what the
-  // region sends it is recorded by `recordEnvelopes` and goes no further.
+  // The other node of the remote cases: a node nobody runs, so what the
+  // region sends it is recorded by `recordEnvelopes` and goes no further.  It
+  // still needs a transport the cluster counts as a connected peer — the
+  // cluster sends nothing to an address that is neither a member nor
+  // connected (#936) — and one that drops what it receives is enough.
   const remoteNode = new NodeAddress(options.systemName, 'elsewhere', options.port);
+  remoteListener = new InMemoryTransport(remoteNode);
+  await remoteListener.start();
 
   const placeRemotely = (shardId: number): void => {
     const home: ShardHome = {

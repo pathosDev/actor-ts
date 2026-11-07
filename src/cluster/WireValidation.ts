@@ -1,6 +1,7 @@
 import {
   MAX_CONTEXT_KEYS,
   MAX_CONTEXT_VALUE_LENGTH,
+  MAX_LOGGED_ADDRESS_PART_LENGTH,
   MAX_LOGGED_WIRE_KIND_LENGTH,
 } from './Constants.js';
 import { isMemberStatus, type MemberData, type WireMessage } from './Protocol.js';
@@ -221,9 +222,43 @@ export function sanitizeWireLogContext(
  * worth seeing in escaped form.
  */
 export function sanitizeWireKindForLog(kind: string): string {
-  const clipped = kind.length > MAX_LOGGED_WIRE_KIND_LENGTH
-    ? `${kind.slice(0, MAX_LOGGED_WIRE_KIND_LENGTH)}…`
-    : kind;
+  return escapeForLog(kind, MAX_LOGGED_WIRE_KIND_LENGTH);
+}
+
+/**
+ * Make a node address that may be a peer's choice safe to put in a log line
+ * (#936) — a ref marker in a message body names one, and so does gossip.
+ *
+ * The same escaping as {@link sanitizeWireKindForLog}, applied to the system
+ * name, host and port one at a time, each clipped to
+ * {@link MAX_LOGGED_ADDRESS_PART_LENGTH}.  Clipping the rendered address as one
+ * string cut it from the end, so a long system name — the first part, and a
+ * free choice of whoever wrote the marker — hid exactly the host and port an
+ * operator needs to see.  `String(…)` on every part because an address built
+ * with the raw constructor carries no runtime guarantee about its fields.
+ *
+ * An `@` inside the system name or host is escaped as well, so the first `@`
+ * in the line is always the separator: `NodeAddress.fromJSON` checks only that
+ * both are non-empty strings, and a system name of `x@10.0.0.1:22@` would
+ * otherwise render as an address that names a different host.
+ */
+export function sanitizeNodeAddressForLog(address: NodeAddress): string {
+  const system = escapeAtSign(escapeForLog(String(address.systemName), MAX_LOGGED_ADDRESS_PART_LENGTH));
+  const host = escapeAtSign(escapeForLog(String(address.host), MAX_LOGGED_ADDRESS_PART_LENGTH));
+  const port = escapeForLog(String(address.port), MAX_LOGGED_ADDRESS_PART_LENGTH);
+  return `${system}@${host}:${port}`;
+}
+
+/* ------------------------------- internals ------------------------------- */
+
+/** `@` in the `\u0040` form {@link escapeForLog} writes, so it cannot read as the address separator. */
+function escapeAtSign(value: string): string {
+  return value.replaceAll('@', '\\u0040');
+}
+
+/** Clip `value` to `maxLength` characters and escape every line-breaking or control character. */
+function escapeForLog(value: string, maxLength: number): string {
+  const clipped = value.length > maxLength ? `${value.slice(0, maxLength)}…` : value;
   let safe = '';
   for (const character of clipped) {
     const code = character.codePointAt(0)!;
@@ -234,8 +269,6 @@ export function sanitizeWireKindForLog(kind: string): string {
   }
   return safe;
 }
-
-/* ------------------------------- internals ------------------------------- */
 
 /**
  * Any C0/C1 control character, plus the Unicode line and paragraph separators.
