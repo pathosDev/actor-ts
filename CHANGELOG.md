@@ -9092,11 +9092,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   and the node gossiped the substituted set onward as its own. The node's own
   roles now join the facts it keeps over any record about itself (address
   incarnation, storage identities, configuration facts, app version), and so
-  does the absence of a `removedAt`. A genuine leader promotion carries the
-  roles the node gossiped and lands unchanged. The exception still does not
-  require standing from the sender: the frame carrying a joiner's promotion is
-  routinely from a peer it has not merged yet, and any stranger can grant
-  itself standing one frame earlier by announcing itself `up`.
+  does the absence of a `removedAt`. Storage identities and configuration
+  facts are now kept outright too: a node that had resolved no storage
+  identity of its own no longer adopts, and re-gossips, one a promotion
+  carried. A genuine leader promotion carries the roles the node gossiped and
+  lands unchanged. What a promotion still carries is the status and the
+  record's version, taken as sent and bounded only by the #114 skew cap
+  (`maxVersionSkewMs`, 5 minutes by default) — so a stranger can still date
+  this node's record up to that far ahead; clamping it is tracked in
+  #1797. The exception still does not require standing from the
+  sender: the frame carrying a joiner's promotion is routinely from a peer it
+  has not merged yet, and any stranger can grant itself standing one frame
+  earlier by announcing itself `up`.
 
 - **Three configuration parsers no longer take quadratic time on a hostile
   value** (#1792, CodeQL `js/polynomial-redos`). The HOCON number literal
