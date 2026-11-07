@@ -27,7 +27,8 @@ const routes = path('api',
 
 30 Sekunden Cache pro Produkt-ID.  Der erste Request trifft den
 Handler; nachfolgende GETs in den nächsten 30 s liefern die gecachte
-Response.
+Response.  Ein Request mit Credentials umgeht den Cache, bis
+`identity` gesetzt ist — siehe [was nie geteilt wird](#was-nie-geteilt-wird).
 
 ## Konfiguration
 
@@ -125,13 +126,21 @@ die Response eines Aufrufers einen anderen erreichen könnte:
 | Ein Request mit `Authorization`, `Proxy-Authorization` oder `Cookie` umgeht den Cache, solange `identity` nicht gesetzt ist. | Sonst sagt nichts im Key, wessen Response es ist.  `identity` zu setzen ist das ausdrückliche Opt-in; für einen Endpunkt, der wirklich nicht vom Aufrufer abhängt, sagt `identity: () => 'public'` genau das. |
 | Eine Response mit `Set-Cookie` wird nicht gespeichert. | Es gibt keinen korrekten Weg, das Cookie eines Aufrufers einem anderen zu geben. |
 | `Cache-Control: no-store`, `no-cache` oder `private` auf der Response unterdrückt das Speichern. | Der Handler hat gesagt, dass die Response nicht in einen geteilten Cache gehört. |
-| Eine Response mit `Vary` wird zusammen mit den Werten der genannten Request-Header gespeichert und nur an einen Request mit denselben Werten ausgeliefert; `Vary: *` wird nicht gespeichert. | Der Handler hat gesagt, dass die Response von diesen Headern abhängt. |
+| Eine Response mit `Vary` wird zusammen mit einem SHA-256-Digest der Werte der genannten Request-Header gespeichert und nur an einen Request ausgeliefert, dessen Werte denselben Digest ergeben; `Vary: *` wird nicht gespeichert. | Der Handler hat gesagt, dass die Response von diesen Headern abhängt.  Geschrieben werden nur die Digests, eine `Vary: Authorization`-Response legt also nie ein Bearer-Token oder Cookie im zugrunde liegenden Cache ab.  Der Digest ist ungesalzen, damit jeder Prozess am selben Backend denselben berechnet — aus einem Token mit hoher Entropie lässt er sich nicht zurückgewinnen, ein schwaches Passwort in `Basic`-Credentials bleibt für jeden, der das Backend lesen kann, aber offline erratbar. |
 | Ein streamender Body wird nicht gespeichert. | Ein Stream ist einmalig lesbar. |
+
+Diese Regeln betreffen das *Teilen*, sie sind keine vollständige
+`Cache-Control`-Implementierung: Frische-Direktiven wie `max-age=0`
+oder `must-revalidate` werden nicht ausgewertet, und allein `ttlMs`
+begrenzt, wie lange ein Eintrag ausgeliefert wird.
 
 Dieselben Regeln gelten für den Stampede-Schutz: Ein Request, der auf
 den laufenden Handler eines anderen Requests wartet, übernimmt dessen
-Response nur, wenn er sie auch aus dem Cache hätte bekommen können,
-und führt den Handler sonst selbst aus.  `Cache-Control` auf dem
+Response nur, wenn die Regeln oben den beiden erlauben, sie zu teilen,
+und führt den Handler sonst selbst aus.  `cacheStatuses` entscheidet,
+was **gespeichert** wird, nicht, was geteilt wird — ein `404`
+außerhalb davon wird nie in den Cache geschrieben, die gleichzeitig
+Wartenden übernehmen es aber trotzdem.  `Cache-Control` auf dem
 **Request** wird bewusst ignoriert — ein Client darf den Handler nicht
 am Cache vorbei erzwingen können.
 
@@ -160,8 +169,16 @@ await cache.delete('rsp:products:42');   // 'rsp:' is the default keyPrefix
 
 Der Cache ist einfach ein `Cache` — du kannst den mit Prefix
 versehenen Key direkt `delete`n, wenn ein Write ihn invalidieren soll.
-Mit gesetztem `identity` lautet der Key `<keyPrefix><scope>:<key>`,
-der Scope URI-kodiert (`rsp:alice:users:me`).
+Mit gesetztem `identity` lautet der Key `<keyPrefix><scope>:<key>`
+mit URI-kodiertem Scope — baue ihn also genauso:
+
+```ts
+// After a write to the profile of the caller whose identity scope is `sub`:
+await cache.delete(`rsp:${encodeURIComponent(sub)}:users:me`);
+```
+
+Ein Scope wie `auth0|abc` wird als `auth0%7Cabc` gespeichert; ein Key
+mit dem rohen Scope löscht nichts.
 
 ## Geteilter Cache über Pods
 
@@ -184,6 +201,19 @@ Für **Per-Pod-Caches** (jeder Pod hat seinen eigenen InMemoryCache)
 können Pods kurzzeitig unterschiedliche gecachte Responses liefern,
 bis sich die TTLs angleichen.  Oft akzeptabel; hängt von den
 Konsistenzanforderungen ab.
+
+Ein geteilter Cache überdauert ein Deployment und kann deshalb
+Einträge enthalten, die vor diesen Teilungsregeln geschrieben wurden.
+Jeder wird vor dem Ausliefern erneut geprüft, und einer mit
+`Set-Cookie`, einem nicht teilbaren `Cache-Control`, `Vary: *` oder
+einem `Vary` ohne gespeicherte Request-Werte gilt als Miss — ein
+Eintrag aus einem Request mit Credentials, dessen Response weder
+`Set-Cookie` noch `Vary` trug, sieht aber genau wie ein öffentlicher
+aus und wird ausgeliefert, bis er abläuft.  Beim Upgrade von einer
+Version ohne diese Regeln: warte, bis der letzte alte Pod weg ist — er
+schreibt solche Einträge weiter —, und leere dann den `keyPrefix`
+(Default `rsp:`) oder lass `ttlMs` verstreichen, bevor du dich auf die
+Regeln verlässt.
 
 ## Verschiedene Status-Codes cachen
 
@@ -210,9 +240,12 @@ import { Aside } from '@astrojs/starlight/components';
   Middleware verifiziert hat.  Mit einem rohen Header kann sich jeder
   Aufrufer den Scope eines anderen anmaßen und dessen gecachte Response
   lesen.  Requests mit Credentials umgehen den Cache, bis `identity`
-  gesetzt ist — eine Response pro Aufrufer auf einen Request ohne
-  Credential-Header, etwa mit einem eigenen API-Key-Header, hält aber
-  nur `identity` auseinander.
+  gesetzt ist, der Bypass erkennt aber nur `Authorization`,
+  `Proxy-Authorization` und `Cookie`.  Ein Token in einem anderen
+  Header — `BearerTokenAuth({ tokens, headerName: 'x-access-token' })`
+  oder ein eigener API-Key-Header — löst ihn nicht aus, eine Response
+  pro Aufrufer auf einen solchen Request hält also allein `identity`
+  auseinander.
 </Aside>
 
 <Aside type="note" title="Stampede-Schutz ist Per-Process">

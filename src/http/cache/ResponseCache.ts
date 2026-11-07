@@ -45,13 +45,22 @@ import type { HttpRequest, HttpResponse } from '../Types.js';
  *   - a response is not stored when it carries `Set-Cookie`, a
  *     `Cache-Control` of `no-store`, `no-cache` or `private`, `Vary: *`, or
  *     a streaming body;
- *   - a response carrying `Vary` is stored together with the request's
- *     values of the named headers, and served only to a request whose values
- *     match — any other request is a miss.
+ *   - a response carrying `Vary` is stored together with a SHA-256 digest of
+ *     the request's value of each named header, and served only to a request
+ *     whose values digest the same — any other request is a miss.  The digest
+ *     and not the value, because the headers worth varying on are
+ *     `Authorization` and `Cookie`, and a cache entry is a copy of a bearer
+ *     token sitting in Redis or Memcached for `ttlMs`;
+ *   - an entry whose `Vary` names a header it carries no recorded value for —
+ *     one stored before these rules — is never served, since nothing says
+ *     whose request produced it.
  *
  * The same rules govern stampede protection: a request waiting on another
- * request's in-flight handler takes that response only when it could have
- * taken it from the cache, and otherwise runs the handler itself.
+ * request's in-flight handler takes that response only when the response is
+ * shareable and its `Vary` values match, and otherwise runs the handler
+ * itself.  `cacheStatuses` decides what is **stored**, not what is
+ * **shared**: concurrent misses on an endpoint answering `404` or `503`
+ * still collapse onto one handler run, they just leave nothing behind.
  *
  * **Security — give this middleware its own cache (security audit
  * HTTP-8):** `key(request)` almost always derives from something the
@@ -90,6 +99,9 @@ export type ResponseCacheOptions = {
    * Status codes whose responses are cacheable.  Default `[200]` — only
    * 2xx are cached.  Pass `[200, 404]` if you want to cache "not found"
    * responses (saves repeat lookups when callers query unknown ids).
+   *
+   * This decides what is stored, not what is shared: concurrent misses on
+   * one key collapse onto a single handler run whatever status it answers.
    */
   readonly cacheStatuses?: ReadonlyArray<number>;
   /**
@@ -118,23 +130,34 @@ type CachedResponse = {
   readonly body: unknown;
   readonly contentType?: string;
   /**
-   * The request headers the response's `Vary` named, with the values the
-   * storing request carried (`null` for an absent header).  A hit is served
-   * only when the new request carries the same values.
+   * The request headers the response's `Vary` named, each with a digest of
+   * the value the storing request carried.  A hit is served only when the
+   * new request's values digest the same.  Absent on an entry whose response
+   * carried no `Vary`; an entry whose `Vary` names a header missing from this
+   * list is not servable at all.
    */
   readonly vary?: ReadonlyArray<VariedHeader>;
 };
 
 type VariedHeader = {
   readonly name: string;
-  readonly value: string | null;
+  /**
+   * Base64 SHA-256 of the header's value, or `null` when the request did not
+   * carry it — an absent header and an empty one are different requests.
+   * Never the value itself: see the module docblock.
+   */
+  readonly digest: string | null;
 };
 
 /** The outcome of one handler run, as the requests waiting on it see it. */
 type FlightResult = {
   readonly response: HttpResponse;
-  /** The shareable form of `response`, or `null` when it may not be shared. */
-  readonly entry: CachedResponse | null;
+  /**
+   * The leader's varied header digests when `response` may be shared (an
+   * empty list when it carries no `Vary`), or `null` when it must reach only
+   * the leader.  Independent of `cacheStatuses`, which governs storing alone.
+   */
+  readonly vary: ReadonlyArray<VariedHeader> | null;
 };
 
 /** Methods whose response is safe to replay.  `HEAD` reads but never stores — see `cachedHandler`. */
@@ -173,7 +196,7 @@ export function cached(options: ResponseCacheOptions) {
       // entry stored before them (a shared Redis outlives a deploy) is
       // never served either.
       const hit = await options.cache.get<CachedResponse>(cacheKey);
-      if (hit.isSome() && servable(hit.value, request)) {
+      if (hit.isSome() && await servable(hit.value, request)) {
         return decodeResponse(hit.value);
       }
 
@@ -183,23 +206,25 @@ export function cached(options: ResponseCacheOptions) {
       if (request.method === 'HEAD') return handler(request);
 
       // 2. Miss — but is another request already running this key?  Its
-      // response is ours only if the cache could have handed it to us.
+      // response is ours only if it may be shared and was produced for a
+      // request with our varied header values.
       const existingFlight = inflight.get(cacheKey);
       if (existingFlight) {
         const flight = await existingFlight;
-        if (flight.entry !== null && varyMatches(flight.entry, request)) return flight.response;
+        if (flight.vary !== null && await varyMatches(flight.vary, request)) return flight.response;
         return handler(request);
       }
 
-      // 3. We're the leader for this key.  Run the handler, then cache
-      // the result if it may be shared.
+      // 3. We're the leader for this key.  Run the handler, then cache the
+      // result if it may be shared *and* its status is one worth storing —
+      // the waiters above take a shareable response either way.
       const work = (async (): Promise<FlightResult> => {
         const response = await handler(request);
-        const entry = cacheStatuses.has(response.status) ? shareableEntry(response, request) : null;
-        if (entry !== null) {
-          await options.cache.set<CachedResponse>(cacheKey, entry, options.ttlMs);
+        const vary = await sharedVary(response, request);
+        if (vary !== null && cacheStatuses.has(response.status)) {
+          await options.cache.set<CachedResponse>(cacheKey, encodeResponse(response, vary), options.ttlMs);
         }
-        return { response, entry };
+        return { response, vary };
       })();
       inflight.set(cacheKey, work);
       try { return (await work).response; }
@@ -211,13 +236,22 @@ export function cached(options: ResponseCacheOptions) {
 /* ------------------------------ internals -------------------------------- */
 
 /**
- * The form of `r` that may be stored and replayed to other callers, or
- * `null` when it must reach only the caller it was produced for.
+ * Whether `r` may be replayed to callers other than the one it was produced
+ * for — the stream and header rules, deliberately blind to the status, which
+ * decides storing only.  Returns the storing request's varied header digests
+ * (empty when `r` carries no `Vary`), or `null` when `r` must not be shared.
  */
-function shareableEntry(r: HttpResponse, request: HttpRequest): CachedResponse | null {
+async function sharedVary(r: HttpResponse, request: HttpRequest): Promise<ReadonlyArray<VariedHeader> | null> {
   if (r.body instanceof ReadableStream) return null;
   if (!headersShareable(r.headers)) return null;
-  const varied = varyNames(r.headers);
+  return Promise.all(varyNames(r.headers).map(async (name) => ({
+    name,
+    digest: await headerDigest(headerValue(request.headers, name)),
+  })));
+}
+
+/** The stored form of a response {@link sharedVary} found shareable. */
+function encodeResponse(r: HttpResponse, vary: ReadonlyArray<VariedHeader>): CachedResponse {
   let body: unknown = r.body;
   if (body instanceof Uint8Array) {
     body = { __bin: bytesToBase64(body) };
@@ -227,15 +261,20 @@ function shareableEntry(r: HttpResponse, request: HttpRequest): CachedResponse |
     headers: r.headers as Record<string, string> | undefined,
     body,
     contentType: r.contentType,
-    ...(varied.length > 0
-      ? { vary: varied.map((name) => ({ name, value: headerValue(request.headers, name) ?? null })) }
-      : {}),
+    ...(vary.length > 0 ? { vary } : {}),
   };
 }
 
 /** Whether a stored entry may answer `request`. */
-function servable(entry: CachedResponse, request: HttpRequest): boolean {
-  return headersShareable(entry.headers) && varyMatches(entry, request);
+async function servable(entry: CachedResponse, request: HttpRequest): Promise<boolean> {
+  if (!headersShareable(entry.headers)) return false;
+  const recorded = entry.vary ?? [];
+  // Every header the entry's own `Vary` names must have a recorded value.  An
+  // entry stored before #980 carries `Vary: authorization` and no `vary`
+  // list, and matching it against nothing would serve it to everyone.
+  const recordedNames = new Set(recorded.map(({ name }) => name));
+  if (!varyNames(entry.headers).every((name) => recordedNames.has(name))) return false;
+  return varyMatches(recorded, request);
 }
 
 /**
@@ -263,10 +302,33 @@ function varyNames(headers: Readonly<Record<string, string>> | undefined): strin
   return vary.split(',').map((name) => name.trim().toLowerCase()).filter((name) => name.length > 0);
 }
 
-/** Whether `request` carries the values of every header the entry varies on. */
-function varyMatches(entry: CachedResponse, request: HttpRequest): boolean {
-  if (entry.vary === undefined) return true;
-  return entry.vary.every(({ name, value }) => (headerValue(request.headers, name) ?? null) === value);
+/** Whether `request`'s value of every varied header digests to the recorded one. */
+async function varyMatches(recorded: ReadonlyArray<VariedHeader>, request: HttpRequest): Promise<boolean> {
+  for (const { name, digest } of recorded) {
+    if (await headerDigest(headerValue(request.headers, name)) !== digest) return false;
+  }
+  return true;
+}
+
+/**
+ * Base64 SHA-256 of a varied header's value, `null` for an absent header.
+ *
+ * WebCrypto with no fallback: Bun, Node ≥ 24 and Deno all provide it, and a
+ * non-cryptographic hash here would make the stored value reversible or
+ * collidable, which is the thing being prevented.  Unsalted on purpose —
+ * every process sharing a backend has to compute the same digest for the
+ * same caller, or a shared cache never hits.  That makes it a fingerprint,
+ * not a password hash: a high-entropy bearer token or session id cannot be
+ * recovered from it, a weak password inside `Basic` credentials could be
+ * guessed offline by whoever can read the backend.
+ */
+async function headerDigest(value: string | undefined): Promise<string | null> {
+  if (value === undefined) return null;
+  // Cast through BufferSource — TS 5.7+'s DOM types tighten the constraint
+  // in a way `Uint8Array<ArrayBufferLike>` does not match cleanly.
+  const bytes = new TextEncoder().encode(value) as unknown as BufferSource;
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+  return bytesToBase64(new Uint8Array(digest));
 }
 
 function carriesCredentials(request: HttpRequest): boolean {
