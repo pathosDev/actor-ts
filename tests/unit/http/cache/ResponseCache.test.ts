@@ -107,6 +107,21 @@ describe('cached — stampede protection', () => {
     await handler(makeRequest('/'));
     expect(calls).toBe(1);
   });
+
+  test('concurrent misses on a status outside cacheStatuses still run the handler once and store nothing', async () => {
+    const cache = new InMemoryCache();
+    let calls = 0;
+    const handler = cached({ cache, ttlMs: 5_000, key: () => 'missing' })(
+      // A fixture: the handler has to stay in flight while the other requests
+      // arrive, or there is no stampede for the protection to collapse.
+      async () => { calls++; await sleep(20); return completeJson(Status.NotFound, { error: 'nope' }); },
+    );
+    const results = await Promise.all(Array.from({ length: 10 }, () => handler(makeRequest('/'))));
+    expect(calls).toBe(1);
+    for (const r of results) expect(r.status).toBe(Status.NotFound);
+    // `cacheStatuses` governs storing: nothing is left behind for the next miss.
+    expect((await cache.get('rsp:missing')).isSome()).toBe(false);
+  });
 });
 
 describe('cached — binary payload round-trip', () => {
@@ -314,6 +329,18 @@ describe('cached — #980 responses that must not be shared', () => {
     expect(response.body).toEqual({ user: 'fresh' });
     expect(calls).toBe(1);
   });
+
+  test('an entry stored before these rules carrying Vary but no recorded values is not served', async () => {
+    const cache = new InMemoryCache();
+    await cache.set('rsp:k', { status: 200, headers: { Vary: 'Authorization' }, body: { user: 'alice' } });
+    let calls = 0;
+    const handler = cached({ cache, ttlMs: 30_000, key: () => 'k' })(
+      () => { calls++; return completeJson(Status.OK, { user: 'fresh' }); },
+    );
+    const anonymous = await handler(request());
+    expect(anonymous.body).toEqual({ user: 'fresh' });
+    expect(calls).toBe(1);
+  });
 });
 
 describe('cached — #980 Vary', () => {
@@ -357,6 +384,39 @@ describe('cached — #980 Vary', () => {
     expect(english.body).toEqual({ language: 'en' });
     expect(germanToo.body).toEqual({ language: 'de' });
     expect(calls).toBe(2);
+  });
+
+  test('varied credential values are stored as digests, never as the token or cookie itself', async () => {
+    const cache = new InMemoryCache();
+    let calls = 0;
+    const handler = cached({ cache, ttlMs: 30_000, key: (r) => r.path, identity: () => 'public' })(
+      (): HttpResponse => { calls++; return { status: 200, headers: { vary: 'Authorization, Cookie' }, body: { n: calls } }; },
+    );
+    const token = 'Bearer eyJ-secret-token-1234';
+    const sessionCookie = 'session=s3cr3t-session-id';
+    await handler(request({ path: '/a', headers: { authorization: token, cookie: sessionCookie } }));
+
+    const stored = await cache.get<{ vary?: ReadonlyArray<{ name: string }> }>('rsp:public:/a');
+    expect(stored.isSome()).toBe(true);
+    const entry = stored.isSome() ? stored.value : undefined;
+    // The varied headers are still recorded — the digest replaces the value, not the rule.
+    expect(entry?.vary?.map(({ name }) => name)).toEqual(['authorization', 'cookie']);
+    const serialized = JSON.stringify(entry);
+    expect(serialized).not.toContain('eyJ-secret-token-1234');
+    expect(serialized).not.toContain('s3cr3t-session-id');
+
+    // Matching still works on the digest: the same credentials hit, different ones miss.
+    const same = await handler(request({ path: '/a', headers: { authorization: token, cookie: sessionCookie } }));
+    expect(same.body).toEqual({ n: 1 });
+    const otherToken = await handler(request({ path: '/a', headers: { authorization: 'Bearer other', cookie: sessionCookie } }));
+    expect(otherToken.body).toEqual({ n: 2 });
+    expect(calls).toBe(2);
+
+    // An absent header and an empty one are still different requests.
+    await handler(request({ path: '/b', headers: { authorization: token } }));
+    const emptyCookie = await handler(request({ path: '/b', headers: { authorization: token, cookie: '' } }));
+    expect(emptyCookie.body).toEqual({ n: 4 });
+    expect(calls).toBe(4);
   });
 });
 
