@@ -11,8 +11,8 @@
  * to its node.
  *
  * The marker's address is validated now, and a frame leaves through those two
- * doors only for a member that is not a tombstone or a peer the transport is
- * already connected to.  The first block proves the dial no longer happens on
+ * doors only for a member that is not a tombstone or a node the transport
+ * already holds a connection to, acked or still handshaking.  The first block proves the dial no longer happens on
  * a real socket; the rest pin which destinations are still reachable.
  */
 import { afterEach, describe, expect, test } from 'bun:test';

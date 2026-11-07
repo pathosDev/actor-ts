@@ -304,7 +304,7 @@ rate on those classes is drift rather than load.
 | `cluster_gossip_records_refused_total` | counter | `reason` | Gossiped member records a merge-path guard refused. |
 | `cluster_envelope_from_mismatch_total` | counter | `frame` | Envelopes whose payload named a sender other than the connection they arrived on. |
 | `cluster_envelope_refusals_total` | counter | `reason`, `frame` | Inbound envelopes refused because their target path is outside what this node accepts by name. |
-| `cluster_outbound_refusals_total` | counter | `frame` | Frames this node refused to send because the destination was neither a member nor a connected peer. |
+| `cluster_outbound_refusals_total` | counter | `frame` | Frames this node refused to send because the destination was neither a member nor a node it already holds a connection to. |
 
 For monitoring cluster health:
 
@@ -356,8 +356,8 @@ For monitoring cluster health:
   the log line either, since it is an unvalidated string from the
   payload.
 - `cluster_outbound_refusals_total` counts a frame this node would
-  not send because its destination was neither a member nor a
-  connected peer — a ref in a message body naming some other host,
+  not send because its destination was neither a member nor a node
+  it already holds a connection to — a ref in a message body naming some other host,
   or, far more often, a node that has just left.  A short burst after
   a node leaves is normal; a steady rate on a stable membership means
   something keeps handing this node refs to addresses outside the

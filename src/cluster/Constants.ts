@@ -614,7 +614,7 @@ export const ENVELOPE_REFUSAL_REPORT_INTERVAL_MS = 30_000;
 
 /**
  * How often `Cluster` may log that it refused to send a frame to an address
- * that is neither a member nor a connected peer (#936).
+ * that is neither a member nor a node it already holds a connection to (#936).
  *
  * The same thirty seconds as {@link ENVELOPE_REFUSAL_REPORT_INTERVAL_MS}, for
  * the same reason: the first refusal is reported at once and the rest are

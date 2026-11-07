@@ -1709,7 +1709,7 @@ export class Cluster {
       'cluster_outbound_refusals_total', { frame },
       {
         help: 'Cumulative count of frames this node refused to send because the destination '
-          + 'was neither a cluster member nor a connected peer.',
+          + 'was neither a cluster member nor a node this one already holds a connection to.',
       },
     ).inc();
     this.outboundRefusalsSuppressed += 1;
@@ -1719,7 +1719,7 @@ export class Cluster {
     const count = this.outboundRefusalsSuppressed;
     this.outboundRefusalsSuppressed = 0;
     this.log.warn(
-      `refused to send ${count} frame(s) to an address that is neither a member nor a connected peer `
+      `refused to send ${count} frame(s) to an address that is neither a member nor held by an open connection `
       + `— most recently ${sanitizeWireKindForLog(kind)} to ${sanitizeNodeAddressForLog(to)}`,
     );
   }

@@ -279,7 +279,7 @@ erreichen.
 | Adresse beansprucht, bevor der zugehörige Knoten existiert | Enge Versions-Skew-Grenze auf jeder gegossipten Member-Version |
 | Vom Draht mitgeschnittener Gossip-Frame wird später erneut gesendet | Sequence pro Sender — ein Frame muss den zuletzt von diesem Sender akzeptierten überbieten (teilweise: erst wenn einer akzeptiert wurde) |
 | Gefälschte Discovery-Antwort lenkt den Bootstrap um | mTLS, dazu `pinnedAddresses` am Seed-Provider |
-| Ein Ref im Nachrichtenkörper nennt einen internen Host, damit dieser Knoten ihn anwählt | Frames gehen nur an Mitglieder und verbundene Peers |
+| Ein Ref im Nachrichtenkörper nennt einen internen Host, damit dieser Knoten ihn anwählt | Frames gehen nur an Mitglieder und an Knoten, zu denen dieser Knoten schon eine Verbindung hält (teilweise: ein Gossip-Frame kann eine Adresse noch zum Mitglied machen, #939) |
 | Kompromittierter Pod im Cluster | Application-Level-Auth (hier nicht abgedeckt) |
 
 Der Cluster-Transport handhabt Transport-Level-Sicherheit.
@@ -849,10 +849,17 @@ einer Death-Watch-Nachricht — jeder Versand, der nicht zum
 Mitgliedschaftsprotokoll selbst gehört — geht nur noch an:
 
 - **ein Mitglied, das kein Tombstone ist**, oder
-- **einen Peer, mit dem der Transport schon verbunden ist** — über eine
-  bestehende Verbindung zu senden wählt nichts an, und so erreicht eine
-  Antwort einen Knoten, der beigetreten ist, von dem dieser Knoten aber
-  noch nichts gehört hat.
+- **einen Knoten, zu dem der Transport schon eine Verbindung hält**,
+  bestätigt oder noch im Handshake — über eine bestehende Verbindung
+  zu senden wählt nichts an. So erreicht eine Antwort einen Knoten,
+  der beigetreten ist, von dem dieser Knoten aber noch nichts gehört
+  hat, und so wird ein `tell` an einen Seed direkt nach dem Auflösen
+  von `Cluster.join` auf der Verbindung eingereiht, die der Beitritt
+  geöffnet hat, statt verworfen zu werden. Ein eigener Transport, der
+  das optionale `holdsConnectionTo` nicht implementiert, wird
+  stattdessen über `peers()` gefragt, das nur bestätigte Verbindungen
+  kennt; auf ihm wird dieses `tell` abgelehnt, bis der Handshake
+  durch ist.
 
 Alles andere wird verworfen, wie ein Frame an einen unerreichbaren
 Knoten, unter `cluster_outbound_refusals_total{frame}` (`envelope` oder
@@ -861,14 +868,26 @@ zusammengefasst, das das letzte Ziel escaped nennt. Die häufigste
 Ursache auf einem gesunden Cluster ist ein Knoten, der gerade gegangen
 ist. Ein Ref wird verzögert gebaut, also funktioniert einer zu einem
 Knoten, von dem dieser Knoten einen Moment später erfährt, noch, wenn
-er benutzt wird.
+er benutzt wird. Einen Ref zu beobachten, dessen Knoten abgelehnt
+wird, wird sofort mit `Terminated` und `existenceConfirmed` false
+beantwortet, wie eine abgelehnte Beobachtung auf der Gegenseite, damit
+der Beobachter nicht auf eine Antwort wartet, die nicht kommen kann.
 
-Die Regel ist nur so stark wie die Mitgliedschaft. Ohne mTLS wählt ein
-Peer die Identität, die er in seinem `hello` vorlegt, und kann diese
-Adresse zum Mitglied machen, indem er sich selbst ankündigt — das hier
-schließt also den Weg über einen Nachrichtenkörper, nicht den über den
-Beitritt. mTLS ist das, was die Adresse eines Mitglieds an ein
-Zertifikat bindet.
+Die Regel ist nur so stark wie die Mitgliedschaft, und Mitgliedschaft
+ist noch nicht schwer zu bekommen. Heute macht ein einziger
+Gossip-Frame, dessen Payload eine beliebige Adresse als Absender
+nennt, diese Adresse zu einem `joining`-Mitglied: Der Absender wird
+nicht gegen die Verbindung geprüft, auf der der Frame ankam (#939,
+noch offen). Von da an lässt diese Sperre Frames an sie durch, und
+das Gossip und die Heartbeats des Mitgliedschaftsprotokolls selbst
+wählen sie in jedem Intervall an, ganz ohne Ref. Das hier schließt
+also den Weg über einen Nachrichtenkörper, nicht das Erzeugen eines
+Mitglieds. #939 wird den Absender eines Gossip-Frames an die Identität
+binden, die seine Verbindung vorgelegt hat; ohne mTLS wählt der Peer
+diese Identität aber selbst, kann sich also unter einer Adresse seiner
+Wahl ankündigen. mTLS ist das, was die Adresse eines Mitglieds an ein
+Zertifikat bindet, und bis #939 da ist, auch das, was beschränkt, wer
+diesen Gossip-Frame überhaupt senden kann.
 
 ### Eine Sharding-Direktive braucht den Koordinator dahinter
 
