@@ -119,15 +119,17 @@ Daraus folgen zwei Dinge:
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Streaming ist aus gutem Grund opt-in">
-  Ein Stream-Body ist **einmalig**, und zwei mitgelieferte Middlewares gehen
-  damit noch falsch um: `cached()` und `idempotent()` serialisieren einen Body
-  über eine `Uint8Array`-Prüfung, eine gestreamte Response wird also als
-  leeres Objekt gespeichert und der zweite Treffer liefert nichts (#674); und
-  das Express-Backend pipet einen Stream ohne Error-Handler, ein Fehler
-  mitten in der Response reißt also den Prozess oder den Request mit (#979).
-  Bis das gelandet ist: `streamThreshold` nicht mit `cached()` /
-  `idempotent()` kombinieren und für einen streamenden Mount das
-  Standard-Backend Fastify bevorzugen. Weil Streaming aus bleibt, ist die
+  Ein Stream-Body ist **einmalig**, und zwei mitgelieferte Bausteine gehen
+  damit noch falsch um: `idempotent()` serialisiert einen Body über eine
+  `Uint8Array`-Prüfung, eine gestreamte Response wird also als leeres Objekt
+  gespeichert und die Wiederholung liefert nichts (#674); und das
+  Express-Backend pipet einen Stream ohne Error-Handler, ein Fehler mitten in
+  der Response reißt also den Prozess oder den Request mit (#979). `cached()`
+  reicht eine gestreamte Response ungecacht durch (#980), die Kombination mit
+  `streamThreshold` ist also sicher, cacht oberhalb der Schwelle aber nichts.
+  Bis das gelandet ist: `streamThreshold` nicht mit `idempotent()`
+  kombinieren und für einen streamenden Mount das Standard-Backend Fastify
+  bevorzugen. Weil Streaming aus bleibt, ist die
   Static-Route out of the box von beidem nicht betroffen.
 </Aside>
 

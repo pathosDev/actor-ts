@@ -38,6 +38,7 @@ type ResponseCacheOptions = {
   key:            (req: HttpRequest) => string | Promise<string>;
   keyPrefix?:     string;                            // default 'rsp:'
   cacheStatuses?: ReadonlyArray<number>;             // default [200]
+  identity?:      (req: HttpRequest) => string | Promise<string>;
 };
 ```
 
@@ -48,6 +49,7 @@ type ResponseCacheOptions = {
 | `key(req)` | Leitet den Cache-Key aus dem Request ab — enthält typischerweise URL-Params, Tenant-ID, Accept-Header usw.  **Pflicht.** |
 | `keyPrefix` | Cache-Key-Namespace.  Default `'rsp:'`, damit sich mehrere Response-Caches im selben Redis nicht überschneiden. |
 | `cacheStatuses` | Welche Status-Codes cachebar sind.  Default `[200]` — nur 2xx-Responses werden gecacht. |
+| `identity(req)` | Optionaler Scope pro Aufrufer, der in den Key gefaltet wird, damit eine Response nur dem Aufrufer wieder ausgeliefert wird, für den sie entstand.  Zugleich das Opt-in, Requests mit Credentials zu cachen — siehe [was nie geteilt wird](#was-nie-geteilt-wird).  **Leite ihn aus einer verifizierten Identität ab**, nie aus einem rohen Header. |
 
 ## Cache-Key-Zusammensetzung
 
@@ -81,14 +83,57 @@ aber über getrennt zu cachende Responses eindeutig ist.
 
 ```
 GET /api/products       → cache (stable, read-heavy)
-POST /api/orders        → don't wrap with cached() (mutation)
-GET /api/users/me       → cache only with per-user key
+POST /api/orders        → passes straight through — only GET is stored
+GET /api/users/me       → cache only with identity (per-caller scope)
 GET /api/feed?cursor=X  → cache (one entry per cursor)
 ```
 
 Der Wrapper ist eine Handler-Ebenen-Entscheidung — du wählst, welche
 Handler du umhüllst.  Mutationen sollten typischerweise
 [`idempotent`](/de/http/middleware/idempotency-key/) verwenden.
+
+## Was nie geteilt wird
+
+Ein Cache-Treffer kehrt zurück, **bevor der umhüllte Handler läuft**.
+Jede Prüfung im Handler — Authentifizierung, Autorisierung, ein
+Lookup pro Aufrufer — läuft deshalb nur für den ersten Aufrufer.
+**Die Autorisierung muss `cached(...)` umhüllen, nie darin sitzen:**
+
+```ts no-compile — ext, jwtOptions and loadProfile belong to the surrounding application
+import { cached, get, JwtAuth, jwtClaimsOf, path, withMiddleware } from 'actor-ts/http';
+
+const profileCache = cached({
+  cache:    ext.cache('response-cache'),
+  ttlMs:    30_000,
+  key:      () => 'users:me',
+  identity: (req) => jwtClaimsOf(req)?.sub ?? 'anonymous',
+});
+
+// ✓ JwtAuth verifies the token on every request, hit or miss
+const routes = withMiddleware(JwtAuth(jwtOptions),
+  path('me', get(profileCache(loadProfile))),
+);
+// ✗ a check inside loadProfile is skipped by every hit
+```
+
+Darüber hinaus verweigert der Wrapper von sich aus jeden Fall, in dem
+die Response eines Aufrufers einen anderen erreichen könnte:
+
+| Regel | Warum |
+| --- | --- |
+| Nur `GET` wird gespeichert; nur `GET` und `HEAD` werden aus dem Cache beantwortet. | Ein wiederholtes `POST` ist nie richtig.  `HEAD` liest einen `GET`-Eintrag, schreibt aber nie einen, weil eine `HEAD`-Antwort ohne Body auskommen darf. |
+| Ein Request mit `Authorization`, `Proxy-Authorization` oder `Cookie` umgeht den Cache, solange `identity` nicht gesetzt ist. | Sonst sagt nichts im Key, wessen Response es ist.  `identity` zu setzen ist das ausdrückliche Opt-in; für einen Endpunkt, der wirklich nicht vom Aufrufer abhängt, sagt `identity: () => 'public'` genau das. |
+| Eine Response mit `Set-Cookie` wird nicht gespeichert. | Es gibt keinen korrekten Weg, das Cookie eines Aufrufers einem anderen zu geben. |
+| `Cache-Control: no-store`, `no-cache` oder `private` auf der Response unterdrückt das Speichern. | Der Handler hat gesagt, dass die Response nicht in einen geteilten Cache gehört. |
+| Eine Response mit `Vary` wird zusammen mit den Werten der genannten Request-Header gespeichert und nur an einen Request mit denselben Werten ausgeliefert; `Vary: *` wird nicht gespeichert. | Der Handler hat gesagt, dass die Response von diesen Headern abhängt. |
+| Ein streamender Body wird nicht gespeichert. | Ein Stream ist einmalig lesbar. |
+
+Dieselben Regeln gelten für den Stampede-Schutz: Ein Request, der auf
+den laufenden Handler eines anderen Requests wartet, übernimmt dessen
+Response nur, wenn er sie auch aus dem Cache hätte bekommen können,
+und führt den Handler sonst selbst aus.  `Cache-Control` auf dem
+**Request** wird bewusst ignoriert — ein Client darf den Handler nicht
+am Cache vorbei erzwingen können.
 
 ## Cache-Invalidierung
 
@@ -115,6 +160,8 @@ await cache.delete('rsp:products:42');   // 'rsp:' is the default keyPrefix
 
 Der Cache ist einfach ein `Cache` — du kannst den mit Prefix
 versehenen Key direkt `delete`n, wenn ein Write ihn invalidieren soll.
+Mit gesetztem `identity` lautet der Key `<keyPrefix><scope>:<key>`,
+der Scope URI-kodiert (`rsp:alice:users:me`).
 
 ## Geteilter Cache über Pods
 
@@ -153,14 +200,19 @@ transientes 500 nicht 30 Sekunden lang hängen bleibt.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Authentifizierte Responses cachen">
+<Aside type="caution" title="Responses pro Aufrufer mit identity trennen">
   ```ts
-  // GET /api/users/me with cache → all users see the first user's response
+  identity: (req) => jwtClaimsOf(req)?.sub ?? 'anonymous',   // ✓ verified
+  identity: (req) => req.headers['x-user-id'] ?? 'anonymous', // ✗ client-chosen
   ```
-  Ohne den User in `key(req)` aufzunehmen, lecken gecachte Responses
-  über User hinweg.  Nimm entweder `hashUser(req.headers.authorization)`
-  in den Key auf oder umhülle Per-User-Endpunkte gar nicht mit
-  `cached`.
+  Eine Response, die davon abhängt, wer fragt, muss mit `identity`
+  getrennt werden, und der Scope muss aus dem kommen, was eine
+  Middleware verifiziert hat.  Mit einem rohen Header kann sich jeder
+  Aufrufer den Scope eines anderen anmaßen und dessen gecachte Response
+  lesen.  Requests mit Credentials umgehen den Cache, bis `identity`
+  gesetzt ist — eine Response pro Aufrufer auf einen Request ohne
+  Credential-Header, etwa mit einem eigenen API-Key-Header, hält aber
+  nur `identity` auseinander.
 </Aside>
 
 <Aside type="note" title="Stampede-Schutz ist Per-Process">
