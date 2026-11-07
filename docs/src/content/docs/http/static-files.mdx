@@ -113,14 +113,16 @@ Two things follow from setting it:
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Streaming is opt-in for a reason">
-  A stream body is **one-shot**, and two first-party middlewares still
-  mishandle one: `cached()` and `idempotent()` serialise a body by checking
-  for `Uint8Array`, so a streamed response is stored as an empty object and
-  the second hit serves nothing (#674); and the Express backend pipes a
-  stream with no error handler, so a mid-response failure takes the process
-  or the request with it (#979). Until those land, do not combine
-  `streamThreshold` with `cached()` / `idempotent()`, and prefer the default
-  Fastify backend for a streaming mount. Leaving streaming off is why the
+  A stream body is **one-shot**, and two first-party pieces still mishandle
+  one: `idempotent()` serialises a body by checking for `Uint8Array`, so a
+  streamed response is stored as an empty object and the replay serves
+  nothing (#674); and the Express backend pipes a stream with no error
+  handler, so a mid-response failure takes the process or the request with it
+  (#979). `cached()` passes a streamed response through uncached (#980), so
+  combining it with `streamThreshold` is safe but caches nothing above the
+  threshold. Until those land, do not combine `streamThreshold` with
+  `idempotent()`, and prefer the default Fastify backend for a streaming
+  mount. Leaving streaming off is why the
   out-of-the-box static route is unaffected by both.
 </Aside>
 

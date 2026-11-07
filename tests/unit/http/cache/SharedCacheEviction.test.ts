@@ -69,6 +69,14 @@ function makeRequest(
   return { method: 'POST', path, headers, query: {}, params: {}, body: null, remoteAddress };
 }
 
+/**
+ * A flooding request.  A `GET`, because that is the only method `cached()`
+ * stores (#980) — a flood of `POST`s would mint nothing.
+ */
+function floodRequest(path: string, remoteAddress?: string): HttpRequest {
+  return { ...makeRequest({}, path, remoteAddress), method: 'GET' };
+}
+
 function newCache(): InMemoryCache {
   return new InMemoryCache({ maxEntries: MAX_ENTRIES, cleanupMs: 0 });
 }
@@ -104,7 +112,7 @@ function floodHandler(cache: InMemoryCache): (request: HttpRequest) => Promise<H
 
 async function flood(cache: InMemoryCache): Promise<void> {
   const handler = floodHandler(cache);
-  for (let i = 0; i < FLOOD_SIZE; i++) await handler(makeRequest({}, `/public/${i}`));
+  for (let i = 0; i < FLOOD_SIZE; i++) await handler(floodRequest(`/public/${i}`));
 }
 
 describe('shared cache — an idempotency record survives a response-cache key flood', () => {
@@ -227,7 +235,7 @@ describe('shared cache — another client\'s rate-limit counter survives a key f
 
     const statuses: number[] = [];
     for (let i = 0; i < FLOOD_SIZE; i++) {
-      statuses.push((await limited(makeRequest({}, `/public/${i}`, '192.0.2.5'))).status);
+      statuses.push((await limited(floodRequest(`/public/${i}`, '192.0.2.5'))).status);
     }
     expect(statuses.every((s) => s === Status.OK)).toBe(true);
     // The flood really did turn the map over — otherwise no eviction ran and
@@ -237,7 +245,7 @@ describe('shared cache — another client\'s rate-limit counter survives a key f
     // Counter never lost: the (FLOOD_SIZE + 1)-th request is over `max`.
     // Had it been evicted mid-flood, the window would have restarted and
     // this would be another 200.
-    expect((await limited(makeRequest({}, '/public/x', '192.0.2.5'))).status)
+    expect((await limited(floodRequest('/public/x', '192.0.2.5'))).status)
       .toBe(Status.TooManyRequests);
 
     await shared.close();

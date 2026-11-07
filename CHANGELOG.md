@@ -9081,6 +9081,34 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **BREAKING — `cached()` no longer replays one caller's response to
+  another** (#980, CWE-524). It stored the whole response, headers verbatim,
+  under a key that said nothing about the caller, and a hit returns before the
+  wrapped handler — so with the documented path-keyed usage the second caller
+  received the first one's body and `Set-Cookie`, and an unauthenticated
+  caller got a 200 the handler's own 401 never had the chance to send. The
+  wrapper now stores only `GET` and answers only `GET`/`HEAD` from the cache
+  (`HEAD` reads a `GET` entry and never writes one); a request carrying
+  `Authorization`, `Proxy-Authorization` or `Cookie` bypasses the cache
+  unless the new `identity` option folds a per-caller scope into the key; a
+  response carrying `Set-Cookie`, `Cache-Control: no-store`/`no-cache`/
+  `private`, `Vary: *` or a streaming body is not stored; and one carrying
+  `Vary` is served only to a request with the same values of the named
+  headers. Stampede protection follows the same rules — a request waiting on
+  another's in-flight handler takes its response only where it could have
+  taken it from the cache — and an entry already in a shared cache is
+  re-checked before it is served, so one stored before the upgrade cannot
+  leak either. A streamed response no longer turns into a cached `{}`.
+
+  **Migration.** Authorization must wrap `cached(...)`, not sit in the
+  handler — a hit never runs the handler. An endpoint that relied on caching
+  credentialed requests through a caller-derived `key` now bypasses the cache
+  until it sets `identity` (from verified claims, e.g.
+  `jwtClaimsOf(request)?.sub`; `() => 'public'` for a response that genuinely
+  does not depend on the caller), and with `identity` set a manual
+  invalidation deletes `<keyPrefix><scope>:<key>`. Non-`GET` routes wrapped
+  in `cached()` now always run their handler.
+
 - **Three configuration parsers no longer take quadratic time on a hostile
   value** (#1792, CodeQL `js/polynomial-redos`). The HOCON number literal
   (`\d+\.?\d*`) split a digit run two ways at every position, and the WHATWG
