@@ -124,6 +124,32 @@ Der Vertrag, den ein Detector implementiert, sagt dasselbe in zwei
 Methoden: `heardFrom` ist ein Frame beliebiger Art, `heartbeat` ein
 Heartbeat-Frame.
 
+Beides zählt nur für einen Peer, den dieser Node **beobachtet**: ein
+Mitglied, das kein Tombstone ist, oder einen seiner konfigurierten
+Seeds, der ebenfalls keiner ist. Ein Frame von jemand anderem wird
+trotzdem verarbeitet — er kann zum Beispiel seinen Absender
+aufnehmen —, legt aber keinen Zustand im Detector an. Der Detector
+wird nur nach Mitgliedern gefragt, und die Verbindungsidentität,
+unter der ein Frame ankommt, ist ohne mTLS die eigene Behauptung des
+Peers. Jeden Frame anzurechnen ließ einen Peer den Detector also um
+einen Eintrag pro behauptetem Namen wachsen, über die
+`max-members`-Grenze der Mitgliederliste hinaus (#1103).
+
+Der Eintrag eines Mitglieds beginnt, wenn das Mitglied aufgenommen
+wird, gleich über welchen Weg, und endet, wenn es die lebenden
+Mitglieder verlässt: wenn dieser Node es als Tombstone ablegt — aus
+eigener Entscheidung oder weil ein gegossipter Eintrag es so sagt —
+oder es aus der Mitgliedertabelle löscht. Jedes lebende Mitglied wird
+also beobachtet, der Detector hält nichts über die lebenden
+Mitglieder und die Seeds hinaus, und ein Mitglied, das nach seiner
+Entfernung zurückkommt, wird ab seiner Rückkehr beurteilt und nicht
+nach der Stille seines vorigen Laufs. Ein beitretender Node verliert
+dadurch nichts: Der Frame, der ihn aufnimmt, registriert ihn, und das
+startet seine Stille-Uhr im selben Moment wie früher die Anrechnung.
+Seeds werden ab dem ersten Anwählen beobachtet, ein spät antwortender
+Seed wird also nach seiner Antwort beurteilt und nicht nach der
+Stille davor.
+
 ## Was der Detector entscheidet — und was nicht
 
 Der Detector gibt `'healthy'` / `'unreachable'` / `'down'` zurück.
