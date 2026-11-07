@@ -1606,11 +1606,16 @@ export class Cluster {
    * single chokepoint where every cross-node message leaves, so hooking
    * the encode step once covers all paths (sharding, pub-sub, singleton,
    * direct remote-ref).  Receiving nodes decode in `onEnvelope`.
+   *
+   * Returns `false` when {@link mayAddress} refused the destination, `true`
+   * when the envelope was handed to the transport — which is still a
+   * best-effort send, not a delivery.
    */
-  _sendEnvelope(to: NodeAddress, env: EnvelopeMessage): void {
-    if (!this.mayAddress(to, env.kind)) return;
+  _sendEnvelope(to: NodeAddress, env: EnvelopeMessage): boolean {
+    if (!this.mayAddress(to, env.kind)) return false;
     const encoded: EnvelopeMessage = { ...env, body: encodeRefs(env.body, this) };
     this.transport.send(to, encoded);
+    return true;
   }
 
   /** Register a handler for a specific wire-message discriminator. */
@@ -1619,10 +1624,15 @@ export class Cluster {
    * own extension points — remote death watch sends its three kinds through
    * here — not for user payloads, which go through `_sendEnvelope` so that
    * embedded refs are rewritten.
+   *
+   * Returns `false` when {@link mayAddress} refused the destination, so a
+   * caller that keeps state for an answer — remote death watch — can tell a
+   * frame that will never leave from one that is merely in flight.
    */
-  _sendWire(to: NodeAddress, message: WireMessage): void {
-    if (!this.mayAddress(to, message.kind)) return;
+  _sendWire(to: NodeAddress, message: WireMessage): boolean {
+    if (!this.mayAddress(to, message.kind)) return false;
     this.transport.send(to, message);
+    return true;
   }
 
   /**
