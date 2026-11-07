@@ -9081,6 +9081,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **A ref in a message body no longer makes the receiving node dial the
+  address it names** (#936). `decodeSingleRef` rebuilt a ref marker's node
+  with the raw `NodeAddress` constructor, and `_sendEnvelope` handed whatever
+  node a ref named to the transport, which dials what it is given — so an
+  actor answering a decoded `replyTo`, or watching it, opened a connection to
+  an address of the sender's choosing (a cloud metadata endpoint, an internal
+  admin port) and wrote a frame to it. A marker now goes through
+  `NodeAddress.fromJSON` and decodes to `Nobody` when it is not a valid node,
+  and `_sendEnvelope` and `_sendWire` send only to a member that is not a
+  tombstone or to a peer the transport is already connected to. Anything else
+  is dropped, counted on the new `cluster_outbound_refusals_total{frame}` and
+  logged at most once every 30 seconds. The membership protocol's own sends
+  (seeds, gossip, heartbeats) are unaffected. Without mTLS a peer can still
+  make its own claimed address a member by announcing itself; this closes the
+  route through a message body, not that one.
+
 - **Three configuration parsers no longer take quadratic time on a hostile
   value** (#1792, CodeQL `js/polynomial-redos`). The HOCON number literal
   (`\d+\.?\d*`) split a digit run two ways at every position, and the WHATWG

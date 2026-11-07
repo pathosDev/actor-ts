@@ -279,6 +279,7 @@ erreichen.
 | Adresse beansprucht, bevor der zugehörige Knoten existiert | Enge Versions-Skew-Grenze auf jeder gegossipten Member-Version |
 | Vom Draht mitgeschnittener Gossip-Frame wird später erneut gesendet | Sequence pro Sender — ein Frame muss den zuletzt von diesem Sender akzeptierten überbieten (teilweise: erst wenn einer akzeptiert wurde) |
 | Gefälschte Discovery-Antwort lenkt den Bootstrap um | mTLS, dazu `pinnedAddresses` am Seed-Provider |
+| Ein Ref im Nachrichtenkörper nennt einen internen Host, damit dieser Knoten ihn anwählt | Frames gehen nur an Mitglieder und verbundene Peers |
 | Kompromittierter Pod im Cluster | Application-Level-Auth (hier nicht abgedeckt) |
 
 Der Cluster-Transport handhabt Transport-Level-Sicherheit.
@@ -826,6 +827,48 @@ wird wie ein fehlender beantwortet — `Terminated` mit
 `existenceConfirmed = false` —, sodass ein Watcher nie hängt und
 die Antwort nichts preisgibt, was die Ablehnung nicht ohnehin
 schon täte; die Ablehnung wird unter `frame="watch"` gezählt.
+
+### Ein Ref in einer Nachricht bestimmt nicht, wohin dieser Knoten wählt
+
+Die andere Richtung hat dieselbe Form. Ein `ActorRef` im
+Nachrichtenkörper geht als Marker über die Leitung, der seinen Knoten
+nennt — System, Host, Port —, und der Empfänger baut daraus einen
+Remote-Ref. Diese Adresse ist eine Behauptung des Absenders. Früher
+wurde der Marker ohne die Prüfung zurückgebaut, die jede andere
+Wire-Adresse bekommt, und der Knoten, den ein Ref nannte, wurde in dem
+Moment angewählt, in dem der Ref benutzt wurde: Ein Aktor, der einem
+dekodierten `replyTo` antwortete — die Redewendung, der jeder Handler
+folgt —, öffnete eine Verbindung zu einer Adresse nach Wahl des
+Absenders und schrieb einen Frame hinein, etwa an einen
+Cloud-Metadaten-Endpunkt oder einen internen Admin-Port. Den Ref zu
+beobachten tat dasselbe mit einem `watch`-Frame (#936).
+
+Ein Marker wird jetzt als Knotenadresse geprüft, und einer, der nicht
+gültig ist, wird zu `Nobody`. Und ein Frame mit einer Nutzlast oder
+einer Death-Watch-Nachricht — jeder Versand, der nicht zum
+Mitgliedschaftsprotokoll selbst gehört — geht nur noch an:
+
+- **ein Mitglied, das kein Tombstone ist**, oder
+- **einen Peer, mit dem der Transport schon verbunden ist** — über eine
+  bestehende Verbindung zu senden wählt nichts an, und so erreicht eine
+  Antwort einen Knoten, der beigetreten ist, von dem dieser Knoten aber
+  noch nichts gehört hat.
+
+Alles andere wird verworfen, wie ein Frame an einen unerreichbaren
+Knoten, unter `cluster_outbound_refusals_total{frame}` (`envelope` oder
+`wire`) gezählt und zu höchstens einem `WARN` alle 30 Sekunden
+zusammengefasst, das das letzte Ziel escaped nennt. Die häufigste
+Ursache auf einem gesunden Cluster ist ein Knoten, der gerade gegangen
+ist. Ein Ref wird verzögert gebaut, also funktioniert einer zu einem
+Knoten, von dem dieser Knoten einen Moment später erfährt, noch, wenn
+er benutzt wird.
+
+Die Regel ist nur so stark wie die Mitgliedschaft. Ohne mTLS wählt ein
+Peer die Identität, die er in seinem `hello` vorlegt, und kann diese
+Adresse zum Mitglied machen, indem er sich selbst ankündigt — das hier
+schließt also den Weg über einen Nachrichtenkörper, nicht den über den
+Beitritt. mTLS ist das, was die Adresse eines Mitglieds an ein
+Zertifikat bindet.
 
 ### Eine Sharding-Direktive braucht den Koordinator dahinter
 

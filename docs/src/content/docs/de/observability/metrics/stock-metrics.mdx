@@ -328,6 +328,7 @@ etwas ablehnt, ist eine Rate auf diesen Klassen Drift und keine Last.
 | `cluster_gossip_records_refused_total` | counter | `reason` | Von einer Merge-Pfad-Wache abgelehnte gegossipte Member-Records. |
 | `cluster_envelope_from_mismatch_total` | counter | `frame` | Envelopes, deren Payload einen anderen Absender nennt als die Verbindung, auf der sie ankamen. |
 | `cluster_envelope_refusals_total` | counter | `reason`, `frame` | Eingehende Envelopes, die abgelehnt wurden, weil ihr Zielpfad außerhalb dessen liegt, was dieser Knoten namentlich annimmt. |
+| `cluster_outbound_refusals_total` | counter | `frame` | Frames, die dieser Knoten nicht gesendet hat, weil das Ziel weder ein Mitglied noch ein verbundener Peer war. |
 
 Zum Monitoring der Cluster-Gesundheit:
 
@@ -385,6 +386,16 @@ Zum Monitoring der Cluster-Gesundheit:
   Label, aus demselben Grund wie die behauptete Adresse oben — und er
   steht auch nicht in der Log-Zeile, denn er ist eine ungeprüfte
   Zeichenkette aus der Payload.
+- `cluster_outbound_refusals_total` zählt einen Frame, den dieser
+  Knoten nicht sendet, weil sein Ziel weder ein Mitglied noch ein
+  verbundener Peer war — ein Ref im Nachrichtenkörper, der einen
+  anderen Host nennt, oder, weit häufiger, ein Knoten, der gerade
+  gegangen ist. Ein kurzer Schub nach dem Abgang eines Knotens ist
+  normal; eine stetige Rate bei stabiler Mitgliedschaft heißt, dass
+  etwas diesem Knoten fortlaufend Refs auf Adressen außerhalb des
+  Clusters gibt. `frame` ist `envelope` oder `wire`, die Familie sind
+  also zwei Serien; das Ziel ist kein Label, und die Log-Zeile, die es
+  höchstens alle 30 Sekunden begleitet, nennt es escaped.
 
 ## DistributedData-Metriken
 
