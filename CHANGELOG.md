@@ -9094,11 +9094,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   response carrying `Set-Cookie`, `Cache-Control: no-store`/`no-cache`/
   `private`, `Vary: *` or a streaming body is not stored; and one carrying
   `Vary` is served only to a request with the same values of the named
-  headers. Stampede protection follows the same rules — a request waiting on
-  another's in-flight handler takes its response only where it could have
-  taken it from the cache — and an entry already in a shared cache is
-  re-checked before it is served, so one stored before the upgrade cannot
-  leak either. A streamed response no longer turns into a cached `{}`.
+  headers, which are recorded as SHA-256 digests and never verbatim, so a
+  `Vary: Authorization` response puts no bearer token or cookie into the
+  backing cache. Stampede protection follows the same header rules — a
+  request waiting on another's in-flight handler takes its response only
+  where the two may share it, including a response `cacheStatuses` keeps out
+  of the cache (it governs storing, not sharing). An entry already in a
+  shared cache is re-checked before it is served: one carrying `Set-Cookie`,
+  an unshareable `Cache-Control`, `Vary: *` or a `Vary` with no recorded
+  values is treated as a miss. An entry minted before the upgrade from a
+  credentialed request whose response carried neither `Set-Cookie` nor
+  `Vary` is indistinguishable from a public one, though, and is served until
+  it expires — see the migration note. A streamed response no longer turns
+  into a cached `{}`.
 
   **Migration.** Authorization must wrap `cached(...)`, not sit in the
   handler — a hit never runs the handler. An endpoint that relied on caching
@@ -9106,8 +9114,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   until it sets `identity` (from verified claims, e.g.
   `jwtClaimsOf(request)?.sub`; `() => 'public'` for a response that genuinely
   does not depend on the caller), and with `identity` set a manual
-  invalidation deletes `<keyPrefix><scope>:<key>`. Non-`GET` routes wrapped
-  in `cached()` now always run their handler.
+  invalidation deletes `<keyPrefix><scope>:<key>` with the scope
+  URI-encoded — `` `rsp:${encodeURIComponent(sub)}:users:me` ``, since a raw
+  `auth0|abc` misses. A token carried in any header other than
+  `Authorization`, `Proxy-Authorization` or `Cookie` (e.g.
+  `BearerTokenAuth({ headerName })`) does not trigger the bypass, so a
+  per-caller response behind one needs `identity`. Non-`GET` routes wrapped
+  in `cached()` now always run their handler. With a shared (e.g. Redis)
+  cache, once the last pod on the old version is gone, flush the
+  response-cache `keyPrefix` (`rsp:` by default) or let `ttlMs` elapse
+  before relying on the new rules — the old version's entries for
+  credentialed requests can otherwise still be served.
 
 - **Three configuration parsers no longer take quadratic time on a hostile
   value** (#1792, CodeQL `js/polynomial-redos`). The HOCON number literal
