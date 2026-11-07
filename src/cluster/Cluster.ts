@@ -3907,6 +3907,19 @@ export class Cluster {
    * a hostile one can send whatever it likes, so the self record's identifier
    * would be whatever the last peer to promote us happened to say.
    *
+   * **The roles are the sharpest case (#1104).**  The promotion exception asks
+   * nothing of the sender — it cannot, see {@link isOwnPromotion} — so while
+   * this node is `joining` any stranger's single frame could promote it *with
+   * roles of the stranger's choosing*.  Roles are what shard placement,
+   * singleton hosting, routing and downing quorums are computed from, and the
+   * node would then gossip the substituted set onward as its own.  They are
+   * this node's configuration ({@link selfRoles}), fixed for the life of the
+   * incarnation, so the local set is taken outright.  A genuine leader
+   * promotes from the record this node gossiped and carries the same set, so
+   * the substitution changes nothing for it.  `removedAt` is kept from the
+   * local record for the same reason: the only status a claim about this node
+   * may set is `up`, and a tombstone timestamp belongs to no `up` record.
+   *
    * Substituting the local address is the one incarnation comparison that needs
    * no distributed agreement, because it only ever discards a peer's claim in
    * favour of a fact this node owns.  It is not a refusal: the promotion still
@@ -3939,14 +3952,17 @@ export class Cluster {
     // about it is an echo of ours or wrong.  Taken outright rather than with
     // `??`, so a promotion cannot hand a node that states none a label either.
     const ownAppVersion = this.selfAppVersion;
+    const ownRemovedAt = this.members.get(this.selfAddress.toString())?.removedAt;
     if (member.address.incarnation === this.selfAddress.incarnation
       && ownIdentities === member.storageIdentities
       && ownFacts === member.configurationFacts
-      && ownAppVersion === member.appVersion) {
+      && ownAppVersion === member.appVersion
+      && ownRemovedAt === member.removedAt
+      && sameRoles(member.roles, this.selfRoles)) {
       return member;
     }
     return new Member(
-      this.selfAddress, member.status, member.version, member.roles, member.removedAt,
+      this.selfAddress, member.status, member.version, this.selfRoles, ownRemovedAt,
       ownIdentities, ownFacts, ownAppVersion,
     );
   }
@@ -4218,6 +4234,13 @@ function sameConfigurationFacts(
   for (const name of names) {
     if (!Object.hasOwn(incoming, name) || incoming[name] !== held[name]) return false;
   }
+  return true;
+}
+
+/** Whether two role sets hold the same names — order-blind, as roles are. */
+function sameRoles(held: ReadonlySet<string>, incoming: ReadonlySet<string>): boolean {
+  if (held.size !== incoming.size) return false;
+  for (const role of held) if (!incoming.has(role)) return false;
   return true;
 }
 
