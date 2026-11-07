@@ -599,3 +599,14 @@ export const MAX_LOGGED_WIRE_KIND_LENGTH = 64;
  * be a knob for how loud an attacker may make this node's log.
  */
 export const ENVELOPE_REFUSAL_REPORT_INTERVAL_MS = 30_000;
+
+/**
+ * How often `Cluster` may log that it refused to send a frame to an address
+ * that is neither a member nor a connected peer (#936).
+ *
+ * The same thirty seconds as {@link ENVELOPE_REFUSAL_REPORT_INTERVAL_MS}, for
+ * the same reason: the first refusal is reported at once and the rest are
+ * folded into the next line, because a peer that embeds hostile refs in every
+ * message it sends would otherwise decide how often this node logs.
+ */
+export const OUTBOUND_REFUSAL_REPORT_INTERVAL_MS = 30_000;

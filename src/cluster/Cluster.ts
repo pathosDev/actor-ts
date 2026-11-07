@@ -13,6 +13,7 @@ import {
   MAX_REPORTED_CONFIGURATION_MISMATCHES,
   MAX_REPORTED_UNCLAIMED_WIRE_KINDS,
   MAX_WALL_CLOCK_SKEW_MS,
+  OUTBOUND_REFUSAL_REPORT_INTERVAL_MS,
 } from './Constants.js';
 import { countUnhandled } from '../internal/Unhandled.js';
 import { none, some, type Option } from '../util/Option.js';
@@ -312,6 +313,10 @@ export class Cluster {
   private readonly gossipIntervalMs: number;
   private readonly seedRetryIntervalMs: number;
   private readonly seedAddrs: NodeAddress[] = [];
+  /** Refused sends since the last report — see {@link reportOutboundRefusal}. */
+  private outboundRefusalsSuppressed = 0;
+  /** When {@link reportOutboundRefusal} last logged; the first refusal always does. */
+  private lastOutboundRefusalReportAt = Number.NEGATIVE_INFINITY;
   private readonly tombstoneTtlMs: number;
   private readonly tombstonePruneIntervalMs: number;
   private readonly tombstoneMinRetentionMs: number;
@@ -1603,6 +1608,7 @@ export class Cluster {
    * direct remote-ref).  Receiving nodes decode in `onEnvelope`.
    */
   _sendEnvelope(to: NodeAddress, env: EnvelopeMessage): void {
+    if (!this.mayAddress(to, env.kind)) return;
     const encoded: EnvelopeMessage = { ...env, body: encodeRefs(env.body, this) };
     this.transport.send(to, encoded);
   }
@@ -1615,7 +1621,84 @@ export class Cluster {
    * embedded refs are rewritten.
    */
   _sendWire(to: NodeAddress, message: WireMessage): void {
+    if (!this.mayAddress(to, message.kind)) return;
     this.transport.send(to, message);
+  }
+
+  /**
+   * Whether a frame may leave for `to` through {@link _sendEnvelope} or
+   * {@link _sendWire} (#936).
+   *
+   * Every address these two are handed can come from a peer: a ref marker in
+   * an envelope body decodes to a `RemoteActorRef` for whatever node it names,
+   * the receptionist and pub-sub rebuild nodes out of gossip, and remote death
+   * watch sends a `watch` frame to the node of any ref an actor watches.  The
+   * transport dials whatever it is given, so an actor answering a decoded
+   * `replyTo` — the idiom every handler uses — opened a connection to an
+   * address of the sender's choosing and wrote a frame to it: a cloud metadata
+   * endpoint, an internal admin port.
+   *
+   * Two destinations are allowed:
+   *
+   * - **A member that is not a tombstone.**  Every legitimate envelope goes to
+   *   one, and a member's address came through the merge rules rather than out
+   *   of a message body.  A tombstone is a node that has left, so nothing
+   *   should be sent to it — and it would otherwise be the one kind of member a
+   *   stranger can mint by gossiping a `removed` record about an address.
+   * - **A peer the transport is already connected to.**  Sending over an
+   *   existing connection dials nothing, and it covers the reply to a node
+   *   this one has not admitted yet — during a join a member can learn of this
+   *   node before this node learns of it.  Asked only when the first rule says
+   *   no, because `peers()` builds a list and this is the send path.
+   *
+   * The gate is here rather than inside `Transport.send` on purpose: the
+   * transport has no view of membership, and the core protocol has to dial
+   * non-members — seeds while joining, a joiner the seed has not admitted yet.
+   * Those sends go to `transport.send` directly and are not affected.
+   *
+   * A refused frame is dropped, as a frame to a node that cannot be reached
+   * is, and reported by {@link reportOutboundRefusal}.
+   */
+  private mayAddress(to: NodeAddress, kind: string): boolean {
+    const member = this.members.get(to.toString());
+    if (member !== undefined && member.status !== 'removed') return true;
+    if (this.transport.peers().some((peer) => peer.equals(to))) return true;
+    this.reportOutboundRefusal(to, kind);
+    return false;
+  }
+
+  /**
+   * Count a refused send, and fold it into at most one WARN per
+   * {@link OUTBOUND_REFUSAL_REPORT_INTERVAL_MS}.
+   *
+   * The counter carries the signal and the log is rate-limited, as for inbound
+   * envelope refusals: a peer can make every message it sends carry a hostile
+   * ref, and one line per refusal would let it write this node's log at its
+   * own rate.  The counter is labelled by frame family only — `envelope` or
+   * `wire` — because the destination is exactly the unbounded value a label
+   * must not be.  The line names the most recent destination, escaped, since
+   * it may be a stranger's choice; the commonest one is a node that has just
+   * left.
+   */
+  private reportOutboundRefusal(to: NodeAddress, kind: string): void {
+    const frame = kind === 'envelope' ? 'envelope' : 'wire';
+    metricsOf(this.system).counter(
+      'cluster_outbound_refusals_total', { frame },
+      {
+        help: 'Cumulative count of frames this node refused to send because the destination '
+          + 'was neither a cluster member nor a connected peer.',
+      },
+    ).inc();
+    this.outboundRefusalsSuppressed += 1;
+    const now = this.system.clock.now();
+    if (now - this.lastOutboundRefusalReportAt < OUTBOUND_REFUSAL_REPORT_INTERVAL_MS) return;
+    this.lastOutboundRefusalReportAt = now;
+    const count = this.outboundRefusalsSuppressed;
+    this.outboundRefusalsSuppressed = 0;
+    this.log.warn(
+      `refused to send ${count} frame(s) to an address that is neither a member nor a connected peer `
+      + `— most recently ${sanitizeWireKindForLog(kind)} to ${sanitizeWireKindForLog(to.toString())}`,
+    );
   }
 
   _onWire(kind: string, handler: (message: WireMessage, from: NodeAddress) => void): () => void {

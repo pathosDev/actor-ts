@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, test } from 'bun:test';
 import type { ActorRef } from '../../../src/ActorRef.js';
 import { Cluster } from '../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../src/cluster/ClusterOptions.js';
@@ -127,6 +127,29 @@ function claimsTopics(mediator: Mediator, peer: NodeAddress, topics: string[]): 
   );
 }
 
+/** The transports {@link listeningPeer} started, shut down after each test. */
+let listeners: InMemoryTransport[] = [];
+
+afterEach(async () => {
+  for (const listener of listeners) await listener.shutdown();
+  listeners = [];
+});
+
+/**
+ * The address of a peer that claims topics without running a node — only a
+ * transport that drops what it receives.  The cluster sends nothing to an
+ * address that is neither a member nor a connected peer (#936), so a claimant
+ * with no transport behind it would never see a frame, and the rotation would
+ * have nothing to show.
+ */
+async function listeningPeer(systemName: string, port: number): Promise<NodeAddress> {
+  const address = new NodeAddress(systemName, 'h', port);
+  const listener = new InMemoryTransport(address);
+  await listener.start();
+  listeners.push(listener);
+  return address;
+}
+
 /** Subscribe to the system's dead letters so an unrouted publish is visible. */
 function watchDeadLetters(node: Node): TestProbe {
   const probe = node.kit.createTestProbe();
@@ -138,9 +161,8 @@ function watchDeadLetters(node: Node): TestProbe {
  * Record every anycast frame the mediator hands to the transport.
  *
  * The remote half of the rotation has no other observable on a single node:
- * the chosen peer is a gossip claim, not a running system, and
- * `InMemoryTransport.send` drops a frame for an unregistered address without
- * a trace.  Watching the send is watching the decision.
+ * the chosen peer is a gossip claim, not a running system, and its transport
+ * drops what it is handed.  Watching the send is watching the decision.
  */
 function recordAnycastFrames(transport: InMemoryTransport): RecordedAnycast[] {
   const recorded: RecordedAnycast[] = [];
@@ -261,7 +283,7 @@ describe('DistributedPubSub — anycast across nodes (#155)', () => {
     await subscribed(mediator, 'work', local);
 
     // One peer claims the topic: candidates are now [local subscriber, peer].
-    const peer = new NodeAddress('ps-anycast-remote', 'h', 51599);
+    const peer = await listeningPeer('ps-anycast-remote', 51599);
     mediator.internals.handleGossip(
       { kind: 'pubsub-gossip', from: peer.toJSON(), entries: ['work'], version: 1 },
       peer,
@@ -330,7 +352,7 @@ describe('DistributedPubSub — anycast across nodes (#155)', () => {
     const worker = node.kit.createTestProbe();
     await subscribed(mediator, 'work', worker);
 
-    const peer = new NodeAddress('ps-anycast-interleaved', 'h', 51598);
+    const peer = await listeningPeer('ps-anycast-interleaved', 51598);
     claimsTopics(mediator, peer, ['work']);
     expect(mediator.internals.topics.get('work')?.remoteNodes.size).toBe(1);
 
@@ -373,9 +395,9 @@ describe('DistributedPubSub — anycast across nodes (#155)', () => {
     const frames = recordAnycastFrames(node.transport);
 
     // Deliberately announced out of order: arrival order is 3, 1, 2.
-    const third = new NodeAddress('ps-anycast-order', 'h', 51703);
-    const first = new NodeAddress('ps-anycast-order', 'h', 51701);
-    const second = new NodeAddress('ps-anycast-order', 'h', 51702);
+    const third = await listeningPeer('ps-anycast-order', 51703);
+    const first = await listeningPeer('ps-anycast-order', 51701);
+    const second = await listeningPeer('ps-anycast-order', 51702);
     for (const peer of [third, first, second]) claimsTopics(mediator, peer, ['fan']);
     expect(mediator.internals.topics.get('fan')?.remoteNodes.size).toBe(3);
 

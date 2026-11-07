@@ -409,6 +409,7 @@ const STOCK_LABELS: Readonly<Record<string, ReadonlyArray<string>>> = {
   cluster_sharding_registrations_refused_total: ['reason', 'type'],
   cluster_envelope_from_mismatch_total: ['frame'],
   cluster_envelope_refusals_total: ['reason', 'frame'],
+  cluster_outbound_refusals_total: ['frame'],
   distributed_data_quorum_pending: [],
   distributed_data_quorum_timeouts_total: ['operation'],
   offload_tasks_total: ['task', 'outcome'],
