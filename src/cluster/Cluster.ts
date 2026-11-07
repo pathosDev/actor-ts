@@ -2712,8 +2712,7 @@ export class Cluster {
       this.reportRefusals(from, 'replayed-frame', message.members.length);
       return;
     }
-    const sender = NodeAddress.fromJSON(message.from);
-    this.log.debug(`gossip from ${sender}: ${message.members.length} member(s)`);
+    this.log.debug(`gossip from ${from}: ${message.members.length} member(s)`);
 
     // Snapshot the sender's standing *before* merging: this frame may be the
     // one that introduces the sender, and a claim must not be authorised by a
@@ -2725,23 +2724,18 @@ export class Cluster {
       this.mergeMember(from, senderStatus, data);
     }
 
-    // Ensure we know about the sender itself.  This insert sits *outside*
-    // `mergeMember`, so it bypassed every guard the merge path grew — it is
-    // capped here explicitly rather than left as the one door #138 forgot to
-    // close.  `sender` is the payload's self-declaration, not the connection's
-    // peer, which makes it the cheaper of the two addresses to fabricate.
-    //
-    // Admitted through the same door as a merged first sighting, so it is
-    // registered with the failure detector too (#1103).  A live member without
-    // an entry reads `healthy` for good, and nothing else would create one: the
-    // frame credited no one it named, and a sender that was only ever a claim
-    // sends no frame of its own — registered, it goes the way of any silent
-    // member instead of staying `up` forever.
-    if (!this.members.has(sender.toString())) {
-      const member = new Member(sender, 'joining', 1);
-      if (this.admitsMember(member, undefined)) this.admitFirstSighting(member);
-    }
-
+    // No member is filed from the payload's `from` (#939).  A door here used
+    // to add it as `joining` when this node held no record of it — outside
+    // `mergeMember`, so with no `maySpeakFor` at all, and keyed on a field the
+    // sender writes rather than on the connection it came in on.  One frame
+    // naming a low-sorting address made that address a member, the leader
+    // promoted it, and `leader()` moved to a node that does not exist; and a
+    // member is an address the heartbeat and gossip ticks dial, so it was also
+    // a way to make this node connect wherever the frame said (#936).  The
+    // door had no legitimate use: every gossip frame carries the sender's own
+    // record — `gossipTick` sends the whole map, self included, and a join's
+    // first frame is `[me]` — so a sender is introduced by the loop above, as
+    // a self-announcement held to the connection's identity.
     this.rememberGossipSequence(from, message.sequence);
 
     // One line and one counter increment per frame and reason, not per refused
@@ -2869,8 +2863,12 @@ export class Cluster {
    * where C's own counter has reached.
    *
    * **Only for an address the member map holds**, which is what bounds this map
-   * by the same caps as that one — the sender fallback above has already run, so
-   * an honest peer is on file by the time this is asked.
+   * by the same caps as that one.  Every frame carries the sender's own record
+   * and the merge loop has just run over it, so an honest peer whose record was
+   * admitted is on file by the time this is asked.  One whose record was refused
+   * — a clock past `maxVersionSkewMs`, a full member map — gets no mark, which
+   * costs nothing: its next frame is judged against no mark, as a first frame
+   * is, and it is not a member to be replayed into anyway.
    *
    * Plausibility is not re-checked here: {@link admitsGossipSequence} refuses an
    * implausible frame outright, so nothing that reaches this point carries a
@@ -3607,11 +3605,12 @@ export class Cluster {
    *   `members.get(…)` per record, so the first creates the entry under the
    *   tight cap and the second — same frame, same peer — is an update and got
    *   the wide one.
-   * - A frame with **no member records at all**.  `onGossip`'s sender fallback
-   *   files the connection's self-declared address by itself, so the next
-   *   frame is an update too.  That fallback is what makes a refusal cost one
-   *   gossip round rather than being permanent; the same property was the way
-   *   around the cap.
+   * - A frame with **no member records at all**.  `onGossip` used to end with
+   *   a door that filed the frame's self-declared `from` by itself, so the
+   *   next frame was an update too.  That door made a refusal cost one gossip
+   *   round rather than being permanent, and the same property was the way
+   *   around the cap.  It is gone (#939): a sender is introduced only by its
+   *   own record, under this same cap.
    *
    * Any rule that lets a record *earn* the wide cap fails the same way, one
    * step later: without per-node credentials every step of the earning is
@@ -3628,13 +3627,14 @@ export class Cluster {
    * either side of it are far apart: an NTP-disciplined host sits milliseconds
    * from true, a host that never synced at all is hours out.
    *
-   * **What a refusal costs.**  It is not exclusion: a node announcing itself
-   * is still recorded by the sender fallback, at version 1 with no roles.  It
-   * *is* durable, which the two-cap version was not — a node whose clock runs
-   * more than `maxVersionSkewMs` ahead of this one stays in the member list
-   * without roles until its clock comes back inside the budget.  That was
-   * always this cap's verdict on such a node; what changed is that the verdict
-   * now sticks instead of being reversed by the node's second frame.
+   * **What a refusal costs.**  It is exclusion, and it is durable: a node
+   * whose clock runs more than `maxVersionSkewMs` ahead of this one is not
+   * filed at all — its own record is the only thing that could introduce it,
+   * and that is the record refused — so it stays out, with the per-frame
+   * `version-skew` WARN naming the cap on the receiving side, until its clock
+   * comes back inside the budget.  Before #939 the sender door still filed it,
+   * role-less, and before the single cap its second frame reversed the
+   * verdict; neither softening is left.
    * Deployments whose clocks are known to run loose raise the knob.
    */
   private admitsVersion(incoming: Member): boolean {

@@ -16,16 +16,21 @@
  * So the section had to name that door in a sentence that said the detector
  * does not watch what comes through it, and cite #939 there.
  *
- * #1103 moved the two together, as this file anticipated: the sender door now
- * admits through the same route as the merge and registers what it files,
- * because a live member without a detector entry reads `healthy` for good and
- * the bound on the detector's size is stated as "an entry per live member".  So
- * the detector bound the old wording credited is real on that door now, and
- * the guard pins the opposite sentence — the door named as registered, with
- * #1103.  #939 stays cited beside the door: the authority half of it, a member
- * filed with no check at all, is still open.  Keyed on markers rather than on a
- * sentence, like `GossipReplayBoundDocumented`, so a rewrite that keeps the
- * meaning keeps passing.
+ * #1103 moved the two together: the sender door admitted through the same route
+ * as the merge and registered what it filed.  #939 then closed the door
+ * outright — it filed a member with no authority check, and no legitimate frame
+ * needed it, since every gossip frame carries its sender's own record.  So the
+ * guard now pins the last state: the section names the sender field as no
+ * longer a way in, with #939 in the same sentence.  Keyed on markers rather
+ * than on a sentence, like `GossipReplayBoundDocumented`, so a rewrite that
+ * keeps the meaning keeps passing.
+ *
+ * The version-skew section on the same page leaned on the door too: it said a
+ * refused self-announcement was not exclusion, because the sender was still
+ * filed at version 1 without roles.  With the door gone a refusal *is*
+ * exclusion — the node's own record is the only thing that introduces it — so
+ * the second block pins that: no sentence there may put "version 1" next to
+ * roles, and one has to call the refusal exclusion.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -38,7 +43,7 @@ type DoorText = {
   /** A phrase inside the section, which is located by it rather than by its heading. */
   readonly anchor: string;
   readonly door: RegExp;
-  readonly registered: RegExp;
+  readonly closed: RegExp;
 };
 
 const DOOR_TEXTS: readonly DoorText[] = [
@@ -46,13 +51,13 @@ const DOOR_TEXTS: readonly DoorText[] = [
     path: 'docs/src/content/docs/operations/security/cluster-security.mdx',
     anchor: 'Splitting members from tombstones is not tidiness',
     door: /\bsender\b/i,
-    registered: /\bregisters?\b[^.]*\bdetector\b|\bregistered with the detector\b/i,
+    closed: /\bclosed\b|\bno longer a route\b/i,
   },
   {
     path: 'docs/src/content/docs/de/operations/security/cluster-security.mdx',
     anchor: 'Mitglieder und Tombstones zu trennen ist keine Ordnungsliebe',
     door: /Absender/,
-    registered: /\bbeim Detector an\b|\bbeim Detector angemeldet\b/,
+    closed: /\bTür ist zu\b|\bkein Weg mehr\b|\bgeschlossen\b/,
   },
 ];
 
@@ -77,25 +82,66 @@ function sentencesOf(text: string): string[] {
     .filter((sentence) => sentence !== '');
 }
 
-describe('#1477 — the phantom passage states the detector bound the sender door has', () => {
+describe('#1477 — the phantom passage says the sender door is closed', () => {
   for (const text of DOOR_TEXTS) {
-    test(`${text.path}: the sender door is named as registered, with #1103, and #939 beside it`, () => {
+    test(`${text.path}: the sender field is named as no way in, with #939`, () => {
       const sentences = sentencesOf(sectionAround(text.path, text.anchor));
-      const registering = sentences
-        .filter((sentence) => text.door.test(sentence) && text.registered.test(sentence) && /#1103/.test(sentence));
+      const closing = sentences
+        .filter((sentence) => text.door.test(sentence) && text.closed.test(sentence) && /#939/.test(sentence));
       expect(
-        registering.length,
-        `${text.path}: no sentence in the two-caps section says that a phantom filed from a frame's `
-        + 'sender field is registered with the failure detector, with #1103. Since #1103 the sender insert '
-        + 'admits like the merge and registers what it files, so the detector declares it down like any '
-        + 'silent member.',
+        closing.length,
+        `${text.path}: no sentence in the two-caps section says, with #939, that a frame's sender field `
+        + 'no longer files a member. Since #939 a sender is introduced only by its own record, through the merge.',
       ).toBeGreaterThan(0);
-      const citing = sentences.filter((sentence) => text.door.test(sentence) && /#939/.test(sentence));
+    });
+  }
+});
+
+type SkewText = {
+  readonly path: string;
+  readonly anchor: string;
+  readonly versionOne: RegExp;
+  readonly roles: RegExp;
+  readonly exclusion: RegExp;
+};
+
+const SKEW_TEXTS: readonly SkewText[] = [
+  {
+    path: 'docs/src/content/docs/operations/security/cluster-security.mdx',
+    anchor: 'A version cannot claim an address in advance',
+    versionOne: /\bversion 1\b/i,
+    roles: /\broles?\b/i,
+    exclusion: /\bis exclusion\b/i,
+  },
+  {
+    path: 'docs/src/content/docs/de/operations/security/cluster-security.mdx',
+    anchor: 'Eine Version kann keine Adresse im Voraus beanspruchen',
+    versionOne: /\bVersion 1\b/,
+    roles: /Rolle/,
+    exclusion: /\bist Ausschluss\b/,
+  },
+];
+
+describe('#939 — the version-skew section says a refusal keeps the node out', () => {
+  for (const text of SKEW_TEXTS) {
+    test(`${text.path}: no sentence files a refused node at version 1 without roles`, () => {
+      const sentences = sentencesOf(sectionAround(text.path, text.anchor));
+      const stale = sentences.filter((sentence) => text.versionOne.test(sentence) && text.roles.test(sentence));
       expect(
-        citing.length,
-        `${text.path}: the sender door is no longer cited with #939 — the member it files without any `
-        + 'authority check is still that issue.',
-      ).toBeGreaterThan(0);
+        stale,
+        `${text.path}: the version-skew section still says a refused node is filed at version 1 without roles. `
+        + 'That was the gossip sender door, which #939 removed: a node is introduced only by its own record, '
+        + 'so a refusal keeps it out of the member list until its clock is back inside maxVersionSkewMs.',
+      ).toEqual([]);
+    });
+
+    test(`${text.path}: the refusal is called exclusion`, () => {
+      const sentences = sentencesOf(sectionAround(text.path, text.anchor));
+      expect(
+        sentences.some((sentence) => text.exclusion.test(sentence)),
+        `${text.path}: no sentence in the version-skew section says a refusal is exclusion. Since #939 a node `
+        + 'whose own record is refused for version skew is not filed at all.',
+      ).toBe(true);
     });
   }
 });

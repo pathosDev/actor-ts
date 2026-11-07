@@ -632,21 +632,18 @@ Tombstone, und ein Knoten, der das Phantom noch nicht gelöscht hat,
 gossipt es zurück. Mit konfigurierter Strategie oder unter
 `auto-down = off` wird das Phantom wie jeder stille Peer auf
 `unreachable` geparkt und hält seinen lebenden Platz, bis eine
-Strategie oder ein Operator es entfernt. Ein Phantom, das stattdessen
-über das *Absender*-Feld eines Frames ankommt — ein `from`, das eine
-Adresse nennt, zu der dieser Knoten keinen Eintrag hat —, wird ganz
-ohne Berechtigungsprüfung als `joining` abgelegt und wie jedes
-beitretende Mitglied befördert, hält seinen Platz also als
-`up`-Mitglied — als Leader dieses Knotens, wenn seine Adresse
-zuerst sortiert ([Issue #939](https://github.com/pathosDev/actor-ts/issues/939)).
-Die Absender-Tür meldet es bei der Aufnahme beim Detector an, wie
-der Merge einen Eintrag (#1103), also geht es von da an denselben
-Weg: unter dem Default bei `down-after` entfernt, mit Strategie
-oder unter `auto-down = off` auf `unreachable` geparkt. Vor #1103
-wurde es nie angemeldet, also erklärte es kein Detector je für
-`down`, und nur ein Operator entfernte es.
-`max-members` ist darum die eine Schranke für lebende Phantome, die
-auf jedem Weg gilt. Ein als **`removed`** gegossipter Eintrag wird
+Strategie oder ein Operator es entfernt. Das *Absender*-Feld eines
+Frames ist überhaupt kein Weg mehr. Ein `from`, das eine Adresse
+nannte, zu der dieser Knoten keinen Eintrag hatte, wurde früher ohne
+Berechtigungsprüfung als `joining` abgelegt und wie jedes beitretende
+Mitglied befördert — als Leader dieses Knotens, wenn seine Adresse
+zuerst sortierte, und als Adresse, die die Heartbeat- und
+Gossip-Ticks danach anwählten. Diese Tür ist zu
+([Issue #939](https://github.com/pathosDev/actor-ts/issues/939)): Ein
+Absender wird über seinen eigenen Eintrag eingeführt, der wie jeder
+andere gemergt wird, und jeder Gossip-Frame trägt einen.
+`max-members` ist darum die eine Schranke für lebende Phantome und der
+Merge der eine Weg hinein. Ein als **`removed`** gegossipter Eintrag wird
 von nichts beobachtet; nur das Aufräumen der Tombstones holt ihn
 zurück, sobald der größere Wert von
 `cluster.tombstone.time-to-live` und `tombstone.min-retention`
@@ -724,7 +721,8 @@ ist die implizite Schranke weg: Ein geparktes Phantom hat gar keine
 Lebensdauer und bleibt, bis eine Strategie oder ein Operator es
 entfernt. Selbst unter dem Default holt die Kaskade nur ein Phantom
 zurück, das der Detector beobachtet, und bis #1103 fehlte darunter
-jedes, das die Absender-Feld-Tür oben aufgenommen hatte. Diese Grenzen waren die Voraussetzung dafür, das
+jedes, das die Absender-Feld-Tür aufgenommen hatte — eine Tür, die
+#939 inzwischen geschlossen hat. Diese Grenzen waren die Voraussetzung dafür, das
 Löschen an eine Bedingung zu hängen, und keine unabhängige Härtung,
 und `max-members` ist seither das, was lebende Phantome begrenzt.
 :::
@@ -985,22 +983,25 @@ der eine Adresse einführt. Ursprünglich war es die engere Regel —
 enge Grenze bei der Erstsichtung, großzügige 24 h bei jedem
 Update —, und diese Aufteilung ließ sich umgehen, indem man die
 Adresse zuerst einführte: zwei Records für dieselbe Adresse in
-einem Frame, oder ein Frame ganz ohne Member-Records, der den
-Empfänger trotzdem die Absenderadresse eintragen lässt. Jede
+einem Frame, oder — bis #939 die Tür entfernt hat, die den
+selbsterklärten Absender eines Frames eintrug — ein Frame ganz ohne
+Member-Records. Jede
 Regel, die einen Record das weitere Budget *verdienen* lässt,
 scheitert einen Schritt später genauso — ohne Peer-Zertifikate
 kann der Angreifer jeden Schritt des Verdienens selbst erzeugen.
 
 Erhöhe den Wert für ein Deployment, dessen Uhren bekanntermaßen
 lose laufen; `24 * 60 * 60 * 1000` stellt das alte Verhalten mit
-einer einzigen Grenze wieder her. Eine Abweisung ist kein
-Ausschluss — ein Knoten, der sich selbst ankündigt, wird trotzdem
-erfasst, mit Version 1 und ohne Rollen —, aber sie ist *dauerhaft*:
-Ein Knoten, dessen Uhr weiter vorgeht als das Budget, bleibt ohne
-Rollen in der Member-Liste, bis seine Uhr zurückkommt. Das war
-immer schon das Urteil dieser Grenze über einen solchen Knoten;
-geändert hat sich, dass es jetzt bestehen bleibt, statt vom
-zweiten Gossip-Frame des Knotens aufgehoben zu werden.
+einer einzigen Grenze wieder her. Eine Abweisung ist Ausschluss,
+und zwar ein *dauerhafter*: Ein Knoten wird nur durch seinen eigenen
+Record eingeführt, also wird ein Knoten, dessen Uhr weiter vorgeht
+als das Budget, gar nicht erfasst. Er bleibt außerhalb der
+Member-Liste — mit der WARN-Zeile unten, die die Grenze nennt —,
+bis seine Uhr wieder innerhalb des Budgets liegt. Das war immer
+schon das Urteil dieser Grenze über einen solchen Knoten; geändert
+hat sich, dass es jetzt bestehen bleibt, statt von der Absender-Tür
+abgeschwächt oder vom zweiten Gossip-Frame des Knotens aufgehoben
+zu werden.
 
 Abgewiesene Records werden einmal pro Frame gemeldet, nicht
 einmal pro Record — eine WARN-Zeile mit Peer und Anzahl, dazu der
