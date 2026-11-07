@@ -2471,7 +2471,8 @@ export class Cluster {
     // Liveness, once per frame and before any handler can refuse it: bytes did
     // arrive on this connection, so its peer is demonstrably alive.  Never a
     // sample — the heartbeat handler adds that, and only for a heartbeat frame.
-    this.failureDetector.heardFrom(from);
+    // Only for a peer this node watches, though: see `watchesLivenessOf`.
+    if (this.watchesLivenessOf(from)) this.failureDetector.heardFrom(from);
 
     match(message)
       .with({ kind: 'heartbeat' }, (m) => this.onHeartbeat(from, m))
@@ -2483,6 +2484,45 @@ export class Cluster {
       .with({ kind: 'unwatch' }, (m) => this.onUnwatch(from, m))
       .with({ kind: 'watch-terminated' }, (m) => this.onWatchTerminated(from, m))
       .otherwise((m) => this.onUnhandledWire(m, from));
+  }
+
+  /**
+   * Whether a frame from `peer` may touch the failure detector at all (#1103).
+   *
+   * The detector creates an entry for every address it is told about, and only
+   * a member's removal ever forgets one.  The connection identity is chosen by
+   * the peer — without mTLS it is whatever its `hello` said — so crediting every
+   * frame let one connection per claimed address grow the detector without
+   * bound, past the `maxMembers` cap the member map holds: 500 frames under
+   * distinct names left 502 entries beside 3 members.  The φ-accrual detector
+   * also allocates a `maxSampleSize` interval window per entry.
+   *
+   * The detector is only ever asked about a member (`failureDetectionTick`
+   * walks the member map), so an entry for anyone else is state nothing reads.
+   * Two kinds of peer are watched:
+   *
+   * - **A member that is not a tombstone.**  Admission registers it, which
+   *   starts its silence clock, so a joiner's first frame is still enough: the
+   *   frame admits it and the registration takes the instant the `heardFrom`
+   *   used to.  Down and unreachable members stay in — their frames are how a
+   *   parked or unreachable peer is seen again.  A tombstone is not watched:
+   *   nothing decides about it, and its frames no longer refresh an entry for
+   *   it — the local tombstoning routes `forget` it outright.
+   * - **A configured seed.**  The seed loop registers each one before it has
+   *   answered, and that entry's silence clock runs from the first dial.  A
+   *   seed that answers late is admitted on that answer, and the registration
+   *   is a no-op by then — so without the seed's own frames counting first, it
+   *   would be judged on the silence since this node started and read
+   *   `unreachable` the moment it became a member.  The seed list is fixed at
+   *   start, so it bounds itself.
+   *
+   * Everything else is still dispatched; it only no longer creates detector
+   * state.  Membership is the cap: an entry needs a member slot or a seed.
+   */
+  private watchesLivenessOf(peer: NodeAddress): boolean {
+    const member = this.members.get(peer.toString());
+    if (member !== undefined) return member.status !== 'removed';
+    return this.seedAddrs.some((seed) => seed.equals(peer));
   }
 
   private onWatch(from: NodeAddress, message: WatchMessage): void {
@@ -2613,14 +2653,15 @@ export class Cluster {
    * failover; and the acknowledgment was *sent* to that address, so a frame
    * naming an attacker-chosen `host:port` made the receiver dial it.
    *
-   * `handleWire` has already credited the liveness; what this adds is the one
+   * `handleWire` has already credited the liveness of a watched peer, and
+   * this applies the same rule (`watchesLivenessOf`); what this adds is the one
    * thing only a heartbeat frame may: an inter-arrival sample for the φ-accrual
    * detector, whose model is the peer's heartbeat schedule (#1451).
    */
   private onHeartbeat(from: NodeAddress, message: HeartbeatMessage): void {
     if (!this.isPlausibleHeartbeat(from, message)) return;
     const peer = from;
-    this.failureDetector.heartbeat(peer);
+    if (this.watchesLivenessOf(peer)) this.failureDetector.heartbeat(peer);
     // The peer's detector does not need the reply — our own heartbeats feed
     // it, and an acknowledgment is liveness only there — but it keeps the
     // round trip observable from the side that started it.

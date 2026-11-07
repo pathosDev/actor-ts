@@ -230,8 +230,12 @@ describe('what one inbound frame credits', () => {
     const liveness: Credit = { method: 'heardFrom', peer: peer.toString() };
     const sample: Credit = { method: 'heartbeat', peer: peer.toString() };
 
+    // The frame that admits the peer credits nothing: until it was merged the
+    // peer was a stranger, and a stranger's frame touches no detector state
+    // (#1103).  The admission registers it, which starts the same silence
+    // clock the credit would have.
     expect(deliver({ kind: 'gossip', from: peer.toJSON(), sequence: 1, members: [selfRecord(peer)] }))
-      .toEqual([liveness]);
+      .toEqual([]);
     expect(deliver({ kind: 'heartbeat', from: peer.toJSON(), seq: 1, ts: Date.now() }))
       .toEqual([liveness, sample]);
     // The acknowledgment of *our* heartbeat arrives on our cadence, not the
