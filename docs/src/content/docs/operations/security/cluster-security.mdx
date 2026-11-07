@@ -593,12 +593,16 @@ configured, or under `auto-down = off`, the phantom is parked at
 `unreachable` like any silent peer and holds its live slot until a
 strategy or an operator removes it. A phantom that arrives through
 a frame's *sender* field instead — a `from` naming an address this
-node holds no record of — is filed as `joining` without being
-registered with the detector at all, so no detector ever declares
-it `down`: it is promoted like any joining member and holds its
+node holds no record of — is filed as `joining` with no authority
+check at all and promoted like any joining member, so it holds its
 slot as an `up` member — this node's leader, if its address sorts
-first — until an operator removes it
-([issue #939](https://github.com/pathosDev/actor-ts/issues/939)).
+first ([issue #939](https://github.com/pathosDev/actor-ts/issues/939)).
+The sender door registers it with the detector on admission, as
+the merge does a record (#1103), so from there it goes the same
+way: removed at `down-after` under the default, parked at
+`unreachable` under a strategy or `auto-down = off`. Before #1103 it
+was never registered, so no detector ever declared it `down` and
+only an operator removed it.
 `max-members` is therefore the one bound on live phantoms that holds
 on every route. A record gossiped as **`removed`** is watched by
 nothing: only the tombstone prune reclaims it, once the larger of
@@ -659,8 +663,9 @@ with none `failure-detector.auto-down` decides, which ships on — so
 wherever a strategy is configured or `auto-down` is off the implicit
 bound is gone: a parked phantom has no lifetime at all, and stays
 until a strategy or an operator removes it. Even under the default
-the cascade reclaims only a phantom the detector watches, which the
-sender-field door above never registers. These caps were the
+the cascade reclaims only a phantom the detector watches, which
+until #1103 left out every one the sender-field door above admitted.
+These caps were the
 precondition for gating it rather than an independent hardening
 step, and `max-members` is what bounds live phantoms since.
 :::

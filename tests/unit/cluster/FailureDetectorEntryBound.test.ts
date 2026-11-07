@@ -43,14 +43,23 @@ type NodeSettings = {
   readonly seeds?: ReadonlyArray<NodeAddress>;
   /** Timings for the join tests; the flood tests push every timer far out. */
   readonly live?: boolean;
-  /** Every timer far out, but a 400 ms `unreachableAfterMs` for a tick driven by hand. */
+  /**
+   * Every timer far out, but a 400 ms `unreachableAfterMs` for a tick driven by
+   * hand — and, for the φ detector, a 50 ms first-contact estimate with no
+   * pause allowance, so that 400 ms of silence is a verdict there too.
+   */
   readonly shortSilence?: boolean;
+  readonly maxMembers?: number;
+  /** A tombstone TTL (and retention floor) short enough to prune within a test. */
+  readonly tombstoneTtlMs?: number;
 };
 
 /** The private surface these tests reach through — detector and wire entry, by design. */
 interface ClusterInternals {
   handleWire(from: NodeAddress, message: WireMessage): void;
   failureDetectionTick(): void;
+  tombstonePruneTick(): void;
+  contactSeeds(): void;
   readonly failureDetector: FailureDetectorLike;
   readonly members: Map<string, Member>;
 }
@@ -64,14 +73,37 @@ function internals(cluster: Cluster): ClusterInternals {
  * it under different private names; reading it is the point of the test, and
  * the contract has no count to offer.
  */
-function detectorEntries(cluster: Cluster): number {
+function detectorKeys(cluster: Cluster): Set<string> {
   const detector = internals(cluster).failureDetector as unknown as {
     readonly samples?: Map<string, unknown>;
     readonly peers?: Map<string, unknown>;
   };
   const entries = detector.samples ?? detector.peers;
   if (entries === undefined) throw new Error('detector keeps its entries under an unexpected name');
-  return entries.size;
+  return new Set(entries.keys());
+}
+
+function detectorEntries(cluster: Cluster): number {
+  return detectorKeys(cluster).size;
+}
+
+/**
+ * The detector holds an entry for every live member but this node, and beyond
+ * them at most for a seed that is not a tombstone.  A live member missing from
+ * it reads `healthy` for good; anything else in it is state nothing reads.
+ */
+function expectEntriesForWatchedPeersOnly(node: NodeHandle, seeds: ReadonlyArray<NodeAddress> = []): void {
+  const members = internals(node.cluster).members;
+  const liveMembers = [...members.values()]
+    .filter((m) => m.status !== 'removed' && !m.address.equals(node.address))
+    .map((m) => m.address.toString());
+  const keys = detectorKeys(node.cluster);
+  for (const member of liveMembers) expect(keys.has(member)).toBe(true);
+  const watchedSeeds = seeds
+    .filter((seed) => members.get(seed.toString())?.status !== 'removed')
+    .map((seed) => seed.toString());
+  const allowed = new Set([...liveMembers, ...watchedSeeds]);
+  expect([...keys].filter((key) => !allowed.has(key))).toEqual([]);
 }
 
 let nodes: NodeHandle[] = [];
@@ -98,6 +130,15 @@ async function startNode(systemName: string, port: number, settings: NodeSetting
       .withFailureDetector({ heartbeatIntervalMs: 60_000, unreachableAfterMs, downAfterMs: 240_000 })
       .withGossipIntervalMs(60_000)
       .withTombstonePruneIntervalMs(60_000);
+    if (settings.shortSilence === true) {
+      clusterOptions.withPhiAccrual({ expectedResponseAfterMs: 50, acceptableHeartbeatPauseMs: 0, minStdDeviationMs: 10 });
+    }
+  }
+  if (settings.maxMembers !== undefined) clusterOptions.withMaxMembers(settings.maxMembers);
+  if (settings.tombstoneTtlMs !== undefined) {
+    clusterOptions
+      .withTombstoneTtlMs(settings.tombstoneTtlMs)
+      .withTombstoneMinRetentionMs(settings.tombstoneTtlMs);
   }
   const cluster = await Cluster.join(system, clusterOptions);
   const node = { system, cluster, address };
@@ -118,27 +159,59 @@ function stranger(systemName: string, index: number): NodeAddress {
   return new NodeAddress(systemName, '10.0.110.99', 30_000 + index);
 }
 
+/**
+ * Strictly increasing, unlike `Date.now()`: a second frame from the same peer
+ * within one millisecond would otherwise be refused as a replay (#112).
+ */
+let gossipSequence = Date.now();
+
 function gossipFrame(from: NodeAddress, members: ReadonlyArray<MemberData> = []): WireMessage {
-  return { kind: 'gossip', from: from.toJSON(), sequence: Date.now(), members: [...members] };
+  gossipSequence += 1;
+  return { kind: 'gossip', from: from.toJSON(), sequence: gossipSequence, members: [...members] };
 }
 
 function heartbeatFrame(from: NodeAddress, seq: number): WireMessage {
   return { kind: 'heartbeat', from: from.toJSON(), seq, ts: Date.now() };
 }
 
+/** A record `peer` states about itself — the only claim a non-member may make. */
+function selfRecord(peer: NodeAddress, status: MemberData['status'], version: number): MemberData {
+  const record: MemberData = { address: peer.toJSON(), status, version, roles: [] };
+  return status === 'removed' ? { ...record, removedAt: Date.now() } : record;
+}
+
+/** Every `MemberUnreachable` `observer` announces about `about`. */
+function unreachableAnnouncements(observer: Cluster, about: NodeAddress): ClusterEvent[] {
+  const seen: ClusterEvent[] = [];
+  observer.subscribe((event) => {
+    if (event instanceof MemberUnreachable && event.member.address.equals(about)) seen.push(event);
+  });
+  return seen;
+}
+
+function isUpAt(observer: Cluster, peer: NodeAddress): boolean {
+  return observer.getMembers().some((m) => m.address.equals(peer) && m.status === 'up');
+}
+
 for (const implementation of ['simple', 'phi'] as const) {
   describe(`the detector holds entries only for watched peers — ${implementation} (#1103)`, () => {
-    test('a gossip frame under each of 500 claimed names adds no entry', async () => {
+    test('a gossip frame under each of 500 claimed names adds entries only for the members it admits', async () => {
+      // A gossip frame admits its sender — capped by `maxMembers`, which is
+      // #138's bound, not this one's.  What this file holds is that the
+      // detector follows that map: an entry for each member admitted, none for
+      // the 490 names the cap turned away.  Before the fix every name got one;
+      // with only the crediting gated, the admitted members got none and read
+      // `healthy` for good.
       const name = `fd-bound-gossip-${implementation}`;
-      const node = await startNode(name, 9_831, { implementation });
-      const before = detectorEntries(node.cluster);
+      const node = await startNode(name, 9_831, { implementation, maxMembers: 10 });
 
       for (let i = 0; i < FLOOD; i++) {
         internals(node.cluster).handleWire(stranger(name, i), gossipFrame(stranger(name, i)));
       }
 
-      expect(detectorEntries(node.cluster)).toBe(before);
-      expect(internals(node.cluster).failureDetector.lastSeen(stranger(name, 0)).isNone()).toBe(true);
+      expect(detectorEntries(node.cluster)).toBe(9);
+      expectEntriesForWatchedPeersOnly(node);
+      expect(internals(node.cluster).failureDetector.lastSeen(stranger(name, FLOOD - 1)).isNone()).toBe(true);
     });
 
     test('a heartbeat frame under each of 500 claimed names adds no entry and no sample', async () => {
@@ -178,24 +251,12 @@ for (const implementation of ['simple', 'phi'] as const) {
       internals(node.cluster).handleWire(peer, heartbeatFrame(peer, 2));
       internals(node.cluster).handleWire(peer, gossipFrame(peer));
       expect(detector.lastSeen(peer).isNone()).toBe(true);
+      expectEntriesForWatchedPeersOnly(node);
     });
   });
 }
 
 describe('a legitimate join is not judged on frames it sent before it was a member (#1103)', () => {
-  /** Every `MemberUnreachable` `observer` announces about `about`. */
-  function unreachableAnnouncements(observer: Cluster, about: NodeAddress): ClusterEvent[] {
-    const seen: ClusterEvent[] = [];
-    observer.subscribe((event) => {
-      if (event instanceof MemberUnreachable && event.member.address.equals(about)) seen.push(event);
-    });
-    return seen;
-  }
-
-  function isUpAt(observer: Cluster, peer: NodeAddress): boolean {
-    return observer.getMembers().some((m) => m.address.equals(peer) && m.status === 'up');
-  }
-
   test('a joining node and its seed watch each other without a false unreachable', async () => {
     const seed = await startNode('fd-bound-join', 9_841, { live: true });
     const joiner = await startNode('fd-bound-join', 9_842, { live: true, seeds: [seed.address] });
@@ -207,8 +268,12 @@ describe('a legitimate join is not judged on frames it sent before it was a memb
       { label: 'both nodes up at both nodes', timeoutMs: 5_000 },
     );
     // The elapsed time IS the assertion: a full `unreachableAfterMs` (400 ms)
-    // and then some, at a 50 ms heartbeat, is where a member judged on a stale
-    // silence clock would have been announced unreachable.
+    // and then some, at a 50 ms heartbeat.  This guards the steady-state pair —
+    // two members heartbeating each other stay reachable under the gated
+    // crediting.  It does not tell the fix from a rule that credits members
+    // only: a live seed's next frame arrives within microseconds of the one
+    // that admits it and refreshes the entry either way.  The first tick after
+    // a late admission is the hand-driven test below.
     await sleep(600);
 
     expect(atSeed).toEqual([]);

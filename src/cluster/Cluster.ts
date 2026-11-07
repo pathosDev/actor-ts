@@ -2723,12 +2723,16 @@ export class Cluster {
     // capped here explicitly rather than left as the one door #138 forgot to
     // close.  `sender` is the payload's self-declaration, not the connection's
     // peer, which makes it the cheaper of the two addresses to fabricate.
+    //
+    // Admitted through the same door as a merged first sighting, so it is
+    // registered with the failure detector too (#1103).  A live member without
+    // an entry reads `healthy` for good, and nothing else would create one: the
+    // frame credited no one it named, and a sender that was only ever a claim
+    // sends no frame of its own — registered, it goes the way of any silent
+    // member instead of staying `up` forever.
     if (!this.members.has(sender.toString())) {
       const member = new Member(sender, 'joining', 1);
-      if (this.admitsMember(member, undefined)) {
-        this.setMember(member);
-        this.emit(new MemberJoined(member));
-      }
+      if (this.admitsMember(member, undefined)) this.admitFirstSighting(member);
     }
 
     this.rememberGossipSequence(from, message.sequence);
