@@ -138,13 +138,10 @@ describe('the gossip version-skew cap (#114)', () => {
       roles: ['shard-host', 'singleton-host'],
     }]);
 
-    // The address does turn up: `onGossip` records any sender it does not
-    // already know.  What it does not get is anything the frame asked for —
-    // no roles, and a version the real owner can beat with its own clock.
-    const stored = memberIn(node.cluster, claimed);
-    expect(stored).toBeDefined();
-    expect(Array.from(stored!.roles)).toEqual([]);
-    expect(stored!.version).toBeLessThan(Date.now());
+    // The address does not turn up at all.  The record is over the cap, and
+    // since #939 there is no second door that files a frame's sender anyway —
+    // it used to add the address as `joining` at version 1, without the roles.
+    expect(memberIn(node.cluster, claimed)).toBeUndefined();
   });
 
   test('the real owner of the address still wins it, roles and all', async () => {

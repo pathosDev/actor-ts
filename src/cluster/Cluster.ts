@@ -2712,8 +2712,7 @@ export class Cluster {
       this.reportRefusals(from, 'replayed-frame', message.members.length);
       return;
     }
-    const sender = NodeAddress.fromJSON(message.from);
-    this.log.debug(`gossip from ${sender}: ${message.members.length} member(s)`);
+    this.log.debug(`gossip from ${from}: ${message.members.length} member(s)`);
 
     // Snapshot the sender's standing *before* merging: this frame may be the
     // one that introduces the sender, and a claim must not be authorised by a
@@ -2725,23 +2724,18 @@ export class Cluster {
       this.mergeMember(from, senderStatus, data);
     }
 
-    // Ensure we know about the sender itself.  This insert sits *outside*
-    // `mergeMember`, so it bypassed every guard the merge path grew — it is
-    // capped here explicitly rather than left as the one door #138 forgot to
-    // close.  `sender` is the payload's self-declaration, not the connection's
-    // peer, which makes it the cheaper of the two addresses to fabricate.
-    //
-    // Admitted through the same door as a merged first sighting, so it is
-    // registered with the failure detector too (#1103).  A live member without
-    // an entry reads `healthy` for good, and nothing else would create one: the
-    // frame credited no one it named, and a sender that was only ever a claim
-    // sends no frame of its own — registered, it goes the way of any silent
-    // member instead of staying `up` forever.
-    if (!this.members.has(sender.toString())) {
-      const member = new Member(sender, 'joining', 1);
-      if (this.admitsMember(member, undefined)) this.admitFirstSighting(member);
-    }
-
+    // No member is filed from the payload's `from` (#939).  A door here used
+    // to add it as `joining` when this node held no record of it — outside
+    // `mergeMember`, so with no `maySpeakFor` at all, and keyed on a field the
+    // sender writes rather than on the connection it came in on.  One frame
+    // naming a low-sorting address made that address a member, the leader
+    // promoted it, and `leader()` moved to a node that does not exist; and a
+    // member is an address the heartbeat and gossip ticks dial, so it was also
+    // a way to make this node connect wherever the frame said (#936).  The
+    // door had no legitimate use: every gossip frame carries the sender's own
+    // record — `gossipTick` sends the whole map, self included, and a join's
+    // first frame is `[me]` — so a sender is introduced by the loop above, as
+    // a self-announcement held to the connection's identity.
     this.rememberGossipSequence(from, message.sequence);
 
     // One line and one counter increment per frame and reason, not per refused
