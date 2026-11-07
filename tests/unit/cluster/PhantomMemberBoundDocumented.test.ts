@@ -24,6 +24,13 @@
  * longer a way in, with #939 in the same sentence.  Keyed on markers rather
  * than on a sentence, like `GossipReplayBoundDocumented`, so a rewrite that
  * keeps the meaning keeps passing.
+ *
+ * The version-skew section on the same page leaned on the door too: it said a
+ * refused self-announcement was not exclusion, because the sender was still
+ * filed at version 1 without roles.  With the door gone a refusal *is*
+ * exclusion — the node's own record is the only thing that introduces it — so
+ * the second block pins that: no sentence there may put "version 1" next to
+ * roles, and one has to call the refusal exclusion.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -86,6 +93,55 @@ describe('#1477 — the phantom passage says the sender door is closed', () => {
         `${text.path}: no sentence in the two-caps section says, with #939, that a frame's sender field `
         + 'no longer files a member. Since #939 a sender is introduced only by its own record, through the merge.',
       ).toBeGreaterThan(0);
+    });
+  }
+});
+
+type SkewText = {
+  readonly path: string;
+  readonly anchor: string;
+  readonly versionOne: RegExp;
+  readonly roles: RegExp;
+  readonly exclusion: RegExp;
+};
+
+const SKEW_TEXTS: readonly SkewText[] = [
+  {
+    path: 'docs/src/content/docs/operations/security/cluster-security.mdx',
+    anchor: 'A version cannot claim an address in advance',
+    versionOne: /\bversion 1\b/i,
+    roles: /\broles?\b/i,
+    exclusion: /\bis exclusion\b/i,
+  },
+  {
+    path: 'docs/src/content/docs/de/operations/security/cluster-security.mdx',
+    anchor: 'Eine Version kann keine Adresse im Voraus beanspruchen',
+    versionOne: /\bVersion 1\b/,
+    roles: /Rolle/,
+    exclusion: /\bist Ausschluss\b/,
+  },
+];
+
+describe('#939 — the version-skew section says a refusal keeps the node out', () => {
+  for (const text of SKEW_TEXTS) {
+    test(`${text.path}: no sentence files a refused node at version 1 without roles`, () => {
+      const sentences = sentencesOf(sectionAround(text.path, text.anchor));
+      const stale = sentences.filter((sentence) => text.versionOne.test(sentence) && text.roles.test(sentence));
+      expect(
+        stale,
+        `${text.path}: the version-skew section still says a refused node is filed at version 1 without roles. `
+        + 'That was the gossip sender door, which #939 removed: a node is introduced only by its own record, '
+        + 'so a refusal keeps it out of the member list until its clock is back inside maxVersionSkewMs.',
+      ).toEqual([]);
+    });
+
+    test(`${text.path}: the refusal is called exclusion`, () => {
+      const sentences = sentencesOf(sectionAround(text.path, text.anchor));
+      expect(
+        sentences.some((sentence) => text.exclusion.test(sentence)),
+        `${text.path}: no sentence in the version-skew section says a refusal is exclusion. Since #939 a node `
+        + 'whose own record is refused for version skew is not filed at all.',
+      ).toBe(true);
     });
   }
 });

@@ -721,8 +721,8 @@ ist die implizite Schranke weg: Ein geparktes Phantom hat gar keine
 Lebensdauer und bleibt, bis eine Strategie oder ein Operator es
 entfernt. Selbst unter dem Default holt die Kaskade nur ein Phantom
 zurück, das der Detector beobachtet, und bis #1103 fehlte darunter
-jedes, das die Absender-Feld-Tür aufgenommen hatte, bis #939 diese
-Tür geschlossen hat. Diese Grenzen waren die Voraussetzung dafür, das
+jedes, das die Absender-Feld-Tür aufgenommen hatte — eine Tür, die
+#939 inzwischen geschlossen hat. Diese Grenzen waren die Voraussetzung dafür, das
 Löschen an eine Bedingung zu hängen, und keine unabhängige Härtung,
 und `max-members` ist seither das, was lebende Phantome begrenzt.
 :::
@@ -983,22 +983,25 @@ der eine Adresse einführt. Ursprünglich war es die engere Regel —
 enge Grenze bei der Erstsichtung, großzügige 24 h bei jedem
 Update —, und diese Aufteilung ließ sich umgehen, indem man die
 Adresse zuerst einführte: zwei Records für dieselbe Adresse in
-einem Frame, oder ein Frame ganz ohne Member-Records, der den
-Empfänger trotzdem die Absenderadresse eintragen lässt. Jede
+einem Frame, oder — bis #939 die Tür entfernt hat, die den
+selbsterklärten Absender eines Frames eintrug — ein Frame ganz ohne
+Member-Records. Jede
 Regel, die einen Record das weitere Budget *verdienen* lässt,
 scheitert einen Schritt später genauso — ohne Peer-Zertifikate
 kann der Angreifer jeden Schritt des Verdienens selbst erzeugen.
 
 Erhöhe den Wert für ein Deployment, dessen Uhren bekanntermaßen
 lose laufen; `24 * 60 * 60 * 1000` stellt das alte Verhalten mit
-einer einzigen Grenze wieder her. Eine Abweisung ist kein
-Ausschluss — ein Knoten, der sich selbst ankündigt, wird trotzdem
-erfasst, mit Version 1 und ohne Rollen —, aber sie ist *dauerhaft*:
-Ein Knoten, dessen Uhr weiter vorgeht als das Budget, bleibt ohne
-Rollen in der Member-Liste, bis seine Uhr zurückkommt. Das war
-immer schon das Urteil dieser Grenze über einen solchen Knoten;
-geändert hat sich, dass es jetzt bestehen bleibt, statt vom
-zweiten Gossip-Frame des Knotens aufgehoben zu werden.
+einer einzigen Grenze wieder her. Eine Abweisung ist Ausschluss,
+und zwar ein *dauerhafter*: Ein Knoten wird nur durch seinen eigenen
+Record eingeführt, also wird ein Knoten, dessen Uhr weiter vorgeht
+als das Budget, gar nicht erfasst. Er bleibt außerhalb der
+Member-Liste — mit der WARN-Zeile unten, die die Grenze nennt —,
+bis seine Uhr wieder innerhalb des Budgets liegt. Das war immer
+schon das Urteil dieser Grenze über einen solchen Knoten; geändert
+hat sich, dass es jetzt bestehen bleibt, statt von der Absender-Tür
+abgeschwächt oder vom zweiten Gossip-Frame des Knotens aufgehoben
+zu werden.
 
 Abgewiesene Records werden einmal pro Frame gemeldet, nicht
 einmal pro Record — eine WARN-Zeile mit Peer und Anzahl, dazu der

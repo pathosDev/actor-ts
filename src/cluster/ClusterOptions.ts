@@ -486,14 +486,15 @@ export type ClusterOptionsType = {
    *
    * It applies to *every* merge because the narrower reading — "only where an
    * address is introduced" — could be stepped around by introducing the
-   * address first: two records for it in one frame, or an empty frame that
-   * makes the sender fallback file it.  See `Cluster.admitsVersion`.
+   * address first: two records for it in one frame, for instance.  See
+   * `Cluster.admitsVersion`.
    *
    * Default: 5 min — comfortably above any NTP-disciplined clock.  A refusal
-   * is not exclusion (the sender fallback still records the address, at
-   * version 1 without roles), but it is durable: a node whose clock runs
-   * further ahead than this stays role-less until its clock comes back.  Raise
-   * it for a deployment whose clocks are known to run loose.
+   * is exclusion, and durable: a node's own record is the only thing that
+   * introduces it (#939), so a node whose clock runs further ahead than this
+   * is not filed at all — it stays out, with a WARN naming this cap, until its
+   * clock comes back inside the budget.  Raise it for a deployment whose
+   * clocks are known to run loose.
    */
   readonly maxVersionSkewMs?: number;
   /**

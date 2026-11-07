@@ -9091,11 +9091,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   singleton. The heartbeat and gossip ticks then dialled the address, so the
   same frame also chose where this node connected (#936). The door is removed:
   every gossip frame carries the sender's own record, which merges as a
-  self-announcement held to the connection's identity. **Behaviour change:** a
-  joining node whose own record the merge refuses — a wall clock more than
-  `maxVersionSkewMs` ahead, or a full member map — is no longer filed anyway
-  as a role-less `joining` member at version 1; it stays out, with the
-  existing `WARN` naming the cap, until the cause is fixed.
+  self-announcement held to the connection's identity. What still mints a
+  member is that self-announcement, under the identity a peer presents in its
+  `hello` — which carries no credential, so without mTLS binding it to the
+  peer certificate (#912) anyone who can connect still chooses it.
+  **Behaviour change:** a joining node whose own record the merge refuses for
+  a wall clock more than `maxVersionSkewMs` ahead is no longer filed anyway as
+  a role-less `joining` member at version 1; it stays out, with the existing
+  `WARN` naming the cap, until its clock is back inside the budget.
 
 - **The cluster's failure detector no longer creates an entry for every
   connection identity a frame arrives under** (#1103). `handleWire` credited

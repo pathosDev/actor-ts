@@ -2863,8 +2863,12 @@ export class Cluster {
    * where C's own counter has reached.
    *
    * **Only for an address the member map holds**, which is what bounds this map
-   * by the same caps as that one — the sender fallback above has already run, so
-   * an honest peer is on file by the time this is asked.
+   * by the same caps as that one.  Every frame carries the sender's own record
+   * and the merge loop has just run over it, so an honest peer whose record was
+   * admitted is on file by the time this is asked.  One whose record was refused
+   * — a clock past `maxVersionSkewMs`, a full member map — gets no mark, which
+   * costs nothing: its next frame is judged against no mark, as a first frame
+   * is, and it is not a member to be replayed into anyway.
    *
    * Plausibility is not re-checked here: {@link admitsGossipSequence} refuses an
    * implausible frame outright, so nothing that reaches this point carries a
@@ -3601,11 +3605,12 @@ export class Cluster {
    *   `members.get(…)` per record, so the first creates the entry under the
    *   tight cap and the second — same frame, same peer — is an update and got
    *   the wide one.
-   * - A frame with **no member records at all**.  `onGossip`'s sender fallback
-   *   files the connection's self-declared address by itself, so the next
-   *   frame is an update too.  That fallback is what makes a refusal cost one
-   *   gossip round rather than being permanent; the same property was the way
-   *   around the cap.
+   * - A frame with **no member records at all**.  `onGossip` used to end with
+   *   a door that filed the frame's self-declared `from` by itself, so the
+   *   next frame was an update too.  That door made a refusal cost one gossip
+   *   round rather than being permanent, and the same property was the way
+   *   around the cap.  It is gone (#939): a sender is introduced only by its
+   *   own record, under this same cap.
    *
    * Any rule that lets a record *earn* the wide cap fails the same way, one
    * step later: without per-node credentials every step of the earning is
@@ -3622,13 +3627,14 @@ export class Cluster {
    * either side of it are far apart: an NTP-disciplined host sits milliseconds
    * from true, a host that never synced at all is hours out.
    *
-   * **What a refusal costs.**  It is not exclusion: a node announcing itself
-   * is still recorded by the sender fallback, at version 1 with no roles.  It
-   * *is* durable, which the two-cap version was not — a node whose clock runs
-   * more than `maxVersionSkewMs` ahead of this one stays in the member list
-   * without roles until its clock comes back inside the budget.  That was
-   * always this cap's verdict on such a node; what changed is that the verdict
-   * now sticks instead of being reversed by the node's second frame.
+   * **What a refusal costs.**  It is exclusion, and it is durable: a node
+   * whose clock runs more than `maxVersionSkewMs` ahead of this one is not
+   * filed at all — its own record is the only thing that could introduce it,
+   * and that is the record refused — so it stays out, with the per-frame
+   * `version-skew` WARN naming the cap on the receiving side, until its clock
+   * comes back inside the budget.  Before #939 the sender door still filed it,
+   * role-less, and before the single cap its second frame reversed the
+   * verdict; neither softening is left.
    * Deployments whose clocks are known to run loose raise the knob.
    */
   private admitsVersion(incoming: Member): boolean {
