@@ -24,8 +24,34 @@ import type { HttpRequest, HttpResponse } from '../Types.js';
  *     cache: ext.cache('response-cache'),
  *     ttlMs: 30_000,
  *     key: (request) => `users:${request.params.id}`,
+ *     identity: (request) => jwtClaimsOf(request)?.sub ?? 'anonymous',
  *   });
- *   route(get('/users/:id', userCache(request => askUserActor(request.params.id))));
+ *   withMiddleware(JwtAuth(jwtOptions),
+ *     path('users', path(':id', get(userCache(request => askUserActor(request.params.id))))));
+ *
+ * **Security — what may be shared (#980).**  A hit returns before the
+ * wrapped handler runs, so any check *inside* the handler — authentication,
+ * authorization, a per-caller lookup — runs for the first caller only.
+ * Authorization therefore has to wrap `cached(...)`, never sit inside it.
+ * Beyond that the wrapper refuses, on its own, every case in which one
+ * caller's response can reach another:
+ *
+ *   - only `GET` is stored, and only `GET`/`HEAD` are answered from the
+ *     cache — any other method goes straight to the handler;
+ *   - a request carrying credentials (`Authorization`, `Proxy-Authorization`,
+ *     `Cookie`) bypasses the cache entirely unless {@link
+ *     ResponseCacheOptions.identity} is configured, which folds a per-caller
+ *     scope into the key and is the explicit opt-in;
+ *   - a response is not stored when it carries `Set-Cookie`, a
+ *     `Cache-Control` of `no-store`, `no-cache` or `private`, `Vary: *`, or
+ *     a streaming body;
+ *   - a response carrying `Vary` is stored together with the request's
+ *     values of the named headers, and served only to a request whose values
+ *     match — any other request is a miss.
+ *
+ * The same rules govern stampede protection: a request waiting on another
+ * request's in-flight handler takes that response only when it could have
+ * taken it from the cache, and otherwise runs the handler itself.
  *
  * **Security — give this middleware its own cache (security audit
  * HTTP-8):** `key(request)` almost always derives from something the
@@ -66,6 +92,23 @@ export type ResponseCacheOptions = {
    * responses (saves repeat lookups when callers query unknown ids).
    */
   readonly cacheStatuses?: ReadonlyArray<number>;
+  /**
+   * Per-caller scope folded into the cache key, so a cached response is
+   * only ever replayed to the caller it was produced for — the counterpart
+   * of `idempotent()`'s option of the same name.
+   *
+   * Configuring it is also the opt-in for caching requests that carry
+   * credentials (`Authorization`, `Proxy-Authorization`, `Cookie`): without
+   * it they bypass the cache, because nothing else in the key says whose
+   * response it is.  Derive the scope from what a middleware **verified**
+   * (`jwtClaimsOf(request)?.sub`), never from a raw header the client could
+   * set to someone else's id.  For an endpoint whose response genuinely does
+   * not depend on the caller, `() => 'public'` says exactly that.
+   *
+   * The scope is URI-encoded into the key (`<keyPrefix><scope>:<key>`), so a
+   * scope containing `:` cannot collide with a differently split one.
+   */
+  readonly identity?: (request: HttpRequest) => string | Promise<string>;
 };
 
 type CachedResponse = {
@@ -74,7 +117,34 @@ type CachedResponse = {
   /** JSON-serialisable body.  Uint8Array is base64-tagged. */
   readonly body: unknown;
   readonly contentType?: string;
+  /**
+   * The request headers the response's `Vary` named, with the values the
+   * storing request carried (`null` for an absent header).  A hit is served
+   * only when the new request carries the same values.
+   */
+  readonly vary?: ReadonlyArray<VariedHeader>;
 };
+
+type VariedHeader = {
+  readonly name: string;
+  readonly value: string | null;
+};
+
+/** The outcome of one handler run, as the requests waiting on it see it. */
+type FlightResult = {
+  readonly response: HttpResponse;
+  /** The shareable form of `response`, or `null` when it may not be shared. */
+  readonly entry: CachedResponse | null;
+};
+
+/** Methods whose response is safe to replay.  `HEAD` reads but never stores — see `cachedHandler`. */
+const CACHEABLE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD']);
+
+/** Request headers that say who is asking. */
+const CREDENTIAL_HEADERS: ReadonlyArray<string> = ['authorization', 'proxy-authorization', 'cookie'];
+
+/** `Cache-Control` response directives that forbid a shared cache from storing it. */
+const UNSHAREABLE_DIRECTIVES: ReadonlySet<string> = new Set(['no-store', 'no-cache', 'private']);
 
 export function cached(options: ResponseCacheOptions) {
   if (!Number.isFinite(options.ttlMs) || options.ttlMs <= 0) {
@@ -82,36 +152,57 @@ export function cached(options: ResponseCacheOptions) {
   }
   const prefix = options.keyPrefix ?? 'rsp:';
   const cacheStatuses = new Set(options.cacheStatuses ?? [200]);
+  const identity = options.identity;
   // Per-process single-flight map.  Lifetime: the time it takes the
   // wrapped handler to run for one key.  Cleaned up in finally.
-  const inflight = new Map<string, Promise<HttpResponse>>();
+  const inflight = new Map<string, Promise<FlightResult>>();
 
   return function wrap(handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse) {
     return async function cachedHandler(request: HttpRequest): Promise<HttpResponse> {
-      const userKey = await options.key(request);
-      const cacheKey = `${prefix}${userKey}`;
+      if (!CACHEABLE_METHODS.has(request.method)) return handler(request);
+      // Without an identity nothing in the key says whose response it is,
+      // so a credentialed request must neither read nor feed the cache.
+      if (identity === undefined && carriesCredentials(request)) return handler(request);
 
-      // 1. Cache hit?
+      const userKey = await options.key(request);
+      const cacheKey = identity === undefined
+        ? `${prefix}${userKey}`
+        : `${prefix}${encodeURIComponent(await identity(request))}:${userKey}`;
+
+      // 1. Cache hit?  The entry is re-checked against today's rules, so an
+      // entry stored before them (a shared Redis outlives a deploy) is
+      // never served either.
       const hit = await options.cache.get<CachedResponse>(cacheKey);
-      if (hit.isSome()) {
+      if (hit.isSome() && servable(hit.value, request)) {
         return decodeResponse(hit.value);
       }
 
-      // 2. Miss — but is another request already running this key?
+      // `HEAD` is answered from a `GET` entry but never stores one: a
+      // handler may well answer it without a body (static files do), and
+      // that entry would then be served to the next `GET`.
+      if (request.method === 'HEAD') return handler(request);
+
+      // 2. Miss — but is another request already running this key?  Its
+      // response is ours only if the cache could have handed it to us.
       const existingFlight = inflight.get(cacheKey);
-      if (existingFlight) return existingFlight;
+      if (existingFlight) {
+        const flight = await existingFlight;
+        if (flight.entry !== null && varyMatches(flight.entry, request)) return flight.response;
+        return handler(request);
+      }
 
       // 3. We're the leader for this key.  Run the handler, then cache
-      // the result if its status is cacheable.
-      const work = (async (): Promise<HttpResponse> => {
+      // the result if it may be shared.
+      const work = (async (): Promise<FlightResult> => {
         const response = await handler(request);
-        if (cacheStatuses.has(response.status)) {
-          await options.cache.set<CachedResponse>(cacheKey, encodeResponse(response), options.ttlMs);
+        const entry = cacheStatuses.has(response.status) ? shareableEntry(response, request) : null;
+        if (entry !== null) {
+          await options.cache.set<CachedResponse>(cacheKey, entry, options.ttlMs);
         }
-        return response;
+        return { response, entry };
       })();
       inflight.set(cacheKey, work);
-      try { return await work; }
+      try { return (await work).response; }
       finally { inflight.delete(cacheKey); }
     };
   };
@@ -119,7 +210,14 @@ export function cached(options: ResponseCacheOptions) {
 
 /* ------------------------------ internals -------------------------------- */
 
-function encodeResponse(r: HttpResponse): CachedResponse {
+/**
+ * The form of `r` that may be stored and replayed to other callers, or
+ * `null` when it must reach only the caller it was produced for.
+ */
+function shareableEntry(r: HttpResponse, request: HttpRequest): CachedResponse | null {
+  if (r.body instanceof ReadableStream) return null;
+  if (!headersShareable(r.headers)) return null;
+  const varied = varyNames(r.headers);
   let body: unknown = r.body;
   if (body instanceof Uint8Array) {
     body = { __bin: bytesToBase64(body) };
@@ -129,7 +227,64 @@ function encodeResponse(r: HttpResponse): CachedResponse {
     headers: r.headers as Record<string, string> | undefined,
     body,
     contentType: r.contentType,
+    ...(varied.length > 0
+      ? { vary: varied.map((name) => ({ name, value: headerValue(request.headers, name) ?? null })) }
+      : {}),
   };
+}
+
+/** Whether a stored entry may answer `request`. */
+function servable(entry: CachedResponse, request: HttpRequest): boolean {
+  return headersShareable(entry.headers) && varyMatches(entry, request);
+}
+
+/**
+ * The response-header half of the sharing rules: no `Set-Cookie` (there is
+ * no correct way to hand one caller's cookie to another), no `Cache-Control`
+ * directive that keeps the response out of a shared cache, no `Vary: *`.
+ */
+function headersShareable(headers: Readonly<Record<string, string>> | undefined): boolean {
+  if (headers === undefined) return true;
+  if (headerValue(headers, 'set-cookie') !== undefined) return false;
+  const cacheControl = headerValue(headers, 'cache-control');
+  if (cacheControl !== undefined) {
+    for (const directive of cacheControl.split(',')) {
+      const name = directive.split('=', 1)[0]!.trim().toLowerCase();
+      if (UNSHAREABLE_DIRECTIVES.has(name)) return false;
+    }
+  }
+  return !varyNames(headers).includes('*');
+}
+
+/** The lower-cased header names a response's `Vary` lists. */
+function varyNames(headers: Readonly<Record<string, string>> | undefined): string[] {
+  const vary = headers === undefined ? undefined : headerValue(headers, 'vary');
+  if (vary === undefined) return [];
+  return vary.split(',').map((name) => name.trim().toLowerCase()).filter((name) => name.length > 0);
+}
+
+/** Whether `request` carries the values of every header the entry varies on. */
+function varyMatches(entry: CachedResponse, request: HttpRequest): boolean {
+  if (entry.vary === undefined) return true;
+  return entry.vary.every(({ name, value }) => (headerValue(request.headers, name) ?? null) === value);
+}
+
+function carriesCredentials(request: HttpRequest): boolean {
+  return CREDENTIAL_HEADERS.some((name) => headerValue(request.headers, name) !== undefined);
+}
+
+/**
+ * Case-insensitive header read.  Backends hand requests over lower-cased,
+ * but response headers are whatever the handler wrote (`'Set-Cookie'`), and
+ * a rule that misses one spelling is a rule an ordinary handler walks past.
+ */
+function headerValue(headers: Readonly<Record<string, string>>, name: string): string | undefined {
+  const direct = headers[name];
+  if (direct !== undefined) return direct;
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === name) return value;
+  }
+  return undefined;
 }
 
 function decodeResponse(c: CachedResponse): HttpResponse {
