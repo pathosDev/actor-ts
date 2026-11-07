@@ -1668,7 +1668,6 @@ export class Cluster {
     this.updateMember(downed);
     const removed = downed.withRemoved(Date.now());
     this.setMember(removed);
-    this.failureDetector.forget(member.address);
     this.emit(new MemberRemoved(removed));
     this.log.info(`operator force-down: ${member.address}`);
     return true;
@@ -1947,7 +1946,10 @@ export class Cluster {
       members: [this.memberDataForGossip(me)],
     };
     for (const seed of this.seedAddrs) {
-      this.failureDetector.register(seed);
+      // Not a seed this node holds as a tombstone: nothing decides about one,
+      // and an entry registered here would be the one its revival inherits —
+      // judged on the silence since this round instead of from its admission.
+      if (this.watchesLivenessOf(seed)) this.failureDetector.register(seed);
       this.transport.send(seed, initialGossip);
     }
   }
@@ -2489,13 +2491,13 @@ export class Cluster {
   /**
    * Whether a frame from `peer` may touch the failure detector at all (#1103).
    *
-   * The detector creates an entry for every address it is told about, and only
-   * a member's removal ever forgets one.  The connection identity is chosen by
-   * the peer — without mTLS it is whatever its `hello` said — so crediting every
-   * frame let one connection per claimed address grow the detector without
-   * bound, past the `maxMembers` cap the member map holds: 500 frames under
-   * distinct names left 502 entries beside 3 members.  The φ-accrual detector
-   * also allocates a `maxSampleSize` interval window per entry.
+   * The detector creates an entry for every address it is told about.  The
+   * connection identity is chosen by the peer — without mTLS it is whatever its
+   * `hello` said — so crediting every frame let one connection per claimed
+   * address grow the detector without bound, past the `maxMembers` cap the
+   * member map holds: 500 frames under distinct names left 502 entries beside
+   * 3 members.  The φ-accrual detector also allocates a `maxSampleSize`
+   * interval window per entry.
    *
    * The detector is only ever asked about a member (`failureDetectionTick`
    * walks the member map), so an entry for anyone else is state nothing reads.
@@ -2506,18 +2508,23 @@ export class Cluster {
    *   frame admits it and the registration takes the instant the `heardFrom`
    *   used to.  Down and unreachable members stay in — their frames are how a
    *   parked or unreachable peer is seen again.  A tombstone is not watched:
-   *   nothing decides about it, and its frames no longer refresh an entry for
-   *   it — the local tombstoning routes `forget` it outright.
-   * - **A configured seed.**  The seed loop registers each one before it has
-   *   answered, and that entry's silence clock runs from the first dial.  A
-   *   seed that answers late is admitted on that answer, and the registration
-   *   is a no-op by then — so without the seed's own frames counting first, it
-   *   would be judged on the silence since this node started and read
-   *   `unreachable` the moment it became a member.  The seed list is fixed at
-   *   start, so it bounds itself.
+   *   nothing decides about it, {@link setMember} forgets its entry as it is
+   *   stored, and its frames do not create a new one.  A revival is admitted
+   *   afresh and registered at that instant.
+   * - **A configured seed that is not a tombstone.**  The seed loop registers
+   *   each one before it has answered, and that entry's silence clock runs
+   *   from the first dial.  A seed that answers late is admitted on that
+   *   answer, and the registration is a no-op by then — so without the seed's
+   *   own frames counting first, it would be judged on the silence since this
+   *   node started and read `unreachable` the moment it became a member.  The
+   *   seed list is fixed at start, so it bounds itself.  A seed held as a
+   *   tombstone is a member like any other: its revival registers it.
    *
    * Everything else is still dispatched; it only no longer creates detector
-   * state.  Membership is the cap: an entry needs a member slot or a seed.
+   * state.  Together with the forgetting in {@link setMember} and
+   * {@link deleteMember}, the detector holds an entry for every live member
+   * other than this node, and otherwise only for a seed that is not a
+   * tombstone — so its size is bounded by `maxMembers` plus the seed list.
    */
   private watchesLivenessOf(peer: NodeAddress): boolean {
     const member = this.members.get(peer.toString());
@@ -3069,7 +3076,6 @@ export class Cluster {
     // `tombstonePruneTick` uses to drop the entry once `tombstoneTtlMs`
     // has elapsed (#75).
     this.setMember(removed);
-    this.failureDetector.forget(peer);
     this.emit(new MemberLeft(leaving));
     this.emit(new MemberRemoved(removed));
     this.maybeEmitLeaderChange();
@@ -3166,7 +3172,6 @@ export class Cluster {
         // at all — so a symmetric partition leaves neither side with a way
         // to hear the other again.  Closing that is #930.
         this.deleteMember(member.address.toString());
-        this.failureDetector.forget(member.address);
         // Transient `removed` Member only used for the event emit —
         // not stored, so the missing `removedAt` here is intentional.
         const removed = downed.withStatus('removed');
@@ -3437,7 +3442,6 @@ export class Cluster {
       // after `tombstoneTtlMs` (#75).
       const removed = downed.withRemoved(Date.now());
       this.setMember(removed);
-      this.failureDetector.forget(member.address);
       this.emit(new MemberRemoved(removed));
     }
     if (downsSelf) this.leaveAfterDowningSelf();
@@ -3854,12 +3858,21 @@ export class Cluster {
    * If the record arrives already past `joining` (common via gossip merging),
    * the matching status event follows the `MemberJoined`, so subscribers
    * (ShardRegion, etc.) re-allocate.
+   *
+   * This is the one route by which an address becomes a live member, so it is
+   * where the failure detector's entry for it starts — and its silence clock
+   * with it, at the receipt of the frame that carried the record (#1103).  The
+   * address holds no entry from an earlier run by now: {@link setMember} and
+   * {@link deleteMember} forget one as the member leaves the live set.  The
+   * only entry `register` can find in place is a configured seed's, fed by
+   * that seed's own frames since this node first dialled it, which is the
+   * history worth keeping.  A record that arrives as a tombstone gets none.
    */
   private admitFirstSighting(incoming: Member): void {
     this.setMember(incoming);
     this.checkStorageIdentityAgreement(incoming);
     this.checkConfigurationAgreement(incoming);
-    this.failureDetector.register(incoming.address);
+    if (incoming.status !== 'removed') this.failureDetector.register(incoming.address);
     this.emit(new MemberJoined(incoming));
     if (incoming.status !== 'joining') {
       this.emitStatusTransition(new Member(incoming.address, 'joining', 0), incoming);
@@ -3933,7 +3946,6 @@ export class Cluster {
     // down — see `emitStatusTransition` (#1428).
     this.updateMember(downed);
     this.deleteMember(existing.address.toString());
-    this.failureDetector.forget(existing.address);
     // Transient, like the detector route's: only the event carries it.
     this.emit(new MemberRemoved(downed.withStatus('removed')));
     this.admitFirstSighting(incoming);
@@ -4004,6 +4016,13 @@ export class Cluster {
    *
    * Keyed by `address.toString()` like every other entry; the map has no other
    * key shape.
+   *
+   * It is also where a member's failure-detector entry ends when the member
+   * becomes a tombstone, whichever route stored it — a local removal or a
+   * gossiped `removed` record (#1103).  Nothing decides about a tombstone, and
+   * an entry left behind would be what its revival inherits: `register` is a
+   * no-op on an existing entry, so the new run would be judged on the old
+   * run's silence and read `unreachable` on the first detection tick.
    */
   private setMember(member: Member): void {
     const key = member.address.toString();
@@ -4011,6 +4030,7 @@ export class Cluster {
     if (previous?.status === 'removed') this.tombstoneCount--;
     if (member.status === 'removed') this.tombstoneCount++;
     this.members.set(key, member);
+    if (member.status === 'removed') this.failureDetector.forget(member.address);
   }
 
   /** The matching delete — see {@link setMember}. */
@@ -4028,6 +4048,10 @@ export class Cluster {
     // frames of the address's next incarnation, whose counter starts from its
     // own clock rather than from where the previous one left off (#112).
     this.acceptedGossipSequences.delete(key);
+    // Likewise, or the next incarnation would inherit this one's silence clock
+    // and interval window (#1103).  A tombstone's entry already went in
+    // `setMember`; this is the one for the routes that delete a live member.
+    this.failureDetector.forget(previous.address);
   }
 
   private updateMember(next: Member): void {

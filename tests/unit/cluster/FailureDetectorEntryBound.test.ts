@@ -3,17 +3,21 @@
  *
  * `handleWire` credited liveness for every frame before dispatching it, and the
  * heartbeat handler added a sample for every heartbeat frame.  Both create a
- * detector entry for an address the detector has never seen, and only a
- * member's removal ever forgets one.  Without mTLS the connection identity is
+ * detector entry for an address the detector has never seen, and only the
+ * local removal routes forgot one.  Without mTLS the connection identity is
  * whatever the peer's `hello` said, so a single peer could mint entries at will
  * — 500 frames under 500 names left 502 entries beside a member map held at 3
  * by `maxMembers` (#138).
  *
  * Liveness now reaches the detector only for a peer this node watches: a live
- * member, or a configured seed.  The second half of the file is the acceptance
- * criterion the obvious fix put at risk: a node that is joining, or a seed that
- * answers late, must not read `unreachable` for want of the frames that came
- * before it was a member.
+ * member, or a configured seed that is not a tombstone.  Every live member is
+ * registered at admission, and its entry goes when it leaves the live set or
+ * the map, by whichever route — so the detector's keys are exactly the watched
+ * peers, which `expectEntriesForWatchedPeersOnly` checks wherever the member
+ * map moves.  The second half of the file is the acceptance criterion the
+ * obvious fix put at risk: a node that is joining, a seed that answers late, or
+ * a member that comes back after being tombstoned, must not read `unreachable`
+ * for want of frames that came before it was a member.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
@@ -251,6 +255,98 @@ for (const implementation of ['simple', 'phi'] as const) {
       internals(node.cluster).handleWire(peer, heartbeatFrame(peer, 2));
       internals(node.cluster).handleWire(peer, gossipFrame(peer));
       expect(detector.lastSeen(peer).isNone()).toBe(true);
+      expectEntriesForWatchedPeersOnly(node);
+    });
+
+    test('gossiped tombstones and their prune leave no entry behind', async () => {
+      const name = `fd-bound-prune-${implementation}`;
+      const node = await startNode(name, 9_837, { implementation, tombstoneTtlMs: 200 });
+      const before = detectorEntries(node.cluster);
+      const peers = Array.from({ length: 20 }, (_, i) => new NodeAddress(name, '10.0.111.1', 31_000 + i));
+      const version = Date.now();
+
+      for (const peer of peers) {
+        internals(node.cluster).handleWire(peer, gossipFrame(peer, [selfRecord(peer, 'joining', version)]));
+      }
+      expect(detectorEntries(node.cluster)).toBe(before + peers.length);
+      expectEntriesForWatchedPeersOnly(node);
+
+      // Each peer announces its own removal — the record a leaving node
+      // gossips, and one any connection may state about itself.  Ten versions
+      // on, because this node's promotion of each joiner to `up` took one.
+      for (const peer of peers) {
+        internals(node.cluster).handleWire(peer, gossipFrame(peer, [selfRecord(peer, 'removed', version + 10)]));
+      }
+      expect(peers.every((p) => internals(node.cluster).members.get(p.toString())?.status === 'removed')).toBe(true);
+      expect(detectorEntries(node.cluster)).toBe(before);
+      expectEntriesForWatchedPeersOnly(node);
+
+      // The elapsed time IS the precondition: the tombstones have to age past
+      // the 200 ms TTL and retention floor before the prune may drop them.
+      await sleep(250);
+      internals(node.cluster).tombstonePruneTick();
+      expect(peers.some((p) => internals(node.cluster).members.has(p.toString()))).toBe(false);
+      expect(detectorEntries(node.cluster)).toBe(before);
+      expectEntriesForWatchedPeersOnly(node);
+    });
+
+    test('a peer whose first record is its own removal is stored as a tombstone with no entry', async () => {
+      const name = `fd-bound-removed-first-${implementation}`;
+      const node = await startNode(name, 9_838, { implementation });
+      const peer = new NodeAddress(name, '10.0.111.2', 9_839);
+      const before = detectorEntries(node.cluster);
+
+      internals(node.cluster).handleWire(peer, gossipFrame(peer, [selfRecord(peer, 'removed', Date.now())]));
+
+      expect(internals(node.cluster).members.get(peer.toString())?.status).toBe('removed');
+      expect(detectorEntries(node.cluster)).toBe(before);
+      expectEntriesForWatchedPeersOnly(node);
+    });
+
+    test('a seed held as a tombstone is not registered again by the seed loop', async () => {
+      const name = `fd-bound-seed-tombstone-${implementation}`;
+      const seed = new NodeAddress(name, '10.0.111.3', 9_840);
+      const node = await startNode(name, 9_841, { implementation, seeds: [seed] });
+      expect(detectorKeys(node.cluster).has(seed.toString())).toBe(true);
+
+      internals(node.cluster).handleWire(seed, gossipFrame(seed, [selfRecord(seed, 'removed', Date.now())]));
+      expect(detectorKeys(node.cluster).has(seed.toString())).toBe(false);
+
+      // The next seed round, which runs for as long as this node is joining.
+      internals(node.cluster).contactSeeds();
+      expect(detectorKeys(node.cluster).has(seed.toString())).toBe(false);
+      expectEntriesForWatchedPeersOnly(node, [seed]);
+    });
+
+    test('a member tombstoned by gossip and revived is judged from its revival, not from before it', async () => {
+      // The entry a gossiped tombstone left behind was what the revival
+      // inherited: `register` is a no-op on an existing entry, and the frame
+      // that revives the member was a tombstone's frame when it arrived, so it
+      // credited nothing.  The first tick then judged the new run on the silence
+      // since the old one went away.
+      const name = `fd-bound-revival-${implementation}`;
+      const node = await startNode(name, 9_835, { implementation, shortSilence: true });
+      const peer = new NodeAddress(name, '10.0.110.5', 9_836);
+      const unreachable = unreachableAnnouncements(node.cluster, peer);
+      const version = Date.now();
+
+      internals(node.cluster).handleWire(peer, gossipFrame(peer, [selfRecord(peer, 'joining', version)]));
+      internals(node.cluster).handleWire(peer, heartbeatFrame(peer, 1));
+      // Versions well apart: this node's promotion of the joiner to `up` takes
+      // `version + 1`, and the revival has to out-version the tombstone.
+      internals(node.cluster).handleWire(peer, gossipFrame(peer, [selfRecord(peer, 'removed', version + 10)]));
+      expect(internals(node.cluster).members.get(peer.toString())?.status).toBe('removed');
+      // The elapsed time IS the precondition: the peer stays silent past
+      // `unreachableAfterMs` (400 ms, and eight φ-estimates of 50 ms), so a
+      // detector still holding its previous entry finds it stale.
+      await sleep(600);
+
+      internals(node.cluster).handleWire(peer, gossipFrame(peer, [selfRecord(peer, 'up', version + 20)]));
+      expect(isUpAt(node.cluster, peer)).toBe(true);
+      internals(node.cluster).failureDetectionTick();
+
+      expect(isUpAt(node.cluster, peer)).toBe(true);
+      expect(unreachable).toEqual([]);
       expectEntriesForWatchedPeersOnly(node);
     });
   });
