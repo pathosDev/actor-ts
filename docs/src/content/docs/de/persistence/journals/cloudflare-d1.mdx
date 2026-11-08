@@ -299,12 +299,15 @@ Also präzise:
 </Aside>
 
 <Aside type="caution" title="Per-Actor-Verschlüsselung und -Integrität schützen keine Events">
-  Per-Call-`PersistenceOptions` gelten nur für die Object-Storage-Stores.
-  Der D1-Snapshot-Store und der D1-Durable-State-Store deklarieren, dass
-  sie keinen der drei Hooks honorieren, also **verweigert** ein
-  `encryption()`- oder `integrity()`-Override gegen einen der beiden
-  **den Actor beim Start**, und `compression()` warnt einmal
-  ([#960](https://github.com/pathosDev/actor-ts/issues/960)).
+  Per-Call-`PersistenceOptions` (Compression, Encryption, Integrity)
+  werden vom D1-Snapshot-Store und vom D1-Durable-State-Store
+  honoriert, wie von jedem SQL- und Object-Storage-Store: Eine Zeile,
+  die unter einem Hook geschrieben wird, ist der Object-Storage-Frame in
+  Base64 hinter einem `ats1:`-Präfix, in derselben `TEXT`-Spalte,
+  gebunden an ihre Persistence-ID und ihre Sequenznummer bzw. Revision
+  ([#1802](https://github.com/pathosDev/actor-ts/issues/1802)).  Eine Zeile ohne den Schutz, den der Actor verlangt, wird
+  verweigert, sofern der Store nicht für eine Migration mit
+  `withAllowPlaintextRows(true)` gebaut wurde.
 
   Das Journal wird nie gefragt.  `encryption()` und `integrity()` an
   einem `PersistentActor` schützen nur seine Snapshots: Jedes Journal

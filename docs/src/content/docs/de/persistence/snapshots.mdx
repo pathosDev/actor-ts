@@ -118,17 +118,36 @@ Hooks erreicht — siehe das Ende dieses Abschnitts:
 | Store | Wann | Honoriert die drei Hooks |
 | --- | --- | --- |
 | `InMemorySnapshotStore` | Tests, Dev. | Nein. |
-| `SqliteSnapshotStore` | Single-Node-Produktion. | Nein. |
-| `PostgresSnapshotStore` | PostgreSQL-gestützte Produktion. | Nein. |
-| `MariaDbSnapshotStore` | MariaDB / MySQL-gestützte Produktion. | Nein. |
-| `LibSqlSnapshotStore` | libSQL / Turso — entferntes SQLite über HTTP. | Nein. |
-| `MsSqlSnapshotStore` | Microsoft SQL Server-gestützte Produktion. | Nein. |
+| `SqliteSnapshotStore` | Single-Node-Produktion. | Ja — alle drei, beim Schreiben und beim Lesen, als versiegelte Zeile (unten). |
+| `PostgresSnapshotStore` | PostgreSQL-gestützte Produktion. | Ja — alle drei, beim Schreiben und beim Lesen, als versiegelte Zeile (unten). |
+| `MariaDbSnapshotStore` | MariaDB / MySQL-gestützte Produktion. | Ja — alle drei, beim Schreiben und beim Lesen, als versiegelte Zeile (unten). |
+| `LibSqlSnapshotStore` | libSQL / Turso — entferntes SQLite über HTTP. | Ja — alle drei, beim Schreiben und beim Lesen, als versiegelte Zeile (unten). |
+| `MsSqlSnapshotStore` | Microsoft SQL Server-gestützte Produktion. | Ja — alle drei, beim Schreiben und beim Lesen, als versiegelte Zeile (unten). |
 | `MongoSnapshotStore` | MongoDB-gestützte Produktion. | Nein. |
 | `DynamoDbSnapshotStore` | DynamoDB-gestützte Produktion. | Nein. |
-| `D1SnapshotStore` | Cloudflare D1 — SQLite am Edge. | Nein. |
+| `D1SnapshotStore` | Cloudflare D1 — SQLite am Edge. | Ja — alle drei, beim Schreiben und beim Lesen, als versiegelte Zeile (unten). |
 | `CassandraSnapshotStore` | Verteilt — Cassandra / ScyllaDB. | Nein. |
 | `ObjectStorageSnapshotStore` | Filesystem / S3 mit optionaler Verschlüsselung. | Ja — alle drei, beim Schreiben und beim Lesen, für die Snapshots, die er hält. |
 | `CachedSnapshotStore` | Wickelt einen anderen Store mit einem Read-Through-Cache ein. | Was der eingewickelte Store deklariert; ein `encryption()`-Hook umgeht außerdem den Cache — siehe unten. |
+
+**Versiegelte Zeilen in den SQL-Stores** ([#1802](https://github.com/pathosDev/actor-ts/issues/1802)).  Die sechs
+SQL-Snapshot-Stores behalten ihr Schema: Ein Snapshot, der unter einem
+der Hooks geschrieben wird, landet in derselben `payload`-Spalte, als
+Frame der Object-Storage-Stores in Base64 hinter einem
+`ats1:`-Präfix — dasselbe AES-256-GCM, dieselbe Schlüsselableitung
+pro Persistence-ID, derselbe Master-Key-Ring.  Der Frame ist an seine
+Persistence-ID und Sequenznummer gebunden, eine unter eine andere
+kopierte Zeile lässt sich also nicht entschlüsseln, statt als dieser
+Snapshot geladen zu werden.  Das Lesen schließt gegen den Hook ab:
+Unter `encryption()` oder `integrity()` wird eine Zeile verweigert,
+die Klartext-JSON ist oder ein Frame ohne Verschlüsselung bzw. ohne
+Tag — sie ist entweder älter als der Hook oder wurde von jemandem mit
+Zugriff auf die Tabelle geschrieben.  Um einen Hook über bestehenden
+Snapshots einzuschalten, baust du den Store mit
+`withAllowPlaintextRows(true)`, bis der nächste Save sie abgelöst
+hat, und nimmst es danach wieder heraus.  `sse-s3` und `sse-kms`
+bitten einen Object Store, auf seiner Seite zu verschlüsseln, und
+werden von einem SQL-Store verweigert.
 
 Ein `Nein` in dieser Spalte ist durchgesetzt, nicht nur dokumentiert.
 `encryption()` oder `integrity()` auf einem Actor zu setzen, der von

@@ -338,15 +338,29 @@ class Sensitive extends DurableStateActor<Command, State> {
 }
 ```
 
-**Nur der Object-Storage-Durable-State-Store liest diese.**  Neun
-der zehn Durable-State-Stores nehmen die Optionen entgegen und
-sehen sie nie an — aber sie sagen es jetzt, über eine
-`persistenceOptionSupport`-Deklaration, die das Framework beim
-Actor-Start prüft
-([#960](https://github.com/pathosDev/actor-ts/issues/960)).
+**Die Object-Storage- und SQL-Durable-State-Stores lesen diese.**
+Der Object-Storage-Store und die SQL-Familie — SQLite, Postgres,
+MariaDB, MSSQL, libSQL und D1 ([#1802](https://github.com/pathosDev/actor-ts/issues/1802)) — honorieren alle drei
+Hooks auf Schreib- und Lesepfad.  Die SQL-Stores behalten das
+Schema: Der Datensatz landet in derselben `payload`-Spalte, als
+Object-Storage-Frame in Base64 hinter einem `ats1:`-Präfix,
+gebunden an Persistence-ID und Revision, sodass ein Payload, der mit
+einer anderen Revision gepaart wird, sich nicht entschlüsseln lässt.
+Ein Actor mit `encryption()` verweigert eine Zeile, die nicht
+verschlüsselt ist, Klartext-JSON eingeschlossen, denn diese Zeile
+ist entweder älter als der Hook oder wurde von jemandem mit Zugriff
+auf die Tabelle geschrieben.  Um einen Hook über bestehenden
+Datensätzen einzuschalten, baust du den Store mit
+`withAllowPlaintextRows(true)`: Der nächste `persist` schreibt jede
+Zeile versiegelt neu, danach kommt die Option wieder heraus.  Was
+kein Schlüssel erkennen kann, ist eine ganze Zeile — Revision und
+Payload zusammen —, die auf eine ältere Kopie zurückgesetzt wird.
 
-Auf In-Memory, SQLite, Postgres, MariaDB, MSSQL, libSQL, D1, Mongo
-und DynamoDB **verweigern** `encryption()` oder `integrity()`
+Die übrigen drei Durable-State-Stores nehmen die Optionen entgegen
+und sehen sie nie an — aber sie sagen es, über eine
+`persistenceOptionSupport`-Deklaration, die das Framework beim
+Actor-Start prüft ([#960](https://github.com/pathosDev/actor-ts/issues/960)).  Auf In-Memory, Mongo und DynamoDB
+**verweigern** `encryption()` oder `integrity()`
 **den Actor vor dem Start**, mit einem
 `UnsupportedPersistenceOptionError`, der Store und Feld benennt.
 Die Verweigerung liegt bewusst vor dem Load in `preStart` und

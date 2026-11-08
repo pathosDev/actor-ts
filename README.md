@@ -91,7 +91,10 @@ A short tour of what's in the box:
   SQLite (built-in driver on every runtime — `bun:sqlite`, `node:sqlite`, or
   `better-sqlite3`), libSQL / Turso, PostgreSQL, MariaDB,
   Microsoft SQL Server, MongoDB, DynamoDB, Cloudflare D1,
-  Cassandra / ScyllaDB.
+  Cassandra / ScyllaDB.  The SQL and object-storage snapshot and
+  durable-state stores honour per-actor `encryption()` / `integrity()` /
+  `compression()` (client-side AES-256-GCM, HMAC-SHA256); events in the
+  journal stay plaintext.
 - **Object storage** — S3 / MinIO / R2 / filesystem with optional gzip/zstd
   compression and client-side AES-256-GCM encryption (per-tenant subkeys via
   HKDF).
