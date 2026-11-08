@@ -638,11 +638,11 @@ const PAGE_SURFACES: readonly MirroredSurface[] = [
     surface: 'the per-actor policies danger aside on which stores read the hooks',
     english: {
       path: docsPage('english', PER_ACTOR_POLICIES),
-      scope: insideAside('Only the object-storage stores read this hook'),
+      scope: insideAside('Only the object-storage and SQL stores read this hook'),
     },
     german: {
       path: docsPage('german', PER_ACTOR_POLICIES),
-      scope: insideAside('Nur die Object-Storage-Stores lesen diesen Hook'),
+      scope: insideAside('Nur die Object-Storage- und SQL-Stores lesen diesen Hook'),
     },
   },
   {
@@ -732,12 +732,12 @@ const DECISION_CITATIONS: readonly MirroredCitation[] = [
     surface: 'the per-actor policies danger aside on which stores read the hooks',
     english: {
       path: docsPage('english', PER_ACTOR_POLICIES),
-      scope: insideAside('Only the object-storage stores read this hook'),
+      scope: insideAside('Only the object-storage and SQL stores read this hook'),
       callsIt: 'a documented non-goal',
     },
     german: {
       path: docsPage('german', PER_ACTOR_POLICIES),
-      scope: insideAside('Nur die Object-Storage-Stores lesen diesen Hook'),
+      scope: insideAside('Nur die Object-Storage- und SQL-Stores lesen diesen Hook'),
       callsIt: 'ein dokumentiertes nicht-ziel',
     },
   },

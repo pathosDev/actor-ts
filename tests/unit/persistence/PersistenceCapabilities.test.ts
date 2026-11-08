@@ -108,23 +108,27 @@ const fakeBackend: ObjectStorageBackend = {
 /* ---------------------------- the declarations --------------------------- */
 
 describe('persistenceOptionSupport declarations', () => {
-  test('the object-storage pair is the only family that acts on all three fields', () => {
+  test('the object-storage pair and the SQL family act on all three fields', () => {
     expect(new ObjectStorageSnapshotStore({ backend: fakeBackend }).persistenceOptionSupport)
       .toEqual(ALL_SUPPORTED);
     expect(new ObjectStorageDurableStateStore({ backend: fakeBackend }).persistenceOptionSupport)
       .toEqual(ALL_SUPPORTED);
-  });
-
-  test('every other shipped snapshot store declares none of the three', () => {
     // `PostgresSnapshotStore` stands in for the relational family, whose
     // declaration lives on `RelationalSnapshotStore`; the repo scan below
     // holds MariaDB, MSSQL, libSQL and D1 to the same inheritance.  It is
     // constructed with no pool on purpose — the pool opens lazily, so this
-    // asserts a declaration without touching a database.
-    expect(new PostgresSnapshotStore().persistenceOptionSupport).toEqual(NONE_SUPPORTED);
+    // asserts a declaration without touching a database (#1802).
+    expect(new PostgresSnapshotStore().persistenceOptionSupport).toEqual(ALL_SUPPORTED);
     // Standalone `implements SnapshotStore`: it shares no base with the
-    // relational family, so the family declaration does not reach it.
-    expect(new SqliteSnapshotStore({ path: ':memory:' }).persistenceOptionSupport).toEqual(NONE_SUPPORTED);
+    // relational family, so it declares on its own.
+    expect(new SqliteSnapshotStore({ path: ':memory:' }).persistenceOptionSupport).toEqual(ALL_SUPPORTED);
+    expect(new PostgresDurableStateStore().persistenceOptionSupport).toEqual(ALL_SUPPORTED);
+    // Unlike the snapshot side, the SQLite durable-state store extends the
+    // relational base and inherits the declaration rather than repeating it.
+    expect(new SqliteDurableStateStore({ path: ':memory:' }).persistenceOptionSupport).toEqual(ALL_SUPPORTED);
+  });
+
+  test('every other shipped snapshot store declares none of the three', () => {
     expect(new InMemorySnapshotStore().persistenceOptionSupport).toEqual(NONE_SUPPORTED);
     expect(new MongoSnapshotStore().persistenceOptionSupport).toEqual(NONE_SUPPORTED);
     expect(new DynamoDbSnapshotStore().persistenceOptionSupport).toEqual(NONE_SUPPORTED);
@@ -133,10 +137,6 @@ describe('persistenceOptionSupport declarations', () => {
   });
 
   test('every other shipped durable-state store declares none of the three', () => {
-    expect(new PostgresDurableStateStore().persistenceOptionSupport).toEqual(NONE_SUPPORTED);
-    // Unlike the snapshot side, the SQLite durable-state store extends the
-    // relational base and inherits the declaration rather than repeating it.
-    expect(new SqliteDurableStateStore({ path: ':memory:' }).persistenceOptionSupport).toEqual(NONE_SUPPORTED);
     expect(new InMemoryDurableStateStore().persistenceOptionSupport).toEqual(NONE_SUPPORTED);
     expect(new MongoDurableStateStore().persistenceOptionSupport).toEqual(NONE_SUPPORTED);
     expect(new DynamoDbDurableStateStore().persistenceOptionSupport).toEqual(NONE_SUPPORTED);
@@ -459,17 +459,18 @@ describe('PersistentActor — an unhonourable request is refused at start', () =
    * start rather than the first write, because a durable-state actor reads
    * first (see the sibling suite below) and the two seams have to agree.
    *
-   * `PostgresSnapshotStore` is constructed with no pool, and the refusal
+   * `MongoSnapshotStore` is constructed with no client, and the refusal
    * lands before anything opens one — so this doubles as proof that the
-   * check precedes any contact with the store at all.  If it did not, `pg`
-   * would be reached for and the failure would arrive as a different error.
+   * check precedes any contact with the store at all.  If it did not, the
+   * `mongodb` driver would be reached for and the failure would arrive as a
+   * different error.  (Until #1802 the relational family stood in here.)
    */
-  test('encryption() over a relational store throws, naming the store and the field', async () => {
-    const error = await refusalFrom('refuse-encryption', new PostgresSnapshotStore(), {
+  test('encryption() over a database store that cannot encrypt throws, naming the store and the field', async () => {
+    const error = await refusalFrom('refuse-encryption', new MongoSnapshotStore(), {
       encryption: CLIENT_ENCRYPTION,
     });
     expect(error.field).toBe('encryption');
-    expect(error.storeName).toBe('PostgresSnapshotStore');
+    expect(error.storeName).toBe('MongoSnapshotStore');
     expect(error.message).toMatch(/does not implement encryption/);
     // The advice to switch stores must not read as protecting the events too.
     expect(error.message).toContain(EVENTS_STAY_UNPROTECTED);
@@ -612,20 +613,20 @@ describe('DurableStateActor — the refusal precedes the load, not just the writ
   });
 
   /** The relational half of acceptance criterion 4, on a real SQL store. */
-  test('encryption() over a relational durable-state store throws, naming it', async () => {
-    const { system } = loggingSystem('durable-refuse-sqlite');
+  test('encryption() over a durable-state store that cannot encrypt throws, naming it', async () => {
+    const { system } = loggingSystem('durable-refuse-mongo');
     const options = DurableStateOptions.create<SettingState>()
       .withPersistenceId('capability-probe')
-      .withStore(new SqliteDurableStateStore({ path: ':memory:' }))
+      .withStore(new MongoDurableStateStore())
       .withEmptyState(() => ({ value: '' }));
     const caught: Error[] = [];
     system.spawn(() => new ProbeSetting(options, caught, CLIENT_ENCRYPTION), 'setting');
     try {
-      await awaitCondition(() => caught.length > 0, { label: 'preStart refused the SQLite-backed actor' });
+      await awaitCondition(() => caught.length > 0, { label: 'preStart refused the Mongo-backed actor' });
     } finally {
       await system.terminate();
     }
-    expect((caught[0] as UnsupportedPersistenceOptionError).storeName).toBe('SqliteDurableStateStore');
+    expect((caught[0] as UnsupportedPersistenceOptionError).storeName).toBe('MongoDurableStateStore');
     // No journal stands behind a durable-state actor, so its refusal names none (#1430).
     expect((caught[0] as UnsupportedPersistenceOptionError).message).not.toContain('journal');
   });

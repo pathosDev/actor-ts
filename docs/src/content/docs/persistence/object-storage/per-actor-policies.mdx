@@ -221,12 +221,11 @@ the read-then-write sweep is done.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="danger" title="Only the object-storage stores read this hook">
-  Ten of the eleven snapshot stores and nine of the ten
+<Aside type="danger" title="Only the object-storage and SQL stores read this hook">
+  Four of the eleven snapshot stores and three of the ten
   durable-state stores accept `PersistenceOptions` and never look
   at it ([#960](https://github.com/pathosDev/actor-ts/issues/960)).
-  On SQLite, Postgres, MariaDB, MSSQL, libSQL, D1, Cassandra,
-  Mongo, DynamoDB and the in-memory reference store, an
+  On Cassandra, Mongo, DynamoDB and the in-memory reference store, an
   `integrity()` or `encryption()` override now **refuses the actor
   at start** rather than buying nothing quietly: every shipped
   store declares a `persistenceOptionSupport` triple, and one that
@@ -243,8 +242,10 @@ import { Aside } from '@astrojs/starlight/components';
 
   So the control is enforced where it can be, and reported where
   it cannot.  The stores that honour all three hooks on both the
-  write and the read path are the object-storage snapshot and
-  durable-state stores — every other snapshot or durable-state
+  write and the read path are the object-storage and the SQL
+  (SQLite, Postgres, MariaDB, MSSQL, libSQL, D1) snapshot and
+  durable-state stores — the SQL ones as a sealed row in the same
+  column ([#1802](https://github.com/pathosDev/actor-ts/issues/1802)) — and every other snapshot or durable-state
   store refuses or warns.  Two cases stay quiet: `{ mode: 'none' }`,
   which is how you say "deliberately unprotected", and a
   third-party store that declares no triple at all, which counts

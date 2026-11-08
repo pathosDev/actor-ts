@@ -9,6 +9,12 @@ import type { PersistenceOptions } from '../PersistenceOptions.js';
 import { none, some, type Option } from '../../util/Option.js';
 import { DEFAULT_DURABLE_STATE_TABLE } from '../Constants.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
+import {
+  durableStatePayloadContext,
+  openPayload,
+  sealPayload,
+  type SealedPayloadReadPolicy,
+} from '../storage/SealedPayload.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { expandPlaceholders } from './SqlDialect.js';
 import { RelationalStore, type RelationalStoreConfig } from './RelationalStore.js';
@@ -23,6 +29,12 @@ type StateRow = {
 export interface RelationalDurableStateStoreConfig extends RelationalStoreConfig {
   /** Durable-state table.  Default `'durable_state'`. */
   readonly table?: string;
+  /**
+   * Re-admit rows that lack the protection an actor's `encryption()` /
+   * `integrity()` asks for — the read-then-write migration window (#1802).
+   * Default `false`; see `storage/SealedPayload.ts`.
+   */
+  readonly allowPlaintextRows?: boolean;
 }
 
 /**
@@ -43,21 +55,29 @@ export interface RelationalDurableStateStoreConfig extends RelationalStoreConfig
  *
  * Either way the current revision is read back so the error can report what
  * the caller actually raced against.
+ *
+ * The payload is JSON text, or — when the actor sets `compression()`,
+ * `encryption()` or `integrity()` — the object-storage `BodyCodec` frame in
+ * base64 behind an `ats1:` prefix, in the same column, bound to the row's
+ * persistence id and revision (#1802, `storage/SealedPayload.ts`).  Binding
+ * the revision stops an authentic payload from being paired with another
+ * revision; restoring a whole older row — revision and payload together — is
+ * a rollback no key can detect without state kept outside the table.
  */
 export class RelationalDurableStateStore extends RelationalStore implements DurableStateStore {
   /**
-   * The payload is `encodePayload`'s JSON text in a SQL column, written and
-   * read without ever looking at `options` (#960).  Unlike the snapshot side
-   * this one really does cover the whole family — `SqliteDurableStateStore`
-   * extends it and inherits the declaration.
+   * All three hooks are honoured on the write and the read path (#1802).
+   * Unlike the snapshot side this one covers the whole family —
+   * `SqliteDurableStateStore` extends it and inherits the declaration.
    */
   readonly persistenceOptionSupport: PersistenceOptionSupport = {
-    encryption: false,
-    compression: false,
-    integrity: false,
+    encryption: true,
+    compression: true,
+    integrity: true,
   };
 
   private readonly table: string;
+  private readonly readPolicy: SealedPayloadReadPolicy;
   private readonly statements: {
     readonly insert: string;
     readonly update: string;
@@ -70,6 +90,7 @@ export class RelationalDurableStateStore extends RelationalStore implements Dura
     super(config);
     const table = assertSafeIdentifier(config.table ?? DEFAULT_DURABLE_STATE_TABLE, 'durable-state table');
     this.table = table;
+    this.readPolicy = { allowPlaintextRows: config.allowPlaintextRows ?? false };
 
     const expand = (sql: string): string => expandPlaceholders(sql, config.dialect);
     this.statements = {
@@ -95,7 +116,7 @@ export class RelationalDurableStateStore extends RelationalStore implements Dura
     persistenceId: string,
     expectedRevision: number,
     state: S,
-    _options?: PersistenceOptions,
+    options?: PersistenceOptions,
   ): Promise<DurableStateRecord<S>> {
     // A bogus revision is a caller bug, not a lost race — reporting it as a
     // concurrency conflict would invite an endless retry loop.
@@ -107,7 +128,16 @@ export class RelationalDurableStateStore extends RelationalStore implements Dura
     const pool = await this.ensureOpen();
     const now = Date.now();
     const newRevision = expectedRevision + 1;
-    const payload = encodePayload(state, this.serializer);
+    let payload: string;
+    try {
+      payload = await sealPayload(
+        encodePayload(state, this.serializer), persistenceId, durableStatePayloadContext(persistenceId, newRevision), options,
+      );
+    } catch (e) {
+      throw new JournalError(
+        `${this.storeName}.upsert: cannot seal the state of ${persistenceId}: ${(e as Error).message}`, e,
+      );
+    }
     try {
       if (expectedRevision === 0) {
         await this.insert(pool, persistenceId, newRevision, payload, now, expectedRevision);
@@ -139,15 +169,26 @@ export class RelationalDurableStateStore extends RelationalStore implements Dura
     }
   }
 
-  async load<S>(persistenceId: string, _options?: PersistenceOptions): Promise<Option<DurableStateRecord<S>>> {
+  async load<S>(persistenceId: string, options?: PersistenceOptions): Promise<Option<DurableStateRecord<S>>> {
     const pool = await this.ensureOpen();
     const result = await pool.query(this.statements.load, [persistenceId]);
     const row = result.rows[0] as unknown as StateRow | undefined;
     if (!row) return none;
+    const revision = Number(row.revision);
+    let json: string;
+    try {
+      json = await openPayload(
+        row.payload, persistenceId, durableStatePayloadContext(persistenceId, revision), options, this.readPolicy,
+      );
+    } catch (e) {
+      throw new JournalError(
+        `${this.storeName}: durable state of ${persistenceId}@${revision} refused: ${(e as Error).message}`, e,
+      );
+    }
     return some({
       persistenceId,
-      revision: Number(row.revision),
-      state: decodePayload(row.payload, this.serializer) as S,
+      revision,
+      state: decodePayload(json, this.serializer) as S,
       timestamp: Number(row.timestamp),
     });
   }

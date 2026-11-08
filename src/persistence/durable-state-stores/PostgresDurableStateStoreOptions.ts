@@ -1,7 +1,7 @@
-import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
+import { SealedPayloadOptionsBuilder, type SealedPayloadOptionsBase } from '../storage/SealedPayloadOptions.js';
 import { PostgresOptionsValidatorBase, type PgPoolLike, type PostgresConnection } from '../journals/PostgresClient.js';
 
-export interface PostgresDurableStateStoreOptionsType extends PostgresConnection, StoreSerializerOptionsBase {
+export interface PostgresDurableStateStoreOptionsType extends PostgresConnection, SealedPayloadOptionsBase {
   /** Table name.  Default: `durable_state`. */
   readonly table?: string;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
@@ -17,7 +17,7 @@ export interface PostgresDurableStateStoreOptionsType extends PostgresConnection
  * typed `withMaxPoolSize` … `withCaFile`) come from the shared
  * {@link PostgresConnection} mixin.
  */
-export class PostgresDurableStateStoreOptionsBuilder extends StoreSerializerOptionsBuilder<PostgresDurableStateStoreOptionsType> {
+export class PostgresDurableStateStoreOptionsBuilder extends SealedPayloadOptionsBuilder<PostgresDurableStateStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new PostgresDurableStateStoreOptionsBuilder()`. */
   static create(): PostgresDurableStateStoreOptionsBuilder {
     return new PostgresDurableStateStoreOptionsBuilder();

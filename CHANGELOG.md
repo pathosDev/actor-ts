@@ -11,6 +11,28 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`encryption()`, `integrity()` and `compression()` work on the SQL
+  snapshot and durable-state stores** — SQLite, Postgres, MariaDB, SQL
+  Server, libSQL and D1 (#1802). Until now these stores refused an actor
+  that set `encryption()` or `integrity()` at start (#960), which left the
+  object-storage pair as the only way to get at-rest encryption for
+  snapshots or durable state. A row written under a hook is the
+  object-storage `BodyCodec` frame — the same AES-256-GCM, the same
+  per-persistence-id HKDF subkey, the same master-key ring and rotation —
+  stored as base64 behind an `ats1:` prefix in the existing `payload`
+  column, so no schema changes and rows written without a hook stay exactly
+  as they were. Each frame is bound to its persistence id and its sequence
+  number (snapshots) or revision (durable state), so a row moved to another
+  address fails to decrypt; a whole durable-state row put back to an older
+  copy is still undetectable without state kept outside the table. All
+  twelve store builders gain `withAllowPlaintextRows(boolean)` for the
+  migration of an actor that turns a hook on over existing rows; the next
+  write seals the row. `sse-s3` / `sse-kms` are object-storage modes and a
+  SQL store refuses them rather than writing plaintext. Events in the
+  journal are unchanged and stay plaintext (#1430). New exports:
+  `SEALED_PAYLOAD_PREFIX`, `SealedPayloadError`,
+  `SealedPayloadOptionsBuilder`, `SealedPayloadOptionsBase`.
+
 - **`Cluster.bootstrap` forwards six more settings, under the names
   `ClusterOptions` and `ActorSystemOptions` give them: `withAppVersion`,
   `withFailureDetectorAutoDown`, `withSplitBrainResolver` and
@@ -9080,6 +9102,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   supported state.
 
 ### Security
+
+- **The SQL snapshot and durable-state stores refuse a row that lacks the
+  protection the actor asks for** (#1802, the SQL half of #965). Under
+  `encryption()` a plaintext JSON row, or a sealed frame without encryption,
+  is refused; under `integrity()` a row without a tag is; and every sealed
+  frame must be bound to the row it is read from. The bytes that say "not
+  encrypted" are bytes anyone with write access to the table controls, so the
+  frame's own flags are never taken as the answer. `withAllowPlaintextRows`
+  opens the migration window and is meant to be dropped once the rows are
+  rewritten.
 
 - **Three configuration parsers no longer take quadratic time on a hostile
   value** (#1792, CodeQL `js/polynomial-redos`). The HOCON number literal

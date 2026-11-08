@@ -329,15 +329,28 @@ class Sensitive extends DurableStateActor<Command, State> {
 }
 ```
 
-**Only the object-storage durable-state store reads these.**  Nine
-of the ten durable-state stores accept the options and never look
-at them — but they now say so, through a
-`persistenceOptionSupport` declaration the framework checks at
-actor start ([#960](https://github.com/pathosDev/actor-ts/issues/960)).
+**The object-storage and SQL durable-state stores read these.**
+The object-storage store and the SQL family — SQLite, Postgres,
+MariaDB, MSSQL, libSQL and D1 ([#1802](https://github.com/pathosDev/actor-ts/issues/1802)) — honour all three hooks
+on write and on read.  The SQL stores keep the schema: the record
+goes into the same `payload` column, as the object-storage frame in
+base64 behind an `ats1:` prefix, bound to the persistence id and the
+revision, so a payload paired with another revision fails to
+decrypt.  An actor with `encryption()` refuses a row that is not
+encrypted, plaintext JSON included, because that row is either older
+than the hook or was written by someone with access to the table.
+To turn a hook on over existing records, build the store with
+`withAllowPlaintextRows(true)`: the next `persist` rewrites each row
+sealed, and the option comes out again afterwards.  What no key can
+detect is a whole row — revision and payload together — put back to
+an older copy.
 
-On in-memory, SQLite, Postgres, MariaDB, MSSQL, libSQL, D1, Mongo
-and DynamoDB, `encryption()` or `integrity()` **refuses the actor
-before it starts**, with an `UnsupportedPersistenceOptionError`
+The other three durable-state stores accept the options and never
+look at them — but they say so, through a
+`persistenceOptionSupport` declaration the framework checks at
+actor start ([#960](https://github.com/pathosDev/actor-ts/issues/960)).  On in-memory, Mongo and DynamoDB,
+`encryption()` or `integrity()` **refuses the actor before it
+starts**, with an `UnsupportedPersistenceOptionError`
 naming the store and the field.  The refusal comes ahead of
 `preStart`'s load rather than at the first write, deliberately: a
 durable-state actor reads before it writes, and reading against a

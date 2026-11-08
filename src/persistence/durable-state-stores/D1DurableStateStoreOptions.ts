@@ -3,9 +3,10 @@ import {
   D1OptionsValidatorBase,
   type D1OptionsBaseType,
 } from '../journals/D1OptionsBase.js';
+import type { SealedPayloadOptionsBase } from '../storage/SealedPayloadOptions.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 
-export interface D1DurableStateStoreOptionsType extends D1OptionsBaseType {
+export interface D1DurableStateStoreOptionsType extends D1OptionsBaseType, Pick<SealedPayloadOptionsBase, 'allowPlaintextRows'> {
   /** Durable-state table name.  Default: `durable_state`. */
   readonly table?: string;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
@@ -33,6 +34,11 @@ export class D1DurableStateStoreOptionsBuilder
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
   withAutoCreateTables(autoCreateTables: boolean): this {
     return this.set('autoCreateTables', autoCreateTables);
+  }
+
+  /** Re-admit unprotected rows for the hook-migration window (#1802).  Default `false` — see `SealedPayloadOptionsBase`. */
+  withAllowPlaintextRows(allowPlaintextRows: boolean): this {
+    return this.set('allowPlaintextRows', allowPlaintextRows);
   }
 }
 
