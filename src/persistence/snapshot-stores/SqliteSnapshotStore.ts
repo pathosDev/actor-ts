@@ -5,12 +5,20 @@ import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
 import { none, some, type Option } from '../../util/Option.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
+import { openPayload, sealPayload, snapshotPayloadContext } from '../storage/SealedPayload.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { DEFAULT_SNAPSHOTS_TABLE, DEFAULT_SNAPSHOT_KEEP_N, STORAGE_IDENTITY_TABLE } from '../Constants.js';
 import { applySqliteBusyTimeout } from '../journals/SqliteClient.js';
 import { SqliteSnapshotStoreOptionsValidator } from './SqliteSnapshotStoreOptions.js';
 import type { SqliteSnapshotStoreOptions, SqliteSnapshotStoreOptionsType } from './SqliteSnapshotStoreOptions.js';
 import type { StorageLocality } from '../StorageLocality.js';
+
+type SnapshotRow = {
+  persistence_id: string;
+  sequence_nr: number;
+  payload: string;
+  timestamp: number;
+};
 
 type Statements = {
   insert: SqliteStatement;
@@ -21,7 +29,8 @@ type Statements = {
 };
 
 /**
- * SQLite-backed SnapshotStore — JSON payloads, single table, prune-on-save.
+ * SQLite-backed SnapshotStore — JSON payloads (sealed when the actor sets a
+ * persistence hook, #1802), single table, prune-on-save.
  * Works on Bun, Node and Deno via the `SqliteDriver` abstraction.
  * Construction is lazy (same pattern as `SqliteJournal`): the DB is opened on
  * the first save / load call, and an open that fails closes the handle it
@@ -37,15 +46,17 @@ export class SqliteSnapshotStore implements SnapshotStore {
   readonly storageLocality: StorageLocality = 'node-local';
 
   /**
-   * JSON text in a SQLite column — `options` is bound and never read (#960).
-   * Declared here rather than inherited: this store is a standalone
-   * `implements SnapshotStore` and shares no base with the relational
-   * family, unlike its durable-state twin.
+   * JSON text in a SQLite column, or the sealed `ats1:` frame when the actor
+   * sets a hook — all three honoured on both paths (#1802), through the same
+   * `storage/SealedPayload.ts` as the relational family.  Declared here
+   * rather than inherited: this store is a standalone `implements
+   * SnapshotStore` and shares no base with the relational family, unlike its
+   * durable-state twin.
    */
   readonly persistenceOptionSupport: PersistenceOptionSupport = {
-    encryption: false,
-    compression: false,
-    integrity: false,
+    encryption: true,
+    compression: true,
+    integrity: true,
   };
 
   private cachedStorageIdentity: string | null = null;
@@ -85,13 +96,22 @@ export class SqliteSnapshotStore implements SnapshotStore {
     this.keepN = resolvedOptions.keepN ?? DEFAULT_SNAPSHOT_KEEP_N;
   }
 
-  async save<S>(persistenceId: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
-    // SQLite store has no compression / encryption — options ignored.
+  async save<S>(persistenceId: string, seq: number, state: S, options?: PersistenceOptions): Promise<Snapshot<S>> {
+    let payload: string;
+    try {
+      payload = await sealPayload(
+        encodePayload(state, this.options.serializer), persistenceId, snapshotPayloadContext(persistenceId, seq), options,
+      );
+    } catch (e) {
+      throw new JournalError(
+        `SqliteSnapshotStore.save: cannot seal the snapshot of ${persistenceId}@${seq}: ${(e as Error).message}`, e,
+      );
+    }
     await this.ensureOpen();
     const statements = this.statements!;
     const now = Date.now();
     try {
-      statements.insert.run(persistenceId, seq, encodePayload(state, this.options.serializer), now);
+      statements.insert.run(persistenceId, seq, payload, now);
     } catch (e) {
       throw new JournalError(`SqliteSnapshotStore.save failed: ${(e as Error).message}`, e);
     }
@@ -103,38 +123,41 @@ export class SqliteSnapshotStore implements SnapshotStore {
     return { persistenceId: persistenceId, sequenceNr: seq, state, timestamp: now };
   }
 
-  async loadLatest<S>(persistenceId: string, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
+  async loadLatest<S>(persistenceId: string, options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
     await this.ensureOpen();
-    const row = this.statements!.latest.get(persistenceId) as {
-      persistence_id: string;
-      sequence_nr: number;
-      payload: string;
-      timestamp: number;
-    } | undefined;
+    const row = this.statements!.latest.get(persistenceId) as SnapshotRow | undefined;
     if (!row) return none;
-    return some({
-      persistenceId: row.persistence_id,
-      sequenceNr: row.sequence_nr,
-      state: decodePayload(row.payload, this.options.serializer) as S,
-      timestamp: row.timestamp,
-    });
+    return some(await this.toSnapshot<S>(row, options));
   }
 
-  async loadBefore<S>(persistenceId: string, seq: number, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
+  async loadBefore<S>(persistenceId: string, seq: number, options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
     await this.ensureOpen();
-    const row = this.statements!.before.get(persistenceId, seq) as {
-      persistence_id: string;
-      sequence_nr: number;
-      payload: string;
-      timestamp: number;
-    } | undefined;
+    const row = this.statements!.before.get(persistenceId, seq) as SnapshotRow | undefined;
     if (!row) return none;
-    return some({
+    return some(await this.toSnapshot<S>(row, options));
+  }
+
+  private async toSnapshot<S>(row: SnapshotRow, options: PersistenceOptions | undefined): Promise<Snapshot<S>> {
+    let json: string;
+    try {
+      json = await openPayload(
+        row.payload,
+        row.persistence_id,
+        snapshotPayloadContext(row.persistence_id, row.sequence_nr),
+        options,
+        { allowPlaintextRows: this.options.allowPlaintextRows ?? false },
+      );
+    } catch (e) {
+      throw new JournalError(
+        `SqliteSnapshotStore: snapshot ${row.persistence_id}@${row.sequence_nr} refused: ${(e as Error).message}`, e,
+      );
+    }
+    return {
       persistenceId: row.persistence_id,
       sequenceNr: row.sequence_nr,
-      state: decodePayload(row.payload, this.options.serializer) as S,
+      state: decodePayload(json, this.options.serializer) as S,
       timestamp: row.timestamp,
-    });
+    };
   }
 
   async delete(persistenceId: string, toSeq: number): Promise<void> {

@@ -1,9 +1,9 @@
-import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
+import { SealedPayloadOptionsBuilder, type SealedPayloadOptionsBase } from '../storage/SealedPayloadOptions.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import { assertRemoteLibSqlUrl } from '../journals/LibSqlJournalOptions.js';
 import type { LibSqlClientLike, LibSqlConnection } from '../journals/LibSqlClient.js';
 
-export interface LibSqlDurableStateStoreOptionsType extends LibSqlConnection, StoreSerializerOptionsBase {
+export interface LibSqlDurableStateStoreOptionsType extends LibSqlConnection, SealedPayloadOptionsBase {
   /** Durable-state table name.  Default: `durable_state`. */
   readonly table?: string;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
@@ -17,7 +17,7 @@ export interface LibSqlDurableStateStoreOptionsType extends LibSqlConnection, St
  *       .withUrl('libsql://my-db.turso.io')
  *       .withAuthToken(process.env.TURSO_AUTH_TOKEN))
  */
-export class LibSqlDurableStateStoreOptionsBuilder extends StoreSerializerOptionsBuilder<LibSqlDurableStateStoreOptionsType> {
+export class LibSqlDurableStateStoreOptionsBuilder extends SealedPayloadOptionsBuilder<LibSqlDurableStateStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new LibSqlDurableStateStoreOptionsBuilder()`. */
   static create(): LibSqlDurableStateStoreOptionsBuilder {
     return new LibSqlDurableStateStoreOptionsBuilder();

@@ -7,8 +7,9 @@ import type { StorageUseKind } from './StorageLocality.js';
  * The three per-actor hooks (`compression()`, `encryption()`, `integrity()`)
  * are folded into a `PersistenceOptions` and handed to the snapshot or
  * durable-state store on every read and every write — never to the journal,
- * whose contract takes no options (#1430) — but only the object-storage pair
- * has ever read them.
+ * whose contract takes no options (#1430) — but for a long time only the
+ * object-storage pair read them; the SQL snapshot and durable-state stores
+ * joined it in #1802.
  * Every other shipped store binds the parameter and drops it, and the
  * contracts used to *sanction* that — "stores that cannot honour them
  * silently ignore the field", a clause written for `compression`, where
@@ -128,8 +129,9 @@ export function unsupportedPersistenceOptionMessage(
   const refusal = `persistence: this actor sets ${field}(), but the ${kind} '${storeName}' does not implement `
     + `${field} — it accepts PersistenceOptions and never reads them, so the write would be stored `
     + `unprotected and the read would hand back unverified data, with nothing reporting either (#960). `
-    + 'Use the object-storage snapshot or durable-state store, which honours all three hooks on both '
-    + `the write and the read path, or drop the ${field}() override. Declaring `
+    + 'Use an object-storage or SQL (Postgres, MariaDB, SQL Server, libSQL, D1, SQLite) snapshot or '
+    + 'durable-state store, which honour all three hooks on both the write and the read path (#1802), '
+    + `or drop the ${field}() override. Declaring `
     + `{ mode: 'none' } is accepted by every store and is the way to say "deliberately unprotected".`;
   if (kind !== 'snapshot-store') return refusal;
   return `${refusal} Switching stores protects the snapshots and nothing else (#1430). `

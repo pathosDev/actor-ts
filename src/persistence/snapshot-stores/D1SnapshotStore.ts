@@ -23,6 +23,7 @@ export class D1SnapshotStore extends RelationalSnapshotStore {
       keepN: resolvedOptions.keepN,
       autoCreateTables: resolvedOptions.autoCreateTables,
       serializer: resolvedOptions.serializer,
+      allowPlaintextRows: resolvedOptions.allowPlaintextRows,
       ownsPool: resolvedOptions.client === undefined,
       openPool: async () => adaptD1Client(buildD1Client(resolvedOptions)),
     });

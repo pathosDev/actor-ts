@@ -1,7 +1,7 @@
-import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
+import { SealedPayloadOptionsBuilder, type SealedPayloadOptionsBase } from '../storage/SealedPayloadOptions.js';
 import { MariaDbOptionsValidatorBase, type MariaDbConnection, type MariaDbPoolLike } from '../journals/MariaDbClient.js';
 
-export interface MariaDbDurableStateStoreOptionsType extends MariaDbConnection, StoreSerializerOptionsBase {
+export interface MariaDbDurableStateStoreOptionsType extends MariaDbConnection, SealedPayloadOptionsBase {
   /** Table name.  Default: `durable_state`. */
   readonly table?: string;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
@@ -17,7 +17,7 @@ export interface MariaDbDurableStateStoreOptionsType extends MariaDbConnection, 
  * typed `withMaxPoolSize` … `withCaFile`) come from the shared
  * {@link MariaDbConnection} mixin.
  */
-export class MariaDbDurableStateStoreOptionsBuilder extends StoreSerializerOptionsBuilder<MariaDbDurableStateStoreOptionsType> {
+export class MariaDbDurableStateStoreOptionsBuilder extends SealedPayloadOptionsBuilder<MariaDbDurableStateStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new MariaDbDurableStateStoreOptionsBuilder()`. */
   static create(): MariaDbDurableStateStoreOptionsBuilder {
     return new MariaDbDurableStateStoreOptionsBuilder();

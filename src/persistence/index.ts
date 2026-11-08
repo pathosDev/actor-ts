@@ -104,6 +104,12 @@ export {
 } from './StoreConfig.js';
 export { StoreSerializerOptionsBuilder } from './storage/StoreSerializerOptions.js';
 export type { StoreSerializerOptionsBase } from './storage/StoreSerializerOptions.js';
+// The SQL stores' carrier for the per-actor hooks (#1802).  The error class is
+// exported so a caller discriminates on it rather than on wording; the prefix
+// so an operator's own tooling can tell a sealed row from a plain one.
+export { SEALED_PAYLOAD_PREFIX, SealedPayloadError } from './storage/SealedPayload.js';
+export { SealedPayloadOptionsBuilder } from './storage/SealedPayloadOptions.js';
+export type { SealedPayloadOptionsBase } from './storage/SealedPayloadOptions.js';
 
 export { InMemoryJournal } from './journals/InMemoryJournal.js';
 export { SqliteJournal } from './journals/SqliteJournal.js';

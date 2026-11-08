@@ -1,9 +1,9 @@
-import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
+import { SealedPayloadOptionsBuilder, type SealedPayloadOptionsBase } from '../storage/SealedPayloadOptions.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import { assertLocalSqlitePath, type SqliteConnection } from '../journals/SqliteClient.js';
 import type { SqliteDb } from '../../runtime/sqlite/index.js';
 
-export interface SqliteDurableStateStoreOptionsType extends SqliteConnection, StoreSerializerOptionsBase {
+export interface SqliteDurableStateStoreOptionsType extends SqliteConnection, SealedPayloadOptionsBase {
   /** Durable-state table name.  Default: `durable_state`. */
   readonly table?: string;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
@@ -16,7 +16,7 @@ export interface SqliteDurableStateStoreOptionsType extends SqliteConnection, St
  *     new SqliteDurableStateStore(SqliteDurableStateStoreOptions.create()
  *       .withPath('./state.db'))
  */
-export class SqliteDurableStateStoreOptionsBuilder extends StoreSerializerOptionsBuilder<SqliteDurableStateStoreOptionsType> {
+export class SqliteDurableStateStoreOptionsBuilder extends SealedPayloadOptionsBuilder<SqliteDurableStateStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new SqliteDurableStateStoreOptionsBuilder()`. */
   static create(): SqliteDurableStateStoreOptionsBuilder {
     return new SqliteDurableStateStoreOptionsBuilder();
