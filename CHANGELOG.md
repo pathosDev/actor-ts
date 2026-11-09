@@ -6108,6 +6108,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A cluster that is merely smaller than `StaticQuorum`'s `quorum-size`, or
+  than `KeepReferee`'s `down-all-if-below-quorum`, is no longer downed; a node
+  starting with `quorum-size = 3` downed itself on its first stable view,
+  before its peers had joined** (#933). Both strategies now decide nothing
+  while nothing is unreachable — a small cluster has no partition to resolve —
+  as `LeaseMajority` and `KeepMajority` already did. A partition that leaves a
+  side below the quorum still downs that side. The `static-quorum` caution on
+  the downing page says so (EN + DE).
+
 - **A node the rest of the cluster removed now learns of it and takes itself
   out; it used to keep running the shards and the singleton the survivors had
   already taken over, and `SelfRemoved` never fired on a real `Cluster`**

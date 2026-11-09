@@ -122,6 +122,14 @@ describe('KeepOldest', () => {
 });
 
 describe('StaticQuorum', () => {
+  test('nothing unreachable is no partition, however far below the quorum (#933)', () => {
+    // A single node that has just started, with two more still to come.
+    const quorumOptions = StaticQuorumOptions.create().withQuorumSize(3);
+    expect(new StaticQuorum(quorumOptions).decide(view([{ port: 1 }], [])).size).toBe(0);
+    // And a healthy cluster scaled down below it.
+    expect(new StaticQuorum(quorumOptions).decide(view([{ port: 1 }, { port: 2 }], [])).size).toBe(0);
+  });
+
   test('reachable meets quorum → down unreachable', () => {
     const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
     const quorumOptions = StaticQuorumOptions.create().withQuorumSize(2);
@@ -146,6 +154,16 @@ describe('StaticQuorum', () => {
 });
 
 describe('KeepReferee', () => {
+  test('nothing unreachable is no partition, even below down-all-if-below-quorum (#933)', () => {
+    // The referee and one more node, with a quorum of three still to come:
+    // the rule that downs everyone below it is for a partition, not for a
+    // cluster that has not finished joining.
+    const refereeOptions = KeepRefereeOptions.create()
+      .withRefereeAddress(addr(1).toString())
+      .withDownAllIfBelowQuorum(3);
+    expect(new KeepReferee(refereeOptions).decide(view([{ port: 1 }, { port: 2 }], [])).size).toBe(0);
+  });
+
   test('referee reachable on this side → down the other', () => {
     const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }], [3]);
     const refereeOptions = KeepRefereeOptions.create().withRefereeAddress(addr(1).toString());

@@ -173,12 +173,13 @@ stops the node.  Naming `static-quorum` or `keep-referee` without its key
 is refused at startup, with the missing key in the message.
 
 :::caution[`static-quorum` from a config file is a cluster-wide switch]
-Quorum is checked at *every* membership change, including the initial join,
-and a node below it downs itself.  So `quorum-size = 3` in a config every
-replica shares makes each node leave as it starts, until the third one is
-up — a rolling restart then takes the cluster down rather than through.
-Set it to a value at or below your minimum runtime size, and roll it out
-before the deployment that relies on it.
+Quorum is checked whenever a member is unreachable, and a side below it downs
+itself.  A cluster that is merely smaller than `quorum-size` — still
+bootstrapping, or scaled down — has no partition and is left alone (#933),
+but a crash during a rolling restart is one: with `quorum-size = 3` and one
+replica already restarting, the crash of a second leaves one reachable member,
+and it downs itself.  Set it to a value at or below your minimum runtime size,
+and roll it out before the deployment that relies on it.
 :::
 
 `lease-majority` needs a lease backend as well.  Its lease is built from
@@ -414,8 +415,9 @@ const staticQuorumOptions = StaticQuorumOptions.create().withQuorumSize(3);
 new StaticQuorum(staticQuorumOptions);
 ```
 
-A side wins only if it has at least `quorumSize` reachable members.
-Below the quorum, the side downs itself.
+When some member is unreachable, a side wins only if it has at least
+`quorumSize` reachable members; below the quorum, the side downs itself.
+With nothing unreachable it decides nothing, however small the cluster is.
 
 **Picks:**
 
