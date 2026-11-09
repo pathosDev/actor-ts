@@ -146,6 +146,14 @@ export type EncryptionConfig =
  * binding the storage key into both authenticators; integrity remains
  * worthwhile defense-in-depth on top of that.
  *
+ * What the AES-GCM tag does *not* cover is the manifest byte that says
+ * whether there is any ciphertext at all: a body claiming to be plaintext
+ * carries no tag to fail.  That downgrade is refused by the encryption
+ * config itself, not by integrity — a store reading with a decryption key
+ * rejects an unencrypted body unless `allowUnencryptedBodies` opens the
+ * migration window (#965) — so an encrypted deployment does not need
+ * integrity to be safe from it.
+ *
  * The binding is deployment-wide-key-shaped in one direction that
  * matters here: `integrityKey` is flat, with no per-`persistenceId`
  * derivation of its own, so before #612 a tag valid for one pid was

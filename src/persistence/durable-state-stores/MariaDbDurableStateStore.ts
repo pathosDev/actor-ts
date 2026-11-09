@@ -26,6 +26,7 @@ export class MariaDbDurableStateStore extends RelationalDurableStateStore {
       table: resolvedOptions.table,
       autoCreateTables: resolvedOptions.autoCreateTables,
       serializer: resolvedOptions.serializer,
+      allowPlaintextRows: resolvedOptions.allowPlaintextRows,
       ownsPool: resolvedOptions.pool === undefined,
       openPool: async () => adaptMariaDbPool(await buildMariaDbPool(resolvedOptions)),
     });

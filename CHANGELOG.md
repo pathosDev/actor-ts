@@ -11,6 +11,28 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`encryption()`, `integrity()` and `compression()` work on the SQL
+  snapshot and durable-state stores** — SQLite, Postgres, MariaDB, SQL
+  Server, libSQL and D1 (#1802). Until now these stores refused an actor
+  that set `encryption()` or `integrity()` at start (#960), which left the
+  object-storage pair as the only way to get at-rest encryption for
+  snapshots or durable state. A row written under a hook is the
+  object-storage `BodyCodec` frame — the same AES-256-GCM, the same
+  per-persistence-id HKDF subkey, the same master-key ring and rotation —
+  stored as base64 behind an `ats1:` prefix in the existing `payload`
+  column, so no schema changes and rows written without a hook stay exactly
+  as they were. Each frame is bound to its persistence id and its sequence
+  number (snapshots) or revision (durable state), so a row moved to another
+  address fails to decrypt; a whole durable-state row put back to an older
+  copy is still undetectable without state kept outside the table. All
+  twelve store builders gain `withAllowPlaintextRows(boolean)` for the
+  migration of an actor that turns a hook on over existing rows; the next
+  write seals the row. `sse-s3` / `sse-kms` are object-storage modes and a
+  SQL store refuses them rather than writing plaintext. Events in the
+  journal are unchanged and stay plaintext (#1430). New exports:
+  `SEALED_PAYLOAD_PREFIX`, `SealedPayloadError`,
+  `SealedPayloadOptionsBuilder`, `SealedPayloadOptionsBase`.
+
 - **`Cluster.bootstrap` forwards six more settings, under the names
   `ClusterOptions` and `ActorSystemOptions` give them: `withAppVersion`,
   `withFailureDetectorAutoDown`, `withSplitBrainResolver` and
@@ -9080,6 +9102,166 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   supported state.
 
 ### Security
+
+- **BREAKING — an object-storage store that reads with a decryption key
+  refuses an unencrypted body** (#965, CWE-757). Whether a body is
+  encrypted is recorded in a manifest byte of the body itself, outside the
+  AES-GCM tag, and `decodeBody` took that byte at its word: a store
+  configured `client-aes256-gcm` read a body whose flags said "not
+  encrypted" as plaintext. Anyone with write access to the bucket could
+  therefore replace an actor's encrypted state or snapshot with five bytes
+  of header and JSON of their choosing, needing no key. Supplying a key is
+  now the assertion that the body is encrypted, held the way an integrity
+  key holds an untagged body (#579), for `ObjectStorageDurableStateStore`
+  and `ObjectStorageSnapshotStore` alike and through the per-call
+  `PersistenceOptions.encryption` path too. The SQL stores closed the same
+  hole in #1802.
+
+  **Migration.** A bucket that already holds bodies written before
+  encryption was switched on needs the migration window:
+  `withAllowUnencryptedBodies(true)` on the store, or on
+  `ObjectStoragePluginOptions` for both registered stores. Then load and
+  write each `persistenceId` once — the write encrypts it; snapshots are
+  superseded by the next save — and remove the option. The re-encryption
+  sweep does not encrypt plaintext bodies, and the docs that said
+  enabling encryption on an existing bucket "just works" have been
+  corrected. A bucket encrypted from the start needs nothing.
+
+- **Only an approved run on a release ref can publish `actor-ts` to npm**
+  (#704). npm's Trusted Publisher checks the repository and the workflow
+  file name, never the ref, and the publish job's only gate was "this
+  version is not on npm yet" — idempotency, not authorization. Any account
+  with write access could therefore dispatch `publish.yml` on a branch of
+  its own, or push a copy with `on: push`, and ship a provenance-attested
+  tarball under a version nobody released. The `publish` job now runs in
+  the GitHub environment `npm`, which admits only `v*` tags and `main` and
+  requires a maintainer's approval, and the Trusted Publisher is registered
+  against that environment, so npm hands no token to a run outside it.
+  `WorkflowHygiene.test.ts` holds the key in place. For maintainers: a
+  release run now waits for that approval before anything is published.
+
+- **The SQL snapshot and durable-state stores refuse a row that lacks the
+  protection the actor asks for** (#1802, the SQL half of #965). Under
+  `encryption()` a plaintext JSON row, or a sealed frame without encryption,
+  is refused; under `integrity()` a row without a tag is; and every sealed
+  frame must be bound to the row it is read from. The bytes that say "not
+  encrypted" are bytes anyone with write access to the table controls, so the
+  frame's own flags are never taken as the answer. `withAllowPlaintextRows`
+  opens the migration window and is meant to be dropped once the rows are
+  rewritten.
+
+- **BREAKING — `cached()` no longer replays one caller's response to
+  another** (#980, CWE-524). It stored the whole response, headers verbatim,
+  under a key that said nothing about the caller, and a hit returns before the
+  wrapped handler — so with the documented path-keyed usage the second caller
+  received the first one's body and `Set-Cookie`, and an unauthenticated
+  caller got a 200 the handler's own 401 never had the chance to send. The
+  wrapper now stores only `GET` and answers only `GET`/`HEAD` from the cache
+  (`HEAD` reads a `GET` entry and never writes one); a request carrying
+  `Authorization`, `Proxy-Authorization` or `Cookie` bypasses the cache
+  unless the new `identity` option folds a per-caller scope into the key; a
+  response carrying `Set-Cookie`, `Cache-Control: no-store`/`no-cache`/
+  `private`, `Vary: *` or a streaming body is not stored; and one carrying
+  `Vary` is served only to a request with the same values of the named
+  headers, which are recorded as SHA-256 digests and never verbatim, so a
+  `Vary: Authorization` response puts no bearer token or cookie into the
+  backing cache. Stampede protection follows the same header rules — a
+  request waiting on another's in-flight handler takes its response only
+  where the two may share it, including a response `cacheStatuses` keeps out
+  of the cache (it governs storing, not sharing). An entry already in a
+  shared cache is re-checked before it is served: one carrying `Set-Cookie`,
+  an unshareable `Cache-Control`, `Vary: *` or a `Vary` with no recorded
+  values is treated as a miss. An entry minted before the upgrade from a
+  credentialed request whose response carried neither `Set-Cookie` nor
+  `Vary` is indistinguishable from a public one, though, and is served until
+  it expires — see the migration note. A streamed response no longer turns
+  into a cached `{}`.
+
+  **Migration.** Authorization must wrap `cached(...)`, not sit in the
+  handler — a hit never runs the handler. An endpoint that relied on caching
+  credentialed requests through a caller-derived `key` now bypasses the cache
+  until it sets `identity` (from verified claims, e.g.
+  `jwtClaimsOf(request)?.sub`; `() => 'public'` for a response that genuinely
+  does not depend on the caller), and with `identity` set a manual
+  invalidation deletes `<keyPrefix><scope>:<key>` with the scope
+  URI-encoded — `` `rsp:${encodeURIComponent(sub)}:users:me` ``, since a raw
+  `auth0|abc` misses. A token carried in any header other than
+  `Authorization`, `Proxy-Authorization` or `Cookie` (e.g.
+  `BearerTokenAuth({ headerName })`) does not trigger the bypass, so a
+  per-caller response behind one needs `identity`. Non-`GET` routes wrapped
+  in `cached()` now always run their handler. With a shared (e.g. Redis)
+  cache, once the last pod on the old version is gone, flush the
+  response-cache `keyPrefix` (`rsp:` by default) or let `ttlMs` elapse
+  before relying on the new rules — the old version's entries for
+  credentialed requests can otherwise still be served.
+
+- **A promotion can no longer choose the roles of the node it promotes**
+  (#1104). While a node is `joining` or `weakly-up`, a claim about its own
+  record is accepted when it says `up`, because the leader's promotion has to
+  arrive from outside — and that exception asks nothing of the sender. The
+  record was then merged wholesale, so a single gossip frame from an address
+  the node had never heard of promoted it with roles of the sender's choosing
+  (`["worker"]` became `["shard-host","singleton-host"]`), which is what shard
+  placement, singleton hosting, routing and downing quorums are computed from,
+  and the node gossiped the substituted set onward as its own. The node's own
+  roles now join the facts it keeps over any record about itself (address
+  incarnation, storage identities, configuration facts, app version), and so
+  does the absence of a `removedAt`. Storage identities and configuration
+  facts are now kept outright too: a node that had resolved no storage
+  identity of its own no longer adopts, and re-gossips, one a promotion
+  carried. A genuine leader promotion carries the roles the node gossiped and
+  lands unchanged. What a promotion still carries is the status and the
+  record's version, taken as sent and bounded only by the #114 skew cap
+  (`maxVersionSkewMs`, 5 minutes by default) — so a stranger can still date
+  this node's record up to that far ahead; clamping it is tracked in
+  #1797. The exception still does not require standing from the
+  sender: the frame carrying a joiner's promotion is routinely from a peer it
+  has not merged yet, and any stranger can grant itself standing one frame
+  earlier by announcing itself `up`.
+
+- **A gossip frame's payload `from` no longer files a member** (#939). `onGossip`
+  ended with a door that added the payload's `from` as `joining` whenever the
+  node held no record of it — outside `mergeMember`, so with no `maySpeakFor`,
+  and keyed on a field the sender writes rather than on the connection. One
+  frame naming a low-sorting address made it a member; the leader promoted it,
+  `leader()` moved to a node that does not exist and `isLeader()` went false on
+  the real leader, stopping the shard coordinator and misplacing the
+  singleton. The heartbeat and gossip ticks then dialled the address, so the
+  same frame also chose where this node connected (#936). The door is removed:
+  every gossip frame carries the sender's own record, which merges as a
+  self-announcement held to the connection's identity. What still mints a
+  member is that self-announcement, under the identity a peer presents in its
+  `hello` — which carries no credential, so without mTLS binding it to the
+  peer certificate (#912) anyone who can connect still chooses it.
+  **Behaviour change:** a joining node whose own record the merge refuses for
+  a wall clock more than `maxVersionSkewMs` ahead is no longer filed anyway as
+  a role-less `joining` member at version 1; it stays out, with the existing
+  `WARN` naming the cap, until its clock is back inside the budget.
+
+- **The cluster's failure detector no longer creates an entry for every
+  connection identity a frame arrives under** (#1103). `handleWire` credited
+  liveness for each frame before dispatching it, and the heartbeat handler
+  added a sample for each heartbeat frame, so an address the detector had
+  never seen got an entry — and only the local removal routes (a peer's
+  `leave`, `down()`, a downing decision) forgot one. Without mTLS the
+  identity is whatever the peer's `hello` claimed, so one peer reconnecting
+  under fresh names grew the detector without bound past the `max-members`
+  cap the member map holds: 500 names left 502 entries beside 3 members,
+  each carrying a `max-sample-size` window under the φ-accrual detector.
+  Liveness now reaches the detector only for a peer the node watches — a
+  member that is not a tombstone, or a configured seed that is not one
+  either — and every other frame is still dispatched. Every route that
+  admits a member registers it, and every route that takes one out of the
+  live set forgets its entry, including the two that kept it before: a
+  tombstone stored from gossip, and the tombstone prune. So the detector
+  holds an entry per live member and at most one per seed. A joiner is
+  registered by the frame that admits it, which starts its silence clock
+  where the credit used to; a seed is watched from the first dial, so one
+  that answers late is not read `unreachable` on admission; and a member
+  that returns after being tombstoned is judged from its return. A phantom
+  admitted through a gossip frame's sender field (#939) is now registered
+  too, so the detector declares it `down` like any silent member instead of
+  leaving it `up` until an operator removes it.
 
 - **A ref in a message body no longer makes the receiving node dial the
   address it names** (#936). `decodeSingleRef` rebuilt a ref marker's node

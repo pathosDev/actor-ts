@@ -162,13 +162,15 @@ class CreditCardActor extends DurableStateActor<...> {
 }
 ```
 
-Alte (unverschlüsselte) Reads funktionieren — keine Metadaten →
-Plaintext-Pfad.  Neue Writes verschlüsseln.  Schließlich:
-
-- Ein **Re-Encryption-Sweep**, gefiltert auf die
-  persistenceIds dieses Actors, migriert den Rest.
-
-Siehe [Schlüsselrotation](/de/persistence/object-storage/key-rotation/).
+Neue Writes verschlüsseln.  Ein alter, unverschlüsselter Body dieses
+Actors wird beim Lesen jetzt **abgelehnt**: Ob ein Body verschlüsselt
+ist, ist ein Byte im Body, also ist ein Plaintext-Body von einer
+Fälschung nicht zu unterscheiden (#965).  Öffne am Store das
+Migrationsfenster mit `withAllowUnencryptedBodies(true)`, lass jede
+`persistenceId` einmal laden und schreiben — der Write verschlüsselt sie
+— und entferne die Option wieder.  Der Re-Encryption-Sweep verschlüsselt
+keine Plaintext-Bodies; er rotiert verschlüsselte.  Siehe
+[Alte Payloads lesen](/de/persistence/object-storage/encryption/#alte-payloads-lesen).
 
 ## Mit dem Snapshot-Store arbeiten
 
@@ -227,13 +229,12 @@ sobald der Read-then-Write-Sweep abgeschlossen ist.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="danger" title="Nur die Object-Storage-Stores lesen diesen Hook">
-  Zehn der elf Snapshot-Stores und neun der zehn
+<Aside type="danger" title="Nur die Object-Storage- und SQL-Stores lesen diesen Hook">
+  Vier der elf Snapshot-Stores und drei der zehn
   Durable-State-Stores nehmen `PersistenceOptions` entgegen und
   sehen es nie an
   ([#960](https://github.com/pathosDev/actor-ts/issues/960)).  Auf
-  SQLite, Postgres, MariaDB, MSSQL, libSQL, D1, Cassandra, Mongo,
-  DynamoDB und dem In-Memory-Referenz-Store **verweigert** ein
+  Cassandra, Mongo, DynamoDB und dem In-Memory-Referenz-Store **verweigert** ein
   `integrity()`- oder `encryption()`-Override den Actor jetzt
   **beim Start**, statt still gar nichts zu bringen: Jeder
   ausgelieferte Store deklariert ein
@@ -250,8 +251,10 @@ import { Aside } from '@astrojs/starlight/components';
 
   Die Kontrolle wird also durchgesetzt, wo das geht, und gemeldet,
   wo nicht.  Die Stores, die alle drei Hooks auf Schreib- und
-  Lesepfad honorieren, sind der Object-Storage-Snapshot- und der
-  Durable-State-Store — jeder andere Snapshot- oder
+  Lesepfad honorieren, sind die Object-Storage- und die SQL-Stores
+  (SQLite, Postgres, MariaDB, MSSQL, libSQL, D1) für Snapshots und
+  Durable State — die SQL-Stores als versiegelte Zeile in derselben
+  Spalte ([#1802](https://github.com/pathosDev/actor-ts/issues/1802)) —, und jeder andere Snapshot- oder
   Durable-State-Store verweigert oder warnt.  Zwei Fälle bleiben
   still: `{ mode: 'none' }`, womit du "bewusst ungeschützt" sagst,
   und ein Fremd-Store, der gar kein Tripel deklariert und damit als

@@ -1,10 +1,10 @@
 import type { SqliteDriver } from '../../runtime/sqlite/index.js';
-import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
+import { SealedPayloadOptionsBuilder, type SealedPayloadOptionsBase } from '../storage/SealedPayloadOptions.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from '../Constants.js';
 import { assertLocalSqlitePath } from '../journals/SqliteClient.js';
 
-export type SqliteSnapshotStoreOptionsType = StoreSerializerOptionsBase & {
+export type SqliteSnapshotStoreOptionsType = SealedPayloadOptionsBase & {
   /**
    * Database file, or `":memory:"` for an in-memory database.  Required: a
    * snapshot store that names no database is refused rather than run in
@@ -33,7 +33,7 @@ export type SqliteSnapshotStoreOptionsType = StoreSerializerOptionsBase & {
  *
  *     new SqliteSnapshotStore(SqliteSnapshotStoreOptions.create().withPath(':memory:').withKeepN(2))
  */
-export class SqliteSnapshotStoreOptionsBuilder extends StoreSerializerOptionsBuilder<SqliteSnapshotStoreOptionsType> {
+export class SqliteSnapshotStoreOptionsBuilder extends SealedPayloadOptionsBuilder<SqliteSnapshotStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new SqliteSnapshotStoreOptionsBuilder()`. */
   static create(): SqliteSnapshotStoreOptionsBuilder {
     return new SqliteSnapshotStoreOptionsBuilder();

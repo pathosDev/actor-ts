@@ -1774,7 +1774,6 @@ export class Cluster {
     this.updateMember(downed);
     const removed = downed.withRemoved(Date.now());
     this.setMember(removed);
-    this.failureDetector.forget(member.address);
     this.emit(new MemberRemoved(removed));
     this.log.info(`operator force-down: ${member.address}`);
     return true;
@@ -2053,7 +2052,10 @@ export class Cluster {
       members: [this.memberDataForGossip(me)],
     };
     for (const seed of this.seedAddrs) {
-      this.failureDetector.register(seed);
+      // Not a seed this node holds as a tombstone: nothing decides about one,
+      // and an entry registered here would be the one its revival inherits —
+      // judged on the silence since this round instead of from its admission.
+      if (this.watchesLivenessOf(seed)) this.failureDetector.register(seed);
       this.transport.send(seed, initialGossip);
     }
   }
@@ -2577,7 +2579,8 @@ export class Cluster {
     // Liveness, once per frame and before any handler can refuse it: bytes did
     // arrive on this connection, so its peer is demonstrably alive.  Never a
     // sample — the heartbeat handler adds that, and only for a heartbeat frame.
-    this.failureDetector.heardFrom(from);
+    // Only for a peer this node watches, though: see `watchesLivenessOf`.
+    if (this.watchesLivenessOf(from)) this.failureDetector.heardFrom(from);
 
     match(message)
       .with({ kind: 'heartbeat' }, (m) => this.onHeartbeat(from, m))
@@ -2589,6 +2592,50 @@ export class Cluster {
       .with({ kind: 'unwatch' }, (m) => this.onUnwatch(from, m))
       .with({ kind: 'watch-terminated' }, (m) => this.onWatchTerminated(from, m))
       .otherwise((m) => this.onUnhandledWire(m, from));
+  }
+
+  /**
+   * Whether a frame from `peer` may touch the failure detector at all (#1103).
+   *
+   * The detector creates an entry for every address it is told about.  The
+   * connection identity is chosen by the peer — without mTLS it is whatever its
+   * `hello` said — so crediting every frame let one connection per claimed
+   * address grow the detector without bound, past the `maxMembers` cap the
+   * member map holds: 500 frames under distinct names left 502 entries beside
+   * 3 members.  The φ-accrual detector also allocates a `maxSampleSize`
+   * interval window per entry.
+   *
+   * The detector is only ever asked about a member (`failureDetectionTick`
+   * walks the member map), so an entry for anyone else is state nothing reads.
+   * Two kinds of peer are watched:
+   *
+   * - **A member that is not a tombstone.**  Admission registers it, which
+   *   starts its silence clock, so a joiner's first frame is still enough: the
+   *   frame admits it and the registration takes the instant the `heardFrom`
+   *   used to.  Down and unreachable members stay in — their frames are how a
+   *   parked or unreachable peer is seen again.  A tombstone is not watched:
+   *   nothing decides about it, {@link setMember} forgets its entry as it is
+   *   stored, and its frames do not create a new one.  A revival is admitted
+   *   afresh and registered at that instant.
+   * - **A configured seed that is not a tombstone.**  The seed loop registers
+   *   each one before it has answered, and that entry's silence clock runs
+   *   from the first dial.  A seed that answers late is admitted on that
+   *   answer, and the registration is a no-op by then — so without the seed's
+   *   own frames counting first, it would be judged on the silence since this
+   *   node started and read `unreachable` the moment it became a member.  The
+   *   seed list is fixed at start, so it bounds itself.  A seed held as a
+   *   tombstone is a member like any other: its revival registers it.
+   *
+   * Everything else is still dispatched; it only no longer creates detector
+   * state.  Together with the forgetting in {@link setMember} and
+   * {@link deleteMember}, the detector holds an entry for every live member
+   * other than this node, and otherwise only for a seed that is not a
+   * tombstone — so its size is bounded by `maxMembers` plus the seed list.
+   */
+  private watchesLivenessOf(peer: NodeAddress): boolean {
+    const member = this.members.get(peer.toString());
+    if (member !== undefined) return member.status !== 'removed';
+    return this.seedAddrs.some((seed) => seed.equals(peer));
   }
 
   private onWatch(from: NodeAddress, message: WatchMessage): void {
@@ -2719,14 +2766,15 @@ export class Cluster {
    * failover; and the acknowledgment was *sent* to that address, so a frame
    * naming an attacker-chosen `host:port` made the receiver dial it.
    *
-   * `handleWire` has already credited the liveness; what this adds is the one
+   * `handleWire` has already credited the liveness of a watched peer, and
+   * this applies the same rule (`watchesLivenessOf`); what this adds is the one
    * thing only a heartbeat frame may: an inter-arrival sample for the φ-accrual
    * detector, whose model is the peer's heartbeat schedule (#1451).
    */
   private onHeartbeat(from: NodeAddress, message: HeartbeatMessage): void {
     if (!this.isPlausibleHeartbeat(from, message)) return;
     const peer = from;
-    this.failureDetector.heartbeat(peer);
+    if (this.watchesLivenessOf(peer)) this.failureDetector.heartbeat(peer);
     // The peer's detector does not need the reply — our own heartbeats feed
     // it, and an acknowledgment is liveness only there — but it keeps the
     // round trip observable from the side that started it.
@@ -2770,8 +2818,7 @@ export class Cluster {
       this.reportRefusals(from, 'replayed-frame', message.members.length);
       return;
     }
-    const sender = NodeAddress.fromJSON(message.from);
-    this.log.debug(`gossip from ${sender}: ${message.members.length} member(s)`);
+    this.log.debug(`gossip from ${from}: ${message.members.length} member(s)`);
 
     // Snapshot the sender's standing *before* merging: this frame may be the
     // one that introduces the sender, and a claim must not be authorised by a
@@ -2783,19 +2830,18 @@ export class Cluster {
       this.mergeMember(from, senderStatus, data);
     }
 
-    // Ensure we know about the sender itself.  This insert sits *outside*
-    // `mergeMember`, so it bypassed every guard the merge path grew — it is
-    // capped here explicitly rather than left as the one door #138 forgot to
-    // close.  `sender` is the payload's self-declaration, not the connection's
-    // peer, which makes it the cheaper of the two addresses to fabricate.
-    if (!this.members.has(sender.toString())) {
-      const member = new Member(sender, 'joining', 1);
-      if (this.admitsMember(member, undefined)) {
-        this.setMember(member);
-        this.emit(new MemberJoined(member));
-      }
-    }
-
+    // No member is filed from the payload's `from` (#939).  A door here used
+    // to add it as `joining` when this node held no record of it — outside
+    // `mergeMember`, so with no `maySpeakFor` at all, and keyed on a field the
+    // sender writes rather than on the connection it came in on.  One frame
+    // naming a low-sorting address made that address a member, the leader
+    // promoted it, and `leader()` moved to a node that does not exist; and a
+    // member is an address the heartbeat and gossip ticks dial, so it was also
+    // a way to make this node connect wherever the frame said (#936).  The
+    // door had no legitimate use: every gossip frame carries the sender's own
+    // record — `gossipTick` sends the whole map, self included, and a join's
+    // first frame is `[me]` — so a sender is introduced by the loop above, as
+    // a self-announcement held to the connection's identity.
     this.rememberGossipSequence(from, message.sequence);
 
     // One line and one counter increment per frame and reason, not per refused
@@ -2923,8 +2969,12 @@ export class Cluster {
    * where C's own counter has reached.
    *
    * **Only for an address the member map holds**, which is what bounds this map
-   * by the same caps as that one — the sender fallback above has already run, so
-   * an honest peer is on file by the time this is asked.
+   * by the same caps as that one.  Every frame carries the sender's own record
+   * and the merge loop has just run over it, so an honest peer whose record was
+   * admitted is on file by the time this is asked.  One whose record was refused
+   * — a clock past `maxVersionSkewMs`, a full member map — gets no mark, which
+   * costs nothing: its next frame is judged against no mark, as a first frame
+   * is, and it is not a member to be replayed into anyway.
    *
    * Plausibility is not re-checked here: {@link admitsGossipSequence} refuses an
    * implausible frame outright, so nothing that reaches this point carries a
@@ -3130,7 +3180,6 @@ export class Cluster {
     // `tombstonePruneTick` uses to drop the entry once `tombstoneTtlMs`
     // has elapsed (#75).
     this.setMember(removed);
-    this.failureDetector.forget(peer);
     this.emit(new MemberLeft(leaving));
     this.emit(new MemberRemoved(removed));
     this.maybeEmitLeaderChange();
@@ -3227,7 +3276,6 @@ export class Cluster {
         // at all — so a symmetric partition leaves neither side with a way
         // to hear the other again.  Closing that is #930.
         this.deleteMember(member.address.toString());
-        this.failureDetector.forget(member.address);
         // Transient `removed` Member only used for the event emit —
         // not stored, so the missing `removedAt` here is intentional.
         const removed = downed.withStatus('removed');
@@ -3498,7 +3546,6 @@ export class Cluster {
       // after `tombstoneTtlMs` (#75).
       const removed = downed.withRemoved(Date.now());
       this.setMember(removed);
-      this.failureDetector.forget(member.address);
       this.emit(new MemberRemoved(removed));
     }
     if (downsSelf) this.leaveAfterDowningSelf();
@@ -3664,11 +3711,12 @@ export class Cluster {
    *   `members.get(…)` per record, so the first creates the entry under the
    *   tight cap and the second — same frame, same peer — is an update and got
    *   the wide one.
-   * - A frame with **no member records at all**.  `onGossip`'s sender fallback
-   *   files the connection's self-declared address by itself, so the next
-   *   frame is an update too.  That fallback is what makes a refusal cost one
-   *   gossip round rather than being permanent; the same property was the way
-   *   around the cap.
+   * - A frame with **no member records at all**.  `onGossip` used to end with
+   *   a door that filed the frame's self-declared `from` by itself, so the
+   *   next frame was an update too.  That door made a refusal cost one gossip
+   *   round rather than being permanent, and the same property was the way
+   *   around the cap.  It is gone (#939): a sender is introduced only by its
+   *   own record, under this same cap.
    *
    * Any rule that lets a record *earn* the wide cap fails the same way, one
    * step later: without per-node credentials every step of the earning is
@@ -3685,13 +3733,14 @@ export class Cluster {
    * either side of it are far apart: an NTP-disciplined host sits milliseconds
    * from true, a host that never synced at all is hours out.
    *
-   * **What a refusal costs.**  It is not exclusion: a node announcing itself
-   * is still recorded by the sender fallback, at version 1 with no roles.  It
-   * *is* durable, which the two-cap version was not — a node whose clock runs
-   * more than `maxVersionSkewMs` ahead of this one stays in the member list
-   * without roles until its clock comes back inside the budget.  That was
-   * always this cap's verdict on such a node; what changed is that the verdict
-   * now sticks instead of being reversed by the node's second frame.
+   * **What a refusal costs.**  It is exclusion, and it is durable: a node
+   * whose clock runs more than `maxVersionSkewMs` ahead of this one is not
+   * filed at all — its own record is the only thing that could introduce it,
+   * and that is the record refused — so it stays out, with the per-frame
+   * `version-skew` WARN naming the cap on the receiving side, until its clock
+   * comes back inside the budget.  Before #939 the sender door still filed it,
+   * role-less, and before the single cap its second frame reversed the
+   * verdict; neither softening is left.
    * Deployments whose clocks are known to run loose raise the knob.
    */
   private admitsVersion(incoming: Member): boolean {
@@ -3915,12 +3964,21 @@ export class Cluster {
    * If the record arrives already past `joining` (common via gossip merging),
    * the matching status event follows the `MemberJoined`, so subscribers
    * (ShardRegion, etc.) re-allocate.
+   *
+   * This is the one route by which an address becomes a live member, so it is
+   * where the failure detector's entry for it starts — and its silence clock
+   * with it, at the receipt of the frame that carried the record (#1103).  The
+   * address holds no entry from an earlier run by now: {@link setMember} and
+   * {@link deleteMember} forget one as the member leaves the live set.  The
+   * only entry `register` can find in place is a configured seed's, fed by
+   * that seed's own frames since this node first dialled it, which is the
+   * history worth keeping.  A record that arrives as a tombstone gets none.
    */
   private admitFirstSighting(incoming: Member): void {
     this.setMember(incoming);
     this.checkStorageIdentityAgreement(incoming);
     this.checkConfigurationAgreement(incoming);
-    this.failureDetector.register(incoming.address);
+    if (incoming.status !== 'removed') this.failureDetector.register(incoming.address);
     this.emit(new MemberJoined(incoming));
     if (incoming.status !== 'joining') {
       this.emitStatusTransition(new Member(incoming.address, 'joining', 0), incoming);
@@ -3994,7 +4052,6 @@ export class Cluster {
     // down — see `emitStatusTransition` (#1428).
     this.updateMember(downed);
     this.deleteMember(existing.address.toString());
-    this.failureDetector.forget(existing.address);
     // Transient, like the detector route's: only the event carries it.
     this.emit(new MemberRemoved(downed.withStatus('removed')));
     this.admitFirstSighting(incoming);
@@ -4013,6 +4070,25 @@ export class Cluster {
    * a hostile one can send whatever it likes, so the self record's identifier
    * would be whatever the last peer to promote us happened to say.
    *
+   * **The roles are the sharpest case (#1104).**  The promotion exception asks
+   * nothing of the sender — it cannot, see {@link isOwnPromotion} — so while
+   * this node is `joining` any stranger's single frame could promote it *with
+   * roles of the stranger's choosing*.  Roles are what shard placement,
+   * singleton hosting, routing and downing quorums are computed from, and the
+   * node would then gossip the substituted set onward as its own.  They are
+   * this node's configuration ({@link selfRoles}), fixed for the life of the
+   * incarnation, so the local set is taken outright.  A genuine leader
+   * promotes from the record this node gossiped and carries the same set, so
+   * the substitution changes nothing for it.  `removedAt` is kept from the
+   * local record for the same reason: the only status a claim about this node
+   * may set is `up`, and a tombstone timestamp belongs to no `up` record.
+   *
+   * What a promotion still carries is the status and the record's
+   * **version**, which is taken as sent — bounded by the #114 skew cap
+   * ({@link admitsVersion}, `maxVersionSkewMs`) and by nothing else, so a
+   * stranger can still push this node's version up to that bound.  Clamping it
+   * is tracked in #1797; this method deliberately leaves it alone.
+   *
    * Substituting the local address is the one incarnation comparison that needs
    * no distributed agreement, because it only ever discards a peer's claim in
    * favour of a fact this node owns.  It is not a refusal: the promotion still
@@ -4025,8 +4101,18 @@ export class Cluster {
     // the same reason (#1358): they are a fact this node owns.  A leader
     // promoting us from a view that predates our publication would otherwise
     // merge a self record without them — wholesale, per the rule above — and
-    // wipe what only this node can know.
-    const ownIdentities = this.selfStorageIdentitiesSnapshot() ?? member.storageIdentities;
+    // wipe what only this node can know.  Taken outright rather than with
+    // `??`, and that half matters as much (#1104): a node that has resolved
+    // nothing yet — no persistence, or a store still starting — would
+    // otherwise store the promotion's claims as its own, and since
+    // `memberDataForGossip` stamps only a defined snapshot, gossip them onward
+    // too.  A peer with a real journal would then report a mismatch for a
+    // database this node never named and spend its once-per-kind latch on it,
+    // so the genuine divergence that came later would go unreported.  Nothing
+    // is lost by refusing the fallback: an identity resolved after the
+    // promotion goes through `publishStorageIdentity` and rides every outgoing
+    // self record from then on.
+    const ownIdentities = this.selfStorageIdentitiesSnapshot();
     // The configuration facts are the same kind of thing one field over
     // (#844): what this node resolved for itself, which no peer is in a
     // position to restate.  A promotion merged wholesale from a view that
@@ -4038,21 +4124,28 @@ export class Cluster {
     // correct either way.  Worth stating precisely rather than overclaiming —
     // the field is read by operators and by the DevTools tap, and a self
     // record that contradicts the frames the same node is sending is its own
-    // kind of wrong.
-    const ownFacts = this.selfConfigurationFactsSnapshot() ?? member.configurationFacts;
+    // kind of wrong.  Taken outright, like the identities above: the
+    // constructor publishes the framework's own facts before the first frame,
+    // so a fallback could only ever fill an empty set — `checked-paths` set to
+    // nothing, or only to names the application has not published yet — with
+    // a peer's, and those are claims this node never made.
+    const ownFacts = this.selfConfigurationFactsSnapshot();
     // The app version is the plainest of the three (#843): fixed for the life
     // of this incarnation and known before the first frame, so a peer's record
     // about it is an echo of ours or wrong.  Taken outright rather than with
     // `??`, so a promotion cannot hand a node that states none a label either.
     const ownAppVersion = this.selfAppVersion;
+    const ownRemovedAt = this.members.get(this.selfAddress.toString())?.removedAt;
     if (member.address.incarnation === this.selfAddress.incarnation
       && ownIdentities === member.storageIdentities
       && ownFacts === member.configurationFacts
-      && ownAppVersion === member.appVersion) {
+      && ownAppVersion === member.appVersion
+      && ownRemovedAt === member.removedAt
+      && sameRoles(this.selfRoles, member.roles)) {
       return member;
     }
     return new Member(
-      this.selfAddress, member.status, member.version, member.roles, member.removedAt,
+      this.selfAddress, member.status, member.version, this.selfRoles, ownRemovedAt,
       ownIdentities, ownFacts, ownAppVersion,
     );
   }
@@ -4065,6 +4158,13 @@ export class Cluster {
    *
    * Keyed by `address.toString()` like every other entry; the map has no other
    * key shape.
+   *
+   * It is also where a member's failure-detector entry ends when the member
+   * becomes a tombstone, whichever route stored it — a local removal or a
+   * gossiped `removed` record (#1103).  Nothing decides about a tombstone, and
+   * an entry left behind would be what its revival inherits: `register` is a
+   * no-op on an existing entry, so the new run would be judged on the old
+   * run's silence and read `unreachable` on the first detection tick.
    */
   private setMember(member: Member): void {
     const key = member.address.toString();
@@ -4072,6 +4172,7 @@ export class Cluster {
     if (previous?.status === 'removed') this.tombstoneCount--;
     if (member.status === 'removed') this.tombstoneCount++;
     this.members.set(key, member);
+    if (member.status === 'removed') this.failureDetector.forget(member.address);
   }
 
   /** The matching delete — see {@link setMember}. */
@@ -4089,6 +4190,10 @@ export class Cluster {
     // frames of the address's next incarnation, whose counter starts from its
     // own clock rather than from where the previous one left off (#112).
     this.acceptedGossipSequences.delete(key);
+    // Likewise, or the next incarnation would inherit this one's silence clock
+    // and interval window (#1103).  A tombstone's entry already went in
+    // `setMember`; this is the one for the routes that delete a live member.
+    this.failureDetector.forget(previous.address);
   }
 
   private updateMember(next: Member): void {
@@ -4324,6 +4429,13 @@ function sameConfigurationFacts(
   for (const name of names) {
     if (!Object.hasOwn(incoming, name) || incoming[name] !== held[name]) return false;
   }
+  return true;
+}
+
+/** Whether two role sets hold the same names — order-blind, as roles are. */
+function sameRoles(held: ReadonlySet<string>, incoming: ReadonlySet<string>): boolean {
+  if (held.size !== incoming.size) return false;
+  for (const role of held) if (!incoming.has(role)) return false;
   return true;
 }
 

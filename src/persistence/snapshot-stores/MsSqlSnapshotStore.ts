@@ -24,6 +24,7 @@ export class MsSqlSnapshotStore extends RelationalSnapshotStore {
       keepN: resolvedOptions.keepN,
       autoCreateTables: resolvedOptions.autoCreateTables,
       serializer: resolvedOptions.serializer,
+      allowPlaintextRows: resolvedOptions.allowPlaintextRows,
       ownsPool: resolvedOptions.pool === undefined,
       openPool: async () => adaptMsSqlPool(await buildMsSqlPool(resolvedOptions)),
     });

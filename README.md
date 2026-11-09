@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml"><img alt="build workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml/badge.svg?branch=main"/></a>
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml"><img alt="tests workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml/badge.svg?branch=main"/></a>
-  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-22329%20of%2022329-22c55e?style=flat-square&logo=bun"/></a>
+  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-22468%20of%2022469-ef4444?style=flat-square&logo=bun"/></a>
   <a href="#"><img alt="coverage" src="https://img.shields.io/badge/coverage-~96%25-22c55e?style=flat-square"/></a>
 </p>
 
@@ -28,7 +28,7 @@
 > the actor-model stack (actors, supervision, cluster, sharding, persistence,
 > HTTP) to TypeScript, running on Bun, Node.js, and Deno.  Large parts were
 > written with AI pair-programming and **have not been battle-tested in
-> production**.  Test coverage is good (~22329 tests, ~96 % line) but the
+> production**.  Test coverage is good (~22468 tests, ~96 % line) but the
 > surface area is enormous.  **Do not deploy this to anything that matters
 > yet.**  Use it to learn, to prototype, to benchmark ideas — not to handle
 > real money, users, or data.
@@ -91,7 +91,10 @@ A short tour of what's in the box:
   SQLite (built-in driver on every runtime — `bun:sqlite`, `node:sqlite`, or
   `better-sqlite3`), libSQL / Turso, PostgreSQL, MariaDB,
   Microsoft SQL Server, MongoDB, DynamoDB, Cloudflare D1,
-  Cassandra / ScyllaDB.
+  Cassandra / ScyllaDB.  The SQL and object-storage snapshot and
+  durable-state stores honour per-actor `encryption()` / `integrity()` /
+  `compression()` (client-side AES-256-GCM, HMAC-SHA256); events in the
+  journal stay plaintext.
 - **Object storage** — S3 / MinIO / R2 / filesystem with optional gzip/zstd
   compression and client-side AES-256-GCM encryption (per-tenant subkeys via
   HKDF).

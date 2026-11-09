@@ -158,13 +158,14 @@ class CreditCardActor extends DurableStateActor<...> {
 }
 ```
 
-Old (unencrypted) reads work — no metadata → plaintext path.
-New writes encrypt.  Eventually:
-
-- A **re-encryption sweep** filtered to this actor's
-  persistenceIds migrates the rest.
-
-See [key rotation](/persistence/object-storage/key-rotation/).
+New writes encrypt.  An old, unencrypted body of this actor is now
+**refused** on read: whether a body is encrypted is a byte in the body,
+so a plaintext one is indistinguishable from a forgery (#965).  Open the
+migration window on the store with `withAllowUnencryptedBodies(true)`,
+let each `persistenceId` be loaded and written once — the write
+re-encrypts it — and remove the option again.  The re-encryption sweep
+does not encrypt plaintext bodies; it rotates encrypted ones.  See
+[Reading old payloads](/persistence/object-storage/encryption/#reading-old-payloads).
 
 ## Working with the snapshot store
 
@@ -221,12 +222,11 @@ the read-then-write sweep is done.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="danger" title="Only the object-storage stores read this hook">
-  Ten of the eleven snapshot stores and nine of the ten
+<Aside type="danger" title="Only the object-storage and SQL stores read this hook">
+  Four of the eleven snapshot stores and three of the ten
   durable-state stores accept `PersistenceOptions` and never look
   at it ([#960](https://github.com/pathosDev/actor-ts/issues/960)).
-  On SQLite, Postgres, MariaDB, MSSQL, libSQL, D1, Cassandra,
-  Mongo, DynamoDB and the in-memory reference store, an
+  On Cassandra, Mongo, DynamoDB and the in-memory reference store, an
   `integrity()` or `encryption()` override now **refuses the actor
   at start** rather than buying nothing quietly: every shipped
   store declares a `persistenceOptionSupport` triple, and one that
@@ -243,8 +243,10 @@ import { Aside } from '@astrojs/starlight/components';
 
   So the control is enforced where it can be, and reported where
   it cannot.  The stores that honour all three hooks on both the
-  write and the read path are the object-storage snapshot and
-  durable-state stores — every other snapshot or durable-state
+  write and the read path are the object-storage and the SQL
+  (SQLite, Postgres, MariaDB, MSSQL, libSQL, D1) snapshot and
+  durable-state stores — the SQL ones as a sealed row in the same
+  column ([#1802](https://github.com/pathosDev/actor-ts/issues/1802)) — and every other snapshot or durable-state
   store refuses or warns.  Two cases stay quiet: `{ mode: 'none' }`,
   which is how you say "deliberately unprotected", and a
   third-party store that declares no triple at all, which counts

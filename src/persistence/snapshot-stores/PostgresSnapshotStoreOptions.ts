@@ -1,7 +1,7 @@
-import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
+import { SealedPayloadOptionsBuilder, type SealedPayloadOptionsBase } from '../storage/SealedPayloadOptions.js';
 import { PostgresOptionsValidatorBase, type PgPoolLike, type PostgresConnection } from '../journals/PostgresClient.js';
 
-export interface PostgresSnapshotStoreOptionsType extends PostgresConnection, StoreSerializerOptionsBase {
+export interface PostgresSnapshotStoreOptionsType extends PostgresConnection, SealedPayloadOptionsBase {
   /** Snapshots table name.  Default: `snapshots`. */
   readonly snapshotsTable?: string;
   /** Keep this many snapshots per persistenceId; older ones pruned on save.  Default: 3.  `<=0` keeps all. */
@@ -19,7 +19,7 @@ export interface PostgresSnapshotStoreOptionsType extends PostgresConnection, St
  * typed `withMaxPoolSize` … `withCaFile`) come from the shared
  * {@link PostgresConnection} mixin.
  */
-export class PostgresSnapshotStoreOptionsBuilder extends StoreSerializerOptionsBuilder<PostgresSnapshotStoreOptionsType> {
+export class PostgresSnapshotStoreOptionsBuilder extends SealedPayloadOptionsBuilder<PostgresSnapshotStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new PostgresSnapshotStoreOptionsBuilder()`. */
   static create(): PostgresSnapshotStoreOptionsBuilder {
     return new PostgresSnapshotStoreOptionsBuilder();

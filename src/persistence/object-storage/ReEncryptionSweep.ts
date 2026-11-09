@@ -623,11 +623,18 @@ export async function reEncryptObjectStorage(
       };
 
     // Decrypt with whatever retired/active key matches the body's version.
+    //
+    // `allowUnencryptedBodies` because the only unencrypted bodies that get
+    // this far are the tagged ones `willDecodeBody` admits for their #612
+    // binding, already verified against the integrity key above, and they
+    // are re-framed unencrypted below rather than promoted — the sweep keeps
+    // a body's encryption state and leaves the decision about a plaintext
+    // body to the store that reads it (#965).
     let decoded: DecodedBody;
     let alreadyAtNewInfo = false;
     try {
       decoded = await decodeBody(framed, {
-        encryption: { subKeyFor: subKeyResolverFor(decryptInfo) },
+        encryption: { subKeyFor: subKeyResolverFor(decryptInfo), allowUnencryptedBodies: true },
         ...decodeIntegrity,
         context: item.key,
       });
@@ -642,7 +649,7 @@ export async function reEncryptObjectStorage(
       if (!rotatingInfo) throw decryptError;
       try {
         decoded = await decodeBody(framed, {
-          encryption: { subKeyFor: subKeyResolverFor(encryptInfo) },
+          encryption: { subKeyFor: subKeyResolverFor(encryptInfo), allowUnencryptedBodies: true },
           ...decodeIntegrity,
           context: item.key,
         });

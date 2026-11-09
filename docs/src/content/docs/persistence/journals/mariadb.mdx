@@ -360,13 +360,14 @@ import { Aside } from '@astrojs/starlight/components';
 </Aside>
 
 <Aside type="caution" title="Per-actor encryption and integrity do not protect events">
-  The SQL backends store JSON as `LONGTEXT`; per-call `PersistenceOptions`
-  (compression, encryption, integrity) apply only to the object-storage
-  stores.  The MariaDB snapshot and durable-state stores declare that they
-  honour none of the three, so an `encryption()` or `integrity()` override
-  against either of them **refuses the actor at start**, and
-  `compression()` warns once
-  ([#960](https://github.com/pathosDev/actor-ts/issues/960)).
+  Per-call `PersistenceOptions` (compression, encryption, integrity) are
+  honoured by the MariaDB snapshot and durable-state stores, as by every
+  SQL and object-storage store: a row written under a hook is the
+  object-storage frame in base64 behind an `ats1:` prefix, in the same
+  `LONGTEXT` column, bound to its persistence id and its sequence number or
+  revision ([#1802](https://github.com/pathosDev/actor-ts/issues/1802)).  A row that lacks the protection the actor asks
+  for is refused unless the store was built with
+  `withAllowPlaintextRows(true)` for a migration.
 
   The journal is never asked.  `encryption()` and `integrity()` on a
   `PersistentActor` protect its snapshots only: every journal stores

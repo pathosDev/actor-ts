@@ -1031,6 +1031,29 @@ const privilegedWriteScopesOf = (job: WorkflowJob): string[] =>
   });
 
 /**
+ * The environment a job declares, in either spelling GitHub accepts — the
+ * scalar `environment: npm` or the mapping `environment:` with a `name:` under
+ * it — or `undefined` when it declares none. Quotes and a trailing comment are
+ * part of neither value.
+ */
+function environmentOf(job: WorkflowJob): string | undefined {
+  const unquote = (value: string) => value.replace(/\s+#.*$/, '').trim().replace(/^(['"])(.*)\1$/, '$2');
+  for (let index = 0; index < job.lines.length; index++) {
+    const match = /^(\s+)environment:\s*(.*)$/.exec(job.lines[index]!);
+    if (match === null) continue;
+    const scalar = unquote(match[2]!);
+    if (scalar !== '') return scalar;
+    const indent = match[1]!.length;
+    for (const next of job.lines.slice(index + 1)) {
+      const nested = /^(\s+)name:\s*(.+)$/.exec(next);
+      if (nested !== null && nested[1]!.length > indent) return unquote(nested[2]!);
+      if (next.trim() !== '' && (/^(\s*)/.exec(next)?.[1]?.length ?? 0) <= indent) break;
+    }
+  }
+  return undefined;
+}
+
+/**
  * `test.yml` alone maintains the README badges, so the two assertions below are
  * scoped to it by name — a repo-wide version would match nothing in the other
  * ten workflows and would need a permanent exemption list to say so.
@@ -1929,6 +1952,59 @@ describe('workflow hygiene', () => {
       'publish.yml#publish',
       'test.yml#badge',
     ]);
+  });
+
+  /**
+   * The publish credential is gated by a GitHub environment, not by the
+   * workflow's triggers (#704).
+   *
+   * npm's Trusted Publisher checks the repository and the workflow file name,
+   * never the ref, so before this a write-access account could dispatch
+   * `publish.yml` on a branch of its own — or push a copy with `on: push` — and
+   * ship a provenance-attested tarball under a version nobody released. The
+   * version guard in that job is idempotency, not authorization. What closes
+   * it is the `npm` environment: GitHub starts the job only on a ref its policy
+   * lists and only after a reviewer approves, and the Trusted Publisher is
+   * registered with that environment name, so a run without the claim gets no
+   * token. Both of those are settings; the `environment:` key is the half that
+   * lives in this repository, and dropping it would leave the npm side
+   * refusing every release while reading, in review, like a harmless tidy-up.
+   *
+   * Two assertions, because the scope and the command are different questions:
+   * an OIDC token is also what deploys Pages (`docs.yml#deploy`, environment
+   * `github-pages`), so every holder needs *an* environment, and the one job
+   * that actually runs `npm publish` needs *this* one.
+   */
+  test.each(jobs)('$workflow#$name runs an OIDC grant inside an environment', (job) => {
+    if (!privilegedWriteScopesOf(job).some((scope) => scope === 'id-token' || scope === 'write-all')) return;
+    expect(
+      environmentOf(job),
+      `${job.workflow}#${job.name} can mint an OIDC token but declares no environment, so no `
+      + 'ref policy or required reviewer stands between a pushed branch and the token (#704).',
+    ).toBeDefined();
+  });
+
+  test('every job that runs npm publish runs in the npm environment', () => {
+    const publishers = jobs.filter((job) => job.lines.some(
+      (line) => !line.trim().startsWith('#') && /\bnpm\s+publish\b/.test(line),
+    ));
+    expect(publishers.map((job) => `${job.workflow}#${job.name}`)).toEqual(['publish.yml#publish']);
+    for (const job of publishers) {
+      expect(
+        environmentOf(job),
+        `${job.workflow}#${job.name} runs npm publish outside the \`npm\` environment the `
+        + 'Trusted Publisher is registered against (#704).',
+      ).toBe('npm');
+    }
+  });
+
+  test('the environment reader takes both spellings of the key, and a comment is not one', () => {
+    const read = (...lines: string[]) => environmentOf({ workflow: 'fixture.yml', name: 'j', lines });
+    expect(read('  j:', '    environment: npm')).toBe('npm');
+    expect(read('  j:', "    environment: 'npm'  # gated")).toBe('npm');
+    expect(read('  j:', '    environment:', '      name: npm', '      url: https://x')).toBe('npm');
+    expect(read('  j:', '    # environment: npm')).toBeUndefined();
+    expect(read('  j:', '    runs-on: ubuntu-latest')).toBeUndefined();
   });
 
   test('the privileged-scope scanner reads the spellings a job can actually use', () => {

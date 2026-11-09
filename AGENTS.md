@@ -230,6 +230,15 @@ the net under a `npm publish` run by hand from a clone; CI does not rely
 on it, because `npm pack` runs `prepack`/`postpack` only and
 `npm publish <tarball>` runs no lifecycle script at all.
 
+The version guard is idempotency, not authorization. **Authorization is the
+GitHub environment `npm`** that the `publish` job runs in (#704): it admits
+only a `v*` tag or `main`, holds the run until the maintainer approves it,
+and is the environment the Trusted Publisher on npmjs.com is registered
+against, so npm hands no publish token to a run outside it. So **a release
+run waits for that approval** before anything reaches npm, and the job
+must keep its `environment: npm` key — `WorkflowHygiene.test.ts` fails
+without it.
+
 ## Breaking changes
 
 **Pre-1.0, a hard cut is fine.** Remove or replace an API directly — no

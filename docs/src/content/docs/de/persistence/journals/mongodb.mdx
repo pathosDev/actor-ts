@@ -387,8 +387,9 @@ Vorfiltern und fällt auf den Journal-Scan zurück.
 </Aside>
 
 <Aside type="caution" title="Per-Actor-Verschlüsselung und -Integrität schützen keine Events">
-  Per-Call-`PersistenceOptions` gelten nur für die Object-Storage-Stores.  Das
-  gilt genauso für jedes SQL-Backend und Cassandra.  Der
+  Per-Call-`PersistenceOptions` gelten nur für die Object-Storage-Stores und
+  die SQL-Snapshot- und -Durable-State-Stores ([#1802](https://github.com/pathosDev/actor-ts/issues/1802)); Cassandra
+  honoriert, wie MongoDB, keinen davon.  Der
   MongoDB-Snapshot-Store und der MongoDB-Durable-State-Store deklarieren,
   dass sie keinen der drei Hooks honorieren, also **verweigert** ein
   `encryption()`- oder `integrity()`-Override gegen einen der beiden

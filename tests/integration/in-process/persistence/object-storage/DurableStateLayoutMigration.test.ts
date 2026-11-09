@@ -40,7 +40,7 @@ import {
 } from '../../../../../src/persistence/Constants.js';
 import { DurableStateConcurrencyError } from '../../../../../src/persistence/DurableStateStore.js';
 import type { EncryptionConfig, IntegrityConfig } from '../../../../../src/persistence/PersistenceOptions.js';
-import { encodeBody } from '../../../../../src/persistence/object-storage/BodyCodec.js';
+import { FLAG_ENCRYPTED, encodeBody } from '../../../../../src/persistence/object-storage/BodyCodec.js';
 import {
   DurableStateLayoutMigrationKeyError,
   migrateObjectStorageDurableStateLayout,
@@ -311,6 +311,46 @@ describe('#716 — migrateObjectStorageDurableStateLayout', () => {
     // configured, so a load that succeeds is the tag surviving the move.
     const store = new ObjectStorageDurableStateStore(storeOptions);
     expect((await store.load('account-1')).toNullable()?.revision).toBe(6);
+  });
+
+  test('a plaintext body in a corpus migrated with a key moves as plaintext, and the store decides (#965)', async () => {
+    // A bucket that turned encryption on part-way holds both kinds; the
+    // plaintext one here is tagged and bound, the only unencrypted shape the
+    // migration re-seals rather than moves verbatim.  The migration keeps each
+    // body's encryption state rather than judging it —
+    // refusing here would stop a mixed corpus from migrating at all — and the
+    // store that reads the result is what refuses a plaintext body, or admits
+    // it inside its own migration window.
+    await seedLegacyRecord({
+      persistenceId: 'account-1', revision: 4, state: { balance: 400 }, timestamp: 2_000,
+      encryption: sealedEncryption, integrity: sealedIntegrity,
+    });
+    await seedLegacyRecord({
+      persistenceId: 'account-2', revision: 7, state: { balance: 700 }, timestamp: 3_000,
+      integrity: sealedIntegrity,
+    });
+
+    const result = await migrateObjectStorageDurableStateLayout(backend, {
+      prefix: PREFIX, encryption: sealedEncryption, integrity: sealedIntegrity,
+    });
+    expect(result.migrated).toBe(2);
+    const moved = await backend.get(newLayoutKeyOf('account-2'));
+    expect(moved.isSome() && (moved.value.body[4]! & FLAG_ENCRYPTED)).toBe(0);
+
+    const encrypting = () => ObjectStorageDurableStateStoreOptions.create()
+      .withBackend(backend)
+      .withOwnsBackend(false)
+      .withPrefix(PREFIX)
+      .withCompression({ algorithm: 'gzip' })
+      .withEncryption(sealedEncryption)
+      .withIntegrity(sealedIntegrity);
+    const closedOptions = encrypting();
+    const closed = new ObjectStorageDurableStateStore(closedOptions);
+    expect((await closed.load<{ balance: number }>('account-1')).toNullable()?.state).toEqual({ balance: 400 });
+    await expect(closed.load('account-2')).rejects.toThrow(/integrity \/ decode failure/);
+    const migratingOptions = encrypting().withAllowUnencryptedBodies(true);
+    const migrating = new ObjectStorageDurableStateStore(migratingOptions);
+    expect((await migrating.load<{ balance: number }>('account-2')).toNullable()?.revision).toBe(7);
   });
 
   test('a sealed body with no key supplied is refused, and nothing is written', async () => {

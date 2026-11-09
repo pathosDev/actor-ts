@@ -40,6 +40,7 @@ export class SqliteDurableStateStore extends RelationalDurableStateStore {
       table: resolvedOptions.table,
       autoCreateTables: resolvedOptions.autoCreateTables,
       serializer: resolvedOptions.serializer,
+      allowPlaintextRows: resolvedOptions.allowPlaintextRows,
       // A caller-supplied handle belongs to whoever opened it — closing it here
       // would pull the database out from under the code that handed it over.
       // No SQLite journal or snapshot store shares it: they open their own

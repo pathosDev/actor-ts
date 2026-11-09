@@ -1,7 +1,7 @@
-import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
+import { SealedPayloadOptionsBuilder, type SealedPayloadOptionsBase } from '../storage/SealedPayloadOptions.js';
 import { MariaDbOptionsValidatorBase, type MariaDbConnection, type MariaDbPoolLike } from '../journals/MariaDbClient.js';
 
-export interface MariaDbSnapshotStoreOptionsType extends MariaDbConnection, StoreSerializerOptionsBase {
+export interface MariaDbSnapshotStoreOptionsType extends MariaDbConnection, SealedPayloadOptionsBase {
   /** Snapshots table name.  Default: `snapshots`. */
   readonly snapshotsTable?: string;
   /** Keep this many snapshots per persistenceId; older ones pruned on save.  Default: 3.  `<=0` keeps all. */
@@ -19,7 +19,7 @@ export interface MariaDbSnapshotStoreOptionsType extends MariaDbConnection, Stor
  * typed `withMaxPoolSize` … `withCaFile`) come from the shared
  * {@link MariaDbConnection} mixin.
  */
-export class MariaDbSnapshotStoreOptionsBuilder extends StoreSerializerOptionsBuilder<MariaDbSnapshotStoreOptionsType> {
+export class MariaDbSnapshotStoreOptionsBuilder extends SealedPayloadOptionsBuilder<MariaDbSnapshotStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new MariaDbSnapshotStoreOptionsBuilder()`. */
   static create(): MariaDbSnapshotStoreOptionsBuilder {
     return new MariaDbSnapshotStoreOptionsBuilder();

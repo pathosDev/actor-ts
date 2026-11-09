@@ -49,6 +49,19 @@ export type ObjectStorageDurableStateStoreOptionsType = StoreSerializerOptionsBa
    */
   readonly allowUntaggedBodies?: boolean;
   /**
+   * Re-admit bodies that are not encrypted while an encryption config is
+   * in effect — the read-then-write migration window of a bucket written
+   * before `client-aes256-gcm` was enabled.  Default `false`.
+   *
+   * Spelled out rather than implied for the same reason as
+   * {@link allowUntaggedBodies}: the "not encrypted" flag sits in a byte
+   * whoever wrote the object chose, so a party with write access to the
+   * bucket can always produce a plaintext body, and without this refusal it
+   * would be read back as the actor's state (#965).  Drop it once every
+   * object has been rewritten.
+   */
+  readonly allowUnencryptedBodies?: boolean;
+  /**
    * Refuse a body that is not bound to the storage key it was read from
    * (#612).  Default `false`.
    *
@@ -139,6 +152,11 @@ export class ObjectStorageDurableStateStoreOptionsBuilder extends StoreSerialize
   /** Accept untagged bodies while integrity is configured — the legacy-corpus migration window (#579).  Default: false. */
   withAllowUntaggedBodies(allowUntaggedBodies = true): this {
     return this.set('allowUntaggedBodies', allowUntaggedBodies);
+  }
+
+  /** Accept unencrypted bodies while encryption is configured — the legacy-corpus migration window (#965).  Default: false. */
+  withAllowUnencryptedBodies(allowUnencryptedBodies = true): this {
+    return this.set('allowUnencryptedBodies', allowUnencryptedBodies);
   }
 
   /** Refuse bodies not bound to the storage key they were read from (#612) — turn on once the corpus is rewritten.  Default: false. */

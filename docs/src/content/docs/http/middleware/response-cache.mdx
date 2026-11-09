@@ -26,7 +26,8 @@ const routes = path('api',
 
 Cache for 30 seconds per product ID.  First request hits the
 handler; subsequent GETs in the next 30 s return the cached
-response.
+response.  A request that carries credentials bypasses the cache
+until `identity` is set — see [what is never shared](#what-is-never-shared).
 
 ## Configuration
 
@@ -37,6 +38,7 @@ type ResponseCacheOptions = {
   key:            (req: HttpRequest) => string | Promise<string>;
   keyPrefix?:     string;                            // default 'rsp:'
   cacheStatuses?: ReadonlyArray<number>;             // default [200]
+  identity?:      (req: HttpRequest) => string | Promise<string>;
 };
 ```
 
@@ -47,6 +49,7 @@ type ResponseCacheOptions = {
 | `key(req)` | Derive the cache key from the request — typically includes URL params, tenant ID, accept header etc.  **Required.** |
 | `keyPrefix` | Cache-key namespace.  Default `'rsp:'` so multiple response-caches in the same Redis don't collide. |
 | `cacheStatuses` | Which status codes are cacheable.  Default `[200]` — only 2xx responses get cached. |
+| `identity(req)` | Optional per-caller scope folded into the key, so a response is only replayed to the caller it was produced for.  Also the opt-in for caching requests that carry credentials — see [what is never shared](#what-is-never-shared).  **Derive it from a verified identity**, never from a raw header. |
 
 ## Cache key composition
 
@@ -80,14 +83,64 @@ but unique across responses you want cached separately.
 
 ```
 GET /api/products       → cache (stable, read-heavy)
-POST /api/orders        → don't wrap with cached() (mutation)
-GET /api/users/me       → cache only with per-user key
+POST /api/orders        → passes straight through — only GET is stored
+GET /api/users/me       → cache only with identity (per-caller scope)
 GET /api/feed?cursor=X  → cache (one entry per cursor)
 ```
 
 The wrapper is a handler-level decision — you choose which
 handlers to wrap.  Mutations should typically use
 [`idempotent`](/http/middleware/idempotency-key/) instead.
+
+## What is never shared
+
+A cache hit returns **before the wrapped handler runs**.  Any check
+inside the handler — authentication, authorization, a per-caller
+lookup — therefore runs for the first caller only.  **Authorization
+has to wrap `cached(...)`, never sit inside it:**
+
+```ts no-compile — ext, jwtOptions and loadProfile belong to the surrounding application
+import { cached, get, JwtAuth, jwtClaimsOf, path, withMiddleware } from 'actor-ts/http';
+
+const profileCache = cached({
+  cache:    ext.cache('response-cache'),
+  ttlMs:    30_000,
+  key:      () => 'users:me',
+  identity: (req) => jwtClaimsOf(req)?.sub ?? 'anonymous',
+});
+
+// ✓ JwtAuth verifies the token on every request, hit or miss
+const routes = withMiddleware(JwtAuth(jwtOptions),
+  path('me', get(profileCache(loadProfile))),
+);
+// ✗ a check inside loadProfile is skipped by every hit
+```
+
+Beyond that, the wrapper refuses on its own every case in which one
+caller's response could reach another:
+
+| Rule | Why |
+| --- | --- |
+| Only `GET` is stored; only `GET` and `HEAD` are answered from the cache. | A replayed `POST` is never right.  `HEAD` reads a `GET` entry but never writes one, because a `HEAD` answer may carry no body. |
+| A request carrying `Authorization`, `Proxy-Authorization` or `Cookie` bypasses the cache unless `identity` is set. | Nothing else in the key says whose response it is.  Setting `identity` is the explicit opt-in; for an endpoint that genuinely does not depend on the caller, `identity: () => 'public'` says exactly that. |
+| A response carrying `Set-Cookie` is not stored. | There is no correct way to hand one caller's cookie to another. |
+| `Cache-Control: no-store`, `no-cache` or `private` on the response suppresses storing. | The handler said the response is not for a shared cache. |
+| A response carrying `Vary` is stored with a SHA-256 digest of the request's values of the named headers and served only to a request whose values digest the same; `Vary: *` is not stored. | The handler said the response depends on those headers.  Only the digests are written, so a `Vary: Authorization` response never puts a bearer token or cookie into the backing cache.  The digest is unsalted, so every process sharing the backend computes the same one — a high-entropy token cannot be recovered from it, but a weak password inside `Basic` credentials stays guessable offline by whoever can read the backend. |
+| A streaming body is not stored. | A stream is one-shot. |
+
+These rules are about *sharing*, not a full `Cache-Control`
+implementation: freshness directives such as `max-age=0` or
+`must-revalidate` are not interpreted, and `ttlMs` alone bounds how
+long an entry is served.
+
+The same rules govern stampede protection: a request waiting on
+another request's in-flight handler takes that response only when the
+rules above would let the two share it, and otherwise runs the handler
+itself.  `cacheStatuses` decides what is **stored**, not what is
+shared — a `404` outside it is never written to the cache, but the
+concurrent waiters still take it.  `Cache-Control` on the **request**
+is deliberately ignored — a client must not be able to force the
+handler past the cache.
 
 ## Cache invalidation
 
@@ -112,7 +165,17 @@ await cache.delete('rsp:products:42');   // 'rsp:' is the default keyPrefix
 ```
 
 The cache is just a `Cache` — you can `delete` the prefixed key
-directly when a write should invalidate it.
+directly when a write should invalidate it.  With `identity` set, the
+key is `<keyPrefix><scope>:<key>` with the scope URI-encoded, so build
+it the same way:
+
+```ts
+// After a write to the profile of the caller whose identity scope is `sub`:
+await cache.delete(`rsp:${encodeURIComponent(sub)}:users:me`);
+```
+
+A scope like `auth0|abc` is stored as `auth0%7Cabc`; a key spelled with
+the raw scope deletes nothing.
 
 ## Shared cache across pods
 
@@ -135,6 +198,17 @@ For **per-pod caches** (each pod has its own InMemoryCache),
 pods may serve different cached responses briefly until TTLs
 align.  Often acceptable; depends on consistency requirements.
 
+A shared cache outlives a deploy, so it can hold entries written
+before the sharing rules existed.  Each one is re-checked before it is
+served, and one carrying `Set-Cookie`, an unshareable `Cache-Control`,
+`Vary: *` or a `Vary` without recorded request values is treated as a
+miss — but an entry minted from a credentialed request whose response
+carried neither `Set-Cookie` nor `Vary` looks exactly like a public one
+and is served until it expires.  When upgrading from a version without
+these rules, wait until the last old pod is gone — it keeps writing
+such entries — and then flush the `keyPrefix` (`rsp:` by default) or
+let `ttlMs` elapse before relying on them.
+
 ## Caching different status codes
 
 ```ts
@@ -150,14 +224,20 @@ transient 500 never sticks around for 30 seconds.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Caching authenticated responses">
+<Aside type="caution" title="Scope per-caller responses with identity">
   ```ts
-  // GET /api/users/me with cache → all users see the first user's response
+  identity: (req) => jwtClaimsOf(req)?.sub ?? 'anonymous',   // ✓ verified
+  identity: (req) => req.headers['x-user-id'] ?? 'anonymous', // ✗ client-chosen
   ```
-  Without including the user in `key(req)`, cached responses
-  leak across users.  Either include `hashUser(req.headers.authorization)`
-  in the key, or skip wrapping per-user endpoints with `cached`
-  at all.
+  A response that depends on who is asking must be scoped with
+  `identity`, and the scope must come from what a middleware verified.
+  A raw header lets any caller claim someone else's scope and read
+  their cached response.  Credentialed requests bypass the cache until
+  `identity` is set, but the bypass recognises only `Authorization`,
+  `Proxy-Authorization` and `Cookie`.  A token in any other header —
+  `BearerTokenAuth({ tokens, headerName: 'x-access-token' })`, or an
+  API-key header of your own — does not trigger it, so a per-caller
+  response to such a request is kept apart by `identity` alone.
 </Aside>
 
 <Aside type="note" title="Stampede protection is per-process">

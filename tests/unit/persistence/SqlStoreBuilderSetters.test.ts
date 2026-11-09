@@ -99,11 +99,13 @@ const SNAPSHOT_TABLES = [
   ['withSnapshotsTable', 'snapshotsTable', 'snapshot_rows'],
   ['withKeepN', 'keepN', 3],
   ['withAutoCreateTables', 'autoCreateTables', false],
+  ['withAllowPlaintextRows', 'allowPlaintextRows', true],
 ] as const;
 
 const DURABLE_STATE_TABLES = [
   ['withTable', 'table', 'state_rows'],
   ['withAutoCreateTables', 'autoCreateTables', false],
+  ['withAllowPlaintextRows', 'allowPlaintextRows', true],
 ] as const;
 
 const BUILDERS: ReadonlyArray<BuilderTable> = [
