@@ -28,12 +28,24 @@ interface Transport {
   send(to: NodeAddress, message: WireMessage): void;
   disconnect(peer: NodeAddress): void;
   peers(): NodeAddress[];
+  holdsConnectionTo?(peer: NodeAddress): boolean;
 }
 ```
 
 Kleine Oberfläche — Bootstrap, Senden, Empfangen, Trennen. Der
 Cluster steckt einen Handler ein und bekommt einen Strom
 eingehender Wire-Nachrichten samt Absenderadresse.
+
+`holdsConnectionTo` ist optional. Die Methode beantwortet, ob
+`send(peer, …)` über eine Verbindung hinausginge, die der Transport
+bereits hält — bestätigt oder noch im Handshake —, statt eine neue
+aufzubauen, und der Cluster fragt sie, bevor ein Anwendungs-Frame an
+einen Node geht, der kein Member ist (siehe
+[Cluster-Sicherheit](/de/operations/security/cluster-security/)).
+Ein eigener Transport ohne sie funktioniert weiterhin: Der Cluster
+fällt auf `peers()` zurück, das nur bestätigte Verbindungen auflistet,
+sodass ein Frame an einen Nicht-Member in diesem Handshake-Fenster
+abgelehnt statt eingereiht wird.
 
 ## TcpTransport (Standard)
 

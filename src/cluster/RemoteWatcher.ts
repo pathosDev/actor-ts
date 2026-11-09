@@ -100,6 +100,16 @@ export class RemoteWatcher {
    * Start watching `subject` on behalf of `watcher`.  Returns `false` when
    * `subject` is not a remote ref — the cell then reports the unsupported
    * shape itself, because it is the cell that knows what it was handed.
+   *
+   * A `watch` frame the cluster refuses to send — its node is neither a member
+   * nor a peer this node holds a connection to (#936) — is answered at once
+   * with a `Terminated` whose `existenceConfirmed` is false, and no entry is
+   * kept.  An entry for it could never be answered: no `watch-terminated`
+   * comes back for a frame that never left, and no membership event names a
+   * node that was never a member.  `existenceConfirmed: false` is what the far
+   * side answers a refused watch with as well, and `addressTerminated` stays
+   * false because nothing is known to have ended — the commonest refusal is a
+   * ref out of a message body naming an address this node will not dial.
    */
   watch(watcher: ActorRef, subject: ActorRef): boolean {
     // `instanceof` rather than a `LocalActorRef` parameter: the cell's `self`
@@ -108,9 +118,7 @@ export class RemoteWatcher {
     // without a cast at every call site.
     if (!(watcher instanceof LocalActorRef) || !(subject instanceof RemoteActorRef)) return false;
     const peer = subject.targetNode;
-    const byPath = this.outbound.get(peer.toString()) ?? new Map<string, OutboundWatch>();
-    this.outbound.set(peer.toString(), byPath);
-    const existing = byPath.get(subject.targetPath);
+    const existing = this.outbound.get(peer.toString())?.get(subject.targetPath);
     if (existing) {
       existing.watchers.set(watcher.path.toString(), watcher);
       return true;
@@ -119,6 +127,10 @@ export class RemoteWatcher {
     // side keys its proxy by the watcher path this frame names, so `unwatch`
     // has to name the same one — see `announcedWatcher`.
     const announcedWatcher = watcher.path.toString();
+    const byPath = this.outbound.get(peer.toString()) ?? new Map<string, OutboundWatch>();
+    this.outbound.set(peer.toString(), byPath);
+    // Recorded before the send, so an answer from a transport that delivers
+    // synchronously still finds it; taken back out if the send is refused.
     byPath.set(subject.targetPath, {
       subject,
       announcedWatcher,
@@ -129,8 +141,16 @@ export class RemoteWatcher {
       watcher: announcedWatcher,
       watchee: subject.targetPath,
     };
-    this.cluster._sendWire(peer, frame);
+    if (!this.cluster._sendWire(peer, frame)) this.onWatchRefused(peer, subject, watcher);
     return true;
+  }
+
+  /** The cluster would not send the `watch` frame: forget the entry and answer the watcher now. */
+  private onWatchRefused(peer: NodeAddress, subject: RemoteActorRef, watcher: LocalActorRef): void {
+    const byPath = this.outbound.get(peer.toString());
+    byPath?.delete(subject.targetPath);
+    if (byPath?.size === 0) this.outbound.delete(peer.toString());
+    this.notify(watcher, subject, { existenceConfirmed: false, addressTerminated: false });
   }
 
   /** Stop watching `subject` for `watcher`; the last watcher off a path sends `unwatch`. */

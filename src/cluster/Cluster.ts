@@ -13,6 +13,7 @@ import {
   MAX_REPORTED_CONFIGURATION_MISMATCHES,
   MAX_REPORTED_UNCLAIMED_WIRE_KINDS,
   MAX_WALL_CLOCK_SKEW_MS,
+  OUTBOUND_REFUSAL_REPORT_INTERVAL_MS,
 } from './Constants.js';
 import { countUnhandled } from '../internal/Unhandled.js';
 import { none, some, type Option } from '../util/Option.js';
@@ -112,8 +113,8 @@ import type {
 import { decodeRefs, encodeRefs } from './RefCodec.js';
 import { RemoteActorRef } from './RemoteActorRef.js';
 import { RemoteWatcher } from './RemoteWatcher.js';
-import { sanitizeWireKindForLog, sanitizeWireLogContext } from './WireValidation.js';
-import { InMemoryTransport, TcpTransport, type Transport } from './Transport.js';
+import { sanitizeNodeAddressForLog, sanitizeWireKindForLog, sanitizeWireLogContext } from './WireValidation.js';
+import { holdsConnectionTo, InMemoryTransport, TcpTransport, type Transport } from './Transport.js';
 import type {
   ClusterPartitionView,
   DowningProvider,
@@ -312,6 +313,10 @@ export class Cluster {
   private readonly gossipIntervalMs: number;
   private readonly seedRetryIntervalMs: number;
   private readonly seedAddrs: NodeAddress[] = [];
+  /** Refused sends since the last report — see {@link reportOutboundRefusal}. */
+  private outboundRefusalsSuppressed = 0;
+  /** When {@link reportOutboundRefusal} last logged; the first refusal always does. */
+  private lastOutboundRefusalReportAt = Number.NEGATIVE_INFINITY;
   private readonly tombstoneTtlMs: number;
   private readonly tombstonePruneIntervalMs: number;
   private readonly tombstoneMinRetentionMs: number;
@@ -1601,10 +1606,16 @@ export class Cluster {
    * single chokepoint where every cross-node message leaves, so hooking
    * the encode step once covers all paths (sharding, pub-sub, singleton,
    * direct remote-ref).  Receiving nodes decode in `onEnvelope`.
+   *
+   * Returns `false` when {@link mayAddress} refused the destination, `true`
+   * when the envelope was handed to the transport — which is still a
+   * best-effort send, not a delivery.
    */
-  _sendEnvelope(to: NodeAddress, env: EnvelopeMessage): void {
+  _sendEnvelope(to: NodeAddress, env: EnvelopeMessage): boolean {
+    if (!this.mayAddress(to, env.kind)) return false;
     const encoded: EnvelopeMessage = { ...env, body: encodeRefs(env.body, this) };
     this.transport.send(to, encoded);
+    return true;
   }
 
   /** Register a handler for a specific wire-message discriminator. */
@@ -1613,9 +1624,104 @@ export class Cluster {
    * own extension points — remote death watch sends its three kinds through
    * here — not for user payloads, which go through `_sendEnvelope` so that
    * embedded refs are rewritten.
+   *
+   * Returns `false` when {@link mayAddress} refused the destination, so a
+   * caller that keeps state for an answer — remote death watch — can tell a
+   * frame that will never leave from one that is merely in flight.
    */
-  _sendWire(to: NodeAddress, message: WireMessage): void {
+  _sendWire(to: NodeAddress, message: WireMessage): boolean {
+    if (!this.mayAddress(to, message.kind)) return false;
     this.transport.send(to, message);
+    return true;
+  }
+
+  /**
+   * Whether a frame may leave for `to` through {@link _sendEnvelope} or
+   * {@link _sendWire} (#936).
+   *
+   * Every address these two are handed can come from a peer: a ref marker in
+   * an envelope body decodes to a `RemoteActorRef` for whatever node it names,
+   * the receptionist and pub-sub rebuild nodes out of gossip, and remote death
+   * watch sends a `watch` frame to the node of any ref an actor watches.  The
+   * transport dials whatever it is given, so an actor answering a decoded
+   * `replyTo` — the idiom every handler uses — opened a connection to an
+   * address of the sender's choosing and wrote a frame to it: a cloud metadata
+   * endpoint, an internal admin port.
+   *
+   * Two destinations are allowed:
+   *
+   * - **A member that is not a tombstone.**  Every legitimate envelope goes to
+   *   one, and a member's address came through the merge rules rather than out
+   *   of a message body.  A tombstone is a node that has left, so nothing
+   *   should be sent to it — and it would otherwise be the one kind of member a
+   *   stranger can mint by gossiping a `removed` record about an address.
+   * - **A node the transport already holds a connection to**, acked or still
+   *   dialling ({@link Transport.holdsConnectionTo}).  Sending over an existing
+   *   connection dials nothing, and it covers two sends to a node this one has
+   *   not admitted yet: the reply to a member that learnt of this node first —
+   *   during a join that is the usual order — and a `tell` to a seed straight
+   *   after `Cluster.join` resolves, which `TcpTransport` queues on the
+   *   connection the join opened until its handshake lands.  `peers()` lists
+   *   acked connections only, so asking it dropped that `tell`.
+   *
+   * The gate is here rather than inside `Transport.send` on purpose: the
+   * transport has no view of membership, and the core protocol has to dial
+   * non-members — seeds while joining, a joiner the seed has not admitted yet.
+   * Those sends go to `transport.send` directly and are not affected.
+   *
+   * A refused frame is dropped, as a frame to a node that cannot be reached
+   * is, and reported by {@link reportOutboundRefusal}.
+   */
+  private mayAddress(to: NodeAddress, kind: string): boolean {
+    const member = this.members.get(to.toString());
+    if (member !== undefined && member.status !== 'removed') return true;
+    if (holdsConnectionTo(this.transport, to)) return true;
+    this.reportOutboundRefusal(to, kind);
+    return false;
+  }
+
+  /**
+   * Count a refused send, and fold it into at most one WARN per
+   * {@link OUTBOUND_REFUSAL_REPORT_INTERVAL_MS}.
+   *
+   * The counter carries the signal and the log is rate-limited, as for inbound
+   * envelope refusals: a peer can make every message it sends carry a hostile
+   * ref, and one line per refusal would let it write this node's log at its
+   * own rate.  The counter is labelled by frame family only — `envelope` or
+   * `wire` — because the destination is exactly the unbounded value a label
+   * must not be.  The line names the most recent destination, escaped, since
+   * it may be a stranger's choice; the commonest one is a node that has just
+   * left.
+   *
+   * The interval is measured on `system.clock`, not the wall clock, so it
+   * follows whatever scheduler the system runs on.  Under a `ManualScheduler`
+   * the first refusal is still logged — the last-report mark starts at
+   * negative infinity, not zero, and virtual time may well start at zero —
+   * and later ones fold, counted, into the next line once the test advances
+   * the clock past the interval.  A test that never advances it sees one line
+   * and the counter, which is the honest reading of "nothing has elapsed".
+   * `EnvelopeTrust.report` folds the same way on the wall clock; it is a
+   * counted entry of the wall-clock ratchet (#1424) and moves with the rest.
+   */
+  private reportOutboundRefusal(to: NodeAddress, kind: string): void {
+    const frame = kind === 'envelope' ? 'envelope' : 'wire';
+    metricsOf(this.system).counter(
+      'cluster_outbound_refusals_total', { frame },
+      {
+        help: 'Cumulative count of frames this node refused to send because the destination '
+          + 'was neither a cluster member nor a node this one already holds a connection to.',
+      },
+    ).inc();
+    this.outboundRefusalsSuppressed += 1;
+    const now = this.system.clock.now();
+    if (now - this.lastOutboundRefusalReportAt < OUTBOUND_REFUSAL_REPORT_INTERVAL_MS) return;
+    this.lastOutboundRefusalReportAt = now;
+    const count = this.outboundRefusalsSuppressed;
+    this.outboundRefusalsSuppressed = 0;
+    this.log.warn(
+      `refused to send ${count} frame(s) to an address that is neither a member nor held by an open connection `
+      + `— most recently ${sanitizeWireKindForLog(kind)} to ${sanitizeNodeAddressForLog(to)}`,
+    );
   }
 
   _onWire(kind: string, handler: (message: WireMessage, from: NodeAddress) => void): () => void {

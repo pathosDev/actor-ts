@@ -9263,6 +9263,34 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   too, so the detector declares it `down` like any silent member instead of
   leaving it `up` until an operator removes it.
 
+- **A ref in a message body no longer makes the receiving node dial the
+  address it names** (#936). `decodeSingleRef` rebuilt a ref marker's node
+  with the raw `NodeAddress` constructor, and `_sendEnvelope` handed whatever
+  node a ref named to the transport, which dials what it is given — so an
+  actor answering a decoded `replyTo`, or watching it, opened a connection to
+  an address of the sender's choosing (a cloud metadata endpoint, an internal
+  admin port) and wrote a frame to it. A marker now goes through
+  `NodeAddress.fromJSON` and decodes to `Nobody` when it is not a valid node,
+  and `_sendEnvelope` and `_sendWire` send only to a member that is not a
+  tombstone or to a node the transport already holds a connection to, acked
+  or still in its handshake — so a `tell` to a seed straight after
+  `Cluster.join` resolves is still queued, not dropped. Anything else is
+  dropped, counted on the new `cluster_outbound_refusals_total{frame}` and
+  logged at most once every 30 seconds with the address escaped part by part;
+  a refused remote `watch` is answered at once with `Terminated`
+  (`existenceConfirmed` false) instead of never. The membership protocol's own
+  sends (seeds, gossip, heartbeats) are unaffected. `Transport` gains an
+  optional `holdsConnectionTo(peer)`; a custom transport without it is asked
+  through `peers()`, which knows acked connections only, so on it a frame to a
+  non-member is refused until the handshake lands. **This closes the route
+  through a message body, not the minting of a member.** Since #939 a gossip
+  frame's payload `from` no longer files a member, so a member is minted only
+  by a self-announcement held to the connection's identity — and that identity
+  is whatever a peer's `hello` claims until mTLS binds it to a certificate
+  (#912). Without mTLS, anyone who can connect can still become a member under
+  an address of its choosing, after which this gate and the membership
+  protocol's own gossip and heartbeats both send to it.
+
 - **Three configuration parsers no longer take quadratic time on a hostile
   value** (#1792, CodeQL `js/polynomial-redos`). The HOCON number literal
   (`\d+\.?\d*`) split a digit run two ways at every position, and the WHATWG

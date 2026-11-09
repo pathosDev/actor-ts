@@ -27,12 +27,23 @@ interface Transport {
   send(to: NodeAddress, message: WireMessage): void;
   disconnect(peer: NodeAddress): void;
   peers(): NodeAddress[];
+  holdsConnectionTo?(peer: NodeAddress): boolean;
 }
 ```
 
 Small surface — bootstrap, send, receive, disconnect.  The cluster
 plugs in a handler and gets a stream of inbound wire messages with
 their sender address.
+
+`holdsConnectionTo` is optional.  It answers whether `send(peer, …)`
+would go out over a connection the transport already holds — acked
+or still in its handshake — rather than dial a new one, and the
+cluster asks it before an application frame leaves for a node that
+is not a member (see
+[Cluster security](/operations/security/cluster-security/)).
+A custom transport without it still works: the cluster falls back to
+`peers()`, which lists acked connections only, so a frame to a
+non-member in that handshake window is refused instead of queued.
 
 ## TcpTransport (default)
 

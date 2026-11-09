@@ -266,6 +266,7 @@ Only `app=actor-ts` pods can reach port 2552 on each other.
 | Address claimed before the node that owns it exists | Tight version-skew cap on every gossiped member version |
 | Gossip frame captured off the wire and played back later | Per-sender frame sequence — a frame must out-number the last one accepted from that sender (partial: only once one has been) |
 | Spoofed discovery answer steering the bootstrap | mTLS, plus `pinnedAddresses` on the seed provider |
+| A ref in a message body naming an internal host, to make this node dial it | Frames leave only for members and nodes this node already holds a connection to (partial: without mTLS a peer still becomes a member under an address its own `hello` names) |
 | Compromised pod inside the cluster | Application-level auth (out of scope here) |
 
 The cluster transport handles transport-level security.
@@ -790,6 +791,57 @@ a missing one — `Terminated` with `existenceConfirmed = false` —
 so a watcher never hangs and the answer reveals nothing the
 refusal did not already; the refusal is counted under
 `frame="watch"`.
+
+### A ref in a message cannot choose where this node dials
+
+The other direction has the same shape. An `ActorRef` in a message
+body crosses the wire as a marker naming its node — system, host,
+port — and the receiver rebuilds a remote ref from it. That address
+is the sender's claim. The marker used to be rebuilt without even
+the validation every other wire address gets, and whatever node a
+ref named was dialled the moment it was used: an actor answering a
+decoded `replyTo`, the idiom every handler follows, opened a
+connection to an address of the sender's choosing and wrote a frame
+to it — a cloud metadata endpoint, an internal admin port. Watching
+the ref did the same with a `watch` frame (#936).
+
+A marker is now validated as a node address, and one that is not
+valid decodes to `Nobody`. And a frame that carries a user payload or
+a death-watch message — every send that is not the membership
+protocol's own — leaves only for:
+
+- **a member that is not a tombstone**, or
+- **a node the transport already holds a connection to**, acked or
+  still in its handshake — sending over an existing connection dials
+  nothing. It is how a reply reaches a node that has joined but that
+  this node has not heard of yet, and how a `tell` to a seed straight
+  after `Cluster.join` resolves is queued on the connection the join
+  opened instead of dropped. A custom transport that does not
+  implement the optional `holdsConnectionTo` is asked through
+  `peers()` instead, which knows acked connections only, so on it
+  that `tell` is refused until the handshake lands.
+
+Anything else is dropped, as a frame to an unreachable node is,
+counted on `cluster_outbound_refusals_total{frame}` (`envelope` or
+`wire`) and folded into at most one `WARN` every 30 seconds that
+names the most recent destination, escaped. The commonest cause on a
+healthy cluster is a node that has just left. A ref is rebuilt
+lazily, so one to a node this node learns of a moment later still
+works when it is used. Watching a ref whose node is refused is
+answered at once with `Terminated` and `existenceConfirmed` false,
+as a refused watch on the far side is, so the watcher does not wait
+for an answer that cannot come.
+
+The rule is only as strong as membership. Since #939 a gossip frame's
+payload `from` no longer files a member: a sender is introduced only
+by its own record, merged as a self-announcement held to the identity
+its connection presented. Without mTLS that identity is still the
+peer's own choice, so a peer that can connect can announce itself under
+an address it picks — and from then on this gate lets frames through to
+it, and the membership protocol's own gossip and heartbeats dial it
+every interval with no ref involved at all. So this closes the route
+through a message body, not the minting of a member. mTLS is what binds
+a member's address to a certificate.
 
 ### A sharding directive needs the coordinator behind it
 
