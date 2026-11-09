@@ -108,6 +108,7 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
   private readonly encryption: EncryptionConfig | EncryptionResolver | undefined;
   private readonly integrity: IntegrityConfig | IntegrityResolver | undefined;
   private readonly allowUntaggedBodies: boolean;
+  private readonly allowUnencryptedBodies: boolean;
   private readonly requireContextBinding: boolean;
   private readonly rejectRevisionRollback: boolean;
   private readonly maxDecompressedBytes: number;
@@ -139,6 +140,7 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
     this.encryption = resolvedOptions.encryption;
     this.integrity = resolvedOptions.integrity;
     this.allowUntaggedBodies = resolvedOptions.allowUntaggedBodies ?? false;
+    this.allowUnencryptedBodies = resolvedOptions.allowUnencryptedBodies ?? false;
     this.requireContextBinding = resolvedOptions.requireContextBinding ?? false;
     this.rejectRevisionRollback = resolvedOptions.rejectRevisionRollback ?? true;
     this.maxDecompressedBytes = resolvedOptions.maxDecompressedBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES;
@@ -160,7 +162,7 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
     // (#579).  Note this covers the per-call `options.integrity` path
     // too: the demand travels with the key, not with the store field.
     const decodeOptions: import('../object-storage/BodyCodec.js').DecodeOptions = {
-      ...(subKeyFor ? { encryption: { subKeyFor } } : {}),
+      ...(subKeyFor ? { encryption: { subKeyFor, allowUnencryptedBodies: this.allowUnencryptedBodies } } : {}),
       ...(integrity.mode === 'hmac-sha256'
         ? {
             integrity: {

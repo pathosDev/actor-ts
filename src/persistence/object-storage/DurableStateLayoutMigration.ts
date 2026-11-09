@@ -344,8 +344,12 @@ async function reseal(body: Uint8Array, context: ResealContext): Promise<Uint8Ar
   const wasEncrypted = (flags & FLAG_ENCRYPTED) !== 0;
   const wasTagged = (flags & FLAG_INTEGRITY_HMAC) !== 0;
 
+  // `allowUnencryptedBodies`: the migration moves a body to its new key and
+  // keeps its encryption state (`wasEncrypted` below), so a plaintext body
+  // stays plaintext and the store that reads it is what refuses or admits it
+  // (#965).  Refusing here would only stop a mixed corpus from migrating.
   const decodeOptions: DecodeOptions = {
-    ...(subKeyFor !== undefined ? { encryption: { subKeyFor } } : {}),
+    ...(subKeyFor !== undefined ? { encryption: { subKeyFor, allowUnencryptedBodies: true } } : {}),
     ...(integrityKey !== undefined
       ? { integrity: { integrityKey, allowUntaggedBodies: options.allowUntaggedBodies === true } }
       : {}),

@@ -481,10 +481,14 @@ describe('CachedSnapshotStore — encryption configured on the wrapped store (#7
     info: HKDF_INFO,
   };
 
-  const storeConfigured = (encryption?: EncryptionConfig | EncryptionResolver): ObjectStorageSnapshotStore => {
+  const storeConfigured = (
+    encryption?: EncryptionConfig | EncryptionResolver,
+    allowUnencryptedBodies = false,
+  ): ObjectStorageSnapshotStore => {
     const objectStorageOptions = ObjectStorageSnapshotStoreOptions.create().withBackend(backend);
+    const configured = encryption === undefined ? objectStorageOptions : objectStorageOptions.withEncryption(encryption);
     return new ObjectStorageSnapshotStore(
-      encryption === undefined ? objectStorageOptions : objectStorageOptions.withEncryption(encryption),
+      allowUnencryptedBodies ? configured.withAllowUnencryptedBodies(true) : configured,
     );
   };
 
@@ -621,7 +625,10 @@ describe('CachedSnapshotStore — encryption configured on the wrapped store (#7
     await before.loadLatest('pid-secret');
     expect(JSON.stringify(await cache.get('snap:pid-secret'))).toContain(SECRET);
 
-    const after = new CachedSnapshotStore(storeConfigured(clientSideEncryption), cachedSnapshotStoreOptions);
+    // The redeploy opens the migration window: the snapshot the previous
+    // deployment wrote is still plaintext in the bucket, and a store that
+    // reads with a key refuses such a body without it (#965).
+    const after = new CachedSnapshotStore(storeConfigured(clientSideEncryption, true), cachedSnapshotStoreOptions);
     const warnings = await captureWarnings(async () => {
       const served = await after.loadLatest<{ iban: string }>('pid-secret');
       expect(served.toNullable()?.state.iban).toBe(SECRET);

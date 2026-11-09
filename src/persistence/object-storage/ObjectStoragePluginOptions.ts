@@ -45,6 +45,12 @@ export type ObjectStoragePluginOptionsType = {
    */
   readonly allowUntaggedBodies?: boolean;
   /**
+   * Accept unencrypted bodies while `encryption` is configured — the
+   * migration window for a bucket written before encryption was enabled
+   * (#965), applied to both registered stores.  Default: false.
+   */
+  readonly allowUnencryptedBodies?: boolean;
+  /**
    * Refuse bodies that are not bound to the storage key they were read
    * from (#612), in both registered stores.  Default: false.
    *
@@ -126,6 +132,11 @@ export class ObjectStoragePluginOptionsBuilder extends OptionsBuilder<ObjectStor
   /** Accept untagged bodies in both registered stores while integrity is configured — the migration window (#579).  Default: false. */
   withAllowUntaggedBodies(allowUntaggedBodies = true): this {
     return this.set('allowUntaggedBodies', allowUntaggedBodies);
+  }
+
+  /** Accept unencrypted bodies in both registered stores while encryption is configured — the migration window (#965).  Default: false. */
+  withAllowUnencryptedBodies(allowUnencryptedBodies = true): this {
+    return this.set('allowUnencryptedBodies', allowUnencryptedBodies);
   }
 
   /** Refuse bodies not bound to their storage key in both registered stores (#612) — turn on once the corpus is rewritten.  Default: false. */

@@ -179,7 +179,10 @@ export async function openPayload(
   }
   const subKeyFor = encryption ? resolveDecryptSubkey(encryption, persistenceId) : undefined;
   const decodeOptions: DecodeOptions = {
-    ...(subKeyFor !== undefined ? { encryption: { subKeyFor } } : {}),
+    // The codec refuses an unencrypted frame when a key is supplied (#965) —
+    // the check above already did, naming the hook; the window it opens has
+    // to reach the codec too.
+    ...(subKeyFor !== undefined ? { encryption: { subKeyFor, allowUnencryptedBodies: allowPlaintext } } : {}),
     ...(wantsIntegrity
       ? { integrity: { integrityKey: integrity.integrityKey, allowUntaggedBodies: allowPlaintext } }
       : {}),
