@@ -59,6 +59,15 @@ can do.  They cannot forge a body — that needs the key — but they can
 **move and replay** the authentic ones they find, and the auth tag
 travels with the bytes.
 
+Nor can they forge one by **declaring there is no encryption**.  Whether
+a body is encrypted is recorded in a manifest byte of the body itself,
+outside the auth tag, so a writer with no key could otherwise put down
+five bytes of header and JSON of their choosing and have it read as the
+actor's state.  A store that reads with a decryption key refuses an
+unencrypted body
+([#965](https://github.com/pathosDev/actor-ts/issues/965)); only
+[the migration window](#reading-old-payloads) re-admits one.
+
 Two shapes of that, both closed since
 [#612](https://github.com/pathosDev/actor-ts/issues/612) and neither by
 encryption alone:
@@ -282,18 +291,39 @@ state/cart-42  ← old, plaintext (encrypted flag unset in the manifest)
 state/cart-43  ← new, encrypted (encrypted flag set, key version 0)
 ```
 
-The framework detects each per-payload from the body manifest:
+A store configured with `client-aes256-gcm` **refuses** the old body:
 
-- **Encrypted flag unset** → plaintext path.
-- **Encrypted flag set** → decrypt using the key version the
-  manifest records.
+```
+BodyCodec: body is not encrypted but a decryption key was supplied
+for decoding.
+```
 
-Means **you can enable encryption gradually** — new writes get
-encrypted, old reads still work, and a background
-re-encryption sweep can migrate the rest.
+The flag that says "not encrypted" sits in the body, so a plaintext body
+from before the switch and a plaintext body an attacker wrote over an
+encrypted one look the same from here — and only the second is worth
+guarding against.  Open the migration window explicitly:
 
-See [key rotation](/persistence/object-storage/key-rotation/)
-for the rotation flow.
+```ts
+const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create()
+  .withBackend(backend)
+  .withEncryption({ mode: 'client-aes256-gcm', masterKey, info })
+  .withAllowUnencryptedBodies(true);
+```
+
+The snapshot store and `ObjectStoragePluginOptions` take the same
+`withAllowUnencryptedBodies`.  While it is set, the framework reads each
+body by its manifest — an encrypted one is decrypted with the key
+version it records, an unencrypted one is read as it is — and every
+write is encrypted.
+
+Then rewrite every object — a `load` followed by an `upsert` per
+`persistenceId` re-encrypts it; snapshots are superseded by the next
+save and pruned by `keepN` — and **remove the option again**.  While it
+is set, a plaintext body is accepted from anyone with write access to
+the bucket.  The [re-encryption sweep](/persistence/object-storage/key-rotation/)
+does not do this step: it rotates encrypted bodies to a new key and
+counts plaintext ones as `skippedUnencrypted` rather than encrypting
+them.
 
 ## Body integrity (HMAC)
 

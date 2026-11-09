@@ -158,13 +158,14 @@ class CreditCardActor extends DurableStateActor<...> {
 }
 ```
 
-Old (unencrypted) reads work — no metadata → plaintext path.
-New writes encrypt.  Eventually:
-
-- A **re-encryption sweep** filtered to this actor's
-  persistenceIds migrates the rest.
-
-See [key rotation](/persistence/object-storage/key-rotation/).
+New writes encrypt.  An old, unencrypted body of this actor is now
+**refused** on read: whether a body is encrypted is a byte in the body,
+so a plaintext one is indistinguishable from a forgery (#965).  Open the
+migration window on the store with `withAllowUnencryptedBodies(true)`,
+let each `persistenceId` be loaded and written once — the write
+re-encrypts it — and remove the option again.  The re-encryption sweep
+does not encrypt plaintext bodies; it rotates encrypted ones.  See
+[Reading old payloads](/persistence/object-storage/encryption/#reading-old-payloads).
 
 ## Working with the snapshot store
 
