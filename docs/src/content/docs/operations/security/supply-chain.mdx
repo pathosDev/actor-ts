@@ -31,6 +31,16 @@ workflow exchanges a short-lived GitHub identity token for a
 one-shot publish token. There is no long-lived npm token stored
 anywhere, so there is none to leak.
 
+The publishing job runs in the GitHub environment `npm`, and that
+environment is what decides who may publish (#704). GitHub starts the
+job only on a ref the environment allows — a `v*` tag or the `main`
+branch — and holds it until a maintainer approves the run. The Trusted
+Publisher on npmjs.com is registered with the same environment name, so
+npm refuses a publish token to any run that does not carry it. A
+branch pushed by an account with write access therefore cannot publish
+a version of its own, whether through a manual dispatch or through an
+edited copy of the workflow.
+
 ### Verifying provenance
 
 ```sh
