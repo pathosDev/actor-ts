@@ -337,4 +337,29 @@ describe('how a refusal is reported (#936)', () => {
     expect(line).not.toContain('@10.9.9.9');
     expect(line.length).toBeLessThan(1_000);
   });
+
+  test('a hostile host is escaped too — it is the marker author\'s choice as much as the system name', async () => {
+    const logger = new RecordingLogger();
+    const address = new NodeAddress('wire-ref-host', 'h', 47_452);
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(logger)
+      .withLogLevel(LogLevel.Debug);
+    const system = ActorSystem.create('wire-ref-host', systemOptions);
+    const clusterOptions = ClusterOptions.create()
+      .withHost('h')
+      .withPort(47_452)
+      .withTransport(new InMemoryTransport(address));
+    const cluster = await Cluster.join(system, clusterOptions);
+    nodes.push({ system, cluster, address });
+    // A line break to forge a record, and an `@` so the line would name a
+    // second, different node if it were printed as it is.
+    const host = 'evil\r\nWARN forged@10.9.9.9';
+    new RemoteActorRef(new NodeAddress('s', host, 80), '/user/x', cluster).tell('m');
+
+    const line = logger.records.find((record) => record.message.includes('refused to send'))?.message ?? '';
+    expect(line).not.toBe('');
+    expect(line).not.toMatch(/[\r\n]/);
+    expect(line).not.toContain('forged@10.9.9.9');
+    expect(line).toContain(':80');
+  });
 });
