@@ -188,12 +188,12 @@ describe('the member-map caps (#138)', () => {
     expect(liveIn(node.cluster)).toBe(4);
   });
 
-  test('the sender fallback outside mergeMember is capped too', async () => {
-    // `onGossip` records any sender it does not already know, and that insert
-    // never went through the merge path's guards — it was the one door #138
-    // left open even with the merge capped.  `sender` is the payload's
-    // self-declaration, so it is the cheaper of the two addresses to forge:
-    // one connection can walk through a whole address range.
+  test("a frame's sender field files no member at all", async () => {
+    // `onGossip` used to record any sender it did not already know, outside
+    // the merge path's guards — capped here once #138 noticed, and removed by
+    // #939, since it filed a member with no authority check.  `sender` is the
+    // payload's self-declaration, the cheaper of the two addresses to forge:
+    // one connection could walk through a whole address range.
     const node = await startNode('cap-sender', 9_204, { maxMembers: 3 });
     nodes.push(node);
     const connection = new NodeAddress('cap-sender', '10.0.138.2', 9_290);
@@ -210,7 +210,8 @@ describe('the member-map caps (#138)', () => {
       });
     }
 
-    expect(liveIn(node.cluster)).toBe(3);
+    // Self, and nothing the frames named.
+    expect(liveIn(node.cluster)).toBe(1);
   });
 
   test('0 disables a cap — and shows what the map did before', async () => {

@@ -199,21 +199,19 @@ function isUpAt(observer: Cluster, peer: NodeAddress): boolean {
 
 for (const implementation of ['simple', 'phi'] as const) {
   describe(`the detector holds entries only for watched peers — ${implementation} (#1103)`, () => {
-    test('a gossip frame under each of 500 claimed names adds entries only for the members it admits', async () => {
-      // A gossip frame admits its sender — capped by `maxMembers`, which is
-      // #138's bound, not this one's.  What this file holds is that the
-      // detector follows that map: an entry for each member admitted, none for
-      // the 490 names the cap turned away.  Before the fix every name got one;
-      // with only the crediting gated, the admitted members got none and read
-      // `healthy` for good.
+    test('a gossip frame under each of 500 claimed names adds no entry', async () => {
+      // A frame that carries no record admits no member — since #939 a frame's
+      // sender field files nothing — so the detector, which follows the member
+      // map, gains nothing either.  Before #1103 every name got an entry.
       const name = `fd-bound-gossip-${implementation}`;
-      const node = await startNode(name, 9_831, { implementation, maxMembers: 10 });
+      const node = await startNode(name, 9_831, { implementation });
+      const before = detectorEntries(node.cluster);
 
       for (let i = 0; i < FLOOD; i++) {
         internals(node.cluster).handleWire(stranger(name, i), gossipFrame(stranger(name, i)));
       }
 
-      expect(detectorEntries(node.cluster)).toBe(9);
+      expect(detectorEntries(node.cluster)).toBe(before);
       expectEntriesForWatchedPeersOnly(node);
       expect(internals(node.cluster).failureDetector.lastSeen(stranger(name, FLOOD - 1)).isNone()).toBe(true);
     });
