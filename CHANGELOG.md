@@ -9103,6 +9103,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **BREAKING — an object-storage store that reads with a decryption key
+  refuses an unencrypted body** (#965, CWE-757). Whether a body is
+  encrypted is recorded in a manifest byte of the body itself, outside the
+  AES-GCM tag, and `decodeBody` took that byte at its word: a store
+  configured `client-aes256-gcm` read a body whose flags said "not
+  encrypted" as plaintext. Anyone with write access to the bucket could
+  therefore replace an actor's encrypted state or snapshot with five bytes
+  of header and JSON of their choosing, needing no key. Supplying a key is
+  now the assertion that the body is encrypted, held the way an integrity
+  key holds an untagged body (#579), for `ObjectStorageDurableStateStore`
+  and `ObjectStorageSnapshotStore` alike and through the per-call
+  `PersistenceOptions.encryption` path too. The SQL stores closed the same
+  hole in #1802.
+
+  **Migration.** A bucket that already holds bodies written before
+  encryption was switched on needs the migration window:
+  `withAllowUnencryptedBodies(true)` on the store, or on
+  `ObjectStoragePluginOptions` for both registered stores. Then load and
+  write each `persistenceId` once — the write encrypts it; snapshots are
+  superseded by the next save — and remove the option. The re-encryption
+  sweep does not encrypt plaintext bodies, and the docs that said
+  enabling encryption on an existing bucket "just works" have been
+  corrected. A bucket encrypted from the start needs nothing.
+
 - **Only an approved run on a release ref can publish `actor-ts` to npm**
   (#704). npm's Trusted Publisher checks the repository and the workflow
   file name, never the ref, and the publish job's only gate was "this

@@ -179,10 +179,23 @@ export type DecodeOptions = {
    * single subkey (legacy single-key shape) or a resolver that
    * dispatches on the manifest's key version.  If absent on an
    * encrypted body, `decodeBody` rejects.
+   *
+   * Supplying it is also the assertion *"this body must be encrypted"*,
+   * and the codec holds an unencrypted body to it the way it holds an
+   * untagged one to `integrity` (#965).  The flag that says "not
+   * encrypted" sits in the manifest byte whoever wrote the object
+   * chose, and outside the AES-GCM tag nothing authenticates it — so a
+   * party with write access to the bucket could otherwise replace an
+   * encrypted body with a plaintext one of its own making, needing no
+   * key at all.  `allowUnencryptedBodies: true` re-admits plaintext
+   * bodies for the migration window of a corpus written before
+   * encryption was enabled, and for the tools that rewrite a body
+   * without deciding what it means (the re-encryption sweep, the
+   * layout migration).
    */
   readonly encryption?:
-    | { readonly subKey: Uint8Array }
-    | { readonly subKeyFor: SubKeyResolver };
+    & ({ readonly subKey: Uint8Array } | { readonly subKeyFor: SubKeyResolver })
+    & { readonly allowUnencryptedBodies?: boolean };
   /**
    * Verification key for the appended HMAC tag.  Supplying it is the
    * assertion *"this corpus is integrity-protected"*, and the codec
@@ -402,6 +415,20 @@ export async function decodeBody(framed: Uint8Array, options: DecodeOptions = {}
       + 'decoding.  It was either written before integrity was enabled — set '
       + 'allowUntaggedBodies: true for the read-then-write migration window — or its '
       + 'tag was stripped as part of a downgrade attack.',
+    );
+  }
+
+  // The same rule one flag over (#965): a key was supplied, so this body
+  // must be encrypted.  A plaintext body is older than the encryption or
+  // an attacker's — five bytes of header and JSON of their choosing — and
+  // nothing here can tell which, so the safe reading is the default one.
+  if (!encrypted && options.encryption !== undefined && options.encryption.allowUnencryptedBodies !== true) {
+    throw new Error(
+      'BodyCodec: body is not encrypted but a decryption key was supplied for decoding.  '
+      + 'It was either written before encryption was enabled — set allowUnencryptedBodies: '
+      + 'true for the read-then-write migration window — or it is a plaintext body written '
+      + 'over an encrypted one by someone with write access to the bucket (an encryption '
+      + 'downgrade).',
     );
   }
 

@@ -74,6 +74,7 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
   private readonly encryption: EncryptionConfig | EncryptionResolver | undefined;
   private readonly integrity: IntegrityConfig | IntegrityResolver | undefined;
   private readonly allowUntaggedBodies: boolean;
+  private readonly allowUnencryptedBodies: boolean;
   private readonly requireContextBinding: boolean;
   private readonly maxDecompressedBytes: number;
 
@@ -136,6 +137,7 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
     this.encryption = resolvedOptions.encryption;
     this.integrity = resolvedOptions.integrity;
     this.allowUntaggedBodies = resolvedOptions.allowUntaggedBodies ?? false;
+    this.allowUnencryptedBodies = resolvedOptions.allowUnencryptedBodies ?? false;
     this.requireContextBinding = resolvedOptions.requireContextBinding ?? false;
     this.maxDecompressedBytes = resolvedOptions.maxDecompressedBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES;
     this.serializer = resolvedOptions.serializer;
@@ -322,7 +324,7 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
     let decoded: import('../object-storage/BodyCodec.js').DecodedBody;
     try {
       decoded = await decodeBody(fetched.value.body, {
-        ...(subKeyFor ? { encryption: { subKeyFor } } : {}),
+        ...(subKeyFor ? { encryption: { subKeyFor, allowUnencryptedBodies: this.allowUnencryptedBodies } } : {}),
         ...(integrity.mode === 'hmac-sha256'
           ? {
               integrity: {

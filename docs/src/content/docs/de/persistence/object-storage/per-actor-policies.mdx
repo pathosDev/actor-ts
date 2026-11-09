@@ -162,13 +162,15 @@ class CreditCardActor extends DurableStateActor<...> {
 }
 ```
 
-Alte (unverschlüsselte) Reads funktionieren — keine Metadaten →
-Plaintext-Pfad.  Neue Writes verschlüsseln.  Schließlich:
-
-- Ein **Re-Encryption-Sweep**, gefiltert auf die
-  persistenceIds dieses Actors, migriert den Rest.
-
-Siehe [Schlüsselrotation](/de/persistence/object-storage/key-rotation/).
+Neue Writes verschlüsseln.  Ein alter, unverschlüsselter Body dieses
+Actors wird beim Lesen jetzt **abgelehnt**: Ob ein Body verschlüsselt
+ist, ist ein Byte im Body, also ist ein Plaintext-Body von einer
+Fälschung nicht zu unterscheiden (#965).  Öffne am Store das
+Migrationsfenster mit `withAllowUnencryptedBodies(true)`, lass jede
+`persistenceId` einmal laden und schreiben — der Write verschlüsselt sie
+— und entferne die Option wieder.  Der Re-Encryption-Sweep verschlüsselt
+keine Plaintext-Bodies; er rotiert verschlüsselte.  Siehe
+[Alte Payloads lesen](/de/persistence/object-storage/encryption/#alte-payloads-lesen).
 
 ## Mit dem Snapshot-Store arbeiten
 
