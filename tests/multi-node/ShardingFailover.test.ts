@@ -33,6 +33,7 @@
 import { match } from 'ts-pattern';
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
+import { KeepMajority } from '../../src/cluster/downing/index.js';
 import type { NodeAddress } from '../../src/cluster/NodeAddress.js';
 import { ClusterSharding } from '../../src/cluster/sharding/ClusterSharding.js';
 import { hashShardId } from '../../src/cluster/sharding/ShardAllocator.js';
@@ -279,11 +280,24 @@ describe('multi-node sharding failover', () => {
   }, 30_000);
 
   test('3. partitioned region — shards move; on heal, the cluster reconverges', async () => {
+    // Downed by a strategy, not by the failure detector's own word (#1806).
+    // The auto-down route *deletes* the cut-off member instead of tombstoning
+    // it, so a survivor that has not deleted it yet gossips it back to the one
+    // that has, and the two forget it at the same instant only when their
+    // deletions land in one gossip round — measured at a median of 194 ms with
+    // a tail out to 11.6 s, which no budget below makes deterministic.  That
+    // route is #940's.  This scenario is about the region and its shards, and
+    // `KeepMajority` tombstones the minority on both survivors, so the
+    // removal converges once and stays converged through the heal.
     const spec = new MultiNodeSpec({
       roles: ['a', 'b', 'c'],
       failureDetector: TIGHT_FD,
-      failureDetectorAutoDown: true,
       gossipIntervalMs: 80,
+      // Short enough for a test, and long enough that the two survivors'
+      // detections of c — a heartbeat apart — settle before a decision.  The
+      // production default is 20 s (#839).
+      stableAfterMs: 500,
+      downing: () => new KeepMajority(),
     });
     try {
       await spec.start();
@@ -304,9 +318,10 @@ describe('multi-node sharding failover', () => {
       // asserted on the wait; the 2-member view below is the real signal.
       await sleep(300);
 
-      // Cut 'c' from both 'a' and 'b' — c becomes unreachable, then with
-      // tight FD options (downAfterMs = 400) the cluster declares c
-      // down + removed within ~half a second.
+      // Cut 'c' from both 'a' and 'b' — c becomes unreachable within
+      // `unreachableAfterMs`, and once the view has been stable for
+      // `stableAfterMs` each survivor's KeepMajority downs it, the two of
+      // them being the majority; c, alone on its side, downs itself.
       spec.partition('a', 'c');
       spec.partition('b', 'c');
 
