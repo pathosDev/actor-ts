@@ -20,7 +20,7 @@ services:
     # suite, so an upstream regression still surfaces within a day — attributable
     # to the bump, instead of turning the nightly red underneath a run.
     # Production users pin their own version.
-    image: mongo:8.3.11
+    image: mongo:9.0.4
     environment:
       # MongoDB 8.x refuses to start on kernels 6.19 – 7.0.13 while tcmalloc's
       # per-CPU caches are on, because those kernels changed the rseq behaviour
