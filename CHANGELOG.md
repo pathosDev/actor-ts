@@ -4413,6 +4413,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — `actor-ts.cluster.run-coordinated-shutdown-when-down` ships
+  `on`: a node its own downing decision removes now runs the
+  coordinated-shutdown pipeline, which ends its ActorSystem; it used to leave
+  the membership and keep its entities, singletons and HTTP binding running
+  beside the side that won** (#1456). The default was held off while two wrong
+  self-downs were known — `StaticQuorum` downing a cluster below its quorum
+  (#933) and `KeepOldest` downing every survivor of a crashed oldest (#932) —
+  and moves now that both are fixed. With #940, a node the others removed while
+  it was paused or cut off reaches the same decision once it hears them again,
+  so the switch covers that case too. `coordinated-shutdown.terminate-actor-system`
+  and `exit-process` still decide what the run ends in. **Migration:** a
+  deployment that wants a downed node to keep its actors running sets
+  `run-coordinated-shutdown-when-down = off` or
+  `withRunCoordinatedShutdownWhenDown(false)`; either way the self-down now
+  announces `SelfRemoved`.
+
 - **BREAKING — `KeepOldest` lets the rest of the cluster carry on when the
   oldest member crashes; every survivor used to down itself, so one dead node
   — the lowest-addressed, which is also the leader — stopped the whole

@@ -52,18 +52,18 @@ export const DEFAULT_FAILURE_DETECTOR_AUTO_DOWN = true;
  * — whether a node whose own downing decision removes it also runs the
  * coordinated-shutdown pipeline, or only leaves (#1456).
  *
- * Off, and neither setting is safe on its own terms, which is why the choice
- * is the deployment's.  Off, the downed node leaves the membership and keeps
- * everything else running — its actors, its HTTP binding, the entities and
- * singletons it hosted — beside the side that won: a second writer.  On stops
- * that, and turns every wrong self-down into a terminated ActorSystem.  Two
- * are known: StaticQuorum downs a cluster still below `quorum-size` while it
- * bootstraps (#933), and KeepOldest downs every survivor once the node it
- * counts as oldest — the lowest-addressed — crashes (#932).  Opt-in until
- * those are fixed, the shape every other switch in this block that can stop
- * nodes takes.
+ * On (#1456).  Off, the downed node leaves the membership and keeps everything
+ * else running — its actors, its HTTP binding, the entities and singletons it
+ * hosted — beside the side that won: a second writer, which is the defect a
+ * downing decision exists to prevent.  On stops that, at the price that a
+ * wrong self-down terminates the ActorSystem.  It shipped off while two wrong
+ * self-downs were known — StaticQuorum downing a cluster still below
+ * `quorum-size` as it bootstrapped (#933), and KeepOldest downing every
+ * survivor once the oldest crashed (#932) — and moved once both were fixed.
+ * A deployment that would rather keep a downed node's actors running sets it
+ * off.
  */
-export const DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN = false;
+export const DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN = true;
 
 /**
  * Built-in default for {@link ClusterOptionsType.seedRetryIntervalMs} — how
@@ -639,7 +639,7 @@ export type ClusterOptionsType = {
   /**
    * Whether this node runs the coordinated-shutdown pipeline, with
    * `ClusterDowningReason`, when its own downing decision removes it —
-   * `false` by default (#1456).
+   * `true` by default (#1456).
    *
    * "Its own" is the whole scope: {@link downing}, or `down-all-when-unstable`,
    * deciding on this node that this node goes.  The node leaves first, so it
@@ -655,8 +655,11 @@ export type ClusterOptionsType = {
    * Not suppressed by `coordinated-shutdown.auto-register-tasks = off`, which
    * withholds the framework's own tasks and decides nothing about when the
    * pipeline runs.  Inert without a {@link downing} provider, since nothing
-   * else decides a self-down, and deaf to a downing a *peer* decides: a peer's
-   * claim about this node's own record is refused (#940).
+   * else decides a self-down.  A downing a *peer* decides reaches it only
+   * through this node's own provider: a peer's claim about this node's own
+   * record is refused, but a peer that removed this node answers its
+   * heartbeats with a refusal, and a node every peer refuses is asked about
+   * at once (#940).
    */
   readonly runCoordinatedShutdownWhenDown?: boolean;
   /**

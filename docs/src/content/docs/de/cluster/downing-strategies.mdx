@@ -15,17 +15,19 @@ Eine **Downing-Strategie** wählt eine Gewinnerseite und downt die
 Verliererseite zwangsweise. Jeder verlierende Node verlässt den
 Cluster; die Gewinnerseite läuft als Cluster weiter. Ob auch die
 Actors eines verlierenden Nodes stoppen, entscheidet
-`actor-ts.cluster.run-coordinated-shutdown-when-down`. Ist er an,
-führt der Node seine
+`actor-ts.cluster.run-coordinated-shutdown-when-down`. Ist er an, wie
+ausgeliefert, führt der Node seine
 [Coordinated-Shutdown-Pipeline](/de/fundamentals/coordinated-shutdown/#wenn-der-cluster-diesen-knoten-downt)
 aus, die sein Actor-System beendet, sofern
-`coordinated-shutdown.terminate-actor-system` nicht aus ist. Mit
-dem ausgelieferten `off` verlässt er den Cluster nur, und seine
-Actors laufen neben den Gewinnern weiter — ein zweiter Schreiber für
-jede Entity und jeden Singleton, die er hielt. So oder so handelt ein
-Node nur auf das Urteil seiner eigenen Strategie: ein Downing, das
-die Gewinnerseite über ihn entscheidet, wird ihm nicht mitgeteilt
-([Issue #940](https://github.com/pathosDev/actor-ts/issues/940)).
+`coordinated-shutdown.terminate-actor-system` nicht aus ist. Mit `off` verlässt er den Cluster nur, und
+seine Actors laufen neben den Gewinnern weiter — ein zweiter
+Schreiber für jede Entity und jeden Singleton, die er hielt. So oder
+so handelt ein Node nur auf das Urteil seiner eigenen Strategie. Die
+Gewinnerseite kann ihn nicht downen, aber sie lehnt seine Heartbeats
+ab, und bei einem Node, den jeder Peer ablehnt, wird die eigene
+Strategie sofort gefragt — ein Node, der pausiert oder abgeschnitten
+war, während die anderen ihn entfernten, tritt also ab, sobald er sie
+wieder hört ([Issue #940](https://github.com/pathosDev/actor-ts/issues/940)).
 
 ```mermaid
 flowchart LR

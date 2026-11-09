@@ -567,16 +567,15 @@ actor-ts {
     # still decide what that run ends in; auto-register-tasks = off does not
     # suppress it.
     #
-    # Neither value is safe on its own terms.  off leaves a second writer: the
-    # downed node's entities, singletons and HTTP binding keep running beside
-    # the side that won.  on turns every wrong self-down into a terminated
-    # actor system, and two are known: static-quorum below quorum-size while
-    # the cluster bootstraps (#933), and keep-oldest once the lowest-addressed
-    # node crashes (#932).  Off until those are fixed.
+    # off leaves a second writer: the downed node's entities, singletons and
+    # HTTP binding keep running beside the side that won.  on turns a wrong
+    # self-down into a terminated actor system; the two known ones, in
+    # static-quorum (#933) and keep-oldest (#932), are fixed.
     #
-    # Only this node's own verdict reaches it: a downing a peer decides about
-    # this node is refused, so it is not seen here at all (#940).
-    run-coordinated-shutdown-when-down = off
+    # Only this node's own verdict reaches it.  A peer that removed this node
+    # cannot down it, but it refuses this node's heartbeats, and a node every
+    # peer refuses has its own strategy asked at once (#940).
+    run-coordinated-shutdown-when-down = on
 
     # Peers this node announces itself to at start-up, "system@host:port" (or
     # "host:port", which takes this system's own name).  Empty is the

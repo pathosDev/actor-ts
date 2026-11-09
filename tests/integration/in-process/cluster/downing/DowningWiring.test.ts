@@ -964,11 +964,10 @@ describe('Cluster + DowningProvider — the shutdown pipeline after a self-down 
     return { seed, peer };
   }
 
-  test('switched on, a self-down leaves, then runs the pipeline with ClusterDowningReason, which ends the system', async () => {
-    const { seed, peer } = await formPair('down-self-runs-pipeline', 64_311, {
-      downing: DOWNS_ITSELF,
-      runCoordinatedShutdownWhenDown: true,
-    });
+  test('unset, a self-down leaves, then runs the pipeline with ClusterDowningReason, which ends the system', async () => {
+    // The default, bound by behaviour rather than by a constant: the key is
+    // left out entirely, so whatever the shipped default is decides this.
+    const { seed, peer } = await formPair('down-self-runs-pipeline', 64_311, { downing: DOWNS_ITSELF });
     const seen = observeFirstPhase(seed);
 
     await peer.cluster.transport.shutdown();
@@ -984,10 +983,11 @@ describe('Cluster + DowningProvider — the shutdown pipeline after a self-down 
     await peer.sys.terminate();
   }, 15_000);
 
-  test('unset, a self-down only leaves: no pipeline runs and the system stays up', async () => {
-    // The default, bound by behaviour rather than by a constant: the key is
-    // left out entirely, so whatever the shipped default is decides this.
-    const { seed, peer } = await formPair('down-self-leaves-only', 64_321, { downing: DOWNS_ITSELF });
+  test('switched off, a self-down only leaves: no pipeline runs and the system stays up', async () => {
+    const { seed, peer } = await formPair('down-self-leaves-only', 64_321, {
+      downing: DOWNS_ITSELF,
+      runCoordinatedShutdownWhenDown: false,
+    });
     const seen = observeFirstPhase(seed);
     const shutdown = seed.sys.extension(CoordinatedShutdownId);
 

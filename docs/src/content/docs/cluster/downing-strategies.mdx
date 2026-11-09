@@ -14,14 +14,17 @@ A **downing strategy** picks a winning side and forcibly downs the
 losing side.  Each losing node leaves the cluster; the winning side
 continues as the cluster.  Whether a losing node's actors stop as
 well is `actor-ts.cluster.run-coordinated-shutdown-when-down`.  With
-it on, the node runs its
+it on, the shipped default, the node runs its
 [coordinated-shutdown pipeline](/fundamentals/coordinated-shutdown/#when-the-cluster-downs-this-node),
 which ends its actor system unless
-`coordinated-shutdown.terminate-actor-system` is off.  With the
-shipped `off` it only leaves, and its actors keep running beside the
-winners — a second writer for every entity and singleton it hosted.
-Either way a node acts only on its own strategy's verdict: a downing
-the winning side decides about it is not told to it
+`coordinated-shutdown.terminate-actor-system` is off.  With it `off`
+it only leaves, and its actors keep
+running beside the winners — a second writer for every entity and
+singleton it hosted.  Either way a node acts only on its own
+strategy's verdict.  The winning side cannot down it, but it refuses
+its heartbeats, and a node every peer refuses has its own strategy
+asked at once — so a node that was paused or cut off while the others
+removed it stands down once it can hear them again
 ([issue #940](https://github.com/pathosDev/actor-ts/issues/940)).
 
 ```mermaid

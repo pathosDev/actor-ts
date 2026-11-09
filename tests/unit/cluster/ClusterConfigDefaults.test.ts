@@ -257,27 +257,27 @@ describe('readClusterOptionsFromConfig', () => {
   });
 
   test('run-coordinated-shutdown-when-down reads through as its own field (#1456)', () => {
-    // `on`, against the shipped `off`, so the exact object can only hold `true`
-    // if the reader read this leaf — and the whole object, so the switch must
-    // land flat on its own field and must NOT drag a `splitBrainResolver` or a
-    // `downing` key in with it: it is about what this node does once a
-    // decision is made, not part of how one is made.
-    const config = Config.parseString('actor-ts.cluster.run-coordinated-shutdown-when-down = on');
+    // `off`, against the shipped `on`, so the exact object can only hold
+    // `false` if the reader read this leaf — and the whole object, so the
+    // switch must land flat on its own field and must NOT drag a
+    // `splitBrainResolver` or a `downing` key in with it: it is about what this
+    // node does once a decision is made, not part of how one is made.
+    const config = Config.parseString('actor-ts.cluster.run-coordinated-shutdown-when-down = off');
 
-    expectExactOptions(readClusterOptionsFromConfig(config), { runCoordinatedShutdownWhenDown: true });
+    expectExactOptions(readClusterOptionsFromConfig(config), { runCoordinatedShutdownWhenDown: false });
   });
 
   test('an explicit run-coordinated-shutdown-when-down wins over the file, an unset one falls through (#1456)', () => {
-    const configured = Config.parseString('actor-ts.cluster.run-coordinated-shutdown-when-down = on');
+    const configured = Config.parseString('actor-ts.cluster.run-coordinated-shutdown-when-down = off');
 
     expect(withClusterConfigDefaults(configured, {} as ClusterOptionsType).runCoordinatedShutdownWhenDown)
-      .toBe(true);
-    // `false` is a value, not an absence: a merge that treated it as "unset"
-    // would let the file terminate a node whose code said only to leave.
+      .toBe(false);
+    // An explicit `true` wins over a file that says `off`: code that asks for
+    // the stand-down gets it, whatever the deployment's file says.
     expect(withClusterConfigDefaults(
       configured,
-      { host: 'h', port: 1, runCoordinatedShutdownWhenDown: false } as ClusterOptionsType,
-    ).runCoordinatedShutdownWhenDown).toBe(false);
+      { host: 'h', port: 1, runCoordinatedShutdownWhenDown: true } as ClusterOptionsType,
+    ).runCoordinatedShutdownWhenDown).toBe(true);
   });
 
   test('an empty config yields no settings at all', () => {
