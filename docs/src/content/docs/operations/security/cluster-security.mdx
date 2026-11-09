@@ -593,12 +593,16 @@ configured, or under `auto-down = off`, the phantom is parked at
 `unreachable` like any silent peer and holds its live slot until a
 strategy or an operator removes it. A phantom that arrives through
 a frame's *sender* field instead — a `from` naming an address this
-node holds no record of — is filed as `joining` without being
-registered with the detector at all, so no detector ever declares
-it `down`: it is promoted like any joining member and holds its
+node holds no record of — is filed as `joining` with no authority
+check at all and promoted like any joining member, so it holds its
 slot as an `up` member — this node's leader, if its address sorts
-first — until an operator removes it
-([issue #939](https://github.com/pathosDev/actor-ts/issues/939)).
+first ([issue #939](https://github.com/pathosDev/actor-ts/issues/939)).
+The sender door registers it with the detector on admission, as
+the merge does a record (#1103), so from there it goes the same
+way: removed at `down-after` under the default, parked at
+`unreachable` under a strategy or `auto-down = off`. Before #1103 it
+was never registered, so no detector ever declared it `down` and
+only an operator removed it.
 `max-members` is therefore the one bound on live phantoms that holds
 on every route. A record gossiped as **`removed`** is watched by
 nothing: only the tombstone prune reclaims it, once the larger of
@@ -641,6 +645,21 @@ the connection on the length prefix — the node evicts itself from
 the cluster while still running, long before anything runs out of
 memory.
 
+The failure detector is held to the same bound. It keeps state per
+peer, and it used to create that state for every connection identity
+a frame arrived under — without mTLS, a name the peer picks in its
+`hello`. A peer reconnecting under fresh names grew it by an entry per
+name while the member map held at its cap: 500 names left 502 entries
+beside 3 members, each carrying a sample window under the φ-accrual
+detector. Liveness now reaches the detector only for a member that is
+not a tombstone, or a configured seed that is not one either. Every
+route that admits a member registers it, and every route that takes
+it out of the live set forgets its entry — a tombstone this node
+mints, a tombstone a gossiped record brings, and a deletion from the
+member map alike. So the detector holds an entry per live member and
+at most one per seed, bounded by `max-members` and the seed list
+(#1103).
+
 :::note[The order these landed in mattered]
 The failure detector's `down → delete` cascade used to be what
 bounded phantom *live* members to seconds. That deletion is now
@@ -649,8 +668,9 @@ with none `failure-detector.auto-down` decides, which ships on — so
 wherever a strategy is configured or `auto-down` is off the implicit
 bound is gone: a parked phantom has no lifetime at all, and stays
 until a strategy or an operator removes it. Even under the default
-the cascade reclaims only a phantom the detector watches, which the
-sender-field door above never registers. These caps were the
+the cascade reclaims only a phantom the detector watches, which
+until #1103 left out every one the sender-field door above admitted.
+These caps were the
 precondition for gating it rather than an independent hardening
 step, and `max-members` is what bounds live phantoms since.
 :::
