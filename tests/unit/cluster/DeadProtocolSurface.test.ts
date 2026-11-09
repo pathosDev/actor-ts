@@ -74,6 +74,8 @@ const CORE_WIRE_KINDS = [
   'hello-ack',
   'heartbeat',
   'heartbeat-ack',
+  // The answer to a heartbeat from a member held as `removed` (#940).
+  'membership-refused',
   'gossip',
   'envelope',
   'leave',

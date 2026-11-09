@@ -6108,6 +6108,29 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A node the rest of the cluster removed now learns of it and takes itself
+  out; it used to keep running the shards and the singleton the survivors had
+  already taken over, and `SelfRemoved` never fired on a real `Cluster`**
+  (#940). Reported from a deployment where a node was paused past the downing
+  window — SIGSTOP, a suspended VM, a long GC pause — and resumed: the
+  survivors acknowledged its heartbeats, the acknowledgment counted as
+  liveness, and the node never saw a partition its downing provider could
+  decide on. A survivor now answers a heartbeat from the run it holds as
+  `removed` with a new `membership-refused` frame naming that run (incarnation
+  included) instead of an acknowledgment. The removed node takes it as a fact
+  about the peer only: the peer is parked at `unreachable` and its later
+  heartbeats no longer bring it back, while the node's own status stays its own
+  to author, so the frame is no remote kill switch. Once every peer has refused
+  it the view is settled and the downing provider is asked at once instead of
+  after `stable-after`; under `KeepMajority` the node downs itself — about
+  200 ms after resuming in the reproduction, against never before. A node's
+  own self-down now ends in `removed` and emits `MemberRemoved` and
+  `SelfRemoved` for it, as `MockCluster` always did. A refusal naming another
+  run at the address (a restart) or carrying no incarnation is ignored, and the
+  real peer's gossip listing this run as a member withdraws a forged one.
+  `scripts/repro/cluster-dual-activity.ts` reproduces both #940 and #1272 with
+  three local processes.
+
 - **`idle-timeout` and `request-timeout` on the Express and Fastify backends
   are reported in effect on Deno 2.7.13 and later, where they hold; they were
   reported not in effect on every Deno** (#1793). Deno's `node:http` applies

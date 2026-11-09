@@ -138,8 +138,9 @@ async function formPair(systemName: string, seedPort: number, seedSpec: NodeSpec
   return { seed, peer };
 }
 
+/** This node's own status, tombstone included — a self-down ends in `removed` (#940). */
 function selfStatusOf(node: Node): MemberStatus | undefined {
-  return node.cluster.getMembers().find((member) => member.address.equals(node.cluster.selfAddress))?.status;
+  return node.cluster.selfMember()?.status;
 }
 
 /** Whether another owner could take the record right now; a record it takes is given straight back. */
@@ -276,7 +277,7 @@ describe('both leave routes reach the provider\'s shutdown hook (#1454)', () => 
     await peer.cluster.transport.shutdown();
 
     await awaitCondition(() => provider.shutdowns > 0, { timeoutMs: 3_000, label: 'the at-once leave called the hook' });
-    expect(selfStatusOf(seed)).toBe('leaving');
+    expect(selfStatusOf(seed)).toBe('removed');
     // An absence, so a fixed wait: several detector rounds past the release, in
     // which a tick still armed would decide again and a second leave would
     // call the hook again.
