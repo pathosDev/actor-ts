@@ -748,6 +748,13 @@ actor-ts {
       keep-oldest.role   = ""
       static-quorum.role = ""
 
+      # keep-oldest only: whether the oldest member loses when it is the only
+      # member on its side of a split, against two or more on the other.  On,
+      # a crash of the oldest leaves the rest running.  Off, the side holding
+      # the oldest survives and nothing else does -- and a crashed oldest is
+      # on nobody's side, so every survivor downs itself (#932).
+      keep-oldest.down-if-alone = on
+
       # Three keys ship comment-only, because "not configured" has no legal
       # spelling: quorum-size = 0 is refused by StaticQuorum's own validator
       # and referee-address = "" by KeepReferee's, so a shipped leaf could

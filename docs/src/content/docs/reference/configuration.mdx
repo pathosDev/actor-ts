@@ -432,6 +432,7 @@ replay from it.
 | `cluster.split-brain-resolver.down-all-when-unstable` | `off` | Down every member, this node included, when the view never once holds still for `stable-after` across `3 × stable-after` of churn.  Off — see below. |
 | `cluster.split-brain-resolver.keep-majority.role` | `""` | Only members carrying this role count toward the majority.  `""` counts every member. |
 | `cluster.split-brain-resolver.keep-oldest.role` | `""` | Only members with this role are eligible "oldest".  `""` considers every member. |
+| `cluster.split-brain-resolver.keep-oldest.down-if-alone` | `on` | Whether the oldest loses when it is the only member on its side, against two or more on the other.  On, a crash of the oldest leaves the rest running; off, every survivor downs itself (#932). |
 | `cluster.split-brain-resolver.static-quorum.role` | `""` | Only members carrying this role count toward quorum.  `""` counts every member. |
 | `cluster.split-brain-resolver.static-quorum.quorum-size` | *(unset)* | Reachable members required to keep running.  Required by `static-quorum`; comment-only in `reference.conf` — see below. |
 | `cluster.split-brain-resolver.keep-referee.referee-address` | *(unset)* | The referee node's address; the side containing it wins.  Required by `keep-referee`; comment-only. |

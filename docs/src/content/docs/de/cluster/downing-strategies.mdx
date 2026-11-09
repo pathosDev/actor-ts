@@ -366,11 +366,12 @@ besondere Deployments.
 ```ts
 import { KeepOldest, KeepOldestOptions } from 'actor-ts/cluster';
 
-const keepOldestOptions = KeepOldestOptions.create().withDownIfAlone(true);
+const keepOldestOptions = KeepOldestOptions.create().withRole('backend');
 new KeepOldest(keepOldestOptions);
 ```
 
-Die Seite mit dem **„ältesten“ Mitglied** gewinnt.
+Die Seite mit dem **„ältesten“ Mitglied** gewinnt — außer das älteste
+steht allein (siehe `downIfAlone` unten).
 
 :::caution[„Ältestes“ heißt hier niedrigste Adresse, nicht längste Laufzeit]
 Dem Namen zum Trotz verfolgt diese Strategie keine Join-Reihenfolge —
@@ -394,10 +395,23 @@ Nützlich, wenn:
 - Du die Adresse der Node festlegen kannst, die überleben soll — dann
   ist die Strategie deterministisch und braucht keine Quorum-Arithmetik.
 
-`downIfAlone: true` bedeutet "wenn ich der älteste bin, aber alle
-anderen unreachable sind, downe ich mich selbst" —
-verhindert, dass ein Ein-Node-"Gewinner" sich nach einem
-Komplett-Split selbst zum Cluster erklärt.
+`downIfAlone` — standardmäßig an, in der Config-Datei
+`keep-oldest.down-if-alone` — entscheidet, was passiert, wenn das älteste
+Mitglied allein auf seiner Seite des Splits steht, gegen zwei oder mehr auf
+der anderen:
+
+- **An:** Das älteste verliert, und die Gruppe läuft weiter.  Beide Seiten
+  kommen zur selben Antwort: Überlebende, die ein abgestürztes ältestes als
+  unreachable sehen, downen es, und ein allein abgeschnittenes ältestes downt
+  sich selbst.
+- **Aus:** Die Seite mit dem ältesten überlebt, sonst keine.  Ein
+  abgestürztes ältestes steht auf keiner Seite, also downt sich jeder
+  Überlebende selbst, und der Absturz eines einzigen Nodes — des mit der
+  niedrigsten Adresse, der auch Leader ist — stoppt den Cluster (#932).  Wähle
+  das nur, wenn du lieber stoppst, als ohne den festgelegten Node zu laufen.
+
+Zwei Seiten mit je einem Mitglied sind nicht „allein gegen eine Gruppe“:
+Ein Zwei-Node-Cluster behält das älteste in beiden Fällen.
 
 ## KeepReferee
 

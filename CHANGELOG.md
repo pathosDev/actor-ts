@@ -4413,6 +4413,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — `KeepOldest` lets the rest of the cluster carry on when the
+  oldest member crashes; every survivor used to down itself, so one dead node
+  — the lowest-addressed, which is also the leader — stopped the whole
+  cluster** (#932). `downIfAlone` was a dead branch: both arms returned the
+  same set. It now decides the case it names, an oldest that is the only
+  member on its side against two or more on the other, and is **on by
+  default** — the survivors down a crashed oldest, and an oldest cut off on
+  its own downs itself. Two sides of one member each keep the oldest, so a
+  two-node cluster does not stop. It is readable from the config file as
+  `actor-ts.cluster.split-brain-resolver.keep-oldest.down-if-alone`. With
+  nothing unreachable the strategy decides nothing. **Migration:** a
+  deployment that wants the strict rule — the side holding the oldest
+  survives, nothing else does — sets `keep-oldest.down-if-alone = off` or
+  `withDownIfAlone(false)`.
+
 - **BREAKING — the minimum supported Bun is 1.4.0; `engines.bun` was
   `>=1.3.0`** (#1793). Bun 1.3.x does not deliver runtime behaviour the
   framework relies on — the details are in a security advisory — and the

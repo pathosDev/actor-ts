@@ -158,11 +158,11 @@ function keepMajorityOptions(config: Config): KeepMajorityOptionsType {
 }
 
 function keepOldestOptions(config: Config): KeepOldestOptionsType {
-  // `down-if-alone` has no key on purpose: `KeepOldest.decide`'s two arms are
-  // byte-identical today, so the flag provably changes nothing (#932).
-  // `NoDeadConfigKeys` would pass it — the field *is* read — which is exactly
-  // why the guard cannot be the thing that decides this.
-  return readRole(config, ConfigKeys.cluster.splitBrainResolver.keepOldest.role);
+  const keys = ConfigKeys.cluster.splitBrainResolver.keepOldest;
+  return {
+    ...readRole(config, keys.role),
+    ...(config.hasPath(keys.downIfAlone) ? { downIfAlone: config.getBoolean(keys.downIfAlone) } : {}),
+  };
 }
 
 function keepReferee(config: Config): KeepReferee {

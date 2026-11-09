@@ -1841,6 +1841,7 @@ export const ConfigKeys = {
       },
       keepOldest: {
         role: 'actor-ts.cluster.split-brain-resolver.keep-oldest.role',
+        downIfAlone: 'actor-ts.cluster.split-brain-resolver.keep-oldest.down-if-alone',
       },
       keepReferee: {
         /** Comment-only in `reference.conf` — `""` is refused by the validator. */

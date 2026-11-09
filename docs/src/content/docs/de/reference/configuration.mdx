@@ -451,6 +451,7 @@ man daraus erneut zustellt.
 | `cluster.split-brain-resolver.down-all-when-unstable` | `off` | Alle Mitglieder downen, diesen Node eingeschlossen, wenn das Bild über `3 × stable-after` Unruhe kein einziges Mal für `stable-after` stillsteht.  Aus — siehe unten. |
 | `cluster.split-brain-resolver.keep-majority.role` | `""` | Nur Mitglieder mit dieser Rolle zählen zur Mehrheit.  `""` zählt alle. |
 | `cluster.split-brain-resolver.keep-oldest.role` | `""` | Nur Mitglieder mit dieser Rolle kommen als „ältestes“ infrage.  `""` betrachtet alle. |
+| `cluster.split-brain-resolver.keep-oldest.down-if-alone` | `on` | Ob das älteste verliert, wenn es allein auf seiner Seite steht, gegen zwei oder mehr auf der anderen.  An, lässt ein Absturz des ältesten den Rest weiterlaufen; aus, downt sich jeder Überlebende selbst (#932). |
 | `cluster.split-brain-resolver.static-quorum.role` | `""` | Nur Mitglieder mit dieser Rolle zählen zum Quorum.  `""` zählt alle. |
 | `cluster.split-brain-resolver.static-quorum.quorum-size` | *(ungesetzt)* | Wie viele erreichbare Mitglieder nötig sind, um weiterzulaufen.  Von `static-quorum` verlangt; in `reference.conf` nur als Kommentar — siehe unten. |
 | `cluster.split-brain-resolver.keep-referee.referee-address` | *(ungesetzt)* | Adresse des Referee-Nodes; die Seite mit ihm gewinnt.  Von `keep-referee` verlangt; nur als Kommentar. |
