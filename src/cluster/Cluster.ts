@@ -644,9 +644,10 @@ export class Cluster {
     this.minimumMembersBeforeUp = options.minimumMembersBeforeUp ?? DEFAULT_MINIMUM_MEMBERS_BEFORE_UP;
     this.minimumMembersBeforeUpPerRole = options.minimumMembersBeforeUpPerRole ?? {};
     this.downing = options.downing ?? null;
-    // Beside `downing` because the two answer one question between them —
-    // who removes a peer the detector has given up on — and
-    // `ClusterOptionsValidator` has already refused the pair in `join`.
+    // Beside `downing` because the two answer one question between them — who
+    // removes a peer the detector has given up on.  The pair is legal: with a
+    // provider configured the switch is inert, since the detector then only
+    // parks a peer and the provider decides (#929; `failureDetectionTick`).
     this.failureDetectorAutoDown = options.failureDetectorAutoDown ?? DEFAULT_FAILURE_DETECTOR_AUTO_DOWN;
     this.runCoordinatedShutdownWhenDown =
       options.runCoordinatedShutdownWhenDown ?? DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN;
