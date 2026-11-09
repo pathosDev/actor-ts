@@ -6167,7 +6167,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   own self-down now ends in `removed` and emits `MemberRemoved` and
   `SelfRemoved` for it, as `MockCluster` always did. A refusal naming another
   run at the address (a restart) or carrying no incarnation is ignored, and the
-  real peer's gossip listing this run as a member withdraws a forged one.
+  real peer's gossip listing this run as a member withdraws a forged one. The
+  same path makes `Cluster.down` — and `POST /cluster/down` — on any one node
+  reach the node it downs: the tombstone gossips to the others, every peer
+  refuses the node, and it stands down, where it used to run on. It holds over
+  an injected transport too (a TLS `TcpTransport`, an in-memory one), whose
+  connections carry no incarnation: the run is read from the heartbeat itself.
   `scripts/repro/cluster-dual-activity.ts` reproduces both #940 and #1272 with
   three local processes.
 

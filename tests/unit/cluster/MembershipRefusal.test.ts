@@ -157,6 +157,33 @@ describe('the survivor answers the run it removed with a refusal (#940)', () => 
     });
   });
 
+  test('over a connection keyed without the incarnation, the heartbeat payload names the run', async () => {
+    // An injected transport — a TLS TcpTransport, an in-memory one — was built
+    // before the cluster minted its incarnation, so the connection identity it
+    // hands the receiver carries none.  The heartbeat payload does.
+    const node = await startNode('refusal-injected', 9_489);
+    const run = peerRun('refusal-injected', 0, 9_490, 'run-1');
+    announce(node.cluster, run);
+    node.cluster.down(run);
+    node.sent.length = 0;
+
+    const connection = new NodeAddress(run.systemName, run.host, run.port);
+    lastHeartbeat += 1;
+    internals(node.cluster).handleWire(connection, {
+      kind: 'heartbeat', from: run.toJSON(), seq: lastHeartbeat, ts: Date.now(),
+    });
+    expect(repliesOfKind(node, 'membership-refused')).toHaveLength(1);
+
+    // A payload naming another address says nothing about this connection's run.
+    node.sent.length = 0;
+    const elsewhere = peerRun('refusal-injected', 1, 9_490, 'run-1');
+    lastHeartbeat += 1;
+    internals(node.cluster).handleWire(connection, {
+      kind: 'heartbeat', from: elsewhere.toJSON(), seq: lastHeartbeat, ts: Date.now(),
+    });
+    expect(repliesOfKind(node, 'membership-refused')).toEqual([]);
+  });
+
   test('a restart at the address is a different run, and is acknowledged as before', async () => {
     const node = await startNode('refusal-restart', 9_483);
     const run = peerRun('refusal-restart', 0, 9_484, 'run-1');

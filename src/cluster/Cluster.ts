@@ -2686,7 +2686,7 @@ export class Cluster {
     if (!this.isPlausibleHeartbeat(from, message)) return;
     const peer = from;
     const existing = this.members.get(peer.toString());
-    if (existing !== undefined && this.holdsRemovedRunOf(existing, peer)) {
+    if (existing !== undefined && this.holdsRemovedRunOf(existing, peer, message)) {
       this.refuseMembership(existing, peer);
       return;
     }
@@ -2712,8 +2712,8 @@ export class Cluster {
   }
 
   /**
-   * Whether `stored` is this node's tombstone for the very run that `peer`, the
-   * heartbeat's connection, is (#940).
+   * Whether `stored` is this node's tombstone for the very run that sent this
+   * heartbeat over `peer`'s connection (#940).
    *
    * Both incarnations have to be known and equal.  A different one is a restart
    * at the address, which the gossip merge admits as a new member
@@ -2721,11 +2721,24 @@ export class Cluster {
    * self-down.  A missing one is a peer that predates the field, or a tombstone
    * learned from one, and the refusal could only name a run it cannot pin —
    * such a peer is acknowledged as before.
+   *
+   * The run is read from the heartbeat's own `from` when that names the
+   * connection's address, and from the connection otherwise.  A transport the
+   * cluster builds announces the incarnation in its handshake, but an injected
+   * one — a TLS `TcpTransport`, an in-memory one — was constructed before the
+   * incarnation was minted and keys its peers without it, and a refusal that
+   * depended on the connection alone would never be sent there.  Trusting the
+   * payload here costs nothing: the answer goes down the connection the
+   * heartbeat came in on, so a peer that names another run only refuses
+   * itself.
    */
-  private holdsRemovedRunOf(stored: Member, peer: NodeAddress): boolean {
+  private holdsRemovedRunOf(stored: Member, peer: NodeAddress, message: HeartbeatMessage): boolean {
     if (stored.status !== 'removed') return false;
     const removedRun = stored.address.incarnation;
-    return removedRun !== undefined && removedRun === peer.incarnation;
+    if (removedRun === undefined) return false;
+    const claimed = NodeAddress.fromJSON(message.from);
+    const senderRun = claimed.toString() === peer.toString() ? claimed.incarnation : peer.incarnation;
+    return senderRun === removedRun;
   }
 
   /**
