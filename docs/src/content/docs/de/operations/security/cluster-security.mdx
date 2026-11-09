@@ -279,7 +279,7 @@ erreichen.
 | Adresse beansprucht, bevor der zugehörige Knoten existiert | Enge Versions-Skew-Grenze auf jeder gegossipten Member-Version |
 | Vom Draht mitgeschnittener Gossip-Frame wird später erneut gesendet | Sequence pro Sender — ein Frame muss den zuletzt von diesem Sender akzeptierten überbieten (teilweise: erst wenn einer akzeptiert wurde) |
 | Gefälschte Discovery-Antwort lenkt den Bootstrap um | mTLS, dazu `pinnedAddresses` am Seed-Provider |
-| Ein Ref im Nachrichtenkörper nennt einen internen Host, damit dieser Knoten ihn anwählt | Frames gehen nur an Mitglieder und an Knoten, zu denen dieser Knoten schon eine Verbindung hält (teilweise: ein Gossip-Frame kann eine Adresse noch zum Mitglied machen, #939) |
+| Ein Ref im Nachrichtenkörper nennt einen internen Host, damit dieser Knoten ihn anwählt | Frames gehen nur an Mitglieder und an Knoten, zu denen dieser Knoten schon eine Verbindung hält (teilweise: ohne mTLS wird ein Peer weiterhin Mitglied unter einer Adresse, die sein eigenes `hello` nennt) |
 | Kompromittierter Pod im Cluster | Application-Level-Auth (hier nicht abgedeckt) |
 
 Der Cluster-Transport handhabt Transport-Level-Sicherheit.
@@ -907,21 +907,18 @@ wird, wird sofort mit `Terminated` und `existenceConfirmed` false
 beantwortet, wie eine abgelehnte Beobachtung auf der Gegenseite, damit
 der Beobachter nicht auf eine Antwort wartet, die nicht kommen kann.
 
-Die Regel ist nur so stark wie die Mitgliedschaft, und Mitgliedschaft
-ist noch nicht schwer zu bekommen. Heute macht ein einziger
-Gossip-Frame, dessen Payload eine beliebige Adresse als Absender
-nennt, diese Adresse zu einem `joining`-Mitglied: Der Absender wird
-nicht gegen die Verbindung geprüft, auf der der Frame ankam (#939,
-noch offen). Von da an lässt diese Sperre Frames an sie durch, und
-das Gossip und die Heartbeats des Mitgliedschaftsprotokolls selbst
-wählen sie in jedem Intervall an, ganz ohne Ref. Das hier schließt
-also den Weg über einen Nachrichtenkörper, nicht das Erzeugen eines
-Mitglieds. #939 wird den Absender eines Gossip-Frames an die Identität
-binden, die seine Verbindung vorgelegt hat; ohne mTLS wählt der Peer
-diese Identität aber selbst, kann sich also unter einer Adresse seiner
-Wahl ankündigen. mTLS ist das, was die Adresse eines Mitglieds an ein
-Zertifikat bindet, und bis #939 da ist, auch das, was beschränkt, wer
-diesen Gossip-Frame überhaupt senden kann.
+Die Regel ist nur so stark wie die Mitgliedschaft. Seit #939 trägt das
+`from` in der Payload eines Gossip-Frames kein Mitglied mehr ein: Ein
+Absender wird nur über seinen eigenen Eintrag aufgenommen, als
+Selbstankündigung, die an die Identität gebunden ist, die seine
+Verbindung vorgelegt hat. Ohne mTLS wählt der Peer diese Identität aber
+selbst. Ein Peer, der sich verbinden kann, kann sich also unter einer
+Adresse seiner Wahl ankündigen — und von da an lässt diese Sperre Frames
+an ihn durch, und das Gossip und die Heartbeats des
+Mitgliedschaftsprotokolls selbst wählen ihn in jedem Intervall an, ganz
+ohne Ref. Das hier schließt also den Weg über einen Nachrichtenkörper,
+nicht das Erzeugen eines Mitglieds. mTLS ist das, was die Adresse eines
+Mitglieds an ein Zertifikat bindet.
 
 ### Eine Sharding-Direktive braucht den Koordinator dahinter
 

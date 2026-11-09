@@ -266,7 +266,7 @@ Only `app=actor-ts` pods can reach port 2552 on each other.
 | Address claimed before the node that owns it exists | Tight version-skew cap on every gossiped member version |
 | Gossip frame captured off the wire and played back later | Per-sender frame sequence — a frame must out-number the last one accepted from that sender (partial: only once one has been) |
 | Spoofed discovery answer steering the bootstrap | mTLS, plus `pinnedAddresses` on the seed provider |
-| A ref in a message body naming an internal host, to make this node dial it | Frames leave only for members and nodes this node already holds a connection to (partial: one gossip frame can still make an address a member, #939) |
+| A ref in a message body naming an internal host, to make this node dial it | Frames leave only for members and nodes this node already holds a connection to (partial: without mTLS a peer still becomes a member under an address its own `hello` names) |
 | Compromised pod inside the cluster | Application-level auth (out of scope here) |
 
 The cluster transport handles transport-level security.
@@ -832,19 +832,16 @@ answered at once with `Terminated` and `existenceConfirmed` false,
 as a refused watch on the far side is, so the watcher does not wait
 for an answer that cannot come.
 
-The rule is only as strong as membership, and membership is not yet
-hard to get. Today one gossip frame whose payload names any address
-as its sender makes that address a `joining` member: the sender is
-not checked against the connection the frame arrived on (#939, still
-open). From then on this gate lets frames through to it, and the
-membership protocol's own gossip and heartbeats dial it every
-interval with no ref involved at all. So this closes the route
-through a message body, not the minting of a member. #939 will tie a
-gossip sender to the identity its connection presented; that identity
-is still the peer's own choice without mTLS, so a peer can announce
-itself under an address it picks. mTLS is what binds a member's
-address to a certificate, and until #939 lands it is also what limits
-who can send that gossip frame at all.
+The rule is only as strong as membership. Since #939 a gossip frame's
+payload `from` no longer files a member: a sender is introduced only
+by its own record, merged as a self-announcement held to the identity
+its connection presented. Without mTLS that identity is still the
+peer's own choice, so a peer that can connect can announce itself under
+an address it picks — and from then on this gate lets frames through to
+it, and the membership protocol's own gossip and heartbeats dial it
+every interval with no ref involved at all. So this closes the route
+through a message body, not the minting of a member. mTLS is what binds
+a member's address to a certificate.
 
 ### A sharding directive needs the coordinator behind it
 

@@ -9283,11 +9283,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   optional `holdsConnectionTo(peer)`; a custom transport without it is asked
   through `peers()`, which knows acked connections only, so on it a frame to a
   non-member is refused until the handshake lands. **This closes the route
-  through a message body, not the minting of a member**: today one gossip
-  frame whose payload names any address as its sender makes that address a
-  `joining` member (#939, still open), after which this gate and the
-  membership protocol's own gossip and heartbeats both send to it. #939 and
-  mTLS are what address that.
+  through a message body, not the minting of a member.** Since #939 a gossip
+  frame's payload `from` no longer files a member, so a member is minted only
+  by a self-announcement held to the connection's identity — and that identity
+  is whatever a peer's `hello` claims until mTLS binds it to a certificate
+  (#912). Without mTLS, anyone who can connect can still become a member under
+  an address of its choosing, after which this gate and the membership
+  protocol's own gossip and heartbeats both send to it.
 
 - **Three configuration parsers no longer take quadratic time on a hostile
   value** (#1792, CodeQL `js/polynomial-redos`). The HOCON number literal
