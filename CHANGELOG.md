@@ -9103,6 +9103,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **Only an approved run on a release ref can publish `actor-ts` to npm**
+  (#704). npm's Trusted Publisher checks the repository and the workflow
+  file name, never the ref, and the publish job's only gate was "this
+  version is not on npm yet" — idempotency, not authorization. Any account
+  with write access could therefore dispatch `publish.yml` on a branch of
+  its own, or push a copy with `on: push`, and ship a provenance-attested
+  tarball under a version nobody released. The `publish` job now runs in
+  the GitHub environment `npm`, which admits only `v*` tags and `main` and
+  requires a maintainer's approval, and the Trusted Publisher is registered
+  against that environment, so npm hands no token to a run outside it.
+  `WorkflowHygiene.test.ts` holds the key in place. For maintainers: a
+  release run now waits for that approval before anything is published.
+
 - **The SQL snapshot and durable-state stores refuse a row that lacks the
   protection the actor asks for** (#1802, the SQL half of #965). Under
   `encryption()` a plaintext JSON row, or a sealed frame without encryption,

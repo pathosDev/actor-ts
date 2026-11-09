@@ -32,6 +32,17 @@ Workflow tauscht ein kurzlebiges GitHub-Identity-Token gegen ein
 Einmal-Publish-Token. Es liegt nirgends ein langlebiges
 npm-Token, also kann auch keins abfließen.
 
+Der Publish-Job läuft im GitHub-Environment `npm`, und dieses
+Environment entscheidet, wer veröffentlichen darf (#704). GitHub startet
+den Job nur auf einer Ref, die das Environment zulässt — einem Tag `v*`
+oder dem Branch `main` — und hält ihn an, bis ein Maintainer den Lauf
+freigibt. Der Trusted Publisher auf npmjs.com ist mit demselben
+Environment-Namen registriert, also gibt npm keinem Lauf ein
+Publish-Token, der ihn nicht trägt. Ein Branch, den ein Konto mit
+Schreibrechten pusht, kann deshalb keine eigene Version veröffentlichen,
+weder über einen manuellen Dispatch noch über eine geänderte Kopie des
+Workflows.
+
 ### Provenance prüfen
 
 ```sh

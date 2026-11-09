@@ -7,7 +7,8 @@ name: publish
 #
 # Auth model: **npm Trusted Publishing** via GitHub's OIDC.
 # Registered on npmjs.com → Settings → Trusted Publishers for
-# the `actor-ts` package, pinned to this repo + this workflow.
+# the `actor-ts` package, pinned to this repo + this workflow + the
+# `npm` environment the `publish` job runs in (#704).
 # No long-lived NPM_TOKEN secret is involved — the workflow
 # exchanges its short-lived OIDC token for a one-shot npm
 # publish token at runtime.  Requires npm >= 11.5.1.
@@ -25,8 +26,9 @@ on:
     types: [published]
   # Manual fallback: a release-event run uses the workflow file at the tag's
   # commit, so a workflow bug can't be fixed-and-re-run through the release
-  # event alone.  Dispatching from a fixed branch re-attempts the publish;
-  # the version guard below makes re-runs safe.
+  # event alone.  Dispatching from `main` re-attempts the publish; the version
+  # guard below makes re-runs safe.  The `publish` job's `npm` environment is
+  # what limits *which* ref may be dispatched — see the comment there (#704).
   workflow_dispatch:
 
 # The version guard below (`npm view` → skip if already published) is a
@@ -150,11 +152,30 @@ jobs:
   # checkout-free and ties the guard to the bytes actually being published
   # instead of to a second copy of the repository that merely ought to match.
   # ---------------------------------------------------------------------------
+  #
+  # The `npm` environment is the authorization gate, and the version guard is
+  # not one (#704): it only refuses a version that is already on npm, so on its
+  # own any account with write access could push a branch, dispatch this
+  # workflow on it — or add an `on: push` to its copy of this file — and ship a
+  # provenance-attested tarball under a version nobody released.  npm's Trusted
+  # Publisher checks the repository and the workflow file name, never the ref.
+  #
+  # The environment closes both routes, from two sides:
+  #   - GitHub refuses to start this job on a ref the environment's deployment
+  #     policy does not list (tags `v*` and the branch `main`) and holds it
+  #     until a required reviewer approves the run;
+  #   - the Trusted Publisher on npmjs.com is registered *with* the environment
+  #     name, so npm rejects an OIDC token whose `environment` claim is absent
+  #     or different — a copy of this file without the key gets no token.
+  # Both halves are settings outside this repository; the key below is the
+  # one half that lives here, and `tests/unit/ci/WorkflowHygiene.test.ts`
+  # holds it in place.
   publish:
     name: Publish to npm
     needs: pack
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: npm
     permissions:
       contents: read
       id-token: write     # Required for both npm provenance AND OIDC trusted publishing.
@@ -195,7 +216,7 @@ jobs:
         if: steps.version-check.outputs.already_published == 'false'
         # Tokenless — npm Trusted Publishing via GitHub OIDC.  With
         # `id-token: write` + a Trusted Publisher configured on npmjs.com
-        # (repo pathosDev/actor-ts, workflow publish.yml, no environment),
+        # (repo pathosDev/actor-ts, workflow publish.yml, environment npm),
         # npm ≥ 11.5.1 auto-detects the OIDC path — no NODE_AUTH_TOKEN.
         # `--provenance` signs via the same id-token; libnpmpublish computes
         # the attestation's subject digest over the tarball bytes, so a tarball
