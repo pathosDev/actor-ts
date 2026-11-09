@@ -17,7 +17,7 @@ services:
     # suite, so an upstream regression still surfaces within a day — attributable
     # to the bump, instead of turning the nightly red underneath a run.
     # Production users pin their own version.
-    image: rabbitmq:4.3.6
+    image: rabbitmq:4.4.0
     volumes:
       # Permit transient non-exclusive queues — see the conf file
       # for the rationale; without it RabbitMQ 4.x rejects the

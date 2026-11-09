@@ -18,7 +18,7 @@ services:
     # suite, so an upstream regression still surfaces within a day — attributable
     # to the bump, instead of turning the nightly red underneath a run.
     # Production users pin their own version.
-    image: amazon/dynamodb-local:3.3.1
+    image: amazon/dynamodb-local:3.3.2
     # In-memory: the suite creates its own tables on first use, and a fresh
     # instance per run is exactly what makes it reproducible.
     command: -jar DynamoDBLocal.jar -inMemory -sharedDb
