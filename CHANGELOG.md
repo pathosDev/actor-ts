@@ -9,6 +9,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-11-10
+
 ### Added
 
 - **`actor-ts.sharding.persist-coordinator-state = on` keeps each coordinator's
@@ -3712,10 +3714,10 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   reason `withEntity` is: a test bench spawning an entity with no cluster
   behind it.
 
-  *Note:* Nothing to migrate. `actor-ts.mailbox.default.*` has never been
-  released — it and the repaired scope both sit in [Unreleased], added by
-  f234dac6 after v0.17.0 — so no deployment can have relied on the narrower
-  reach. A deployment that had already picked up the pre-release key and set
+  *Note:* Nothing to migrate. `actor-ts.mailbox.default.*` was never in a
+  release before this one — it and the repaired scope both ship in 0.18.0,
+  added by f234dac6 after v0.17.0 — so no deployment can have relied on the
+  narrower reach. A deployment that had already picked up the pre-release key and set
   a capacity gets it applied to its sharded entities and singleton instances
   as well from here on, which is what the key's own documentation always
   said it did.
@@ -4491,7 +4493,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `withDownIfAlone(false)`.
 
 - **BREAKING — the minimum supported Bun is 1.4.0; `engines.bun` was
-  `>=1.3.0`** (#1793). Bun 1.3.x does not deliver runtime behaviour the
+  `>=1.3.0`** (#1793,
+  [GHSA-fcgw-9hgj-r3w3](https://github.com/pathosDev/actor-ts/security/advisories/GHSA-fcgw-9hgj-r3w3)). Bun 1.3.x does not deliver runtime behaviour the
   framework relies on — the details are in a security advisory — and the
   `smoke (bun-floor)` leg, which runs every smoke case on the floor, now pins
   1.4.0, where all of them pass. **Migration:** upgrade Bun to 1.4.0 or newer
@@ -6184,6 +6187,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **A `PersistentFSM` command whose `kind` names an `Object.prototype` member
+  reaches `onInvalidTransition`** (#1449). A command whose `kind` is the name
+  of an `Object.prototype` member, such as `toString`, `constructor` or
+  `__proto__`, now reaches `onInvalidTransition` like any kind the
+  transition table does not declare. The table was read through the
+  prototype chain, so such a kind found an inherited function where a
+  transition belonged: the hook never ran, and the command failed in the
+  persist instead, on a batch of one `undefined` event. A command of kind
+  `_timeout` is no transition either; it used to run the state timeout's
+  event at once, ahead of the timer. The security side is GHSA-m77m-wxrj-2ff4
+  above.
 
 - **A joiner learns of its own promotion in one hop, so `Cluster.bootstrap`
   no longer rejects a healthy join at random** (#1747). The leader promoted
@@ -9328,6 +9343,71 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   supported state.
 
 ### Security
+
+- **A TLS listener refuses a `ca` that holds no certificate**
+  ([GHSA-9qrp-qppj-jmw7](https://github.com/pathosDev/actor-ts/security/advisories/GHSA-9qrp-qppj-jmw7)).
+  The cluster transport's listener and the TCP server actor now refuse at
+  bind — the actor at validation — a `ca` that is an empty or blank string,
+  an empty or whitespace-only byte array, an empty array, or `null`, naming
+  the field, whatever `requestClientCert` says. Such a value is what an
+  empty secret or an unset variable reads as, and it made the listener
+  accept client certificates from the system trust store. One-way TLS is
+  `requestClientCert: false`. A listener configured this way now fails at
+  bind instead of starting. The HTTP server options apply the same rule
+  through the same predicate.
+
+- **A node refuses a peer whose handshake claims the node's own address**
+  ([GHSA-j32m-x9vm-25vq](https://github.com/pathosDev/actor-ts/security/advisories/GHSA-j32m-x9vm-25vq)).
+  `TcpTransport` accepted a `hello`, or a `hello-ack` answering its own
+  dial, that named the receiving node and registered the connection under
+  that address: a node holds no connection to itself for the
+  duplicate-identity check to find, and without a certificate nothing else
+  held the claim against anything — so a peer on the plaintext transport
+  could remove a node from the cluster. Such a handshake is now refused
+  before anything reads it, the connection is dropped with nothing
+  registered, and one WARN names the address. The address alone decides, so
+  a claim with no incarnation or another one is refused the same way, and so
+  is one whose certificate vouches for the address. The worker-mesh and
+  in-memory transports are unchanged: a frame from a node's own address is
+  how its own sends come back to it there.
+
+- **A `sharding.GetShardStats` without a usable reply reference no longer
+  stops a shard's entities**
+  ([GHSA-rw73-vxp2-f5f7](https://github.com/pathosDev/actor-ts/security/advisories/GHSA-rw73-vxp2-f5f7)).
+  Such a request threw inside the shard, and the restart that followed
+  stopped every entity of that shard, so any sender that could reach a shard
+  could stop its entities. The request is now answered when its `replyTo`
+  has a callable `tell`, `equals` and a `path`, whatever copy of the
+  module minted it, and declined through `Actor.unhandled` otherwise, the
+  shard's entities left running (#1437; the Fixed entry below).
+
+- **A `PersistentFSM` command named after an `Object.prototype` member can
+  no longer stop the FSM**
+  ([GHSA-m77m-wxrj-2ff4](https://github.com/pathosDev/actor-ts/security/advisories/GHSA-m77m-wxrj-2ff4)).
+  The transition table was read through the prototype chain, so a command
+  whose `kind` was `toString`, `constructor` or `__proto__` found an
+  inherited function where a transition belonged and threw inside the actor,
+  which restarted it; eleven within 60 s passed the default restart limit
+  and stopped the FSM for good. Any sender that can choose a command kind
+  could do this, and the wire protocols carry `kind` by convention. A
+  command of kind `_timeout` could also fire the state timeout early. See
+  the Fixed entry below for the behaviour now (#1449).
+
+- **DistributedData no longer restarts its replicator when a value of
+  another CRDT kind arrives for a key it already holds**
+  ([GHSA-cvwq-42mg-7xj9](https://github.com/pathosDev/actor-ts/security/advisories/GHSA-cvwq-42mg-7xj9)).
+  A cluster peer could send one by gossip, in a quorum write or as a quorum
+  read reply; the merge then threw inside the replicator and restarted it, a
+  quorum read could be left unsettled, and for some pairs of kinds the merge
+  replaced the held value with one of the other kind instead. A local update
+  could restart it the same way. The replicator now compares kinds before
+  merging, ORMap entries included, keeps the value it holds, does not
+  acknowledge such a write, counts the drop in
+  `distributed_data_dropped_values_total` and logs one warning per key per
+  quiet period naming the key and both kinds; a durable record entry of
+  another kind is skipped the same way while the rest of the record reloads.
+  An update whose modifier fails on a value of another kind is rejected to
+  its caller instead of restarting the replicator.
 
 - **BREAKING — an object-storage store that reads with a decryption key
   refuses an unencrypted body** (#965, CWE-757). Whether a body is
