@@ -464,6 +464,7 @@ describe('a conflict release is repeated until the claimant gives the shard up (
     });
 
     const sent = handedOff(stale).length;
+    // An absence: nothing more is sent over several repeat intervals.
     await sleep(RETRY_MS * 4);
     expect(handedOff(stale).length).toBe(sent);
     expect(coordinatorState(victim).shardHome.get(victim.shardId)).toBe(ownerKey);
@@ -479,11 +480,12 @@ describe('a conflict release is repeated until the claimant gives the shard up (
     // Inside two repeat intervals: the attempt cap would end it as well, and
     // later, so a release the registration did not end would still be here.
     await awaitCondition(() => !coordinatorState(victim).conflictReleases.has(victim.shardId), {
-      timeoutMs: RETRY_MS * 2,
+      timeoutMs: 200,
       label: 'the registration ended the release',
     });
 
     const sent = handedOff(stale).length;
+    // An absence: nothing more is sent over several repeat intervals.
     await sleep(RETRY_MS * 4);
     expect(handedOff(stale).length).toBe(sent);
   });
@@ -496,9 +498,10 @@ describe('a conflict release is repeated until the claimant gives the shard up (
     // First the release has to exist — the registration is still in flight.
     await awaitCondition(() => handedOff(stale).length >= 1, { label: 'the hand-off was sent' });
     await awaitCondition(() => !coordinatorState(victim).conflictReleases.has(victim.shardId), {
-      timeoutMs: RETRY_MS * 20,
+      timeoutMs: 2_000,
       label: 'the release gave up',
     });
+    // An absence: nothing more is sent over several repeat intervals.
     await sleep(RETRY_MS * 4);
 
     expect(handedOff(stale)).toHaveLength(5);
