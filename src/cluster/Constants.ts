@@ -277,6 +277,22 @@ export const MAX_CONTEXT_VALUE_LENGTH = 1_024;
 export const MAX_NODE_INCARNATION_LENGTH = 128;
 
 /**
+ * How many gossip rounds a coordinator that has just become leader allows the
+ * other members to learn so and register, before it places shards without
+ * their claims (#1272) — see `ShardCoordinator.registrationWindowMs`.
+ *
+ * The regions learn of a leader change from gossip, which pushes to one random
+ * peer per round, so three rounds is in reach of every member of a cluster of
+ * eight with no unlucky draws, and of most of a larger one.  It is a window,
+ * not a wait: it closes the moment every member has registered, so it is only
+ * paid in full where a member never will — one that does not run the type.
+ * That is why it is kept short and not the hand-off timeout's ten seconds:
+ * a type started on some of the nodes of a cluster would sit for that long on
+ * every leader change.
+ */
+export const COORDINATOR_REGISTRATION_GOSSIP_ROUNDS = 3;
+
+/**
  * How long allocation changes are gathered before one `ShardMapUpdate` goes
  * out.  Long enough to fold a whole-cluster placement into a single
  * broadcast, short enough that a panel still feels live.

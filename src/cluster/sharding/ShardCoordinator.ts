@@ -3,7 +3,8 @@ import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
-import { SHARD_MAP_PUBLISH_DELAY_MS } from '../Constants.js';
+import { COORDINATOR_REGISTRATION_GOSSIP_ROUNDS, SHARD_MAP_PUBLISH_DELAY_MS } from '../Constants.js';
+import { DEFAULT_REGISTER_RETRY_INTERVAL_MS } from './ShardingOptions.js';
 import {
   DEFAULT_ACQUIRE_RETRY_INTERVAL_MS,
   DEFAULT_HAND_OFF_TIMEOUT_MS,
@@ -73,12 +74,16 @@ type RequestRegistrationsEvent = {
   readonly regions: ReadonlyArray<RegionAddress>;
 };
 
+/** The registration barrier ran out — see `ShardCoordinator.beginRegistrationBarrier`. */
+type RegistrationBarrierTimeoutEvent = { readonly kind: 'registration-barrier-timeout' };
+
 type CoordinatorEvent =
   | ReconcileEvent
   | LeaseAcquireResultEvent
   | LeaseLostEvent
   | AcquireRetryEvent
-  | RequestRegistrationsEvent;
+  | RequestRegistrationsEvent
+  | RegistrationBarrierTimeoutEvent;
 
 type CoordinatorInbox = ShardingMessage | AuthenticatedShardingMessage | CoordinatorEvent;
 
@@ -87,7 +92,7 @@ function isCoordinatorEvent(message: CoordinatorInbox): message is CoordinatorEv
   const discriminator = (message as { kind?: unknown }).kind;
   return discriminator === 'reconcile' || discriminator === 'lease-acquire-result'
     || discriminator === 'lease-lost' || discriminator === 'acquire-retry'
-    || discriminator === 'request-registrations';
+    || discriminator === 'request-registrations' || discriminator === 'registration-barrier-timeout';
 }
 
 /**
@@ -401,6 +406,13 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * of this leader term — see {@link observeEligibleSet}.
    */
   private eligibleSetRecord: EligibleSetRecord | null = null;
+  /**
+   * The members whose regions a coordinator that has just become leader waits
+   * for before it places any shard, keyed by `NodeAddress.toString()`, with the
+   * timer that ends the wait regardless (#1272).  `null` outside that window.
+   * See {@link beginRegistrationBarrier}.
+   */
+  private registrationBarrier: { readonly awaiting: Set<string>; readonly timer: Cancellable } | null = null;
 
   public readonly options: ShardCoordinatorOptionsType;
 
@@ -464,7 +476,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.rebalanceTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       rebalanceIntervalMs,
       rebalanceIntervalMs,
-      () => { if (this.isActive()) this.rebalanceTick(); },
+      () => { if (this.isActive() && this.registrationBarrier === null) this.rebalanceTick(); },
     );
   }
 
@@ -494,6 +506,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.rebalanceTimer?.cancel();
     this.acquireRetryTimer?.cancel();
     this.shardMapPublishTimer?.cancel();
+    this.registrationBarrier?.timer.cancel();
     for (const rebalance of this.rebalanceInProgress.values()) rebalance.timer.cancel();
     for (const query of this.statsQueries.values()) query.timer?.cancel();
     this.statsQueries.clear();
@@ -680,6 +693,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       .with({ kind: 'lease-lost' }, (m) => this.onLeaseLost(m))
       .with({ kind: 'acquire-retry' }, () => this.onAcquireRetry())
       .with({ kind: 'request-registrations' }, (m) => this.onRequestRegistrations(m))
+      .with({ kind: 'registration-barrier-timeout' }, () => this.onRegistrationBarrierTimeout())
       .exhaustive();
   }
 
@@ -1138,10 +1152,16 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   }
 
   private onRegister(message: RegisterRegion): void {
-    if (!this.isAgreedNumShards(message)) return;
-    const hostedShards = this.acceptedHostedShards(message);
     const node = NodeAddress.fromJSON(message.node);
+    if (!this.isAgreedNumShards(message)) {
+      // Refused, but heard from: a refused region is never a placement
+      // candidate and gives its shards up, so it is not one to wait for.
+      this.noteRegistered(node);
+      return;
+    }
+    const hostedShards = this.acceptedHostedShards(message);
     const key = regionKey(node, message.region);
+    this.releaseHomesOfPreviousRun(key, node, hostedShards);
     // Judged against the map as it stands *before* any write below — the whole
     // point is that the claim does not get to decide what it is compared with.
     const verdict = this.adjudicateClaim(key, hostedShards);
@@ -1192,6 +1212,171 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       for (const shardId of verdict.adopted) this.shipRememberedEntities(shardId);
     }
     this.afterShardMapChange();
+    this.noteRegistered(node);
+  }
+
+  /**
+   * A region whose entry was seeded from a snapshot registers from a different
+   * incarnation of its node than the one the snapshot recorded: the homes the
+   * snapshot gave that entry belong to a process that is gone (#1272).
+   *
+   * Region keys are `host:port` plus a path and carry no incarnation, so a node
+   * restarted at the same address re-registered under the very key its previous
+   * run's shards were filed under, and kept every one of them — `adjudicateClaim`
+   * merges the homes the map already assigns to a key into what it owns.  A
+   * fresh process hosts nothing it did not just claim; the shards the old run
+   * held have meanwhile been taken over elsewhere, and handing the new run their
+   * homes made the coordinator answer `GetShardHome` with a region that starts
+   * them a second time.  So the homes it does not claim are released, and are
+   * placed again on demand, after the region that really runs them has claimed
+   * them.
+   *
+   * Only on a known, differing incarnation: the same run re-registering after a
+   * leader change may legitimately hold a home its claim does not show yet — a
+   * `ShardHome` the previous leader sent and the region had not acted on.
+   */
+  private releaseHomesOfPreviousRun(key: string, node: NodeAddress, claimed: ReadonlySet<number>): void {
+    const seeded = this.regions.get(key);
+    if (seeded?.seededFromSnapshot !== true) return;
+    const recordedRun = seeded.node.incarnation;
+    if (recordedRun === undefined || node.incarnation === undefined || recordedRun === node.incarnation) return;
+    let released = 0;
+    for (const [shardId, home] of Array.from(this.shardHome)) {
+      if (home !== key || claimed.has(shardId)) continue;
+      this.shardHome.delete(shardId);
+      seeded.shards.delete(shardId);
+      released += 1;
+    }
+    if (released === 0) return;
+    this.log.info(
+      `[sharding] ${node} restarted since the coordinator-state snapshot of "${this.options.typeName}" was `
+      + `taken; releasing the ${released} shard home(s) the snapshot gave its previous run`,
+    );
+  }
+
+  /* ------------------------- Registration barrier ------------------------- */
+
+  /**
+   * Hold every shard placement until the regions of every other `up` member
+   * have registered with this coordinator, or until
+   * {@link registrationWindowMs} has passed (#1272).
+   *
+   * A coordinator runs on every node and takes authority from `isLeader()`, so a
+   * leader change hands it over with no protocol between the outgoing and the
+   * incoming instance — the shape #949 closed for the singleton.  The incoming
+   * one starts from an empty map, and the regions learn of the change through
+   * gossip, each at its own moment.  Placing a shard in that window decides on a
+   * map that does not yet hold the region already running it: a node restarted
+   * at the lowest address, or one that joins with it, becomes leader at once,
+   * and the first `GetShardHome` it answers places the shard on itself while a
+   * survivor still hosts it.  The claim that would have said so arrives a gossip
+   * round later and can only release the stale copy after the fact.
+   *
+   * So placement waits for the claims.  Nothing needs asking: every region
+   * re-registers, `hostedShards` and all, on the `LeaderChanged` it observes,
+   * and retries every 500 ms until acknowledged.  A `GetShardHome` for a shard
+   * that a registration has already homed is answered at once — the barrier
+   * holds only what would need a *new* home, as a pending request.
+   *
+   * Which members are waited for: every `up` member but this one, narrowed to
+   * the type's role when it has one.  Members outside the role run at most a
+   * proxy, which hosts nothing.  A member that leaves the cluster stops being
+   * waited for; one that never registers — it has not started the type, or it
+   * is unreachable — is what the window is for.  Its end logs which members it
+   * gave up on and that uniqueness was not proven for them, as the singleton's
+   * hand-over does; the lease stays the hard guarantee.
+   *
+   * Only at a leader *change* with other members already up: a cluster's first
+   * leader founds it alone, and the members that join it afterwards do not move
+   * the leader, so a forming cluster places shards without waiting.
+   */
+  private beginRegistrationBarrier(): void {
+    this.endRegistrationBarrierQuietly();
+    const self = this.options.cluster.selfAddress;
+    const role = this.options.role;
+    const awaiting = new Set<string>();
+    for (const member of this.options.cluster.upMembers()) {
+      if (member.address.equals(self)) continue;
+      if (role && !member.hasRole(role)) continue;
+      awaiting.add(member.address.toString());
+    }
+    for (const info of this.regions.values()) awaiting.delete(info.node.toString());
+    if (awaiting.size === 0) return;
+    const timeoutMs = this.registrationWindowMs();
+    const timer = this.system.scheduler.scheduleOnceFunction(timeoutMs, () => {
+      this.self.tell({ kind: 'registration-barrier-timeout' } satisfies CoordinatorEvent);
+    });
+    this.registrationBarrier = { awaiting, timer };
+    this.log.debug(
+      `[sharding] coordinator '${this.options.typeName}' became leader; holding shard placement until `
+      + `${awaiting.size} member(s) have registered, at most ${timeoutMs} ms`,
+    );
+  }
+
+  /**
+   * How long {@link beginRegistrationBarrier} waits at most: as long as the
+   * leader change takes to reach the other members by gossip, plus one region
+   * register retry — {@link COORDINATOR_REGISTRATION_GOSSIP_ROUNDS} explains the
+   * rounds — and never longer than `handOffTimeoutMs`, the coordinator's bound
+   * on any hand-off.
+   */
+  private registrationWindowMs(): number {
+    const propagation = COORDINATOR_REGISTRATION_GOSSIP_ROUNDS * this.options.cluster._gossipIntervalMs
+      + DEFAULT_REGISTER_RETRY_INTERVAL_MS;
+    return Math.min(propagation, this.options.handOffTimeoutMs ?? DEFAULT_HAND_OFF_TIMEOUT_MS);
+  }
+
+  /** A region of `node` registered: one member fewer to wait for. */
+  private noteRegistered(node: NodeAddress): void {
+    this.stopAwaiting(node.toString());
+  }
+
+  /** `key` no longer holds the barrier up — it registered, or it left the cluster. */
+  private stopAwaiting(key: string): void {
+    const barrier = this.registrationBarrier;
+    if (barrier === null || !barrier.awaiting.delete(key)) return;
+    if (barrier.awaiting.size === 0) this.endRegistrationBarrier();
+  }
+
+  /**
+   * Gave up waiting: place shards anyway, and say what was not proven.  The
+   * same trade the singleton's hand-over timeout makes — availability over
+   * uniqueness — and the same remedy for a deployment that will not make it:
+   * a lease on the coordinator.
+   */
+  private onRegistrationBarrierTimeout(): void {
+    const barrier = this.registrationBarrier;
+    if (barrier === null) return;
+    const missing = Array.from(barrier.awaiting).sort();
+    // At info, not warn: the common reason is a member that does not run this
+    // type at all, which is a legitimate deployment and would otherwise warn on
+    // every leader change.
+    this.log.info(
+      `[sharding] coordinator '${this.options.typeName}' places shards without a registration from `
+      + `${missing.join(', ')}, ${this.registrationWindowMs()} ms after becoming leader. If one of them runs `
+      + 'the type, a shard it still hosts may be started a second time until its registration releases it; '
+      + 'a lease on the coordinator is what rules that out.',
+    );
+    this.endRegistrationBarrier();
+  }
+
+  /** Lift the barrier and serve what it held: answer what has a home, place the rest. */
+  private endRegistrationBarrier(): void {
+    this.endRegistrationBarrierQuietly();
+    if (!this.isActive()) return;
+    for (const shardId of Array.from(this.pending.keys())) {
+      const home = this.shardHome.get(shardId);
+      if (home !== undefined && this.regions.has(home)) {
+        this.flushPending(shardId);
+      } else if (!this.rebalanceInProgress.has(shardId)) {
+        this.tryAllocate(shardId);
+      }
+    }
+  }
+
+  private endRegistrationBarrierQuietly(): void {
+    this.registrationBarrier?.timer.cancel();
+    this.registrationBarrier = null;
   }
 
   /**
@@ -1226,12 +1411,14 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * `shardHome` already assigns to this key closes that in the same pass.
    *
    * The guard shape is `loadCoordinatorState`'s (`regions.has` / `!shardHome.has`
-   * before writing); the limit is the same one it has.  A fresh leader term
-   * clears `regions` and `shardHome` wholesale, so in the first moments of a
-   * term every claim is unowned and the rule degenerates to first-claim-wins by
-   * mailbox order.  That is better than the last-claim-wins it replaces — the
-   * later claim is the likelier stale one — but it does not *resolve* a
-   * double-homing that predates the election; it stops new ones.
+   * before writing).  A fresh leader term clears `regions` and `shardHome`
+   * wholesale, so in the first moments of a term every claim is unowned and the
+   * rule degenerates to first-claim-wins by mailbox order.  What keeps a
+   * *placement* out of that window is {@link beginRegistrationBarrier}: no shard
+   * is given a new home until the other members' regions have claimed theirs,
+   * so the first claim is the running copy's rather than a fresh allocation.  A
+   * double-homing that predates the election is still not resolved here; the
+   * conflict path releases it on the claimant's registration.
    */
   private adjudicateClaim(key: string, claimed: ReadonlySet<number>): ClaimVerdict {
     const adopted = new Set<number>();
@@ -1457,6 +1644,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * or an operator removes the member.
    */
   private tryAllocate(shardId: number): void {
+    // Held until the regions that may already run the shard have claimed it;
+    // the request stays pending and is served when the barrier lifts.
+    if (this.registrationBarrier !== null) return;
     const candidates = this.candidateRegions();
     const eligible = this.observeEligibleSet(candidates);
     if (candidates.length === 0) {
@@ -1769,6 +1959,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   }
 
   private onMemberRemoved(addr: NodeAddress): void {
+    this.stopAwaiting(addr.toString());
     for (const [_key, info] of Array.from(this.regions.entries())) {
       if (info.node.equals(addr)) {
         this.onRegionTerminated({
@@ -1803,7 +1994,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       // be worse than the caller's own timeout — drop them.
       for (const query of this.statsQueries.values()) query.timer?.cancel();
       this.statsQueries.clear();
+      this.endRegistrationBarrierQuietly();
     } else {
+      this.beginRegistrationBarrier();
       // Just became leader (or re-elected).  If a state store is
       // configured, try to seed `regions` + `shardHome` from the
       // last known snapshot — saves the from-scratch reallocation

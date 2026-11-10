@@ -230,6 +230,8 @@ interface CoordinatorInternals {
   onHandOffTimeout(shardId: number): void;
   onRegionTerminated(message: RegionTerminated): void;
   onLeaderChanged(): void;
+  /** Lifts the registration barrier a new term starts with (#1272) — what the regions' `Register` frames do. */
+  endRegistrationBarrier(): void;
 }
 
 /** The cluster's membership map, written directly to stage a member in any status. */
@@ -1012,6 +1014,9 @@ describe('a pick outside the candidates is never placed, and says so (#1467)', (
     members.set(usurper.toString(), members.get(usurper.toString())!.withStatus('removed'));
     coordinator.onLeaderChanged();
     fabricate(placement, registry);
+    // The fabricated registry stands in for the registrations a new term waits
+    // for, so it lifts the barrier those registrations would have lifted.
+    coordinator.endRegistrationBarrier();
 
     coordinator.tryAllocate(3);
     expect(offCandidateWarnings(logger)).toHaveLength(2);

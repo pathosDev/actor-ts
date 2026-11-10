@@ -326,11 +326,44 @@ des Anspruchstellers passt deshalb zu keinem laufenden Rebalance und
 ist ein No-op, was zugleich verhindert, dass es ein echtes Rebalance
 desselben Shards vorzeitig beendet.
 
-Eine Grenze ist wissenswert: Ein Leader-Wechsel leert die
-Allokationskarte, in den ersten Momenten einer neuen Amtszeit wirkt
-also jeder Anspruch unbesetzt und der zuerst eintreffende gewinnt.
-Die Prüfung verhindert neues Double-Homing; einen Split, der der
-Wahl vorausging, löst sie nicht auf.
+### Ein neuer Leader wartet auf die Ansprüche
+
+Ein Leader-Wechsel leert die Allokationskarte, und die Regions der
+anderen Mitglieder erfahren per Gossip davon, jede zu ihrem eigenen
+Zeitpunkt. Ein Coordinator, der sofort Shards platzierte, entschiede
+auf einer Karte, die die Region noch nicht enthält, die einen Shard
+bereits betreibt — ein Knoten, der an der niedrigsten Adresse neu
+startet oder mit ihr beitritt, wird sofort Leader und würde diesen
+Shard bei sich selbst platzieren (#1272).
+
+Ein Coordinator, der gerade Leader geworden ist, **platziert deshalb
+keinen Shard, bis sich die Regions aller anderen `up`-Mitglieder
+registriert haben** — eingeschränkt auf die Rolle des Typs, wenn er
+eine hat. Jede Region registriert sich beim Leader-Wechsel, den sie
+beobachtet, mit ihren `hostedShards` neu; gefragt werden muss also
+niemand. Ein Shard, den eine Registrierung bereits einem Home
+zugeordnet hat, wird sofort beantwortet; nur was ein *neues* Home
+bräuchte, wartet. Das Warten endet, sobald sich das letzte Mitglied
+registriert, spätestens aber nach drei Gossip-Runden plus einem
+Register-Retry — nie länger als `handOffTimeoutMs` —, ein Mitglied,
+das den Typ nicht betreibt, kostet bei einem Leader-Wechsel also
+dieses Fenster und nicht mehr. Auf ein Mitglied, das den Cluster
+verlässt, wird nicht gewartet.
+
+Läuft das Fenster ab, platziert der Coordinator trotzdem und
+protokolliert, von welchen Mitgliedern keine Registrierung kam.
+Betreibt eines davon den Typ doch — seine Ansprüche kommen spät, oder
+es ist unreachable —, kann ein Shard, den es noch hostet, ein zweites
+Mal gestartet werden, bis seine Registrierung eintrifft und die
+veraltete Kopie freigibt. Eine
+[Lease auf dem Coordinator](/de/cluster/sharding/with-lease/) schließt
+das aus.
+
+Auch ein Coordinator-State-Snapshot kann einem neu gestarteten Knoten
+nicht mehr die Shards seines vorigen Laufs zuordnen: Registriert sich
+eine Region, deren Eintrag aus dem Snapshot stammt, aus einer anderen
+Inkarnation ihres Knotens, werden die Homes, die sie nicht beansprucht,
+freigegeben und bei Bedarf neu platziert.
 
 ## Wer einen Handoff anordnen darf
 

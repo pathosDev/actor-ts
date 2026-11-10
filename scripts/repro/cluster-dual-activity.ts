@@ -4,6 +4,7 @@
  * #1272 and #940. Three real processes on one host, no Docker.
  *
  *   bun scripts/repro/cluster-dual-activity.ts restart   # #1272: restart the lowest-addressed node
+ *   bun scripts/repro/cluster-dual-activity.ts join-lower # #1272: a lower address joins a running cluster
  *   bun scripts/repro/cluster-dual-activity.ts pause [ms] # #940: stall one node (8000 ms default) past the downing window
  *
  * Ground truth for "where does an entity run" is the entity itself: every
@@ -26,6 +27,7 @@ import {
   Cluster,
   DistributedDataCoordinatorStateStore,
   KeepMajority,
+  LeaderChanged,
   MemberLeft,
   SelfRemoved,
   ShardKey,
@@ -93,6 +95,9 @@ async function runNode(port: number): Promise<void> {
     }
     if (event instanceof MemberLeft && event.member.address.equals(cluster.selfAddress)) {
       report('self-left');
+    }
+    if (event instanceof LeaderChanged) {
+      report('leader', { id: event.leader.fold(() => 'none', (member) => String(member.address.port)) });
     }
   });
   const coordinatorStateStore = new DistributedDataCoordinatorStateStore(
@@ -170,6 +175,28 @@ async function drive(scenario: string): Promise<void> {
     for (const child of processes.values()) child.kill(9);
   };
 
+  if (scenario === 'join-lower') {
+    // #1272's own trigger: the cluster runs without its lowest address, which
+    // then joins and becomes leader at once.
+    const lowest = PORTS[0]!;
+    for (const port of PORTS.slice(1)) start(port);
+    await Bun.sleep(8000);
+    const joinedAt = Date.now();
+    start(lowest);
+    await Bun.sleep(15000);
+    const now = Date.now();
+    const early = runningTwice(joinedAt, joinedAt + 5000);
+    const late = runningTwice(now - 2000, now);
+    const leaderOnJoiner = reports.find((r) => r.port === lowest && r.event === 'leader' && r.id === String(lowest));
+    console.log(
+      `join of ${lowest}: leader on it after ${leaderOnJoiner ? `${leaderOnJoiner.time - joinedAt} ms` : 'never'}; ` +
+        `${early.length} of ${ENTITIES.length} entities live on two nodes in the first 5 s, ${late.length} still at 13–15 s`,
+    );
+    if (early.length > 0) console.log(early.slice(0, 10).join(' '));
+    stopAll();
+    process.exit(early.length > 0 || late.length > 0 ? 1 : 0);
+  }
+
   for (const port of PORTS) start(port);
   await Bun.sleep(8000);
 
@@ -183,8 +210,11 @@ async function drive(scenario: string): Promise<void> {
     const now = Date.now();
     const early = runningTwice(restartedAt, restartedAt + 5000);
     const late = runningTwice(now - 2000, now);
+    const leaderOnRestarted = reports.find((r) =>
+      r.port === lowest && r.time >= restartedAt && r.event === 'leader' && r.id === String(lowest));
     console.log(
-      `restart of ${lowest}: ${early.length} of ${ENTITIES.length} entities live on two nodes in the first 5 s, ${late.length} still at 13–15 s`,
+      `restart of ${lowest}: leader on it after ${leaderOnRestarted ? `${leaderOnRestarted.time - restartedAt} ms` : 'never'}; ` +
+        `${early.length} of ${ENTITIES.length} entities live on two nodes in the first 5 s, ${late.length} still at 13–15 s`,
     );
     if (early.length > 0) console.log(early.slice(0, 10).join(' '));
     stopAll();
