@@ -6139,6 +6139,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A coordinator repeats the `HandOff` that tells a region to give up a shard
+  it claims but does not own, until the region has done so; it used to send it
+  once** (#1272). A region drops such a `HandOff` for ordinary reasons — it has
+  not yet seen the leader change, or the shard is mid-stop — and it re-registers
+  only on a cluster event or before its first acknowledgment, so on a stable
+  cluster a dropped one left the stale copy running beside the owner for good.
+  The release is now repeated every second (never slower than
+  `handOffTimeoutMs`) until the region completes it, registers again without
+  the shard, or leaves, and gives up after five sends with a warning. It never
+  reallocates: the shard keeps its owner throughout.
+
 - **A region stops a shard the coordinator has homed on another region while it
   still runs here; the shard and its entities used to keep running beside the
   new home's copy, out of reach of every cleanup** (#953). `onShardHome` only

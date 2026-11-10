@@ -94,6 +94,7 @@ type CoordinatorState = {
   readonly regions: Map<string, RegionInfo>;
   readonly shardHome: Map<number, string>;
   readonly rebalanceInProgress: Map<number, { readonly from: string }>;
+  readonly conflictReleases: Map<number, { readonly claimant: string; readonly attempts: number }>;
 };
 
 /** A second node speaking the wire under its own identity, and recording replies. */
@@ -126,7 +127,7 @@ afterEach(async () => {
  * want to move half the map, and a `HandOff` from *that* would be
  * indistinguishable from the conflict release these tests are about.
  */
-async function startVictim(systemName: string, port: number): Promise<Victim> {
+async function startVictim(systemName: string, port: number, handOffTimeoutMs?: number): Promise<Victim> {
   const systemOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
@@ -147,6 +148,8 @@ async function startVictim(systemName: string, port: number): Promise<Victim> {
     .withRebalanceIntervalMs(600_000)
     // A sweep firing mid-test would take the entity down for its own reasons.
     .withPassivationIdleMs(0);
+  // A short one paces the conflict release's repeats (#1272) inside a test.
+  if (handOffTimeoutMs !== undefined) shardingOptions.withHandOffTimeoutMs(handOffTimeoutMs);
   const region = cluster.sharding.start<Command>(shardingOptions);
 
   const victim: Victim = {
@@ -416,5 +419,105 @@ describe('ShardCoordinator register conflict (#948)', () => {
 
     expect(coordinatorState(victim).shardHome.get(victim.shardId)).toBe(ownerKey);
     expect(entityIsUp(victim)).toBe(true);
+  });
+});
+
+describe('a conflict release is repeated until the claimant gives the shard up (#1272)', () => {
+  /** The repeat interval in these cases: `min(1 s, handOffTimeoutMs)`. */
+  const RETRY_MS = 100;
+
+  function handOffComplete(from: Claimant, victim: Victim, shardId: number): void {
+    post(from, victim, {
+      kind: 'sharding.HandOffComplete',
+      shardId,
+      region: from.regionPath,
+      node: from.address.toJSON(),
+    });
+  }
+
+  test('a claimant that drops the first HandOff is sent another, and no rebalance is started', async () => {
+    const victim = await startVictim('conflict-retry-repeat', 47_481, RETRY_MS);
+    const stale = await claimant('conflict-retry-repeat-peer', 47_482);
+
+    register(stale, victim, [victim.shardId]);
+    await awaitCondition(() => handedOff(stale).length >= 2, {
+      label: 'the hand-off was sent a second time',
+    });
+
+    expect(handedOff(stale).every((shardId) => shardId === victim.shardId)).toBe(true);
+    // Repeated, never escalated into a rebalance, whose timeout would take the
+    // shard away from the owner.
+    expect(coordinatorState(victim).rebalanceInProgress.size).toBe(0);
+    expect(coordinatorState(victim).shardHome.get(victim.shardId)).toBe(regionEntry(victim, victim.regionPath)![0]);
+  });
+
+  test("the claimant's HandOffComplete ends the release and leaves the owner where it was", async () => {
+    const victim = await startVictim('conflict-retry-complete', 47_483, RETRY_MS);
+    const stale = await claimant('conflict-retry-complete-peer', 47_484);
+    const ownerKey = regionEntry(victim, victim.regionPath)![0];
+
+    register(stale, victim, [victim.shardId]);
+    await awaitCondition(() => handedOff(stale).length >= 1, { label: 'the hand-off was sent' });
+    handOffComplete(stale, victim, victim.shardId);
+    await awaitCondition(() => !coordinatorState(victim).conflictReleases.has(victim.shardId), {
+      label: 'the completion ended the release',
+    });
+
+    const sent = handedOff(stale).length;
+    await sleep(RETRY_MS * 4);
+    expect(handedOff(stale).length).toBe(sent);
+    expect(coordinatorState(victim).shardHome.get(victim.shardId)).toBe(ownerKey);
+  });
+
+  test('a registration that no longer claims the shard ends the release', async () => {
+    const victim = await startVictim('conflict-retry-reregister', 47_485, RETRY_MS);
+    const stale = await claimant('conflict-retry-reregister-peer', 47_486);
+
+    register(stale, victim, [victim.shardId]);
+    await awaitCondition(() => handedOff(stale).length >= 1, { label: 'the hand-off was sent' });
+    register(stale, victim, []);
+    // Inside two repeat intervals: the attempt cap would end it as well, and
+    // later, so a release the registration did not end would still be here.
+    await awaitCondition(() => !coordinatorState(victim).conflictReleases.has(victim.shardId), {
+      timeoutMs: RETRY_MS * 2,
+      label: 'the registration ended the release',
+    });
+
+    const sent = handedOff(stale).length;
+    await sleep(RETRY_MS * 4);
+    expect(handedOff(stale).length).toBe(sent);
+  });
+
+  test('a claimant that never answers is sent five hand-offs and then left to its next registration', async () => {
+    const victim = await startVictim('conflict-retry-give-up', 47_487, RETRY_MS);
+    const stale = await claimant('conflict-retry-give-up-peer', 47_488);
+
+    register(stale, victim, [victim.shardId]);
+    // First the release has to exist — the registration is still in flight.
+    await awaitCondition(() => handedOff(stale).length >= 1, { label: 'the hand-off was sent' });
+    await awaitCondition(() => !coordinatorState(victim).conflictReleases.has(victim.shardId), {
+      timeoutMs: RETRY_MS * 20,
+      label: 'the release gave up',
+    });
+    await sleep(RETRY_MS * 4);
+
+    expect(handedOff(stale)).toHaveLength(5);
+  });
+
+  test('a HandOffComplete from another region does not end the release', async () => {
+    const victim = await startVictim('conflict-retry-other', 47_489, RETRY_MS);
+    const stale = await claimant('conflict-retry-other-peer', 47_490);
+    const bystander = await claimant('conflict-retry-other-bystander', 47_491);
+
+    register(stale, victim, [victim.shardId]);
+    await awaitCondition(() => handedOff(stale).length >= 1, { label: 'the hand-off was sent' });
+    register(bystander, victim, []);
+    handOffComplete(bystander, victim, victim.shardId);
+
+    await awaitCondition(() => handedOff(stale).length >= 2, {
+      label: 'the release went on despite the bystander',
+    });
+    expect(coordinatorState(victim).conflictReleases.get(victim.shardId)?.claimant)
+      .toBe(regionEntry(victim, stale.regionPath)![0]);
   });
 });
