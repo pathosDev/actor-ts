@@ -876,35 +876,91 @@ describe('a shard that stops unexpectedly is backed off (#1437)', () => {
     expect(coordinatorFrames.some((frame) => frame.kind === 'sharding.GetShardHome' && frame.shardId === SHARD)).toBe(true);
   }, 15_000);
 
-  test('a shard that dies after its home moved elsewhere is not backed off here, and comes back at once when it is placed here again', async () => {
+  test('a shard homed elsewhere while it still runs here is stopped — not backed off, not handed off — and comes back at once when it is placed here again (#953)', async () => {
     const harness = await startRegion('backoff-not-local', 47_454);
     await placed(harness);
     harness.send(ID, 1);
     await awaitCondition(() => delivered.includes(`${ID}#1`), { timeoutMs: ASK_TIMEOUT_MS, label: 'the shard delivered' });
 
-    // The coordinator moves the shard while its actor still runs here, and the
-    // actor dies before anything stops it: there is nothing for this region to
-    // bring back.
+    // The coordinator homes the shard elsewhere while its actor still runs
+    // here.  The region used to forget it and leave the actor — and its
+    // entities — running beside the new home's copy.
     harness.placeElsewhere(SHARD);
+    await awaitCondition(() => !harness.shardIsUp(SHARD), {
+      timeoutMs: ASK_TIMEOUT_MS, label: 'the shard that moved away was stopped',
+    });
     await harness.fence();
-    harness.killShard(SHARD);
-    // Both ways of handling the death say this much, so waiting on it decides
-    // nothing about which way it went.
-    await awaitCondition(
-      () => harness.log.records.some((record) => record.message.includes('stopped unexpectedly')),
-      { timeoutMs: ASK_TIMEOUT_MS, label: 'the region saw the shard die' },
-    );
+    // A release, not a death and not a hand-off: no backoff for a shard that
+    // is not this region's, and no completion nobody asked for.
     expect(harness.scheduler.armed).toHaveLength(0);
+    expect(harness.log.records.some((record) => record.message.includes('stopped unexpectedly'))).toBe(false);
+    expect(coordinatorFrames.some((frame) => frame.kind === 'sharding.HandOffComplete')).toBe(false);
 
-    // Placed back here, the shard is up at once and takes its traffic — a
-    // backoff armed for a shard that was not this region's would have kept it
-    // down, its messages buffered, for good.
+    // Placed back here, the shard is up at once and takes its traffic.
     await placed(harness);
     harness.send(ID, 2);
     await awaitCondition(() => delivered.includes(`${ID}#2`), {
       timeoutMs: ASK_TIMEOUT_MS,
       label: 'the shard placed back here delivered',
     });
+    expect(harness.scheduler.armed).toHaveLength(0);
+  }, 15_000);
+
+  test('under rememberEntities, an entity event about a shard that moved away is not relayed (#953)', async () => {
+    // Such an event was already queued when the shard moved: it describes a
+    // copy the coordinator has handed to another region, and relayed it would
+    // edit the registry the new home was shipped (#632).
+    const harness = await startRegion('release-no-stale-relay', 47_461, { rememberEntities: true });
+    await placed(harness);
+    const stopped = (shardId: number): void => {
+      (harness.region as ActorRef<unknown>).tell({ kind: 'sharding.EntityStopped', shardId, entityId: ID });
+    };
+    const relayedStops = (): number =>
+      coordinatorFrames.filter((frame) => frame.kind === 'sharding.EntityStopped').length;
+
+    // The control: while the shard is this region's, the report goes up.
+    stopped(SHARD);
+    await harness.fence();
+    expect(relayedStops()).toBe(1);
+
+    // Placed back while the old copy still stops: local again, but the event
+    // can only be about the copy that is going.
+    harness.placeElsewhere(SHARD);
+    harness.place(SHARD);
+    stopped(SHARD);
+    await harness.fence();
+    expect(relayedStops()).toBe(1);
+
+    // Moved away for good, and the old copy gone: not this region's at all.
+    harness.placeElsewhere(SHARD);
+    await awaitCondition(() => !harness.shardIsUp(SHARD), {
+      timeoutMs: ASK_TIMEOUT_MS, label: 'the shard that moved away was stopped',
+    });
+    stopped(SHARD);
+    await harness.fence();
+    expect(relayedStops()).toBe(1);
+  }, 15_000);
+
+  test('placed back while it is still stopping, the shard waits for the old actor and then takes its traffic (#953)', async () => {
+    const harness = await startRegion('release-moved-back', 47_460);
+    await placed(harness);
+    harness.send(ID, 1);
+    await awaitCondition(() => delivered.includes(`${ID}#1`), { timeoutMs: ASK_TIMEOUT_MS, label: 'the shard delivered' });
+
+    // One synchronous step: homed elsewhere, homed back, and a message.  The
+    // old actor is still stopping when the second placement lands, and a new
+    // one cannot be created under its name until it is gone.
+    harness.placeElsewhere(SHARD);
+    harness.place(SHARD);
+    harness.send(ID, 2);
+
+    // Buffered while the old actor stopped, then delivered by the new one —
+    // not lost into the stopping actor's mailbox.
+    await awaitCondition(() => delivered.includes(`${ID}#2`), {
+      timeoutMs: ASK_TIMEOUT_MS,
+      label: 'the shard created again delivered the message that waited for it',
+    });
+    expect(harness.shardIsUp(SHARD)).toBe(true);
     expect(harness.scheduler.armed).toHaveLength(0);
   }, 15_000);
 
@@ -1114,25 +1170,22 @@ describe('the empty-shard sweep\'s request, overtaken while the shard declines i
     expect(deadWorkFor(2)).toEqual([]);
   }, 15_000);
 
-  test('a shard the coordinator moves elsewhere while the request is out keeps the entity the request found busy', async () => {
+  test('a shard the coordinator moves elsewhere while the request is out is stopped, entity and all (#953)', async () => {
     const harness = await startRegion('sweep-request-moved', 47_457, sweepOnly);
     await placed(harness);
     await waitOutShardWindow();
 
     // The first message for a new entity, routed before the move; the sweep
-    // tick and the move behind it.  The shard declines, since it has just
-    // created that entity — and stopping it now, because it is no longer this
-    // region's, would take the message down with it.
+    // tick and the move behind it.  The shard used to keep the entity running
+    // here because the sweep request found it busy — a copy beside the new
+    // home's.  The move now stops the shard, and whatever it held goes with it.
     harness.send(ID, 1);
     harness.scheduler.fireSweep();
     harness.placeElsewhere(SHARD);
-    await awaitCondition(() => delivered.includes(`${ID}#1`) || deadWorkFor(1).length > 0, {
-      timeoutMs: ASK_TIMEOUT_MS,
-      label: 'the message was handled, or dead-lettered',
+    await awaitCondition(() => !harness.shardIsUp(SHARD), {
+      timeoutMs: ASK_TIMEOUT_MS, label: 'the shard that moved away was stopped',
     });
     await harness.fence();
-    expect(delivered).toEqual([`${ID}#1`]);
-    expect(deadWorkFor(1)).toEqual([]);
     expect(harness.scheduler.armed).toHaveLength(0);
   }, 15_000);
 
