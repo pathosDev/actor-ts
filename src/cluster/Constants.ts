@@ -293,6 +293,26 @@ export const MAX_NODE_INCARNATION_LENGTH = 128;
 export const COORDINATOR_REGISTRATION_GOSSIP_ROUNDS = 3;
 
 /**
+ * How often a coordinator repeats a conflict release's `HandOff` while the
+ * claimant has neither completed it nor stopped claiming the shard (#1272) —
+ * see `ShardCoordinator.trackConflictRelease`.  Capped by `handOffTimeoutMs`.
+ *
+ * A second, not the rebalance interval: the stale copy runs beside the owner
+ * for as long as the release waits, and the common reason a claimant dropped
+ * the first one — it had not yet seen the leader change — clears within a few
+ * gossip rounds.
+ */
+export const CONFLICT_RELEASE_RETRY_INTERVAL_MS = 1_000;
+
+/**
+ * How many `HandOff`s a conflict release sends before it gives up and logs the
+ * claimant (#1272).  Five rounds of the interval above cover a region that is
+ * slow to notice a leader change; a claimant still silent after them is not
+ * one another send will reach, and its next registration is released again.
+ */
+export const CONFLICT_RELEASE_MAX_ATTEMPTS = 5;
+
+/**
  * How long allocation changes are gathered before one `ShardMapUpdate` goes
  * out.  Long enough to fold a whole-cluster placement into a single
  * broadcast, short enough that a panel still feels live.

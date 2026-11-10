@@ -3,7 +3,12 @@ import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
-import { COORDINATOR_REGISTRATION_GOSSIP_ROUNDS, SHARD_MAP_PUBLISH_DELAY_MS } from '../Constants.js';
+import {
+  CONFLICT_RELEASE_MAX_ATTEMPTS,
+  CONFLICT_RELEASE_RETRY_INTERVAL_MS,
+  COORDINATOR_REGISTRATION_GOSSIP_ROUNDS,
+  SHARD_MAP_PUBLISH_DELAY_MS,
+} from '../Constants.js';
 import { DEFAULT_REGISTER_RETRY_INTERVAL_MS } from './ShardingOptions.js';
 import {
   DEFAULT_ACQUIRE_RETRY_INTERVAL_MS,
@@ -77,13 +82,17 @@ type RequestRegistrationsEvent = {
 /** The registration barrier ran out — see `ShardCoordinator.beginRegistrationBarrier`. */
 type RegistrationBarrierTimeoutEvent = { readonly kind: 'registration-barrier-timeout' };
 
+/** Time to repeat a conflict release — see `ShardCoordinator.trackConflictRelease`. */
+type ConflictReleaseRetryEvent = { readonly kind: 'conflict-release-retry'; readonly shardId: number };
+
 type CoordinatorEvent =
   | ReconcileEvent
   | LeaseAcquireResultEvent
   | LeaseLostEvent
   | AcquireRetryEvent
   | RequestRegistrationsEvent
-  | RegistrationBarrierTimeoutEvent;
+  | RegistrationBarrierTimeoutEvent
+  | ConflictReleaseRetryEvent;
 
 type CoordinatorInbox = ShardingMessage | AuthenticatedShardingMessage | CoordinatorEvent;
 
@@ -92,7 +101,8 @@ function isCoordinatorEvent(message: CoordinatorInbox): message is CoordinatorEv
   const discriminator = (message as { kind?: unknown }).kind;
   return discriminator === 'reconcile' || discriminator === 'lease-acquire-result'
     || discriminator === 'lease-lost' || discriminator === 'acquire-retry'
-    || discriminator === 'request-registrations' || discriminator === 'registration-barrier-timeout';
+    || discriminator === 'request-registrations' || discriminator === 'registration-barrier-timeout'
+    || discriminator === 'conflict-release-retry';
 }
 
 /**
@@ -413,6 +423,14 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * See {@link beginRegistrationBarrier}.
    */
   private registrationBarrier: { readonly awaiting: Set<string>; readonly timer: Cancellable } | null = null;
+  /**
+   * Conflict releases still waiting on their claimant, by shard id: who was
+   * told to give the shard up, how often, and the timer that repeats it
+   * (#1272).  Kept apart from {@link rebalanceInProgress} for the reason
+   * {@link releaseConflictingShards} gives: a rebalance's timeout reallocates,
+   * and here the shard already has its owner.
+   */
+  private readonly conflictReleases = new Map<number, { readonly claimant: string; attempts: number; timer: Cancellable }>();
 
   public readonly options: ShardCoordinatorOptionsType;
 
@@ -507,6 +525,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.acquireRetryTimer?.cancel();
     this.shardMapPublishTimer?.cancel();
     this.registrationBarrier?.timer.cancel();
+    this.dropConflictReleases();
     for (const rebalance of this.rebalanceInProgress.values()) rebalance.timer.cancel();
     for (const query of this.statsQueries.values()) query.timer?.cancel();
     this.statsQueries.clear();
@@ -694,6 +713,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       .with({ kind: 'acquire-retry' }, () => this.onAcquireRetry())
       .with({ kind: 'request-registrations' }, (m) => this.onRequestRegistrations(m))
       .with({ kind: 'registration-barrier-timeout' }, () => this.onRegistrationBarrierTimeout())
+      .with({ kind: 'conflict-release-retry' }, (m) => this.onConflictReleaseRetry(m))
       .exhaustive();
   }
 
@@ -793,6 +813,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     // register loop).
     for (const rebalance of this.rebalanceInProgress.values()) rebalance.timer.cancel();
     this.rebalanceInProgress.clear();
+    this.dropConflictReleases();
     this.pending.clear();
     this.acquireBuffer = [];
     // Deliberately do NOT clear `regions` or `shardHome` here.  We
@@ -1197,6 +1218,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       coordinator: this.self.path.toString(),
     };
     this.replyTo(message.region, message.node, ack);
+    this.settleConflictReleasesOf(key, verdict.conflicting);
     // Strictly after the acknowledgment: the ack is what cancels the claimant's
     // 500 ms register retry (`ShardRegion.onRegisterAcknowledgment`), and a
     // directive that overtakes it lands on a region still re-registering.
@@ -1453,8 +1475,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * Deliberately **not** recorded in `rebalanceInProgress`.  That map's timeout
    * callback deletes `shardHome[shardId]` and reallocates, which here would
    * destroy the *true owner's* ownership on a timer over a hand-off it never
-   * agreed to.  Left out, the claimant's `HandOffComplete` meets
-   * `if (!inProgress) return` and is the harmless no-op it should be.
+   * agreed to.  It is tracked in {@link conflictReleases} instead, which only
+   * ever repeats the hand-off ({@link trackConflictRelease}); the claimant's
+   * `HandOffComplete` ends that and reallocates nothing.
    *
    * A shard already mid-rebalance is skipped for the mirror-image reason:
    * `onHandOffComplete` checks no ownership and is handed no peer (#1231), so
@@ -1478,6 +1501,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       if (owner) owners.add(owner.node.toString());
       if (this.rebalanceInProgress.has(shardId)) continue;
       this.sendToRegion(key, { kind: 'sharding.HandOff', shardId });
+      this.trackConflictRelease(shardId, key);
       released += 1;
     }
     // One line per registration, never one per id — the same rule
@@ -1489,6 +1513,90 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       + `already own${owners.size === 1 ? 's' : ''}; ownership stays put and ${released} hand-off(s) were sent `
       + `to give the stale copies up`,
     );
+  }
+
+  /**
+   * Keep a conflict release going until the claimant has given the shard up
+   * (#1272).
+   *
+   * {@link releaseConflictingShards} sent its `HandOff` once and forgot it, and
+   * a region drops one for ordinary reasons: it does not yet believe this node
+   * hosts the coordinator — the gap after a leader change — or the shard is
+   * mid-stop for another reason.  The claimant re-registers only on a member
+   * or leader event, or on its register retry before an acknowledgment, so on
+   * a stable cluster a dropped `HandOff` left the stale copy running beside the
+   * owner indefinitely.  Now the hand-off is repeated every
+   * {@link conflictReleaseRetryMs} until one of these says it is done: the
+   * claimant's `HandOffComplete`, a registration of it that no longer claims
+   * the shard, the claimant or the owner leaving, or the end of this leader
+   * term — or until {@link CONFLICT_RELEASE_MAX_ATTEMPTS} sends have gone
+   * unanswered, which is logged once.
+   */
+  private trackConflictRelease(shardId: number, claimant: string): void {
+    const existing = this.conflictReleases.get(shardId);
+    if (existing?.claimant === claimant) return;
+    if (existing) existing.timer.cancel();
+    this.conflictReleases.set(shardId, { claimant, attempts: 1, timer: this.scheduleConflictReleaseRetry(shardId) });
+  }
+
+  private scheduleConflictReleaseRetry(shardId: number): Cancellable {
+    return this.system.scheduler.scheduleOnceFunction(this.conflictReleaseRetryMs(), () => {
+      this.self.tell({ kind: 'conflict-release-retry', shardId } satisfies CoordinatorEvent);
+    });
+  }
+
+  /**
+   * How long a conflict release waits for its claimant before repeating the
+   * `HandOff`: {@link CONFLICT_RELEASE_RETRY_INTERVAL_MS}, never longer than
+   * `handOffTimeoutMs`, the coordinator's bound on any hand-off.
+   */
+  private conflictReleaseRetryMs(): number {
+    return Math.min(CONFLICT_RELEASE_RETRY_INTERVAL_MS, this.options.handOffTimeoutMs ?? DEFAULT_HAND_OFF_TIMEOUT_MS);
+  }
+
+  private onConflictReleaseRetry(event: ConflictReleaseRetryEvent): void {
+    const release = this.conflictReleases.get(event.shardId);
+    if (!release) return;
+    const home = this.shardHome.get(event.shardId);
+    // Nothing left to release: the claimant is gone, or it is the owner after
+    // all, or the shard has no owner whose copy the claimant's would shadow.
+    if (!this.regions.has(release.claimant) || home === undefined || home === release.claimant || !this.regions.has(home)) {
+      this.endConflictRelease(event.shardId);
+      return;
+    }
+    if (release.attempts >= CONFLICT_RELEASE_MAX_ATTEMPTS) {
+      const claimantNode = this.regions.get(release.claimant)?.node.toString() ?? 'a departed region';
+      this.log.warn(
+        `[sharding] ${claimantNode} has not given up shard ${event.shardId} of "${this.options.typeName}" after `
+        + `${release.attempts} hand-off(s); its stale copy may still run until it registers again`,
+      );
+      this.endConflictRelease(event.shardId);
+      return;
+    }
+    // A rebalance of the shard is under way: its own hand-off is the one in
+    // flight, so this one waits a round rather than crossing it.
+    if (!this.rebalanceInProgress.has(event.shardId)) {
+      this.sendToRegion(release.claimant, { kind: 'sharding.HandOff', shardId: event.shardId });
+      release.attempts += 1;
+    }
+    release.timer = this.scheduleConflictReleaseRetry(event.shardId);
+  }
+
+  /** A registration from `key` that no longer claims a shard ends that shard's release. */
+  private settleConflictReleasesOf(key: string, stillConflicting: ReadonlySet<number>): void {
+    for (const [shardId, release] of Array.from(this.conflictReleases)) {
+      if (release.claimant === key && !stillConflicting.has(shardId)) this.endConflictRelease(shardId);
+    }
+  }
+
+  private endConflictRelease(shardId: number): void {
+    this.conflictReleases.get(shardId)?.timer.cancel();
+    this.conflictReleases.delete(shardId);
+  }
+
+  private dropConflictReleases(): void {
+    for (const release of this.conflictReleases.values()) release.timer.cancel();
+    this.conflictReleases.clear();
   }
 
   /**
@@ -1751,6 +1859,13 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private onHandOffComplete(message: HandOffComplete): void {
     this.markRegionSeen(message.region, message.node);
     const shardId = message.shardId;
+    const sender = regionKey(NodeAddress.fromJSON(message.node), message.region);
+    // A claimant giving up a shard it did not own: the owner stays, so there
+    // is nothing to reallocate — only the release to end.
+    if (this.conflictReleases.get(shardId)?.claimant === sender) {
+      this.endConflictRelease(shardId);
+      return;
+    }
     const inProgress = this.rebalanceInProgress.get(shardId);
     if (!inProgress) return;
     if (inProgress.from !== regionKey(NodeAddress.fromJSON(message.node), message.region)) return;
@@ -1944,6 +2059,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     const info = this.regions.get(key);
     if (!info) return;
     this.regions.delete(key);
+    for (const [shardId, release] of Array.from(this.conflictReleases)) {
+      if (release.claimant === key) this.endConflictRelease(shardId);
+    }
     for (const shardId of info.shards) {
       this.shardHome.delete(shardId);
       const inProg = this.rebalanceInProgress.get(shardId);
@@ -1989,6 +2107,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       this.acquireBuffer = [];
       for (const rebalance of this.rebalanceInProgress.values()) rebalance.timer.cancel();
       this.rebalanceInProgress.clear();
+      this.dropConflictReleases();
       // In-flight stats queries answered from a view we no longer own would
       // be worse than the caller's own timeout — drop them.
       for (const query of this.statsQueries.values()) query.timer?.cancel();
