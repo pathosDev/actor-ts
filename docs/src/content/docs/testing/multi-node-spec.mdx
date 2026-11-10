@@ -171,6 +171,38 @@ watcher gets `Terminated`.  The `await*` helpers replace
 fragile `setTimeout` sleeps — they poll until the condition holds (or
 throw after `awaitTimeoutMs`).
 
+## Restarting a node
+
+`restart(role)` brings a role back at the **same address as a new process** —
+the shape of a pod replacement.  The old system is crashed and terminated, a
+fresh system and cluster join in its place with a new incarnation, and the
+other members see the old run end before the new one joins.  `withNodeSetup`
+runs on every node after its join and again on a restarted one, so the
+sharded types, singletons and subscriptions a test starts exist on the new
+node too.
+
+```ts
+const spec = new MultiNodeSpec(MultiNodeSpecOptions.create()
+  .withRoles(['a', 'b', 'c'])
+  // Runs on every node once it has joined — and again on a restarted one.
+  .withNodeSetup((role, system, cluster) => {
+    cluster.sharding.start(shardingOptions);
+  }));
+await spec.start();
+
+const oldRun = spec.clusterFor('a').selfAddress.incarnation;
+await spec.restart('a');                  // same address, new process
+await spec.awaitMembers('b', 3);
+expect(spec.clusterFor('a').selfAddress.incarnation).not.toBe(oldRun);
+```
+
+The restarted node's seeds are the other running roles, so a restarted seed
+rejoins the cluster it founded.  Pass `restart(role, { seeds: [] })` to have it
+found a cluster of its own instead — the fork
+[issue #1176](https://github.com/pathosDev/actor-ts/issues/1176) is about.
+References taken from `systemFor` / `clusterFor` before the restart name the
+old node; ask again afterwards.
+
 ## A network that works badly
 
 `partition` and `crash` describe a network that is perfect or severed. Between

@@ -27,7 +27,8 @@ import {
  *   - **Cluster API access** per role — `clusterFor('a')`, `systemFor('b')`.
  *   - **Crash simulation** — `crash(role)` shuts down a node's transport
  *     ungracefully (other nodes detect via failure-detection); `leave(role)`
- *     does a graceful exit.
+ *     does a graceful exit; `restart(role)` brings a role back at the same
+ *     address as a new process.
  *   - **Network partition** — `partition(roleA, roleB)` bidirectionally
  *     blocks messages between the two roles; `heal(...)` undoes it.
  *   - **Synchronization helpers** — `awaitMembers`, `awaitMemberStatus`,
@@ -92,11 +93,11 @@ type BarrierEntry = {
 export class MultiNodeSpec {
   private readonly options: Required<Omit<
     MultiNodeSpecOptionsType,
-    'addresses' | 'failureDetector' | 'downing' | 'failureDetectorAutoDown' | 'scheduler'
+    'addresses' | 'failureDetector' | 'downing' | 'failureDetectorAutoDown' | 'scheduler' | 'nodeSetup'
   >>
     & Pick<
       MultiNodeSpecOptionsType,
-      'addresses' | 'failureDetector' | 'downing' | 'failureDetectorAutoDown' | 'scheduler'
+      'addresses' | 'failureDetector' | 'downing' | 'failureDetectorAutoDown' | 'scheduler' | 'nodeSetup'
     >;
   private readonly nodes = new Map<string, NodeRecord>();
   private started = false;
@@ -131,6 +132,7 @@ export class MultiNodeSpec {
       // unless a test's HOCON says otherwise.
       failureDetectorAutoDown: options.failureDetectorAutoDown,
       scheduler: options.scheduler,
+      nodeSetup: options.nodeSetup,
     };
   }
 
@@ -163,63 +165,63 @@ export class MultiNodeSpec {
       ...this.options.roles.filter((r) => !this.options.seedRoles.includes(r)),
     ];
     for (const role of orderedRoles) {
-      const address = addressByRole.get(role)!;
-      const transport = new MultiNodeTransport(address);
-      // Always wrapped, never conditionally: `degrade` has to be able to
-      // start a fault after `start()`, and a spec that decided at construction
-      // whether it might later want one would be back to a network that can
-      // only be broken before the nodes come up.  A clean link costs one map
-      // lookup per frame — see `FaultyTransport.send`.
-      const faults = new FaultyTransport(transport, {
-        seed: this.options.faultSeed,
-        ...(this.options.scheduler ? { scheduler: this.options.scheduler } : {}),
-      });
-      const systemOptions = ActorSystemOptions.create()
-        .withLogger(new NoopLogger())
-        .withLogLevel(this.options.logLevel);
-      // One scheduler for the whole cluster, so `advance` moves every node's
-      // gossip, heartbeat and detection ticks by the same amount at the same
-      // instant.  Giving each node its own would put them on separate virtual
-      // clocks, which is worse than sharing a real one.
-      if (this.options.scheduler) systemOptions.withScheduler(this.options.scheduler);
-      const system = ActorSystem.create(role, systemOptions);
-      const clusterOptions = ClusterOptions.create()
-        .withHost(address.host)
-        .withPort(address.port)
-        .withSeeds(seeds)
-        .withTransport(faults)
-        .withGossipIntervalMs(this.options.gossipIntervalMs)
-        .withSeedRetryIntervalMs(100)
-        .withSplitBrainResolver({ stableAfterMs: this.options.stableAfterMs });
-      if (this.options.failureDetector) {
-        clusterOptions.withFailureDetector(this.options.failureDetector);
-      }
-      const downing = this.options.downing?.(role);
-      if (downing) clusterOptions.withDowning(downing);
-      if (this.options.failureDetectorAutoDown !== undefined) {
-        clusterOptions.withFailureDetectorAutoDown(this.options.failureDetectorAutoDown);
-      }
-      let cluster: Cluster;
-      try {
-        cluster = await Cluster.join(system, clusterOptions);
-      } catch (error) {
-        // A refused join — options a spec can configure itself into, such as
-        // a gossip interval or a stability window the validator rejects —
-        // must not leave this role's system running behind a node `stop()`
-        // cannot see: it is recorded below, only after the join succeeded.
-        await system.terminate();
-        throw error;
-      }
-      this.nodes.set(role, {
-        role,
-        address,
-        transport,
-        faults,
-        system,
-        cluster,
-        removed: false,
-      });
+      this.nodes.set(role, await this.startNode(role, addressByRole.get(role)!, seeds));
     }
+  }
+
+  /**
+   * One role's transport, system and cluster, joined and set up — what `start`
+   * does for every role and `restart` for one.
+   */
+  private async startNode(role: string, address: NodeAddress, seeds: ReadonlyArray<string>): Promise<NodeRecord> {
+    const transport = new MultiNodeTransport(address);
+    // Always wrapped, never conditionally: `degrade` has to be able to
+    // start a fault after `start()`, and a spec that decided at construction
+    // whether it might later want one would be back to a network that can
+    // only be broken before the nodes come up.  A clean link costs one map
+    // lookup per frame — see `FaultyTransport.send`.
+    const faults = new FaultyTransport(transport, {
+      seed: this.options.faultSeed,
+      ...(this.options.scheduler ? { scheduler: this.options.scheduler } : {}),
+    });
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(this.options.logLevel);
+    // One scheduler for the whole cluster, so `advance` moves every node's
+    // gossip, heartbeat and detection ticks by the same amount at the same
+    // instant.  Giving each node its own would put them on separate virtual
+    // clocks, which is worse than sharing a real one.
+    if (this.options.scheduler) systemOptions.withScheduler(this.options.scheduler);
+    const system = ActorSystem.create(role, systemOptions);
+    const clusterOptions = ClusterOptions.create()
+      .withHost(address.host)
+      .withPort(address.port)
+      .withSeeds([...seeds])
+      .withTransport(faults)
+      .withGossipIntervalMs(this.options.gossipIntervalMs)
+      .withSeedRetryIntervalMs(100)
+      .withSplitBrainResolver({ stableAfterMs: this.options.stableAfterMs });
+    if (this.options.failureDetector) {
+      clusterOptions.withFailureDetector(this.options.failureDetector);
+    }
+    const downing = this.options.downing?.(role);
+    if (downing) clusterOptions.withDowning(downing);
+    if (this.options.failureDetectorAutoDown !== undefined) {
+      clusterOptions.withFailureDetectorAutoDown(this.options.failureDetectorAutoDown);
+    }
+    let cluster: Cluster;
+    try {
+      cluster = await Cluster.join(system, clusterOptions);
+      await this.options.nodeSetup?.(role, system, cluster);
+    } catch (error) {
+      // A refused join — options a spec can configure itself into, such as
+      // a gossip interval or a stability window the validator rejects —
+      // must not leave this role's system running behind a node `stop()`
+      // cannot see: it is recorded only after the join and its setup succeeded.
+      await system.terminate();
+      throw error;
+    }
+    return { role, address, transport, faults, system, cluster, removed: false };
   }
 
   /** Tear down every node.  Idempotent — safe to call after `crash()`. */
@@ -276,6 +278,55 @@ export class MultiNodeSpec {
     if (node.removed) return;
     node.removed = true;
     await node.cluster.leave();
+  }
+
+  /**
+   * Bring `role` back at the same address as a new process (#1382): its old
+   * system is terminated, and a fresh system and cluster join in its place —
+   * a new incarnation, as a restarted pod is, which the other members take as
+   * the old run ending and a new one joining.  `nodeSetup` runs on the new
+   * node, so whatever the spec starts on every node exists there again.
+   *
+   * Crashes the role first if it still runs, so a restart is always a crash
+   * followed by a start, never a graceful leave.  The new node's seeds are the
+   * other roles that still run, by default, so a restarted *seed* rejoins the
+   * cluster it founded; pass `seeds` — `[]` or its own address — to have it
+   * found a cluster of its own instead, which is the fork #1176 is about.
+   *
+   * References taken from `systemFor` / `clusterFor` before the restart name
+   * the old node; ask again afterwards.  A partition recorded against the
+   * role on another node's side still applies to the new one.
+   */
+  async restart(role: string, options: { readonly seeds?: ReadonlyArray<string> } = {}): Promise<void> {
+    const old = this.requireNode(role);
+    await this.crash(role);
+    await this.terminateDuringRestart(old.system);
+    const seeds = options.seeds ?? [...this.nodes.values()]
+      .filter((node) => node.role !== role && !node.removed)
+      .map((node) => node.address.toString());
+    this.nodes.set(role, await this.startNode(role, old.address, seeds));
+  }
+
+  /**
+   * Terminate a crashed node's system.  On a virtual clock its coordinated
+   * shutdown waits on timers only the spec can move, so the clock is advanced
+   * in gossip-sized steps until the termination settles.
+   */
+  private async terminateDuringRestart(system: ActorSystem): Promise<void> {
+    const scheduler = this.options.scheduler;
+    if (scheduler === undefined || !scheduler.isVirtual) {
+      await system.terminate();
+      return;
+    }
+    let terminated = false;
+    const termination = system.terminate().then(() => { terminated = true; });
+    const clock = scheduler as ManualScheduler;
+    const deadline = clock.now() + this.options.awaitTimeoutMs;
+    while (!terminated && clock.now() < deadline) {
+      clock.advance(this.options.gossipIntervalMs);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    await termination;
   }
 
   /** Bidirectional partition between two roles.  Both sides drop traffic to the other. */

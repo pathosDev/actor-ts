@@ -173,6 +173,40 @@ vergeben, und kein entfernter Watcher bekommt `Terminated`. Die `await*`-Helfer 
 fragile `setTimeout`-Schlafphasen — sie pollen, bis die Bedingung gilt
 (oder werfen nach `awaitTimeoutMs`).
 
+## Einen Node neu starten
+
+`restart(role)` bringt eine Rolle **an derselben Adresse als neuen Prozess**
+zurück — die Form eines Pod-Austauschs.  Das alte System wird gecrasht und
+beendet, ein frisches System mit Cluster tritt an seiner Stelle mit einer
+neuen Inkarnation bei, und die anderen Mitglieder sehen den alten Lauf enden,
+bevor der neue beitritt.  `withNodeSetup` läuft auf jedem Node nach seinem
+Beitritt und erneut auf einem neu gestarteten, sodass die Sharding-Typen,
+Singletons und Abonnements, die ein Test startet, auch auf dem neuen Node
+existieren.
+
+```ts
+const spec = new MultiNodeSpec(MultiNodeSpecOptions.create()
+  .withRoles(['a', 'b', 'c'])
+  // Läuft auf jedem Node, sobald er beigetreten ist — und erneut auf einem neu gestarteten.
+  .withNodeSetup((role, system, cluster) => {
+    cluster.sharding.start(shardingOptions);
+  }));
+await spec.start();
+
+const oldRun = spec.clusterFor('a').selfAddress.incarnation;
+await spec.restart('a');                  // gleiche Adresse, neuer Prozess
+await spec.awaitMembers('b', 3);
+expect(spec.clusterFor('a').selfAddress.incarnation).not.toBe(oldRun);
+```
+
+Die Seeds des neu gestarteten Nodes sind die anderen laufenden Rollen, ein neu
+gestarteter Seed tritt also wieder dem Cluster bei, den er gegründet hat.  Mit
+`restart(role, { seeds: [] })` gründet er stattdessen einen eigenen — die
+Gabelung, um die es in
+[Issue #1176](https://github.com/pathosDev/actor-ts/issues/1176) geht.
+Referenzen aus `systemFor` / `clusterFor` von vor dem Neustart benennen den
+alten Node; danach erneut abfragen.
+
 ## Ein Netz, das schlecht funktioniert
 
 `partition` und `crash` beschreiben ein Netz, das perfekt oder durchtrennt ist.

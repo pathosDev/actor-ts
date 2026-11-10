@@ -1,5 +1,7 @@
+import type { ActorSystem } from '../ActorSystem.js';
 import type { Scheduler } from '../Scheduler.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import type { Cluster } from '../cluster/Cluster.js';
 import type { ClusterOptionsType } from '../cluster/ClusterOptions.js';
 import type { DowningProvider } from '../cluster/downing/index.js';
 import type { LogLevel } from '../Logger.js';
@@ -73,6 +75,16 @@ export type MultiNodeSpecOptionsType = {
    * red run reproduces from the log alone (#1023).
    */
   readonly faultSeed?: number;
+  /**
+   * What every node runs once it has joined — on `start` and again on every
+   * `MultiNodeSpec.restart`, so a restarted role comes back with the same
+   * sharded types, singletons and subscriptions its previous run had.
+   *
+   * A restart builds a new system and cluster, and nothing a test started on
+   * the old one exists there; without a hook each test would repeat its setup
+   * by hand after every restart, and forget a piece of it.
+   */
+  readonly nodeSetup?: (role: string, system: ActorSystem, cluster: Cluster) => void | Promise<void>;
 };
 
 /** Fluent builder for {@link MultiNodeSpecOptionsType}. */
@@ -144,6 +156,11 @@ export class MultiNodeSpecOptionsBuilder extends OptionsBuilder<MultiNodeSpecOpt
   /** Seed for every injected transport fault.  Default `DEFAULT_TRANSPORT_FAULT_SEED`. */
   withFaultSeed(faultSeed: number): this {
     return this.set('faultSeed', faultSeed);
+  }
+
+  /** What every node runs once it has joined, on start and on every restart. */
+  withNodeSetup(nodeSetup: (role: string, system: ActorSystem, cluster: Cluster) => void | Promise<void>): this {
+    return this.set('nodeSetup', nodeSetup);
   }
 }
 
