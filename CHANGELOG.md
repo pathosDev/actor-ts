@@ -6108,6 +6108,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A coordinator that has just become leader places no shard until the other
+  members' regions have registered what they host; it used to place shards at
+  once, so a node restarted at the lowest address — or one joining with it —
+  could start a shard a survivor was still running** (#1272). A leader change
+  hands the coordinator over with no protocol between the two instances, and
+  the other regions learn of it through gossip. The new coordinator now holds
+  every *new* placement — a shard a registration has already homed is answered
+  at once — until each other `up` member's region has re-registered, which it
+  does with its `hostedShards` on the leader change it observes. The wait ends
+  with the last registration and at the latest after three gossip rounds plus a
+  register retry, never longer than `handOffTimeoutMs`, so a member that does
+  not run the type costs that window and nothing more; when it runs out the
+  coordinator places shards anyway and logs whom it heard nothing from. A
+  coordinator-state snapshot no longer hands a restarted node its previous
+  run's shards either: a region seeded from the snapshot that registers from a
+  different incarnation keeps only what it claims. The rebalance page says so
+  (EN + DE); a lease on the coordinator stays the hard guarantee.
+
 - **`idle-timeout` and `request-timeout` on the Express and Fastify backends
   are reported in effect on Deno 2.7.13 and later, where they hold; they were
   reported not in effect on every Deno** (#1793). Deno's `node:http` applies

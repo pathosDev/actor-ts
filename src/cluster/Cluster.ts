@@ -303,6 +303,13 @@ export class Cluster {
    */
   readonly _membershipSettleWindowMs: number;
 
+  /**
+   * How often this node gossips — what a sharding coordinator sizes its
+   * registration window by, since that is how fast a leader change reaches
+   * the other members' regions (#1272).  Internal, like the field above.
+   */
+  get _gossipIntervalMs(): number { return this.gossipIntervalMs; }
+
   private readonly members = new Map<string, Member>();
   /**
    * The contract, not one of the two classes that satisfy it: typing this

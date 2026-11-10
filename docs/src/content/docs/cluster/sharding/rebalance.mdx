@@ -285,11 +285,39 @@ never gave it up.  The claimant's `HandOffComplete` therefore
 matches no in-flight rebalance and is a no-op, which is also what
 stops it from ending a genuine one for the same shard.
 
-One limit is worth knowing: a leader change clears the allocation
-map, so in the first moments of a new term every claim looks
-unowned and the first to arrive wins.  The check stops new
-double-homing; it does not resolve a split that predates the
-election.
+### A new leader waits for the claims
+
+A leader change clears the allocation map, and the other members'
+regions learn of the change through gossip, each at its own moment.
+A coordinator that placed shards at once would decide on a map that
+does not yet hold the region already running a shard — a node that
+restarts at the lowest address, or joins with it, becomes leader at
+once and would place that shard on itself (#1272).
+
+So a coordinator that has just become leader **places no shard
+until the regions of every other `up` member have registered** —
+narrowed to the type's role when it has one.  Every region
+re-registers with its `hostedShards` on the leader change it
+observes, so nothing has to be asked.  A shard a registration has
+already homed is answered at once; only what would need a *new* home
+waits.  The wait ends the moment the last member registers, and at
+the latest after three gossip rounds plus one register retry — never
+longer than `handOffTimeoutMs` — so a member that does not run the
+type costs that window on a leader change and nothing more.  A
+member that leaves the cluster is not waited for.
+
+When the window runs out the coordinator places shards anyway and
+logs which members it had no registration from.  If one of them does
+run the type — its claims are late, or it is unreachable — a shard it
+still hosts can be started a second time until its registration
+arrives and releases the stale copy.  A
+[lease on the coordinator](/cluster/sharding/with-lease/) is what rules
+that out.
+
+A coordinator-state snapshot cannot hand a restarted node its previous
+run's shards either: when a region whose entry came from the snapshot
+registers from a different incarnation of its node, the homes it does
+not claim are released and placed again on demand.
 
 ## Who may order a handoff
 
