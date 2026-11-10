@@ -6,7 +6,11 @@ description: How a node enters a cluster — seed contact, the join handshake, l
 A node enters a cluster by **contacting a seed node**.  The seed
 gossips back its current membership view; the joiner is added as
 `joining`, propagates through gossip, and once the leader sees it
-(plus convergence), transitions to `up`.
+(plus convergence), transitions to `up`.  The leader sends its view
+straight to every member it has just promoted, so a joiner learns it is
+`up` one hop after the promotion rather than whenever a random gossip
+round happens to pick it — which is what keeps `Cluster.bootstrap`'s
+readiness wait independent of the cluster's size (#1747).
 
 ```mermaid
 sequenceDiagram
@@ -16,7 +20,8 @@ sequenceDiagram
   J->>S: Join announcement
   S->>C: gossip Join
   S-->>J: Gossip — current view
-  Note over J: joining → weakly-up? → up<br/>over a few gossip rounds
+  C-->>J: Gossip from the leader, sent on promotion
+  Note over J: joining → weakly-up? → up
 ```
 
 This page covers the **mechanics** of that handshake, plus the

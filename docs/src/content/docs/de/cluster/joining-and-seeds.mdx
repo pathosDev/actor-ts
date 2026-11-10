@@ -7,7 +7,12 @@ Ein Node tritt einem Cluster bei, indem er **einen Seed-Node
 kontaktiert**. Der Seed sendet per Gossip seine aktuelle
 Mitgliedschaftssicht zurück; der Joiner wird als `joining`
 hinzugefügt, propagiert per Gossip, und sobald der Leader ihn sieht
-(plus Konvergenz), wechselt er zu `up`.
+(plus Konvergenz), wechselt er zu `up`.  Der Leader schickt seine Sicht
+direkt an jedes Mitglied, das er gerade befördert hat. Ein Joiner erfährt
+also einen Hop nach der Beförderung, dass er `up` ist, statt erst dann,
+wenn eine zufällige Gossip-Runde ihn trifft — deshalb hängt die
+Bereitschafts-Wartezeit von `Cluster.bootstrap` nicht von der Größe des
+Clusters ab (#1747).
 
 ```mermaid
 sequenceDiagram
@@ -17,7 +22,8 @@ sequenceDiagram
   J->>S: Join-Ankündigung
   S->>C: Gossip Join
   S-->>J: Gossip — aktuelle Sicht
-  Note over J: joining → weakly-up? → up<br/>über ein paar Gossip-Runden
+  C-->>J: Gossip vom Leader, bei der Beförderung gesendet
+  Note over J: joining → weakly-up? → up
 ```
 
 Diese Seite behandelt die **Mechanik** dieses Handshakes plus die

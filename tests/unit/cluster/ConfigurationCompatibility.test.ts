@@ -75,6 +75,13 @@ async function startNode(spec: NodeSpec): Promise<Node> {
     .withLogger(logger)
     .withLogLevel(LogLevel.Debug);
   const system = ActorSystem.create(SYSTEM, systemOptions);
+  // Collected from the system's event stream, subscribed before the join: a
+  // joiner hears the leader's record — and so reports a divergence — within a
+  // hop of its promotion (#1747), which can be inside `Cluster.join` itself.
+  // A `cluster.subscribe` after the join would miss that report, and the
+  // "no mismatch" cases below would pass on a report they never saw.
+  const events: ClusterEvent[] = [];
+  system.eventStream.subscribeFunction(MemberConfigurationMismatch, (event) => { events.push(event); });
   const clusterOptions = ClusterOptions.create()
     .withHost(HOST)
     .withPort(spec.port)
@@ -90,8 +97,6 @@ async function startNode(spec: NodeSpec): Promise<Node> {
     clusterOptions.withConfigurationCompatibilityEnforce(spec.enforce);
   }
   const cluster = await Cluster.join(system, clusterOptions);
-  const events: ClusterEvent[] = [];
-  cluster.subscribe((event) => { events.push(event); });
   const node: Node = { system, cluster, logger, events };
   running.push(node);
   return node;
