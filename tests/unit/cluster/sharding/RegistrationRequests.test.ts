@@ -86,7 +86,7 @@ type RegionAddress = { readonly path: string; readonly node: NodeAddressData };
 type CoordinatorInternals = {
   readonly regions: Map<string, RegionInfo>;
   readonly refusedRegions: Set<string>;
-  loadCoordinatorState(): Promise<void>;
+  applyCoordinatorState(data: unknown): void;
   onRegionHeartbeat(message: { kind: 'sharding.RegionHeartbeat'; region: string; node: NodeAddressData }): void;
   onRequestRegistrations(event: { kind: 'request-registrations'; regions: ReadonlyArray<RegionAddress> }): void;
 };
@@ -196,7 +196,7 @@ describe('a coordinator asks for the registrations it lacks (#853, #849)', () =>
       shardHome: [[5, keyOf(seededPeer)]],
     };
 
-    await harness.coordinator.loadCoordinatorState();
+    harness.coordinator.applyCoordinatorState(harness.store.snapshot);
 
     expect(harness.coordinator.regions.get(keyOf(seededPeer))?.seededFromSnapshot).toBe(true);
     expect(harness.coordinator.regions.has(keyOf(departedPeer))).toBe(false);

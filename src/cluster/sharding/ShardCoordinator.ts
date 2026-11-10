@@ -12,6 +12,7 @@ import {
 import { DEFAULT_REGISTER_RETRY_INTERVAL_MS } from './ShardingOptions.js';
 import {
   DEFAULT_ACQUIRE_RETRY_INTERVAL_MS,
+  DEFAULT_COORDINATOR_STATE_LOAD_TIMEOUT_MS,
   DEFAULT_HAND_OFF_TIMEOUT_MS,
   DEFAULT_REBALANCE_ABSOLUTE_LIMIT,
   DEFAULT_REBALANCE_INTERVAL_MS,
@@ -85,6 +86,19 @@ type RegistrationBarrierTimeoutEvent = { readonly kind: 'registration-barrier-ti
 /** Time to repeat a conflict release — see `ShardCoordinator.trackConflictRelease`. */
 type ConflictReleaseRetryEvent = { readonly kind: 'conflict-release-retry'; readonly shardId: number };
 
+/** The cluster's leader moved — handled in the mailbox, not in the cluster's callback (#952). */
+type LeaderChangedEvent = { readonly kind: 'leader-changed' };
+
+/** The coordinator-state load of leader term `term` finished — see `ShardCoordinator.startCoordinatorStateLoad`. */
+type CoordinatorStateLoadedEvent = {
+  readonly kind: 'coordinator-state-loaded';
+  readonly term: number;
+  readonly data: CoordinatorStateData | null;
+};
+
+/** The coordinator-state load of leader term `term` took longer than `coordinatorStateLoadTimeoutMs`. */
+type CoordinatorStateLoadTimeoutEvent = { readonly kind: 'coordinator-state-load-timeout'; readonly term: number };
+
 type CoordinatorEvent =
   | ReconcileEvent
   | LeaseAcquireResultEvent
@@ -92,9 +106,29 @@ type CoordinatorEvent =
   | AcquireRetryEvent
   | RequestRegistrationsEvent
   | RegistrationBarrierTimeoutEvent
-  | ConflictReleaseRetryEvent;
+  | ConflictReleaseRetryEvent
+  | LeaderChangedEvent
+  | CoordinatorStateLoadedEvent
+  | CoordinatorStateLoadTimeoutEvent;
 
 type CoordinatorInbox = ShardingMessage | AuthenticatedShardingMessage | CoordinatorEvent;
+
+/**
+ * What a coordinator that has just become leader is still waiting for before
+ * it places shards — see `ShardCoordinator.beginRegistrationBarrier`.
+ */
+type RegistrationBarrier = {
+  /** Members whose region has not registered yet, by `NodeAddress.toString()`. */
+  readonly awaiting: Set<string>;
+  /** Ends the wait for registrations; `null` when there were none to wait for. */
+  readonly windowTimer: Cancellable | null;
+  /** The registration window has run out. */
+  windowElapsed: boolean;
+  /** The coordinator-state load has not finished yet (#1188). */
+  loading: boolean;
+  /** Ends the wait for the load; `null` once it finished or when there is none. */
+  loadTimer: Cancellable | null;
+};
 
 function isCoordinatorEvent(message: CoordinatorInbox): message is CoordinatorEvent {
   if (!message || typeof message !== 'object') return false;
@@ -102,7 +136,8 @@ function isCoordinatorEvent(message: CoordinatorInbox): message is CoordinatorEv
   return discriminator === 'reconcile' || discriminator === 'lease-acquire-result'
     || discriminator === 'lease-lost' || discriminator === 'acquire-retry'
     || discriminator === 'request-registrations' || discriminator === 'registration-barrier-timeout'
-    || discriminator === 'conflict-release-retry';
+    || discriminator === 'conflict-release-retry' || discriminator === 'leader-changed'
+    || discriminator === 'coordinator-state-loaded' || discriminator === 'coordinator-state-load-timeout';
 }
 
 /**
@@ -189,7 +224,7 @@ type RegionInfo = {
    */
   lastHeartbeatAtMs: number | null;
   /**
-   * `true` for an entry `loadCoordinatorState` restored from a coordinator-state
+   * `true` for an entry `applyCoordinatorState` restored from a coordinator-state
    * snapshot whose region has not registered in this leader term.  The region's
    * own `Register` replaces the entry, so registering is what clears it.
    *
@@ -422,7 +457,13 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * timer that ends the wait regardless (#1272).  `null` outside that window.
    * See {@link beginRegistrationBarrier}.
    */
-  private registrationBarrier: { readonly awaiting: Set<string>; readonly timer: Cancellable } | null = null;
+  private registrationBarrier: RegistrationBarrier | null = null;
+  /**
+   * Counts the leader terms this coordinator has begun, so the result of a
+   * coordinator-state load started in one term is recognised, and dropped, if
+   * it arrives in another (#952).
+   */
+  private leaderTerm = 0;
   /**
    * Conflict releases still waiting on their claimant, by shard id: who was
    * told to give the shard up, how often, and the timer that repeats it
@@ -479,7 +520,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.unsubscribeCluster = this.options.cluster.subscribe(evt =>
       match(evt)
         .with(P.instanceOf(MemberRemoved), (e) => this.onMemberRemoved(e.member.address))
-        .with(P.instanceOf(LeaderChanged), () => this.onLeaderChanged())
+        // Through the mailbox (#952): the handler clears and seeds the maps
+        // every other handler reads, so it must not interleave with them.
+        .with(P.instanceOf(LeaderChanged), () => this.self.tell({ kind: 'leader-changed' } satisfies CoordinatorEvent))
         .otherwise(() => this.onOtherClusterEvent()),
     );
     if (this.options.lease) {
@@ -524,7 +567,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.rebalanceTimer?.cancel();
     this.acquireRetryTimer?.cancel();
     this.shardMapPublishTimer?.cancel();
-    this.registrationBarrier?.timer.cancel();
+    this.endRegistrationBarrierQuietly();
     this.dropConflictReleases();
     for (const rebalance of this.rebalanceInProgress.values()) rebalance.timer.cancel();
     for (const query of this.statsQueries.values()) query.timer?.cancel();
@@ -714,6 +757,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       .with({ kind: 'request-registrations' }, (m) => this.onRequestRegistrations(m))
       .with({ kind: 'registration-barrier-timeout' }, () => this.onRegistrationBarrierTimeout())
       .with({ kind: 'conflict-release-retry' }, (m) => this.onConflictReleaseRetry(m))
+      .with({ kind: 'leader-changed' }, () => this.onLeaderChanged())
+      .with({ kind: 'coordinator-state-loaded' }, (m) => this.onCoordinatorStateLoaded(m))
+      .with({ kind: 'coordinator-state-load-timeout' }, (m) => this.onCoordinatorStateLoadTimeout(m))
       .exhaustive();
   }
 
@@ -883,7 +929,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * regions whose member is `up` is {@link observeEligibleSet}'s (#1467).
    *
    * A refused key is skipped even though it is in `regions`: the refusal only
-   * keeps a refused region *out*, so an entry `loadCoordinatorState` seeded
+   * keeps a refused region *out*, so an entry `applyCoordinatorState` seeded
    * before the region's own `Register` was refused is still there (#633).
    */
   private candidateRegions(): RegionEntry[] {
@@ -1146,7 +1192,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    *
    * Compared against the coordinator's own configured count rather than the
    * first registrant's, which is not a durable authority — `onLeaderChanged`
-   * clears `regions` wholesale and `loadCoordinatorState` restores no shard
+   * clears `regions` wholesale and `applyCoordinatorState` restores no shard
    * count, so "first" would be re-decided at every election.
    */
   private isAgreedNumShards(message: RegisterRegion): boolean {
@@ -1323,16 +1369,40 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       awaiting.add(member.address.toString());
     }
     for (const info of this.regions.values()) awaiting.delete(info.node.toString());
-    if (awaiting.size === 0) return;
+    const loading = this.options.coordinatorStateStore !== undefined;
+    if (awaiting.size === 0 && !loading) return;
     const timeoutMs = this.registrationWindowMs();
-    const timer = this.system.scheduler.scheduleOnceFunction(timeoutMs, () => {
+    const windowTimer = awaiting.size === 0 ? null : this.system.scheduler.scheduleOnceFunction(timeoutMs, () => {
       this.self.tell({ kind: 'registration-barrier-timeout' } satisfies CoordinatorEvent);
     });
-    this.registrationBarrier = { awaiting, timer };
+    const term = this.leaderTerm;
+    const loadTimer = !loading ? null : this.system.scheduler.scheduleOnceFunction(this.coordinatorStateLoadTimeoutMs(), () => {
+      this.self.tell({ kind: 'coordinator-state-load-timeout', term } satisfies CoordinatorEvent);
+    });
+    this.registrationBarrier = { awaiting, windowTimer, windowElapsed: awaiting.size === 0, loading, loadTimer };
     this.log.debug(
       `[sharding] coordinator '${this.options.typeName}' became leader; holding shard placement until `
-      + `${awaiting.size} member(s) have registered, at most ${timeoutMs} ms`,
+      + `${awaiting.size} member(s) have registered (at most ${timeoutMs} ms)`
+      + (loading ? ` and its coordinator state has loaded (at most ${this.coordinatorStateLoadTimeoutMs()} ms)` : ''),
     );
+  }
+
+  /**
+   * How long the barrier waits for the coordinator-state load:
+   * `coordinatorStateLoadTimeoutMs`, ten seconds unless configured (#1188).
+   */
+  private coordinatorStateLoadTimeoutMs(): number {
+    return this.options.coordinatorStateLoadTimeoutMs ?? DEFAULT_COORDINATOR_STATE_LOAD_TIMEOUT_MS;
+  }
+
+  /**
+   * Lift the barrier once nothing holds it any more: the load is done, and
+   * every awaited member has registered or the registration window ran out.
+   */
+  private endRegistrationBarrierIfDone(): void {
+    const barrier = this.registrationBarrier;
+    if (barrier === null || barrier.loading) return;
+    if (barrier.awaiting.size === 0 || barrier.windowElapsed) this.endRegistrationBarrier();
   }
 
   /**
@@ -1357,7 +1427,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private stopAwaiting(key: string): void {
     const barrier = this.registrationBarrier;
     if (barrier === null || !barrier.awaiting.delete(key)) return;
-    if (barrier.awaiting.size === 0) this.endRegistrationBarrier();
+    this.endRegistrationBarrierIfDone();
   }
 
   /**
@@ -1369,6 +1439,11 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private onRegistrationBarrierTimeout(): void {
     const barrier = this.registrationBarrier;
     if (barrier === null) return;
+    barrier.windowElapsed = true;
+    if (barrier.awaiting.size === 0) {
+      this.endRegistrationBarrierIfDone();
+      return;
+    }
     const missing = Array.from(barrier.awaiting).sort();
     // At info, not warn: the common reason is a member that does not run this
     // type at all, which is a legitimate deployment and would otherwise warn on
@@ -1379,7 +1454,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       + 'the type, a shard it still hosts may be started a second time until its registration releases it; '
       + 'a lease on the coordinator is what rules that out.',
     );
-    this.endRegistrationBarrier();
+    this.endRegistrationBarrierIfDone();
   }
 
   /** Lift the barrier and serve what it held: answer what has a home, place the rest. */
@@ -1397,7 +1472,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   }
 
   private endRegistrationBarrierQuietly(): void {
-    this.registrationBarrier?.timer.cancel();
+    this.registrationBarrier?.windowTimer?.cancel();
+    this.registrationBarrier?.loadTimer?.cancel();
     this.registrationBarrier = null;
   }
 
@@ -1432,7 +1508,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * `snapshotCoordinatorState` persists the hole.  Adding back every id
    * `shardHome` already assigns to this key closes that in the same pass.
    *
-   * The guard shape is `loadCoordinatorState`'s (`regions.has` / `!shardHome.has`
+   * The guard shape is `applyCoordinatorState`'s (`regions.has` / `!shardHome.has`
    * before writing).  A fresh leader term clears `regions` and `shardHome`
    * wholesale, so in the first moments of a term every claim is unowned and the
    * rule degenerates to first-claim-wins by mailbox order.  What keeps a
@@ -2114,17 +2190,13 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       this.statsQueries.clear();
       this.endRegistrationBarrierQuietly();
     } else {
+      // Just became leader (or re-elected): a new term, which placement
+      // waits on until the regions have claimed theirs and, with a state store
+      // configured, the last snapshot has loaded.  A load that fails or finds
+      // nothing leaves the map to the registrations, as without a store.
+      this.leaderTerm += 1;
       this.beginRegistrationBarrier();
-      // Just became leader (or re-elected).  If a state store is
-      // configured, try to seed `regions` + `shardHome` from the
-      // last known snapshot — saves the from-scratch reallocation
-      // storm of every shard re-registering through a fresh
-      // tryAllocate call.  Failure is tolerated: we fall back to
-      // the v1 rebuild-from-Register path when the load fails or
-      // returns nothing.
-      if (this.options.coordinatorStateStore) {
-        void this.loadCoordinatorState();
-      }
+      if (this.options.coordinatorStateStore) this.startCoordinatorStateLoad(this.leaderTerm);
     }
     // Lease-aware coordinators re-evaluate the acquire/release cycle
     // any time the leader role flips — see `reconcileLease()`.  We
@@ -2140,6 +2212,65 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   }
 
   /* ------------------- Coordinator-state persistence ------------------ */
+
+  /**
+   * Read the coordinator state for leader term `term`, and hand the result back
+   * through the mailbox (#952).
+   *
+   * The read is asynchronous, and the term it was started for may end while it
+   * runs.  It used to seed the maps from inside the promise, outside the
+   * mailbox: a demotion that cleared `regions` and `shardHome` while the load
+   * was in flight was undone by the load landing afterwards, and a stale
+   * snapshot repopulated a coordinator that was no longer leader.  Now only
+   * the read happens out here; the seeding is a message, applied in turn and
+   * only if its term is still the current one.
+   */
+  private startCoordinatorStateLoad(term: number): void {
+    const store = this.options.coordinatorStateStore;
+    if (!store) return;
+    const loaded = (data: CoordinatorStateData | null): void => {
+      this.self.tell({ kind: 'coordinator-state-loaded', term, data } satisfies CoordinatorEvent);
+    };
+    store.load(this.options.typeName).then(loaded, (err: unknown) => {
+      this.system.log.warn(`[sharding] coordinator-state load failed for '${this.options.typeName}'`, err);
+      loaded(null);
+    });
+  }
+
+  private onCoordinatorStateLoaded(event: CoordinatorStateLoadedEvent): void {
+    if (event.term !== this.leaderTerm || !this.isLeader()) {
+      this.log.debug(
+        `[sharding] dropping a coordinator-state load of '${this.options.typeName}' from leader term ${event.term}; `
+        + `this coordinator is ${this.isLeader() ? `in term ${this.leaderTerm}` : 'no longer leader'}`,
+      );
+      return;
+    }
+    if (event.data !== null) this.applyCoordinatorState(event.data);
+    this.finishCoordinatorStateLoad();
+  }
+
+  /**
+   * The load of term `event.term` has not come back in time: placement goes on
+   * without the snapshot, and says so.  A load that still arrives later in the
+   * same term is applied then, as it always was.
+   */
+  private onCoordinatorStateLoadTimeout(event: CoordinatorStateLoadTimeoutEvent): void {
+    if (event.term !== this.leaderTerm || this.registrationBarrier?.loading !== true) return;
+    this.log.warn(
+      `[sharding] coordinator '${this.options.typeName}' gave up waiting for its coordinator state after `
+      + `${this.coordinatorStateLoadTimeoutMs()} ms; placing shards from region registrations alone`,
+    );
+    this.finishCoordinatorStateLoad();
+  }
+
+  private finishCoordinatorStateLoad(): void {
+    const barrier = this.registrationBarrier;
+    if (barrier === null || !barrier.loading) return;
+    barrier.loading = false;
+    barrier.loadTimer?.cancel();
+    barrier.loadTimer = null;
+    this.endRegistrationBarrierIfDone();
+  }
 
   /**
    * Read the most recent snapshot from `coordinatorStateStore` and
@@ -2160,31 +2291,17 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * restored refusal is a full placement candidate again.
    *
    * The refusal check sits *inside* the loop rather than in front of it because
-   * the load is fire-and-forget (`void this.loadCoordinatorState()` on the
-   * promotion) — a `Register` refused while the store call is still in flight
-   * leaves `regions.has(key)` false when the loop finally runs, so a guard
-   * hoisted above the loop would read an empty refusal set and let the entry
-   * through anyway.
+   * the read is asynchronous ({@link startCoordinatorStateLoad}) — a `Register`
+   * refused while the store call is still in flight leaves `regions.has(key)`
+   * false when the loop finally runs, so a guard hoisted above the loop would
+   * read an empty refusal set and let the entry through anyway.
    *
    * Every entry it seeds is then asked to register (#853).  A seeded entry is
    * a sweep candidate until its region registers, and nothing else makes the
    * region do so when the load follows a restart rather than a leader change —
    * see {@link RegistrationRequest}.
    */
-  private async loadCoordinatorState(): Promise<void> {
-    const store = this.options.coordinatorStateStore;
-    if (!store) return;
-    let data: CoordinatorStateData | null;
-    try {
-      data = await store.load(this.options.typeName);
-    } catch (err) {
-      this.system.log.warn(
-        `[sharding] coordinator-state load failed for '${this.options.typeName}'`,
-        err,
-      );
-      return;
-    }
-    if (!data) return;
+  private applyCoordinatorState(data: CoordinatorStateData): void {
     if (data.numShards !== this.options.numShards) {
       this.log.warn(
         `[sharding] ignoring the coordinator-state snapshot for '${this.options.typeName}' written by `
@@ -2239,9 +2356,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
         this.shardHome.set(shardId, regionKey);
       }
     }
-    // The load is asynchronous, so the leadership it was started for may have
-    // moved while it ran; a follower's request would be refused by every
-    // region it reached.
+    // Applied only in the term it was read for (`onCoordinatorStateLoaded`), so
+    // this node still leads; checked all the same, since a follower's request
+    // would be refused by every region it reached.
     if (!this.isLeader()) return;
     for (const region of seeded) this.requestRegistration(region);
   }
@@ -2336,7 +2453,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       regions,
       shardHome,
       // The modulus every id above was produced under, so the next leader can
-      // tell whether the map means anything to it — see `loadCoordinatorState`.
+      // tell whether the map means anything to it — see `applyCoordinatorState`.
       numShards: this.options.numShards,
     };
   }
@@ -2535,7 +2652,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * one placement predicate, which the stale-region sweep and shard placement
    * both read (#853, #1467).  A node absent from the member map fails it.
    *
-   * The same question {@link loadCoordinatorState} asks of a snapshot's regions
+   * The same question {@link applyCoordinatorState} asks of a snapshot's regions
    * through `upMembers()`, answered per node.  `up` and nothing wider, because
    * every other status is one the cluster has not decided about yet: `joining`
    * and `weakly-up` have not been admitted, `unreachable` waits for a

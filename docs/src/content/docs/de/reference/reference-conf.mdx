@@ -2716,6 +2716,17 @@ actor-ts {
     #   them at once.
     rebalance-absolute-limit = 0     # 0 = no absolute ceiling
     rebalance-relative-limit = 0.1   # fraction of number-of-shards; 0 = no relative ceiling
+    # Keep each coordinator's allocation map in the persistence journal, so a
+    #   new leader -- often a node that has just restarted -- starts from the
+    #   map the previous one last wrote instead of an empty one.  The journal
+    #   must be one database for the whole cluster; a node-local journal on a
+    #   node that expects remote peers is refused at start.  Region claims are
+    #   still waited for: the map can lag the last allocation (#1188).
+    persist-coordinator-state = off
+    # How long a new leader waits for that map to load before it places
+    #   shards without it.  Inert while persist-coordinator-state is off and no
+    #   store is passed in code.
+    coordinator-state-load-timeout = 10s
     # Give every sharded type's coordinator a lease built from
     #   coordination.lease, so only the side holding it allocates shards under
     #   a partition.  Needs coordination.lease.backend: with backend = none, on

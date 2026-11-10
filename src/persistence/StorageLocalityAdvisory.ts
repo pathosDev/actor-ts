@@ -61,6 +61,7 @@ const IDENTITY_FIELD_BY_KIND: Record<StorageUseKind, StorageIdentityField> = {
   'snapshot-store': 'snapshotStore',
   'durable-state-store': 'durableStateStore',
   'remember-entities': 'journal',
+  'coordinator-state': 'journal',
 };
 
 /**
@@ -210,7 +211,9 @@ export class StorageLocalityAdvisory {
 function nodeLocalStorageMessage(kind: StorageUseKind, storeName: string): string {
   const rememberEntitiesConsequence = kind === 'remember-entities'
     ? ' On coordinator failover the next leader replays ITS OWN journal and forgets every remembered entity.'
-    : '';
+    : kind === 'coordinator-state'
+      ? ' On coordinator failover the next leader reads ITS OWN journal and starts from a stale or empty map.'
+      : '';
   return `persistence: ${kind} '${storeName}' declares node-local storage, but this cluster expects `
     + 'remote peers. Each node reads and writes only its own database, so an entity that moves between '
     + 'nodes recovers from whichever database it lands on — two nodes, two histories, and no error on '

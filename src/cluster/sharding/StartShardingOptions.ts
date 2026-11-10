@@ -112,6 +112,24 @@ export interface StartShardingOptionsType<TMessage> extends ShardingOptionsType<
    */
   readonly coordinatorStateStore?: CoordinatorStateStore;
   /**
+   * Keep the coordinator's allocation state in the persistence extension's
+   * journal — `ClusterSharding` wires a `JournalCoordinatorStateStore` for
+   * this type, unless {@link coordinatorStateStore} names one (#1188).
+   * Default `false`.
+   *
+   * The journal has to be one database for the whole cluster: the next leader
+   * reads what the previous one wrote, so a node-local journal on a node that
+   * expects remote peers is refused at start, as it is for
+   * `rememberEntities` (#1356).
+   */
+  readonly persistCoordinatorState?: boolean;
+  /**
+   * How long a coordinator that has just become leader waits for the
+   * coordinator-state load before it places shards without it, in ms.
+   * Default 10 000.  Inert without a coordinator-state store.
+   */
+  readonly coordinatorStateLoadTimeoutMs?: number;
+  /**
    * Default timeout, in ms, for {@link ClusterSharding.shards} and
    * {@link ClusterSharding.shardRefFor} on this type (#849).  Default: 5000.
    *
@@ -188,6 +206,16 @@ export class StartShardingOptionsBuilder<TMessage> extends ShardingOptionsBuilde
     return this.set('useLease', useLease);
   }
 
+  /** Keep the coordinator's allocation state in the journal (#1188).  Default false. */
+  withPersistCoordinatorState(persistCoordinatorState = true): this {
+    return this.set('persistCoordinatorState', persistCoordinatorState);
+  }
+
+  /** How long a new leader waits for the coordinator-state load, in ms.  Default 10 000. */
+  withCoordinatorStateLoadTimeoutMs(coordinatorStateLoadTimeoutMs: number): this {
+    return this.set('coordinatorStateLoadTimeoutMs', coordinatorStateLoadTimeoutMs);
+  }
+
   /** Retry interval for `lease.acquire()` after a failed attempt.  Default: 5 s. */
   withAcquireRetryIntervalMs(acquireRetryIntervalMs: number): this {
     return this.set('acquireRetryIntervalMs', acquireRetryIntervalMs);
@@ -230,6 +258,7 @@ export class StartShardingOptionsValidator<TMessage>
     this.commonRules(s);
     this.positiveNumber('rebalanceIntervalMs');
     this.positiveNumber('handOffTimeoutMs');
+    this.positiveNumber('coordinatorStateLoadTimeoutMs');
     this.positiveNumber('acquireRetryIntervalMs');
     this.positiveNumber('shardRegionQueryTimeoutMs');
     // `0` is a real value on both — it switches that ceiling off — so neither
@@ -299,6 +328,8 @@ export type ShardingConfigDefaults = Pick<
   | 'rebalanceRelativeLimit'
   | 'acquireRetryIntervalMs'
   | 'useLease'
+  | 'persistCoordinatorState'
+  | 'coordinatorStateLoadTimeoutMs'
   | 'shardRegionQueryTimeoutMs'
   | 'entityRecoveryStrategy'
   | 'entityRecoveryConstantRateFrequencyMs'
@@ -411,6 +442,12 @@ export function readShardingOptionsFromConfig(config: Config): ShardingConfigDef
   // Read as a flag only: whether a backend exists to honour it is decided where
   // the coordinator is built, so a `withLease(…)` in code can still satisfy it.
   if (config.hasPath(keys.useLease)) out.useLease = config.getBoolean(keys.useLease);
+  if (config.hasPath(keys.persistCoordinatorState)) {
+    out.persistCoordinatorState = config.getBoolean(keys.persistCoordinatorState);
+  }
+  if (config.hasPath(keys.coordinatorStateLoadTimeout)) {
+    out.coordinatorStateLoadTimeoutMs = config.getDuration(keys.coordinatorStateLoadTimeout);
+  }
   if (config.hasPath(keys.shardRegionQueryTimeout)) {
     out.shardRegionQueryTimeoutMs = config.getDuration(keys.shardRegionQueryTimeout);
   }

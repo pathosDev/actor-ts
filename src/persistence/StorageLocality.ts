@@ -32,9 +32,11 @@ export type StorageLocality = 'node-local' | 'shared';
  * journal instance carries a different blast radius when it holds the
  * sharding registry — on coordinator failover the next leader replays its
  * own database — so that use escalates to an error where the general
- * combination only warns (#1356).
+ * combination only warns (#1356).  `'coordinator-state'` is the same case for
+ * the coordinator's persisted allocation map (#1188).
  */
-export type StorageUseKind = 'journal' | 'snapshot-store' | 'durable-state-store' | 'remember-entities';
+export type StorageUseKind =
+  'journal' | 'snapshot-store' | 'durable-state-store' | 'remember-entities' | 'coordinator-state';
 
 /**
  * Refusal raised where the node-local combination is provably broken rather

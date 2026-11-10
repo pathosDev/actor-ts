@@ -30,6 +30,7 @@ import {
   JournalRememberEntitiesStore,
   type RememberEntitiesStore,
 } from './RememberEntitiesStore.js';
+import { JournalCoordinatorStateStore, type CoordinatorStateStore } from './CoordinatorState.js';
 import { EntityRef } from './EntityRef.js';
 import type { ShardMessage } from './Shard.js';
 import type { ShardInfo } from './ShardInfo.js';
@@ -936,7 +937,11 @@ export class ClusterSharding {
     if (options.rememberEntities !== undefined) coordinatorOptions.withRememberEntities(options.rememberEntities);
     const store = this.resolveRememberEntitiesStore(options);
     if (store !== undefined) coordinatorOptions.withRememberEntitiesStore(store);
-    if (options.coordinatorStateStore !== undefined) coordinatorOptions.withCoordinatorStateStore(options.coordinatorStateStore);
+    const coordinatorStateStore = this.resolveCoordinatorStateStore(options);
+    if (coordinatorStateStore !== undefined) coordinatorOptions.withCoordinatorStateStore(coordinatorStateStore);
+    if (options.coordinatorStateLoadTimeoutMs !== undefined) {
+      coordinatorOptions.withCoordinatorStateLoadTimeoutMs(options.coordinatorStateLoadTimeoutMs);
+    }
     if (lease !== undefined) coordinatorOptions.withLease(lease);
     if (options.acquireRetryIntervalMs !== undefined) coordinatorOptions.withAcquireRetryIntervalMs(options.acquireRetryIntervalMs);
     // The coordinator half of stale-region detection (#853).  The region reads
@@ -1015,6 +1020,33 @@ export class ClusterSharding {
     // the first remote peer surfaces this note at error level instead.
     persistenceExtension.noteStoreUse('remember-entities', journal, 'error');
     return new JournalRememberEntitiesStore(journal);
+  }
+
+  /**
+   * The coordinator's state store: an explicit `coordinatorStateStore`, or —
+   * with `persistCoordinatorState` on — one over the persistence extension's
+   * journal (#1188).
+   *
+   * Guarded like the remember-entities registry above, for the same reason:
+   * the next leader reads what the previous one wrote, so the journal has to be
+   * one database for the whole cluster, and a node-local one on a node that
+   * expects remote peers would hand every new leader an empty or stale map.
+   */
+  private resolveCoordinatorStateStore(options: StartShardingOptionsType<unknown>): CoordinatorStateStore | undefined {
+    if (options.coordinatorStateStore !== undefined) return options.coordinatorStateStore;
+    if (options.persistCoordinatorState !== true) return undefined;
+    const persistenceExtension = this.system.extension(PersistenceExtensionId);
+    const journal = persistenceExtension.journal;
+    if (journal.storageLocality === 'node-local' && this.cluster.expectsRemotePeers()) {
+      throw new StorageLocalityError(
+        `cluster.sharding: persistCoordinatorState=true wired the coordinator state of '${options.typeName}' to `
+        + `this node's journal, but '${journal.constructor.name}' declares node-local storage and the cluster `
+        + 'expects remote peers — the next leader would read ITS OWN journal and find a stale or empty map '
+        + '(#1188, #1356). Wire a shared journal, or pass an explicit coordinatorStateStore.',
+      );
+    }
+    persistenceExtension.noteStoreUse('coordinator-state', journal, 'error');
+    return new JournalCoordinatorStateStore(journal);
   }
 
   /**

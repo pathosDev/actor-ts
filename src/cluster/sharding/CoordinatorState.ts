@@ -1,3 +1,5 @@
+import type { Journal } from '../../persistence/Journal.js';
+import { JournalConcurrencyError } from '../../persistence/JournalTypes.js';
 import { LWWRegister } from '../../crdt/LWWRegister.js';
 import type { DistributedDataHandle } from '../../crdt/DistributedData.js';
 import type { NodeAddressData } from '../NodeAddress.js';
@@ -136,5 +138,79 @@ export class DistributedDataCoordinatorStateStore implements CoordinatorStateSto
     // mailbox) — we don't await write-to-disk.  That's fine: load
     // reads the local view, which always reflects our own writes
     // synchronously.
+  }
+}
+
+/* ===================== Journal-backed implementation ===================== */
+
+/** What {@link JournalCoordinatorStateStore} writes to the journal: one snapshot per event. */
+type CoordinatorStateEvent = { readonly kind: 'coordinator-state'; readonly state: CoordinatorStateData };
+
+/**
+ * `CoordinatorStateStore` backed by any `Journal` (#1188).
+ *
+ * The DistributedData store reads only the *local* replica, so a coordinator
+ * that comes up on a node that has just restarted — exactly the node a leader
+ * change most often lands on, since the leader is the lowest address — finds
+ * nothing to load.  A journal shared by the cluster does not have that gap:
+ * the new leader reads what the previous one last wrote, wherever it ran.
+ *
+ * **Shape: the latest snapshot, not an event log.**  Each save appends one
+ * event carrying the whole `CoordinatorStateData` under
+ * `persistenceId = "sharding-coordinator-state-{typeName}"` (tag
+ * `sharding-coordinator-state`) and then deletes everything before it, so the
+ * stream never holds more than the one snapshot `load` reads.  The
+ * persistence id is not the remember-entities registry's
+ * (`sharding-coordinator-{typeName}`): the two must never share a stream.
+ *
+ * **A fence against a second writer.**  A save appends with the sequence
+ * number this store last loaded or wrote as `expectedSeq`, so a coordinator
+ * whose view of the stream is stale — another coordinator wrote in between,
+ * which only a split brain allows — fails with `JournalConcurrencyError`
+ * instead of silently overwriting.  The store then adopts the stream's head,
+ * so the next save of a coordinator that still holds authority goes through;
+ * the failure itself is logged by the coordinator's save path.  This narrows
+ * a split brain's damage to the persisted map; it does not replace the lease,
+ * which is what keeps two coordinators from allocating at all.
+ */
+export class JournalCoordinatorStateStore implements CoordinatorStateStore {
+  /** The sequence number this store last saw for each type — the `expectedSeq` of its next save. */
+  private readonly heads = new Map<string, number>();
+
+  constructor(private readonly journal: Journal) {}
+
+  private persistenceIdFor(typeName: string): string {
+    return `sharding-coordinator-state-${typeName}`;
+  }
+
+  async load(typeName: string): Promise<CoordinatorStateData | null> {
+    const persistenceId = this.persistenceIdFor(typeName);
+    const head = await this.journal.highestSeq(persistenceId);
+    this.heads.set(typeName, head);
+    if (head === 0) return null;
+    const [latest] = await this.journal.read<CoordinatorStateEvent>(persistenceId, head, head);
+    return latest?.event.kind === 'coordinator-state' ? latest.event.state : null;
+  }
+
+  async save(typeName: string, state: CoordinatorStateData): Promise<void> {
+    const persistenceId = this.persistenceIdFor(typeName);
+    const expected = this.heads.get(typeName) ?? await this.journal.highestSeq(persistenceId);
+    let written: number;
+    try {
+      const [event] = await this.journal.append<CoordinatorStateEvent>(
+        persistenceId,
+        [{ event: { kind: 'coordinator-state', state }, tags: ['sharding-coordinator-state'] }],
+        expected,
+      );
+      written = event!.sequenceNr;
+    } catch (error) {
+      if (error instanceof JournalConcurrencyError) this.heads.set(typeName, error.actualSeq);
+      throw error;
+    }
+    this.heads.set(typeName, written);
+    // Only the latest snapshot is ever read, so everything before it is dead
+    // weight — and a stream that grew by one event per allocation change is
+    // the unbounded growth #649 records for the remember-entities registry.
+    if (written > 1) await this.journal.delete(persistenceId, written - 1);
   }
 }

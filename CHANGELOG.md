@@ -11,6 +11,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`actor-ts.sharding.persist-coordinator-state = on` keeps each coordinator's
+  allocation map in the persistence journal, through a new
+  `JournalCoordinatorStateStore`** (#1188). The DistributedData store reads
+  only the local replica, so a coordinator that came up on a node that had
+  just restarted — the node a leader change most often lands on — found
+  nothing to load; a journal the cluster shares does not have that gap. Only
+  the latest map is kept (each save compacts the one before it), a save from a
+  coordinator whose view of the stream is stale fails instead of
+  overwriting, and a node-local journal on a node expecting remote peers is
+  refused at start. `coordinator-state-load-timeout` (10 s) bounds how long a
+  new leader waits for the load. Off by default; the sharding overview and
+  the configuration tables say so (EN + DE).
+
 - **`MultiNodeSpec.restart(role)` brings a role back at the same address as a
   new process, and `withNodeSetup` re-runs a spec's per-node setup on it**
   (#1382). A restart at the same `host:port` is the ordinary shape of a pod
@@ -6150,6 +6163,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **A coordinator applies its coordinator-state load in its own turn and only
+  in the leader term it was started for, and places no shard until the load
+  has finished; a demotion during the load used to be undone when it landed**
+  (#952). The load seeded `regions` and `shardHome` from inside its promise,
+  outside the mailbox, so a coordinator that stopped leading while the read
+  was in flight had its just-cleared map repopulated from a stale snapshot.
+  The leader change now goes through the coordinator's mailbox too, the read
+  hands its result back as a message that is dropped if the term has moved
+  on, and the registration barrier waits for the load as well as for the
+  regions — at most `coordinator-state-load-timeout`.
 
 - **A coordinator repeats the `HandOff` that tells a region to give up a shard
   it claims but does not own, until the region has done so; it used to send it

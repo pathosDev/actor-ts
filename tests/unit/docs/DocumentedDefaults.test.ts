@@ -110,6 +110,7 @@ import {
 import { DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_FREQUENCY_MS, DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_NUMBER_OF_ENTITIES, DEFAULT_ENTITY_RECOVERY_STRATEGY } from '../../../src/cluster/sharding/ShardingOptions.js';
 import { DEFAULT_ACQUIRE_RETRY_INTERVAL_MS } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
 import {
+  DEFAULT_COORDINATOR_STATE_LOAD_TIMEOUT_MS,
   DEFAULT_HAND_OFF_TIMEOUT_MS,
   DEFAULT_REBALANCE_INTERVAL_MS,
 } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
@@ -567,6 +568,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.sharding.passivation-idle', kind: 'duration', constant: DEFAULT_PASSIVATION_IDLE_MS },
   { key: 'actor-ts.sharding.rebalance-interval', kind: 'duration', constant: DEFAULT_REBALANCE_INTERVAL_MS },
   { key: 'actor-ts.sharding.hand-off-timeout', kind: 'duration', constant: DEFAULT_HAND_OFF_TIMEOUT_MS },
+  { key: 'actor-ts.sharding.coordinator-state-load-timeout', kind: 'duration', constant: DEFAULT_COORDINATOR_STATE_LOAD_TIMEOUT_MS },
   { key: 'actor-ts.sharding.rebalance-absolute-limit', kind: 'int', constant: DEFAULT_REBALANCE_ABSOLUTE_LIMIT },
   // `number`, not `int`: the relative limit is a fraction of `numShards` and
   // `getInt` throws on the 0.1 that ships, so the wrong kind is loud here
@@ -1410,6 +1412,11 @@ const FEATURE_SWITCHES: readonly string[] = [
   // lease only on `useLease === true` — so there is no constant to disagree with.
   'actor-ts.sharding.use-lease',
   'actor-ts.cluster.singleton.use-lease',
+  // off = no coordinator-state store is wired, which is what every release
+  // before #1188 did.  The off state IS the store being absent —
+  // `ClusterSharding` wires one only on `persistCoordinatorState === true` —
+  // so there is no constant to disagree with, the shape `use-lease` has.
+  'actor-ts.sharding.persist-coordinator-state',
   'actor-ts.coordinated-shutdown.terminate-actor-system',
   'actor-ts.coordinated-shutdown.exit-process',
   'actor-ts.coordinated-shutdown.auto-register-tasks',

@@ -173,7 +173,7 @@ type Node = {
 
 /** The coordinator's allocation state, read straight off the actor instance. */
 interface CoordinatorState {
-  readonly regions: Map<string, { readonly path: string; readonly shards: Set<number> }>;
+  readonly regions: Map<string, { readonly node: NodeAddress; readonly path: string; readonly shards: Set<number> }>;
   readonly shardHome: Map<number, string>;
   readonly refusedRegions: Set<string>;
   candidates(): NodeAddress[];
@@ -237,6 +237,19 @@ async function startNode(
     });
   }
 
+  if (store !== undefined) {
+    // While the gated load is outstanding the coordinator places nothing — it
+    // waits for its state before allocating (#952, #1188) — so an entity
+    // cannot come up yet.  The region's registration is the proof both actors
+    // are live instead: it sets the coordinator's node, the one origin a
+    // directive is accepted from, and it proves the matching count passes.
+    await awaitCondition(() => [...coordinatorState(node).regions.values()]
+      .some((info) => info.node.equals(cluster.selfAddress)), {
+      timeoutMs: 5_000,
+      label: 'the local region registered, so region and coordinator are both live',
+    });
+    return node;
+  }
   // One real round trip, so both actors have finished `preStart`: the region's
   // registration is what sets the coordinator's node — the one origin a
   // directive is accepted from — and it also proves the matching count passes.

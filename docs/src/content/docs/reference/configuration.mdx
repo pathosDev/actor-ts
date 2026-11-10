@@ -2729,6 +2729,8 @@ consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
 | `sharding.role` | `""` | Only members carrying this role host shards.  `""` = unrestricted.  **It names a role, it does not grant one** — see [a role names, it does not grant](#a-role-names-it-does-not-grant) below. |
 | `sharding.rebalance-interval` | `2s` | Gap between coordinator-driven rebalance passes. |
 | `sharding.hand-off-timeout` | `10s` | How long to wait for HandOffComplete before force-reallocating. |
+| `sharding.persist-coordinator-state` | `off` | Keep each coordinator's allocation map in the persistence journal, so a new leader starts from the map the previous one last wrote.  The journal must be shared by the cluster; a node-local one on a node expecting remote peers is refused (#1188). |
+| `sharding.coordinator-state-load-timeout` | `10s` | How long a new leader waits for that map to load before it places shards without it. |
 | `sharding.rebalance-absolute-limit` | `0` | Flat ceiling on shards a rebalance may have **in flight**.  `0` = no absolute ceiling.  See [bounding rebalance churn](#bounding-rebalance-churn) below. |
 | `sharding.rebalance-relative-limit` | `0.1` | The same ceiling as a fraction of `number-of-shards`, so it scales with the entity space — `0.1` of the shipped `64` is 6.  `0` = no relative ceiling; `0` for **both** leaves the rebalance uncapped.  Where both are set the lower wins, and a ceiling never floors below one shard. |
 | `sharding.acquire-retry-interval` | `5s` | How long the coordinator waits before re-acquiring a [lease](/cluster/sharding/with-lease/) it failed to take.  Observable only where the coordinator has a lease — passed in code, or built by `use-lease`. |
