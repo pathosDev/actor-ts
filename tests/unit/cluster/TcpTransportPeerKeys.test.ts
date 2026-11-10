@@ -82,11 +82,11 @@ function openingDialer(transport: TcpTransport): Dial[] {
   return dials;
 }
 
-const self = new NodeAddress('sim', '10.0.0.100', 5_000);
+const self = new NodeAddress('sim', '10.0.0.100', 5_000, 'test-run');
 /** The three identities one connection announces, in this order. */
-const first = new NodeAddress('sim', '10.0.0.1', 5_000);
-const second = new NodeAddress('sim', '10.0.0.2', 5_000);
-const third = new NodeAddress('sim', '10.0.0.3', 5_000);
+const first = new NodeAddress('sim', '10.0.0.1', 5_000, 'test-run');
+const second = new NodeAddress('sim', '10.0.0.2', 5_000, 'test-run');
+const third = new NodeAddress('sim', '10.0.0.3', 5_000, 'test-run');
 const IDENTITIES = [first, second, third] as const;
 
 const transports: TcpTransport[] = [];
@@ -102,7 +102,7 @@ function startTransport(): { transport: TcpTransport; dials: Dial[] } {
 }
 
 function handshake(kind: 'hello' | 'hello-ack', address: NodeAddress): Uint8Array {
-  return encodeFrame({ kind, self: address.toJSON() });
+  return encodeFrame({ kind, wireVersion: 2, minWireVersion: 2, self: address.toJSON() });
 }
 
 /** An accepted socket that announces every identity in `IDENTITIES`, one `hello` each. */
@@ -205,7 +205,7 @@ describe('a dial gives back its address and every identity its peer announced (#
   test('disconnect(dialled address) leaves none of the four keys behind', () => {
     // The dialled address names none of the identities, as a seed written as a
     // DNS name does not name the address its peer advertises.
-    const dialled = new NodeAddress('sim', 'seed.internal', 5_000);
+    const dialled = new NodeAddress('sim', 'seed.internal', 5_000, 'test-run');
     const { transport, dials } = startTransport();
     transport.send(dialled, heartbeat(1));
     const [dial] = dials;

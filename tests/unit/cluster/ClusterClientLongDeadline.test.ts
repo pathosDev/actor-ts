@@ -143,7 +143,8 @@ async function contactPoint(options: { readonly holdHelloAcknowledgment: boolean
   const acknowledge = (socket: TcpSocketLike): void => {
     const acknowledgment: HelloAcknowledgmentMessage = {
       kind: 'hello-ack',
-      self: new NodeAddress('contact-point', '127.0.0.1', boundPort).toJSON(),
+      wireVersion: 2,
+      self: new NodeAddress('contact-point', '127.0.0.1', boundPort, 'test-run').toJSON(),
     };
     socket.write(encodeFrame(acknowledgment));
   };

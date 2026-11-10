@@ -175,7 +175,7 @@ const UP_THRESHOLD_STATUSES: ReadonlySet<MemberStatus> = new Set<MemberStatus>([
  * series an operator carries forever.
  */
 const GOSSIP_REFUSAL_REASONS = [
-  'map-cap', 'version-skew', 'timestamp-skew', 'replayed-frame', 'self-claim',
+  'map-cap', 'version-skew', 'timestamp-skew', 'replayed-frame', 'self-claim', 'removed-run',
 ] as const;
 
 /** One of {@link GOSSIP_REFUSAL_REASONS}. */
@@ -381,6 +381,7 @@ export class Cluster {
     'timestamp-skew': 0,
     'replayed-frame': 0,
     'self-claim': 0,
+    'removed-run': 0,
   };
 
   /**
@@ -602,6 +603,9 @@ export class Cluster {
         maxInboundConnections: options.maxInboundConnections,
         incompleteFrameIdleMs: options.incompleteFrameIdleMs,
       });
+    // An injected transport was built before this run's incarnation was
+    // minted, and cluster wire v2 requires it on every handshake (#823).
+    this.transport.adoptIdentity?.(this.selfAddress);
     // That `tls: null` is written out rather than omitted, and it is hard-coded: the
     // transport this constructor builds is always plaintext until #941 wires
     // the option up.  An operator who set the HOCON flag asked for the
@@ -3195,6 +3199,9 @@ export class Cluster {
       .with('self-claim', () =>
         'a status for this node itself that is neither the one it already holds nor the leader '
         + 'promoting it to up — this node is the author of its own status (#562)')
+      .with('removed-run', () =>
+        'a run this node removed — the same address and incarnation as a tombstone it holds; only a '
+        + 'restart, with a new incarnation, can join again (#940, #823)')
       .exhaustive();
   }
 
@@ -4084,6 +4091,16 @@ export class Cluster {
     // version monotonicity below would pin the address to
     // `removed` forever even though the higher version is the
     // newer truth.
+    // The same run cannot come back (#940, #823).  Its version is its own to
+    // choose — a stalled process that resumes, or anyone replaying its records,
+    // can restamp it past the tombstone — but its incarnation is the identity
+    // of the process the cluster removed, and only a restart mints a new one.
+    // Cluster wire v2 carries the incarnation on every address, so this is the
+    // refusal the tombstone could not make while a version was all it had.
+    if (existing.status === 'removed' && this.isSameRun(existing, incoming)) {
+      this.refusalCounts['removed-run'] += 1;
+      return;
+    }
     if (existing.status === 'removed' && incoming.version > existing.version) {
       // A revival vacates the tombstone bucket and occupies a live slot, so it
       // is the live cap's call — without this the two caps traded headroom for
@@ -4207,6 +4224,12 @@ export class Cluster {
    * already gone, then the end a second time, and the slot's replay mark
    * would go at once instead of with its entry (#112).
    */
+  /** Whether two records name the same run of an address — both incarnations known and equal. */
+  private isSameRun(existing: Member, incoming: Member): boolean {
+    const before = existing.address.incarnation;
+    return before !== undefined && before === incoming.address.incarnation;
+  }
+
   private isRestartOf(existing: Member, incoming: Member): boolean {
     if (incoming.status === 'down' || incoming.status === 'removed') return false;
     const before = existing.address.incarnation;

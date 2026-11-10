@@ -23,8 +23,10 @@ import {
   DEFAULT_MAX_FRAME_BYTES,
   type HelloMessage,
   type HelloAcknowledgmentMessage,
+  type HelloRefusedMessage,
   type WireMessage,
 } from './Protocol.js';
+import { CLUSTER_WIRE_VERSION, MIN_CLUSTER_WIRE_VERSION, wireVersionRefusal } from './WireVersion.js';
 import { validateWireFrame } from './WireValidation.js';
 
 export type WireHandler = (from: NodeAddress, message: WireMessage) => void;
@@ -37,6 +39,18 @@ export type { TlsTransportOptionsType };
  */
 export interface Transport {
   readonly self: NodeAddress;
+  /**
+   * Take this node's run identity — the same address, now naming the
+   * incarnation `Cluster.join` minted (#823).
+   *
+   * A transport is often built before the cluster that uses it — every
+   * injected one is — so the address it was given names no run, and cluster
+   * wire v2 requires one on every handshake.  `Cluster` hands its own address
+   * over here before it starts the transport.  An address naming a different
+   * `host:port` is ignored: an injected transport may announce another one
+   * than the cluster advertises, and that choice is the caller's.
+   */
+  adoptIdentity?(self: NodeAddress): void;
   /**
    * Per-frame payload cap this transport enforces, when it enforces one —
    * `undefined` where framing does not apply at all.
@@ -56,9 +70,10 @@ export interface Transport {
    * figure here would be fiction.  Read it as "the cap this transport will
    * reject on", not "how large a message may be".
    *
-   * It is the *local* cap.  There is no protocol negotiation yet (#823), so a
-   * peer configured lower than this node is still able to reject a frame this
-   * node considered safe; homogeneous configuration is the assumption.
+   * It is the *local* cap.  The handshake negotiates the wire version, not the
+   * caps (#823), so a peer configured lower than this node is still able to
+   * reject a frame this node considered safe; homogeneous configuration is the
+   * assumption.
    */
   readonly maxFrameBytes?: number;
   start(): Promise<void>;
@@ -265,6 +280,15 @@ export class TcpTransport implements Transport {
    */
   private readonly connectTimeoutMs: number;
 
+  /** This node's address as the handshake announces it — see {@link adoptIdentity}. */
+  private identity: NodeAddress;
+
+  get self(): NodeAddress { return this.identity; }
+
+  adoptIdentity(self: NodeAddress): void {
+    if (self.toString() === this.identity.toString()) this.identity = self;
+  }
+
   /**
    * `self` and `log` stay positional; everything else arrives as
    * {@link TcpTransportOptions} (#846).
@@ -282,10 +306,11 @@ export class TcpTransport implements Transport {
    * into `ClusterOptions` before building this).
    */
   constructor(
-    readonly self: NodeAddress,
+    self: NodeAddress,
     private readonly log: Logger,
     options: TcpTransportOptions = {},
   ) {
+    this.identity = self;
     const settings = options as TcpTransportOptionsType;
     new TcpTransportOptionsValidator().validate(settings);
     this.tls = settings.tls ?? null;
@@ -565,7 +590,12 @@ export class TcpTransport implements Transport {
               // handshake deadline decides, and it reports a silent peer.
               this.clearConnectTimer(connection);
               // Send hello; remote will ack and we'll flush `pending` then.
-              const hello: HelloMessage = { kind: 'hello', self: this.self.toJSON() };
+              const hello: HelloMessage = {
+                kind: 'hello',
+                self: this.self.toJSON(),
+                wireVersion: CLUSTER_WIRE_VERSION,
+                minWireVersion: MIN_CLUSTER_WIRE_VERSION,
+              };
               s.write(encodeFrame(hello));
             },
             // Both pass the connection explicitly: the socket is absent from
@@ -677,6 +707,11 @@ export class TcpTransport implements Transport {
       const peer = NodeAddress.fromJSON(message.self);
       if (this.refuseOwnAddress(connection, peer, 'hello')) return;
       if (!this.certificateAdmits(connection, peer, 'hello')) return;
+      const refusal = wireVersionRefusal(message, message.self);
+      if (refusal !== null) {
+        this.refuseHello(connection, peer, refusal);
+        return;
+      }
       const peerKey = peer.toString();
       // Security: reject a duplicate-identity hello on a different
       // socket.  Without this, a second connection claiming the
@@ -724,14 +759,30 @@ export class TcpTransport implements Transport {
       connection.peer = peer;
       this.clearHandshakeTimer(connection);
       this.claimPeerSlot(peerKey, connection);
-      const ack: HelloAcknowledgmentMessage = { kind: 'hello-ack', self: this.self.toJSON() };
+      const ack: HelloAcknowledgmentMessage = {
+        kind: 'hello-ack',
+        self: this.self.toJSON(),
+        wireVersion: CLUSTER_WIRE_VERSION,
+      };
       connection.socket?.write(encodeFrame(ack));
+      return;
+    }
+    if (message.kind === 'hello-refused') {
+      this.onHelloRefused(connection, message);
       return;
     }
     if (message.kind === 'hello-ack') {
       const peer = NodeAddress.fromJSON(message.self);
       if (this.refuseOwnAddress(connection, peer, 'hello-ack')) return;
       if (!this.certificateAdmits(connection, peer, 'hello-ack')) return;
+      // The acceptor speaks the version it acknowledged with; an older one
+      // acknowledges with none, and this side refuses the pair just the same.
+      const refusal = wireVersionRefusal({ wireVersion: message.wireVersion }, message.self);
+      if (refusal !== null) {
+        this.log.warn(`cluster handshake with ${peer} refused: ${refusal}`);
+        this.dropConnection(connection);
+        return;
+      }
       const peerKey = peer.toString();
       const existing = this.byPeer.get(peerKey);
       if (existing && existing !== connection) {
@@ -756,6 +807,39 @@ export class TcpTransport implements Transport {
       return;
     }
     this.handler(connection.peer, message);
+  }
+
+  /**
+   * Turn a `hello` away over the wire version, telling the peer why before the
+   * connection closes, and saying so here (#823).
+   */
+  private refuseHello(connection: Connection, peer: NodeAddress, reason: string): void {
+    this.log.warn(`cluster handshake from ${peer} refused: ${reason}`);
+    const refused: HelloRefusedMessage = {
+      kind: 'hello-refused',
+      self: this.self.toJSON(),
+      wireVersion: CLUSTER_WIRE_VERSION,
+      minWireVersion: MIN_CLUSTER_WIRE_VERSION,
+      reason,
+    };
+    const socket = connection.socket;
+    socket?.write(encodeFrame(refused));
+    // Half-closed, not aborted: an abort discards what is still buffered, and
+    // the refusal is the whole point of answering at all.  `closeConnection`
+    // would abort here — the connection has no peer yet, a hello being exactly
+    // what it is still waiting for — so the socket is ended directly.
+    if (!this.retireConnection(connection)) return;
+    try { socket?.end(); } catch { /* the peer already went */ }
+  }
+
+  /** The peer turned this node's `hello` away: say why, and give the dial up (#823). */
+  private onHelloRefused(connection: Connection, message: HelloRefusedMessage): void {
+    const peer = NodeAddress.fromJSON(message.self);
+    this.log.warn(
+      `cluster handshake with ${peer} refused by the peer (it speaks cluster wire `
+      + `v${message.minWireVersion}..v${message.wireVersion}): ${message.reason}`,
+    );
+    this.dropConnection(connection);
   }
 
   /**
@@ -1189,7 +1273,14 @@ export class InMemoryTransport implements Transport {
   private handler: WireHandler = () => {};
   private stopped = false;
 
-  constructor(readonly self: NodeAddress) {}
+  constructor(private identity: NodeAddress) {}
+
+  get self(): NodeAddress { return this.identity; }
+
+  /** See {@link Transport.adoptIdentity}; the registry key is the address, which does not change. */
+  adoptIdentity(self: NodeAddress): void {
+    if (self.toString() === this.identity.toString()) this.identity = self;
+  }
 
   setHandler(handler: WireHandler): void { this.handler = handler; }
 

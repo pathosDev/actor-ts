@@ -95,7 +95,7 @@ describe('the validator holds the label to what every peer admits', () => {
   });
 });
 
-const ADDRESS = new NodeAddress('app-version-record', 'h', 4_713);
+const ADDRESS = new NodeAddress('app-version-record', 'h', 4_713, 'test-run');
 
 /** A record a hostile or broken peer could send, typed as the wire type. */
 function gossipedWith(appVersion: unknown): MemberData {
@@ -274,7 +274,7 @@ async function startNode(spec: NodeSpec): Promise<Node> {
   if (spec.hocon !== undefined) systemOptions.withConfig(Config.parseString(spec.hocon));
   const system = ActorSystem.create(SYSTEM, systemOptions);
   systems.push(system);
-  const transport = new InMemoryTransport(new NodeAddress(SYSTEM, HOST, spec.port));
+  const transport = new InMemoryTransport(new NodeAddress(SYSTEM, HOST, spec.port, 'test-run'));
   const clusterOptions = ClusterOptions.create()
     .withHost(HOST)
     .withPort(spec.port)
@@ -391,7 +391,7 @@ describe('Cluster.bootstrap states the label from the file or the builder (#843,
     const bootstrapOptions = ClusterBootstrapOptions.create(name)
       .withHost('127.0.0.1')
       .withPort(59_511)
-      .withTransport(new InMemoryTransport(new NodeAddress(name, '127.0.0.1', 59_511)))
+      .withTransport(new InMemoryTransport(new NodeAddress(name, '127.0.0.1', 59_511, 'test-run')))
       .withReceptionist(false)
       .withShutdownOnSignals(false)
       .withAwaitReady(false)
@@ -410,7 +410,7 @@ describe('Cluster.bootstrap states the label from the file or the builder (#843,
     const bootstrapOptions = ClusterBootstrapOptions.create(name)
       .withHost('127.0.0.1')
       .withPort(59_512)
-      .withTransport(new InMemoryTransport(new NodeAddress(name, '127.0.0.1', 59_512)))
+      .withTransport(new InMemoryTransport(new NodeAddress(name, '127.0.0.1', 59_512, 'test-run')))
       .withReceptionist(false)
       .withShutdownOnSignals(false)
       .withAwaitReady(false)
@@ -429,7 +429,7 @@ describe('Cluster.bootstrap states the label from the file or the builder (#843,
     const bootstrapOptions = ClusterBootstrapOptions.create(name)
       .withHost('127.0.0.1')
       .withPort(59_513)
-      .withTransport(new InMemoryTransport(new NodeAddress(name, '127.0.0.1', 59_513)))
+      .withTransport(new InMemoryTransport(new NodeAddress(name, '127.0.0.1', 59_513, 'test-run')))
       .withReceptionist(false)
       .withShutdownOnSignals(false)
       .withAwaitReady(false)
@@ -502,8 +502,8 @@ describe('a peer\'s label survives the release that introduces the field (#843)'
    */
   test('a record first learned from a node that predates the field fills on the subject\'s own frame', async () => {
     const node = await startNode({ port: 59_431 });
-    const subject = new NodeAddress(SYSTEM, HOST, 59_432);
-    const relay = new NodeAddress(SYSTEM, HOST, 59_433);
+    const subject = new NodeAddress(SYSTEM, HOST, 59_432, 'test-run');
+    const relay = new NodeAddress(SYSTEM, HOST, 59_433, 'test-run');
     const version = Date.now();
 
     // The relay needs standing before it may speak about a third node.
@@ -518,8 +518,8 @@ describe('a peer\'s label survives the release that introduces the field (#843)'
 
   test('a re-version by a node that predates the field strips the label, and the subject\'s next frame restores it', async () => {
     const node = await startNode({ port: 59_441 });
-    const subject = new NodeAddress(SYSTEM, HOST, 59_442);
-    const relay = new NodeAddress(SYSTEM, HOST, 59_443);
+    const subject = new NodeAddress(SYSTEM, HOST, 59_442, 'test-run');
+    const relay = new NodeAddress(SYSTEM, HOST, 59_443, 'test-run');
     const version = Date.now();
 
     gossipClaim({ node, sender: relay, subject: relay, version, sequence: version });
@@ -548,8 +548,8 @@ describe('a peer\'s label survives the release that introduces the field (#843)'
     // or invented.  Letting it overwrite the subject's own statement would
     // flap the label against whichever copy arrived last.
     const node = await startNode({ port: 59_451 });
-    const subject = new NodeAddress(SYSTEM, HOST, 59_452);
-    const relay = new NodeAddress(SYSTEM, HOST, 59_453);
+    const subject = new NodeAddress(SYSTEM, HOST, 59_452, 'test-run');
+    const relay = new NodeAddress(SYSTEM, HOST, 59_453, 'test-run');
     const version = Date.now();
 
     gossipClaim({ node, sender: relay, subject: relay, version, sequence: version });
@@ -587,8 +587,8 @@ describe('a peer\'s label survives the release that introduces the field (#843)'
     // need not be the subject's.  Fill-only would keep a relay's invention
     // for the rest of the incarnation.
     const node = await startNode({ port: 59_461 });
-    const subject = new NodeAddress(SYSTEM, HOST, 59_462);
-    const relay = new NodeAddress(SYSTEM, HOST, 59_463);
+    const subject = new NodeAddress(SYSTEM, HOST, 59_462, 'test-run');
+    const relay = new NodeAddress(SYSTEM, HOST, 59_463, 'test-run');
     const version = Date.now();
 
     gossipClaim({ node, sender: relay, subject: relay, version, sequence: version });
@@ -604,7 +604,7 @@ describe('a peer\'s label survives the release that introduces the field (#843)'
     // Every round carries the whole member map, so the steady state is the
     // same label arriving over and over.
     const node = await startNode({ port: 59_471 });
-    const subject = new NodeAddress(SYSTEM, HOST, 59_472);
+    const subject = new NodeAddress(SYSTEM, HOST, 59_472, 'test-run');
     const version = Date.now();
 
     gossipClaim({ node, sender: subject, subject, version, sequence: version, appVersion: '2.4.0' });
@@ -629,7 +629,7 @@ describe('this node\'s own label survives a promotion merged from a peer\'s view
   test('a leader that predates the field does not wipe the label', async () => {
     const node = await startNode({ port: 59_481, seeds: [addressOf(59_489)], appVersion: '2.4.0' });
     expect(node.cluster.selfMember()?.status).toBe('joining');
-    const leader = new NodeAddress(SYSTEM, HOST, 59_482);
+    const leader = new NodeAddress(SYSTEM, HOST, 59_482, 'test-run');
     const version = Date.now();
 
     gossipClaim({ node, sender: leader, subject: leader, version, sequence: version });
@@ -646,7 +646,7 @@ describe('this node\'s own label survives a promotion merged from a peer\'s view
     // first frame, so a peer's record about it is an echo or wrong — the
     // substitution takes this node's own value outright, unset included.
     const node = await startNode({ port: 59_491, seeds: [addressOf(59_499)] });
-    const leader = new NodeAddress(SYSTEM, HOST, 59_492);
+    const leader = new NodeAddress(SYSTEM, HOST, 59_492, 'test-run');
     const version = Date.now();
 
     gossipClaim({ node, sender: leader, subject: leader, version, sequence: version });
@@ -672,7 +672,7 @@ describe('this node\'s own label survives a promotion merged from a peer\'s view
     const node = await startNode({ port: 59_501, appVersion: '2.4.0' });
     const internals = node.cluster as unknown as ClusterInternals;
     const bareSelf = new Member(node.cluster.selfAddress, 'up', 7);
-    const peer = new Member(new NodeAddress(SYSTEM, HOST, 59_502), 'up', 7);
+    const peer = new Member(new NodeAddress(SYSTEM, HOST, 59_502, 'test-run'), 'up', 7);
 
     expect(internals.memberDataForGossip(bareSelf).appVersion).toBe('2.4.0');
     expect('appVersion' in internals.memberDataForGossip(peer)).toBe(false);
@@ -808,7 +808,7 @@ describe('a label belongs to the run that stated it (#843)', () => {
     // whichever side is missing it.  The subject's own frame still fills.
     const node = await startNode({ port: 59_581 });
     const subject = new NodeAddress(SYSTEM, HOST, 59_582, 'subject-run');
-    const subjectNamingNoRun = new NodeAddress(SYSTEM, HOST, 59_582);
+    const subjectNamingNoRun = new NodeAddress(SYSTEM, HOST, 59_582, 'test-run');
     const relay = new NodeAddress(SYSTEM, HOST, 59_583, 'relay-run');
     const version = Date.now();
 
@@ -818,7 +818,7 @@ describe('a label belongs to the run that stated it (#843)', () => {
     expect(labelHeldBy(node, subject)).toBeUndefined();
 
     // The other side: the held record names no run, the relayed one does.
-    const otherSubject = new NodeAddress(SYSTEM, HOST, 59_584);
+    const otherSubject = new NodeAddress(SYSTEM, HOST, 59_584, 'test-run');
     const otherSubjectRun = new NodeAddress(SYSTEM, HOST, 59_584, 'other-run');
     gossipClaim({ node, sender: otherSubject, subject: otherSubject, version, sequence: version });
     gossipClaim({ node, sender: relay, subject: otherSubjectRun, version, sequence: version + 2, appVersion: '2.5.0' });

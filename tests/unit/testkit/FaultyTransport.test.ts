@@ -23,11 +23,11 @@ import { awaitCondition } from '../../util/AwaitCondition.js';
  * source of ordering to a test about ordering.
  */
 
-const address = (name: string): NodeAddress => new NodeAddress(name, '127.0.0.1', 2552);
+const address = (name: string): NodeAddress => new NodeAddress(name, '127.0.0.1', 2552, 'test-run');
 
 const frame = (seq: number): WireMessage => ({
   kind: 'heartbeat',
-  from: { systemName: 'a', host: '127.0.0.1', port: 2552 },
+  from: { systemName: 'a', host: '127.0.0.1', port: 2552, incarnation: 'test-run' },
   seq,
   ts: 0,
 });
@@ -308,12 +308,12 @@ describe('it decorates any transport, which is why it is a decorator', () => {
   test('an InMemoryTransport gains the controls without growing a line', async () => {
     // The acceptance criterion of #1023: `InMemoryTransport` had no fault hook
     // at all, and still has none — the controls come from the wrapper.
-    const receiver = new InMemoryTransport(new NodeAddress('receiver', '127.0.0.1', 2662));
+    const receiver = new InMemoryTransport(new NodeAddress('receiver', '127.0.0.1', 2662, 'test-run'));
     const received: number[] = [];
     receiver.setHandler((_from, message) => { received.push((message as { seq: number }).seq); });
     await receiver.start();
 
-    const sender = new InMemoryTransport(new NodeAddress('sender', '127.0.0.1', 2663));
+    const sender = new InMemoryTransport(new NodeAddress('sender', '127.0.0.1', 2663, 'test-run'));
     await sender.start();
     const link = new FaultyTransport(sender, { dropProbability: 1 });
 

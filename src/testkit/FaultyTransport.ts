@@ -97,6 +97,8 @@ export class FaultyTransport implements Transport {
 
   get self(): NodeAddress { return this.inner.self; }
 
+  adoptIdentity(self: NodeAddress): void { this.inner.adoptIdentity?.(self); }
+
   get maxFrameBytes(): number | undefined { return this.inner.maxFrameBytes; }
 
   /**

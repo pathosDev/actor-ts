@@ -43,12 +43,14 @@ export function isWireFrame(value: unknown): value is { kind: string } {
 /**
  * A `NodeAddressData` whose fields are actually the declared types.
  *
- * The single gate for every address-bearing wire field — `hello.self`,
- * `hello-ack.self`, `heartbeat.from`, `heartbeat-ack.from`,
- * `membership-refused.from` and `.subject`, `gossip.from`, every
- * `gossip.members[].address` and `leave.node` — which is why an *optional*
- * `incarnation` is checked here rather than required: making it required would
- * refuse all of them at once from any peer that predates the field (#940).
+ * The shape every address-bearing wire field shares.  The handshake fields
+ * (`hello.self`, `hello-ack.self`, `hello-refused.self`) are held to this
+ * alone; every frame past the handshake is held to {@link isRunAddressData},
+ * which additionally requires the incarnation cluster wire v2 carries (#823).
+ * The field stays optional *here* so a version-1 `hello` is refused by the
+ * transport with a reason instead of dropped as malformed, and so the address
+ * shapes that legitimately name no run — a ref in a body, a persisted
+ * snapshot — still validate.
  *
  * The two field rules with any substance to them — what a port is and what an
  * incarnation is — are `NodeAddress.isPort` and `NodeAddress.isIncarnation`,
@@ -68,6 +70,20 @@ export function isNodeAddressData(value: unknown): value is NodeAddressData {
 }
 
 /**
+ * A node address as cluster wire v2 carries it on every frame past the
+ * handshake: valid, and naming its incarnation (#823, #940).
+ *
+ * Kept apart from {@link isNodeAddressData}, which stays lenient: a ref in a
+ * message body (`RefCodec`), a persisted coordinator-state snapshot and a seed
+ * parsed from configuration legitimately name an address without a run, and a
+ * `hello` from a version-1 peer has to get far enough to be refused with a
+ * reason rather than dropped as malformed.
+ */
+export function isRunAddressData(value: unknown): value is NodeAddressData {
+  return isNodeAddressData(value) && (value as NodeAddressData).incarnation !== undefined;
+}
+
+/**
  * A gossiped member entry.  `status` is checked against the runtime allow-list
  * rather than trusted (#563); `version` and `removedAt` only need to be finite
  * here — `Cluster.mergeMember` applies the plausibility bounds that decide
@@ -83,6 +99,19 @@ export function isMemberData(value: unknown): value is MemberData {
     && (removedAt === undefined || (typeof removedAt === 'number' && Number.isFinite(removedAt)));
 }
 
+/** A member entry as cluster wire v2 gossips it: its address names its run (#823). */
+function isRunMemberData(value: unknown): value is MemberData {
+  return isMemberData(value) && isRunAddressData(value.address);
+}
+
+/** An announced wire version: absent, or a safe integer of at least 1. */
+function isAnnouncedWireVersion(value: unknown): boolean {
+  return value === undefined || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 1);
+}
+
+/** How long a refusal's `reason` may be — a bound on what a peer can make this node log. */
+const MAX_HELLO_REFUSAL_REASON_LENGTH = 512;
+
 /**
  * Validate a frame against the variant its `kind` claims.
  *
@@ -94,37 +123,57 @@ export function isMemberData(value: unknown): value is MemberData {
  */
 export function wireFrameProblem(frame: { kind: string }): string | null {
   switch (frame.kind) {
+    // Lenient on purpose: a version-1 peer's `hello` names no incarnation and
+    // no version, and the transport refuses it with the reason (#823).
     case 'hello':
-    case 'hello-ack':
-      return isNodeAddressData((frame as { self?: unknown }).self)
-        ? null : '`self` is not a valid node address';
+    case 'hello-ack': {
+      const { self, wireVersion, minWireVersion } = frame as {
+        self?: unknown; wireVersion?: unknown; minWireVersion?: unknown;
+      };
+      if (!isNodeAddressData(self)) return '`self` is not a valid node address';
+      if (!isAnnouncedWireVersion(wireVersion)) return '`wireVersion` is not a wire version';
+      return isAnnouncedWireVersion(minWireVersion) ? null : '`minWireVersion` is not a wire version';
+    }
+
+    case 'hello-refused': {
+      const { self, wireVersion, minWireVersion, reason } = frame as {
+        self?: unknown; wireVersion?: unknown; minWireVersion?: unknown; reason?: unknown;
+      };
+      if (!isNodeAddressData(self)) return '`self` is not a valid node address';
+      if (wireVersion === undefined || !isAnnouncedWireVersion(wireVersion)) return '`wireVersion` is not a wire version';
+      if (minWireVersion === undefined || !isAnnouncedWireVersion(minWireVersion)) {
+        return '`minWireVersion` is not a wire version';
+      }
+      return typeof reason === 'string' && reason.length <= MAX_HELLO_REFUSAL_REASON_LENGTH
+        ? null : '`reason` is not a bounded string';
+    }
 
     case 'heartbeat':
     case 'heartbeat-ack': {
       const { from, seq } = frame as { from?: unknown; seq?: unknown };
-      if (!isNodeAddressData(from)) return '`from` is not a valid node address';
+      if (!isRunAddressData(from)) return '`from` is not a node address with its incarnation';
       return typeof seq === 'number' && Number.isFinite(seq) ? null : '`seq` is not a finite number';
     }
 
     case 'membership-refused': {
       const { from, subject } = frame as { from?: unknown; subject?: unknown };
-      if (!isNodeAddressData(from)) return '`from` is not a valid node address';
-      return isNodeAddressData(subject) ? null : '`subject` is not a valid node address';
+      if (!isRunAddressData(from)) return '`from` is not a node address with its incarnation';
+      return isRunAddressData(subject) ? null : '`subject` is not a node address with its incarnation';
     }
 
     case 'gossip': {
       const { from, sequence, members } = frame as {
         from?: unknown; sequence?: unknown; members?: unknown;
       };
-      if (!isNodeAddressData(from)) return '`from` is not a valid node address';
+      if (!isRunAddressData(from)) return '`from` is not a node address with its incarnation';
       // Shape only — `Cluster.onGossip` decides whether a well-formed sequence
       // is also *fresh*, and how far ahead of this node's clock it may be.
       if (typeof sequence !== 'number' || !Number.isFinite(sequence)) {
         return '`sequence` is not a finite number';
       }
       if (!Array.isArray(members)) return '`members` is not an array';
-      const bad = members.findIndex((m) => !isMemberData(m));
-      return bad < 0 ? null : `member[${bad}] is malformed (address, status or version)`;
+      const bad = members.findIndex((m) => !isRunMemberData(m));
+      return bad < 0 ? null : `member[${bad}] is malformed (address with its incarnation, status or version)`;
     }
 
     case 'envelope': {
@@ -134,8 +183,8 @@ export function wireFrameProblem(frame: { kind: string }): string | null {
     }
 
     case 'leave':
-      return isNodeAddressData((frame as { node?: unknown }).node)
-        ? null : '`node` is not a valid node address';
+      return isRunAddressData((frame as { node?: unknown }).node)
+        ? null : '`node` is not a node address with its incarnation';
 
     case 'watch':
     case 'unwatch':

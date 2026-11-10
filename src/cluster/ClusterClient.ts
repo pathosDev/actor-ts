@@ -42,6 +42,7 @@
  * all — the connection, not the payload, is what a reply is routed on.
  */
 
+import { CLUSTER_WIRE_VERSION, MIN_CLUSTER_WIRE_VERSION, wireVersionRefusal } from './WireVersion.js';
 import { getTcpBackend, type TcpSocketLike, type TlsTransportOptionsType } from '../runtime/tcp/index.js';
 import type { Config } from '../config/Config.js';
 import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
@@ -50,7 +51,7 @@ import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
 import { randomUuid } from '../util/RandomString.js';
 import { safeStringify } from '../util/SafeStringify.js';
 import { NodeAddress } from './NodeAddress.js';
-import { encodeFrame, FrameDecoder, type WireMessage, type HelloMessage, type HelloAcknowledgmentMessage } from './Protocol.js';
+import { encodeFrame, FrameDecoder, type WireMessage, type HelloMessage, type HelloAcknowledgmentMessage, type HelloRefusedMessage } from './Protocol.js';
 import { validateWireFrame } from './WireValidation.js';
 import type {
   ClusterClientEnvelopeMessage,
@@ -176,7 +177,8 @@ export class ClusterClient {
       host: '127.0.0.1',
       port: syntheticClientPort(),
     };
-    this.identity = new NodeAddress(sysName, id.host, id.port);
+    // A run of its own, as every node on cluster wire v2 names one (#823).
+    this.identity = new NodeAddress(sysName, id.host, id.port, NodeAddress.mintIncarnation());
     this.tls = resolvedOptions.tls ?? null;
     this.askTimeoutMs = resolvedOptions.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
     this.connectTimeoutMs =
@@ -307,7 +309,12 @@ export class ClusterClient {
               onOpen: (s) => {
                 openSock = s;
                 // Send hello.
-                const hello: HelloMessage = { kind: 'hello', self: this.identity.toJSON() };
+                const hello: HelloMessage = {
+                  kind: 'hello',
+                  self: this.identity.toJSON(),
+                  wireVersion: CLUSTER_WIRE_VERSION,
+                  minWireVersion: MIN_CLUSTER_WIRE_VERSION,
+                };
                 try { s.write(encodeFrame(hello)); } catch (e) {
                   timer.cancel();
                   reject(e as Error);
@@ -375,8 +382,21 @@ export class ClusterClient {
         this.log.warn(`ClusterClient: ignoring malformed frame — ${checked.problem}`);
         continue;
       }
+      if (checked.message.kind === 'hello-refused') {
+        const refused = checked.message as HelloRefusedMessage;
+        this.log.warn(
+          `ClusterClient: contact point ${NodeAddress.fromJSON(refused.self)} refused the handshake `
+          + `(it speaks cluster wire v${refused.minWireVersion}..v${refused.wireVersion}): ${refused.reason}`,
+        );
+        continue;
+      }
       if (checked.message.kind === 'hello-ack') {
         const ack = checked.message as HelloAcknowledgmentMessage;
+        const refusal = wireVersionRefusal({ wireVersion: ack.wireVersion }, ack.self);
+        if (refusal !== null) {
+          this.log.warn(`ClusterClient: handshake with ${NodeAddress.fromJSON(ack.self)} refused: ${refusal}`);
+          continue;
+        }
         onHelloAcknowledgment(NodeAddress.fromJSON(ack.self));
         continue;
       }

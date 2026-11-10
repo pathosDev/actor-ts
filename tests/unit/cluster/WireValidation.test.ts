@@ -91,7 +91,8 @@ describe('isMemberData', () => {
 });
 
 describe('validateWireFrame — per-kind shapes', () => {
-  const address = { systemName: 'app', host: 'h', port: 2552 };
+  // A run address: cluster wire v2 requires the incarnation past the handshake (#823).
+  const address = { systemName: 'app', host: 'h', port: 2552, incarnation: 'run-1' };
 
   test('names the offending field so a dropped frame is diagnosable', () => {
     const result = validateWireFrame({ kind: 'leave', node: { systemName: 'app', host: 'h' } });

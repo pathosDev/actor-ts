@@ -235,6 +235,7 @@ export type MemberData = {
 export type WireMessage =
   | HelloMessage
   | HelloAcknowledgmentMessage
+  | HelloRefusedMessage
   | HeartbeatMessage
   | HeartbeatAcknowledgmentMessage
   | MembershipRefusedMessage
@@ -245,14 +246,38 @@ export type WireMessage =
   | UnwatchMessage
   | WatchTerminatedMessage;
 
+/**
+ * A connection's opening frame.  `wireVersion` and `minWireVersion` announce the
+ * cluster wire versions the sender speaks (#823); a `hello` without them is a
+ * version-1 peer.  Optional on the type for that reason only — this build
+ * always sends both.
+ */
 export type HelloMessage = {
   kind: 'hello';
   self: NodeAddressData;
+  wireVersion?: number;
+  minWireVersion?: number;
 };
 
+/** The acceptor's answer to a `hello` it takes, with the wire version it speaks (#823). */
 export type HelloAcknowledgmentMessage = {
   kind: 'hello-ack';
   self: NodeAddressData;
+  wireVersion?: number;
+};
+
+/**
+ * The acceptor's answer to a `hello` it will not take, sent before it closes
+ * the connection, so the peer's log says why rather than only that the
+ * connection closed (#823).  An older peer does not know the kind and logs it
+ * as an unclaimed frame — with the reason in it.
+ */
+export type HelloRefusedMessage = {
+  kind: 'hello-refused';
+  self: NodeAddressData;
+  wireVersion: number;
+  minWireVersion: number;
+  reason: string;
 };
 
 export type HeartbeatMessage = {
@@ -440,8 +465,9 @@ const HEADER_SIZE = 4;
  * the same chunk.  The `__literal__` escape only protects data *this* encoder
  * produced, so it does nothing here.  The other direction is plainly lossy: an
  * older node reading a newer node's frame sees the tag wrapper as plain data.
- * There is no protocol negotiation yet (#823), so a mixed-version window is a
- * hazard rather than a supported state.
+ * Since v0.18.0 the handshake negotiates a wire version (#823), so nodes on
+ * either side of a break refuse each other instead of exchanging frames like
+ * these; the encoding itself is not versioned.
  */
 export function encodeFrame(message: WireMessage): Uint8Array {
   const json = JSON.stringify(encodeJsonTree(message, { undefinedValues: 'omit' }));

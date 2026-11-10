@@ -810,16 +810,20 @@ Eintrag ohne ersetzt den alten Lauf still, wie es jeder Eintrag
 vorher tat
 ([ein Neustart beendet den vorherigen Lauf](/de/cluster/failure-detector/#ein-neustart-beendet-den-vorherigen-lauf)).
 
-Zwei Grenzen folgen daraus, dass der Tombstone eine Versionsuntergrenze
-ist und kein Bann gegen einen Prozess:
+Der Tombstone weist **den Lauf** ab, für den er geschrieben wurde, nicht
+nur dessen Version: Seit Cluster-Wire v2 nennt jede Adresse auf einem
+Frame ihre Inkarnation — welcher Prozess dort antwortet, einmal pro
+`Cluster.join` geprägt —, und ein Eintrag für die Inkarnation, die ein
+Tombstone hält, wird abgewiesen, egal welche Version er trägt
+([Issue #823](https://github.com/pathosDev/actor-ts/issues/823),
+[Issue #940](https://github.com/pathosDev/actor-ts/issues/940)). Ein
+Prozess, der gedownt wurde, während er weiterlief, kann nicht durch eine
+neu gestempelte Version zurückkommen; er tritt stattdessen ab, und nur
+ein Neustart tritt wieder bei.
 
-- **Derselbe Lauf stempelt seine Version neu.** Eine Version ist eine
-  Zahl, die der Peer selbst schreibt. Ein Prozess, der gedownt wurde,
-  während er weiterlief, und sich mit einer frischen Version ankündigt,
-  ist von einem Neustart nicht zu unterscheiden und wird sofort wieder
-  aufgenommen. Die Abweisung hält gegen einen Lauf, der weiter mit
-  seiner alten Version spricht — einen, der nichts bemerkt hat, oder
-  einen Mitschnitt —, nicht gegen einen, der zurückkommen will.
+Eine Grenze bleibt, weil die Untergrenze, die ein *Neustart* überwinden
+muss, weiterhin eine Version ist:
+
 - **Ein Hebel zum Aussperren für einen Peer mit Standing.** Ein
   Mitglied, das dieser Knoten für aktiv hält, darf Einträge über andere
   Adressen gossipen, und ein `removed`-Eintrag, der innerhalb des
@@ -829,14 +833,9 @@ ist und kein Bann gegen einen Prozess:
   erneut jenseits dieser Version startet oder der Tombstone abläuft —
   gezählt ab einem `removedAt`, das derselbe Peer gewählt hat.
 
-Beide schließen sich erst, wenn die Inkarnation — welcher Prozess unter
-einer Adresse antwortet, einmal pro `Cluster.join` geprägt — auf dem
-Draht verpflichtend ist, sodass eine Abweisung Prozesse vergleichen kann
-statt Zahlen
-([Issue #823](https://github.com/pathosDev/actor-ts/issues/823),
-[Issue #940](https://github.com/pathosDev/actor-ts/issues/940)). Heute
-wird sie mitgeführt und entscheidet nur, was ein Neustart verkündet;
-keine Abweisung vergleicht sie.
+Ein Neustart trägt eine neue Inkarnation und könnte deshalb über jeden
+Tombstone eines *vorigen* Laufs hinweg aufgenommen werden, egal welche
+Version; noch geschieht das nicht, und das hält diesen Hebel offen.
 
 ## Wohin als Nächstes
 

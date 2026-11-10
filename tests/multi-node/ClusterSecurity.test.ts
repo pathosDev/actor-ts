@@ -50,7 +50,7 @@ async function startNode(
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
   const system = ActorSystem.create(systemName, sysOptions);
-  const address = new NodeAddress(systemName, 'h', port);
+  const address = new NodeAddress(systemName, 'h', port, 'test-run');
   const clusterOptions = ClusterOptions.create()
     .withHost('h')
     .withPort(port)
@@ -167,7 +167,7 @@ describe('Cluster — gossip exploit defenses', () => {
 
     // Forge a malicious gossip from an "attacker" address (no real
     // node — just a synthetic NodeAddress to source the frame).
-    const attacker = new NodeAddress('csec', 'h', 65_535);
+    const attacker = new NodeAddress('csec', 'h', 65_535, 'test-run');
     const evil: InjectableGossip = {
       kind: 'gossip',
       from: attacker.toJSON(),
@@ -197,7 +197,7 @@ describe('Cluster — gossip exploit defenses', () => {
       return !!member && member.status === 'up';
     });
 
-    const attacker = new NodeAddress('csec', 'h', 65_534);
+    const attacker = new NodeAddress('csec', 'h', 65_534, 'test-run');
     const evil: InjectableGossip = {
       kind: 'gossip',
       from: attacker.toJSON(),
@@ -219,8 +219,8 @@ describe('Cluster — gossip exploit defenses', () => {
     nodes = [nodeA];
 
     // No B needed — inject an attempted-creation of a fake member.
-    const ghost = new NodeAddress('csec', 'h', 60_000);
-    const attacker = new NodeAddress('csec', 'h', 65_533);
+    const ghost = new NodeAddress('csec', 'h', 60_000, 'test-run');
+    const attacker = new NodeAddress('csec', 'h', 65_533, 'test-run');
     const evil: InjectableGossip = {
       kind: 'gossip',
       from: attacker.toJSON(),
@@ -336,7 +336,7 @@ describe('Transport — hello-handshake hijack defense', () => {
     // — it skips the handshake entirely — so it's not the right
     // probe.  Mock TcpSocketLike objects let us call the transport's
     // private machinery via type cast.
-    const self = new NodeAddress('hijack', '127.0.0.1', 1);
+    const self = new NodeAddress('hijack', '127.0.0.1', 1, 'test-run');
     const log = new NoopLogger();
     const transport = new TcpTransport(self, log);
 
@@ -364,11 +364,11 @@ describe('Transport — hello-handshake hijack defense', () => {
     rawTransport.attachInbound(sock1);
     rawTransport.attachInbound(sock2);
 
-    const claimedPeer = new NodeAddress('hijack', '10.0.0.42', 5000);
+    const claimedPeer = new NodeAddress('hijack', '10.0.0.42', 5000, 'test-run');
 
     // First hello on conn1 — legitimate, accepted.
     const helloFrame = (): Uint8Array => {
-      const message = JSON.stringify({ kind: 'hello', self: claimedPeer.toJSON() });
+      const message = JSON.stringify({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: claimedPeer.toJSON() });
       const payload = new TextEncoder().encode(message);
       const frame = new Uint8Array(4 + payload.byteLength);
       new DataView(frame.buffer).setUint32(0, payload.byteLength, false);
@@ -391,7 +391,7 @@ describe('Transport — hello-handshake hijack defense', () => {
     // After conn1 closes (onClose removes it from byPeer), a fresh
     // hello on conn2 with the same identity succeeds.  This is the
     // normal reconnect path; the hijack defense must not break it.
-    const self = new NodeAddress('hijack', '127.0.0.1', 1);
+    const self = new NodeAddress('hijack', '127.0.0.1', 1, 'test-run');
     const transport = new TcpTransport(self, new NoopLogger());
 
     interface MockSock { writes: Uint8Array[]; write(d: Uint8Array): void; end(): void; ended: boolean }
@@ -409,9 +409,9 @@ describe('Transport — hello-handshake hijack defense', () => {
     };
     rawTransport.attachInbound(sock1);
 
-    const peer = new NodeAddress('hijack', '10.0.0.99', 5001);
+    const peer = new NodeAddress('hijack', '10.0.0.99', 5001, 'test-run');
     const helloFrame = (): Uint8Array => {
-      const message = JSON.stringify({ kind: 'hello', self: peer.toJSON() });
+      const message = JSON.stringify({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: peer.toJSON() });
       const payload = new TextEncoder().encode(message);
       const frame = new Uint8Array(4 + payload.byteLength);
       new DataView(frame.buffer).setUint32(0, payload.byteLength, false);
@@ -527,13 +527,13 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
     return { raw, dialled };
   }
 
-  const nodeA = new NodeAddress('sim', '10.0.0.1', 5000);
-  const nodeB = new NodeAddress('sim', '10.0.0.2', 5000);
+  const nodeA = new NodeAddress('sim', '10.0.0.1', 5000, 'test-run');
+  const nodeB = new NodeAddress('sim', '10.0.0.2', 5000, 'test-run');
   // The tie-break is "the dial from the lexicographically smaller address
   // wins", and these two addresses differ only in that octet — so A's dial
   // is the one that must survive, on both sides.
-  const helloFromA = frameOf({ kind: 'hello', self: nodeA.toJSON() });
-  const helloFromB = frameOf({ kind: 'hello', self: nodeB.toJSON() });
+  const helloFromA = frameOf({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: nodeA.toJSON() });
+  const helloFromB = frameOf({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: nodeB.toJSON() });
 
   test('exploit: two nodes dialling each other at once still converge', async () => {
     // --- node A dials B, and B's hello arrives before A's ack ---
@@ -575,7 +575,7 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
     expect(b.raw.byPeer.get(nodeA.toString())?.socket).toBe(aInboundAtB);
 
     // --- A completes its handshake on the surviving connection ---
-    a.raw.onData(aOutbound, frameOf({ kind: 'hello-ack', self: nodeB.toJSON() }));
+    a.raw.onData(aOutbound, frameOf({ kind: 'hello-ack', wireVersion: 2, self: nodeB.toJSON() }));
     expect(a.raw.byPeer.get(nodeB.toString())?.peer).not.toBeNull();
   });
 
@@ -786,7 +786,7 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
       expect(a.raw.byPeer.size).toBe(0);
     });
 
-    const helloAckFromB = frameOf({ kind: 'hello-ack', self: nodeB.toJSON() });
+    const helloAckFromB = frameOf({ kind: 'hello-ack', wireVersion: 2, self: nodeB.toJSON() });
 
     /**
      * The three things a late `hello-ack` must not leave behind.  `byPeer.has`
@@ -984,8 +984,8 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
       const connection = a.raw.openOutbound(nodeB);
       const dial = a.dials[0]!;
       await dial.openThenResolve();
-      const nodeBAdvertised = new NodeAddress('sim', 'node-b.internal', 5000);
-      dial.handlers.onData(dial.socket, frameOf({ kind: 'hello-ack', self: nodeBAdvertised.toJSON() }));
+      const nodeBAdvertised = new NodeAddress('sim', 'node-b.internal', 5000, 'test-run');
+      dial.handlers.onData(dial.socket, frameOf({ kind: 'hello-ack', wireVersion: 2, self: nodeBAdvertised.toJSON() }));
       expect(a.raw.byPeer.get(nodeB.toString())).toBe(connection);
       expect(a.raw.byPeer.get(nodeBAdvertised.toString())).toBe(connection);
 
@@ -1009,8 +1009,8 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
 
       const intruder = abortableSocket();
       b.raw.attachInbound(intruder);
-      const nodeC = new NodeAddress('sim', '10.0.0.3', 5000);
-      const hijackThenFreshClaim = concatFrames(helloFromA, frameOf({ kind: 'hello', self: nodeC.toJSON() }));
+      const nodeC = new NodeAddress('sim', '10.0.0.3', 5000, 'test-run');
+      const hijackThenFreshClaim = concatFrames(helloFromA, frameOf({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: nodeC.toJSON() }));
       b.raw.onData(intruder, hijackThenFreshClaim);
 
       expect(b.raw.byPeer.get(nodeA.toString())?.socket).toBe(established);
@@ -1067,7 +1067,7 @@ async function startRecordingNode(
 ): Promise<{ node: NodeHandle; sent: WireMessage[] }> {
   const sysOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
   const system = ActorSystem.create(systemName, sysOptions);
-  const address = new NodeAddress(systemName, 'h', port);
+  const address = new NodeAddress(systemName, 'h', port, 'test-run');
   const transport = new InMemoryTransport(address);
   const sent: WireMessage[] = [];
   const realSend = transport.send.bind(transport);
@@ -1096,8 +1096,8 @@ describe('Cluster — numeric wire-field defenses', () => {
     const nodeA = await startNode('csec', portA);
     nodes = [nodeA];
 
-    const attacker = new NodeAddress('csec', 'h', 65_533);
-    const victim = new NodeAddress('csec', 'h', 64_000);
+    const attacker = new NodeAddress('csec', 'h', 65_533, 'test-run');
+    const victim = new NodeAddress('csec', 'h', 64_000, 'test-run');
     const forge = (removedAt: number): InjectableGossip => ({
       kind: 'gossip',
       from: attacker.toJSON(),
@@ -1121,7 +1121,7 @@ describe('Cluster — numeric wire-field defenses', () => {
     const nodeA = await startNode('csec', portA);
     nodes = [nodeA];
 
-    const peer = new NodeAddress('csec', 'h', 64_001);
+    const peer = new NodeAddress('csec', 'h', 64_001, 'test-run');
     inject(nodeA.cluster, peer, {
       kind: 'gossip',
       from: peer.toJSON(),
@@ -1142,7 +1142,7 @@ describe('Cluster — numeric wire-field defenses', () => {
     // but a NaN reaching future RTT or skew tracking would be silent nonsense.
     const { node, sent } = await startRecordingNode('csechb', 53_990 + Math.floor(Math.random() * 9));
     nodes = [node];
-    const peer = new NodeAddress('csechb', 'h', 64_002);
+    const peer = new NodeAddress('csechb', 'h', 64_002, 'test-run');
 
     for (const [seq, ts] of [
       [Number.NaN, Date.now()],
@@ -1162,7 +1162,7 @@ describe('Cluster — numeric wire-field defenses', () => {
   test('a well-formed heartbeat is still acknowledged (#115)', async () => {
     const { node, sent } = await startRecordingNode('csechb2', 53_970 + Math.floor(Math.random() * 9));
     nodes = [node];
-    const peer = new NodeAddress('csechb2', 'h', 64_003);
+    const peer = new NodeAddress('csechb2', 'h', 64_003, 'test-run');
 
     sent.length = 0;
     injectWire(node.cluster, peer, { kind: 'heartbeat', from: peer.toJSON(), seq: 7, ts: Date.now() });
@@ -1191,7 +1191,7 @@ describe('Cluster — the wire edge rejects malformed frames (#563, #705)', () =
   });
 
   function attackerTransport(systemName: string, port: number): InMemoryTransport {
-    const transport = new InMemoryTransport(new NodeAddress(systemName, 'h', port));
+    const transport = new InMemoryTransport(new NodeAddress(systemName, 'h', port, 'test-run'));
     void transport.start();
     attackers.push(transport);
     return transport;
@@ -1214,7 +1214,7 @@ describe('Cluster — the wire edge rejects malformed frames (#563, #705)', () =
     nodes = [victim];
 
     const attacker = attackerTransport('csecwire', port + 1);
-    const ghost = new NodeAddress('csecwire', 'h', port + 900);
+    const ghost = new NodeAddress('csecwire', 'h', port + 900, 'test-run');
     attacker.send(victim.address, {
       kind: 'gossip',
       from: attacker.self.toJSON(),
@@ -1238,7 +1238,7 @@ describe('Cluster — the wire edge rejects malformed frames (#563, #705)', () =
     nodes = [victim];
 
     const attacker = attackerTransport('csecwire2', port + 1);
-    const good = new NodeAddress('csecwire2', 'h', port + 800);
+    const good = new NodeAddress('csecwire2', 'h', port + 800, 'test-run');
     attacker.send(victim.address, {
       kind: 'gossip',
       from: attacker.self.toJSON(),
@@ -1318,7 +1318,7 @@ describe('Cluster — a claim needs authority, not just a big version (#562, #56
     nodes = [node];
     await waitFor(() => node.cluster.upMembers().length === 1);
 
-    const attacker = new NodeAddress('csecauth', 'h', port + 500);
+    const attacker = new NodeAddress('csecauth', 'h', port + 500, 'test-run');
     injectWire(node.cluster, attacker, {
       kind: 'gossip',
       from: attacker.toJSON(),
@@ -1345,7 +1345,7 @@ describe('Cluster — a claim needs authority, not just a big version (#562, #56
     await waitFor(() => node.cluster.upMembers().length === 1);
 
     // Already `up`, so a *downgrade* dressed as a promotion is still refused.
-    const peer = new NodeAddress('csecauth2', 'h', port + 500);
+    const peer = new NodeAddress('csecauth2', 'h', port + 500, 'test-run');
     injectWire(node.cluster, peer, {
       kind: 'gossip',
       from: peer.toJSON(),
@@ -1362,8 +1362,8 @@ describe('Cluster — a claim needs authority, not just a big version (#562, #56
 
     // The attacker is not a member this node considers active, so its claim
     // about an unrelated address carries no authority.
-    const attacker = new NodeAddress('csecauth3', 'h', port + 500);
-    const victim = new NodeAddress('csecauth3', 'h', port + 600);
+    const attacker = new NodeAddress('csecauth3', 'h', port + 500, 'test-run');
+    const victim = new NodeAddress('csecauth3', 'h', port + 600, 'test-run');
     injectWire(node.cluster, attacker, {
       kind: 'gossip',
       from: attacker.toJSON(),
@@ -1391,7 +1391,7 @@ describe('Cluster — a claim needs authority, not just a big version (#562, #56
       return !!member && member.status === 'up';
     });
 
-    const attacker = new NodeAddress('csecleave', 'h', portA + 500);
+    const attacker = new NodeAddress('csecleave', 'h', portA + 500, 'test-run');
     injectWire(nodeA.cluster, attacker, { kind: 'leave', node: nodeB.address.toJSON() });
 
     const victim = nodeA.cluster.getMembers().find(x => x.address.equals(nodeB.address));
@@ -1410,8 +1410,8 @@ describe('Cluster — a claim needs authority, not just a big version (#562, #56
     const { node, sent } = await startRecordingNode('csechb3', port);
     nodes = [node];
 
-    const realPeer = new NodeAddress('csechb3', 'h', port + 100);
-    const impersonated = new NodeAddress('csechb3', 'h', port + 200);
+    const realPeer = new NodeAddress('csechb3', 'h', port + 100, 'test-run');
+    const impersonated = new NodeAddress('csechb3', 'h', port + 200, 'test-run');
 
     sent.length = 0;
     injectWire(node.cluster, realPeer, {
@@ -1499,8 +1499,8 @@ describe('Cluster — a recorded gossip frame is worthless on a second delivery 
     nodes = [node];
     await waitFor(() => node.cluster.upMembers().length === 1);
 
-    const peer = new NodeAddress('csecreplay', 'h', port + 100);
-    const victim = new NodeAddress('csecreplay', 'h', port + 200);
+    const peer = new NodeAddress('csecreplay', 'h', port + 100, 'test-run');
+    const victim = new NodeAddress('csecreplay', 'h', port + 200, 'test-run');
 
     // The peer earns standing the ordinary way — a self-announcement, the one
     // claim `maySpeakFor` never refuses (#562).
@@ -1556,8 +1556,8 @@ describe('Cluster — a recorded gossip frame is worthless on a second delivery 
     nodes = [node];
     await waitFor(() => node.cluster.upMembers().length === 1);
 
-    const peer = new NodeAddress('csecreplay2', 'h', port + 100);
-    const subject = new NodeAddress('csecreplay2', 'h', port + 200);
+    const peer = new NodeAddress('csecreplay2', 'h', port + 100, 'test-run');
+    const subject = new NodeAddress('csecreplay2', 'h', port + 200, 'test-run');
 
     inject(node.cluster, peer, {
       kind: 'gossip',
@@ -1601,8 +1601,8 @@ describe('Cluster — a recorded gossip frame is worthless on a second delivery 
     nodes = [node];
     await waitFor(() => node.cluster.upMembers().length === 1);
 
-    const peer = new NodeAddress('csecreplay3', 'h', port + 100);
-    const ghost = new NodeAddress('csecreplay3', 'h', port + 200);
+    const peer = new NodeAddress('csecreplay3', 'h', port + 100, 'test-run');
+    const ghost = new NodeAddress('csecreplay3', 'h', port + 200, 'test-run');
 
     inject(node.cluster, peer, {
       kind: 'gossip',

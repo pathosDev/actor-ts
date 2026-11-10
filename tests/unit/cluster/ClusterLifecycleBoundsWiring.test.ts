@@ -216,8 +216,8 @@ describe('the association-lifecycle bounds reach the transport Cluster builds (#
     // three synchronous buffer writes below.
     const peer = new NodeAddress('unreachable-peer', '127.0.0.1', await freePort());
 
-    cluster.transport.send(peer, { kind: 'hello', self: peer.toJSON() });
-    cluster.transport.send(peer, { kind: 'hello-ack', self: peer.toJSON() });
+    cluster.transport.send(peer, { kind: 'hello', wireVersion: 2, minWireVersion: 2, self: peer.toJSON() });
+    cluster.transport.send(peer, { kind: 'hello-ack', wireVersion: 2, self: peer.toJSON() });
     cluster.transport.send(peer, { kind: 'heartbeat', from: peer.toJSON(), seq: 1, ts: 1 });
 
     expect(internals(cluster).byPeer.get(peer.toString())?.pending).toHaveLength(2);

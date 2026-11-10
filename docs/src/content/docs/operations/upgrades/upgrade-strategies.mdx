@@ -26,18 +26,21 @@ caught by the additive patterns below.
 | --- | --- | --- |
 | **v0.15.x → v0.16.0** | **Not safe** (#112) | Every gossip frame carries a `sequence`, and `GossipMessage` gains a required field.  An upgraded peer refuses an old node's frames; an old node ignores an upgraded peer's.  Nothing errors — **membership silently never converges** while both versions run, so the cluster never agrees on who is in it. |
 | **v0.16.0 → v0.17.0** | **Not safe** (#450) | Frames are a tagged JSON tree instead of bare `JSON.stringify` output.  Most legacy traffic decodes unchanged; a legacy body that already had a reserved tag's shape does not.  `__map__`, `__set__`, `__regexp__`, `__bigint__`, `__url__`, `__number__` and `__error__` **throw at any depth**, and a decoder throw costs the **whole connection** along with every frame batched into the same chunk.  Two fail silently instead: `__bytes__` decodes to a `Uint8Array`, `__date__` to an Invalid Date.  The other direction is plainly lossy — an older node reads the tag wrapper as ordinary data. |
+| **v0.17.x → v0.18.0** | **Not safe** (#823) | The cluster wire gains a version, announced in every handshake, and version 2 requires every node address on a frame to name its incarnation.  Unlike the two rows above this one **fails loudly**: a v0.18.0 node refuses an older node's `hello` with a `hello-refused` and a WARN on its own side naming both versions, and an older node logs that frame as unclaimed with the reason in it.  The two never form one cluster. |
 
 **Upgrade the cluster in one step.** Stop every node, then start every node
-on the new version.  No intermediate version makes either leg rollable, so a
-hop from v0.15.x straight to v0.17.0 crosses both breaks and needs the same
-treatment — once, rather than twice.
+on the new version.  No intermediate version makes any of these legs
+rollable, so a hop across several of them needs the same treatment — once,
+rather than once per leg.
 
-**When this ends.** Both breaks exist for the same reason: the cluster
-protocol has no version negotiation, so a node cannot ask a peer what it
-speaks and adapt.
-[#823](https://github.com/pathosDev/actor-ts/issues/823) adds that
-handshake.  Until it lands, a mixed-version window is a hazard rather than a
-supported state, and this table is what to check before an upgrade.
+**From v0.18.0 on, the handshake says so.** Every `hello` and `hello-ack`
+carries the cluster wire versions the node speaks
+([#823](https://github.com/pathosDev/actor-ts/issues/823)), and two nodes
+that share none refuse each other at the handshake — a `hello-refused` with
+the reason, and a WARN on both sides — instead of half-working.  A future
+release that changes the wire can then speak a range of versions and keep a
+rolling upgrade possible; one that raises the minimum is a stop-and-start
+upgrade again, and this table will say which.
 
 ## Code-only upgrades
 
