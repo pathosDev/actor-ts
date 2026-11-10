@@ -1,4 +1,4 @@
-export type { Crdt, ReplicaId } from './Crdt.js';
+export type { Crdt, CrdtIdentityFunction, ReplicaId } from './Crdt.js';
 export { GCounter } from './GCounter.js';
 export type { GCounterJson } from './GCounter.js';
 export { PNCounter } from './PNCounter.js';
@@ -19,6 +19,7 @@ export { ORMap } from './ORMap.js';
 export type { ORMapJson, ORMapOptions } from './ORMap.js';
 export {
   DistributedData,
+  DistributedDataChanged,
   DistributedDataId,
   decodeCrdt,
 } from './DistributedData.js';

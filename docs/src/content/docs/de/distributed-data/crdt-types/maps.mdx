@@ -91,6 +91,35 @@ Einen Key aus `ORMap` zu entfernen nutzt die OR-Semantik —
 getaggte Operation, die nebenläufige Re-Adds überschreiben
 können.  Gleiche "Add wins"-Semantik wie bei ORSet.
 
+### Identität verschachtelter Werte
+
+Eine `ORMap` stellt beim Dekodieren eines Frames ihre eigene
+Key-Identität wieder her, die CRDTs *in* ihr bleiben aber auf der
+Standard-Regel `JSON.stringify` — die Grenze, die die Sets-Seite
+[ausbuchstabiert](/de/distributed-data/crdt-types/sets/#identität-innerhalb-von-distributeddata),
+samt der Begründung, warum die äußere Funktion weiterzureichen
+schlimmer wäre als die Lücke (#1421).  Am meisten zählt das dort,
+wo die Werte Sets sind: `ORMap<RoomId, ORSet<UserId>>` ist eine
+Form, die diese Seite empfiehlt, und genau das innere `ORSet`
+bekommt deine Identität nicht zurück.
+
+Map-spezifisch ist die Frage, *welche Operation sie noch retten
+kann*.  `update` nutzt den Wert weiter, der schon unter dem Key
+liegt — die `factory`, der einzige Ort, an dem die innere
+Identität steht, läuft für einen per Gossip angekommenen Key also
+nie, und ein zweites `update` bringt sie ihm ebenso wenig bei.
+Nach einem `remove` sieht `get` den Key nicht mehr, das nächste
+`update` ruft die Factory deshalb auf, und der Wert, den sie baut,
+trägt deine Identität.
+
+Das ist ein Neuanfang und keine Reparatur, und der Unterschied
+zählt: Der Wert, der unter dem Key lag, ist weg — genau das
+bedeutet ein Remove —, und ein Peer, der den Stand von vor dem
+Remove noch hält, legt seine Elemente beim nächsten Merge wieder
+unter seinen eigenen Keys ab.  Einen Key zu entfernen ist ein Weg,
+einen *neuen* Wert auf deine Identität zu bekommen, nie ein Weg,
+einen bestehenden umzuschlüsseln.
+
 ## GCounterMap
 
 ```ts

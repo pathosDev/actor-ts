@@ -1,10 +1,14 @@
 import { match } from 'ts-pattern';
+import { ConfigError } from '../../config/Config.js';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Terminated } from '../../SystemMessages.js';
+import { classNameOf } from '../../util/ClassName.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
+import { MQTT_LOGGED_SUBSCRIBE_FIELD_MAX_CHARACTERS } from '../Constants.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import { toBrokerDriverTls } from './BrokerTls.js';
 import { mqttJsonCodec, MqttDecodeError, type MqttCodec } from './MqttCodec.js';
@@ -12,6 +16,7 @@ import { MqttOptionsValidator } from './MqttOptions.js';
 import type { MqttOptions, MqttOptionsType } from './MqttOptions.js';
 import {
   MqttPayload,
+  isMqttSignal,
   mqttConnectedSignal,
   mqttDisconnectedSignal,
   mqttInboundSignal,
@@ -38,14 +43,26 @@ export type MqttPublishOptions = {
   readonly userProperties?: MqttUserProperties;
 };
 
+/**
+ * Who attached a fan-out target: the subclass (`subscribe()` or the `preStart`
+ * flush of a constructor declaration) or an external `subscribe` command.
+ *
+ * The distinction is what an external `unsubscribe` is measured against — an
+ * external command may detach only what an external command attached — so it
+ * travels with the target rather than with the pattern.  One pattern routinely
+ * carries both: a subclass declares its worker and a controller mirrors the
+ * same feed somewhere else.  #1510.
+ */
+type TargetOrigin = 'own' | 'external';
+
 /** One subscription pattern's routing state. */
 type SubscriptionEntry<T> = {
   /** Requested QoS, or undefined → resolve to `qos` at SUBSCRIBE time. */
   qos?: MqttQos;
   /** Deliver matching messages to this actor's own `onMessage`. */
   deliverToSelf: boolean;
-  /** Foreign actors to fan matching messages out to. */
-  readonly targets: Set<ActorRef<MqttMessage<T>>>;
+  /** Foreign actors to fan matching messages out to, each with its origin. */
+  readonly targets: Map<ActorRef<MqttMessage<T>>, TargetOrigin>;
 };
 
 /**
@@ -71,6 +88,13 @@ type SubscriptionEntry<T> = {
  * with a {@link MqttCommand} publishes / subscribes / unsubscribes; a
  * `subscribe` command with no `target` routes to this actor's own
  * `onMessage`, with a `target` fans out to that actor.
+ *
+ * That control is additive, not authoritative.  A command may create a
+ * pattern and attach a target to one, but it never rewrites the QoS of a
+ * pattern this actor already holds — the `qos` is ignored there and the
+ * actor records that it was — and it can detach only what an external
+ * `subscribe` attached.  Whatever the subclass declared, as own delivery
+ * or as a target, survives every command.  #783, #1510.
  *
  * Lifecycle events (inbound / connected / disconnected) are delivered
  * through the mailbox, so `onMessage` and the hooks always run on the
@@ -119,13 +143,27 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   }
 
   /**
-   * App-level message told to this actor's ref (reachable only when TSelf ≠ never).
+   * App-level message told to this actor's ref — your `TSelf` — or anything
+   * else none of the actor's own kinds matched, which includes a body a remote
+   * node addressed to this path, even one that spells a signal's `kind`: a
+   * signal also needs the mark only its constructor sets (`isMqttSignal`).
    *
    * A `Terminated` from a `context.watch` of your own no longer arrives here —
    * `BrokerActor` intercepts it and offers `onTerminated` instead (#709).
+   *
+   * The default declines it: a warn naming the message's *class*, then
+   * `this.unhandled(message)`, which dead-letters it with this actor as the
+   * recipient and counts it in `actor_unhandled_total{class}` (#1442).  It
+   * used to warn with `String(message)` and stop there, which printed the
+   * payload into the log, left the decline invisible to anything but that
+   * line, and threw on a body whose `toString` is not callable — restarting
+   * the actor, which is a broker disconnect and reconnect, on one peer
+   * frame.  The warn stays because it says what the dead-letter record
+   * cannot: that this hook was not overridden.
    */
   protected onSelfMessage(message: TSelf): void | Promise<void> {
-    this.log.warn(`MqttActor: unhandled self message: ${String(message)}`);
+    this.log.warn(`MqttActor: unhandled self message: ${classNameOf(message)}`);
+    this.unhandled(message);
   }
 
   /* ----------------------- protected API ------------------------- */
@@ -142,13 +180,14 @@ export abstract class MqttActor<T = unknown, TSelf = never>
       this.pendingSubs.push({ topic, qos: options.qos, target: options.target });
       return;
     }
-    this.registerSubscription(topic, options);
+    this.registerSubscription(topic, options, false);
   }
 
   /**
-   * Remove a subscription.  With `target`, removes that foreign target;
-   * without, removes this actor's own `onMessage` delivery for `topic`.
-   * A broker UNSUBSCRIBE fires once the pattern has no consumers left.
+   * Remove a subscription.  With `target`, removes that foreign target —
+   * whoever attached it, since the subclass owns the registry; without,
+   * removes this actor's own `onMessage` delivery for `topic`.  A broker
+   * UNSUBSCRIBE fires once the pattern has no consumers left.
    */
   protected unsubscribe(topic: string, options: { target?: ActorRef<MqttMessage<T>> } = {}): void {
     this.removeSubscription(topic, options.target, false);
@@ -208,11 +247,17 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     // is an open type parameter, and ts-pattern cannot build a `Pattern<>` for
     // a union that still contains one.  `.otherwise` is reached exactly when
     // none of our kinds hit, i.e. for an app-level `TSelf` message.
+    //
+    // A signal arm also requires the mark only the signal constructors set
+    // (`isMqttSignal`), so a body that merely spells a signal's kind — what a
+    // remote node's message to this path decodes to — is not one of our kinds
+    // and lands in `.otherwise` too.  The commands need no mark: they are this
+    // actor's public protocol, open to anyone who holds the ref.
     const envelope = command as MqttCommand<T> | MqttSignal<T>;
     return match(envelope)
-      .with({ kind: 'mqtt-inbound' }, (m) => this.onMqttInbound(m))
-      .with({ kind: 'mqtt-connected' }, () => this.onMqttConnected())
-      .with({ kind: 'mqtt-disconnected' }, (m) => this.onMqttDisconnected(m))
+      .with({ kind: 'mqtt-inbound' }, (m) => isMqttSignal(m), (m) => this.onMqttInbound(m))
+      .with({ kind: 'mqtt-connected' }, (m) => isMqttSignal(m), () => this.onMqttConnected())
+      .with({ kind: 'mqtt-disconnected' }, (m) => isMqttSignal(m), (m) => this.onMqttDisconnected(m))
       .with({ kind: 'publish' }, (m) => this.onPublish(m))
       .with({ kind: 'subscribe' }, (m) => this.onSubscribe(m))
       .with({ kind: 'unsubscribe' }, (m) => this.onUnsubscribe(m))
@@ -236,7 +281,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   }
 
   private onSubscribe(command: MqttSubscribeCommand<T>): void {
-    this.registerSubscription(command.topic, { qos: command.qos, target: command.target });
+    this.registerSubscription(command.topic, { qos: command.qos, target: command.target }, true);
   }
 
   private onUnsubscribe(command: MqttUnsubscribeCommand<T>): void {
@@ -251,7 +296,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     for (const [pattern, entry] of this.registry) {
       if (!matchesMqttPattern(pattern, message.topic)) continue;
       if (entry.deliverToSelf) toSelf = true;
-      for (const ref of entry.targets) {
+      for (const ref of entry.targets.keys()) {
         if (!seen.has(ref)) { seen.add(ref); ref.tell(message); }
       }
     }
@@ -266,22 +311,47 @@ export abstract class MqttActor<T = unknown, TSelf = never>
 
   /* ----------------------- subscription registry ----------------- */
 
+  /**
+   * @param fromExternal true for an external `subscribe` command — it may
+   *   attach a target and may create a pattern, but never rewrites the QoS
+   *   of a pattern that already exists.  This is the additive mirror of the
+   *   guard on {@link removeSubscription}: a controller that cannot silence
+   *   the subclass's constructor-declared subscription must not be able to
+   *   downgrade it either, and a QoS-2 entry re-SUBSCRIBEd at 0 is the same
+   *   loss taken slowly — the application still believes delivery is
+   *   exactly-once while the broker is free to drop.  false for the
+   *   protected {@link subscribe} and for the `preStart` flush of the
+   *   constructor's own subscriptions, which own the QoS and may change it.
+   *   It also decides whether the registration is announced — see
+   *   {@link announceIntroducedFilter}.  #783.
+   */
   private registerSubscription(
     topic: string,
     options: { qos?: MqttQos; target?: ActorRef<MqttMessage<T>> },
+    fromExternal: boolean,
   ): void {
     let entry = this.registry.get(topic);
+    const introduced = entry === undefined;
     if (!entry) {
-      entry = { qos: options.qos, deliverToSelf: false, targets: new Set() };
+      entry = { qos: options.qos, deliverToSelf: false, targets: new Map() };
       this.registry.set(topic, entry);
-    } else if (options.qos !== undefined) {
-      entry.qos = options.qos;  // last-writer-wins when a QoS is given
+    } else if (options.qos !== undefined && !fromExternal) {
+      entry.qos = options.qos;  // last-writer-wins among the actor's own calls
     }
     if (options.target) {
-      entry.targets.add(options.target);
+      this.attachTarget(entry, options.target, fromExternal ? 'external' : 'own');
       this.watchTarget(options.target, topic);
     } else {
       entry.deliverToSelf = true;
+    }
+    if (fromExternal && introduced) {
+      this.announceIntroducedFilter(topic, entry.qos, options.target);
+    } else if (
+      fromExternal
+      && options.qos !== undefined
+      && this.effectiveQos(options.qos) !== this.effectiveQos(entry.qos)
+    ) {
+      this.announceKeptQos(topic, options.qos, entry.qos);
     }
     if (this.connectionState === 'connected' && this.client) {
       this.brokerSubscribe(topic, entry.qos);
@@ -289,11 +359,127 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   }
 
   /**
-   * @param fromExternal true for an external `unsubscribe` command with
-   *   no target — drops all foreign targets but keeps the actor's own
-   *   subscription (a controller must not be able to silence the
-   *   subclass's constructor-declared subscription).  false for the
-   *   protected `unsubscribe(topic)` — drops only the own delivery.
+   * Record a fan-out target together with the {@link TargetOrigin} that decides
+   * who may detach it again.
+   *
+   * `'own'` wins when both name the same ref, and the asymmetry is the point:
+   * a controller mirroring a feed the subclass already declared must not
+   * acquire the right to take the subclass's copy away by asking for it a
+   * second time.  The reverse — the subclass declaring a ref a controller
+   * attached earlier — is the subclass adopting it, which it may do.
+   */
+  private attachTarget(
+    entry: SubscriptionEntry<T>,
+    target: ActorRef<MqttMessage<T>>,
+    origin: TargetOrigin,
+  ): void {
+    if (origin === 'own' || !entry.targets.has(target)) entry.targets.set(target, origin);
+  }
+
+  /**
+   * Announce a broker-level topic filter an external `subscribe` command
+   * introduced — one the actor did not already hold (#783).
+   *
+   * The wildcard fan-out this makes visible stays open by design: it is the
+   * actor's advertised contract, and a holder of the ref can already publish
+   * anywhere.  That answer is defensible precisely because an operator can
+   * see it happen, which is what this record is for — a `#` nobody expected
+   * is otherwise visible only in a heap dump.
+   *
+   * Both silences are as much of the contract as the record.  A *join* to a
+   * filter already in the registry introduces no filter and no consumer set
+   * that did not exist, and the subclass's own `subscribe()` is the operator's
+   * own declaration, so announcing it would put a line in the log for every
+   * actor that starts and bury the one line that means something.
+   *
+   * The join is silent because nothing was asked for, though — not because
+   * nothing happened.  A join whose `qos` the guard kept out *did* ask for
+   * something and did not get it, and {@link announceKeptQos} says so.  Nor is
+   * a join a no-op at the broker: {@link registerSubscription} re-issues the
+   * SUBSCRIBE while connected, and an MQTT re-SUBSCRIBE replays the filter's
+   * retained messages (always on 3.1.1, on 5.0 unless `retainHandling` says
+   * otherwise), so a join is observable at the actor as a retained replay to
+   * `onMessage` and to every target.  Skipping the round-trip when the
+   * effective QoS is unchanged would remove both the replay and the
+   * round-trip; that is a behaviour change rather than a wording one, and is
+   * not made here.
+   *
+   * Printed: the filter; the QoS the SUBSCRIBE actually carries, which is not
+   * necessarily the command's (an existing entry keeps its own, an absent one
+   * resolves to the actor's default); and enough of the destination to tell a
+   * foreign ref from this actor's own `onMessage`, since which of the two it
+   * is decides whether the feed is being mirrored to somebody else.  Not
+   * printed: anything from a message.  One line per new filter must never
+   * become one line per payload.
+   *
+   * Printing the filter itself is a decision rather than a default, because a
+   * topic path really can carry a secret — ThingSpeak puts a channel's write
+   * API key in the topic, and device-per-topic schemes routinely embed a
+   * serial.  It is printed anyway on two grounds: a redacted filter would
+   * make the record useless for the single question it exists to answer, and
+   * this class already prints the same string verbatim at warn on both
+   * broker-failure paths, so info adds no new class of disclosure.  What *is*
+   * new is that a sender can now drive a log line on a success path at will,
+   * which is what {@link sanitizeForSubscribeLog} answers.
+   */
+  private announceIntroducedFilter(
+    topic: string,
+    qos: MqttQos | undefined,
+    target?: ActorRef<MqttMessage<T>>,
+  ): void {
+    const destination = target
+      ? `actor '${sanitizeForSubscribeLog(target.path.toString())}'`
+      : "this actor's own onMessage";
+    this.log.info(
+      'MqttActor: external subscribe introduced broker filter '
+      + `'${sanitizeForSubscribeLog(topic)}' at QoS ${this.effectiveQos(qos)}, `
+      + `delivering to ${destination}`,
+    );
+  }
+
+  /**
+   * Announce an external `subscribe` whose `qos` the actor kept out of a
+   * pattern it already holds (#1510).
+   *
+   * The refusal is {@link registerSubscription}'s guard and is the right
+   * behaviour; doing it in silence was not.  The command still produces a
+   * broker SUBSCRIBE, so the sender observes a success at a QoS it did not ask
+   * for, and a controller legitimately retuning a filter fails with no signal
+   * anywhere — no record, no dead letter, nothing in the re-SUBSCRIBE it can
+   * see.  Same ground as {@link announceIntroducedFilter}: the refusal is
+   * defensible precisely because an operator can see it happen.
+   *
+   * Both numbers are the *effective* QoS — what the broker is given, after an
+   * entry that named none resolves to the actor's default.  Comparing the
+   * stored values instead would announce a refusal on a command that asked for
+   * exactly what it got, which is the failure mode this record exists to
+   * avoid: a record that reads as an observation and is not one.
+   *
+   * The filter is sanitized for the reason {@link sanitizeForSubscribeLog}
+   * gives — it is sender-chosen text on a success path a sender can drive.
+   */
+  private announceKeptQos(topic: string, asked: MqttQos, kept: MqttQos | undefined): void {
+    this.log.info(
+      `MqttActor: external subscribe asked QoS ${this.effectiveQos(asked)} for filter `
+      + `'${sanitizeForSubscribeLog(topic)}', which the actor already holds at QoS `
+      + `${this.effectiveQos(kept)}; kept QoS ${this.effectiveQos(kept)}`,
+    );
+  }
+
+  /**
+   * @param fromExternal true for an external `unsubscribe` command — it may
+   *   detach only what an external `subscribe` attached, whether it names the
+   *   target or not, and never touches the actor's own `onMessage` delivery.
+   *   A controller must not be able to silence the subclass's
+   *   constructor-declared subscription, and clearing every target used to be
+   *   exactly that whenever the subclass declared its subscription in the
+   *   target form: the entry emptied, was deleted, and a broker UNSUBSCRIBE
+   *   went out — after which a plain `subscribe` re-created the pattern at its
+   *   own QoS, because {@link registerSubscription} guards a rewrite and not a
+   *   creation.  Two messages from any holder of the ref, and the guarantee
+   *   this pair of methods advertises was gone.  false for the protected
+   *   `unsubscribe` — it owns the registry, so it drops the named target
+   *   whatever its origin, or the own delivery when none is named.  #1510.
    */
   private removeSubscription(
     topic: string,
@@ -303,11 +489,16 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     const entry = this.registry.get(topic);
     if (!entry) return;
     if (target) {
-      entry.targets.delete(target);
-      this.unwatchTarget(target, topic);
+      if (!fromExternal || entry.targets.get(target) === 'external') {
+        entry.targets.delete(target);
+        this.unwatchTarget(target, topic);
+      }
     } else if (fromExternal) {
-      for (const ref of entry.targets) this.unwatchTarget(ref, topic);
-      entry.targets.clear();
+      for (const [ref, origin] of [...entry.targets]) {
+        if (origin !== 'external') continue;
+        entry.targets.delete(ref);
+        this.unwatchTarget(ref, topic);
+      }
     } else {
       entry.deliverToSelf = false;
     }
@@ -335,7 +526,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     for (const pattern of watchEntry.patterns) {
       const entry = this.registry.get(pattern);
       if (!entry) continue;
-      for (const target of entry.targets) {
+      for (const target of entry.targets.keys()) {
         if (target.path.toString() === key) { entry.targets.delete(target); break; }
       }
       if (!entry.deliverToSelf && entry.targets.size === 0) {
@@ -367,8 +558,19 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     }
   }
 
+  /**
+   * The QoS a SUBSCRIBE for a registry entry actually carries.
+   *
+   * Factored out so {@link announceIntroducedFilter} and the broker call
+   * cannot drift apart: a record naming a QoS the SUBSCRIBE did not carry
+   * would be worse than no record, since it reads as an observation.
+   */
+  private effectiveQos(qos: MqttQos | undefined): MqttQos {
+    return qos ?? this.options.qos ?? 0;
+  }
+
   private brokerSubscribe(topic: string, qos?: MqttQos): void {
-    this.client?.subscribe(topic, { qos: qos ?? this.options.qos ?? 0 }, (err) => {
+    this.client?.subscribe(topic, { qos: this.effectiveQos(qos) }, (err) => {
       if (err) this.log.warn(`MqttActor: subscribe '${topic}' failed: ${err.message}`);
     });
   }
@@ -387,37 +589,23 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     // super.preStart().  Flush constructor subscriptions into the
     // registry (idempotent) so connectImplementation applies them on connect.
     for (const pendingSub of this.pendingSubs) {
-      this.registerSubscription(pendingSub.topic, { qos: pendingSub.qos, target: pendingSub.target });
+      this.registerSubscription(pendingSub.topic, { qos: pendingSub.qos, target: pendingSub.target }, false);
     }
     this._started = true;
     await super.preStart();
   }
 
-  protected configKey(): string { return ConfigKeys.io.broker.mqtt; }
+  protected configKey(): string { return ConfigKeys.io.broker.mqtt.root; }
 
   protected builtInDefaultOptions(): Partial<MqttOptionsType> {
     return { qos: 0, cleanSession: true, keepAlive: 60 };
   }
 
   protected readOptionsFromConfig(config: Config): Partial<MqttOptionsType> {
-    const out: { -readonly [K in keyof MqttOptionsType]?: MqttOptionsType[K] } = {};
-    if (config.hasPath('brokerUrl')) out.brokerUrl = config.getString('brokerUrl');
-    if (config.hasPath('clientId')) out.clientId = config.getString('clientId');
-    if (config.hasPath('credentials')) {
-      const cc = config.getConfig('credentials');
-      out.credentials = {
-        username: cc.hasPath('username') ? cc.getString('username') : undefined,
-        password: cc.hasPath('password') ? cc.getString('password') : undefined,
-      };
-    }
-    if (config.hasPath('qos')) out.qos = config.getInt('qos') as MqttQos;
-    if (config.hasPath('cleanSession')) out.cleanSession = config.getBoolean('cleanSession');
-    if (config.hasPath('keepAlive')) out.keepAlive = config.getInt('keepAlive');
-    // Value validation (protocolVersion ∈ {4,5}, etc.) is enforced uniformly
-    // by optionsValidator() on the merged options — see MqttOptionsValidator.
-    if (config.hasPath('protocolVersion')) out.protocolVersion = config.getInt('protocolVersion') as 4 | 5;
-    return out;
+    return readMqttOptionsFromConfig(config);
   }
+
+  protected override retiredLeaves(): RetiredLeaves { return RETIRED_MQTT_LEAVES; }
 
   protected requiredOptions(): ReadonlyArray<keyof MqttOptionsType> { return ['brokerUrl']; }
   protected override optionsValidator(): MqttOptionsValidator { return new MqttOptionsValidator(); }
@@ -524,6 +712,113 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   }
 }
 
+/* ---------------------------- HOCON readers ---------------------------- */
+
+/**
+ * The camelCase spellings MQTT's own leaves had before #1443, mapped to the
+ * leaves that replaced them — see `BrokerActor.retiredLeaves`.
+ */
+const RETIRED_MQTT_LEAVES: RetiredLeaves = {
+  brokerUrl: 'broker-url',
+  clientId: 'client-id',
+  cleanSession: 'clean-session',
+  keepAlive: 'keep-alive',
+  protocolVersion: 'protocol-version',
+};
+
+/** The will and the credentials as the options carry them. */
+type MqttWill = NonNullable<MqttOptionsType['will']>;
+type MqttCredentialsOptions = NonNullable<MqttOptionsType['credentials']>;
+
+/**
+ * Read the `actor-ts.io.broker.mqtt` block off the system config, at the full
+ * paths `keys` holds; the reconnect / breaker / buffer leaves are
+ * `BrokerActor`'s.  An unset leaf is omitted.  `keep-alive` is a duration in
+ * whole seconds — see {@link readWholeSeconds}.  Value validation
+ * (`protocol-version` ∈ {4, 5} and the rest) is `MqttOptionsValidator`'s, on
+ * the merged options.  `codec` is a pair of functions and `tls` certificate
+ * material, so neither has a leaf.
+ */
+export function readMqttOptionsFromConfig(
+  config: Config,
+  keys: typeof ConfigKeys.io.broker.mqtt = ConfigKeys.io.broker.mqtt,
+): Partial<MqttOptionsType> {
+  const out: { -readonly [K in keyof MqttOptionsType]?: MqttOptionsType[K] } = {};
+  if (config.hasPath(keys.brokerUrl)) out.brokerUrl = config.getString(keys.brokerUrl);
+  if (config.hasPath(keys.clientId)) out.clientId = config.getString(keys.clientId);
+  if (config.hasPath(keys.credentials.root)) out.credentials = readCredentialsFromConfig(config, keys.credentials);
+  if (config.hasPath(keys.qos)) out.qos = config.getInt(keys.qos) as MqttQos;
+  if (config.hasPath(keys.will.root)) out.will = readWillFromConfig(config, keys.will);
+  if (config.hasPath(keys.cleanSession)) out.cleanSession = config.getBoolean(keys.cleanSession);
+  if (config.hasPath(keys.keepAlive)) out.keepAlive = readWholeSeconds(config, keys.keepAlive);
+  if (config.hasPath(keys.protocolVersion)) out.protocolVersion = config.getInt(keys.protocolVersion) as 4 | 5;
+  return out;
+}
+
+/**
+ * Read `path` as a duration in **whole seconds**, the unit MQTT carries
+ * keep-alive in on the wire.  `30s` is 30.  A value that is not a whole number
+ * of seconds is refused naming the key — `1500ms`, and just as much a bare
+ * `30`, which HOCON reads as thirty *milliseconds*: turning it into 0 or 1
+ * would answer a different question than the one written.  `0` switches
+ * keep-alive off, as it does in code.
+ */
+function readWholeSeconds(config: Config, path: string): number {
+  const milliseconds = config.getDuration(path);
+  if (milliseconds % 1000 !== 0) {
+    throw new ConfigError(
+      `${path} = ${milliseconds} ms is not a whole number of seconds — MQTT carries its keep-alive in `
+      + 'seconds, so write a duration of whole seconds (keep-alive = 30s).  A bare number is read as '
+      + 'milliseconds.',
+    );
+  }
+  return milliseconds / 1000;
+}
+
+/** Read `credentials { … }`, omitting an unset leaf. */
+function readCredentialsFromConfig(
+  config: Config,
+  credentialsKeys: typeof ConfigKeys.io.broker.mqtt.credentials,
+): MqttCredentialsOptions {
+  const credentials: { -readonly [K in keyof MqttCredentialsOptions]: MqttCredentialsOptions[K] } = {};
+  if (config.hasPath(credentialsKeys.username)) credentials.username = config.getString(credentialsKeys.username);
+  if (config.hasPath(credentialsKeys.password)) credentials.password = config.getString(credentialsKeys.password);
+  return credentials;
+}
+
+/**
+ * Read a `will { … }` block.
+ *
+ * A free function rather than four lines inside the reader because the block
+ * is the one place it has to *reconstruct* a value instead of copying leaves
+ * across: `mergeOptions` is a shallow spread, so whatever comes back here
+ * replaces the whole `will` object underneath it.  That is why `payload` falls
+ * back to `''` rather than staying unset — `MqttOptionsType['will']` types both
+ * `topic` and `payload` as required, and a half-built object would satisfy the
+ * compiler only through the cast this function exists to avoid.  `qos` and
+ * `retain` are optional and omitted when unset.
+ *
+ * **`payload` is string-only from HOCON.**  The field is `Uint8Array | string`
+ * and a config file can supply only the string arm; a binary will stays
+ * code-only rather than acquiring a base64 spelling this project has no
+ * precedent for.  An *absent* payload reads as the empty one, which is a
+ * legal MQTT will (a zero-length payload is how a retained will is cleared) —
+ * so unlike `topic` it needs no validator rule.
+ */
+function readWillFromConfig(config: Config, willKeys: typeof ConfigKeys.io.broker.mqtt.will): MqttWill {
+  const will: { -readonly [K in keyof MqttWill]: MqttWill[K] } = {
+    // Empty rather than absent, and MqttOptionsValidator rejects it: the
+    // MQTT spec forbids a zero-length topic name, so `will { qos = 1 }` with
+    // no topic is a configuration mistake that should surface at startup
+    // rather than as a will the broker refuses on CONNECT.
+    topic: config.hasPath(willKeys.topic) ? config.getString(willKeys.topic) : '',
+    payload: config.hasPath(willKeys.payload) ? config.getString(willKeys.payload) : '',
+  };
+  if (config.hasPath(willKeys.qos)) will.qos = config.getInt(willKeys.qos) as MqttQos;
+  if (config.hasPath(willKeys.retain)) will.retain = config.getBoolean(willKeys.retain);
+  return will;
+}
+
 /* --------------------------- MQTT 5.0 helpers -------------------------- */
 
 /**
@@ -544,6 +839,50 @@ export function buildPublishProperties(
   const keys = Object.keys(p.userProperties);
   if (keys.length === 0) return undefined;
   return { userProperties: p.userProperties };
+}
+
+/* ------------------------ subscribe-advisory rendering ----------------- */
+
+/**
+ * Any C0/C1 control character, plus the Unicode line and paragraph separators
+ * — the set that must never reach a log line verbatim.
+ *
+ * The regex *is* the rule, so it stays beside the only function that applies
+ * it.  CR and LF are the ones that matter: a logger writes one line per
+ * record, so a value carrying either forges further lines that read exactly
+ * like genuine ones.  The rest of the control range is in because none of it
+ * belongs in a diagnostic value, and U+2028/U+2029 because enough log
+ * processors treat those as line breaks too.
+ */
+const LOG_UNSAFE_CHARACTERS = /[\u0000-\u001f\u007f\u0085\u2028\u2029]/g;
+
+/**
+ * Clip and escape a value an external caller controls, before it reaches the
+ * advisory {@link MqttActor} writes for a newly introduced topic filter.
+ *
+ * Both of that record's variable fields qualify.  The topic filter is
+ * verbatim from the `subscribe` command, and a fan-out target's path comes
+ * off the wire whenever the ref is a remote one — neither is this process's
+ * own text, and both are printed on a success path a sender can drive at
+ * will.
+ *
+ * Escaped rather than dropped, for the reason the filter is printed at all:
+ * the value *is* the diagnostic, and a sender that put a newline in a topic
+ * filter has told an operator something worth seeing in escaped form.
+ *
+ * The same shape as `sanitizeWireKindForLog` in the cluster transport, and
+ * deliberately a second small copy rather than an import: `src/io/` does not
+ * depend on `src/cluster/`, and a shared `src/util/` helper is worth
+ * extracting once a third subsystem needs one — two is not yet a pattern.
+ */
+function sanitizeForSubscribeLog(value: string): string {
+  const clipped = value.length > MQTT_LOGGED_SUBSCRIBE_FIELD_MAX_CHARACTERS
+    ? `${value.slice(0, MQTT_LOGGED_SUBSCRIBE_FIELD_MAX_CHARACTERS)}…`
+    : value;
+  return clipped.replace(
+    LOG_UNSAFE_CHARACTERS,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  );
 }
 
 /* --------------------------- MQTT topic match -------------------------- */

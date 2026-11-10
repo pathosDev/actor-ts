@@ -145,13 +145,33 @@ describe('adaptSqliteDatabase — transactions (#392)', () => {
 });
 
 describe('buildSqliteDatabase (#392)', () => {
+  // The rule the three stores' validators hold (#1492): a direct caller gets
+  // the same answer as a store, not a weaker one of its own.
   test('requires a path or a pre-opened database', async () => {
-    await expect(buildSqliteDatabase({})).rejects.toThrow(/requires either `path`/);
+    await expect(buildSqliteDatabase({})).rejects.toThrow(/path is required unless `database` is supplied/);
+  });
+
+  test('refuses an empty path rather than opening an anonymous database', async () => {
+    await expect(buildSqliteDatabase({ path: '' })).rejects.toThrow(/path must be a non-empty string/);
+  });
+
+  test('refuses a remote URL, pointing at the libSQL stores', async () => {
+    await expect(buildSqliteDatabase({ path: 'libsql://app.example.turso.io' }))
+      .rejects.toThrow(/use the libSQL stores/);
+  });
+
+  test('checks a present path even beside a handle, as the validator does', async () => {
+    const database = await buildSqliteDatabase({ path: ':memory:' });
+    try {
+      await expect(buildSqliteDatabase({ path: '', database })).rejects.toThrow(/path must be a non-empty string/);
+    } finally {
+      database.close();
+    }
   });
 
   test('an injected database is not closed by end()', async () => {
     // A shared handle belongs to whoever opened it: closing it here would pull
-    // the database out from under the journal and snapshot store sharing it.
+    // the database out from under the code that handed it over.
     const database = await buildSqliteDatabase({ path: ':memory:' });
     const shared = adaptSqliteDatabase(database, false);
     await shared.query('CREATE TABLE t (id INTEGER PRIMARY KEY)');

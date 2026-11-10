@@ -82,7 +82,9 @@ backoff timer and reconnected forever, since `maxAttempts` defaults to
 
 ## Subclass contract
 
-```ts
+```ts no-compile — a signature listing of the base class, not a program
+import type { RetiredLeaves } from 'actor-ts/io';
+
 abstract class BrokerActor<S, Command, P, Subscription = never> extends Actor<Command> {
   // Subclasses implement:
   protected abstract configKey(): string;
@@ -99,6 +101,9 @@ abstract class BrokerActor<S, Command, P, Subscription = never> extends Actor<Co
 
   // Optional — only for refs the subclass watches itself:
   protected onTerminated(signal: Terminated): void | Promise<void> {}
+
+  // Optional — the spellings this broker's own leaves had before a rename:
+  protected retiredLeaves(): RetiredLeaves { return {}; }
 }
 ```
 
@@ -116,6 +121,22 @@ Four categories:
   lives.
 - **Death watch** (`onTerminated`) — optional; see *Subscriber tracking*.
 
+`readOptionsFromConfig` is handed the **system** config, not the broker's
+block, and reads its leaves at their full dotted paths under `configKey()` —
+`` `${this.configKey()}.url` ``, or a `ConfigKeys` constant holding the path —
+the way every other reader in the framework addresses its keys.  It is called
+only when the block exists.  The config it is handed refuses any path outside
+`configKey()` with a `ConfigError` naming it, so an override written for the
+old contract, which was handed the block and read relative names such as
+`'url'`, fails at start instead of quietly reading nothing.
+
+`retiredLeaves()` is the other half of renaming a leaf: return the old
+spellings mapped to the new ones — a `RetiredLeaves` table, imported from
+`actor-ts/io` beside `BrokerActor` — as paths relative to `configKey()` (dotted
+for a leaf in a group), and a configuration that still spells one the old way
+fails `preStart` with a `ConfigError` naming both paths — the same refusal the
+shared leaves below get.  The default retires nothing.
+
 `endpointLabel` is the human-readable connection identity
 ("amqp://localhost:5672", "kafka-cluster-1") used in log lines
 and lifecycle events.
@@ -130,9 +151,15 @@ system-wide `EventStream`, which has no authorization concept, so
 any actor in the system can read them — and a reconnect loop
 republishes on every backoff tick for the length of an outage.
 A joined server list keeps its shape and loses each credential
-(`nats://***@a:4222,nats://***@b:4222`), and a label that never
-carried one comes back unchanged. Call `redactedEndpointLabel()`
-in your own log lines too.
+(`nats://***@a:4222,nats://***@b:4222`). A label that never carried
+one comes back unchanged only when it holds no `?`, `#` or `@`:
+nothing behind the first `?` or `#` is shown, and an `@` anywhere
+past a host cannot be told from a password that holds a `/`, so
+`amqp://rabbit:5671/orders@eu` stops at `amqp://***`. A URL with a
+web scheme (`http`, `https`, `ws`, `wss`) is also printed the way its
+parse normalises it — `ws://Broker.Example:80/feed` as
+`ws://broker.example/feed`. Call `redactedEndpointLabel()` in your
+own log lines too.
 
 `onReceive` is **sealed** — the base class owns it, so that it can intercept
 `Terminated` before your dispatch table sees it.  Implement `onCommand`
@@ -312,6 +339,46 @@ auto-reconnect entirely).  Each attempt waits
 `min(initialDelayMs * factor^(attempt - 1), maxDelayMs)`, multiplied
 by a random `1 ± randomFactor`.
 
+The same settings come from HOCON too, under the broker's own root.  Every
+broker block shares these leaves with the circuit breaker's id and the
+outbound buffer, and a subclass you write reads them under its `configKey()`
+without doing anything for it:
+
+```hocon
+actor-ts.io.broker.kafka {
+  reconnect {
+    initial-delay = 200ms
+    max-delay     = 30s
+    factor        = 2
+    random-factor = 0.2    # ±20 % jitter; 0 for a deterministic schedule
+    # max-attempts omitted = unlimited (the default); 1 = one reconnect, two connects in all
+  }
+  circuit-breaker = "kafka"   # a breaker id; none when unset or ""
+  outbound-buffer = 1000   # messages held while disconnected; 0 = fail-fast
+}
+
+# The breaker's numbers live with every other breaker's, over actor-ts.circuit-breaker.default.
+actor-ts.circuit-breaker.kafka {
+  max-failures  = 5
+  reset-timeout = 30s
+}
+```
+
+Each leaf is the kebab-case of its field with the unit suffix dropped, so a
+duration takes `30s` as readily as a bare millisecond count.  There is no
+HOCON spelling of `reconnect: false`: switching auto-reconnect off entirely
+takes the constructor, and `max-attempts = 1` is the nearest a config file
+gets.  It still retries once: the count is of reconnects, the first connect is
+not one, and `0` is refused.  The camelCase spellings these leaves used to
+have — `initialDelayMs`, `outboundBuffer` and the rest — and every block the
+breaker had before it
+became an id — `circuitBreaker { … }` and
+`circuit-breaker { failure-threshold, reset }` — are refused with a
+`ConfigError` that names the new key, rather than ignored.  The refusal comes
+when the actor starts, in its `preStart`, which is where its block is first
+read — not at `ActorSystem.create`, so a retired key under a broker that is
+never spawned is never reported.
+
 The jitter is what keeps a **fleet** from retrying in lockstep.  Without
 it the delay is a pure function of the attempt counter and these options,
 so every broker actor that lost the same broker in the same instant wakes
@@ -319,10 +386,12 @@ in the same millisecond, wave after wave — and the herd can hold the
 recovering broker down.  Set `randomFactor: 0` for a fully deterministic
 schedule.
 
-The same spread applies to the **circuit breaker**: when the breaker is
-open the actor re-checks somewhere in
-`[resetMs, resetMs × (1 + randomFactor)]` rather than exactly on the
-deadline.  That jitter is one-sided — a breaker is never re-tried early.
+The same spread applies to the wake-up after a **circuit breaker** refused an
+attempt: the actor comes back somewhere in
+`[remaining, remaining × (1 + randomFactor)]` of the window the breaker
+reported, rather than exactly at its end.  That jitter is one-sided — a
+breaker is never re-tried early.  See [Circuit breaker](#circuit-breaker)
+below.
 
 Each attempt fires `BrokerReconnectAttempt` on the event stream (its
 `delayMs` is the jittered value actually scheduled); after `maxAttempts`
@@ -335,6 +404,75 @@ For a deterministic test, inject the randomness source — `random: () =>
 ```ts
 reconnect: { initialDelayMs: 100, random: () => 0.5 }
 ```
+
+### Circuit breaker
+
+Off by default.  Name a breaker by id and every connect attempt is called
+through it:
+
+```ts
+import { KafkaOptions } from 'actor-ts/io';
+
+const kafkaOptions = KafkaOptions.create()
+  .withBrokers(['kafka-1:9092'])
+  .withCircuitBreaker('kafka');
+```
+
+— or `circuit-breaker = "kafka"` under the broker's root, as in the block
+above.  It is the [pattern breaker](/patterns/circuit-breaker/), resolved
+through `CircuitBreakerExtension`: its numbers live under
+`actor-ts.circuit-breaker.kafka`, leaf by leaf over
+`actor-ts.circuit-breaker.default`, the block every breaker in the system is
+configured from.  `""` names none.
+
+What it does to the connect cycle:
+
+- **It opens after `max-failures` consecutive failed connects.**  Only connect
+  attempts count: a connection that drops after it was established is a
+  reconnect, not a failure, and a connect that succeeds resets the count.
+- **While open, it refuses.**  A refused attempt makes no connect, publishes
+  no `BrokerReconnectAttempt` and does not count against `maxAttempts`; the
+  actor comes back when the window ends, by the breaker's clock, spread
+  forwards by `randomFactor` as above.
+- **Once the window has passed, it lets one probe through.**  The breaker is
+  half-open, and the probe decides: a success closes it, a failure opens it
+  again at once — for a window `backoff-factor` grows, up to
+  `max-reset-timeout`.
+- **`ignored-error-names`** lists `Error.name` values that never count — a
+  driver's transient resolver error, say.
+- **`call-timeout`**, when set, is a deadline on each connect, and an attempt
+  that outlasts it counts as a failure.  The WebSocket client, `SseActor` and
+  `TcpSocketActor` abort that attempt through `abortConnectAttempt`, as the
+  connect deadline below aborts one.  No other built-in broker can abort a
+  connect in flight: there the timeout still counts and can open the breaker,
+  but the connect runs until it settles on its own, the next attempt waits for
+  it, and a warning says so.
+
+Actors that name the same id **share one breaker**, and so one verdict: once
+it opens, an actor that never tried is refused too, and each actor makes at
+most one connect per window.  For a fleet of actors on one broker cluster that
+is the point — one attempt each per window instead of a reconnect burst from
+each.  Whether a single probe answers for all of them depends on how long a
+failing connect takes.  Each actor's wake-up is spread forwards by its
+`randomFactor`, and the half-open breaker admits every attempt that arrives
+before the probe settles.  A connect that fails fast reopens the breaker
+before the next actor wakes, so the rest are refused and one probe decided for
+the fleet; a connect that hangs — a broker that black-holes its traffic — is
+still in flight when the others wake, and each of them probes too.  A
+`call-timeout` bounds how long a hanging probe holds the breaker half-open.
+It is also why two
+unrelated brokers get two ids: a breaker shared by both opens on either's
+failures and holds both off.
+
+Every transition is published as `BrokerCircuitBreakerStateChanged` — actor
+path, endpoint, breaker id and state — by each actor that names the breaker.
+`open` is the one to alert on, since a refused attempt publishes nothing else.
+A connect that fails because the actor was being stopped is not counted.
+
+What a breaker does **not** do is slow a peer that accepts every connect and
+then drops it.  A connect that succeeds counts as a success and resets the
+reconnect backoff, so the actor reconnects to such a peer every
+`initialDelayMs` or so.
 
 ### Liveness deadlines
 
@@ -384,6 +522,7 @@ Published on `system.eventStream`:
 | `BrokerReconnectFailed` | `maxAttempts` exhausted. |
 | `BrokerBufferOverflow` | The outbound buffer dropped an envelope. |
 | `BrokerNotConnected` | Sent without a connection. |
+| `BrokerCircuitBreakerStateChanged` | The circuit breaker the actor names went `open`, `half-open` or `closed`. |
 
 Subscribe to monitor every broker actor uniformly:
 
@@ -403,9 +542,13 @@ different broker actors in the system.
 3. Constructor argument        ← highest priority (per-instance)
 ```
 
-`preStart` merges the three layers, validates against
-`requiredOptions()`, and stashes the result for the rest of the
-actor's life via `this.options`.
+`preStart` first refuses a retired spelling under `configKey()` — one of the
+shared leaves, or one `retiredLeaves()` lists.  It then reads the shared
+reconnect, circuit-breaker and buffer leaves itself and the protocol's own
+through `readOptionsFromConfig`, both off the system config at full paths
+under `configKey()`, merges the three layers, validates against
+`requiredOptions()`, resolves the circuit breaker `circuitBreaker` names, and
+stashes the result for the rest of the actor's life via `this.options`.
 
 Missing required settings cause an early-error throw on
 `preStart` — the actor goes through the supervisor's failure
@@ -415,6 +558,7 @@ path before it ever attempts to connect.
 
 ```ts
 import { match } from 'ts-pattern';
+import type { Config } from 'actor-ts';
 import { BrokerActor, type OutboundEnvelope, type BrokerCommonOptionsType } from 'actor-ts/io';
 
 interface MyProtocolOptionsType extends BrokerCommonOptionsType {
@@ -426,7 +570,11 @@ class MyProtocolActor extends BrokerActor<MyProtocolOptionsType, Command, MyPayl
 
   protected configKey() { return 'actor-ts.io.broker.my-protocol'; }
   protected builtInDefaultOptions() { return { /* ... */ }; }
-  protected readOptionsFromConfig(c) { /* parse HOCON */ return {}; }
+  // The system config, read at full paths under configKey().
+  protected readOptionsFromConfig(config: Config): Partial<MyProtocolOptionsType> {
+    const url = `${this.configKey()}.url`;
+    return config.hasPath(url) ? { url: config.getString(url) } : {};
+  }
   protected requiredOptions() { return ['url'] as const; }
   protected endpointLabel() { return this.options.url; }
 

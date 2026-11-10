@@ -24,3 +24,10 @@ export { PriorityMailbox } from './PriorityMailbox.js';
 export { PriorityMailboxOptions, PriorityMailboxOptionsBuilder, PriorityMailboxOptionsValidator } from './PriorityMailboxOptions.js';
 export type { PriorityMailboxOptionsType, PriorityMailboxOverflow } from './PriorityMailboxOptions.js';
 export type { PriorityFunction } from './PriorityMailbox.js';
+export { ControlAwareMailbox } from './ControlAwareMailbox.js';
+export {
+  ControlAwareMailboxOptions,
+  ControlAwareMailboxOptionsBuilder,
+  ControlAwareMailboxOptionsValidator,
+} from './ControlAwareMailboxOptions.js';
+export type { ControlAwareMailboxOptionsType } from './ControlAwareMailboxOptions.js';

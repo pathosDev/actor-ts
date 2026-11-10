@@ -1,9 +1,9 @@
-import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
+import { SealedPayloadOptionsBuilder, type SealedPayloadOptionsBase } from '../storage/SealedPayloadOptions.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
-import type { SqliteConnection } from '../journals/SqliteClient.js';
+import { assertLocalSqlitePath, type SqliteConnection } from '../journals/SqliteClient.js';
 import type { SqliteDb } from '../../runtime/sqlite/index.js';
 
-export interface SqliteDurableStateStoreOptionsType extends SqliteConnection, StoreSerializerOptionsBase {
+export interface SqliteDurableStateStoreOptionsType extends SqliteConnection, SealedPayloadOptionsBase {
   /** Durable-state table name.  Default: `durable_state`. */
   readonly table?: string;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
@@ -16,7 +16,7 @@ export interface SqliteDurableStateStoreOptionsType extends SqliteConnection, St
  *     new SqliteDurableStateStore(SqliteDurableStateStoreOptions.create()
  *       .withPath('./state.db'))
  */
-export class SqliteDurableStateStoreOptionsBuilder extends StoreSerializerOptionsBuilder<SqliteDurableStateStoreOptionsType> {
+export class SqliteDurableStateStoreOptionsBuilder extends SealedPayloadOptionsBuilder<SqliteDurableStateStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new SqliteDurableStateStoreOptionsBuilder()`. */
   static create(): SqliteDurableStateStoreOptionsBuilder {
     return new SqliteDurableStateStoreOptionsBuilder();
@@ -27,7 +27,11 @@ export class SqliteDurableStateStoreOptionsBuilder extends StoreSerializerOption
     return this.set('path', path);
   }
 
-  /** Pre-opened database — share one handle across stores, or inject a fake. */
+  /**
+   * Pre-opened database, used in place of `path` — share a connection the
+   * caller owns, or inject a fake.  This store is the only SQLite store that
+   * takes one: the journal and the snapshot store open their own (#491).
+   */
   withDatabase(database: SqliteDb): this {
     return this.set('database', database);
   }
@@ -68,26 +72,13 @@ export class SqliteDurableStateStoreOptionsValidator
   constructor() { super('SqliteDurableStateStoreOptions'); }
 
   protected rules(s: Partial<SqliteDurableStateStoreOptionsType>): void {
-    this.nonEmptyString('path');
+    // The rule all three SQLite stores share (#1492), with the one difference
+    // this store has: a pre-opened `database` stands in for the path.
+    assertLocalSqlitePath('SqliteDurableStateStoreOptions', s, { acceptsDatabase: true });
     this.nonEmptyString('table');
     // Negative is SQLite's "retry forever", and the driver is synchronous —
     // that is an unbounded event-loop freeze, not a long wait.  `0` is legal
     // and means "fail fast instead of waiting".
     this.nonNegativeInt('busyTimeoutMs');
-    // The mirror image of the libSQL rule.  That backend rejects a local URL
-    // because its HTTP driver cannot open one; this one rejects a remote path
-    // because the local driver cannot either — and a `libsql://` path silently
-    // creating a *file* with that name is the confusing outcome worth
-    // preventing.
-    if (s.path !== undefined && /^(libsql|https?|wss?):/i.test(s.path)) {
-      this.fail(
-        'path',
-        'must be a local file path or ":memory:" — for a remote SQLite service use LibSqlDurableStateStore',
-        s.path,
-      );
-    }
-    if (s.path === undefined && s.database === undefined) {
-      this.fail('path', 'is required unless `database` is supplied');
-    }
   }
 }

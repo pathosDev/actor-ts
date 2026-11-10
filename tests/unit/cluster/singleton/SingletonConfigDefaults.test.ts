@@ -1,0 +1,188 @@
+/**
+ * `readSingletonOptionsFromConfig` — the reader half of
+ * `actor-ts.cluster.singleton.*` (#855).
+ *
+ * Exact objects throughout, through `expectExactOptions`, which compares own
+ * keys as well as values.  A `toEqual({ … })` alone passes for a result
+ * carrying explicit `undefined`s, and that is precisely the bug the `hasPath`
+ * guards exist to prevent:
+ * `mergeOptions` falls through on `undefined`, not on absent, so a
+ * present-but-undefined field would shadow the built-in default the config
+ * layer was supposed to sit *under*.
+ *
+ * `Config.parseString` and never `Config.fromObject({'actor-ts.x.y': …})`: the
+ * latter keeps the dotted string as one literal top-level key, so `hasPath`
+ * goes on resolving the nested `reference.conf` value and the test asserts
+ * nothing.
+ */
+import { describe, expect, test } from 'bun:test';
+import { Config, ConfigError } from '../../../../src/config/Config.js';
+import { ConfigKeys } from '../../../../src/config/ConfigKeys.js';
+import {
+  DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS,
+  DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS,
+  DEFAULT_SINGLETON_MAX_HAND_OVER_STATE_BYTES,
+  DEFAULT_SINGLETON_RESTART_ON_TERMINATION,
+} from '../../../../src/cluster/Constants.js';
+import {
+  DEFAULT_BUFFER_SIZE,
+  readSingletonOptionsFromConfig,
+} from '../../../../src/cluster/singleton/StartSingletonOptions.js';
+import type { SingletonConfigDefaults } from '../../../../src/cluster/singleton/StartSingletonOptions.js';
+import { mergeOptions } from '../../../../src/util/OptionsMerge.js';
+import { expectExactOptions } from '../../../util/ExactOptions.js';
+
+describe('readSingletonOptionsFromConfig', () => {
+  test('reads every key of the singleton block', () => {
+    const config = Config.parseString(`
+      actor-ts.cluster.singleton {
+        role                      = "backend"
+        buffer-size               = 4096
+        hand-over-timeout         = 30s
+        use-lease                 = on
+        acquire-retry-interval    = 1500ms
+        max-hand-over-state-bytes = 64K
+        restart-on-termination    = off
+      }
+    `);
+
+    expectExactOptions(readSingletonOptionsFromConfig(config), {
+      role: 'backend',
+      bufferSize: 4_096,
+      handOverTimeoutMs: 30_000,
+      useLease: true,
+      acquireRetryIntervalMs: 1_500,
+      maxHandOverStateBytes: 65_536,
+      restartOnTermination: false,
+    });
+  });
+
+  test('omits absent keys entirely rather than reporting them as undefined', () => {
+    const config = Config.parseString('actor-ts.cluster.singleton.hand-over-timeout = 90s');
+    // The distinction that matters: a present-but-undefined key would shadow
+    // the built-in default once spread.
+    expectExactOptions(readSingletonOptionsFromConfig(config), { handOverTimeoutMs: 90_000 });
+  });
+
+  test('an empty config yields no settings at all', () => {
+    expectExactOptions(readSingletonOptionsFromConfig(Config.empty()), {});
+  });
+
+  test('the reference defaults round-trip to the built-in ones', () => {
+    // The values `reference.conf` ships have to equal what the code falls back
+    // to, or merely wiring the block would change behaviour for everyone who
+    // configured nothing.
+    //
+    // `role` is absent from this object although the leaf *does* ship: it
+    // ships as `""`, so `hasPath` is true forever, and the reader's
+    // empty-string skip is the only thing keeping `role: ''` out of every
+    // merged options object on every node.  Here that is not merely tidy —
+    // `StartSingletonOptionsValidator.nonEmptyString('role')` throws on `''`,
+    // so passing it through would refuse every `start()` on a node that copied
+    // the shipped file unedited.
+    const config = Config.loadReference();
+
+    expectExactOptions(readSingletonOptionsFromConfig(config), {
+      bufferSize: DEFAULT_BUFFER_SIZE,
+      handOverTimeoutMs: DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS,
+      // Off, which is what every singleton did before the switch existed: no
+      // node builds a lease until a deployment both asks and names a backend.
+      useLease: false,
+      acquireRetryIntervalMs: DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS,
+      maxHandOverStateBytes: DEFAULT_SINGLETON_MAX_HAND_OVER_STATE_BYTES,
+      restartOnTermination: DEFAULT_SINGLETON_RESTART_ON_TERMINATION,
+    });
+  });
+
+  test('an explicitly empty role is "unrestricted", not a role named ""', () => {
+    // The shape an operator hits by leaving the shipped line alone.  Two
+    // separate failures ride on the skip: `role: ''` would shadow an explicit
+    // `withRole` on the layer above (`mergeOptions` only falls through on
+    // `undefined`), and it would fail the options validator outright.
+    const config = Config.parseString('actor-ts.cluster.singleton.role = ""');
+
+    expectExactOptions(readSingletonOptionsFromConfig(config), {});
+  });
+
+  test('explicit options beat HOCON, and an explicit undefined does not shadow', () => {
+    const config = Config.parseString(`
+      actor-ts.cluster.singleton {
+        role        = "backend"
+        buffer-size = 32
+      }
+    `);
+    const fromConfig = readSingletonOptionsFromConfig(config);
+
+    const explicit = mergeOptions<SingletonConfigDefaults>(
+      {},
+      fromConfig,
+      { role: 'gpu', bufferSize: undefined },
+    );
+    expect(explicit.role).toBe('gpu');
+    // `bufferSize: undefined` is "not set", not "explicitly clear" — the
+    // configured 32 has to survive it, or every partially-filled options object
+    // would blank out the config file underneath it.
+    expect(explicit.bufferSize).toBe(32);
+
+    expect(mergeOptions<SingletonConfigDefaults>({}, fromConfig, {}).role).toBe('backend');
+  });
+
+  test('every key it reads is reachable from ConfigKeys as a full dotted path', () => {
+    // Full paths rather than a bare `singleton` root, and the exact object is
+    // what holds that shape.  `NoDeadConfigKeys` decides a read by perturbing
+    // each leaf, which no root satisfies (#1425), but its reachability check
+    // still falls back to the nearest config root: a root-only declaration
+    // would count every leaf beneath it as reachable, named by an accessor or
+    // not.
+    expect(ConfigKeys.cluster.singleton).toEqual({
+      role: 'actor-ts.cluster.singleton.role',
+      useLease: 'actor-ts.cluster.singleton.use-lease',
+      bufferSize: 'actor-ts.cluster.singleton.buffer-size',
+      handOverTimeout: 'actor-ts.cluster.singleton.hand-over-timeout',
+      acquireRetryInterval: 'actor-ts.cluster.singleton.acquire-retry-interval',
+      maxHandOverStateBytes: 'actor-ts.cluster.singleton.max-hand-over-state-bytes',
+      restartOnTermination: 'actor-ts.cluster.singleton.restart-on-termination',
+    });
+  });
+
+  test('the keys with no mechanism behind them are still absent', () => {
+    // Three of the keys #855 proposed have nothing to configure, and one more
+    // is refused in writing by `SINGLETON_HAND_OVER_RETRY_INTERVAL_MS`'s JSDoc.
+    // Asserted rather than merely omitted, because the cost of the mistake is
+    // asymmetric: a key that ships cannot be withdrawn without a breaking
+    // config change, and each of these would read as a feature that is not
+    // there.  `use-lease` left this list when a lease could be built from
+    // `actor-ts.coordination.lease` (#1454); `lease-name` did not, because the
+    // name is derived per singleton.
+    const reference = Config.loadReference();
+    expect(reference.hasPath('actor-ts.cluster.singleton.use-lease')).toBe(true);
+    for (const leaf of [
+      'lease-name',
+      'hand-over-retry-interval',
+      'min-number-of-hand-over-retries',
+      'singleton-identification-interval',
+    ]) {
+      expect(reference.hasPath(`actor-ts.cluster.singleton.${leaf}`)).toBe(false);
+    }
+    // …and no second block for the proxy: `buffer-size` is a field of the same
+    // options type as the manager keys, so `actor-ts.cluster.singleton-proxy`
+    // would split one options type across two namespaces.
+    expect(reference.hasPath('actor-ts.cluster.singleton-proxy')).toBe(false);
+  });
+
+  test('a lease-name written into the block is refused, naming it (#1454)', () => {
+    // Absent is not enough on its own: nothing detects an unknown key, so an
+    // operator's `lease-name` would sit in the tree read by nothing while the
+    // singleton's lease went on being named after its type.
+    const config = Config.parseString(`
+      actor-ts.cluster.singleton {
+        use-lease  = on
+        lease-name = "scheduler-lease"
+      }
+    `);
+
+    expect(() => readSingletonOptionsFromConfig(config)).toThrow(ConfigError);
+    expect(() => readSingletonOptionsFromConfig(config))
+      .toThrow(/^actor-ts\.cluster\.singleton\.lease-name is read by nothing: .*<system>-singleton-<type>/);
+  });
+});

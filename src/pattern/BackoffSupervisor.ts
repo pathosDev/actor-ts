@@ -3,16 +3,30 @@ import { Actor, type ActorClassOrFactory, type ActorFactory } from '../Actor.js'
 import type { ActorOptions } from '../ActorOptions.js';
 import type { ActorRef } from '../ActorRef.js';
 import { LocalActorRef } from '../internal/LocalActorRef.js';
+import { LogContext, type LogContextData } from '../LogContext.js';
 import {
   Directive,
   OneForOneStrategy,
   type SupervisorStrategy,
 } from '../Supervision.js';
 import { DeadLetter, Terminated } from '../SystemMessages.js';
+import { OptionsError } from '../util/OptionsValidator.js';
 import {
   type BackoffPolicy,
   exponentialBackoff,
 } from './BackoffPolicy.js';
+import {
+  BackoffSupervisorOptionsValidator,
+  DEFAULT_BACKOFF_DRAIN_GRACE_CAP_MS,
+  withBackoffSupervisorConfigDefaults,
+} from './BackoffSupervisorOptions.js';
+import type {
+  BackoffSupervisorOptions,
+  BackoffSupervisorOptionsType,
+  ForwardStrategy,
+  ResetCounter,
+  TerminationTrigger,
+} from './BackoffSupervisorOptions.js';
 
 /**
  * BackoffSupervisor — wraps a single child actor and reschedules its
@@ -22,17 +36,18 @@ import {
  * hammer the broken dependency.
  *
  *   const supervisor = system.spawn(
- *     BackoffSupervisor.factory({
- *       child: MyFlaky,
- *       minBackoff: 200,
- *       maxBackoff: 10_000,
- *       randomFactor: 0.2,
- *     }),
+ *     BackoffSupervisor.factory({ child: MyFlaky }),
  *     'flaky-supervisor',
  *   );
  *   // Send messages to the supervisor — they're forwarded to the
  *   // current child, or stashed during a backoff window.
  *   supervisor.tell({ kind: 'do-work' }, replyTo);
+ *
+ * `child` is the only required field.  Everything else comes from
+ * `actor-ts.backoff-supervisor.*` when a config file sets it and from the
+ * built-in defaults otherwise, with an option passed here outranking both —
+ * per field, the usual three layers (#865).  The merge happens in `preStart`,
+ * because that is the first moment `system.config` is reachable.
  *
  * **Mechanism.**  The supervisor:
  *
@@ -54,7 +69,9 @@ import {
  *      — the stash is held back until the new child has clearly
  *      survived its grace window.  New messages arriving during the
  *      grace forward immediately so the happy-path latency is
- *      unaffected.
+ *      unaffected — or, with `forwardDuringGrace: false`, wait in the
+ *      stash until the grace is over, in `drop` mode as well: `drop`
+ *      applies while there is no child, not to one inside its grace.
  *   5. The restart counter resets when the child has been alive for
  *      `resetCounter` ms — default `'after-min-stable'` which uses
  *      `minBackoff` as the threshold.  After a long-running successful
@@ -71,117 +88,56 @@ import {
  *     supervisor will respawn either way until **it** is stopped.
  */
 
-/** Reset rule for the consecutive-restart counter. */
-export type ResetCounter =
-  /** Never reset — the counter grows monotonically. */
-  | 'never'
-  /** Reset after the child has been alive for `>= minBackoff` ms. */
-  | 'after-min-stable'
-  /** Reset after the child has been alive for `>= ms` ms. */
-  | { readonly kind: 'after-time'; readonly ms: number };
-
-/** What to do with messages that arrive while the child is dead. */
-export type ForwardStrategy =
-  /** Buffer them and re-deliver to the next child instance. */
-  | 'stash'
-  /** Drop them silently (the supervisor logs at debug level). */
-  | 'drop';
-
 /**
- * Which terminations should trigger a respawn (#68).  Two modes,
- * because the right answer depends on whether you treat a clean
- * self-stop as recoverable or as a deliberate end of life:
+ * Everything the supervisor derives once from its merged settings.
  *
- *   - `'any'` *(default)* — respawn on every termination, whether the
- *     child crashed (uncaught throw) or stopped itself cleanly
- *     (`context.stop(self)`, `PoisonPill`, parent-driven stop).  This
- *     is the original v1 (#48) behaviour.
- *   - `'failure'` — respawn only when the child crashed.  A clean
- *     self-stop is taken as "this child is done"; the supervisor
- *     itself stops afterwards instead of spawning a replacement.
- *   - `'stop'` — the inverse: respawn only on clean stops (e.g. a
- *     transient connection actor that periodically tears itself
- *     down).  Crashes propagate "up" by stopping the supervisor.
- *
- * Matching is on the **last termination only** — the supervisor
- * re-arms its tracking on every respawn, so a string of crashes
- * followed by a clean stop in `'failure'` mode would respawn through
- * each crash and then stop on the clean stop.
+ * One object rather than nine fields because it is resolved in `preStart`
+ * (the first point where `this.system.config` exists) and not in the
+ * constructor: a null-until-preStart box behind an accessor that throws says
+ * "read before it was resolved" out loud, where nine `!`-asserted fields would
+ * each read as `undefined` at the use site.  `BrokerActor._options` is the
+ * same shape for the same reason.
  */
-export type TerminationTrigger = 'any' | 'failure' | 'stop';
-
-export type BackoffOptions<T> = {
-  /** The child actor — its class, or a factory when it needs dependencies. */
+type ResolvedBackoffSettings<T> = {
   readonly child: ActorClassOrFactory<T>;
-  /** Spawn options for the child.  Its supervision is fixed, see {@link factory}. */
-  readonly childOptions?: ActorOptions<T>;
-  /** Name suffix for the child.  The actual child name is
-   *  `${childName}-${incarnation}` so successive incarnations don't
-   *  collide on names while the previous instance is still tearing down. */
-  readonly childName?: string;
-  /** Floor for the backoff delay, in ms.  Must be > 0. */
-  readonly minBackoff: number;
-  /** Ceiling for the backoff delay, in ms.  Must be >= `minBackoff`. */
-  readonly maxBackoff: number;
-  /** Jitter fraction in `[0, 1]`.  Default `0.2`. */
-  readonly randomFactor?: number;
-  /** Custom policy — overrides the default exponential backoff. */
-  readonly policy?: BackoffPolicy;
-  /** Counter-reset rule.  Default `'after-min-stable'`. */
-  readonly resetCounter?: ResetCounter;
-  /** What to do with messages while the child is dead.  Default `'stash'`. */
-  readonly forward?: ForwardStrategy;
-  /**
-   * Which terminations should trigger a respawn.  Default `'any'`
-   * (current v1 behaviour: respawn on crash AND on clean stop).
-   * See {@link TerminationTrigger} for the three modes.
-   */
-  readonly triggerOn?: TerminationTrigger;
-  /** Stash buffer size (only when `forward === 'stash'`).  Default 1000. */
-  readonly maxStashSize?: number;
-  /**
-   * Grace period after a respawn before stashed messages are forwarded
-   * to the new child.  This protects buffered messages against children
-   * that crash in `preStart` — if the child dies during the grace
-   * window, the stash is preserved for the **next** incarnation.
-   *
-   * Default: `min(50ms, minBackoff)`.  Set `0` to disable (drain
-   * immediately on spawn — the v0 behaviour).
-   */
-  readonly drainGraceMs?: number;
-  /**
-   * What to do with messages that arrive during the grace window
-   * (after a respawn, before the child has proven it survives
-   * `drainGraceMs`).  Two modes (#67):
-   *
-   *   - `true` *(default)* — v1 behaviour.  New messages forward
-   *     immediately to the about-to-be-confirmed child; if that
-   *     child dies in `preStart`, those forwarded messages
-   *     dead-letter.  Lowest latency on the happy path, accepts
-   *     dead-letters during a preStart-crash cascade.
-   *   - `false` — strict mode.  New messages stash until the grace
-   *     expires, then drain alongside the carry-over stash from the
-   *     previous incarnation.  Costs up to `drainGraceMs` of latency
-   *     on the first messages after a respawn but guarantees nothing
-   *     dead-letters when the child keeps crashing in `preStart`.
-   *     Opt-in to fix the dead-letter cascade described in #67.
-   *
-   * Has no effect when `drainGraceMs === 0` — without a grace there
-   * is no "uncertain" window for the gate to apply to.
-   */
-  readonly forwardDuringGrace?: boolean;
-  /** Override `Date.now`/`Math.random` for deterministic tests. */
-  readonly clock?: () => number;
+  readonly childOptions: ActorOptions<T> | undefined;
+  readonly policy: BackoffPolicy;
+  readonly childName: string;
+  readonly forward: ForwardStrategy;
+  readonly stashLimit: number;
+  readonly resetThresholdMs: number | null;
+  readonly drainGraceMs: number;
+  readonly clock: () => number;
+  readonly triggerOn: TerminationTrigger;
+  readonly forwardDuringGrace: boolean;
 };
 
-/** Default child name when the user doesn't supply one. */
-const DEFAULT_CHILD_NAME = 'child';
-/** Default cap so a stuck supervisor doesn't OOM the process. */
-const DEFAULT_STASH_LIMIT = 1000;
-
+/**
+ * One buffered message, plus what the framework can still say about where it
+ * came from once it is evicted (#773).
+ *
+ * **The MDC snapshot is taken here, at stash time, and it has to be.**  The
+ * cell runs each handler inside `LogContext.run(envelope.context, …)`, so
+ * `LogContext.get()` during `onReceive` *is* the arriving envelope's own
+ * context — but {@link BackoffSupervisor.evictOldestStashed} runs while
+ * handling a *later* message, and reading it there would attribute the loss to
+ * whichever message happened to trigger the overflow instead of to the one
+ * being discarded.  A stash entry outlives its turn; the context does not.
+ *
+ * **There is deliberately no `trace`.**  Nothing exposes the arriving
+ * envelope's `trace` to actor code — `ActorContext` has no span accessor, and
+ * the receive span the cell opens is never made active — so the only span
+ * reachable from in here belongs to a different operation than the one that
+ * sent the message.  Recording it under the same field the mailbox path fills
+ * with the *sender's* span would make one field mean two things.  Closing that
+ * needs a seam on `ActorContext`, which is an API change #773 does not ask
+ * for.
+ */
 type StashedMessage = {
   readonly message: unknown;
   readonly sender: ActorRef | null;
+  /** The MDC in force when this message arrived, if it carried one. */
+  readonly context?: LogContextData;
 };
 
 export class BackoffSupervisor<T> extends Actor<unknown> {
@@ -191,20 +147,14 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
    * options to change how the *supervisor* is supervised — the **child** is
    * always run under `stoppingStrategy` regardless.
    */
-  static factory<T>(options: BackoffOptions<T>): ActorFactory<unknown> {
+  static factory<T>(options: BackoffSupervisorOptions<T>): ActorFactory<unknown> {
     return () => new BackoffSupervisor(options) as unknown as Actor<unknown>;
   }
 
-  private readonly options: BackoffOptions<T>;
-  private readonly policy: BackoffPolicy;
-  private readonly childName: string;
-  private readonly forward: ForwardStrategy;
-  private readonly stashLimit: number;
-  private readonly resetThresholdMs: number | null;
-  private readonly drainGraceMs: number;
-  private readonly clock: () => number;
-  private readonly triggerOn: TerminationTrigger;
-  private readonly forwardDuringGrace: boolean;
+  /** Constructor options — partial; merged with HOCON + defaults in preStart. */
+  private readonly constructorOptions: Partial<BackoffSupervisorOptionsType<T>>;
+  /** Everything derived from the merged settings.  `null` until preStart ran. */
+  private resolved: ResolvedBackoffSettings<T> | null = null;
   /**
    * Set by the supervisor's decider (#68) on the way to `Stop` so
    * `handleTerminated` can distinguish a crash-driven termination from
@@ -253,40 +203,22 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
    */
   private stashDropWarnAt = 1;
 
-  constructor(options: BackoffOptions<T>) {
+  constructor(options: BackoffSupervisorOptions<T>) {
     super();
-    if (!Number.isFinite(options.minBackoff) || options.minBackoff <= 0) {
-      throw new Error(`BackoffSupervisor: minBackoff must be > 0, got ${options.minBackoff}`);
+    // A builder carries its set fields as own enumerable props, so one spread
+    // normalizes builder OR plain object into the same `Partial` snapshot.
+    // Nothing is derived here: `this.system.config` does not exist yet — the
+    // cell calls the blueprint factory and only then attaches the context —
+    // so the merge that HOCON participates in has to wait for `preStart`.
+    this.constructorOptions = { ...(options as Partial<BackoffSupervisorOptionsType<T>>) };
+  }
+
+  /** Derived settings — only valid after `preStart`. */
+  private get settings(): ResolvedBackoffSettings<T> {
+    if (this.resolved === null) {
+      throw new Error('BackoffSupervisor: settings read before preStart resolved them');
     }
-    if (!Number.isFinite(options.maxBackoff) || options.maxBackoff < options.minBackoff) {
-      throw new Error(
-        `BackoffSupervisor: maxBackoff (${options.maxBackoff}) must be >= minBackoff (${options.minBackoff})`,
-      );
-    }
-    this.options = options;
-    this.policy = options.policy ?? exponentialBackoff({
-      minMs: options.minBackoff,
-      maxMs: options.maxBackoff,
-      randomFactor: options.randomFactor ?? 0.2,
-    });
-    this.childName = options.childName ?? DEFAULT_CHILD_NAME;
-    this.forward = options.forward ?? 'stash';
-    this.stashLimit = options.maxStashSize ?? DEFAULT_STASH_LIMIT;
-    this.resetThresholdMs = resolveResetThreshold(options.resetCounter, options.minBackoff);
-    if (options.drainGraceMs !== undefined) {
-      if (!Number.isFinite(options.drainGraceMs) || options.drainGraceMs < 0) {
-        throw new Error(`BackoffSupervisor: drainGraceMs must be >= 0, got ${options.drainGraceMs}`);
-      }
-      this.drainGraceMs = options.drainGraceMs;
-    } else {
-      this.drainGraceMs = Math.min(50, options.minBackoff);
-    }
-    this.clock = options.clock ?? Date.now;
-    this.triggerOn = options.triggerOn ?? 'any';
-    // Default `true` keeps the v1 fast-forward path; the dead-letter
-    // protection is opt-in (#67) because every respawn would
-    // otherwise pay `drainGraceMs` of latency on the happy path.
-    this.forwardDuringGrace = options.forwardDuringGrace ?? true;
+    return this.resolved;
   }
 
   /**
@@ -308,7 +240,16 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
     });
   }
 
+  /**
+   * Resolve first, spawn second — the order is load-bearing:
+   * {@link spawnChild} reads `childName`, `clock` and `drainGraceMs`.
+   *
+   * `postRestart` re-runs this by default, so a restarted supervisor re-reads
+   * the config.  That costs nothing: `system.config` is an already-parsed
+   * object, not a file the merge goes back to disk for.
+   */
   override preStart(): void {
+    this.resolved = this.resolveSettings();
     this.spawnChild();
   }
 
@@ -317,8 +258,14 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
       this.handleTerminated(message);
       return;
     }
-    // Internal respawn tick — we only ever schedule it via timers, so
-    // any other appearance is a bug somewhere upstream.
+    // Internal respawn tick.  The timer below is the only thing that can put
+    // one on this queue — not by convention but because `RESPAWN_TICK` is a
+    // module-private symbol nothing outside this file can name or rebuild, and
+    // a symbol survives no wire codec, so an arriving message that is `===` to
+    // it came from our own `startSingleTimer` (#770).  Before that it was
+    // `Symbol.for`, and the comment here claimed a guarantee the code did not
+    // enforce: anyone with the registry string could forge a tick and collapse
+    // the backoff window this class exists to impose.
     if (message === RESPAWN_TICK) {
       this.respawn();
       return;
@@ -326,7 +273,9 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
     // Internal drain tick — fired drainGraceMs after a respawn.  If
     // the child is still alive, mark it confirmed and drain the
     // stash.  If it died in the meantime, currentChild is null and
-    // we leave the stash for the next incarnation.
+    // we leave the stash for the next incarnation.  Module-private for the
+    // same reason as the respawn tick above: a forged one flushed the stash
+    // into a child that had not yet cleared `preStart` (#770).
     if (message === DRAIN_TICK) {
       if (this.currentChild) {
         this.childConfirmedAlive = true;
@@ -338,17 +287,31 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
     // `forwardDuringGrace` opt-out preserves the v1 behaviour for
     // users who prefer zero-latency forwarding over the
     // dead-letter-during-preStart-crash protection (#67).
-    if (this.currentChild && (this.childConfirmedAlive || this.forwardDuringGrace)) {
+    if (this.currentChild && (this.childConfirmedAlive || this.settings.forwardDuringGrace)) {
       this.currentChild.tell(message as T, this.sender.toNullable());
       return;
     }
-    if (this.forward === 'drop') {
+    // `forward = drop` is about the backoff window, when there is no child to
+    // hold a message for.  Inside the grace there is one — alive, not yet
+    // confirmed — and `forwardDuringGrace: false` holds its messages in the
+    // stash until the grace is over, in either mode: dropping them here lost
+    // every message of the first grace after each start and respawn (#1479).
+    if (this.currentChild === null && this.settings.forward === 'drop') {
       this.log.debug('BackoffSupervisor: dropping message during backoff window', { message });
       return;
     }
-    // 'stash' mode.
-    if (this.stash.length >= this.stashLimit) this.evictOldestStashed();
-    this.stash.push({ message, sender: this.sender.toNullable() });
+    // 'stash' mode, or the grace hold.
+    if (this.stash.length >= this.settings.stashLimit) this.evictOldestStashed();
+    // The MDC is snapshotted now rather than at eviction, for the reason
+    // `StashedMessage` gives: by then this turn's context is somebody else's.
+    // Omitted when there is none, exactly as `LocalActorRef.tell` omits it —
+    // an empty context on the entry would say the sender had one.
+    const context = LogContext.get();
+    this.stash.push(
+      LogContext.isEmpty(context)
+        ? { message, sender: this.sender.toNullable() }
+        : { message, sender: this.sender.toNullable(), context },
+    );
   }
 
   override postStop(): void {
@@ -367,6 +330,58 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
   /* ------------------------- internals ---------------------------------- */
 
   /**
+   * Merge the three layers, check them, and derive what the message loop
+   * reads — the whole of what used to happen in the constructor (#865).
+   *
+   * **Where a bad value surfaces moved with it, deliberately.**  Before this,
+   * `minBackoff <= 0` threw synchronously out of `new BackoffSupervisor(...)`;
+   * now it fails the supervisor's `preStart` and reaches whoever supervises
+   * *it*.  That is the price of the config layer existing at all — a value
+   * from `application.conf` cannot be checked at a call site that never saw it
+   * — and it is the shape every other configurable actor in the framework
+   * already has (`BrokerActor` runs `optionsValidator()` in `preStart` for the
+   * same reason).  The gain is that one rule now covers all three sources
+   * instead of the code path only.
+   */
+  private resolveSettings(): ResolvedBackoffSettings<T> {
+    const merged = withBackoffSupervisorConfigDefaults<T>(this.constructorOptions, this.system.config);
+    // Required-ness first and by hand: every check helper is a deliberate
+    // no-op on `undefined`, and `child` is the one field neither HOCON nor a
+    // built-in default can supply.  Same split as
+    // `BrokerActor.requiredOptions()`.
+    if (merged.child === undefined) {
+      throw new OptionsError(
+        'BackoffSupervisorOptions: child is required — there is no actor to supervise without it',
+        'BackoffSupervisorOptions',
+        'child',
+      );
+    }
+    new BackoffSupervisorOptionsValidator().validate(merged);
+    return {
+      child: merged.child,
+      childOptions: merged.childOptions,
+      // A custom policy computes the whole delay, so `randomFactor` is inert
+      // for a caller that supplies one — while `minBackoff` / `maxBackoff`
+      // still apply, through the reset threshold and the drain grace below.
+      policy: merged.policy ?? exponentialBackoff({
+        minMs: merged.minBackoff,
+        maxMs: merged.maxBackoff,
+        randomFactor: merged.randomFactor,
+      }),
+      childName: merged.childName,
+      forward: merged.forward,
+      stashLimit: merged.maxStashSize,
+      resetThresholdMs: resolveResetThreshold(merged.resetCounter, merged.minBackoff),
+      drainGraceMs: merged.drainGraceMs === 'auto'
+        ? Math.min(DEFAULT_BACKOFF_DRAIN_GRACE_CAP_MS, merged.minBackoff)
+        : merged.drainGraceMs,
+      clock: merged.clock ?? Date.now,
+      triggerOn: merged.triggerOn,
+      forwardDuringGrace: merged.forwardDuringGrace,
+    };
+  }
+
+  /**
    * Make room in a full stash, and account for what that costs (#773).
    *
    * **The evicted message becomes a dead letter.**  A stash entry is an
@@ -378,6 +393,21 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
    * runs inside the supervisor's own `onReceive` rather than on the sender's
    * stack, so nothing here is charged to whoever produced the burst.
    *
+   * **Where the per-message cost is bounded, since attribution is not the
+   * whole answer.**  `BoundedMailboxOptionsType.deadLetterDrops` makes the
+   * same publish opt-in and defaults it off, and it does so on grounds of
+   * *magnitude* rather than of whose stack the work lands on — a durable
+   * capture plus a synchronous fan-out per shed message, under exactly the
+   * pressure a bound exists to absorb.  That argument does not stop applying
+   * because the stack changed: a sustained flood against a supervisor in a
+   * backoff window pays it once per eviction here too.  What answers it is
+   * that the bound belongs on the publish side rather than per producer —
+   * rate-limiting, sampling and suppression of the dead-letter stream are
+   * #1179, sited in `DeadLetterRef.tell` after the sink so a complete record
+   * never becomes a lossy one.  A knob of its own here would be a third
+   * place to configure one answer, and it would have to be HOCON-backed to
+   * be worth having (#773).
+   *
    * **The warning is aggregated, not per message.**  One `log.warn` per
    * evicted message meant a supervisor stuck in a long backoff window turned
    * a message flood into a log flood at exactly the same rate.  The line now
@@ -386,15 +416,23 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
    * condition that repeats as fast as traffic arrives, and the one that needs
    * no tuned interval to be picked and defended.  It carries the running
    * total, so a line arriving late still says how much was lost.
+   *
+   * **The letter carries the MDC the message arrived with**, captured at stash
+   * time — see {@link StashedMessage}, which also says why it carries no span
+   * context.  Without it an operator reading the dead-letter stream can see
+   * that a supervisor in a backoff window shed a message and not which request
+   * it belonged to, which is the same gap the mailbox path had.
    */
   private evictOldestStashed(): void {
     const evicted = this.stash.shift();
     if (evicted === undefined) return;
-    this.system.deadLetters.tell(new DeadLetter(evicted.message, evicted.sender, this.self));
+    this.system.deadLetters.tell(
+      new DeadLetter(evicted.message, evicted.sender, this.self, { context: evicted.context }),
+    );
     this.stashDropCount += 1;
     if (this.stashDropCount < this.stashDropWarnAt) return;
     this.log.warn('BackoffSupervisor: stash full — oldest message dead-lettered', {
-      stashLimit: this.stashLimit,
+      stashLimit: this.settings.stashLimit,
       droppedTotal: this.stashDropCount,
     });
     this.stashDropWarnAt = this.stashDropCount * 2;
@@ -403,31 +441,31 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
   private spawnChild(): void {
     this.stopPreviousChild();
     this.incarnation += 1;
-    const name = `${this.childName}-${this.incarnation}`;
-    const child = this.context.spawn(this.options.child, name, this.options.childOptions);
+    const name = `${this.settings.childName}-${this.incarnation}`;
+    const child = this.context.spawn(this.settings.child, name, this.settings.childOptions);
     this.context.watch(child);
     this.currentChild = child;
-    this.spawnTs = this.clock();
+    this.spawnTs = this.settings.clock();
     // Reset the alive-confirmation flag.  In the default
     // `forwardDuringGrace: true` mode this only matters for the
     // explicit-stash carry-over (the gate doesn't apply); in the
     // opt-in strict mode it gates new forwards until DRAIN_TICK
     // flips it back to true.  `drainGraceMs === 0` skips the grace
     // entirely.
-    this.childConfirmedAlive = this.drainGraceMs === 0;
-    if (this.drainGraceMs === 0) {
+    this.childConfirmedAlive = this.settings.drainGraceMs === 0;
+    if (this.settings.drainGraceMs === 0) {
       this.drainStash(child);
       return;
     }
     // Wait one grace period before flipping confirmedAlive AND
     // draining the stash — a child that crashes in `preStart`
-    // doesn't take the stash with it to dead-letter, and (with
-    // `forwardDuringGrace: false`, the default) new messages
-    // arriving in the post-respawn window are stashed too.
+    // doesn't take the stash with it to dead-letter, and (with the
+    // opt-in `forwardDuringGrace: false`; the default is `true`) new
+    // messages arriving in the post-respawn window are stashed too.
     this.context.timers.startSingleTimer(
       DRAIN_TIMER_KEY,
       DRAIN_TICK as unknown as never,
-      this.drainGraceMs,
+      this.settings.drainGraceMs,
     );
   }
 
@@ -471,7 +509,7 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
       this.log.info('BackoffSupervisor: child terminated, triggerOn rejected — supervisor stops', {
         child: message.actor.toString(),
         cause: wasFailure ? 'failure' : 'stop',
-        triggerOn: this.triggerOn,
+        triggerOn: this.settings.triggerOn,
       });
       // Stop ourselves — the parent (or whoever spawned us) gets a
       // Terminated for the supervisor and decides what to do next.
@@ -482,11 +520,11 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
       return;
     }
 
-    const aliveFor = this.clock() - this.spawnTs;
-    if (this.resetThresholdMs !== null && aliveFor >= this.resetThresholdMs) {
+    const aliveFor = this.settings.clock() - this.spawnTs;
+    if (this.settings.resetThresholdMs !== null && aliveFor >= this.settings.resetThresholdMs) {
       this.restartCount = 0;
     }
-    const delay = this.policy.delayFor(this.restartCount);
+    const delay = this.settings.policy.delayFor(this.restartCount);
     this.restartCount += 1;
     this.previousChild = child;
     this.currentChild = null;
@@ -519,7 +557,7 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
   private shouldRespawn(wasFailure: boolean): boolean {
     // Exhaustive match — adding a new TerminationTrigger variant
     // forces this site to be updated (TS error otherwise).
-    return match(this.triggerOn)
+    return match(this.settings.triggerOn)
       .with('any',     () => true)
       .with('failure', () => wasFailure)
       .with('stop',    () => !wasFailure)
@@ -573,11 +611,50 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
   }
 }
 
+/*
+ * The two control ticks, and why they are `Symbol()` and not `Symbol.for()`
+ * (#770).
+ *
+ * `onReceive` is the supervisor's public, arbitrary-message entry point — it
+ * forwards anything it does not recognise to the child — and it recognises
+ * these two by bare value equality.  `Symbol.for` resolves through the
+ * cross-realm global registry, so the sentinel was reconstructible by anyone
+ * holding the string, and the string was a compile-time constant in a
+ * published package.  Telling a forged `RESPAWN_TICK` during a backoff window
+ * collapsed that window to zero; a forged `DRAIN_TICK` flushed the stash into
+ * a child that had not yet cleared `preStart`.
+ *
+ * A plain `Symbol()` is unguessable and costs nothing, because global identity
+ * was never needed: this module is the only place that constructs either one
+ * and the only place that compares them.  The timer *keys* stay strings — they
+ * name entries in the actor's own `TimerScheduler`, which is reachable only
+ * from inside the actor, so there is no channel for a collision to arrive on.
+ *
+ * The issue asked for one of two things — verified provenance, or a dedicated
+ * internal channel the ticks travel on instead — and this answers the first.
+ * The second is not available to a supervisor: the only lane a message can
+ * arrive on that a `tell` cannot reach is the system queue, and its door,
+ * `ActorCell.enqueueSystem`, is `@internal` and has no user-level equivalent;
+ * a `BackoffSupervisor` is an ordinary `Actor`, so building one would mean
+ * opening that door to every actor rather than to this one.  Nor does the
+ * scheduler substitute for it: arming the respawn with
+ * `scheduleOnceFunction` would take the tick off the mailbox entirely and run
+ * `respawn()` from the timer's callback — outside the actor's turn, against
+ * state the next message is about to read.  The sentinel is therefore the
+ * whole of the answer here, and provenance is what it has to carry.
+ *
+ * Honest scope, so nobody reads more into this than it carries: no trust
+ * boundary was crossed.  A symbol survives neither JSON nor CBOR, so no
+ * cluster peer could ever produce one, and the only caller who could is
+ * in-process code already holding the supervisor's ref — which could equally
+ * reassign this module's state directly.  This is a published constant string
+ * colliding with a public message channel, not a privilege boundary.
+ */
 /** Sentinel for the respawn timer message. */
-const RESPAWN_TICK = Symbol.for('actor-ts.pattern.BackoffSupervisor.respawn');
+const RESPAWN_TICK = Symbol('actor-ts.pattern.BackoffSupervisor.respawn');
 const RESPAWN_TIMER_KEY = 'actor-ts.pattern.BackoffSupervisor.respawn';
 /** Sentinel for the stash-drain timer message. */
-const DRAIN_TICK = Symbol.for('actor-ts.pattern.BackoffSupervisor.drain');
+const DRAIN_TICK = Symbol('actor-ts.pattern.BackoffSupervisor.drain');
 const DRAIN_TIMER_KEY = 'actor-ts.pattern.BackoffSupervisor.drain';
 
 /**
@@ -598,6 +675,16 @@ function hasTerminated(ref: ActorRef): boolean {
   return ref instanceof LocalActorRef && ref.getCell().isTerminated();
 }
 
+/**
+ * Turn the reset rule into the milliseconds `handleTerminated` compares
+ * against, or `null` for "never reset".
+ *
+ * It no longer range-checks `ms`: that rule lives in
+ * {@link BackoffSupervisorOptionsValidator}, which runs on the merged settings
+ * just above this call, so a value arriving from a config file is rejected by
+ * the same message a value written in code is.  Keeping a second throw here
+ * would be one rule with two wordings.
+ */
 function resolveResetThreshold(
   rule: ResetCounter | undefined, minBackoff: number,
 ): number | null {
@@ -607,11 +694,6 @@ function resolveResetThreshold(
   return match(rule)
     .with(undefined, 'after-min-stable', () => minBackoff)
     .with('never', () => null)
-    .with({ kind: 'after-time' }, (r) => {
-      if (!Number.isFinite(r.ms) || r.ms < 0) {
-        throw new Error(`BackoffSupervisor: resetCounter.ms must be a non-negative number, got ${r.ms}`);
-      }
-      return r.ms;
-    })
+    .with({ kind: 'after-time' }, (r) => r.ms)
     .exhaustive();
 }

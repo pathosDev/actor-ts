@@ -1,20 +1,28 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
+import { ConfigKeys } from '../config/ConfigKeys.js';
+import type { Config } from '../config/Config.js';
 import type { ActorRef } from '../ActorRef.js';
 import type { Delivery } from './Messages.js';
 import { MAX_DELIVERY_IDENTIFIER_LENGTH } from './Constants.js';
+
+/** Built-in default for {@link ProducerControllerOptionsType.resendTimeout}. */
+export const DEFAULT_RESEND_TIMEOUT_MS = 500;
+/** Built-in default for {@link ProducerControllerOptionsType.windowSize}. */
+export const DEFAULT_WINDOW_SIZE = 16;
 
 /** Plain options-object shape accepted by a {@link ProducerController}. */
 export type ProducerControllerOptionsType<T> = {
   readonly consumer: ActorRef<Delivery<T>>;
   /**
-   * How long to wait for an Acknowledgment before re-sending.  Default 500ms.
+   * How long to wait for an Acknowledgment before re-sending.  Default
+   * {@link DEFAULT_RESEND_TIMEOUT_MS} (500 ms).
    */
   readonly resendTimeout?: number;
   /**
    * Flow-control window: at most `windowSize` messages may be in-flight
    * (un-acked) at any moment.  Additional Sends queue until room opens up.
-   * Default: 16.
+   * Default {@link DEFAULT_WINDOW_SIZE} (16).
    */
   readonly windowSize?: number;
   /**
@@ -97,6 +105,31 @@ export class ProducerControllerOptionsValidator<T> extends OptionsValidator<Prod
       );
     }
   }
+}
+
+/**
+ * Read `actor-ts.reliable-delivery.producer.*` into the shape
+ * {@link ReliableDelivery.producer} layers under the caller's options.  Only
+ * keys actually present are returned, so an absent one falls through to the
+ * built-in default instead of landing as an explicit `undefined` — the rule
+ * `mergeOptions` encodes.
+ *
+ * The return type deliberately drops the generic.  `consumer` and
+ * `producerId` have no leaf — the first is an actor reference HOCON cannot
+ * express, the second is per-producer identity that one shared leaf would
+ * corrupt (see {@link ProducerControllerOptionsType.producerId}) — and those
+ * two are the only reason the options type is generic at all.  Picking the
+ * two tunables off `<never>` gives a plain `{ resendTimeout?, windowSize? }`
+ * that composes with any `T` at the merge site.
+ */
+export function readProducerControllerOptionsFromConfig(
+  config: Config,
+): Partial<Pick<ProducerControllerOptionsType<never>, 'resendTimeout' | 'windowSize'>> {
+  const keys = ConfigKeys.reliableDelivery.producer;
+  const out: { -readonly [K in 'resendTimeout' | 'windowSize']?: number } = {};
+  if (config.hasPath(keys.resendTimeout)) out.resendTimeout = config.getDuration(keys.resendTimeout);
+  if (config.hasPath(keys.windowSize)) out.windowSize = config.getInt(keys.windowSize);
+  return out;
 }
 
 /**

@@ -103,13 +103,46 @@ The options are validated at construction: a missing or non-positive
 `callTimeoutMs` throws `OptionsError` (omit `callTimeoutMs` entirely to
 disable the per-call timeout).
 
+#### Ignoring errors by name
+
+`isFailure` is a predicate, so it lives in code.  `ignoredErrorNames`
+is the same idea expressed as data — a list of `Error.name` values
+that never count — which is what lets an operator change it in
+`application.conf` without a deploy:
+
+```ts
+new CircuitBreaker({
+  maxFailures: 5,
+  resetTimeoutMs: 30_000,
+  ignoredErrorNames: ['ValidationError', 'NotFoundError'],
+});
+```
+
+The list is consulted **before** `isFailure`, and a listed name is
+never a failure whatever the predicate says.  That order is deliberate:
+the list is the operator's half of the classifier and the predicate is
+the developer's, and a compiled predicate that could overrule the list
+would make the config key go inert for exactly the deployments that
+set it.  For an *unlisted* name, `isFailure` still decides.
+
+`'CircuitBreakerTimeoutError'` is listable, and it means what it says:
+a call that blew its own `callTimeoutMs` does not count against the
+breaker.  Coherent — "slow is not down" — and surprising enough to be
+worth writing on the deployment that chooses it.
+
 ### Open → half-open
 
 Once open, every call rejects with `CircuitBreakerOpenError`
-immediately.  The breaker stays open until `Date.now() >= nextProbeAt`.
-At that point, the *next* call transitions to **half-open** and is
-allowed through.  This isn't a scheduled wake-up — the breaker
-checks lazily on the next `call()`.
+immediately.  The breaker stays open until its clock — the wall clock,
+or the `scheduler` it was given — reaches `nextProbeAt`.  At that point,
+the *next* call transitions to **half-open** and is allowed through.
+This isn't a scheduled wake-up — the breaker checks lazily on the next
+`call()`.
+
+The refusal says how long is left: `error.remainingMs` is the wait, from
+the moment the call was refused, until a call would be let through.  A
+caller that wants to come back reads that rather than `nextProbeAt`,
+since only the breaker knows which clock the timestamp is on.
 
 ### Half-open → closed (or back to open)
 
@@ -123,13 +156,177 @@ calls during half-open *also* go through (the breaker doesn't
 serialize), but the breaker's state transitions are driven by the
 first one to complete.
 
+### The reopen schedule
+
+By default the window is flat: every open waits `resetTimeoutMs`.
+Two optional knobs change that, and both ship neutral so the default
+behaviour is the one every earlier release had.
+
+```ts
+const breaker = new CircuitBreaker({
+  maxFailures:       5,
+  resetTimeoutMs:    15_000,  // the first window
+  backoffFactor:     2,       // each further open doubles it
+  maxResetTimeoutMs: 60_000,  // …up to here
+  randomFactor:      0.2,     // then spread by ±20%
+});
+```
+
+The delay for the *n*-th consecutive open is
+`resetTimeoutMs × backoffFactor^(n − 1)`, clamped to
+`maxResetTimeoutMs`, then multiplied by `1 ± randomFactor`.  Above:
+15 s, 30 s, 60 s, 60 s…, each ±20 %.  The counter resets when a probe
+succeeds and the breaker closes, so a dependency that recovers starts
+over at the first window rather than staying in a long one it earned
+while it was down.
+
+A `resetTimeoutMs` of `0` — "probe on the very next call" — stays `0`
+at every open count, whatever the factor: the growth is multiplicative
+and there is nothing to multiply.  It is a legal pairing and it stays
+one; the window is a finite number of milliseconds for every legal
+combination of these four settings, however long the outage runs.
+
+Jitter is the same contract `retry` and `exponentialBackoff` use, and
+it buys the same thing here: N replicas that opened on one upstream
+event stop probing it in lockstep, so the recovering dependency meets
+a spread of probes instead of a synchronised wave.
+
+`maxResetTimeoutMs` bounds the *whole* window, not only the growth, so
+a `resetTimeoutMs` above the ceiling is refused at construction rather
+than quietly shortened — clamping silently would replace a window an
+operator chose with one nobody wrote down.  It defaults to 60 s, which
+is what a `resetTimeoutMs` longer than that has to raise.
+
+`breaker.nextProbeAt` reads the scheduled timestamp and
+`breaker.consecutiveOpens` the exponent behind it, which is how a
+metric sees the schedule without waiting it out.
+
+## Breakers from configuration
+
+`new CircuitBreaker({ … })` is the door for a breaker whose settings
+live in code.  The **`CircuitBreakerExtension`** is the other one: it
+resolves a breaker by id, so the numbers come from HOCON and the
+instance is owned by the system rather than by whatever created it.
+
+```ts
+import { CircuitBreakerExtensionId } from 'actor-ts';
+
+const breakers = system.extension(CircuitBreakerExtensionId);
+const payments = breakers.breaker('payment-api');
+const shipping = breakers.breaker('shipping-api');
+```
+
+```hocon
+actor-ts.circuit-breaker {
+  default {
+    max-failures  = 5
+    reset-timeout = 15s
+  }
+  payment-api {
+    max-failures        = 3
+    reset-timeout       = 30s
+    backoff-factor      = 2.0
+    random-factor       = 0.2
+    ignored-error-names = ["ValidationError"]
+  }
+}
+```
+
+`payment-api` takes its own four leaves and inherits the rest from
+`default`; `shipping-api` has no block at all and is entirely the
+`default` one.  Each id is a separate instance with separate settings,
+which is the "one breaker per logical dependency" advice below made
+configurable instead of only recommended.  The same id always returns
+the same instance, and it reads the system's clock — under a
+`ManualScheduler` its window moves with the advance.
+
+The framework's own breakers are resolved this way too, so they are
+configured in the same block: the persistence stores name theirs with
+`actor-ts.persistence.journal-breaker` / `snapshot-breaker`, and a broker
+actor names one with `withCircuitBreaker('kafka')` or
+`circuit-breaker = "kafka"` under its root — off until it does.  Every
+actor that names the same id shares the instance: one breaker per broker
+cluster, opened by any of them, with at most one attempt per window from each
+— and a single probe for all of them only while a failing connect is short
+against the spread of their wake-ups
+(see [BrokerActor base](/io/broker-actor-base/#circuit-breaker)).
+
+Options a config file cannot express are passed as the second
+argument, above both blocks:
+
+```ts
+const payments = breakers.breaker('payment-api', {
+  isFailure: (err) => err.name !== 'ValidationError',
+});
+```
+
+Read them once, when the instance is created — a later
+`breaker('payment-api')` returns the breaker that already exists
+rather than reconfiguring it.  A bad value in either block throws
+`OptionsError` at that first call, so a typo'd override fails loudly
+instead of leaving one breaker quietly running the framework defaults.
+
+#### A classifier that belongs to the dependency, not to one caller
+
+That "read once" rule has a sharp edge as soon as more than one place
+resolves the same id: whoever gets there first decides, and every later
+caller's `isFailure` is silently dropped.  Passing the predicate to
+`call` instead sidesteps it — it classifies *that* call's errors and
+takes precedence over whatever the instance was built with:
+
+```ts
+const journal = breakers.breaker('persistence-journal');
+
+await journal.call(
+  () => store.append(id, entries, expectedSeq),
+  (err) => !(err instanceof ConcurrencyError),
+);
+```
+
+Use the construction option when the breaker's settings are yours
+alone, and the per-call argument when the id is shared or published —
+which is what the framework does for
+`actor-ts.persistence.journal-breaker`, whose id is a documented config
+path anyone may resolve.
+
+The persistence breakers also choose the classifier by call, because
+not every call through them is one they guard.  An append, a recovery
+and a snapshot load are classified as above; a journal delete and a
+snapshot save or delete still run through the breaker — so
+`call-timeout` bounds them and an open breaker refuses them — with a
+classifier that counts nothing.  A store that refuses deletes or
+snapshot writes but serves everything else therefore cannot open the
+breaker in front of every append and recovery on the node; see [When
+the stores are down](/persistence/persistent-actor/#when-the-stores-are-down).
+
+`ignoredErrorNames` still comes first either way, and an excused error
+is still neither a failure nor a success: the consecutive-failure count
+survives it untouched, so one excused error between every two real ones
+cannot keep a dead dependency from opening the breaker.
+
+The full key list is in the [configuration
+reference](/reference/configuration/#actor-tscircuit-breaker).
+
 ## Observability
 
 ```ts
-const breaker = new CircuitBreaker({ /* ... */ });
+import { CircuitBreaker, type CircuitState } from 'actor-ts';
+import { MetricsExtensionId } from 'actor-ts/metrics';
+
+const breaker = new CircuitBreaker({ maxFailures: 5, resetTimeoutMs: 30_000 });
+
+// A gauge holds a number, so the state is encoded — ordered by how much
+// traffic is refused, the encoding persistence_breaker_state uses too.
+const stateValue: Record<CircuitState, number> = { closed: 0, 'half-open': 1, open: 2 };
+const metrics = system.extension(MetricsExtensionId).enable();
+const stateGauge = metrics.gauge(
+  'payments_breaker_state', {},
+  { help: 'Payments API circuit breaker: 0 closed, 1 half-open, 2 open.' },
+);
+stateGauge.set(stateValue[breaker.state]);
 
 const unsubscribe = breaker.onStateChange((state) => {
-  metrics.gauge('circuit_breaker.state', state);
+  stateGauge.set(stateValue[state]);
   log.info(`circuit breaker → ${state}`);
 });
 
@@ -140,7 +337,22 @@ Use this to wire state transitions into your logging or metrics
 pipeline.  The listener fires on every transition, including
 forced ones via `breaker.setState(...)`.
 
+`metrics.gauge(name, labels, options)` returns the gauge; it is
+not a setter, so the value goes through `.set()`.  The name must be
+a Prometheus metric name — underscores, not dots — and a gauge holds
+a number, which is why the state is mapped rather than passed.
+Setting it once before the first transition makes a closed breaker
+read `0` instead of being absent from the scrape.
+
 `breaker.state` reads the current state synchronously.
+
+The two breakers in front of the persistence stores need none of
+this: with metrics enabled they are exported as
+`persistence_breaker_state{breaker="journal"|"snapshot"}` — see
+[Persistence metrics](/observability/metrics/stock-metrics/#persistence-metrics).
+A broker actor's breaker needs none of it either: each actor naming one
+publishes its transitions on the event stream as
+`BrokerCircuitBreakerStateChanged`.
 
 ## Manual overrides
 
@@ -156,7 +368,8 @@ configured right.
 
 ## Picking the numbers
 
-Three parameters; here's how to think about them:
+Three parameters decide when the breaker trips; here's how to think
+about them:
 
 - **`maxFailures`** — high enough that a single transient blip
   doesn't open the breaker, low enough that a real outage opens it
@@ -171,6 +384,23 @@ Three parameters; here's how to think about them:
   take.  If the upstream's p99 is 800 ms, set this to 2-3 s.
   Setting it lower than the upstream's normal latency means
   you're declaring everything a timeout.
+
+Three more shape the reopen schedule, and all three are off by
+default:
+
+- **`backoffFactor`** — leave it at `1` for a dependency whose
+  outages are short and self-clearing; reach for `2` when a
+  repeatedly-failing upstream is one you should stop asking so
+  often.  Growth only compounds while the breaker never closes, so
+  it costs nothing in the common case.
+- **`maxResetTimeoutMs`** — how long you are willing to *not*
+  notice a recovery.  It has to be at least `resetTimeoutMs`, and
+  the default 60 s is the ceiling the rest of the project converged
+  on for a backoff someone is waiting behind.
+- **`randomFactor`** — `0.2` if more than one process runs this
+  breaker against the same dependency, `0` if exactly one does.
+  Jitter is about de-synchronising a fleet, and a single instance
+  has nothing to de-synchronise from.
 
 ## Compared to retry
 
@@ -219,8 +449,11 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   Putting the breaker on the actor means it survives only as long
   as the actor.  If you need the breaker's state to persist across
-  restarts, hoist it to an extension or a parent actor and inject
-  it into the constructor.
+  restarts, resolve it from the
+  [`CircuitBreakerExtension`](#breakers-from-configuration) —
+  `system.extension(CircuitBreakerExtensionId).breaker('payment-api')`
+  hands back the same instance every time, for the life of the
+  system — or hoist it to a parent actor and inject it.
 </Aside>
 
 <Aside type="caution" title="`half-open` doesn't queue">

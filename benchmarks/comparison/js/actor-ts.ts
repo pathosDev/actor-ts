@@ -58,11 +58,14 @@ import {
   ActorSystemOptions,
   LogLevel,
   NoopLogger,
+  ParallelismExtensionId,
+  ParallelismOptions,
   type ActorRef,
 } from '../../../src/index.js';
+import { ParallelWorker, type WorkMessage } from './actor-ts-parallel-actors.js';
 import { runArm, type ArmCase } from './arm.js';
 import { actorTsVersion } from './environment.js';
-import { workloadCase } from './workload.js';
+import { workRounds, workSeed, workloadCase, type WorkloadCase } from './workload.js';
 
 /**
  * Generous by design.  These timeouts exist to turn a deadlock into a
@@ -211,6 +214,93 @@ class PingActor extends Actor<VolleyMessage> {
   }
 }
 
+/* ------------------------------ parallel workload ------------------------ */
+
+/**
+ * The `parallel-workload` rows run on a **second** system, built lazily in
+ * the first such case's `setup()` — after the four single-actor rows have
+ * been measured on the first.  Two reasons.  The rows above must be the
+ * `workers = 0` figures the placement feature promises to leave untouched,
+ * and a mesh in the same process would cost the main thread its gossip and
+ * heartbeats while they run.  And it is what an operator does: this system
+ * is `ActorSystem.create` with one config number set, the actors are
+ * `system.spawn(ParallelWorker, name)`, the refs are ordinary refs — the
+ * placement is the extension's, exactly as documented, not the benchmark's.
+ *
+ * Every worker actor matches `/user/parallel-*`; nothing else is offloaded.
+ * The note names the count `auto` resolved to on this machine, because the
+ * row means nothing without it.
+ */
+class ParallelSystem {
+  private system: ActorSystem | null = null;
+  readonly workers: ActorRef<WorkMessage>[] = [];
+  resolvedWorkers = 0;
+
+  constructor(private readonly actorCount: number) {}
+
+  /** Built once, by whichever case runs first; both rows share the actors. */
+  async setup(): Promise<void> {
+    if (this.system !== null) return;
+    const parallelism = ParallelismOptions.create()
+      .withWorkers('auto')
+      .withModule(new URL('./actor-ts-parallel-actors.ts', import.meta.url))
+      .withOffload(['/user/parallel-*']);
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({ 'actor-ts': { cluster: { 'gossip-interval': '40ms' }, 'worker-cluster': { 'ready-timeout': '60s' } } })
+      .withParallelism(parallelism);
+    const system = ActorSystem.create('comparison-actor-ts-parallel', systemOptions);
+    this.system = system;
+    for (let i = 0; i < this.actorCount; i++) this.workers.push(system.spawn(ParallelWorker, `parallel-${i}`));
+    const extension = system.extension(ParallelismExtensionId);
+    await extension.whenReady();
+    this.resolvedWorkers = extension.workerMesh?.size ?? 0;
+    // One round trip per actor so the spawns are acknowledged and every
+    // worker has imported the module before the first warmup call.
+    await Promise.all(this.workers.map((ref) => ref.ask<number>({ kind: 'work', seed: 1, rounds: 1 }, REPLY_TIMEOUT_MS)));
+  }
+
+  async shutdown(): Promise<void> {
+    if (this.system === null) return;
+    const system = this.system;
+    this.system = null;
+    await system.terminate();
+  }
+}
+
+class ParallelWorkload {
+  private messageIndex = 0;
+  private total = 0;
+
+  constructor(readonly workload: WorkloadCase, private readonly parallel: ParallelSystem) {}
+
+  get notes(): string {
+    return `Sixty-four actors placed on ${this.parallel.resolvedWorkers} worker thread(s) by `
+      + '`actor-ts.parallelism.workers = auto` (available parallelism minus the main thread); '
+      + 'every message crosses the thread boundary once each way. No sharding (#529).';
+  }
+
+  setup(): Promise<void> { return this.parallel.setup(); }
+
+  /** One message to every actor; returns how many replies carried the right result. */
+  async run(): Promise<number> {
+    const rounds = this.workload.workIterationsPerMessage ?? 0;
+    const message = this.messageIndex++;
+    const replies = await Promise.all(this.parallel.workers.map((ref, actor) =>
+      ref.ask<number>({ kind: 'work', seed: workSeed(actor, message), rounds }, REPLY_TIMEOUT_MS)));
+    let correct = 0;
+    for (let actor = 0; actor < replies.length; actor++) {
+      const reply = replies[actor]!;
+      if (reply === workRounds(workSeed(actor, message), rounds)) correct++;
+      this.total = (this.total + reply) >>> 0;
+    }
+    return correct;
+  }
+
+  checksum(): number { return this.total; }
+}
+
 /* ---------------------------------- arm ---------------------------------- */
 
 async function main(): Promise<void> {
@@ -229,6 +319,9 @@ async function main(): Promise<void> {
   const tellLarge = workloadCase('tell-throughput', 'batch=10k');
   const askWorkload = workloadCase('ask-round-trip', 'sequential');
   const pingPongWorkload = workloadCase('ping-pong', 'exchanges=10k');
+  const parallelSystem = new ParallelSystem(workloadCase('parallel-workload', 'load=light').actorCount ?? 0);
+  const parallelLight = new ParallelWorkload(workloadCase('parallel-workload', 'load=light'), parallelSystem);
+  const parallelHeavy = new ParallelWorkload(workloadCase('parallel-workload', 'load=heavy'), parallelSystem);
 
   const spawnBatch = async (batch: number): Promise<number> => {
     let onAllStarted!: () => void;
@@ -278,6 +371,13 @@ async function main(): Promise<void> {
         REPLY_TIMEOUT_MS,
       ),
     },
+    ...[parallelLight, parallelHeavy].map((parallel): ArmCase => ({
+      workload: parallel.workload,
+      get notes(): string { return parallel.notes; },
+      setup: () => parallel.setup(),
+      run: () => parallel.run(),
+      checksum: () => parallel.checksum(),
+    })),
   ];
 
   await runArm({
@@ -288,7 +388,10 @@ async function main(): Promise<void> {
       license: 'MIT',
     },
     cases,
-    shutdown: () => system.terminate(),
+    shutdown: async () => {
+      await parallelSystem.shutdown();
+      await system.terminate();
+    },
   });
 }
 

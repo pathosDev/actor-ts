@@ -254,13 +254,17 @@ post(async (req) => {
 });
 ```
 
-The framework catches `HttpError` and produces a structured response:
+The framework catches `HttpError` and produces a structured response —
+here for a JSON body with a trailing comma, decoded on Bun:
 
 ```json
 {
-  "error": "Cannot decode body: Unexpected token } in JSON at position 42"
+  "error": "Cannot decode body: JsonSerializer: document is not valid JSON: JSON Parse error: Property name must be a string literal"
 }
 ```
+
+Everything after `document is not valid JSON:` is the runtime's own parse
+message, so Node and Deno word the same fault differently.
 
 For more specific error responses, `reject` after a manual decode:
 

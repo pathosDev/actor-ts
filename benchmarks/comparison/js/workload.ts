@@ -23,12 +23,13 @@
  * framework.
  */
 
-/** The four operations every framework is measured on. */
+/** The five operations every framework is measured on. */
 export type ScenarioName =
   | 'spawn'
   | 'tell-throughput'
   | 'ask-round-trip'
-  | 'ping-pong';
+  | 'ping-pong'
+  | 'parallel-workload';
 
 /** One row of the published table: a scenario at one parameterisation. */
 export type WorkloadCase = {
@@ -58,6 +59,13 @@ export type WorkloadCase = {
    * few seconds per arm.
    */
   readonly warmupIterations: number;
+  /**
+   * `parallel-workload` only: independent actors, one message each per
+   * iteration (so `opsPerIteration === actorCount`), and the CPU work every
+   * message carries — see {@link workRounds}.  Absent on every other row.
+   */
+  readonly actorCount?: number;
+  readonly workIterationsPerMessage?: number;
 };
 
 /**
@@ -92,7 +100,67 @@ export const WORKLOAD: ReadonlyArray<WorkloadCase> = [
   // is the entire subject, with no user code, no payload and no allocation
   // worth speaking of between the hops.
   { scenario: 'ping-pong',       case: 'exchanges=10k', unit: 'exchange', iterations: 20,  opsPerIteration: 10_000, warmupIterations: 10 },
+
+  // The one scenario multithreading exists for (#1565): sixty-four independent
+  // actors — well above any core count in the table, so distribution is
+  // measured rather than luck — each handed one message per iteration that
+  // carries real CPU work.  The JVM and .NET arms spread them over their
+  // default schedulers; actor-ts places them on worker threads through
+  // `actor-ts.parallelism.workers = auto`, exactly as an operator would;
+  // nact and XState run them on one thread and say so.  `light` is a few
+  // microseconds of work per message, where the thread boundary costs more
+  // than it saves; `heavy` is where it pays.
+  { scenario: 'parallel-workload', case: 'load=light', unit: 'msg', iterations: 200, opsPerIteration: 64, warmupIterations: 100, actorCount: 64, workIterationsPerMessage: 5_000 },
+  { scenario: 'parallel-workload', case: 'load=heavy', unit: 'msg', iterations: 50,  opsPerIteration: 64, warmupIterations: 20,  actorCount: 64, workIterationsPerMessage: 100_000 },
 ];
+
+/**
+ * The CPU work of `parallel-workload`, language-neutral and not optimisable
+ * away: `rounds` of xorshift32 from a seed, every round feeding the next,
+ * the final state returned.  Every cross-language arm mirrors this loop bit
+ * for bit — 32-bit lanes with logical right shifts are the same on the JVM's
+ * `int`, .NET's `uint` and JavaScript's `>>> 0` — and every reply carries the
+ * result, so a JIT that elided the loop, or an arm that skipped a message,
+ * produces a checksum the report refuses.
+ */
+export function workRounds(seed: number, rounds: number): number {
+  let x = seed >>> 0;
+  for (let i = 0; i < rounds; i++) {
+    x ^= x << 13; x >>>= 0;
+    x ^= x >>> 17;
+    x ^= x << 5; x >>>= 0;
+  }
+  return x >>> 0;
+}
+
+/**
+ * The seed of one message: a function of the actor and the message index
+ * (warmup and measured calls counted together, from zero), never zero
+ * because xorshift is stuck there.  Mirrored by the cross-language arms.
+ */
+export function workSeed(actorIndex: number, messageIndex: number): number {
+  const seed = (Math.imul(actorIndex + 1, 0x9E3779B1) ^ Math.imul(messageIndex + 1, 0x85EBCA77)) >>> 0;
+  return seed === 0 ? 1 : seed;
+}
+
+/**
+ * What a `parallel-workload` arm has to report as its checksum: the sum,
+ * modulo 2^32, of every reply over every call — warmup and measured — so
+ * `report.ts` can recompute it from this file alone and refuse a row whose
+ * work did not happen.
+ */
+export function expectedChecksum(workload: WorkloadCase): number {
+  const actors = workload.actorCount ?? 0;
+  const rounds = workload.workIterationsPerMessage ?? 0;
+  const calls = workload.warmupIterations + workload.iterations;
+  let total = 0;
+  for (let message = 0; message < calls; message++) {
+    for (let actor = 0; actor < actors; actor++) {
+      total = (total + workRounds(workSeed(actor, message), rounds)) >>> 0;
+    }
+  }
+  return total;
+}
 
 /**
  * Look up one case, failing loudly when it does not exist.

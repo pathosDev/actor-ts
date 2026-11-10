@@ -16,6 +16,7 @@ import {
 } from '../../../../../src/io/broker/MqttActor.js';
 import type { MqttMessage } from '../../../../../src/io/broker/MqttMessages.js';
 import { awaitCondition } from '../../../../util/AwaitCondition.js';
+import { expectExactOptions } from '../../../../util/ExactOptions.js';
 
 describe('MqttOptions builder', () => {
   test('each withX sets the right options key', () => {
@@ -31,7 +32,7 @@ describe('MqttOptions builder', () => {
       .withProtocolVersion(5)
       .withCodec(codec)
       .withReconnect({ initialDelayMs: 5 })
-      .withCircuitBreaker(3, 1000)
+      .withCircuitBreaker('mqtt-fleet')
       .withOutboundBuffer(50)
       .build();
 
@@ -45,7 +46,7 @@ describe('MqttOptions builder', () => {
     expect(resolved.protocolVersion).toBe(5);
     expect(resolved.codec).toBe(codec);
     expect(resolved.reconnect).toEqual({ initialDelayMs: 5 });
-    expect(resolved.circuitBreaker).toEqual({ failureThreshold: 3, resetMs: 1000 });
+    expect(resolved.circuitBreaker).toBe('mqtt-fleet');
     expect(resolved.outboundBuffer).toBe(50);
   });
 
@@ -102,9 +103,10 @@ describe('MqttOptions HOCON merge precedence', () => {
       .withConfig({
         'actor-ts': {
           io: { broker: { mqtt: {
-            brokerUrl: 'mqtt://from-hocon:1883',
-            clientId: 'hocon-client',
-            keepAlive: 30,
+            'broker-url': 'mqtt://from-hocon:1883',
+            'client-id': 'hocon-client',
+            // A duration in whole seconds: MQTT's keep-alive unit.
+            'keep-alive': '30s',
           } } },
         },
       });
@@ -124,6 +126,64 @@ describe('MqttOptions HOCON merge precedence', () => {
       expect(resolved.brokerUrl).toBe('mqtt://from-hocon:1883'); // HOCON supplies
       expect(resolved.keepAlive).toBe(30);                       // HOCON supplies
       expect(resolved.cleanSession).toBe(true);                  // built-in default
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('HOCON will { … } feeds the options (#871)', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({
+        // Nested, never a dotted top-level key: a literal `'actor-ts.io.…'`
+        // key stays literal in the tree, so `hasPath` would answer from
+        // reference.conf and the assertion would prove nothing.
+        'actor-ts': {
+          io: { broker: { mqtt: {
+            'broker-url': 'mqtt://from-hocon:1883',
+            will: { topic: 'devices/42/status', payload: 'offline', qos: 1, retain: true },
+          } } },
+        },
+      });
+    const sys = ActorSystem.create('mqtt-will-hocon', sysOptions);
+    try {
+      const actor = new ProbeActor({});
+      sys.spawn(() => actor, 'probe');
+      await awaitCondition(() => actor.resolved !== null, {
+        label: 'the probe resolved its options in preStart',
+      });
+      expect(actor.resolved!.will).toEqual({
+        topic: 'devices/42/status', payload: 'offline', qos: 1, retain: true,
+      });
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a will block with no payload reads as the empty one (#871)', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({
+        'actor-ts': {
+          io: { broker: { mqtt: {
+            'broker-url': 'mqtt://from-hocon:1883',
+            will: { topic: 'devices/42/status' },
+          } } },
+        },
+      });
+    const sys = ActorSystem.create('mqtt-will-empty-payload', sysOptions);
+    try {
+      const actor = new ProbeActor({});
+      sys.spawn(() => actor, 'probe');
+      await awaitCondition(() => actor.resolved !== null, {
+        label: 'the probe resolved its options in preStart',
+      });
+      // A zero-length will payload is legal MQTT, so absence is not an error
+      // here — unlike an absent topic, which the validator rejects.  The unset
+      // qos and retain are omitted, not written as undefined.
+      expectExactOptions(actor.resolved!.will, { topic: 'devices/42/status', payload: '' });
     } finally {
       await sys.terminate();
     }
@@ -160,6 +220,23 @@ describe('MqttOptionsValidator (direct)', () => {
 
   test('rejects a negative outboundBuffer (common broker field)', () => {
     expect(() => validate({ outboundBuffer: -1 })).toThrow(/outboundBuffer/);
+  });
+
+  test('rejects a will with an empty topic (#871)', () => {
+    // The shape HOCON produces for `will { qos = 1 }` — the reader fills the
+    // required leaf with '' precisely so this reports it by name.
+    expect(() => validate({ will: { topic: '', payload: 'bye', qos: 1 } })).toThrow(/will\.topic/);
+  });
+
+  test('rejects an out-of-range will qos (#871)', () => {
+    expect(() => validate({ will: { topic: 't', payload: '', qos: 7 as unknown as 0 } }))
+      .toThrow(/will\.qos/);
+  });
+
+  test('accepts a will with an empty payload (#871)', () => {
+    // Zero-length is a legal MQTT will payload, so it is not a rule.
+    expect(() => validate({ brokerUrl: 'mqtt://h:1883', will: { topic: 't', payload: '' } }))
+      .not.toThrow();
   });
 
   test('an unset field passes', () => {
@@ -217,7 +294,7 @@ describe('MqttOptions validation fires at actor start (all input paths)', () => 
   test('HOCON path: invalid protocolVersion throws OptionsError', async () => {
     const err = await captureStart({}, {
       'actor-ts': {
-        io: { broker: { mqtt: { brokerUrl: 'mqtt://h:1883', protocolVersion: 6 } } },
+        io: { broker: { mqtt: { 'broker-url': 'mqtt://h:1883', 'protocol-version': 6 } } },
       },
     });
     expect(err).toBeInstanceOf(OptionsError);

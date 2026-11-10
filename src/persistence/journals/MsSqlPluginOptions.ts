@@ -1,9 +1,26 @@
+import type { Config } from '../../config/Config.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { Serializer } from '../../serialization/Serializer.js';
-import type { MsSqlPoolLike } from './MsSqlClient.js';
-import type { MsSqlJournalOptions } from './MsSqlJournalOptions.js';
-import type { MsSqlSnapshotStoreOptions } from '../snapshot-stores/MsSqlSnapshotStoreOptions.js';
-import type { MsSqlDurableStateStoreOptions } from '../durable-state-stores/MsSqlDurableStateStoreOptions.js';
+import {
+  readStoreBoolean,
+  readStoreDuration,
+  readStoreIdentifier,
+  readStoreInt,
+  readStoreString,
+  storeLeaf,
+} from '../StoreConfig.js';
+import { readStoreUrl } from './ConnectionStringInspection.js';
+import type { MsSqlConnection, MsSqlPoolLike } from './MsSqlClient.js';
+import type { MsSqlJournalOptions, MsSqlJournalOptionsType } from './MsSqlJournalOptions.js';
+import type {
+  MsSqlSnapshotStoreOptions,
+  MsSqlSnapshotStoreOptionsType,
+} from '../snapshot-stores/MsSqlSnapshotStoreOptions.js';
+import type {
+  MsSqlDurableStateStoreOptions,
+  MsSqlDurableStateStoreOptionsType,
+} from '../durable-state-stores/MsSqlDurableStateStoreOptions.js';
 
 export type RegisterMsSqlPluginsOptionsType = {
   /**
@@ -17,6 +34,16 @@ export type RegisterMsSqlPluginsOptionsType = {
   readonly url?: string;
   /** `mssql` config object applied to every store that does not set its own. */
   readonly poolConfig?: Record<string, unknown>;
+  /** Pool size applied to every store that does not set its own — see `MsSqlConnection.maxPoolSize`. */
+  readonly maxPoolSize?: number;
+  /** Idle timeout in ms applied to every store that does not set its own — see `MsSqlConnection.idleTimeoutMs`. */
+  readonly idleTimeoutMs?: number;
+  /** Connect timeout in ms applied to every store that does not set its own — see `MsSqlConnection.connectTimeoutMs`. */
+  readonly connectTimeoutMs?: number;
+  /** Request timeout in ms applied to every store that does not set its own — see `MsSqlConnection.requestTimeoutMs`. */
+  readonly requestTimeoutMs?: number;
+  /** CA file applied to every store that does not set its own — see `MsSqlConnection.caFile`. */
+  readonly caFile?: string;
   /** Shared payload serializer applied to every store that does not set its own. */
   readonly serializer?: Serializer;
   /** Journal-specific options (table names, autoCreate). */
@@ -60,6 +87,31 @@ export class RegisterMsSqlPluginsOptionsBuilder extends OptionsBuilder<RegisterM
     return this.set('poolConfig', poolConfig);
   }
 
+  /** Pool size applied to every store that does not set its own. */
+  withMaxPoolSize(maxPoolSize: number): this {
+    return this.set('maxPoolSize', maxPoolSize);
+  }
+
+  /** Idle timeout in ms applied to every store that does not set its own. */
+  withIdleTimeoutMs(idleTimeoutMs: number): this {
+    return this.set('idleTimeoutMs', idleTimeoutMs);
+  }
+
+  /** Connect timeout in ms applied to every store that does not set its own. */
+  withConnectTimeoutMs(connectTimeoutMs: number): this {
+    return this.set('connectTimeoutMs', connectTimeoutMs);
+  }
+
+  /** Request timeout in ms applied to every store that does not set its own. */
+  withRequestTimeoutMs(requestTimeoutMs: number): this {
+    return this.set('requestTimeoutMs', requestTimeoutMs);
+  }
+
+  /** CA file applied to every store that does not set its own. */
+  withCaFile(caFile: string): this {
+    return this.set('caFile', caFile);
+  }
+
   /** Shared payload serializer applied to every store that does not set its own. */
   withSerializer(serializer: Serializer): this {
     return this.set('serializer', serializer);
@@ -91,3 +143,116 @@ export type RegisterMsSqlPluginsOptions =
   | Partial<RegisterMsSqlPluginsOptionsType>;
 /** Value alias so `RegisterMsSqlPluginsOptions.create()` resolves to the builder. */
 export const RegisterMsSqlPluginsOptions = RegisterMsSqlPluginsOptionsBuilder;
+
+/**
+ * Read the SQL Server journal's block — `actor-ts.persistence.journal.mssql` by
+ * default, or whichever id the plug-in was registered under (#872).  Same shape
+ * and same reasoning as `readPostgresJournalOptionsFromConfig`.
+ *
+ * `poolConfig` has no leaf, which matters more here than for the other
+ * backends: `buildMsSqlPool` needs `poolConfig`, `url` or a pre-built pool, so
+ * a purely config-driven SQL Server store is reached through `url`, in the
+ * `Server=…;Database=…` form.  An `mssql://` URL is read like any other string
+ * here and refused when the store is built: node-mssql has parsed none since
+ * its 8.0.
+ *
+ * That `url` is inspected as the Postgres one is: `TrustServerCertificate` set
+ * to anything node-mssql reads as true is refused with a `ConfigError` naming
+ * the leaf (#1490), and `withUrl(...)` in code is not inspected.  A connection
+ * string has no key for a CA, so a server behind a private CA is named beside
+ * it with `ca-file` — one of the typed connection leaves, with
+ * `max-pool-size`, `idle-timeout`, `connect-timeout` and `request-timeout`,
+ * that {@link readMsSqlConnection} reads.
+ */
+export function readMsSqlJournalOptionsFromConfig(
+  config: Config,
+  blockRoot: string = ConfigKeys.persistence.journal.mssql.root,
+): Partial<MsSqlJournalOptionsType> {
+  if (!config.hasPath(blockRoot)) return {};
+  const keys = ConfigKeys.persistence.journal.mssql;
+  const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
+  const out: { -readonly [K in keyof MsSqlJournalOptionsType]?: MsSqlJournalOptionsType[K] } =
+    readMsSqlConnection(config, at, keys);
+  const eventsTable = readStoreIdentifier(config, at(keys.eventsTable));
+  if (eventsTable !== undefined) out.eventsTable = eventsTable;
+  const tagsTable = readStoreIdentifier(config, at(keys.tagsTable));
+  if (tagsTable !== undefined) out.tagsTable = tagsTable;
+  const autoCreateTables = readStoreBoolean(config, at(keys.autoCreateTables));
+  if (autoCreateTables !== undefined) out.autoCreateTables = autoCreateTables;
+  return out;
+}
+
+/** Read the SQL Server snapshot store's block — see {@link readMsSqlJournalOptionsFromConfig}. */
+export function readMsSqlSnapshotStoreOptionsFromConfig(
+  config: Config,
+  blockRoot: string = ConfigKeys.persistence.snapshotStore.mssql.root,
+): Partial<MsSqlSnapshotStoreOptionsType> {
+  if (!config.hasPath(blockRoot)) return {};
+  const keys = ConfigKeys.persistence.snapshotStore.mssql;
+  const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
+  const out: {
+    -readonly [K in keyof MsSqlSnapshotStoreOptionsType]?: MsSqlSnapshotStoreOptionsType[K]
+  } = readMsSqlConnection(config, at, keys);
+  const snapshotsTable = readStoreIdentifier(config, at(keys.snapshotsTable));
+  if (snapshotsTable !== undefined) out.snapshotsTable = snapshotsTable;
+  const keepN = readStoreInt(config, at(keys.keepN));
+  if (keepN !== undefined) out.keepN = keepN;
+  const autoCreateTables = readStoreBoolean(config, at(keys.autoCreateTables));
+  if (autoCreateTables !== undefined) out.autoCreateTables = autoCreateTables;
+  return out;
+}
+
+/** Read the SQL Server durable-state store's block — see {@link readMsSqlJournalOptionsFromConfig}. */
+export function readMsSqlDurableStateStoreOptionsFromConfig(
+  config: Config,
+  blockRoot: string = ConfigKeys.persistence.durableState.mssql.root,
+): Partial<MsSqlDurableStateStoreOptionsType> {
+  if (!config.hasPath(blockRoot)) return {};
+  const keys = ConfigKeys.persistence.durableState.mssql;
+  const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
+  const out: {
+    -readonly [K in keyof MsSqlDurableStateStoreOptionsType]?: MsSqlDurableStateStoreOptionsType[K]
+  } = readMsSqlConnection(config, at, keys);
+  const table = readStoreIdentifier(config, at(keys.table));
+  if (table !== undefined) out.table = table;
+  const autoCreateTables = readStoreBoolean(config, at(keys.autoCreateTables));
+  if (autoCreateTables !== undefined) out.autoCreateTables = autoCreateTables;
+  return out;
+}
+
+/** The connection leaves every SQL Server block spells the same way, under its own root. */
+type MsSqlConnectionKeys = {
+  readonly url: string;
+  readonly maxPoolSize: string;
+  readonly idleTimeout: string;
+  readonly connectTimeout: string;
+  readonly requestTimeout: string;
+  readonly caFile: string;
+};
+
+/**
+ * The connection half the three SQL Server readers share — see
+ * `readPostgresConnection`, which it mirrors leaf for leaf plus the request
+ * timeout.  The url goes through `readStoreUrl`, so a verification-off switch
+ * in it is refused here, before any store is built.
+ */
+function readMsSqlConnection(
+  config: Config,
+  at: (canonicalLeafPath: string) => string,
+  keys: MsSqlConnectionKeys,
+): { -readonly [K in keyof MsSqlConnection]?: MsSqlConnection[K] } {
+  const out: { -readonly [K in keyof MsSqlConnection]?: MsSqlConnection[K] } = {};
+  const url = readStoreUrl(config, at(keys.url), 'mssql');
+  if (url !== undefined) out.url = url;
+  const maxPoolSize = readStoreInt(config, at(keys.maxPoolSize));
+  if (maxPoolSize !== undefined) out.maxPoolSize = maxPoolSize;
+  const idleTimeoutMs = readStoreDuration(config, at(keys.idleTimeout));
+  if (idleTimeoutMs !== undefined) out.idleTimeoutMs = idleTimeoutMs;
+  const connectTimeoutMs = readStoreDuration(config, at(keys.connectTimeout));
+  if (connectTimeoutMs !== undefined) out.connectTimeoutMs = connectTimeoutMs;
+  const requestTimeoutMs = readStoreDuration(config, at(keys.requestTimeout));
+  if (requestTimeoutMs !== undefined) out.requestTimeoutMs = requestTimeoutMs;
+  const caFile = readStoreString(config, at(keys.caFile));
+  if (caFile !== undefined) out.caFile = caFile;
+  return out;
+}

@@ -36,6 +36,14 @@ import { describe, expect, test } from 'bun:test';
  * declaration to hold the package in the tree. A coverage check alone would not
  * have caught that: moving `ws` to the brokers manifest satisfies "declared
  * somewhere" while leaving the root `bun test` pass just as broken.
+ *
+ * One property has to hold before any of that covers the manifest rather than
+ * a subset of it: every declared peer has to BE an optional peer. The list
+ * below is read out of `peerDependenciesMeta`, so a peer that never appears
+ * there is not exempted from the split — it is never considered at all.
+ * `typescript` sat in exactly that blind spot from the initial scaffold, as the
+ * one mandatory peer in the manifest, through #676's whole-manifest sweep and
+ * every audit after it, until #781.
  */
 
 const REPOSITORY_ROOT = join(import.meta.dir, '..', '..', '..');
@@ -59,6 +67,9 @@ const optionalPeers: readonly string[] = Object.entries(rootManifest.peerDepende
   .map(([name]) => name)
   .sort();
 
+/** Every peer the manifest declares, whether or not it is marked optional. */
+const declaredPeers: readonly string[] = Object.keys(rootManifest.peerDependencies ?? {}).sort();
+
 const rootDevDependencies: readonly string[] = Object.keys(rootManifest.devDependencies ?? {});
 const brokerDependencies: readonly string[] = Object.keys(brokerManifest.dependencies ?? {});
 
@@ -80,9 +91,10 @@ const brokerDependencies: readonly string[] = Object.keys(brokerManifest.depende
  * that one was:
  *
  *   1. Suppress the advisory — a new `--ignore` plus a `SECURITY.md` row.
- *      Every suppression on file predates the gate rather than having been
- *      added to get a change through, and adding one to land a change is how
- *      a gate stops gating. Not taken.
+ *      Every suppression on file at the time predated the gate — none had
+ *      been added to get a change through, and #779 has since cleared them
+ *      all — so this one would have been the first, and adding one to land a
+ *      change is how a gate stops gating. Not taken.
  *   2. **Stand up a Cassandra Docker suite** (`tests/integration/brokers/cassandra/`,
  *      #1169 tracked it from the coverage side), so the brokers manifest
  *      legitimately owns the driver and the root install never sees it. This
@@ -259,6 +271,181 @@ describe('optional peer declarations', () => {
   });
 
   /**
+   * Every declared peer is an OPTIONAL peer — the precondition that makes the
+   * assertions below cover the manifest instead of a subset of it.
+   *
+   * `optionalPeers` comes out of `peerDependenciesMeta`, so a peer missing from
+   * that map is invisible here: not exempted from the two-context split, never
+   * considered against it. `typescript` was that peer, and it is why this test
+   * exists rather than only the one-line manifest fix. It was the sole
+   * non-optional entry from the initial scaffold, survived #676's
+   * whole-manifest sweep and every audit after it, and no gate could have
+   * reported it — the guard written to police peer declarations was structurally
+   * unable to see the one peer that was mandatory (#781).
+   *
+   * What the gap costs is npm's doing rather than this manifest's. npm 7+
+   * installs a missing non-optional peer automatically, so a plain-JavaScript
+   * consumer — or a production image running `npm i actor-ts --omit=dev` —
+   * silently receives the package. For `typescript` that is a compiler, with
+   * executable bin entries, installed for a dependency the library never loads:
+   * nothing under `src/` names it in an import specifier of any spelling, and
+   * `tsconfig.json` sets `"types": []`, so the emitted declarations do not
+   * reference it either. It also quietly contradicted what
+   * `intro/installation` promises about keeping the core install small. Marking
+   * it optional costs the declaration nothing — the version range documents the
+   * supported compiler floor for the shipped `.d.ts` files exactly as well, and
+   * tooling still warns on a genuine mismatch.
+   *
+   * The assertion is about the flag, not about the key, and that distinction is
+   * the whole of it: `optional: false` is a `peerDependenciesMeta` entry that
+   * satisfies any completeness check while npm goes on auto-installing the
+   * package. Measured, not assumed — that variant was written and this test
+   * still failed on it.
+   */
+  test('every declared peer is marked optional', () => {
+    // Guards the guard: the filter below reads `declaredPeers`, and a renamed
+    // or emptied `peerDependencies` would report no violations for exactly the
+    // same reason a fully optional manifest does.
+    expect(
+      declaredPeers.length,
+      'No peer dependencies found in the root package.json — `peerDependencies` '
+      + 'was renamed or emptied, so the assertion below filters an empty list '
+      + 'and cannot report anything.',
+    ).toBeGreaterThan(20);
+    const mandatory = declaredPeers.filter((peer) => !optionalPeers.includes(peer));
+    expect(
+      mandatory,
+      'These peers are declared in `peerDependencies` with no '
+      + '`peerDependenciesMeta` entry marking them `optional: true`, so npm 7+ '
+      + 'installs them into every consumer that does not already have them — '
+      + 'plain-JavaScript consumers and production images included, for a '
+      + 'package the library may never load. They are also invisible to every '
+      + 'other assertion in this file, which reads its subject list out of '
+      + '`peerDependenciesMeta`: a mandatory peer is not exempted from the '
+      + 'two-context split, it is never checked against it. Add '
+      + '`"<name>": { "optional": true }` — the version range keeps documenting '
+      + 'the supported floor either way (#781).',
+    ).toEqual([]);
+  });
+
+  /**
+   * And the same claim read the other way.
+   *
+   * The assertion above runs `peerDependencies -> peerDependenciesMeta`, which
+   * is the direction #781 needed and is only half of "the two lists describe
+   * the same packages".  A `peerDependenciesMeta` row naming a package that is
+   * not a peer at all passes every assertion in this file — measured with a
+   * `"knip": { "optional": true }` row, which stayed green throughout.
+   *
+   * That matters because `optionalPeers` is the SUBJECT LIST every other
+   * assertion here reads, including its own `> 20` guard-the-guard.  A row
+   * added by a typo, a rename that moved a package out of `peerDependencies`
+   * and left its meta entry behind, or a deliberate padding all do the same
+   * thing: they inflate the list this file believes it is checking, and each
+   * phantom entry then has to be "declared in one of the two contexts" or
+   * excused in `UNDECLARED_PEERS` — so the pressure is towards excusing names
+   * that describe nothing.
+   *
+   * npm reads `peerDependenciesMeta` rows for packages that are not peers as
+   * inert, so nothing downstream breaks either.  This is the only thing that
+   * would notice.
+   */
+  test('every peerDependenciesMeta row names a package that IS a peer', () => {
+    const metaRows = Object.keys(rootManifest.peerDependenciesMeta ?? {}).sort();
+    // Guards the guard: an emptied or renamed `peerDependenciesMeta` reports
+    // no phantoms for the same reason a correct one does.
+    expect(
+      metaRows.length,
+      'No `peerDependenciesMeta` entries found in the root package.json — the '
+      + 'field was renamed or emptied, so this assertion filters an empty list.',
+    ).toBeGreaterThan(20);
+    const phantom = metaRows.filter((name) => !declaredPeers.includes(name));
+    expect(
+      phantom,
+      'These packages have a `peerDependenciesMeta` entry but are not declared '
+      + 'in `peerDependencies`, so the entry describes nothing npm will ever '
+      + 'read — and it silently pads `optionalPeers`, which is the list every '
+      + 'other assertion in this file checks. Remove the row, or add the peer '
+      + 'declaration it was meant to annotate (#781).',
+    ).toEqual([]);
+  });
+
+  /**
+   * And the third copy of the same list, which is the one no gate reads.
+   *
+   * `bun.lock` records the optional split itself, in a root `optionalPeers`
+   * array bun regenerates from `peerDependenciesMeta` on every install. That
+   * copy can go stale in one direction only, and it is a direction this
+   * repository takes regularly: the manifest is edited by hand — AGENTS.md
+   * says to write an optional peer's second declaration by hand, because
+   * `bun add` no-ops on a package that is already a peer — and a commit that
+   * forgets the `bun install` afterwards leaves the lockfile describing the
+   * previous manifest.
+   *
+   * Nothing notices. `bun install --frozen-lockfile --dry-run` exits 0 with an
+   * entry removed from this array — measured, and it is why the array is on
+   * this list at all (#781): the frozen check compares resolutions, and an
+   * optional peer has none to compare. `bun audit` reads the `packages` map
+   * below it, not this. The type checker never opens the file.
+   *
+   * What a stale copy costs is bun's peer resolution running against the old
+   * split: a peer marked optional in `package.json` but missing here is
+   * treated as required at install time in this repository, which turns the
+   * lazy-`import()` design AGENTS.md describes into an install-time
+   * requirement for the one package the library was written never to need
+   * eagerly. The reverse — a name still here after the manifest dropped it —
+   * is the more likely of the two and reads as an optional peer that no longer
+   * exists.
+   *
+   * Asserted as set equality rather than one-directionally, for the reason the
+   * two tests above document: half a bijection is what let a phantom row sit
+   * in `peerDependenciesMeta` unnoticed.
+   */
+  test('bun.lock records the same optional peers the manifest declares', () => {
+    const lockfile = readFileSync(join(REPOSITORY_ROOT, 'bun.lock'), 'utf8');
+    // The `packages` map further down carries `optionalPeers` arrays of its
+    // own, one per dependency that has optional peers, so the read is scoped
+    // to the workspace region above it rather than to the first match.
+    const packagesAt = lockfile.indexOf('\n  "packages": {');
+    expect(
+      packagesAt,
+      'bun.lock has no top-level `packages` map, so the workspace region below '
+      + 'could not be bounded — the lockfile format changed and this read needs '
+      + 'rewriting rather than relaxing.',
+    ).toBeGreaterThan(0);
+    const workspaceRegion = lockfile.slice(0, packagesAt);
+    // Guards the guard: an `optionalPeers` that moved, was renamed, or gained a
+    // sibling would leave the extraction below reading the wrong array — or an
+    // empty one, which compares equal to an emptied manifest for the wrong
+    // reason.
+    expect(
+      workspaceRegion.split('"optionalPeers"').length - 1,
+      'Expected exactly one `optionalPeers` array in bun.lock\'s workspace '
+      + 'region. Zero means bun stopped recording the split and this assertion '
+      + 'is comparing against nothing; more than one means the repository grew '
+      + 'a second workspace and the read has to say which one it means.',
+    ).toBe(1);
+
+    const arrayStart = workspaceRegion.indexOf('"optionalPeers"');
+    const arrayEnd = workspaceRegion.indexOf(']', arrayStart);
+    const recorded = [
+      ...workspaceRegion.slice(arrayStart + '"optionalPeers"'.length, arrayEnd)
+        .matchAll(/"([^"]+)"/g),
+    ].map((match) => match[1] ?? '').sort();
+
+    expect(
+      recorded,
+      'bun.lock\'s root `optionalPeers` array and package.json\'s optional '
+      + '`peerDependenciesMeta` entries name different packages, which means '
+      + 'the lockfile was not regenerated after the manifest changed. Nothing '
+      + 'else catches this — `bun install --frozen-lockfile` exits 0 on it, '
+      + 'because an optional peer has no resolution for the frozen check to '
+      + 'compare. Run `bun install` and commit the lockfile alongside the '
+      + 'manifest edit (#781).',
+    ).toEqual([...optionalPeers]);
+  });
+
+  /**
    * The core invariant: no optional peer is declared nowhere.
    *
    * This is what would have caught `imapflow` and `nodemailer` had the email
@@ -390,18 +577,19 @@ describe('optional peer declarations', () => {
   });
 
   /**
-   * The opposite direction, and the one that settles #676's `nats` follow-up:
+   * The opposite direction, and the one that settles #676's NATS follow-up:
    * nothing in `src/` may name an optional peer in an import specifier. Every
    * adapter reaches its peer through a hand-written structural stub instead —
    * `NatsConnectionLike`, `CassandraDriver`, `MemjsClientStatic`,
    * `WebsocketServerLike` — and that is the design, not a placeholder.
    *
    * It reads like a placeholder, which is why this test exists. #676's
-   * round-4 scan comment asked for the reverse: replace the `nats` stubs in
+   * round-4 scan comment asked for the reverse: replace the NATS stubs in
    * `src/io/broker/NatsActor.ts` and `src/io/broker/JetStreamActor.ts` with
    * the module's real types "once this issue adds the missing
-   * devDependencies", so a `nats` major bump could not drift silently. The
-   * precondition never arrived and cannot. `nats` is declared only in
+   * devDependencies", so a NATS major bump could not drift silently. The
+   * precondition never arrived and cannot. The `@nats-io/*` packages are
+   * declared only in
    * `tests/integration/brokers/package.json`, which is deliberately not
    * installed at the root, so the build compile cannot resolve it — measured:
    * a type-only import of it from `src/` fails `bun run typecheck` with
@@ -412,7 +600,8 @@ describe('optional peer declarations', () => {
    * The stubs are *exported* — `NatsConnectionLike` and its siblings reach
    * `dist/io/index.d.ts` through `src/io/broker/index.ts`, a declared package
    * entry point — and `tsconfig.json` emits declarations. A real
-   * `import type … from 'nats'` there would be emitted into a published
+   * `import type … from '@nats-io/transport-node'` there would be emitted
+   * into a published
    * `.d.ts`, so a consumer who has not installed the optional peer resolves
    * nothing: TS2307 without `skipLibCheck`, a silent `any` with it. That is
    * precisely the cost "optional" is supposed to spare them.
@@ -422,6 +611,16 @@ describe('optional peer declarations', () => {
    * catches a rename the types would only have caught at compile time in a
    * tree that cannot compile it. The follow-up is withdrawn, and this is the
    * assertion that says so instead of the silence that implied it.
+   *
+   * That defence was thinner than it read until #1526, and the nats.js v2 to
+   * v3 migration is what showed it: the suite it points at ran its server
+   * without `-js`, so JetStream, key-value and the object store had **no**
+   * live coverage, and the v3 split — `jetstream()` moving off the connection,
+   * KV and the object store into packages of their own — would have been
+   * caught by nothing.
+   * `tests/integration/brokers/nats/scenarios/00-driver-shape.ts` now asserts
+   * the surface these stubs declare against the real modules, which is what
+   * this paragraph always claimed existed.
    */
   test('no optional peer is named by a literal import specifier in src/', () => {
     const sources = librarySources();

@@ -113,8 +113,8 @@ interpret the segments — it's just string matching.
 
 On `Publish(topic, message)`:
 
-1. The local mediator looks up the topic in its `Map<topic,
-   { local, remoteNodes }>`.
+1. The local mediator looks up the topic in its
+   `Map<topic, { local, remoteNodes }>`.
 2. **Local subscribers** receive directly — `local.values()`,
    each gets a `tell`.
 3. **Remote nodes** with subscribers get one envelope per node
@@ -236,22 +236,33 @@ nothing to do.
 
 ## Topic→node gossip
 
-The mediator keeps its `Map<topic, SubscriberSet>` local, but
-**gossips deltas** to peers:
+The mediator keeps its `Map<topic, SubscriberSet>` local and gossips
+only **topic names**: every topic this node holds at least one local
+subscriber for, the **full set** in every frame, never a delta.  The
+receiver **replaces that sender's contribution wholesale**.  A topic
+the frame no longer names is dropped for that node, so an unsubscribe
+travels as an absence from the next frame.  There are no tombstones,
+and a node that leaves loses its claims on every peer when the cluster
+announces `MemberRemoved`.
 
-- "Node X now has subscribers for topic Y."
-- "Node X no longer has subscribers for topic Y."
-
-Default gossip interval is the cluster's `gossipIntervalMs` (1
-second).  Override per-mediator:
+The periodic push runs on the mediator's **own timer** and goes to
+**one random `up` peer per tick**.  Its interval is
+`actor-ts.cluster.pub-sub.gossip-interval`, 1 second by default, and
+it does **not** follow the cluster's `gossip-interval`: changing one
+leaves the other alone.  Override it per mediator:
 
 ```ts
 const distributedPubSubOptions = DistributedPubSubOptions.create().withGossipIntervalMs(500);
 system.extension(DistributedPubSubId).start(cluster, distributedPubSubOptions);
 ```
 
-Lower intervals → faster convergence after subscribe / unsubscribe,
-more chatter.  500 ms is reasonable for chat-style use cases.
+Lower intervals → faster anti-entropy, more chatter.  Subscribing,
+unsubscribing and a member reaching `up` each broadcast right away to
+every `up` peer and do not wait for the interval; what the interval
+repairs is a frame that was dropped.  Because each tick reaches one
+random peer, a given peer hears a given node's periodic push about once
+every N−1 ticks in an N-node cluster, so that repair slows as the
+cluster grows.  500 ms is reasonable for chat-style use cases.
 
 ## When subscribers stop
 
@@ -390,25 +401,42 @@ Four good fits:
   ps.mediator.tell(new Publish('topic', message));   // ↑ same node — sub gets it
   // But: a publish on ANOTHER node right after Subscribe might miss `sub`
   ```
-  The subscription has to gossip to the publisher's mediator
-  before a publish on that mediator routes back.  Within 1-2
-  gossip intervals (1-2 s default), convergence happens.  For
-  must-not-miss messages, await `SubscribeAcknowledgment` and add a small
-  delay before the first publish across nodes.
+  The subscription has to reach the publisher's mediator before a publish
+  on that mediator routes back.  Two events send it there immediately — a
+  local `Subscribe`, and a member reaching `up` — and the first frame a
+  peer sends is answered with the same state in return, so a node that has
+  just joined can publish to subscribers that were already there.  The
+  gossip interval above is the anti-entropy behind those, not the ordinary
+  path.
+
+  What is left is the round trip itself.  For must-not-miss messages, await
+  `SubscribeAcknowledgment` and add a small delay before the first publish
+  across nodes.
 </Aside>
 
-## DistributedPubSub vs event-stream
+## DistributedPubSub vs the event streams
 
-Two pub/sub bus implementations; pick by scope:
+Three pub/sub buses; pick by scope first, then by how a channel is named:
 
-| Bus | Scope | Topic key |
+| Bus | Scope | Channel key |
 | --- | --- | --- |
-| [Event stream](/fundamentals/event-stream/) | One ActorSystem | Class (`instanceof`) |
+| [Event stream](/fundamentals/event-stream/) | One ActorSystem | Class (`instanceof`) or `kind` |
+| [Cluster event stream](/cluster/event-stream/) | Cluster-wide | Class (`instanceof`) or `kind` |
 | `DistributedPubSub` | Cluster-wide | String topic |
 
-Use the event stream for in-system dispatch; use DistributedPubSub
-when topics span nodes.  Both can coexist — many apps use both for
-different concerns.
+Use the event stream for in-system dispatch, and the cluster event
+stream when the *same* channels should reach every node — it is built
+on the mediator described above, so it is this page's machinery with a
+typed façade.
+
+Reach for `DistributedPubSub` directly when a topic is a **string
+chosen at runtime** (a room id, a tenant, a device id — anything a
+class or `kind` cannot enumerate ahead of time), or when you want
+**anycast**: exactly one subscriber cluster-wide rather than all of
+them. The event streams offer neither.
+
+All three can coexist — many apps use more than one for different
+concerns.
 
 ## Where to next
 

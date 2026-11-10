@@ -1,6 +1,8 @@
 import { match } from 'ts-pattern';
+import { ConfigError } from '../../config/Config.js';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
@@ -20,6 +22,7 @@ import type {
   EmailBridgeOptions,
   EmailBridgeOptionsType,
   EmailImapOptionsType,
+  EmailProcessedAction,
   EmailSmtpOptionsType,
 } from './EmailBridgeOptions.js';
 
@@ -175,7 +178,7 @@ export class EmailBridgeActor extends BrokerActor<EmailBridgeOptionsType, EmailB
 
   constructor(options: EmailBridgeOptions = {}) { super(options); }
 
-  protected configKey(): string { return ConfigKeys.io.broker.emailBridge; }
+  protected configKey(): string { return ConfigKeys.io.broker.emailBridge.root; }
 
   /**
    * Empty on purpose — every default belongs to a nested group, and
@@ -186,11 +189,10 @@ export class EmailBridgeActor extends BrokerActor<EmailBridgeOptionsType, EmailB
   protected builtInDefaultOptions(): Partial<EmailBridgeOptionsType> { return {}; }
 
   protected readOptionsFromConfig(config: Config): Partial<EmailBridgeOptionsType> {
-    const out: { -readonly [K in keyof EmailBridgeOptionsType]?: EmailBridgeOptionsType[K] } = {};
-    if (config.hasPath('imap')) out.imap = readImapOptions(config.getConfig('imap'));
-    if (config.hasPath('smtp')) out.smtp = readSmtpOptions(config.getConfig('smtp'));
-    return out;
+    return readEmailBridgeOptionsFromConfig(config);
   }
+
+  protected override retiredLeaves(): RetiredLeaves { return RETIRED_EMAIL_BRIDGE_LEAVES; }
 
   /** Empty — which side is required depends on the other, so the validator decides. */
   protected requiredOptions(): ReadonlyArray<keyof EmailBridgeOptionsType> { return []; }
@@ -331,7 +333,7 @@ export class EmailBridgeActor extends BrokerActor<EmailBridgeOptionsType, EmailB
     });
 
     await client.connect();
-    if ((imap.onProcessed ?? 'markSeen') === 'move') {
+    if (processedActionOf(imap) === 'move') {
       // A move into a mailbox that does not exist fails, and a settle that
       // fails leaves the message unflagged — so it is delivered again, and
       // again, forever.  Creating it once here is the difference between a
@@ -393,9 +395,9 @@ export class EmailBridgeActor extends BrokerActor<EmailBridgeOptionsType, EmailB
 
   /** Deliver every message the mailbox holds that has not been processed yet. */
   private async sweepMailbox(client: ImapFlowClientLike, imap: EmailImapOptionsType): Promise<void> {
-    // In `markSeen` mode the `\Seen` flag is the processed marker; in `move`
+    // In `mark-seen` mode the `\Seen` flag is the processed marker; in `move`
     // mode a processed message is simply not in this mailbox any more.
-    const query = (imap.onProcessed ?? 'markSeen') === 'move' ? { all: true } : { seen: false };
+    const query = processedActionOf(imap) === 'move' ? { all: true } : { seen: false };
     // `false` is how the driver reports a search it could not run at all.
     const found = await client.search(query, { uid: true });
     const uids = found === false ? [] : found;
@@ -504,7 +506,7 @@ export class EmailBridgeActor extends BrokerActor<EmailBridgeOptionsType, EmailB
       return;
     }
     try {
-      if ((imap.onProcessed ?? 'markSeen') === 'move') {
+      if (processedActionOf(imap) === 'move') {
         await client.messageMove(String(pending.uid), imap.moveToMailbox!, { uid: true });
       } else {
         await client.messageFlagsAdd(String(pending.uid), ['\\Seen'], { uid: true });
@@ -673,6 +675,16 @@ function currentUidValidity(client: ImapFlowClientLike): string {
   return value === undefined ? '' : String(value);
 }
 
+/**
+ * How an acknowledged message is settled — `onProcessed`, or `'mark-seen'`
+ * when the group leaves it unset.  One typed place for the default, so a
+ * spelling the union no longer has cannot survive in a comparison: an
+ * untyped `?? 'markSeen'` compared against `'move'` would still compile.
+ */
+function processedActionOf(imap: EmailImapOptionsType): EmailProcessedAction {
+  return imap.onProcessed ?? 'mark-seen';
+}
+
 function supportsIdle(client: ImapFlowClientLike): boolean {
   const capabilities = client.capabilities;
   // No capability map at all: assume IDLE and let the fallback happen on the
@@ -687,34 +699,117 @@ function errorMessage(e: unknown): string {
 
 /* --------------------------- HOCON leaf readers -------------------------- */
 
-function readImapOptions(config: Config): EmailImapOptionsType {
-  const out: { -readonly [K in keyof EmailImapOptionsType]?: EmailImapOptionsType[K] } = {};
-  if (config.hasPath('host')) out.host = config.getString('host');
-  if (config.hasPath('port')) out.port = config.getInt('port');
-  if (config.hasPath('secure')) out.secure = config.getBoolean('secure');
-  if (config.hasPath('user')) out.user = config.getString('user');
-  if (config.hasPath('password')) out.password = config.getString('password');
-  if (config.hasPath('mailbox')) out.mailbox = config.getString('mailbox');
-  if (config.hasPath('onProcessed')) out.onProcessed = config.getString('onProcessed') as EmailImapOptionsType['onProcessed'];
-  if (config.hasPath('moveToMailbox')) out.moveToMailbox = config.getString('moveToMailbox');
-  if (config.hasPath('disableIdle')) out.disableIdle = config.getBoolean('disableIdle');
-  if (config.hasPath('maxIdleTimeMs')) out.maxIdleTimeMs = config.getDuration('maxIdleTimeMs');
-  if (config.hasPath('pollIntervalMs')) out.pollIntervalMs = config.getDuration('pollIntervalMs');
-  if (config.hasPath('maxMessageBytes')) out.maxMessageBytes = config.getInt('maxMessageBytes');
-  if (config.hasPath('acknowledgmentTimeoutMs')) out.acknowledgmentTimeoutMs = config.getDuration('acknowledgmentTimeoutMs');
+/**
+ * The camelCase spellings the bridge's own leaves had before #1443, mapped to
+ * the leaves that replaced them — see `BrokerActor.retiredLeaves`.  Both caps
+ * are here: `imap.maxMessageBytes` and `smtp.maxConnections` are the limits
+ * the docs tell a deployment to tune, and an ignored old spelling would
+ * restore the default with nothing said.
+ */
+const RETIRED_EMAIL_BRIDGE_LEAVES: RetiredLeaves = {
+  'imap.onProcessed': 'imap.on-processed',
+  'imap.moveToMailbox': 'imap.move-to-mailbox',
+  'imap.disableIdle': 'imap.disable-idle',
+  'imap.maxIdleTimeMs': 'imap.max-idle-time',
+  'imap.pollIntervalMs': 'imap.poll-interval',
+  'imap.maxMessageBytes': 'imap.max-message-bytes',
+  'imap.acknowledgmentTimeoutMs': 'imap.acknowledgment-timeout',
+  'smtp.maxConnections': 'smtp.max-connections',
+  'smtp.maxMessages': 'smtp.max-messages',
+};
+
+/**
+ * The `imap.on-processed` values this block took before every value a HOCON
+ * key takes became kebab-case (#1443), each mapped to the value that replaced
+ * it.  A `Map` rather than an object literal, so a value spelled like an
+ * `Object.prototype` member is never mistaken for an entry.
+ */
+const RETIRED_PROCESSED_ACTIONS: ReadonlyMap<string, EmailProcessedAction> = new Map([
+  ['markSeen', 'mark-seen'],
+]);
+
+/**
+ * Read the `actor-ts.io.broker.email-bridge` block's own leaves off the system
+ * config, at the full paths `keys` holds; the reconnect / breaker / buffer
+ * leaves are `BrokerActor`'s.  Each half is read whole into its group, and an
+ * unset leaf is omitted: the defaults are applied where the fields are read,
+ * not here.  `target` names an actor and has no leaf.
+ */
+export function readEmailBridgeOptionsFromConfig(
+  config: Config,
+  keys: typeof ConfigKeys.io.broker.emailBridge = ConfigKeys.io.broker.emailBridge,
+): Partial<EmailBridgeOptionsType> {
+  const out: { -readonly [K in keyof EmailBridgeOptionsType]?: EmailBridgeOptionsType[K] } = {};
+  if (config.hasPath(keys.imap.root)) out.imap = readImapOptions(config, keys.imap);
+  if (config.hasPath(keys.smtp.root)) out.smtp = readSmtpOptions(config, keys.smtp);
   return out;
 }
 
-function readSmtpOptions(config: Config): EmailSmtpOptionsType {
+/**
+ * Read `imap.on-processed` at `path`, refusing a retired spelling by name.
+ *
+ * Refused, not translated: a translation would be a second spelling the
+ * bridge accepts for good.  And refused here rather than left to the
+ * validator, because the validator can only say the value is not one it
+ * knows, where this can say what it was renamed to — the difference between
+ * an operator guessing and an operator fixing it.  Any other unknown value
+ * is still the validator's to reject.
+ */
+function readProcessedAction(config: Config, path: string): EmailProcessedAction {
+  const value = config.getString(path);
+  const replacement = RETIRED_PROCESSED_ACTIONS.get(value);
+  if (replacement !== undefined) {
+    throw new ConfigError(
+      `${path} = "${value}" has been renamed to "${replacement}" — every value a `
+      + 'HOCON key takes is kebab-case now, and the retired spelling is read by nothing.  '
+      + 'Change the value in your application.conf; code that sets it changes the same '
+      + 'way, since the TypeScript union was renamed with it.',
+    );
+  }
+  return value as EmailProcessedAction;
+}
+
+/**
+ * The inbound half.  `max-message-bytes` is a size, read with `getBytes`, so
+ * `25M` is 26 214 400; the three intervals are durations.
+ */
+function readImapOptions(
+  config: Config,
+  imapKeys: typeof ConfigKeys.io.broker.emailBridge.imap,
+): EmailImapOptionsType {
+  const out: { -readonly [K in keyof EmailImapOptionsType]?: EmailImapOptionsType[K] } = {};
+  if (config.hasPath(imapKeys.host)) out.host = config.getString(imapKeys.host);
+  if (config.hasPath(imapKeys.port)) out.port = config.getInt(imapKeys.port);
+  if (config.hasPath(imapKeys.secure)) out.secure = config.getBoolean(imapKeys.secure);
+  if (config.hasPath(imapKeys.user)) out.user = config.getString(imapKeys.user);
+  if (config.hasPath(imapKeys.password)) out.password = config.getString(imapKeys.password);
+  if (config.hasPath(imapKeys.mailbox)) out.mailbox = config.getString(imapKeys.mailbox);
+  if (config.hasPath(imapKeys.onProcessed)) out.onProcessed = readProcessedAction(config, imapKeys.onProcessed);
+  if (config.hasPath(imapKeys.moveToMailbox)) out.moveToMailbox = config.getString(imapKeys.moveToMailbox);
+  if (config.hasPath(imapKeys.disableIdle)) out.disableIdle = config.getBoolean(imapKeys.disableIdle);
+  if (config.hasPath(imapKeys.maxIdleTime)) out.maxIdleTimeMs = config.getDuration(imapKeys.maxIdleTime);
+  if (config.hasPath(imapKeys.pollInterval)) out.pollIntervalMs = config.getDuration(imapKeys.pollInterval);
+  if (config.hasPath(imapKeys.maxMessageBytes)) out.maxMessageBytes = config.getBytes(imapKeys.maxMessageBytes);
+  if (config.hasPath(imapKeys.acknowledgmentTimeout)) {
+    out.acknowledgmentTimeoutMs = config.getDuration(imapKeys.acknowledgmentTimeout);
+  }
+  return out;
+}
+
+/** The outbound half. */
+function readSmtpOptions(
+  config: Config,
+  smtpKeys: typeof ConfigKeys.io.broker.emailBridge.smtp,
+): EmailSmtpOptionsType {
   const out: { -readonly [K in keyof EmailSmtpOptionsType]?: EmailSmtpOptionsType[K] } = {};
-  if (config.hasPath('host')) out.host = config.getString('host');
-  if (config.hasPath('port')) out.port = config.getInt('port');
-  if (config.hasPath('secure')) out.secure = config.getBoolean('secure');
-  if (config.hasPath('user')) out.user = config.getString('user');
-  if (config.hasPath('password')) out.password = config.getString('password');
-  if (config.hasPath('from')) out.from = config.getString('from');
-  if (config.hasPath('maxConnections')) out.maxConnections = config.getInt('maxConnections');
-  if (config.hasPath('maxMessages')) out.maxMessages = config.getInt('maxMessages');
+  if (config.hasPath(smtpKeys.host)) out.host = config.getString(smtpKeys.host);
+  if (config.hasPath(smtpKeys.port)) out.port = config.getInt(smtpKeys.port);
+  if (config.hasPath(smtpKeys.secure)) out.secure = config.getBoolean(smtpKeys.secure);
+  if (config.hasPath(smtpKeys.user)) out.user = config.getString(smtpKeys.user);
+  if (config.hasPath(smtpKeys.password)) out.password = config.getString(smtpKeys.password);
+  if (config.hasPath(smtpKeys.from)) out.from = config.getString(smtpKeys.from);
+  if (config.hasPath(smtpKeys.maxConnections)) out.maxConnections = config.getInt(smtpKeys.maxConnections);
+  if (config.hasPath(smtpKeys.maxMessages)) out.maxMessages = config.getInt(smtpKeys.maxMessages);
   return out;
 }
 

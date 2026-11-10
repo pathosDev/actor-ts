@@ -31,6 +31,13 @@ import type { LeaseMajorityOptions, LeaseMajorityOptionsType } from './LeaseMajo
  * is **stateful**: the first equal-size observation kicks off the
  * acquire; subsequent ticks read the cached result.
  *
+ * Selected from configuration (`active-strategy = lease-majority`), it is
+ * built at its first decision, with a lease from `actor-ts.coordination
+ * .lease` owned by the address that decision carries — `readDowningFromConfig`
+ * does the wrapping, because `Cluster.join` builds the provider before that
+ * address exists (#1454).  Constructed in code it takes the lease it is given,
+ * as it always has.
+ *
  * **Lease unavailable** (network problem reaching the K8s API):
  * `acquire()` rejects → strategy stays in pending state and returns
  * an empty decision.  Better to wait than to risk both sides
@@ -73,6 +80,25 @@ import type { LeaseMajorityOptions, LeaseMajorityOptionsType } from './LeaseMajo
  *     view returns an empty decision, refusing to claim majority
  *     until the partition heals (which resets the fail-safe flag).
  *
+ * **Re-validated win (#937)**
+ *
+ * A won arbitration is only true for as long as the lease behind it is.
+ * The cached `surviveSet` can be asked for again long after it was
+ * computed — `Cluster` consults the strategy every failure-detector tick
+ * once its stability window opens, and its view moves on things this
+ * strategy's fingerprint ignores — and a holder that stalled past the
+ * TTL in between has had the lease taken by the other side, which is now
+ * downing *this* one.  Replaying the cached "down them" is how both
+ * halves came to act as the survivor.  So a cached win is returned only
+ * while `lease.checkAlive()` says the lease is still held; otherwise it
+ * is dropped and arbitrated afresh.  The fresh acquire loses if the
+ * other side holds the lease now, and wins it back if nobody took it.  A
+ * lost arbitration is not re-asked — it does not rest on the lease.
+ *
+ * An acquire that takes longer than the lease's TTL can therefore never
+ * produce a usable win: the strategy keeps arbitrating and returns no
+ * decision, which is the same conservative posture as a pending acquire.
+ *
  * **Fencing tokens (optional)**
  *
  * If the underlying `Lease` implements `acquireWithToken()` (K8s
@@ -88,6 +114,13 @@ export class LeaseMajority implements DowningProvider {
   /** Cached decision once acquire has resolved.  Cleared on a fresh
    *  partition view so a new split triggers a new acquire. */
   private decision: DowningDecision | null = null;
+
+  /**
+   * True when {@link decision} is a won arbitration — the one cached answer
+   * that holds only for as long as the lease does (#937).  Set wherever
+   * `decision` is, so a cached answer never carries a stale flag.
+   */
+  private decisionRestsOnLease = false;
 
   /** True while an `acquire()` is in flight. */
   private acquiring = false;
@@ -134,6 +167,9 @@ export class LeaseMajority implements DowningProvider {
    */
   private abandonedAcquireEpoch: number | null = null;
 
+  /** Set once by {@link shutdown}; every decision after it is the empty one. */
+  private stopped = false;
+
   private readonly options: LeaseMajorityOptionsType;
 
   constructor(options: LeaseMajorityOptions) {
@@ -142,6 +178,7 @@ export class LeaseMajority implements DowningProvider {
   }
 
   decide(view: ClusterPartitionView): DowningDecision {
+    if (this.stopped) return new Set();
     const candidates = view.allMembers.filter((m) =>
       (m.status === 'up' || m.status === 'leaving' || m.status === 'unreachable') &&
       (!this.options.role || m.hasRole(this.options.role)),
@@ -170,11 +207,13 @@ export class LeaseMajority implements DowningProvider {
     // Strict majority — no Lease needed.
     if (reachable.length >= needed) {
       this.decision = new Set(unreachable.map(addrKey));
+      this.decisionRestsOnLease = false;
       return this.decision;
     }
     // Strict minority — also no Lease needed.
     if (unreachable.length >= needed) {
       this.decision = new Set(reachable.map(addrKey));
+      this.decisionRestsOnLease = false;
       return this.decision;
     }
 
@@ -192,8 +231,14 @@ export class LeaseMajority implements DowningProvider {
     }
 
     if (this.decision !== null) {
-      // Cached from a prior tick on this same view.
-      return this.decision;
+      // Cached from a prior tick on this same view.  A won arbitration is
+      // returned only while the lease behind it is still held (#937);
+      // otherwise it is dropped here and the kickoff below arbitrates afresh.
+      if (!this.decisionRestsOnLease || this.options.lease.checkAlive()) {
+        return this.decision;
+      }
+      this.decision = null;
+      this.decisionRestsOnLease = false;
     }
 
     if (this.acquiring) {
@@ -230,6 +275,31 @@ export class LeaseMajority implements DowningProvider {
     const myEpoch = this.acquireEpoch;
     void this.runAcquire(myEpoch, surviveSet, downSelfSet);
     return new Set();
+  }
+
+  /**
+   * Stop arbitrating and give back the lease this strategy holds (#1454).
+   *
+   * What a node that leaves owes the members it leaves behind.  A won
+   * arbitration keeps the lease, and the backend renews the record until
+   * something releases it — {@link decide} never does, because a cached win is
+   * only as good as the lease under it (#937).  Without this, a node that left
+   * kept the record for as long as its process ran, and a later even split
+   * among the members still there found it held by a node that was gone: both
+   * halves lost the arbitration and downed themselves.
+   *
+   * An acquire still on the wire is abandoned the way a changed view abandons
+   * one ({@link reset}), so a win it reports after this is undone where it
+   * lands (#600).  The release itself is `Lease.release()`, a no-op for a lease
+   * that is not held, so a strategy that never arbitrated pays one call.  A
+   * release that fails rejects this call; the strategy stays stopped either
+   * way, and decides nothing again.
+   */
+  async shutdown(): Promise<void> {
+    if (this.stopped) return;
+    this.stopped = true;
+    this.reset();
+    await this.options.lease.release();
   }
 
   /* ------------------------------ internals ------------------------------ */
@@ -291,6 +361,7 @@ export class LeaseMajority implements DowningProvider {
     }
     this.acquiring = false;
     this.decision = won ? surviveSet : downSelfSet;
+    this.decisionRestsOnLease = won;
   }
 
   /**
@@ -328,6 +399,7 @@ export class LeaseMajority implements DowningProvider {
 
   private reset(): void {
     this.decision = null;
+    this.decisionRestsOnLease = false;
     this.lastFingerprint = null;
     this.failSafe = false;
     // An acquire that is still in flight loses its watcher here exactly as

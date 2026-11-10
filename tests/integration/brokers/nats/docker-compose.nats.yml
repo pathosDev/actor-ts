@@ -2,7 +2,8 @@
 #
 # NATS boots in well under a second — the fastest broker in the
 # suite.  No auth, no clustering — just the standalone server on
-# port 4222.
+# port 4222, with JetStream enabled so the JetStream, key-value and
+# object-store actors have something to run against.
 #
 # Run locally:
 #   bun run test:integration:broker nats
@@ -12,10 +13,12 @@ name: actor-ts-integration-nats
 
 services:
   nats:
-    # `latest` deliberately — integration tests want to surface
-    # upstream NATS regressions as soon as they ship.  Production
-    # users pin a specific version themselves.
-    image: nats:latest
+    # Pinned to the release `latest` resolved to when the pin was written, and
+    # Dependabot moves it (#1597): a new NATS arrives as a PR that runs this
+    # suite, so an upstream regression still surfaces within a day — attributable
+    # to the bump, instead of turning the nightly red underneath a run.
+    # Production users pin their own version.
+    image: nats:2.15.2
     # `-p 4222` for client traffic.  No healthcheck here: the
     # NATS image is built on `scratch` and ships no shell / curl /
     # wget / nc, so docker-compose has no way to probe readiness
@@ -23,7 +26,12 @@ services:
     # `waitForPort` (lib/WaitForPort.ts) polls the client port
     # until it accepts a TCP connection — same readiness shape,
     # just from the OUTSIDE.
-    command: ["-p", "4222"]
+    # `-js` enables JetStream, and it is not optional: the JetStream, KV and
+    # object-store actors all need it, and without it this suite covered core
+    # NATS only — which is how a broken push-consumer path stayed invisible
+    # (#1526).  `-sd` puts the stream store on the container filesystem, which
+    # is thrown away with the container between runs.
+    command: ["-p", "4222", "-js", "-sd", "/tmp/jetstream"]
     networks:
       natsnet: {}
 

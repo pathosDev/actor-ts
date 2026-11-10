@@ -151,6 +151,66 @@ events_total{source="batch", env="prod"} 89
 
 In Prometheus / Grafana lesbar als Filter oder Group-by-Achsen.
 
+### Namen und Label-Keys sind Konstanten
+
+In einen Label-**Wert** gehören Daten. In einen Metrik-**Namen** und
+einen Label-**Key** nicht:
+
+```ts
+// ✗ INJECTION — TU DAS NICHT
+metrics.counter(`http_requests_${tenantFromHeader}_total`).inc();
+metrics.counter('http_requests_total', { [headerFromRequest]: 'yes' }).inc();
+```
+
+Das Exposition-Format ist zeilenorientiert, und nur die Wert-Hälfte von
+`key="value"` wird gequotet und escaped. Ein Name und ein Key landen roh
+darin, weil das Format nichts anbietet, womit man sie escapen könnte. Eine
+Tenant-ID von `x_total 1\nnode_up{job="prod"} 0\n#` erzeugt also keine
+seltsam benannte Serie — sie **beendet die aktuelle und schreibt eine
+weitere**. Wer das scrapet, kann das gefälschte `node_up` nicht von einem
+echten unterscheiden, und ein Alert auf `node_up == 0` feuert nie wieder.
+
+Die Registry weist deshalb beides schon bei der Registrierung zurück,
+damit der Fehler als Stacktrace an der verursachenden Stelle auftaucht
+statt Stunden später als korrupter Scrape:
+
+- ein Metrik-Name muss `[a-zA-Z_:][a-zA-Z0-9_:]*` erfüllen
+- ein Label-Key muss `[a-zA-Z_][a-zA-Z0-9_]*` erfüllen — kein Doppelpunkt
+- ein Label-Key darf nicht mit `__` beginnen
+
+Alles andere wirft.
+
+Die dritte Regel ist dieselbe Fälschung eine Schicht weiter. Prometheus
+reserviert `__`-präfigierte Label-Namen für sich selbst und verwirft sie
+nach dem Relabeling — aber `__name__` *ist* der Serienname, und ein
+Scrape-Job mit `honor_labels: true` behält dafür den Wert des Targets.
+Ein vollkommen wohlgeformtes `hits_total{__name__="forged_series"} 1`
+lässt also den Exporter ehrlich aussehen und wird vom Server unter
+`forged_series` abgelegt. `client_golang` und `client_python` weisen das
+Präfix an derselben Stelle zurück. Reserviert ist nur die **Key**-Seite:
+`__` in einem Label-*Wert* bleibt unangetastet — deshalb ist
+`__overflow__`, die Overflow-Markierung der Kardinalitätsgrenze, ein Wert
+und kein Name.
+
+Die Aufschlüsselung pro Tenant oder pro Route gehört in einen
+Label-**Wert**, an der Quelle beschränkt (siehe *`bucketize`* weiter
+unten):
+
+```ts
+// ✓ — konstanter Name, konstanter Key, der variable Teil im Wert
+metrics.counter('http_requests_total', { tenant: tenantLabel }).inc();
+```
+
+Beide Grammatiken sind exportiert — `PROMETHEUS_METRIC_NAME_PATTERN` und
+`PROMETHEUS_LABEL_NAME_PATTERN` aus `actor-ts/metrics` —, sodass Code,
+der einen Namen oder einen Key aus etwas anderem als einem Literal
+zusammensetzt, dieselbe Frage stellen kann, die die Registry gleich
+stellen wird, und „diese Metrik würde abgelehnt“ an der eigenen Grenze
+melden kann, statt mehrere Frames tiefer einen Throw zu fangen.  Es sind
+dieselben Objekte, die die Registry konsultiert, und genau sie schuldet
+eine eigene `MetricsRegistry` dem Renderer: siehe
+[Der Renderer vertraut seiner Eingabe](/de/observability/metrics/prometheus-exporter/#der-renderer-vertraut-seiner-eingabe).
+
 ### Kardinalitätsdisziplin
 
 ```ts
@@ -232,6 +292,21 @@ const metrics = system.extension(MetricsExtensionId).enable(metricsOptions);
 Label-Wert nachweislich aus einer beschränkten Menge stammt.
 (`0`, nicht `Infinity`: die Grenze ist eine Ganzzahl-Anzahl, und
 `Infinity` ist keine Ganzzahl.)
+
+Dieselbe Grenze kann auch aus einer Config-Datei kommen, als
+[`actor-ts.metrics.max-series-per-family`](/de/reference/configuration/#actor-tsmetrics):
+
+```hocon
+actor-ts.metrics.max-series-per-family = 50000
+```
+
+`enable()` legt die drei pro Feld übereinander: Optionen, die du
+übergibst, gewinnen, die Datei füllt, was sie offen lassen, und
+10 000 ist der Boden.  Die Datei ist der einzige Weg zu den
+Registries, die du nie selbst einschaltest — die, die DevTools
+einschaltet, solange es angehängt ist, und die in jedem Worker eines
+[Worker-Mesh](/de/cluster/worker-mesh/#metriken-ein-scrape-für-jeden-thread),
+dessen System aus der Config des Main-Threads gebaut wird.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -322,5 +397,8 @@ Nützlich für **Tests** und **eigene Exporter**.
 - **[prom-client-Adapter](/de/observability/metrics/prom-client-adapter/)** —
   für Projekte, die schon `prom-client` nutzen.
 
-Die [`MetricsExtension`](/api/classes/metricsextension/)
-API-Referenz deckt die volle Oberfläche ab.
+`MetricsExtension` und die Metrik-Primitive kommen aus dem Sub-Pfad
+`actor-ts/metrics`.  Die generierte [API-Referenz](/api/) wird allein
+aus dem Root-Barrel `actor-ts` erzeugt, deshalb sind diese Seite und die
+Seite [Prometheus-Exporter](/de/observability/metrics/prometheus-exporter/)
+die Referenz dafür.

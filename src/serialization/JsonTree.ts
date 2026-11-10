@@ -1,6 +1,8 @@
 import { BidirectionalMap } from '../util/BidirectionalMap.js';
 import { BidirectionalMultiMap } from '../util/BidirectionalMultiMap.js';
 import { ownedBytes } from './ByteViews.js';
+import { MAX_BIGINT_DIGITS, MAX_BIGNUM_BYTES, MAX_BIGNUM_MAGNITUDE } from './Constants.js';
+import { DEFAULT_MAX_NESTING_DEPTH } from './ReadConstraintsOptions.js';
 import { binaryBytesOf, binaryKindOf, rebuildBinaryView, rebuildError } from './RichTypes.js';
 import { SerializationError } from './Serializer.js';
 
@@ -49,6 +51,12 @@ const BIDIRECTIONAL_MAP_TAG = '__bidirectionalmap__';
  */
 const BIDIRECTIONAL_MULTI_MAP_TAG = '__bidirectionalmultimap__';
 const BIGINT_TAG = '__bigint__';
+/**
+ * The one spelling the encoder writes into a `__bigint__`, `String(value)`: a
+ * minus sign only below zero, then decimal digits without a leading zero, `0`
+ * itself aside.  `String(-0n)` is `'0'`, so `-0` is not among them.
+ */
+const CANONICAL_BIGINT_PATTERN = /^(?:0|-?[1-9][0-9]*)$/;
 /** Non-finite numbers and `-0` — plain JSON silently turns them into `null` / `0`. */
 const NUMBER_TAG = '__number__';
 /**
@@ -124,6 +132,25 @@ export type JsonTreeEncodeOptions = {
 };
 
 /**
+ * What a decode is allowed to do with the tree it is handed.
+ *
+ * Symmetric with {@link JsonTreeEncodeOptions}, and it exists for the same
+ * reason `CborDecoder` takes constraints: this walker is reached directly from
+ * the cluster wire (`cluster/Protocol.ts`) and from `JsonSerializer`, so the
+ * value it walks is chosen by a peer.  `JSON.parse` offers no protection to
+ * inherit — measured on Bun, Node and Deno, it accepts 100 000 levels of `[`
+ * on all three — so the recursion that overflows is this file's own (#880).
+ */
+export type JsonTreeDecodeOptions = {
+  /**
+   * Container levels to descend before refusing the payload.  Defaults to
+   * {@link DEFAULT_MAX_NESTING_DEPTH}; the operator-facing knob is
+   * `actor-ts.serialization.read-constraints.max-nesting-depth`.
+   */
+  readonly maxNestingDepth?: number;
+};
+
+/**
  * Internal sentinel: "this node vanishes" — an `undefined` under `'omit'`.
  * Object properties drop it, value positions turn it into `null`, and the
  * root converts it into an error; it never leaks out of the walker.
@@ -132,6 +159,11 @@ const OMITTED = Symbol('omitted');
 
 /** Decode sentinel: "the sole key was not a known tag — plain data". */
 const NOT_TAGGED = Symbol('not-tagged');
+
+type DecodeContext = {
+  /** Levels {@link decodeNode} may descend; see {@link JsonTreeDecodeOptions}. */
+  readonly maxNestingDepth: number;
+};
 
 type EncodeContext = {
   readonly undefinedValues: UndefinedValueHandling;
@@ -159,16 +191,11 @@ export function encodeJsonTree(value: unknown, options?: JsonTreeEncodeOptions):
   return encoded;
 }
 
-export function decodeJsonTree(value: unknown): unknown {
-  if (value === null || typeof value !== 'object') return value;
-  if (Array.isArray(value)) return value.map((entry) => decodeJsonTree(entry));
-  const obj = value as Record<string, unknown>;
-  const keys = Object.keys(obj);
-  if (keys.length === 1) {
-    const tagged = decodeTagged(keys[0]!, obj);
-    if (tagged !== NOT_TAGGED) return tagged;
-  }
-  return decodePlainObject(obj);
+export function decodeJsonTree(value: unknown, options?: JsonTreeDecodeOptions): unknown {
+  const context: DecodeContext = {
+    maxNestingDepth: options?.maxNestingDepth ?? DEFAULT_MAX_NESTING_DEPTH,
+  };
+  return decodeNode(value, context, 0);
 }
 
 /* -------------------------------- Encode --------------------------------- */
@@ -182,7 +209,7 @@ function encodeNode(value: unknown, context: EncodeContext, allowToJson: boolean
   }
   if (value === null) return null;
   if (typeof value === 'number') return encodeNumber(value);
-  if (typeof value === 'bigint') return { [BIGINT_TAG]: value.toString() };
+  if (typeof value === 'bigint') return encodeBigint(value, context);
   if (value instanceof Date) return { [DATE_TAG]: value.toISOString() };
   if (value instanceof Uint8Array) return { [BYTES_TAG]: toBase64(value) };
   // Ahead of the `Map` branch on purpose.  `BidirectionalMap` only implements
@@ -228,6 +255,22 @@ function encodeNumber(value: number): unknown {
   if (value === -Infinity) return { [NUMBER_TAG]: '-infinity' };
   if (Object.is(value, -0)) return { [NUMBER_TAG]: '-0' };
   return value;
+}
+
+/**
+ * Both decoders refuse an integer outside `-2^8192` to `2^8192 - 1` — this
+ * walker's {@link decodeBigint} and the CBOR codec's bignum cap — so the
+ * encoder refuses it too.  Written, it would be a journal row every recovery
+ * fails on, or a frame the receiving peer answers by closing the connection.
+ * Refused here, the error reaches whoever called `persist()`, `tell` or
+ * `toBinary` while they can still act on it.  The message names the range
+ * and the path, never the digits.
+ */
+function encodeBigint(value: bigint, context: EncodeContext): unknown {
+  if (outsideBignumRange(value)) {
+    throw new SerializationError(`bigint outside ${bignumRange()} at ${formatPath(context.path)}`);
+  }
+  return { [BIGINT_TAG]: value.toString() };
 }
 
 function enterContainer(container: object, context: EncodeContext): void {
@@ -431,7 +474,48 @@ function encodeObject(value: object, context: EncodeContext, allowToJson: boolea
 
 /* -------------------------------- Decode --------------------------------- */
 
-function decodeTagged(key: string, obj: Record<string, unknown>): unknown {
+/**
+ * `depth` counts the levels THIS WALKER will descend, not the levels of JSON
+ * structure — the same thing `CborDecoder.readValue` counts, and for the same
+ * reason: it is the stack the cap protects.  A tagged container charges one
+ * level for the tag object and one more for its members, so
+ * `{"__map__":[[{"__map__":[…]},1]]}` costs two rather than the four its braces
+ * and brackets suggest.  Under-counting structure is fine; under-counting
+ * frames would not be.
+ *
+ * Threaded as a parameter rather than kept on the context so it unwinds with
+ * the call stack — there is no cleanup to forget on the many early returns and
+ * throws below.
+ */
+function decodeNode(value: unknown, context: DecodeContext, depth: number): unknown {
+  if (value === null || typeof value !== 'object') return value;
+  if (depth > context.maxNestingDepth) {
+    throw new SerializationError(`JSON nesting deeper than ${context.maxNestingDepth}`);
+  }
+  if (Array.isArray(value)) return value.map((entry) => decodeNode(entry, context, depth + 1));
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj);
+  if (keys.length === 1) {
+    const tagged = decodeTagged(keys[0]!, obj, context, depth);
+    if (tagged !== NOT_TAGGED) return tagged;
+  }
+  return decodePlainObject(obj, context, depth);
+}
+
+/**
+ * `depth` is the level of the tag OBJECT; everything it unpacks sits one
+ * level below, which is what `childDepth` names.  Every recursion site in this
+ * function has to use it — a tag whose members were re-entered at `depth`
+ * would recurse without ever charging for it, and the cap would be silently
+ * absent for exactly that shape.
+ */
+function decodeTagged(
+  key: string,
+  obj: Record<string, unknown>,
+  context: DecodeContext,
+  depth: number,
+): unknown {
+  const childDepth = depth + 1;
   switch (key) {
     case DATE_TAG: {
       const iso = obj[DATE_TAG];
@@ -448,7 +532,10 @@ function decodeTagged(key: string, obj: Record<string, unknown>): unknown {
       if (!Array.isArray(entries)) throw malformedTag(MAP_TAG, 'an array of entry pairs');
       return new Map(entries.map((entry) => {
         if (!Array.isArray(entry) || entry.length !== 2) throw malformedTag(MAP_TAG, 'an array of entry pairs');
-        return [decodeJsonTree(entry[0]), decodeJsonTree(entry[1])] as [unknown, unknown];
+        return [
+          decodeNode(entry[0], context, childDepth),
+          decodeNode(entry[1], context, childDepth),
+        ] as [unknown, unknown];
       }));
     }
     case BIDIRECTIONAL_MAP_TAG: {
@@ -463,7 +550,10 @@ function decodeTagged(key: string, obj: Record<string, unknown>): unknown {
         if (!Array.isArray(entry) || entry.length !== 2) {
           throw malformedTag(BIDIRECTIONAL_MAP_TAG, 'an array of entry pairs');
         }
-        return [decodeJsonTree(entry[0]), decodeJsonTree(entry[1])] as [unknown, unknown];
+        return [
+          decodeNode(entry[0], context, childDepth),
+          decodeNode(entry[1], context, childDepth),
+        ] as [unknown, unknown];
       }));
     }
     case BIDIRECTIONAL_MULTI_MAP_TAG: {
@@ -479,20 +569,20 @@ function decodeTagged(key: string, obj: Record<string, unknown>): unknown {
         if (!Array.isArray(row) || row.length !== 2 || !Array.isArray(row[1])) {
           throw malformedTag(BIDIRECTIONAL_MULTI_MAP_TAG, 'an array of [left, right[]] rows');
         }
-        const left = decodeJsonTree(row[0]);
-        for (const right of row[1]) map.add(left, decodeJsonTree(right));
+        const left = decodeNode(row[0], context, childDepth);
+        for (const right of row[1]) map.add(left, decodeNode(right, context, childDepth));
       }
       return map;
     }
     case SET_TAG: {
       const values = obj[SET_TAG];
       if (!Array.isArray(values)) throw malformedTag(SET_TAG, 'an array');
-      return new Set(values.map((entry) => decodeJsonTree(entry)));
+      return new Set(values.map((entry) => decodeNode(entry, context, childDepth)));
     }
     case BIGINT_TAG: {
       const digits = obj[BIGINT_TAG];
       if (typeof digits !== 'string') throw malformedTag(BIGINT_TAG, 'a string');
-      return BigInt(digits);
+      return decodeBigint(digits);
     }
     case NUMBER_TAG: {
       switch (obj[NUMBER_TAG]) {
@@ -532,11 +622,11 @@ function decodeTagged(key: string, obj: Record<string, unknown>): unknown {
       }
     }
     case ERROR_TAG:
-      return decodeError(obj[ERROR_TAG]);
+      return decodeError(obj[ERROR_TAG], context, childDepth);
     case TYPEDARRAY_TAG:
       return decodeBinaryView(obj[TYPEDARRAY_TAG]);
     case LITERAL_TAG:
-      return decodeLiteral(obj[LITERAL_TAG]);
+      return decodeLiteral(obj[LITERAL_TAG], context, childDepth);
     default:
       // Includes SERIALIZED_TAG: the PayloadCodec interprets that framing at
       // the root before this walker runs — anywhere else it is plain data.
@@ -544,7 +634,46 @@ function decodeTagged(key: string, obj: Record<string, unknown>): unknown {
   }
 }
 
-function decodeError(inner: unknown): Error {
+/**
+ * A `__bigint__` is held to the integers the CBOR codec's bignum cap admits,
+ * `-2^8192` to `2^8192 - 1`, so the two codecs accept the same values — and
+ * its string is measured before anything parses it.  `BigInt()` costs more
+ * than linear time in the length of a decimal string, and this walker is
+ * reached by request bodies, cluster frames and journal rows alike, so the
+ * digits are first held to {@link MAX_BIGINT_DIGITS}, the decimal length of
+ * that range's ends; a leading minus sign does not count against it.  The
+ * bound is on the string, which is what the parse pays for, so a padded
+ * spelling of an admitted value can still be too long.
+ *
+ * Only the spelling the encoder writes is parsed at all
+ * ({@link CANONICAL_BIGINT_PATTERN}).  `BigInt()` reads far more — `''` as
+ * `0n`, whitespace, a `+`, hex, octal and binary prefixes, leading zeros —
+ * and not the same set on every engine: Bun returns `0n` for a lone `-` or
+ * `+`, where Node throws.  Checked before the parse, the pattern also leaves
+ * `BigInt()` nothing to throw on, which is how a string such as 'abc' once
+ * escaped this tag untyped (#1449).
+ *
+ * A digit count is coarser than the range, so the parsed value is checked
+ * too, the way a tag 3 stores it: as `-1 - n` below zero, which keeps
+ * `-2^8192` in and `2^8192` out, as in CBOR.  No refusal echoes the digits:
+ * even bounded they run to thousands.
+ */
+function decodeBigint(digits: string): bigint {
+  const signLength = digits.startsWith('-') ? 1 : 0;
+  if (digits.length - signLength > MAX_BIGINT_DIGITS) {
+    throw malformedTag(BIGINT_TAG, `at most ${MAX_BIGINT_DIGITS} digits`);
+  }
+  if (!CANONICAL_BIGINT_PATTERN.test(digits)) {
+    throw malformedTag(BIGINT_TAG, 'a decimal integer string');
+  }
+  const value = BigInt(digits);
+  if (outsideBignumRange(value)) {
+    throw malformedTag(BIGINT_TAG, `an integer from ${bignumRange()}`);
+  }
+  return value;
+}
+
+function decodeError(inner: unknown, context: DecodeContext, depth: number): Error {
   if (inner === null || typeof inner !== 'object' || Array.isArray(inner)) {
     throw malformedTag(ERROR_TAG, 'a { name, message } object');
   }
@@ -553,10 +682,12 @@ function decodeError(inner: unknown): Error {
     throw malformedTag(ERROR_TAG, 'a { name, message } object');
   }
   const errors = Array.isArray(payload.errors)
-    ? (decodeJsonTree(payload.errors) as unknown[])
+    ? (decodeNode(payload.errors, context, depth + 1) as unknown[])
     : undefined;
   const out = rebuildError(payload.name, payload.message, errors);
-  if ('cause' in payload) (out as { cause?: unknown }).cause = decodeJsonTree(payload.cause);
+  if ('cause' in payload) {
+    (out as { cause?: unknown }).cause = decodeNode(payload.cause, context, depth + 1);
+  }
   return out;
 }
 
@@ -575,17 +706,24 @@ function decodeBinaryView(inner: unknown): unknown {
   return view;
 }
 
-function decodeLiteral(inner: unknown): unknown {
-  if (inner === null || typeof inner !== 'object' || Array.isArray(inner)) return decodeJsonTree(inner);
+function decodeLiteral(inner: unknown, context: DecodeContext, depth: number): unknown {
+  if (inner === null || typeof inner !== 'object' || Array.isArray(inner)) {
+    return decodeNode(inner, context, depth);
+  }
   // The escape's contract: the wrapped object's TOP-LEVEL keys are plain
   // data, never tags — but the values underneath decode normally.
-  return decodePlainObject(inner as Record<string, unknown>);
+  return decodePlainObject(inner as Record<string, unknown>, context, depth);
 }
 
-function decodePlainObject(obj: Record<string, unknown>): Record<string, unknown> {
+/** `depth` is the level of `obj` itself; its property values sit one below. */
+function decodePlainObject(
+  obj: Record<string, unknown>,
+  context: DecodeContext,
+  depth: number,
+): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, entryValue] of Object.entries(obj)) {
-    defineOwnProperty(out, key, decodeJsonTree(entryValue));
+    defineOwnProperty(out, key, decodeNode(entryValue, context, depth + 1));
   }
   return out;
 }
@@ -610,6 +748,21 @@ function defineOwnProperty(target: Record<string, unknown>, key: string, value: 
 
 function malformedTag(tag: string, expected: string): SerializationError {
   return new SerializationError(`Malformed ${tag} tag: expected ${expected}`);
+}
+
+/**
+ * Whether `value` lies outside the integers both codecs carry, measured the
+ * way a CBOR tag 3 stores a negative — as `-1 - n` — which is why the
+ * negative end, `-2^8192`, is one further out than the positive one.
+ */
+function outsideBignumRange(value: bigint): boolean {
+  return (value < 0n ? -1n - value : value) > MAX_BIGNUM_MAGNITUDE;
+}
+
+/** That range written out for a message: `-2^8192 to 2^8192 - 1`. */
+function bignumRange(): string {
+  const bits = MAX_BIGNUM_BYTES * 8;
+  return `-2^${bits} to 2^${bits} - 1`;
 }
 
 function formatPath(path: ReadonlyArray<string | number>): string {

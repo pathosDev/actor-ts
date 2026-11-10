@@ -11,6 +11,8 @@
  * Every field is optional, so the whole argument is: the defaults are an
  * unbounded FIFO mailbox, the system dispatcher, and the parent's supervision.
  */
+import { type Config, ConfigError } from './config/Config.js';
+import { ConfigKeys } from './config/ConfigKeys.js';
 import type { Dispatcher } from './Dispatcher.js';
 import type { EntityContext } from './EntityContext.js';
 import type { Mailbox } from './internal/Mailbox.js';
@@ -53,9 +55,10 @@ export type ActorOptionsType<TMessage = unknown> = {
   readonly dispatcher?: Dispatcher;
   /**
    * User messages this actor handles per dispatcher turn before it yields
-   * (#409).  Unset falls through to `actor-ts.actor.throughput`, then to the
+   * (#409).  Unset falls through to the `actor-ts.deployment` entry matching
+   * the actor's path (#868), then to `actor-ts.actor.throughput`, then to the
    * built-in default — so this is the highest-precedence layer, not a
-   * replacement for the system-wide setting.
+   * replacement for the configured ones.
    *
    * Raise it for an actor that is a throughput bottleneck and whose handler is
    * short; the scheduling round trip it amortises costs more than such a
@@ -71,38 +74,72 @@ export type ActorOptionsType<TMessage = unknown> = {
   readonly throughput?: number;
   /**
    * Bound this actor's mailbox at `mailboxCapacity` queued user messages.
-   * Unset means unbounded, which is the default — so setting this is the
-   * act that introduces message loss, and {@link mailboxOverflow} decides
-   * which message is lost.  Cannot be combined with `mailbox`, which brings
-   * its own bound.
+   * Unset falls through to the `mailbox-capacity` of the `actor-ts.deployment`
+   * entry matching the actor's path (#868) — where `0` means unbounded
+   * whatever the global bound says — then to
+   * `actor-ts.mailbox.default.capacity`, which is `0`, meaning no global
+   * bound, and then to unbounded, which is the shipped answer.  So setting
+   * one of the three is the act that introduces message loss, and
+   * {@link mailboxOverflow} decides which message is lost.  Cannot be
+   * combined with `mailbox`, which brings its own bound.
    *
    * What it never loses is anything the framework posts through
    * `ActorCell.postSignalEnvelope`.  That door — not the message that goes
    * through it — is the rule: since #729 it stamps {@link Envelope.undroppable}
    * and routes to `Mailbox.enqueueSignal`, a lane no overflow policy can shed.
-   * Two senders use it, a death-watch `Terminated` and the `websocket-accept`
-   * command that hands an upgraded socket to its hub (#717).  So bounding a
-   * watcher costs it backlog and not the deaths it is watching for, and
-   * bounding a hub cannot orphan a socket it has already accepted.
+   * Four senders use it, from five call sites: a death-watch `Terminated`,
+   * posted by `ActorCell._notifyWatcher` for a local death and by
+   * `ActorCell.onWatchNotify` for one another node reported (#918); the
+   * `websocket-accept` command that hands an upgraded socket to its hub
+   * (#717); the `close` a `WebsocketConnection` sends its own actor (#985);
+   * and the `DistributedDataChanged` a DistributedData replicator posts to an
+   * actor subscribed to one of its keys (#1468).  So bounding a watcher costs
+   * it backlog and not the deaths it is watching for, bounding a hub cannot
+   * orphan a socket it has already accepted, bounding a connection cannot turn
+   * a `closeAll` into a socket that stays open, and bounding a subscriber
+   * cannot leave its subscription waiting for ever on a notification it was
+   * never handed.
+   *
+   * Exempt is not early (#1431).  The door decides that an envelope survives
+   * the bound, never where it lands, so each of the five still queues behind
+   * the backlog it arrives after — which is what keeps death watch and
+   * reply-then-close in order.  An actor whose control traffic must overtake
+   * its backlog says so with {@link mailbox} and a `ControlAwareMailbox`.
+   * The WebSocket hub is the one exception, and it needs no spawn option: it
+   * names its control messages through the internal `Actor._controlMessages()`
+   * hook, and the cell gives it a `ControlAwareMailbox` holding the bound
+   * this field (or a layer under it) set — shape 5 of
+   * `ActorCell._createMailbox`.
    */
   readonly mailboxCapacity?: number;
   /**
    * What a full mailbox does with an arriving message.  Only meaningful
    * together with {@link mailboxCapacity} — an unbounded mailbox is never
    * full — so setting it alone is rejected rather than silently ignored.
-   * Defaults to {@link DEFAULT_MAILBOX_OVERFLOW}.
+   * Falls through to the `mailbox-overflow` of the `actor-ts.deployment`
+   * entry matching the actor's path (#868), then to
+   * `actor-ts.mailbox.default.overflow`, then to
+   * {@link DEFAULT_MAILBOX_OVERFLOW}.
+   *
+   * The rejection stands even where a configured bound exists (#862): the
+   * validator has no `Config` and must not grow one, so it cannot tell an
+   * intended override of a global or per-path bound from the no-op the rule
+   * was written for.  Restate the capacity alongside the policy to reshape a
+   * configured bound for one actor, or set the policy in the same entry or
+   * block as the capacity.
    */
   readonly mailboxOverflow?: BoundedMailboxOverflow;
   /**
-   * Custom mailbox — `PriorityMailbox`, or a `BoundedMailbox` configured
-   * beyond what `mailboxCapacity` / `mailboxOverflow` express, or a
-   * `Mailbox` subclass of your own.  Omit for the default unbounded FIFO
+   * Custom mailbox — `PriorityMailbox`, `ControlAwareMailbox` (control
+   * messages dequeued ahead of the rest, #1431), a `BoundedMailbox`
+   * configured beyond what `mailboxCapacity` / `mailboxOverflow` express, or
+   * a `Mailbox` subclass of your own.  Omit for the default unbounded FIFO
    * queue.
    *
    * Drops still reach `actor_mailbox_dropped_total`: the cell registers its
    * observer on whatever you return, provided the mailbox implements
-   * `DropReportingMailbox` (`BoundedMailbox` does).  Any `onDrop` of your own
-   * keeps firing alongside it.
+   * `DropReportingMailbox` (all three built-in variants do, through
+   * `DroppingMailbox`).  Any `onDrop` of your own keeps firing alongside it.
    */
   readonly mailbox?: MailboxFactory<TMessage>;
   /**
@@ -114,6 +151,30 @@ export type ActorOptionsType<TMessage = unknown> = {
    * the mark — a tooling actor's children are tooling.
    */
   readonly internal?: boolean;
+  /**
+   * This actor's class came from the **application**, even though the
+   * framework spawned it (#862).
+   *
+   * Two populations are like this, and both are large: a sharded entity, whose
+   * parent chain is `ShardRegion` → `Shard` under `/system`, and a cluster
+   * singleton, spawned by its manager there.  Where an actor sits in the tree
+   * therefore does not answer "whose actor is this" — which is the question
+   * system-wide application policy has to ask, because that policy exists to
+   * let an operator reach code they cannot edit.  Two such policies exist:
+   * `actor-ts.mailbox.default.capacity` and the per-path `actor-ts.deployment`
+   * entries (#868), whose `/system` keys reach exactly these two populations.
+   *
+   * Children inherit it: an entity's children are the application's too.  The
+   * framework's *own* actors under `/system` never carry it, and must not —
+   * a bounded mailbox on a coordinator or a gossip actor sheds messages that
+   * hold a cluster invariant together.
+   *
+   * `ClusterSharding` and `ClusterSingleton` set this themselves.  It is
+   * public for the same reason {@link entity} is — a test bench that spawns an
+   * entity without a cluster behind it — and setting it on an actor already
+   * under `/user` changes nothing.
+   */
+  readonly applicationOwned?: boolean;
   /**
    * Human-readable name for log lines and the DevTools tree (#891) — the
    * spawn-site counterpart to overriding `Actor.displayName()`, for a
@@ -187,6 +248,14 @@ export class ActorOptionsBuilder<TMessage = unknown>
     return this.set('internal', internal);
   }
 
+  /**
+   * Mark this actor as the application's rather than the framework's — see
+   * {@link ActorOptionsType.applicationOwned}.
+   */
+  withApplicationOwned(applicationOwned = true): this {
+    return this.set('applicationOwned', applicationOwned);
+  }
+
   /** Name this actor in logs and the DevTools tree — see {@link ActorOptionsType.displayName}. */
   withDisplayName(displayName: string): this {
     return this.set('displayName', displayName);
@@ -220,6 +289,16 @@ export class ActorOptionsValidator<TMessage = unknown>
     // An overflow policy without a bound is a no-op, and a silent no-op in
     // an options object is the shape that makes someone believe they
     // configured something.
+    //
+    // Kept as-is now that `actor-ts.mailbox.default.capacity` can supply the
+    // bound this rule says is missing (#862).  The premise did narrow — with
+    // a global capacity set, a lone `withMailboxOverflow` would have a bound
+    // to reshape — but the validator sees only the spawn site's own fields,
+    // and giving it a `Config` would make one actor's options depend on which
+    // system it is later spawned into.  So the rule keeps catching the case
+    // it was written for, and the override is spelled by restating the
+    // capacity.  The alternative — relaxing it — trades a real guard for an
+    // ergonomic saving of one call.
     if (s.mailboxOverflow !== undefined && s.mailboxCapacity === undefined) {
       this.fail(
         'mailboxOverflow',
@@ -250,3 +329,96 @@ export type ActorOptions<TMessage = unknown> =
   | ActorOptionsType<TMessage>;
 /** Value alias so `ActorOptions.create()` / `new ActorOptions()` resolve to the builder. */
 export const ActorOptions = ActorOptionsBuilder;
+
+/**
+ * What `actor-ts.mailbox.default.*` says, resolved once per system (#862).
+ *
+ * Deliberately not an options triad: there is no `ActorSystemOptions` field
+ * behind it, exactly as there is none behind `actor-ts.actor.throughput`.  A
+ * global bound is an operator's decision about a deployment, and a code-level
+ * setter for it would be a second way to say what the spawn site already says
+ * better.
+ *
+ * Both fields are optional and absent when unset, because this is a
+ * *middle* precedence layer — {@link ActorOptionsType} and then the
+ * `actor-ts.deployment` entry matching the actor's path (#868) above it, the
+ * built-in answer below it.  A field forced to an explicit `undefined` would
+ * shadow the layer underneath instead of falling through to it.
+ */
+export type DefaultMailboxConfiguration = {
+  /**
+   * Queued user messages an actor the application wrote may hold before its
+   * overflow policy starts shedding, or absent for "no global bound" — which
+   * is the shipped answer, and the one `capacity = 0` spells in HOCON.
+   *
+   * "The application wrote" is provenance, not a path: a child of `/user` and
+   * everything beneath it, plus the sharded entities and singleton instances
+   * the framework spawns under `/system` from a class it was handed
+   * ({@link ActorOptionsType.applicationOwned}), and their children.  The
+   * framework's own actors — shard regions and shards, coordinators,
+   * singleton managers, the pub-sub mediator — stay unbounded whatever the
+   * number.
+   */
+  readonly capacity?: number;
+  /**
+   * System-wide overflow policy for **any** bounded mailbox, not only the
+   * global bound: an actor that sets `withMailboxCapacity` and no policy of
+   * its own takes this one.  That is the same shape as
+   * `actor-ts.actor.throughput`, and it is what makes "this deployment
+   * rejects instead of dropping" expressible in one line.
+   */
+  readonly overflow?: BoundedMailboxOverflow;
+};
+
+/**
+ * Read `actor-ts.mailbox.default.*` into the layer `ActorCell` puts under a
+ * spawn site's own mailbox settings: the capacity for every actor the
+ * application wrote — provenance, not the `/user` path, see
+ * {@link DefaultMailboxConfiguration.capacity} — and the policy for any
+ * bounded mailbox.
+ *
+ * `capacity <= 0` leaves the field **absent** rather than passing the number
+ * on.  Zero is the published spelling of "no global bound", so it has to mean
+ * the same thing as an unset key; and `BoundedMailbox`'s validator rejects a
+ * non-positive capacity, so forwarding it would turn a documented off-switch
+ * into an `OptionsError` at the first spawn.  A negative value is that same
+ * statement made by a typo and is answered the same way.
+ *
+ * `overflow` outside the three policies is refused **here**, so the system
+ * does not start — the moment `ask-timeout` is refused too (#863), for that
+ * rule's reason: the mistake is in the config file, so the failure belongs
+ * where the file is read, naming the key.  Leaving it to
+ * `BoundedMailboxOptionsValidator` let a typo start the system: with no
+ * global capacity nothing read the policy until some actor bounded itself,
+ * perhaps never, and with one the first spawn failed with an `OptionsError`
+ * that named no key.  The value is a string, which is the key's kind, so the
+ * refusal is worded as one on its merits and not as a getter's kind mismatch.
+ */
+export function readDefaultMailboxFromConfig(config: Config): DefaultMailboxConfiguration {
+  const keys = ConfigKeys.mailbox.default;
+  const out: {
+    -readonly [K in keyof DefaultMailboxConfiguration]?: DefaultMailboxConfiguration[K]
+  } = {};
+  if (config.hasPath(keys.capacity)) {
+    const capacity = config.getInt(keys.capacity);
+    if (capacity > 0) out.capacity = capacity;
+  }
+  if (config.hasPath(keys.overflow)) {
+    const overflow = config.getString(keys.overflow);
+    if (!isBoundedMailboxOverflow(overflow)) {
+      throw new ConfigError(
+        `${keys.overflow} must be one of drop-head | drop-new | reject (got "${overflow}")`,
+      );
+    }
+    out.overflow = overflow;
+  }
+  return out;
+}
+
+/**
+ * The three policies a `BoundedMailbox` takes — the list
+ * `BoundedMailboxOptionsValidator` and {@link ActorOptionsValidator} check.
+ */
+function isBoundedMailboxOverflow(value: string): value is BoundedMailboxOverflow {
+  return value === 'drop-head' || value === 'drop-new' || value === 'reject';
+}

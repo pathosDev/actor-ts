@@ -34,10 +34,12 @@ const transport = new TcpTransport(
   NodeAddress.parse('my-app@10.0.0.5:2552'),
   system.log,
   {
-    cert: fs.readFileSync('./tls/cluster.crt'),
-    key:  fs.readFileSync('./tls/cluster.key'),
-    ca:   fs.readFileSync('./tls/ca.crt'),
-    rejectUnauthorized: true,   // Peer-Certs verifizieren
+    tls: {
+      cert: fs.readFileSync('./tls/cluster.crt'),
+      key:  fs.readFileSync('./tls/cluster.key'),
+      ca:   fs.readFileSync('./tls/ca.crt'),
+      rejectUnauthorized: true,   // Peer-Certs verifizieren
+    },
   },
 );
 
@@ -122,7 +124,7 @@ hinzuzufügen, den man vergessen kann.
   Service-Mesh, ein privates L2) die Authentifizierung übernimmt.
 </Aside>
 
-Drei Konfigurationen werden beim Bind abgelehnt, statt in einem
+Vier Konfigurationen werden beim Bind abgelehnt, statt in einem
 schwächeren Zustand zu starten, als sie sich lesen:
 
 - **Ein unvollständiges Server-Credential** — `cert` ohne `key`,
@@ -134,6 +136,14 @@ schwächeren Zustand zu starten, als sie sich lesen:
   hier ankommt.
 - `requestClientCert: true` ohne `ca` — es gäbe nichts, wogegen
   Peer-Zertifikate validiert werden könnten.
+- Eine `ca`, die kein Zertifikat enthält — ein leerer oder nur aus
+  Leerzeichen bestehender String, ein leeres Byte-Array oder Array,
+  `null` —, was immer `requestClientCert` sagt.  So sieht ein
+  fehlendes Secret aus, wenn es hier ankommt, kein Weg, einseitiges
+  TLS zu verlangen — das ist `requestClientCert: false`.  Der
+  HTTP-Server misst seine `ca` an derselben Regel, die an einer
+  Stelle steht, unter
+  [Client-Zertifikate](/de/operations/security/tls-everywhere/#client-zertifikate).
 - Ein mTLS-**Listener auf Deno** — `Deno.listenTls` nimmt nur
   Zertifikat und Key entgegen und kann ein Client-Zertifikat weder
   anfordern noch prüfen; der Listener würde also niemanden
@@ -269,6 +279,7 @@ erreichen.
 | Adresse beansprucht, bevor der zugehörige Knoten existiert | Enge Versions-Skew-Grenze auf jeder gegossipten Member-Version |
 | Vom Draht mitgeschnittener Gossip-Frame wird später erneut gesendet | Sequence pro Sender — ein Frame muss den zuletzt von diesem Sender akzeptierten überbieten (teilweise: erst wenn einer akzeptiert wurde) |
 | Gefälschte Discovery-Antwort lenkt den Bootstrap um | mTLS, dazu `pinnedAddresses` am Seed-Provider |
+| Ein Ref im Nachrichtenkörper nennt einen internen Host, damit dieser Knoten ihn anwählt | Frames gehen nur an Mitglieder und an Knoten, zu denen dieser Knoten schon eine Verbindung hält (teilweise: ohne mTLS wird ein Peer weiterhin Mitglied unter einer Adresse, die sein eigenes `hello` nennt) |
 | Kompromittierter Pod im Cluster | Application-Level-Auth (hier nicht abgedeckt) |
 
 Der Cluster-Transport handhabt Transport-Level-Sicherheit.
@@ -316,13 +327,39 @@ Endpoints-Kompromittierung einbringt, und es ist die einzige
 Kontrolle auf der Discovery-Ebene, die übrig bleibt, wenn mTLS
 nicht eingerichtet ist.
 
+Bis #860 war das Snippet oben der **einzige** Weg dorthin:
+`Cluster.bootstrap({ discovery: 'dns' })` und die env-getriebene Leiter bauten
+ihre Provider ganz ohne Pin, die dokumentierte Gegenmaßnahme war auf dem Pfad,
+den die meisten Deployments nehmen, also gar nicht erreichbar.  Jetzt ist sie
+ein Config-Key, und sie liegt im selben Block wie die Keys, die entscheiden,
+welcher Provider läuft:
+
+```hocon
+actor-ts.discovery {
+  dns.pinned-addresses        = ["10.0.0.0/8"]
+  kubernetes.pinned-addresses = ["10.0.0.0/8"]
+}
+```
+
+Setz ihn überall dort, wo auch `actor-ts.cluster.bootstrap.discovery.method`
+oder `service-name` gesetzt ist — aus demselben Grund, aus dem beides zusammen
+kam: Eine Config-Datei ist eine breitere Eingabefläche als ein Aufruf im Code,
+das *Ziel* von Discovery konfigurierbar zu machen, ohne den *Pin*
+konfigurierbar zu machen, hätte also die Angriffsfläche erweitert und den
+Schutz stehen gelassen, wo er war.  Eine Liste, die im konfigurierten Modus
+nicht passen kann — nur CIDRs im SRV-Modus, ein Host-Suffix unter Kubernetes —,
+wird beim Start abgelehnt, statt still jede Antwort zu verwerfen: Eine leere
+Seed-Menge liest sich als „wir sind allein“ und endet in einem
+Einzelknoten-Cluster.
+
 ## Was der Wire-Rand abweist
 
 Frames kommen als JSON an und wurden früher auf den
 Protokolltyp *gecastet* statt gegen ihn geprüft — ein Peer
 konnte einem Knoten also einen Wert reichen, den der Code
 anschließend las, als stimmte der Typ. Jeder Frame wird jetzt
-geprüft, bevor ihn irgendein Handler sieht:
+geprüft, bevor ihn irgendein Handler sieht — auf jedem
+Transport, das Worker-Mesh eingeschlossen:
 
 - Der Frame muss ein Objekt mit einem String-`kind` sein.
   `null`, ein nackter String und eine Zahl werden abgewiesen —
@@ -350,6 +387,52 @@ kaputter Frame soll einen gesunden Peer nicht seine Leitung
 kosten. Ein Handler, der *wirft*, kappt die Verbindung: das ist
 der Fall, den niemand versteht, und er darf nicht in den
 Socket-Callback des Runtimes entkommen.
+
+Das Worker-Mesh übernimmt die erste Stufe und keine Hälfte der
+zweiten. `MessageChannelTransport` — der Transport, über den ein
+Worker-Thread und der Main-Thread über einen `MessagePort`
+sprechen — prüft die Form des Umschlags selbst und schickt die
+Nutzlast dann durch dasselbe `validateWireFrame` wie die
+Socket-Transporte, sodass auch ein fehlerhafter Frame von einem
+Worker nie einen Handler erreicht. `WorkerBroker`, der zwischen
+den Threads vermittelt, prüft nur die beiden Adressfelder des
+Umschlags — die Nutzlast ist Sache des Transports — und schreibt
+`from` auf den Port um, auf dem der Frame ankam, sodass ein
+Worker nicht für einen Geschwister-Worker sprechen kann. Der
+Broker **berichtet** auch, was er abweist: Ein fehlerhafter
+Umschlag oder ein Port, der einen Frame verweigert, ist ein
+gefaltetes `WARN` — eine Zeile pro Grund alle 30 Sekunden, mit
+Zähler —, das die registrierte Adresse des Ports nennt, auf dem
+der jüngste Frame ankam, und nie die Nutzlast; ein Frame an eine Adresse,
+die niemand registriert hat, ist dieselbe Zeile auf `DEBUG`, denn
+genau das sendet jedes gesunde Geschwister für einen Moment nach
+einem Crash (#1276). Die Transport-Hälfte **berichtet ebenfalls**,
+nach demselben Muster: Ein fehlerhafter Umschlag, eine Nutzlast,
+die die Wire-Prüfungen abweisen, und ein Handler, der wirft,
+erhöhen jeweils `transport.dropped()` und erreichen das Log als
+ein gefaltetes `WARN` pro Grund alle 30 Sekunden, mit Zähler.
+Zwei der drei tragen zusätzlich den Absender; die
+Umschlag-Variante nicht, und sie kann es auch nicht: Wurde der
+Umschlag selbst abgewiesen, ist keine Adresse weit genug gelesen
+worden, um sie zu nennen — diese Zeile lässt `most recently from`
+deshalb ganz weg, was die Mesh-Seite über dieselbe Zeile ebenso
+sagt. Die Nutzlast-Variante nennt den Grund, den
+`validateWireFrame` geliefert hat — daran unterscheidet man eine
+Versionsabweichung von einem feindlichen Peer —, und keine der
+drei trägt den Frame (#1515). Davor war der Transport die letzte
+stumme Kante auf diesem Pfad: Ein Worker mit abweichender Version
+verschwand samt seinen Frames in einem schwarzen Loch, ohne jedes
+Signal — schlechter als vor der Einführung des Guards, als der
+Frame wenigstens noch ankam.
+
+Der Absender wird auf dem Weg ins Log escaped, was die Zeile des
+Brokers nicht nötig hat. Über einen Broker wird `from` auf den
+Port umgeschrieben, auf dem der Frame ankam, ist also vom Host
+vergeben; bei direkter Port-zu-Port-Verdrahtung gibt es keinen
+Broker, der das tut, und eine Node-Adresse muss nur nichtleere
+Strings tragen — ein `host` mit einem Zeilenumbruch darin ist
+also eine wohlgeformte Adresse, die sonst ganze Log-Zeilen
+fälschen würde.
 
 Frame-Kinds, die Extensions registrieren (Sharding, PubSub,
 Receptionist, DistributedData, DevTools), passieren diese
@@ -394,10 +477,14 @@ die Menge der Peers, die du auf die Leitung lässt — was das
 mTLS-Setup oben für einen Quota- oder Billing-Counter zur
 Voraussetzung macht statt zur Härtungsmaßnahme.
 
-Jede Abweisung wird auf `WARN` mit Peer und beanstandetem Feld
-geloggt, damit ein verworfener Frame diagnostizierbar bleibt —
-eine Versionsabweichung und ein feindlicher Peer sehen im Log
-unterschiedlich aus.
+Auf den Socket-Transporten wird jede Abweisung auf `WARN` mit
+Peer und beanstandetem Feld geloggt, damit ein verworfener Frame
+diagnostizierbar bleibt — eine Versionsabweichung und ein
+feindlicher Peer sehen im Log unterschiedlich aus. Auf dem
+Worker-Pfad tun beide Hälften des Kanals dasselbe, gefaltet: Der
+Broker loggt ein `WARN` pro Grund für das, was er nicht routet,
+und der Transport eines für das, was er nicht zustellt; siehe
+oben.
 
 ## Was das Decodieren eines Frames kostet
 
@@ -464,6 +551,24 @@ senken ist auch der Hebel für ein Deployment, das nie große
 Envelopes schickt — die residenten Kosten pro Verbindung folgen
 ihm direkt.
 
+Bytes und *Arbeit* sind nicht dieselbe Grenze, und hier trennen
+sich die beiden. Ein akzeptierter Frame geht an `JSON.parse` und
+erst danach an den Tagged-Tree-Walker; die Tiefengrenze
+(`actor-ts.serialization.read-constraints.max-nesting-depth`)
+meldet ein zu tiefes Payload also erst, nachdem das Parsen es
+bereits aufgebaut hat. Auf Bun 1.4 gemessen kostet ein einzelner
+16-MiB-Frame aus ausbalancierten `[` rund 1,0 s CPU und 260 MiB
+Heap bis zur Ablehnung — etwa das Vierfache eines legitimen
+Frames derselben Größe, und wiederholbar für jeden Peer, der den
+Handshake abgeschlossen hat. Zwei Keys begrenzen das, keiner
+davon ist per Default aktiv: `remote.max-frame-bytes` und
+`serialization.read-constraints.max-document-bytes`, das gegen
+dasselbe 4-Byte-Längen-Präfix geprüft wird und den Frame
+ablehnt, bevor sein Payload überhaupt gepuffert ist. Ein
+Vorab-Scan des Rohpuffers würde es ohne beide schließen; er
+wurde mit 18–28 % jeder Frame-Dekodierung gemessen und für eine
+vierfache Verstärkung nicht ausgeliefert (#880).
+
 ## Was ein wohlgeformter Frame trotzdem nicht wachsen lassen kann
 
 Die Shape-Prüfung sagt, dass ein Frame *lesbar* ist — nicht,
@@ -511,22 +616,45 @@ Senke die Defaults für ein Deployment, dessen legitime Zahlen
 weit darunter liegen: eine Obergrenze begrenzt nur den Schaden,
 und eine weit über der echten Nutzung begrenzt sehr wenig.
 
-### Warum die Mitgliedschaft zwei Grenzen braucht — und warum die zweite die eigentliche ist
+### Warum die Mitgliedschaft zwei Grenzen braucht
 
-Mitglieder und Tombstones zu trennen ist keine Ordnungsliebe. Ein
-Phantom-Mitglied in `up` / `joining` / `unreachable` ist ein
-Mitglied, das der Failure Detector beobachtet: es wird
-`failure-detector.down-after` nach dem letzten Nachschub gedownt
-und gelöscht — im Default fünf Sekunden. Ein als **`removed`**
-gegossipter Eintrag wird von nichts beobachtet; nur
-`cluster.tombstone.time-to-live` holt ihn zurück, einen Tag
-später. Die Flut, die bleibt, ist also die Tombstone-Flut, und
-`max-tombstones` ist die Grenze, die die Arbeit macht. Einen
-solchen Eintrag abzulehnen kostet auch nichts: ein Tombstone für
-eine Adresse, zu der dieser Knoten keinen Eintrag hat, unterdrückt
-nichts, was existiert — während ein abgelehnter *lebender*
-Eintrag ein legitimes Mitglied eine Gossip-Runde kostet und mit
-einem `WARN` samt Namen der Grenze kommt.
+Mitglieder und Tombstones zu trennen ist keine Ordnungsliebe: Die
+beiden Arten von Phantom leben verschieden lange. Ein
+Phantom-Mitglied in `up` / `joining` / `unreachable`, das als
+Eintrag in einem Gossip-Frame ankommt, ist ein Mitglied, das der
+Failure Detector ab dem Merge beobachtet, und weil nie jemand
+Heartbeats für es schickt, erklären es beide Detectors für `down` —
+φ misst die Stille ab diesem Moment. Was dieses Urteil bewirkt,
+entscheidet die Downing-Konfiguration. Unter dem Default — keine
+Strategie, `failure-detector.auto-down = on` — entfernt der Detector
+es, `down-after` nach dem letzten Nachschub, und endgültig erst,
+wenn kein anderer Knoten es noch trägt, denn dieser Weg löscht ohne
+Tombstone, und ein Knoten, der das Phantom noch nicht gelöscht hat,
+gossipt es zurück. Mit konfigurierter Strategie oder unter
+`auto-down = off` wird das Phantom wie jeder stille Peer auf
+`unreachable` geparkt und hält seinen lebenden Platz, bis eine
+Strategie oder ein Operator es entfernt. Das *Absender*-Feld eines
+Frames ist überhaupt kein Weg mehr. Ein `from`, das eine Adresse
+nannte, zu der dieser Knoten keinen Eintrag hatte, wurde früher ohne
+Berechtigungsprüfung als `joining` abgelegt und wie jedes beitretende
+Mitglied befördert — als Leader dieses Knotens, wenn seine Adresse
+zuerst sortierte, und als Adresse, die die Heartbeat- und
+Gossip-Ticks danach anwählten. Diese Tür ist zu
+([Issue #939](https://github.com/pathosDev/actor-ts/issues/939)): Ein
+Absender wird über seinen eigenen Eintrag eingeführt, der wie jeder
+andere gemergt wird, und jeder Gossip-Frame trägt einen.
+`max-members` ist darum die eine Schranke für lebende Phantome und der
+Merge der eine Weg hinein. Ein als **`removed`** gegossipter Eintrag wird
+von nichts beobachtet; nur das Aufräumen der Tombstones holt ihn
+zurück, sobald der größere Wert von
+`cluster.tombstone.time-to-live` und `tombstone.min-retention`
+verstrichen ist — einen Tag bei den Defaults. Zwei Reste mit zwei
+Lebensdauern, also zwei Grenzen. Einen
+Tombstone abzulehnen kostet nichts: ein Tombstone für eine Adresse,
+zu der dieser Knoten keinen Eintrag hat, unterdrückt nichts, was
+existiert — während ein abgelehnter *lebender* Eintrag ein
+legitimes Mitglied eine Gossip-Runde kostet und mit einem `WARN`
+samt Namen der Grenze kommt.
 
 Beide Grenzen werden auf den **Topf abgerechnet, in den ein
 Record wandert**, nicht darauf, ob er einen Eintrag neu anlegt.
@@ -543,8 +671,11 @@ Tombstone-Topf, ohne einen Map-Slot herzugeben, sodass die
 nächste Tombstone-Flut ebenfalls durchging; im Wechsel wuchs die
 Map unbegrenzt, obwohl beide Grenzen bei jedem einzelnen Schritt
 eingehalten wurden. Eine abgelehnte *Umwandlung* lässt das
-Mitglied lebendig, wo der Failure Detector es auf dem langsameren
-Weg einsammelt.
+Mitglied lebendig, wo es den Weg jedes stillen Mitglieds geht:
+unter dem Default bei `down-after` vom Detector entfernt oder — mit
+konfigurierter Strategie oder unter `auto-down = off` — auf
+`unreachable` geparkt, bis eine Strategie oder ein Operator es
+entfernt.
 
 Tombstones, die der Knoten selbst erzeugt — das `leave` eines
 Peers, eine Downing-Entscheidung, ein `down()` des Operators —
@@ -562,14 +693,39 @@ schon am Längen-Präfix — der Knoten wirft sich selbst aus dem
 Cluster, während er noch läuft, lange bevor irgendwo der
 Speicher ausgeht.
 
-:::note[Die Reihenfolge, in der das gelandet ist, zählt]
-Heute ist die `down → delete`-Kaskade des Failure Detectors das,
-was Phantom-Mitglieder in *lebenden* Status auf Sekunden
-begrenzt. Eine Downing-Strategie, die dieses Löschen hinter einen
-konfigurierten `DowningProvider` hängt, nähme diese implizite
-Schranke weg und ließe die 24-Stunden-Rechnung für *jeden* Status
-gelten, nicht nur für Tombstones — diese Grenzen sind also eine
-Voraussetzung für jene Änderung und keine unabhängige Härtung.
+Der Failure Detector unterliegt derselben Grenze. Er hält Zustand pro
+Peer und legte diesen früher für jede Verbindungsidentität an, unter
+der ein Frame ankam — ohne mTLS ein Name, den der Peer in seinem
+`hello` selbst wählt. Ein Peer, der sich unter immer neuen Namen
+verband, ließ ihn um einen Eintrag pro Namen wachsen, während die
+Mitgliederliste an ihrer Grenze stand: 500 Namen hinterließen 502
+Einträge neben 3 Mitgliedern, beim φ-Accrual-Detector jeder mit einem
+eigenen Probenfenster. Lebenszeichen erreichen den Detector jetzt nur
+noch für ein Mitglied, das kein Tombstone ist, oder für einen
+konfigurierten Seed, der ebenfalls keiner ist. Jeder Weg, der ein
+Mitglied aufnimmt, meldet es an, und jeder Weg, der es aus den
+lebenden Mitgliedern nimmt, vergisst seinen Eintrag — ein Tombstone,
+den dieser Knoten selbst erzeugt, ein Tombstone, den ein gegossipter
+Eintrag bringt, und ein Löschen aus der Mitgliederliste
+gleichermaßen. Der Detector hält also einen Eintrag pro lebendem
+Mitglied und höchstens einen pro Seed, begrenzt durch `max-members`
+und die Seed-Liste (#1103).
+
+:::note[Die Reihenfolge, in der das gelandet ist, hat gezählt]
+Früher war die `down → delete`-Kaskade des Failure Detectors das,
+was Phantom-Mitglieder in *lebenden* Status auf Sekunden begrenzte.
+Dieses Löschen hängt jetzt an einer Bedingung — ein konfigurierter
+`DowningProvider` übernimmt die Entscheidung, und ohne einen
+entscheidet `failure-detector.auto-down`, das an ausgeliefert wird —,
+wo immer also eine Strategie konfiguriert oder `auto-down` aus ist,
+ist die implizite Schranke weg: Ein geparktes Phantom hat gar keine
+Lebensdauer und bleibt, bis eine Strategie oder ein Operator es
+entfernt. Selbst unter dem Default holt die Kaskade nur ein Phantom
+zurück, das der Detector beobachtet, und bis #1103 fehlte darunter
+jedes, das die Absender-Feld-Tür aufgenommen hatte — eine Tür, die
+#939 inzwischen geschlossen hat. Diese Grenzen waren die Voraussetzung dafür, das
+Löschen an eine Bedingung zu hängen, und keine unabhängige Härtung,
+und `max-members` ist seither das, was lebende Phantome begrenzt.
 :::
 
 ## Wer was sagen darf
@@ -587,7 +743,21 @@ Regeln:
   ist die Beförderung von `joining`/`weakly-up` nach `up` — die
   muss von außen kommen, weil sie die Entscheidung des Leaders
   ist, und sie anzunehmen ist harmlos, denn ein joinender
-  Knoten will ohnehin `up` werden. Alles andere über den
+  Knoten will ohnehin `up` werden. Begrenzt wird sie dadurch,
+  wie wenig sie transportiert: den Status und eine Version, die
+  nur die Obergrenze `maxVersionSkewMs` beschränkt (standardmäßig
+  5 Minuten, siehe *Eine Version kann keine Adresse im Voraus
+  beanspruchen* unten) — ein Fremder kann den Record dieses
+  Knotens also bis zu so weit in die Zukunft datieren; die
+  Version zu klemmen verfolgt #1797. Mehr kommt nicht
+  herüber. Die Beförderung fragt nichts über ihren Absender,
+  deshalb muss dieser Knoten seine eigenen Rollen, Inkarnation,
+  Storage-Identitäten, Konfigurationsfakten und App-Version
+  behalten, egal was der Record sagt. Vor #1104 kamen die Rollen
+  aus dem Record — und bei einem Knoten, der selbst keine
+  Storage-Identität aufgelöst hatte, auch diese —, ein einziges
+  Frame eines Fremden im Joining-Fenster bestimmte also, was
+  dieser Knoten hostet und platziert. Alles andere über den
   eigenen Record entscheiden wir selbst.
 - **Aussagen über Dritte brauchen einen Absender mit Standing.**
   Etwas über einen *anderen* Knoten zu behaupten setzt voraus,
@@ -624,6 +794,32 @@ konvergieren, bevor ein Downing-Provider entscheidet. Solche
 Aussagen abzuweisen ließe jedem Knoten nur sein eigenes
 Erreichbarkeitsbild.
 
+### Wie ein entfernter Knoten davon erfährt
+
+Die erste Regel heißt, dass kein Peer diesem Knoten sagen kann, dass
+er entfernt wurde — und ein Knoten, den der Rest des Clusters gedownt
+hat, während er pausiert oder abgeschnitten war, lief früher mit allem
+weiter, was er hielt. Ein Peer, der den Lauf dieses Knotens als
+`removed` führt, beantwortet seine Heartbeats deshalb mit einem
+`membership-refused`-Frame statt einer Bestätigung und nennt diesen
+Lauf mit seiner Inkarnation (#940). Der Frame gilt nur als Aussage
+über den **Absender**: „Ich nehme dich nicht zurück". Der Empfänger
+parkt diesen Peer als `unreachable` und lässt ihn nicht mehr durch
+dessen Heartbeats zurückkommen; sein eigener Eintrag bleibt unberührt,
+und das Urteil bleibt bei seiner eigenen Downing-Strategie. Sobald ihn
+jeder Peer abgelehnt hat, gilt die Sicht als stabil, und die Strategie
+wird sofort gefragt statt nach `stable-after`.
+
+Eine gefälschte Ablehnung erreicht also, was das Verwerfen des
+Verkehrs dieses Peers ohnehin erreicht — der Peer wirkt unreachable —,
+und nicht mehr: Der Gossip des echten Peers, der diesen Knoten als
+Mitglied führt, nimmt sie zurück, und eine Ablehnung, die einen
+anderen oder keinen Lauf an dieser Adresse nennt, wird ignoriert. Eine
+Fälschung für *jeden* Peer lässt die Strategie des Knotens über eine
+Sicht entscheiden, in der er allein ist; das ist die Reichweite, die
+das Kappen seines gesamten Verkehrs hat, und der Grund, warum der
+Hinweis unten auch hier gilt.
+
 :::caution[Das ist keine Authentifizierung]
 Die Regeln nehmen die Beliebigkeit heraus — eine Aussage
 braucht jetzt Standing, das dieser Knoten vergeben hat, statt
@@ -636,6 +832,119 @@ vertrauenswürdig ist — unter mTLS muss die beanspruchte Adresse
 zum Zertifikat des Peers passen, und genau das gibt diesen Regeln
 ein echtes Subjekt.
 :::
+
+### Wer namentlich adressiert werden darf
+
+Die Regeln oben begrenzen, was ein Frame *behaupten* darf. Eine
+weitere begrenzt, was es *erreichen* darf: Ein `envelope` trägt
+den Zielpfad, den der Absender gewählt hat, und der Knoten löst
+ihn gegen seinen eigenen Aktor-Baum auf. Diese Auflösung lief
+früher von der Wurzel los, `/system/…` war also genauso
+erreichbar wie `/user/…` — jeder Peer, der ein `hello`
+abgeschlossen hatte, konnte direkt an einen Shard-Coordinator,
+einen Singleton-Manager oder den PubSub-Mediator zustellen, am
+Pro-Pfad-Handler vorbei, den jeder von ihnen registriert, und
+damit an der Absender-Zuordnung vorbei, auf der die Regeln oben
+aufbauen.
+
+Der `/system`-Teilbaum wird auf diesem Weg jetzt abgelehnt, in
+jeder Konfiguration und an beiden Nahtstellen — der
+Cluster-Verbindung und dem `ClusterClientReceptionist`.
+Framework-Aktoren bleiben über ihre registrierten Handler
+erreichbar, also über die Tür, die weiß, auf welcher Verbindung
+ein Frame ankam. Nichts, was ein Betreiber konfigurieren kann,
+öffnet den alten Weg wieder.
+
+Die `/user`-Hälfte ist die Entscheidung des Deployments, denn
+dass ein Peer einen Anwendungsaktor benennt, ist genau die Art,
+wie eine `ActorRef` über Knoten hinweg funktioniert. Engt sie
+dort ein, wo das Cluster-Netz eine Grenze überschreitet, die ihr
+nicht kontrolliert:
+
+```hocon
+actor-ts.remote {
+  untrusted-mode          = true
+  trusted-selection-paths = ["/user/orders/*", "/user/reporting/intake"]
+}
+```
+
+Ein Eintrag ist ein exakter Pfad, außer er endet auf `/*` — dann
+ist er dieser Pfad und sein Teilbaum, segmentverankert:
+`/user/orders/*` lässt `/user/orders-archive` also nicht zu.
+Ablehnungen werden auf
+`cluster_envelope_refusals_total{reason, frame}` gezählt und zu
+höchstens einem `WARN` pro Grund alle 30 Sekunden gefaltet, das
+den Peer der Verbindung nennt und nie den angefragten Pfad; eine
+Zeile pro Ablehnung würde dem Peer stattdessen
+Log-Verstärkung schenken. Beobachtet `reason="not-allow-listed"`
+an dem Tag, an dem ihr den Modus anschaltet — dort taucht eine
+unvollständige Allow-List auf. Siehe
+[Konfiguration](/de/reference/configuration/#actor-tsremote).
+
+Dieselbe Policy bewacht den einen anderen Frame, in dem ein Peer
+einen Pfad seiner Wahl nennt: ein `watch`. Ein abgelehnter Pfad
+wird wie ein fehlender beantwortet — `Terminated` mit
+`existenceConfirmed = false` —, sodass ein Watcher nie hängt und
+die Antwort nichts preisgibt, was die Ablehnung nicht ohnehin
+schon täte; die Ablehnung wird unter `frame="watch"` gezählt.
+
+### Ein Ref in einer Nachricht bestimmt nicht, wohin dieser Knoten wählt
+
+Die andere Richtung hat dieselbe Form. Ein `ActorRef` im
+Nachrichtenkörper geht als Marker über die Leitung, der seinen Knoten
+nennt — System, Host, Port —, und der Empfänger baut daraus einen
+Remote-Ref. Diese Adresse ist eine Behauptung des Absenders. Früher
+wurde der Marker ohne die Prüfung zurückgebaut, die jede andere
+Wire-Adresse bekommt, und der Knoten, den ein Ref nannte, wurde in dem
+Moment angewählt, in dem der Ref benutzt wurde: Ein Aktor, der einem
+dekodierten `replyTo` antwortete — die Redewendung, der jeder Handler
+folgt —, öffnete eine Verbindung zu einer Adresse nach Wahl des
+Absenders und schrieb einen Frame hinein, etwa an einen
+Cloud-Metadaten-Endpunkt oder einen internen Admin-Port. Den Ref zu
+beobachten tat dasselbe mit einem `watch`-Frame (#936).
+
+Ein Marker wird jetzt als Knotenadresse geprüft, und einer, der nicht
+gültig ist, wird zu `Nobody`. Und ein Frame mit einer Nutzlast oder
+einer Death-Watch-Nachricht — jeder Versand, der nicht zum
+Mitgliedschaftsprotokoll selbst gehört — geht nur noch an:
+
+- **ein Mitglied, das kein Tombstone ist**, oder
+- **einen Knoten, zu dem der Transport schon eine Verbindung hält**,
+  bestätigt oder noch im Handshake — über eine bestehende Verbindung
+  zu senden wählt nichts an. So erreicht eine Antwort einen Knoten,
+  der beigetreten ist, von dem dieser Knoten aber noch nichts gehört
+  hat, und so wird ein `tell` an einen Seed direkt nach dem Auflösen
+  von `Cluster.join` auf der Verbindung eingereiht, die der Beitritt
+  geöffnet hat, statt verworfen zu werden. Ein eigener Transport, der
+  das optionale `holdsConnectionTo` nicht implementiert, wird
+  stattdessen über `peers()` gefragt, das nur bestätigte Verbindungen
+  kennt; auf ihm wird dieses `tell` abgelehnt, bis der Handshake
+  durch ist.
+
+Alles andere wird verworfen, wie ein Frame an einen unerreichbaren
+Knoten, unter `cluster_outbound_refusals_total{frame}` (`envelope` oder
+`wire`) gezählt und zu höchstens einem `WARN` alle 30 Sekunden
+zusammengefasst, das das letzte Ziel escaped nennt. Die häufigste
+Ursache auf einem gesunden Cluster ist ein Knoten, der gerade gegangen
+ist. Ein Ref wird verzögert gebaut, also funktioniert einer zu einem
+Knoten, von dem dieser Knoten einen Moment später erfährt, noch, wenn
+er benutzt wird. Einen Ref zu beobachten, dessen Knoten abgelehnt
+wird, wird sofort mit `Terminated` und `existenceConfirmed` false
+beantwortet, wie eine abgelehnte Beobachtung auf der Gegenseite, damit
+der Beobachter nicht auf eine Antwort wartet, die nicht kommen kann.
+
+Die Regel ist nur so stark wie die Mitgliedschaft. Seit #939 trägt das
+`from` in der Payload eines Gossip-Frames kein Mitglied mehr ein: Ein
+Absender wird nur über seinen eigenen Eintrag aufgenommen, als
+Selbstankündigung, die an die Identität gebunden ist, die seine
+Verbindung vorgelegt hat. Ohne mTLS wählt der Peer diese Identität aber
+selbst. Ein Peer, der sich verbinden kann, kann sich also unter einer
+Adresse seiner Wahl ankündigen — und von da an lässt diese Sperre Frames
+an ihn durch, und das Gossip und die Heartbeats des
+Mitgliedschaftsprotokolls selbst wählen ihn in jedem Intervall an, ganz
+ohne Ref. Das hier schließt also den Weg über einen Nachrichtenkörper,
+nicht das Erzeugen eines Mitglieds. mTLS ist das, was die Adresse eines
+Mitglieds an ein Zertifikat bindet.
 
 ### Eine Sharding-Direktive braucht den Koordinator dahinter
 
@@ -773,30 +1082,42 @@ der eine Adresse einführt. Ursprünglich war es die engere Regel —
 enge Grenze bei der Erstsichtung, großzügige 24 h bei jedem
 Update —, und diese Aufteilung ließ sich umgehen, indem man die
 Adresse zuerst einführte: zwei Records für dieselbe Adresse in
-einem Frame, oder ein Frame ganz ohne Member-Records, der den
-Empfänger trotzdem die Absenderadresse eintragen lässt. Jede
+einem Frame, oder — bis #939 die Tür entfernt hat, die den
+selbsterklärten Absender eines Frames eintrug — ein Frame ganz ohne
+Member-Records. Jede
 Regel, die einen Record das weitere Budget *verdienen* lässt,
 scheitert einen Schritt später genauso — ohne Peer-Zertifikate
 kann der Angreifer jeden Schritt des Verdienens selbst erzeugen.
 
 Erhöhe den Wert für ein Deployment, dessen Uhren bekanntermaßen
 lose laufen; `24 * 60 * 60 * 1000` stellt das alte Verhalten mit
-einer einzigen Grenze wieder her. Eine Abweisung ist kein
-Ausschluss — ein Knoten, der sich selbst ankündigt, wird trotzdem
-erfasst, mit Version 1 und ohne Rollen —, aber sie ist *dauerhaft*:
-Ein Knoten, dessen Uhr weiter vorgeht als das Budget, bleibt ohne
-Rollen in der Member-Liste, bis seine Uhr zurückkommt. Das war
-immer schon das Urteil dieser Grenze über einen solchen Knoten;
-geändert hat sich, dass es jetzt bestehen bleibt, statt vom
-zweiten Gossip-Frame des Knotens aufgehoben zu werden.
+einer einzigen Grenze wieder her. Eine Abweisung ist Ausschluss,
+und zwar ein *dauerhafter*: Ein Knoten wird nur durch seinen eigenen
+Record eingeführt, also wird ein Knoten, dessen Uhr weiter vorgeht
+als das Budget, gar nicht erfasst. Er bleibt außerhalb der
+Member-Liste — mit der WARN-Zeile unten, die die Grenze nennt —,
+bis seine Uhr wieder innerhalb des Budgets liegt. Das war immer
+schon das Urteil dieser Grenze über einen solchen Knoten; geändert
+hat sich, dass es jetzt bestehen bleibt, statt von der Absender-Tür
+abgeschwächt oder vom zweiten Gossip-Frame des Knotens aufgehoben
+zu werden.
 
 Abgewiesene Records werden einmal pro Frame gemeldet, nicht
 einmal pro Record — eine WARN-Zeile mit Peer und Anzahl, dazu der
 Zähler `cluster_gossip_records_refused_total{reason}`, dessen
 Label `reason` auf `version-skew`, `map-cap`, `timestamp-skew`,
-`replayed-frame` und `self-claim` geschlossen ist. Pro Record zu
-loggen würde einem Peer Log-Verstärkung schenken statt des
+`replayed-frame`, `self-claim`, `removed-run` und `foreign-cluster` geschlossen ist. Pro
+Record zu loggen würde einem Peer Log-Verstärkung schenken statt des
 Wachstums, das er gerade verloren hat.
+
+`removed-run` ist ein Record für einen Lauf, den dieser Knoten als
+`removed` führt — dieselbe Adresse *und* dieselbe Inkarnation.  Eine
+Version wählt der Absender und konnte immer über einen Grabstein
+hinaus neu gestempelt werden; eine Inkarnation benennt den Prozess,
+den der Cluster entfernt hat, und nur ein Neustart erzeugt eine neue.
+Seit Cluster-Wire v2 trägt jede Adresse auf einem Frame sie, also kann
+der gedownte Lauf unter keiner Version zurückkommen, während ein
+Neustart an derselben Adresse weiterhin sofort beitritt (#823, #940).
 
 `self-claim` ist die Regel von oben, aus Sicht des Zählers: ein
 Peer behauptet einen Status für den empfangenden Knoten, der
@@ -815,13 +1136,36 @@ bewegt — ein vom Draht mitgeschnittener Frame bleibt also
 unbegrenzt *gültig*. Gegen einen konvergierten Empfänger kostet
 das nichts: jeder Record darin verliert den Vergleich „höhere
 Version gewinnt" gegen den Record, der schon da ist. Zum Exploit
-wird es bei einem Eintrag, den der Empfänger **gelöscht** hat.
-Der Down-Pfad des Failure Detectors löscht rundheraus, statt
-einen Tombstone zu hinterlassen, damit eine Partition nach dem
-Heilen den Peer wiederfinden kann — und ein abgelaufener
-Tombstone wird aus demselben Grund entfernt. So oder so bleibt
-nichts zum Vergleichen übrig, und der Zweig, der eine
-Erstsichtung ablegt, hat überhaupt keine untere Versionsgrenze.
+wird es bei einem Eintrag, den der Empfänger **gelöscht** hat,
+und zwei Wege löschen einen. Das eigene Entfernen des Failure
+Detectors — der Default ohne konfigurierte Strategie, unter
+`failure-detector.auto-down = on` — löscht rundheraus, statt einen
+Tombstone zu hinterlassen. Begründet wurde das einmal damit, dass
+eine Partition nach dem Heilen den Peer so wiederfinde, und genau
+das bringt das Löschen nicht: Keine Seite schickt einem Peer, den
+sie für unerreichbar hält, Heartbeats oder Gossip, und einen
+gelöschten hat sie gar nicht mehr in ihrer Map, um ihn zu
+adressieren — nach einer symmetrischen Partition hört also keine
+Seite je wieder von der anderen
+([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
+Unter dem Default entfernen sich die beiden Seiten einer echten
+Partition also gegenseitig und laufen als zwei Cluster weiter — ein
+weiterer Grund, warum ein Produktions-Deployment `lease-majority`
+oder eine andere [Downing-Strategie](/de/cluster/downing-strategies/)
+konfiguriert.
+Und ein abgelaufener Tombstone wird entfernt, sobald der größere
+Wert von seiner Lebensdauer und `tombstone.min-retention` verstrichen
+ist. So oder so bleibt nichts zum Vergleichen übrig, und der Zweig,
+der eine Erstsichtung ablegt, hat überhaupt keine untere
+Versionsgrenze. Die übrigen Entfernungen — ein `down()` des
+Operators, die Entscheidung einer Strategie, das `leave` eines
+Peers — hinterlassen einen Tombstone, der den Mitschnitt bis zu
+diesem Aufräumen überbietet; mit konfigurierter Strategie oder unter
+`auto-down = off` entfernt der Detector selbst niemanden. Ein
+Neustart, der einen lebenden Eintrag seines vorherigen Laufs
+ersetzt, löscht diesen Eintrag ebenfalls, aber der Eintrag des neuen
+Laufs übernimmt den Schlüssel im selben Schritt mit höherer Version,
+ein Mitschnitt des alten Laufs verliert den Vergleich also weiterhin.
 
 Das Wiedereinspielen des eigenen Records eines heruntergefahrenen
 Members brachte ihn also zurück: gleiche Adresse, gleiche
@@ -871,8 +1215,11 @@ von einer.
 
 Eine Adresse trägt zusätzlich eine **Inkarnation**: welcher
 *Prozess* unter diesem `system@host:port` antwortet, einmal pro
-`Cluster.join` geprägt. Sie wird bewusst mitgeführt und noch nicht
-ausgewertet. Das Feld ist auf dem Draht optional, damit ein Knoten
+`Cluster.join` geprägt. Sie wird bewusst mitgeführt und nur dafür
+ausgewertet, was ein Neustart verkündet — ein Eintrag einer neuen
+Inkarnation beendet die Mitgliedschaft des alten Laufs, bevor der
+neue beitritt —, nie, um einen Eintrag abzuweisen. Das Feld ist auf
+dem Draht optional, damit ein Knoten
 jeder der beiden Versionen einen der anderen versteht — und ein
 optionales Feld umgeht man durch *Weglassen*, eine auf eine
 Abweichung gestützte Ablehnung wäre also eine, aus der ein
@@ -900,9 +1247,17 @@ genau der Wire-Bruch von oben.
 
 Zweitens lässt eine fehlende Marke alles zu, und es gibt drei Wege,
 keine zu haben — nur einer davon ist die Evakuierung des Absenders
-selbst. Ein gelöschtes Member verliert seine Marke, aus dem Grund
-von oben — und eine gewöhnliche Partition trifft Absender und
-Subjekt gemeinsam, dieser Weg kommt also gebrauchsfertig. Ein
+selbst. Ein evakuiertes Member verliert seine Marke mit seinem
+Eintrag, aus dem Grund von oben: sofort auf dem eigenen
+`auto-down`-Weg des Detectors, der löscht, und bei jeder anderen
+Entfernung erst, wenn der Tombstone aufgeräumt wird, denn ein
+Tombstone behält die Marke zusammen mit dem Eintrag. Unter dem
+Default `auto-down` trifft eine gewöhnliche Partition Absender und
+Subjekt gemeinsam, dieser Weg kommt also gebrauchsfertig; mit
+konfigurierter Strategie oder unter `auto-down = off` evakuiert eine
+Partition niemanden, bis etwas entscheidet — beide werden geparkt,
+die Marken bleiben —, und hinter einem Tombstone lebt die Marke
+genau so lange wie die Abweisung. Ein
 frischer oder neu gestarteter Prozess hat von Anfang an keine. Und
 ein Member, von dem man **über Dritte** erfahren hat, hatte noch
 nie eine: Gossip ist epidemisch, ein Knoten legt C also auf Bs
@@ -962,7 +1317,7 @@ const tlsOptionsType = {
   rejectUnauthorized: true,
 };
 
-const transport = new TcpTransport(self, log, tlsOptionsType);
+const transport = new TcpTransport(self, log, { tls: tlsOptionsType });
 
 const clusterOptions = ClusterOptions.create()
   .withHost(host)

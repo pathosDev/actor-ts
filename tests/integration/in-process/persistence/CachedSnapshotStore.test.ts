@@ -1,8 +1,16 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { InMemoryCache } from '../../../../src/cache/InMemoryCache.js';
+import { FilesystemObjectStorageBackend } from '../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
+import { FilesystemObjectStorageOptions } from '../../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
 import { CachedSnapshotStore } from '../../../../src/persistence/snapshot-stores/CachedSnapshotStore.js';
 import { CachedSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/CachedSnapshotStoreOptions.js';
 import { InMemorySnapshotStore } from '../../../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
+import { ObjectStorageSnapshotStore } from '../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStore.js';
+import { ObjectStorageSnapshotStoreOptions } from '../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
+import type { EncryptionConfig, EncryptionResolver } from '../../../../src/persistence/object-storage/PluginConfig.js';
 import type { Snapshot } from '../../../../src/persistence/JournalTypes.js';
 import type { PersistenceOptions } from '../../../../src/persistence/PersistenceOptions.js';
 import type { SnapshotStore } from '../../../../src/persistence/SnapshotStore.js';
@@ -186,5 +194,449 @@ describe('CachedSnapshotStore — config guards', () => {
     await store.loadLatest('p');  // populate
     // Direct cache probe with the expected key:
     expect((await cache.get('env-prod:snap:p')).isSome()).toBe(true);
+  });
+});
+
+/**
+ * A stub that claims all three fields, standing in for the object-storage
+ * store without dragging a filesystem backend into this suite.
+ */
+class HonouringStore extends InMemorySnapshotStore {
+  override readonly persistenceOptionSupport = { encryption: true, compression: true, integrity: true } as const;
+}
+
+describe('CachedSnapshotStore — capability delegation', () => {
+  /**
+   * The decorator forwards `options` to the wrapped store verbatim and adds
+   * no codec of its own, so its `persistenceOptionSupport` genuinely IS the
+   * inner store's (#960).  A literal would be a lie in both directions: a
+   * hard-coded `false` refuses an actor whose object-storage store can
+   * encrypt, a hard-coded `true` waves one through over Postgres.
+   *
+   * Note this reports the *inner store's* at-rest behaviour and says nothing
+   * about what the cache itself holds — see #782.
+   */
+  const cachedOptions = (): CachedSnapshotStoreOptions =>
+    CachedSnapshotStoreOptions.create().withCache(new InMemoryCache());
+
+  test('reports what the wrapped store reports', () => {
+    const plaintext = new CachedSnapshotStore(new InMemorySnapshotStore(), cachedOptions());
+    expect(plaintext.persistenceOptionSupport)
+      .toEqual({ encryption: false, compression: false, integrity: false });
+
+    const honouring = new CachedSnapshotStore(new HonouringStore(), cachedOptions());
+    expect(honouring.persistenceOptionSupport)
+      .toEqual({ encryption: true, compression: true, integrity: true });
+  });
+
+  test('an undeclared inner store stays undeclared rather than becoming a confident answer', () => {
+    // `CountingStore` declares nothing, which is the third-party shape: the
+    // actor-side check treats it as unknown and never refuses.  A decorator
+    // that defaulted here would launder that into a claim nobody made.
+    const spy = new CountingStore(new InMemorySnapshotStore());
+    expect(new CachedSnapshotStore(spy, cachedOptions()).persistenceOptionSupport).toBeUndefined();
+  });
+});
+
+/**
+ * A wrapped store with something to open: counts its starts, and fails the
+ * ones it is told to — the shape of a store whose database is not up yet.
+ */
+class OpeningStore extends InMemorySnapshotStore {
+  starts = 0;
+  constructor(private readonly refusal?: Error) { super(); }
+
+  async start(): Promise<void> {
+    this.starts++;
+    if (this.refusal !== undefined) throw this.refusal;
+  }
+}
+
+describe('CachedSnapshotStore — start() reaches the wrapped store (#1473)', () => {
+  /**
+   * The decorator is what the persistence extension resolves when a plug-in
+   * wraps its snapshot store in it, so it is what a boot-time warm-up calls
+   * `start?.()` on.  Without its own `start()` the call found nothing and the
+   * wrapped store opened at its first load instead.
+   */
+  const cachedOptions = (): CachedSnapshotStoreOptions =>
+    CachedSnapshotStoreOptions.create().withCache(new InMemoryCache());
+
+  test('a warm-up through the decorator opens the wrapped store', async () => {
+    const wrapped = new OpeningStore();
+    const store: SnapshotStore = new CachedSnapshotStore(wrapped, cachedOptions());
+
+    await store.start?.();
+
+    expect(wrapped.starts).toBe(1);
+  });
+
+  test('a wrapped store that cannot open fails the start with its own error', async () => {
+    const refusal = new Error('the snapshot database refused the connection');
+    const store: SnapshotStore = new CachedSnapshotStore(new OpeningStore(refusal), cachedOptions());
+
+    let failure: unknown;
+    try {
+      await store.start?.();
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBe(refusal);
+  });
+
+  test('a wrapped store with nothing to open leaves start() resolving at once', async () => {
+    const store = new CachedSnapshotStore(new InMemorySnapshotStore(), cachedOptions());
+
+    await store.start();
+
+    expect((await store.loadLatest('p')).isNone()).toBe(true);
+  });
+});
+
+/**
+ * The cache holds the *decoded* snapshot, so composing this decorator with
+ * client-side snapshot encryption puts a second, plaintext copy of the state
+ * in a datastore the caller owns and usually shares (#782).  The per-call
+ * `encryption` directive is the half of that the decorator can actually see —
+ * it arrives on every read and write — and it used to be forwarded blind.
+ */
+/**
+ * Swap `console.warn` for the duration of one call and hand back what it
+ * saw.  The advisory has no `ActorSystem` to log through, for the reason
+ * `ObjectStoragePlugin` states, so the console *is* the observable.
+ */
+const captureWarnings = async (body: () => Promise<void>): Promise<string[]> => {
+  const captured: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]): void => { captured.push(String(args[0])); };
+  try { await body(); } finally { console.warn = original; }
+  return captured;
+};
+
+describe('CachedSnapshotStore — plaintext cache guard', () => {
+  const encryptedOptions: PersistenceOptions = { encryption: { mode: 'sse-s3' } };
+  const explicitlyUnprotectedOptions: PersistenceOptions = { encryption: { mode: 'none' } };
+
+  test('an encrypted loadLatest is served from the wrapped store, never cached, and warns once', async () => {
+    const counting = new CountingStore(new HonouringStore());
+    const cache = new InMemoryCache();
+    const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create().withCache(cache);
+    const store = new CachedSnapshotStore(counting, cachedSnapshotStoreOptions);
+    await store.save('pid-secret', 1, { balance: 42 }, encryptedOptions);
+
+    const warnings = await captureWarnings(async () => {
+      await store.loadLatest('pid-secret', encryptedOptions);
+      await store.loadLatest('pid-secret', encryptedOptions);
+    });
+
+    // Two loads, two trips to the wrapped store — nothing was cached for the
+    // second one to hit, which is the point.
+    expect(counting.loadLatestCalls).toBe(2);
+    expect((await cache.get('snap:pid-secret')).isNone()).toBe(true);
+    // Once per store, not once per cold start.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('caches decoded snapshot state');
+    // The advisory names which of the two routes produced it, and the docs
+    // quote both lines verbatim — so these two assertions are what keeps the
+    // quotes honest.
+    expect(warnings[0]).toContain('this loadLatest asked for encryption');
+    expect(warnings[0]).toContain('withAllowPlaintextCache');
+    // And it names the store it is warning *about*, read off the wrapped
+    // instance rather than written into the sentence.  An operator running
+    // several stores behind one cache has nothing else in the line to tell
+    // them which one is exposed, and the decorator cannot know the name any
+    // other way — so a literal here would be wrong for every wrapping but the
+    // one it was written for.
+    expect(warnings[0]).toContain("on 'CountingStore'");
+  });
+
+  test('withAllowPlaintextCache(true) is the acknowledgement — caching resumes, silently', async () => {
+    const counting = new CountingStore(new HonouringStore());
+    const cache = new InMemoryCache();
+    const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create()
+      .withCache(cache)
+      .withAllowPlaintextCache(true);
+    const store = new CachedSnapshotStore(counting, cachedSnapshotStoreOptions);
+    await store.save('pid-secret', 1, { balance: 42 }, encryptedOptions);
+
+    const warnings = await captureWarnings(async () => {
+      await store.loadLatest('pid-secret', encryptedOptions);
+      await store.loadLatest('pid-secret', encryptedOptions);
+    });
+
+    expect(counting.loadLatestCalls).toBe(1);  // second call served from cache
+    expect((await cache.get('snap:pid-secret')).isSome()).toBe(true);
+    expect(warnings).toEqual([]);
+  });
+
+  test('an explicit mode: none is an opt-out, not a refusal', async () => {
+    // `{ mode: 'none' }` is how an actor says "deliberately unprotected" —
+    // the same reading `unhonouredPersistenceOptions` gives it.  Turning that
+    // into a cache bypass would punish the one caller who said what they meant.
+    const counting = new CountingStore(new HonouringStore());
+    const cache = new InMemoryCache();
+    const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create().withCache(cache);
+    const store = new CachedSnapshotStore(counting, cachedSnapshotStoreOptions);
+    await store.save('pid-open', 1, { balance: 7 }, explicitlyUnprotectedOptions);
+
+    const warnings = await captureWarnings(async () => {
+      await store.loadLatest('pid-open', explicitlyUnprotectedOptions);
+      await store.loadLatest('pid-open', explicitlyUnprotectedOptions);
+      // And an absent directive, the overwhelmingly common case, is untouched.
+      await store.loadLatest('pid-open');
+    });
+
+    expect(counting.loadLatestCalls).toBe(1);
+    expect((await cache.get('snap:pid-open')).isSome()).toBe(true);
+    expect(warnings).toEqual([]);
+  });
+
+  test('a refused loadLatest evicts the plaintext an earlier unguarded load cached', async () => {
+    // The rollout shape #782's verification recorded: an actor gains an
+    // `encryption()` hook, but the cache it shares still holds the state its
+    // previous version loaded without one.  Refusing to cache the *new* load
+    // is not enough — the old entry would sit there in plaintext until the
+    // next `save`, or for `ttlMs`, whichever came first.
+    const counting = new CountingStore(new HonouringStore());
+    const cache = new InMemoryCache();
+    const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create().withCache(cache);
+    const store = new CachedSnapshotStore(counting, cachedSnapshotStoreOptions);
+    await store.save('pid-mixed', 1, { ssn: '078-05-1120' });
+    await store.loadLatest('pid-mixed');  // unguarded: populates the cache
+    expect((await cache.get('snap:pid-mixed')).isSome()).toBe(true);
+
+    const warnings = await captureWarnings(async () => {
+      const served = await store.loadLatest<{ ssn: string }>('pid-mixed', encryptedOptions);
+      // Refusing to cache is still not refusing to serve.
+      expect(served.toNullable()?.state).toEqual({ ssn: '078-05-1120' });
+    });
+
+    expect((await cache.get('snap:pid-mixed')).isNone()).toBe(true);
+    expect(counting.loadLatestCalls).toBe(2);
+    expect(warnings).toHaveLength(1);
+  });
+
+  test('every refused load evicts — the eviction is per load, the advisory per store', async () => {
+    // The advisory is deliberately once per store.  The eviction must not
+    // ride on it: the second entity behind the same cache is exposed exactly
+    // as the first was, and its refused load is the silent one.
+    const counting = new CountingStore(new HonouringStore());
+    const cache = new InMemoryCache();
+    const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create().withCache(cache);
+    const store = new CachedSnapshotStore(counting, cachedSnapshotStoreOptions);
+    await store.save('pid-first', 1, { balance: 1 });
+    await store.save('pid-second', 1, { balance: 2 });
+    await store.loadLatest('pid-first');
+    await store.loadLatest('pid-second');
+
+    const warnings = await captureWarnings(async () => {
+      await store.loadLatest('pid-first', encryptedOptions);   // warns, and evicts
+      await store.loadLatest('pid-second', encryptedOptions);  // silent, and must still evict
+    });
+
+    expect(warnings).toHaveLength(1);
+    expect((await cache.get('snap:pid-first')).isNone()).toBe(true);
+    expect((await cache.get('snap:pid-second')).isNone()).toBe(true);
+  });
+});
+
+/**
+ * The composition #782's own walkthrough describes, and the one the
+ * object-storage page's example builds: encryption configured on the **store**
+ * with `withEncryption(...)`, nothing per call.  That is the path the
+ * documentation presents as the norm — `PersistentActor.encryption()` is the
+ * per-actor override, not the default — so a guard that saw only the per-call
+ * directive left the documented path unguarded, and four documentation lines
+ * claiming otherwise (#782 as first shipped).
+ *
+ * These tests build the composition end to end against a real
+ * `ObjectStorageSnapshotStore` over a filesystem backend rather than a fake,
+ * because the point in question is exactly what the *store* does with its own
+ * configuration: it decrypts on `loadLatest` and hands back the decoded state,
+ * which is what the decorator would then write into a cache the operator
+ * shares with other subsystems.
+ */
+describe('CachedSnapshotStore — encryption configured on the wrapped store (#782)', () => {
+  /** 32 bytes — the single-key shorthand of `client-aes256-gcm`. */
+  const MASTER_KEY = new Uint8Array(32).fill(0x2b);
+  /** HKDF context — required on every client-side encryption config (#108). */
+  const HKDF_INFO = 'acme/test/cached-snapshot/v1';
+  /** A value that must never be findable in the cache while the bucket is encrypted. */
+  const SECRET = 'DE00-1234-5678-9012';
+
+  let directory: string;
+  let backend: FilesystemObjectStorageBackend;
+
+  beforeEach(() => {
+    directory = mkdtempSync(join(tmpdir(), 'actor-ts-cached-snapshot-'));
+    backend = new FilesystemObjectStorageBackend(FilesystemObjectStorageOptions.create().withDir(directory));
+  });
+
+  afterEach(() => { try { rmSync(directory, { recursive: true, force: true }); } catch { /* ignore */ } });
+
+  const clientSideEncryption: EncryptionConfig = {
+    mode: 'client-aes256-gcm',
+    masterKey: MASTER_KEY,
+    info: HKDF_INFO,
+  };
+
+  const storeConfigured = (
+    encryption?: EncryptionConfig | EncryptionResolver,
+    allowUnencryptedBodies = false,
+  ): ObjectStorageSnapshotStore => {
+    const objectStorageOptions = ObjectStorageSnapshotStoreOptions.create().withBackend(backend);
+    const configured = encryption === undefined ? objectStorageOptions : objectStorageOptions.withEncryption(encryption);
+    return new ObjectStorageSnapshotStore(
+      allowUnencryptedBodies ? configured.withAllowUnencryptedBodies(true) : configured,
+    );
+  };
+
+  test('the plaintext never enters the cache, and the refusal warns once', async () => {
+    const cache = new InMemoryCache();
+    const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create().withCache(cache);
+    const store = new CachedSnapshotStore(storeConfigured(clientSideEncryption), cachedSnapshotStoreOptions);
+    // No per-call options anywhere: the store's own config is the whole story.
+    await store.save('pid-secret', 1, { iban: SECRET });
+
+    const warnings = await captureWarnings(async () => {
+      await store.loadLatest('pid-secret');
+      await store.loadLatest('pid-secret');
+    });
+
+    // The exploit assertion first, because it is the one that reads as the
+    // issue's walkthrough: the account number must not be findable in a
+    // datastore the bucket's operators may not even administer.
+    const cached = await cache.get('snap:pid-secret');
+    expect(JSON.stringify(cached)).not.toContain(SECRET);
+    expect(cached.isNone()).toBe(true);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('caches decoded snapshot state');
+    expect(warnings[0]).toContain("the store's own configuration keeps this persistenceId encrypted");
+    expect(warnings[0]).toContain('withAllowPlaintextCache');
+    // The name both `cached-snapshot-store.mdx` pages quote in their sample of
+    // this line.  It comes from `this.underlying.constructor.name`, so this is
+    // what holds the quoted sample to the emitted one — and what would notice
+    // a build that mangled the class name away.
+    expect(warnings[0]).toContain("on 'ObjectStorageSnapshotStore'");
+  });
+
+  test('the load still returns the decrypted snapshot — refusing to cache is not refusing to serve', async () => {
+    const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create().withCache(new InMemoryCache());
+    const store = new CachedSnapshotStore(storeConfigured(clientSideEncryption), cachedSnapshotStoreOptions);
+    await store.save('pid-secret', 1, { iban: SECRET });
+
+    await captureWarnings(async () => {
+      const loaded = await store.loadLatest<{ iban: string }>('pid-secret');
+      expect(loaded.isSome()).toBe(true);
+      expect(loaded.getOrElse({ iban: '' } as never).state.iban).toBe(SECRET);
+    });
+  });
+
+  test('withAllowPlaintextCache(true) is the acknowledgement here too', async () => {
+    const cache = new InMemoryCache();
+    const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create()
+      .withCache(cache)
+      .withAllowPlaintextCache(true);
+    const store = new CachedSnapshotStore(storeConfigured(clientSideEncryption), cachedSnapshotStoreOptions);
+    await store.save('pid-secret', 1, { iban: SECRET });
+
+    const warnings = await captureWarnings(async () => { await store.loadLatest('pid-secret'); });
+
+    expect((await cache.get('snap:pid-secret')).isSome()).toBe(true);
+    expect(warnings).toEqual([]);
+  });
+
+  test('a store that is not encrypting still caches — the guard is about exposure, not about object storage', async () => {
+    const cache = new InMemoryCache();
+    const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create().withCache(cache);
+    const store = new CachedSnapshotStore(storeConfigured(), cachedSnapshotStoreOptions);
+    await store.save('pid-open', 1, { balance: 7 });
+
+    const warnings = await captureWarnings(async () => { await store.loadLatest('pid-open'); });
+
+    expect((await cache.get('snap:pid-open')).isSome()).toBe(true);
+    expect(warnings).toEqual([]);
+  });
+
+  test("an explicit { mode: 'none' } on the store is an opt-out, not a refusal", async () => {
+    const cache = new InMemoryCache();
+    const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create().withCache(cache);
+    const store = new CachedSnapshotStore(storeConfigured({ mode: 'none' }), cachedSnapshotStoreOptions);
+    await store.save('pid-open', 1, { balance: 7 });
+
+    const warnings = await captureWarnings(async () => { await store.loadLatest('pid-open'); });
+
+    expect((await cache.get('snap:pid-open')).isSome()).toBe(true);
+    expect(warnings).toEqual([]);
+  });
+
+  test('encryptsAtRest is delegated, and an undeclared store stays undeclared', () => {
+    const cachedOptions = (): CachedSnapshotStoreOptions =>
+      CachedSnapshotStoreOptions.create().withCache(new InMemoryCache());
+
+    expect(new CachedSnapshotStore(storeConfigured(clientSideEncryption), cachedOptions())
+      .encryptsAtRest('pid-secret')).toBe(true);
+    expect(new CachedSnapshotStore(storeConfigured(), cachedOptions())
+      .encryptsAtRest('pid-open')).toBe(false);
+    // `InMemorySnapshotStore` cannot encrypt and says so once, through
+    // `persistenceOptionSupport`; it declares nothing here, and a decorator
+    // that answered `false` for it would launder unknown into a claim.
+    expect(new CachedSnapshotStore(new InMemorySnapshotStore(), cachedOptions())
+      .encryptsAtRest('pid-open')).toBeUndefined();
+    // Stacked decorators see through, because each one delegates.
+    const inner = new CachedSnapshotStore(storeConfigured(clientSideEncryption), cachedOptions());
+    expect(new CachedSnapshotStore(inner, cachedOptions()).encryptsAtRest('pid-secret')).toBe(true);
+  });
+
+  test('a per-persistenceId resolver is decided per persistenceId, not once for the store', async () => {
+    // `encryptionByPrefix`-shaped config: one prefix encrypted, everything
+    // else not.  A coarse "this store has a resolver, assume encrypted" would
+    // pass the first assertion and kill the cache for `open-`, which is the
+    // whole population the cache exists for.
+    const byPrefix: EncryptionResolver = (persistenceId) => (
+      persistenceId.startsWith('secret-') ? clientSideEncryption : { mode: 'none' }
+    );
+    const cache = new InMemoryCache();
+    const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create().withCache(cache);
+    const store = new CachedSnapshotStore(storeConfigured(byPrefix), cachedSnapshotStoreOptions);
+    await store.save('secret-1', 1, { iban: SECRET });
+    await store.save('open-1', 1, { balance: 7 });
+
+    await captureWarnings(async () => {
+      await store.loadLatest('secret-1');
+      await store.loadLatest('open-1');
+    });
+
+    expect((await cache.get('snap:secret-1')).isNone()).toBe(true);
+    expect((await cache.get('snap:open-1')).isSome()).toBe(true);
+  });
+
+  test('a refused load evicts the plaintext cached before the store was configured to encrypt', async () => {
+    // The redeploy #782's verification describes: the same bucket and the
+    // same external cache, and `withEncryption(...)` added to the store in
+    // between.  The entry the previous deployment cached in plaintext must
+    // not outlive the first refused load — `ttlMs` was the only thing that
+    // bounded it, and nothing else on this route ever touches the entry.
+    const cache = new InMemoryCache();
+    const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create().withCache(cache);
+    const before = new CachedSnapshotStore(storeConfigured(), cachedSnapshotStoreOptions);
+    await before.save('pid-secret', 1, { iban: SECRET });
+    await before.loadLatest('pid-secret');
+    expect(JSON.stringify(await cache.get('snap:pid-secret'))).toContain(SECRET);
+
+    // The redeploy opens the migration window: the snapshot the previous
+    // deployment wrote is still plaintext in the bucket, and a store that
+    // reads with a key refuses such a body without it (#965).
+    const after = new CachedSnapshotStore(storeConfigured(clientSideEncryption, true), cachedSnapshotStoreOptions);
+    const warnings = await captureWarnings(async () => {
+      const served = await after.loadLatest<{ iban: string }>('pid-secret');
+      expect(served.toNullable()?.state.iban).toBe(SECRET);
+    });
+
+    expect(JSON.stringify(await cache.get('snap:pid-secret'))).not.toContain(SECRET);
+    expect((await cache.get('snap:pid-secret')).isNone()).toBe(true);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("the store's own configuration keeps this persistenceId encrypted");
   });
 });

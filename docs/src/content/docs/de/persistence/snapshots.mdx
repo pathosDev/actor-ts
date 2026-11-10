@@ -108,25 +108,86 @@ const actorSystemOptions = ActorSystemOptions.create().withPersistence({
 });
 ```
 
-Eingebaute Snapshot Stores:
+Eingebaute Snapshot Stores.  Die dritte Spalte ist die
+`persistenceOptionSupport`-Deklaration des Stores selbst — ob er für
+die Snapshots, die er hält, auf die Hooks `compression()` /
+`encryption()` / `integrity()` reagiert oder sie bloß entgegennimmt.
+Keine Zeile deckt Events ab: Die liegen im Journal, das keiner der
+Hooks erreicht — siehe das Ende dieses Abschnitts:
 
-| Store | Wann |
-| --- | --- |
-| `InMemorySnapshotStore` | Tests, Dev. |
-| `SqliteSnapshotStore` | Single-Node-Produktion. |
-| `PostgresSnapshotStore` | PostgreSQL-gestützte Produktion. |
-| `MariaDbSnapshotStore` | MariaDB / MySQL-gestützte Produktion. |
-| `LibSqlSnapshotStore` | libSQL / Turso — entferntes SQLite über HTTP. |
-| `MsSqlSnapshotStore` | Microsoft SQL Server-gestützte Produktion. |
-| `MongoSnapshotStore` | MongoDB-gestützte Produktion. |
-| `DynamoDbSnapshotStore` | DynamoDB-gestützte Produktion. |
-| `D1SnapshotStore` | Cloudflare D1 — SQLite am Edge. |
-| `CassandraSnapshotStore` | Verteilt — Cassandra / ScyllaDB. |
-| `ObjectStorageSnapshotStore` | Filesystem / S3 mit optionaler Verschlüsselung. |
-| `CachedSnapshotStore` | Wickelt einen anderen Store mit einem Read-Through-Cache ein. |
+| Store | Wann | Honoriert die drei Hooks |
+| --- | --- | --- |
+| `InMemorySnapshotStore` | Tests, Dev. | Nein. |
+| `SqliteSnapshotStore` | Single-Node-Produktion. | Ja — alle drei, beim Schreiben und beim Lesen, als versiegelte Zeile (unten). |
+| `PostgresSnapshotStore` | PostgreSQL-gestützte Produktion. | Ja — alle drei, beim Schreiben und beim Lesen, als versiegelte Zeile (unten). |
+| `MariaDbSnapshotStore` | MariaDB / MySQL-gestützte Produktion. | Ja — alle drei, beim Schreiben und beim Lesen, als versiegelte Zeile (unten). |
+| `LibSqlSnapshotStore` | libSQL / Turso — entferntes SQLite über HTTP. | Ja — alle drei, beim Schreiben und beim Lesen, als versiegelte Zeile (unten). |
+| `MsSqlSnapshotStore` | Microsoft SQL Server-gestützte Produktion. | Ja — alle drei, beim Schreiben und beim Lesen, als versiegelte Zeile (unten). |
+| `MongoSnapshotStore` | MongoDB-gestützte Produktion. | Nein. |
+| `DynamoDbSnapshotStore` | DynamoDB-gestützte Produktion. | Nein. |
+| `D1SnapshotStore` | Cloudflare D1 — SQLite am Edge. | Ja — alle drei, beim Schreiben und beim Lesen, als versiegelte Zeile (unten). |
+| `CassandraSnapshotStore` | Verteilt — Cassandra / ScyllaDB. | Nein. |
+| `ObjectStorageSnapshotStore` | Filesystem / S3 mit optionaler Verschlüsselung. | Ja — alle drei, beim Schreiben und beim Lesen, für die Snapshots, die er hält. |
+| `CachedSnapshotStore` | Wickelt einen anderen Store mit einem Read-Through-Cache ein. | Was der eingewickelte Store deklariert; ein `encryption()`-Hook umgeht außerdem den Cache — siehe unten. |
+
+**Versiegelte Zeilen in den SQL-Stores** ([#1802](https://github.com/pathosDev/actor-ts/issues/1802)).  Die sechs
+SQL-Snapshot-Stores behalten ihr Schema: Ein Snapshot, der unter einem
+der Hooks geschrieben wird, landet in derselben `payload`-Spalte, als
+Frame der Object-Storage-Stores in Base64 hinter einem
+`ats1:`-Präfix — dasselbe AES-256-GCM, dieselbe Schlüsselableitung
+pro Persistence-ID, derselbe Master-Key-Ring.  Der Frame ist an seine
+Persistence-ID und Sequenznummer gebunden, eine unter eine andere
+kopierte Zeile lässt sich also nicht entschlüsseln, statt als dieser
+Snapshot geladen zu werden.  Das Lesen schließt gegen den Hook ab:
+Unter `encryption()` oder `integrity()` wird eine Zeile verweigert,
+die Klartext-JSON ist oder ein Frame ohne Verschlüsselung bzw. ohne
+Tag — sie ist entweder älter als der Hook oder wurde von jemandem mit
+Zugriff auf die Tabelle geschrieben.  Um einen Hook über bestehenden
+Snapshots einzuschalten, baust du den Store mit
+`withAllowPlaintextRows(true)`, bis der nächste Save sie abgelöst
+hat, und nimmst es danach wieder heraus.  `sse-s3` und `sse-kms`
+bitten einen Object Store, auf seiner Seite zu verschlüsseln, und
+werden von einem SQL-Store verweigert.
+
+Ein `Nein` in dieser Spalte ist durchgesetzt, nicht nur dokumentiert.
+`encryption()` oder `integrity()` auf einem Actor zu setzen, der von
+einem dieser Stores getragen wird, **verweigert den Actor beim Start**
+mit einem `UnsupportedPersistenceOptionError`, der Store und Feld
+benennt — das sind Sicherheitskontrollen, und Klartext zu schreiben,
+statt die Lücke zu melden, ist genau der Fehler, den die Verweigerung
+verhindern soll.  `compression()` ist ein Performance-Hinweis, also
+gibt es eine einzelne Warnung mit dem Store-Namen und der Snapshot
+wird unkomprimiert geschrieben.  `{ mode: 'none' }` wird überall
+akzeptiert: So sagst du "bewusst ungeschützt".
+
+Ein Store, der gar nichts deklariert — eine Fremdimplementierung aus
+der Zeit vor der Deklaration — gilt als *unbekannt* und wird nie
+verweigert, aus derselben Überlegung wie bei `storageLocality`: Ein
+Store darf nicht an einer Vorgabe gemessen werden, die er nicht
+gewählt hat.
+
+`CachedSnapshotStore` ist die eine Zeile, deren Antwort nicht die
+ganze Geschichte ist.  Er reicht die drei Hooks unverändert an den
+eingewickelten Store weiter, die Spalte liest sich also wie dessen —
+aber der Cache, den er füllt, hält den *dekodierten* State.  Ein
+Actor, der `encryption()` deklariert, oder ein eingewickelter Store,
+der at rest verschlüsselt, wird deshalb am Cache vorbei bedient, mit
+einem einmaligen Hinweis, bis
+`CachedSnapshotStoreOptions.withAllowPlaintextCache(true)` bestätigt,
+dass der Cache so geschützt ist wie der Store; siehe
+[Cached-Snapshot-Store — Sicherheit](/de/persistence/snapshot-stores/cached-snapshot-store/#sicherheit--der-cache-hält-klartext).
 
 Das Journal und der Snapshot Store sind unabhängig; du kannst sie
 mischen (z. B. Cassandra-Journal + Object-Storage-Snapshot-Store).
+Das Mischen trägt den Schutz des Object-Storage-Stores aber nicht
+auf die Events über.  `encryption()` und `integrity()` an einem
+`PersistentActor` schützen nur seine Snapshots: Jedes Journal
+speichert Events als Klartext-JSON, nichts erkennt ein an Ort und
+Stelle manipuliertes Event, und datenbankseitige Kontrollen —
+Transparent Data Encryption, ein verschlüsseltes Volume,
+Zugriffskontrolle — sind heute der einzige Schutz für Events.  Kein
+Journal wird gefragt, also startet dieser Actor ohne Verweigerung
+und ohne Warnung.
 
 ## Was gespeichert wird
 

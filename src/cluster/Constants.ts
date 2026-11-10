@@ -28,8 +28,11 @@
  *
  * Mirrored by `actor-ts.cluster.failure-detector.heartbeat-interval` in
  * `reference.conf`, which is pinned to the simple detector's defaults by
- * `ClusterConfigDefaults.test.ts`.  The φ-accrual detector has no config
- * block at all, so its copy was pinned to nothing.
+ * `ClusterConfigDefaults.test.ts`.  Since #840 the φ-accrual detector is
+ * selectable from that same block — and deliberately has no
+ * `heartbeat-interval` of its own there: `createFailureDetector` imposes this
+ * one on whichever implementation is installed, so the two copies cannot drift
+ * back apart through config.
  */
 export const DEFAULT_HEARTBEAT_INTERVAL_MS = 500;
 
@@ -53,14 +56,6 @@ export const DEFAULT_HEARTBEAT_INTERVAL_MS = 500;
 export const MAX_WALL_CLOCK_SKEW_MS = 24 * 60 * 60 * 1_000;
 
 /**
- * How long a `ClusterClient` waits for the receptionist's `hello-ack` before
- * giving up on a contact point and trying the next one.  Matches
- * {@link HANDSHAKE_TIMEOUT_MS}: both bound the same thing from opposite ends
- * of the same handshake.
- */
-export const HELLO_TIMEOUT_MS = 5_000;
-
-/**
  * How long a connection may sit without its half of the handshake before it is
  * torn down and whatever it holds released.  A peer that accepts TCP but never
  * speaks the protocol would otherwise hold that resource — for the process's
@@ -79,6 +74,25 @@ export const HELLO_TIMEOUT_MS = 5_000;
  * accept, so a peer that is still trying has always given up first, and the
  * accepting side can never be the deadline that punishes a slow-but-legitimate
  * one.
+ *
+ * Built-in default for `actor-ts.remote.handshake-timeout`, and for the
+ * `handshakeTimeoutMs` field on both `ClusterOptionsType` and
+ * `TcpTransportOptionsType` (#846) — a default shared by two options types,
+ * which is what keeps it in this module rather than in either of them.
+ *
+ * **One key for both directions.**  The paragraph above is the reason: the
+ * ordering it relies on is free while the two sides read one number, and a
+ * dial/accept pair would hand an operator the ability to set the acceptor
+ * stricter than the dialler and make a healthy peer permanently unjoinable.
+ *
+ * The **third** number in that story is `ClusterClient`'s per-contact-point
+ * wait for its `hello-ack`.  It is the same 5 s and the same handshake seen
+ * from the outside, and it lives in `ClusterClientOptions.ts` as
+ * `DEFAULT_CLUSTER_CLIENT_CONNECT_TIMEOUT_MS` because it is that options
+ * type's built-in default and the published default of
+ * `actor-ts.cluster.client.connect-timeout` (#858).  A client is not a peer,
+ * so it never joins the association this constant guards — which is why the
+ * two are separate keys rather than one.
  */
 export const HANDSHAKE_TIMEOUT_MS = 5_000;
 
@@ -88,6 +102,13 @@ export const HANDSHAKE_TIMEOUT_MS = 5_000;
  * an unbounded one turns a silently-stuck peer into a memory leak.  Oldest
  * frames are dropped first — the newest membership/heartbeat state is the
  * state worth keeping.
+ *
+ * Built-in default for `actor-ts.remote.outbound-queue-size` (#846), on both
+ * `ClusterOptionsType` and `TcpTransportOptionsType`.  The key is named for
+ * the *category* — frames held for a peer that cannot take them — rather than
+ * for this one buffer, because #931's post-handshake backpressure queue is the
+ * same quantity with the same drop-oldest policy and the same one-shot WARN,
+ * and a HOCON key cannot be renamed without a breaking config change.
  */
 export const MAX_PENDING_FRAMES = 1_000;
 
@@ -127,6 +148,13 @@ export const RETAINED_FRAME_BUFFER_BYTES = 64 * 1_024;
  * Generous on purpose.  Together with {@link MAX_INBOUND_CONNECTIONS} it is
  * what bounds inbound decode memory at all, and the bound is the product of
  * the two — so the useful tightening is the connection count, not this.
+ *
+ * Built-in default for `actor-ts.remote.incomplete-frame-idle` (#846), on both
+ * `ClusterOptionsType` and `TcpTransportOptionsType`.  Both validators refuse
+ * a *resolved* value at or below `handshake-timeout` — this number included,
+ * so raising the handshake deadline past it without moving this one is refused
+ * too.  The paragraph above is why: the two deadlines cover disjoint failures,
+ * and the handshake one is the shorter of the pair by construction.
  */
 export const INCOMPLETE_FRAME_IDLE_MS = 30_000;
 
@@ -150,8 +178,77 @@ export const INCOMPLETE_FRAME_IDLE_MS = 30_000;
  * Refusing the newest rather than evicting the oldest is the same choice the
  * member-map caps make: eviction would let an attacker push established peers
  * off the node, which is a better exploit than the one being closed.
+ *
+ * Built-in default for `actor-ts.remote.max-inbound-connections` (#846), on
+ * both `ClusterOptionsType` and `TcpTransportOptionsType`.  This is the half
+ * of the inbound-memory bound worth moving, and the paragraph above is the
+ * shape of the trade an operator is making when they do: set it from the real
+ * peer count, with headroom for the `ClusterClient`s that dial in.
  */
 export const MAX_INBOUND_CONNECTIONS = 1_024;
+
+/**
+ * How many distinct peer addresses one `MessageChannelTransport` remembers
+ * (#945).
+ *
+ * The set behind `peers()` gains an entry for every distinct `from` that has
+ * ever arrived on the port, and nothing ever removed one — a broker model owns
+ * no per-peer connection, so there is no close event to prune on.  One
+ * `postMessage` per address is therefore one permanent entry, and the resident
+ * cost of "has posted at least once" was unbounded.
+ *
+ * Through a broker the ceiling is already the registered worker count, because
+ * the broker rewrites `from` from the port the frame arrived on (#774).  This
+ * cap is for the shape that has no broker: the transport is exported package
+ * surface and two of them can be wired to each other's port directly, which is
+ * how the manual wiring in `worker-mesh.mdx` and this transport's own suite
+ * pair them.
+ *
+ * Refusing the newest rather than evicting the oldest, the same choice
+ * {@link MAX_INBOUND_CONNECTIONS} makes — and the reader here sharpens it:
+ * `transportReachesCluster` reports the node **not ready** unless `peers()`
+ * still names an expected member, so evicting an established peer would take a
+ * healthy node out of its load balancer. The frame itself is delivered either
+ * way; the cap bounds the bookkeeping, never the traffic, because dropping
+ * frames once the set filled would hand an attacker a denial of service in
+ * place of the leak.
+ *
+ * **Refusal has the mirror failure, and it is the same reader.** Fill the set
+ * ahead of a legitimate peer and that peer's first valid frame finds no slot;
+ * nothing ever removes an entry, so it is never listed, and
+ * `transportReachesCluster` reports the node not ready against it for the life
+ * of the process — while its frames keep being delivered the whole time. So
+ * the choice is not "safe versus unsafe" but *which* peer a full set locks
+ * out, and the answer is the one that cannot be aimed: an attacker picks which
+ * established peer to evict, and cannot pick which stranger arrives late.
+ *
+ * Two things make that tolerable in the configurations this framework ships,
+ * and neither is a property of the cap:
+ *
+ * - **Through a broker**, `from` is rewritten to the port the frame arrived on
+ *   (`WorkerBroker.withChannelSource`, #774), so the set is bounded by the
+ *   registered worker count and this cap is unreachable.
+ * - **Without a broker**, the wiring is point-to-point — one `MessagePort` pair
+ *   per transport, the shape `worker-mesh.mdx` documents — so the only sender
+ *   is the peer on the other end. A flooder there can lock out nobody but
+ *   itself, which gains it nothing over staying silent.
+ *
+ * Validating the payload before recording the sender (`onFrame`) does **not**
+ * close it, and used to read as though it did: the frames that fill the set
+ * only have to be schema-valid, which a stranger posting invented addresses
+ * manages at will. The ordering keeps *garbage* out of the set; it does not
+ * decide who gets in first.
+ *
+ * `tests/unit/cluster/TransportFrameGuardContract.test.ts` asserts both sides
+ * — the established peer keeps its slot, the late one is never ready — so
+ * moving to eviction or to pruning has to re-argue this trade rather than
+ * quietly reverse it.
+ *
+ * Sized like the inbound-connection cap and for the same reason: far above any
+ * mesh this framework is built for — a worker per core, not a thousand — so
+ * only traffic no honest broker produces ever reaches it.
+ */
+export const MAX_KNOWN_CHANNEL_PEERS = 1_024;
 
 /**
  * How many keys a remote peer may contribute, and how long each value may be.
@@ -180,6 +277,54 @@ export const MAX_CONTEXT_VALUE_LENGTH = 1_024;
 export const MAX_NODE_INCARNATION_LENGTH = 128;
 
 /**
+ * How many gossip rounds a coordinator that has just become leader allows the
+ * other members to learn so and register, before it places shards without
+ * their claims (#1272) — see `ShardCoordinator.registrationWindowMs`.
+ *
+ * The regions learn of a leader change from gossip, which pushes to one random
+ * peer per round, so three rounds is in reach of every member of a cluster of
+ * eight with no unlucky draws, and of most of a larger one.  It is a window,
+ * not a wait: it closes the moment every member has registered, so it is only
+ * paid in full where a member never will — one that does not run the type.
+ * That is why it is kept short and not the hand-off timeout's ten seconds:
+ * a type started on some of the nodes of a cluster would sit for that long on
+ * every leader change.
+ */
+export const COORDINATOR_REGISTRATION_GOSSIP_ROUNDS = 3;
+
+/**
+ * How many seed-retry intervals a node that is already `up` waits between two
+ * dials of the seeds it has not met (#1176).
+ *
+ * A node stops dialling its seeds once it is up, so two clusters that formed
+ * while a startup partition kept them apart never sent each other a frame
+ * again.  Dialling again is what lets them meet; doing it at the joining
+ * cadence would put a steady trickle of frames on every seed for the life of
+ * the cluster, so it is ten times slower — thirty seconds at the default.
+ */
+export const SEED_REDIAL_AFTER_UP_FACTOR = 10;
+
+/**
+ * How often a coordinator repeats a conflict release's `HandOff` while the
+ * claimant has neither completed it nor stopped claiming the shard (#1272) —
+ * see `ShardCoordinator.trackConflictRelease`.  Capped by `handOffTimeoutMs`.
+ *
+ * A second, not the rebalance interval: the stale copy runs beside the owner
+ * for as long as the release waits, and the common reason a claimant dropped
+ * the first one — it had not yet seen the leader change — clears within a few
+ * gossip rounds.
+ */
+export const CONFLICT_RELEASE_RETRY_INTERVAL_MS = 1_000;
+
+/**
+ * How many `HandOff`s a conflict release sends before it gives up and logs the
+ * claimant (#1272).  Five rounds of the interval above cover a region that is
+ * slow to notice a leader change; a claimant still silent after them is not
+ * one another send will reach, and its next registration is released again.
+ */
+export const CONFLICT_RELEASE_MAX_ATTEMPTS = 5;
+
+/**
  * How long allocation changes are gathered before one `ShardMapUpdate` goes
  * out.  Long enough to fold a whole-cluster placement into a single
  * broadcast, short enough that a panel still feels live.
@@ -201,6 +346,44 @@ export const SHARD_MAP_PUBLISH_DELAY_MS = 50;
  * matters in the failure case it damps.
  */
 export const SINGLETON_RESTART_BACKOFF_MS = 1_000;
+
+/**
+ * Whether a singleton manager re-spawns its instance after an *unexpected*
+ * death — `context.stopSelf()`, or a supervision budget exhausted — as opposed
+ * to the planned teardown of a hand-over (#1175).
+ *
+ * Here rather than in an `XOptions.ts` for the reason
+ * {@link DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS} gives: the field it defaults
+ * is on **two** options types, `StartSingletonOptionsType` and
+ * `ClusterSingletonManagerOptionsType`.
+ *
+ * `true` is the availability-preserving answer, and a named constant rather
+ * than the `?? true` it replaces because `actor-ts.cluster.singleton
+ * .restart-on-termination` publishes it (#855) — a published default with no
+ * constant behind it is a number `DocumentedDefaults` cannot check.
+ */
+export const DEFAULT_SINGLETON_RESTART_ON_TERMINATION = true;
+
+/**
+ * How long a singleton manager waits before re-`acquire()`ing a lease it
+ * failed to take (#855).
+ *
+ * Here rather than in an `XOptions.ts` for the same reason as
+ * {@link DEFAULT_SINGLETON_RESTART_ON_TERMINATION} above: two options types
+ * carry the field.  Deliberately a *separate* constant from
+ * `sharding/ShardCoordinatorOptions.ts`'s `DEFAULT_ACQUIRE_RETRY_INTERVAL_MS`,
+ * which holds the same 5 s for the shard coordinator: that one is the built-in
+ * default of a single options type (Constants rule 1) and lives with it, and
+ * merging the two would couple a singleton's recovery latency to a sharded
+ * type's for no reason beyond the numbers currently matching.
+ *
+ * Only reachable where the manager has a {@link Lease} — passed in code, or
+ * built from `actor-ts.coordination.lease` by
+ * `actor-ts.cluster.singleton.use-lease` (#1454).  Configurable because the
+ * retry cadence *is* the recovery latency of a partition that heals: until an
+ * acquire succeeds no node hosts the singleton and every proxy is buffering.
+ */
+export const DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS = 5_000;
 
 /**
  * How long an incoming singleton host waits for every eligible peer to confirm
@@ -354,7 +537,7 @@ export const SINGLETON_HAND_OVER_RETRY_INTERVAL_MS = 500;
 
 /**
  * How many fruitless seed-contact rounds pass before a node still stuck in
- * `joining` says why (#1351).
+ * `joining` or `weakly-up` says why (#1351, #1493).
  *
  * The check behind this is exact rather than heuristic — no `up` member is
  * known and no self-election is scheduled, which together mean nothing can
@@ -376,3 +559,114 @@ export const SINGLETON_HAND_OVER_RETRY_INTERVAL_MS = 500;
  * a correspondingly slower verdict.
  */
 export const COLD_START_STALL_AFTER_SEED_ROUNDS = 3;
+
+/**
+ * How many distinct unclaimed wire-frame kinds a node names in its log before
+ * it stops reporting new ones (#1178).
+ *
+ * `Cluster.onUnhandledWire` receives every frame kind that is not one of the
+ * core ones — each extension's kinds arrive there and are dispatched from the
+ * handler registry — and a kind nobody registered is either an extension this
+ * node did not start or a peer speaking a protocol it does not know. Both are
+ * worth one line; neither is worth one line per frame, because a rolling
+ * upgrade produces them at message rate.
+ *
+ * A cap and not merely a remembered set, because `kind` arrives **off the
+ * wire**: a peer inventing a fresh kind per frame would otherwise grow that
+ * set without bound, which is the memory-growth shape this codebase caps
+ * everywhere else it accepts a peer-supplied string. Eight is comfortably
+ * above the number of wire kinds the framework's own extensions register
+ * together, so an honest heterogeneous deployment never reaches it — and a
+ * sender that does reach it has already been reported eight times.
+ *
+ * The counter is deliberately *not* capped with it: `actor_unhandled_total`
+ * is the rate signal, and suppressing that is what #1179 is for.
+ */
+export const MAX_REPORTED_UNCLAIMED_WIRE_KINDS = 8;
+
+/**
+ * How many distinct configuration divergences a node reports before it stops
+ * naming new ones (#844).
+ *
+ * `Cluster.checkConfigurationAgreement` latches on the **pair** — the fact and
+ * the peer — rather than on the fact alone, because "the wire cap disagrees"
+ * with no address in it is not something an operator can act on when the
+ * second and third peers are the misconfigured ones.  That makes the latch set
+ * grow with the member map, whose own cap an operator may set to `0`, so it
+ * needs a bound of its own: both halves of the key come from gossip, and this
+ * codebase caps every set keyed on peer-supplied strings.
+ *
+ * Thirty-two is several times the product an honest deployment produces — a
+ * divergence is normally one setting across the nodes on the wrong side of a
+ * rolling deploy — and reaching it means the node has already reported
+ * thirty-two of them.
+ *
+ * The *enforcement* is deliberately not capped with it: barring a diverging
+ * peer from placement is derived from the member record on every call, so it
+ * stays correct for every peer whether or not its divergence was one of the
+ * ones reported.
+ */
+export const MAX_REPORTED_CONFIGURATION_MISMATCHES = 32;
+
+/**
+ * How many characters of a peer-supplied frame `kind` reach a log line, and
+ * therefore how much of one this node remembers (#1178).
+ *
+ * `isWireFrame` enforces only that `kind` is a string — unknown kinds pass on
+ * purpose, so extensions can define their own — which leaves its length and
+ * its contents entirely to the sender. Sixty-four characters is several times
+ * the longest kind the framework itself registers
+ * (`cluster-client-envelope`), so a real one is never clipped, and it bounds
+ * both the log line and the entry `Cluster` keeps to avoid repeating itself.
+ *
+ * A length, not a format, for the same reason {@link MAX_NODE_INCARNATION_LENGTH} is:
+ * the rule has to admit whatever an extension names its frames, including one
+ * this build has never heard of.
+ */
+export const MAX_LOGGED_WIRE_KIND_LENGTH = 64;
+
+/**
+ * How many characters of each part of a node address — system name, host,
+ * port — reach a log line when the address may be a peer's choice (#936).
+ *
+ * Per part rather than over the rendered `system@host:port`, because the host
+ * and port are what an operator acts on and the system name comes first: one
+ * bound over the whole string let a long system name push both off the end of
+ * the line.  253 is the longest DNS name, so a real host is never clipped, and
+ * three parts at this bound still keep the line finite.
+ */
+export const MAX_LOGGED_ADDRESS_PART_LENGTH = 253;
+
+/**
+ * How often each `EnvelopeTrust` refusal reason may reach the log, whatever
+ * the refusal rate (#877).
+ *
+ * A folded WARN rather than a line per refusal, for the reason
+ * `ClusterClientReceptionist.countSenderMismatch` states one seam over: an
+ * envelope *is* a frame, so there is nothing to fold within one, and an
+ * unthrottled line would let a peer write this node's log at message rate —
+ * log amplification handed to the party whose probe was just turned away
+ * (#131). The counter carries the rate; this only bounds the prose.
+ *
+ * Thirty seconds because the line's job is to be *noticed*, not to be
+ * complete. The first refusal of each reason is reported at once, so an
+ * operator who has just turned `untrusted-mode` on sees a missing allow-list
+ * entry immediately; what this spaces out is the second thousand.
+ *
+ * Read by both wire seams through the one `EnvelopeTrust` a node builds, which
+ * is why it is a constant here rather than a field on an options type: there
+ * is no deployment in which the useful value differs, and a knob for it would
+ * be a knob for how loud an attacker may make this node's log.
+ */
+export const ENVELOPE_REFUSAL_REPORT_INTERVAL_MS = 30_000;
+
+/**
+ * How often `Cluster` may log that it refused to send a frame to an address
+ * that is neither a member nor a node it already holds a connection to (#936).
+ *
+ * The same thirty seconds as {@link ENVELOPE_REFUSAL_REPORT_INTERVAL_MS}, for
+ * the same reason: the first refusal is reported at once and the rest are
+ * folded into the next line, because a peer that embeds hostile refs in every
+ * message it sends would otherwise decide how often this node logs.
+ */
+export const OUTBOUND_REFUSAL_REPORT_INTERVAL_MS = 30_000;

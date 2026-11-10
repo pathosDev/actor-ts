@@ -308,10 +308,10 @@ describe('TcpServerActor — bounds', () => {
     expect(harness.target.openedIds().length).toBe(1);
   });
 
-  test('a frame past maxLineLen drops that connection only', async () => {
+  test('a frame past maxLineBytes drops that connection only', async () => {
     const harness = await boot(
       'tcp-server-overlong',
-      (o) => o.withFraming({ kind: 'lines', maxLineLen: 8 }),
+      (o) => o.withFraming({ kind: 'lines', maxLineBytes: 8 }),
     );
     const offender = await dial(harness.port);
     const bystander = await dial(harness.port);

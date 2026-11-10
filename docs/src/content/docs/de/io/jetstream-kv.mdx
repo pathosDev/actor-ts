@@ -155,11 +155,23 @@ HOCON-Defaults liegen unter `actor-ts.io.broker.jetstream-key-value`:
 
 ```hocon
 actor-ts.io.broker.jetstream-key-value {
-  servers = ["nats://localhost:4222"]
-  bucket  = "sessions"
-  history = 5
+  servers         = ["nats://localhost:4222"]   # a list, even for one server
+  name            = "sessions-cache"
+  user            = "my-app"
+  password        = ${?ACTOR_TS_NATS_PASSWORD}
+  # token         = ${?ACTOR_TS_NATS_TOKEN}     # instead of user and password
+  bucket          = "sessions"                  # required
+  history         = 5                           # create-time, like the four below
+  time-to-live    = 1h                          # unset: keep forever
+  storage         = "file"                      # "memory" or "file"
+  replicas        = 1
+  max-value-bytes = 64K
+  create          = true                        # the default
 }
 ```
+
+`time-to-live` ist eine Dauer, `1h` und `3600000` meinen also dasselbe, und
+`max-value-bytes` ist eine Bytegröße.
 
 ## Object Store
 
@@ -223,9 +235,17 @@ HOCON-Defaults liegen unter `actor-ts.io.broker.jetstream-object-store`:
 
 ```hocon
 actor-ts.io.broker.jetstream-object-store {
-  servers        = ["nats://localhost:4222"]
-  bucket         = "assets"
-  maxObjectBytes = 4M
+  servers          = ["nats://localhost:4222"]   # a list, even for one server
+  name             = "asset-store"
+  user             = "my-app"
+  password         = ${?ACTOR_TS_NATS_PASSWORD}
+  # token          = ${?ACTOR_TS_NATS_TOKEN}     # instead of user and password
+  bucket           = "assets"                    # required
+  description      = "uploaded assets"           # create-time, like the two below
+  storage          = "file"                      # "memory" or "file"
+  replicas         = 1
+  max-object-bytes = 4M                          # the default is 1 MiB
+  create           = true                        # the default
 }
 ```
 
@@ -263,13 +283,15 @@ Dispatch-Pfad außerhalb der Verbindungs-Zustandsmaschine — eine größere
 ## Peer-Dependency
 
 ```bash
-npm install nats
-# or: bun add nats
+npm install @nats-io/transport-node @nats-io/jetstream @nats-io/kv @nats-io/obj
+# oder: bun add @nats-io/transport-node @nats-io/jetstream @nats-io/kv @nats-io/obj
 ```
 
-Dasselbe `nats`-Paket, das [NATS](/de/io/nats/) und
-[JetStream](/de/io/jetstream/) trägt — die KV- und
-Object-Store-Views kommen mit.
+Vier Pakete, und genau das ist die bemerkenswerte Änderung: Key-Value- und
+Object-Store-View lagen früher im selben Paket wie [NATS](/de/io/nats/) und
+[JetStream](/de/io/jetstream/), nats.js v3 hat jedem ein eigenes gegeben.
+Lass `@nats-io/obj` weg, wenn du nur Key-Value brauchst, oder `@nats-io/kv`,
+wenn du nur den Object-Store brauchst.
 
 <Aside type="caution" title="Eine fehlgeschlagene Operation trennt die Verbindung nicht">
   Ein Fehler pro Key oder pro Objekt (ein Compare-and-Swap-Konflikt, ein

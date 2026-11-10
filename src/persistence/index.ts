@@ -2,8 +2,34 @@ export {
   PersistenceExtension,
   PersistenceExtensionId,
 } from './PersistenceExtension.js';
-export { PersistentActor, everyNEvents } from './PersistentActor.js';
+// What `callThroughJournalBreaker` / `callThroughSnapshotBreaker` take as their
+// first argument (#1496) — exported so a caller wrapping either seam can name it.
+export type { JournalOperation, SnapshotOperation } from './PersistenceExtension.js';
+// What `ActorSystemOptions.withPersistence({ plugins })` takes (#1473) — exported
+// so an application can name a plug-in it builds apart from the options.
+export type { PersistencePlugin } from './PersistenceExtension.js';
+export { PersistentActor, everyNEvents, RecoveryTimeoutError } from './PersistentActor.js';
 export type { SnapshotPolicy } from './PersistentActor.js';
+
+// System-wide persistence behaviour (#874) — the recovery cap and deadline,
+// the snapshot fallback, the two circuit-breaker ids, and whether the stores
+// open at startup (#1473).  Exported as the usual triad so an application can
+// express the same settings in code; the `DEFAULT_*` constants are the
+// built-in defaults, and what `reference.conf` publishes under
+// `actor-ts.persistence`, the startup switch as `auto-start`.
+export {
+  DEFAULT_JOURNAL_BREAKER_ID,
+  DEFAULT_MAX_CONCURRENT_RECOVERIES,
+  DEFAULT_PERSISTENCE_AUTO_START,
+  DEFAULT_RECOVERY_TIMEOUT_MS,
+  DEFAULT_SNAPSHOT_BREAKER_ID,
+  DEFAULT_SNAPSHOT_IS_OPTIONAL,
+  PersistenceBehaviorOptions,
+  PersistenceBehaviorOptionsBuilder,
+  PersistenceBehaviorOptionsValidator,
+  readPersistenceBehaviorOptionsFromConfig,
+} from './PersistenceBehaviorOptions.js';
+export type { PersistenceBehaviorOptionsType } from './PersistenceBehaviorOptions.js';
 
 export { eventDispatcher } from './EventDispatcher.js';
 export type { EventDispatcherBuilder, EventDispatcherIncomplete } from './EventDispatcher.js';
@@ -12,6 +38,11 @@ export type { Journal } from './Journal.js';
 export type { SnapshotStore } from './SnapshotStore.js';
 export type { StorageLocality, StorageUseKind } from './StorageLocality.js';
 export { StorageLocalityError } from './StorageLocality.js';
+export type { PersistenceOptionField, PersistenceOptionSupport } from './PersistenceCapabilities.js';
+// Exported as a class for the same reason `StorageLocalityError` is: a caller
+// that catches an unhonourable encryption/integrity request discriminates on
+// the class, and `error.name === '…'` breaks on any rewording (#960).
+export { UnsupportedPersistenceOptionError } from './PersistenceCapabilities.js';
 export type { JournalEntry, PersistentEvent, Snapshot } from './JournalTypes.js';
 export { JournalConcurrencyError, JournalError } from './JournalTypes.js';
 // The two integrity failures a recovery can raise.  Exported because
@@ -39,10 +70,46 @@ export {
 // so a `tagsFor` an application cannot check ahead of time is a `persist` that
 // throws in production instead.  The caps behind it stay internal — the rules
 // are what a caller checks against, not the numbers.
-export { assertValidTags } from './storage/TagValidator.js';
+// And its read-side counterpart (#738), which is deliberately not the same set
+// of rules — an application that builds a `TagFilter` out of request data can
+// check one before the query, and the export is what lets it.
+export { assertValidFilterTags, assertValidTags } from './storage/TagValidator.js';
 export { MAX_PERSISTENCE_ID_LENGTH } from './Constants.js';
+// The table names, retention bound and auto-create switch every relational and
+// SQLite store falls back to (#872).  Exported for the same reason the id
+// validators are: an application that wants to name a table explicitly, or to
+// assert against the shipped default, should not have to restate the literal.
+export {
+  DEFAULT_AUTO_CREATE_TABLES,
+  DEFAULT_DURABLE_STATE_TABLE,
+  DEFAULT_EVENTS_TABLE,
+  DEFAULT_MONGO_AUTO_CREATE_INDEXES,
+  DEFAULT_SNAPSHOT_KEEP_N,
+  DEFAULT_SNAPSHOTS_TABLE,
+} from './Constants.js';
+// The plug-in config seam (#872) — a backend plug-in reads the HOCON block
+// named by the id it was registered under, and these are the readers that make
+// a leaf a value rather than a documented string.  All of them: a reader left
+// off this list is one only the framework's own backends can use (#1490).
+export {
+  readStoreBoolean,
+  readStoreBytes,
+  readStoreDuration,
+  readStoreEnum,
+  readStoreIdentifier,
+  readStoreInt,
+  readStoreString,
+  readStoreStringList,
+  storeLeaf,
+} from './StoreConfig.js';
 export { StoreSerializerOptionsBuilder } from './storage/StoreSerializerOptions.js';
 export type { StoreSerializerOptionsBase } from './storage/StoreSerializerOptions.js';
+// The SQL stores' carrier for the per-actor hooks (#1802).  The error class is
+// exported so a caller discriminates on it rather than on wording; the prefix
+// so an operator's own tooling can tell a sealed row from a plain one.
+export { SEALED_PAYLOAD_PREFIX, SealedPayloadError } from './storage/SealedPayload.js';
+export { SealedPayloadOptionsBuilder } from './storage/SealedPayloadOptions.js';
+export type { SealedPayloadOptionsBase } from './storage/SealedPayloadOptions.js';
 
 export { InMemoryJournal } from './journals/InMemoryJournal.js';
 export { SqliteJournal } from './journals/SqliteJournal.js';
@@ -56,6 +123,7 @@ export { InMemorySnapshotStore } from './snapshot-stores/InMemorySnapshotStore.j
 export {
   InMemorySnapshotStoreOptions,
   InMemorySnapshotStoreOptionsBuilder,
+  readInMemorySnapshotStoreOptionsFromConfig,
 } from './snapshot-stores/InMemorySnapshotStoreOptions.js';
 export type { InMemorySnapshotStoreOptionsType } from './snapshot-stores/InMemorySnapshotStoreOptions.js';
 export { SqliteSnapshotStore } from './snapshot-stores/SqliteSnapshotStore.js';
@@ -73,6 +141,23 @@ export {
   SqliteDurableStateStoreOptionsValidator,
 } from './durable-state-stores/SqliteDurableStateStoreOptions.js';
 export type { SqliteDurableStateStoreOptionsType } from './durable-state-stores/SqliteDurableStateStoreOptions.js';
+// The SQLite plug-in (#872).  SQLite had no registration story at all until
+// this landed, while two docs pages and a runnable example already printed the
+// plugin id it now registers.
+export {
+  registerSqlitePlugins,
+  SQLITE_DURABLE_STATE_PLUGIN_ID,
+  SQLITE_JOURNAL_PLUGIN_ID,
+  SQLITE_SNAPSHOT_PLUGIN_ID,
+} from './journals/SqlitePlugin.js';
+export {
+  readSqliteDurableStateStoreOptionsFromConfig,
+  readSqliteJournalOptionsFromConfig,
+  readSqliteSnapshotStoreOptionsFromConfig,
+  RegisterSqlitePluginsOptions,
+  RegisterSqlitePluginsOptionsBuilder,
+} from './journals/SqlitePluginOptions.js';
+export type { RegisterSqlitePluginsOptionsType } from './journals/SqlitePluginOptions.js';
 export {
   adaptSqliteDatabase,
   applySqliteBusyTimeout,
@@ -91,12 +176,23 @@ export type { CachedSnapshotStoreOptionsType } from './snapshot-stores/CachedSna
 
 // Cassandra / ScyllaDB plug-in (same CQL protocol — one plug-in).
 export { CassandraJournal } from './journals/CassandraJournal.js';
-export { CassandraJournalOptions, CassandraJournalOptionsBuilder, CassandraJournalOptionsValidator } from './journals/CassandraJournalOptions.js';
+export {
+  CassandraJournalOptions,
+  CassandraJournalOptionsBuilder,
+  CassandraJournalOptionsValidator,
+  DEFAULT_CASSANDRA_ALL_IDS_TABLE,
+  DEFAULT_CASSANDRA_LIGHTWEIGHT_TRANSACTIONS,
+  DEFAULT_CASSANDRA_METADATA_TABLE,
+  DEFAULT_CASSANDRA_PARTITION_SIZE,
+} from './journals/CassandraJournalOptions.js';
 export type { CassandraJournalOptionsType } from './journals/CassandraJournalOptions.js';
 export { CassandraSnapshotStore } from './snapshot-stores/CassandraSnapshotStore.js';
 export { CassandraSnapshotStoreOptions, CassandraSnapshotStoreOptionsBuilder } from './snapshot-stores/CassandraSnapshotStoreOptions.js';
 export type { CassandraSnapshotStoreOptionsType } from './snapshot-stores/CassandraSnapshotStoreOptions.js';
 export {
+  DEFAULT_CASSANDRA_LOCAL_DATA_CENTER,
+  DEFAULT_CASSANDRA_PORT,
+  DEFAULT_CASSANDRA_TAG_INDEX_TABLE,
   createCassandraClient,
   keyspaceDdl,
   tagIndexDdl,
@@ -112,8 +208,17 @@ export {
   CASSANDRA_JOURNAL_PLUGIN_ID,
   CASSANDRA_SNAPSHOT_PLUGIN_ID,
 } from './journals/CassandraPlugin.js';
-export { RegisterCassandraPluginsOptions, RegisterCassandraPluginsOptionsBuilder } from './journals/CassandraPluginOptions.js';
+export {
+  readCassandraJournalOptionsFromConfig,
+  readCassandraSnapshotStoreOptionsFromConfig,
+  RegisterCassandraPluginsOptions,
+  RegisterCassandraPluginsOptionsBuilder,
+} from './journals/CassandraPluginOptions.js';
 export type { RegisterCassandraPluginsOptionsType } from './journals/CassandraPluginOptions.js';
+// What `auto-create-keyspace` creates a keyspace with when nothing names a
+// replication — the class and factor reference.conf publishes under both
+// Cassandra blocks (#1490).
+export { DEFAULT_CASSANDRA_REPLICATION_CLASS, DEFAULT_CASSANDRA_REPLICATION_FACTOR } from './Constants.js';
 
 // Store lifecycle shared by every backend that talks to an external system —
 // lazy first-use connection, one-shot schema preparation, ownership-aware
@@ -143,13 +248,25 @@ export { mariaDbDialect } from './relational/MariaDbDialect.js';
 
 // PostgreSQL plug-in (journal + snapshot + durable-state).
 export { PostgresJournal } from './journals/PostgresJournal.js';
-export { PostgresJournalOptions, PostgresJournalOptionsBuilder } from './journals/PostgresJournalOptions.js';
+export {
+  PostgresJournalOptions,
+  PostgresJournalOptionsBuilder,
+  PostgresJournalOptionsValidator,
+} from './journals/PostgresJournalOptions.js';
 export type { PostgresJournalOptionsType } from './journals/PostgresJournalOptions.js';
 export { PostgresSnapshotStore } from './snapshot-stores/PostgresSnapshotStore.js';
-export { PostgresSnapshotStoreOptions, PostgresSnapshotStoreOptionsBuilder } from './snapshot-stores/PostgresSnapshotStoreOptions.js';
+export {
+  PostgresSnapshotStoreOptions,
+  PostgresSnapshotStoreOptionsBuilder,
+  PostgresSnapshotStoreOptionsValidator,
+} from './snapshot-stores/PostgresSnapshotStoreOptions.js';
 export type { PostgresSnapshotStoreOptionsType } from './snapshot-stores/PostgresSnapshotStoreOptions.js';
 export { PostgresDurableStateStore } from './durable-state-stores/PostgresDurableStateStore.js';
-export { PostgresDurableStateStoreOptions, PostgresDurableStateStoreOptionsBuilder } from './durable-state-stores/PostgresDurableStateStoreOptions.js';
+export {
+  PostgresDurableStateStoreOptions,
+  PostgresDurableStateStoreOptionsBuilder,
+  PostgresDurableStateStoreOptionsValidator,
+} from './durable-state-stores/PostgresDurableStateStoreOptions.js';
 export type { PostgresDurableStateStoreOptionsType } from './durable-state-stores/PostgresDurableStateStoreOptions.js';
 export {
   registerPostgresPlugins,
@@ -157,9 +274,16 @@ export {
   POSTGRES_SNAPSHOT_PLUGIN_ID,
   POSTGRES_DURABLE_STATE_PLUGIN_ID,
 } from './journals/PostgresPlugin.js';
-export { RegisterPostgresPluginsOptions, RegisterPostgresPluginsOptionsBuilder } from './journals/PostgresPluginOptions.js';
+export {
+  readPostgresDurableStateStoreOptionsFromConfig,
+  readPostgresJournalOptionsFromConfig,
+  readPostgresSnapshotStoreOptionsFromConfig,
+  RegisterPostgresPluginsOptions,
+  RegisterPostgresPluginsOptionsBuilder,
+} from './journals/PostgresPluginOptions.js';
 export type { RegisterPostgresPluginsOptionsType } from './journals/PostgresPluginOptions.js';
 export type { PostgresPluginHandles } from './journals/PostgresPlugin.js';
+export { PostgresOptionsValidatorBase } from './journals/PostgresClient.js';
 export type {
   PostgresConnection,
   PgPoolLike,
@@ -202,10 +326,20 @@ export {
   D1_SNAPSHOT_PLUGIN_ID,
   D1_DURABLE_STATE_PLUGIN_ID,
 } from './journals/D1Plugin.js';
-export { RegisterD1PluginsOptions, RegisterD1PluginsOptionsBuilder } from './journals/D1PluginOptions.js';
+export {
+  readD1DurableStateStoreOptionsFromConfig,
+  readD1JournalOptionsFromConfig,
+  readD1SnapshotStoreOptionsFromConfig,
+  RegisterD1PluginsOptions,
+  RegisterD1PluginsOptionsBuilder,
+} from './journals/D1PluginOptions.js';
 export type { RegisterD1PluginsOptionsType } from './journals/D1PluginOptions.js';
 export type { D1PluginHandles } from './journals/D1Plugin.js';
 export { D1RequestError, DEFAULT_D1_BASE_URL, adaptD1Client, buildD1Client } from './journals/D1Client.js';
+// The transport's two bounds, which reference.conf publishes as `timeout` and
+// `max-response-bytes` under all three D1 blocks (#1490) — exported beside the
+// base URL for the reason the shared table names are.
+export { DEFAULT_D1_MAX_RESPONSE_BYTES, DEFAULT_D1_TIMEOUT_MS } from './Constants.js';
 export type { D1ClientLike, D1Connection, D1QueryResult } from './journals/D1Client.js';
 
 // DynamoDB plug-in (journal + snapshot + durable-state).  The concurrency
@@ -213,6 +347,7 @@ export type { D1ClientLike, D1Connection, D1QueryResult } from './journals/D1Cli
 // append atomic — stronger than the relational backends manage.
 export { DynamoDbJournal } from './journals/DynamoDbJournal.js';
 export {
+  DEFAULT_DYNAMODB_EVENTS_TABLE,
   DynamoDbJournalOptions,
   DynamoDbJournalOptionsBuilder,
   DynamoDbJournalOptionsValidator,
@@ -220,6 +355,7 @@ export {
 export type { DynamoDbJournalOptionsType } from './journals/DynamoDbJournalOptions.js';
 export { DynamoDbSnapshotStore } from './snapshot-stores/DynamoDbSnapshotStore.js';
 export {
+  DEFAULT_DYNAMODB_SNAPSHOTS_TABLE,
   DynamoDbSnapshotStoreOptions,
   DynamoDbSnapshotStoreOptionsBuilder,
   DynamoDbSnapshotStoreOptionsValidator,
@@ -227,6 +363,7 @@ export {
 export type { DynamoDbSnapshotStoreOptionsType } from './snapshot-stores/DynamoDbSnapshotStoreOptions.js';
 export { DynamoDbDurableStateStore } from './durable-state-stores/DynamoDbDurableStateStore.js';
 export {
+  DEFAULT_DYNAMODB_DURABLE_STATE_TABLE,
   DynamoDbDurableStateStoreOptions,
   DynamoDbDurableStateStoreOptionsBuilder,
   DynamoDbDurableStateStoreOptionsValidator,
@@ -240,13 +377,27 @@ export {
   assertDynamoDbTableName,
 } from './journals/DynamoDbOptionsBase.js';
 export type { DynamoDbOptionsBaseType, DynamoDbTableProvisioning } from './journals/DynamoDbOptionsBase.js';
+// What table provisioning falls back to: the billing mode and the ready
+// timeout reference.conf publishes under all three DynamoDB blocks, and the
+// capacity a provisioned table gets with no pair named (#1490).
+export {
+  DEFAULT_DYNAMODB_BILLING_MODE,
+  DEFAULT_DYNAMODB_PROVISIONED_CAPACITY_UNITS,
+  DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS,
+} from './Constants.js';
 export {
   registerDynamoDbPlugins,
   DYNAMODB_JOURNAL_PLUGIN_ID,
   DYNAMODB_SNAPSHOT_PLUGIN_ID,
   DYNAMODB_DURABLE_STATE_PLUGIN_ID,
 } from './journals/DynamoDbPlugin.js';
-export { RegisterDynamoDbPluginsOptions, RegisterDynamoDbPluginsOptionsBuilder } from './journals/DynamoDbPluginOptions.js';
+export {
+  readDynamoDbDurableStateStoreOptionsFromConfig,
+  readDynamoDbJournalOptionsFromConfig,
+  readDynamoDbSnapshotStoreOptionsFromConfig,
+  RegisterDynamoDbPluginsOptions,
+  RegisterDynamoDbPluginsOptionsBuilder,
+} from './journals/DynamoDbPluginOptions.js';
 export type { RegisterDynamoDbPluginsOptionsType } from './journals/DynamoDbPluginOptions.js';
 export type { DynamoDbPluginHandles } from './journals/DynamoDbPlugin.js';
 export {
@@ -306,10 +457,20 @@ export {
   MONGO_SNAPSHOT_PLUGIN_ID,
   MONGO_DURABLE_STATE_PLUGIN_ID,
 } from './journals/MongoPlugin.js';
-export { RegisterMongoPluginsOptions, RegisterMongoPluginsOptionsBuilder } from './journals/MongoPluginOptions.js';
+export {
+  readMongoDurableStateStoreOptionsFromConfig,
+  readMongoJournalOptionsFromConfig,
+  readMongoSnapshotStoreOptionsFromConfig,
+  RegisterMongoPluginsOptions,
+  RegisterMongoPluginsOptionsBuilder,
+} from './journals/MongoPluginOptions.js';
 export type { RegisterMongoPluginsOptionsType } from './journals/MongoPluginOptions.js';
 export type { MongoPluginHandles } from './journals/MongoPlugin.js';
-export { DEFAULT_MONGO_DATABASE, isMongoDuplicateKeyError } from './journals/MongoClient.js';
+export {
+  DEFAULT_MONGO_DATABASE,
+  isMongoDuplicateKeyError,
+  MongoOptionsValidatorBase,
+} from './journals/MongoClient.js';
 export type {
   MongoClientLike,
   MongoCollectionLike,
@@ -352,9 +513,16 @@ export {
   MSSQL_SNAPSHOT_PLUGIN_ID,
   MSSQL_DURABLE_STATE_PLUGIN_ID,
 } from './journals/MsSqlPlugin.js';
-export { RegisterMsSqlPluginsOptions, RegisterMsSqlPluginsOptionsBuilder } from './journals/MsSqlPluginOptions.js';
+export {
+  readMsSqlDurableStateStoreOptionsFromConfig,
+  readMsSqlJournalOptionsFromConfig,
+  readMsSqlSnapshotStoreOptionsFromConfig,
+  RegisterMsSqlPluginsOptions,
+  RegisterMsSqlPluginsOptionsBuilder,
+} from './journals/MsSqlPluginOptions.js';
 export type { RegisterMsSqlPluginsOptionsType } from './journals/MsSqlPluginOptions.js';
 export type { MsSqlPluginHandles } from './journals/MsSqlPlugin.js';
+export { MsSqlOptionsValidatorBase } from './journals/MsSqlClient.js';
 export type {
   MsSqlConnection,
   MsSqlPoolLike,
@@ -394,7 +562,13 @@ export {
   LIBSQL_SNAPSHOT_PLUGIN_ID,
   LIBSQL_DURABLE_STATE_PLUGIN_ID,
 } from './journals/LibSqlPlugin.js';
-export { RegisterLibSqlPluginsOptions, RegisterLibSqlPluginsOptionsBuilder } from './journals/LibSqlPluginOptions.js';
+export {
+  readLibSqlDurableStateStoreOptionsFromConfig,
+  readLibSqlJournalOptionsFromConfig,
+  readLibSqlSnapshotStoreOptionsFromConfig,
+  RegisterLibSqlPluginsOptions,
+  RegisterLibSqlPluginsOptionsBuilder,
+} from './journals/LibSqlPluginOptions.js';
 export type { RegisterLibSqlPluginsOptionsType } from './journals/LibSqlPluginOptions.js';
 export type { LibSqlPluginHandles } from './journals/LibSqlPlugin.js';
 export type {
@@ -408,13 +582,25 @@ export { sqliteDialect } from './relational/SqliteDialect.js';
 
 // MariaDB / MySQL plug-in (journal + snapshot + durable-state).
 export { MariaDbJournal } from './journals/MariaDbJournal.js';
-export { MariaDbJournalOptions, MariaDbJournalOptionsBuilder } from './journals/MariaDbJournalOptions.js';
+export {
+  MariaDbJournalOptions,
+  MariaDbJournalOptionsBuilder,
+  MariaDbJournalOptionsValidator,
+} from './journals/MariaDbJournalOptions.js';
 export type { MariaDbJournalOptionsType } from './journals/MariaDbJournalOptions.js';
 export { MariaDbSnapshotStore } from './snapshot-stores/MariaDbSnapshotStore.js';
-export { MariaDbSnapshotStoreOptions, MariaDbSnapshotStoreOptionsBuilder } from './snapshot-stores/MariaDbSnapshotStoreOptions.js';
+export {
+  MariaDbSnapshotStoreOptions,
+  MariaDbSnapshotStoreOptionsBuilder,
+  MariaDbSnapshotStoreOptionsValidator,
+} from './snapshot-stores/MariaDbSnapshotStoreOptions.js';
 export type { MariaDbSnapshotStoreOptionsType } from './snapshot-stores/MariaDbSnapshotStoreOptions.js';
 export { MariaDbDurableStateStore } from './durable-state-stores/MariaDbDurableStateStore.js';
-export { MariaDbDurableStateStoreOptions, MariaDbDurableStateStoreOptionsBuilder } from './durable-state-stores/MariaDbDurableStateStoreOptions.js';
+export {
+  MariaDbDurableStateStoreOptions,
+  MariaDbDurableStateStoreOptionsBuilder,
+  MariaDbDurableStateStoreOptionsValidator,
+} from './durable-state-stores/MariaDbDurableStateStoreOptions.js';
 export type { MariaDbDurableStateStoreOptionsType } from './durable-state-stores/MariaDbDurableStateStoreOptions.js';
 export {
   registerMariaDbPlugins,
@@ -422,9 +608,16 @@ export {
   MARIADB_SNAPSHOT_PLUGIN_ID,
   MARIADB_DURABLE_STATE_PLUGIN_ID,
 } from './journals/MariaDbPlugin.js';
-export { RegisterMariaDbPluginsOptions, RegisterMariaDbPluginsOptionsBuilder } from './journals/MariaDbPluginOptions.js';
+export {
+  readMariaDbDurableStateStoreOptionsFromConfig,
+  readMariaDbJournalOptionsFromConfig,
+  readMariaDbSnapshotStoreOptionsFromConfig,
+  RegisterMariaDbPluginsOptions,
+  RegisterMariaDbPluginsOptionsBuilder,
+} from './journals/MariaDbPluginOptions.js';
 export type { RegisterMariaDbPluginsOptionsType } from './journals/MariaDbPluginOptions.js';
 export type { MariaDbPluginHandles } from './journals/MariaDbPlugin.js';
+export { MariaDbOptionsValidatorBase } from './journals/MariaDbClient.js';
 export type {
   MariaDbConnection,
   MariaDbPoolLike,
@@ -586,9 +779,12 @@ export {
   DEFAULT_PROJECTION_MAX_RETRIES,
   DEFAULT_PROJECTION_RETRY_BACKOFF_MS,
   DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS,
+  DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES,
   defaultProjectionRecoveryOptions,
+  readProjectionOptionsFromConfig,
 } from './projection/ProjectionOptions.js';
 export type {
+  ProjectionConfigDefaults,
   ProjectionOptionsType,
   ProjectionRecoveryStrategy,
   ProjectionRecoveryOptionsType,
@@ -632,12 +828,25 @@ export type { ObjectStorageSnapshotStoreOptionsType } from './snapshot-stores/Ob
 export { ObjectStorageDurableStateStore } from './durable-state-stores/ObjectStorageDurableStateStore.js';
 export { ObjectStorageDurableStateStoreOptions, ObjectStorageDurableStateStoreOptionsBuilder, ObjectStorageDurableStateStoreOptionsValidator } from './durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
 export type { ObjectStorageDurableStateStoreOptionsType } from './durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
+// The namespace segment each object-storage store owns under a shared
+// `prefix` (#716).  Public because the migration off the old flat layout is
+// an operator script that has to name the destination key, and a script that
+// spells the segment as a literal is a second copy of the layout.
+export {
+  OBJECT_STORAGE_DURABLE_STATE_NAMESPACE,
+  OBJECT_STORAGE_SNAPSHOT_NAMESPACE,
+} from './Constants.js';
 export {
   registerObjectStoragePlugins,
   OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID,
   OBJECT_STORAGE_DURABLE_STATE_PLUGIN_ID,
 } from './object-storage/ObjectStoragePlugin.js';
-export { ObjectStoragePluginOptions, ObjectStoragePluginOptionsBuilder } from './object-storage/ObjectStoragePluginOptions.js';
+export {
+  ObjectStoragePluginOptions,
+  ObjectStoragePluginOptionsBuilder,
+  ObjectStoragePluginOptionsValidator,
+  readObjectStoragePluginOptionsFromConfig,
+} from './object-storage/ObjectStoragePluginOptions.js';
 export type { ObjectStoragePluginOptionsType } from './object-storage/ObjectStoragePluginOptions.js';
 export type {
   ObjectStoragePluginHandles,
@@ -667,3 +876,16 @@ export type {
   ReEncryptResumeState,
   ReEncryptProgressStore,
 } from './object-storage/ReEncryptionSweep.js';
+// The #716 key-layout migration.  Public because it is the only procedure
+// that moves a durable-state corpus onto the new keys with its revisions
+// intact — an `upsert`-based recipe either throws against the empty
+// destination or rewinds every record to revision 1.
+export {
+  migrateObjectStorageDurableStateLayout,
+  DurableStateLayoutMigrationKeyError,
+} from './object-storage/DurableStateLayoutMigration.js';
+export type {
+  DurableStateLayoutMigrationOptions,
+  DurableStateLayoutMigrationProgress,
+  DurableStateLayoutMigrationResult,
+} from './object-storage/DurableStateLayoutMigration.js';

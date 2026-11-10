@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { defineConfig } from 'astro/config';
 import { unified } from '@astrojs/markdown-remark';
+import mdx from '@astrojs/mdx';
 import starlight from '@astrojs/starlight';
 import { createStarlightTypeDocPlugin } from 'starlight-typedoc';
 import rehypeMermaid from 'rehype-mermaid';
@@ -114,8 +115,15 @@ export default defineConfig({
   // `@astrojs/markdown-remark` — so `markdown.rehypePlugins` is
   // deprecated and `markdown.processor` is how you opt back in.  We
   // stay on unified because `rehype-mermaid` is a rehype (hast) plugin
-  // written against that pipeline; Starlight 0.41 detects either
+  // written against that pipeline; Starlight 0.42 detects either
   // processor and pushes its own plugins into whichever is configured.
+  //
+  // `docs/package.json` used to pin `@astrojs/markdown-remark` to an exact
+  // `7.2.1`, because that is what astro 7.1.3 declared as its optional
+  // peer.  That exact declaration was an astro bug, fixed in 7.2.10
+  // ("Fixes `@astrojs/markdown-remark` being pinned to an exact version");
+  // astro 7.3 declares `^7.3.0`, so the caret there mirrors astro again
+  // rather than freezing a patch level of its own accord (#1527).
   markdown: {
     syntaxHighlight: {
       type: 'shiki',
@@ -393,7 +401,10 @@ export default defineConfig({
                 { label: 'Death watch',           slug: 'fundamentals/death-watch',           translations: { de: 'Death Watch', es: 'Death watch', fr: 'Death watch', ja: 'Death watch', ko: 'Death watch', 'pt-BR': 'Death watch', ru: 'Death watch', 'zh-CN': 'Death watch' } },
                 { label: 'Supervision',           slug: 'fundamentals/supervision',           translations: { de: 'Supervision', es: 'Supervisión', fr: 'Supervision', ja: 'スーパービジョン', ko: '슈퍼비전', 'pt-BR': 'Supervisão', ru: 'Супервизия', 'zh-CN': '监督' } },
                 { label: 'Dispatchers',           slug: 'fundamentals/dispatchers',           translations: { de: 'Dispatcher', es: 'Dispatchers', fr: 'Dispatchers', ja: 'Dispatchers', ko: 'Dispatchers', 'pt-BR': 'Dispatchers', ru: 'Dispatchers', 'zh-CN': 'Dispatchers' } },
+                { label: 'Parallelism',           slug: 'fundamentals/parallelism',           translations: { de: 'Parallelität', es: 'Paralelismo', fr: 'Parallélisme', ja: '並列性', ko: '병렬성', 'pt-BR': 'Paralelismo', ru: 'Параллелизм', 'zh-CN': '并行' } },
+                { label: 'Blocking and CPU-bound work', slug: 'fundamentals/blocking-and-cpu-bound-work', translations: { de: 'Blockierende und CPU-lastige Arbeit', es: 'Trabajo bloqueante y de CPU', fr: 'Travail bloquant et CPU', ja: 'ブロッキングと CPU 負荷の高い処理', ko: '블로킹 및 CPU 집약 작업', 'pt-BR': 'Trabalho bloqueante e de CPU', ru: 'Блокирующая и CPU-нагрузка', 'zh-CN': '阻塞与 CPU 密集型工作' } },
                 { label: 'Mailboxes',             slug: 'fundamentals/mailboxes',             translations: { de: 'Mailboxes', es: 'Mailboxes', fr: 'Mailboxes', ja: 'Mailboxes', ko: 'Mailboxes', 'pt-BR': 'Mailboxes', ru: 'Mailboxes', 'zh-CN': 'Mailboxes' } },
+                { label: 'Throttling',            slug: 'fundamentals/throttling',            translations: { de: 'Throttling', es: 'Regulación', fr: 'Throttling', ja: 'スロットリング', ko: '스로틀링', 'pt-BR': 'Throttling', ru: 'Тротлинг', 'zh-CN': '限流' } },
                 { label: 'Timers and scheduling', slug: 'fundamentals/timers-and-scheduling', translations: { de: 'Timer und Scheduling', es: 'Timers y planificación', fr: 'Timers et planification', ja: 'タイマーとスケジューリング', ko: '타이머와 스케줄링', 'pt-BR': 'Timers e agendamento', ru: 'Таймеры и планирование', 'zh-CN': '定时器与调度' } },
                 { label: 'Receive timeout',       slug: 'fundamentals/receive-timeout',       translations: { de: 'Receive-Timeout', es: 'Receive timeout', fr: 'Receive timeout', ja: 'Receive timeout', ko: 'Receive timeout', 'pt-BR': 'Receive timeout', ru: 'Receive timeout', 'zh-CN': 'Receive timeout' } },
                 { label: 'Coordinated shutdown',  slug: 'fundamentals/coordinated-shutdown',  translations: { de: 'Koordinierter Shutdown', es: 'Apagado coordinado', fr: 'Arrêt coordonné', ja: '協調シャットダウン', ko: '코디네이트 셧다운', 'pt-BR': 'Desligamento coordenado', ru: 'Координированное завершение', 'zh-CN': '协调关闭' } },
@@ -459,6 +470,7 @@ export default defineConfig({
                 { label: 'Weakly-up',          slug: 'cluster/weakly-up',          translations: { de: 'Weakly-Up', es: 'Weakly-up', fr: 'Weakly-up', ja: 'Weakly-up', ko: 'Weakly-up', 'pt-BR': 'Weakly-up', ru: 'Weakly-up', 'zh-CN': 'Weakly-up' } },
                 { label: 'Refs across nodes',  slug: 'cluster/refs-across-nodes',  translations: { de: 'Refs über Nodes hinweg', es: 'Refs entre nodos', fr: 'Refs entre nœuds', ja: 'ノード間の参照', ko: '노드 간 ActorRef', 'pt-BR': 'Refs entre nós', ru: 'Ссылки между узлами', 'zh-CN': '跨节点引用' } },
                 { label: 'Distributed PubSub', slug: 'cluster/pubsub',             translations: { de: 'Distributed PubSub', es: 'Distributed PubSub', fr: 'Distributed PubSub', ja: 'Distributed PubSub', ko: 'Distributed PubSub', 'pt-BR': 'Distributed PubSub', ru: 'Distributed PubSub', 'zh-CN': 'Distributed PubSub' } },
+                { label: 'Cluster event stream', slug: 'cluster/event-stream',     translations: { de: 'Cluster-Event-Stream', es: 'Event stream del cluster', fr: 'Event stream du cluster', ja: 'クラスタイベントストリーム', ko: '클러스터 이벤트 스트림', 'pt-BR': 'Event stream do cluster', ru: 'Событийный поток кластера', 'zh-CN': '集群事件流' } },
                 {
                   label: 'Singleton',
                   translations: { de: 'Singleton', es: 'Singleton', fr: 'Singleton', ja: 'Singleton', ko: 'Singleton', 'pt-BR': 'Singleton', ru: 'Singleton', 'zh-CN': 'Singleton' },
@@ -719,6 +731,7 @@ export default defineConfig({
                     { label: 'CSP',             slug: 'http/middleware/csp',             translations: { de: 'CSP', es: 'CSP', fr: 'CSP', ja: 'CSP', ko: 'CSP', 'pt-BR': 'CSP', ru: 'CSP', 'zh-CN': 'CSP' } },
                     { label: 'Basic auth',      slug: 'http/middleware/basic-auth',      translations: { de: 'Basic-Auth', es: 'Autenticación básica', fr: 'Authentification Basic', ja: 'Basic 認証', ko: 'Basic 인증', 'pt-BR': 'Autenticação básica', ru: 'Basic-аутентификация', 'zh-CN': 'Basic 认证' } },
                     { label: 'Bearer token',    slug: 'http/middleware/bearer-token',    translations: { de: 'Bearer-Token', es: 'Token Bearer', fr: 'Jeton Bearer', ja: 'Bearer トークン', ko: 'Bearer 토큰', 'pt-BR': 'Token Bearer', ru: 'Bearer-токен', 'zh-CN': 'Bearer 令牌' } },
+                    { label: 'JWT auth',        slug: 'http/middleware/jwt',             translations: { de: 'JWT-Auth', es: 'Autenticación JWT', fr: 'Authentification JWT', ja: 'JWT 認証', ko: 'JWT 인증', 'pt-BR': 'Autenticação JWT', ru: 'JWT-аутентификация', 'zh-CN': 'JWT 认证' } },
                     { label: 'IP allowlist',    slug: 'http/middleware/ip-allowlist',    translations: { de: 'IP-Allowlist', es: 'Lista de IP permitidas', fr: 'Liste d’IP autorisées', ja: 'IP 許可リスト', ko: 'IP 허용 목록', 'pt-BR': 'Lista de IPs permitidos', ru: 'Список разрешённых IP', 'zh-CN': 'IP 白名单' } },
                     { label: 'Request ID',      slug: 'http/middleware/request-id',      translations: { de: 'Request-ID', es: 'ID de solicitud', fr: 'ID de requête', ja: 'リクエスト ID', ko: '요청 ID', 'pt-BR': 'ID de requisição', ru: 'ID запроса', 'zh-CN': '请求 ID' } },
                     { label: 'Timeout',         slug: 'http/middleware/timeout',         translations: { de: 'Timeout', es: 'Tiempo límite', fr: 'Délai d’attente', ja: 'タイムアウト', ko: '타임아웃', 'pt-BR': 'Timeout', ru: 'Тайм-аут', 'zh-CN': '超时' } },
@@ -969,5 +982,33 @@ export default defineConfig({
       // sidebar is wired (Commit 2.3).
       pagination: true,
     }),
+    // Registered here for one reason: to turn `optimize` off.  Starlight
+    // adds `mdx({ optimize: true })` itself when the site has not
+    // registered the integration (`@astrojs/starlight/dist/index.js`), and
+    // with `@astrojs/markdown-remark` 7.3.1 that combination corrupts every
+    // rendered mermaid diagram.
+    //
+    // 7.3.1 added `rehype-collapse-script-style` — a security fix, so it
+    // stays: only *literal* `<style>`/`<script>` content is treated as
+    // trusted markup and anything dynamic is escaped.  It moves the literal
+    // CSS into the element's `set:html` property and empties its children.
+    // `rehype-optimize-static`, which `optimize: true` enables, then
+    // serialises the surrounding static subtree through `hast-util-to-html`
+    // — which has no idea `set:html` is an Astro directive and writes it out
+    // as an ordinary attribute.  What ships is
+    // `<style set:html="…"></style>`: the CSS sits in an attribute, the
+    // element body is empty, and the browser applies none of it.  Measured
+    // here at 423 of 423 mermaid pages, every diagram losing its font, its
+    // fill colours and its edge animations (#1527).
+    //
+    // Dropping `optimize` keeps the security fix and costs only the
+    // static-subtree collapse, which is a render optimisation rather than
+    // anything the output depends on.  Revert once the two plugins compose.
+    //
+    // It has to sit **after** `starlight()`: Starlight registers
+    // `astro-expressive-code`, which refuses to start when `mdx()` precedes
+    // it — code blocks on MDX pages would silently lose their highlighting,
+    // so it throws instead.
+    mdx({ optimize: false }),
   ],
 });

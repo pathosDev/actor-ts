@@ -329,9 +329,7 @@ export abstract class PersistentFSM<
   }
 
   async onCommand(curr: FsmStateData<SName, Data>, command: Command): Promise<void> {
-    const stateEntry = this.transitions[curr.state];
-    const transition = stateEntry?.[command.kind as Command['kind']] as
-      FsmTransition<SName, Command, Event, Data> | undefined;
+    const transition = this.transitionFor(curr.state, command.kind);
     if (!transition) {
       await this.onInvalidTransition(curr.state, command);
       return;
@@ -371,6 +369,33 @@ export abstract class PersistentFSM<
       // has a `_timeout` entry.
       this.armTimerForCurrentState();
     });
+  }
+
+  /**
+   * The table's transition for `kind` in `state`, or `undefined` when it
+   * declares none.
+   *
+   * Own properties only, on both levels.  The table is an object literal, so
+   * it inherits every `Object.prototype` member, and a command's `kind` is
+   * whatever its sender wrote.  Read through the prototype chain, a kind such
+   * as `toString` or `constructor` found an inherited function where a
+   * transition belonged: `onInvalidTransition` never ran, and the command
+   * failed in the persist instead, on a batch of one `undefined` event.
+   *
+   * {@link FSM_TIMEOUT_KEY} is an own key of a state's entry but holds the
+   * state timeout, not a transition, so it is no command's transition either:
+   * taken for one, a command of that kind ran the timeout's event at once.
+   */
+  private transitionFor(
+    state: SName,
+    kind: Command['kind'],
+  ): FsmTransition<SName, Command, Event, Data> | undefined {
+    if (kind === FSM_TIMEOUT_KEY) return undefined;
+    const transitions = this.transitions;
+    if (!Object.hasOwn(transitions, state)) return undefined;
+    const stateEntry = transitions[state];
+    if (stateEntry === undefined || !Object.hasOwn(stateEntry, kind)) return undefined;
+    return stateEntry[kind] as FsmTransition<SName, Command, Event, Data> | undefined;
   }
 
   /* ---------------------- internal: timer plumbing ---------------------- */

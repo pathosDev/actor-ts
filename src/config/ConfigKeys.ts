@@ -7,7 +7,7 @@
  *
  *   1. **Typo-safety**: a string literal like
  *      `'actor-ts.io.broker.mqqt'` (oops — three Q's) is a silent
- *      runtime null at a config-lookup site.  `ConfigKeys.io.broker.mqtt`
+ *      runtime null at a config-lookup site.  `ConfigKeys.io.broker.mqtt.root`
  *      is a typed reference — IDE autocomplete + TypeScript catch
  *      typos before they ship.
  *
@@ -38,8 +38,11 @@ export const ConfigKeys = {
     /**
      * One block root per sink.  Each is read as a *block* by the matching
      * `readXSinkOptionsFromConfig`, so the leaves under it (`enabled`,
-     * `min-level`, …) need no entry of their own — the same shape the
-     * cache and persistence plugin roots use.
+     * `min-level`, …) need no entry of their own: the root is what makes them
+     * reachable for `NoDeadConfigKeys`, whose read half runs the readers rather
+     * than looking here.  The cache and persistence plugin blocks have a root
+     * too, but list their leaves beside it, as the typed key sets their
+     * readers are handed.
      */
     sinks: {
       console: 'actor-ts.logger.sinks.console',
@@ -54,9 +57,83 @@ export const ConfigKeys = {
     },
   },
 
-  /** Per-actor message-loop tuning — `actor-ts.actor.*`. */
+  /**
+   * System-wide actor defaults — `actor-ts.actor.*`.
+   *
+   * The two leaves are not the same kind of knob: `throughput` is per-actor
+   * message-loop tuning, `ask-timeout` the caller-side deadline `ActorRef.ask`
+   * arms when nobody names one (#863).  What puts them in one block is where
+   * they are answered — both are resolved once in the `ActorSystem`
+   * constructor and layered *under* an explicit argument, because neither a
+   * cell nor a ref reads config for itself.  `throughput` has one layer
+   * between the two: the `deployment` entry matching the actor's path (#868),
+   * compiled once per system as well.
+   *
+   * Full dotted leaves rather than an `actor` block root, for the reason
+   * spelled out under `mailbox` below: with no root above them,
+   * `NoDeadConfigKeys` has to find each leaf here by its exact path to count
+   * it reachable.
+   */
   actor: {
+    askTimeout: 'actor-ts.actor.ask-timeout',
     throughput: 'actor-ts.actor.throughput',
+  },
+
+  /**
+   * The global mailbox bound — `actor-ts.mailbox.default.*` (#862).
+   *
+   * Read once, in the `ActorSystem` constructor, and layered *under* the
+   * per-spawn `ActorOptions` in `ActorCell`, with the `deployment` entry
+   * matching the actor's path between the two (#868): explicit options win,
+   * then that entry, then this block, and the built-in answer is still
+   * "unbounded".  This block and an entry's `mailbox-capacity` are the two
+   * knobs in the file that can introduce message loss in an actor whose spawn
+   * site says nothing about a mailbox — this one in every actor the
+   * application wrote at once — which is why the reference comment spends
+   * more lines on the scope than on the values.
+   *
+   * Full dotted leaves rather than a `mailbox` block root, for the reason
+   * spelled out under `diagnostics` below: with no root above them,
+   * `NoDeadConfigKeys` has to find each leaf here by its exact path to count
+   * it reachable.
+   */
+  mailbox: {
+    default: {
+      capacity: 'actor-ts.mailbox.default.capacity',
+      overflow: 'actor-ts.mailbox.default.overflow',
+    },
+  },
+
+  /**
+   * Per-path deployment entries — `actor-ts.deployment."<path pattern>"`
+   * (#868): `throughput`, `mailbox-capacity` and `mailbox-overflow` for the
+   * actors whose path a key matches, layered between the spawn site and the
+   * system-wide `actor.throughput` / `mailbox.default`.
+   *
+   * A block root plus the three leaf names *relative to one entry*, not full
+   * paths: the keys under the root are the application's actor paths, so
+   * there is no fixed set of leaves to list, and a path holds `/` and may hold
+   * `.`, which `Config.hasPath` splits on.  `readDeploymentFromConfig` reads
+   * the root as an object and each entry through a `Config` of its own — the
+   * shape the coordinated-shutdown `phases` and the in-memory cache's
+   * `prefix-quotas` are read in.
+   *
+   * Comment-only in `reference.conf`: a shipped entry would be a live default
+   * in every deployment's effective config, and a capacity there would bring
+   * back the bound #1148 removed.  So the leaf-driven guards see nothing of it
+   * by themselves — `DocumentedDefaults` pins published leaves only, and
+   * `NoDeadConfigKeys` perturbs this block only because the reader registry
+   * introduces it as an object.  The proof that it is wired is behavioural:
+   * `DeploymentConfigDefaults.test.ts` binds the reader, and
+   * `DeploymentBlock.test.ts` the cell that applies what it read.
+   */
+  deployment: {
+    root: 'actor-ts.deployment',
+    entry: {
+      throughput: 'throughput',
+      mailboxCapacity: 'mailbox-capacity',
+      mailboxOverflow: 'mailbox-overflow',
+    },
   },
 
   /**
@@ -79,9 +156,13 @@ export const ConfigKeys = {
    *
    * - #1179 wants a per-recipient token bucket over the *publish* path, and
    *   sketches it under `actor-ts.diagnostics.*`.
-   * - #867 wants dead-letter *logging* toggles, and sketches them at the
+   * - #867 wanted dead-letter *logging* toggles, and sketched them at the
    *   root — `log-dead-letters`, `log-dead-letters-during-shutdown`,
-   *   `log-dead-letters-suspend-duration` — beside `actor-ts.debug.*`.
+   *   `log-dead-letters-suspend-duration` — beside `actor-ts.debug.*`.  That
+   *   sketch is superseded: #1000 shipped those three under `diagnostics`
+   *   below, because `Reference.ts` has fourteen root blocks and no
+   *   root-level leaf at all, and because the switch that turns a
+   *   default-on log line off cannot ship after the log line does.
    *
    * Neither asks for the retention keys to move, and there is no single
    * alternative block they could move into.  The line that matters is the
@@ -107,6 +188,58 @@ export const ConfigKeys = {
     persistenceId: 'actor-ts.dead-letters.persistence-id',
   },
 
+  /**
+   * What the runtime says about itself — `actor-ts.diagnostics.*`.
+   *
+   * Read once, in the `ActorSystem` constructor, and handed to
+   * `DeadLetterRef` — the announce side of a dead letter, as against the
+   * capture side that `deadLetters` above configures.  That split is the
+   * settled namespace argument recorded there: retention is read by
+   * `DeadLetterQueue`, loudness by `DeadLetterRef`, and merging them would
+   * make a suppression knob look like it gates capture.
+   *
+   * Full dotted leaves rather than a block root on purpose.
+   * `NoDeadConfigKeys` asks two things of every leaf `reference.conf` ships:
+   * that this tree reaches it, and that changing it on its own changes what
+   * some registered reader answers (#1425).  Only the first looks at this
+   * file, and a root would satisfy it for every leaf beneath it, a misspelt
+   * one included; with no root above them, each of these leaves has to be
+   * named here exactly.  The second watches the readers' answers rather than
+   * this file's layout, so no layout of this group can carry a leaf nothing
+   * reads through it.
+   *
+   * #867 extended it with `log-config-on-start` and the three `debug.*`
+   * switches; #1179's per-recipient suppression lands here too.
+   *
+   * **The `log-*` / `debug.*` split is by level, and that is the whole
+   * reason for the nesting.**  Everything named `log-…` is emitted at `info`
+   * or `warn` and appears in a default deployment once it is switched on.
+   * Everything under `debug` is emitted at `debug` and therefore needs
+   * `actor-ts.logger.level = debug` as well — two switches, not one.  Naming
+   * the sub-block after the level is what makes that second requirement
+   * visible in an `application.conf` instead of only in the docs.
+   */
+  diagnostics: {
+    logDeadLetters: 'actor-ts.diagnostics.log-dead-letters',
+    logDeadLettersDuringShutdown: 'actor-ts.diagnostics.log-dead-letters-during-shutdown',
+    logDeadLettersSuspendDuration: 'actor-ts.diagnostics.log-dead-letters-suspend-duration',
+    logConfigOnStart: 'actor-ts.diagnostics.log-config-on-start',
+    debugUnhandled: 'actor-ts.diagnostics.debug.unhandled',
+    debugLifecycle: 'actor-ts.diagnostics.debug.lifecycle',
+    debugEventStream: 'actor-ts.diagnostics.debug.event-stream',
+  },
+
+  /**
+   * Message-boundary checks — `actor-ts.diagnostics.message-boundary.*`
+   * (#1386).  Its own group, read by `readMessageBoundaryOptionsFromConfig`
+   * rather than the diagnostics reader, so each reader's guard pins exactly
+   * the leaves it reads.
+   */
+  messageBoundary: {
+    structuredClone: 'actor-ts.diagnostics.message-boundary.structured-clone',
+    serializerRoundTrip: 'actor-ts.diagnostics.message-boundary.serializer-round-trip',
+  },
+
   /** Dispatcher root — `actor-ts.dispatcher.*`. */
   dispatcher: {
     default: 'actor-ts.dispatcher.default',
@@ -125,46 +258,384 @@ export const ConfigKeys = {
     inMemory: 'actor-ts.cache.in-memory',
     redis: 'actor-ts.cache.redis',
     memcached: 'actor-ts.cache.memcached',
+    /**
+     * The global in-memory block's *settings*, as against `inMemory` above,
+     * which is its plugin **id** — the factory-map key, re-exported as
+     * `IN_MEMORY_CACHE_PLUGIN_ID` and pinned by its literal value in the cache
+     * suite.  The two carry the same string and stay two entries because one
+     * is an identifier and the other is a config path: growing `inMemory` into
+     * an object to hold these would break every use of the id.
+     *
+     * Declared leaf by leaf because this group *is* the global block's
+     * `InMemoryCacheKeys`, the shape `readInMemoryCacheOptionsFromConfig` is
+     * handed.  The identical leaves under `actor-ts.cache.<name>.in-memory`
+     * cannot be listed (the name is the application's);
+     * `inMemoryCacheKeysUnder` (`src/cache/InMemoryCacheOptions.ts`) composes
+     * those from the same five suffixes.  `NoDeadConfigKeys` gains nothing
+     * from the leaves: `root` makes any key under `actor-ts.cache` reachable,
+     * and each leaf is proven read by changing it and watching that reader's
+     * answer (#1425).
+     */
+    inMemoryOptions: {
+      root: 'actor-ts.cache.in-memory',
+      maxEntries: 'actor-ts.cache.in-memory.max-entries',
+      cleanupInterval: 'actor-ts.cache.in-memory.cleanup-interval',
+      timeToLive: 'actor-ts.cache.in-memory.time-to-live',
+      timeToIdle: 'actor-ts.cache.in-memory.time-to-idle',
+      /** Comment-only in `reference.conf` — unset means one undivided map. */
+      prefixQuotas: 'actor-ts.cache.in-memory.prefix-quotas',
+    },
+    /**
+     * The global Redis block's *settings*, standing to `redis` above exactly as
+     * `inMemoryOptions` stands to `inMemory`: one is the plugin **id** the
+     * factory map is keyed by (and `REDIS_CACHE_PLUGIN_ID` re-exports), the
+     * other is a config path.  Same string, two entries, for the same reason.
+     *
+     * Leaf by leaf rather than a root alone, because this group is the global
+     * block's `RedisCacheKeys`, the shape `readRedisCacheOptionsFromConfig` is
+     * handed.  The identical leaves under `actor-ts.cache.<name>.redis`
+     * cannot be listed (the name is the application's);
+     * {@link redisCacheKeysUnder} composes those from the same suffixes.
+     * `NoDeadConfigKeys` resolves anything under `actor-ts.cache` to the
+     * `root` entry for reachability, so the leaves add nothing there; each is
+     * proven read by changing it and watching the reader's answer (#1425).
+     *
+     * `host` and `port` are **comment-only** in `reference.conf`: `url` is
+     * mutually exclusive with them, and a published `host` would be set for
+     * every deployment and refuse every `url`.  They are read all the same,
+     * which is what this entry records.
+     */
+    redisOptions: {
+      root: 'actor-ts.cache.redis',
+      url: 'actor-ts.cache.redis.url',
+      host: 'actor-ts.cache.redis.host',
+      port: 'actor-ts.cache.redis.port',
+      db: 'actor-ts.cache.redis.db',
+      keyPrefix: 'actor-ts.cache.redis.key-prefix',
+      password: 'actor-ts.cache.redis.password',
+    },
+    /** The global Memcached block's settings — see {@link redisOptions}. */
+    memcachedOptions: {
+      root: 'actor-ts.cache.memcached',
+      servers: 'actor-ts.cache.memcached.servers',
+      username: 'actor-ts.cache.memcached.username',
+      password: 'actor-ts.cache.memcached.password',
+      keyPrefix: 'actor-ts.cache.memcached.key-prefix',
+    },
   },
 
-  /** IO broker config roots — `actor-ts.io.broker.*`. */
+  /**
+   * IO broker blocks — `actor-ts.io.broker.*` (#1443).
+   *
+   * Each block is a group: the `root` its actor's `configKey()` returns, and
+   * every leaf of the protocol's own as a full dotted path, which the block's
+   * `read…OptionsFromConfig` reads the system config through.  None of them
+   * publishes a `reference.conf` leaf (#871) — their keys are required or
+   * unset, with no default worth shipping — so `NoDeadConfigKeys` sees a
+   * broker leaf only as the reader registry introduces it, through the same
+   * accessor the reader reads.  That proves the reader reads the key, not
+   * that the key is spelled right: these entries are where a misspelt leaf
+   * has to be caught.
+   *
+   * The leaves every broker shares — `reconnect`, `circuit-breaker`,
+   * `outbound-buffer` — are not listed under each root: one shape hangs under
+   * every broker's root, and under any an out-of-tree subclass picks, so
+   * `brokerCommonKeysUnder` composes them, as `redisCacheKeysUnder` composes a
+   * named cache's.  The `framing` block the two TCP roots share is composed
+   * too, by {@link tcpFramingKeysUnder}, but its roots are fixed, so it is
+   * listed under both.
+   */
   io: {
     broker: {
-      amqp: 'actor-ts.io.broker.amqp',
+      /** `AmqpActor`. */
+      amqp: {
+        root: 'actor-ts.io.broker.amqp',
+        url: 'actor-ts.io.broker.amqp.url',
+        prefetch: 'actor-ts.io.broker.amqp.prefetch',
+        autoAcknowledge: 'actor-ts.io.broker.amqp.auto-acknowledge',
+      },
       /**
        * The IMAP-in / SMTP-out mail bridge (#1133).  One root for both
        * halves: they are two sides of one connection lifecycle, and a
        * bridge configured with only one of them is the normal case rather
-       * than a degenerate one.
+       * than a degenerate one.  Each half is read as a whole, so an `imap`
+       * or `smtp` group passed in code replaces the configured one.
        */
-      emailBridge: 'actor-ts.io.broker.email-bridge',
-      grpc: {
-        client: 'actor-ts.io.broker.grpc.client',
-        server: 'actor-ts.io.broker.grpc.server',
+      emailBridge: {
+        root: 'actor-ts.io.broker.email-bridge',
+        imap: {
+          root: 'actor-ts.io.broker.email-bridge.imap',
+          host: 'actor-ts.io.broker.email-bridge.imap.host',
+          port: 'actor-ts.io.broker.email-bridge.imap.port',
+          secure: 'actor-ts.io.broker.email-bridge.imap.secure',
+          user: 'actor-ts.io.broker.email-bridge.imap.user',
+          password: 'actor-ts.io.broker.email-bridge.imap.password',
+          mailbox: 'actor-ts.io.broker.email-bridge.imap.mailbox',
+          onProcessed: 'actor-ts.io.broker.email-bridge.imap.on-processed',
+          moveToMailbox: 'actor-ts.io.broker.email-bridge.imap.move-to-mailbox',
+          disableIdle: 'actor-ts.io.broker.email-bridge.imap.disable-idle',
+          maxIdleTime: 'actor-ts.io.broker.email-bridge.imap.max-idle-time',
+          pollInterval: 'actor-ts.io.broker.email-bridge.imap.poll-interval',
+          /** A size: `25M` reads as 26 214 400 bytes. */
+          maxMessageBytes: 'actor-ts.io.broker.email-bridge.imap.max-message-bytes',
+          acknowledgmentTimeout: 'actor-ts.io.broker.email-bridge.imap.acknowledgment-timeout',
+        },
+        smtp: {
+          root: 'actor-ts.io.broker.email-bridge.smtp',
+          host: 'actor-ts.io.broker.email-bridge.smtp.host',
+          port: 'actor-ts.io.broker.email-bridge.smtp.port',
+          secure: 'actor-ts.io.broker.email-bridge.smtp.secure',
+          user: 'actor-ts.io.broker.email-bridge.smtp.user',
+          password: 'actor-ts.io.broker.email-bridge.smtp.password',
+          from: 'actor-ts.io.broker.email-bridge.smtp.from',
+          maxConnections: 'actor-ts.io.broker.email-bridge.smtp.max-connections',
+          maxMessages: 'actor-ts.io.broker.email-bridge.smtp.max-messages',
+        },
       },
-      jetstream: 'actor-ts.io.broker.jetstream',
+      grpc: {
+        /** `GrpcClientActor`.  `proto-path` is one file or a list of them. */
+        client: {
+          root: 'actor-ts.io.broker.grpc.client',
+          protoPath: 'actor-ts.io.broker.grpc.client.proto-path',
+          packageName: 'actor-ts.io.broker.grpc.client.package-name',
+          serviceName: 'actor-ts.io.broker.grpc.client.service-name',
+          endpoint: 'actor-ts.io.broker.grpc.client.endpoint',
+          deadline: 'actor-ts.io.broker.grpc.client.deadline',
+        },
+        /**
+         * `GrpcServerActor` — a plain actor, not a `BrokerActor`, so it shares
+         * none of the reconnect / breaker / buffer leaves and refuses its own
+         * retired spellings itself.
+         */
+        server: {
+          root: 'actor-ts.io.broker.grpc.server',
+          protoPath: 'actor-ts.io.broker.grpc.server.proto-path',
+          packageName: 'actor-ts.io.broker.grpc.server.package-name',
+          serviceName: 'actor-ts.io.broker.grpc.server.service-name',
+          bind: 'actor-ts.io.broker.grpc.server.bind',
+        },
+      },
+      /**
+       * `JetStreamActor`.  `stream` and `consumer` are each read whole once
+       * there — `stream.name`, `stream.subjects` and `consumer.durable` are
+       * required inside them — and `consumer.deliver-policy` is either a
+       * string (`all`, `last`, `new`) or a block whose `kind` picks
+       * `start-seq` or `start-time`.
+       */
+      jetstream: {
+        root: 'actor-ts.io.broker.jetstream',
+        servers: 'actor-ts.io.broker.jetstream.servers',
+        token: 'actor-ts.io.broker.jetstream.token',
+        user: 'actor-ts.io.broker.jetstream.user',
+        password: 'actor-ts.io.broker.jetstream.password',
+        name: 'actor-ts.io.broker.jetstream.name',
+        stream: {
+          root: 'actor-ts.io.broker.jetstream.stream',
+          name: 'actor-ts.io.broker.jetstream.stream.name',
+          subjects: 'actor-ts.io.broker.jetstream.stream.subjects',
+          retention: 'actor-ts.io.broker.jetstream.stream.retention',
+          storage: 'actor-ts.io.broker.jetstream.stream.storage',
+          maxMessages: 'actor-ts.io.broker.jetstream.stream.max-messages',
+          maxBytes: 'actor-ts.io.broker.jetstream.stream.max-bytes',
+          /** Nanoseconds, handed to nats.js verbatim — a count, not a duration. */
+          maxAge: 'actor-ts.io.broker.jetstream.stream.max-age',
+          create: 'actor-ts.io.broker.jetstream.stream.create',
+        },
+        consumer: {
+          root: 'actor-ts.io.broker.jetstream.consumer',
+          durable: 'actor-ts.io.broker.jetstream.consumer.durable',
+          mode: 'actor-ts.io.broker.jetstream.consumer.mode',
+          deliverPolicy: {
+            root: 'actor-ts.io.broker.jetstream.consumer.deliver-policy',
+            kind: 'actor-ts.io.broker.jetstream.consumer.deliver-policy.kind',
+            startSeq: 'actor-ts.io.broker.jetstream.consumer.deliver-policy.start-seq',
+            /** Epoch milliseconds — an instant, not a duration. */
+            startTime: 'actor-ts.io.broker.jetstream.consumer.deliver-policy.start-time',
+          },
+          ackPolicy: 'actor-ts.io.broker.jetstream.consumer.ack-policy',
+          ackWait: 'actor-ts.io.broker.jetstream.consumer.ack-wait',
+          filterSubject: 'actor-ts.io.broker.jetstream.consumer.filter-subject',
+          maxAcknowledgmentPending: 'actor-ts.io.broker.jetstream.consumer.max-acknowledgment-pending',
+          create: 'actor-ts.io.broker.jetstream.consumer.create',
+        },
+        acknowledgmentTimeout: 'actor-ts.io.broker.jetstream.acknowledgment-timeout',
+      },
       /**
        * JetStream's KV and Object-Store views (#74) are separate actors on
        * separate roots, not sub-blocks of `jetstream`: they configure a
        * *bucket*, not a stream + consumer, and nesting them would put keys
        * like `history` under a block whose reader never looks at them.
        */
-      jetstreamKeyValue: 'actor-ts.io.broker.jetstream-key-value',
-      jetstreamObjectStore: 'actor-ts.io.broker.jetstream-object-store',
-      kafka: 'actor-ts.io.broker.kafka',
-      mqtt: 'actor-ts.io.broker.mqtt',
-      nats: 'actor-ts.io.broker.nats',
-      redisStreams: 'actor-ts.io.broker.redis-streams',
-      sse: 'actor-ts.io.broker.sse',
-      tcp: 'actor-ts.io.broker.tcp',
+      jetstreamKeyValue: {
+        root: 'actor-ts.io.broker.jetstream-key-value',
+        servers: 'actor-ts.io.broker.jetstream-key-value.servers',
+        token: 'actor-ts.io.broker.jetstream-key-value.token',
+        user: 'actor-ts.io.broker.jetstream-key-value.user',
+        password: 'actor-ts.io.broker.jetstream-key-value.password',
+        name: 'actor-ts.io.broker.jetstream-key-value.name',
+        bucket: 'actor-ts.io.broker.jetstream-key-value.bucket',
+        history: 'actor-ts.io.broker.jetstream-key-value.history',
+        timeToLive: 'actor-ts.io.broker.jetstream-key-value.time-to-live',
+        storage: 'actor-ts.io.broker.jetstream-key-value.storage',
+        replicas: 'actor-ts.io.broker.jetstream-key-value.replicas',
+        maxValueBytes: 'actor-ts.io.broker.jetstream-key-value.max-value-bytes',
+        create: 'actor-ts.io.broker.jetstream-key-value.create',
+      },
+      jetstreamObjectStore: {
+        root: 'actor-ts.io.broker.jetstream-object-store',
+        servers: 'actor-ts.io.broker.jetstream-object-store.servers',
+        token: 'actor-ts.io.broker.jetstream-object-store.token',
+        user: 'actor-ts.io.broker.jetstream-object-store.user',
+        password: 'actor-ts.io.broker.jetstream-object-store.password',
+        name: 'actor-ts.io.broker.jetstream-object-store.name',
+        bucket: 'actor-ts.io.broker.jetstream-object-store.bucket',
+        description: 'actor-ts.io.broker.jetstream-object-store.description',
+        storage: 'actor-ts.io.broker.jetstream-object-store.storage',
+        replicas: 'actor-ts.io.broker.jetstream-object-store.replicas',
+        maxObjectBytes: 'actor-ts.io.broker.jetstream-object-store.max-object-bytes',
+        create: 'actor-ts.io.broker.jetstream-object-store.create',
+      },
+      /**
+       * `KafkaActor`.  `sasl` is read whole once there — `mechanism`,
+       * `username` and `password` are all required in it — while `producer`
+       * and `consumer` take any subset of their leaves.
+       */
+      kafka: {
+        root: 'actor-ts.io.broker.kafka',
+        brokers: 'actor-ts.io.broker.kafka.brokers',
+        clientId: 'actor-ts.io.broker.kafka.client-id',
+        /** Boolean only: the certificate-material form of `ssl` is code-only. */
+        ssl: 'actor-ts.io.broker.kafka.ssl',
+        sasl: {
+          root: 'actor-ts.io.broker.kafka.sasl',
+          mechanism: 'actor-ts.io.broker.kafka.sasl.mechanism',
+          username: 'actor-ts.io.broker.kafka.sasl.username',
+          password: 'actor-ts.io.broker.kafka.sasl.password',
+        },
+        producer: {
+          root: 'actor-ts.io.broker.kafka.producer',
+          idempotent: 'actor-ts.io.broker.kafka.producer.idempotent',
+          allowAutoTopicCreation: 'actor-ts.io.broker.kafka.producer.allow-auto-topic-creation',
+        },
+        consumer: {
+          root: 'actor-ts.io.broker.kafka.consumer',
+          groupId: 'actor-ts.io.broker.kafka.consumer.group-id',
+          fromBeginning: 'actor-ts.io.broker.kafka.consumer.from-beginning',
+          commitMode: 'actor-ts.io.broker.kafka.consumer.commit-mode',
+          commitTimeout: 'actor-ts.io.broker.kafka.consumer.commit-timeout',
+        },
+        topics: 'actor-ts.io.broker.kafka.topics',
+      },
+      /**
+       * `MqttActor`.  `keep-alive` is a duration in **whole seconds**, the
+       * unit MQTT carries it in: `30s` is 30, a sub-second value is refused,
+       * and `0` still switches it off.
+       */
+      mqtt: {
+        root: 'actor-ts.io.broker.mqtt',
+        brokerUrl: 'actor-ts.io.broker.mqtt.broker-url',
+        clientId: 'actor-ts.io.broker.mqtt.client-id',
+        credentials: {
+          root: 'actor-ts.io.broker.mqtt.credentials',
+          username: 'actor-ts.io.broker.mqtt.credentials.username',
+          password: 'actor-ts.io.broker.mqtt.credentials.password',
+        },
+        qos: 'actor-ts.io.broker.mqtt.qos',
+        will: {
+          root: 'actor-ts.io.broker.mqtt.will',
+          topic: 'actor-ts.io.broker.mqtt.will.topic',
+          payload: 'actor-ts.io.broker.mqtt.will.payload',
+          qos: 'actor-ts.io.broker.mqtt.will.qos',
+          retain: 'actor-ts.io.broker.mqtt.will.retain',
+        },
+        cleanSession: 'actor-ts.io.broker.mqtt.clean-session',
+        keepAlive: 'actor-ts.io.broker.mqtt.keep-alive',
+        protocolVersion: 'actor-ts.io.broker.mqtt.protocol-version',
+      },
+      /** `NatsActor`. */
+      nats: {
+        root: 'actor-ts.io.broker.nats',
+        servers: 'actor-ts.io.broker.nats.servers',
+        token: 'actor-ts.io.broker.nats.token',
+        user: 'actor-ts.io.broker.nats.user',
+        password: 'actor-ts.io.broker.nats.password',
+        name: 'actor-ts.io.broker.nats.name',
+      },
+      /**
+       * `RedisStreamsActor`.  `consumer-group` is read as a whole once it is
+       * there: `group` and `consumer` are both required inside it.
+       */
+      redisStreams: {
+        root: 'actor-ts.io.broker.redis-streams',
+        url: 'actor-ts.io.broker.redis-streams.url',
+        streams: 'actor-ts.io.broker.redis-streams.streams',
+        block: 'actor-ts.io.broker.redis-streams.block',
+        consumerGroup: {
+          root: 'actor-ts.io.broker.redis-streams.consumer-group',
+          group: 'actor-ts.io.broker.redis-streams.consumer-group.group',
+          consumer: 'actor-ts.io.broker.redis-streams.consumer-group.consumer',
+          createIfMissing: 'actor-ts.io.broker.redis-streams.consumer-group.create-if-missing',
+        },
+      },
+      /** `SseActor`.  `headers` is a block of header names, read whole. */
+      sse: {
+        root: 'actor-ts.io.broker.sse',
+        url: 'actor-ts.io.broker.sse.url',
+        headers: 'actor-ts.io.broker.sse.headers',
+        idleTimeout: 'actor-ts.io.broker.sse.idle-timeout',
+        connectTimeout: 'actor-ts.io.broker.sse.connect-timeout',
+      },
+      /**
+       * `TcpSocketActor`.  `framing` is the block both TCP actors carry, so its
+       * leaves come from {@link tcpFramingKeysUnder} under each root, and
+       * `readFramingFromConfig` reads either copy.
+       */
+      tcp: {
+        root: 'actor-ts.io.broker.tcp',
+        host: 'actor-ts.io.broker.tcp.host',
+        port: 'actor-ts.io.broker.tcp.port',
+        framing: tcpFramingKeysUnder('actor-ts.io.broker.tcp.framing'),
+        idleTimeout: 'actor-ts.io.broker.tcp.idle-timeout',
+        connectTimeout: 'actor-ts.io.broker.tcp.connect-timeout',
+        keepAlive: 'actor-ts.io.broker.tcp.keep-alive',
+      },
       /**
        * The TCP *listener* (`TcpServerActor`), on its own root rather than a
        * sub-block of `tcp`: it configures a bind address and an admission
        * cap, not a remote endpoint, so the two blocks share only `framing`.
        */
-      tcpServer: 'actor-ts.io.broker.tcp-server',
-      udp: 'actor-ts.io.broker.udp',
-      websocket: 'actor-ts.io.broker.websocket',
+      tcpServer: {
+        root: 'actor-ts.io.broker.tcp-server',
+        bindHost: 'actor-ts.io.broker.tcp-server.bind-host',
+        bindPort: 'actor-ts.io.broker.tcp-server.bind-port',
+        /** The admission cap; unset means unlimited. */
+        maxConnections: 'actor-ts.io.broker.tcp-server.max-connections',
+        framing: tcpFramingKeysUnder('actor-ts.io.broker.tcp-server.framing'),
+      },
+      /** `UdpSocketActor`. */
+      udp: {
+        root: 'actor-ts.io.broker.udp',
+        bindHost: 'actor-ts.io.broker.udp.bind-host',
+        bindPort: 'actor-ts.io.broker.udp.bind-port',
+        type: 'actor-ts.io.broker.udp.type',
+      },
+      /**
+       * `WebsocketClientActor` — the client side.  The server's own block is
+       * `http.websocket`, and its `on-invalid-message` takes a different list
+       * of values than this one.
+       */
+      websocket: {
+        root: 'actor-ts.io.broker.websocket',
+        url: 'actor-ts.io.broker.websocket.url',
+        protocols: 'actor-ts.io.broker.websocket.protocols',
+        pingInterval: 'actor-ts.io.broker.websocket.ping-interval',
+        maxFrameBytes: 'actor-ts.io.broker.websocket.max-frame-bytes',
+        onInvalidMessage: 'actor-ts.io.broker.websocket.on-invalid-message',
+        idleTimeout: 'actor-ts.io.broker.websocket.idle-timeout',
+        connectTimeout: 'actor-ts.io.broker.websocket.connect-timeout',
+        inboundHighWaterMark: 'actor-ts.io.broker.websocket.inbound-high-water-mark',
+        inboundLowWaterMark: 'actor-ts.io.broker.websocket.inbound-low-water-mark',
+      },
     },
   },
 
@@ -174,28 +645,935 @@ export const ConfigKeys = {
     backend: 'actor-ts.http.backend',
     /** How long `unbind()` lets in-flight requests drain before forcing. */
     shutdownGracePeriod: 'actor-ts.http.shutdown-grace-period',
-    /** Server-side WebSocket defaults for `websocket()` routes. */
-    websocket: 'actor-ts.http.websocket',
+    /**
+     * Connection-level bounds for one bound server — the listening socket
+     * itself, not a route on it (#870).
+     *
+     * Full dotted leaves beside the `root`, never a bare root, for the reason
+     * `websocket` below spells out; and here four keys — and the whole `tls`
+     * block — have **no leaf in `reference.conf` at all**, so a root-only
+     * declaration would have left them checked by nothing whatsoever.
+     *
+     * `idle-timeout`, `max-connections`, `max-content-length` and
+     * `max-header-bytes` are the comment-only four.  All need "unset" to stay
+     * expressible: unset keep-alive is whatever the backend picked — and the
+     * backends disagree on purpose, 72 s on Fastify against 5 s on
+     * `node:http` — unset `max-connections` is unlimited, and the two size
+     * caps unset keep each backend's own.  For those two, unset is also what a
+     * backend built with a cap of its own is measured against: a *set* key
+     * that differs from it is refused at `bind()`, and a published literal
+     * would set the key for everyone (#1488).
+     */
+    server: {
+      root: 'actor-ts.http.server',
+      /** Comment-only in `reference.conf` — unset keeps the backend's own. */
+      idleTimeout: 'actor-ts.http.server.idle-timeout',
+      headerTimeout: 'actor-ts.http.server.header-timeout',
+      /**
+       * How long a peer may take to deliver a request — receiving only.  A
+       * handler's deadline is the other key, `http.requestTimeout` (#1463).
+       */
+      requestTimeout: 'actor-ts.http.server.request-timeout',
+      /** Comment-only in `reference.conf` — unset means unlimited. */
+      maxConnections: 'actor-ts.http.server.max-connections',
+      /**
+       * Comment-only in `reference.conf` — unset keeps each backend's own body
+       * cap: the shared 1 MiB, or what `withMaxBodyBytes` / Fastify's
+       * `bodyLimit` set.
+       */
+      maxContentLength: 'actor-ts.http.server.max-content-length',
+      /**
+       * Comment-only in `reference.conf` — unset keeps the runtime's own header
+       * cap: `node:http`'s 16 KiB, or Bun's process-wide
+       * `--max-http-header-size`.
+       */
+      maxHeaderBytes: 'actor-ts.http.server.max-header-bytes',
+      http2: 'actor-ts.http.server.http2',
+      /**
+       * All comment-only in `reference.conf`: unset means plain HTTP, and
+       * there is no defensible path to publish.  The three `*-file` leaves
+       * are read as paths and the files as PEM when the block is read, so
+       * the option type still carries contents, never paths (#1522).
+       */
+      tls: {
+        certFile: 'actor-ts.http.server.tls.cert-file',
+        keyFile: 'actor-ts.http.server.tls.key-file',
+        caFile: 'actor-ts.http.server.tls.ca-file',
+        requestClientCert: 'actor-ts.http.server.tls.request-client-cert',
+        /**
+         * `reject-unauthorized = false` there leaves a client certificate
+         * unverified — supply `ca-file` instead.
+         */
+        rejectUnauthorized: 'actor-ts.http.server.tls.reject-unauthorized',
+      },
+    },
+    /**
+     * Per-route CORS defaults for the `cors(options, routes)` directive (#878).
+     *
+     * Full dotted leaves beside the `root`, for the reason `websocket` below
+     * spells out.  Four of the six leaves are **comment-only** in
+     * `reference.conf`, so `NoDeadConfigKeys` has no literal of theirs to
+     * change: the reader registry introduces each at one value and changes it
+     * to a second, and `readCorsOptionsFromConfig` has to answer the two
+     * differently, as it has to answer to the two leaves that ship a value.
+     *
+     * `origins` is settable here but the `'*'` wildcard is not: a value
+     * containing it is refused with a `ConfigError` naming this key, because
+     * `withAnyOrigin()` is documented as the explicit opt-in and #128 was about
+     * CORS defaults being too permissive.  The predicate form has no path here
+     * either — a function cannot live in HOCON.
+     */
+    cors: {
+      root: 'actor-ts.http.cors',
+      origins: 'actor-ts.http.cors.origins',
+      methods: 'actor-ts.http.cors.methods',
+      allowedHeaders: 'actor-ts.http.cors.allowed-headers',
+      exposedHeaders: 'actor-ts.http.cors.exposed-headers',
+      credentials: 'actor-ts.http.cors.credentials',
+      maxAge: 'actor-ts.http.cors.max-age',
+    },
+    /**
+     * The policy `hsts()` / `strictTransportSecurity()` sends (#1462), read
+     * through the hook `compile()` resolves a config-aware middleware with.
+     *
+     * Full dotted leaves beside the `root`, for the reason `websocket` below
+     * spells out.  All three ship a value: none is computed and none has an
+     * "unset" state worth keeping, so the published literals are the built-in
+     * defaults themselves.
+     *
+     * `max-age` is a count of SECONDS, read with `getInt` — `getDuration`
+     * would read `180d` as milliseconds and send a 1000x pin.  A `max-age`
+     * below a day (`MINIMUM_CONFIGURED_HSTS_MAX_AGE_SECONDS`, 86400) is
+     * refused with a `ConfigError` naming the key and the floor: `0` has every
+     * browser forget the pin, and a shorter one lapses before a visitor comes
+     * back the next day.  Code may still set a value below it, `0` included.
+     *
+     * It governs that middleware only.  The `hsts` field of the
+     * `securityHeaders()` bundle and of `withSecurityHeaders(...)` is code-only.
+     */
+    hsts: {
+      root: 'actor-ts.http.hsts',
+      maxAge: 'actor-ts.http.hsts.max-age',
+      includeSubDomains: 'actor-ts.http.hsts.include-sub-domains',
+      preload: 'actor-ts.http.hsts.preload',
+    },
+    /**
+     * The handler deadline `requestTimeout()` holds (#1463), read through the
+     * same hook as `hsts`.  Not `server.requestTimeout`: that one bounds how
+     * long a peer takes to *send* a request and never a response, this one
+     * starts once the request has arrived and bounds the handler's answer.
+     *
+     * One leaf, `deadline`, the kebab-case of `deadlineMs` with the unit
+     * suffix dropped; read with `getDuration`.  The response sent on timeout
+     * (`onTimeout`) is a function and has no leaf.
+     */
+    requestTimeout: {
+      root: 'actor-ts.http.request-timeout',
+      deadline: 'actor-ts.http.request-timeout.deadline',
+    },
+    /**
+     * Server-side WebSocket defaults for `websocket()` routes.
+     *
+     * Full dotted leaves under a `root`, not a bare block root, so each read
+     * site names its leaf through a typed accessor and a misspelt one does not
+     * compile.  `NoDeadConfigKeys` leans on neither shape: the root makes any
+     * leaf beneath it reachable, declared or not, and the gate's read half
+     * watches the readers, not this layout.  #1405 renamed all nine of these
+     * leaves; a leaf renamed in `reference.conf` and not in its reader fails
+     * that half whatever this group declares, because the new spelling
+     * changes no registered reader's answer.
+     */
+    websocket: {
+      root: 'actor-ts.http.websocket',
+      maxFrameBytes: 'actor-ts.http.websocket.max-frame-bytes',
+      onOversizeFrame: 'actor-ts.http.websocket.on-oversize-frame',
+      onInvalidMessage: 'actor-ts.http.websocket.on-invalid-message',
+      maxBufferedBytes: 'actor-ts.http.websocket.max-buffered-bytes',
+      onBackpressure: 'actor-ts.http.websocket.on-backpressure',
+      /** Comment-only in `reference.conf` — unset means unlimited. */
+      maxConnections: 'actor-ts.http.websocket.max-connections',
+      maxPreAttachFrames: 'actor-ts.http.websocket.max-pre-attach-frames',
+      maxPreAttachBytes: 'actor-ts.http.websocket.max-pre-attach-bytes',
+      acceptTimeout: 'actor-ts.http.websocket.accept-timeout',
+      /**
+       * Comment-only in `reference.conf` — unset means "no per-route bound", so
+       * each connection actor falls through to a matching `deployment` entry,
+       * then to `actor-ts.mailbox.default.*` (#1432, #868).
+       */
+      connectionMailboxCapacity: 'actor-ts.http.websocket.connection-mailbox-capacity',
+      /** Comment-only in `reference.conf`; only meaningful beside a capacity. */
+      connectionMailboxOverflow: 'actor-ts.http.websocket.connection-mailbox-overflow',
+    },
     /** Outbound `HttpClient` defaults — the shared client and `newClient(...)`. */
-    client: 'actor-ts.http.client',
+    client: {
+      root: 'actor-ts.http.client',
+      maxResponseBytes: 'actor-ts.http.client.max-response-bytes',
+      defaultTimeout: 'actor-ts.http.client.default-timeout',
+      redirect: 'actor-ts.http.client.redirect',
+      maxRedirects: 'actor-ts.http.client.max-redirects',
+    },
   },
 
   /** Persistence plugin selection + config — `actor-ts.persistence.*`. */
   persistence: {
+    /**
+     * System-wide persistence *behaviour* (#874), read once by
+     * `PersistenceExtension` — as distinct from the plugin-id namespaces
+     * below, which name another config root each.
+     *
+     * These six sit **directly** under `actor-ts.persistence`, one level
+     * above where a plugin id can appear (`persistence.<axis>.<backend>`), so
+     * the "that block is exclusively plugin-id namespaces" reading that sent
+     * `actor-ts.projection` to the top level still holds for everything a
+     * backend owns.
+     *
+     * Full dotted leaves rather than a block root: with no `persistence` root
+     * above them, `NoDeadConfigKeys` has to find each leaf here by its exact
+     * path, where one root would make every key under `actor-ts.persistence`
+     * reachable — every plugin block's leaves and a misspelt one alike.
+     */
+    maxConcurrentRecoveries: 'actor-ts.persistence.max-concurrent-recoveries',
+    recoveryTimeout: 'actor-ts.persistence.recovery-timeout',
+    snapshotIsOptional: 'actor-ts.persistence.snapshot-is-optional',
+    /**
+     * The `CircuitBreakerExtension` id each store is called through — a name,
+     * not a block of numbers.  The numbers live under
+     * `actor-ts.circuit-breaker.<id>`, which #864 made the single home for
+     * them; publishing `max-failures` a second time here would be two homes
+     * for one mechanism.
+     */
+    journalBreaker: 'actor-ts.persistence.journal-breaker',
+    snapshotBreaker: 'actor-ts.persistence.snapshot-breaker',
+    /**
+     * Whether the selected stores open in the startup's `persistence-start`
+     * phase (#1473).  One switch for all three axes rather than one per
+     * axis: what it moves is *when* a bad connection string fails, and a
+     * deployment that wants that failure at boot wants it for every store.
+     */
+    autoStart: 'actor-ts.persistence.auto-start',
     journal: {
       plugin: 'actor-ts.persistence.journal.plugin',
       inMemory: 'actor-ts.persistence.journal.in-memory',
-      cassandra: 'actor-ts.persistence.journal.cassandra',
+      /**
+       * The Cassandra / ScyllaDB journal's block (#872, slice 3), and the
+       * widest of them: Cassandra is reached by a seed list rather than a URL,
+       * and its schema is four tables rather than one plus a derived name,
+       * because a wide-column store has no join to derive one with.
+       *
+       * Full dotted leaves beside the `root`, which is also the plugin id
+       * `CassandraPlugin.ts` registers: the reader takes each leaf through
+       * its own accessor, rebased onto the block in force.  That literal is no
+       * read, and `NoDeadConfigKeys` does not count it as one: the root only
+       * makes the leaves reachable, and each leaf is proven read by changing
+       * it and watching `readCassandraJournalOptionsFromConfig`'s answer
+       * (#1425).  The substring search the gate replaced did count it — this
+       * block is the worked example #872's triage cited.
+       *
+       * `consistency` and `serial-consistency` are **comment-only** in
+       * `reference.conf`.  Neither has a framework default - both read sites
+       * branch on `=== undefined` - so absence is what leaves the level to the
+       * driver, and a published number would pin a choice the framework never
+       * made.  `credentials` has no entry at all: it is key material, which
+       * never gets a path.  `replication` is not free-form driver config but
+       * the typed shape `keyspaceDdl` validates, so it is read leaf by leaf:
+       * `replication.class` (kebab-case values mapped to CQL's class names),
+       * `replication.replication-factor` and the **comment-only**
+       * `replication.data-centers`, a list of `{ name, replication-factor }`
+       * entries rather than a map, because a data center's name is the
+       * operator's data, not a key (#1490).
+       */
+      cassandra: {
+        root: 'actor-ts.persistence.journal.cassandra',
+        contactPoints: 'actor-ts.persistence.journal.cassandra.contact-points',
+        keyspace: 'actor-ts.persistence.journal.cassandra.keyspace',
+        localDataCenter: 'actor-ts.persistence.journal.cassandra.local-data-center',
+        port: 'actor-ts.persistence.journal.cassandra.port',
+        autoCreateKeyspace: 'actor-ts.persistence.journal.cassandra.auto-create-keyspace',
+        replicationClass: 'actor-ts.persistence.journal.cassandra.replication.class',
+        replicationFactor: 'actor-ts.persistence.journal.cassandra.replication.replication-factor',
+        /** Comment-only in `reference.conf` - a list of `{ name, replication-factor }` entries. */
+        replicationDataCenters: 'actor-ts.persistence.journal.cassandra.replication.data-centers',
+        /** Comment-only in `reference.conf` - absence leaves the CQL level to the driver. */
+        consistency: 'actor-ts.persistence.journal.cassandra.consistency',
+        eventsTable: 'actor-ts.persistence.journal.cassandra.events-table',
+        metadataTable: 'actor-ts.persistence.journal.cassandra.metadata-table',
+        allIdsTable: 'actor-ts.persistence.journal.cassandra.all-ids-table',
+        tagIndexTable: 'actor-ts.persistence.journal.cassandra.tag-index-table',
+        partitionSize: 'actor-ts.persistence.journal.cassandra.partition-size',
+        autoCreateTables: 'actor-ts.persistence.journal.cassandra.auto-create-tables',
+        useTagIndex: 'actor-ts.persistence.journal.cassandra.use-tag-index',
+        lightweightTransactions: 'actor-ts.persistence.journal.cassandra.lightweight-transactions',
+        /** Comment-only in `reference.conf` - ignored unless the LWT above is on. */
+        serialConsistency: 'actor-ts.persistence.journal.cassandra.serial-consistency',
+      },
+      /**
+       * The SQLite journal's block — `root` is also `SQLITE_JOURNAL_PLUGIN_ID`,
+       * per the framework rule that a plugin id *is* the config section holding
+       * that plugin's settings (#872).
+       *
+       * Full dotted leaves beside the `root`, which is also the plugin id
+       * `SqlitePlugin.ts` registers — the shape `cassandra` above explains.
+       * A plugin-id literal is no read of the block, and `NoDeadConfigKeys`
+       * does not take it for one: the root only makes the leaves reachable,
+       * and each leaf is proven read by changing it and watching the
+       * registered reader's answer (#1425).
+       */
+      sqlite: {
+        root: 'actor-ts.persistence.journal.sqlite',
+        path: 'actor-ts.persistence.journal.sqlite.path',
+        eventsTable: 'actor-ts.persistence.journal.sqlite.events-table',
+        wal: 'actor-ts.persistence.journal.sqlite.wal',
+        busyTimeout: 'actor-ts.persistence.journal.sqlite.busy-timeout',
+      },
+      /**
+       * The five relational journals (#872, slice 2).  They all sit on
+       * `RelationalJournal`, so the table half of every block is the same three
+       * leaves and only the connection half differs — which is why the leaf
+       * names are identical across them and the reader bodies are not.
+       *
+       * `tags-table` is **comment-only** in `reference.conf` under every one of
+       * them: its default is derived from `events-table`
+       * (`${events}_tags`, `RelationalJournal.ts`), so absence is what selects
+       * it and a published value would pin the two apart the moment somebody
+       * renamed the event table.  Comment-only, it is invisible to
+       * `DocumentedDefaults`, which pins published leaves — so it still needs
+       * this entry, a reader, and the unpublished-leaf entry through which the
+       * reader registry has `NoDeadConfigKeys` introduce it at one value,
+       * change it to a second, and require the reader to answer the two
+       * differently.
+       *
+       * `client` / `pool` have no entry at all: they are live objects, so a
+       * config file cannot reach one.  Nor has `pool-config`: it is the
+       * driver's whole option surface, free-form and unvalidated, and stays
+       * the code-only long tail.  What an operator actually tunes has typed
+       * leaves instead — `postgres`'s `maxPoolSize` and the three after it,
+       * `mariadb`'s five and `mssql`'s five — each comment-only in
+       * `reference.conf` (unset leaves the driver's own default) and
+       * validated by the store's options validator.
+       */
+      postgres: {
+        root: 'actor-ts.persistence.journal.postgres',
+        url: 'actor-ts.persistence.journal.postgres.url',
+        eventsTable: 'actor-ts.persistence.journal.postgres.events-table',
+        tagsTable: 'actor-ts.persistence.journal.postgres.tags-table',
+        autoCreateTables: 'actor-ts.persistence.journal.postgres.auto-create-tables',
+        /** Comment-only in `reference.conf`, as are the three below — unset leaves pg's own default. */
+        maxPoolSize: 'actor-ts.persistence.journal.postgres.max-pool-size',
+        idleTimeout: 'actor-ts.persistence.journal.postgres.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.journal.postgres.connect-timeout',
+        caFile: 'actor-ts.persistence.journal.postgres.ca-file',
+      },
+      /** The MariaDB journal's block — see {@link postgres}. */
+      mariadb: {
+        root: 'actor-ts.persistence.journal.mariadb',
+        url: 'actor-ts.persistence.journal.mariadb.url',
+        eventsTable: 'actor-ts.persistence.journal.mariadb.events-table',
+        tagsTable: 'actor-ts.persistence.journal.mariadb.tags-table',
+        autoCreateTables: 'actor-ts.persistence.journal.mariadb.auto-create-tables',
+        /** Comment-only in `reference.conf`, as are the four below — unset leaves the connector's own default. */
+        maxPoolSize: 'actor-ts.persistence.journal.mariadb.max-pool-size',
+        acquireTimeout: 'actor-ts.persistence.journal.mariadb.acquire-timeout',
+        idleTimeout: 'actor-ts.persistence.journal.mariadb.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.journal.mariadb.connect-timeout',
+        caFile: 'actor-ts.persistence.journal.mariadb.ca-file',
+      },
+      /** The SQL Server journal's block — see {@link postgres}. */
+      mssql: {
+        root: 'actor-ts.persistence.journal.mssql',
+        url: 'actor-ts.persistence.journal.mssql.url',
+        eventsTable: 'actor-ts.persistence.journal.mssql.events-table',
+        tagsTable: 'actor-ts.persistence.journal.mssql.tags-table',
+        autoCreateTables: 'actor-ts.persistence.journal.mssql.auto-create-tables',
+        /** Comment-only in `reference.conf`, as are the four below — unset leaves node-mssql's own default. */
+        maxPoolSize: 'actor-ts.persistence.journal.mssql.max-pool-size',
+        idleTimeout: 'actor-ts.persistence.journal.mssql.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.journal.mssql.connect-timeout',
+        requestTimeout: 'actor-ts.persistence.journal.mssql.request-timeout',
+        caFile: 'actor-ts.persistence.journal.mssql.ca-file',
+      },
+      /** The libSQL journal's block — `auth-token` is the Turso credential. */
+      libsql: {
+        root: 'actor-ts.persistence.journal.libsql',
+        url: 'actor-ts.persistence.journal.libsql.url',
+        authToken: 'actor-ts.persistence.journal.libsql.auth-token',
+        eventsTable: 'actor-ts.persistence.journal.libsql.events-table',
+        tagsTable: 'actor-ts.persistence.journal.libsql.tags-table',
+        autoCreateTables: 'actor-ts.persistence.journal.libsql.auto-create-tables',
+      },
+      /**
+       * The Cloudflare D1 journal's block — three coordinates, not a URL, and
+       * the two bounds of the HTTP transport D1 is the one backend to speak
+       * over: `timeout` and `max-response-bytes` (#1490).
+       */
+      cloudflareD1: {
+        root: 'actor-ts.persistence.journal.cloudflare-d1',
+        accountId: 'actor-ts.persistence.journal.cloudflare-d1.account-id',
+        databaseId: 'actor-ts.persistence.journal.cloudflare-d1.database-id',
+        apiToken: 'actor-ts.persistence.journal.cloudflare-d1.api-token',
+        baseUrl: 'actor-ts.persistence.journal.cloudflare-d1.base-url',
+        timeout: 'actor-ts.persistence.journal.cloudflare-d1.timeout',
+        maxResponseBytes: 'actor-ts.persistence.journal.cloudflare-d1.max-response-bytes',
+        eventsTable: 'actor-ts.persistence.journal.cloudflare-d1.events-table',
+        tagsTable: 'actor-ts.persistence.journal.cloudflare-d1.tags-table',
+        autoCreateTables: 'actor-ts.persistence.journal.cloudflare-d1.auto-create-tables',
+      },
+      /**
+       * The MongoDB journal's block (#872, slice 3).  Mongo names its
+       * containers *collections*, so the leaf is `events-collection` rather
+       * than `events-table` and the switch is `auto-create-indexes` rather
+       * than `auto-create-tables` - the block says what the backend says,
+       * because a leaf named after another backend's vocabulary is a leaf an
+       * operator has to translate.
+       *
+       * `client-options` has no entry, for the reason `pool-config` has none:
+       * it is the driver's whole option surface, free-form and unvalidated,
+       * and stays the code-only long tail.  What an operator actually tunes on
+       * the client has typed leaves instead (#1490) — `maxPoolSize` and the
+       * four after it, each comment-only in `reference.conf` (unset leaves the
+       * driver's own default) and validated by the store's options validator.
+       */
+      mongodb: {
+        root: 'actor-ts.persistence.journal.mongodb',
+        url: 'actor-ts.persistence.journal.mongodb.url',
+        databaseName: 'actor-ts.persistence.journal.mongodb.database-name',
+        eventsCollection: 'actor-ts.persistence.journal.mongodb.events-collection',
+        autoCreateIndexes: 'actor-ts.persistence.journal.mongodb.auto-create-indexes',
+        /** Comment-only in `reference.conf`, as are the four below — unset leaves the driver's own default. */
+        maxPoolSize: 'actor-ts.persistence.journal.mongodb.max-pool-size',
+        minPoolSize: 'actor-ts.persistence.journal.mongodb.min-pool-size',
+        serverSelectionTimeout: 'actor-ts.persistence.journal.mongodb.server-selection-timeout',
+        connectTimeout: 'actor-ts.persistence.journal.mongodb.connect-timeout',
+        caFile: 'actor-ts.persistence.journal.mongodb.ca-file',
+      },
+      /**
+       * The DynamoDB journal's block (#872, slice 3).  Reached by a region and
+       * an optional endpoint override rather than a URL, and its table names
+       * carry the `actor_ts_` prefix the store defaults to: a DynamoDB table
+       * name is account- and region-global, so the bare `events` the SQL family
+       * uses would collide with whatever else the account owns.
+       *
+       * `client-config` has no entry, for the reason `pool-config` has none:
+       * it is the SDK's whole option surface and stays the code-only long
+       * tail; nor do credentials, which reach the SDK through its own default
+       * chain.  The client's retry and timeout settings have typed leaves
+       * instead (#1490) — `maxAttempts` and the three after it, each
+       * comment-only in `reference.conf`, because unset leaves the SDK's own
+       * resolution (an `AWS_*` environment variable, the shared config file)
+       * that a shipped value would overrule.
+       *
+       * The table provisioning has leaves (#1490): `billing-mode` (kebab-case
+       * values the reader maps to AWS's), `table-ready-timeout`,
+       * `auto-create-tables`, and the capacity pair under
+       * `provisioned-throughput`, which is **comment-only** — published, it
+       * would be refused for every store under the default `pay-per-request`
+       * mode.
+       */
+      dynamodb: {
+        root: 'actor-ts.persistence.journal.dynamodb',
+        region: 'actor-ts.persistence.journal.dynamodb.region',
+        endpoint: 'actor-ts.persistence.journal.dynamodb.endpoint',
+        eventsTable: 'actor-ts.persistence.journal.dynamodb.events-table',
+        billingMode: 'actor-ts.persistence.journal.dynamodb.billing-mode',
+        /** Comment-only in `reference.conf`, as is the write half — see above. */
+        provisionedThroughputReadCapacityUnits:
+          'actor-ts.persistence.journal.dynamodb.provisioned-throughput.read-capacity-units',
+        provisionedThroughputWriteCapacityUnits:
+          'actor-ts.persistence.journal.dynamodb.provisioned-throughput.write-capacity-units',
+        tableReadyTimeout: 'actor-ts.persistence.journal.dynamodb.table-ready-timeout',
+        autoCreateTables: 'actor-ts.persistence.journal.dynamodb.auto-create-tables',
+        /** Comment-only in `reference.conf`, as are the three below — see above. */
+        maxAttempts: 'actor-ts.persistence.journal.dynamodb.max-attempts',
+        retryMode: 'actor-ts.persistence.journal.dynamodb.retry-mode',
+        requestTimeout: 'actor-ts.persistence.journal.dynamodb.request-timeout',
+        connectionTimeout: 'actor-ts.persistence.journal.dynamodb.connection-timeout',
+      },
     },
     snapshotStore: {
       plugin: 'actor-ts.persistence.snapshot-store.plugin',
-      inMemory: 'actor-ts.persistence.snapshot-store.in-memory',
-      cassandra: 'actor-ts.persistence.snapshot-store.cassandra',
-      objectStorage: 'actor-ts.persistence.snapshot-store.object-storage',
+      /**
+       * The in-memory snapshot store's block - `root` is the plugin id
+       * `PersistenceExtension` installs when nothing is configured, and
+       * `keep-n` is its one leaf (#872, slice 3).
+       *
+       * The only leaf outside the per-backend fan-out, and the store whose
+       * retention deliberately diverges: every persistent store keeps three
+       * snapshots per id, this one keeps all of them, because a default bound
+       * on the store an unconfigured application gets would quietly change what
+       * that application retains.  The leaf is what lets a long-running fixture
+       * bound it without reaching for code.
+       */
+      inMemory: {
+        root: 'actor-ts.persistence.snapshot-store.in-memory',
+        keepN: 'actor-ts.persistence.snapshot-store.in-memory.keep-n',
+      },
+      /** The Cassandra / ScyllaDB snapshot store's block - see {@link journal}'s `cassandra`. */
+      cassandra: {
+        root: 'actor-ts.persistence.snapshot-store.cassandra',
+        contactPoints: 'actor-ts.persistence.snapshot-store.cassandra.contact-points',
+        keyspace: 'actor-ts.persistence.snapshot-store.cassandra.keyspace',
+        localDataCenter: 'actor-ts.persistence.snapshot-store.cassandra.local-data-center',
+        port: 'actor-ts.persistence.snapshot-store.cassandra.port',
+        autoCreateKeyspace: 'actor-ts.persistence.snapshot-store.cassandra.auto-create-keyspace',
+        replicationClass: 'actor-ts.persistence.snapshot-store.cassandra.replication.class',
+        replicationFactor: 'actor-ts.persistence.snapshot-store.cassandra.replication.replication-factor',
+        /** Comment-only in `reference.conf` - a list of `{ name, replication-factor }` entries. */
+        replicationDataCenters: 'actor-ts.persistence.snapshot-store.cassandra.replication.data-centers',
+        /** Comment-only in `reference.conf` - absence leaves the CQL level to the driver. */
+        consistency: 'actor-ts.persistence.snapshot-store.cassandra.consistency',
+        snapshotsTable: 'actor-ts.persistence.snapshot-store.cassandra.snapshots-table',
+        keepN: 'actor-ts.persistence.snapshot-store.cassandra.keep-n',
+        autoCreateTables: 'actor-ts.persistence.snapshot-store.cassandra.auto-create-tables',
+      },
+      /** The SQLite snapshot store's block — see {@link journal}'s `sqlite`. */
+      sqlite: {
+        root: 'actor-ts.persistence.snapshot-store.sqlite',
+        path: 'actor-ts.persistence.snapshot-store.sqlite.path',
+        snapshotsTable: 'actor-ts.persistence.snapshot-store.sqlite.snapshots-table',
+        keepN: 'actor-ts.persistence.snapshot-store.sqlite.keep-n',
+        busyTimeout: 'actor-ts.persistence.snapshot-store.sqlite.busy-timeout',
+      },
+      /**
+       * The five relational snapshot stores (#872, slice 2) — see
+       * {@link journal}'s `postgres`.  The connection is repeated under each
+       * plugin root rather than hoisted to a per-backend one, because a plugin
+       * id *is* its config section: the three axes are selected independently
+       * and may legitimately name different databases.  A deployment that does
+       * share one connection deduplicates it with a HOCON substitution.
+       */
+      postgres: {
+        root: 'actor-ts.persistence.snapshot-store.postgres',
+        url: 'actor-ts.persistence.snapshot-store.postgres.url',
+        snapshotsTable: 'actor-ts.persistence.snapshot-store.postgres.snapshots-table',
+        keepN: 'actor-ts.persistence.snapshot-store.postgres.keep-n',
+        autoCreateTables: 'actor-ts.persistence.snapshot-store.postgres.auto-create-tables',
+        /** Comment-only, as are the three below — see {@link journal}'s `postgres`. */
+        maxPoolSize: 'actor-ts.persistence.snapshot-store.postgres.max-pool-size',
+        idleTimeout: 'actor-ts.persistence.snapshot-store.postgres.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.snapshot-store.postgres.connect-timeout',
+        caFile: 'actor-ts.persistence.snapshot-store.postgres.ca-file',
+      },
+      /** The MariaDB snapshot store's block — see {@link postgres}. */
+      mariadb: {
+        root: 'actor-ts.persistence.snapshot-store.mariadb',
+        url: 'actor-ts.persistence.snapshot-store.mariadb.url',
+        snapshotsTable: 'actor-ts.persistence.snapshot-store.mariadb.snapshots-table',
+        keepN: 'actor-ts.persistence.snapshot-store.mariadb.keep-n',
+        autoCreateTables: 'actor-ts.persistence.snapshot-store.mariadb.auto-create-tables',
+        /** Comment-only, as are the four below — see {@link journal}'s `mariadb`. */
+        maxPoolSize: 'actor-ts.persistence.snapshot-store.mariadb.max-pool-size',
+        acquireTimeout: 'actor-ts.persistence.snapshot-store.mariadb.acquire-timeout',
+        idleTimeout: 'actor-ts.persistence.snapshot-store.mariadb.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.snapshot-store.mariadb.connect-timeout',
+        caFile: 'actor-ts.persistence.snapshot-store.mariadb.ca-file',
+      },
+      /** The SQL Server snapshot store's block — see {@link postgres}. */
+      mssql: {
+        root: 'actor-ts.persistence.snapshot-store.mssql',
+        url: 'actor-ts.persistence.snapshot-store.mssql.url',
+        snapshotsTable: 'actor-ts.persistence.snapshot-store.mssql.snapshots-table',
+        keepN: 'actor-ts.persistence.snapshot-store.mssql.keep-n',
+        autoCreateTables: 'actor-ts.persistence.snapshot-store.mssql.auto-create-tables',
+        /** Comment-only, as are the four below — see {@link journal}'s `mssql`. */
+        maxPoolSize: 'actor-ts.persistence.snapshot-store.mssql.max-pool-size',
+        idleTimeout: 'actor-ts.persistence.snapshot-store.mssql.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.snapshot-store.mssql.connect-timeout',
+        requestTimeout: 'actor-ts.persistence.snapshot-store.mssql.request-timeout',
+        caFile: 'actor-ts.persistence.snapshot-store.mssql.ca-file',
+      },
+      /** The libSQL snapshot store's block — see {@link postgres}. */
+      libsql: {
+        root: 'actor-ts.persistence.snapshot-store.libsql',
+        url: 'actor-ts.persistence.snapshot-store.libsql.url',
+        authToken: 'actor-ts.persistence.snapshot-store.libsql.auth-token',
+        snapshotsTable: 'actor-ts.persistence.snapshot-store.libsql.snapshots-table',
+        keepN: 'actor-ts.persistence.snapshot-store.libsql.keep-n',
+        autoCreateTables: 'actor-ts.persistence.snapshot-store.libsql.auto-create-tables',
+      },
+      /** The Cloudflare D1 snapshot store's block — see {@link postgres}. */
+      cloudflareD1: {
+        root: 'actor-ts.persistence.snapshot-store.cloudflare-d1',
+        accountId: 'actor-ts.persistence.snapshot-store.cloudflare-d1.account-id',
+        databaseId: 'actor-ts.persistence.snapshot-store.cloudflare-d1.database-id',
+        apiToken: 'actor-ts.persistence.snapshot-store.cloudflare-d1.api-token',
+        baseUrl: 'actor-ts.persistence.snapshot-store.cloudflare-d1.base-url',
+        timeout: 'actor-ts.persistence.snapshot-store.cloudflare-d1.timeout',
+        maxResponseBytes: 'actor-ts.persistence.snapshot-store.cloudflare-d1.max-response-bytes',
+        snapshotsTable: 'actor-ts.persistence.snapshot-store.cloudflare-d1.snapshots-table',
+        keepN: 'actor-ts.persistence.snapshot-store.cloudflare-d1.keep-n',
+        autoCreateTables: 'actor-ts.persistence.snapshot-store.cloudflare-d1.auto-create-tables',
+      },
+      /** The MongoDB snapshot store's block - see {@link journal}'s `mongodb`. */
+      mongodb: {
+        root: 'actor-ts.persistence.snapshot-store.mongodb',
+        url: 'actor-ts.persistence.snapshot-store.mongodb.url',
+        databaseName: 'actor-ts.persistence.snapshot-store.mongodb.database-name',
+        snapshotsCollection: 'actor-ts.persistence.snapshot-store.mongodb.snapshots-collection',
+        keepN: 'actor-ts.persistence.snapshot-store.mongodb.keep-n',
+        autoCreateIndexes: 'actor-ts.persistence.snapshot-store.mongodb.auto-create-indexes',
+        /** Comment-only, as are the four below — see {@link journal}'s `mongodb`. */
+        maxPoolSize: 'actor-ts.persistence.snapshot-store.mongodb.max-pool-size',
+        minPoolSize: 'actor-ts.persistence.snapshot-store.mongodb.min-pool-size',
+        serverSelectionTimeout: 'actor-ts.persistence.snapshot-store.mongodb.server-selection-timeout',
+        connectTimeout: 'actor-ts.persistence.snapshot-store.mongodb.connect-timeout',
+        caFile: 'actor-ts.persistence.snapshot-store.mongodb.ca-file',
+      },
+      /** The DynamoDB snapshot store's block - see {@link journal}'s `dynamodb`. */
+      dynamodb: {
+        root: 'actor-ts.persistence.snapshot-store.dynamodb',
+        region: 'actor-ts.persistence.snapshot-store.dynamodb.region',
+        endpoint: 'actor-ts.persistence.snapshot-store.dynamodb.endpoint',
+        snapshotsTable: 'actor-ts.persistence.snapshot-store.dynamodb.snapshots-table',
+        keepN: 'actor-ts.persistence.snapshot-store.dynamodb.keep-n',
+        billingMode: 'actor-ts.persistence.snapshot-store.dynamodb.billing-mode',
+        /** Comment-only, as is the write half — see {@link journal}'s `dynamodb`. */
+        provisionedThroughputReadCapacityUnits:
+          'actor-ts.persistence.snapshot-store.dynamodb.provisioned-throughput.read-capacity-units',
+        provisionedThroughputWriteCapacityUnits:
+          'actor-ts.persistence.snapshot-store.dynamodb.provisioned-throughput.write-capacity-units',
+        tableReadyTimeout: 'actor-ts.persistence.snapshot-store.dynamodb.table-ready-timeout',
+        autoCreateTables: 'actor-ts.persistence.snapshot-store.dynamodb.auto-create-tables',
+        /** Comment-only, as are the three below — see {@link journal}'s `dynamodb`. */
+        maxAttempts: 'actor-ts.persistence.snapshot-store.dynamodb.max-attempts',
+        retryMode: 'actor-ts.persistence.snapshot-store.dynamodb.retry-mode',
+        requestTimeout: 'actor-ts.persistence.snapshot-store.dynamodb.request-timeout',
+        connectionTimeout: 'actor-ts.persistence.snapshot-store.dynamodb.connection-timeout',
+      },
+      /**
+       * The object-storage plugin's block — the framework's rule that a plugin
+       * id *is* its config section, so `root` is also
+       * `OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID` (#873).  It configures both stores
+       * `registerObjectStoragePlugins` returns, because the two share one
+       * backend; `durableState.objectStorage` below stays a bare plugin id and
+       * gets no leaves of its own.
+       *
+       * Full dotted leaves beside the `root`, for the reason `http.websocket`
+       * spells out.  The root is also the plugin id `ObjectStoragePlugin.ts`
+       * registers, which `NoDeadConfigKeys` does not mistake for a read of the
+       * block: it watches the registered reader's answer as each leaf
+       * changes, not the source text (#1425).
+       *
+       * No leaf carries key material, and that is structural rather than a
+       * convention: `s3.credentials`, the client-side master key and the
+       * integrity key have no path here at all, so a config file cannot
+       * express them.
+       */
+      objectStorage: {
+        root: 'actor-ts.persistence.snapshot-store.object-storage',
+        backend: 'actor-ts.persistence.snapshot-store.object-storage.backend',
+        prefix: 'actor-ts.persistence.snapshot-store.object-storage.prefix',
+        keepN: 'actor-ts.persistence.snapshot-store.object-storage.keep-n',
+        maxDecompressedBytes: 'actor-ts.persistence.snapshot-store.object-storage.max-decompressed-bytes',
+        compressionAlgorithm: 'actor-ts.persistence.snapshot-store.object-storage.compression.algorithm',
+        /** Comment-only in `reference.conf` — absence selects the encoder's per-algorithm default. */
+        compressionLevel: 'actor-ts.persistence.snapshot-store.object-storage.compression.level',
+        encryptionMode: 'actor-ts.persistence.snapshot-store.object-storage.encryption.mode',
+        encryptionKmsKeyId: 'actor-ts.persistence.snapshot-store.object-storage.encryption.kms-key-id',
+        s3Bucket: 'actor-ts.persistence.snapshot-store.object-storage.s3.bucket',
+        s3Region: 'actor-ts.persistence.snapshot-store.object-storage.s3.region',
+        s3Endpoint: 'actor-ts.persistence.snapshot-store.object-storage.s3.endpoint',
+        s3ForcePathStyle: 'actor-ts.persistence.snapshot-store.object-storage.s3.force-path-style',
+        filesystemDir: 'actor-ts.persistence.snapshot-store.object-storage.filesystem.dir',
+        filesystemLockTimeout: 'actor-ts.persistence.snapshot-store.object-storage.filesystem.lock-timeout',
+        filesystemStaleLock: 'actor-ts.persistence.snapshot-store.object-storage.filesystem.stale-lock',
+      },
     },
+    /**
+     * The third plug-in axis (#872).  It shipped as a namespace of ids nothing
+     * could select: `PersistenceExtension` carried only a journal and a
+     * snapshot-store registry, so `durable-state.object-storage` named a
+     * plugin that had to be threaded through application code by hand.
+     * `plugin` is the selector `PersistenceExtension.durableStateStore`
+     * resolves through, and `DurableStateActor` falls back to it when its
+     * options name no store.
+     */
     durableState: {
+      plugin: 'actor-ts.persistence.durable-state.plugin',
+      inMemory: 'actor-ts.persistence.durable-state.in-memory',
       objectStorage: 'actor-ts.persistence.durable-state.object-storage',
+      /** The SQLite durable-state store's block — see {@link journal}'s `sqlite`. */
+      sqlite: {
+        root: 'actor-ts.persistence.durable-state.sqlite',
+        path: 'actor-ts.persistence.durable-state.sqlite.path',
+        table: 'actor-ts.persistence.durable-state.sqlite.table',
+        autoCreateTables: 'actor-ts.persistence.durable-state.sqlite.auto-create-tables',
+        busyTimeout: 'actor-ts.persistence.durable-state.sqlite.busy-timeout',
+      },
+      /**
+       * The five relational durable-state stores (#872, slice 2) — see
+       * {@link journal}'s `postgres`.  These are the blocks that made the
+       * axis worth having beyond SQLite: each backend's durable-state store is
+       * now a registered factory rather than an instance the register helper
+       * built eagerly and handed back, so the id here selects it.
+       */
+      postgres: {
+        root: 'actor-ts.persistence.durable-state.postgres',
+        url: 'actor-ts.persistence.durable-state.postgres.url',
+        table: 'actor-ts.persistence.durable-state.postgres.table',
+        autoCreateTables: 'actor-ts.persistence.durable-state.postgres.auto-create-tables',
+        /** Comment-only, as are the three below — see {@link journal}'s `postgres`. */
+        maxPoolSize: 'actor-ts.persistence.durable-state.postgres.max-pool-size',
+        idleTimeout: 'actor-ts.persistence.durable-state.postgres.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.durable-state.postgres.connect-timeout',
+        caFile: 'actor-ts.persistence.durable-state.postgres.ca-file',
+      },
+      /** The MariaDB durable-state store's block — see {@link postgres}. */
+      mariadb: {
+        root: 'actor-ts.persistence.durable-state.mariadb',
+        url: 'actor-ts.persistence.durable-state.mariadb.url',
+        table: 'actor-ts.persistence.durable-state.mariadb.table',
+        autoCreateTables: 'actor-ts.persistence.durable-state.mariadb.auto-create-tables',
+        /** Comment-only, as are the four below — see {@link journal}'s `mariadb`. */
+        maxPoolSize: 'actor-ts.persistence.durable-state.mariadb.max-pool-size',
+        acquireTimeout: 'actor-ts.persistence.durable-state.mariadb.acquire-timeout',
+        idleTimeout: 'actor-ts.persistence.durable-state.mariadb.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.durable-state.mariadb.connect-timeout',
+        caFile: 'actor-ts.persistence.durable-state.mariadb.ca-file',
+      },
+      /** The SQL Server durable-state store's block — see {@link postgres}. */
+      mssql: {
+        root: 'actor-ts.persistence.durable-state.mssql',
+        url: 'actor-ts.persistence.durable-state.mssql.url',
+        table: 'actor-ts.persistence.durable-state.mssql.table',
+        autoCreateTables: 'actor-ts.persistence.durable-state.mssql.auto-create-tables',
+        /** Comment-only, as are the four below — see {@link journal}'s `mssql`. */
+        maxPoolSize: 'actor-ts.persistence.durable-state.mssql.max-pool-size',
+        idleTimeout: 'actor-ts.persistence.durable-state.mssql.idle-timeout',
+        connectTimeout: 'actor-ts.persistence.durable-state.mssql.connect-timeout',
+        requestTimeout: 'actor-ts.persistence.durable-state.mssql.request-timeout',
+        caFile: 'actor-ts.persistence.durable-state.mssql.ca-file',
+      },
+      /** The libSQL durable-state store's block — see {@link postgres}. */
+      libsql: {
+        root: 'actor-ts.persistence.durable-state.libsql',
+        url: 'actor-ts.persistence.durable-state.libsql.url',
+        authToken: 'actor-ts.persistence.durable-state.libsql.auth-token',
+        table: 'actor-ts.persistence.durable-state.libsql.table',
+        autoCreateTables: 'actor-ts.persistence.durable-state.libsql.auto-create-tables',
+      },
+      /** The Cloudflare D1 durable-state store's block — see {@link postgres}. */
+      cloudflareD1: {
+        root: 'actor-ts.persistence.durable-state.cloudflare-d1',
+        accountId: 'actor-ts.persistence.durable-state.cloudflare-d1.account-id',
+        databaseId: 'actor-ts.persistence.durable-state.cloudflare-d1.database-id',
+        apiToken: 'actor-ts.persistence.durable-state.cloudflare-d1.api-token',
+        baseUrl: 'actor-ts.persistence.durable-state.cloudflare-d1.base-url',
+        timeout: 'actor-ts.persistence.durable-state.cloudflare-d1.timeout',
+        maxResponseBytes: 'actor-ts.persistence.durable-state.cloudflare-d1.max-response-bytes',
+        table: 'actor-ts.persistence.durable-state.cloudflare-d1.table',
+        autoCreateTables: 'actor-ts.persistence.durable-state.cloudflare-d1.auto-create-tables',
+      },
+      /** The MongoDB durable-state store's block - see {@link journal}'s `mongodb`. */
+      mongodb: {
+        root: 'actor-ts.persistence.durable-state.mongodb',
+        url: 'actor-ts.persistence.durable-state.mongodb.url',
+        databaseName: 'actor-ts.persistence.durable-state.mongodb.database-name',
+        collection: 'actor-ts.persistence.durable-state.mongodb.collection',
+        /** Comment-only, as are the four below — see {@link journal}'s `mongodb`. */
+        maxPoolSize: 'actor-ts.persistence.durable-state.mongodb.max-pool-size',
+        minPoolSize: 'actor-ts.persistence.durable-state.mongodb.min-pool-size',
+        serverSelectionTimeout: 'actor-ts.persistence.durable-state.mongodb.server-selection-timeout',
+        connectTimeout: 'actor-ts.persistence.durable-state.mongodb.connect-timeout',
+        caFile: 'actor-ts.persistence.durable-state.mongodb.ca-file',
+      },
+      /**
+       * The DynamoDB durable-state store's block - see {@link journal}'s
+       * `dynamodb`.  There is no Cassandra sibling here at all: the tree ships
+       * no Cassandra durable-state store, so the "three stores per backend"
+       * model does not hold uniformly and this axis is two backends wide where
+       * the other two are three.
+       */
+      dynamodb: {
+        root: 'actor-ts.persistence.durable-state.dynamodb',
+        region: 'actor-ts.persistence.durable-state.dynamodb.region',
+        endpoint: 'actor-ts.persistence.durable-state.dynamodb.endpoint',
+        table: 'actor-ts.persistence.durable-state.dynamodb.table',
+        billingMode: 'actor-ts.persistence.durable-state.dynamodb.billing-mode',
+        /** Comment-only, as is the write half — see {@link journal}'s `dynamodb`. */
+        provisionedThroughputReadCapacityUnits:
+          'actor-ts.persistence.durable-state.dynamodb.provisioned-throughput.read-capacity-units',
+        provisionedThroughputWriteCapacityUnits:
+          'actor-ts.persistence.durable-state.dynamodb.provisioned-throughput.write-capacity-units',
+        tableReadyTimeout: 'actor-ts.persistence.durable-state.dynamodb.table-ready-timeout',
+        autoCreateTables: 'actor-ts.persistence.durable-state.dynamodb.auto-create-tables',
+        /** Comment-only, as are the three below — see {@link journal}'s `dynamodb`. */
+        maxAttempts: 'actor-ts.persistence.durable-state.dynamodb.max-attempts',
+        retryMode: 'actor-ts.persistence.durable-state.dynamodb.retry-mode',
+        requestTimeout: 'actor-ts.persistence.durable-state.dynamodb.request-timeout',
+        connectionTimeout: 'actor-ts.persistence.durable-state.dynamodb.connection-timeout',
+      },
     },
+  },
+
+  /**
+   * The management HTTP surface — `actor-ts.management.*`.  Two readers, one
+   * block: `readManagementRoutesOptionsFromConfig` supplies what
+   * `managementRoutes` layers under its explicit options, and
+   * `readHealthCheckRegistryOptionsFromConfig` supplies the per-check deadline
+   * the shared `HealthCheckRegistry` is built with.  They are separate because
+   * the registry exists from the first `healthChecksOf(system)` call, usually
+   * long before anything builds a route tree.
+   *
+   * Every leaf is spelled out rather than covered by a block root (#882): a
+   * root alone satisfies the `NoDeadConfigKeys` reachability check for
+   * everything beneath it, a misspelt leaf included.  That each leaf is read
+   * is the gate's other half, which no layout here decides.
+   *
+   * `auth` and `ipAllowlist` have no path here and cannot get one — they are
+   * `Middleware` functions, which HOCON has no way to express.  That is what
+   * makes the block unable to weaken the security wiring: it decides which
+   * endpoints exist and where the probes answer, never who may reach them.
+   */
+  management: {
+    enableLeaveEndpoint: 'actor-ts.management.enable-leave-endpoint',
+    enableDownEndpoint: 'actor-ts.management.enable-down-endpoint',
+    enableMetricsEndpoint: 'actor-ts.management.enable-metrics-endpoint',
+    authProtectHealth: 'actor-ts.management.auth-protect-health',
+    livenessPath: 'actor-ts.management.liveness-path',
+    readinessPath: 'actor-ts.management.readiness-path',
+    healthChecks: {
+      checkTimeout: 'actor-ts.management.health-checks.check-timeout',
+    },
+  },
+
+  /**
+   * The registries `MetricsExtension` builds — `actor-ts.metrics.*` (#1466).
+   * Two readers, one block, because the two registries take different slices
+   * of it: `readMetricsRegistryOptionsFromConfig` feeds `enable()`, whose
+   * in-process registry has a cap and no prefix concept, and
+   * `readPromClientAdapterOptionsFromConfig` feeds `enablePromClient()`, whose
+   * prom-client bridge takes both.
+   *
+   * The block is about the registry and nothing else.  The scrape endpoint and
+   * the worker-mesh relay keep their switches where they are served
+   * (`management.enable-metrics-endpoint`, `worker-mesh.metrics-relay-interval`),
+   * since those are read by the route tree and the mesh, which never build a
+   * registry.
+   *
+   * Every leaf is spelled out rather than covered by a block root: a root
+   * alone satisfies the `NoDeadConfigKeys` reachability check for everything
+   * beneath it.
+   */
+  metrics: {
+    maxSeriesPerFamily: 'actor-ts.metrics.max-series-per-family',
+    namePrefix: 'actor-ts.metrics.name-prefix',
+  },
+
+  /**
+   * The OpenTelemetry tracer `TracingExtension.enableOtel()` builds, and the
+   * OpenTelemetry logger the `ActorSystem` constructor builds from the
+   * `otelLogs` slot — `actor-ts.tracing.*` (#1466).
+   * `readOtelAdapterOptionsFromConfig` supplies the name and version the
+   * tracer asks `getTracer` for, `readOtelLogsAdapterOptionsFromConfig` the
+   * pair the logger asks `getLogger` for, each layered under its explicit
+   * options; the free `otelTracer` and `otelLogger` take no config and stay
+   * the pure code paths.
+   *
+   * The `@opentelemetry/api` and `@opentelemetry/api-logs` namespaces and a
+   * pre-built tracer or logger have no path and cannot get one: all are live
+   * objects, which HOCON has no way to express.
+   *
+   * Every leaf is spelled out rather than covered by a block root: a root
+   * alone satisfies the `NoDeadConfigKeys` reachability check for everything
+   * beneath it.
+   */
+  tracing: {
+    tracerName: 'actor-ts.tracing.tracer-name',
+    /** Comment-only in reference.conf — unset passes no version to `getTracer`. */
+    tracerVersion: 'actor-ts.tracing.tracer-version',
+    loggerName: 'actor-ts.tracing.logger-name',
+    /** Comment-only in reference.conf — unset passes no version to `getLogger`. */
+    loggerVersion: 'actor-ts.tracing.logger-version',
+  },
+
+  /**
+   * Named circuit breakers — `actor-ts.circuit-breaker.*`.  Read by
+   * `CircuitBreakerExtension.breaker(id)`, which layers
+   * `<root>.<id>.*` over `<root>.default.*` over the built-in floor, and the
+   * caller's explicit options over all three.
+   *
+   * `default` is reserved: it is the defaults block AND the id `breaker()`
+   * resolves with no argument, which is the same thing twice rather than a
+   * collision.  `<root>.<id>.*` cannot be declared here at all — the id is the
+   * application's — which is what `ConfigKeys.cache.root` is for too.
+   *
+   * Every leaf under `default` is spelled out rather than covered by a
+   * `default` root, so `readCircuitBreakerOptionsFromConfig` takes the
+   * defaults block through the same leaf set `circuitBreakerKeysUnder` builds
+   * for a per-id one (#864).  `NoDeadConfigKeys` gains nothing from it:
+   * `root` already makes every key under `actor-ts.circuit-breaker`
+   * reachable, and each leaf is proven read by changing it and watching that
+   * reader's answer (#1425).
+   */
+  circuitBreaker: {
+    root: 'actor-ts.circuit-breaker',
+    default: {
+      maxFailures: 'actor-ts.circuit-breaker.default.max-failures',
+      resetTimeout: 'actor-ts.circuit-breaker.default.reset-timeout',
+      /** Comment-only in reference.conf — omitting it is what disables the per-call timeout. */
+      callTimeout: 'actor-ts.circuit-breaker.default.call-timeout',
+      maxResetTimeout: 'actor-ts.circuit-breaker.default.max-reset-timeout',
+      backoffFactor: 'actor-ts.circuit-breaker.default.backoff-factor',
+      randomFactor: 'actor-ts.circuit-breaker.default.random-factor',
+      ignoredErrorNames: 'actor-ts.circuit-breaker.default.ignored-error-names',
+    },
+  },
+
+  /**
+   * Process-wide projection defaults — `actor-ts.projection.*`.  Read by
+   * `ProjectionActor.byPersistenceId` / `byTag`, which layer them under the
+   * explicit `ProjectionOptions` of a single projection.
+   *
+   * Top-level rather than under `actor-ts.persistence.*` because that block is
+   * exclusively plugin-id namespaces (`journal.plugin` names another config
+   * root), so a tuning leaf dropped in there reads as a plugin id.
+   * `actor-ts.sharding` is the same shape — a top-level block owned by a
+   * subdirectory subsystem.
+   *
+   * Every leaf is spelled out rather than covered by a block root (#875): a
+   * root alone satisfies the `NoDeadConfigKeys` reachability check for
+   * everything beneath it, a misspelt leaf included.
+   *
+   * `groupAfterEnvelopes` reaches `handleGroup` projections only; a `handle`
+   * projection has no group to size and ignores it (#1448).
+   */
+  projection: {
+    recoveryStrategy: 'actor-ts.projection.recovery-strategy',
+    maxRetries: 'actor-ts.projection.max-retries',
+    retryBackoff: 'actor-ts.projection.retry-backoff',
+    maxRetryBackoff: 'actor-ts.projection.max-retry-backoff',
+    pollInterval: 'actor-ts.projection.poll-interval',
+    groupAfterEnvelopes: 'actor-ts.projection.group-after-envelopes',
+  },
+
+  /**
+   * `BackoffSupervisor` defaults — `actor-ts.backoff-supervisor.*`.  Read once
+   * per supervisor, in its `preStart`, and layered under the explicit
+   * `BackoffSupervisorOptions` of that supervisor.
+   *
+   * Top-level and a sibling of `actor-ts.circuit-breaker` rather than nested
+   * under an `actor-ts.pattern.*` umbrella: `actor-ts.worker-cluster` is the
+   * shape a block named after the options type it feeds already takes, and an
+   * umbrella nobody asked for would put the directory layout of `src/` into
+   * the key an operator types.
+   *
+   * Every leaf is spelled out rather than covered by a block root (#875): a
+   * root alone satisfies the `NoDeadConfigKeys` reachability check for
+   * everything beneath it, a misspelt leaf included.
+   */
+  backoffSupervisor: {
+    // The two window bounds drop the `Ms` a HOCON duration literal makes
+    // unnecessary, as `worker-cluster.restart-min-backoff` already does.
+    minBackoff: 'actor-ts.backoff-supervisor.min-backoff',
+    maxBackoff: 'actor-ts.backoff-supervisor.max-backoff',
+    randomFactor: 'actor-ts.backoff-supervisor.random-factor',
+    maxStashSize: 'actor-ts.backoff-supervisor.max-stash-size',
+    /** `never` | `after-min-stable` | a duration for the `after-time` variant. */
+    resetCounter: 'actor-ts.backoff-supervisor.reset-counter',
+    forward: 'actor-ts.backoff-supervisor.forward',
+    triggerOn: 'actor-ts.backoff-supervisor.trigger-on',
+    /** `auto` (min(50ms, min-backoff), resolved per supervisor) | a duration. */
+    drainGrace: 'actor-ts.backoff-supervisor.drain-grace',
+    forwardDuringGrace: 'actor-ts.backoff-supervisor.forward-during-grace',
   },
 
   /**
@@ -212,6 +1590,39 @@ export const ConfigKeys = {
     /** Auto-promotion `joining` → `weakly-up`; `0` keeps it opt-in (#841). */
     weaklyUpAfter: 'actor-ts.cluster.weakly-up-after',
     /**
+     * How often this node publishes a `ClusterStatsPublished` sample of its own
+     * membership view on `system.eventStream` (#842).  `0` arms no timer, which
+     * is what every release before the key did.
+     *
+     * Read by `readClusterOptionsFromConfig` into
+     * `ClusterOptionsType.publishStatsIntervalMs`; `Cluster._start` arms the
+     * timer only for a positive value.
+     *
+     * Not `actor-ts.devtools.stats-interval`, which paces the DevTools
+     * dashboard's own sampler over the websocket.  Same figures, different
+     * channel and different audience — and neither forwards into the other,
+     * because one number with two periodic sources is how two views of a
+     * cluster start disagreeing about it.
+     */
+    publishStatsInterval: 'actor-ts.cluster.publish-stats-interval',
+    /**
+     * How long a node may stay `joining` or `weakly-up` before it gives up the
+     * join (#1500).  `0` sets no deadline, which is what every release before
+     * the key did.  When it passes, the node asks whether anything can still
+     * promote it — the verdict the cold-start stall warning states — and only
+     * if nothing can does it warn, leave and run the coordinated-shutdown
+     * pipeline with `ClusterJoinUnsuccessfulReason`; otherwise it asks again
+     * every `seed-retry-interval`.
+     *
+     * Its own key rather than a reuse of `bootstrap.await-ready`: that one
+     * budgets a single `Cluster.bootstrap` call and is sized to the election
+     * grace (#1086), while this one applies to every `Cluster.join`,
+     * bootstrapped or not, and is composed with it on that path.  Read by
+     * `readClusterOptionsFromConfig` into
+     * `ClusterOptionsType.shutdownAfterUnsuccessfulJoinMs`.
+     */
+    shutdownAfterUnsuccessfulJoin: 'actor-ts.cluster.shutdown-after-unsuccessful-join',
+    /**
      * The two membership caps (#138).  They bound what unauthenticated gossip
      * can make the local member map hold — `maxFrameBytes` bounds one frame,
      * these bound what a sequence of well-formed frames accumulates.  `0`
@@ -219,6 +1630,111 @@ export const ConfigKeys = {
      */
     maxMembers: 'actor-ts.cluster.max-members',
     maxTombstones: 'actor-ts.cluster.max-tombstones',
+    /**
+     * Members that must be present before anything is promoted to `up` (#837)
+     * — the leader's promotions and a founder's own self-election alike.
+     *
+     * Not `bootstrap.minimum-members`, which sits one block down and is a
+     * *wait* predicate for `awaitReady` / `isReady`: that one counts `up`
+     * members and never changes a status, this one decides whether a status
+     * changes at all.  The `-before-up` suffix is what keeps the two apart in
+     * an operator's config file, and is the reason this key is not simply
+     * `minimum-members`.
+     */
+    minimumMembersBeforeUp: 'actor-ts.cluster.minimum-members-before-up',
+    /**
+     * Whether a node whose own downing decision removes it runs the
+     * coordinated-shutdown pipeline after leaving, with `ClusterDowningReason`
+     * (#1456).  Off by default; the trade between a downed node that keeps
+     * running and a wrong self-down that terminates one is on
+     * `DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN`.
+     *
+     * A direct child of the cluster block rather than of
+     * `split-brain-resolver`, because it is about what this node does once it
+     * is out, not about how a strategy picks a side — and
+     * `down-all-when-unstable` reaches it with no strategy's verdict at all.
+     * Read by `readClusterOptionsFromConfig` into
+     * `ClusterOptionsType.runCoordinatedShutdownWhenDown`.
+     */
+    runCoordinatedShutdownWhenDown: 'actor-ts.cluster.run-coordinated-shutdown-when-down',
+    /** `ClusterOptionsType.downSmallerIsland` (#1176). */
+    downSmallerIsland: 'actor-ts.cluster.down-smaller-island',
+    /**
+     * The peers this node announces itself to at start-up (#836).
+     *
+     * In config despite being per-node identity, and the reason is that it is
+     * *not* per-node in the shape the project prescribes: `Cluster` removes
+     * this node's own address before dialling, so a file naming the designated
+     * first node is correct on every node of the deployment — that node is
+     * left with an empty list and self-elects, everyone else dials it.  What
+     * stays out is `selfElection`, whose shared value is not merely useless
+     * but unsafe; the ranking is in `ClusterConfigDefaults`' own doc.
+     *
+     * Read as a **list** and only as a list: a single `${?SEED_NODES}` lands a
+     * string and `getStringList` refuses it.  The per-entry substitution form
+     * is what works, and `reference.conf` spells it out beside the key.
+     */
+    seedNodes: 'actor-ts.cluster.seed-nodes',
+    /**
+     * The role tags this node carries (#836) — what shard regions, singletons,
+     * the per-role thresholds above and the role-filtered downing strategies
+     * place on.
+     *
+     * The half of #836 that reverses nothing: no file ever gave a
+     * roles-specific reason to keep it out of HOCON, and `sharding.role`
+     * already lets a config file *filter* on a role, which is only usable if
+     * the same file can assign one.
+     */
+    roles: 'actor-ts.cluster.roles',
+    /**
+     * The application version this node states to its peers (#843) — an
+     * advisory, operator-facing label for the window of a rolling update in
+     * which old and new code share one cluster.  Gossiped on the member
+     * record and printed by `Member.toString` and `/cluster/members`; nothing
+     * places, routes or downs on it.
+     *
+     * Ships **comment-only** in `reference.conf`, the `remote.tcp.advertised-host`
+     * shape: a leaf that is always present could not mean "this node states no
+     * version", and that meaning is what keeps a fleet that never set one from
+     * putting anything on the wire.  Being leafless also keeps it from
+     * `DocumentedDefaults`, as it does `role` below; `NoDeadConfigKeys` sees
+     * it only because the reader registry introduces it at one value and
+     * changes it to a second, and the exact-object reader pins in
+     * `ClusterConfigDefaults.test.ts` are what bind the value.
+     */
+    appVersion: 'actor-ts.cluster.app-version',
+    /**
+     * Root of the per-role Up thresholds —
+     * `actor-ts.cluster.role.<role>.minimum-members-before-up` (#837).
+     *
+     * A root rather than leaves, and unavoidably so: the role names belong to
+     * the deployment, so no full path can be written down here.
+     * `ClusterOptions.ts` composes the leaf from this root, exactly as
+     * `redisCacheKeysUnder` composes a per-name cache block's.
+     *
+     * Ships **comment-only** in `reference.conf` for the same reason, so
+     * `DocumentedDefaults`, which walks `REFERENCE_CONF`'s leaves, never sees
+     * it, and `NoDeadConfigKeys` does only because the reader registry
+     * introduces the root as one role's block and changes its threshold.
+     * What checks this entry is `ClusterConfigDefaults.test.ts`, which reads
+     * a written-out role block back through `readClusterOptionsFromConfig`.
+     */
+    role: 'actor-ts.cluster.role',
+    /**
+     * Cluster-wide configuration agreement —
+     * `actor-ts.cluster.configuration-compatibility-check.*` (#844).  Read once
+     * by `readClusterOptionsFromConfig`; `Cluster` publishes the listed
+     * settings' *effective* values on the gossip overlay and compares what
+     * peers publish back.
+     *
+     * Full dotted leaves rather than a block root, for the reason
+     * `failure-detector.phi` below states: with no root above them,
+     * `NoDeadConfigKeys` has to find each leaf here by its exact path.
+     */
+    configurationCompatibilityCheck: {
+      enforce: 'actor-ts.cluster.configuration-compatibility-check.enforce',
+      checkedPaths: 'actor-ts.cluster.configuration-compatibility-check.checked-paths',
+    },
     /**
      * Tombstone housekeeping — `actor-ts.cluster.tombstone.*` (#841).  Grouped
      * in HOCON because an operator tunes the three together; the matching
@@ -230,10 +1746,117 @@ export const ConfigKeys = {
       pruneInterval: 'actor-ts.cluster.tombstone.prune-interval',
       minRetention: 'actor-ts.cluster.tombstone.min-retention',
     },
+    /**
+     * Failure detection — `actor-ts.cluster.failure-detector.*` (#840).
+     *
+     * `implementation` picks the algorithm; `heartbeat-interval` is shared by
+     * both and belongs to the cluster's heartbeat loop rather than to either
+     * detector (#1142), which is why the `phi` sub-block does not repeat it.
+     * `unreachable-after` / `down-after` are the *simple* detector's
+     * thresholds and mean nothing to the φ-accrual one, whose suspicion values
+     * live under `phi`.
+     *
+     * Full dotted leaves under `phi`, not a bare block root: with no root
+     * above them, `NoDeadConfigKeys` has to find each leaf here by its exact
+     * path to count it reachable, where a root would cover all six and a
+     * misspelt seventh.  Whether the reader reads them is the gate's other
+     * half, which changes each leaf and watches the reader's answer, whatever
+     * this file declares (#1425).
+     *
+     * `expected-response-after` takes the word `auto` or a duration (#1451):
+     * `auto` follows `heartbeat-interval` — the same single source as above,
+     * resolved by the detector rather than copied into its block.
+     *
+     * `auto-down` is the block's one policy leaf (#1426): whether a `down`
+     * verdict removes the peer when no split-brain strategy is configured.  It
+     * governs both detectors — φ reaches `down` too — so, like
+     * `implementation`, it is read flat into `failureDetectorAutoDown` rather
+     * than into the simple detector's thresholds.  On by default; off is the
+     * opt-out that parks the peer.  A configured strategy decides every
+     * removal whatever this says.
+     */
     failureDetector: {
+      implementation: 'actor-ts.cluster.failure-detector.implementation',
+      autoDown: 'actor-ts.cluster.failure-detector.auto-down',
       heartbeatInterval: 'actor-ts.cluster.failure-detector.heartbeat-interval',
       unreachableAfter: 'actor-ts.cluster.failure-detector.unreachable-after',
       downAfter: 'actor-ts.cluster.failure-detector.down-after',
+      phi: {
+        unreachableThreshold: 'actor-ts.cluster.failure-detector.phi.unreachable-threshold',
+        downThreshold: 'actor-ts.cluster.failure-detector.phi.down-threshold',
+        maxSampleSize: 'actor-ts.cluster.failure-detector.phi.max-sample-size',
+        minStdDeviation: 'actor-ts.cluster.failure-detector.phi.min-std-deviation',
+        acceptableHeartbeatPause: 'actor-ts.cluster.failure-detector.phi.acceptable-heartbeat-pause',
+        expectedResponseAfter: 'actor-ts.cluster.failure-detector.phi.expected-response-after',
+      },
+    },
+
+    /**
+     * Split-brain resolution — `actor-ts.cluster.split-brain-resolver.*`
+     * (#838).  `active-strategy` names which `DowningProvider`
+     * `readDowningFromConfig` (`src/cluster/downing/DowningFromConfig.ts`)
+     * builds; the per-strategy leaves are that strategy's own options.
+     *
+     * All five strategies are selectable.  `lease-majority` arbitrates through
+     * a lease built from `actor-ts.coordination.lease` (#1454): the reader
+     * checks that block when the cluster starts — `lease.backend = none`
+     * refuses the strategy — and the lease itself is built at the first
+     * decision, because its owner is this node's address and the provider
+     * exists before the address does.  There is no `lease-majority` sub-block;
+     * one written is refused.
+     *
+     * `static-quorum.quorum-size` and the two `keep-referee` leaves ship
+     * **comment-only** in `reference.conf`, so `hasPath` stays false until an
+     * operator sets one.  Each is required or bounded and has no legal
+     * default: `quorum-size = 0` is refused by `StaticQuorumOptionsValidator`
+     * and `referee-address = ""` by `KeepRefereeOptionsValidator`, so a
+     * shipped leaf could only be a value that stops the node from starting.
+     * They are still declared here, which is what makes setting one in an
+     * `application.conf` work — the `remote.tcp.advertised-host` shape.
+     *
+     * Full dotted leaves rather than a `split-brain-resolver` root, for the
+     * reason `failure-detector.phi` above states: with no root above them,
+     * `NoDeadConfigKeys` has to find each leaf here by its exact path.
+     */
+    splitBrainResolver: {
+      activeStrategy: 'actor-ts.cluster.split-brain-resolver.active-strategy',
+      /**
+       * The policy half of the block (#839) — *when* the resolver is asked,
+       * as against which one `active-strategy` above builds.  Read by
+       * `readSplitBrainResolverOptionsFromConfig`
+       * (`src/cluster/downing/SplitBrainResolverOptions.ts`) into
+       * `ClusterOptionsType.splitBrainResolver`, and consumed by
+       * `Cluster.evaluateDowning`; no bundled strategy sees either value.
+       *
+       * They configure the *provider* path only.  With no provider there is
+       * no decision for a window to delay: the failure detector removes a
+       * `down` peer at `failure-detector.down-after` under the default
+       * `failure-detector.auto-down = on`, or parks it at `unreachable` when
+       * that is off (#1426), and putting a second window in front of that
+       * from this block would be two thresholds for one decision, under a name
+       * that says "resolver".
+       */
+      stableAfter: 'actor-ts.cluster.split-brain-resolver.stable-after',
+      downAllWhenUnstable: 'actor-ts.cluster.split-brain-resolver.down-all-when-unstable',
+      keepMajority: {
+        role: 'actor-ts.cluster.split-brain-resolver.keep-majority.role',
+      },
+      keepOldest: {
+        role: 'actor-ts.cluster.split-brain-resolver.keep-oldest.role',
+        downIfAlone: 'actor-ts.cluster.split-brain-resolver.keep-oldest.down-if-alone',
+      },
+      keepReferee: {
+        /** Comment-only in `reference.conf` — `""` is refused by the validator. */
+        refereeAddress: 'actor-ts.cluster.split-brain-resolver.keep-referee.referee-address',
+        /** Comment-only — absence is what "no extra quorum rule" has to look like. */
+        downAllIfBelowQuorum:
+          'actor-ts.cluster.split-brain-resolver.keep-referee.down-all-if-below-quorum',
+      },
+      staticQuorum: {
+        role: 'actor-ts.cluster.split-brain-resolver.static-quorum.role',
+        /** Comment-only in `reference.conf` — `0` is refused by the validator. */
+        quorumSize: 'actor-ts.cluster.split-brain-resolver.static-quorum.quorum-size',
+      },
     },
 
     /**
@@ -242,7 +1865,9 @@ export const ConfigKeys = {
      * are read once per `bootstrapCluster` call with `stableObservation`
      * enabled, layered under the explicit tuning; the readiness pair
      * (`await-ready`, `minimum-members`) is read by every `bootstrapCluster`
-     * call and by `Cluster.awaitReady` / `isReady`.
+     * call and by `Cluster.awaitReady` / `isReady`; `new-cluster-enabled` and
+     * the `discovery` sub-block are read by every `bootstrapCluster` call,
+     * before the join (#860).
      *
      * The election's *outcome* (`ClusterOptions.selfElection`) is
      * deliberately not configurable here: it differs per node by
@@ -260,6 +1885,115 @@ export const ConfigKeys = {
       selfElectionGrace: 'actor-ts.cluster.bootstrap.self-election-grace',
       awaitReady: 'actor-ts.cluster.bootstrap.await-ready',
       minimumMembers: 'actor-ts.cluster.bootstrap.minimum-members',
+      /**
+       * Whether a bootstrapped node may form a new cluster when it finds
+       * nobody to join (#860).  Published `on`, because a deployment's first
+       * start has to found one; off is the setting for every start after it,
+       * and `bootstrapCluster` warns once per start while it is on.
+       */
+      newClusterEnabled: 'actor-ts.cluster.bootstrap.new-cluster-enabled',
+      /**
+       * Which seed provider the bootstrap builds, and the service it asks
+       * about — `actor-ts.cluster.bootstrap.discovery.*` (#860).  Read by
+       * every `bootstrapCluster` call, not only the stable-observation one,
+       * and layered under the `discovery:` option in code.
+       *
+       * They live under `bootstrap` rather than under the top-level
+       * `discovery` group because they are properties of *this join*: which
+       * ladder a node climbs and whose members it is looking for.  The
+       * per-provider settings a deployment tunes independently of that
+       * choice are the `discovery` group below.
+       */
+      discovery: {
+        method: 'actor-ts.cluster.bootstrap.discovery.method',
+        serviceName: 'actor-ts.cluster.bootstrap.discovery.service-name',
+      },
+    },
+
+    /**
+     * Cluster-singleton placement and tuning — `actor-ts.cluster.singleton.*`
+     * (#855).  Read once per `ClusterSingleton.start`, which layers the block
+     * under the caller's `StartSingletonOptions`, **and** once per
+     * `ClusterSingleton.ref` — the only channel a proxy-only node has, since
+     * `ref()` takes no options object at all.
+     *
+     * Nested under `cluster` rather than top-level by the test
+     * {@link distributedData} states below, applied the other way round: that
+     * module is top-level because it ships from `src/crdt/` and its options
+     * type carries no `cluster` field.  The singleton fails both halves — it
+     * ships from `src/cluster/singleton/`, and
+     * `ClusterSingletonManagerOptionsType` carries a `cluster` field — so it
+     * nests, beside `pub-sub` and `receptionist`.
+     *
+     * Full dotted leaves rather than a bare `singleton` root, for the reason
+     * `failure-detector.phi` above states: with no root above them,
+     * `NoDeadConfigKeys` has to find each leaf here by its exact path.
+     *
+     * `useLease` gives each singleton a lease built from
+     * `actor-ts.coordination.lease` (#1454): refused at `start` while
+     * `lease.backend = none`, and outranked by an explicit `withLease(…)`.
+     * Three of the keys #855 proposed stay **absent on purpose**: `lease-name`
+     * (the name is derived per singleton, and one written is refused),
+     * `min-number-of-hand-over-retries` (the wait is bounded by
+     * `hand-over-timeout`, and nothing counts attempts) and
+     * `singleton-identification-interval` (the proxy never polls — it
+     * subscribes to cluster events once).  `hand-over-retry-interval` is
+     * refused in writing by `SINGLETON_HAND_OVER_RETRY_INTERVAL_MS`'s own JSDoc.
+     */
+    singleton: {
+      role: 'actor-ts.cluster.singleton.role',
+      useLease: 'actor-ts.cluster.singleton.use-lease',
+      bufferSize: 'actor-ts.cluster.singleton.buffer-size',
+      handOverTimeout: 'actor-ts.cluster.singleton.hand-over-timeout',
+      acquireRetryInterval: 'actor-ts.cluster.singleton.acquire-retry-interval',
+      maxHandOverStateBytes: 'actor-ts.cluster.singleton.max-hand-over-state-bytes',
+      restartOnTermination: 'actor-ts.cluster.singleton.restart-on-termination',
+    },
+
+    /**
+     * The outside-in `ClusterClient` and its cluster-side endpoint —
+     * `actor-ts.cluster.client.*` (#858).
+     *
+     * The client half is read by `readClusterClientOptionsFromConfig`, which
+     * — alone among the framework's config readers, and for the reason
+     * `readWorkerClusterOptionsFromConfig` states — loads the config itself:
+     * `new ClusterClient(options)` holds no `ActorSystem`, so there is no
+     * `system.config` above it.  The `receptionist` sub-block is read by
+     * `readClusterClientReceptionistOptionsFromConfig` from the system the
+     * extension runs in, and never self-loads.
+     *
+     * Nested here rather than folded into `receptionist` below, which is the
+     * *discovery* `Receptionist` (`src/discovery/Receptionist.ts`) — a
+     * different actor with a different protocol.  One shared word is not a
+     * reason to give an operator one block whose halves are read by two
+     * unrelated readers.
+     *
+     * `contact-points` ships **comment-only** in `reference.conf`, the
+     * `remote.tcp.advertised-host` shape: the list is per-deployment identity,
+     * and `[]` is refused by `ClusterClientOptionsValidator` rather than
+     * meaning "unset".  It is read all the same, which is what this entry
+     * records.
+     *
+     * Full dotted leaves rather than a `client` root, for the reason
+     * `failure-detector.phi` above states: with no root above them,
+     * `NoDeadConfigKeys` has to find each leaf here by its exact path.  What
+     * checks the values is `ClusterClientConfigDefaults.test.ts`, which pins
+     * each reader's return value exactly.
+     *
+     * `client-identity`, `tls` and `logger` are absent on purpose and stay
+     * that way: the first is the CSPRNG-drawn wire address a shared config
+     * value would defeat, the second is certificate material, and the third
+     * is a `Logger` instance.  `buffer-size` and `reconnect-timeout` are
+     * absent because the mechanisms are — #689 owns both and adds them here.
+     */
+    client: {
+      contactPoints: 'actor-ts.cluster.client.contact-points',
+      systemName: 'actor-ts.cluster.client.system-name',
+      askTimeout: 'actor-ts.cluster.client.ask-timeout',
+      connectTimeout: 'actor-ts.cluster.client.connect-timeout',
+      receptionist: {
+        askTimeout: 'actor-ts.cluster.client.receptionist.ask-timeout',
+      },
     },
 
     /**
@@ -291,6 +2025,66 @@ export const ConfigKeys = {
   },
 
   /**
+   * Seed-discovery provider settings — `actor-ts.discovery.*` (#860).  Read
+   * once per `bootstrapCluster` by `readAutoDiscoveryOptionsFromConfig`
+   * (`src/discovery/AutoDiscoveryOptions.ts`), which layers them under the
+   * explicit `AutoDiscoveryOptions` and above the `CLUSTER_*` environment
+   * variables the providers already read.
+   *
+   * Top-level rather than under `cluster.*` for the reason `distributedData`
+   * below is: the module is.  `src/discovery/` ships its own subpath export,
+   * a `SeedProvider` is built and then handed to the cluster, and the same
+   * providers serve a hand-wired `Cluster.join` that never bootstraps.
+   *
+   * Leaf by leaf rather than a block root, for the reason `reliableDelivery`
+   * spells out: with no root above them, `NoDeadConfigKeys` has to find each
+   * leaf here by its exact path.  Four of these seven ship no
+   * `reference.conf` leaf at all; the gate sets them only because the reader
+   * registry introduces each at one value and changes it to a second, which
+   * `readAutoDiscoveryOptionsFromConfig` has to answer differently.
+   *
+   * `dns.pinned-addresses`, `kubernetes.pinned-addresses`, `config.seeds` and
+   * `kubernetes.namespace` are the comment-only four.  The pins need "unset"
+   * to stay expressible — an always-present empty list cannot say "no
+   * pinning", and no pinning is the default (#145).  `namespace` and
+   * `config.seeds` have to stay unset for a *precedence* reason rather than an
+   * expressiveness one: each has a variable beneath it — `CLUSTER_NAMESPACE`,
+   * `CLUSTER_SEEDS` — and a published value would occupy the config layer on
+   * every node that configured nothing, which is exactly how the first cut of
+   * this block made `CLUSTER_NAMESPACE` unreachable.  For `config.seeds` that
+   * holds even of `[]`, which is not "unset": it drops the static rung and
+   * silences the variable (#1499).  The list itself is a deployment topology,
+   * correct on every node when it names the designated first node.
+   *
+   * The two pin entries are spelled `dnsPinnedAddresses` /
+   * `kubernetesPinnedAddresses` rather than sharing one `pinnedAddresses`
+   * name under their own sub-blocks.  That was for the substring search the
+   * dead-key gate ran before #1425, which reduced an accessor to its group
+   * plus its **last** segment, so two siblings with one final name vouched
+   * for each other.  The perturbation gate changes each key on its own and
+   * reads no accessor names, so nothing depends on the distinct finals now.
+   */
+  discovery: {
+    dns: {
+      cacheTtl: 'actor-ts.discovery.dns.cache-ttl',
+      useSrv: 'actor-ts.discovery.dns.use-srv',
+      /** Comment-only in `reference.conf` — unset means no pinning. */
+      dnsPinnedAddresses: 'actor-ts.discovery.dns.pinned-addresses',
+    },
+    kubernetes: {
+      requestTimeout: 'actor-ts.discovery.kubernetes.request-timeout',
+      /** Comment-only in `reference.conf` — unset falls through to `CLUSTER_NAMESPACE`. */
+      namespace: 'actor-ts.discovery.kubernetes.namespace',
+      /** Comment-only in `reference.conf` — unset means no pinning. */
+      kubernetesPinnedAddresses: 'actor-ts.discovery.kubernetes.pinned-addresses',
+    },
+    config: {
+      /** Comment-only in `reference.conf` — `CLUSTER_SEEDS` sits beneath it, and even `[]` would silence it. */
+      seeds: 'actor-ts.discovery.config.seeds',
+    },
+  },
+
+  /**
    * DistributedData tuning — `actor-ts.distributed-data.*`.  Read once per
    * `DistributedData.start`, which layers them under the explicit options
    * (#140, #856).
@@ -312,12 +2106,154 @@ export const ConfigKeys = {
    * carry.  It reads as a size (`1M`), and it is clamped down to
    * `remote.max-frame-bytes` at consume time — a budget above the wire cap is
    * the configuration that reintroduces #691, so it is not expressible (#691).
+   *
+   * `log-data-size-exceeding` reports on the same measurement one order of
+   * magnitude earlier and changes nothing: a key past it still gossips, it is
+   * merely named, because a value at a large fraction of the budget slows
+   * every other key's sweep and nothing else says so.  `durable-keys` is the
+   * only leaf here that is not a bound — it narrows what a configured
+   * `durableStore` writes, and an empty list means every key (#856).
+   *
+   * `quorum-timeout` is the deadline a quorum call gets when it names none,
+   * resolved in the replicator so that `max-quorum-timeout` clamps it like a
+   * caller's own.  It shares its built-in value with `actor.ask-timeout` and
+   * nothing else: that key moves `ActorRef.ask`, and inheriting it would tie
+   * how long a replica holds a pending slot to an unrelated wait (#856).
    */
   distributedData: {
     gossipInterval: 'actor-ts.distributed-data.gossip-interval',
+    quorumTimeout: 'actor-ts.distributed-data.quorum-timeout',
     maxPendingQuorumRequests: 'actor-ts.distributed-data.max-pending-quorum-requests',
     maxQuorumTimeout: 'actor-ts.distributed-data.max-quorum-timeout',
     maxGossipBytes: 'actor-ts.distributed-data.max-gossip-bytes',
+    logDataSizeExceeding: 'actor-ts.distributed-data.log-data-size-exceeding',
+    durableKeys: 'actor-ts.distributed-data.durable-keys',
+  },
+
+  /**
+   * Reliable delivery — `actor-ts.reliable-delivery.*` (#861).
+   *
+   * Every leaf is spelled out rather than covered by a block root, for the
+   * reason the two groups below it give: with no root above them,
+   * `NoDeadConfigKeys` has to find each leaf here by its exact path.  The
+   * readers are `readProducerControllerOptionsFromConfig`
+   * (`src/delivery/ProducerControllerOptions.ts`) and
+   * `readConsumerControllerOptionsFromConfig`
+   * (`src/delivery/ConsumerControllerOptions.ts`), layered in
+   * `ReliableDelivery.producer` / `.consumer`.
+   *
+   * The block is named for the `ReliableDelivery` class and the
+   * `reliable-delivery.*` message kinds on the wire, not for the `src/delivery`
+   * directory: `actor-ts.logger.sinks.*.delivery.*` is already taken by log-sink
+   * batching, with its own `DeliveryOptions` type and `DEFAULT_DELIVERY_*`
+   * constants, so a top-level `actor-ts.delivery` would collide in prose and in
+   * constant naming even though HOCON would keep the two apart.
+   *
+   * `producer-idle-time-to-live` spells out the field's `Ttl`, following
+   * `cluster.tombstone.time-to-live` ⇔ `tombstoneTtlMs` above — the same
+   * divergence from the leaf/field lockstep, and the same reason for it: the
+   * `Ms` suffix is carried by the HOCON duration unit and the abbreviation is
+   * one AGENTS.md asks to spell out.
+   *
+   * `consumer.max-out-of-order` is the one leaf sized against another:
+   * `producer.window-size` sends are already in flight when a gap opens, so a
+   * cap below the largest window stalls that producer on its first gap.  It
+   * ships at the same 1024 as `max-producers`, the bound the two halves of the
+   * deduplication budget share (#1471).
+   *
+   * `producer.producer-id` deliberately has no key.  It is a real options
+   * field, but one shared value across every producer in a process is the
+   * corruption `Constants.ts` documents — the consumer keys its deduplication
+   * on it, so two producers sharing an id reset each other's window.
+   */
+  reliableDelivery: {
+    producer: {
+      resendTimeout: 'actor-ts.reliable-delivery.producer.resend-timeout',
+      windowSize: 'actor-ts.reliable-delivery.producer.window-size',
+    },
+    consumer: {
+      maxProducers: 'actor-ts.reliable-delivery.consumer.max-producers',
+      producerIdleTimeToLive: 'actor-ts.reliable-delivery.consumer.producer-idle-time-to-live',
+      maxOutOfOrder: 'actor-ts.reliable-delivery.consumer.max-out-of-order',
+    },
+  },
+
+  /**
+   * Decoder ceilings — `actor-ts.serialization.read-constraints.*` (#880).
+   *
+   * Every leaf is declared individually rather than as a block root:
+   * `NoDeadConfigKeys`' reachability check accepts a root above a leaf, so a
+   * single `readConstraints` entry would cover all three and any misspelt
+   * fourth, where declared individually each has to be named exactly.  That
+   * each is read, the gate's other half proves by changing it and watching
+   * `readReadConstraintsOptionsFromConfig`'s answer, whatever this file lists.
+   *
+   * They bound READS only.  The encoder keeps a hard `MAX_NESTING_DEPTH`, so
+   * lowering `max-nesting-depth` makes this node stricter than its own writer
+   * and raising it past the encoder's cap is refused — a node that accepted
+   * what it cannot produce is the asymmetry #1036 closed.
+   */
+  serialization: {
+    readConstraints: {
+      maxNestingDepth: 'actor-ts.serialization.read-constraints.max-nesting-depth',
+      maxDocumentBytes: 'actor-ts.serialization.read-constraints.max-document-bytes',
+      maxStringLength: 'actor-ts.serialization.read-constraints.max-string-length',
+    },
+  },
+
+  /**
+   * Lease coordination — `actor-ts.coordination.*` (#859, #1454).
+   *
+   * Every leaf is spelled out rather than covered by a block root: with no
+   * root above them, `NoDeadConfigKeys` has to find each leaf here by its
+   * exact path, where a root would make any leaf under it reachable.  The
+   * readers here are `readLeaseOptionsFromConfig`
+   * (`src/coordination/LeaseOptions.ts`),
+   * `readKubernetesLeaseOptionsFromConfig`
+   * (`src/coordination/leases/KubernetesLeaseOptions.ts`) and
+   * `readLeaseBackendFromConfig` (`src/coordination/LeaseFromConfig.ts`).
+   *
+   * `lease.backend` names what the framework builds a lease with when a
+   * consumer's switch asks for one — `sharding.use-lease`,
+   * `cluster.singleton.use-lease`, `split-brain-resolver.active-strategy =
+   * lease-majority` (#1454).  `none` or `kubernetes`; `in-memory` is refused by
+   * name, because its store is per isolate and a configured one would gate
+   * nothing.  A built lease's name and owner have no key and are refused when
+   * written: the name is derived per consumer and the owner per node, and one
+   * value shared by a deployment could mean neither.
+   *
+   * `lease.ttl`, `lease.renewal-interval` and `lease.kubernetes.namespace`
+   * deliberately ship **no leaf** in `reference.conf`, so `hasPath` stays false
+   * until an operator sets one. Each is a field the code either requires or
+   * derives: a shipped `ttl` would satisfy `validateRequired` for every lease
+   * in the process and make the #596 guard unreachable; a shipped
+   * `renewal-interval` would displace the computed default (a third of the TTL
+   * with a floor of 500 ms for Kubernetes and 100 ms in memory, capped at half
+   * the TTL), and `0` cannot stand in for "derive it" because the validator
+   * rejects it; a shipped
+   * `namespace` could only be `""`, which the validator rejects too, and would
+   * take away "read it from the Pod's ServiceAccount mount". They are still
+   * read here, which is what makes setting one in an `application.conf` work.
+   *
+   * `acquire-retries` / `acquire-retry-delay` have no keys at all: the two
+   * backends ship different built-in defaults (3 / 100 ms for Kubernetes, 1 /
+   * 50 ms in memory) and a single leaf would silently unify them.
+   */
+  coordination: {
+    lease: {
+      backend: 'actor-ts.coordination.lease.backend',
+      ttl: 'actor-ts.coordination.lease.ttl',
+      renewalInterval: 'actor-ts.coordination.lease.renewal-interval',
+      kubernetes: {
+        namespace: 'actor-ts.coordination.lease.kubernetes.namespace',
+        namespacePath: 'actor-ts.coordination.lease.kubernetes.namespace-path',
+        tokenPath: 'actor-ts.coordination.lease.kubernetes.token-path',
+        caPath: 'actor-ts.coordination.lease.kubernetes.ca-path',
+        tokenReloadInterval: 'actor-ts.coordination.lease.kubernetes.token-reload-interval',
+        operationTimeout: 'actor-ts.coordination.lease.kubernetes.operation-timeout',
+        leaseNameMaxLength: 'actor-ts.coordination.lease.kubernetes.lease-name-max-length',
+      },
+    },
   },
 
   /**
@@ -330,45 +2266,372 @@ export const ConfigKeys = {
    * so an unset one keeps meaning "derive it from `tcp.host`" instead of being
    * permanently present and empty.
    *
+   * `tcp.port` and `tcp.advertised-port` are the same split one axis over
+   * (#845): the first is the port bound, the second the port peers dial, and
+   * the second likewise ships no leaf so that "the same as `tcp.port`" stays
+   * expressible.  It is the published-container-port case — a process
+   * listening on 2552 that the outside world reaches on the port
+   * `docker run -p 3000:2552` published — and nothing else needs it.
+   *
+   * The bind pair ships no leaf either (#1435), for a precedence reason rather
+   * than an expressiveness one: on the `bootstrapCluster` path `CLUSTER_HOST` /
+   * `POD_IP` / `HOSTNAME` sit beneath `tcp.host` and `CLUSTER_PORT` beneath
+   * `tcp.port`, and a published value would occupy the config layer on every
+   * node and leave the variables unreachable — the trap
+   * `discovery.kubernetes.namespace` fell into.  The built-in pair is
+   * `DEFAULT_BIND_HOST` / `DEFAULT_PORT` in `ClusterOptions.ts`, which the join
+   * applies beneath both.
+   *
    * `remote.tls.enabled` is read but **not honoured**: the transport
    * `Cluster` builds for itself is always plaintext, so the flag decides
    * nothing except whether the node warns about that at startup (#591).
    * Encrypting the wire is its own issue (#941); until it lands, a key that
    * says `true` and a socket that is not encrypted is exactly the gap the
    * warning exists to close.
+   *
+   * `untrusted-mode` and `trusted-selection-paths` narrow the one thing a
+   * remote party chooses — the `to` path on an inbound envelope (#877).  They
+   * do **not** decide whether `/system` is reachable: that is refused
+   * unconditionally in `EnvelopeTrust`, because a switch defaulted off would
+   * leave #964 open on every deployment that did not opt in.
+   *
+   * The last four are the transport's **association-lifecycle** bounds, which
+   * have been enforced since #588 and #697 and only became configurable in
+   * #846.  They are what an unauthenticated party can make this node hold:
+   * `handshake-timeout` reclaims a connection that never speaks its half of
+   * the handshake, `incomplete-frame-idle` reclaims one that went silent
+   * mid-frame, `max-inbound-connections` stops either cost from being
+   * multiplied by opening sockets in a loop, and `outbound-queue-size` bounds
+   * what this node holds for a peer that is not taking it.
+   *
+   * `handshake-timeout` is deliberately **one** key rather than a dial/accept
+   * pair.  The dialling side's clock starts before the TCP connect and the TLS
+   * handshake and the accepting side's starts after the accept, so equal
+   * numbers mean the peer that is still trying has always given up first; a
+   * split pair lets an operator set the acceptor stricter and make a healthy
+   * peer permanently unreachable.
+   *
+   * `connect-timeout` is not that split: it bounds only how long a dial may
+   * take to open, under the handshake deadline that still bounds the whole
+   * dial, so a peer that is not there is known before a slow one is given up
+   * on (#1475).  It ships **comment-only**, the `tcp.advertised-host` shape:
+   * unset means "the same as `handshake-timeout`", and a shipped number would
+   * refuse every `handshake-timeout` set below it, since the connect deadline
+   * may not exceed the handshake one.
    */
   remote: {
     tcp: {
       host: 'actor-ts.remote.tcp.host',
       advertisedHost: 'actor-ts.remote.tcp.advertised-host',
       port: 'actor-ts.remote.tcp.port',
+      advertisedPort: 'actor-ts.remote.tcp.advertised-port',
     },
     tls: {
       enabled: 'actor-ts.remote.tls.enabled',
     },
     maxFrameBytes: 'actor-ts.remote.max-frame-bytes',
+    untrustedMode: 'actor-ts.remote.untrusted-mode',
+    trustedSelectionPaths: 'actor-ts.remote.trusted-selection-paths',
+    handshakeTimeout: 'actor-ts.remote.handshake-timeout',
+    connectTimeout: 'actor-ts.remote.connect-timeout',
+    outboundQueueSize: 'actor-ts.remote.outbound-queue-size',
+    maxInboundConnections: 'actor-ts.remote.max-inbound-connections',
+    incompleteFrameIdle: 'actor-ts.remote.incomplete-frame-idle',
   },
 
   /**
    * Cluster-sharding defaults — `actor-ts.sharding.*`.  Read once per
    * started type by `ClusterSharding.start`, which layers them under the
-   * explicit options; the first five reach the region, the last two the
-   * per-type coordinator.
+   * explicit options; most reach the region, `rebalanceInterval` and
+   * `acquireRetryInterval` and `handOffTimeout` the per-type coordinator, and
+   * `shardRegionQueryTimeout` neither — it is the default
+   * `ClusterSharding.shards()` / `shardRefFor()` wait, held on this node.
    *
    * `shardPassivationIdle` has no leaf in `reference.conf` on purpose — it
    * must stay absent for "unset means: follow `passivationIdle`" to be
    * expressible, since a shipped value would make `hasPath` true forever.
+   *
+   * `bufferSize` caps the region's routing buffer as a **region-wide total**
+   * (#849).  The buffer is keyed by shard id, so reading it as per-shard
+   * multiplies the bound by `numberOfShards`; and `0` here means *never
+   * buffer*, the opposite polarity to `maxEntities = 0`, which means *no cap*.
+   *
+   * `role` names **which** role hosts a type; it does not *give* a node that
+   * role — `actor-ts.cluster.roles` does, and did not exist when this key
+   * shipped (#836).  Which role hosts a type is uniform across a
+   * deployment — which roles a node carries is not — and that asymmetry is
+   * both the argument for the key and the reason it ships as `""`: the empty
+   * string is the only way a shipped leaf can still mean *unrestricted*, since
+   * `reference.conf` merges under everything and would otherwise make
+   * `hasPath` true forever (#847).
+   *
+   * `useLease` gives every sharded type's coordinator a lease built from
+   * `actor-ts.coordination.lease` (#847, #1454).  With `lease.backend = none`
+   * the switch is refused when the type starts rather than producing no lease,
+   * which would advertise split-brain protection that is not there; an
+   * explicit `withLease(…)` wins over it.  `acquireRetryInterval` paces the
+   * coordinator's re-`acquire()` after a failed one, whichever way the lease
+   * arrived.  There is no `lease-name`, and one written is refused: the name is
+   * derived per type, and one value for the block would put every type on one
+   * record.
+   *
+   * The three `entityRecovery*` leaves pace how remembered entities come back
+   * after a region is handed a shard (#851).  They are declared here as full
+   * dotted paths rather than as an `entity-recovery` block root on purpose:
+   * `NoDeadConfigKeys`' reachability lookup falls back to *any* config root
+   * above a leaf, so a root-only entry would vouch for all three and any
+   * misspelt fourth, where declared each has to be named exactly.  That each
+   * is read is the gate's other half, proven by changing it and watching the
+   * registered reader's answer (#1425).
+   *
+   * `entityRecoveryConstantRateNumberOfEntities` is a **region-wide** budget,
+   * like `bufferSize` and `maxEntities` above and for the same reason: the
+   * recovery queue is fed by every shard the region owns, so read per shard
+   * the key would silently mean `numberOfShards ×` what it says.
+   *
+   * The two `rebalance*Limit` leaves bound shards **in flight**, not shards per
+   * tick, and they reach the coordinator rather than a strategy on purpose
+   * (#850): capping inside `LeastShardAllocationStrategy` — which already caps
+   * itself — would have left the default `HashAllocationStrategy`, and every
+   * user-supplied one, uncapped.
    */
   sharding: {
     numberOfShards: 'actor-ts.sharding.number-of-shards',
+    role: 'actor-ts.sharding.role',
     rememberEntities: 'actor-ts.sharding.remember-entities',
     passivationIdle: 'actor-ts.sharding.passivation-idle',
     shardPassivationIdle: 'actor-ts.sharding.shard-passivation-idle',
     maxEntities: 'actor-ts.sharding.max-entities',
+    /**
+     * Entity-replacement policy — `actor-ts.sharding.passivation.*` (#848).
+     * Grouped in HOCON because the five are only meaningful together and all
+     * five are inert without `max-entities`; the matching options fields stay
+     * flat (`passivationReplacement`, …), the same translation
+     * `cluster.tombstone.*` and `stale-region-detection.*` already make.
+     *
+     * Full dotted leaves, not a bare `passivation` root, for the reason
+     * `entity-recovery` above spells out: `NoDeadConfigKeys` resolves a leaf's
+     * reachability through *any* config root above it, so a root-only entry
+     * would vouch for all five whatever they were called.
+     *
+     * `passivation-idle` and `max-entities` above deliberately do NOT move in
+     * here.  Both are pinned as reference leaves at their current paths by the
+     * guards themselves, so relocating them means editing the tests that exist
+     * to catch relocation, and aliasing them means two leaves feeding one field
+     * with a precedence rule between them.
+     */
+    passivationReplacement: 'actor-ts.sharding.passivation.replacement',
+    passivationSegmentedProtectedProportion:
+      'actor-ts.sharding.passivation.segmented-protected-proportion',
+    passivationAdmissionWindowProportion:
+      'actor-ts.sharding.passivation.admission-window-proportion',
+    passivationAdmissionFilter: 'actor-ts.sharding.passivation.admission-filter',
+    passivationStopTimeout: 'actor-ts.sharding.passivation.stop-timeout',
+    bufferSize: 'actor-ts.sharding.buffer-size',
+    registerRetryInterval: 'actor-ts.sharding.register-retry-interval',
     rebalanceInterval: 'actor-ts.sharding.rebalance-interval',
     handOffTimeout: 'actor-ts.sharding.hand-off-timeout',
+    rebalanceAbsoluteLimit: 'actor-ts.sharding.rebalance-absolute-limit',
+    rebalanceRelativeLimit: 'actor-ts.sharding.rebalance-relative-limit',
+    acquireRetryInterval: 'actor-ts.sharding.acquire-retry-interval',
+    useLease: 'actor-ts.sharding.use-lease',
+    persistCoordinatorState: 'actor-ts.sharding.persist-coordinator-state',
+    coordinatorStateLoadTimeout: 'actor-ts.sharding.coordinator-state-load-timeout',
+    shardRegionQueryTimeout: 'actor-ts.sharding.shard-region-query-timeout',
+    entityRecoveryStrategy: 'actor-ts.sharding.entity-recovery.strategy',
+    entityRecoveryConstantRateFrequency: 'actor-ts.sharding.entity-recovery.constant-rate.frequency',
+    entityRecoveryConstantRateNumberOfEntities:
+      'actor-ts.sharding.entity-recovery.constant-rate.number-of-entities',
+    /**
+     * Stale-region detection — `actor-ts.sharding.stale-region-detection.*`
+     * (#853).  Grouped in HOCON because the three are only meaningful together;
+     * the matching options fields stay flat (`staleRegionDetection`,
+     * `regionHeartbeatIntervalMs`, `regionStaleAfterMs`), the same translation
+     * `cluster.tombstone.*` already makes.
+     *
+     * Full dotted leaves, not a bare `staleRegionDetection` root, and for the
+     * reason `entity-recovery` above spells out: `NoDeadConfigKeys` resolves a
+     * leaf's reachability through *any* config root above it, so a root-only
+     * entry would vouch for all three whatever they were called.
+     */
+    staleRegionDetection: {
+      enabled: 'actor-ts.sharding.stale-region-detection.enabled',
+      heartbeatInterval: 'actor-ts.sharding.stale-region-detection.heartbeat-interval',
+      staleAfter: 'actor-ts.sharding.stale-region-detection.stale-after',
+    },
+    /**
+     * How long a shard that stopped unexpectedly stays down before its region
+     * re-creates it — `actor-ts.sharding.shard-failure-backoff.*` (#1437).
+     * Grouped in HOCON because the four describe one backoff; the matching
+     * options fields stay flat (`shardFailureBackoffMinMs`, …), the
+     * translation `stale-region-detection.*` above already makes.
+     *
+     * Four full dotted leaves rather than a `shardFailureBackoff` root.
+     * `NoDeadConfigKeys` counts a leaf as read only when a registered reader
+     * answers differently once that leaf is perturbed, so a root can no longer
+     * carry an unread leaf through it — but the same guard decides whether a
+     * leaf is reachable from here by resolving it through any config root
+     * above it, and a root-only entry would vouch for leaves no accessor names.
+     */
+    shardFailureBackoff: {
+      min: 'actor-ts.sharding.shard-failure-backoff.min',
+      max: 'actor-ts.sharding.shard-failure-backoff.max',
+      randomFactor: 'actor-ts.sharding.shard-failure-backoff.random-factor',
+      resetAfter: 'actor-ts.sharding.shard-failure-backoff.reset-after',
+    },
+    /**
+     * How long an entity that stopped without being passivated stays down
+     * before its shard re-creates it — `actor-ts.sharding.entity-restart-backoff.*`
+     * (#1437).  The entity half of `shardFailureBackoff` above, in its shape and
+     * for its reasons: grouped in HOCON, flat in the options
+     * (`entityRestartBackoffMinMs`, …), and four full dotted leaves.
+     */
+    entityRestartBackoff: {
+      min: 'actor-ts.sharding.entity-restart-backoff.min',
+      max: 'actor-ts.sharding.entity-restart-backoff.max',
+      randomFactor: 'actor-ts.sharding.entity-restart-backoff.random-factor',
+      resetAfter: 'actor-ts.sharding.entity-restart-backoff.reset-after',
+    },
+    /**
+     * The sharded types this node is not ready without —
+     * `actor-ts.sharding.healthcheck.names` (#1465).  The one leaf of the block
+     * that is not read per started type: the `Cluster` constructor reads it once
+     * per `join`, and `registerClusterHealthChecks` installs a
+     * `shardRegionRegistered` readiness check per name beside the cluster's own
+     * pair, so a type the node never starts keeps it out of rotation.
+     *
+     * A full dotted leaf, not a `healthcheck` root, for the reason
+     * `entity-recovery` above spells out.  Deliberately alone in its block:
+     * there is no timeout, because the check is a set read with nothing to
+     * wait for, and no window after which it stops failing, because a refused
+     * region is exactly what it has to keep reporting.
+     */
+    healthcheck: {
+      names: 'actor-ts.sharding.healthcheck.names',
+    },
   },
 
+  /**
+   * `ShardedDaemonProcess.init` defaults — `actor-ts.sharded-daemon-process.*`
+   * (#854).  Read once per `init` and merged under the caller's options, which
+   * is the seam the module had none of: it used to cast its argument straight
+   * to the settings type, so a daemon set was configurable from code and from
+   * nowhere else.
+   *
+   * A top-level group rather than a nesting under {@link ConfigKeys.sharding}
+   * because a daemon set is a module built *on* sharding: `sharding.*` tunes
+   * every sharded type, these two tune only the daemons.
+   *
+   * Both are full dotted paths rather than a `shardedDaemonProcess` block root,
+   * for the reason `sharding.entityRecovery*` above spells out: `NoDeadConfigKeys`
+   * resolves a leaf's reachability through *any* config root above it, so a
+   * root-only entry would vouch for both whatever they were called.
+   *
+   * `name`, `numDaemons` and `actorFor` have no leaf: they describe one daemon
+   * set, not a deployment, and a factory has no HOCON form at all.
+   */
+  shardedDaemonProcess: {
+    livenessInterval: 'actor-ts.sharded-daemon-process.liveness-interval',
+    role: 'actor-ts.sharded-daemon-process.role',
+  },
+
+  /**
+   * DevTools attachment defaults — `actor-ts.devtools.*`.
+   *
+   * The block does not *start* DevTools: nothing in `ActorSystem` constructs
+   * the extension, and `DevTools.attach(system)` is always a code call.  It
+   * fills in what that call leaves unset, and is read once per attach or
+   * mount by `readDevToolsOptionsFromConfig`.
+   *
+   * Every leaf is declared individually, `panels` included, rather than as a
+   * block root read whole.  `NoDeadConfigKeys` resolves a leaf under a root
+   * to that root's accessor for reachability, so a root-only entry would
+   * vouch for leaves no accessor names; declared, each has to be named here.
+   * That each is read the gate proves by changing it and watching
+   * `readDevToolsOptionsFromConfig`'s answer, however that reader is written.
+   *
+   * `auth`, `ipAllowlist`, `backend`, `cluster` and `replayFolds` have no
+   * leaf because HOCON cannot express a function or a live object.
+   * `allowUngatedMount` and `allowMessageSending` have none by decision: one
+   * states a fact about the code that binds `mount()`'s routes rather than
+   * about a deployment, the other grants a browser write access into the
+   * running system (#881).
+   */
+  devtools: {
+    host: 'actor-ts.devtools.host',
+    port: 'actor-ts.devtools.port',
+    allowRemote: 'actor-ts.devtools.allow-remote',
+    serveUi: 'actor-ts.devtools.serve-ui',
+    allowedOrigins: 'actor-ts.devtools.allowed-origins',
+    /** Per-panel switches; a panel is disabled only by an explicit `false`. */
+    panels: {
+      actors: 'actor-ts.devtools.panels.actors',
+      cluster: 'actor-ts.devtools.panels.cluster',
+      tracing: 'actor-ts.devtools.panels.tracing',
+      explain: 'actor-ts.devtools.panels.explain',
+      timeTravel: 'actor-ts.devtools.panels.time-travel',
+      profiler: 'actor-ts.devtools.panels.profiler',
+      deadLetters: 'actor-ts.devtools.panels.dead-letters',
+      eventStream: 'actor-ts.devtools.panels.event-stream',
+      config: 'actor-ts.devtools.panels.config',
+      send: 'actor-ts.devtools.panels.send',
+    },
+    // The four interval leaves drop the `Ms` their fields carry and take a
+    // HOCON duration literal, as `cluster.receptionist.gossip-interval`
+    // (field `gossipIntervalMs`) already does.
+    mailboxSampleInterval: 'actor-ts.devtools.mailbox-sample-interval',
+    mailboxSampleLimit: 'actor-ts.devtools.mailbox-sample-limit',
+    statsInterval: 'actor-ts.devtools.stats-interval',
+    spanBufferCapacity: 'actor-ts.devtools.span-buffer-capacity',
+    spanFlushInterval: 'actor-ts.devtools.span-flush-interval',
+    // The one payload-granularity switch: it empties the tracing panel's
+    // Payload column and leaves the panel itself running, where
+    // `panels.tracing = false` takes the whole panel (#1420).
+    capturePayloads: 'actor-ts.devtools.capture-payloads',
+    eventBufferCapacity: 'actor-ts.devtools.event-buffer-capacity',
+    eventFlushInterval: 'actor-ts.devtools.event-flush-interval',
+    replayAutoCapture: 'actor-ts.devtools.replay-auto-capture',
+  },
+
+  /** Actors on worker threads from configuration alone — `actor-ts.parallelism.*` (#1563). */
+  parallelism: {
+    workers: 'actor-ts.parallelism.workers',
+    offload: 'actor-ts.parallelism.offload',
+    placement: 'actor-ts.parallelism.placement',
+    leader: 'actor-ts.parallelism.leader',
+    spawnTimeout: 'actor-ts.parallelism.spawn-timeout',
+    bufferSize: 'actor-ts.parallelism.buffer-size',
+  },
+  /** The function-level offload pool — `actor-ts.offload-pool.*` (#1558). */
+  offloadPool: {
+    size: 'actor-ts.offload-pool.size',
+    minSize: 'actor-ts.offload-pool.min-size',
+    maxQueue: 'actor-ts.offload-pool.max-queue',
+    overflow: 'actor-ts.offload-pool.overflow',
+    idleTimeout: 'actor-ts.offload-pool.idle-timeout',
+    taskTimeout: 'actor-ts.offload-pool.task-timeout',
+    maxRestarts: 'actor-ts.offload-pool.max-restarts',
+    restartWindow: 'actor-ts.offload-pool.restart-window',
+    warmUp: 'actor-ts.offload-pool.warm-up',
+  },
+  /**
+   * `actor-ts.worker-mesh.*` — the main thread joining its own workers (#1562).
+   * The actor module and the bootstrap are deliberately absent, as
+   * `worker-cluster.bootstrap` is: a config file must not decide which code a
+   * worker runs.  The restart knobs are `worker-cluster.*`'s and are read there.
+   */
+  workerMesh: {
+    workers: 'actor-ts.worker-mesh.workers',
+    mainHostname: 'actor-ts.worker-mesh.main-hostname',
+    mainPort: 'actor-ts.worker-mesh.main-port',
+    workerHostname: 'actor-ts.worker-mesh.worker-hostname',
+    basePort: 'actor-ts.worker-mesh.base-port',
+    mainRoles: 'actor-ts.worker-mesh.main-roles',
+    workerRoles: 'actor-ts.worker-mesh.worker-roles',
+    // A duration leaf drops the `Ms` its field carries, as the worker-cluster
+    // block's four do below (#1570).
+    metricsRelayInterval: 'actor-ts.worker-mesh.metrics-relay-interval',
+  },
   /**
    * `WorkerCluster.spawn` defaults — `actor-ts.worker-cluster.*`.
    *
@@ -379,15 +2642,66 @@ export const ConfigKeys = {
    */
   workerCluster: {
     workers: 'actor-ts.worker-cluster.workers',
+    systemName: 'actor-ts.worker-cluster.system-name',
+    hostname: 'actor-ts.worker-cluster.hostname',
+    basePort: 'actor-ts.worker-cluster.base-port',
+    // The four duration leaves drop the `Ms` their fields carry and take a
+    // HOCON duration literal, as `logger.close-timeout` (field
+    // `closeTimeoutMs`) and `…delivery.flush-interval` (field
+    // `flushIntervalMs`) already do.  A `…-ms` leaf would be the first in
+    // reference.conf and would make `10s` unwritable.
+    readyTimeout: 'actor-ts.worker-cluster.ready-timeout',
     restartPolicy: 'actor-ts.worker-cluster.restart-policy',
+    restartMinBackoff: 'actor-ts.worker-cluster.restart-min-backoff',
+    restartMaxBackoff: 'actor-ts.worker-cluster.restart-max-backoff',
+    restartRandomFactor: 'actor-ts.worker-cluster.restart-random-factor',
+    maxRestarts: 'actor-ts.worker-cluster.max-restarts',
+    restartWindow: 'actor-ts.worker-cluster.restart-window',
   },
 
-  /** CoordinatedShutdown pipeline defaults — `actor-ts.coordinated-shutdown.*`. */
+  /**
+   * The startup graph's budgets — `actor-ts.coordinated-startup.*` (#1473),
+   * read by `readCoordinatedStartupOptionsFromConfig` and layered under what
+   * `ActorSystemOptions.withCoordinatedStartup` sets in code.
+   *
+   * `phases` is a block root rather than a leaf and ships **comment-only**,
+   * for the reason the shutdown block's does: its children are named after
+   * the phases a deployment retimes or adds, so there is no fixed set of
+   * leaves to publish.  Its children are type-checked by the shutdown
+   * block's own reader, so the two blocks accept exactly the same settings.
+   */
+  coordinatedStartup: {
+    defaultPhaseTimeout: 'actor-ts.coordinated-startup.default-phase-timeout',
+    phases: 'actor-ts.coordinated-startup.phases',
+  },
+
+  /**
+   * CoordinatedShutdown pipeline defaults — `actor-ts.coordinated-shutdown.*`.
+   *
+   * Every leaf is read through `readCoordinatedShutdownOptionsFromConfig`, the
+   * registered reader: the extension's constructor applies what it returns,
+   * and `ActorSystem` reads `run-by-actor-system-terminate` through it when
+   * the system is built, because a bare `terminate()` must not build the
+   * extension to ask (#1455).  What it returns is no options triad — nothing in
+   * code hands the extension these settings, the reason
+   * `DEFAULT_PHASE_TIMEOUT_MS` gives in `src/Constants.ts` — only the shape
+   * the config layer reads into.
+   *
+   * `phases` is a block root rather than a leaf, and it ships **comment-only**
+   * in `reference.conf`: its children are named after the operator's phases,
+   * so there is no fixed set of leaves to publish, and an example one
+   * (`phases.service-unbind.timeout = 5s`) would freeze that example's budget
+   * into every deployment's effective config (#866).
+   */
   coordinatedShutdown: {
     defaultPhaseTimeout: 'actor-ts.coordinated-shutdown.default-phase-timeout',
     terminateActorSystem: 'actor-ts.coordinated-shutdown.terminate-actor-system',
     exitProcess: 'actor-ts.coordinated-shutdown.exit-process',
+    exitCode: 'actor-ts.coordinated-shutdown.exit-code',
     autoRegisterTasks: 'actor-ts.coordinated-shutdown.auto-register-tasks',
+    runByProcessSignals: 'actor-ts.coordinated-shutdown.run-by-process-signals',
+    runByActorSystemTerminate: 'actor-ts.coordinated-shutdown.run-by-actor-system-terminate',
+    phases: 'actor-ts.coordinated-shutdown.phases',
   },
 
   /**
@@ -404,3 +2718,25 @@ export const ConfigKeys = {
     transport: 'worker-transport',
   },
 } as const;
+
+/**
+ * The leaves of a TCP `framing` block under `root`.  The client and the
+ * listener carry the same block, so its shape is written once and composed
+ * under both roots, where two hand-written copies could drift apart.  The two
+ * caps keep their unit, as `max-frame-bytes` does under the WebSocket roots:
+ * they are sizes, and `64K` reads as 65 536 bytes.
+ *
+ * Here rather than beside `readFramingFromConfig`, which reads through it,
+ * because `ConfigKeys` is built from it and nothing in `src/config` imports the
+ * subsystems whose keys it lists.  Typed by its argument, so each path stays
+ * the string-literal type every other entry has.
+ */
+function tcpFramingKeysUnder<Root extends string>(root: Root) {
+  return {
+    root,
+    kind: `${root}.kind`,
+    delimiter: `${root}.delimiter`,
+    maxLineBytes: `${root}.max-line-bytes`,
+    maxFrameBytes: `${root}.max-frame-bytes`,
+  } as const;
+}

@@ -1,6 +1,13 @@
 import type { ActorSystem } from '../ActorSystem.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
+import { mergeOptions } from '../util/OptionsMerge.js';
 import { NOOP_TRACER } from './NoopTracer.js';
+import { otelTracer } from './OtelAdapter.js';
+import {
+  readOtelAdapterOptionsFromConfig,
+  type OtelAdapterOptions,
+  type OtelAdapterOptionsType,
+} from './OtelAdapterOptions.js';
 import type { Tracer } from './Tracer.js';
 
 /**
@@ -9,7 +16,9 @@ import type { Tracer } from './Tracer.js';
  * framework instrumentation can call `tracerOf(system).activeSpan()`
  * etc. without conditional checks.  Opt in by calling `enable(tracer)`
  * with either a `RecordingTracer` (for tests) or an adapter around
- * `@opentelemetry/api`'s tracer.
+ * `@opentelemetry/api`'s tracer — or by calling `enableOtel(options)`,
+ * which builds that adapter with `actor-ts.tracing` layered under
+ * `options` and installs it.
  */
 export class TracingExtension implements Extension {
   private tracer: Tracer = NOOP_TRACER;
@@ -17,13 +26,49 @@ export class TracingExtension implements Extension {
   constructor(private readonly _system: ActorSystem) {}
 
 
-  /** Currently-installed tracer (noop until `enable(...)` is called). */
+  /** Currently-installed tracer (noop until `enable(...)` or `enableOtel(...)` is called). */
   get(): Tracer { return this.tracer; }
 
-  /** Plug in a tracer.  Idempotent if you re-pass the same instance. */
+  /**
+   * Plug in a tracer.  Idempotent if you re-pass the same instance.
+   *
+   * `enable(NOOP_TRACER)` *is* {@link disable} — see {@link install} for why
+   * that has to be true rather than nearly true.
+   */
   enable(tracer: Tracer): Tracer {
     this.install(tracer);
     return tracer;
+  }
+
+  /**
+   * Build an OpenTelemetry tracer with `actor-ts.tracing` layered under
+   * `options`, install it through {@link enable}, and return it (#1466).
+   *
+   * The name and version `getTracer` is asked for are **explicit `options` >
+   * `actor-ts.tracing.tracer-name` and `tracer-version` >
+   * `DEFAULT_OTEL_TRACER_NAME`**, per field, so an explicit name leaves a
+   * configured version in place.  The floor is `otelTracer`'s own rather than
+   * a layer here, so the two paths cannot disagree about it.  `api` and a
+   * pre-built `tracer` are code-only — both are live objects a config file
+   * cannot hold — and a pre-built tracer is used as it is, so neither leaf
+   * reaches it.
+   *
+   * The construction lives here rather than in `otelTracer` because this is
+   * the seam that holds the system: the free function takes no config and
+   * stays the pure code path, so a tracer built with it behaves exactly as its
+   * options say, while one built here also takes the file's settings — and
+   * neither ever loads a config file of its own.
+   *
+   *     const otelOptions = OtelAdapterOptions.create().withApi(otel);
+   *     system.extension(TracingExtensionId).enableOtel(otelOptions);
+   */
+  enableOtel(options: OtelAdapterOptions): Tracer {
+    const settings = mergeOptions<OtelAdapterOptionsType>(
+      {},
+      readOtelAdapterOptionsFromConfig(this._system.config),
+      options as Partial<OtelAdapterOptionsType>,
+    );
+    return this.enable(otelTracer(settings));
   }
 
   /** True if a real (non-noop) tracer is installed. */
@@ -76,9 +121,6 @@ export class TracingExtension implements Extension {
   /** Reset back to the noop — primarily for tests. */
   disable(): void {
     this.install(NOOP_TRACER);
-    // Both are pure cost without a tracer, so they go with it.
-    this._system._traceRootSpans = false;
-    this._system._traceMessagePayloads = false;
   }
 
   /**
@@ -92,10 +134,29 @@ export class TracingExtension implements Extension {
    * same thing to `tracerOf(...)` and to the per-message read — and this
    * extension is swapped at runtime with live cells draining, so the two
    * agreeing at every instant is the actual requirement.
+   *
+   * The two switches are the third thing that has to agree, and they clear
+   * here rather than in {@link disable} for the same reason.  Both are pure
+   * cost with nothing to record them, and {@link recordRootSpans} refuses to
+   * *set* root spans without a tracer — so the state it refuses must not be
+   * reachable by taking the tracer away either.  Clearing them only in
+   * `disable()` left exactly that hole: `isEnabled` is an identity check
+   * against the singleton, so `enable(NOOP_TRACER)` and `disable()` already
+   * named the same state, `NOOP_TRACER` is a public export, and swapping it in
+   * is an ordinary way to write "tracing off in this environment" — after
+   * which `isRecordingRootSpans()` still said `true` on a system where
+   * `recordRootSpans(true)` throws.  Anything that snapshots that pair and
+   * restores it later then cannot honour what it saved; `SpanTap.uninstall`
+   * threw on it (#714).
    */
   private install(tracer: Tracer): void {
     this.tracer = tracer;
-    this._system._tracer = tracer === NOOP_TRACER ? null : tracer;
+    const isNoop = tracer === NOOP_TRACER;
+    this._system._tracer = isNoop ? null : tracer;
+    if (isNoop) {
+      this._system._traceRootSpans = false;
+      this._system._traceMessagePayloads = false;
+    }
   }
 }
 

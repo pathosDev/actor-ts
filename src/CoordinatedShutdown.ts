@@ -1,8 +1,10 @@
 import type { ActorSystem } from './ActorSystem.js';
 import { ConfigKeys } from './config/ConfigKeys.js';
+import { Config, ConfigError, isPlainObject } from './config/Config.js';
 import { extensionId, type Extension, type ExtensionId } from './Extension.js';
-import { DEFAULT_PHASE_TIMEOUT_MS } from './Constants.js';
+import { DEFAULT_PHASE_TIMEOUT_MS, DEFAULT_SHUTDOWN_EXIT_CODE, MAX_PROCESS_EXIT_CODE } from './Constants.js';
 import { getProcessSignals } from './runtime/signals/index.js';
+import { armChainedTimeout, unreferencedHostTimers, type Cancellable } from './Scheduler.js';
 import type { ProcessSignal } from './util/ProcessSignal.js';
 
 /**
@@ -31,11 +33,73 @@ export class ClusterDowningReason extends Reason {
   readonly name = 'ClusterDowningReason';
   static readonly instance = new ClusterDowningReason();
 }
+/**
+ * The node gave up joining the cluster (#1500): it never became a member, and
+ * this run is how it stops.  Passed by both deadlines a join has —
+ * `actor-ts.cluster.shutdown-after-unsuccessful-join` passing with nothing
+ * able to promote the node, and a `Cluster.bootstrap` readiness wait
+ * expiring — so a task tells "could not join" by one reason whichever fired.
+ * A `Cluster.bootstrap` refused after it built its system ends with it too,
+ * where `run-by-actor-system-terminate` makes that end a run (#1455).
+ *
+ * Its own reason rather than {@link ClusterLeavingReason}, which keeps meaning
+ * that a member is leaving: a task that hands work over before a node leaves
+ * has nothing to hand over from a node that never joined, and one that pages
+ * someone about a failed start should not page about a rolling restart.
+ *
+ * A run with it is a run for a failure: with `exit-process` on it never ends
+ * the process with status `0`, whichever way the run ends (see
+ * {@link reportsFailure}).
+ */
+export class ClusterJoinUnsuccessfulReason extends Reason {
+  readonly name = 'ClusterJoinUnsuccessfulReason';
+  static readonly instance = new ClusterJoinUnsuccessfulReason();
+}
 /** Received SIGTERM / SIGINT from the process. */
 export class ProcessTerminateReason extends Reason {
   constructor(public readonly signal: ProcessSignal) { super(); }
   readonly name = 'ProcessTerminateReason';
   override toString(): string { return `ProcessTerminateReason(${this.signal})`; }
+}
+
+/**
+ * Whether a run with `reason` is a run for a failure — one `exit-process`
+ * never ends with status `0`, the status that tells a supervisor the process
+ * stopped cleanly (see `CoordinatedShutdown.exitStatus`).
+ *
+ * Asked of the reason because for a node that could not join nothing else
+ * can say so: the join give-up starts its run from inside the cluster, with no
+ * caller there to mark it the way the system marks a failed startup's run
+ * ({@link CoordinatedShutdown._runForFailure}).  One answer here then covers
+ * every route to that reason — the give-up, a `Cluster.bootstrap` readiness
+ * wait that failed, a bootstrap refused after its system was built (#1500,
+ * #1455).  `StartupFailedReason` is the other failure, and the one this
+ * cannot name: it is declared beside the startup graph, which imports this
+ * module, so its run is marked by the call instead.
+ */
+function reportsFailure(reason: Reason): boolean {
+  return reason instanceof ClusterJoinUnsuccessfulReason;
+}
+
+/**
+ * Whether `reason` says this node was told to go by a trigger nobody awaits —
+ * a signal, the node's own downing decision, a join that could not complete —
+ * so that a run with it that halts still ends in the teardown (see
+ * `CoordinatedShutdown.standInForTheTerminator`).
+ *
+ * Those triggers fire the run and move on, so nobody would answer the halt:
+ * the signal handler holds nothing but the run's promise, and the cluster's
+ * two call sites only log its rejection.  Left up, a node its own downing
+ * decision removed keeps its entities and singletons running beside the side
+ * that won — the second writer `run-coordinated-shutdown-when-down` exists to
+ * stop (#1456) — and a node that could not join stays up having failed its
+ * start.  The other triggers answer for themselves: `terminate()` and a failed
+ * startup tear the system down after any run, and a caller of `run()` decides.
+ */
+function toldTheNodeToGo(reason: Reason): boolean {
+  return reason instanceof ProcessTerminateReason
+    || reason instanceof ClusterDowningReason
+    || reason instanceof ClusterJoinUnsuccessfulReason;
 }
 
 /** A single task.  Returning a Promise makes the task async. */
@@ -53,6 +117,23 @@ export type PhaseDefinition = {
 type RegisteredTask = {
   readonly name: string;
   readonly task: ShutdownTask;
+};
+
+/**
+ * One child of `actor-ts.coordinated-shutdown.phases` or of
+ * `actor-ts.coordinated-startup.phases`, already type-checked — both blocks
+ * are parsed by {@link readPhaseOverrides}.
+ *
+ * Every field is optional and `undefined` means "the config said nothing" —
+ * the same rule `mergeOptions` uses everywhere else, and the reason a phase
+ * that only sets `timeout` keeps the `recover` and `dependsOn` it was seeded
+ * with instead of having them blanked to a default.
+ */
+export type PhaseOverride = {
+  readonly name: string;
+  readonly timeoutMs: number | undefined;
+  readonly recover: boolean | undefined;
+  readonly dependsOn: ReadonlyArray<string> | undefined;
 };
 
 /** Canonical phase names, run in order from top to bottom. */
@@ -85,7 +166,14 @@ export class CoordinatedShutdown implements Extension {
   private readonly tasks = new Map<string, RegisteredTask[]>();
   private _running = false;
   private _completed = false;
+  /**
+   * The run has ended, completed or halted, and past the exit `exit-process`
+   * makes at its end — what `_running`, set for good, cannot say.
+   */
+  private _settled = false;
   private _runPromise: Promise<void> | null = null;
+  /** Something failed and the pipeline is how the system goes — see {@link _runForFailure}. */
+  private _failed = false;
   private _processHooksInstalled = false;
   /**
    * The handlers this instance installed, paired with their signal.
@@ -110,8 +198,24 @@ export class CoordinatedShutdown implements Extension {
    */
   defaultPhaseTimeoutMs = DEFAULT_PHASE_TIMEOUT_MS;
 
-  /** Call `process.exit(0)` once the pipeline completes.  Off by default. */
+  /**
+   * Call `process.exit` once a run ends — after its last phase, or where a
+   * phase halts it (see {@link onRunHalted}).  Off by default.
+   */
   private readonly exitProcess: boolean;
+
+  /**
+   * Status that exit carries.  Only read when {@link exitProcess} is on.
+   */
+  private readonly exitCode: number;
+
+  /**
+   * Whether the built-in terminator sits in the last phase — whether this
+   * pipeline takes the system down at all.  Kept past the constructor for the
+   * signal path, which stands in for the terminator after a run that halted
+   * short of it, and must not where there is none to stand in for.
+   */
+  private readonly terminateActorSystem: boolean;
 
   /**
    * Whether framework components register their own teardown — see
@@ -119,21 +223,31 @@ export class CoordinatedShutdown implements Extension {
    */
   readonly autoRegisterTasks: boolean;
 
+  /**
+   * Whether the framework's two *defaulting* signal call sites —
+   * `ActorSystem.runUntilTerminated()` and the cluster bootstrap — arm
+   * SIGTERM/SIGINT on the caller's behalf.
+   *
+   * Deliberately not consulted by {@link installProcessHooks}, which keeps
+   * meaning "do it".  The key ships as a leaf, so `reference.conf` always
+   * supplies a value and a gate inside the installer would let HOCON beat a
+   * caller who named the signals explicitly — the exact inversion of
+   * *explicit options > HOCON > defaults*.  Reading it where the default is
+   * chosen keeps that order intact.
+   */
+  readonly runByProcessSignals: boolean;
+
   constructor(private readonly system: ActorSystem) {
     const config = system.config;
-    const keys = ConfigKeys.coordinatedShutdown;
-    if (config.hasPath(keys.defaultPhaseTimeout)) {
-      this.defaultPhaseTimeoutMs = config.getDuration(keys.defaultPhaseTimeout);
+    const configured = readCoordinatedShutdownOptionsFromConfig(config);
+    if (configured.defaultPhaseTimeoutMs !== undefined) {
+      this.defaultPhaseTimeoutMs = configured.defaultPhaseTimeoutMs;
     }
-    this.exitProcess = config.hasPath(keys.exitProcess)
-      ? config.getBoolean(keys.exitProcess)
-      : false;
-    const terminateActorSystem = config.hasPath(keys.terminateActorSystem)
-      ? config.getBoolean(keys.terminateActorSystem)
-      : true;
-    this.autoRegisterTasks = config.hasPath(keys.autoRegisterTasks)
-      ? config.getBoolean(keys.autoRegisterTasks)
-      : true;
+    this.exitProcess = configured.exitProcess ?? false;
+    this.exitCode = configured.exitCode ?? DEFAULT_SHUTDOWN_EXIT_CODE;
+    this.terminateActorSystem = configured.terminateActorSystem ?? true;
+    this.autoRegisterTasks = configured.autoRegisterTasks ?? true;
+    this.runByProcessSignals = configured.runByProcessSignals ?? true;
 
     // Seed the 12 canonical phases linearly — each depends on the previous.
     const order: DefaultPhase[] = [
@@ -158,14 +272,19 @@ export class CoordinatedShutdown implements Extension {
         recover: true,
       });
     }
+    this.applyPhaseOverrides(config);
     // Built-in terminator in the final phase.  Opting out leaves the phase
     // in place — user tasks registered there still run — and hands the
     // system's lifetime back to the embedder, which is the point: a host
     // process that owns the system does not want a signal handler killing it.
-    if (terminateActorSystem) {
-      this.addTask(Phases.ActorSystemTerminate, 'terminate-actor-system', async () => {
-        if (!this.system.isTerminated) await this.system.terminate();
-      });
+    //
+    // It calls the teardown, never the public `terminate()`.  That method may
+    // be what started this run, and while a run is in flight it deliberately
+    // starts nothing: called from here it would only queue the teardown
+    // behind the very run that is waiting for it, and `run()` would resolve
+    // on a system that is still up (#1455).
+    if (this.terminateActorSystem) {
+      this.addTask(Phases.ActorSystemTerminate, 'terminate-actor-system', () => this.system._teardown());
     }
   }
 
@@ -239,6 +358,20 @@ export class CoordinatedShutdown implements Extension {
     this.phases.set(def.name, def);
   }
 
+  /**
+   * The resolved definition of a phase, or `undefined` if there is none.
+   *
+   * Read-only on purpose — the map is the pipeline's own state, and the copy
+   * handed back is the same frozen-by-convention record `addPhase` took.
+   * It exists because the graph stopped being something only code builds:
+   * once `actor-ts.coordinated-shutdown.phases` can retime a phase or add
+   * one, the operator who wrote that block needs a way to ask what the merge
+   * actually produced, and "run a shutdown and watch" is not one.
+   */
+  phaseDefinition(phase: string): PhaseDefinition | undefined {
+    return this.phases.get(phase);
+  }
+
   /** Override the timeout for a phase.  Uses `defaultPhaseTimeoutMs` by default. */
   setPhaseTimeout(phase: string, timeoutMs: number): void {
     const phaseEntry = this.phases.get(phase);
@@ -252,13 +385,77 @@ export class CoordinatedShutdown implements Extension {
   get isComplete(): boolean { return this._completed; }
 
   /**
+   * @internal The run in flight, or `null` when there is none — before the
+   * first `run()`, and again once that run has ended, completed or halted.
+   * A run `exit-process` ends with an exit is in flight until that exit:
+   * the flush in front of it is still the run.
+   *
+   * Narrower than {@link isRunning}, which stays true for good, and
+   * `ActorSystem.terminate()` needs the narrow answer: while a run is in
+   * flight it must start nothing, but after a run that left the system up
+   * it is the ordinary teardown again.
+   */
+  get _runInProgress(): Promise<void> | null {
+    return this._settled ? null : this._runPromise;
+  }
+
+  /**
    * Run the pipeline.  Safe to call from multiple sites — subsequent calls
    * return the same in-flight promise.
+   *
+   * A reason that reports a failure — `ClusterJoinUnsuccessfulReason`, a node
+   * that could not join — makes the run one for a failure, which
+   * `exit-process` never exits `0` after; passed to a run already under way,
+   * it marks that run so too, as {@link _runForFailure} does.
+   *
+   * A startup the system is still running is abandoned as the run begins,
+   * before its first phase — the same abandonment `terminate()` makes (#1473).
    */
   run(reason: Reason = UnknownReason.instance): Promise<void> {
+    // Ahead of the in-flight check: a failure reported while a run is under
+    // way — a give-up landing beside a signal's run — still is one.
+    if (reportsFailure(reason)) this._failed = true;
     if (this._runPromise) return this._runPromise;
-    this._runPromise = this._run(reason);
+    // Stored before `_run` is called rather than taken from what it returns.
+    // `_run` is async, but the tasks of the first phase in the order start
+    // before its first `await` — inside this call — and one of them may ask
+    // whether a run is in flight: `terminate()` does, and so does a second
+    // `run()`.  Assigned afterwards, the run was invisible for exactly that
+    // phase, so a task there tore the system down mid-pipeline or started a
+    // second pipeline inside the first (#1455).
+    let resolveRun!: () => void;
+    let rejectRun!: (error: unknown) => void;
+    this._runPromise = new Promise<void>((resolve, reject) => {
+      resolveRun = resolve;
+      rejectRun = reject;
+    });
+    // Before the first phase, whoever started the run: a startup still
+    // running is abandoned the way `terminate()` abandons it, so its tasks'
+    // signals abort now rather than after the unbind and the leave (#1473).
+    // After the run is visible, so a task aborted here that asks whether one
+    // is in flight finds it.
+    this.system._abandonStartup();
+    this._run(reason).then(resolveRun, rejectRun);
     return this._runPromise;
+  }
+
+  /**
+   * @internal {@link run} for a system that is going down because something
+   * failed — a startup task, today.  The same pipeline, and the same run when
+   * one is already in flight; what differs is the status `exit-process` exits
+   * with, which is never `0` after a failure (see {@link exitStatus}).
+   *
+   * A call rather than a check of the reason: the reason a failed startup
+   * passes is declared beside the startup graph, which imports this module, so
+   * recognising it here would be an import cycle — and the system, which
+   * learns of the failure first, is the one place that knows it was one.  The
+   * reason of a node that could not join is checked instead
+   * ({@link reportsFailure}): its run starts inside the cluster, where no
+   * caller could make this call.
+   */
+  _runForFailure(reason: Reason): Promise<void> {
+    this._failed = true;
+    return this.run(reason);
   }
 
   /**
@@ -279,13 +476,64 @@ export class CoordinatedShutdown implements Extension {
     const backend = getProcessSignals();
     for (const signal of signals) {
       if (!backend.supports(signal)) continue;
-      const handler = (): void => {
-        void this.run(new ProcessTerminateReason(signal));
-      };
+      const handler = (): void => { this.onProcessSignal(signal); };
       backend.add(signal, handler);
       this._processHooks.push({ signal, handler });
     }
     this._processHooksInstalled = true;
+  }
+
+  /**
+   * A signal arrived: run the pipeline.
+   *
+   * Nobody awaits a signal, so the promise `run()` hands back is held by
+   * nothing but this handler, and a failing phase with `recover = false`
+   * would otherwise reject it unhandled — which ends a Node process with the
+   * task's stack.  The run answers its own halt, as it does for every trigger
+   * that told the node to go ({@link standInForTheTerminator}): stopped short
+   * of its terminator, it used to leave the system up and
+   * `runUntilTerminated()` waiting on `whenTerminated()` for good (#1455).  A
+   * signal that arrives while a run exists — a second SIGINT, or one during a
+   * run something else started — joins it and adds nothing: that run's
+   * outcome is its starter's to answer.
+   */
+  private onProcessSignal(signal: ProcessSignal): void {
+    if (this._runPromise !== null) return;
+    this.run(new ProcessTerminateReason(signal)).catch(() => {
+      // Reported, and answered, by the run itself.
+    });
+  }
+
+  /**
+   * Report a halted run whose trigger told the node to go and nobody answers
+   * — a signal, this node's own downing decision, a join that could not
+   * complete — and stand in for the terminator it never reached: the
+   * teardown an opted-in `terminate()` performs after a halt too, since the
+   * node was asked to stop either way.  Left to the trigger, a halt the
+   * downing decision's run hit kept the downed node's actors running beside
+   * the side that won (#1456).
+   *
+   * Only where there is a terminator to stand in for: with
+   * `terminate-actor-system` off the pipeline never takes the system down,
+   * because a host process that owns it does not want a signal handler or the
+   * cluster doing so, and a halt on the way changes nothing about whose system
+   * it is.
+   *
+   * With `exit-process` on this never runs where `process.exit` ends the
+   * process: the run exits at the halt, ahead of this, so the exit takes the
+   * place of the stand-in (see {@link onRunHalted}).
+   */
+  private standInForTheTerminator(phase: string, error: unknown, reason: Reason): void {
+    const halted = `the coordinated-shutdown pipeline (${reason}) halted in phase "${phase}"`;
+    if (!this.terminateActorSystem) {
+      this.system.log.error(
+        `${halted}; ${ConfigKeys.coordinatedShutdown.terminateActorSystem} is off, so the system stays up`,
+        error,
+      );
+      return;
+    }
+    this.system.log.error(`${halted}; tearing the system down regardless`, error);
+    void this.system._teardown();
   }
 
   /**
@@ -309,22 +557,231 @@ export class CoordinatedShutdown implements Extension {
 
   /* ------------------------------- Internal ------------------------------ */
 
+  /**
+   * Fold `actor-ts.coordinated-shutdown.phases` into the freshly seeded DAG.
+   *
+   * A child naming one of the twelve canonical phases **merges** into it —
+   * neither {@link addPhase} (which throws on a duplicate) nor
+   * {@link setPhaseTimeout} (which only replaces the timeout) can express
+   * that, so this is a third path rather than a call into either.  Any other
+   * name declares a new phase, and there `depends-on` is required: a phase
+   * with no edges sorts into the first ready batch and would run *before*
+   * `before-service-unbind`, which is never what an operator adding a phase
+   * meant.
+   *
+   * `depends-on` on a canonical phase is **added** to the seeded edge, never
+   * a replacement.  The topological sort catches cycles and nothing else, so
+   * a replacing form would let a config file re-parent `cluster-leave` ahead
+   * of `service-unbind` and produce a pipeline that runs happily in the wrong
+   * order — a silent failure exactly where the pipeline exists to prevent one.
+   *
+   * Everything it can reject, it rejects here rather than at `run()`: a
+   * shutdown that throws on a bad phase graph fails at the worst possible
+   * moment, whereas failing in the extension's constructor fails at startup.
+   */
+  private applyPhaseOverrides(config: Config): void {
+    const path = ConfigKeys.coordinatedShutdown.phases;
+    if (!config.hasPath(path)) return;
+    const overrides = readPhaseOverrides(config, path);
+    if (overrides.length === 0) return;
+
+    // Resolve every target against existing *and* declared names, so a
+    // canonical phase may depend on a config-declared one and vice versa.
+    const declared = new Set(overrides.map((entry) => entry.name));
+    for (const entry of overrides) {
+      for (const dependency of entry.dependsOn ?? []) {
+        if (!this.phases.has(dependency) && !declared.has(dependency)) {
+          throw new ConfigError(
+            `${path}.${entry.name}.depends-on names "${dependency}", which is `
+            + 'neither a canonical phase nor another phase declared here',
+          );
+        }
+      }
+    }
+
+    const additions = overrides.filter((entry) => !this.phases.has(entry.name));
+    const addedNames = new Set(additions.map((entry) => entry.name));
+    this.registerDeclaredPhases(additions, path);
+    for (const entry of overrides) {
+      if (!addedNames.has(entry.name)) this.mergePhaseOverride(entry);
+    }
+    this.checkPhaseGraph(path);
+  }
+
+  /**
+   * Register the config-declared phases, dependency-first.
+   *
+   * {@link addPhase} demands every `dependsOn` target already exist, and two
+   * phases declared in one config block may name each other — declaration
+   * order in the file says nothing about the order they can be registered in.
+   * A round that registers nothing therefore means a cycle among them, since
+   * unresolvable targets were rejected before this runs.
+   */
+  private registerDeclaredPhases(additions: readonly PhaseOverride[], path: string): void {
+    let pending = additions.map((entry) => {
+      const dependsOn = entry.dependsOn ?? [];
+      if (dependsOn.length === 0) {
+        throw new ConfigError(
+          `${path}.${entry.name} declares a new phase, so it must name depends-on: `
+          + 'a phase with no dependencies sorts into the first batch and would run '
+          + `before "${Phases.BeforeServiceUnbind}"`,
+        );
+      }
+      return { entry, dependsOn };
+    });
+    while (pending.length > 0) {
+      const ready = pending.filter(({ dependsOn }) => dependsOn.every((d) => this.phases.has(d)));
+      if (ready.length === 0) {
+        throw new ConfigError(
+          `${path}: the phases declared here depend on each other in a cycle: `
+          + pending.map(({ entry }) => entry.name).sort().join(', '),
+        );
+      }
+      for (const { entry, dependsOn } of ready) {
+        this.addPhase({
+          name: entry.name,
+          timeoutMs: entry.timeoutMs ?? this.defaultPhaseTimeoutMs,
+          dependsOn: [...dependsOn],
+          recover: entry.recover ?? true,
+        });
+      }
+      const registered = new Set(ready.map(({ entry }) => entry.name));
+      pending = pending.filter(({ entry }) => !registered.has(entry.name));
+    }
+  }
+
+  /** Merge one config child into the phase of the same name that already exists. */
+  private mergePhaseOverride(entry: PhaseOverride): void {
+    const seeded = this.phases.get(entry.name)!;
+    const added = (entry.dependsOn ?? []).filter((d) => !seeded.dependsOn.includes(d));
+    this.phases.set(seeded.name, {
+      name: seeded.name,
+      timeoutMs: entry.timeoutMs ?? seeded.timeoutMs,
+      dependsOn: added.length === 0 ? seeded.dependsOn : [...seeded.dependsOn, ...added],
+      recover: entry.recover ?? seeded.recover,
+    });
+  }
+
+  /** Sort the resulting graph once, so a cycle is a startup error, not a shutdown one. */
+  private checkPhaseGraph(path: string): void {
+    try {
+      this.topologicalOrder();
+    } catch (e) {
+      throw new ConfigError(`${path} produced an unusable phase graph — ${(e as Error).message}`);
+    }
+  }
+
   private async _run(reason: Reason): Promise<void> {
     this._running = true;
-    const order = this.topologicalOrder();
-    for (const phase of order) {
-      await this.runPhase(phase, reason);
+    // Settled in the `finally` and nowhere earlier: once the exit has happened
+    // or, where there is none, once the run has ended (#1455).  The exit
+    // flushes the dead-letter queue and the log sinks first, and a
+    // `terminate()` arriving during that flush must still find the run in
+    // flight and start nothing — settled before it, the run let that call
+    // start the very teardown the exit takes the place of, in front of the
+    // exit.  The `finally` settles a halted run too, so a `terminate()` after
+    // one is the ordinary teardown again.
+    try {
+      let halt: { readonly phase: string; readonly error: unknown } | undefined;
+      for (const phase of this.topologicalOrder()) {
+        try {
+          await this.runPhase(phase, reason);
+        } catch (error) {
+          halt = { phase, error };
+          break;
+        }
+      }
+      if (halt !== undefined) await this.onRunHalted(halt.phase, halt.error, reason);
+      this._completed = true;
+      // Last thing, and only when asked: a lingering handle (an open socket, a
+      // pooled DB connection a driver never released) otherwise keeps the
+      // process alive long after the pipeline is done, and the operator has no
+      // way to tell "shutting down" from "hung".  `_completed` is already set,
+      // so anything awaiting `run()` observes success even though this call
+      // does not return.
+      if (this.exitsProcess()) await this.exitWith(this.exitStatus(this._failed));
+    } finally {
+      this._settled = true;
     }
-    this._completed = true;
-    // Last thing, and only when asked: a lingering handle (an open socket, a
-    // pooled DB connection a driver never released) otherwise keeps the
-    // process alive long after the pipeline is done, and the operator has no
-    // way to tell "shutting down" from "hung".  `_completed` is already set,
-    // so anything awaiting `run()` observes success even though this call
-    // does not return.
-    if (this.exitProcess && typeof process !== 'undefined' && typeof process.exit === 'function') {
-      process.exit(0);
+  }
+
+  /**
+   * A phase with `recover = false` failed, and the run ends there: rethrow, so
+   * `run()` rejects with the task's error — after exiting the process first
+   * when `exit-process` is on, and after standing in for the terminator when
+   * the run's trigger told the node to go and nobody answers it.
+   *
+   * The exit follows the rule a failed startup's run exits by (see
+   * {@link exitStatus}), because a run that halted is no clean stop either.  It
+   * sits here, in the run, rather than in whatever answers the rejection, so
+   * that every trigger gets it — a signal, a `terminate()` that runs the
+   * pipeline, a `run()` of your own, the cluster's join give-up and its
+   * self-down.  The stand-in sits here for the same reason: of those triggers
+   * a signal and the cluster's two hold nothing but the run's promise
+   * ({@link standInForTheTerminator}).
+   *
+   * Nothing after `process.exit` runs, so the exit takes the place of the
+   * teardown a halt would otherwise get — the stand-in, and the one an
+   * opted-in `terminate()` performs.  Hence the ERROR line naming the phase,
+   * written before the exit rather than left to the trigger: it is the last
+   * word the process has, and {@link exitWith} flushes the log sinks before
+   * exiting so that it gets out.  Where `process.exit` returns, which only a
+   * test that replaces it sees, the stand-in and the rejection still follow,
+   * and with them those teardowns.
+   */
+  private async onRunHalted(phase: string, error: unknown, reason: Reason): Promise<never> {
+    if (this.exitsProcess()) {
+      const status = this.exitStatus(true);
+      this.system.log.error(
+        `the coordinated-shutdown pipeline (${reason}) halted in phase "${phase}"; `
+        + `${ConfigKeys.coordinatedShutdown.exitProcess} is on, so the process exits with status ${status} `
+        + 'once the log sinks are flushed, without the remaining phases or a teardown',
+        error,
+      );
+      await this.exitWith(status);
     }
+    if (toldTheNodeToGo(reason)) this.standInForTheTerminator(phase, error, reason);
+    throw error;
+  }
+
+  /**
+   * `process.exit(status)`, once what a teardown flushes on its way down is
+   * out — the dead-letter queue's writes and the log sinks.
+   *
+   * Which run this is decides whether that takes a step.  After a completed
+   * run whose built-in terminator took the system down, the teardown has
+   * already flushed and closed both, and {@link ActorSystem._flushBeforeExit}
+   * returns at once.  After a halted run, or a completed one with
+   * `terminate-actor-system = false`, no teardown ran and none will, so the
+   * flush happens here, bounded by `actor-ts.logger.close-timeout`: without
+   * it a buffering sink would still hold the last records — after a halt, the
+   * ERROR line saying why — when the process goes.
+   */
+  private async exitWith(status: number): Promise<void> {
+    await this.system._flushBeforeExit();
+    process.exit(status);
+  }
+
+  /** Whether the end of a run calls `process.exit`: asked for, on a runtime that has one. */
+  private exitsProcess(): boolean {
+    return this.exitProcess && typeof process !== 'undefined' && typeof process.exit === 'function';
+  }
+
+  /**
+   * The status `exit-process` exits with: `exit-code`, unless the run `failed`
+   * and that is `0`.
+   *
+   * `0` tells a supervisor the process stopped cleanly, and neither a run for a
+   * failed startup, nor one for a node that could not join, nor a run that
+   * halted is a clean stop, so there the configured code is kept only when it
+   * already says "failed" and becomes `1` — the conventional general-failure
+   * status — otherwise.  The default
+   * `exit-process = false` never gets here: `runUntilTerminated()` rejects with
+   * the startup's error, or with the halt's once the system is down, and a
+   * `main` that awaits it exits non-zero by itself.
+   */
+  private exitStatus(failed: boolean): number {
+    return failed && this.exitCode === 0 ? 1 : this.exitCode;
   }
 
   private async runPhase(phase: string, reason: Reason): Promise<void> {
@@ -344,13 +801,27 @@ export class CoordinatedShutdown implements Extension {
     }
   }
 
+  /**
+   * Run one task against its phase's budget.
+   *
+   * The budget is armed through the scheduler's chain rather than as one
+   * `setTimeout`, which holds at most ~24.9 days and fires a longer delay after
+   * 1 ms on Bun and Node — so a phase timeout the config accepts, `30d` say,
+   * timed every task out the moment it started (#1455).  Unreferenced, as the
+   * single timer was, so a pending budget never keeps the process alive; and
+   * real time, not the system's scheduler, which a `ManualScheduler` would
+   * freeze.
+   */
   private async runOneTask(t: RegisteredTask, def: PhaseDefinition, reason: Reason): Promise<void> {
-    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    let budget!: Cancellable;
     const timeout = new Promise<never>((_, reject) => {
-      timeoutHandle = setTimeout(() => reject(
-        new Error(`Shutdown task "${t.name}" in phase "${def.name}" timed out after ${def.timeoutMs}ms`),
-      ), def.timeoutMs);
-      (timeoutHandle as { unref?: () => void }).unref?.();
+      budget = armChainedTimeout(
+        () => reject(
+          new Error(`Shutdown task "${t.name}" in phase "${def.name}" timed out after ${def.timeoutMs}ms`),
+        ),
+        def.timeoutMs,
+        unreferencedHostTimers,
+      );
     });
     try {
       await Promise.race([Promise.resolve(t.task(reason)), timeout]);
@@ -360,7 +831,7 @@ export class CoordinatedShutdown implements Extension {
       );
       if (!def.recover) throw e;
     } finally {
-      if (timeoutHandle) clearTimeout(timeoutHandle);
+      budget.cancel();
     }
   }
 
@@ -392,6 +863,132 @@ export class CoordinatedShutdown implements Extension {
     }
     return out;
   }
+}
+
+/**
+ * What `actor-ts.coordinated-shutdown` says about the pipeline: its seven
+ * leaves, each absent when unset — six the extension applies, and
+ * `run-by-actor-system-terminate`, which `ActorSystem` reads through the same
+ * reader because a bare `terminate()` must not build the extension to ask
+ * (#1455).  The `phases` block is not part of it — its children are named
+ * after the operator's own phases, so there is no fixed leaf to read into a
+ * field, and {@link CoordinatedShutdown} applies it against the seeded graph
+ * instead.
+ *
+ * Not an options triad: nothing in code hands the extension these settings, so
+ * this is only the shape the config layer reads into, as
+ * `DefaultMailboxConfiguration` is for the global mailbox bound.
+ */
+export type CoordinatedShutdownConfiguration = {
+  /** `default-phase-timeout`: the budget each seeded phase starts with. */
+  readonly defaultPhaseTimeoutMs?: number;
+  /** `exit-process`: call `process.exit` once a run ends, completed or halted. */
+  readonly exitProcess?: boolean;
+  /** `exit-code`: the status that exit carries, already range-checked. */
+  readonly exitCode?: number;
+  /** `terminate-actor-system`: register the built-in terminator in the last phase. */
+  readonly terminateActorSystem?: boolean;
+  /** `auto-register-tasks`: let framework components register their own teardown. */
+  readonly autoRegisterTasks?: boolean;
+  /** `run-by-process-signals`: let the defaulting call sites arm SIGTERM/SIGINT. */
+  readonly runByProcessSignals?: boolean;
+  /** `run-by-actor-system-terminate`: a `terminate()` that does not choose runs the pipeline first. */
+  readonly runByActorSystemTerminate?: boolean;
+};
+
+/**
+ * Read the seven leaves of `actor-ts.coordinated-shutdown`, leaving an unset one
+ * absent rather than defaulting it in; the extension's constructor and the
+ * system apply the defaults.  Exported so that what is read can be checked
+ * without building a system around it (#1425).
+ */
+export function readCoordinatedShutdownOptionsFromConfig(
+  config: Config,
+): CoordinatedShutdownConfiguration {
+  const keys = ConfigKeys.coordinatedShutdown;
+  const out: {
+    -readonly [K in keyof CoordinatedShutdownConfiguration]?: CoordinatedShutdownConfiguration[K]
+  } = {};
+  if (config.hasPath(keys.defaultPhaseTimeout)) {
+    out.defaultPhaseTimeoutMs = config.getDuration(keys.defaultPhaseTimeout);
+  }
+  if (config.hasPath(keys.exitProcess)) out.exitProcess = config.getBoolean(keys.exitProcess);
+  if (config.hasPath(keys.exitCode)) out.exitCode = readExitCode(config, keys.exitCode);
+  if (config.hasPath(keys.terminateActorSystem)) {
+    out.terminateActorSystem = config.getBoolean(keys.terminateActorSystem);
+  }
+  if (config.hasPath(keys.autoRegisterTasks)) {
+    out.autoRegisterTasks = config.getBoolean(keys.autoRegisterTasks);
+  }
+  if (config.hasPath(keys.runByProcessSignals)) {
+    out.runByProcessSignals = config.getBoolean(keys.runByProcessSignals);
+  }
+  if (config.hasPath(keys.runByActorSystemTerminate)) {
+    out.runByActorSystemTerminate = config.getBoolean(keys.runByActorSystemTerminate);
+  }
+  return out;
+}
+
+/**
+ * The three keys a `phases.<name>` block may carry.
+ *
+ * Checked rather than ignored, because the failure this prevents is silent:
+ * `timout = 30s` under a phase would leave the phase on its seeded budget and
+ * say nothing, which is the same class of defect as a documented key nothing
+ * reads.  The list is the whole schema of a phase child, so it lives beside
+ * the reader that applies it.
+ */
+const PHASE_OVERRIDE_KEYS: ReadonlySet<string> = new Set(['timeout', 'recover', 'depends-on']);
+
+/**
+ * Type-check one `phases` block into {@link PhaseOverride}s.
+ *
+ * Each child is re-wrapped in its own `Config` rather than addressed through
+ * a dotted path, so a phase whose name contains a dot is read as one key
+ * instead of being silently split into a nesting that does not exist.
+ */
+export function readPhaseOverrides(config: Config, path: string): PhaseOverride[] {
+  return Object.entries(config.getObject(path)).map(([name, raw]) => {
+    if (!isPlainObject(raw)) {
+      throw new ConfigError(
+        `${path}.${name} must be a block of timeout / recover / depends-on, not a bare value`,
+      );
+    }
+    for (const key of Object.keys(raw)) {
+      if (!PHASE_OVERRIDE_KEYS.has(key)) {
+        throw new ConfigError(
+          `${path}.${name}.${key} is not a phase setting — expected one of `
+          + `${[...PHASE_OVERRIDE_KEYS].join(', ')}`,
+        );
+      }
+    }
+    const phase = Config.fromObject(raw);
+    return {
+      name,
+      timeoutMs: phase.hasPath('timeout') ? phase.getDuration('timeout') : undefined,
+      recover: phase.hasPath('recover') ? phase.getBoolean('recover') : undefined,
+      dependsOn: phase.hasPath('depends-on') ? phase.getStringList('depends-on') : undefined,
+    };
+  });
+}
+
+/**
+ * Read `exit-code`, refusing a status the operating system would rewrite.
+ *
+ * Only eight bits of a wait status carry the code, so `process.exit(256)`
+ * surfaces as `0`: a configured failure that the supervisor reads as a clean
+ * stop.  Rejecting it at startup is the only point at which anyone is looking.
+ */
+function readExitCode(config: Config, path: string): number {
+  const code = config.getInt(path);
+  if (code < 0 || code > MAX_PROCESS_EXIT_CODE) {
+    throw new ConfigError(
+      `${path} must be between 0 and ${MAX_PROCESS_EXIT_CODE}, got ${code} — `
+      + 'a status outside that range is truncated by the operating system, so the '
+      + 'exit an operator sees would not be the one configured',
+    );
+  }
+  return code;
 }
 
 /** ExtensionId — use via `system.extension(CoordinatedShutdownId)`. */

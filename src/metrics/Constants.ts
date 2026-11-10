@@ -1,5 +1,6 @@
 /**
- * Tuned values used by the metrics subsystem.
+ * Tuned values and fixed exposition vocabulary used by the metrics
+ * subsystem.
  *
  * Anything a caller can set belongs in an `XOptions.ts` instead — see
  * `MetricsRegistryOptions.ts` for the registry's cardinality cap.
@@ -133,10 +134,10 @@ export const MAILBOX_DEPTH_BUCKETS_MESSAGES: ReadonlyArray<number> = Object.free
  * #196 asked for was `dispatcher_saturation_ratio`, a 0-1 busy fraction, and
  * the only primitive that could have produced one is
  * `performance.eventLoopUtilization`: measured on this project's three
- * supported runtimes it is *absent* on Bun, *real* on Node, and a
- * *hard-zero stub* on Deno.  A ratio that reads 0 on a third of the matrix is
- * worse than no ratio, because an alert built on it never fires and nobody
- * finds out.  Scheduling delay needs no runtime primitive — two reads of a
+ * supported runtimes it is *real* on Node, a *hard-zero stub* on Deno, and on
+ * Bun *absent* until something imports `node:perf_hooks`, after which it is the
+ * same hard-zero stub.  A ratio that reads 0 everywhere but Node is worse than
+ * no ratio, because an alert built on it never fires and nobody finds out.  Scheduling delay needs no runtime primitive — two reads of a
  * clock every runtime has — so it is the same measurement everywhere.
  *
  * A 1-5 ladder from 10 µs to 10 s, six decades in thirteen boundaries.  The
@@ -161,3 +162,170 @@ export const MAILBOX_DEPTH_BUCKETS_MESSAGES: ReadonlyArray<number> = Object.free
 export const DISPATCHER_QUEUE_DELAY_BUCKETS_SECONDS: ReadonlyArray<number> = Object.freeze([
   0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10,
 ]);
+
+/* ----------------------- Exposition-name grammar ---------------------- */
+
+/**
+ * Characters a metric family name may consist of, straight out of the
+ * Prometheus exposition grammar (#784).
+ *
+ * **The pattern is a security boundary, not a style rule.**  The 0.0.4 text
+ * format is line-oriented and unquoted in the name position — `# HELP <name>`,
+ * `# TYPE <name>` and `<name>{…} <value>` — so a name is the one field the
+ * exporter has no way to escape.  A `"`, `{`, `}` or a newline in it does not
+ * render as a malformed name, it *ends the current series and starts another*,
+ * and the forged series is indistinguishable from a real one to whatever
+ * scrapes it.  Rejecting the character class at registration is what keeps the
+ * exporter's raw interpolation safe, and is what every mainstream Prometheus
+ * client library does at the same point.
+ *
+ * The `:` is legal here and deliberately kept even though it is reserved for
+ * recording rules by convention: it is part of the grammar, exposing a name
+ * that contains one is legal, and a validator narrower than the format would
+ * reject an exposition Prometheus itself accepts.
+ *
+ * No `g` flag: a global regex carries `lastIndex` across `test()` calls, so a
+ * shared one would answer differently on alternate calls.
+ */
+export const PROMETHEUS_METRIC_NAME_PATTERN = /^[a-zA-Z_:][a-zA-Z0-9_:]*$/;
+
+/**
+ * Characters a label key may consist of — the same grammar as
+ * {@link PROMETHEUS_METRIC_NAME_PATTERN} **minus the colon**, which
+ * Prometheus does not allow in a label name (#784).
+ *
+ * Same reasoning: `renderLabels` emits `<key>="<value>"`, and only the value
+ * side of that is quoted and escaped.  A key carrying a `"` closes the string
+ * early and everything after it is read as exposition rather than as data.
+ *
+ * Note that this constrains the label **key** only.  Values stay unrestricted
+ * — they are the field that legitimately carries data, and the exporter
+ * escapes them, after {@link STRIPPED_CONTROL_CHARACTERS_PATTERN} has taken
+ * out the bytes it has no escape for.
+ */
+export const PROMETHEUS_LABEL_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+/**
+ * Characters removed from a label value and from a `# HELP` string: the C0
+ * controls, minus the two the exposition has an answer for (#1414).
+ *
+ * **TAB and LF are the exceptions, for opposite reasons.**  LF is one of the
+ * three entries in the 0.0.4 escape table, so it is escaped rather than
+ * dropped.  TAB is ordinary data to both Go readers — a quoted value is lexed
+ * as `[^\\"]` and a HELP string as `C [^\n]` — so it needs nothing done to
+ * it.  Everything else in the range has neither an escape to render it with
+ * nor a reader that wants it raw.
+ *
+ * **It lives here because two layers read it, and they must not diverge.**
+ * `PrometheusExporter` applies it when it writes a value, and
+ * `Metrics.stripExpositionControlCharacters` applies it when a series is
+ * minted, so that two label maps stripping to the same bytes are one series
+ * rather than two rows a scrape rejects as a duplicate.  Spelled out twice —
+ * which is how it stood while the mint side had no strip at all — the two
+ * answers drift, and a strip on the rendering side only is what #1414's first
+ * half shipped: a body carrying the same series twice.  One declaration makes
+ * "the same strip the exporter applies" a fact the compiler checks rather
+ * than a claim a comment makes.
+ *
+ * The `g` flag is load-bearing: without it only the first control of a run
+ * would go.  It is also why this pattern may be read with **`String.replace`
+ * and `String.search` only**.  Both are specified to leave `lastIndex` where
+ * they found it — `replace` sets it to 0 before it starts, and
+ * `RegExp.prototype[Symbol.search]` saves it, zeroes it and restores it — so
+ * neither can answer differently on alternate calls.  `.test` advances
+ * `lastIndex` past the match and the next call resumes from there, so a shared
+ * global pattern read with `.test` reports a control character in every
+ * *other* value: measured, three `.test` calls on the same string answer
+ * `true, false, true`.
+ *
+ * **The rule is blanket, and deliberately wider than the hazard.**  A `.test`
+ * whose `true` is always followed by a `replace` happens to be safe, because
+ * the `replace` zeroes `lastIndex` on the way in and a `.test` that fails
+ * zeroes it itself — so that one shape works and the next reader to add a
+ * second `.test`, a log line or an early return breaks it silently, with no
+ * error and a control character surviving into the exposition on alternate
+ * calls.  "Do not read it with `.test`" is a rule a reviewer can apply to one
+ * line; "do not read it with `.test` unless a `replace` unconditionally
+ * follows" is a rule about a call sequence, which is how the first half of
+ * #1414 came about.  The two grammar patterns above dodge the whole question
+ * by not carrying the flag, which they can because they are only ever read
+ * with `.test`; this one cannot, so the rule is on the reader instead.
+ * `tests/unit/metrics/MetricsLabelValueNormalisation.test.ts` demonstrates the
+ * alternating answer rather than asserting that it exists.
+ */
+export const STRIPPED_CONTROL_CHARACTERS_PATTERN = /[\x00-\x08\x0b-\x1f]/g;
+
+/* ---------------------- Exposition-time thread label --------------------- */
+
+/**
+ * The one label the exposition adds **at export time** rather than at a call
+ * site (#1570).
+ *
+ * A worker mesh hosts one `ActorSystem` per thread, each with its own
+ * registry, and `MetricsExtension.collectAll` merges the workers' snapshots
+ * into the main thread's exposition.  Two threads then report the same stock
+ * family — `actor_messages_delivered_total` from the main thread and from
+ * `worker-0` are the same name with the same labels — and without a label to
+ * tell them apart the exporter would emit two rows for one series, which a
+ * scraper reads as a duplicate.  So every sample is stamped with which thread
+ * produced it: {@link MAIN_THREAD_LABEL_VALUE} for the main thread's own
+ * registry, `worker-<slot>` for a worker's (the thread's own name, and the
+ * `WorkerHandle.id` it was spawned under).  `sum without (thread)` is the
+ * process total, `sum by (thread)` the breakdown.
+ *
+ * Stamped **only while a relay is active** — a mesh up, its interval above
+ * zero, the main registry enabled.  A single-threaded system exports exactly
+ * the bytes it did before the label existed, so switching workers on is the
+ * one moment every series' label set changes.
+ *
+ * Reserved, at three points.  `DefaultMetricsRegistry` refuses it as an
+ * application label key when a family is minted, on every thread alike, so
+ * the collision cannot arise from a registry of ours — the alternative was a
+ * label that was legal in a single-threaded deployment and silently
+ * overwritten (main) or snapshot-refused (worker) the day the mesh went on.
+ * The two export-side rules stay as the trust boundary for samples the
+ * registry did not mint: the main side sets it on its own samples whatever
+ * they carried, and a worker snapshot that already carries the key is refused
+ * whole rather than merged, because a relayed sample claiming to be another
+ * thread's is the exposition-level forgery #784 is about, one field over.
+ * Vocabulary of the exposition rather than a tuned value, so it lives beside
+ * the two grammar patterns above and not in `src/util/Constants.ts`, even
+ * though the worker subsystem reads it too.
+ */
+export const THREAD_LABEL = 'thread';
+
+/** {@link THREAD_LABEL} value of the main thread's own samples. */
+export const MAIN_THREAD_LABEL_VALUE = 'main';
+
+/* -------------------- Label keys the server reserves ------------------- */
+
+/**
+ * Prefix Prometheus reserves on a **label name** for its own use (#1513).
+ *
+ * The server drops `__`-prefixed labels after relabeling, so one that reaches
+ * it is at best invisible — but `__name__` is not one of the invisible ones:
+ * it *is* the series name, and a scrape job configured with
+ * `honor_labels: true` keeps the target's value for it.  An application label
+ * `__name__="forged_series"` on an honestly-named family is then filed under
+ * `forged_series`, which is precisely the forged series
+ * {@link PROMETHEUS_METRIC_NAME_PATTERN} exists to prevent (#784) — reached
+ * one layer later rather than closed.  `client_golang`
+ * (`reservedLabelPrefix`) and `client_python`
+ * (`RESERVED_METRIC_LABEL_NAME_RE`) refuse the prefix at the same point, for
+ * the same reason.
+ *
+ * A prefix and not a list of the server's current label names: `__address__`,
+ * `__scheme__` and the `__meta_*` family move between Prometheus releases and
+ * between service-discovery mechanisms, and the reservation is the part that
+ * does not.
+ *
+ * It constrains the key side only, which is the asymmetry that makes
+ * `METRICS_OVERFLOW_LABEL_VALUE` (`__overflow__`) legal and deliberate: a
+ * label **value** is unrestricted, survives ingestion untouched, and is
+ * exactly where a marker that must stay greppable belongs.
+ *
+ * Vocabulary of the exposition rather than a tuned value, so it lives here
+ * beside {@link THREAD_LABEL} and the two grammars, even though the worker
+ * subsystem reads it too.
+ */
+export const RESERVED_LABEL_PREFIX = '__';

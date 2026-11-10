@@ -17,7 +17,8 @@
  * callers use for it, and it imports this module rather than the other way
  * round.
  */
-import type { Config } from '../../config/Config.js';
+import { ConfigError, type Config } from '../../config/Config.js';
+import { rejectRetiredLeaves, type RetiredLeaves } from '../../config/RetiredKeys.js';
 
 /** Raw byte chunks, no framing — the subscriber handles stream semantics. */
 type BytesFraming = { readonly kind: 'bytes' };
@@ -25,10 +26,10 @@ type BytesFraming = { readonly kind: 'bytes' };
 type LinesFraming = {
   readonly kind: 'lines';
   readonly delimiter?: string;
-  readonly maxLineLen?: number;
+  readonly maxLineBytes?: number;
 };
 /** First 4 bytes (big-endian uint32) carry the payload size. */
-type LengthPrefixedFraming = { readonly kind: 'length-prefixed'; readonly maxFrameLen?: number };
+type LengthPrefixedFraming = { readonly kind: 'length-prefixed'; readonly maxFrameBytes?: number };
 
 /**
  * Frame extraction strategy on the inbound stream.
@@ -49,10 +50,10 @@ export type TcpFrame = Uint8Array | string;
 export const DEFAULT_FRAMING: TcpFraming = { kind: 'bytes' };
 /** Line terminator when `lines` framing leaves `delimiter` unset. */
 export const DEFAULT_LINE_DELIMITER = '\n';
-/** Cap on one `lines` frame, in bytes, when `maxLineLen` is unset. */
-export const DEFAULT_MAX_LINE_LENGTH = 1_048_576;
-/** Cap on one `length-prefixed` frame when `maxFrameLen` is unset. */
-export const DEFAULT_MAX_FRAME_LENGTH = 16 * 1024 * 1024;
+/** Cap on one `lines` frame, in bytes, when `maxLineBytes` is unset. */
+export const DEFAULT_MAX_LINE_BYTES = 1_048_576;
+/** Cap on one `length-prefixed` frame, in bytes, when `maxFrameBytes` is unset. */
+export const DEFAULT_MAX_FRAME_BYTES = 16 * 1024 * 1024;
 
 /**
  * What one extraction pass produced.
@@ -116,16 +117,16 @@ export function extractFrames(
     return extractLineFrames(
       buffer,
       framing.delimiter ?? DEFAULT_LINE_DELIMITER,
-      framing.maxLineLen ?? DEFAULT_MAX_LINE_LENGTH,
+      framing.maxLineBytes ?? DEFAULT_MAX_LINE_BYTES,
       scanFrom,
     );
   }
-  return extractLengthPrefixedFrames(buffer, framing.maxFrameLen ?? DEFAULT_MAX_FRAME_LENGTH);
+  return extractLengthPrefixedFrames(buffer, framing.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES);
 }
 
 /**
- * Split `buffer` on `delimiter`, rejecting any line longer than `maxLineLen`
- * **bytes**.
+ * Split `buffer` on `delimiter`, rejecting any line longer than
+ * `maxLineBytes`.
  *
  * The scan runs over the raw bytes against the UTF-8-encoded delimiter, and
  * only completed lines are decoded.  Three properties follow from that, none
@@ -142,7 +143,7 @@ export function extractFrames(
  *     it.  Raw bytes go back untouched, so it repairs itself.
  *   - **The cap counts bytes** (#752) — the unit the options validator has
  *     always claimed.  Measured on the decoded string it counted UTF-16 code
- *     units, which let a 1 MiB `maxLineLen` buffer 3 MiB of ordinary CJK.
+ *     units, which let a 1 MiB `maxLineBytes` buffer 3 MiB of ordinary CJK.
  *
  * The un-terminated remainder is checked against the cap too: bytes after the
  * last delimiter can never become a valid line once they are already over it,
@@ -152,7 +153,7 @@ export function extractFrames(
 export function extractLineFrames(
   buffer: Uint8Array,
   delimiter: string,
-  maxLineLen: number,
+  maxLineBytes: number,
   scanFrom = 0,
 ): FrameExtraction {
   const delimiterBytes = textEncoder.encode(delimiter);
@@ -175,18 +176,18 @@ export function extractLineFrames(
   for (;;) {
     const index = indexOfBytes(buffer, delimiterBytes, searchFrom);
     if (index < 0) break;
-    if (index - lineStart > maxLineLen) {
-      return { frames, consumed: 0, overflow: `line exceeds maxLineLen=${maxLineLen}` };
+    if (index - lineStart > maxLineBytes) {
+      return { frames, consumed: 0, overflow: `line exceeds maxLineBytes=${maxLineBytes}` };
     }
     frames.push(textDecoder.decode(buffer.subarray(lineStart, index)));
     lineStart = index + delimiterBytes.length;
     searchFrom = lineStart;
   }
-  if (buffer.length - lineStart > maxLineLen) {
+  if (buffer.length - lineStart > maxLineBytes) {
     return {
       frames,
       consumed: 0,
-      overflow: `unterminated line exceeds maxLineLen=${maxLineLen}`,
+      overflow: `unterminated line exceeds maxLineBytes=${maxLineBytes}`,
     };
   }
   // Resume one short of a full delimiter, not at the very end: a multi-byte
@@ -224,7 +225,7 @@ function indexOfBytes(haystack: Uint8Array, needle: Uint8Array, from: number): n
 
 /**
  * Peel `[uint32 length][payload]` frames off `buffer`, rejecting any frame
- * whose declared length exceeds `maxFrameLen`.
+ * whose declared length exceeds `maxFrameBytes`.
  *
  * The cap is checked against the **declared** length, before waiting for the
  * payload: a 4-byte header is all an attacker needs to send to make the
@@ -233,15 +234,15 @@ function indexOfBytes(haystack: Uint8Array, needle: Uint8Array, from: number): n
  */
 export function extractLengthPrefixedFrames(
   buffer: Uint8Array,
-  maxFrameLen: number,
+  maxFrameBytes: number,
 ): FrameExtraction {
   const frames: TcpFrame[] = [];
   let cursor = 0;
   while (buffer.length - cursor >= 4) {
     const length = (buffer[cursor]! << 24 | buffer[cursor + 1]! << 16
                   | buffer[cursor + 2]! << 8 | buffer[cursor + 3]!) >>> 0;
-    if (length > maxFrameLen) {
-      return { frames, consumed: 0, overflow: `frame exceeds maxFrameLen=${maxFrameLen}` };
+    if (length > maxFrameBytes) {
+      return { frames, consumed: 0, overflow: `frame exceeds maxFrameBytes=${maxFrameBytes}` };
     }
     if (buffer.length - cursor - 4 < length) break;
     // `slice`, not `subarray`: a frame handed to a subscriber outlives this
@@ -253,31 +254,150 @@ export function extractLengthPrefixedFrames(
   return { frames, consumed: cursor };
 }
 
-/** Read a `framing { … }` block off a broker actor's HOCON config. */
-export function readFramingFromConfig(framingConfig: Config): TcpFraming {
-  const kind = framingConfig.getString('kind') as TcpFraming['kind'];
+/**
+ * The full config paths of one `framing` block's leaves.  The block hangs under
+ * both TCP roots, so there are two copies — `ConfigKeys.io.broker.tcp.framing`
+ * and `ConfigKeys.io.broker.tcpServer.framing` — composed by one function in
+ * `ConfigKeys.ts`, and this reader takes either.
+ */
+export type TcpFramingKeys = {
+  readonly root: string;
+  readonly kind: string;
+  readonly delimiter: string;
+  readonly maxLineBytes: string;
+  readonly maxFrameBytes: string;
+};
+
+/**
+ * The spellings the two caps had before #1443, relative to a framing block's
+ * root, mapped to the leaves that replaced them.
+ *
+ * A table of its own rather than entries in either TCP actor's
+ * `retiredLeaves()`, for two reasons.  The block is shared, so refusing the old
+ * spellings where it is read covers both roots and every caller.  And the
+ * rename moved the TypeScript fields with the leaves — `maxLineLen` and
+ * `maxFrameLen` were the field names too — so the refusal says that instead of
+ * the default note, which would tell the operator no code change is needed.
+ * Both caps bound what a peer can make the actor buffer, the frame cap at
+ * 16 MiB by default: an old spelling ignored would put that default back with
+ * nothing said.  See `rejectRetiredLeaves` in `config/RetiredKeys.ts`.
+ */
+export const RETIRED_TCP_FRAMING_LEAVES: RetiredLeaves = {
+  maxLineLen: 'max-line-bytes',
+  maxFrameLen: 'max-frame-bytes',
+};
+
+/** What refusing a retired cap tells the operator about their code. */
+const FRAMING_FIELD_RENAME_NOTE =
+  'The TypeScript fields were renamed with them: maxLineLen is maxLineBytes and maxFrameLen is maxFrameBytes, '
+  + 'so code that sets either needs the same rename.';
+
+/**
+ * Read a `framing { … }` block off the system config, at the full paths `keys`
+ * holds; the TCP readers call it only where the block exists.
+ *
+ * The leaves are the kebab-case of the fields (#1443).  The caps are sizes,
+ * read with `getBytes`: `64K` is 65 536 bytes and a bare number is a byte
+ * count, where `getInt`, which read them before, refused a unit outright.
+ * Their retired spellings are refused before anything is read — here rather
+ * than by either caller, so every root this reader is pointed at gets the
+ * refusal and no caller can read the block without it.
+ *
+ * So is every other leaf the block does not have — see
+ * {@link rejectUnknownFramingLeaves}: a cap spelt any other way would leave its
+ * default in force as surely as the retired spelling.
+ *
+ * A `kind` outside the three is handed on as written rather than read as
+ * `bytes`, which dropped the framing and its cap together on a typo.  The
+ * options validator refuses it at start, through {@link findFramingViolation} —
+ * the rule a framing built in code meets as well — so the refusal names the
+ * kinds there are once, for both routes.  A refusal here instead would also
+ * read to the dead-key gate as a leaf no reader answers.
+ *
+ * An unset leaf is omitted rather than written as `undefined`, the contract
+ * every config reader keeps: an own `undefined` shadows whatever a spread puts
+ * beneath it.
+ */
+export function readFramingFromConfig(config: Config, keys: TcpFramingKeys): TcpFraming {
+  rejectRetiredLeaves(config, keys.root, RETIRED_TCP_FRAMING_LEAVES, FRAMING_FIELD_RENAME_NOTE);
+  rejectUnknownFramingLeaves(config, keys);
+  const kind = config.getString(keys.kind) as TcpFraming['kind'];
   if (kind === 'lines') {
-    return {
-      kind,
-      delimiter: framingConfig.hasPath('delimiter') ? framingConfig.getString('delimiter') : undefined,
-      maxLineLen: framingConfig.hasPath('maxLineLen') ? framingConfig.getInt('maxLineLen') : undefined,
-    };
+    const framing: { -readonly [K in keyof LinesFraming]: LinesFraming[K] } = { kind };
+    if (config.hasPath(keys.delimiter)) framing.delimiter = config.getString(keys.delimiter);
+    if (config.hasPath(keys.maxLineBytes)) framing.maxLineBytes = config.getBytes(keys.maxLineBytes);
+    return framing;
   }
   if (kind === 'length-prefixed') {
-    return {
-      kind,
-      maxFrameLen: framingConfig.hasPath('maxFrameLen') ? framingConfig.getInt('maxFrameLen') : undefined,
-    };
+    const framing: { -readonly [K in keyof LengthPrefixedFraming]: LengthPrefixedFraming[K] } = { kind };
+    if (config.hasPath(keys.maxFrameBytes)) framing.maxFrameBytes = config.getBytes(keys.maxFrameBytes);
+    return framing;
   }
-  return { kind: 'bytes' };
+  // `bytes`, which has no leaves of its own — or a kind that is none of the
+  // three, cast above and refused by the validator before a socket exists.
+  return { kind };
+}
+
+/**
+ * Refuse any leaf under the framing block other than the four `keys` names,
+ * listing the four.
+ *
+ * The block is small and closed, so an allow-list is exact where a list of
+ * known mistakes is not: there is one way to spell each cap and any number of
+ * ways to misspell it.  A migration by hand produces the likeliest — the old
+ * names kebab-cased (`max-frame-len`), the fields with their unit dropped
+ * (`max-frame`, the rule every duration leaf follows and the caps, as sizes,
+ * do not), the field names themselves (`maxFrameBytes`) — and read by nothing,
+ * each would start the actor on the default cap, 16 MiB for a frame, with the
+ * lower one its operator wrote nowhere in force.  The four are taken from
+ * `keys`, so a leaf the block gains is allowed the day `ConfigKeys` declares
+ * it.
+ */
+function rejectUnknownFramingLeaves(config: Config, keys: TcpFramingKeys): void {
+  const leaves = [keys.kind, keys.delimiter, keys.maxLineBytes, keys.maxFrameBytes]
+    .map((path) => path.slice(keys.root.length + 1));
+  for (const leaf of Object.keys(config.getObject(keys.root))) {
+    if (leaves.includes(leaf)) continue;
+    throw new ConfigError(
+      `${keys.root}.${leaf} is not a framing leaf — the block takes ${leaves.join(', ')}.  Read by nothing, `
+      + 'it would leave a default in force, so it is refused rather than ignored.',
+    );
+  }
 }
 
 /** A framing setting that is present but outside its domain. */
 export type FramingViolation = {
   readonly field: string;
   readonly reason: string;
-  readonly value: number | string;
+  /** As found — a framing from plain JavaScript can carry any value in any field. */
+  readonly value: unknown;
 };
+
+/**
+ * Every strategy's `kind`, keyed by the union so the compiler holds the two
+ * together: a kind the union gains without an entry here is a missing
+ * property, and an entry the union lacks is an excess one.
+ */
+const TCP_FRAMING_KINDS: Readonly<Record<TcpFraming['kind'], true>> = {
+  bytes: true,
+  lines: true,
+  'length-prefixed': true,
+};
+
+/**
+ * The fields the two caps had before #1443, mapped to the fields that replaced
+ * them — the code half of {@link RETIRED_TCP_FRAMING_LEAVES}.
+ *
+ * The compiler refuses them only on a fresh object literal.  A framing parsed
+ * from JSON, built in plain JavaScript or passed through a cast reaches the
+ * validator with the old field still on it, and nothing reads that field: the
+ * actor would start on the default cap, 16 MiB for a frame, with the lower one
+ * its caller set nowhere in force.
+ */
+const RETIRED_TCP_FRAMING_FIELDS: ReadonlyMap<string, 'maxLineBytes' | 'maxFrameBytes'> = new Map([
+  ['maxLineLen', 'maxLineBytes'],
+  ['maxFrameLen', 'maxFrameBytes'],
+]);
 
 /**
  * The offending `framing` setting, or `undefined` when all of them are fine —
@@ -303,22 +423,45 @@ export type FramingViolation = {
  * synchronous spin — not a slow actor but a wedged process, since no timeout
  * can interrupt it (#789).  `''` survives every layer on its own (`??`
  * treats it as set, HOCON reads it verbatim), so nothing else would catch it.
+ *
+ * An unknown `kind` and a retired cap field fail the same way the caps do,
+ * by dropping a limit without a word.  {@link extractFrames} reads any kind
+ * but `bytes` and `lines` as `length-prefixed` on the default cap, and the
+ * HOCON reader hands an unknown kind on for this rule to refuse.  A field
+ * nothing reads (`maxFrameLen`) leaves its cap at the default.  The kind is
+ * checked first, against an own key of the table, because every other rule
+ * here depends on it and `'toString' in {}` is `true`.
  */
 export function findFramingViolation(
   framing: TcpFraming | undefined,
 ): FramingViolation | undefined {
   if (framing === undefined) return undefined;
+  const kind: unknown = framing.kind;
+  if (typeof kind !== 'string' || !Object.hasOwn(TCP_FRAMING_KINDS, kind)) {
+    const accepted = Object.keys(TCP_FRAMING_KINDS).map((name) => `'${name}'`);
+    return {
+      field: 'framing.kind',
+      reason: `must be ${accepted.slice(0, -1).join(', ')} or ${accepted.at(-1)}`,
+      value: kind,
+    };
+  }
+  for (const [retired, current] of RETIRED_TCP_FRAMING_FIELDS) {
+    const value: unknown = (framing as Readonly<Record<string, unknown>>)[retired];
+    if (value !== undefined) {
+      return { field: `framing.${retired}`, reason: `has been renamed to framing.${current}`, value };
+    }
+  }
   if (framing.kind === 'lines' && framing.delimiter === '') {
     return { field: 'framing.delimiter', reason: 'must not be empty', value: framing.delimiter };
   }
   const reason = 'must be a positive integer number of bytes';
-  if (framing.kind === 'lines' && framing.maxLineLen !== undefined
-      && !isByteCap(framing.maxLineLen)) {
-    return { field: 'framing.maxLineLen', reason, value: framing.maxLineLen };
+  if (framing.kind === 'lines' && framing.maxLineBytes !== undefined
+      && !isByteCap(framing.maxLineBytes)) {
+    return { field: 'framing.maxLineBytes', reason, value: framing.maxLineBytes };
   }
-  if (framing.kind === 'length-prefixed' && framing.maxFrameLen !== undefined
-      && !isByteCap(framing.maxFrameLen)) {
-    return { field: 'framing.maxFrameLen', reason, value: framing.maxFrameLen };
+  if (framing.kind === 'length-prefixed' && framing.maxFrameBytes !== undefined
+      && !isByteCap(framing.maxFrameBytes)) {
+    return { field: 'framing.maxFrameBytes', reason, value: framing.maxFrameBytes };
   }
   return undefined;
 }

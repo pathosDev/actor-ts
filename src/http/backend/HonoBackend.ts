@@ -1,24 +1,32 @@
 import { match } from 'ts-pattern';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import {
   getHonoRunner,
   type FetchHandler,
   type HonoServerHandle,
+  type HonoServerRunner,
   type HonoWebsocketBridge,
   type WSContextLike,
   type WSEventsLike,
 } from '../../runtime/http/index.js';
+import { OptionsError } from '../../util/OptionsValidator.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../Types.js';
 import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
 import {
+  applyServerOptions,
+  bodyCapOf,
   contentLengthExceeds,
   DEFAULT_RESPONSE_SECURITY_HEADERS,
   PAYLOAD_TOO_LARGE_RESPONSE,
+  serverOptionsReportOf,
   transportFrameCapOf,
 } from './HttpServerBackend.js';
 import type {
   HttpServerBackend,
+  NodeHttpServerLike,
   RouteRegistration,
   ServerBinding,
+  ServerListenOptions,
   WebsocketRouteRegistration,
 } from './HttpServerBackend.js';
 import { bufferWebsocketEvents } from '../websocket/SocketAdapter.js';
@@ -32,6 +40,30 @@ function coerceWebsocketData(data: unknown): string | Uint8Array {
   if (data instanceof Uint8Array) return data;
   if (data instanceof ArrayBuffer) return new Uint8Array(data);
   return new Uint8Array(0);
+}
+
+/**
+ * The request's query parameters as every backend hands them over: one value
+ * as a string, a repeated parameter as the array of its values.
+ *
+ * Each parameter is defined on the copy rather than assigned to it.  An
+ * assignment runs a parameter named `__proto__` through `Object.prototype`'s
+ * setter instead of creating it, so that one never arrived as a parameter;
+ * defined, it is an own parameter like any other.
+ */
+function honoQueryOf(context: { req: { queries(): unknown } }): Record<string, string | string[] | undefined> {
+  const rawQueries = (context.req.queries() as Record<string, string[]> | undefined) ?? {};
+  const query: Record<string, string | string[] | undefined> = {};
+  for (const [key, values] of Object.entries(rawQueries)) {
+    if (!values) continue;
+    Object.defineProperty(query, key, {
+      value: values.length === 1 ? values[0] : values,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return query;
 }
 
 /** Read the `Content-Length` header off a Hono context as a string, if present. */
@@ -98,6 +130,17 @@ export function readBufferedAmount(raw: unknown): number {
     return typeof buffered === 'number' && Number.isFinite(buffered) ? buffered : 0;
   }
   return typeof sock.bufferedAmount === 'number' && Number.isFinite(sock.bufferedAmount) ? sock.bufferedAmount : 0;
+}
+
+/**
+ * The hard close of the runtime's own socket, if it has one: Bun's
+ * `ServerWebSocket` and `@hono/node-ws`'s `ws` `WebSocket` do, and Deno's
+ * standard `WebSocket` does not.  Bound to the socket, so it can be handed on.
+ */
+function terminateOf(raw: unknown): (() => void) | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const socket = raw as { terminate?: unknown };
+  return typeof socket.terminate === 'function' ? (socket.terminate as () => void).bind(raw) : undefined;
 }
 
 /*
@@ -182,6 +225,36 @@ export function honoFetchHandler(app: HonoAppLike): FetchHandler {
 }
 
 /**
+ * Refuse an `idle-timeout` this runtime's server cannot hold, before anything
+ * binds (#1487).
+ *
+ * The runner knows the ceiling — `Bun.serve` takes whole seconds up to 255 and
+ * throws past that — and this backend knows the key that set the value, which
+ * `src/runtime/` does not import.  So the runner declares it and the refusal is
+ * raised here, naming both the HOCON leaf and the builder method, since either
+ * could have set it.  A value is refused rather than clamped: an operator who
+ * asked for ten minutes and got four would find out from a cut connection.
+ *
+ * The remedy it names is the ceiling and nothing else — not `0`, which turns
+ * the idle timeout off.  Under Bun that timeout is the one bound this backend
+ * has on a request whose body stops arriving and on a connection left idle,
+ * since `header-timeout`, `request-timeout` and `max-connections` cannot be
+ * installed there, so `0` is no answer to a value that is too long.
+ */
+function refuseIdleTimeoutPastCeiling(runner: HonoServerRunner, idleTimeoutMs: number | undefined): void {
+  const ceilingMs = runner.idleTimeoutCeilingMs;
+  if (ceilingMs === undefined || idleTimeoutMs === undefined || idleTimeoutMs <= ceilingMs) return;
+  throw new OptionsError(
+    `HttpServerOptions: ${ConfigKeys.http.server.idleTimeout} (withIdleTimeoutMs in code) is ${idleTimeoutMs} ms, `
+      + `longer than the Hono backend can hold on this runtime — at most ${ceilingMs} ms, in whole seconds — `
+      + `and the server would refuse it rather than bind. Set it to ${ceilingMs / 1_000}s or less.`,
+    'HttpServerOptions',
+    'idleTimeoutMs',
+    idleTimeoutMs,
+  );
+}
+
+/**
  * Hono-backed HTTP backend — a thin adapter that compiles the actor-ts
  * routing DSL onto a Hono app and serves it with `Bun.serve`.  Hono is a
  * lightweight router that runs well on Bun and covers the middleware cases
@@ -196,7 +269,15 @@ export class HonoBackend implements HttpServerBackend {
 
   private app: HonoAppLike | null;
   private readonly ownsApp: boolean;
-  private readonly maxBodyBytes: number;
+  /**
+   * What `withMaxBodyBytes` said, or `undefined` — kept apart from the default
+   * so `listen()` can tell an untouched backend, which yields to the server's
+   * `max-content-length`, from one built with a cap of its own, which must
+   * agree with it.  See {@link bodyCapOf}.
+   */
+  private readonly maxBodyBytes: number | undefined;
+  /** The cap every body read holds, decided at `listen()`. */
+  private bodyCapBytes = DEFAULT_HTTP_MAX_BODY_BYTES;
   private readonly registered: RouteRegistration[] = [];
   private readonly wsRegistered: WebsocketRouteRegistration[] = [];
   private notFoundHandler: ((request: HttpRequest) => Promise<HttpResponse> | HttpResponse) | null = null;
@@ -221,7 +302,7 @@ export class HonoBackend implements HttpServerBackend {
     new HonoBackendOptionsValidator().validate(resolvedOptions);
     this.app = resolvedOptions.app ?? null;
     this.ownsApp = resolvedOptions.app == null;
-    this.maxBodyBytes = resolvedOptions.maxBodyBytes ?? DEFAULT_HTTP_MAX_BODY_BYTES;
+    this.maxBodyBytes = resolvedOptions.maxBodyBytes;
   }
 
   /** Inject / access the underlying Hono app — useful for native middleware. */
@@ -256,7 +337,11 @@ export class HonoBackend implements HttpServerBackend {
     this.defaultResponseHeaders = headers;
   }
 
-  async listen(host: string, port: number): Promise<ServerBinding> {
+  async listen(host: string, port: number, serverOptions?: ServerListenOptions): Promise<ServerBinding> {
+    // First, so a refusal leaves the app as the caller handed it over.
+    this.bodyCapBytes = bodyCapOf('HonoBackend', this.maxBodyBytes, serverOptions?.maxContentLength);
+    const runner = await getHonoRunner();
+    refuseIdleTimeoutPastCeiling(runner, serverOptions?.idleTimeoutMs);
     if (!this.app) this.app = await this.createHonoApp();
     const app = this.app;
 
@@ -268,7 +353,7 @@ export class HonoBackend implements HttpServerBackend {
     if (this.notFoundHandler) {
       const handler = this.notFoundHandler;
       app.notFound(async (context) => {
-        if (contentLengthExceeds(contentLengthHeader(context), this.maxBodyBytes)) return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
+        if (contentLengthExceeds(contentLengthHeader(context), this.bodyCapBytes)) return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
         const read = await this.readBodyWithinCap(context);
         if (read.kind === 'over-cap') return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
         const request = this.buildRequest(context, read.body);
@@ -287,7 +372,7 @@ export class HonoBackend implements HttpServerBackend {
       }
       if (err instanceof HttpError) {
         return new Response(JSON.stringify({ error: err.message, ...err.extra }), {
-          status: err.status,
+          status: responseStatusOrServerError(err.status),
           headers: { ...this.defaultResponseHeaders, 'content-type': 'application/json; charset=utf-8', ...(err.headers ?? {}) },
         });
       }
@@ -297,8 +382,6 @@ export class HonoBackend implements HttpServerBackend {
         { status: 500, headers: { ...this.defaultResponseHeaders, 'content-type': 'application/json; charset=utf-8' } },
       );
     });
-
-    const runner = await getHonoRunner();
 
     // WebSocket routes: obtain the per-runtime bridge, register each route
     // as a GET carrying the authorize guard + Hono's upgrade middleware,
@@ -319,18 +402,56 @@ export class HonoBackend implements HttpServerBackend {
       for (const reg of this.wsRegistered) this.attachWebsocketRoute(app, bridge, reg);
     }
 
+    // TLS and HTTP/2 ride to the runner as-is: it owns the socket, and every
+    // runtime spells the pair differently (#1522).  So does the header cap,
+    // as a typed member rather than folded into the bridge's bag: only the
+    // Node runner can build it into a server, and the handle says whether it
+    // did (#1488).  The idle timeout and the request deadline go the same way:
+    // `Bun.serve` takes its idle timeout when it is built, and derives it from
+    // the deadline when the key is unset; the Node runner hands its server
+    // back for `applyServerOptions` to write, and Deno has no knob (#1487).
     const server = await runner.serve({
       host,
       port,
       fetch: honoFetchHandler(app),
       serveOptions: bridge?.serveOptions,
+      tls: serverOptions?.tls,
+      http2: serverOptions?.http2,
+      maxHeaderBytes: serverOptions?.maxHeaderBytes,
+      idleTimeoutMs: serverOptions?.idleTimeoutMs,
+      requestDeadlineMs: serverOptions?.requestDeadlineMs,
     });
     this.server = server;
+    // Hono owns no server of its own — the per-runtime runner does — so the
+    // policy reaches whatever that runner is willing to hand back.  Only
+    // `@hono/node-server` hands back a `node:http` server (as `raw`); on Bun
+    // and Deno `raw` is absent and none of these knobs has anywhere to go from
+    // here.  `applyServerOptions` treats an absent server as ordinary for
+    // exactly this case and reports every field not in effect, and the binding
+    // carries that report to `bind()`, which names each field the deployment
+    // set in a warning — so the gap is said rather than left to be discovered.
+    // The body cap needs no server: it is this backend's own reader, so a set
+    // key holds on every runtime.  The header cap and the idle timeout are the
+    // runner's to say: under Bun the idle timeout holds and the header cap does
+    // not, under Deno neither does — so a set one that did not take is warned
+    // about.
+    const applied = server.appliedServeOptions;
+    const serverOptionsReport = serverOptionsReportOf(
+      applyServerOptions(server.raw as NodeHttpServerLike | undefined, serverOptions),
+      serverOptions,
+      {
+        maxHeaderBytes: applied?.maxHeaderBytes === true,
+        idleTimeoutMs: applied?.idleTimeoutMs === true,
+        ...(applied?.idleTimeoutHeldAtCeilingMs !== undefined ? { idleTimeoutHeldAtCeilingMs: applied.idleTimeoutHeldAtCeilingMs } : {}),
+        ...(applied?.idleTimeoutEarliestCutMs !== undefined ? { idleTimeoutEarliestCutMs: applied.idleTimeoutEarliestCutMs } : {}),
+      },
+    );
     bridge?.attach?.(server);
 
     return {
       host: server.host,
       port: server.port,
+      serverOptionsReport,
       unbind: async (gracePeriodMs?: number) => {
         const srv = this.server;
         if (!srv) return;
@@ -366,7 +487,7 @@ export class HonoBackend implements HttpServerBackend {
       // #357).  Both halves matter: the fast path costs no read at all, and
       // the counter is what stops a body that never announced its size from
       // being materialised in full first.
-      if (contentLengthExceeds(contentLengthHeader(c), this.maxBodyBytes)) return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
+      if (contentLengthExceeds(contentLengthHeader(c), this.bodyCapBytes)) return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
       const read = await this.readBodyWithinCap(c);
       if (read.kind === 'over-cap') return this.writeResponse(PAYLOAD_TOO_LARGE_RESPONSE);
       const request = this.buildRequest(c, read.body);
@@ -440,6 +561,13 @@ export class HonoBackend implements HttpServerBackend {
         // Enables the backpressure guard in WebsocketConnectionActor on Hono
         // (was a no-op before — the adapter had no bufferedAmount).  WS-4.
         bufferedAmount: () => readBufferedAmount(ws?.raw),
+        // Read when it is asked for, like `readyState`: the socket exists from
+        // `onOpen` on, which is before `onConnection` hands this adapter out.
+        // Absent where the runtime's socket has no hard close (Deno), so
+        // `abort()` and shutdown fall back to `close()` there, as they must.
+        get terminate() {
+          return terminateOf(ws?.raw);
+        },
         remoteAddress: adapted.remoteAddress,
         get protocol() {
           return ws?.protocol;
@@ -469,11 +597,7 @@ export class HonoBackend implements HttpServerBackend {
     try {
       params = (context.req.param() as Record<string, string>) ?? {};
     } catch { /* no match — leave empty */ }
-    const rawQueries = (context.req.queries() as Record<string, string[]>) ?? {};
-    const query: Record<string, string | string[] | undefined> = {};
-    for (const [key, value] of Object.entries(rawQueries)) {
-      if (value) query[key] = value.length === 1 ? value[0] : value;
-    }
+    const query = honoQueryOf(context);
     const remoteAddress = extractHonoRemoteAddress(context);
     return {
       method: 'GET',
@@ -487,7 +611,9 @@ export class HonoBackend implements HttpServerBackend {
   }
 
   /**
-   * Read the request body, giving up the moment it crosses `maxBodyBytes`.
+   * Read the request body, giving up the moment it crosses the body cap
+   * `listen()` resolved — the server's `max-content-length`, or this
+   * backend's own.
    *
    * Chunk by chunk rather than through `c.req.arrayBuffer()`, which is a
    * single await that only returns once the *whole* body is resident — so a
@@ -513,7 +639,7 @@ export class HonoBackend implements HttpServerBackend {
     const stream = requestBodyStream(context.req.raw);
     if (!stream) {
       const buffer = await context.req.arrayBuffer();
-      if (buffer.byteLength > this.maxBodyBytes) return { kind: 'over-cap' };
+      if (buffer.byteLength > this.bodyCapBytes) return { kind: 'over-cap' };
       return this.rememberBody(context, buffer.byteLength > 0 ? new Uint8Array(buffer) : null);
     }
 
@@ -526,7 +652,7 @@ export class HonoBackend implements HttpServerBackend {
         if (done) break;
         if (value === undefined) continue;
         totalBytes += value.byteLength;
-        if (totalBytes > this.maxBodyBytes) {
+        if (totalBytes > this.bodyCapBytes) {
           // Hang up on the rest of the upload — the whole point is that the
           // bytes past the cap are never received, let alone allocated.
           await reader.cancel().catch(() => undefined);
@@ -569,13 +695,7 @@ export class HonoBackend implements HttpServerBackend {
       params = (context.req.param() as Record<string, string>) ?? {};
     } catch { /* no match — leave empty */ }
 
-    // Hono returns queries as Record<string, string[]>; flatten single values.
-    const rawQueries = (context.req.queries() as Record<string, string[]>) ?? {};
-    const query: Record<string, string | string[] | undefined> = {};
-    for (const [key, value] of Object.entries(rawQueries)) {
-      if (!value) continue;
-      query[key] = value.length === 1 ? value[0] : value;
-    }
+    const query = honoQueryOf(context);
 
     const remoteAddress = extractHonoRemoteAddress(context);
 
@@ -591,6 +711,7 @@ export class HonoBackend implements HttpServerBackend {
   }
 
   private writeResponse(response: HttpResponse): Response {
+    const status = responseStatusOrServerError(response.status);
     const headers = new Headers();
     // Server-wide defaults go in first; `Headers.set` is case-insensitive, so
     // whatever the response carries itself replaces them.
@@ -599,25 +720,25 @@ export class HonoBackend implements HttpServerBackend {
     if (response.contentType) headers.set('content-type', response.contentType);
 
     const body = response.body;
-    if (body === undefined || body === null) return new Response(null, { status: response.status, headers });
+    if (body === undefined || body === null) return new Response(null, { status, headers });
 
     if (typeof body === 'string') {
       if (!headers.has('content-type')) headers.set('content-type', 'text/plain; charset=utf-8');
-      return new Response(body, { status: response.status, headers });
+      return new Response(body, { status, headers });
     }
     if (body instanceof Uint8Array) {
       if (!headers.has('content-type')) headers.set('content-type', 'application/octet-stream');
       // Cast through BodyInit — the standard `Uint8Array<ArrayBufferLike>`
       // IS a valid Fetch body, but TypeScript 5.7+'s DOM types are not
       // (yet) parameterised that way, so the direct assignment errors.
-      return new Response(body as unknown as BodyInit, { status: response.status, headers });
+      return new Response(body as unknown as BodyInit, { status, headers });
     }
     if (typeof ReadableStream !== 'undefined' && body instanceof ReadableStream) {
       if (!headers.has('content-type')) headers.set('content-type', 'application/octet-stream');
-      return new Response(body as unknown as BodyInit, { status: response.status, headers });
+      return new Response(body as unknown as BodyInit, { status, headers });
     }
     if (!headers.has('content-type')) headers.set('content-type', 'application/json; charset=utf-8');
-    return new Response(JSON.stringify(body), { status: response.status, headers });
+    return new Response(JSON.stringify(body), { status, headers });
   }
 
   private async createHonoApp(): Promise<HonoAppLike> {
@@ -634,6 +755,35 @@ export class HonoBackend implements HttpServerBackend {
       );
     }
   }
+}
+
+/**
+ * `status` if the `Response` constructor will take it, `500` otherwise.
+ *
+ * `Response` throws a `RangeError` for anything outside `101` and
+ * `[200, 599]`, and every status reaching {@link HonoBackend.writeResponse}
+ * comes from code this backend does not control — a route handler, the
+ * `notFound` fallback, a WebSocket `authorize` guard, or a `HttpError` a user
+ * threw (whose `status` is not validated at construction either).  Passing it
+ * through unchecked turns a wrong number into a throw *inside the request
+ * path*: a guard that meant to refuse an upgrade with `403` and computed the
+ * code wrong takes the response down instead of sending one, and on the
+ * `onError` path there is no handler left to catch it.
+ *
+ * A final response status is an integer in `[200, 599]`, so anything else is
+ * a bug in the caller and `500` is the honest rendering of one — the request
+ * gets answered, which is the property that was missing.  `101` is deliberately
+ * not admitted even though `Response` allows it: the upgrade handshake is this
+ * backend's own business and never travels through `HttpResponse`, so a `101`
+ * arriving here is a caller error like any other.
+ *
+ * Fastify and Express reject their own, *different* ranges (Node's writer
+ * takes `[100, 999]`, Fastify `[100, 600)`), so this is not lifted to a shared
+ * helper: there is no single range all three transports accept, and pretending
+ * otherwise would move the surprise rather than remove it.  #1362.
+ */
+function responseStatusOrServerError(status: number): number {
+  return Number.isInteger(status) && status >= 200 && status <= 599 ? status : 500;
 }
 
 /** The path remainder a `/prefix/*` route matched (still URL-encoded — the caller decodes). */

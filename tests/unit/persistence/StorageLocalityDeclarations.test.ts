@@ -110,8 +110,8 @@ describe('storageLocality declarations', () => {
     expect(new InMemoryJournal().storageLocality).toBe('node-local');
     expect(new InMemorySnapshotStore().storageLocality).toBe('node-local');
     expect(new InMemoryDurableStateStore().storageLocality).toBe('node-local');
-    expect(new SqliteJournal().storageLocality).toBe('node-local');
-    expect(new SqliteSnapshotStore().storageLocality).toBe('node-local');
+    expect(new SqliteJournal({ path: ':memory:' }).storageLocality).toBe('node-local');
+    expect(new SqliteSnapshotStore({ path: ':memory:' }).storageLocality).toBe('node-local');
     // The one relational store on a local file — overrides the family default.
     expect(new SqliteDurableStateStore({ path: ':memory:' }).storageLocality).toBe('node-local');
     expect(new FilesystemObjectStorageBackend({ dir: 'storage-locality-fixture' }).storageLocality).toBe('node-local');

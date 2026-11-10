@@ -1,4 +1,5 @@
 import { type Snapshot } from '../JournalTypes.js';
+import type { PersistenceOptionSupport } from '../PersistenceCapabilities.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
 import { none, some, type Option } from '../../util/Option.js';
@@ -7,9 +8,11 @@ import {
   type MongoCollectionLike,
   type MongoDatabaseLike,
 } from '../journals/MongoClient.js';
+import { DEFAULT_SNAPSHOTS_TABLE, DEFAULT_SNAPSHOT_KEEP_N } from '../Constants.js';
 import { MongoStore } from '../journals/MongoStore.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
+import { assertStringPersistenceId } from '../storage/PersistenceIdValidator.js';
 import {
   MongoSnapshotStoreOptionsValidator,
   type MongoSnapshotStoreOptions,
@@ -37,6 +40,13 @@ type SnapshotDocument = {
  * and Cassandra stores; the object-storage store is the one that honours them.
  */
 export class MongoSnapshotStore extends MongoStore implements SnapshotStore {
+  /** The payload is a plain document field — `options` is bound and never read (#960). */
+  readonly persistenceOptionSupport: PersistenceOptionSupport = {
+    encryption: false,
+    compression: false,
+    integrity: false,
+  };
+
   private readonly collectionName: string;
   private readonly keepN: number;
 
@@ -51,8 +61,8 @@ export class MongoSnapshotStore extends MongoStore implements SnapshotStore {
       ownsClient: resolvedOptions.client === undefined,
       openClient: () => buildMongoResource(resolvedOptions),
     });
-    this.collectionName = resolvedOptions.snapshotsCollection ?? 'snapshots';
-    this.keepN = resolvedOptions.keepN ?? 3;
+    this.collectionName = resolvedOptions.snapshotsCollection ?? DEFAULT_SNAPSHOTS_TABLE;
+    this.keepN = resolvedOptions.keepN ?? DEFAULT_SNAPSHOT_KEEP_N;
     this.serializer = resolvedOptions.serializer;
   }
 
@@ -60,7 +70,16 @@ export class MongoSnapshotStore extends MongoStore implements SnapshotStore {
     await this.snapshots(database).createIndex({ persistenceId: 1, sequenceNr: 1 }, { unique: true });
   }
 
+  /**
+   * `save` is guarded like a read, because its id reaches MongoDB in the
+   * *filter* of an upsert: `{ persistenceId: { $gte: '' }, sequenceNr: 1 }`
+   * matches a neighbour's document and `$set` rewrites its payload in place,
+   * while the caller is handed a record saying the save succeeded (#1507).
+   * The type is all that is checked — the write *rules* live one layer up, in
+   * `PersistentActor`, exactly as they do for every other snapshot store.
+   */
   async save<S>(persistenceId: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
+    assertStringPersistenceId(persistenceId, 'MongoSnapshotStore.save');
     const { database } = await this.ensureOpen();
     const now = Date.now();
     try {
@@ -81,6 +100,7 @@ export class MongoSnapshotStore extends MongoStore implements SnapshotStore {
   }
 
   async loadLatest<S>(persistenceId: string, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
+    assertStringPersistenceId(persistenceId, 'MongoSnapshotStore.loadLatest');
     const { database } = await this.ensureOpen();
     const [document] = await this.snapshots(database)
       .find({ persistenceId })
@@ -91,6 +111,7 @@ export class MongoSnapshotStore extends MongoStore implements SnapshotStore {
   }
 
   async loadBefore<S>(persistenceId: string, seq: number, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
+    assertStringPersistenceId(persistenceId, 'MongoSnapshotStore.loadBefore');
     const { database } = await this.ensureOpen();
     const [document] = await this.snapshots(database)
       .find({ persistenceId, sequenceNr: { $lt: seq } })
@@ -101,6 +122,7 @@ export class MongoSnapshotStore extends MongoStore implements SnapshotStore {
   }
 
   async delete(persistenceId: string, toSeq: number): Promise<void> {
+    assertStringPersistenceId(persistenceId, 'MongoSnapshotStore.delete');
     const { database } = await this.ensureOpen();
     await this.snapshots(database).deleteMany({ persistenceId, sequenceNr: { $lte: toSeq } });
   }

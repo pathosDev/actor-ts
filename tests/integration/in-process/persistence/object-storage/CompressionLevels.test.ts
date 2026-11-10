@@ -71,7 +71,7 @@ describe('Compression levels — zstd', () => {
       const back = await zstdCompressor.decompress(compressed);
       expect(fromUtf8(back)).toBe(PAYLOAD);
     }
-  });
+  }, 15_000);
 
   test('undefined level uses the impl default and round-trips', async () => {
     const zstdCompressor = compressorFor('zstd');

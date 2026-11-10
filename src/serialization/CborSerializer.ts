@@ -1,5 +1,11 @@
 import { CborDecoder, CborEncoder } from './CborCodec.js';
-import { type Serializer } from './Serializer.js';
+import {
+  defaultReadConstraintsOptions,
+  ReadConstraintsOptionsValidator,
+  type ReadConstraintsOptions,
+  type ReadConstraintsOptionsType,
+} from './ReadConstraintsOptions.js';
+import { SerializationError, type Serializer } from './Serializer.js';
 
 /**
  * CBOR serializer — compact binary format, used by default for system
@@ -26,6 +32,21 @@ export class CborSerializer implements Serializer<unknown> {
   readonly id = 2;
   readonly name = 'cbor';
   readonly includesManifest = false;
+  /** Ceilings handed to every {@link CborDecoder} this serializer builds. */
+  private readonly constraints: Required<ReadConstraintsOptionsType>;
+
+  /**
+   * Read constraints are optional and default to the built-ins, so every
+   * `new CborSerializer()` in the tree keeps working; `SerializationExtension`
+   * is what hands over what config resolved to.
+   */
+  constructor(readConstraints: ReadConstraintsOptions = {}) {
+    this.constraints = {
+      ...defaultReadConstraintsOptions,
+      ...(readConstraints as Partial<ReadConstraintsOptionsType>),
+    };
+    new ReadConstraintsOptionsValidator().validate(this.constraints);
+  }
 
   manifest(_obj: unknown): string { return ''; }
 
@@ -34,6 +55,14 @@ export class CborSerializer implements Serializer<unknown> {
   }
 
   fromBinary(bytes: Uint8Array, _manifest: string): unknown {
-    return new CborDecoder().decode(bytes);
+    // Before the decoder is even built: a document ceiling that fired mid-decode
+    // would already have paid for the allocations it exists to refuse.
+    const ceiling = this.constraints.maxDocumentBytes;
+    if (ceiling > 0 && bytes.byteLength > ceiling) {
+      throw new SerializationError(
+        `CborSerializer: document of ${bytes.byteLength} bytes exceeds maxDocumentBytes ${ceiling}`,
+      );
+    }
+    return new CborDecoder(this.constraints).decode(bytes);
   }
 }

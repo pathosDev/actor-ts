@@ -33,9 +33,19 @@ export type ChildTerminatedCommand = {
   readonly child: ActorRef;
 };
 
+/**
+ * A death the watcher's own node did not witness — the far node reported it,
+ * or membership took the whole node away (#918).  The remote watcher enqueues
+ * this on the watching cell, which is what turns a wire frame into the
+ * branded `Terminated` the dispatch gate accepts.
+ */
 export type WatchNotifyCommand = {
   readonly kind: 'watchNotify';
   readonly target: ActorRef;
+  /** `false` when the far node never saw the watched actor exist. */
+  readonly existenceConfirmed?: boolean;
+  /** `true` when the far node itself left the cluster. */
+  readonly addressTerminated?: boolean;
 };
 
 export type ReceiveTimeoutCommand = {

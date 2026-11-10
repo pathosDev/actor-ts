@@ -2,13 +2,16 @@ import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import { SystemGroups } from '../internal/SystemPaths.js';
 import { ConsumerController } from './ConsumerController.js';
+import { readConsumerControllerOptionsFromConfig } from './ConsumerControllerOptions.js';
 import type { ConsumerControllerOptionsType } from './ConsumerControllerOptions.js';
 import type { ConfirmationCallback, Delivery } from './Messages.js';
 import {
   ProducerController,
   type ProducerSend,
 } from './ProducerController.js';
-import type { ProducerControllerOptions } from './ProducerControllerOptions.js';
+import { readProducerControllerOptionsFromConfig } from './ProducerControllerOptions.js';
+import type { ProducerControllerOptions, ProducerControllerOptionsType } from './ProducerControllerOptions.js';
+import { mergeOptions } from '../util/OptionsMerge.js';
 import { randomId } from '../util/RandomString.js';
 
 /**
@@ -34,8 +37,20 @@ export interface ConsumerHandle {
  * after handling, the producer retries on timeout, and duplicates are
  * silently absorbed on the consumer side.
  *
- * For work-pulling (multiple consumers, one producer) see the WorkPulling
- * companion (follow-up feature).
+ * Work-pulling (multiple consumers, one producer) does not exist here: there
+ * is no consumer-driven demand protocol to build it on — the wire carries a
+ * `Delivery` and an `Acknowledgment` and nothing else — so it is a companion
+ * still to be written rather than one to reach for.
+ *
+ * **This is also the only place HOCON reaches the two controllers.**  Both
+ * resolve their tunables in their constructors, and neither can read config
+ * there: `Actor.system` is a getter over a context the cell injects after
+ * construction.  So `actor-ts.reliable-delivery.*` layers in here, in the
+ * documented order — explicit options beat HOCON, HOCON beats the built-in
+ * defaults the constructors still fall back to.  A controller constructed
+ * directly and handed to `system.spawn` bypasses this seam and stays on its
+ * built-in defaults; that is the trade for the config layer living above the
+ * actor rather than inside it (#861).
  */
 export class ReliableDelivery {
   /** Spawn a ConsumerController — pass the returned ref to a ProducerController. */
@@ -44,8 +59,13 @@ export class ReliableDelivery {
     options: ConsumerControllerOptionsType<T>,
     name?: string,
   ): ConsumerHandle {
+    const resolvedOptions = mergeOptions<ConsumerControllerOptionsType<T>>(
+      {},
+      readConsumerControllerOptionsFromConfig(system.config),
+      options as Partial<ConsumerControllerOptionsType<T>>,
+    );
     const ref = system._spawnSystemActor(
-      () => new ConsumerController<T>(options) as unknown as import('../Actor.js').Actor<Delivery<unknown>>,
+      () => new ConsumerController<T>(resolvedOptions) as unknown as import('../Actor.js').Actor<Delivery<unknown>>,
       SystemGroups.delivery,
       name ?? generatedName('consumer', ++counter),
     );
@@ -58,8 +78,13 @@ export class ReliableDelivery {
     options: ProducerControllerOptions<T>,
     name?: string,
   ): ProducerHandle<T> {
+    const resolvedOptions = mergeOptions<ProducerControllerOptionsType<T>>(
+      {},
+      readProducerControllerOptionsFromConfig(system.config),
+      options as Partial<ProducerControllerOptionsType<T>>,
+    );
     const ref = system._spawnSystemActor(
-      () => new ProducerController<T>(options) as unknown as import('../Actor.js').Actor<ProducerSend<T>>,
+      () => new ProducerController<T>(resolvedOptions) as unknown as import('../Actor.js').Actor<ProducerSend<T>>,
       SystemGroups.delivery,
       name ?? generatedName('producer', ++counter),
     );

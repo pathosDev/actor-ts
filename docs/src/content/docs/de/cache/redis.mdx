@@ -75,6 +75,58 @@ keyPrefix: 'my-app:cache:'
 // → 'my-app:cache:user:42', 'my-app:cache:session:abc', ...
 ```
 
+## Allein aus der Config
+
+Das Framework registriert die Redis-Factory selbst; ein Cache kommt also
+auf Redis hoch, ohne `registerCache`-Aufruf und ohne irgendein
+`new RedisCache(...)` in deinem Code — es braucht nur eine Plugin-Id und
+einen Block:
+
+```hocon
+actor-ts.cache {
+  sessions.plugin = "actor-ts.cache.redis"   # cache('sessions') is Redis
+
+  redis {
+    url        = ${?REDIS_URL}   # or host/port below
+    db         = 0
+    key-prefix = "my-app:"
+    password   = ${?REDIS_PASSWORD}
+  }
+}
+```
+
+Die Blätter sind die Felder aus `RedisCacheOptionsType` oben in
+kebab-case.  `host` und `port` werden gelesen, stehen in der
+[reference.conf](/de/reference/reference-conf/) aber als **Kommentare**:
+`url` schließt sie gegenseitig aus, und ein ausgeliefertes
+`host = "localhost"` wäre für jedes Deployment gesetzt und machte jede
+`url` zu einem `OptionsError`.  Ungesetzt nimmt `ioredis` sein eigenes
+`127.0.0.1:6379`.
+
+**Ein leerer String bedeutet „nicht gesetzt".**  `url`, `key-prefix` und
+`password` werden als `""` ausgeliefert, damit du die Form des Keys
+siehst; der Reader verwirft sie, statt sie weiterzureichen.  Explizite
+Options stechen den Block, und der Block sticht die eingebauten Defaults.
+
+Jeder benannte Cache kann eigene Verbindungs-Settings haben, Blatt für
+Blatt über den globalen Block gelegt — genau das lässt zwei Consumer sich
+einen Server teilen, ohne sich eine Datenbank zu teilen:
+
+```hocon
+actor-ts.cache {
+  redis.url = ${?REDIS_URL}
+
+  rate-limit  { plugin = "actor-ts.cache.redis", redis.db = 1 }
+  idempotency { plugin = "actor-ts.cache.redis", redis.db = 2 }
+}
+```
+
+`ioredis` ist ein lazy geladener optionaler Peer, der Block kostet also
+nichts, solange kein Cache tatsächlich darauf auflöst: Der Treiber wird
+bei der ersten Cache-*Operation* importiert, nicht beim Start.  Ein
+ungültiger Wert wird beim ersten `cache(name)` mit einem `OptionsError`
+abgelehnt, der das Feld benennt.
+
 ## Cluster-Modus
 
 ```ts

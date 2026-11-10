@@ -316,6 +316,172 @@ Snapshot inzwischen weggeräumt wurde.  Dort zeigt es eine
 unvollständige Faltung — mit der erreichten Sequenz und der Zahl der
 angewendeten Events —, statt sich zu weigern, überhaupt zu öffnen.
 
+## Wenn die Stores ausfallen
+
+Fünf Einstellungen unter `actor-ts.persistence` entscheiden, was ein
+`PersistentActor` oder ein `ReplicatedEventSourcedActor` tut, wenn
+Journal oder Snapshot Store nicht mehr antworten.  Alle fünf gelten
+systemweit, werden einmal gelesen und betreffen jeden persistenten
+Actor im System — einen replizierten mit den Ausnahmen, die am Ende
+dieses Abschnitts stehen.
+
+```hocon
+actor-ts.persistence {
+  max-concurrent-recoveries = 50                       # replays in flight; 0 = uncapped
+  recovery-timeout          = 30s                      # ceiling on one recovery; 0 = none
+  snapshot-is-optional      = false
+  journal-breaker           = "persistence-journal"    # a breaker id; "" = no breaker
+  snapshot-breaker          = "persistence-snapshot"
+}
+
+# The breakers' numbers live where every breaker's numbers live:
+actor-ts.circuit-breaker.persistence-journal {
+  max-failures  = 10
+  reset-timeout = 15s
+  call-timeout  = 10s     # ships UNSET — see below
+}
+```
+
+**Der Journal-Breaker umschließt `persist`, die Recovery und
+`deleteHistory`; der Snapshot-Breaker umschließt das Speichern von
+Snapshots, das Laden des Snapshots, mit dem eine Recovery beginnt, und
+die Snapshot-Hälfte von `deleteHistory`.**  Sind `max-failures`
+Appends oder Recoveries in Folge fehlgeschlagen, öffnet der
+Journal-Breaker, und jedes
+`persist` wirft für `reset-timeout` einen `CircuitBreakerOpenError` aus
+dem eigenen Handler heraus — wo die Supervision ihn wie jeden anderen
+Fehler aus `onCommand` sieht.  Genau darum geht es: Ein Knoten, dessen
+Journal weg ist, scheitert schnell und sichtbar, statt Tausende Actors
+mitten in einem Schreibvorgang festzuhalten.
+
+Die Fehler eines Stores zählen gegen seinen eigenen Breaker und gegen
+keinen anderen.  Zehn Entities, die in einen toten Snapshot Store
+hinein neu starten, öffnen den Snapshot-Breaker und lassen den des
+Journals geschlossen, `persist` funktioniert also weiter.  Ein
+`onEvent` — oder ein Upcaster —, das die Historie einer Entity nicht
+falten kann, lässt die Recovery dieser Entity scheitern, ohne gegen
+einen der beiden Breaker zu zählen: Die Faltung läuft nach dem
+Journal-Aufruf, nicht in ihm, und eine Historie, die dieser Code nicht
+falten kann, ist ein Urteil über eine Entity und kein Ausfall.
+
+**Ein Breaker zählt nur die Aufrufe, die er schützt.**  Der
+Journal-Breaker zählt fehlgeschlagene Appends und fehlgeschlagene
+Recoveries, der Snapshot-Breaker fehlgeschlagene Snapshot-Ladevorgänge.
+Ein abgewiesenes Löschen oder Speichern eines Snapshots — Grants, die
+nur Anhängen erlauben, eine Aufbewahrungsrichtlinie, eine volle Platte,
+ein fehlendes Schreibrecht — lässt dieses `deleteHistory` oder
+`saveSnapshot` scheitern und sonst nichts: Zehn davon in Folge lassen
+beide Breaker geschlossen, jedes `persist` und jede Recovery auf dem
+Knoten funktioniert weiter, auch die einer Entity mit `integrity()`
+unter `snapshot-is-optional`.  Diese Aufrufe laufen weiterhin *durch*
+den Breaker: `call-timeout` bricht einen ab, der nie antwortet, und
+ein offener Breaker weist einen ab.
+
+**`call-timeout` wird nicht gesetzt ausgeliefert, und es ist das, was
+man haben will.**  Ein Backend, das Verbindungen ablehnt, scheitert von
+selbst schnell; eines, das die Verbindung *annimmt* und dann hängt,
+nicht — und ein unbegrenztes `await this.persist(...)` blockiert den
+Turn dieses Actors auf unbestimmte Zeit.  Ein gesetztes `call-timeout`
+macht daraus einen `CircuitBreakerTimeoutError` beim Hänger.
+Ausgeliefert wird es ungesetzt, weil genau das Weglassen „keine Frist“
+ausdrückt und ein Default hier jedem bestehenden Deployment eine
+Obergrenze verpassen würde, die es nie gewählt hat.
+
+Das Timeout **gibt auf; es bricht nicht ab.**  Ein Schreibvorgang, der
+die Frist gerissen hat, kann trotzdem noch im Journal landen.  Das ist
+konstruktionsbedingt sicher: Der Wurf überspringt die `onEvent`-Faltung
+und lässt `lastSequenceNr` unberührt, der Actor startet also neu, liest
+den echten Kopf und macht weiter — aber ein nicht wiederholbarer
+Seiteneffekt im Handler ist bereits passiert, dieselbe Vorsicht wie bei
+[zwei Writern für eine Entity](#zwei-writer-für-eine-entity).
+
+Ein `JournalConcurrencyError` zählt nie als Breaker-Fehler.  Er ist das
+Eigentümer-Urteil eines bedingten Appends, kein Ausfall, und zehn
+Entities, die ein Rennen verlieren, dürfen nicht jede gesunde Entity
+auf dem Knoten fast-failen.  `JournalIntegrityError` und
+`SnapshotIntegrityError` sind aus einem anderen Grund ausgenommen: Sie
+sind dauerhafte Tatsachen über die gespeicherten Bytes, und Warten
+ändert daran nichts.
+
+**`max-concurrent-recoveries` begrenzt den Replay-Sturm.**  Ein
+Shard-Hand-off oder ein Rolling Restart erzeugt jede Entity einer
+Region auf einmal neu, und jede davon replayt.  Ohne Schranke öffnen
+ein paar tausend Entities ein paar tausend gleichzeitige Reads gegen
+einen Pool, der für Dutzende ausgelegt ist; das Backend staut sie, und
+jede Recovery wird gemeinsam langsamer, bis `recovery-timeout` über die
+ganze Welle hinweg feuert.  Die Schranke lässt sie stattdessen im
+Framework anstehen, in der Reihenfolge ihres Eintreffens.  Sie
+ergänzt `actor-ts.sharding.entity-recovery`, das eine Ebene höher das
+*Starten* der Entities taktet — jener Block entscheidet, wie schnell
+Entities erzeugt werden, dieser, wie viele ihrer Replays dann
+gleichzeitig unterwegs sind.
+
+**`snapshot-is-optional` tauscht Replay-Zeit gegen Verfügbarkeit.**
+Eingeschaltet wird ein Snapshot Store, der nicht antworten kann, als
+Warnung geloggt, und der Actor stellt sich durch Falten des gesamten
+Journals wieder her.  Es deckt bewusst **nicht** den Fall eines Actors
+ab, der `integrity()` oder `encryption()` gesetzt hat: So ein Store
+weist einen manipulierten Body genauso zurück, wie er Unerreichbarkeit
+meldet — den Ausfall zu tolerieren hieße also, die Manipulation zu
+tolerieren, und machte aus einer Integritätsprüfung einen Retry.
+
+**Beide Breaker werden gemessen.**  Bei aktivierten Metriken wird
+jeder Aufruf durch sie nach `operation` in
+`persistence_journal_latency_seconds` und
+`persistence_snapshot_latency_seconds` gemessen, jeder Fehler nach
+`operation` und `reason` — `outage`, `timeout`, `breaker-open`,
+`ownership` oder `integrity` — in `persistence_journal_failures_total`
+und `persistence_snapshot_failures_total` gezählt, und
+`persistence_breaker_state` folgt jedem Breaker; siehe
+[Persistenz-Metriken](/de/observability/metrics/stock-metrics/#persistenz-metriken).
+Die Latenz ist die einzige frühe Warnung, die ein langsamer Store
+gibt: Ohne `call-timeout` ist ein langsamer Erfolg für den Breaker ein
+Erfolg.  Die Metriken entscheiden nie über einen Aufruf: Eine Registry,
+die einen Schreibvorgang verweigert — etwa weil eine Familie der
+Anwendung schon unter einem dieser Namen registriert ist —, wird
+einmal im Log gemeldet, und der Aufruf liefert weiterhin, was der Store
+geantwortet hat, oder scheitert mit dessen Fehler.
+
+Mehrere Aufrufer erreichen einen Store, ohne durch diese Breaker zu
+laufen, und tauchen deshalb in nichts davon auf: das Anhängen eines
+Events, das ein `ReplicatedEventSourcedActor` von einem Peer empfangen
+hat (#958); der journalgestützte Remember-Entities-Store
+`JournalRememberEntitiesStore` (#852); `readEvents`, der geschützte
+Helfer, mit dem ein Actor seine eigenen Events zurückliest; die
+dauerhafte [Dead-Letter-Queue](/de/operations/dead-letters/), die
+direkt an das System-Journal anhängt, daraus löscht und es liest; die
+Leseseite von [Persistence Query](/de/persistence/persistence-query/);
+das DevTools-[Time-Travel](/de/observability/devtools/time-travel/),
+das einen Stream ganz ohne Schutz wiederholt; und die Migrationshelfer
+wie `migrateBetweenJournals`, die mit den Stores arbeiten, die man
+ihnen übergibt.
+
+[`ReplicatedEventSourcedActor`](/de/persistence/replicated-event-sourcing/overview/#wenn-die-stores-ausfallen)
+folgt allen fünf Einstellungen für sein lokales `persist`, seine
+Recovery und das Speichern seiner Snapshots, über dieselben beiden
+Breaker.  Drei Dinge sind anders.  Das Anhängen eines Events, das ein
+Peer geschickt hat, liegt noch nicht hinter dem Journal-Breaker: Es
+läuft ohne Warten nebenher und konkurriert mit sich selbst, und sein
+Breaker gehört in die serialisierte Append-Kette, die #958 einführt.
+Eine Recovery, die scheitert — nach `recovery-timeout` oder von einem
+Breaker abgewiesen —, lässt `preStart` scheitern, denn die Klasse hat
+kein `onRecoveryFailure`.  Und ein Schreibvorgang, der in das Timeout
+gelaufen ist, ist dort **nicht** konstruktionsbedingt sicher: Landet
+er doch, faltet und verteilt nichts das Event — beides tut nur ein
+erfolgreiches `persist` —, also bekommt es kein Peer je, und das
+Journal der Replica enthält ein Event, das ihr Zustand nicht zeigt.
+Ob eine spätere Recovery es faltet, hängt davon ab, wo sie beginnt:
+Ein nach der Landung aufgenommener Snapshot zählt das Event als
+abgedeckt, also faltet eine Recovery aus diesem Snapshot es nie,
+während ein vollständiges Replay — ohne Snapshot, oder wenn
+`snapshot-is-optional` auf das Journal ausweicht — es faltet.
+
+[`DurableStateActor`](/de/persistence/durable-state/) steht außerhalb
+davon: Keine dieser Einstellungen erreicht einen Durable-State-Store,
+ob die `DurableStateOptions` des Actors einen nennen oder er den
+systemweiten Store nutzt, den `actor-ts.persistence.durable-state.plugin`
+auswählt (#872).
+
 ## Persistenz-ID
 
 Jeder `PersistentActor` deklariert eine `persistenceId`:
@@ -359,7 +525,7 @@ angefasst wird:
 | --- | --- |
 | leer | jedes Backend würde bereitwillig unter `''` schreiben — eine ID, die irgendein Code-Pfad zu füllen vergessen hat, teilt sich dann still einen Stream mit jedem anderen Actor, der dasselbe vergessen hat |
 | länger als **255** Zeichen | die Breite der Spalte `persistence_id` im DDL jedes relationalen Dialekts, und Teil ihres Primärschlüssels — eine längere ID wird abgeschnitten (zwei IDs fallen auf einen Stream zusammen) oder tief im Treiber abgelehnt |
-| `/` oder `\` | die Object-Storage-Stores legen eine ID als *Verzeichnis* ab (`<prefix><persistenceId>/<seq>.json`) und lesen sie über genau dieses Prefix zurück — `a/b` liegt also innerhalb von `a`: `loadLatest` von `a` liefert dann den Snapshot von `a/b`, und `delete` von `a` löscht ihn |
+| `/` oder `\` | die Object-Storage-Stores legen eine ID als *Verzeichnis* ab (`<prefix>snapshots/<persistenceId>/<seq>.json`) und lesen sie über genau dieses Prefix zurück — `a/b` liegt also innerhalb von `a`.  Die Stores lesen über diese Verschachtelung hinweg nichts mehr: ein Key eine Ebene tiefer ist nicht wie einer ihrer eigenen geformt und wird von `loadLatest`, `delete` und dem Pruning gleichermaßen übersprungen (#716) — die ID wird hier trotzdem abgelehnt, denn zwei Streams, die sich ein Verzeichnis teilen, sind eine Namenskollision und keine Form, gegen die sich ein Store bei jedem Read verteidigen sollte |
 | `.` oder `..` (als ganze ID) | Traversal-Bedeutung, eine Ebene höher, mit derselben Konsequenz |
 | Control-Zeichen | IDs werden bei jeder Recovery und jedem Persist in eine Logzeile interpoliert — ein Newline lässt einen Aufrufer Log-Einträge fälschen |
 
@@ -386,10 +552,21 @@ import { assertValidPersistenceId } from 'actor-ts/persistence';
 assertValidPersistenceId(`account-${userId}`);
 ```
 
-**Lesen wird nie verweigert.**  Nur Schreibpfade validieren —
-Events, die bereits unter einer nun ungültigen ID liegen, bleiben
-über `journal.read(oldId, 1)` erreichbar: kopiere sie auf eine
-korrigierte ID und lösche den alten Stream.
+**Über den *Inhalt* einer ID wird Lesen nie verweigert.**  Nur
+Schreibpfade validieren gegen die Regeln oben — Events, die bereits
+unter einer nun ungültigen ID liegen, bleiben über
+`journal.read(oldId, 1)` erreichbar: kopiere sie auf eine korrigierte
+ID und lösche den alten Stream.
+
+Was ein Lesepfad sehr wohl verweigert, ist eine ID, die überhaupt
+keine Zeichenkette ist.  Die MongoDB-Stores setzen die ID in ein
+Query-Dokument ein, wo ein Objekt kein Wert ist, sondern ein
+Operator-Ausdruck: eine ID, die als `{ $gte: '' }` aus einem
+Request-Body kam, würde jeden Stream treffen.  Deshalb prüfen das
+Journal, der Snapshot-Store und der Durable-State-Store den *Typ*,
+bevor die ID eine Collection erreicht — und nur den Typ, was die
+Zusage oben unberührt lässt: eine unter den alten Regeln gespeicherte
+ID ist immer noch eine Zeichenkette.
 
 ## Snapshots
 
@@ -421,6 +598,16 @@ override snapshotPolicy() {
 
 Siehe [Snapshots](/de/persistence/snapshots/) für die
 vollständige Konfiguration.
+
+Der Snapshot ist außerdem das Einzige, was die Per-Actor-Schutz-Hooks
+erreichen.  `encryption()` und `integrity()` an einem
+`PersistentActor` schützen nur seine Snapshots: Jedes Journal
+speichert Events als Klartext-JSON, nichts erkennt ein an Ort und
+Stelle manipuliertes Event, und datenbankseitige Kontrollen —
+Transparent Data Encryption, ein verschlüsseltes Volume,
+Zugriffskontrolle — sind heute der einzige Schutz für Events.
+Siehe [Per-Actor-Policies](/de/persistence/object-storage/per-actor-policies/)
+für das, was jeder Store mit den Hooks macht.
 
 ## Events für Projektionen taggen
 

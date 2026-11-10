@@ -7,7 +7,10 @@ import {
   type Route,
 } from '../../../../src/http/Route.js';
 import { websocket } from '../../../../src/http/websocket/WebsocketRoute.js';
-import { WebsocketRouteOptions } from '../../../../src/http/websocket/WebsocketRouteOptions.js';
+import {
+  DEFAULT_WEBSOCKET_REQUIRE_SAME_ORIGIN,
+  WebsocketRouteOptions,
+} from '../../../../src/http/websocket/WebsocketRouteOptions.js';
 import { Status, type HttpRequest } from '../../../../src/http/Types.js';
 import type { WebsocketServerRef } from '../../../../src/http/websocket/WebsocketMessages.js';
 
@@ -32,9 +35,14 @@ function wsEndpoint(route: Route): CompiledWebsocketRoute {
 describe('websocket() — allowedOrigins (CSWSH defence, WS-2)', () => {
   const allow = { allowedOrigins: ['https://app.example.com'] };
 
-  test('no allowedOrigins → any Origin accepted (unchanged default)', async () => {
+  test('no allowedOrigins → a foreign Origin is still refused (same-origin default, #756)', async () => {
     const endpoint = wsEndpoint(websocket('/ws', target));
-    expect(await endpoint.authorize(request({ origin: 'https://evil.example.com' }))).toBeNull();
+    const denied = await endpoint.authorize(request({
+      origin: 'https://evil.example.com',
+      host: 'app.example.com',
+    }));
+    expect(denied).not.toBeNull();
+    expect(denied!.status).toBe(Status.Forbidden);
   });
 
   test('present-but-unlisted Origin → 403', async () => {
@@ -115,6 +123,35 @@ describe('websocket() — requireSameOrigin', () => {
     expect(denied!.status).toBe(Status.Forbidden);
   });
 
+  // The two limits of a host-only comparison, pinned here because the JSDoc
+  // and `http/websocket.mdx` now name them.  Neither is a defect to fix on
+  // this branch: `WebsocketRoute.ts` documents the host-only choice (`Host`
+  // carries no scheme), and whether the rule should grow an `expectedScheme`
+  // the way `Csrf.ts` did in #604 is a design question on #1514.  What these
+  // do is make the prose falsifiable — a mechanism change that narrows either
+  // one turns them red, so the caveats cannot outlive the behaviour they
+  // describe.
+  test('the compare is scheme-blind — an http:// Origin on the same host:port passes', async () => {
+    const endpoint = wsEndpoint(websocket('/ws', target, sameOrigin));
+    expect(await endpoint.authorize(request({
+      origin: 'http://app.example.com:8443',
+      host: 'app.example.com:8443',
+    }))).toBeNull();
+  });
+
+  test('Origin and Host both come from the client, so a matching forged pair passes', async () => {
+    // The DNS-rebinding shape, and the standard weakness of any same-origin
+    // check built on `Host` — which is why `allowedOrigins` exists.  What it
+    // buys is reachability, not a session: the browser sends no cookies for
+    // the real host, so the exposure is a route whose auth is the network
+    // (`IpAllowlist`, loopback trust) rather than one with a cookie session.
+    const endpoint = wsEndpoint(websocket('/ws', target));
+    expect(await endpoint.authorize(request({
+      origin: 'http://evil.example',
+      host: 'evil.example',
+    }))).toBeNull();
+  });
+
   test('combines with allowedOrigins — either rule admits', async () => {
     const options = WebsocketRouteOptions.create()
       .withRequireSameOrigin(true)
@@ -134,10 +171,107 @@ describe('websocket() — requireSameOrigin', () => {
     })))!.status).toBe(Status.Forbidden);
   });
 
-  test('unset → no origin check, so existing routes are unaffected', async () => {
+  test('unset → the guard is installed anyway (the flipped default, #756)', async () => {
     const endpoint = wsEndpoint(websocket('/ws', target));
-    expect(await endpoint.authorize(request({
+    expect((await endpoint.authorize(request({
       origin: 'https://evil.example', host: '127.0.0.1:9333',
+    })))!.status).toBe(Status.Forbidden);
+    expect(await endpoint.authorize(request({
+      origin: 'http://127.0.0.1:9333', host: '127.0.0.1:9333',
     }))).toBeNull();
+  });
+});
+
+/**
+ * #756 — `requireSameOrigin` shipped defaulting to `false`, so the control was
+ * on for whoever already knew to ask for it and off for everyone else, and a
+ * route whose auth is ambient (a session cookie, `IpAllowlist`) was
+ * CSWSH-exposed by omission.  DevTools had reached the opposite conclusion for
+ * its own socket a month earlier and installed the guard unconditionally.
+ * Pre-1.0 permits the hard cut, so the default is now `true`.
+ *
+ * These tests cover what the flip is *not* allowed to break — a non-browser
+ * client, and the explicit opt-out — because those are the two ways a breaking
+ * default becomes an outage rather than a hardening.
+ */
+describe('websocket() — the same-origin default and its opt-out (#756)', () => {
+  test('a non-browser client sends no Origin and is admitted unchanged', async () => {
+    // The migration question the flip turns on.  A Node / Bun / Deno
+    // `WebSocket` and every server-to-server dialer omit `Origin` entirely,
+    // so they take the missing-Origin branch — which is why turning the
+    // default on does not sever this repository's own smoke-test clients, nor
+    // anyone else's.
+    const endpoint = wsEndpoint(websocket('/ws', target));
+    expect(await endpoint.authorize(request({ host: 'app.example.com' }))).toBeNull();
+    expect(await endpoint.authorize(request())).toBeNull();
+  });
+
+  test('withRequireSameOrigin(false) restores the pre-#756 behaviour', async () => {
+    const options = WebsocketRouteOptions.create().withRequireSameOrigin(false);
+    const endpoint = wsEndpoint(websocket('/ws', target, options));
+    expect(await endpoint.authorize(request({
+      origin: 'https://evil.example', host: 'app.example.com',
+    }))).toBeNull();
+  });
+
+  test('the plain-object opt-out works the same way', async () => {
+    const endpoint = wsEndpoint(websocket('/ws', target, { requireSameOrigin: false }));
+    expect(await endpoint.authorize(request({
+      origin: 'https://evil.example', host: 'app.example.com',
+    }))).toBeNull();
+  });
+
+  test('opting out while keeping an allowlist drops only the same-origin arm', async () => {
+    const options = WebsocketRouteOptions.create()
+      .withRequireSameOrigin(false)
+      .withAllowedOrigins(['https://app.example.com']);
+    const endpoint = wsEndpoint(websocket('/ws', target, options));
+    // The allowlist arm still admits.
+    expect(await endpoint.authorize(request({
+      origin: 'https://app.example.com', host: 'internal.example.com',
+    }))).toBeNull();
+    // The same-origin arm is gone, so the server's own host is not special.
+    expect((await endpoint.authorize(request({
+      origin: 'https://internal.example.com', host: 'internal.example.com',
+    })))!.status).toBe(Status.Forbidden);
+  });
+
+  test('the bare-route behaviour is read off DEFAULT_WEBSOCKET_REQUIRE_SAME_ORIGIN', async () => {
+    // The default's *value* used to live only as the literal `?? true` in
+    // `WebsocketRoute.ts`, while `WebsocketRouteOptions.ts` was where it was
+    // documented — two files kept in step by prose alone, and a flip is a
+    // one-character edit in the file whose reviewers are reading a routing
+    // directive.  Both halves are pinned here, and the behavioural
+    // expectation is *derived* from the constant rather than written out, so
+    // changing either one alone turns this red.
+    const sameOriginRequiredByDefault: boolean = DEFAULT_WEBSOCKET_REQUIRE_SAME_ORIGIN;
+    const endpoint = wsEndpoint(websocket('/ws', target));
+    const foreign = await endpoint.authorize(request({
+      origin: 'https://evil.example',
+      host: 'app.example.com',
+    }));
+    expect(foreign !== null).toBe(sameOriginRequiredByDefault);
+    if (foreign !== null) expect(foreign.status).toBe(Status.Forbidden);
+    // …and the value itself, so a future flip has to be a named, deliberate
+    // edit rather than a silent one (#756).
+    expect(DEFAULT_WEBSOCKET_REQUIRE_SAME_ORIGIN).toBe(true);
+  });
+
+  test('an allowlist alone still admits its own origin and refuses the rest', async () => {
+    // `allowedOrigins` without an explicit `requireSameOrigin` now carries the
+    // same-origin arm too, which widens what it admits — worth pinning, since
+    // it is the one combination the flip changes for a route that already had
+    // an origin control.
+    const options = WebsocketRouteOptions.create().withAllowedOrigins(['https://app.example.com']);
+    const endpoint = wsEndpoint(websocket('/ws', target, options));
+    expect(await endpoint.authorize(request({
+      origin: 'https://app.example.com', host: 'internal.example.com',
+    }))).toBeNull();
+    expect(await endpoint.authorize(request({
+      origin: 'https://internal.example.com', host: 'internal.example.com',
+    }))).toBeNull();
+    expect((await endpoint.authorize(request({
+      origin: 'https://evil.example', host: 'internal.example.com',
+    })))!.status).toBe(Status.Forbidden);
   });
 });

@@ -16,22 +16,29 @@ import { describe, expect, test } from 'bun:test';
  * over a real suite, "reported as flaky" and "misclassified" produce the same
  * output.
  *
- * Three fixtures, one per outcome the harness has to keep apart:
+ * Four fixtures, one per outcome the harness has to keep apart:
  *
  *  - a test that fails in exactly one of five runs is **flaky** — the entry a
  *    catalog is built from;
  *  - a test that fails in all five is **consistently failing** — broken, and
  *    repetition has nothing more to say about it;
  *  - a run that never exits is a **hang** — and the runs around it stay green
- *    individually while the night as a whole must not.
+ *    individually while the night as a whole must not;
+ *  - a test that fails **twice inside one run** is one offender in one table,
+ *    and still red.
  *
- * That last one is the case the nightly actually meets.  `StressHarnessWatchdog`
+ * The third is the case the nightly actually meets.  `StressHarnessWatchdog`
  * covers a run where *every* repeat hangs; the dangerous shape is the mixed one,
  * where two of three runs are green and the third stopped making progress.  If
  * that reads as "no test failed in any run", the un-quarantine streak counts a
  * night in which the measurement did not happen.
  *
- * Refs #290, #538.
+ * The fourth is the shape that got past all of them (#1359): the offender
+ * matched neither `< runs` nor `=== runs`, fell out of both tables and out of
+ * `summary.json`, and the harness printed `PASS` two lines under a 100 %
+ * failure rate.
+ *
+ * Refs #290, #538, #1359.
  */
 
 const SCRIPT = join(import.meta.dir, '..', '..', '..', 'scripts', 'stress-test.mjs');
@@ -103,12 +110,39 @@ const HANG_ON_ONE_RUN_SUITE = [
   '',
 ].join('\n');
 
+/**
+ * One `describe` whose `beforeAll` **and** `afterAll` both blow their budget,
+ * which makes bun emit **two `(unnamed)` testcases with the same classname and
+ * file** — one identity, twice, inside a single run.
+ *
+ * That shape is #1359's, and it is not contrived: it is what
+ * `tests/unit/docs/DocSampleHarnessEndToEnd.test.ts` produced when its hook ran
+ * four compilers against a cap nobody had set.  A throwing hook does not
+ * reproduce it (bun names each test individually) and neither do two separate
+ * blocks (their classnames differ, so the identities do) — both were probed
+ * before settling on this one.
+ *
+ * The hooks carry explicit 200 ms budgets so the fixture costs about half a
+ * second per run rather than the 10 s two default caps would take.
+ */
+const DOUBLE_UNNAMED_FAILURE_SUITE = [
+  "import { afterAll, beforeAll, describe, expect, test } from 'bun:test';",
+  '',
+  "describe('two hooks', () => {",
+  "  beforeAll(async () => { await new Promise((r) => setTimeout(r, 5_000)); }, 200);",
+  "  afterAll(async () => { await new Promise((r) => setTimeout(r, 5_000)); }, 200);",
+  "  test('never reached', () => { expect(1).toBe(1); });",
+  '});',
+  '',
+].join('\n');
+
 type HarnessOffender = {
   readonly identity: string;
   readonly file: string;
   readonly suite: string;
   readonly name: string;
   readonly failedRuns: readonly number[];
+  readonly failureCount: number;
 };
 
 type HarnessSummary = {
@@ -130,6 +164,37 @@ type HarnessRun = {
 };
 
 /**
+ * How long one spawned harness may take before this test gives up on it.
+ *
+ * The number is generous because the subject is a *watchdog*: the fixture below
+ * that never finishes is supposed to be killed by the harness's own
+ * `--run-timeout`, and this budget only decides how long we wait to find out it
+ * was not.
+ */
+const SPAWN_BUDGET_MS = 150_000;
+
+/**
+ * The per-test cap, sized so {@link SPAWN_BUDGET_MS} can actually report.
+ *
+ * Bun kills a test at 5 000 ms unless the test says otherwise, and three of the
+ * four cases below used to say nothing — so a `spawnSync` budget of 150 s sat
+ * under a cap of 5 s and could never fire.  A stuck harness would have failed
+ * with bun's `this test timed out after 5000ms`, which names neither the
+ * command nor the budget, instead of with the diagnosis this file exists to
+ * produce.  That is the inverted-layering shape
+ * `docs/…/testing/diagnosing-flakes.mdx` calls "a budget the per-test timeout
+ * cannot reach", one level out from the `awaitCondition` case the gate already
+ * covers.
+ *
+ * **It is not a speed problem, and the measurement says so.**  The three cases
+ * cost 0.43 s, 0.28 s and 0.27 s on an idle machine and 0.46 s, 0.30 s and
+ * 0.33 s with eight CPU hogs alongside — they spawn their children, so external
+ * load barely reaches them.  The cap is raised so the inner budget is
+ * reachable, not because the work is close to the old one.
+ */
+const TEST_BUDGET_MS = SPAWN_BUDGET_MS + 30_000;
+
+/**
  * A fresh directory per invocation — the counter file is the fixture's state and
  * the harness only wipes its report directory, so a reused directory would put
  * run 6 where run 1 belongs.
@@ -145,7 +210,7 @@ function runHarness(suite: string, argv: readonly string[]): HarnessRun {
       cwd: directory,
       encoding: 'utf8',
       env: { ...process.env, NO_COLOR: '1' },
-      timeout: 150_000,
+      timeout: SPAWN_BUDGET_MS,
       killSignal: 'SIGKILL',
     });
     let summary: HarnessSummary | undefined;
@@ -222,7 +287,7 @@ describe('the harness sorts a synthetic suite into flaky and broken', () => {
     expect(result.output).toContain('5/5');
     expect(result.status).toBe(1);
     expect(result.output).toContain('2 test(s) failed at least once');
-  });
+  }, TEST_BUDGET_MS);
 
   /**
    * The same flake with nothing else in the suite, so the green runs are real.
@@ -241,7 +306,7 @@ describe('the harness sorts a synthetic suite into flaky and broken', () => {
     expect(result.output).toContain('runs:            2/3 green');
     // The default budget is zero, so one flake is still a failed gate.
     expect(result.status).toBe(1);
-  });
+  }, TEST_BUDGET_MS);
 
   /**
    * `--max-flaky` is the only escape hatch, and it has to be reachable — a gate
@@ -255,7 +320,7 @@ describe('the harness sorts a synthetic suite into flaky and broken', () => {
     // Tolerated, not silenced: it is still named in the table and the summary.
     expect(result.output).toContain('FLAKY — failed in some runs but not all (1)');
     expect(result.summary!.offenders).toHaveLength(1);
-  });
+  }, TEST_BUDGET_MS);
 });
 
 describe('a hang among green runs is a hang, not a green night', () => {
@@ -289,5 +354,52 @@ describe('a hang among green runs is a hang, not a green night', () => {
       + 'streak is this exit status.',
     ).toBe(1);
     expect(result.output).not.toContain('stress-test: PASS');
-  }, 150_000);
+  }, TEST_BUDGET_MS);
+});
+
+describe('one test failing twice in a run is still one offender, and still red', () => {
+  /**
+   * The end-to-end half of #1359.  `StressHarnessAggregation` proves the
+   * arithmetic over synthetic runs; this drives the real script against a real
+   * suite that produces the shape, because the defect was only ever visible
+   * once a *report* carried the same identity twice.
+   *
+   * What it looked like when it was wrong: `runs: 0/16 green`, a failure rate
+   * of `100.0000%`, the sentence "No test failed in any run that reported",
+   * `offenders: []` in `summary.json`, and `stress-test: PASS` on the last
+   * line — every one of those in the same output, because `failedRuns.length`
+   * exceeded `runs` and matched neither offender filter.
+   *
+   * The nightly job is `continue-on-error`, so those tables and that exit
+   * status are the *only* signal it produces. A night in which a hook timed out
+   * would have annotated "nothing to add to the flake catalog tonight".
+   */
+  test('the offender is named once, in one table, and the gate fails', () => {
+    const result = runHarness(DOUBLE_UNNAMED_FAILURE_SUITE, ['--runs=2']);
+
+    const summary = result.summary!;
+    expect(summary.greenRuns).toBe(0);
+    expect(summary.offenders).toHaveLength(1);
+
+    const offender = summary.offenders[0]!;
+    expect(offender.name).toBe('(unnamed)');
+    expect(offender.suite).toBe('two hooks');
+    // Two failing testcases per run, two runs: the run count is 2 and the
+    // occurrence count is 4, and conflating them is the whole defect.
+    expect(offender.failedRuns).toEqual([1, 2]);
+    expect(offender.failureCount).toBe(4);
+
+    // Failed in every run, so it is broken rather than flaky — and it appears
+    // in exactly one of the two tables.
+    expect(result.output).toContain('CONSISTENTLY FAILING — failed in every run (1)');
+    expect(result.output).not.toContain('FLAKY — failed in some runs but not all');
+    // The occurrence count is surfaced, because "2/2 runs" alone would hide
+    // that four testcases carried it.
+    expect(result.output).toContain('4 failing testcases in total');
+
+    // The sentence that must never appear over a red run again.
+    expect(result.output).not.toContain('No test failed in any run that reported');
+    expect(result.output).not.toContain('stress-test: PASS');
+    expect(result.status).toBe(1);
+  }, TEST_BUDGET_MS);
 });

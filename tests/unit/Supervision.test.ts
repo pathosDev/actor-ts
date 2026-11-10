@@ -1,3 +1,4 @@
+import type { Clock } from '../../src/Clock.js';
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
 import { ActorRestarted, ActorStopped } from '../../src/SystemMessages.js';
@@ -397,7 +398,9 @@ describe('resume after a failure', () => {
  */
 describe('RestartBudget', () => {
   /** A clock the test moves by hand, so no assertion ever waits on real time. */
-  const manualClock = (): { now: () => number; advance: (ms: number) => void } => {
+  // Structurally a `Clock`, so it goes straight into `RestartBudget` with no
+  // adapter — the shape the contract exists to make ordinary (#1424).
+  const manualClock = (): Clock & { advance: (ms: number) => void } => {
     let current = 1_000_000;
     return { now: () => current, advance: (ms: number) => { current += ms; } };
   };
@@ -438,7 +441,7 @@ describe('RestartBudget', () => {
       () => Directive.Restart,
       { maxRetries: 2, withinTimeRangeMs: 1_000 },
     );
-    const budget = new RestartBudget(strategy, clock.now);
+    const budget = new RestartBudget(strategy, clock);
 
     expect(budget.registerRestart()).toBe(true);
     expect(budget.registerRestart()).toBe(true);
@@ -458,7 +461,7 @@ describe('RestartBudget', () => {
       () => Directive.Restart,
       { maxRetries: 2, withinTimeRangeMs: 1_000 },
     );
-    const budget = new RestartBudget(strategy, clock.now);
+    const budget = new RestartBudget(strategy, clock);
 
     expect(budget.registerRestart()).toBe(true);   // at t
     clock.advance(600);
@@ -474,7 +477,7 @@ describe('RestartBudget', () => {
   test('withinTimeRangeMs: 0 is a process-lifetime cap that never resets', () => {
     const clock = manualClock();
     const strategy = new OneForOneStrategy(() => Directive.Restart, { maxRetries: 2 });
-    const budget = new RestartBudget(strategy, clock.now);
+    const budget = new RestartBudget(strategy, clock);
 
     expect(budget.registerRestart()).toBe(true);
     expect(budget.registerRestart()).toBe(true);
@@ -493,5 +496,66 @@ describe('RestartBudget', () => {
     for (let i = 0; i < 10; i++) expect(first.registerRestart()).toBe(true);
     expect(first.registerRestart()).toBe(false);
     expect(second.registerRestart()).toBe(true);
+  });
+});
+
+/**
+ * The cell and the budget agree on what `maxRetries` means.
+ *
+ * They did not.  `ActorCell` kept its own timestamp array and its own
+ * arithmetic over it — `length <= maxRetries + 1` — while `RestartBudget`
+ * refuses at `length >= maxRetries`.  `maxRetries: 5` therefore bought five
+ * restarts in the worker mesh, which budgets slot respawns through the class
+ * (#734), and six for an ordinary supervised child.  Two implementations of
+ * one documented rule, and the sentence they both implement — "restart failing
+ * child, up to 10 times per minute" — cannot be true of both.
+ *
+ * Nothing observed it: the whole unit suite stayed green through the change
+ * that removed the duplicate, which is exactly why this is here.
+ */
+describe('the restart allowance means the same thing in both implementations', () => {
+  const sys = systemFixture('supervision-allowance');
+
+  class AlwaysFails extends Actor<string> {
+    constructor(private readonly starts: { count: number }) { super(); }
+    override preStart(): void { this.starts.count++; }
+    override onReceive(): void { throw new FooError(); }
+  }
+
+  test('a child restarts exactly maxRetries times, then is stopped', async () => {
+    const starts = { count: 0 };
+    const seen: string[] = [];
+    const probe = sys().spawn(() => new LifecycleCollector(seen), 'allowance-collector');
+    sys().eventStream.subscribe(probe, ActorStopped);
+
+    const maxRetries = 3;
+    const ref = sys().spawn(() => new AlwaysFails(starts), 'allowance-child', {
+      supervisorStrategy: new OneForOneStrategy(() => Directive.Restart, { maxRetries }),
+    });
+
+    // One more failure than the allowance, so the last one has to be refused.
+    for (let i = 0; i < maxRetries + 1; i++) ref.tell('fail');
+
+    await awaitCondition(() => seen.includes('ActorStopped:allowance-child'), {
+      label: 'the restart allowance was spent and the child stopped',
+    });
+
+    // The initial construction plus one per granted restart.  Under the old
+    // `maxRetries + 1` arithmetic this is 5, and the child would still have
+    // been alive for one further failure.
+    expect(starts.count).toBe(maxRetries + 1);
+  });
+
+  test('the budget grants the same number for the same strategy', () => {
+    // The other half of the pair, stated as an equality rather than as two
+    // numbers that happen to match: this is what would go red if either side
+    // grew its own arithmetic again.
+    const strategy = new OneForOneStrategy(() => Directive.Restart, { maxRetries: 3 });
+    const budget = new RestartBudget(strategy);
+
+    let granted = 0;
+    while (budget.registerRestart()) granted++;
+
+    expect(granted).toBe(strategy.maxRetries);
   });
 });

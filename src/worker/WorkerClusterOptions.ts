@@ -1,12 +1,22 @@
 import type { NodeAddress } from '../cluster/NodeAddress.js';
 import { Config } from '../config/Config.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
+import type { Logger } from '../Logger.js';
 import type { WorkerBackend } from '../runtime/worker/index.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { mergeOptions } from '../util/OptionsMerge.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
+import { asUrlParserReadsIt } from '../util/StripCharacters.js';
+import type { WorkerBroker } from './WorkerBroker.js';
 import type { RestartPolicy } from './WorkerCluster.js';
 
+/**
+ * How many workers to spawn when nothing says: `'auto'`, which resolves to
+ * the machine's available parallelism at spawn time (#1440).  A literal at
+ * the read site until it got a name here, which is what lets the documented
+ * default be checked against the shipped one.
+ */
+export const DEFAULT_WORKER_COUNT: number | 'auto' = 'auto';
 /** `ActorSystem` name each worker hosts when nothing overrides it. */
 export const DEFAULT_WORKER_SYSTEM_NAME = 'worker-cluster';
 /** Hostname component of each worker's {@link NodeAddress}. */
@@ -34,13 +44,73 @@ export const DEFAULT_MAX_RESTARTS = 10;
 /** Sliding window the restart budget counts over. */
 export const DEFAULT_RESTART_WINDOW_MS = 60_000;
 
+/** The top of the port range `port()` enforces on the first slot; the last slot is held to it too (#1439). */
+const MAX_PORT = 65_535;
+
+/**
+ * The only URL scheme {@link WorkerClusterOptionsType.bootstrap} may carry.
+ *
+ * The specifier is handed straight to `new Worker(url)`, so its scheme decides
+ * where the worker's entry code comes from.  Measured once per runtime rather
+ * than assumed (Bun 1.4.0, Node 26.7.0, Deno 2.6.8):
+ *
+ * | scheme     | Bun              | Node                     | Deno                      |
+ * | ---------- | ---------------- | ------------------------ | ------------------------- |
+ * | `file:`    | runs             | runs                     | runs                      |
+ * | `data:`    | runs             | runs                     | runs                      |
+ * | `blob:`    | runs             | `ERR_INVALID_URL_SCHEME` | runs                      |
+ * | `http(s):` | `ModuleNotFound` | `ERR_INVALID_URL_SCHEME` | fetched and run           |
+ *
+ * So the sharp edges are not theoretical: a `data:` entry executes
+ * caller-supplied bytes on all three runtimes, `blob:` on two, and a remote
+ * specifier is code off the network on Deno (which needs `--allow-import`, an
+ * unrelated flag an application may well already carry).  `file:` is the only
+ * scheme that names an artifact the operator put on disk, and it is what every
+ * doc and example already uses — `new URL('./worker.js', import.meta.url)`
+ * produces exactly this.  Narrowing to it is a pre-1.0 hard cut (#776).
+ *
+ * The scheme is only half the allow-list, though — see
+ * {@link BOOTSTRAP_ALLOWED_HOST}.
+ */
+export const BOOTSTRAP_ALLOWED_PROTOCOL = 'file:';
+
+/**
+ * The only authority a `file:` {@link WorkerClusterOptionsType.bootstrap} may
+ * carry: none.
+ *
+ * Checking the scheme alone left the hole the scheme check was introduced to
+ * close.  A `file:` URL may carry a host, and a host turns it into a path on
+ * *that machine*: measured on Windows 11 with Node 26.7.0,
+ * `fileURLToPath('file://attacker.example.com/share/worker.js')` yields the UNC
+ * path `\\attacker.example.com\share\worker.js`, and no runtime refuses the
+ * specifier — Node's `Worker` fails with `MODULE_NOT_FOUND` on that UNC path,
+ * Deno with `Module not found "file://attacker.example.com/share/worker.js"`,
+ * Bun with an `Error in worker`.  All three *accepted* the URL; only the SMB
+ * fetch failed.  On a host where the share resolves, the worker's entry module
+ * is code off a remote server — the same class of hole as a `http:` specifier,
+ * wearing the allowed scheme (#776).
+ *
+ * `localhost` is the one host WHATWG admits for `file:`, and it needs no
+ * exemption: the parser erases it.  Measured identically on Bun 1.4.0, Node
+ * 26.7.0 and Deno 2.6.8, `new URL('file://localhost/srv/app/worker.js')` — and
+ * `LOCALHOST`, which is lower-cased first — normalises to
+ * `file:///srv/app/worker.js` with an empty `host`, so it reaches this check
+ * already indistinguishable from the plain form and stays accepted.  Admitting
+ * it by construction is better than special-casing the string: a
+ * `'localhost'` exemption would also have to decide about `127.0.0.1` and
+ * `[::1]`, which the parser does *not* erase and which on Windows still name a
+ * UNC share rather than a plain path.  Those are refused.
+ */
+export const BOOTSTRAP_ALLOWED_HOST = '';
+
 /**
  * What a retired slot reports through
  * {@link WorkerClusterOptionsType.onWorkerPermanentlyDown}.
  *
- * `src/worker/` has no logger of any kind, so before this existed a crash loop
- * was completely silent from the framework's side and its end was invisible
- * (#734).  This callback is the only diagnostic the mesh can offer.
+ * Before this existed a crash loop was completely silent from the framework's
+ * side and its end was invisible (#734).  The callback is the structured form
+ * of that report; without one the same fact goes out as an `error` line
+ * through the pool's logger (#1276).
  */
 export type WorkerPermanentlyDownInfo = {
   /** Slot index — stable across restarts, and what fixes the worker's port. */
@@ -70,6 +140,24 @@ export type WorkerClusterOptionsType = {
   readonly restartWindowMs?: number;
   readonly onWorkerPermanentlyDown?: (info: WorkerPermanentlyDownInfo) => void;
   readonly backend?: WorkerBackend;
+  /**
+   * Where the pool reports: a worker's exit with its code, its failure, a
+   * granted respawn with the delay and the budget it drew on, a failed one, a
+   * worker the policy leaves down, a retired slot — and, when the pool builds
+   * its own broker, the frames that broker drops.  `WorkerCluster.spawn` is a
+   * static with no `ActorSystem` in scope, so without one the pool falls back
+   * to a `ConsoleLogger` at `Info` — the same default a system has (#1276).
+   * `WorkerMesh` passes its system's logger, so a mesh's workers report through
+   * the same sinks as everything else.
+   */
+  readonly logger?: Logger;
+  /**
+   * Route through this broker instead of a fresh one.  `WorkerMesh` registers
+   * the main thread's own port with the broker before it spawns the workers,
+   * which is only possible if the broker exists first — so it owns the broker
+   * and hands it in (#1562).
+   */
+  readonly broker?: WorkerBroker;
 };
 
 /**
@@ -91,7 +179,16 @@ export class WorkerClusterOptionsBuilder extends OptionsBuilder<WorkerClusterOpt
     return new WorkerClusterOptionsBuilder();
   }
 
-  /** Module URL (or string) of the worker entrypoint each worker runs. */
+  /**
+   * Module URL of the worker entrypoint each worker runs.  Required, and must
+   * be an absolute `file:` URL **with no host** — `new URL('./worker.js',
+   * import.meta.url)` is the intended form and produces exactly that.  A string
+   * is accepted under the same two constraints.  See
+   * {@link BOOTSTRAP_ALLOWED_PROTOCOL} for why the other schemes a `Worker`
+   * constructor would take are refused, and {@link BOOTSTRAP_ALLOWED_HOST} for
+   * why a host is: it makes the specifier a UNC path, so the entry module comes
+   * off a remote server.
+   */
   withBootstrap(bootstrap: URL | string): this {
     return this.set('bootstrap', bootstrap);
   }
@@ -142,7 +239,8 @@ export class WorkerClusterOptionsBuilder extends OptionsBuilder<WorkerClusterOpt
   /**
    * Called once per slot when its restart budget is spent and no further
    * worker will be started for it.  Not expressible in a config file, for the
-   * same reason as `backend`.  Default: a `console.error` line.
+   * same reason as `backend`.  Default: an `error` line through the pool's
+   * logger.
    */
   withOnWorkerPermanentlyDown(
     onWorkerPermanentlyDown: (info: WorkerPermanentlyDownInfo) => void,
@@ -187,6 +285,23 @@ export class WorkerClusterOptionsBuilder extends OptionsBuilder<WorkerClusterOpt
   withBackend(backend: WorkerBackend): this {
     return this.set('backend', backend);
   }
+
+  /**
+   * Report worker exits, failures, granted and failed respawns, retired slots
+   * and the pool's own broker drops through this logger.  Not expressible in
+   * a config file, like `backend`.  Default: a `ConsoleLogger` at `Info`.
+   */
+  withLogger(logger: Logger): this {
+    return this.set('logger', logger);
+  }
+
+  /**
+   * Route the workers through a broker the caller owns — the way `WorkerMesh`
+   * puts the main thread's own port on it first.  Default: a fresh broker.
+   */
+  withBroker(broker: WorkerBroker): this {
+    return this.set('broker', broker);
+  }
 }
 
 /** Validates resolved {@link WorkerClusterOptionsType} settings. */
@@ -195,11 +310,45 @@ export class WorkerClusterOptionsValidator extends OptionsValidator<WorkerCluste
     super('WorkerClusterOptions');
   }
   protected rules(s: Partial<WorkerClusterOptionsType>): void {
+    // Required-ness first, and by hand: every check helper is a no-op on
+    // `undefined` by design, so `WorkerClusterOptions` being a
+    // `Partial<WorkerClusterOptionsType>` let an empty options object through
+    // the validator and into `new URL(undefined)`, which surfaced a raw
+    // ERR_INVALID_URL from inside the runtime rather than a named OptionsError
+    // naming the field (#776).
+    if (s.bootstrap === undefined) {
+      this.fail('bootstrap', 'is required — there is no worker entrypoint to spawn without it');
+    }
+    // `url()` is typed for `string` fields and `bootstrap` is `URL | string`,
+    // so the whole allow-list is hand-rolled — and shared, because five other
+    // slots name a module a worker executes and were carrying their own copy
+    // of it (#1515).
+    const rejection = checkWorkerModuleUrl(s.bootstrap);
+    if (rejection !== undefined) this.fail('bootstrap', rejection.reason, rejection.value);
     // workers is `number | 'auto'`, so the field-name helpers can't address it.
     if (s.workers !== undefined && s.workers !== 'auto' && (!Number.isInteger(s.workers) || s.workers < 1)) {
       this.fail('workers', "must be a positive integer or 'auto'", s.workers);
     }
+    // Only code could set these until they got config leaves (#883); an empty
+    // string from a config file would otherwise reach `NodeAddress` and give
+    // every worker an address with no host or no system name.
+    this.nonEmptyString('systemName');
+    this.nonEmptyString('hostname');
     this.port('basePort');
+    // `port()` bounds the first slot; each further slot is `basePort + index`,
+    // and since #883 both numbers can come from a config file, so the last
+    // slot has to be inside the range too (#1439).  Only the numeric case can
+    // be checked here — `'auto'` resolves later.
+    if (typeof s.workers === 'number' && s.basePort !== undefined
+      && Number.isInteger(s.workers) && s.workers >= 1
+      && s.basePort + s.workers - 1 > MAX_PORT) {
+      this.fail(
+        'workers',
+        `with basePort ${s.basePort} the last slot would be port ${s.basePort + s.workers - 1}, `
+        + `above ${MAX_PORT}`,
+        s.workers,
+      );
+    }
     this.positiveNumber('readyTimeoutMs');
     // Worth checking now that a config file can supply it: an unknown policy
     // used to fall through the `match` in WorkerCluster and silently mean
@@ -229,15 +378,210 @@ export class WorkerClusterOptionsValidator extends OptionsValidator<WorkerCluste
 }
 
 /**
- * The slice of worker-cluster settings HOCON can supply.  The rest is either
- * per-call identity (`bootstrap`, `initData`), something a config file cannot
- * express (`backend`, `onWorkerPermanentlyDown`), or still code-only —
- * `systemName` / `hostname` / `basePort` / `readyTimeoutMs` and the five
- * restart-budget knobs, whose config leaves are #883's scope.
+ * Parse a `bootstrap` specifier into a `URL`, or `undefined` when it is not
+ * one.  A bare relative string is the `undefined` case and always was: with no
+ * base to resolve against, `new URL('./worker.js')` throws — it just used to
+ * throw from inside {@link WorkerCluster.spawn} instead of from the validator.
+ */
+export function parseBootstrapUrl(bootstrap: URL | string | undefined): URL | undefined {
+  if (bootstrap instanceof URL) return bootstrap;
+  if (typeof bootstrap !== 'string') return undefined;
+  try {
+    return new URL(bootstrap);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A `file:` specifier whose path is *relative* — `file:worker.js`,
+ * `file:./worker.js`, or the bare `file:`.
+ *
+ * WHATWG does not reject these; it *anchors* them at the filesystem root, so
+ * `file:worker.js` and `file:./worker.js` both arrive as `file:///worker.js`
+ * and `file:` as `file:///`.  Every other rule here therefore sees an
+ * ordinary host-less `file:` URL and passes it, and the caller finds out from
+ * Node's `ERR_INVALID_FILE_URL_PATH` inside the `Worker` constructor — late,
+ * and naming no field (#1515).
+ *
+ * **The single-slash form is not one of these**, and the lookahead is one
+ * slash rather than two for that reason.  `file:/srv/app/worker.js` is an
+ * absolute file URI with the empty authority elided — RFC 8089's own spelling,
+ * and what `java.io.File.toURI()` produces — so the parser does not move it:
+ * measured on bun 1.4.2, its `href` is byte-identical to
+ * `file:///srv/app/worker.js`, and `new Worker(new URL(…))` on that spelling
+ * ran and posted its first frame.  The first cut of this rule refused it
+ * (`(?!\/\/)`), which made it the one spelling the rule broke that had worked
+ * before.  Refusing a path the parser leaves alone is refusing a spelling; the
+ * defect this rule exists for is a path the parser silently *relocates*.
+ *
+ * Matched on the **string** the caller wrote, because that is the only place
+ * the spelling survives: `new URL('file:worker.js')` is already
+ * `file:///worker.js` and nothing on the object remembers how it got there.
+ * A caller who built the `URL` has had it corrected for them; one who wrote
+ * the string has not.  That asymmetry is the rule's limit and it is real —
+ * see the docs rows, which say so rather than promising a refusal the
+ * `URL`-typed slots cannot perform.
+ *
+ * Tested against {@link asTheUrlParserReadsIt}, not against the raw string:
+ * reading a different string than the parser reads is how a rule stated over
+ * a spelling gets walked past.
+ */
+const SCHEME_RELATIVE_FILE_URL = /^file:(?!\/)/i;
+
+/**
+ * The specifier as {@link SCHEME_RELATIVE_FILE_URL} must read it.
+ *
+ * The rule is stated over the string because the spelling survives nowhere
+ * else — but the parser normalises that string first, so a rule that reads
+ * the raw one is reading a different string than the one that decides the
+ * outcome.  `' file:worker.js'`, `'\tfile:worker.js'` and `'fi\tle:worker.js'`
+ * all parse to `file:///worker.js`, the exact spelling the rule refuses, and
+ * all three walked past a `^file:` match on the raw string.
+ *
+ * It matters for a specifier that arrives from an environment variable, a
+ * config leaf or a trimmed template rather than as a literal, which is the
+ * ordinary case for the deployment knob this guards.  The scheme and host
+ * rules were never bypassable this way — they read the parsed `URL` — so this
+ * closes the one rule that does not (#1515).
+ *
+ * The removals are leading and trailing C0-or-space and every interior tab,
+ * LF and CR — measured across all 128 ASCII code points on bun 1.4.2 rather
+ * than read off the specification: prepending or appending any of
+ * U+0000–U+0020 to `file:worker.js` still yields `file:///worker.js`, and of
+ * the interior positions exactly U+0009, U+000A and U+000D vanish.  Nothing
+ * else does: a non-breaking space (U+00A0) in front of `file:worker.js`
+ * leaves a scheme the parser rejects outright, so that string is refused by
+ * the "must be an absolute URL" rule and needs no handling here.  The shared
+ * helper does them in linear time; the regex that stood here was quadratic on
+ * an interior run of controls (#1792).
+ */
+function asTheUrlParserReadsIt(specifier: string): string {
+  return asUrlParserReadsIt(specifier);
+}
+
+/**
+ * Why a worker-entry specifier was refused.  Shaped for
+ * `OptionsValidator.fail`, whose `reason` reads directly after the field name
+ * and whose `value` is what the `(got …)` tail reports.
+ */
+export type WorkerModuleUrlRejection = {
+  readonly reason: string;
+  readonly value: unknown;
+};
+
+/**
+ * The one rule every slot that names a module a worker will **execute** is
+ * held to: an absolute, host-less `file:` URL that names a file.
+ *
+ * `undefined` means it passes.  A single function rather than the four
+ * hand-written copies it replaces (`WorkerClusterOptions.bootstrap`,
+ * `WorkerMeshOptions.module` / `.bootstrap`, `OffloadPoolOptions.bootstrap`,
+ * `ParallelismOptions.module` / `.bootstrap`), which had drifted to three
+ * different wordings and would have needed the two rules below written four
+ * more times.  It returns the rejection instead of throwing because `fail`
+ * belongs to the validator: only the validator knows which field is being
+ * checked, and the message has to name it.
+ *
+ * See {@link BOOTSTRAP_ALLOWED_PROTOCOL} for what each runtime measurably
+ * does with the other schemes and {@link BOOTSTRAP_ALLOWED_HOST} for what a
+ * host does to a `file:` URL.  The remaining three rules —
+ * {@link SCHEME_RELATIVE_FILE_URL}, the doubled leading slash and the
+ * trailing-slash check — close the gap those two leave: each of those
+ * spellings normalises into a form the scheme and host checks are happy with,
+ * and fails later instead (#1515).  The doubled slash is the one of the three
+ * that matters for more than a diagnostic: it reaches the same remote UNC
+ * fetch `BOOTSTRAP_ALLOWED_HOST` exists to refuse, with the authority moved
+ * from the host into the path where that check cannot see it.
+ */
+export function checkWorkerModuleUrl(specifier: URL | string): WorkerModuleUrlRejection | undefined {
+  const url = parseBootstrapUrl(specifier);
+  if (url === undefined) {
+    return {
+      reason: 'must be an absolute URL — resolve a relative specifier against the caller first, '
+        + "as in new URL('./worker.js', import.meta.url)",
+      value: specifier,
+    };
+  }
+  if (url.protocol !== BOOTSTRAP_ALLOWED_PROTOCOL) {
+    return {
+      reason: `must use the ${BOOTSTRAP_ALLOWED_PROTOCOL} scheme — a data:, blob: or remote `
+        + 'specifier hands the worker code from outside the deployment',
+      value: url.href,
+    };
+  }
+  if (url.host !== BOOTSTRAP_ALLOWED_HOST) {
+    return {
+      reason: 'must be a host-less file: URL — a host makes it a UNC path '
+        + `(\\\\${url.host}\\…), so the module is fetched off that server; file:///path is the `
+        + 'intended form, and file://localhost/path normalises to it',
+      value: url.href,
+    };
+  }
+  // The same fetch the rule above refuses, reached without a host at all: with
+  // a fourth slash WHATWG leaves the authority in the *path*, so `host` is
+  // empty and the check above passes it.  Measured on bun 1.4.2,
+  // `fileURLToPath('file:////attacker.example.com/share/worker.js')` is
+  // `\\attacker.example.com\share\worker.js` — byte-for-byte the path the
+  // host rule exists to prevent — and `file://localhost//…` lands there too,
+  // because the parser erases that host and leaves the doubled slash.  Node
+  // 26.7.0 throws on the same URL instead, so this is a runtime split and the
+  // primary toolchain is the permissive one (#1515).
+  if (url.pathname.startsWith('//')) {
+    return {
+      reason: 'has no host but a path beginning // — that is the same UNC fetch the host rule '
+        + 'refuses, spelled with one slash more; file:///path is the intended form',
+      value: url.href,
+    };
+  }
+  // After the host check and not before it, so the message stays true of what
+  // the parser did: `file:\\a-server\share\worker.js` is *also* written without
+  // `//`, but backslashes are slashes to a special scheme, so it lands on a
+  // host rather than at the root and the UNC message is the accurate one.
+  if (typeof specifier === 'string' && SCHEME_RELATIVE_FILE_URL.test(asTheUrlParserReadsIt(specifier))) {
+    return {
+      reason: 'is a scheme-relative spelling the URL parser anchors at the filesystem root as '
+        + `${url.href} — write file:///… , or resolve it against import.meta.url`,
+      value: specifier,
+    };
+  }
+  if (url.pathname.endsWith('/')) {
+    return {
+      reason: 'names a directory, not a module — file:///path/worker.js is the form',
+      value: url.href,
+    };
+  }
+  return undefined;
+}
+
+/**
+ * The slice of worker-cluster settings HOCON can supply — every field but the
+ * four a config file has no way to carry, or must not: `initData` is per-call
+ * identity, `backend` / `onWorkerPermanentlyDown` are live objects rather than
+ * values, and `bootstrap` is held back deliberately (below) (#883).
+ *
+ * The four duration leaves drop the `Ms` suffix their fields carry and take a
+ * HOCON duration literal instead — `actor-ts.logger.close-timeout` reads into
+ * `closeTimeoutMs` and `…delivery.flush-interval` into `flushIntervalMs`, so
+ * this is the house spelling rather than an exception to the `withX` ⇔ `x` ⇔
+ * leaf lockstep.  A `…-ms` leaf would be the first in `reference.conf`, and
+ * would make `10s` unwritable where every other duration accepts it.
+ *
+ * **`bootstrap` stays out of HOCON on purpose** — it is absent from
+ * `ConfigKeys` and from `reference.conf`, and #883 publishing the other nine
+ * did not change that.  It names a module the runtime will *execute*, and a
+ * config file is a wider surface than the call site: `ACTOR_TS_CONFIG`, a
+ * dropped-in `application.conf` or `reference.conf`, and a `.env` all feed
+ * {@link Config.load}, so a leaf here
+ * would let something other than the application's own source decide which
+ * code a worker runs.  {@link WorkerClusterOptionsValidator} constrains the
+ * scheme precisely because that decision has teeth (#776).
  */
 export type WorkerClusterConfigDefaults = Pick<
   WorkerClusterOptionsType,
-  'workers' | 'restartPolicy'
+  'workers' | 'systemName' | 'hostname' | 'basePort' | 'readyTimeoutMs'
+  | 'restartPolicy' | 'restartMinBackoffMs' | 'restartMaxBackoffMs'
+  | 'restartRandomFactor' | 'maxRestarts' | 'restartWindowMs'
 >;
 
 /**
@@ -245,8 +589,10 @@ export type WorkerClusterConfigDefaults = Pick<
  * config readers this one loads the config itself: {@link WorkerCluster.spawn}
  * is a static with no `ActorSystem` in scope — the workers each build their
  * own system *after* spawning — so there is no `system.config` to read.
- * {@link Config.load} is the same chain `ActorSystem.create` uses, honouring
- * `ACTOR_TS_CONFIG` and `./application.conf`.
+ * {@link Config.load} is the same chain `ActorSystem.create` uses: the
+ * project `reference.conf`, `application.conf` and the secrets file, each
+ * named by its `ACTOR_TS_*` variable or found in the working directory, and a
+ * `.env` beside them (#1785).
  */
 export function readWorkerClusterOptionsFromConfig(
   config: Config = Config.load(),
@@ -259,8 +605,39 @@ export function readWorkerClusterOptionsFromConfig(
     const raw = config.getString(keys.workers);
     out.workers = raw === 'auto' ? 'auto' : config.getInt(keys.workers);
   }
+  if (config.hasPath(keys.systemName)) {
+    out.systemName = config.getString(keys.systemName);
+  }
+  if (config.hasPath(keys.hostname)) {
+    out.hostname = config.getString(keys.hostname);
+  }
+  if (config.hasPath(keys.basePort)) {
+    out.basePort = config.getInt(keys.basePort);
+  }
+  if (config.hasPath(keys.readyTimeout)) {
+    out.readyTimeoutMs = config.getDuration(keys.readyTimeout);
+  }
   if (config.hasPath(keys.restartPolicy)) {
     out.restartPolicy = config.getString(keys.restartPolicy) as RestartPolicy;
+  }
+  if (config.hasPath(keys.restartMinBackoff)) {
+    out.restartMinBackoffMs = config.getDuration(keys.restartMinBackoff);
+  }
+  if (config.hasPath(keys.restartMaxBackoff)) {
+    out.restartMaxBackoffMs = config.getDuration(keys.restartMaxBackoff);
+  }
+  if (config.hasPath(keys.restartRandomFactor)) {
+    // `getNumber`, not `getInt`: the jitter fraction is the one leaf in the
+    // block that is legitimately fractional, and `getInt` throws on `0.2`.
+    out.restartRandomFactor = config.getNumber(keys.restartRandomFactor);
+  }
+  if (config.hasPath(keys.maxRestarts)) {
+    // `-1` is the documented "restart forever" value and a legal integer, so
+    // `getInt` is the right accessor even though the field is not a count.
+    out.maxRestarts = config.getInt(keys.maxRestarts);
+  }
+  if (config.hasPath(keys.restartWindow)) {
+    out.restartWindowMs = config.getDuration(keys.restartWindow);
   }
   return out;
 }

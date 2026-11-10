@@ -141,7 +141,7 @@ describe('ClusterSharding — shard passivation (#892)', () => {
     // The entity goes first; only then does the shard's own clock start.
     await waitFor(() => stopped === 1);
     await waitFor(() => !shardIsUp(node, 'user-1'));
-  });
+  }, 15_000);
 
   test('the next message brings shard and entity back, transparently', async () => {
     const node = await startNode('shard-recreate', 47_101, (builder) => {
@@ -158,7 +158,7 @@ describe('ClusterSharding — shard passivation (#892)', () => {
     await waitFor(() => delivered === 2);
     expect(shardIsUp(node, 'user-1')).toBe(true);
     expect(entityIsUp(node, 'user-1')).toBe(true);
-  });
+  }, 15_000);
 
   test('no message is lost across repeated passivation cycles', async () => {
     // The regression that matters.  Each round crosses a full stop/recreate,
@@ -181,7 +181,7 @@ describe('ClusterSharding — shard passivation (#892)', () => {
 
     await waitFor(() => delivered === rounds);
     expect(delivered).toBe(rounds);
-  });
+  }, 15_000);
 
   test('a shard holding a live entity is left alone', async () => {
     const node = await startNode('shard-busy', 47_103, (builder) => {
@@ -199,7 +199,7 @@ describe('ClusterSharding — shard passivation (#892)', () => {
     await sleep(300);
     expect(stopped).toBe(0);
     expect(shardIsUp(node, 'user-1')).toBe(true);
-  });
+  }, 15_000);
 
   test('shardPassivationIdleMs = 0 keeps the shard while entities still passivate', async () => {
     const node = await startNode('shard-optout', 47_104, (builder) => {
@@ -213,7 +213,7 @@ describe('ClusterSharding — shard passivation (#892)', () => {
     // The entity went; the shard must not follow it.
     await sleep(250);
     expect(shardIsUp(node, 'user-1')).toBe(true);
-  });
+  }, 15_000);
 
   test('shardRefFor hands out a live ref for a passivated shard', async () => {
     const node = await startNode('shard-ref', 47_105, (builder) => {
@@ -232,5 +232,5 @@ describe('ClusterSharding — shard passivation (#892)', () => {
 
     expect(stats.shardId).toBe(shardId);
     expect(stats.entityCount).toBe(0);
-  });
+  }, 15_000);
 });

@@ -27,39 +27,209 @@ nothing races past a half-moved entity.
 
 ## What triggers rebalance
 
-Three paths:
+Four paths:
 
-1. **Membership-driven** — `MemberUp` (a new node), `MemberRemoved`
-   (a leaving node), or any cluster transition that changes the
-   candidate set.  The coordinator re-runs the allocation strategy
-   for every owned shard.
+1. **Membership-driven** — `MemberRemoved` (a leaving node) and a
+   leader change.  Those are the only two cluster events the
+   coordinator subscribes to; everything else, `MemberUp` and
+   `MemberUnreachable` included, reaches a handler that does nothing.
+   **A node joining therefore moves no shard at the moment it joins**
+   — it only changes the set of members that are `up`, which the
+   coordinator reads at its next allocation or tick.  Rebalancing then
+   waits until that set has held still for the settle window (see
+   [members that are not up](#members-that-are-not-up) below), which
+   is why the churn of a join arrives as one burst rather than a
+   trickle.
 2. **Strategy-driven** — every `rebalanceIntervalMs` (default 2s),
    the coordinator asks the
    [allocation strategy](/cluster/sharding/allocation-strategy/)
-   for its rebalance recommendations.  `LeastShardAllocationStrategy`
-   returns shards to drain off busy nodes; `HashAllocationStrategy`
-   returns shards whose hash-target moved.
+   for its rebalance recommendations, over the regions whose member is
+   `up` and only once their set has settled.
+   `LeastShardAllocationStrategy` returns shards to drain off busy
+   nodes; `HashAllocationStrategy` returns shards whose hash-target
+   moved.  Both also return the shards of a region that is no
+   candidate (see [members that are not up](#members-that-are-not-up)).
 3. **A region stopping** — a region tells the coordinator on its way
    down, and its shards are reallocated immediately.  This covers a
    region stopped on a node that stays in the cluster, where no
    membership event fires at all.
+4. **A region going silent** — opt-in, and the backstop for a lost
+   notification from path 3.  With
+   `actor-ts.sharding.stale-region-detection.enabled = on` every region
+   beats to the coordinator, and a region that stops beating for
+   `stale-after` is dropped from the registry and its shards re-homed.
+   The coordinator then *tells* that region it was evicted, which path 3
+   never has to do — see below for why the two are not the same thing.
+   A region on a node that is not `up` — `unreachable` behind a partition,
+   say — is left to the membership decision instead: the node may still be
+   running its shards, and re-homing them here would give each a second
+   live home.  The sweep skips such a region and restarts its silence clock
+   on every tick, so once the node is `up` again the region has a fresh
+   `stale-after` to be heard from.
+   Off by default; see [detecting a region that went
+   silent](/reference/configuration/#detecting-a-region-that-went-silent)
+   for what it does and does not cover.
 
-The first two feed into the handoff protocol below.  The third does
-not: the region is already gone, so there is nothing to hand off —
-the coordinator simply drops it from the registry and re-allocates.
+The first two feed into the handoff protocol below.  The last two do
+not: there is nobody to hand off *to* — the coordinator drops the region
+from the registry and re-allocates in one step.
 
 Without that third path a stopped region left its shards **orphaned**:
 the coordinator kept naming it as their home, senders cached that home
 and delivered into a stopped actor, and the messages became dead
 letters.  Nothing recovered it either — the candidate set is derived
-from the registry with no liveness check, so the rebalance tick saw a
-balanced cluster and moved nothing.  It stayed that way until the node
-left the cluster entirely.
+from the registry and checks only that a region's *node* is `up`,
+never that the region itself is still alive, so the rebalance tick saw
+a balanced cluster and moved nothing.  It stayed that way until the
+node left the cluster entirely.
 
 The notification is best-effort and idempotent: it is skipped if the
 region never found a coordinator, a transport failure on the way down
 is logged and swallowed, and the `MemberRemoved` path that follows a
 whole-node shutdown finds the region already gone and does nothing.
+
+Best-effort is why the fourth path exists.  A lost notification puts the
+cluster back in exactly the orphaned state above, and only the beat can
+notice — the node is still up, so no membership event will ever fire.
+The sweep rides the same periodic tick as path 2, inside the same
+"am I the active coordinator?" guard, and evicts through the same code
+path as path 3, so a region that did manage to say goodbye is already
+gone from the registry and cannot be evicted twice.
+
+**An eviction is not a goodbye, though, and the difference is the whole
+safety of the path.**  Path 3 starts at a region that is on its way
+down and knows it.  Path 4 starts at a coordinator that has *inferred*
+a region is gone from the absence of a beat — and the inference can be
+wrong, because a lost frame looks the same from there.  A region that
+is still alive learns nothing from a shard map it is no longer in, so
+left to itself it would keep its shards, keep their entities running
+and keep serving every sender that had cached the old home: one shard,
+two live homes, for as long as the node stayed up.
+
+So the coordinator sends the evicted region a notice.  A region that
+receives one gives up every shard it holds — the shard actors stop, so
+the entities beneath them run `postStop` and a persistent one flushes —
+and registers again immediately.  Receiving it at all is the evidence
+the eviction was a false positive, and registering again is the repair:
+the node is healthy, so it should be hosting shards.  A region that is
+really gone, or wedged, never processes the notice, and the eviction
+stands exactly as before.
+
+The notice itself can be lost, and a live region that never receives it
+believes it is still registered — it keeps the shards that were just
+re-homed, and `isRegistered` keeps reading `true` on its node.  Its beat
+is what gives it away: the next one names a region the coordinator no
+longer holds, and the coordinator answers a beat like that with a
+`RegistrationRequest`.  The region registers again, still claiming the
+shards it kept; the coordinator leaves them where it put them and hands
+the stale copies off.  So a lost notice costs one `heartbeat-interval`,
+not an exile.
+
+The notice cannot start a loop.  A re-registered region is a **new**
+registry entry, one that has beaten to this coordinator zero times, and
+a registered region that has never beaten is never swept — so a region
+whose beats are being lost wholesale is evicted once, not once every
+`stale-after`.  Only an entry seeded from a coordinator-state snapshot
+that never registers in the new term is swept without a beat, once it
+has been silent for `stale-after` from its seeding.
+
+A seeded entry whose region *is* there leaves that state one round trip
+in, because the coordinator does not wait for the region to register of
+its own accord: every entry it seeds is sent a `RegistrationRequest`, and
+the region answers with its ordinary `Register`.  That matters most after
+a **coordinator restart** — its supervisor rebuilds it after one of its
+handlers throws, a user `AllocationStrategy` throwing out of `allocate`
+included — which moves no leader and so gives no region a reason of its
+own to register.  The restarted coordinator also asks every region the
+instance before it knew, so the same holds without a coordinator-state
+store, where a restart used to leave the type headless: no region known,
+no shard placeable, nothing delivered that needed the coordinator.  The
+request goes only to regions the coordinator has a reason to believe in,
+never to every member — a node that runs nothing for the type would count
+it as a refused envelope.
+
+## Members that are not up
+
+A shard is only ever placed on a region whose member is **`up`**.  A
+region on a node that is `unreachable`, still `joining` or
+`weakly-up`, `leaving` or `down` — or on an address that is no member
+at all — is never handed a new shard, whatever the strategy picks.
+Whether the region *itself* is still alive is a different question,
+which this rule does not answer; path 4 above is for that.
+
+The coordinator tracks the set of regions whose member is up — the
+**eligible** regions — and when that set last changed:
+
+- **While the set is settling**, a shard is first asked for over every
+  registered region, and the strategy's pick stands when its member is
+  up.  Only a pick on a member that is not up is asked again, over the
+  eligible regions.  The strategy is not asked to rebalance at all.
+- **Once the set has held still for the settle window**, allocation and
+  rebalancing both place shards on the eligible regions only, and a
+  proposed move away from an owner that is not up is dropped, whichever
+  strategy proposed it.  Rebalancing does see the shards of a region
+  that is registered on an up member but is no candidate — refused over
+  its shard count, or without the type's role — so both built-in
+  strategies move those onto the eligible regions.
+
+The window is derived from the downing timings rather than configured:
+`failure-detector.down-after` with no split-brain strategy, and the
+larger of that and `split-brain-resolver.stable-after` with one.  At the
+shipped defaults that is **5 s** without a strategy and **20 s** with
+one.  It runs from the coordinator's first look at the changed set —
+its next allocation or rebalance tick, which can be up to one tick
+(2 s) after the change — and the first rebalance runs at the first tick
+after it has run out, so the first move can come up to two ticks (4 s)
+later than the window alone would say.  A new leader starts its own
+window, so it settles before it rebalances, too.
+
+What follows from it:
+
+- **A blip moves nothing.**  A member that goes `unreachable` and comes
+  back within the window starts no hand-off of any shard placed before
+  it, during the blip or after it.  Shards asked for during the blip
+  land on members that are up.
+- **No hand-off from a parked owner.**  A hand-off asked of a node that
+  cannot answer can only time out into a forced reallocation — a second
+  live home for the shard while the cut-off node keeps running it — so
+  the coordinator never starts one.
+- **A parked node's shards wait for the downing decision.**  With a
+  split-brain strategy that is its verdict.  Without one it depends on
+  `failure-detector.auto-down`: on, the detector removes the node at
+  `down-after`; off, the node stays parked until an operator downs it
+  (`Cluster.down` or `POST /cluster/down`).  The shards are re-homed from
+  the `MemberRemoved` that follows, and not before.
+- **One round of moves when a member stays parked.**  Once the window
+  has run out with a member still parked, the default
+  `HashAllocationStrategy` balances the shards of the *healthy* members
+  over a set that is one smaller, which moves those whose slot changed
+  with its size once — 21 or 22 of the shipped 64 with one of three
+  nodes parked, since the slots follow address order: 21 when the parked
+  node sorts last, 22 otherwise.  Allocation then asks over the same set,
+  so the next tick finds nothing to do.
+- **A new shard with nowhere to go waits.**  When every region that
+  could host the type is on a member that is not up, a request for a new
+  shard stays pending until the membership decides, and the coordinator
+  logs one warning per episode.  A member that comes back re-emits
+  `MemberUp`, every region registers again and re-asks for the shards it
+  buffered, and the request is answered then; a member that is removed
+  takes its regions with it, and the request waits for a region that can
+  host the type.  While #930 is open, a member cut off by a symmetric
+  partition is not heard from again after the network heals, so it does
+  not come back on its own: the request stays pending until auto-down, a
+  split-brain strategy or an operator removes the member.
+- **A flapping member stalls rebalancing.**  Every time a member leaves
+  or rejoins the set of members that are up, the window starts again, so
+  one that flips faster than the window keeps the coordinator from
+  rebalancing at all — onto a newly joined region too — for as long as
+  it flaps.  Allocation goes on meanwhile, on members that are up.
+
+The rule holds **per coordinator**.  Under a partition the cut-off side
+elects a leader of its own, and with it a coordinator of its own, which
+places shards on the members *it* sees as up.  Keeping a shard from
+getting a home on each side of a partition is the job of a
+[downing strategy](/cluster/downing-strategies/) or a
+[lease](/cluster/sharding/with-lease/), not of placement.
 
 ## The handoff sequence
 
@@ -85,13 +255,77 @@ The whole thing usually takes **sub-second to a few seconds**,
 depending on how many entities are in the shard and how long their
 `postStop` work takes.
 
+### A handoff that is not a rebalance
+
+The same frame has a fourth use, and it has nothing to do with
+load.  A region registers with the coordinator by naming the shards
+it believes it hosts, and that list can be **stale**: nothing clears
+it when a node is downed by a false positive, and the region
+re-registers on every membership change and on a 500 ms retry until
+it is acknowledged.  So a node re-admitted after such a downing
+says, as its first word, that it still hosts everything it hosted
+before.
+
+The coordinator adjudicates that claim rather than believing it.
+Ids nobody owns are adopted exactly as before; an id another
+**registered** region already owns stays where it is, and the
+claimant is sent a `HandOff` for it.  That answer is the graceful
+release above — the claimant's entities run `postStop`, and a
+persistent one flushes, before the true owner's copy takes traffic
+— rather than a bare correction, which would fix the claimant's
+routing table and leave its shard actor and its entities running.
+
+Two details follow from what the frame means here.  The
+registration is acknowledged **first**, so the claimant has stopped
+re-registering by the time the directive lands.  And the release is
+deliberately *not* recorded as a rebalance: a rebalance carries the
+`handOffTimeoutMs` fallback below, whose expiry force-reallocates
+the shard — which here would take ownership away from the node that
+never gave it up.  The claimant's `HandOffComplete` therefore
+matches no in-flight rebalance and is a no-op, which is also what
+stops it from ending a genuine one for the same shard.
+
+### A new leader waits for the claims
+
+A leader change clears the allocation map, and the other members'
+regions learn of the change through gossip, each at its own moment.
+A coordinator that placed shards at once would decide on a map that
+does not yet hold the region already running a shard — a node that
+restarts at the lowest address, or joins with it, becomes leader at
+once and would place that shard on itself (#1272).
+
+So a coordinator that has just become leader **places no shard
+until the regions of every other `up` member have registered** —
+narrowed to the type's role when it has one.  Every region
+re-registers with its `hostedShards` on the leader change it
+observes, so nothing has to be asked.  A shard a registration has
+already homed is answered at once; only what would need a *new* home
+waits — for three gossip rounds plus one register retry, never longer
+than `handOffTimeoutMs`, even once every member it knows of has
+registered: a node that has just joined, the restarted lowest address
+above all, may not have heard of every member yet.  A new placement
+therefore costs at most that window on a leader change.
+
+When the window runs out the coordinator places shards anyway and
+logs which members it had no registration from.  If one of them does
+run the type — its claims are late, or it is unreachable — a shard it
+still hosts can be started a second time until its registration
+arrives and releases the stale copy.  A
+[lease on the coordinator](/cluster/sharding/with-lease/) is what rules
+that out.
+
+A coordinator-state snapshot cannot hand a restarted node its previous
+run's shards either: when a region whose entry came from the snapshot
+registers from a different incarnation of its node, the homes it does
+not claim are released and placed again on demand.
+
 ## Who may order a handoff
 
 A `HandOff` stops every entity in a shard, so the region checks
 **where it came from** before acting on it — not just what it says.
 The rule covers every directive only the coordinator may issue:
-`HandOff`, `ShardHome`, `RememberedEntities`, `ShardMapUpdate` and
-`RegisterAcknowledgment`.
+`HandOff`, `ShardHome`, `RememberedEntities`, `ShardMapUpdate`,
+`RegionEvicted`, `RegistrationRequest` and `RegisterAcknowledgment`.
 
 Two conditions have to hold:
 
@@ -130,6 +364,18 @@ means the two disagree about ownership — and `handOffTimeoutMs`
 below is exactly the fallback for that, force-reallocating the shard
 instead of waiting forever.
 
+One region answers instead of refusing: one whose registration the
+coordinator refused over its shard count. It gave up everything it
+hosted when the refusal reached it and is placed nothing afterwards,
+so whatever the coordinator still lists under it — the shards a
+coordinator-state snapshot seeded it with before its `Register` was
+refused — nothing of it runs there. It answers such a `HandOff` with
+`HandOffComplete` at once, or, for a shard its release is still
+stopping, as soon as that stop has finished, so those shards move
+without sitting out `handOffTimeoutMs`. The coordinator, for its part,
+ends a hand-off only on the word of the region it sent it to: a
+`HandOffComplete` from any other region ends nothing.
+
 :::note[This is authorization, not authentication]
 The check says *"only the coordinator's node"*, and on a cluster
 without peer certificates any party that can reach the port can
@@ -143,8 +389,9 @@ not fully trusted — see
 ```ts
 const shardingOptions = StartShardingOptions.create()
   // ...
-  .withRebalanceIntervalMs(2_000)   // strategy-driven rebalance every 2s
-  .withHandOffTimeoutMs(10_000);    // give up + force-reallocate after 10s
+  .withRebalanceIntervalMs(2_000)      // strategy-driven rebalance every 2s
+  .withHandOffTimeoutMs(10_000)        // give up + force-reallocate after 10s
+  .withRebalanceRelativeLimit(0.1);    // at most 10% of the shards in flight
 sharding.start(shardingOptions);
 ```
 
@@ -152,6 +399,44 @@ sharding.start(shardingOptions);
 | --- | --- | --- |
 | `rebalanceIntervalMs` | 2000 | How often the strategy is consulted for rebalance recommendations. |
 | `handOffTimeoutMs` | 10_000 | If the source region doesn't send `HandOffComplete` within this window, the coordinator gives up waiting and force-reallocates. |
+| `rebalanceAbsoluteLimit` | 0 | Flat ceiling on shards **in flight**.  `0` = no absolute ceiling. |
+| `rebalanceRelativeLimit` | 0.1 | The same ceiling as a fraction of `numShards`.  `0` = no relative ceiling; `0` for both is uncapped.  Where both are set the lower wins, never below one shard. |
+
+### The ceiling on churn
+
+Whatever the strategy recommends, the coordinator hands off at most
+the configured ceiling **at once**.  The default
+[`HashAllocationStrategy`](/cluster/sharding/allocation-strategy/)
+places a shard by `shardId % candidates.length`, so a node joining
+changes the answer for most shards simultaneously: at the shipped
+`numShards = 64` a 2 → 3 node join re-homes **42 to 44 shards** (42
+when the new node sorts last in address order, 44 when it sorts
+first), each one a stop, a re-allocation, a re-creation and — for a
+persistent or remembered entity — a journal replay.  All of it in the
+same tick: a `MemberUp` moves nothing by itself, and the first tick
+after the set of `up` members has held still for the settle window
+proposes every one of them at once.
+
+Three properties of the bound are worth knowing:
+
+- **It counts shards in flight, not shards per tick.**  A tick fires
+  every `rebalanceIntervalMs` while a hand-off may stand for a whole
+  `handOffTimeoutMs`, so at the defaults a per-tick six would admit
+  roughly thirty concurrently.  Each tick's budget is the ceiling
+  *minus what is already moving*.
+- **Only voluntary moves are capped.**  A region that dies leaves its
+  shards with no owner at all; those are re-homed immediately, ceiling
+  or not.
+- **Nothing is dropped, and no node is drained first.**  The remainder
+  is proposed again on the next tick until the map is balanced, and
+  the shards that go first are picked round-robin across their current
+  owners — a ceiling that empties one node before touching the next
+  would be worse than none.
+
+The strategy's own limits and this one stack rather than compete:
+`LeastShardAllocationStrategy`'s `maxSimultaneousRebalance` bounds what
+it **proposes**, this ceiling bounds what the coordinator **accepts**
+from any strategy, including one you wrote.
 
 ## What buffered messages mean
 
@@ -203,7 +488,7 @@ identity](/persistence/overview/#storage-locality--identity).
 
 If `HandOffComplete` doesn't arrive within `handOffTimeoutMs`:
 
-- The coordinator logs a warning ("handoff timed out").
+- The coordinator logs a warning: `[sharding] handoff timeout for shard <id>; forcing reallocate`.
 - It force-reallocates the shard to its new owner.
 - Buffered messages forward as if handoff had completed normally.
 - **The old entities may still be alive** on node A — they
@@ -238,20 +523,39 @@ in `LeastShardAllocationStrategy`'s view receives new shards as
 they're allocated, but doesn't get existing shards moved *into* it
 just because it's quiet.
 
-For an "always-balanced" effect, restart the coordinator
-periodically (which re-runs allocation from scratch) — or
-configure `rebalanceThreshold: 1` to react to any imbalance.
+For an "always-balanced" effect, configure `rebalanceThreshold: 1`
+to react to any imbalance.  Restarting the coordinator does not
+re-run allocation from scratch: the restarted coordinator asks its
+regions to register again, each claims the shards it hosts, and the
+map comes back as it was.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Buffered messages have a memory cost">
+<Aside type="caution" title="Buffered messages have a memory cost, and a bound">
   ```ts
   // Shard X handing off; 10 000 messages pile up before completion
   ```
-  Buffer is unbounded.  In a busy cluster where a slow handoff
-  coincides with high message rate, the buffer can grow large.
-  This isn't a leak — buffered messages drain on completion — but
-  watch memory under load.
+  The buffer is capped at `sharding.buffer-size` (100 000 by
+  default) **across every shard of the region**, not per shard.  Up
+  to that point this isn't a leak — buffered messages drain on
+  completion — but past it the region drops the *newest* arrival to
+  dead letters, with its sender, and logs one warning per overflow
+  episode.  Dropping the newest is deliberate: what is already
+  queued keeps the order its caller sent it in.
+
+  An ordinary rebalance never comes near the cap.  What does is a
+  coordinator that never answers — no leader, a lease it cannot
+  acquire, or a registration it refused while the region keeps
+  taking traffic — and that is the state the bound exists for: the
+  alternative to bounded message loss there is an out-of-memory
+  process.  Raise it with `StartShardingOptions.withBufferSize(n)`
+  or `actor-ts.sharding.buffer-size`; `0` means never buffer at all.
+
+  The same number caps a second hold, **per shard**: the messages a
+  shard keeps for its entities
+  [backing off after a stop nobody asked for](/cluster/sharding/overview/#an-entity-that-keeps-stopping).
+  Past it the shard drops the newest the same way, with its sender,
+  and warns once per episode.
 </Aside>
 
 <Aside type="caution" title="Frequent rebalance is expensive">

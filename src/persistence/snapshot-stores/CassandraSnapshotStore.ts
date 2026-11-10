@@ -1,4 +1,5 @@
 import { JournalError, type Snapshot } from '../JournalTypes.js';
+import type { PersistenceOptionSupport } from '../PersistenceCapabilities.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
 import { none, some, type Option } from '../../util/Option.js';
@@ -9,7 +10,12 @@ import {
   type CassandraConnection,
 } from '../journals/CassandraClient.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
-import { STORAGE_IDENTITY_TABLE } from '../Constants.js';
+import {
+  DEFAULT_AUTO_CREATE_TABLES,
+  DEFAULT_SNAPSHOTS_TABLE,
+  DEFAULT_SNAPSHOT_KEEP_N,
+  STORAGE_IDENTITY_TABLE,
+} from '../Constants.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import type { StorageLocality } from '../StorageLocality.js';
 import type { CassandraSnapshotStoreOptions, CassandraSnapshotStoreOptionsType } from './CassandraSnapshotStoreOptions.js';
@@ -29,6 +35,14 @@ type SnapshotRow = {
 export class CassandraSnapshotStore implements SnapshotStore {
   /** A Cassandra/Scylla cluster any node can reach (#1356). */
   readonly storageLocality: StorageLocality = 'shared';
+
+  /** JSON text in a CQL column — `options` is bound and never read (#960). */
+  readonly persistenceOptionSupport: PersistenceOptionSupport = {
+    encryption: false,
+    compression: false,
+    integrity: false,
+  };
+
   private cachedStorageIdentity: string | null = null;
 
   /** Identity of the keyspace's database — journal and snapshot store over one keyspace share it (#1358). */
@@ -36,7 +50,7 @@ export class CassandraSnapshotStore implements SnapshotStore {
     if (this.cachedStorageIdentity !== null) return this.cachedStorageIdentity;
     await this.ensureStarted();
     const table = this.qualifiedStorageIdentityTable();
-    if (this.options.autoCreateTables ?? true) {
+    if (this.options.autoCreateTables ?? DEFAULT_AUTO_CREATE_TABLES) {
       await this.client.execute(
         `CREATE TABLE IF NOT EXISTS ${table} ( singleton int PRIMARY KEY, identity text )`,
       );
@@ -82,10 +96,17 @@ export class CassandraSnapshotStore implements SnapshotStore {
     this.options = (options as CassandraSnapshotStoreOptionsType);
     this.client = this.options.client ?? (undefined as unknown as CassandraClientLike);
     this.ownsClient = !this.options.client;
-    this.keepN = this.options.keepN ?? 3;
+    this.keepN = this.options.keepN ?? DEFAULT_SNAPSHOT_KEEP_N;
   }
 
+  /**
+   * Explicitly connect + ensure schema — the journal's `start()`, with the
+   * same rules: single-flight, a failed start shuts down a client it created
+   * and the retry opens a fresh one, and after `close()` it rejects instead of
+   * reconnecting (#1473).
+   */
   async start(): Promise<void> {
+    this.throwIfClosed();
     if (this.started) return;
     if (!this.startPromise) {
       this.startPromise = this.doStart().catch((e) => {
@@ -96,18 +117,49 @@ export class CassandraSnapshotStore implements SnapshotStore {
     await this.startPromise;
   }
 
+  /**
+   * Build the client this store owns, on the first start when none was
+   * injected.  The test seam `CassandraJournal.createClient` describes —
+   * override it to hand the store a fake it still treats as its own.
+   */
+  protected async createClient(): Promise<CassandraClientLike> {
+    return createCassandraClient(this.options as CassandraConnection);
+  }
+
   private async doStart(): Promise<void> {
     if (this.ownsClient && !(this.client as unknown)) {
-      this.client = await createCassandraClient(this.options as CassandraConnection);
+      this.client = await this.createClient();
     }
-    await this.client.connect();
-    if (this.options.autoCreateKeyspace) {
-      await this.client.execute(keyspaceDdl(this.options as CassandraConnection));
-    }
-    if (this.options.autoCreateTables ?? true) {
-      await this.ensureTables();
+    try {
+      // Re-checked after every wait, as in `CassandraJournal.doStart`.
+      this.throwIfClosed();
+      await this.client.connect();
+      this.throwIfClosed();
+      if (this.options.autoCreateKeyspace) {
+        await this.client.execute(keyspaceDdl(this.options as CassandraConnection));
+        this.throwIfClosed();
+      }
+      if (this.options.autoCreateTables ?? DEFAULT_AUTO_CREATE_TABLES) {
+        await this.ensureTables();
+      }
+      this.throwIfClosed();
+    } catch (e) {
+      await this.shutDownFailedClient();
+      throw e;
     }
     this.started = true;
+  }
+
+  /** A failed start holds nothing it opened — `CassandraJournal.shutDownFailedClient` says why (#1473). */
+  private async shutDownFailedClient(): Promise<void> {
+    if (!this.ownsClient || !(this.client as unknown)) return;
+    const client = this.client;
+    this.client = undefined as unknown as CassandraClientLike;
+    try { await client.shutdown(); } catch { /* the start's own failure is the one to report */ }
+  }
+
+  private throwIfClosed(): void {
+    if (this.stopped) throw new JournalError('CassandraSnapshotStore is closed');
   }
 
   /** CQL query options for data-path reads/writes, honouring the configured consistency level. */
@@ -175,14 +227,21 @@ export class CassandraSnapshotStore implements SnapshotStore {
   async close(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
-    if (this.ownsClient && this.started) {
+    // As in `CassandraJournal.close`: let a start in flight settle, then shut
+    // down an owned client that is still there — a started one, since a start
+    // that failed shut its own client down (#1473).
+    const pending = this.startPromise;
+    if (pending !== null) {
+      try { await pending; } catch { /* the caller that started it reports the failure */ }
+    }
+    if (this.ownsClient && (this.client as unknown)) {
       try { await this.client.shutdown(); } catch { /* ignore */ }
     }
   }
 
   /* ========================== internal ========================== */
 
-  private get table(): string { return this.options.snapshotsTable ?? 'snapshots'; }
+  private get table(): string { return this.options.snapshotsTable ?? DEFAULT_SNAPSHOTS_TABLE; }
   private qualified(): string {
     // keyspace + table are interpolated into CQL (identifiers can't be bound),
     // so validate them against a safe charset (security audit #6 / #136).
@@ -220,6 +279,8 @@ export class CassandraSnapshotStore implements SnapshotStore {
   }
 
   private async ensureStarted(): Promise<void> {
+    // Before the `started` shortcut, as in `CassandraJournal.ensureStarted`.
+    this.throwIfClosed();
     if (this.started) return;
     await this.start();
   }

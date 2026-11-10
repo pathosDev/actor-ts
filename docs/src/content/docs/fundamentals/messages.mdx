@@ -222,6 +222,63 @@ commands (`DepositCommand`) — keeps the conceptual line clear.
 See [PersistentActor](/persistence/persistent-actor/) for the
 full event-sourcing story.
 
+## Three boundaries, and the check that stands in for them
+
+A message crosses up to three boundaries, and each does something
+different to it:
+
+| Boundary | Mechanism | What arrives |
+| --- | --- | --- |
+| In-process | reference | the same object — prototype intact, methods work |
+| Worker hop ([parallelism](/fundamentals/parallelism/)) | structured clone | a plain object: **prototype gone, methods gone**; a function-valued field throws `DataCloneError` |
+| Cluster wire | the serializer | whatever the registered serializer makes of it — a class with no binding is a plain object again |
+
+A test suite exercises the first boundary almost exclusively, so a
+message type can be green locally, degrade silently the first time
+`actor-ts.parallelism.workers` is switched on, and fail on the wire.  The
+middle case is the dangerous one: a class instance sent to a worker does
+not throw.  It arrives as a plain object and fails later — as a `match`
+arm that never fires, an `.exhaustive()` that throws somewhere else, a
+method that is `undefined`.  The discriminated-union convention above is
+exactly the shape that survives all three.
+
+The **message-boundary check** makes the local path answer for the other
+two.  With a mode on, every local `tell` is examined at send time the way
+the boundary would examine it, and what would be lost is reported with
+the message type and the recipient — while the sender is still on the
+stack:
+
+```hocon
+actor-ts.diagnostics.message-boundary {
+  structured-clone = off        # off | warn | fail — the worker hop
+  serializer-round-trip = off   # off | warn | fail — the cluster wire
+}
+```
+
+```ts
+const messageBoundary = MessageBoundaryOptions.create().withStructuredClone('fail');
+const systemOptions = ActorSystemOptions.create().withMessageBoundary(messageBoundary);
+```
+
+`warn` logs once per message type; `fail` throws a `MessageBoundaryError`
+out of the `tell`.  Both are off in production — the check walks every
+message, and a running system has no one on the stack to tell — and
+**`TestKit` turns `structured-clone` to `fail`**, because a test is where
+this should be found.  A suite whose messages are meant to cross a
+cluster wire turns `serializer-round-trip` on as well; it is off even in
+the kit, because the round trip needs a serializer binding for every
+class an application sends, and most applications have none for messages
+that never leave the process.
+
+What the clone check reports: any reachable value whose prototype the
+clone algorithm does not preserve — a class instance, a subclass of
+`Error` — and any value that cannot be cloned at all — a function, a
+symbol.  `Date`, `RegExp`, `Map`, `Set`, typed arrays and the built-in
+errors are fine, and so is an `ActorRef` anywhere in the message: the
+wire rewrites refs before the port sees them.  The framework's own
+classes — `PoisonPill`, `Terminated`, a cluster event, a `Listing` — are
+exempt; each crosses the boundaries it needs to by its own mechanism.
+
 ## Common pitfalls
 
 <Aside type="caution" title="Forgetting `readonly`">

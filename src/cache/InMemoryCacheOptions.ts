@@ -1,3 +1,6 @@
+import type { Config } from '../config/Config.js';
+import { ConfigKeys } from '../config/ConfigKeys.js';
+import { rejectRetiredLeaves, type RetiredLeaves } from '../config/RetiredKeys.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 
@@ -5,6 +8,10 @@ import { OptionsValidator } from '../util/OptionsValidator.js';
 export const DEFAULT_MAX_ENTRIES = 10_000;
 /** Built-in default background-sweep interval in ms (see {@link InMemoryCacheOptionsType}). */
 export const DEFAULT_CLEANUP_MS = 60_000;
+/** Built-in default lifetime for a `set`/`mset` that names no `ttlMs` — `0` = no expiry. */
+export const DEFAULT_TIME_TO_LIVE_MS = 0;
+/** Built-in default idle window — `0` = a read extends nothing. */
+export const DEFAULT_TIME_TO_IDLE_MS = 0;
 
 /** Plain options-object shape accepted by an {@link InMemoryCache}. */
 export type InMemoryCacheOptionsType = {
@@ -16,6 +23,37 @@ export type InMemoryCacheOptionsType = {
    * on access).
    */
   readonly cleanupMs?: number;
+  /**
+   * Lifetime (ms) stamped on an entry whose writer named no `ttlMs` of its
+   * own.  `0` (the default) means such an entry never expires, which is what
+   * {@link Cache.set} has always promised.
+   *
+   * **`set` and `mset` only.**  `incr` and `setIfAbsent` keep "no `ttlMs`
+   * means no expiry" whatever this says, because for those two the cache is
+   * the source of truth rather than a copy of one: a rate-limit window that
+   * reset itself, or a lock that released itself, on a number an operator
+   * put in a config file is a correctness bug delivered by configuration.
+   * The class header calls an unbounded claim "the wedge `setIfAbsent` warns
+   * about" and refuses to protect it; bounding it from here would be the same
+   * decision taken silently.
+   */
+  readonly timeToLiveMs?: number;
+  /**
+   * Idle window (ms): a read pushes the entry's expiry out to
+   * `now + timeToIdleMs`, never past the `timeToLiveMs` deadline it was
+   * written with.  `0` (the default) means a read extends nothing.
+   *
+   * Applies to the same population as {@link timeToLiveMs} — entries a
+   * `set`/`mset` wrote without a `ttlMs` — and only while they sit in the
+   * eviction-first half of the map.  An entry a guarantee has moved into the
+   * protected half stops being extended, which is deliberate: extending on
+   * every read means a rate-limit window driven by `incr` never closes and an
+   * idempotency claim polled by a retrying client never releases.
+   *
+   * An idle window at or above `timeToLiveMs` never binds — the lifetime is
+   * the ceiling, so the extension is clamped to it on the first read.
+   */
+  readonly timeToIdleMs?: number;
   /**
    * Per-key-prefix reservations — `{ 'rsp:': 8000, 'idem:': 2000 }` — that
    * split one map between the consumers writing into it (#607).  Unset (the
@@ -73,6 +111,16 @@ export class InMemoryCacheOptionsBuilder extends OptionsBuilder<InMemoryCacheOpt
     return this.set('cleanupMs', cleanupMs);
   }
 
+  /** Lifetime (ms) for a `set`/`mset` that names no `ttlMs`.  `0` = no expiry. */
+  withTimeToLiveMs(timeToLiveMs: number): this {
+    return this.set('timeToLiveMs', timeToLiveMs);
+  }
+
+  /** Idle window (ms) a read extends such an entry to.  `0` = a read extends nothing. */
+  withTimeToIdleMs(timeToIdleMs: number): this {
+    return this.set('timeToIdleMs', timeToIdleMs);
+  }
+
   /**
    * Split the map between key prefixes — `{ 'rsp:': 8000, 'idem:': 2000 }`.
    * Each quota is a cap *and* a reservation; the sum may not exceed
@@ -108,7 +156,27 @@ export class InMemoryCacheOptionsValidator extends OptionsValidator<InMemoryCach
     ) {
       this.fail('cleanupMs', 'must be a non-negative number (0 or Infinity disables the sweep)', cleanupMs);
     }
+    this.checkExpiryPolicy('timeToLiveMs', s.timeToLiveMs);
+    this.checkExpiryPolicy('timeToIdleMs', s.timeToIdleMs);
     if (prefixQuotas !== undefined) this.checkPrefixQuotas(prefixQuotas, maxEntries);
+  }
+
+  /**
+   * An expiry policy is a finite, non-negative number of milliseconds, with
+   * `0` as the off sentinel.
+   *
+   * `Infinity` is refused rather than accepted as a second spelling of "off":
+   * it would flow into `now + timeToLiveMs` and produce an `expiresAt` of
+   * `Infinity`, which is the *same* state a `0` reaches by never stamping one
+   * — two configurations for one behaviour, and the one that goes through the
+   * arithmetic is the one that breaks the moment the arithmetic changes.
+   * `assertTtl` refuses a non-finite caller argument on the same grounds.
+   */
+  private checkExpiryPolicy(field: 'timeToLiveMs' | 'timeToIdleMs', value: number | undefined): void {
+    if (value === undefined) return;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+      this.fail(field, 'must be a finite non-negative number of milliseconds (0 disables it)', value);
+    }
   }
 
   /**
@@ -143,6 +211,88 @@ export class InMemoryCacheOptionsValidator extends OptionsValidator<InMemoryCach
       this.fail('prefixQuotas', `reserves ${reserved} entries, more than maxEntries (${cap}) can hold`, prefixQuotas);
     }
   }
+}
+
+/**
+ * The full config paths of one in-memory cache block's leaves.  The global
+ * block's copy is `ConfigKeys.cache.inMemoryOptions`; a per-name block's is
+ * built by {@link inMemoryCacheKeysUnder}, since its root contains a name only
+ * the application knows.
+ */
+export type InMemoryCacheKeys = {
+  readonly root: string;
+  readonly maxEntries: string;
+  readonly cleanupInterval: string;
+  readonly timeToLive: string;
+  readonly timeToIdle: string;
+  readonly prefixQuotas: string;
+};
+
+/** The leaf paths of the in-memory block at `root` — see {@link InMemoryCacheKeys}. */
+export function inMemoryCacheKeysUnder(root: string): InMemoryCacheKeys {
+  return {
+    root,
+    maxEntries: `${root}.max-entries`,
+    cleanupInterval: `${root}.cleanup-interval`,
+    timeToLive: `${root}.time-to-live`,
+    timeToIdle: `${root}.time-to-idle`,
+    prefixQuotas: `${root}.prefix-quotas`,
+  };
+}
+
+/**
+ * The camelCase spellings this block shipped before #1405, mapped to the leaf
+ * that replaced each one.  Checked against every in-memory root — the global
+ * one and each `actor-ts.cache.<name>.in-memory` — so a per-name override
+ * written the old way is refused too, rather than silently sizing that
+ * instance at the global default.  See {@link rejectRetiredLeaves}.
+ */
+const RETIRED_IN_MEMORY_CACHE_LEAVES: RetiredLeaves = {
+  maxEntries: 'max-entries',
+  cleanupMs: 'cleanup-interval',
+  prefixQuotas: 'prefix-quotas',
+};
+
+/**
+ * Read one in-memory cache block, omitting absent leaves so an unset one falls
+ * through to the layer beneath instead of shadowing it — the rule
+ * `mergeOptions` encodes.  Leaf names are the kebab-case of the fields with any
+ * unit suffix dropped, so `cleanupMs` is read from `cleanup-interval`;
+ * `getDuration` takes `60s` and a bare millisecond count alike, so an operator
+ * who prefers raw numbers loses nothing.
+ *
+ * A retired spelling under `keys.root` is refused before anything is read.
+ * The refusal lives here rather than with the caller so that every root the
+ * reader is pointed at gets it, and no caller can read the block without it.
+ *
+ * `prefix-quotas` is read as a whole object and layered whole — a per-name
+ * table **replaces** the global one rather than merging into it, which is the
+ * same shallow rule `mergeOptions` applies to every other field.  Merging would
+ * be worse than inconsistent here: the quotas have to sum to at most
+ * `max-entries`, and a table half-inherited from a global block is a sum nobody
+ * wrote down.  Its keys are read from the object rather than addressed as
+ * config paths, because a prefix may contain a `.` and a path would split it.
+ */
+export function readInMemoryCacheOptionsFromConfig(
+  config: Config,
+  keys: InMemoryCacheKeys = ConfigKeys.cache.inMemoryOptions,
+): Partial<InMemoryCacheOptionsType> {
+  rejectRetiredLeaves(config, keys.root, RETIRED_IN_MEMORY_CACHE_LEAVES);
+  const out: { -readonly [K in keyof InMemoryCacheOptionsType]?: InMemoryCacheOptionsType[K] } = {};
+  if (config.hasPath(keys.maxEntries)) out.maxEntries = config.getInt(keys.maxEntries);
+  if (config.hasPath(keys.cleanupInterval)) out.cleanupMs = config.getDuration(keys.cleanupInterval);
+  if (config.hasPath(keys.timeToLive)) out.timeToLiveMs = config.getDuration(keys.timeToLive);
+  if (config.hasPath(keys.timeToIdle)) out.timeToIdleMs = config.getDuration(keys.timeToIdle);
+  if (config.hasPath(keys.prefixQuotas)) {
+    const quotas: Record<string, number> = {};
+    for (const [prefix, quota] of Object.entries(config.getObject(keys.prefixQuotas))) {
+      // A quoted HOCON number arrives as a string; anything else is passed
+      // through unconverted so the validator names the value it rejected.
+      quotas[prefix] = typeof quota === 'string' ? Number(quota) : (quota as number);
+    }
+    out.prefixQuotas = quotas;
+  }
+  return out;
 }
 
 /**

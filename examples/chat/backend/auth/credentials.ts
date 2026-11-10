@@ -15,23 +15,34 @@
  * username is wrong) gives the response a flat timing profile —
  * a bad-username response takes the same wall-clock as a bad-
  * password one.  Defends against username-enumeration via timing.
- * At four users the cost is ~40 ms of wasted scrypt; for a real
- * deployment you'd verify against a fixed dummy hash on
- * username-miss instead.
+ * At four users that is four scrypt derivations per login; they run
+ * concurrently on the runtime's thread pool (`Promise.all`), so the
+ * wall-clock is one derivation's rather than four (measured 316 → 95 ms
+ * on Node, 206 → 76 ms on Bun, 1159 → 297 ms on Deno, #1540) and the
+ * profile stays flat — every login pays for all four, whichever
+ * username it names.  For a real deployment you'd verify against a
+ * fixed dummy hash on username-miss instead.
+ *
+ * Async because `verifyPassword` is: the derivation runs off the event
+ * loop, and the caller (`UserSessionActor`) awaits this from its
+ * `onReceive`, so the actor's mailbox waits while every other actor
+ * in the backend keeps running.
  */
 import { TEST_USERS, type TestUser } from '../../shared/users.js';
 import { verifyPassword } from './password.js';
 
-export function validateCredentials(
+export async function validateCredentials(
   username: string,
   password: string,
-): TestUser | null {
+): Promise<TestUser | null> {
+  // verifyPassword runs for every user unconditionally so timing is
+  // independent of whether the username matched.
+  const verified = await Promise.all(
+    TEST_USERS.map((u) => verifyPassword(password, u.passwordHash)),
+  );
   let match: TestUser | null = null;
-  for (const u of TEST_USERS) {
-    // verifyPassword runs unconditionally so timing is independent
-    // of whether the username matched.
-    const ok = verifyPassword(password, u.passwordHash);
-    if (ok && u.username === username) match = u;
+  for (const [index, u] of TEST_USERS.entries()) {
+    if (verified[index] && u.username === username) match = u;
   }
   return match;
 }

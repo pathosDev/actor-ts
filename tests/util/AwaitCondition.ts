@@ -1,4 +1,4 @@
-/**
+/**
  * Condition-based waiting for async tests (#418).
  *
  * The suite's dominant flake shape is a fixed `sleep(N)` followed by an
@@ -20,6 +20,7 @@
  * reply, a recovery callback, a spy array — not a proxy that a partially
  * completed step could already satisfy.
  */
+import { describeTimeFactor, scaledMs } from '../../src/testkit/TimeFactor.js';
 
 /** Options for {@link awaitCondition}; every field has a usable default. */
 export type AwaitConditionOptions = {
@@ -59,7 +60,13 @@ export async function awaitCondition(
   predicate: () => boolean | Promise<boolean>,
   options: AwaitConditionOptions = {},
 ): Promise<void> {
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  // Scaled, because this is a failure budget in exactly the sense #1376
+  // is about: nothing is asserted on it, it exists to turn a hang into a
+  // message, and on a slower machine it should be longer.  The per-test cap
+  // it has to fit inside does NOT scale — see `TimeFactor` — so
+  // `AwaitConditionBudgets` measures the scaled value against the literal cap
+  // and fails loudly for any pair that stops fitting.
+  const timeoutMs = scaledMs(options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
   const label = options.label ?? 'condition';
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
@@ -78,7 +85,8 @@ export async function awaitCondition(
     if (await predicate()) return;
     if (performance.now() - start >= timeoutMs) {
       throw new Error(
-        `awaitCondition: ${label} did not become true within ${timeoutMs}ms ` +
+        `awaitCondition: ${label} did not become true within ${timeoutMs}ms` +
+        `${describeTimeFactor()} ` +
         `(waited ${(performance.now() - start).toFixed(0)}ms, ${polls} polls)`,
       );
     }

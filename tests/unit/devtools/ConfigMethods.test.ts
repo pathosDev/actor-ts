@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
@@ -47,6 +50,18 @@ function newSystem(name: string, overrides?: ConfigObject): ActorSystem {
   const system = ActorSystem.create(name, options);
   systems.push(system);
   return system;
+}
+
+/** Run `body` with one environment variable set, restoring it afterwards. */
+function withVariable<T>(name: string, value: string, body: () => T): T {
+  const previous = process.env[name];
+  process.env[name] = value;
+  try {
+    return body();
+  } finally {
+    if (previous === undefined) delete process.env[name];
+    else process.env[name] = previous;
+  }
 }
 
 function resolve(result: ResolvedConfigResult, path: string): ResolvedConfigEntry {
@@ -100,20 +115,108 @@ describe('ConfigMethods', () => {
     const system = newSystem('cfg-secret', {
       'actor-ts': {
         persistence: {
-          postgres: { password: 'hunter2', 'connection-string': 'postgres://x' },
+          journal: {
+            postgres: { password: 'hunter2', 'connection-string': 'postgres://x' },
+          },
         },
       },
     });
+    // A started system, not one whose startup refused the fixture: a key
+    // under actor-ts.persistence that no reader takes fails it (#1729).
+    await system.whenReady();
     const { server, invoke } = fakeServer();
     new ConfigMethods(system).install(server);
 
     const result = await invoke();
     // By key, not by value: a password that happens to look ordinary is
     // still a password, and the key is what names it.
-    expect(resolve(result, 'actor-ts.persistence.postgres.password').value)
+    expect(resolve(result, 'actor-ts.persistence.journal.postgres.password').value)
       .toBe(CONFIG_REDACTED);
-    expect(resolve(result, 'actor-ts.persistence.postgres.connection-string').value)
+    expect(resolve(result, 'actor-ts.persistence.journal.postgres.connection-string').value)
       .toBe('postgres://x');
+  });
+
+  test('masks the credentials of a URL whatever its key is called (#1458)', async () => {
+    const system = newSystem('cfg-url-credentials', {
+      'actor-ts': { cache: { redis: { url: 'redis://default:hunter2@redis.example:6379/0' } } },
+      'my-app': { nats: { servers: ['nats://a:hunter3@h1:4222', 'nats://h2:4222'] } },
+    });
+    const { server, invoke } = fakeServer();
+    new ConfigMethods(system).install(server);
+
+    const result = await invoke();
+    // Only the userinfo goes: the host, port and path are what tell an
+    // operator which Redis this is.
+    expect(resolve(result, 'actor-ts.cache.redis.url').value)
+      .toBe('redis://***@redis.example:6379/0');
+    expect(resolve(result, 'my-app.nats.servers').value)
+      .toEqual(['nats://***@h1:4222', 'nats://h2:4222']);
+    // The whole answer, not only the entries asked about: a credential on the
+    // wire under any key is the defect.
+    expect(JSON.stringify(result)).not.toContain('hunter');
+  });
+
+  test('withholds a credential-named field of an object inside a list (found while #1458)', async () => {
+    // The same decision the boot dump takes, through the same function: the
+    // list is one leaf whose path names no secret, so the field's own name is
+    // what has to be read.  The URL mask still applies to the fields it keeps.
+    const system = newSystem('cfg-list-fields', {
+      'my-app': {
+        upstreams: [
+          { host: 'db-1', password: 'hunter2', url: 'redis://u:hunter3@r1:6379' },
+          { host: 'db-2', 'key-prefix': 'orders:', auth: true },
+        ],
+      },
+    });
+    const { server, invoke } = fakeServer();
+    new ConfigMethods(system).install(server);
+
+    const result = await invoke();
+    // Any whole word of a field's name counts, `key` in `key-prefix` too; a
+    // boolean is never withheld.
+    expect(resolve(result, 'my-app.upstreams').value).toEqual([
+      { host: 'db-1', password: CONFIG_REDACTED, url: 'redis://***@r1:6379' },
+      { host: 'db-2', 'key-prefix': CONFIG_REDACTED, auth: true },
+    ]);
+    expect(JSON.stringify(result)).not.toContain('hunter');
+  });
+
+  test('withholds a value when any whole word of its key names a secret, not only the last (#867)', async () => {
+    const system = newSystem('cfg-any-word', {
+      'my-app': {
+        'auth-header': 'Bearer eyJhbGciOiJIUzI1NiJ9.e30.sig',
+        'secret-value': 'hunter4',
+        'api-key-id': 'AKIA0000EXAMPLE',
+        'token-bucket-size': 64,
+        'auth-enabled': true,
+        endpoint: 'https://api.example',
+      },
+    });
+    const { server, invoke } = fakeServer();
+    new ConfigMethods(system).install(server);
+
+    const result = await invoke();
+    for (const name of ['auth-header', 'secret-value', 'api-key-id', 'token-bucket-size']) {
+      expect(resolve(result, `my-app.${name}`).value, name).toBe(CONFIG_REDACTED);
+    }
+    expect(resolve(result, 'my-app.auth-enabled').value).toBe(true);
+    expect(resolve(result, 'my-app.endpoint').value).toBe('https://api.example');
+  });
+
+  test('masks before the wire cut, so a truncation cannot leave part of a password (#1458)', async () => {
+    // Longer than the wire's 8 192-character string limit, with the `@` that
+    // ends the userinfo beyond it.  Cut first, and the mask finds no `@` to
+    // anchor on — eight thousand characters of the password go out as they are.
+    const password = 'p'.repeat(9_000);
+    const system = newSystem('cfg-url-long', {
+      'my-app': { database: { dsn: `postgres://user:${password}@db/app` } },
+    });
+    const { server, invoke } = fakeServer();
+    new ConfigMethods(system).install(server);
+
+    const entry = resolve(await invoke(), 'my-app.database.dsn');
+    expect(entry.value).toBe('postgres://***@db/app');
+    expect(entry.truncated).toBe(false);
   });
 
   test('keeps a list whole rather than splitting it into indexed keys', async () => {
@@ -153,15 +256,216 @@ describe('ConfigMethods', () => {
   });
 
   test('reports where application.conf was read from', async () => {
-    const system = newSystem('cfg-path');
+    // "My file is ignored" and "my file says something else" are different
+    // problems, and this is what separates them.
+    const directory = mkdtempSync(join(tmpdir(), 'actor-ts-config-methods-'));
+    const path = join(directory, 'application.conf');
+    writeFileSync(path, 'my-app.x = 1\n', 'utf8');
+    try {
+      const systemOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withConfigFile(path);
+      const system = ActorSystem.create('cfg-path', systemOptions);
+      systems.push(system);
+      const { server, invoke } = fakeServer();
+      new ConfigMethods(system).install(server);
+
+      expect((await invoke()).applicationPath).toBe(path);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('attributes a key to its source and withholds what the secrets file set (#1546)', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'actor-ts-config-methods-'));
+    const applicationPath = join(directory, 'application.conf');
+    const secretsPath = join(directory, 'secrets.conf');
+    writeFileSync(applicationPath, [
+      'my-app { set-by-application = "a", set-by-profile = "a" }',
+      'profiles.production.my-app.set-by-profile = "b"',
+    ].join('\n'), 'utf8');
+    writeFileSync(secretsPath, [
+      'my-app { endpoint-value = "s3cr3t-root", set-by-sealed-profile = "c" }',
+      'profiles.production.my-app.set-by-sealed-profile = "s3cr3t-profile"',
+    ].join('\n'), 'utf8');
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withConfigFile(applicationPath)
+      .withProfile('production')
+      .withConfig({ 'my-app': { 'set-by-code': 'x' } });
+    // The variable names the secrets file here — read once, in the
+    // constructor; `withSecretsFile` is the next case.
+    const system = withVariable('ACTOR_TS_SECRETS_CONF', secretsPath, () =>
+      ActorSystem.create('cfg-five-sources', systemOptions));
+    systems.push(system);
+    try {
+      const { server, invoke } = fakeServer();
+      new ConfigMethods(system).install(server);
+      const result = await invoke();
+
+      expect(resolve(result, 'actor-ts.dispatcher.throughput').source).toBe('reference');
+      expect(resolve(result, 'my-app.set-by-application').source).toBe('application');
+      expect(resolve(result, 'my-app.set-by-profile').source).toBe('profile');
+      expect(resolve(result, 'my-app.endpoint-value').source).toBe('secrets');
+      // More layers than names: the secrets file's profile reports as secrets.
+      expect(resolve(result, 'my-app.set-by-sealed-profile').source).toBe('secrets');
+      expect(resolve(result, 'my-app.set-by-sealed-profile').overridden).toBe(true);
+      expect(resolve(result, 'my-app.set-by-code').source).toBe('override');
+      expect(resolve(result, 'my-app.endpoint-value').value).toBe(CONFIG_REDACTED);
+      expect(resolve(result, 'my-app.set-by-sealed-profile').value).toBe(CONFIG_REDACTED);
+      expect(JSON.stringify(result)).not.toContain('s3cr3t');
+      expect(result.profile).toBe('production');
+      expect(result.secretsPath).toBe(secretsPath);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('attributes to secrets and withholds what a file named with withSecretsFile set (#1769)', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'actor-ts-config-methods-'));
+    const secretsPath = join(directory, 'vault.conf');
+    writeFileSync(secretsPath, 'my-app.endpoint-value = "s3cr3t-endpoint"\n', 'utf8');
+    try {
+      const systemOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withConfigFile(join(directory, 'application.conf'))
+        .withSecretsFile(secretsPath);
+      const system = ActorSystem.create('cfg-secrets-file-option', systemOptions);
+      systems.push(system);
+      const { server, invoke } = fakeServer();
+      new ConfigMethods(system).install(server);
+      const result = await invoke();
+
+      expect(resolve(result, 'my-app.endpoint-value').source).toBe('secrets');
+      expect(resolve(result, 'my-app.endpoint-value').value).toBe(CONFIG_REDACTED);
+      expect(result.secretsPath).toBe(secretsPath);
+      expect(JSON.stringify(result)).not.toContain('s3cr3t-endpoint');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('withholds what a credential-named variable supplied, and names the variables behind each entry (#1788)', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'actor-ts-config-methods-'));
+    writeFileSync(join(directory, '.env'), 'METHODS_DB_PASSWORD=hunter2\nMETHODS_DB_HOST=db-1\n', 'utf8');
+    writeFileSync(join(directory, 'reference.conf'), 'my-app.pool-size = 4\n', 'utf8');
+    writeFileSync(join(directory, 'application.conf'), [
+      'my-app.dsn = "host="${METHODS_DB_HOST}" password="${METHODS_DB_PASSWORD}',
+      'my-app.db-host = ${METHODS_DB_HOST}',
+    ].join('\n'), 'utf8');
+    try {
+      const systemOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withReferenceConfigFile(join(directory, 'reference.conf'))
+        .withConfigFile(join(directory, 'application.conf'))
+        .withSecretsFile(false)
+        .withEnvironmentFile(join(directory, '.env'));
+      const system = ActorSystem.create('cfg-variables', systemOptions);
+      systems.push(system);
+      const { server, invoke } = fakeServer();
+      new ConfigMethods(system).install(server);
+      const result = await invoke();
+
+      expect(resolve(result, 'my-app.dsn')).toMatchObject({
+        source: 'application',
+        value: CONFIG_REDACTED,
+        variables: ['METHODS_DB_HOST', 'METHODS_DB_PASSWORD'],
+      });
+      expect(resolve(result, 'my-app.db-host')).toMatchObject({ value: 'db-1', variables: ['METHODS_DB_HOST'] });
+      // A key no variable supplied carries no list at all, not an empty one.
+      expect(Object.hasOwn(resolve(result, 'my-app.pool-size'), 'variables')).toBe(false);
+      expect(resolve(result, 'my-app.pool-size').source).toBe('project-reference');
+      expect(result.referencePath).toBe(join(directory, 'reference.conf'));
+      expect(result.environmentFilePath).toBe(join(directory, '.env'));
+      expect(JSON.stringify(result)).not.toContain('hunter2');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('reports no project reference.conf and no .env file when it read neither (#1785)', async () => {
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withReferenceConfigFile(join(tmpdir(), 'actor-ts-no-such-reference.conf'))
+      .withEnvironmentFile(false);
+    const system = ActorSystem.create('cfg-no-reference', systemOptions);
+    systems.push(system);
+    const { server, invoke } = fakeServer();
+    new ConfigMethods(system).install(server);
+    const result = await invoke();
+
+    // "Read from": a path looked at and not found is no path here.
+    expect(result.referencePath).toBeNull();
+    expect(result.environmentFilePath).toBeNull();
+  });
+
+  test('withholds and attributes a secrets-file key quoted because it holds a dot (#1546)', async () => {
+    // Root, nested and in the secrets file's profile; none named like a
+    // credential.  `"region.name"` sits beside the application file's nested
+    // `region.name`, which reads the same once segments are joined by a dot.
+    const directory = mkdtempSync(join(tmpdir(), 'actor-ts-config-methods-'));
+    const applicationPath = join(directory, 'application.conf');
+    const secretsPath = join(directory, 'secrets.conf');
+    writeFileSync(applicationPath, 'my-app { "hosts.internal" = "db-1", region { name = "eu" } }\n', 'utf8');
+    writeFileSync(secretsPath, [
+      '"db.dsn" = "dotted-root-1"',
+      'my-app { "stripe.live" = "dotted-nested-2", "region.name" = "dotted-beside-3" }',
+      'profiles.production { my-app { "payments.v2" = "dotted-profile-4" } }',
+    ].join('\n'), 'utf8');
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withConfigFile(applicationPath)
+      .withProfile('production');
+    const system = withVariable('ACTOR_TS_SECRETS_CONF', secretsPath, () =>
+      ActorSystem.create('cfg-quoted-dotted', systemOptions));
+    systems.push(system);
+    try {
+      const { server, invoke } = fakeServer();
+      new ConfigMethods(system).install(server);
+      const result = await invoke();
+
+      const wire = JSON.stringify(result);
+      for (const value of ['dotted-root-1', 'dotted-nested-2', 'dotted-beside-3', 'dotted-profile-4']) {
+        expect(wire).not.toContain(value);
+      }
+      // However the paths are spelled: the four keys the file set, each
+      // withheld and reported as the file's.
+      const fromSecrets = result.entries.filter((entry) => entry.source === 'secrets');
+      expect(fromSecrets).toHaveLength(4);
+      for (const entry of fromSecrets) expect(entry.value).toBe(CONFIG_REDACTED);
+      expect(fromSecrets.map((entry) => entry.path).sort()).toEqual([
+        '"db.dsn"', 'my-app."payments.v2"', 'my-app."region.name"', 'my-app."stripe.live"',
+      ]);
+      expect(resolve(result, 'my-app."hosts.internal"')).toMatchObject({ value: 'db-1', source: 'application' });
+      expect(resolve(result, 'my-app.region.name')).toMatchObject({ value: 'eu', source: 'application' });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('reports no profile and no secrets file when there was neither (#1546)', async () => {
+    const system = newSystem('cfg-no-profile');
     const { server, invoke } = fakeServer();
     new ConfigMethods(system).install(server);
 
-    // Null in this run because no file exists; the field carries the path
-    // when one does. "My file is ignored" and "my file says something else"
-    // are different problems, and this is what separates them.
     const result = await invoke();
-    expect(result.applicationPath === null || typeof result.applicationPath === 'string')
-      .toBe(true);
+    expect(result.profile).toBeNull();
+    expect(result.secretsPath).toBeNull();
+  });
+
+  test('reports no application.conf when the file it looked for is not there (found while #1546)', async () => {
+    // The loader names the path it looked at either way — the boot dump
+    // prints it, which is how a wrong ACTOR_TS_CONFIG shows up — but the wire
+    // field means "read from", and the panel says "application.conf read from
+    // <path>" for whatever arrives in it.
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withConfigFile(join(tmpdir(), 'actor-ts-no-such-application.conf'));
+    const system = ActorSystem.create('cfg-no-file', systemOptions);
+    systems.push(system);
+    const { server, invoke } = fakeServer();
+    new ConfigMethods(system).install(server);
+
+    expect((await invoke()).applicationPath).toBeNull();
   });
 });

@@ -32,6 +32,10 @@ export class KeepReferee implements DowningProvider {
 
     const reachable = candidates.filter((m) => !view.unreachable.has(addrKey(m)));
     const unreachable = candidates.filter((m) => view.unreachable.has(addrKey(m)));
+    // No partition, nothing to resolve — and `downAllIfBelowQuorum` would
+    // otherwise down a cluster that is merely still smaller than its quorum,
+    // the same defect #933 found in `StaticQuorum`.
+    if (unreachable.length === 0) return new Set();
 
     if (refereeReachable) {
       if (this.options.downAllIfBelowQuorum && reachable.length < this.options.downAllIfBelowQuorum) {

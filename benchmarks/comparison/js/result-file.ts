@@ -75,6 +75,16 @@ export type ScenarioResult = {
   /** What the system under test was observed to actually do. */
   readonly completedOperations: number;
   /**
+   * `parallel-workload` only: the row's actor count and per-message work,
+   * restated so a reader of the file needs no workload.ts, and the sum modulo
+   * 2^32 of every reply the arm received — which `report.ts` recomputes from
+   * `workload.ts` and refuses to publish when it differs (#1565).  Together
+   * they extend "the messages were processed" to "the work was done".
+   */
+  readonly actorCount?: number;
+  readonly workIterationsPerMessage?: number;
+  readonly checksum?: number;
+  /**
    * Process RSS change across the measured window.  Present for the
    * JavaScript arms only: comparing a JavaScript heap against a JVM or CLR
    * heap measures the collector's appetite, not the framework's footprint.

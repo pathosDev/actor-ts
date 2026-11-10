@@ -1,9 +1,27 @@
+import type { Config } from '../../config/Config.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { Serializer } from '../../serialization/Serializer.js';
-import type { DynamoDbOperations } from './DynamoDbClient.js';
-import type { DynamoDbJournalOptions } from './DynamoDbJournalOptions.js';
-import type { DynamoDbSnapshotStoreOptions } from '../snapshot-stores/DynamoDbSnapshotStoreOptions.js';
-import type { DynamoDbDurableStateStoreOptions } from '../durable-state-stores/DynamoDbDurableStateStoreOptions.js';
+import {
+  readStoreBoolean,
+  readStoreDuration,
+  readStoreEnum,
+  readStoreIdentifier,
+  readStoreInt,
+  readStoreString,
+  storeLeaf,
+} from '../StoreConfig.js';
+import type { DynamoDbConnection, DynamoDbOperations } from './DynamoDbClient.js';
+import { DYNAMODB_RETRY_MODES, type DynamoDbRetryMode, type DynamoDbTableProvisioning } from './DynamoDbOptionsBase.js';
+import type { DynamoDbJournalOptions, DynamoDbJournalOptionsType } from './DynamoDbJournalOptions.js';
+import type {
+  DynamoDbSnapshotStoreOptions,
+  DynamoDbSnapshotStoreOptionsType,
+} from '../snapshot-stores/DynamoDbSnapshotStoreOptions.js';
+import type {
+  DynamoDbDurableStateStoreOptions,
+  DynamoDbDurableStateStoreOptionsType,
+} from '../durable-state-stores/DynamoDbDurableStateStoreOptions.js';
 
 export type RegisterDynamoDbPluginsOptionsType = {
   /**
@@ -18,6 +36,14 @@ export type RegisterDynamoDbPluginsOptionsType = {
   readonly endpoint?: string;
   /** `DynamoDBClient` config applied to every store that does not set its own. */
   readonly clientConfig?: Record<string, unknown>;
+  /** Attempt count applied to every store that does not set its own — see `DynamoDbConnection.maxAttempts`. */
+  readonly maxAttempts?: number;
+  /** Retry mode applied to every store that does not set its own — see `DynamoDbConnection.retryMode`. */
+  readonly retryMode?: DynamoDbRetryMode;
+  /** Request timeout in ms applied to every store that does not set its own — see `DynamoDbConnection.requestTimeoutMs`. */
+  readonly requestTimeoutMs?: number;
+  /** Connection timeout in ms applied to every store that does not set its own — see `DynamoDbConnection.connectionTimeoutMs`. */
+  readonly connectionTimeoutMs?: number;
   /** Shared payload serializer applied to every store that does not set its own. */
   readonly serializer?: Serializer;
   /** Journal-specific options (table name). */
@@ -72,6 +98,26 @@ export class RegisterDynamoDbPluginsOptionsBuilder
     return this.set('clientConfig', clientConfig);
   }
 
+  /** Attempt count applied to every store that does not set its own. */
+  withMaxAttempts(maxAttempts: number): this {
+    return this.set('maxAttempts', maxAttempts);
+  }
+
+  /** Retry mode applied to every store that does not set its own. */
+  withRetryMode(retryMode: DynamoDbRetryMode): this {
+    return this.set('retryMode', retryMode);
+  }
+
+  /** Request timeout in ms applied to every store that does not set its own. */
+  withRequestTimeoutMs(requestTimeoutMs: number): this {
+    return this.set('requestTimeoutMs', requestTimeoutMs);
+  }
+
+  /** Connection timeout in ms applied to every store that does not set its own. */
+  withConnectionTimeoutMs(connectionTimeoutMs: number): this {
+    return this.set('connectionTimeoutMs', connectionTimeoutMs);
+  }
+
   /** Journal-specific options (table name). */
   withJournal(journal: DynamoDbJournalOptions): this {
     return this.set('journal', journal);
@@ -98,3 +144,198 @@ export type RegisterDynamoDbPluginsOptions =
   | Partial<RegisterDynamoDbPluginsOptionsType>;
 /** Value alias so `RegisterDynamoDbPluginsOptions.create()` resolves to the builder. */
 export const RegisterDynamoDbPluginsOptions = RegisterDynamoDbPluginsOptionsBuilder;
+
+/**
+ * The `billing-mode` leaf's values — kebab-case, as every HOCON value is —
+ * each mapped to the spelling `CreateTable` takes and `billingMode` holds.
+ * The table is the reader's whole vocabulary: `PAY_PER_REQUEST` written in a
+ * config file is refused with the key and these two words rather than read
+ * verbatim (#1490).  `DocumentedDefaults.test.ts` pins the published value
+ * through it to `DEFAULT_DYNAMODB_BILLING_MODE`, which keeps AWS's spelling
+ * because it reaches the SDK as it is.
+ */
+export const DYNAMODB_BILLING_MODES = {
+  'pay-per-request': 'PAY_PER_REQUEST',
+  provisioned: 'PROVISIONED',
+} as const satisfies Readonly<Record<string, NonNullable<DynamoDbTableProvisioning['billingMode']>>>;
+
+/**
+ * The five `ConfigKeys` paths the provisioning half is read through, named so
+ * the one helper below serves all three roots.
+ */
+type DynamoDbProvisioningKeys = {
+  readonly billingMode: string;
+  readonly provisionedThroughputReadCapacityUnits: string;
+  readonly provisionedThroughputWriteCapacityUnits: string;
+  readonly tableReadyTimeout: string;
+  readonly autoCreateTables: string;
+};
+
+/**
+ * The provisioning half all three DynamoDB readers share — how a table the
+ * store creates on first use is created (#1490).  `DynamoDbTableProvisioning`
+ * is part of every DynamoDB option family, so the same leaves sit under each
+ * root, and one helper keeps the three from drifting apart.
+ *
+ * The capacity pair is two integer leaves assembled here, and it ships as a
+ * comment: published, it would be refused for every store under the default
+ * `pay-per-request` mode, because `DynamoDbOptionsValidatorBase` refuses a
+ * pair the mode would ignore — AWS ignores it silently.  A `provisioned` table
+ * with no pair is created at 5 read and 5 write capacity units
+ * (`DEFAULT_DYNAMODB_PROVISIONED_CAPACITY_UNITS`).  A pair with one half set
+ * is passed on as the half it is, never completed with a default: the
+ * validator then names the missing half, and the missing half is the mistake.
+ */
+function readDynamoDbProvisioningFromConfig(
+  config: Config,
+  at: (canonicalLeafPath: string) => string,
+  keys: DynamoDbProvisioningKeys,
+): Partial<DynamoDbTableProvisioning> {
+  const out: { -readonly [K in keyof DynamoDbTableProvisioning]?: DynamoDbTableProvisioning[K] } = {};
+  const billingMode = readStoreEnum(config, at(keys.billingMode), DYNAMODB_BILLING_MODES);
+  if (billingMode !== undefined) out.billingMode = billingMode;
+  const readCapacityUnits = readStoreInt(config, at(keys.provisionedThroughputReadCapacityUnits));
+  const writeCapacityUnits = readStoreInt(config, at(keys.provisionedThroughputWriteCapacityUnits));
+  if (readCapacityUnits !== undefined || writeCapacityUnits !== undefined) {
+    const pair: { readCapacityUnits?: number; writeCapacityUnits?: number } = {};
+    if (readCapacityUnits !== undefined) pair.readCapacityUnits = readCapacityUnits;
+    if (writeCapacityUnits !== undefined) pair.writeCapacityUnits = writeCapacityUnits;
+    // Typed as the whole pair the field declares, a half one included: the
+    // validator is written over that case and names the absent half.
+    out.provisionedThroughput = pair as NonNullable<DynamoDbTableProvisioning['provisionedThroughput']>;
+  }
+  const tableReadyTimeoutMs = readStoreDuration(config, at(keys.tableReadyTimeout));
+  if (tableReadyTimeoutMs !== undefined) out.tableReadyTimeoutMs = tableReadyTimeoutMs;
+  const autoCreateTables = readStoreBoolean(config, at(keys.autoCreateTables));
+  if (autoCreateTables !== undefined) out.autoCreateTables = autoCreateTables;
+  return out;
+}
+
+/**
+ * The `retry-mode` leaf's values, each the mode the SDK takes: the two
+ * spellings coincide, the SDK's words being kebab-case already, so the table
+ * is the reader's vocabulary rather than a translation.  Built from
+ * `DYNAMODB_RETRY_MODES`, the list the validator checks a mode set in code
+ * against, so the two cannot drift apart.
+ */
+const retryModeLeafValues: Readonly<Record<string, DynamoDbRetryMode>> =
+  Object.fromEntries(DYNAMODB_RETRY_MODES.map((mode) => [mode, mode]));
+
+/** The four `ConfigKeys` paths the client half is read through. */
+type DynamoDbClientKeys = {
+  readonly maxAttempts: string;
+  readonly retryMode: string;
+  readonly requestTimeout: string;
+  readonly connectionTimeout: string;
+};
+
+/**
+ * The client half all three DynamoDB readers share — the SDK's retry and
+ * timeout settings (#1490).  Like the provisioning half, the same leaves sit
+ * under each root, and one helper keeps the three from drifting apart.  Every
+ * leaf ships as a comment: unset leaves the SDK's own resolution — an `AWS_*`
+ * environment variable, then the shared config file — which a shipped value
+ * would overrule.  `retry-mode` is read through its table, so a word outside
+ * it is refused with the key rather than handed to an SDK that would read it
+ * as `standard`; the two timeouts are read as milliseconds.
+ */
+function readDynamoDbClientSettingsFromConfig(
+  config: Config,
+  at: (canonicalLeafPath: string) => string,
+  keys: DynamoDbClientKeys,
+): { -readonly [K in keyof DynamoDbConnection]?: DynamoDbConnection[K] } {
+  const out: { -readonly [K in keyof DynamoDbConnection]?: DynamoDbConnection[K] } = {};
+  const maxAttempts = readStoreInt(config, at(keys.maxAttempts));
+  if (maxAttempts !== undefined) out.maxAttempts = maxAttempts;
+  const retryMode = readStoreEnum(config, at(keys.retryMode), retryModeLeafValues);
+  if (retryMode !== undefined) out.retryMode = retryMode;
+  const requestTimeoutMs = readStoreDuration(config, at(keys.requestTimeout));
+  if (requestTimeoutMs !== undefined) out.requestTimeoutMs = requestTimeoutMs;
+  const connectionTimeoutMs = readStoreDuration(config, at(keys.connectionTimeout));
+  if (connectionTimeoutMs !== undefined) out.connectionTimeoutMs = connectionTimeoutMs;
+  return out;
+}
+
+/**
+ * Read the DynamoDB journal's block — `actor-ts.persistence.journal.dynamodb`
+ * by default, or whichever id the plug-in was registered under (#872).
+ *
+ * Placed beside the plug-in's own options for the reason
+ * `PostgresPluginOptions.ts` places its readers the same way: the *plug-in* is
+ * what reads configuration, so a store constructed directly stays
+ * constructor-only.
+ *
+ * `operations` and `serializer` are absent by construction — live objects have
+ * no HOCON spelling.  `clientConfig` is absent for another reason: it is the
+ * SDK's whole option surface, free-form and unvalidated, and it is also where
+ * credentials live — omitted, the SDK's own default chain supplies them, so a
+ * config file never has to.  What an operator does tune on the client has
+ * typed leaves instead — `max-attempts`, `retry-mode`, `request-timeout` and
+ * `connection-timeout`, read by {@link readDynamoDbClientSettingsFromConfig}
+ * and checked by the store's validator when it is built (#1490).
+ *
+ * The provisioning half — `billing-mode`, `table-ready-timeout`,
+ * `auto-create-tables` and the comment-only `provisioned-throughput` pair — is
+ * read by {@link readDynamoDbProvisioningFromConfig}, under all three roots.
+ */
+export function readDynamoDbJournalOptionsFromConfig(
+  config: Config,
+  blockRoot: string = ConfigKeys.persistence.journal.dynamodb.root,
+): Partial<DynamoDbJournalOptionsType> {
+  if (!config.hasPath(blockRoot)) return {};
+  const keys = ConfigKeys.persistence.journal.dynamodb;
+  const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
+  const out: { -readonly [K in keyof DynamoDbJournalOptionsType]?: DynamoDbJournalOptionsType[K] } = {
+    ...readDynamoDbProvisioningFromConfig(config, at, keys),
+    ...readDynamoDbClientSettingsFromConfig(config, at, keys),
+  };
+  const region = readStoreString(config, at(keys.region));
+  if (region !== undefined) out.region = region;
+  const endpoint = readStoreString(config, at(keys.endpoint));
+  if (endpoint !== undefined) out.endpoint = endpoint;
+  const eventsTable = readStoreIdentifier(config, at(keys.eventsTable));
+  if (eventsTable !== undefined) out.eventsTable = eventsTable;
+  return out;
+}
+
+/** Read the DynamoDB snapshot store's block — see {@link readDynamoDbJournalOptionsFromConfig}. */
+export function readDynamoDbSnapshotStoreOptionsFromConfig(
+  config: Config,
+  blockRoot: string = ConfigKeys.persistence.snapshotStore.dynamodb.root,
+): Partial<DynamoDbSnapshotStoreOptionsType> {
+  if (!config.hasPath(blockRoot)) return {};
+  const keys = ConfigKeys.persistence.snapshotStore.dynamodb;
+  const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
+  const out: {
+    -readonly [K in keyof DynamoDbSnapshotStoreOptionsType]?: DynamoDbSnapshotStoreOptionsType[K]
+  } = { ...readDynamoDbProvisioningFromConfig(config, at, keys), ...readDynamoDbClientSettingsFromConfig(config, at, keys) };
+  const region = readStoreString(config, at(keys.region));
+  if (region !== undefined) out.region = region;
+  const endpoint = readStoreString(config, at(keys.endpoint));
+  if (endpoint !== undefined) out.endpoint = endpoint;
+  const snapshotsTable = readStoreIdentifier(config, at(keys.snapshotsTable));
+  if (snapshotsTable !== undefined) out.snapshotsTable = snapshotsTable;
+  const keepN = readStoreInt(config, at(keys.keepN));
+  if (keepN !== undefined) out.keepN = keepN;
+  return out;
+}
+
+/** Read the DynamoDB durable-state store's block — see {@link readDynamoDbJournalOptionsFromConfig}. */
+export function readDynamoDbDurableStateStoreOptionsFromConfig(
+  config: Config,
+  blockRoot: string = ConfigKeys.persistence.durableState.dynamodb.root,
+): Partial<DynamoDbDurableStateStoreOptionsType> {
+  if (!config.hasPath(blockRoot)) return {};
+  const keys = ConfigKeys.persistence.durableState.dynamodb;
+  const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
+  const out: {
+    -readonly [K in keyof DynamoDbDurableStateStoreOptionsType]?: DynamoDbDurableStateStoreOptionsType[K]
+  } = { ...readDynamoDbProvisioningFromConfig(config, at, keys), ...readDynamoDbClientSettingsFromConfig(config, at, keys) };
+  const region = readStoreString(config, at(keys.region));
+  if (region !== undefined) out.region = region;
+  const endpoint = readStoreString(config, at(keys.endpoint));
+  if (endpoint !== undefined) out.endpoint = endpoint;
+  const table = readStoreIdentifier(config, at(keys.table));
+  if (table !== undefined) out.table = table;
+  return out;
+}

@@ -14,13 +14,16 @@
  * is intra-manager; the cluster only triggers reconciles via leader/role
  * events, no MultiNodeSpec needed.
  */
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
 import { Cluster } from '../../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../../src/cluster/ClusterOptions.js';
 import { StartSingletonOptions } from '../../../../../src/cluster/singleton/index.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
+import { Config, ConfigError } from '../../../../../src/config/Config.js';
+import { _substituteLeaseBackendForTest } from '../../../../../src/coordination/LeaseFromConfig.js';
+import type { ConfiguredLeaseOptions } from '../../../../../src/coordination/LeaseFromConfig.js';
 import {
   InMemoryLease,
   inMemoryLeaseStore,
@@ -98,6 +101,25 @@ async function startNode(
 async function stop(node: NodeSetup): Promise<void> {
   await node.cluster.leave();
   await node.kit.system.terminate();
+}
+
+/** A node whose system config is `hocon`, laid over the reference (#1454). */
+async function startNodeFromConfig(
+  systemName: string, host: string, port: number, hocon: string,
+): Promise<NodeSetup> {
+  const kitOptions = TestKitOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off)
+    .withConfig(Config.parseString(hocon));
+  const kit = TestKit.create(systemName, kitOptions);
+  const clusterOptions = ClusterOptions.create()
+    .withHost(host)
+    .withPort(port)
+    .withTransport(new InMemoryTransport(new NodeAddress(systemName, host, port)))
+    .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+    .withGossipIntervalMs(80);
+  const cluster = await Cluster.join(kit.system, clusterOptions);
+  return { kit, cluster };
 }
 
 describe('ClusterSingleton + Lease', () => {
@@ -328,4 +350,81 @@ describe('ClusterSingleton + Lease', () => {
     nodeA.cluster.singleton.stop('gated');
     await stop(nodeA);
   }, 15_000);
+});
+
+describe('ClusterSingleton + a lease configured from HOCON alone (#1454)', () => {
+  /**
+   * The backend seam builds an `InMemoryLease` from exactly what the
+   * Kubernetes backend would be handed, for the reason `ShardingLease.test.ts`
+   * gives; the switch, the selector and the TTL are the production path.
+   */
+  const built: ConfiguredLeaseOptions[] = [];
+  let restore: () => void = () => {};
+  beforeEach(() => {
+    inMemoryLeaseStore._clear();
+    built.length = 0;
+    restore = _substituteLeaseBackendForTest((options, config) => {
+      built.push(options);
+      return new InMemoryLease(options, config);
+    });
+  });
+  afterEach(() => { restore(); });
+
+  const leaseFromConfig = `
+    actor-ts.coordination.lease { backend = kubernetes, ttl = 5s }
+    actor-ts.cluster.singleton { use-lease = on, acquire-retry-interval = 100ms }
+  `;
+
+  test('7. use-lease = on gates the singleton on a lease nobody passed in code', async () => {
+    // A foreign holder owns the record the configured lease is named after.
+    const otherHolderOptions = LeaseOptions.create()
+      .withName('sng-lease-hocon-singleton-echo')
+      .withOwner('someone-else')
+      .withTtlMs(5_000);
+    const otherHolder = new InMemoryLease(otherHolderOptions);
+    expect(await otherHolder.acquire()).toBe(true);
+
+    const nodeA = await startNodeFromConfig('sng-lease-hocon', 'h', 60_007, leaseFromConfig);
+    const probe = nodeA.kit.createTestProbe();
+    class Echo extends Actor<string> {
+      override preStart(): void { probe.tell('started'); }
+      override onReceive(): void {}
+    }
+    const singletonOptions = StartSingletonOptions.create<string>()
+      .withTypeName('echo')
+      .withActor(Echo);
+    nodeA.cluster.singleton.start(singletonOptions);
+    await waitFor(() => nodeA.cluster.leader().nonEmpty);
+
+    expect(built.map((options) => options.name)).toEqual(['sng-lease-hocon-singleton-echo']);
+    expect(built[0]!.owner).toStartWith('sng-lease-hocon@h:60007#');
+
+    // The foreign holder still owns it, so nothing is hosted.
+    await probe.expectNoMessage(300);
+
+    await otherHolder.release();
+    await probe.expectMessage('started', 1_000);
+
+    nodeA.cluster.singleton.stop('echo');
+    await stop(nodeA);
+  }, 10_000);
+
+  test('8. use-lease = on with no backend is refused when the singleton starts', async () => {
+    const nodeA = await startNodeFromConfig('sng-lease-none', 'h', 60_008, 'actor-ts.cluster.singleton.use-lease = on');
+    class Idle extends Actor<string> {
+      override onReceive(): void {}
+    }
+    const singletonOptions = StartSingletonOptions.create<string>()
+      .withTypeName('idle')
+      .withActor(Idle);
+
+    expect(() => nodeA.cluster.singleton.start(singletonOptions)).toThrow(ConfigError);
+    expect(() => nodeA.cluster.singleton.start(singletonOptions)).toThrow(
+      /actor-ts\.cluster\.singleton\.use-lease \(or withUseLease\(true\)\) for singleton 'idle' asks for a lease built from configuration, but actor-ts\.coordination\.lease\.backend = none/,
+    );
+    // Refused before anything was claimed or spawned: the type is not started.
+    expect(nodeA.cluster.singleton.isStarted('idle')).toBe(false);
+
+    await stop(nodeA);
+  }, 10_000);
 });

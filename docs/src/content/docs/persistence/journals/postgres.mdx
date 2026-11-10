@@ -25,13 +25,14 @@ and almost certainly already in your stack.
 bun add pg
 ```
 
-The framework lazy-imports `pg` only when a Postgres store is first used,
-so it stays out of your bundle until you opt in.
+The framework imports `pg` only when a Postgres store opens — at startup,
+or on first use when the boot-time open is turned off — so it stays out of
+your bundle until you opt in.
 
 ## Setup
 
-Register the journal + snapshot store against the `PersistenceExtension`
-and receive a ready-to-use durable-state store.  Pass a shared `pool` so
+Register all three stores through the `plugins` slot of the system's
+options and select them in its configuration.  Pass a shared `pool` so
 all three components reuse one connection pool:
 
 ```ts
@@ -41,7 +42,6 @@ import {
   ActorSystemOptions,
 } from 'actor-ts';
 import {
-  PersistenceExtensionId,
   PostgresJournalOptions,
   PostgresSnapshotStoreOptions,
   PostgresDurableStateStoreOptions,
@@ -49,19 +49,6 @@ import {
   registerPostgresPlugins,
 } from 'actor-ts/persistence';
 
-const systemOptions = ActorSystemOptions.create()
-  // Select the Postgres plugins as the active journal + snapshot store.
-  .withConfig({
-    'actor-ts': {
-      persistence: {
-        journal: { plugin: 'actor-ts.persistence.journal.postgres' },
-        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.postgres' },
-      },
-    },
-  });
-const system = ActorSystem.create('my-app', systemOptions);
-
-const ext = system.extension(PersistenceExtensionId);
 const postgresSnapshotStoreOptions = PostgresSnapshotStoreOptions.create().withKeepN(3);
 const registerOptions = RegisterPostgresPluginsOptions.create()
   // One pool shared by journal + snapshot + durable-state (recommended).
@@ -69,17 +56,42 @@ const registerOptions = RegisterPostgresPluginsOptions.create()
   .withJournal(PostgresJournalOptions.create() /* .withEventsTable(...).withTagsTable(...).withAutoCreateTables(...) */)
   .withSnapshotStore(postgresSnapshotStoreOptions)
   .withDurableStateStore(PostgresDurableStateStoreOptions.create() /* .withTable(...) */);
-const { durableStateStore } = registerPostgresPlugins(ext, registerOptions);
+const systemOptions = ActorSystemOptions.create()
+  // Select the Postgres plugins for all three stores.
+  .withConfig({
+    'actor-ts': {
+      persistence: {
+        journal: { plugin: 'actor-ts.persistence.journal.postgres' },
+        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.postgres' },
+        'durable-state': { plugin: 'actor-ts.persistence.durable-state.postgres' },
+      },
+    },
+  })
+  .withPersistence({ plugins: [(persistence) => registerPostgresPlugins(persistence, registerOptions)] });
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
-`registerPostgresPlugins` registers the journal + snapshot store via the
-extension (selected by the config plugin IDs above) and **returns** the
-durable-state store.  `PersistenceExtension` has no durable-state registry
-— hand `durableStateStore` to your `DurableStateActor` settings directly
-(same pattern as the object-storage plugin).
+The plug-in runs inside `ActorSystem.create`, so all three stores are
+registered before `create` returns, and the ones the configuration selects
+open as part of the startup: a database the node cannot reach fails the
+startup rather than the first persisted message — see [opening the stores
+at startup](/persistence/overview/#opening-the-stores-at-startup).
+That holds with `autoCreateTables` off too, since the open then sends a
+`SELECT 1` where it would have run the DDL, and while the boot-time open is
+on, the default: with the boot-time open turned off, the failure moves to the
+store's first operation.  It holds for these stores, not for every axis: an
+object-storage snapshot or durable-state store selected beside them, or a store
+of your own without `start()`, has nothing to open ahead of time and fails its
+first operation instead.
+`registerPostgresPlugins` also **returns** the durable-state store, for a
+caller that would rather wire it by hand; a plug-in keeps it by assigning
+the result, `(persistence) => { postgres = registerPostgresPlugins(persistence, registerOptions); }`.
+Since #872 that is a convenience rather than the only route, and a store
+wired by hand is not a selected one, so it opens on first use rather than
+with the startup.
 
-Without a shared `pool`, each component lazily builds its own pool from
-its `url` / `poolConfig`:
+Without a shared `pool`, each component builds its own pool from its
+`url` / `poolConfig` when it opens:
 
 ```ts
 const postgresJournalOptions = PostgresJournalOptions.create().withUrl('postgres://user:pass@host:5432/app');
@@ -90,8 +102,92 @@ const registerPostgresPluginsOptions = RegisterPostgresPluginsOptions.create()
   .withJournal(postgresJournalOptions)
   .withSnapshotStore(postgresSnapshotStoreOptions)
   .withDurableStateStore(postgresDurableStateStoreOptions);
-registerPostgresPlugins(ext, registerPostgresPluginsOptions);
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerPostgresPlugins(persistence, registerPostgresPluginsOptions)],
+});
 ```
+
+## Configure it from HOCON
+
+The plugin id **is** the config section, so the block named after the id is the
+block that plugin reads (#872).  Everything except the live objects can come
+from `application.conf`, which means `registerPostgresPlugins(persistence)` needs no options at all:
+
+```ts
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerPostgresPlugins } from 'actor-ts/persistence';
+
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerPostgresPlugins(persistence)],
+});
+const system = ActorSystem.create('my-app', systemOptions);
+```
+
+```hocon
+actor-ts.persistence {
+  journal        { plugin = "actor-ts.persistence.journal.postgres" }
+  snapshot-store { plugin = "actor-ts.persistence.snapshot-store.postgres" }
+  durable-state  { plugin = "actor-ts.persistence.durable-state.postgres" }
+
+  journal.postgres        { url = ${?DATABASE_URL}, events-table = "events" }
+  snapshot-store.postgres { url = ${?DATABASE_URL}, keep-n = 5 }
+  durable-state.postgres  { url = ${?DATABASE_URL}, table = "durable_state" }
+}
+```
+
+Options passed to `registerPostgresPlugins` still win, field by field, and a field you leave
+unset falls through to the block rather than blanking it — so a shared
+`pool` in code and the table names in HOCON is a normal mix.  A pre-built
+`pool` and a `serializer` have **no leaf at all**: they are live objects, and
+a config file cannot express one.  Neither does `poolConfig` — the driver's whole
+option surface, which stays code-only.  `tags-table` is read but ships as a *comment*
+rather than a key, because its default is derived from `events-table`, and
+absence is what keeps the two in step.
+
+What you do tune on the pool has **typed leaves** (#1490), each a comment in the
+reference configuration so that leaving it out keeps pg's own default:
+
+```hocon
+actor-ts.persistence.journal.postgres {
+  url             = ${?DATABASE_URL}
+  max-pool-size   = 20                    # pg-pool's max (default 10)
+  idle-timeout    = 30s                   # pg-pool's idleTimeoutMillis (default 10s)
+  connect-timeout = 5s                    # pg's connectionTimeoutMillis (default: none)
+  ca-file         = "/etc/ssl/rds-ca.pem" # read when the pool opens, handed to pg as ssl.ca
+}
+```
+
+Each reaches the driver only when set.  The store checks them when it is built:
+a size or timeout that is not a positive whole number, or a timeout longer than
+a timer can hold, is refused with an `OptionsError` — and so is a leaf beside the
+same key in `poolConfig` (`max-pool-size` beside `max`, say), which names both
+instead of letting one quietly win.  `ca-file` is a path the framework reads,
+never the certificate itself; a file it cannot read fails the store's open —
+the startup, or its first use when the boot-time open is turned off — naming
+the leaf and the path.
+
+**A `url` that switches TLS verification off is refused.**  `sslmode=no-verify`,
+`ssl=no-verify`, and — under `uselibpqcompat=true` — `sslmode=prefer`,
+`require` or `verify-ca` make the reader throw a `ConfigError` naming the leaf
+and the switch, in any letter case and whether the url is written out or
+substituted from `${?DATABASE_URL}`.  The refusal is strict about the file: the
+block's `url` is refused even when `registerPostgresPlugins` is given a url or a
+pool of its own.  Only HOCON is inspected — the same string passed to
+`withUrl(...)` is your code's decision, and that is where an unverified server
+belongs if you really mean one.  For a private CA, set `ca-file` and leave the
+url's ssl parameters out, or write `sslmode=verify-full&sslrootcert=<CA file>` —
+one or the other: node-postgres assigns the TLS settings it parses from the url
+over the ones it was given, so `ca-file` beside any url ssl parameter is
+refused rather than dropped.  `sslmode=disable` is plaintext rather than
+unverified TLS and stays allowed.  The reasoning, and the switches in full, are
+on [TLS everywhere](/operations/security/tls-everywhere/#postgresql).
+
+**`durable-state.plugin` now selects this backend's durable-state store.**  It
+used to be built eagerly and handed back from `registerPostgresPlugins`, so it could only be
+wired by threading that instance through application code.  The returned handle
+still works and still yields the same instance — it is simply built when it is
+first asked for rather than at registration, which for a selected store is the
+startup.
 
 ## When to use it
 
@@ -110,9 +206,13 @@ simpler (one file, no server).
 
 ```ts
 type PostgresConnection = {
-  url?:        string;                      // postgres://user:pass@host:5432/db
-  poolConfig?: Record<string, unknown>;     // extra pg.Pool config (ssl, max, …)
-  pool?:       PgPoolLike;                   // pre-built / shared pool
+  url?:              string;                   // postgres://user:pass@host:5432/db
+  poolConfig?:       Record<string, unknown>;  // extra pg.Pool config — the code-only long tail
+  pool?:             PgPoolLike;               // pre-built / shared pool
+  maxPoolSize?:      number;                   // pg-pool max, default 10            (max-pool-size)
+  idleTimeoutMs?:    number;                   // idleTimeoutMillis, default 10 000  (idle-timeout)
+  connectTimeoutMs?: number;                   // connectionTimeoutMillis, no limit  (connect-timeout)
+  caFile?:           string;                   // PEM file read into ssl.ca          (ca-file)
 };
 
 interface PostgresJournalOptions extends PostgresConnection {
@@ -135,10 +235,20 @@ Table names come from config (not user input) and are validated against a
 safe-identifier pattern; everything else — persistenceIds, tags, payloads
 — is passed as bind parameters (`$1, $2, …`), never string-concatenated.
 
+The connection is validated when the store is built, and one combination is
+refused that used to pass: a `poolConfig.ssl` beside a url (or a
+`poolConfig.connectionString`) that carries an ssl parameter.  node-postgres
+assigns the TLS settings it parses from the connection string over the config
+object, so the `ssl` object was never merged but replaced — run against the
+driver, a CA beside `sslmode=verify-full` was dropped and beside
+`sslmode=no-verify` verification went off with it.  Configure TLS in one of the
+two places.
+
 ## Schema
 
 With `autoCreateTables` (the default), the backend runs
-`CREATE TABLE IF NOT EXISTS` on first use:
+`CREATE TABLE IF NOT EXISTS` when the store opens — at startup, or on first
+use when the boot-time open is turned off:
 
 ```sql
 CREATE TABLE events (
@@ -172,7 +282,9 @@ CREATE TABLE durable_state (
 ```
 
 Pre-provision these (and grant only `INSERT/SELECT/UPDATE/DELETE`) and set
-`autoCreateTables: false` if your DB role can't run DDL.
+`autoCreateTables: false` if your DB role can't run DDL.  With it off, the
+store sends a `SELECT 1` where it would have run the DDL, so it still reaches
+the database when it opens.
 
 ## Tag queries
 
@@ -239,17 +351,35 @@ import { Aside } from '@astrojs/starlight/components';
   possible future enhancement.)
 </Aside>
 
-<Aside type="caution" title="Compression / encryption options are ignored">
-  Per-call `PersistenceOptions` (compression, encryption) apply only to the
-  object-storage stores.  The SQL backends store JSON as `TEXT` — the
-  options are silently ignored here, same as SQLite and Cassandra.
+<Aside type="caution" title="Per-actor encryption and integrity do not protect events">
+  Per-call `PersistenceOptions` (compression, encryption, integrity) are
+  honoured by the Postgres snapshot and durable-state stores, as by every
+  SQL and object-storage store: a row written under a hook is the
+  object-storage frame in base64 behind an `ats1:` prefix, in the same
+  `TEXT` column, bound to its persistence id and its sequence number or
+  revision ([#1802](https://github.com/pathosDev/actor-ts/issues/1802)).  A row that lacks the protection the actor asks
+  for is refused unless the store was built with
+  `withAllowPlaintextRows(true)` for a migration.
+
+  The journal is never asked.  `encryption()` and `integrity()` on a
+  `PersistentActor` protect its snapshots only: every journal stores
+  events as plaintext JSON, nothing detects an event edited in place, and
+  database-side controls — transparent data encryption, an encrypted
+  volume, access control — are the only protection for events today.  An
+  actor that pairs this journal with the object-storage snapshot store
+  starts cleanly and writes its events here in plaintext.
 </Aside>
 
 <Aside type="caution" title="TLS to a managed instance">
+  ```hocon
+  actor-ts.persistence.journal.postgres.ca-file = "/etc/ssl/rds-ca.pem"
+  ```
+  Name the CA a managed instance publishes — from configuration with
+  `ca-file`, or in code through `poolConfig`:
   ```ts
   poolConfig: { ssl: { rejectUnauthorized: true, ca: fs.readFileSync('rds-ca.pem') } }
   ```
-  Pass `ssl` through `poolConfig` for managed Postgres that requires TLS.
+  One of the two, and neither beside an ssl parameter in the url.
 </Aside>
 
 ## Where to next

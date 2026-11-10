@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { Config } from '../../../src/config/Config.js';
 import {
   deepMerge,
   isForbiddenConfigKey,
@@ -183,6 +184,81 @@ describe('resolveSubstitutions', () => {
   });
 });
 
+/**
+ * `port = 2552` followed by `port = ${?PORT}` is the override idiom of every
+ * Akka and Pekko `application.conf`.  Until #1536 the second line replaced the
+ * first at parse time and the unresolved optional was stripped afterwards, so
+ * an unset variable removed the key instead of leaving the default — the
+ * opposite of what the specification says an undefined `${?x}` does.
+ */
+describe('an optional substitution that resolves to nothing keeps the earlier value (#1536)', () => {
+  const resolve = (source: string, env: Record<string, string> = {}) =>
+    stripUndefined(resolveSubstitutions(parseHocon(source), env));
+
+  test('keeps the same-source default when the variable is unset', () => {
+    expect(resolve('fallback-port = 2552\nfallback-port = ${?ENV_PORT}'))
+      .toEqual({ 'fallback-port': 2552 });
+  });
+
+  test('takes the variable when it is set', () => {
+    expect(resolve('fallback-port = 2552\nfallback-port = ${?ENV_PORT}', { ENV_PORT: '9000' }))
+      .toEqual({ 'fallback-port': 9000 });
+  });
+
+  test('holds for a path expression and for an object literal alike', () => {
+    expect(resolve('a.port = 2552\na.port = ${?ENV_PORT}')).toEqual({ a: { port: 2552 } });
+    // The object form goes through `deepMerge`, the other overwrite site.
+    expect(resolve('a { port = 2552 }\na { port = ${?ENV_PORT} }')).toEqual({ a: { port: 2552 } });
+  });
+
+  test('an optional whose previous is itself an optional falls back through the chain', () => {
+    const source = 'x = 1\nx = ${?A}\nx = ${?B}';
+    expect(resolve(source)).toEqual({ x: 1 });
+    expect(resolve(source, { A: '7' })).toEqual({ x: 7 });
+    expect(resolve(source, { A: '7', B: '8' })).toEqual({ x: 8 });
+  });
+
+  test('keeps an earlier object, not only a scalar', () => {
+    expect(resolve('a { x = 1 }\na = ${?X}')).toEqual({ a: { x: 1 } });
+  });
+
+  test('a later plain assignment still replaces an earlier optional', () => {
+    expect(resolve('x = ${?E}\nx = 2552', { E: '1' })).toEqual({ x: 2552 });
+  });
+
+  test('a required substitution after a value still throws when nothing answers it', () => {
+    expect(() => resolve('x = 1\nx = ${X}')).toThrow(/Unresolved substitution: \$\{X\}/);
+  });
+
+  test('an optional that is the first assignment still leaves the key unset', () => {
+    expect(resolve('a = keep\nb = ${?nope}')).toEqual({ a: 'keep' });
+  });
+
+  test('two documents concatenated still equal the two merged, chains included', () => {
+    // `y` falls back through B, then A, then the base document's `0`: the
+    // displaced base value has to join the *tail* of the chain the overlay
+    // already carries, or the merged form would skip the overlay's own default.
+    const base = 'x = 0\ny = 0';
+    const overlay = 'x = 1\nx = ${?Y}\ny = ${?A}\ny = ${?B}';
+    expect(parseHocon(`${base}\n${overlay}`))
+      .toStrictEqual(deepMerge(parseHocon(base), parseHocon(overlay)));
+    expect(resolve(`${base}\n${overlay}`)).toEqual({ x: 1, y: 0 });
+    expect(resolve(`${base}\n${overlay}`, { A: '5' })).toEqual({ x: 1, y: 5 });
+  });
+
+  test('a parsed Config reads the default back — the documented idiom, end to end', () => {
+    const name = 'ACTOR_TS_TEST_1536_UNSET_PORT';
+    const saved = process.env[name];
+    delete process.env[name];
+    try {
+      const config = Config.parseString(`fallback-port = 2552\nfallback-port = \${?${name}}`);
+      expect(config.getNumber('fallback-port')).toBe(2552);
+    } finally {
+      if (saved !== undefined) process.env[name] = saved;
+    }
+  });
+});
+
 describe('deepMerge', () => {
   test('overlay wins for scalars', () => {
     expect(deepMerge({ a: 1 }, { a: 2 })).toEqual({ a: 2 });
@@ -210,6 +286,8 @@ describe('isPlainObject', () => {
     expect(isPlainObject(null)).toBe(false);
     expect(isPlainObject('x')).toBe(false);
     expect(isPlainObject({ __substitution: true, path: 'a', optional: false })).toBe(false);
+    // A concatenation is a value too: merged key by key it would be two strings spliced field-wise.
+    expect(isPlainObject({ __concatenation: true, pieces: ['a'], optional: false })).toBe(false);
   });
 });
 
@@ -224,6 +302,11 @@ describe('include directives (#135)', () => {
       .toThrow(/`include "shared-cluster\.conf"` is not supported/);
     expect(() => parseHocon('include "shared-cluster.conf"\na = 1'))
       .toThrow(/Merge the sources in code instead/);
+  });
+
+  test('the merge advice carries its caveat: substitutions resolve per source (#1071)', () => {
+    expect(() => parseHocon('include "shared-cluster.conf"'))
+      .toThrow(/Substitutions resolve per source, so a value the base file refers to must live in that file or in the environment/);
   });
 
   test('the message no longer reads as a syntax error', () => {
@@ -427,5 +510,332 @@ describe('substitutions read own properties only (#589)', () => {
     // `toString` is an own property and stays readable.
     expect(resolveSubstitutions(parseHocon('toString = "mine"\nx = ${toString}')))
       .toEqual({ toString: 'mine', x: 'mine' });
+  });
+});
+
+/**
+ * A substitution whose target is itself a substitution (#1748).
+ *
+ * The resolver used to re-walk the tree to a fixed point, and its lookup
+ * reported an unresolved target as a miss — so a chain threw in its required
+ * form and resolved to the wrong value, or to nothing, in its optional one.
+ * These cases are the issue's own, plus the cycle a chain can close and the
+ * self-reference it must not mistake for one.
+ */
+describe('substitution chains (#1748)', () => {
+  // A fresh object, so prototype pollution would show as an inherited property.
+  const probe = () => ({}) as Record<string, unknown>;
+
+  test('a chain resolves in any declaration order', () => {
+    expect(Config.parseString('b = 1\na = ${b}\nx = ${a}').getNumber('x')).toBe(1);
+    expect(Config.parseString('x = ${a}\na = ${b}\nb = 1').getNumber('x')).toBe(1);
+    expect(Config.parseString('p { b = 1 }\np.a = ${p.b}\nq = ${p.a}').getNumber('q')).toBe(1);
+    expect(Config.parseString('d = ${c}\nc = ${b}\nb = ${a}\na = "end"').getString('d')).toBe('end');
+  });
+
+  test('the optional form takes the value its target resolves to', () => {
+    const dropped = Config.parseString('b = 1\na = ${b}\nx = ${?a}');
+    expect(dropped.hasPath('x')).toBe(true);
+    expect(dropped.getNumber('x')).toBe(1);
+    expect(Config.parseString('b = 1\na = ${b}\nx = 0\nx = ${?a}').getNumber('x')).toBe(1);
+  });
+
+  test('a key the source defines wins over the environment, through a chain as well', () => {
+    const environment = { DB_URL: 'from-environment' };
+    const viaChain = resolveSubstitutions(
+      parseHocon('db.host = "db-1"\ndb.url = ${db.host}\napi.url = ${db.url}'),
+      environment,
+    );
+    expect((viaChain['api'] as Record<string, unknown>)['url']).toBe('db-1');
+    const direct = resolveSubstitutions(parseHocon('db.url = "db-1"\napi.url = ${db.url}'), environment);
+    expect((direct['api'] as Record<string, unknown>)['url']).toBe('db-1');
+  });
+
+  test('a chain whose source is an unset optional substitution resolves to nothing', () => {
+    expect(resolveSubstitutions(parseHocon('a = ${?V}\nb = ${a}'), { V: 's3cret' }))
+      .toEqual({ a: 's3cret', b: 's3cret' });
+    expect(stripUndefined(resolveSubstitutions(parseHocon('a = ${?V}\nb = ${?a}'), {}))).toEqual({});
+    expect(() => resolveSubstitutions(parseHocon('a = ${?V}\nb = ${a}'), {}))
+      .toThrow('Unresolved substitution: ${a}');
+  });
+
+  test('a cycle is refused, and the error names it', () => {
+    expect(() => resolveSubstitutions(parseHocon('a = ${b}\nb = ${a}'), {}))
+      .toThrow('Substitution cycle: a -> b -> a');
+    expect(() => resolveSubstitutions(parseHocon('a = ${b}\nb = ${c}\nc = ${a}'), {}))
+      .toThrow('Substitution cycle: a -> b -> c -> a');
+    // An object that contains a reference to itself is a cycle too.
+    expect(() => resolveSubstitutions(parseHocon('a { b = ${a} }'), {}))
+      .toThrow('Substitution cycle: a -> a.b -> a');
+  });
+
+  test('an optional cycle is refused as well, rather than vanishing', () => {
+    // Before #1748 this resolved to `{}` without a word.
+    expect(() => resolveSubstitutions(parseHocon('a = ${?b}\nb = ${?a}'), {}))
+      .toThrow('Substitution cycle: a -> b -> a');
+  });
+
+  test('a field that names itself is no cycle: the environment answers, then the value it replaced', () => {
+    expect(resolveSubstitutions(parseHocon('pod.ip = ${?pod.ip}'), { POD_IP: '10.0.0.5' }))
+      .toEqual({ pod: { ip: '10.0.0.5' } });
+    expect(stripUndefined(resolveSubstitutions(parseHocon('pod.ip = ${?pod.ip}'), {}))).toEqual({ pod: {} });
+    expect(resolveSubstitutions(parseHocon('x = 1\nx = ${?x}'), {})).toEqual({ x: 1 });
+    expect(resolveSubstitutions(parseHocon('x = 1\nx = ${?x}\nx = ${?x}'), {})).toEqual({ x: 1 });
+    expect(resolveSubstitutions(parseHocon('x = 1\nx = ${?x}'), { X: '7' })).toEqual({ x: 7 });
+  });
+
+  test('a path into a value read from the environment reads that value', () => {
+    expect(resolveSubstitutions(parseHocon('a = ${?OBJ}\nb = ${a.k}'), { OBJ: '{"k":5}' }))
+      .toEqual({ a: { k: 5 }, b: 5 });
+  });
+
+  test('a value read from the environment is final: nothing inside it is resolved', () => {
+    const marker = JSON.stringify({ __substitution: true, path: 'OTHER', optional: false });
+    const resolved = resolveSubstitutions(parseHocon('x = ${V}'), { V: marker, OTHER: 'other-value' });
+    expect(JSON.stringify(resolved)).not.toContain('other-value');
+    expect((resolved['x'] as Record<string, unknown>)['path']).toBe('OTHER');
+  });
+
+  test('an own __proto__ in a value read from the environment is dropped at every depth', () => {
+    const resolved = resolveSubstitutions(parseHocon('x = ${V}\ny = ${W}'), {
+      V: '{"__proto__":{"envPwned":1},"ok":2}',
+      W: '[{"__proto__":{"envListPwned":1},"a":1}]',
+    });
+    expect(resolved).toEqual({ x: { ok: 2 }, y: [{ a: 1 }] });
+    expect(Object.hasOwn(resolved['x'] as object, '__proto__')).toBe(false);
+    expect(Object.hasOwn((resolved['y'] as object[])[0]!, '__proto__')).toBe(false);
+    expect(probe().envPwned).toBeUndefined();
+    expect(probe().envListPwned).toBeUndefined();
+  });
+
+  test('a value that resolves to nothing drops out at every depth', () => {
+    // Strict: `toEqual` would let an `[undefined]` pass for `[]`.
+    expect(resolveSubstitutions(parseHocon('x = [[${?N}], {y = ${?N}}]'), {})).toStrictEqual({ x: [[], {}] });
+  });
+});
+
+/**
+ * An environment variable that is set but empty (#1787).
+ *
+ * `PORT=` in a shell, `environment: [PORT]` in a compose file and an empty
+ * line of an env file all spell "unset".  As a value it replaced the default
+ * an optional substitution falls back to, and it satisfied a required one with
+ * nothing in it.
+ */
+describe('an empty environment variable counts as unset (#1787)', () => {
+  test('an optional substitution keeps the value it would have replaced', () => {
+    expect(resolveSubstitutions(parseHocon('port = 2552\nport = ${?PORT}'), { PORT: '' }))
+      .toEqual({ port: 2552 });
+    expect(stripUndefined(resolveSubstitutions(parseHocon('port = ${?PORT}'), { PORT: '' }))).toEqual({});
+  });
+
+  test('a required substitution fails, saying the variable is set but empty', () => {
+    expect(() => resolveSubstitutions(parseHocon('port = ${PORT}'), { PORT: '' }))
+      .toThrow('Unresolved substitution: ${PORT} — the environment variable that would answer it is set but empty');
+    // A variable that is missing altogether keeps the plain message.
+    expect(() => resolveSubstitutions(parseHocon('port = ${PORT}'), {}))
+      .toThrow(/^Unresolved substitution: \$\{PORT\}$/);
+  });
+
+  test('an empty variable in a chain of optional overrides falls through to the next', () => {
+    expect(resolveSubstitutions(parseHocon('x = 1\nx = ${?A}\nx = ${?B}'), { A: '7', B: '' }))
+      .toEqual({ x: 7 });
+    expect(resolveSubstitutions(parseHocon('x = 1\nx = ${?A}\nx = ${?B}'), { A: '', B: '' }))
+      .toEqual({ x: 1 });
+  });
+
+  test('an empty value under one spelling does not hide the other', () => {
+    expect(resolveSubstitutions(parseHocon('a = ${?pod.ip}'), { 'pod.ip': '', POD_IP: '10.0.0.5' }))
+      .toEqual({ a: '10.0.0.5' });
+  });
+
+  test('a value that is not empty keeps its reading — JSON first', () => {
+    expect(resolveSubstitutions(parseHocon('a = ${?A}\nb = ${?B}\nc = ${?C}'), { A: ' ', B: '0', C: '""' }))
+      .toEqual({ a: ' ', b: 0, c: '' });
+  });
+
+  test('Config.parseString reads the process environment the same way', () => {
+    const saved = process.env['ACTOR_TS_EMPTY_PROBE'];
+    process.env['ACTOR_TS_EMPTY_PROBE'] = '';
+    try {
+      expect(Config.parseString('port = 2552\nport = ${?ACTOR_TS_EMPTY_PROBE}').getNumber('port')).toBe(2552);
+    } finally {
+      if (saved === undefined) delete process.env['ACTOR_TS_EMPTY_PROBE'];
+      else process.env['ACTOR_TS_EMPTY_PROBE'] = saved;
+    }
+  });
+});
+
+/**
+ * An assignment with nothing after its `=` or `:` (#1786).
+ *
+ * The parser skipped newlines before reading a value, and an unquoted value
+ * runs to the end of its line, so the next line became this key's string —
+ * `a =` then `b = 1` parsed to `{ a: "b = 1" }`, losing `b`.  Now such an
+ * assignment is no assignment: the key keeps what it held.
+ */
+describe('an assignment without a value (#1786)', () => {
+  test('is no assignment: the next line is read as the field it is', () => {
+    expect(parseHocon('a =\nb = 1')).toStrictEqual({ b: 1 });
+    expect(parseHocon('a :\nb = 1')).toStrictEqual({ b: 1 });
+    expect(parseHocon('a = # comment\nb = 1')).toStrictEqual({ b: 1 });
+    expect(parseHocon('a = // comment\nb = 1')).toStrictEqual({ b: 1 });
+    expect(parseHocon('a.b =\nc = 1')).toStrictEqual({ c: 1 });
+  });
+
+  test('keeps the value an earlier line of the same source set', () => {
+    expect(parseHocon('a = 1\na =\nb = 2')).toStrictEqual({ a: 1, b: 2 });
+    expect(Config.parseString('a { x = 1 }\na { x = }').getNumber('a.x')).toBe(1);
+  });
+
+  test('ends at a comma, a closing brace or the end of input', () => {
+    expect(parseHocon('a { x = }')).toStrictEqual({ a: {} });
+    expect(parseHocon('a = , b = 1')).toStrictEqual({ b: 1 });
+    expect(parseHocon('a = 1, b =, c = 3')).toStrictEqual({ a: 1, c: 3 });
+    expect(parseHocon('a =')).toStrictEqual({});
+    expect(parseHocon('x {\n  a =\n\n  # nothing here\n}')).toStrictEqual({ x: {} });
+  });
+
+  test('a value on the next line that does not start a field is still the value', () => {
+    // JSON's own layout, and an unquoted value written below its key.
+    expect(parseHocon('{\n  "a":\n    [1, 2],\n  "b":\n    "s"\n}')).toStrictEqual({ a: [1, 2], b: 's' });
+    expect(parseHocon('a =\n  foo\nb = 2')).toStrictEqual({ a: 'foo', b: 2 });
+    expect(parseHocon('a =\n  { x = 1 }')).toStrictEqual({ a: { x: 1 } });
+  });
+
+  test('a field on the next line is a field, whatever its key looks like', () => {
+    expect(parseHocon('a =\n  "quoted.key": 1')).toStrictEqual({ 'quoted.key': 1 });
+    expect(parseHocon('a =\nb { c = 1 }')).toStrictEqual({ b: { c: 1 } });
+  });
+
+  test('the refusals on the next line still fire, rather than being read as a value', () => {
+    expect(() => parseHocon('a =\n__proto__ = 1')).toThrow(/Refusing "__proto__"/);
+    expect(() => parseHocon('a =\ninclude "f.conf"')).toThrow(/`include "f\.conf"` is not supported/);
+    expect(() => parseHocon('a =\nb += [1]')).toThrow(/after key "b"/);
+  });
+
+  test('an empty string and an empty list stay the explicit ways to set a key to empty', () => {
+    expect(parseHocon('a = 1\na = ""')).toStrictEqual({ a: '' });
+    expect(parseHocon('a = [1]\na = []')).toStrictEqual({ a: [] });
+  });
+});
+
+/**
+ * String value concatenation (#537): simple pieces on one line — quoted
+ * strings, substitutions and unquoted runs — joined into one string.  The
+ * concatenation of objects and lists, `+=` and triple-quoted strings stay
+ * unimplemented, but each is refused with its own message rather than
+ * mis-parsed.
+ */
+describe('string value concatenation (#537)', () => {
+  const environment = { H: 'db', P: '5432', X: 'prod', PW: 's3cr3t' };
+  const resolve = (source: string, env: Record<string, string> = environment) =>
+    resolveSubstitutions(parseHocon(source), env);
+
+  test('joins quoted strings, substitutions and unquoted runs into one string', () => {
+    expect(resolve('url = "redis://:"${PW}"@host:6379"')).toStrictEqual({ url: 'redis://:s3cr3t@host:6379' });
+    expect(resolve('address = ${H}:${P}')).toStrictEqual({ address: 'db:5432' });
+    expect(resolve('name = app-${X}')).toStrictEqual({ name: 'app-prod' });
+    expect(resolve('a = "p-"${X}"-s"')).toStrictEqual({ a: 'p-prod-s' });
+  });
+
+  test('keeps the whitespace between pieces, and trims only the ends of the value', () => {
+    expect(resolve('a = ${X} suffix text')).toStrictEqual({ a: 'prod suffix text' });
+    expect(resolve('a =   ${H}   ${P}   # comment')).toStrictEqual({ a: 'db   5432' });
+  });
+
+  test('a single piece keeps its type', () => {
+    expect(parseHocon('a = 30\nb = true\nc = null\nd = 2 minutes')).toStrictEqual({ a: 30, b: true, c: null, d: '2 minutes' });
+    expect(resolve('n = ${P}')).toStrictEqual({ n: 5432 });
+  });
+
+  test('a variable joins in as the text it holds, not as its JSON reading', () => {
+    const env = { BIG: '123456789012345678901234', QUOTED: '"x"', LIST: '[1,2]' };
+    expect(resolve('a = "pw="${BIG}', env)).toStrictEqual({ a: 'pw=123456789012345678901234' });
+    expect(resolve('a = "v="${QUOTED}', env)).toStrictEqual({ a: 'v="x"' });
+    expect(resolve('a = "v="${LIST}', env)).toStrictEqual({ a: 'v=[1,2]' });
+    // Alone, the same variables keep their JSON reading (D-M6).
+    expect(resolve('a = ${QUOTED}', env)).toStrictEqual({ a: 'x' });
+  });
+
+  test('a value from the tree joins in as HOCON writes it, and an object or a list is refused', () => {
+    expect(resolve('n = 30\na = ${n}s')).toStrictEqual({ n: 30, a: '30s' });
+    expect(resolve('h = ${H}\nu = ${h}":"${P}')).toStrictEqual({ h: 'db', u: 'db:5432' });
+    expect(() => resolve('o { k = 1 }\na = "v"${o}')).toThrow('Cannot join ${o} into a string at a: it resolves to an object');
+    expect(() => resolve('l = [1]\na = "v"${l}')).toThrow('Cannot join ${l} into a string at a: it resolves to a list');
+  });
+
+  test('an optional substitution that finds nothing adds nothing', () => {
+    expect(resolve('u = "redis://:"${?NOPE}"@host"')).toStrictEqual({ u: 'redis://:@host' });
+    expect(resolve('x = [ ${?H}":"${?P} ]')).toStrictEqual({ x: ['db:5432'] });
+  });
+
+  test('a concatenation of optional substitutions only behaves like one optional substitution', () => {
+    expect(stripUndefined(resolve('a = ${?A}${?B}', {}))).toStrictEqual({});
+    expect(resolve('a = 1\na = ${?A}${?B}', {})).toStrictEqual({ a: 1 });
+    expect(resolve('a = 1\na = ${?A} ${?B}', { B: 'b' })).toStrictEqual({ a: ' b' });
+    expect(resolve('x = [ ${?A} ${?B} ]', {})).toStrictEqual({ x: [] });
+  });
+
+  test('a required substitution in a concatenation still has to resolve', () => {
+    expect(() => resolve('a = "x"${NOPE}', {})).toThrow('Unresolved substitution: ${NOPE}');
+  });
+
+  test('a cycle through a concatenation is refused', () => {
+    expect(() => resolve('a = "x"${b}\nb = "y"${a}', {})).toThrow('Substitution cycle: a -> b -> a');
+  });
+
+  test('substitutions inside quotes stay text, and so do quotes inside an unquoted run', () => {
+    expect(resolve('a = "${X}"')).toStrictEqual({ a: '${X}' });
+    expect(parseHocon('a = foo"bar"\nb = say "hi" now')).toStrictEqual({ a: 'foo"bar"', b: 'say "hi" now' });
+  });
+
+  test('a field after whitespace on the same line still ends the value', () => {
+    expect(resolve('a = "x" b = 1')).toStrictEqual({ a: 'x', b: 1 });
+    expect(resolve('a = ${X} b = 1')).toStrictEqual({ a: 'prod', b: 1 });
+    expect(parseHocon('a { b = 1 } c = 2')).toStrictEqual({ a: { b: 1 }, c: 2 });
+  });
+
+  test('pieces without a comma between them are one list element', () => {
+    expect(parseHocon('x = ["a" "b"]')).toStrictEqual({ x: ['a b'] });
+    expect(parseHocon('x = [1 2 3]')).toStrictEqual({ x: ['1 2 3'] });
+    expect(parseHocon('x = ["a", "b"]')).toStrictEqual({ x: ['a', 'b'] });
+  });
+
+  test('three quotes in a row open a triple-quoted string, even when they are two empty strings', () => {
+    // Found by the concatenation property: `${X}""""` is refused.  HOCON reads
+    // any `"""` as the start of a multi-line string, so `""""` is not two
+    // empty strings to it, and the refusal is the right answer here.
+    expect(() => parseHocon('a = ${X}""""')).toThrow(/Triple-quoted strings are not supported/);
+    expect(() => parseHocon('a = """"')).toThrow(/Triple-quoted strings are not supported/);
+    // Two empty strings with something between them are two pieces.
+    expect(parseHocon('a = "" ""')).toStrictEqual({ a: ' ' });
+    expect(resolveSubstitutions(parseHocon('a = ""${X}""'), { X: 'x' })).toStrictEqual({ a: 'x' });
+  });
+
+  test('what concatenation does not support is refused, naming what it is', () => {
+    expect(() => parseHocon('a = """x"""')).toThrow(/Triple-quoted strings are not supported \(#537\)/);
+    expect(() => parseHocon('a = {x = 1} {y = 2}')).toThrow(/Concatenating an object with another value is not supported/);
+    expect(() => parseHocon('a = [1] [2]')).toThrow(/Concatenating a list with another value is not supported/);
+    expect(() => parseHocon('x = [{a = 1} {b = 2}]')).toThrow(/Concatenating an object with another value/);
+    expect(() => parseHocon('a = "x" {y = 2}')).toThrow(/Concatenating a string with an object is not supported/);
+    expect(() => parseHocon('a = "x" [2]')).toThrow(/Concatenating a string with a list is not supported/);
+    // The profile-merging form the configuration reference names (#537).
+    expect(() => parseHocon('staging = ${production} { a = 1 }'))
+      .toThrow(/Concatenating a substitution with an object is not supported \(#537\)/);
+  });
+
+  test('an unquoted URL is refused instead of being cut at its "//"', () => {
+    // `//` starts a comment, so this used to read as the string "http:".
+    expect(() => parseHocon('a = http://x')).toThrow(/put it in quotes/);
+    expect(() => parseHocon('a = redis://:${PW}@host')).toThrow(/put it in quotes/);
+    expect(parseHocon('a = "http://x"')).toStrictEqual({ a: 'http://x' });
+    expect(parseHocon('a = 1 // a comment')).toStrictEqual({ a: 1 });
+  });
+
+  test('two documents concatenated still equal the two merged, concatenations included', () => {
+    const base = 'a = 1\nb { c = "x" }';
+    const overlay = 'a = ${?A}"-"${?B}\nb.c = ${?C}${?D}';
+    expect(parseHocon(`${base}\n${overlay}`)).toStrictEqual(deepMerge(parseHocon(base), parseHocon(overlay)));
   });
 });

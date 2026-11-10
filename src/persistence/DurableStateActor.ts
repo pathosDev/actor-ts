@@ -2,6 +2,7 @@ import { Actor } from '../Actor.js';
 import {
   DurableStateConcurrencyError,
   type DurableStateRecord,
+  type DurableStateStore,
 } from './DurableStateStore.js';
 import type {
   CompressionConfig,
@@ -28,6 +29,7 @@ import { PersistenceExtensionId } from './PersistenceExtension.js';
 export abstract class DurableStateActor<Command, S> extends Actor<Command> {
   private _record: DurableStateRecord<S> | null = null;
   private _persisting: Promise<void> | null = null;
+  private _store: DurableStateStore | null = null;
   public readonly options: DurableStateOptionsType<S>;
 
   constructor(options: DurableStateOptions<S>) {
@@ -63,8 +65,16 @@ export abstract class DurableStateActor<Command, S> extends Actor<Command> {
   protected stateAdapter(): StateAdapter<S> | undefined { return undefined; }
 
   /**
-   * Per-actor compression — overrides the plugin default.  Stores that
-   * don't compress ignore it.  Default `undefined` defers to the plugin.
+   * Per-actor compression — overrides the plugin default.  Default
+   * `undefined` defers to the plugin.
+   *
+   * **Only the object-storage durable-state store compresses.**  Nine of the
+   * ten durable-state stores accept `PersistenceOptions` and never read it,
+   * so setting an algorithm here buys nothing on SQLite, Postgres, MariaDB,
+   * MSSQL, libSQL, D1, Mongo, DynamoDB or the in-memory reference store.
+   * Unlike the two hooks below it does not refuse the actor — it is a
+   * performance hint — so it logs one warning naming the store and the
+   * record is written uncompressed (#960).
    */
   protected compression(): CompressionConfig | undefined { return undefined; }
 
@@ -72,6 +82,15 @@ export abstract class DurableStateActor<Command, S> extends Actor<Command> {
    * Per-actor encryption — overrides the plugin default.  Used on both
    * the write path (encrypt) and the read path (decrypt).  Default
    * `undefined` defers to the plugin.
+   *
+   * **Only the object-storage durable-state store encrypts.**  Setting this
+   * on an actor backed by any other shipped store now **refuses the actor at
+   * start** with an `UnsupportedPersistenceOptionError` naming the store
+   * (#960).  The refusal precedes `preStart`'s load, not just the first
+   * write: a durable-state actor reads before it writes, and reading against
+   * a store that cannot decrypt returns a plaintext record the actor would
+   * treat as having been ciphertext.  `{ mode: 'none' }` is accepted
+   * everywhere.
    */
   protected encryption(): EncryptionConfig | undefined { return undefined; }
 
@@ -80,23 +99,53 @@ export abstract class DurableStateActor<Command, S> extends Actor<Command> {
    * write path (sign) and the read path (verify).  Default `undefined`
    * defers to the plugin.
    *
-   * **Only the object-storage durable-state store honours this today.**
-   * Nine of the ten durable-state stores accept `PersistenceOptions` and
-   * never read it (#960), so on SQLite, Postgres, Mongo, DynamoDB and the
-   * in-memory reference store, configuring `hmac-sha256` here buys no
-   * tamper detection and raises no error — the value is simply dropped.
-   * Treat it as a control you must verify against the store you actually
-   * run, not as one the framework enforces everywhere.  #960 decides
-   * whether an unhonoured directive starts throwing instead.
+   * **Only the object-storage durable-state store signs and verifies.**
+   * Same refusal as `encryption()` above: configuring `hmac-sha256` against
+   * a store that does not implement it throws
+   * `UnsupportedPersistenceOptionError` at start instead of silently buying
+   * no tamper detection (#960).  A store is asked through its
+   * `persistenceOptionSupport` declaration, so a third-party store that
+   * declares nothing is treated as unknown and is never refused.
    */
   protected integrity(): IntegrityConfig | undefined { return undefined; }
 
+  /**
+   * The store this actor actually writes to — the one named in its options,
+   * or the plug-in `PersistenceExtension` resolves from
+   * `actor-ts.persistence.durable-state.plugin` (#872).
+   *
+   * Resolved once and cached, for the same reason the extension caches its
+   * own: the config-selected plug-in is a single instance per system, and a
+   * getter that re-asked would let one actor's later reads land on a store its
+   * earlier writes never reached if the selection changed underneath it.
+   *
+   * `protected` rather than private so a subclass that needs the store —
+   * a bulk read, a store-specific query — reaches the resolved one instead
+   * of `options.store`, which may legitimately be unset.
+   */
+  protected get store(): DurableStateStore {
+    if (!this._store) {
+      this._store = this.options.store
+        ?? this.system.extension(PersistenceExtensionId).durableStateStore;
+    }
+    return this._store;
+  }
+
   override async preStart(): Promise<void> {
     // The storage-locality latch (#1356) — same seam as `PersistentActor`:
-    // the store the options carry is in actual use from here on.
-    this.system.extension(PersistenceExtensionId).noteStoreUse('durable-state-store', this.options.store);
+    // the store this actor resolved to is in actual use from here on.
+    const persistence = this.system.extension(PersistenceExtensionId);
+    const store = this.store;
+    persistence.noteStoreUse('durable-state-store', store);
+    // The capability check (#960) has to precede the load below, not merely
+    // the first `persist`: loading with `encryption()` set against a store
+    // that cannot decrypt returns a plaintext record the actor then treats
+    // as having been ciphertext all along.
+    persistence.assertPersistenceOptionsSupported(
+      'durable-state-store', store, this.persistenceOptions(),
+    );
     const adapter = this.stateAdapter();
-    const loaded = await this.options.store.load<unknown>(
+    const loaded = await store.load<unknown>(
       this.options.persistenceId, this.persistenceOptions(),
     );
     const option = loaded.toNullable();
@@ -126,7 +175,7 @@ export abstract class DurableStateActor<Command, S> extends Actor<Command> {
     // Store sees an envelope (or raw value when no adapter).  We re-stamp
     // the local record with the original `next` so callers see the
     // current-version domain shape.
-    const upsertPromise = this.options.store.upsert<unknown>(
+    const upsertPromise = this.store.upsert<unknown>(
       this.options.persistenceId,
       expected,
       wire,
@@ -153,7 +202,7 @@ export abstract class DurableStateActor<Command, S> extends Actor<Command> {
 
   /** Delete the underlying record and reset to emptyState in memory. */
   protected async deleteRecord(): Promise<void> {
-    await this.options.store.delete(this.options.persistenceId);
+    await this.store.delete(this.options.persistenceId);
     this._record = null;
   }
 

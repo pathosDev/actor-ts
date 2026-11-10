@@ -120,6 +120,70 @@ s.add('node-b', { sku: 'book-1', price: 12 });
 The identity function determines **deduplication**; the tag
 mechanics work per-add regardless.
 
+#### Identity inside DistributedData
+
+An identity function is a closure, so it never travels on the
+wire.  A replica that materialises a key from a peer's gossip,
+from a quorum reply or from its durable record therefore has to
+be *told* which one to use — and the only place that knowledge
+lives is the `factory` you already hand to `update`:
+
+```ts
+const emptyCart = () => ORSet.empty<CartItem>({ identity: (i) => i.sku });
+dd.update('cart-42', emptyCart, (c) => c.add(dd.selfReplicaId(), item));
+```
+
+Pass the same factory on every `update` for a key, and the
+replica files every value it decodes for that key under your
+identity — entries a peer wrote under the default one included.
+Those are re-keyed and merged into the entry they belong with,
+rather than kept alongside it as duplicates: every element your
+callback can name, at any rate.  What happens to one it cannot
+is the last note below.
+
+Two limits are worth knowing (#766):
+
+- **The first `update` for a key is what teaches it.**  A key
+  that arrived by gossip, or came back from a `durableStore`
+  after a restart, stays on the default identity until then — so
+  a bare `dd.get('cart-42')` immediately after startup can hand
+  you a set that deduplicates by `JSON.stringify`.  Issue the
+  `update` first if that matters.
+- **Nesting stops at one level** (#1421).  An `ORMap` recovers
+  its own key identity, but the CRDTs stored *inside* it do not:
+  neither the frame nor an empty template says what theirs should
+  be, so an `ORMap` of carts recovers the tenant key and leaves
+  every cart deduplicating by `JSON.stringify`.  Handing the
+  outer function to the inner set is not the missing half and
+  would be worse than the gap — it keys each item by a field
+  items do not have, collapsing a whole cart onto one entry — so
+  the boundary is written down rather than guessed at.
+
+Note also that your identity function now runs over values a
+peer sent, not only over ones your process built.  A callback
+that assumes its argument's shape will see data it did not
+produce, and what a refusal costs depends on when the element
+got in:
+
+- **A frame that arrives once the identity is known is
+  dropped.**  The callback throwing on any element in it makes
+  the whole value undecodable, and every wire call site treats
+  that as "drop this one" — the sender re-offers it on its next
+  gossip tick, so nothing that was ever accepted is lost.
+- **An element already in the view keeps the key it came in
+  under.**  A value gossiped, or read back from a
+  `durableStore`, before the first `update` was decoded on the
+  default identity, so it can already hold an element your
+  callback refuses.  Re-keying it on that first `update` then
+  re-keys every element the callback *can* name and leaves the
+  refused one exactly where it is.  The element is not dropped,
+  the key does not lose its identity, and later `update`s
+  deduplicate by your rule as normal; the replica logs a warning
+  naming the key.  The one visible effect is that the set is
+  mixed-keyed until that element goes away — which, since
+  `remove` would have to name it with the same callback that
+  refuses it, means for as long as the key lives.
+
 ## Picking between them
 
 | Question | Type |

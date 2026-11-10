@@ -21,6 +21,7 @@ import { NodeAddress } from '../../src/cluster/NodeAddress.js';
 import { Member } from '../../src/cluster/Member.js';
 import type { GossipMessage, MemberData, WireMessage } from '../../src/cluster/Protocol.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
+import type { Logger } from '../../src/Logger.js';
 import { Actor } from '../../src/Actor.js';
 import type { ActorRef } from '../../src/ActorRef.js';
 import { ReceptionistId } from '../../src/discovery/Receptionist.js';
@@ -39,18 +40,24 @@ type NodeHandle = {
   readonly address: NodeAddress;
 };
 
-async function startNode(systemName: string, port: number, seeds: string[] = []): Promise<NodeHandle> {
+async function startNode(
+  systemName: string,
+  port: number,
+  seeds: string[] = [],
+  failureDetectorAutoDown = false,
+): Promise<NodeHandle> {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
   const system = ActorSystem.create(systemName, sysOptions);
-  const address = new NodeAddress(systemName, 'h', port);
+  const address = new NodeAddress(systemName, 'h', port, 'test-run');
   const clusterOptions = ClusterOptions.create()
     .withHost('h')
     .withPort(port)
     .withSeeds(seeds)
     .withTransport(new InMemoryTransport(address))
     .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
+    .withFailureDetectorAutoDown(failureDetectorAutoDown)
     .withGossipIntervalMs(80);
   const cluster = await Cluster.join(system, clusterOptions);
   return { system, cluster, address };
@@ -160,7 +167,7 @@ describe('Cluster — gossip exploit defenses', () => {
 
     // Forge a malicious gossip from an "attacker" address (no real
     // node — just a synthetic NodeAddress to source the frame).
-    const attacker = new NodeAddress('csec', 'h', 65_535);
+    const attacker = new NodeAddress('csec', 'h', 65_535, 'test-run');
     const evil: InjectableGossip = {
       kind: 'gossip',
       from: attacker.toJSON(),
@@ -190,7 +197,7 @@ describe('Cluster — gossip exploit defenses', () => {
       return !!member && member.status === 'up';
     });
 
-    const attacker = new NodeAddress('csec', 'h', 65_534);
+    const attacker = new NodeAddress('csec', 'h', 65_534, 'test-run');
     const evil: InjectableGossip = {
       kind: 'gossip',
       from: attacker.toJSON(),
@@ -212,8 +219,8 @@ describe('Cluster — gossip exploit defenses', () => {
     nodes = [nodeA];
 
     // No B needed — inject an attempted-creation of a fake member.
-    const ghost = new NodeAddress('csec', 'h', 60_000);
-    const attacker = new NodeAddress('csec', 'h', 65_533);
+    const ghost = new NodeAddress('csec', 'h', 60_000, 'test-run');
+    const attacker = new NodeAddress('csec', 'h', 65_533, 'test-run');
     const evil: InjectableGossip = {
       kind: 'gossip',
       from: attacker.toJSON(),
@@ -329,7 +336,7 @@ describe('Transport — hello-handshake hijack defense', () => {
     // — it skips the handshake entirely — so it's not the right
     // probe.  Mock TcpSocketLike objects let us call the transport's
     // private machinery via type cast.
-    const self = new NodeAddress('hijack', '127.0.0.1', 1);
+    const self = new NodeAddress('hijack', '127.0.0.1', 1, 'test-run');
     const log = new NoopLogger();
     const transport = new TcpTransport(self, log);
 
@@ -357,11 +364,11 @@ describe('Transport — hello-handshake hijack defense', () => {
     rawTransport.attachInbound(sock1);
     rawTransport.attachInbound(sock2);
 
-    const claimedPeer = new NodeAddress('hijack', '10.0.0.42', 5000);
+    const claimedPeer = new NodeAddress('hijack', '10.0.0.42', 5000, 'test-run');
 
     // First hello on conn1 — legitimate, accepted.
     const helloFrame = (): Uint8Array => {
-      const message = JSON.stringify({ kind: 'hello', self: claimedPeer.toJSON() });
+      const message = JSON.stringify({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: claimedPeer.toJSON() });
       const payload = new TextEncoder().encode(message);
       const frame = new Uint8Array(4 + payload.byteLength);
       new DataView(frame.buffer).setUint32(0, payload.byteLength, false);
@@ -384,7 +391,7 @@ describe('Transport — hello-handshake hijack defense', () => {
     // After conn1 closes (onClose removes it from byPeer), a fresh
     // hello on conn2 with the same identity succeeds.  This is the
     // normal reconnect path; the hijack defense must not break it.
-    const self = new NodeAddress('hijack', '127.0.0.1', 1);
+    const self = new NodeAddress('hijack', '127.0.0.1', 1, 'test-run');
     const transport = new TcpTransport(self, new NoopLogger());
 
     interface MockSock { writes: Uint8Array[]; write(d: Uint8Array): void; end(): void; ended: boolean }
@@ -402,9 +409,9 @@ describe('Transport — hello-handshake hijack defense', () => {
     };
     rawTransport.attachInbound(sock1);
 
-    const peer = new NodeAddress('hijack', '10.0.0.99', 5001);
+    const peer = new NodeAddress('hijack', '10.0.0.99', 5001, 'test-run');
     const helloFrame = (): Uint8Array => {
-      const message = JSON.stringify({ kind: 'hello', self: peer.toJSON() });
+      const message = JSON.stringify({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: peer.toJSON() });
       const payload = new TextEncoder().encode(message);
       const frame = new Uint8Array(4 + payload.byteLength);
       new DataView(frame.buffer).setUint32(0, payload.byteLength, false);
@@ -481,9 +488,19 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
     attachInbound(s: unknown): void;
     onData(s: unknown, chunk: Uint8Array): void;
     onClose(s: unknown, fallback?: unknown): void;
-    openOutbound(to: NodeAddress): { socket: unknown; peer: unknown; pending: unknown[] };
+    openOutbound(to: NodeAddress): {
+      socket: unknown;
+      peer: unknown;
+      pending: unknown[];
+      handshakeTimer: unknown;
+      connectTimer: unknown;
+      opened: boolean;
+    };
     onHandshakeTimeout(connection: unknown): void;
+    onConnectTimeout(connection: unknown): void;
     byPeer: Map<string, { socket: unknown; peer: unknown }>;
+    bySocket: WeakMap<object, unknown>;
+    inboundConnections: number;
   };
 
   /**
@@ -510,13 +527,13 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
     return { raw, dialled };
   }
 
-  const nodeA = new NodeAddress('sim', '10.0.0.1', 5000);
-  const nodeB = new NodeAddress('sim', '10.0.0.2', 5000);
+  const nodeA = new NodeAddress('sim', '10.0.0.1', 5000, 'test-run');
+  const nodeB = new NodeAddress('sim', '10.0.0.2', 5000, 'test-run');
   // The tie-break is "the dial from the lexicographically smaller address
   // wins", and these two addresses differ only in that octet — so A's dial
   // is the one that must survive, on both sides.
-  const helloFromA = frameOf({ kind: 'hello', self: nodeA.toJSON() });
-  const helloFromB = frameOf({ kind: 'hello', self: nodeB.toJSON() });
+  const helloFromA = frameOf({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: nodeA.toJSON() });
+  const helloFromB = frameOf({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: nodeB.toJSON() });
 
   test('exploit: two nodes dialling each other at once still converge', async () => {
     // --- node A dials B, and B's hello arrives before A's ack ---
@@ -558,7 +575,7 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
     expect(b.raw.byPeer.get(nodeA.toString())?.socket).toBe(aInboundAtB);
 
     // --- A completes its handshake on the surviving connection ---
-    a.raw.onData(aOutbound, frameOf({ kind: 'hello-ack', self: nodeB.toJSON() }));
+    a.raw.onData(aOutbound, frameOf({ kind: 'hello-ack', wireVersion: 2, self: nodeB.toJSON() }));
     expect(a.raw.byPeer.get(nodeB.toString())?.peer).not.toBeNull();
   });
 
@@ -613,6 +630,411 @@ describe('Transport — crossing dials and dead dials (#697)', () => {
     expect(connection.pending.length).toBe(0);
     expect(a.dialled[0]!.ended).toBe(true);
   });
+
+  /**
+   * **Failure walkthrough (pre-fix, #1476).**  The deadline above reasoned
+   * from Node, where `connect` resolves before the socket even opens.  Bun and
+   * Deno resolve only once the TCP connect is done — and run `onOpen` first —
+   * so a connect slower than the deadline outlived it: `onOpen` wrote the hello
+   * on a dial the deadline had already dropped, the `connect` continuation
+   * installed the late socket with no deadline left on it, and the peer's
+   * `hello-ack` put the dropped connection back in `byPeer`.  Nothing ever
+   * reclaimed it again.
+   *
+   * The dialer below settles each `connect` by hand, in either order a runtime
+   * uses, so the deadline can be made to fire on either side of it.
+   */
+  describe('a dial given up stays given up (#1476)', () => {
+    /** A socket that can be aborted as well as half-closed — every runtime adapter's is. */
+    interface AbortableSocket extends MockSock {
+      destroyed: boolean;
+      destroy(): void;
+    }
+
+    const abortableSocket = (): AbortableSocket => ({
+      ended: false, destroyed: false, writes: [],
+      write(d) { this.writes.push(d); },
+      end() { this.ended = true; },
+      destroy() { this.destroyed = true; },
+    });
+
+    /** What the transport hands `connect` — the route a runtime delivers a dial's events through. */
+    interface DialHandlers {
+      onOpen(s: unknown): void;
+      onData(s: unknown, chunk: Uint8Array): void;
+      onClose(s: unknown): void;
+    }
+
+    /** One `connect` the fake backend received, settled when the test says so. */
+    interface HeldDial {
+      readonly socket: AbortableSocket;
+      readonly handlers: DialHandlers;
+      /** Bun and Deno: `onOpen`, then the promise — and only once the TCP connect is done. */
+      openThenResolve(): Promise<void>;
+      /** Node: the promise at once; `onOpen` follows on the socket's own `connect` event. */
+      resolveBeforeOpen(): Promise<void>;
+    }
+
+    /**
+     * A transport whose dials hang until the test settles them.  Settling
+     * returns only once the transport's own continuation has run: it awaits the
+     * promise the transport awaited first, and reactions run in the order they
+     * were registered.
+     */
+    function transportWithHeldDialer(self: NodeAddress, log: Logger = new NoopLogger()): {
+      transport: TcpTransport;
+      raw: RawTransport;
+      dials: HeldDial[];
+    } {
+      const transport = new TcpTransport(self, log);
+      const raw = transport as unknown as RawTransport;
+      const dials: HeldDial[] = [];
+      raw.backend = {
+        listen: () => Promise.resolve({ port: self.port, close: () => {} }),
+        connect: (options: { handlers: DialHandlers }) => {
+          const socket = abortableSocket();
+          let settle: (connected: AbortableSocket) => void = () => {};
+          const connected = new Promise<AbortableSocket>((resolve) => { settle = resolve; });
+          dials.push({
+            socket,
+            handlers: options.handlers,
+            openThenResolve: async () => {
+              options.handlers.onOpen(socket);
+              settle(socket);
+              await connected;
+            },
+            resolveBeforeOpen: async () => {
+              settle(socket);
+              await connected;
+            },
+          });
+          return connected;
+        },
+      };
+      return { transport, raw, dials };
+    }
+
+    /** Two frames in one chunk, the way TCP coalesces them. */
+    function concatFrames(first: Uint8Array, second: Uint8Array): Uint8Array {
+      const both = new Uint8Array(first.byteLength + second.byteLength);
+      both.set(first, 0);
+      both.set(second, first.byteLength);
+      return both;
+    }
+
+    /** Collects the transport's WARNs, for the one case whose defect was a false alarm. */
+    class CapturingLogger implements Logger {
+      readonly level = LogLevel.Warn;
+      readonly warnings: string[] = [];
+      debug(_message: string, ..._args: unknown[]): void {}
+      info(_message: string, ..._args: unknown[]): void {}
+      warn(message: string, ..._args: unknown[]): void { this.warnings.push(message); }
+      error(_message: string, ..._args: unknown[]): void {}
+      withSource(_source: string): Logger { return this; }
+      withFields(_fields: Record<string, unknown>): Logger { return this; }
+    }
+
+    /**
+     * What the dial's deadline does once it passes, with the real timers
+     * cancelled.  A dial that has not opened is given up by the connect
+     * deadline, which is armed first and never later than the handshake one,
+     * so that is the one fired on it; the handshake deadline only ever sees a
+     * dial that opened (#1475).
+     */
+    function fireDeadline(
+      raw: RawTransport,
+      connection: { handshakeTimer: unknown; connectTimer: unknown; opened: boolean },
+    ): void {
+      clearTimeout(connection.handshakeTimer as ReturnType<typeof setTimeout>);
+      clearTimeout(connection.connectTimer as ReturnType<typeof setTimeout>);
+      if (connection.opened) raw.onHandshakeTimeout(connection);
+      else raw.onConnectTimeout(connection);
+    }
+
+    test('a dial whose deadline fires before its connect resolves is aborted, never installed', async () => {
+      const a = transportWithHeldDialer(nodeA);
+      const connection = a.raw.openOutbound(nodeB);
+      fireDeadline(a.raw, connection);
+      expect(a.raw.byPeer.size).toBe(0);
+
+      // Bun and Deno: the socket opens, then `connect` resolves — both late.
+      const dial = a.dials[0]!;
+      await dial.openThenResolve();
+
+      expect(dial.socket.writes).toHaveLength(0);     // no hello for a dial nobody waits on
+      expect(dial.socket.destroyed).toBe(true);       // aborted, not half-closed
+      expect(dial.socket.ended).toBe(false);
+      expect(connection.socket).toBeNull();
+      expect(a.raw.bySocket.has(dial.socket)).toBe(false);
+      expect(a.raw.byPeer.size).toBe(0);
+      expect(a.transport.peers()).toEqual([]);
+    });
+
+    test('a dial dropped between its connect and its open writes no hello', async () => {
+      // Node's order: `connect` resolves at once and the socket is installed,
+      // the deadline fires, and only then does the runtime report the open.
+      const a = transportWithHeldDialer(nodeA);
+      const connection = a.raw.openOutbound(nodeB);
+      const dial = a.dials[0]!;
+      await dial.resolveBeforeOpen();
+      expect(connection.socket).toBe(dial.socket);
+
+      fireDeadline(a.raw, connection);
+      dial.handlers.onOpen(dial.socket);
+
+      expect(dial.socket.writes).toHaveLength(0);
+      expect(a.raw.byPeer.size).toBe(0);
+    });
+
+    const helloAckFromB = frameOf({ kind: 'hello-ack', wireVersion: 2, self: nodeB.toJSON() });
+
+    /**
+     * The three things a late `hello-ack` must not leave behind.  `byPeer.has`
+     * rather than "`byPeer` does not hold *this* connection": on Node the ack
+     * used to be adopted as a brand-new inbound connection, which that weaker
+     * assertion waves through.
+     */
+    function expectNothingRevived(a: { transport: TcpTransport; raw: RawTransport }): void {
+      expect(a.raw.byPeer.has(nodeB.toString())).toBe(false);
+      expect(a.raw.inboundConnections).toBe(0);
+      expect(a.transport.peers()).toEqual([]);
+    }
+
+    test('a late hello-ack does not revive a dial dropped before its socket was installed', async () => {
+      const a = transportWithHeldDialer(nodeA);
+      const connection = a.raw.openOutbound(nodeB);
+      fireDeadline(a.raw, connection);
+      const dial = a.dials[0]!;
+      await dial.openThenResolve();
+
+      // Through the handlers the runtime was given, as the runtime would: the
+      // socket was never installed, so it is in no map at all.
+      dial.handlers.onData(dial.socket, helloAckFromB);
+
+      expectNothingRevived(a);
+    });
+
+    test('a late hello-ack does not revive a dial dropped after its socket was installed', async () => {
+      const a = transportWithHeldDialer(nodeA);
+      const connection = a.raw.openOutbound(nodeB);
+      const dial = a.dials[0]!;
+      await dial.openThenResolve();
+      expect(a.raw.bySocket.get(dial.socket)).toBe(connection);
+
+      // The deadline closes the socket — and Node goes on delivering whatever
+      // the peer sends until the peer closes its half.
+      fireDeadline(a.raw, connection);
+      dial.handlers.onData(dial.socket, helloAckFromB);
+
+      expectNothingRevived(a);
+    });
+
+    test('an abandoned dial\'s late hello-ack is not reported as a hijack of its replacement', async () => {
+      // The next `send` after a deadline dials again, so a replacement already
+      // holds the slot when the abandoned dial's ack lands.  That ack is our
+      // own late answer, not someone claiming the peer's identity.
+      const log = new CapturingLogger();
+      const a = transportWithHeldDialer(nodeA, log);
+      const abandoned = a.raw.openOutbound(nodeB);
+      fireDeadline(a.raw, abandoned);
+      const replacement = a.raw.openOutbound(nodeB);
+      const dial = a.dials[0]!;
+      await dial.openThenResolve();
+
+      dial.handlers.onData(dial.socket, helloAckFromB);
+
+      expect(a.raw.byPeer.get(nodeB.toString())).toBe(replacement);
+      expect(log.warnings.filter((warning) => warning.includes('hijack'))).toEqual([]);
+    });
+
+    test('a dial dropped by its deadline after connecting is aborted, not half-closed', async () => {
+      // Half-closed, the socket stayed readable on Node, and that is the door
+      // the late `hello-ack` came back through; aborted, nothing is delivered
+      // and the descriptor goes at once (#1096).
+      const a = transportWithHeldDialer(nodeA);
+      const connection = a.raw.openOutbound(nodeB);
+      const dial = a.dials[0]!;
+      await dial.openThenResolve();
+
+      fireDeadline(a.raw, connection);
+
+      expect(dial.socket.destroyed).toBe(true);
+      expect(dial.socket.ended).toBe(false);
+    });
+
+    test('disconnect() during an in-flight dial gives it up for good', async () => {
+      // `disconnect` used to close the socket and delete the slot by hand, and
+      // a dial still connecting has no socket to close: its `connect` then
+      // installed one, wrote the hello and re-registered on the ack.
+      const a = transportWithHeldDialer(nodeA);
+      const connection = a.raw.openOutbound(nodeB);
+      a.transport.disconnect(nodeB);
+      expect(connection.handshakeTimer).toBeNull();
+
+      const dial = a.dials[0]!;
+      await dial.openThenResolve();
+      dial.handlers.onData(dial.socket, helloAckFromB);
+
+      expect(dial.socket.writes).toHaveLength(0);
+      expect(dial.socket.destroyed).toBe(true);
+      expect(a.raw.bySocket.has(dial.socket)).toBe(false);
+      expectNothingRevived(a);
+    });
+
+    test('shutdown() during an in-flight dial gives it up for good', async () => {
+      // The leave path's own race: `Cluster.leave` writes its leave frames with
+      // `send`, which dials any member that has no connection yet, and calls
+      // `shutdown()` straight after.
+      const a = transportWithHeldDialer(nodeA);
+      const connection = a.raw.openOutbound(nodeB);
+      await a.transport.shutdown();
+      expect(connection.handshakeTimer).toBeNull();
+
+      const dial = a.dials[0]!;
+      await dial.openThenResolve();
+      dial.handlers.onData(dial.socket, helloAckFromB);
+
+      expect(dial.socket.writes).toHaveLength(0);
+      expect(dial.socket.destroyed).toBe(true);
+      expect(a.raw.bySocket.has(dial.socket)).toBe(false);
+      expectNothingRevived(a);
+    });
+
+    const heartbeatFromA = (seq: number): Uint8Array =>
+      frameOf({ kind: 'heartbeat', from: nodeA.toJSON(), seq, ts: seq });
+
+    /** A transport for node B with node A connected inbound, and a record of what reached the handler. */
+    function withEstablishedPeer(): {
+      b: { transport: TcpTransport; raw: RawTransport };
+      established: AbortableSocket;
+      delivered: string[];
+    } {
+      const b = transportWithHeldDialer(nodeB);
+      const delivered: string[] = [];
+      b.transport.setHandler((from, message) => delivered.push(`${message.kind} from ${from.toString()}`));
+      const established = abortableSocket();
+      b.raw.attachInbound(established);
+      b.raw.onData(established, helloFromA);
+      b.raw.onData(established, heartbeatFromA(1));
+      expect(delivered).toEqual([`heartbeat from ${nodeA.toString()}`]);
+      return { b, established, delivered };
+    }
+
+    test('disconnect() closes an established connection in order and hears nothing from it after', () => {
+      const { b, established, delivered } = withEstablishedPeer();
+
+      b.transport.disconnect(nodeA);
+      expect(b.raw.inboundConnections).toBe(0);
+      // A half-closed Node socket goes on delivering until the peer closes its half.
+      b.raw.onData(established, heartbeatFromA(2));
+
+      expect(delivered).toEqual([`heartbeat from ${nodeA.toString()}`]);
+      // In order — `end()`, not an abort — so what was written still flushes.
+      expect(established.ended).toBe(true);
+      expect(established.destroyed).toBe(false);
+      expect(b.raw.inboundConnections).toBe(0);
+      expect(b.transport.peers()).toEqual([]);
+    });
+
+    test('shutdown() closes an established connection in order and hears nothing from it after', async () => {
+      // On real Bun sockets a heartbeat reached the handler of a transport that
+      // had already shut down, and both ends still listed each other as peers.
+      const { b, established, delivered } = withEstablishedPeer();
+
+      await b.transport.shutdown();
+      // Given back by the shutdown itself, not by whatever the peer sends next.
+      expect(b.raw.inboundConnections).toBe(0);
+      b.raw.onData(established, heartbeatFromA(2));
+
+      expect(delivered).toEqual([`heartbeat from ${nodeA.toString()}`]);
+      // In order: `Cluster.leave` writes its leave frames immediately before
+      // `shutdown()`, and an abort would discard whatever is still buffered.
+      expect(established.ended).toBe(true);
+      expect(established.destroyed).toBe(false);
+      expect(b.raw.inboundConnections).toBe(0);
+      expect(b.transport.peers()).toEqual([]);
+    });
+
+    test('a stopped transport registers nobody whose hello arrives after shutdown()', async () => {
+      // `shutdown` reaches the connections in `byPeer`.  One still waiting for
+      // its hello is in no map it walks — its deadline closes it eventually —
+      // and a hello that beat the deadline registered a peer, wrote a hello-ack
+      // and delivered frames on a transport that had stopped.
+      const b = transportWithHeldDialer(nodeB);
+      const delivered: string[] = [];
+      b.transport.setHandler((from, message) => delivered.push(`${message.kind} from ${from.toString()}`));
+      const late = abortableSocket();
+      b.raw.attachInbound(late);
+      await b.transport.shutdown();
+
+      b.raw.onData(late, concatFrames(helloFromA, heartbeatFromA(1)));
+
+      expect(b.raw.byPeer.has(nodeA.toString())).toBe(false);
+      expect(late.writes).toHaveLength(0);
+      expect(late.destroyed).toBe(true);
+      expect(b.raw.inboundConnections).toBe(0);
+      expect(delivered).toEqual([]);
+    });
+
+    test('disconnect() gives back every key a dial holds, not just the one it was called with', async () => {
+      // A dial is registered under the address it dialled and, once acked,
+      // under the address the peer announced — two different strings whenever
+      // a seed names a host the peer does not advertise itself as.
+      const a = transportWithHeldDialer(nodeA);
+      const connection = a.raw.openOutbound(nodeB);
+      const dial = a.dials[0]!;
+      await dial.openThenResolve();
+      const nodeBAdvertised = new NodeAddress('sim', 'node-b.internal', 5000, 'test-run');
+      dial.handlers.onData(dial.socket, frameOf({ kind: 'hello-ack', wireVersion: 2, self: nodeBAdvertised.toJSON() }));
+      expect(a.raw.byPeer.get(nodeB.toString())).toBe(connection);
+      expect(a.raw.byPeer.get(nodeBAdvertised.toString())).toBe(connection);
+
+      a.transport.disconnect(nodeB);
+
+      // The announced key used to stay, mapped to a connection whose socket
+      // had just been closed: `send` wrote into it and `peers()` listed it.
+      expect(a.raw.byPeer.size).toBe(0);
+      expect(a.transport.peers()).toEqual([]);
+    });
+
+    test('a frame after the one that got its connection refused does not register it', () => {
+      // A connection can be torn down halfway through a chunk: the hijack
+      // guard drops it on one frame, and the decode loop goes on to the next.
+      // Without a check every frame after the drop still runs the handshake —
+      // a second hello under a fresh identity registered the refused socket.
+      const b = transportWithHeldDialer(nodeB);
+      const established = abortableSocket();
+      b.raw.attachInbound(established);
+      b.raw.onData(established, helloFromA);
+
+      const intruder = abortableSocket();
+      b.raw.attachInbound(intruder);
+      const nodeC = new NodeAddress('sim', '10.0.0.3', 5000, 'test-run');
+      const hijackThenFreshClaim = concatFrames(helloFromA, frameOf({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: nodeC.toJSON() }));
+      b.raw.onData(intruder, hijackThenFreshClaim);
+
+      expect(b.raw.byPeer.get(nodeA.toString())?.socket).toBe(established);
+      expect(b.raw.byPeer.has(nodeC.toString())).toBe(false);
+      expect(intruder.writes).toHaveLength(0);     // no hello-ack onto a socket this side closed
+      expect(b.transport.peers().map(String)).toEqual([nodeA.toString()]);
+    });
+
+    test('a dial whose socket closed before its connect resolved is not installed', async () => {
+      // Bun can report the open and the close of a socket that fails right
+      // after connecting before its `connect` promise settles.
+      const a = transportWithHeldDialer(nodeA);
+      const connection = a.raw.openOutbound(nodeB);
+      const dial = a.dials[0]!;
+      dial.handlers.onOpen(dial.socket);
+      dial.handlers.onClose(dial.socket);
+      expect(a.raw.byPeer.size).toBe(0);
+
+      await dial.resolveBeforeOpen();
+
+      expect(connection.socket).toBeNull();
+      expect(a.raw.bySocket.has(dial.socket)).toBe(false);
+    });
+  });
 });
 
 /* ----- injection for any wire frame, not just gossip ----- */
@@ -645,7 +1067,7 @@ async function startRecordingNode(
 ): Promise<{ node: NodeHandle; sent: WireMessage[] }> {
   const sysOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
   const system = ActorSystem.create(systemName, sysOptions);
-  const address = new NodeAddress(systemName, 'h', port);
+  const address = new NodeAddress(systemName, 'h', port, 'test-run');
   const transport = new InMemoryTransport(address);
   const sent: WireMessage[] = [];
   const realSend = transport.send.bind(transport);
@@ -674,8 +1096,8 @@ describe('Cluster — numeric wire-field defenses', () => {
     const nodeA = await startNode('csec', portA);
     nodes = [nodeA];
 
-    const attacker = new NodeAddress('csec', 'h', 65_533);
-    const victim = new NodeAddress('csec', 'h', 64_000);
+    const attacker = new NodeAddress('csec', 'h', 65_533, 'test-run');
+    const victim = new NodeAddress('csec', 'h', 64_000, 'test-run');
     const forge = (removedAt: number): InjectableGossip => ({
       kind: 'gossip',
       from: attacker.toJSON(),
@@ -699,7 +1121,7 @@ describe('Cluster — numeric wire-field defenses', () => {
     const nodeA = await startNode('csec', portA);
     nodes = [nodeA];
 
-    const peer = new NodeAddress('csec', 'h', 64_001);
+    const peer = new NodeAddress('csec', 'h', 64_001, 'test-run');
     inject(nodeA.cluster, peer, {
       kind: 'gossip',
       from: peer.toJSON(),
@@ -720,7 +1142,7 @@ describe('Cluster — numeric wire-field defenses', () => {
     // but a NaN reaching future RTT or skew tracking would be silent nonsense.
     const { node, sent } = await startRecordingNode('csechb', 53_990 + Math.floor(Math.random() * 9));
     nodes = [node];
-    const peer = new NodeAddress('csechb', 'h', 64_002);
+    const peer = new NodeAddress('csechb', 'h', 64_002, 'test-run');
 
     for (const [seq, ts] of [
       [Number.NaN, Date.now()],
@@ -740,7 +1162,7 @@ describe('Cluster — numeric wire-field defenses', () => {
   test('a well-formed heartbeat is still acknowledged (#115)', async () => {
     const { node, sent } = await startRecordingNode('csechb2', 53_970 + Math.floor(Math.random() * 9));
     nodes = [node];
-    const peer = new NodeAddress('csechb2', 'h', 64_003);
+    const peer = new NodeAddress('csechb2', 'h', 64_003, 'test-run');
 
     sent.length = 0;
     injectWire(node.cluster, peer, { kind: 'heartbeat', from: peer.toJSON(), seq: 7, ts: Date.now() });
@@ -769,7 +1191,7 @@ describe('Cluster — the wire edge rejects malformed frames (#563, #705)', () =
   });
 
   function attackerTransport(systemName: string, port: number): InMemoryTransport {
-    const transport = new InMemoryTransport(new NodeAddress(systemName, 'h', port));
+    const transport = new InMemoryTransport(new NodeAddress(systemName, 'h', port, 'test-run'));
     void transport.start();
     attackers.push(transport);
     return transport;
@@ -792,7 +1214,7 @@ describe('Cluster — the wire edge rejects malformed frames (#563, #705)', () =
     nodes = [victim];
 
     const attacker = attackerTransport('csecwire', port + 1);
-    const ghost = new NodeAddress('csecwire', 'h', port + 900);
+    const ghost = new NodeAddress('csecwire', 'h', port + 900, 'test-run');
     attacker.send(victim.address, {
       kind: 'gossip',
       from: attacker.self.toJSON(),
@@ -816,7 +1238,7 @@ describe('Cluster — the wire edge rejects malformed frames (#563, #705)', () =
     nodes = [victim];
 
     const attacker = attackerTransport('csecwire2', port + 1);
-    const good = new NodeAddress('csecwire2', 'h', port + 800);
+    const good = new NodeAddress('csecwire2', 'h', port + 800, 'test-run');
     attacker.send(victim.address, {
       kind: 'gossip',
       from: attacker.self.toJSON(),
@@ -896,7 +1318,7 @@ describe('Cluster — a claim needs authority, not just a big version (#562, #56
     nodes = [node];
     await waitFor(() => node.cluster.upMembers().length === 1);
 
-    const attacker = new NodeAddress('csecauth', 'h', port + 500);
+    const attacker = new NodeAddress('csecauth', 'h', port + 500, 'test-run');
     injectWire(node.cluster, attacker, {
       kind: 'gossip',
       from: attacker.toJSON(),
@@ -923,7 +1345,7 @@ describe('Cluster — a claim needs authority, not just a big version (#562, #56
     await waitFor(() => node.cluster.upMembers().length === 1);
 
     // Already `up`, so a *downgrade* dressed as a promotion is still refused.
-    const peer = new NodeAddress('csecauth2', 'h', port + 500);
+    const peer = new NodeAddress('csecauth2', 'h', port + 500, 'test-run');
     injectWire(node.cluster, peer, {
       kind: 'gossip',
       from: peer.toJSON(),
@@ -940,8 +1362,8 @@ describe('Cluster — a claim needs authority, not just a big version (#562, #56
 
     // The attacker is not a member this node considers active, so its claim
     // about an unrelated address carries no authority.
-    const attacker = new NodeAddress('csecauth3', 'h', port + 500);
-    const victim = new NodeAddress('csecauth3', 'h', port + 600);
+    const attacker = new NodeAddress('csecauth3', 'h', port + 500, 'test-run');
+    const victim = new NodeAddress('csecauth3', 'h', port + 600, 'test-run');
     injectWire(node.cluster, attacker, {
       kind: 'gossip',
       from: attacker.toJSON(),
@@ -969,7 +1391,7 @@ describe('Cluster — a claim needs authority, not just a big version (#562, #56
       return !!member && member.status === 'up';
     });
 
-    const attacker = new NodeAddress('csecleave', 'h', portA + 500);
+    const attacker = new NodeAddress('csecleave', 'h', portA + 500, 'test-run');
     injectWire(nodeA.cluster, attacker, { kind: 'leave', node: nodeB.address.toJSON() });
 
     const victim = nodeA.cluster.getMembers().find(x => x.address.equals(nodeB.address));
@@ -988,8 +1410,8 @@ describe('Cluster — a claim needs authority, not just a big version (#562, #56
     const { node, sent } = await startRecordingNode('csechb3', port);
     nodes = [node];
 
-    const realPeer = new NodeAddress('csechb3', 'h', port + 100);
-    const impersonated = new NodeAddress('csechb3', 'h', port + 200);
+    const realPeer = new NodeAddress('csechb3', 'h', port + 100, 'test-run');
+    const impersonated = new NodeAddress('csechb3', 'h', port + 200, 'test-run');
 
     sent.length = 0;
     injectWire(node.cluster, realPeer, {
@@ -1058,7 +1480,9 @@ describe('Cluster — a recorded gossip frame is worthless on a second delivery 
    * detector's down path deletes outright rather than tombstoning, so a healed
    * partition can re-discover the peer — and that is exactly what leaves
    * nothing behind for a replay to be compared against: the no-existing-entry
-   * branch of the merge has no lower version bound at all.
+   * branch of the merge has no lower version bound at all.  Since #1426 that
+   * path is opt-in (`failure-detector.auto-down`), so the node below opts in:
+   * the default parks the victim instead and deletes nothing.
    *
    * So replaying a downed member's own pre-down record brought it back at its
    * old version, `up`, carrying the roles it had — and roles are what shard
@@ -1071,12 +1495,12 @@ describe('Cluster — a recorded gossip frame is worthless on a second delivery 
    */
   test('exploit: replaying a downed member\'s own record does not bring it back', async () => {
     const port = 60_100 + Math.floor(Math.random() * 300);
-    const node = await startNode('csecreplay', port);
+    const node = await startNode('csecreplay', port, [], true);
     nodes = [node];
     await waitFor(() => node.cluster.upMembers().length === 1);
 
-    const peer = new NodeAddress('csecreplay', 'h', port + 100);
-    const victim = new NodeAddress('csecreplay', 'h', port + 200);
+    const peer = new NodeAddress('csecreplay', 'h', port + 100, 'test-run');
+    const victim = new NodeAddress('csecreplay', 'h', port + 200, 'test-run');
 
     // The peer earns standing the ordinary way — a self-announcement, the one
     // claim `maySpeakFor` never refuses (#562).
@@ -1132,8 +1556,8 @@ describe('Cluster — a recorded gossip frame is worthless on a second delivery 
     nodes = [node];
     await waitFor(() => node.cluster.upMembers().length === 1);
 
-    const peer = new NodeAddress('csecreplay2', 'h', port + 100);
-    const subject = new NodeAddress('csecreplay2', 'h', port + 200);
+    const peer = new NodeAddress('csecreplay2', 'h', port + 100, 'test-run');
+    const subject = new NodeAddress('csecreplay2', 'h', port + 200, 'test-run');
 
     inject(node.cluster, peer, {
       kind: 'gossip',
@@ -1177,8 +1601,8 @@ describe('Cluster — a recorded gossip frame is worthless on a second delivery 
     nodes = [node];
     await waitFor(() => node.cluster.upMembers().length === 1);
 
-    const peer = new NodeAddress('csecreplay3', 'h', port + 100);
-    const ghost = new NodeAddress('csecreplay3', 'h', port + 200);
+    const peer = new NodeAddress('csecreplay3', 'h', port + 100, 'test-run');
+    const ghost = new NodeAddress('csecreplay3', 'h', port + 200, 'test-run');
 
     inject(node.cluster, peer, {
       kind: 'gossip',

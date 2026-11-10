@@ -28,6 +28,13 @@ import { InMemoryQuery } from '../../../../../src/persistence/query/InMemoryQuer
 import { tagFilterCursorKey } from '../../../../../src/persistence/query/PersistenceQuery.js';
 import { offsetGreater, offsetStart } from '../../../../../src/persistence/query/PersistenceQuery.js';
 import { InMemoryDurableStateStore } from '../../../../../src/persistence/durable-state-stores/InMemoryDurableStateStore.js';
+import { MAX_PERSISTENCE_ID_LENGTH } from '../../../../../src/persistence/Constants.js';
+import type {
+  DurableStateRecord,
+  DurableStateStore,
+} from '../../../../../src/persistence/DurableStateStore.js';
+import type { PersistenceOptions } from '../../../../../src/persistence/PersistenceOptions.js';
+import type { Option } from '../../../../../src/util/Option.js';
 import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 /**
@@ -302,6 +309,54 @@ describe('ProjectionActor — by tag', () => {
   });
 });
 
+describe('ProjectionActor — grouped by-tag delivery (#1448)', () => {
+  test('the event the cursor sits on is dropped before grouping, so the next group starts after it', async () => {
+    const journal = new InMemoryJournal();
+    // One append, one stream: the three share a timestamp and order by
+    // sequenceNr, so nothing here has to wait on the wall clock.
+    await journal.append('a', [
+      { event: { n: 1 }, tags: ['t'] },
+      { event: { n: 2 }, tags: ['t'] },
+      { event: { n: 3 }, tags: ['t'] },
+    ], 0);
+
+    const sys = newSystem('proj-tag-group-boundary');
+    const groups: number[][] = [];
+    const projectionOptions = ByTagProjectionOptions.create<{ n: number }>()
+      .withName('tag-group-boundary')
+      .withQuery(new InMemoryQuery(journal))
+      .withTag('t')
+      .withGroupAfterEnvelopes(2)
+      .withHandleGroup((events) => { groups.push(events.map((event) => event.event.n)); })
+      .withLiveOptions({ pollIntervalMs: 30 });
+    const ref = ProjectionActor.byTag<{ n: number }>(sys, projectionOptions);
+
+    await awaitCondition(() => groups.length >= 2, {
+      timeoutMs: 4_000,
+      label: 'the three historic events arrived as two groups',
+    });
+
+    // `currentEventsByTag` is inclusive of the offset it is given, so every
+    // poll from here on returns n=3 again.  Dropped before the events are cut
+    // into groups, it is neither delivered twice nor counted into the next
+    // group's size — which would have made that group [3, 4] and pushed n=5
+    // into a group of its own.
+    await journal.append('a', [
+      { event: { n: 4 }, tags: ['t'] },
+      { event: { n: 5 }, tags: ['t'] },
+    ], 3);
+    await awaitCondition(() => groups.length >= 3, {
+      timeoutMs: 4_000,
+      label: 'the live append arrived as a third group',
+    });
+
+    expect(groups).toEqual([[1, 2], [3], [4, 5]]);
+
+    ref.stop();
+    await sys.terminate();
+  });
+});
+
 describe('ProjectionActor — concurrent writers', () => {
   test('two pids being written concurrently both reach the projection without deadlock', async () => {
     const journal = new InMemoryJournal();
@@ -415,6 +470,112 @@ describe('byTag projection — TagFilter support (#393)', () => {
     expect(seen).toEqual(['kept', 'kept-2']);
 
     ref.stop();
+    await sys.terminate();
+  });
+});
+
+describe('ProjectionActor — the durable-state cursor key stays inside the column', () => {
+  /**
+   * The end-to-end half of the bound `OffsetStoreCompositeKeyBound.test.ts`
+   * pins at the store (#1507).  What it adds is the composition step the
+   * actor performs: `ByPersistenceIdProjectionActor` passes
+   * `(config.name, config.persistenceId)` to the offset store, so the
+   * over-long key is manufactured by the framework out of two arguments the
+   * caller supplied separately and neither of which is itself illegal.
+   *
+   * The absence asserted below — no over-long key reached the backend — is
+   * made observable by a *control* projection on the same journal and the
+   * same backend rather than by a wait.  When the control has delivered, the
+   * pipeline has demonstrably run; anything the subject was going to do it
+   * has had the same chance to do.  A `sleep` here would be a bet on one
+   * machine's scheduling (#418).
+   */
+  const PROJECTION_NAME = 'orders-projection';
+
+  /** Legal on its own (`MAX_PERSISTENCE_ID_LENGTH` is 255); 272 once composed. */
+  const LONG_PERSISTENCE_ID = 'order-'.padEnd(250, 'x');
+
+  /** Records every key the offset store hands the backend. */
+  class RecordingDurableStateStore implements DurableStateStore {
+    readonly keys: string[] = [];
+    private readonly inner = new InMemoryDurableStateStore();
+
+    async upsert<S>(
+      persistenceId: string,
+      expectedRevision: number,
+      state: S,
+      options?: PersistenceOptions,
+    ): Promise<DurableStateRecord<S>> {
+      this.keys.push(persistenceId);
+      return this.inner.upsert<S>(persistenceId, expectedRevision, state, options);
+    }
+
+    async load<S>(
+      persistenceId: string,
+      options?: PersistenceOptions,
+    ): Promise<Option<DurableStateRecord<S>>> {
+      this.keys.push(persistenceId);
+      return this.inner.load<S>(persistenceId, options);
+    }
+
+    async delete(persistenceId: string): Promise<void> {
+      this.keys.push(persistenceId);
+      return this.inner.delete(persistenceId);
+    }
+
+    longestKeyLength(): number {
+      return this.keys.reduce((longest, key) => Math.max(longest, key.length), 0);
+    }
+  }
+
+  test('a 250-character persistenceId never reaches the column, while a fitting one projects', async () => {
+    const journal = new InMemoryJournal();
+    await journal.append('alice', [{ event: { n: 1 } }, { event: { n: 2 } }], 0);
+    await journal.append(LONG_PERSISTENCE_ID, [{ event: { n: 9 } }], 0);
+
+    const backend = new RecordingDurableStateStore();
+    const offsetStore = new DurableStateOffsetStore(backend);
+    const query = new InMemoryQuery(journal);
+    const sys = newSystem('proj-key-bound');
+
+    const controlSeen: number[] = [];
+    const controlOptions = ByPersistenceIdProjectionOptions.create<{ n: number }>()
+      .withName(PROJECTION_NAME)
+      .withQuery(query)
+      .withOffsetStore(offsetStore)
+      .withPersistenceId('alice')
+      .withHandle((ev) => { controlSeen.push(ev.event.n); })
+      .withLiveOptions({ pollIntervalMs: 30 });
+    const controlRef = ProjectionActor.byPersistenceId<{ n: number }>(sys, controlOptions);
+
+    const subjectSeen: number[] = [];
+    const subjectOptions = ByPersistenceIdProjectionOptions.create<{ n: number }>()
+      .withName(PROJECTION_NAME)
+      .withQuery(query)
+      .withOffsetStore(offsetStore)
+      .withPersistenceId(LONG_PERSISTENCE_ID)
+      .withHandle((ev) => { subjectSeen.push(ev.event.n); })
+      .withLiveOptions({ pollIntervalMs: 30 });
+    const subjectRef = ProjectionActor.byPersistenceId<{ n: number }>(sys, subjectOptions);
+
+    await awaitCondition(() => controlSeen.length >= 2, {
+      timeoutMs: 4_000,
+      label: 'the control projection drained its two events through the durable-state cursor',
+    });
+
+    // The whole defect in one assertion: `durable_state.persistence_id` is
+    // VARCHAR(255)/NVARCHAR(255), and the framework must not hand it more.
+    expect(backend.longestKeyLength()).toBeLessThanOrEqual(MAX_PERSISTENCE_ID_LENGTH);
+    expect(backend.keys.some(key => key.includes(LONG_PERSISTENCE_ID))).toBe(false);
+    // A projection that cannot commit its cursor must not run its handler
+    // either: delivering while writing nothing is the at-least-once contract
+    // degraded to at-least-once-forever.
+    expect(subjectSeen).toEqual([]);
+    // ...and the refusal is scoped to the projection that caused it.
+    expect(controlSeen).toEqual([1, 2]);
+
+    controlRef.stop();
+    subjectRef.stop();
     await sys.terminate();
   });
 });

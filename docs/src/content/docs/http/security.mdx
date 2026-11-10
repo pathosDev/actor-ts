@@ -89,9 +89,50 @@ the whole server does.
 
 ## Operational environment
 
-- **TLS terminates at a proxy.** Set [HSTS](/http/middleware/security-headers/)
-  regardless — browsers ignore it over plain HTTP. Don't gate security
+- **TLS terminates at a proxy — or in the process, and the page never said
+  which.** Behind nginx, Caddy or an ingress the app speaks plain HTTP and
+  that stays the production answer: the terminator holds the certificate, and
+  the app sees `X-Forwarded-Proto`, which it never trusts for anything
+  security-relevant on its own.  Two things in this layer assume the https
+  world exists regardless: `Csrf` compares origins against `https` by
+  default, and the `__Host-` cookie prefix it uses requires `Secure`, which
+  is meaningless over plain HTTP.  Both are correct behind a terminator and
+  both fail loudly on a bare quickstart — which is what
+  [`withTls`](/http/overview/#tls-and-http2) exists for: the process itself
+  terminates, on Bun, Node and Deno, so a `Secure` cookie can be exercised
+  without standing up a proxy.  Set [HSTS](/http/middleware/security-headers/)
+  either way — browsers ignore it over plain HTTP.  Don't gate security
   headers on a scheme the app can't see.
+
+  The whole of a minimal terminator, for an app bound with
+  `system.http(8080)` — Caddy provisions the certificate itself and sets
+  `X-Forwarded-Proto` on its own:
+
+  ```text title="Caddyfile"
+  example.com {
+      reverse_proxy 127.0.0.1:8080
+  }
+  ```
+
+  ```nginx title="nginx.conf (server block)"
+  server {
+      listen 443 ssl;
+      server_name example.com;
+      ssl_certificate     /etc/ssl/example.com.pem;
+      ssl_certificate_key /etc/ssl/example.com.key;
+      location / {
+          proxy_pass http://127.0.0.1:8080;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+      }
+  }
+  ```
+
+  What the forwarded headers do here: `X-Forwarded-For` is read only by
+  [`IpAllowlist`](/http/middleware/ip-allowlist/), and only once you have
+  named the proxies; `X-Forwarded-Proto` is read by nothing — `Csrf` gets
+  the scheme from `expectedScheme` instead, precisely because a forwarded
+  scheme is set by whoever sends the request.
 - **Trusting client IPs.** `req.remoteAddress` is the socket peer, not a
   spoofable `X-Forwarded-For` — and "does my proxy overwrite the header" is
   the wrong question, because NGINX, AWS ALB and Cloudflare all **append**
@@ -152,9 +193,10 @@ The server-side copy needs hygiene too, and the usual leak there is a
 connection URL: a rejected option value and the WebSocket client's
 oversize-frame warning both name one, and both are written with the
 userinfo masked. When you log a URL yourself, run it through
-[`redactUrlCredentials` or `redactedUrlLabel`](/reference/utility-helpers/)
-— a password that has reached a log aggregator has to be rotated, not
-deleted.
+[`redactUrlCredentials` or `redactedUrlLabel`](/reference/utility-helpers/),
+or through `redactParsedUrlCredentials` when you hold the `URL` a request
+was made with — a password that has reached a log aggregator has to be
+rotated, not deleted.
 
 ## Redirects
 
@@ -174,19 +216,184 @@ the [Route DSL](/http/route-dsl/).
   it is refused with the same `413 Payload Too Large` whichever backend serves
   it — before the handler runs, and without consulting `withErrorHandler`,
   because a size cap is a transport decision rather than an application error.
-  Raise it where an endpoint genuinely takes more: `withMaxBodyBytes(bytes)` on
-  the Express and Hono backend options, `bodyLimit` in the options bag of
-  `FastifyBackend`. A body that declares an over-cap `Content-Length` is refused
-  before a byte of it is read; a chunked body declares no length, so all three
-  backends count it as it arrives and abandon the read at the cap — the bytes
-  past it are never received.
+  Move it with `actor-ts.http.server.max-content-length` (`withMaxContentLength`
+  in code), which holds on every backend and runtime — lower it where your
+  endpoints take less, raise it where one genuinely takes more. The per-backend
+  knobs remain — `withMaxBodyBytes(bytes)` on the Express and Hono backend
+  options, `bodyLimit` in the options bag of `FastifyBackend` — but beside a set
+  key they must agree with it, or `bind()` refuses the backend rather than hold
+  one cap and ignore the other. A body that declares an over-cap
+  `Content-Length` is refused before a byte of it is read; a chunked body
+  declares no length, so all three backends count it as it arrives and abandon
+  the read at the cap — the bytes past it are never received.
+- **Request headers** are capped by the runtime at **16 KiB** on `node:http`
+  and on Bun, whose cap is the process-wide `--max-http-header-size`.
+  `actor-ts.http.server.max-header-bytes` (`withMaxHeaderBytes` in code) moves
+  it per server wherever actor-ts builds the server — Fastify, Express, and Hono
+  on Node — and a request past it never reaches a handler. Two gaps remain. Hono
+  on Bun or Deno has no per-server header cap to set, so there the key is
+  reported not in effect and `bind()` warns; `Deno.serve`'s own limit let a
+  256 KiB header block through (deno 2.6.8). And on an HTTP/2 listener under
+  Node the cap binds the HTTP/1.1 requests on the port but not an HTTP/2
+  stream's header list — 900 bytes, 4 KiB and 60 KiB lists all passed a 1 KiB
+  cap on node v26.10.0, bounded only by Node's own 64 KiB limit, which neither
+  the cap nor `settings.maxHeaderListSize` lowers — so there the key is
+  reported held for HTTP/1.1 only and `bind()` warns. Bun caps the stream too,
+  counting each field the HTTP/2 way (name, value and 32 bytes, pseudo-headers
+  included), so a header block near the cap that HTTP/1.1 admits can be refused
+  over HTTP/2: under 1 KiB a 900-byte header passed HTTP/1.1 and was reset over
+  HTTP/2 (bun 1.4.2). A reverse proxy in front closes both gaps.
+- **A connection's own time**, which is the bound the rest of this list does
+  not cover: a peer that never finishes sending has no request to time out, so
+  no size cap and no route-level `requestTimeout()` ever sees it. A server bounds the
+  header phase at **60 s** (`actor-ts.http.server.header-timeout` — the
+  slowloris guard, answered `408`) and the whole receive at **300 s**
+  (`request-timeout`). Both bound *receiving* only, so a slow handler, a long
+  poll and an SSE stream are untouched by them. Hono under Bun is the
+  exception, and not because of these keys: there `idle-timeout` is
+  `Bun.serve`'s own whole-connection idle timeout, which counts a request whose
+  handler has not written a byte as idle, so a handler or stream silent for
+  that long is closed without a response. Unset, it is derived from the
+  request deadline so that a `requestTimeout()` 503 is written first — 36 s for
+  the built-in 30 s, rather than Bun's own 10 s, which cut such a request at
+  about 12 s — and a value above `255s` fails `bind()`; see the
+  [Hono backend](/http/backends/hono/). `max-connections` caps
+  how many connections the process accepts at once, and `idle-timeout` how
+  long a quiet connection is held — a keep-alive socket between requests, and
+  an HTTP/2 session with no stream open; both ship unset, so nothing is
+  capped until you say so. **These reach a connection through a `node:http` server**, so
+  Fastify, Express and Hono-on-Node carry them, Hono on Bun carries
+  `idle-timeout` alone — so there it is the only bound on a request whose
+  body stops arriving and on an idle connection, and `0` leaves such a
+  connection open until the client closes it — and Hono on Deno neither
+  — see the [configuration reference](/reference/configuration/) for the table.
+  Where one cannot, `bind()` says so: every bound you set that the backend
+  reports not in effect is named in one warning when the server binds — a bound
+  that holds for only one of the two protocols an HTTP/2 listener speaks with
+  the protocol it does hold for — and the built-in `header-timeout` and
+  `request-timeout` are never among them. On HTTP/1.1, `request-timeout` is
+  enforced on a periodic sweep —
+  `http.createServer`'s `connectionsCheckingInterval`, 30 s by default and not
+  set by actor-ts — so a connection is closed no later than one sweep past the
+  value you set. A bare `node:http` server answers it `408`; the default Fastify
+  backend under Bun closes it with no status line at all. An HTTP/2 stream
+  carries a deadline of its own instead, held to the value — see below. The
+  headers are part of the request, so a `request-timeout` shorter than
+  `header-timeout` is the header deadline as well: actor-ts writes the shorter
+  one to the runtime and arms its own guard with it, which also keeps Node from
+  quietly holding the request open until the longer one.
+
+  **On HTTP/2, both bounds are held by timers of actor-ts's own.**
+  `keepAliveTimeout` and `requestTimeout`, the properties that carry them to an
+  HTTP/1.1 connection, are ones no HTTP/2 session or stream reads: measured on
+  node v26.10.0 and bun 1.4.2, an HTTP/2 session that had finished its only
+  request was still open past 5 s under an 800 ms `idle-timeout`, and a stream
+  whose body stopped after 10 of 1000 announced bytes was still open 12 s later
+  under a 2 s `request-timeout` — as was one trickled a byte every 500 ms.
+
+  - **`request-timeout` bounds each stream's receive.** A stream whose request
+    is still arriving when the deadline passes is answered `408` and reset;
+    measured at 2.0 s for `2s` on both runtimes, stalled or trickled. The
+    deadline ends as soon as the client has finished sending, read or not, so a
+    request received in full is never cut, however long its handler takes — the
+    HTTP/1.1 rule. The stream goes; the session stays for its other streams.
+  - **`idle-timeout` bounds a session with no stream open.** The timer runs
+    while nothing is open and the session is closed with a GOAWAY when it
+    fires; a stream in flight holds it, as a request does an HTTP/1.1
+    keep-alive connection, so a slow handler, a long poll or an SSE stream is
+    never interrupted by it and the bound starts when it ends. It is the same
+    value on both runtimes — 0.81 s and 0.80 s for `800ms` — and a PING frame
+    does not reset it: a client pinging every 300 ms has its idle session
+    closed on time.
+
+  **Left unset**, an idle HTTP/2 session on the default backend is bounded by
+  Fastify's own session timer: **72 s on Node, but 144 s on Bun**, which fires
+  it at twice its value — and on Bun that timer counts a PING frame as
+  activity, so a client pinging once a second held a session with no request
+  on it open for as long as it kept pinging (still open at 170 s, bun 1.4.2).
+  On Hono over Node an unset `idle-timeout` leaves an idle HTTP/2 session
+  bounded by nothing at all. **Set `idle-timeout` on any HTTP/2 listener.**
+
+  **On Bun, an HTTP/1.1 connection on the HTTP/2 listener is bounded by
+  neither.** The listener keeps HTTP/1.1 available on the same port, and Bun
+  hands such a connection to handling that reads neither `keepAliveTimeout`
+  nor `requestTimeout`: a keep-alive HTTP/1.1 connection was still open 8 s
+  after its response under an 800 ms `idle-timeout`, and a stalled HTTP/1.1
+  body 40 s in under a 2 s `request-timeout` (bun 1.4.2) — where Node closes the
+  first at 1.8 s and answers the second `408` at the next sweep. So on Bun the
+  two are reported held for HTTP/2 only and `bind()` warns; `header-timeout`
+  and `max-connections` hold for both protocols there. Where untrusted clients
+  can reach an HTTP/2 listener on Bun, terminate HTTP/1.1 in front of the
+  process or keep the listener HTTP/1.1-only.
+
+  **`header-timeout` is different, and deliberately so: actor-ts arms the
+  deadline itself rather than handing the number to the runtime and hoping.**
+  The property is still written — where a runtime honours it the work happens
+  earlier and more cheaply — but the bound does not depend on that. It cannot:
+  `server.headersTimeout` is accepted and ignored by two of the three supported
+  runtimes. Measured on a bare `node:http` server against a socket that sends a
+  header block and never the terminating blank line, node v26.7.0 answers `408`
+  and closes, bun 1.4.0 enforces nothing at any value — including the `0`
+  documented as disabling it; all of them closed at ~12 s with no `408`, which
+  is Bun's own idle timeout and not this guard — and deno 2.6.8 never closes
+  the connection at all. So the deadline runs from the accepted connection and
+  is cleared the moment a request or a WebSocket upgrade completes its headers,
+  which is what makes the `408` above true on the runtime you are most likely
+  to be on, and makes the number exact rather than rounded up to a sweep.
+
+  On a listener that terminates TLS the handshake counts against the deadline
+  too — a peer that never finishes negotiating is the same attack one layer
+  down, and is hung up on without a status line — and once the handshake is
+  done the `408` goes out inside TLS. On HTTP/2 the first stream's headers
+  clear the deadline, and a session that never opens a stream is closed with a
+  GOAWAY. Node hands the TCP and the TLS socket out as two objects, and an
+  HTTP/2 session arrives as a third on both runtimes, so actor-ts carries the
+  deadline across them by the connection's address and port pair — which is
+  what keeps a healthy HTTPS keep-alive connection or HTTP/2 session from being
+  cut when its deadline would have passed. Bun's HTTPS listener reports a
+  connection only once its handshake is done; there a stalled handshake is
+  bounded by Bun's own ~12 s idle close instead.
+
+  **`max-connections` is the same decision, arrived at from the other
+  direction: actor-ts counts the connections itself.** The property is still
+  set — where a runtime honours it the socket is refused before it reaches us,
+  which is cheaper — but the bound does not depend on that. It cannot: the same
+  runtime release was measured honouring the property on one operating system
+  and ignoring it on another, which is a fine outcome for a tuning hint and not
+  one for the control this page offers as the answer to a connection flood.
+
+  Both rest on the server reporting its accepted connections, which is where
+  they run out. Where a backend exposes no server object at all (Hono on Bun or
+  Deno) there is nothing to hook, and **Deno's `node:http` shim emits no
+  `connection` event** even where a server object exists — so on Deno neither
+  the header deadline nor the connection cap is installed by any backend.
+
+  **A connection that says nothing is the gap that remains, and it is
+  platform-shaped.** Measured on bun 1.4.0 with the runtime installed on both:
+  an `http.Server` emits `connection` for an accepted socket immediately on
+  Windows and on Node, and on Linux only once that socket's **first byte**
+  arrives — until then `getConnections()` answers `0` too, so the connection is
+  invisible to the process rather than merely uncounted. On that pair neither
+  enforcement can act on a silent client: the property is ignored there, and the
+  event has not fired yet.
+
+  That also settles why the header deadline held on the same runner while the
+  cap did not (#1409): a slow-loris writes a partial header block, so its socket
+  speaks and the event fires for it. A cap test that connects and says nothing
+  is asking the Linux server about a connection it does not have.
+
+  So a connection that speaks is capped identically everywhere — every real
+  client — and one that never speaks is bounded by nothing actor-ts can see on
+  that pair. If idle sockets are part of your threat model, pair the cap with a
+  limit that sits below the runtime: an OS-level connection limit, or a reverse
+  proxy (#1505).
 - **WebSocket frames** are capped by `maxFrameBytes` (1 MiB default). The
   framework always refuses an oversize frame before it reaches your actor; on
   most runtime/backend pairs the resolved cap is *also* handed to the runtime's
   own socket, so the frame is refused *while it arrives* rather than after the
   process has buffered it — otherwise a peer could force 16 MiB (Bun) or
   100 MiB (`ws`) of buffering per frame that the framework would then discard.
-  Lowering the cap — per route or via `actor-ts.http.websocket.maxFrameBytes` —
+  Lowering the cap — per route or via `actor-ts.http.websocket.max-frame-bytes` —
   narrows that buffering window with it. **Three places have no transport cap**
   and buffer the frame before rejecting it: Hono on **Deno**, whose
   `upgradeWebSocket` exposes no payload limit at all; **Bun** with the
@@ -225,9 +432,29 @@ structure. See [Static files](/http/static-files/).
 
 ## WebSocket
 
-Wrap a `websocket()` route in `cors(...)` to reject cross-origin upgrades,
-and put auth middleware around it — `withMiddleware` runs at upgrade time,
-so it gates the handshake.
+A `websocket()` route rejects a cross-origin upgrade **by default** —
+`requireSameOrigin` compares the browser's `Origin` against the request's own
+`Host` and answers 403 before the handshake. Name other origins with
+`withAllowedOrigins([...])`, or wrap the route in `cors(...)` for the same
+effect from the middleware side. A client that sends no `Origin` at all — a
+Node, Bun or Deno `WebSocket`, or any server-to-server dialer — is unaffected,
+because Cross-Site WebSocket Hijacking needs a browser and a browser always
+sends the header.
+
+Know what that default does *not* cover. `Origin` and `Host` are both client
+headers, so a page that reaches this server under a name of its own — DNS
+rebinding — presents a matching pair and passes the same-origin arm; the
+comparison is also scheme-blind, an `http://` page on the same `host:port`
+passing it. It buys reachability rather than a session, since no cookies for
+the real host go with it, so what it exposes is a route whose auth *is* the
+network — `IpAllowlist`, or trusting loopback. Pin `withAllowedOrigins([...])`
+on such a route rather than relying on the default alone.
+
+Put auth middleware around the route too — `withMiddleware` runs at upgrade
+time, so it gates the handshake. What it attaches to the request, such as the
+claims [`JwtAuth`](/http/middleware/jwt/) verified, stays on the HTTP side and
+does not reach the connection. And bind the server to loopback unless it is
+meant to be reached from elsewhere.
 
 A `websocket()` route needs no special treatment in the hardening stack
 above: `securityHeaders()`, `requestId()` and the rest may sit over it like
@@ -243,11 +470,13 @@ writes the 101 itself. See [WebSocket](/http/websocket/).
 | Security headers on every response | `withSecurityHeaders(...)` server-wide — `securityHeaders()` covers a subtree, rejections included |
 | HTTPS enforced by the browser | `strictTransportSecurity()` / `withHsts` |
 | Cross-origin controlled | `cors(...)` |
+| WebSocket upgrade origin controlled | nothing — same-origin by default; `withAllowedOrigins(...)` to widen, `withRequireSameOrigin(false)` to opt out |
 | CSRF (browser forms) | `csrfProtection(...)` |
+| API authentication | `JwtAuth(...)` — signature, `exp`, `iss` and `aud` checked against your issuer's keys; `BearerTokenAuth(...)` for a pre-shared operator token |
 | No internal error leaks | `withErrorHandler` + generic bodies |
 | No open redirects | `redirect(...)` — same-origin by default |
 | Request correlation | `requestId()` |
-| Bounded latency | `requestTimeout(...)` |
+| Bounded latency | `requestTimeout(...)` — its deadline also from `actor-ts.http.request-timeout` |
 | Safe file serving | `getFromDirectory` defaults (dotfiles deny, symlink confinement) |
 | Outbound responses bounded | nothing — 30 s and 8 MiB on every `HttpClient` call; per call, per `newClient(...)`, or `actor-ts.http.client` |
 | Outbound redirects bounded | nothing — 5 hops, credentials dropped cross-origin; `redirect: 'error'` to refuse them |
@@ -255,4 +484,5 @@ writes the 101 itself. See [WebSocket](/http/websocket/).
 ## Where to next
 
 - **[CORS](/http/middleware/cors/)** · **[CSRF](/http/middleware/csrf/)** · **[Security headers](/http/middleware/security-headers/)** · **[CSP](/http/middleware/csp/)**
+- **[JWT auth](/http/middleware/jwt/)** · **[Bearer token](/http/middleware/bearer-token/)** · **[Basic auth](/http/middleware/basic-auth/)**
 - **[Error handling](/http/error-handling/)** · **[Static files](/http/static-files/)**

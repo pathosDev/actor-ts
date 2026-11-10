@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import {
   getWorkerBackend,
   resetWorkerBackendCache,
+  resolveWorkerBackend,
   WebWorkerBackend,
   NodeWorkerBackend,
 } from '../../../src/runtime/worker/index.js';
@@ -10,10 +11,12 @@ import {
   type NodeWorkerThread,
 } from '../../../src/runtime/worker/NodeWorkerBackend.js';
 import type {
+  WorkerBackend,
   WorkerCloseEvent,
   WorkerErrorEvent,
   WorkerLike,
   WorkerMessageEvent,
+  WorkerSpawnOptions,
 } from '../../../src/runtime/worker/WorkerBackend.js';
 import { setRuntimeOverride } from '../../../src/runtime/Detect.js';
 
@@ -59,6 +62,142 @@ describe('runtime/worker/getWorkerBackend', () => {
     resetWorkerBackendCache();
     const nodeBackend = await getWorkerBackend();
     expect(nodeBackend).not.toBe(webBackend);
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* The containment declaration (#1288): what the shipped backends say, what  */
+/* the compiler demands of a custom one, and what the resolver does with a   */
+/* `false`.                                                                  */
+/* ------------------------------------------------------------------------ */
+
+/** A `WorkerLike` that does nothing — the resolver never spawns, so none of it is reached. */
+const inertWorker: WorkerLike = {
+  postMessage(): void {},
+  addEventListener(): void {},
+  removeEventListener(): void {},
+  terminate: () => Promise.resolve(),
+};
+
+/** A custom backend under a class name the diagnostic can quote. */
+class UncontainedBackend implements WorkerBackend {
+  readonly containsWorkerErrors = false;
+  spawn(_bootstrap: URL, _options?: WorkerSpawnOptions): WorkerLike { return inertWorker; }
+}
+
+class ContainedBackend implements WorkerBackend {
+  readonly containsWorkerErrors = true;
+  spawn(_bootstrap: URL, _options?: WorkerSpawnOptions): WorkerLike { return inertWorker; }
+}
+
+describe('runtime/worker — the containment declaration (#1288)', () => {
+  test('both shipped backends declare that their error subscription contains the throw', () => {
+    // Pins the declarations to the adapters that earn them: Node forwards to
+    // `on('error')`, the Web adapter cancels the event for Deno — both tested
+    // above.  A backend whose adapter lost that wiring and kept `true` is what
+    // the smoke case exists for; this only keeps the two from drifting apart.
+    expect(new WebWorkerBackend().containsWorkerErrors).toBe(true);
+    expect(new NodeWorkerBackend().containsWorkerErrors).toBe(true);
+  });
+
+  test('a backend without the declaration is not a WorkerBackend — a compile-time fact', () => {
+    // The directive below is the assertion, and `bun test` cannot see it: bun
+    // transpiles without type-checking, so this file passes here whether or
+    // not the member is required.  Only `bun run typecheck:dev`, which
+    // compiles `tests/`, turns a removed member into TS2578 ("unused
+    // '@ts-expect-error' directive") — run it after touching the interface.
+    // @ts-expect-error a backend without containsWorkerErrors is not a WorkerBackend
+    const undeclared: WorkerBackend = { spawn: (): WorkerLike => inertWorker };
+    // Still a real object at runtime — and one the resolver reports as
+    // declaring nothing about containment (below), because the compiler gates
+    // only the TypeScript caller.
+    expect(typeof undeclared.spawn).toBe('function');
+  });
+
+  test('resolveWorkerBackend returns the explicit backend and says nothing about a true', async () => {
+    const reports: string[] = [];
+    const backend = new ContainedBackend();
+    expect(await resolveWorkerBackend(backend, (m) => { reports.push(m); })).toBe(backend);
+    expect(reports).toEqual([]);
+  });
+
+  test('resolveWorkerBackend falls back to the detected backend when none is given', async () => {
+    const reports: string[] = [];
+    const resolved = await resolveWorkerBackend(undefined, (m) => { reports.push(m); });
+    expect(resolved).toBe(await getWorkerBackend());
+    expect(reports).toEqual([]);
+  });
+
+  test('a false is reported once per backend instance, before anything is spawned, naming the backend', async () => {
+    const reports: string[] = [];
+    const backend = new UncontainedBackend();
+    const report = (m: string): void => { reports.push(m); };
+
+    expect(await resolveWorkerBackend(backend, report)).toBe(backend);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toStartWith('worker backend UncontainedBackend declares containsWorkerErrors=false');
+    expect(reports[0]).toContain('will terminate this process');
+    expect(reports[0]).toContain('Failure containment');
+
+    // The latch: a second resolution through the same instance — a respawn,
+    // a second pool sharing the backend — adds no line.
+    expect(await resolveWorkerBackend(backend, report)).toBe(backend);
+    expect(reports).toHaveLength(1);
+
+    // Per instance, not per class: another instance of the same backend is a
+    // different declaration and gets its own line.
+    await resolveWorkerBackend(new UncontainedBackend(), report);
+    expect(reports).toHaveLength(2);
+  });
+
+  test('an anonymous backend is named as such rather than as Object', async () => {
+    const reports: string[] = [];
+    const literal: WorkerBackend = { containsWorkerErrors: false, spawn: (): WorkerLike => inertWorker };
+    await resolveWorkerBackend(literal, (m) => { reports.push(m); });
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toStartWith('an anonymous worker backend declares containsWorkerErrors=false');
+    expect(reports[0]).not.toContain('Object');
+  });
+
+  // The compiler is the gate for a TypeScript caller, and only for one: the
+  // package runs on Node as plain ESM, a cast gets a stub past the check, a
+  // shape copied from an older version predates the member.  At runtime each
+  // of those is a backend that declares *nothing*, and the verification of
+  // #1288 measured that an `=== false` check let every one of them spawn in
+  // silence — the exact silence the issue is titled after, for that class of
+  // consumer.  So anything that is not `true` is reported, with a wording
+  // that says what was found.
+  const undeclaredShapes: ReadonlyArray<[string, () => WorkerBackend]> = [
+    ['no member at all (a plain-JavaScript backend, or a cast)',
+      () => ({ spawn: (): WorkerLike => inertWorker }) as unknown as WorkerBackend],
+    ['containsWorkerErrors: undefined',
+      () => ({ containsWorkerErrors: undefined, spawn: (): WorkerLike => inertWorker }) as unknown as WorkerBackend],
+    ["the string 'false' — an environment variable that never became a boolean",
+      () => ({ containsWorkerErrors: 'false', spawn: (): WorkerLike => inertWorker }) as unknown as WorkerBackend],
+  ];
+  for (const [shape, make] of undeclaredShapes) {
+    test(`a backend with ${shape} is reported once as declaring nothing about containment`, async () => {
+      const reports: string[] = [];
+      const backend = make();
+      const report = (m: string): void => { reports.push(m); };
+      expect(await resolveWorkerBackend(backend, report)).toBe(backend);
+      expect(reports).toHaveLength(1);
+      expect(reports[0]).toStartWith('an anonymous worker backend declares nothing about containment');
+      expect(reports[0]).toContain('containsWorkerErrors');
+      expect(reports[0]).toContain('will terminate this process');
+      // Same latch as a `false`: the second resolution through the instance is silent.
+      await resolveWorkerBackend(backend, report);
+      expect(reports).toHaveLength(1);
+    });
+  }
+
+  test('a class that forgot the member is named, and the wording is not the false one', async () => {
+    class ForgetfulBackend { spawn(): WorkerLike { return inertWorker; } }
+    const reports: string[] = [];
+    await resolveWorkerBackend(new ForgetfulBackend() as unknown as WorkerBackend, (m) => { reports.push(m); });
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toStartWith('worker backend ForgetfulBackend declares nothing about containment');
+    expect(reports[0]).not.toContain('containsWorkerErrors=false');
   });
 });
 
@@ -283,10 +422,13 @@ describe('runtime/worker/WebWorkerAdapter event mapping', () => {
       await worker.terminate();
       const elapsed = performance.now() - startedAt;
       expect(native.terminateCalls).toBe(1);
-      // The elapsed time IS the assertion: it resolves via the bound, and the
-      // bound is short enough that an eight-worker teardown is not seconds long.
+      // Lower bound only, and it is the assertion: `terminate()` resolved via
+      // its own fallback bound rather than via a confirmation the runtime never
+      // sent, and nothing but elapsed time can show that.  The upper bound that
+      // used to follow was a different claim — that an eight-worker teardown is
+      // not seconds long — and it measured the machine rather than the fallback.
+      // That belongs in a benchmark; here it only made the test load-sensitive.
       expect(elapsed).toBeGreaterThanOrEqual(200);
-      expect(elapsed).toBeLessThan(1_500);
     });
   });
 });

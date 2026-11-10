@@ -32,7 +32,7 @@ tests/integration/brokers/
 │   └── persistence-contract/     # the contract's per-store scenario modules
 ├── package.json                  # test-only dep manifest, see below
 ├── README.md                     # ← this file
-├── s3/                           # B.2 — MinIO (Closes #20, refs #297)
+├── s3/                           # B.2 — Silo, a MinIO fork (Closes #20, refs #297, #1795)
 ├── mqtt/                         # B.3 — Mosquitto (Closes #21)
 ├── kafka/                        # B.4 — Redpanda (Closes #22)
 ├── amqp/                         # B.5 — RabbitMQ (Closes #23)
@@ -107,6 +107,14 @@ that a consumer who skipped the optional peer cannot resolve.  Drift in a
 stub is caught here, against the live broker, rather than at compile time
 in a tree that could not compile it (#676).
 
+That last sentence was aspirational for NATS until #1526.  This suite ran
+its server without `-js`, so JetStream, key-value and the object store had
+no live coverage at all, and the nats.js v2-to-v3 split would have gone
+unnoticed by every gate.  `nats/scenarios/00-driver-shape.ts` is the shape
+the sentence promises: it imports the real modules and asserts the surface
+the stubs declare, and it is the cheapest such probe to copy into another
+suite (`cassandra/scenarios/01-driver-shape.ts` is the other one).
+
 `cassandra-driver` is the case where "here" is not a preference but the
 only available home, and it is worth knowing before someone tries to
 "simplify" it back to a root devDependency.  Its 4.9.0 release hard-pins
@@ -180,7 +188,7 @@ You need Docker (Desktop on macOS/Windows, Engine on Linux).
 Nothing else.  One suite, named by its directory here:
 
 ```bash
-bun run test:integration:broker s3             # MinIO + S3ObjectStorageBackend
+bun run test:integration:broker s3             # Silo + S3ObjectStorageBackend
 bun run test:integration:broker mqtt           # Mosquitto + MqttActor
 bun run test:integration:broker kafka          # Redpanda + KafkaActor
 bun run test:integration:broker amqp           # RabbitMQ + AmqpActor
@@ -231,6 +239,37 @@ broken suite cannot strand every later suite's containers and volumes.
 as a job matrix.  Skipped on PRs touching only docs / unit tests
 (same `paths:` filter as `integration.yml`).
 
+## Image pins
+
+Every `image:` in the compose files names a release, and every
+`Dockerfile.runner` pins its `oven/bun` base to a digest (#1597).  Both
+used to float — `:latest`, and a minor tag the publisher moves on every
+rebuild — on the argument that an upstream regression should surface as
+soon as it ships rather than when someone remembers a pin.  Dependabot
+does the remembering now: `.github/dependabot.yml` carries a
+`docker-compose` entry over these directories and a `docker` entry over
+the runner images, so a new release arrives as a PR that runs this
+matrix, and a regression is attributed to the bump instead of turning
+the nightly red underneath a run.  The pins themselves were resolved by
+digest — each is the release `latest` pointed at when it was written,
+so the switch changed what is tested exactly once, for libsql-server,
+whose `latest` on ghcr.io is a main-branch build rather than a release.
+
+Two pins Dependabot cannot follow and that move by hand, like Silo's
+(#1795): `mcr.microsoft.com/mssql/server:2022-CU<n>-ubuntu-22.04` (the
+cumulative-update number sits in what Dependabot treats as the tag's
+suffix) and `yugabytedb/yugabyte:<version>-b<n>` (the build suffix
+changes per release).  The runner base image is pinned to the *digest*
+on purpose: the `docker` entry ignores the major and minor of `oven/bun`,
+so `1.4.x` rebuilds flow as digest bumps and the minor moves with
+`.bun-version` in one reviewed commit — the policy in
+`tests/integration/Dockerfile.node`.
+
+`tests/unit/ci/WorkflowHygiene.test.ts` asserts all of it: every
+Dockerfile and compose file here is named by exactly one Dependabot entry
+of the matching ecosystem, every `FROM` carries a digest, and no `image:`
+is `latest` or `*-latest`.
+
 ## Adding a new broker suite
 
 1. Pick a docker-compose-ready image (`bitnami/<x>`, `eclipse-mosquitto`,
@@ -246,7 +285,10 @@ as a job matrix.  Skipped on PRs touching only docs / unit tests
    `.github/workflows/integration-brokers.yml`.  Not optional:
    `tests/unit/ci/IntegrationBrokerSuites.test.ts` fails when the matrix and
    the tree disagree in either direction, so a missing leg is a red `bun test`
-   rather than a suite that silently never runs.
+   rather than a suite that silently never runs.  Then add the directory to
+   the `docker` and `docker-compose` entries in `.github/dependabot.yml` —
+   `tests/unit/ci/WorkflowHygiene.test.ts` fails until both name it — and
+   pin the image to a release (see *Image pins*).
 5. The scenario uses `waitForPort(host, port)` from `lib/WaitForPort.ts`
    to guard against the "container started, broker not ready yet"
    race that's the single most common source of flake.

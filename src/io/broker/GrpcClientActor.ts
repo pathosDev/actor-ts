@@ -1,12 +1,15 @@
 import { match } from 'ts-pattern';
+import { ConfigError } from '../../config/Config.js';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
+import { DeadLetter } from '../../SystemMessages.js';
 import { Lazy } from '../../util/Lazy.js';
 import { randomId } from '../../util/RandomString.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import { GrpcClientOptionsValidator } from './GrpcClientOptions.js';
-import type { GrpcClientOptions, GrpcClientOptionsType } from './GrpcClientOptions.js';
+import type { GrpcChannelOptions, GrpcClientOptions, GrpcClientOptionsType } from './GrpcClientOptions.js';
 
 /**
  * Inbound gRPC reply / stream frame delivered to subscribers.  The
@@ -44,13 +47,14 @@ export type GrpcInbound =
   | RpcErrorMessage;
 
 /**
- * Write capability for a stream the *caller* drives.
+ * Write capability for a stream the *caller* drives — the client-stream
+ * and bidi classes both.
  *
  * Two fields, two jobs.  `streamId` is the correlation id: it is what
  * this stream's `stream-data` / `stream-end` / `stream-error` frames
  * carry, so one collector can multiplex several concurrent streams.
  * `token` is the capability: `clientStreamSend` / `clientStreamClose`
- * find the stream by token, never by id.
+ * and `bidiSend` / `bidiClose` find the stream by token, never by id.
  *
  * The split matters because a `tell` carries no verified sender.  A
  * sequential id doubles as an address — knowing one hands you the next
@@ -112,8 +116,26 @@ type ClientStreamSendCommand = {
 };
 type ClientStreamCloseCommand = { readonly kind: 'clientStreamClose'; readonly handle: GrpcStreamHandle };
 type BidiStartCommand = { readonly kind: 'bidiStart'; readonly method: string; readonly target: ActorRef<unknown> };
-type BidiSendCommand = { readonly kind: 'bidiSend'; readonly streamId: number; readonly chunk: unknown };
-type BidiCloseCommand = { readonly kind: 'bidiClose'; readonly streamId: number };
+type BidiSendCommand = {
+  readonly kind: 'bidiSend';
+  readonly handle: GrpcStreamHandle;
+  readonly chunk: unknown;
+};
+type BidiCloseCommand = { readonly kind: 'bidiClose'; readonly handle: GrpcStreamHandle };
+
+/**
+ * The four commands that address an already-open caller-driven stream by
+ * handle — client-stream and bidi, send and close.
+ *
+ * Grouped because the handle read is the same on all four, and so is the
+ * guard in front of it: they are the only commands whose first act is to
+ * dereference something the *caller* supplied.
+ */
+type CallerStreamCommand =
+  | ClientStreamSendCommand
+  | ClientStreamCloseCommand
+  | BidiSendCommand
+  | BidiCloseCommand;
 
 /** Outbound command — what the actor accepts to fire RPC calls. */
 export type GrpcClientCommand =
@@ -136,53 +158,64 @@ type OutboundOp = {
  * bidi-stream.  All inbound data (replies, stream chunks) goes to the
  * per-call `target` actor as `GrpcInbound` messages.
  *
- * Client streams: `clientStreamStart` returns nothing — the actor
+ * Caller-driven streams — client-stream and bidi alike — open the same
+ * way: `clientStreamStart` / `bidiStart` return nothing, and the actor
  * delivers a `'stream-started'` frame to the target carrying a
  * {@link GrpcStreamHandle}.  Subsequent `clientStreamSend` /
- * `clientStreamClose` pass that handle back.  The single server
- * response arrives as an ordinary `'reply'`, which is what a
- * client-streaming RPC returns; a failure arrives as `'rpc-error'`.
+ * `clientStreamClose` and `bidiSend` / `bidiClose` pass that handle
+ * back, and the registry each resolves against is keyed by the handle's
+ * token, so the lookup *is* the ownership check.
+ *
+ * A client-streaming RPC answers once: its single server response
+ * arrives as an ordinary `'reply'`, a failure as `'rpc-error'`.  A bidi
+ * RPC answers with a stream, so its responses arrive as
+ * `'stream-data'` / `'stream-end'` / `'stream-error'` frames carrying
+ * the handle's `streamId`.
  *
  * Deadlines: `deadlineMs` bounds a **unary** call and nothing else.
  * A gRPC deadline covers the whole RPC, so one value cannot both fail
  * a request/response call promptly and let a long-lived stream live —
  * see `buildCallOptions`.
- *
- * Bidi streams still use the older in-band handshake: `bidiStart`
- * publishes a `'stream-data'` frame whose chunk is `{ __streamId }`,
- * and `bidiSend` / `bidiClose` address that bare number.  That
- * handshake is a known defect — the id is guessable and the lookup has
- * no ownership check — tracked as #788; the two primitives the client
- * stream introduces (a dedicated `'stream-started'` frame and a
- * capability handle) are what it should adopt.
  */
 export class GrpcClientActor
   extends BrokerActor<GrpcClientOptionsType, GrpcClientCommand, OutboundOp> {
   private serviceClient: GrpcServiceClient | null = null;
   private nextStreamId = 1;
-  private readonly bidiStreams = new Map<number, { call: GrpcDuplexCall; target: ActorRef<unknown> }>();
-  /** Keyed by `GrpcStreamHandle.token` — the key *is* the ownership check. */
-  private readonly clientStreams = new Map<string, { call: GrpcWritableCall; target: ActorRef<unknown> }>();
+  /*
+   * Both registries are keyed by `GrpcStreamHandle.token` — the key *is* the
+   * ownership check — and both entries carry the call and nothing else.
+   *
+   * They used to copy the opening command's `target` in beside it, which is
+   * what #788's own commit body admitted when it said the entries "recorded
+   * the owning target and never consulted it".  The copy was invisible rather
+   * than merely unused: `stream.call` is the only read either map has, the
+   * reply address a stream actually spends is the `op.target` its own
+   * listeners and callbacks close over, and those are reachable *through* the
+   * stored call — so the copy did not even pin an `ActorRef` the entry was not
+   * already holding.
+   *
+   * Nor is it a placeholder for a reader that is wanted.  An owner whose
+   * stream goes with the connection is told by the call's *own* terminal
+   * event — `'stream-end'` / `'stream-error'` for a bidi call, the response
+   * callback's `'reply'` / `'rpc-error'` for a client-streaming one — and
+   * every one of those closes over `op.target` without consulting the map.
+   * `disconnectImplementation` deliberately sends no frame of its own, and
+   * the documented answer to a reconnect is to re-issue the call on
+   * `BrokerConnected` rather than to wait for one (#1510).
+   */
+  private readonly bidiStreams = new Map<string, { call: GrpcDuplexCall }>();
+  private readonly clientStreams = new Map<string, { call: GrpcWritableCall }>();
 
   constructor(options: GrpcClientOptions = {}) { super(options); }
 
-  protected configKey(): string { return ConfigKeys.io.broker.grpc.client; }
+  protected configKey(): string { return ConfigKeys.io.broker.grpc.client.root; }
   protected builtInDefaultOptions(): Partial<GrpcClientOptionsType> {
     return { credentials: { kind: 'insecure' }, deadlineMs: 30_000 };
   }
   protected readOptionsFromConfig(config: Config): Partial<GrpcClientOptionsType> {
-    const out: { -readonly [K in keyof GrpcClientOptionsType]?: GrpcClientOptionsType[K] } = {};
-    if (config.hasPath('protoPath')) {
-      const protoPathList = config.getList('protoPath');
-      if (protoPathList.length === 1 && typeof protoPathList[0] === 'string') out.protoPath = protoPathList[0];
-      else out.protoPath = config.getStringList('protoPath');
-    }
-    if (config.hasPath('packageName')) out.packageName = config.getString('packageName');
-    if (config.hasPath('serviceName')) out.serviceName = config.getString('serviceName');
-    if (config.hasPath('endpoint')) out.endpoint = config.getString('endpoint');
-    if (config.hasPath('deadlineMs')) out.deadlineMs = config.getDuration('deadlineMs');
-    return out;
+    return readGrpcClientOptionsFromConfig(config);
   }
+  protected override retiredLeaves(): RetiredLeaves { return RETIRED_GRPC_CLIENT_LEAVES; }
   protected requiredOptions(): ReadonlyArray<keyof GrpcClientOptionsType> {
     return ['protoPath', 'packageName', 'serviceName', 'endpoint'];
   }
@@ -226,8 +259,31 @@ export class GrpcClientActor
       throw new Error(`grpc: service '${this.options.serviceName}' not found in package '${this.options.packageName}'`);
     }
 
-    const creds = this.buildCredentials(grpc);
-    return new ServiceConstructor(this.options.endpoint!, creds);
+    return this.instantiateServiceClient(ServiceConstructor, this.buildCredentials(grpc));
+  }
+
+  /**
+   * Construct the proto-loaded service client.
+   *
+   * Split out of {@link createServiceClient} because everything above it
+   * needs the two `@grpc/*` modules and this step does not: an override
+   * that supplies its own constructor can call straight through, and the
+   * unit suite does, which is what makes `channelOptions` reaching
+   * grpc-js's third constructor slot assertable without installing the
+   * peers (#790).
+   *
+   * That slot is the whole hardening surface: message-size caps,
+   * keepalive, connection age and idle reaping are channel arguments,
+   * not per-call options, so nothing this actor exposes elsewhere can
+   * reach them.  `undefined` when unset is deliberate — grpc-js then
+   * applies its own defaults, which is not the same as an empty object
+   * on every release.
+   */
+  protected instantiateServiceClient(
+    ServiceConstructor: GrpcServiceConstructor,
+    credentials: GrpcCredentialsLike,
+  ): GrpcServiceClient {
+    return new ServiceConstructor(this.options.endpoint!, credentials, this.options.channelOptions);
   }
 
   protected async connectImplementation(): Promise<void> {
@@ -266,27 +322,82 @@ export class GrpcClientActor
   }
 
   /*
-   * An unknown stream — a stale id, an unknown token — is a no-op on
-   * every one of these paths: the stream is already gone (the server
-   * closed it, or the connection dropped and cleared the map), and the
-   * caller has been told via 'stream-end' / 'stream-error' / 'reply'.
+   * The four send/close paths answer two different failures two
+   * different ways, and the distinction is the point.
+   *
+   * A **well-formed handle naming an unknown stream** — a stale id, a
+   * token the registry no longer holds — is a silent no-op: the stream
+   * is already gone (the server closed it, or the connection dropped and
+   * cleared the map), the caller has been told via 'stream-end' /
+   * 'stream-error' / 'reply', and the race between that notice and a
+   * write already in flight happens in correct use.
+   *
+   * A **command carrying no usable handle at all** is not that.  Nothing
+   * `createGrpcStreamHandle` mints can look like it, so it is a caller
+   * defect, and it becomes a `DeadLetter` — see
+   * {@link resolveStreamToken}.  What neither is, any more, is a thrown
+   * `TypeError`.
    */
 
+  /**
+   * Token naming the stream a caller-driven send/close addresses, or
+   * `null` when the command carries none.
+   *
+   * `handle` is declared non-optional and is read here as if it were not,
+   * because the declaration is the only thing that ever guaranteed it and
+   * a declaration is not a runtime check.  Every message into this actor
+   * arrives through `tell`, which callers reach across an `as never`
+   * cast, so a JavaScript caller, a deserialised message and a stale
+   * handle arriving as `null` all reach this read.
+   *
+   * Before the guard the bare `command.handle.token` threw inside
+   * `dispatchOutgoing`, and `BrokerActor._dispatchOne` reads *any* throw
+   * from there as a dropped connection: it unshifts the offending
+   * envelope back at the head of the outbound buffer and calls
+   * `handleConnectionLost`, after which `_drainBuffer` re-dispatches the
+   * very same envelope on every reconnect.  One malformed `tell` was
+   * therefore an unbounded reconnect loop — measured at 17 service-client
+   * constructions in three seconds — with every legitimate write stuck
+   * behind the poisoned head.  Keying the registry on the token (#788,
+   * #1040) is what made that reachable: the id-keyed lookup it replaced
+   * never dereferenced anything.
+   *
+   * The answer is a dead letter rather than silence because the two
+   * failures above must not be indistinguishable, and rather than a bare
+   * `log.warn` because `deadLetters` is the framework's existing channel
+   * for a message that went nowhere: it is observable programmatically
+   * (event stream, `DeadLetterQueue`), it is throttled, and it keeps the
+   * payload out of the log line — which a hand-rolled warning about a
+   * caller-supplied command would not.
+   */
+  private resolveStreamToken(command: CallerStreamCommand): string | null {
+    const token: unknown = (command.handle as GrpcStreamHandle | undefined)?.token;
+    if (typeof token === 'string') return token;
+    this.system.deadLetters.tell(new DeadLetter(command, null, this.self));
+    return null;
+  }
+
   private onBidiSend(command: BidiSendCommand): void {
-    const stream = this.bidiStreams.get(command.streamId);
+    const token = this.resolveStreamToken(command);
+    if (token === null) return;
+    const stream = this.bidiStreams.get(token);
     if (stream) stream.call.write(command.chunk);
   }
 
   private onBidiClose(command: BidiCloseCommand): void {
-    const stream = this.bidiStreams.get(command.streamId);
+    const token = this.resolveStreamToken(command);
+    if (token === null) return;
+    const stream = this.bidiStreams.get(token);
     if (stream) {
       try { stream.call.end(); } catch { /* ignore */ }
-      this.bidiStreams.delete(command.streamId);
+      this.bidiStreams.delete(token);
     }
   }
 
   private onClientStreamSend(command: ClientStreamSendCommand): void {
-    const stream = this.clientStreams.get(command.handle.token);
+    const token = this.resolveStreamToken(command);
+    if (token === null) return;
+    const stream = this.clientStreams.get(token);
     if (stream) stream.call.write(command.chunk);
   }
 
@@ -299,10 +410,12 @@ export class GrpcClientActor
    * does not look the stream back up.
    */
   private onClientStreamClose(command: ClientStreamCloseCommand): void {
-    const stream = this.clientStreams.get(command.handle.token);
+    const token = this.resolveStreamToken(command);
+    if (token === null) return;
+    const stream = this.clientStreams.get(token);
     if (stream) {
       try { stream.call.end(); } catch { /* ignore */ }
-      this.clientStreams.delete(command.handle.token);
+      this.clientStreams.delete(token);
     }
   }
 
@@ -327,8 +440,8 @@ export class GrpcClientActor
    * `deadlineMs` is one knob: a value generous enough for an hour-long
    * bidi stream is useless on a unary call, and a value right for a
    * unary call kills the stream.  Bounding a stream whose peer has gone
-   * quiet is a channel-level concern (HTTP/2 keepalive), tracked
-   * separately as #790.
+   * quiet is a channel-level concern (HTTP/2 keepalive) and belongs in
+   * `channelOptions` — see {@link GrpcChannelOptions}.
    */
   private buildCallOptions(): GrpcCallOptions {
     const deadlineMs = this.options.deadlineMs;
@@ -398,10 +511,28 @@ export class GrpcClientActor
       if (err) op.target.tell({ kind: 'rpc-error', target: op.target, error: err } as never);
       else op.target.tell({ kind: 'reply', target: op.target, response } as never);
     });
-    if (!settled) this.clientStreams.set(handle.token, { call, target: op.target });
+    if (!settled) this.clientStreams.set(handle.token, { call });
     op.target.tell({ kind: 'stream-started', target: op.target, handle } as never);
   }
 
+  /**
+   * Open a bidirectional call.
+   *
+   * The handshake is deliberately *out of band*.  It used to ride in as
+   * an ordinary `'stream-data'` frame whose chunk was `{ __streamId }`,
+   * which put the framework's own handshake on the same envelope as
+   * server payload: `__streamId` is a legal protobuf field name, so a
+   * server message carrying one was indistinguishable from the
+   * handshake, and the id it named addressed *any* of this client's
+   * streams.  A dedicated `'stream-started'` frame cannot be forged by
+   * a server chunk, and the token on the handle it carries is what the
+   * send/close registry is keyed by — so a stolen or guessed id buys
+   * nothing (#788).
+   *
+   * `streamId` still rides on every `'stream-data'` / `'stream-end'` /
+   * `'stream-error'` frame: it is the correlation id one collector
+   * multiplexes on, and it is not a capability.
+   */
   private onBidiStart(op: BidiStartCommand): void {
     const client = this.serviceClient;
     if (!client) return;
@@ -410,22 +541,22 @@ export class GrpcClientActor
       op.target.tell({ kind: 'rpc-error', target: op.target, error: new Error(`unknown method: ${op.method}`) } as never);
       return;
     }
-    const streamId = this.nextStreamId++;
+    const handle = createGrpcStreamHandle(this.nextStreamId++);
+    const streamId = handle.streamId;
     const call = invoke.call(client);
-    this.bidiStreams.set(streamId, { call, target: op.target });
+    this.bidiStreams.set(handle.token, { call });
     call.on('data', (chunk: unknown) => {
       op.target.tell({ kind: 'stream-data', target: op.target, streamId, chunk } as never);
     });
     call.on('end', () => {
       op.target.tell({ kind: 'stream-end', target: op.target, streamId } as never);
-      this.bidiStreams.delete(streamId);
+      this.bidiStreams.delete(handle.token);
     });
     call.on('error', (err: Error) => {
       op.target.tell({ kind: 'stream-error', target: op.target, streamId, error: err } as never);
-      this.bidiStreams.delete(streamId);
+      this.bidiStreams.delete(handle.token);
     });
-    // Send the streamId back so the caller can address future bidiSend/Close.
-    op.target.tell({ kind: 'stream-data', target: op.target, streamId, chunk: { __streamId: streamId } } as never);
+    op.target.tell({ kind: 'stream-started', target: op.target, handle } as never);
   }
 
   private buildCredentials(grpc: GrpcModule): GrpcCredentialsLike {
@@ -439,6 +570,58 @@ export class GrpcClientActor
   }
 }
 
+/* ----------------------------- HOCON reader ----------------------------- */
+
+/**
+ * The camelCase spellings the gRPC client's own leaves had before #1443,
+ * mapped to the leaves that replaced them — see `BrokerActor.retiredLeaves`.
+ */
+const RETIRED_GRPC_CLIENT_LEAVES: RetiredLeaves = {
+  protoPath: 'proto-path',
+  packageName: 'package-name',
+  serviceName: 'service-name',
+  deadlineMs: 'deadline',
+};
+
+/**
+ * Read the `actor-ts.io.broker.grpc.client` block's own leaves off the system
+ * config, at the full paths `keys` holds; the reconnect / breaker / buffer
+ * leaves are `BrokerActor`'s.  An unset leaf is omitted.  `deadline` is a
+ * duration, so `2s` and a bare millisecond count read alike.  `credentials`
+ * is certificate material and `channelOptions` grpc-js's own keys, so
+ * neither has a leaf.
+ */
+export function readGrpcClientOptionsFromConfig(
+  config: Config,
+  keys: typeof ConfigKeys.io.broker.grpc.client = ConfigKeys.io.broker.grpc.client,
+): Partial<GrpcClientOptionsType> {
+  const out: { -readonly [K in keyof GrpcClientOptionsType]?: GrpcClientOptionsType[K] } = {};
+  if (config.hasPath(keys.protoPath)) out.protoPath = readProtoPath(config, keys.protoPath);
+  if (config.hasPath(keys.packageName)) out.packageName = config.getString(keys.packageName);
+  if (config.hasPath(keys.serviceName)) out.serviceName = config.getString(keys.serviceName);
+  if (config.hasPath(keys.endpoint)) out.endpoint = config.getString(keys.endpoint);
+  if (config.hasPath(keys.deadline)) out.deadlineMs = config.getDuration(keys.deadline);
+  return out;
+}
+
+/**
+ * Read `proto-path`: one file as a string, or several as a list, and a
+ * one-element list as the string it holds.  HOCON offers no accessor that
+ * says which of the two it was given, so the list is asked for first and a
+ * single path is what a refusal leaves — the string form is the one the docs
+ * show, and reading only lists refused it.
+ */
+function readProtoPath(config: Config, path: string): string | ReadonlyArray<string> {
+  let paths: string[];
+  try {
+    paths = config.getStringList(path);
+  } catch (e) {
+    if (e instanceof ConfigError) return config.getString(path);
+    throw e;
+  }
+  return paths.length === 1 ? paths[0]! : paths;
+}
+
 /* --------------------------- shared internals -------------------------- */
 
 /*
@@ -450,8 +633,12 @@ export class GrpcClientActor
  * shape, they are not a re-declaration of its API.
  */
 
-interface GrpcServiceConstructor {
-  new (endpoint: string, credentials: GrpcCredentialsLike): GrpcServiceClient;
+export interface GrpcServiceConstructor {
+  new (
+    endpoint: string,
+    credentials: GrpcCredentialsLike,
+    channelOptions?: GrpcChannelOptions,
+  ): GrpcServiceClient;
 }
 
 export interface GrpcServiceClient {
@@ -515,7 +702,7 @@ export interface GrpcBidiFunction {
   call(client: GrpcServiceClient): GrpcDuplexCall;
 }
 
-type GrpcCredentialsLike = { /* opaque token, set by grpc.credentials.* */ };
+export type GrpcCredentialsLike = { /* opaque token, set by grpc.credentials.* */ };
 
 interface GrpcModule {
   loadPackageDefinition(def: unknown): unknown;

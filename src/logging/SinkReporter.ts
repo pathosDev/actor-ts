@@ -1,3 +1,5 @@
+import type { Clock } from '../Clock.js';
+import { systemClock } from '../Clock.js';
 import { SINK_REPORT_INTERVAL_MS } from './Constants.js';
 
 /**
@@ -24,7 +26,7 @@ import { SINK_REPORT_INTERVAL_MS } from './Constants.js';
  *
  *     [actor-ts] log sink "gelf": queue full — dropped 1240 records (1239 similar suppressed)
  *
- * `now` and `write` are injectable so the throttling is testable without a
+ * The clock and `write` are injectable so the throttling is testable without a
  * clock or a patched console.
  */
 export class SinkReporter {
@@ -34,7 +36,7 @@ export class SinkReporter {
   constructor(
     private readonly sinkName: string,
     private readonly intervalMs: number = SINK_REPORT_INTERVAL_MS,
-    private readonly now: () => number = Date.now,
+    private readonly clock: Clock = systemClock,
     private readonly write: (line: string) => void = (line) => console.error(line),
   ) {}
 
@@ -44,7 +46,7 @@ export class SinkReporter {
    * when it renders to something useful — an error message, a status code.
    */
   report(reason: string, detail?: unknown): void {
-    const at = this.now();
+    const at = this.clock.now();
     const last = this.lastReportMs.get(reason);
     if (last !== undefined && at - last < this.intervalMs) {
       this.suppressed.set(reason, (this.suppressed.get(reason) ?? 0) + 1);

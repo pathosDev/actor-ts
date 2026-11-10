@@ -47,6 +47,7 @@ import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { Cluster } from '../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../src/cluster/ClusterOptions.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
+import { Member } from '../../../../src/cluster/Member.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import { StartShardingOptions } from '../../../../src/cluster/sharding/StartShardingOptions.js';
 import { hashShardId } from '../../../../src/cluster/sharding/ShardAllocator.js';
@@ -58,7 +59,16 @@ import type {
   CoordinatorStateData,
   CoordinatorStateStore,
 } from '../../../../src/cluster/sharding/CoordinatorState.js';
+import { ShardRegionRegistrationRefused } from '../../../../src/cluster/ClusterEvents.js';
+import { MetricsExtensionId, metricsOf } from '../../../../src/metrics/MetricsExtension.js';
+import { Config } from '../../../../src/config/Config.js';
 import { ConfigKeys } from '../../../../src/config/ConfigKeys.js';
+import {
+  healthChecksOf,
+  isHealthy,
+  shardRegionCheckName,
+  type HealthCheckResult,
+} from '../../../../src/management/index.js';
 import type { ActorRef } from '../../../../src/ActorRef.js';
 import type { LogContextData } from '../../../../src/LogContext.js';
 import { LogLevel, type Logger } from '../../../../src/Logger.js';
@@ -162,11 +172,16 @@ type Node = {
 };
 
 /** The coordinator's allocation state, read straight off the actor instance. */
-type CoordinatorState = {
-  readonly regions: Map<string, { readonly path: string; readonly shards: Set<number> }>;
+interface CoordinatorState {
+  readonly regions: Map<string, { readonly node: NodeAddress; readonly path: string; readonly shards: Set<number> }>;
   readonly shardHome: Map<number, string>;
   readonly refusedRegions: Set<string>;
-};
+  candidates(): NodeAddress[];
+  tryAllocate(shardId: number): void;
+}
+
+/** The cluster's membership map, written directly to stage a member no event announces. */
+type ClusterInternals = { readonly members: Map<string, Member> };
 
 let running: Node | null = null;
 
@@ -183,9 +198,11 @@ async function startNode(
   systemName: string,
   port: number,
   store?: FakeCoordinatorStateStore,
+  systemConfig?: Config,
 ): Promise<Node> {
   const log = new RecordingLogger();
   const systemOptions = ActorSystemOptions.create().withLogger(log);
+  if (systemConfig !== undefined) systemOptions.withConfig(systemConfig);
   const system = ActorSystem.create(systemName, systemOptions);
   const clusterOptions = ClusterOptions.create()
     .withHost('h')
@@ -220,6 +237,19 @@ async function startNode(
     });
   }
 
+  if (store !== undefined) {
+    // While the gated load is outstanding the coordinator places nothing — it
+    // waits for its state before allocating (#952, #1188) — so an entity
+    // cannot come up yet.  The region's registration is the proof both actors
+    // are live instead: it sets the coordinator's node, the one origin a
+    // directive is accepted from, and it proves the matching count passes.
+    await awaitCondition(() => [...coordinatorState(node).regions.values()]
+      .some((info) => info.node.equals(cluster.selfAddress)), {
+      timeoutMs: 5_000,
+      label: 'the local region registered, so region and coordinator are both live',
+    });
+    return node;
+  }
   // One real round trip, so both actors have finished `preStart`: the region's
   // registration is what sets the coordinator's node — the one origin a
   // directive is accepted from — and it also proves the matching count passes.
@@ -397,6 +427,114 @@ describe('a refused region gives up the shards it already hosts (#633)', () => {
   }, 20_000);
 });
 
+/** Refusals recorded for `TYPE_NAME` on this node, as the metric sees them. */
+function refusalsCounted(node: Node): number {
+  return metricsOf(node.system)
+    .counter('cluster_sharding_registrations_refused_total', {
+      type: TYPE_NAME, reason: 'num-shards-mismatch',
+    }).value;
+}
+
+describe('a refusal is observable without scraping the log (#1300)', () => {
+  test('it increments the counter, publishes an event and fills the readout', async () => {
+    const node = await startNode('refusal-observable', 47_610);
+    // Metrics are off unless a system turns them on, which is also the posture
+    // of anyone who would alert on this counter.  Enabling it here is what
+    // makes the reading below a measurement rather than a default.
+    node.system.extension(MetricsExtensionId).enable();
+    const seen: ShardRegionRegistrationRefused[] = [];
+    node.cluster.subscribe((event) => {
+      if (event instanceof ShardRegionRegistrationRefused) seen.push(event);
+    });
+
+    // The counter has to be read *before* the refusal too: a metric that was
+    // already non-zero would make the assertion below pass on the wrong thing.
+    expect(refusalsCounted(node)).toBe(0);
+
+    tellAsCoordinator(node, {
+      kind: 'sharding.RegisterRefused',
+      coordinator: '/system/cluster/sharding/coordinator-entity',
+      numShards: NUM_SHARDS,
+      regionNumShards: NUM_SHARDS + 1,
+    });
+
+    await awaitCondition(() => seen.length > 0, {
+      timeoutMs: 4_000, label: 'the refusal was published as a cluster event',
+    });
+
+    expect(refusalsCounted(node)).toBe(1);
+    expect(seen[0]?.type).toBe(TYPE_NAME);
+    expect(seen[0]?.reason).toBe('num-shards-mismatch');
+    // Both counts, because "refused" on its own is the report that sends an
+    // operator back to the log this replaces.
+    expect(seen[0]?.regionNumShards).toBe(NUM_SHARDS + 1);
+    expect(seen[0]?.coordinatorNumShards).toBe(NUM_SHARDS);
+
+    const readout = node.cluster.sharding.registrationRefusal(TYPE_NAME);
+    expect(readout?.reason).toBe('num-shards-mismatch');
+    expect(readout?.regionNumShards).toBe(NUM_SHARDS + 1);
+    expect(node.cluster.sharding.isRegistered(TYPE_NAME)).toBe(false);
+  }, 20_000);
+
+  test('a normal registration does none of it', async () => {
+    const node = await startNode('refusal-negative', 47_611);
+    // Enabled here too, so the zero below means "counted nothing" rather than
+    // "counted nothing because metrics were off" — which is the reading that
+    // would make this case pass no matter what the refusal path did.
+    node.system.extension(MetricsExtensionId).enable();
+    const seen: ShardRegionRegistrationRefused[] = [];
+    node.cluster.subscribe((event) => {
+      if (event instanceof ShardRegionRegistrationRefused) seen.push(event);
+    });
+
+    // Waiting for the *positive* signal is what makes the three absences below
+    // mean "the registration path ran and refused nothing" rather than "the
+    // registration had not happened yet".
+    await awaitCondition(() => node.cluster.sharding.isRegistered(TYPE_NAME), {
+      timeoutMs: 4_000, label: 'the region registered with the coordinator',
+    });
+
+    expect(refusalsCounted(node)).toBe(0);
+    expect(seen).toHaveLength(0);
+    expect(node.cluster.sharding.registrationRefusal(TYPE_NAME)).toBeNull();
+  }, 20_000);
+});
+
+describe('a refusal keeps a configured readiness check failing (#1465)', () => {
+  test('the shard-region check stays registered and reports the refusal, both counts named', async () => {
+    // Configured, not hand-registered: the check `Cluster.join` installed for
+    // the type, which is the one a deployment relies on to keep a refused node
+    // out of rotation.  A refused region keeps running and keeps accepting
+    // traffic for the type, everything it accepts buffers, and nothing will
+    // ever be allocated to it — routing to this node is the one thing the
+    // load balancer must stop doing.
+    const systemConfig = Config.parseString(`${ConfigKeys.sharding.healthcheck.names} = ["${TYPE_NAME}"]`);
+    const node = await startNode('refusal-readiness', 47_612, undefined, systemConfig);
+    const name = shardRegionCheckName(TYPE_NAME);
+    const readinessOf = async (): Promise<HealthCheckResult | undefined> =>
+      (await healthChecksOf(node.system).checkReadiness()).find((result) => result.name === name);
+    await awaitCondition(async () => (await readinessOf())?.status === true, {
+      timeoutMs: 4_000, label: 'the configured check passed once the region registered',
+    });
+
+    tellAsCoordinator(node, {
+      kind: 'sharding.RegisterRefused',
+      coordinator: '/system/cluster/sharding/coordinator-entity',
+      numShards: NUM_SHARDS,
+      regionNumShards: NUM_SHARDS + 1,
+    });
+
+    await awaitCondition(async () => (await readinessOf())?.status === false, {
+      timeoutMs: 4_000, label: 'the configured check went red on the refusal',
+    });
+    const result = await readinessOf();
+    expect(result?.detail).toContain(`refused this node's region for '${TYPE_NAME}'`);
+    expect(result?.detail).toContain(`configured with ${NUM_SHARDS + 1} shards`);
+    expect(result?.detail).toContain(`governs the type with ${NUM_SHARDS}`);
+    expect(isHealthy(await healthChecksOf(node.system).checkReadiness())).toBe(false);
+  }, 20_000);
+});
+
 describe('a coordinator-state snapshot cannot route around the refusal (#633)', () => {
   test('a snapshot taken under a matching numShards is still adopted', async () => {
     // The positive control for the three cases below: the load path has to keep
@@ -509,6 +647,77 @@ describe('a coordinator-state snapshot cannot route around the refusal (#633)', 
     for (const [, key] of state.shardHome) {
       expect(key).not.toBe(keyFor(address, refusedPath));
     }
+  }, 20_000);
+
+  test('a seeded region refused after the load is no placement candidate', async () => {
+    // The opposite order to the case above, and the one the check inside the
+    // load loop cannot see: the snapshot is adopted first and the region's own
+    // `Register` is refused afterwards.  The refusal records the key and replies,
+    // and leaves the seeded entry where it is — so a candidate set built from
+    // `regions` alone kept offering it to the strategy, and every shard hashed
+    // onto it was homed to a region that hashes entity ids under another count.
+    const systemName = 'snapshot-seeded-then-refused';
+    const port = 47_606;
+    // On a host that sorts after this node's `h`, so the staged member below
+    // never takes the leadership away from the coordinator under test.
+    const peer = new NodeAddress(systemName, 'peer', 2_551);
+    const peerKey = keyFor(peer, GHOST_PATH);
+    const store = new FakeCoordinatorStateStore(
+      {
+        leader: addressOf(systemName, port).toString(),
+        takenAt: 0,
+        numShards: NUM_SHARDS,
+        regions: [{ key: peerKey, node: peer.toJSON(), path: GHOST_PATH, proxy: false, shards: [] }],
+        shardHome: [],
+      },
+      true,
+    );
+    const node = await startNode(systemName, port, store);
+
+    // `loadCoordinatorState` keeps only the regions of `up` members, so the peer
+    // is one before the load is let through.  Written straight into the map:
+    // no event announces it, and nothing in this single-node cluster reverts it.
+    (node.cluster as unknown as ClusterInternals).members.set(peer.toString(), new Member(peer, 'up', 1));
+    store.open();
+    await awaitCondition(() => coordinatorState(node).regions.has(peerKey), {
+      timeoutMs: 4_000,
+      label: 'the snapshot seeded the peer region',
+    });
+
+    // The peer's own registration, refused over its count.  Wrapped as a frame
+    // authenticated as the peer — what the envelope route stamps on a frame that
+    // arrived over the peer's connection — so it passes the authority gate and
+    // reaches the count check, the one place a refusal is decided.
+    refFor(node, coordinatorSegments(systemName, TYPE_NAME)).tell(new AuthenticatedShardingMessage(peer, {
+      kind: 'sharding.Register',
+      region: GHOST_PATH,
+      node: peer.toJSON(),
+      proxy: false,
+      hostedShards: [],
+      numShards: NUM_SHARDS + 1,
+    }));
+    await awaitCondition(() => coordinatorState(node).refusedRegions.has(peerKey), {
+      timeoutMs: 4_000,
+      label: 'the peer region was refused',
+    });
+    // The precondition the defect needs: refusing leaves the seeded entry behind.
+    const state = coordinatorState(node);
+    expect(state.regions.has(peerKey)).toBe(true);
+
+    // Every shard nobody holds yet.  Under the default strategy the odd ids hash
+    // onto the second of two candidates, and the peer sorts second.
+    for (let shardId = 0; shardId < NUM_SHARDS; shardId++) {
+      if (!state.shardHome.has(shardId)) state.tryAllocate(shardId);
+    }
+
+    const homedToRefused = Array.from(state.shardHome.entries())
+      .filter(([, key]) => key === peerKey)
+      .map(([shardId]) => shardId);
+    expect(homedToRefused).toEqual([]);
+    // Placed, not merely kept off the refused region: refusing the placement
+    // after the strategy chose it would leave those shards with no home at all.
+    expect(state.shardHome.size).toBe(NUM_SHARDS);
+    expect(state.candidates().map(String)).not.toContain(peer.toString());
   }, 20_000);
 
   test('the snapshot the coordinator writes carries the count it hashed with', async () => {

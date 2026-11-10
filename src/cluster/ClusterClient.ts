@@ -42,26 +42,34 @@
  * all — the connection, not the payload, is what a reply is routed on.
  */
 
-import { HELLO_TIMEOUT_MS } from './Constants.js';
+import { CLUSTER_WIRE_VERSION, MIN_CLUSTER_WIRE_VERSION, wireVersionRefusal } from './WireVersion.js';
 import { getTcpBackend, type TcpSocketLike, type TlsTransportOptionsType } from '../runtime/tcp/index.js';
+import type { Config } from '../config/Config.js';
 import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
+import { armChainedTimeout, type Cancellable } from '../Scheduler.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
 import { randomUuid } from '../util/RandomString.js';
 import { safeStringify } from '../util/SafeStringify.js';
 import { NodeAddress } from './NodeAddress.js';
-import { encodeFrame, FrameDecoder, type WireMessage, type HelloMessage, type HelloAcknowledgmentMessage } from './Protocol.js';
+import { encodeFrame, FrameDecoder, type WireMessage, type HelloMessage, type HelloAcknowledgmentMessage, type HelloRefusedMessage } from './Protocol.js';
 import { validateWireFrame } from './WireValidation.js';
 import type {
   ClusterClientEnvelopeMessage,
   ClusterClientReplyMessage,
 } from './ClusterClientReceptionist.js';
-import { ClusterClientOptionsValidator } from './ClusterClientOptions.js';
+import {
+  ClusterClientOptionsValidator,
+  DEFAULT_CLUSTER_CLIENT_CONNECT_TIMEOUT_MS,
+  DEFAULT_CLUSTER_CLIENT_SYSTEM_NAME,
+  withClusterClientConfigDefaults,
+} from './ClusterClientOptions.js';
 import type { ClusterClientOptions, ClusterClientOptionsType } from './ClusterClientOptions.js';
 
 type PendingAsk = {
   readonly resolve: (value: unknown) => void;
   readonly reject: (err: Error) => void;
-  readonly timer: ReturnType<typeof setTimeout>;
+  /** The ask's deadline; cancelled by whatever settles the ask first. */
+  readonly timer: Cancellable;
 };
 
 /**
@@ -126,6 +134,7 @@ export class ClusterClient {
   private readonly identity: NodeAddress;
   private readonly tls: TlsTransportOptionsType | null;
   private readonly askTimeoutMs: number;
+  private readonly connectTimeoutMs: number;
   private readonly log: Logger;
   private socket: TcpSocketLike | null = null;
   private decoder = new FrameDecoder();
@@ -138,11 +147,28 @@ export class ClusterClient {
 
   private readonly options: ClusterClientOptionsType;
 
-  constructor(options: ClusterClientOptions) {
-    const resolvedOptions = options as ClusterClientOptionsType;
+  /**
+   * @param options  Explicit options — the highest-precedence layer.
+   * @param config   The configuration `actor-ts.cluster.client` is read from.
+   *   Defaults to {@link Config.load}, the same chain `ActorSystem.create`
+   *   uses: a `ClusterClient` holds no `ActorSystem`, so unlike every other
+   *   config consumer in the framework there is no `system.config` above it,
+   *   and without a self-load `new ClusterClient({})` could not be configured
+   *   at all.  `readWorkerClusterOptionsFromConfig` makes the same call for
+   *   the same reason.
+   *
+   *   Pass one explicitly to make a client independent of whatever
+   *   `application.conf` sits in the working directory — which is what the
+   *   unit tests do, so a stray file cannot decide whether they pass.
+   */
+  constructor(options: ClusterClientOptions, config?: Config) {
+    const resolvedOptions = withClusterClientConfigDefaults(
+      options as Partial<ClusterClientOptionsType>,
+      config,
+    );
     this.options = resolvedOptions;
     new ClusterClientOptionsValidator().validate(resolvedOptions);
-    const sysName = resolvedOptions.systemName ?? 'cluster-client';
+    const sysName = resolvedOptions.systemName ?? DEFAULT_CLUSTER_CLIENT_SYSTEM_NAME;
     this.contactPoints = resolvedOptions.contactPoints.map((s) => {
       const withSys = s.includes('@') ? s : `${sysName}@${s}`;
       return NodeAddress.parse(withSys);
@@ -151,9 +177,12 @@ export class ClusterClient {
       host: '127.0.0.1',
       port: syntheticClientPort(),
     };
-    this.identity = new NodeAddress(sysName, id.host, id.port);
+    // A run of its own, as every node on cluster wire v2 names one (#823).
+    this.identity = new NodeAddress(sysName, id.host, id.port, NodeAddress.mintIncarnation());
     this.tls = resolvedOptions.tls ?? null;
     this.askTimeoutMs = resolvedOptions.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
+    this.connectTimeoutMs =
+      resolvedOptions.connectTimeoutMs ?? DEFAULT_CLUSTER_CLIENT_CONNECT_TIMEOUT_MS;
     this.log = resolvedOptions.logger ?? new ConsoleLogger(LogLevel.Warn, 'cluster-client');
   }
 
@@ -181,6 +210,9 @@ export class ClusterClient {
    * Send a message and wait for a reply.  Resolves with the reply body
    * on success, rejects with an Error on path-not-found / timeout /
    * cluster-side ask failure.
+   *
+   * A deadline of any length is waited out in full, one past the host timer
+   * ceiling (~24.9 days) included — see {@link armChainedTimeout}.
    */
   async ask<R = unknown>(
     targetPath: string,
@@ -203,7 +235,14 @@ export class ClusterClient {
     };
     return new Promise<R>((resolve, reject) => {
       const ms = timeoutMs ?? this.askTimeoutMs;
-      const timer = setTimeout(() => {
+      // Chained rather than one `setTimeout`: a host timer fires a delay past
+      // its ceiling (~24.9 days) at once — after 1 ms on Bun and Node — and
+      // `ask-timeout` is refused only when it is not positive, so a 30-day
+      // deadline used to reject the ask almost as soon as it was sent.  The
+      // chain arms one host timer for anything shorter, so the common case
+      // keeps the timer it had; a network round trip dwarfs the one object
+      // more it allocates.
+      const timer = armChainedTimeout(() => {
         this.pending.delete(askId);
         reject(new Error(`ClusterClient.ask timed out after ${ms}ms (path=${targetPath})`));
       }, ms);
@@ -219,7 +258,7 @@ export class ClusterClient {
   async close(): Promise<void> {
     this.stopped = true;
     for (const [, p] of this.pending) {
-      clearTimeout(p.timer);
+      p.timer.cancel();
       p.reject(new Error('ClusterClient closed'));
     }
     this.pending.clear();
@@ -254,9 +293,12 @@ export class ClusterClient {
       ]!;
       try {
         const sock = await new Promise<TcpSocketLike>((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error(
-            `ClusterClient connect to ${target} timed out after ${HELLO_TIMEOUT_MS}ms`,
-          )), HELLO_TIMEOUT_MS);
+          // Chained for the reason `ask` gives: `connect-timeout` is refused
+          // only when it is not positive, and one host timer would give up on
+          // a contact point a millisecond into a 30-day wait.
+          const timer = armChainedTimeout(() => reject(new Error(
+            `ClusterClient connect to ${target} timed out after ${this.connectTimeoutMs}ms`,
+          )), this.connectTimeoutMs);
 
           let openSock: TcpSocketLike | null = null;
           backend.connect({
@@ -267,9 +309,14 @@ export class ClusterClient {
               onOpen: (s) => {
                 openSock = s;
                 // Send hello.
-                const hello: HelloMessage = { kind: 'hello', self: this.identity.toJSON() };
+                const hello: HelloMessage = {
+                  kind: 'hello',
+                  self: this.identity.toJSON(),
+                  wireVersion: CLUSTER_WIRE_VERSION,
+                  minWireVersion: MIN_CLUSTER_WIRE_VERSION,
+                };
                 try { s.write(encodeFrame(hello)); } catch (e) {
-                  clearTimeout(timer);
+                  timer.cancel();
                   reject(e as Error);
                 }
               },
@@ -277,19 +324,19 @@ export class ClusterClient {
                 this.onData(s, chunk, (peer) => {
                   this.contactPointPeer = peer;
                   this.socket = s;
-                  clearTimeout(timer);
+                  timer.cancel();
                   resolve(s);
                 });
               },
               onClose: (_s) => this.onSocketClose(),
               onError: (_s, err) => {
-                clearTimeout(timer);
+                timer.cancel();
                 if (openSock === null) reject(err);
                 else this.log.warn(`ClusterClient socket error`, err);
               },
             },
           }).catch((err) => {
-            clearTimeout(timer);
+            timer.cancel();
             reject(err as Error);
           });
         });
@@ -335,8 +382,21 @@ export class ClusterClient {
         this.log.warn(`ClusterClient: ignoring malformed frame — ${checked.problem}`);
         continue;
       }
+      if (checked.message.kind === 'hello-refused') {
+        const refused = checked.message as HelloRefusedMessage;
+        this.log.warn(
+          `ClusterClient: contact point ${NodeAddress.fromJSON(refused.self)} refused the handshake `
+          + `(it speaks cluster wire v${refused.minWireVersion}..v${refused.wireVersion}): ${refused.reason}`,
+        );
+        continue;
+      }
       if (checked.message.kind === 'hello-ack') {
         const ack = checked.message as HelloAcknowledgmentMessage;
+        const refusal = wireVersionRefusal({ wireVersion: ack.wireVersion }, ack.self);
+        if (refusal !== null) {
+          this.log.warn(`ClusterClient: handshake with ${NodeAddress.fromJSON(ack.self)} refused: ${refusal}`);
+          continue;
+        }
         onHelloAcknowledgment(NodeAddress.fromJSON(ack.self));
         continue;
       }
@@ -365,7 +425,7 @@ export class ClusterClient {
     const pending = this.pending.get(reply.askId);
     if (!pending) return;
     this.pending.delete(reply.askId);
-    clearTimeout(pending.timer);
+    pending.timer.cancel();
     if (reply.ok) {
       pending.resolve(reply.body);
     } else {
@@ -388,7 +448,7 @@ export class ClusterClient {
     this.decoder = new FrameDecoder();
     // Pending asks fail — the user can retry, which will reconnect.
     for (const [id, p] of this.pending) {
-      clearTimeout(p.timer);
+      p.timer.cancel();
       p.reject(new Error('ClusterClient: connection closed before reply arrived'));
       void id;
     }

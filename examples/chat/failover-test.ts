@@ -1,6 +1,10 @@
 /**
  * Manual end-to-end failover verification.
  *
+ * The three backends this spawns inherit its environment, and each
+ * refuses to start without a session-token secret (#791):
+ *
+ *   export CHAT_ALLOW_DEMO_SECRET=1   # or CHAT_TOKEN_SECRET
  *   bun examples/chat/failover-test.ts
  *
  * What it does (no test framework — plain script with assertions):

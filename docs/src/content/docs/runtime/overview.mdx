@@ -61,6 +61,7 @@ What does differ:
 | **WebSocket server** | `Bun.serve` (built-in) | `ws` (peer dep) | `Deno.serve` (Hono) |
 | **HTTP server** | Fastify / Bun.serve / Express | Fastify / Express | Fastify |
 | **File I/O** | `Bun.file` / `node:fs` | `node:fs` | `Deno.open` |
+| **Worker threads** | Web `Worker` | `node:worker_threads` (`parentPort` on the worker side) | Web `Worker` |
 | **Test runner** | `bun:test` | `node:test` / vitest / jest | `Deno.test` |
 
 See the
@@ -100,7 +101,7 @@ For production, **pin runtime versions** in your container
 image:
 
 ```dockerfile
-FROM oven/bun:1.4.0    # explicit tag, no `latest`
+FROM oven/bun:1.4.2    # explicit tag, no `latest`
 ```
 
 ## When to deploy on each

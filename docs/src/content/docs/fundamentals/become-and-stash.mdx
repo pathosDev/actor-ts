@@ -204,7 +204,7 @@ unstashAll(): void;
 readonly stashSize: number;
 ```
 
-Four details that matter:
+Five details that matter:
 
 - **`stash()` must be called from inside a user-message handler.**
   It parks the *currently-handled* message.  Calling it from
@@ -226,6 +226,15 @@ Four details that matter:
   the older stashed ones) and throws `MailboxFullError` under
   `reject`, leaving the batch stashed.  See
   [Mailboxes](/fundamentals/mailboxes/#mailboxes--stash).
+- **A death-watch `Terminated` is the one message that does not come
+  back.**  `watch(ref)` registers an interest that the death itself
+  consumes, so the replayed notification reaches an actor that is no
+  longer watching — and it becomes a
+  [dead letter](/operations/dead-letters/) instead of a second
+  delivery.  `watchWith(ref, message)` is the form that round-trips:
+  what gets parked there is a message from your own protocol, which the
+  stash treats like any other.  See
+  [Death watch](/fundamentals/death-watch/).
 
 ### `stash` + `become` — the canonical combo
 

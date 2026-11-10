@@ -13,10 +13,20 @@
  */
 import type { CompiledEndpoint, Route } from '../Route.js';
 import type { HttpMethod, HttpRequest, HttpResponse } from '../Types.js';
+import { ConfigError, type Config } from '../../config/Config.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
+import { MAXIMUM_ECHOED_CORS_HEADERS_LENGTH } from '../Constants.js';
 import { applyHeaders, appendVary, readHeader } from './Headers.js';
-import { CorsOptionsValidator, type CorsOptions, type CorsOptionsType, type CorsOrigin } from './CorsOptions.js';
+import {
+  CORS_WILDCARD_ORIGIN,
+  CorsOptionsValidator,
+  DEFAULT_CORS_CREDENTIALS,
+  type CorsOptions,
+  type CorsOptionsType,
+  type CorsOrigin,
+} from './CorsOptions.js';
 
-/** Resolved CORS policy stored on the `cors` Route node. */
+/** Resolved CORS policy — what {@link expandCors} decorates responses from. */
 export type CorsRouteOptions = {
   readonly origins: CorsOrigin;
   readonly methods?: ReadonlyArray<HttpMethod>;
@@ -27,44 +37,251 @@ export type CorsRouteOptions = {
 };
 
 /**
- * Apply the CORS policy to `child`'s subtree.  Validates the options up
- * front: `origins` is required, and `credentials` cannot be combined with
- * `'*'` (the Fetch spec forbids `Access-Control-Allow-Origin: *` with
- * credentials).
+ * Apply the CORS policy to `child`'s subtree.
+ *
+ * The options are carried on the node **unresolved** and merged with
+ * `actor-ts.http.cors` by {@link resolveCorsPolicy} when the tree is compiled
+ * (#878).  They cannot be resolved here: a route tree is built before any
+ * `ActorSystem` exists, so this function has no configuration to merge and no
+ * way to tell "the caller set nothing" from "the caller set nothing *and* the
+ * deployment set nothing either".
+ *
+ * What still happens here is the half that needs no configuration — the
+ * options a caller actually wrote are validated against each other, so
+ * `withAnyOrigin().withCredentials()` throws at construction as it always has.
+ * Only the **required-`origins`** check moved to the compile step, because a
+ * config file is now allowed to be the sole source of `origins`.
  */
 export function cors(options: CorsOptions, child: Route): Route {
-  const resolvedOptions = options as Partial<CorsOptionsType>;
-  if (resolvedOptions.origins === undefined) {
-    throw new Error('cors: origins is required — call withOrigins(...), withAnyOrigin(), or withOriginPredicate(...)');
-  }
-  new CorsOptionsValidator().validate(resolvedOptions);
-  const settings: CorsRouteOptions = {
-    origins: resolvedOptions.origins,
-    methods: resolvedOptions.methods,
-    allowedHeaders: resolvedOptions.allowedHeaders,
-    exposedHeaders: resolvedOptions.exposedHeaders,
-    credentials: resolvedOptions.credentials ?? false,
-    maxAge: resolvedOptions.maxAge,
+  const routeOptions = options as Partial<CorsOptionsType>;
+  new CorsOptionsValidator().validate(routeOptions);
+  return { kind: 'cors', options: routeOptions, child };
+}
+
+/**
+ * Merge a `cors()` node's route options with `actor-ts.http.cors` — route
+ * options > HOCON > built-in defaults, per field, `undefined` on the higher
+ * layer falling through rather than shadowing.
+ *
+ * `config` is optional because `compile()` is a public export that predates
+ * the configuration layer: a caller compiling a tree outside an `ActorSystem`
+ * gets exactly the pre-#878 behaviour, which is the built-in defaults and
+ * whatever the route named.
+ *
+ * All six leaves are read here; only two of them ship a value in
+ * `reference.conf`.  The other four are comment-only there because a published
+ * literal would be worse than no key at all: `methods` and `allowedHeaders`
+ * have *computed* defaults (the methods registered at each pattern, and the
+ * echoed request headers) that a fleet-wide literal would override, `maxAge`
+ * unset means no `Access-Control-Max-Age` header is sent at all, and a shipped
+ * `origins` would satisfy the required-origins guard below for every route in
+ * the process — turning a misconfigured `cors({}, routes)` from a loud error
+ * into a silent deny-all.
+ */
+export function resolveCorsPolicy(options: Partial<CorsOptionsType>, config?: Config): CorsRouteOptions {
+  const fromConfig: Partial<CorsOptionsType> = config === undefined ? {} : readCorsOptionsFromConfig(config);
+  const merged: Partial<CorsOptionsType> = {
+    origins: options.origins ?? fromConfig.origins,
+    methods: options.methods ?? fromConfig.methods,
+    allowedHeaders: options.allowedHeaders ?? fromConfig.allowedHeaders,
+    exposedHeaders: options.exposedHeaders ?? fromConfig.exposedHeaders,
+    credentials: options.credentials ?? fromConfig.credentials,
+    maxAge: options.maxAge ?? fromConfig.maxAge,
   };
-  return { kind: 'cors', settings, child };
+  if (merged.origins === undefined) {
+    throw new Error(
+      'cors: origins is required — call withOrigins(...), withAnyOrigin(), or '
+      + `withOriginPredicate(...), or set ${ConfigKeys.http.cors.origins} in your configuration`,
+    );
+  }
+  new CorsOptionsValidator().validate(merged);
+  return {
+    origins: merged.origins,
+    methods: merged.methods,
+    allowedHeaders: merged.allowedHeaders,
+    exposedHeaders: merged.exposedHeaders,
+    credentials: merged.credentials ?? DEFAULT_CORS_CREDENTIALS,
+    maxAge: merged.maxAge,
+  };
+}
+
+/**
+ * The `actor-ts.http.cors` layer, as a partial — an unset leaf is left out of
+ * the result, so the layer below it is reached rather than shadowed by a key
+ * present as `undefined`.
+ *
+ * Values are read raw and left to {@link CorsOptionsValidator} on the merged
+ * result, the same shape `resolveWebsocketPolicy` uses, with one exception:
+ * `origins` is the one field a configuration file must not be able to widen,
+ * so its check is here and throws a `ConfigError` naming the key.  Here rather
+ * than in a caller, because this function is exported as a seam of its own:
+ * whatever reads the block through it gets the refusal with it.
+ */
+export function readCorsOptionsFromConfig(config: Config): Partial<CorsOptionsType> {
+  const keys = ConfigKeys.http.cors;
+  if (!config.hasPath(keys.root)) return {};
+  const out: { -readonly [K in keyof CorsOptionsType]: CorsOptionsType[K] } = {};
+  if (config.hasPath(keys.origins)) out.origins = configuredOrigins(config, keys.origins);
+  if (config.hasPath(keys.methods)) out.methods = config.getStringList(keys.methods) as HttpMethod[];
+  if (config.hasPath(keys.allowedHeaders)) out.allowedHeaders = config.getStringList(keys.allowedHeaders);
+  if (config.hasPath(keys.exposedHeaders)) out.exposedHeaders = config.getStringList(keys.exposedHeaders);
+  if (config.hasPath(keys.credentials)) out.credentials = config.getBoolean(keys.credentials);
+  // `getInt`, never `getDuration`.  The field is a count of SECONDS written
+  // straight into `Access-Control-Max-Age`, while `getDuration` answers in
+  // milliseconds — so reading `1h` that way would emit `3600000`, a 1000x
+  // error.  A bare integer it is; HttpConfigDefaults.test.ts refuses a
+  // duration string for this leaf, which is what catches the wrong accessor.
+  if (config.hasPath(keys.maxAge)) out.maxAge = config.getInt(keys.maxAge);
+  return out;
+}
+
+/**
+ * The configured allowlist, with the wildcard refused.
+ *
+ * `withAnyOrigin()` is documented as the explicit opt-in — "must be explicit,
+ * no accidental wildcard" — and #128 was filed because CORS defaults were too
+ * permissive.  A config file that can write `origins = ["*"]` re-opens exactly
+ * that: one line in an `application.conf`, applying to every `cors()` route in
+ * the process, turning an allowlist into "everyone".  So the wildcard has no
+ * path through HOCON at all, and neither does the predicate arm, which is a
+ * function and could not have one.
+ */
+function configuredOrigins(config: Config, key: string): ReadonlyArray<string> {
+  const origins = config.getStringList(key);
+  if (origins.includes(CORS_WILDCARD_ORIGIN)) {
+    throw new ConfigError(
+      `Config at "${key}" must not contain "${CORS_WILDCARD_ORIGIN}" — allowing every origin is `
+      + 'code-only (withAnyOrigin()), so that a configuration file cannot widen a route\'s CORS '
+      + 'policy to any origin.',
+    );
+  }
+  return origins;
 }
 
 function isAllowed(origins: CorsOrigin, origin: string): boolean {
-  if (origins === '*') return true;
+  if (origins === CORS_WILDCARD_ORIGIN) return true;
   if (typeof origins === 'function') {
     try { return origins(origin); } catch { return false; }
   }
   return origins.includes(origin);
 }
 
-/** Echo the request origin, or literal `*` only when wildcard AND not credentialed. */
-function allowOriginValue(settings: CorsRouteOptions, origin: string): string {
-  return settings.origins === '*' && !settings.credentials ? '*' : origin;
+/**
+ * Is `origin` a value this middleware may write back into a response header?
+ *
+ * The check is a **round trip through the URL parser**, not a pattern: an
+ * origin is well-formed exactly when the parser's own serialisation of it is
+ * the string it was handed.  That is stricter than a regular expression and
+ * cheaper to trust, because every way of being malformed shows up the same
+ * way — the parser strips ASCII tab and newline, lower-cases the scheme and
+ * host, drops a trailing slash, and answers `null` for an opaque origin, so
+ * anything carrying those differs from its own round trip.  Measured
+ * identical on bun 1.4.0 and node v26.7.0 across fourteen cases.
+ *
+ * The literal `null` is admitted because it is a real `Origin` a browser
+ * sends — a sandboxed iframe, a `data:` document, a redirected cross-origin
+ * form post — and a middleware that refused it would deny requests the Fetch
+ * spec expects it to answer.
+ *
+ * Deliberately *not* a normaliser.  A browser compares the value it receives
+ * against the origin it sent, byte for byte, so echoing a repaired spelling
+ * fails the check on the client anyway while looking, from the server side,
+ * as though the request had been allowed.
+ */
+function isEchoableOrigin(origin: string): boolean {
+  if (origin === OPAQUE_ORIGIN) return true;
+  try {
+    return new URL(origin).origin === origin;
+  } catch {
+    return false;
+  }
 }
 
-/** Never echo raw client bytes into a response header: keep only token chars, cap length. */
-function sanitiseRequestHeaders(value: string): string {
-  return value.replace(/[^A-Za-z0-9,\s-]/g, '').slice(0, 1024);
+/**
+ * The value for `Access-Control-Allow-Origin`, or `null` when there is none
+ * that can be written safely.
+ *
+ * Two of the three configurations cannot reach the second case, and saying
+ * which bounds what this guard is for.  `withOrigins(...)` matches with
+ * `origins.includes(origin)`, so a matched origin *is* one of the configured
+ * strings; `withAnyOrigin()` answers the `*` literal, and the credentialed
+ * combination that would fall through to an echo is refused at construction
+ * because the Fetch spec forbids it.  Only `withOriginPredicate(...)` echoes
+ * text nothing constrained: the predicate answers a boolean about a string it
+ * was handed, and before #1516 that string went into the header verbatim —
+ * `Origin: https://evil\r\nSet-Cookie: stolen=1.example` came back out of the
+ * synthesised OPTIONS handler unchanged.
+ *
+ * Nothing could split a response with it today, for the reasons the sibling
+ * guard on the echoed header list records (#792): every runtime's request
+ * parser rejects a bare CR/LF, and `setHeader` / `Headers.set` reject one on
+ * the way out.  It is closed here for that commit's own stated reason — an
+ * echo that is load-bearing must not depend on the layers beneath it.
+ */
+function allowOriginValue(settings: CorsRouteOptions, origin: string): string | null {
+  if (settings.origins === CORS_WILDCARD_ORIGIN && !settings.credentials) return CORS_WILDCARD_ORIGIN;
+  return isEchoableOrigin(origin) ? origin : null;
+}
+
+/**
+ * The `Origin` a browser sends for a request whose origin is opaque — a
+ * sandboxed iframe, a `data:` document, a cross-origin form post that
+ * redirected.  The string `null`, not the value: it arrives as three ASCII
+ * characters in a header.
+ *
+ * It lives here rather than in `CorsOptions.ts` because it is not the default
+ * of any option — it is a value the wire carries, which the file that reads
+ * the wire has to recognise.
+ */
+const OPAQUE_ORIGIN = 'null';
+
+/**
+ * RFC 7230 `tchar` — the alphabet of a header *name*, which is the only thing
+ * `Access-Control-Request-Headers` carries.  Deliberately the same production
+ * as `COOKIE_NAME_RE` in `../Cookies.ts`; both validate an HTTP token.
+ */
+const REQUEST_HEADER_TOKEN = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
+
+/**
+ * Echo the client's requested header names back, keeping only the elements
+ * that are legal tokens and bounding the result at
+ * {@link MAXIMUM_ECHOED_CORS_HEADERS_LENGTH}.  Never echoes raw client bytes.
+ *
+ * Named for what it does — it *filters* a list — rather than for what its
+ * predecessor did.  "Sanitise" describes a scrub, and the scrub is precisely
+ * the shape #792 replaced.
+ *
+ * The value is a comma-separated list of header *names*, so it is validated as
+ * one — element by element, an element that is not a token dropped whole —
+ * rather than scrubbed character by character.  Its predecessor did the latter
+ * and got it backwards (#792): `value.replace(/[^A-Za-z0-9,\s-]/g, '')` is a
+ * *negated* class, so every character `\s` matches is a character the class
+ * KEEPS.  CR, LF, HTAB and U+00A0 — precisely the class the guard existed to
+ * remove — were the ones it preserved, while it stripped only the harmless
+ * punctuation around them.
+ *
+ * No response was ever split by that, and the reason is worth writing down
+ * because it was never this function: measured on Bun 1.4.0, Node 26.7.0 and
+ * Deno 2.6.8, all three request parsers refuse a bare CR or LF inside a header
+ * value (400, or a line break that terminates the field), and every sink the
+ * framework writes a response header through — `setHeader` on the
+ * Fastify/Express path, `Headers.set` on Hono's — throws `ERR_INVALID_CHAR` /
+ * `TypeError` on one.  What did reach the wire was HTAB and U+00A0, which all
+ * six of those accept.  Filtering to tokens no longer depends on any of it.
+ */
+function filterRequestHeaderNames(value: string): string {
+  const names: string[] = [];
+  let length = 0;
+  for (const element of value.split(',')) {
+    const name = element.trim();
+    if (!REQUEST_HEADER_TOKEN.test(name)) continue;
+    // `, ` between names, so every name after the first costs two more.
+    const cost = length === 0 ? name.length : name.length + 2;
+    if (length + cost > MAXIMUM_ECHOED_CORS_HEADERS_LENGTH) break;
+    names.push(name);
+    length += cost;
+  }
+  return names.join(', ');
 }
 
 /** Decorate an actual (non-preflight) response with the CORS headers. */
@@ -72,6 +289,11 @@ function decorateResponse(settings: CorsRouteOptions, response: HttpResponse, re
   const origin = request.headers['origin'];
   if (!origin || !isAllowed(settings.origins, origin)) return response;
   const acao = allowOriginValue(settings, origin);
+  // The same outcome as an origin that did not match: no CORS headers, so the
+  // browser refuses the response.  An origin we cannot echo is not one we can
+  // allow, and answering with a repaired spelling would read as success here
+  // while failing the client's own comparison.
+  if (acao === null) return response;
   const add: Record<string, string> = { 'access-control-allow-origin': acao };
   if (settings.credentials) add['access-control-allow-credentials'] = 'true';
   if (settings.exposedHeaders && settings.exposedHeaders.length > 0) {
@@ -97,16 +319,23 @@ function preflightResponse(settings: CorsRouteOptions, methods: ReadonlyArray<st
     // No ACA-* headers → the browser fails the preflight; no info leak.
     return { status: 204, headers: { vary: PREFLIGHT_VARY }, body: null };
   }
+  const acao = allowOriginValue(settings, origin);
+  // Same shape as the disallowed branch above, and for the same reason: a
+  // preflight that cannot name the origin it is allowing has nothing to say.
+  if (acao === null) return { status: 204, headers: { vary: PREFLIGHT_VARY }, body: null };
   const headers: Record<string, string> = {
     vary: PREFLIGHT_VARY,
-    'access-control-allow-origin': allowOriginValue(settings, origin),
+    'access-control-allow-origin': acao,
     'access-control-allow-methods': (settings.methods ?? methods).join(', '),
   };
   if (settings.allowedHeaders && settings.allowedHeaders.length > 0) {
     headers['access-control-allow-headers'] = settings.allowedHeaders.join(', ');
   } else {
-    const requested = request.headers['access-control-request-headers'];
-    if (requested) headers['access-control-allow-headers'] = sanitiseRequestHeaders(requested);
+    // Nothing legal left to echo → omit the field rather than send an empty
+    // one.  Both deny every non-simple header, but only the absent form says
+    // so; `Access-Control-Allow-Headers: ` reads as a bug in the server.
+    const echoed = filterRequestHeaderNames(request.headers['access-control-request-headers'] ?? '');
+    if (echoed.length > 0) headers['access-control-allow-headers'] = echoed;
   }
   if (settings.credentials) headers['access-control-allow-credentials'] = 'true';
   if (settings.maxAge !== undefined) headers['access-control-max-age'] = String(settings.maxAge);

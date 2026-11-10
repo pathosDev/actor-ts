@@ -12,9 +12,11 @@
  * defined here, at the persistence-layer top level, rather than inside
  * `object-storage/`.  The reason: actors don't know which concrete
  * store is wired up, and we don't want them to import from a specific
- * impl directory just to declare their own options.  Stores that
- * don't honour these options (in-memory, SQLite, Cassandra) simply
- * ignore them.
+ * impl directory just to declare their own options.  A store that
+ * cannot honour a field still accepts and drops it, which is why every
+ * shipped store declares `persistenceOptionSupport`: an actor that asks
+ * one of those for encryption or integrity is refused at start, and one
+ * that asks for compression is warned once (#960).
  */
 
 /** Compression algorithm choices honoured by stores that compress at rest. */
@@ -144,6 +146,14 @@ export type EncryptionConfig =
  * binding the storage key into both authenticators; integrity remains
  * worthwhile defense-in-depth on top of that.
  *
+ * What the AES-GCM tag does *not* cover is the manifest byte that says
+ * whether there is any ciphertext at all: a body claiming to be plaintext
+ * carries no tag to fail.  That downgrade is refused by the encryption
+ * config itself, not by integrity — a store reading with a decryption key
+ * rejects an unencrypted body unless `allowUnencryptedBodies` opens the
+ * migration window (#965) — so an encrypted deployment does not need
+ * integrity to be safe from it.
+ *
  * The binding is deployment-wide-key-shaped in one direction that
  * matters here: `integrityKey` is flat, with no per-`persistenceId`
  * derivation of its own, so before #612 a tag valid for one pid was
@@ -175,8 +185,16 @@ export type IntegrityConfig =
     };
 
 /**
- * Bag of per-call options that any persistence store may accept.  All
- * fields optional — when omitted, the store falls back to its own
+ * Bag of per-call options that a snapshot store or a durable-state store may
+ * accept — never a journal: `Journal.append` and `Journal.read` take no
+ * options, so nothing in here reaches an event (#1430).  `encryption()` and
+ * `integrity()` on a `PersistentActor` protect its snapshots only: every
+ * journal stores events as plaintext JSON, nothing detects an event edited
+ * in place, and database-side controls — transparent data encryption, an
+ * encrypted volume, access control — are the only protection for events
+ * today.
+ *
+ * All fields optional — when omitted, the store falls back to its own
  * configuration (e.g. plugin defaults / per-pid resolver).
  */
 export type PersistenceOptions = {
@@ -184,9 +202,3 @@ export type PersistenceOptions = {
   readonly encryption?: EncryptionConfig;
   readonly integrity?: IntegrityConfig;
 };
-
-/**
- * @deprecated Use `PersistenceOptions` — kept as an alias so the older
- * name doesn't break downstream typings.
- */
-export type PersistenceWriteOptions = PersistenceOptions;

@@ -1,4 +1,4 @@
-import { MAX_COUNTER_SLOT } from './Constants.js';
+import { MAX_COUNTER_SLOT, MAX_CRDT_ENTRIES } from './Constants.js';
 import type { Crdt, ReplicaId } from './Crdt.js';
 import {
   assertCounterValue,
@@ -69,11 +69,63 @@ export class GCounter implements Crdt<GCounter> {
     return total;
   }
 
+  /**
+   * Componentwise maximum, bounded at {@link MAX_CRDT_ENTRIES} slots.
+   *
+   * **Why a merge needs a bound at all.**  {@link MAX_COUNTER_SLOT} is not an
+   * independent number — `Constants.ts` computes it as
+   * `MAX_SAFE_INTEGER / MAX_CRDT_ENTRIES`, precisely so that a counter holding
+   * the most slots a decoder will accept, each at the ceiling, still sums to a
+   * safe integer.  The per-slot ceiling is therefore only sound while the slot
+   * *count* is bounded, and merge was the one operation that could raise the
+   * count without passing a decoder.  Two counters that each decode — 4096
+   * slots apiece — merged to 8192, `value()` returned 18014398509477888, and
+   * `fromJSON(merged.toJSON())` threw.  Since every wire call site routes
+   * through `decodeOrDrop`, every peer then dropped that key and it stopped
+   * converging cluster-wide: a permanent, unrecoverable loss caused by one
+   * frame that was valid in every respect the decoder checks (#1407).
+   *
+   * **What is given up, because something has to be.**  Slots already held are
+   * never disturbed: each still takes its componentwise maximum, so no replica
+   * loses a count it had, and the local replica's own contribution is safe.
+   * Only *new* replica ids compete for the remaining room, and they are
+   * admitted in sorted id order so the result does not depend on `Map`
+   * iteration order.  What that costs is commutativity **in the overflow case
+   * only** — with more than {@link MAX_CRDT_ENTRIES} distinct ids in play,
+   * `a.merge(b)` and `b.merge(a)` can keep different newcomers.
+   *
+   * That is the least-bad of three losses, and the other two are worth naming
+   * so this is not re-litigated from scratch: refusing the merge outright makes
+   * a CRDT join partial, which callers have no reason to expect and which turns
+   * one hostile frame into a throw on the receiving path; evicting the smallest
+   * slots keeps the join total but lets a counter go *down*, which is the one
+   * thing a grow-only counter promises it will not do.  Losing commutativity in
+   * a state the cluster is not designed to reach is cheaper than losing
+   * monotonicity in every state, or than the unrecoverable key this replaces.
+   *
+   * The remaining exposure is that a peer flooding fresh ids can consume the
+   * room a genuine new replica needed.  Bounding who may occupy a slot in the
+   * first place belongs upstream — pruning departed replicas is #955 — and is
+   * not something a value type can decide.
+   */
   merge(other: GCounter): GCounter {
     const next = new Map(this.state);
+    const newcomers: ReplicaId[] = [];
     for (const [replica, count] of other.state) {
+      if (!next.has(replica)) {
+        newcomers.push(replica);
+        continue;
+      }
       const ours = next.get(replica) ?? 0;
       if (count > ours) next.set(replica, count);
+    }
+    // Sorted rather than in `other`'s iteration order: two replicas that merge
+    // the same pair of counters have to reach the same state, and insertion
+    // order is a property of how a Map happened to be built.
+    newcomers.sort();
+    for (const replica of newcomers) {
+      if (next.size >= MAX_CRDT_ENTRIES) break;
+      next.set(replica, other.state.get(replica)!);
     }
     return new GCounter(next);
   }

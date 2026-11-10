@@ -67,6 +67,7 @@ async function startNode(
   systemName: string,
   port: number,
   detector: DetectorTiming = IDLE_DETECTOR,
+  failureDetectorAutoDown = false,
 ): Promise<NodeHandle> {
   const address = new NodeAddress(systemName, '10.0.112.1', port);
   const systemOptions = ActorSystemOptions.create()
@@ -78,6 +79,7 @@ async function startNode(
     .withPort(port)
     .withTransport(new InMemoryTransport(address))
     .withFailureDetector(detector)
+    .withFailureDetectorAutoDown(failureDetectorAutoDown)
     .withGossipIntervalMs(60_000);
   const cluster = await Cluster.join(system, clusterOptions);
   return { system, cluster, address };
@@ -323,10 +325,11 @@ describe('a mark does not outlive its member', () => {
     // The address's next incarnation seeds its counter from its own clock, not
     // from where the previous one left off — a mark left behind would refuse
     // its first frames.  The FD-down path is the one that *deletes* rather than
-    // tombstoning, so it is the one that has to clean up.
+    // tombstoning, so it is the one that has to clean up — and since #1426 it
+    // is reached only under auto-down; the default parks the peer instead.
     const node = await startNode('replay-eviction', 9_406, {
       heartbeatIntervalMs: 40, unreachableAfterMs: 120, downAfterMs: 240,
-    });
+    }, true);
     nodes.push(node);
     const peer = new NodeAddress('replay-eviction', '10.0.112.2', 9_490);
 

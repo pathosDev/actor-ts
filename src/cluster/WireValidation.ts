@@ -1,4 +1,9 @@
-import { MAX_CONTEXT_KEYS, MAX_CONTEXT_VALUE_LENGTH } from './Constants.js';
+import {
+  MAX_CONTEXT_KEYS,
+  MAX_CONTEXT_VALUE_LENGTH,
+  MAX_LOGGED_ADDRESS_PART_LENGTH,
+  MAX_LOGGED_WIRE_KIND_LENGTH,
+} from './Constants.js';
 import { isMemberStatus, type MemberData, type WireMessage } from './Protocol.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
 
@@ -38,22 +43,44 @@ export function isWireFrame(value: unknown): value is { kind: string } {
 /**
  * A `NodeAddressData` whose fields are actually the declared types.
  *
- * The single gate for every address-bearing wire field — `hello.self`,
- * `hello-ack.self`, `heartbeat.from`, `heartbeat-ack.from`, `gossip.from`,
- * every `gossip.members[].address` and `leave.node` — which is why an
- * *optional* `incarnation` is checked here rather than required: making it
- * required would refuse all seven at once from any peer that predates the field
- * (#940).  The length bound it is held to is the point of checking it at all;
- * `NodeAddress.isIncarnation` states it, so this guard and
- * `NodeAddress.fromJSON` cannot disagree.
+ * The shape every address-bearing wire field shares.  The handshake fields
+ * (`hello.self`, `hello-ack.self`, `hello-refused.self`) are held to this
+ * alone; every frame past the handshake is held to {@link isRunAddressData},
+ * which additionally requires the incarnation cluster wire v2 carries (#823).
+ * The field stays optional *here* so a version-1 `hello` is refused by the
+ * transport with a reason instead of dropped as malformed, and so the address
+ * shapes that legitimately name no run — a ref in a body, a persisted
+ * snapshot — still validate.
+ *
+ * The two field rules with any substance to them — what a port is and what an
+ * incarnation is — are `NodeAddress.isPort` and `NodeAddress.isIncarnation`,
+ * spent from here rather than restated.  `NodeAddress.fromJSON` *throws* on
+ * what this guard lets through, on the premise that the two agree, and the
+ * premise is only worth having if there is one rule to agree on: the port half
+ * was written out twice and drifted from what `toString` can actually carry
+ * (#1515).
  */
 export function isNodeAddressData(value: unknown): value is NodeAddressData {
   if (typeof value !== 'object' || value === null) return false;
   const { systemName, host, port, incarnation } = value as Partial<NodeAddressData>;
   return typeof systemName === 'string' && systemName.length > 0
     && typeof host === 'string' && host.length > 0
-    && isPort(port)
+    && NodeAddress.isPort(port)
     && (incarnation === undefined || NodeAddress.isIncarnation(incarnation));
+}
+
+/**
+ * A node address as cluster wire v2 carries it on every frame past the
+ * handshake: valid, and naming its incarnation (#823, #940).
+ *
+ * Kept apart from {@link isNodeAddressData}, which stays lenient: a ref in a
+ * message body (`RefCodec`), a persisted coordinator-state snapshot and a seed
+ * parsed from configuration legitimately name an address without a run, and a
+ * `hello` from a version-1 peer has to get far enough to be refused with a
+ * reason rather than dropped as malformed.
+ */
+export function isRunAddressData(value: unknown): value is NodeAddressData {
+  return isNodeAddressData(value) && (value as NodeAddressData).incarnation !== undefined;
 }
 
 /**
@@ -72,6 +99,19 @@ export function isMemberData(value: unknown): value is MemberData {
     && (removedAt === undefined || (typeof removedAt === 'number' && Number.isFinite(removedAt)));
 }
 
+/** A member entry as cluster wire v2 gossips it: its address names its run (#823). */
+function isRunMemberData(value: unknown): value is MemberData {
+  return isMemberData(value) && isRunAddressData(value.address);
+}
+
+/** An announced wire version: absent, or a safe integer of at least 1. */
+function isAnnouncedWireVersion(value: unknown): boolean {
+  return value === undefined || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 1);
+}
+
+/** How long a refusal's `reason` may be — a bound on what a peer can make this node log. */
+const MAX_HELLO_REFUSAL_REASON_LENGTH = 512;
+
 /**
  * Validate a frame against the variant its `kind` claims.
  *
@@ -83,31 +123,58 @@ export function isMemberData(value: unknown): value is MemberData {
  */
 export function wireFrameProblem(frame: { kind: string }): string | null {
   switch (frame.kind) {
+    // Lenient on purpose: a version-1 peer's `hello` names no incarnation and
+    // no version, and the transport refuses it with the reason (#823).
     case 'hello':
-    case 'hello-ack':
-      return isNodeAddressData((frame as { self?: unknown }).self)
-        ? null : '`self` is not a valid node address';
+    case 'hello-ack': {
+      const { self, wireVersion, minWireVersion } = frame as {
+        self?: unknown; wireVersion?: unknown; minWireVersion?: unknown;
+      };
+      if (!isNodeAddressData(self)) return '`self` is not a valid node address';
+      if (!isAnnouncedWireVersion(wireVersion)) return '`wireVersion` is not a wire version';
+      return isAnnouncedWireVersion(minWireVersion) ? null : '`minWireVersion` is not a wire version';
+    }
+
+    case 'hello-refused': {
+      const { self, wireVersion, minWireVersion, reason } = frame as {
+        self?: unknown; wireVersion?: unknown; minWireVersion?: unknown; reason?: unknown;
+      };
+      if (!isNodeAddressData(self)) return '`self` is not a valid node address';
+      if (wireVersion === undefined || !isAnnouncedWireVersion(wireVersion)) return '`wireVersion` is not a wire version';
+      if (minWireVersion === undefined || !isAnnouncedWireVersion(minWireVersion)) {
+        return '`minWireVersion` is not a wire version';
+      }
+      return typeof reason === 'string' && reason.length <= MAX_HELLO_REFUSAL_REASON_LENGTH
+        ? null : '`reason` is not a bounded string';
+    }
 
     case 'heartbeat':
     case 'heartbeat-ack': {
       const { from, seq } = frame as { from?: unknown; seq?: unknown };
-      if (!isNodeAddressData(from)) return '`from` is not a valid node address';
+      if (!isRunAddressData(from)) return '`from` is not a node address with its incarnation';
       return typeof seq === 'number' && Number.isFinite(seq) ? null : '`seq` is not a finite number';
     }
 
+    case 'membership-refused': {
+      const { from, subject } = frame as { from?: unknown; subject?: unknown };
+      if (!isRunAddressData(from)) return '`from` is not a node address with its incarnation';
+      return isRunAddressData(subject) ? null : '`subject` is not a node address with its incarnation';
+    }
+
     case 'gossip': {
-      const { from, sequence, members } = frame as {
-        from?: unknown; sequence?: unknown; members?: unknown;
+      const { from, sequence, members, islandProbe } = frame as {
+        from?: unknown; sequence?: unknown; members?: unknown; islandProbe?: unknown;
       };
-      if (!isNodeAddressData(from)) return '`from` is not a valid node address';
+      if (!isRunAddressData(from)) return '`from` is not a node address with its incarnation';
+      if (islandProbe !== undefined && islandProbe !== true) return '`islandProbe` is neither absent nor true';
       // Shape only — `Cluster.onGossip` decides whether a well-formed sequence
       // is also *fresh*, and how far ahead of this node's clock it may be.
       if (typeof sequence !== 'number' || !Number.isFinite(sequence)) {
         return '`sequence` is not a finite number';
       }
       if (!Array.isArray(members)) return '`members` is not an array';
-      const bad = members.findIndex((m) => !isMemberData(m));
-      return bad < 0 ? null : `member[${bad}] is malformed (address, status or version)`;
+      const bad = members.findIndex((m) => !isRunMemberData(m));
+      return bad < 0 ? null : `member[${bad}] is malformed (address with its incarnation, status or version)`;
     }
 
     case 'envelope': {
@@ -117,8 +184,22 @@ export function wireFrameProblem(frame: { kind: string }): string | null {
     }
 
     case 'leave':
-      return isNodeAddressData((frame as { node?: unknown }).node)
-        ? null : '`node` is not a valid node address';
+      return isRunAddressData((frame as { node?: unknown }).node)
+        ? null : '`node` is not a node address with its incarnation';
+
+    case 'watch':
+    case 'unwatch':
+    case 'watch-terminated': {
+      const { watcher, watchee, existenceConfirmed } = frame as {
+        watcher?: unknown; watchee?: unknown; existenceConfirmed?: unknown;
+      };
+      if (typeof watcher !== 'string' || watcher.length === 0) return '`watcher` is not a non-empty path string';
+      if (typeof watchee !== 'string' || watchee.length === 0) return '`watchee` is not a non-empty path string';
+      if (frame.kind === 'watch-terminated' && typeof existenceConfirmed !== 'boolean') {
+        return '`existenceConfirmed` is not a boolean';
+      }
+      return null;
+    }
 
     // An extension's frame kind — see the module note.
     default:
@@ -181,7 +262,69 @@ export function sanitizeWireLogContext(
   return safe;
 }
 
+/**
+ * Make a wire-supplied frame `kind` safe to put in a log line (#1178).
+ *
+ * {@link isWireFrame} enforces only "a string", because unknown kinds pass
+ * deliberately — see the module note.  So a `kind` reaching a log line is
+ * arbitrary text from a peer, and the two things wrong with printing it are
+ * the two {@link sanitizeWireLogContext} already names one field to the left:
+ * a CR or LF forges as many additional records as the sender likes, and an
+ * unbounded length lets one frame write an unbounded line.
+ *
+ * Escaped rather than dropped, because unlike an MDC value the kind *is* the
+ * diagnostic — "which frame did this node not understand" is the whole of the
+ * report — and a sender that puts a newline in one has told you something
+ * worth seeing in escaped form.
+ */
+export function sanitizeWireKindForLog(kind: string): string {
+  return escapeForLog(kind, MAX_LOGGED_WIRE_KIND_LENGTH);
+}
+
+/**
+ * Make a node address that may be a peer's choice safe to put in a log line
+ * (#936) — a ref marker in a message body names one, and so does gossip.
+ *
+ * The same escaping as {@link sanitizeWireKindForLog}, applied to the system
+ * name, host and port one at a time, each clipped to
+ * {@link MAX_LOGGED_ADDRESS_PART_LENGTH}.  Clipping the rendered address as one
+ * string cut it from the end, so a long system name — the first part, and a
+ * free choice of whoever wrote the marker — hid exactly the host and port an
+ * operator needs to see.  `String(…)` on every part because an address built
+ * with the raw constructor carries no runtime guarantee about its fields.
+ *
+ * An `@` inside the system name or host is escaped as well, so the first `@`
+ * in the line is always the separator: `NodeAddress.fromJSON` checks only that
+ * both are non-empty strings, and a system name of `x@10.0.0.1:22@` would
+ * otherwise render as an address that names a different host.
+ */
+export function sanitizeNodeAddressForLog(address: NodeAddress): string {
+  const system = escapeAtSign(escapeForLog(String(address.systemName), MAX_LOGGED_ADDRESS_PART_LENGTH));
+  const host = escapeAtSign(escapeForLog(String(address.host), MAX_LOGGED_ADDRESS_PART_LENGTH));
+  const port = escapeForLog(String(address.port), MAX_LOGGED_ADDRESS_PART_LENGTH);
+  return `${system}@${host}:${port}`;
+}
+
 /* ------------------------------- internals ------------------------------- */
+
+/** `@` in the `\u0040` form {@link escapeForLog} writes, so it cannot read as the address separator. */
+function escapeAtSign(value: string): string {
+  return value.replaceAll('@', '\\u0040');
+}
+
+/** Clip `value` to `maxLength` characters and escape every line-breaking or control character. */
+function escapeForLog(value: string, maxLength: number): string {
+  const clipped = value.length > maxLength ? `${value.slice(0, maxLength)}…` : value;
+  let safe = '';
+  for (const character of clipped) {
+    const code = character.codePointAt(0)!;
+    safe += code <= LAST_C0_CONTROL || code === DELETE || code === NEXT_LINE
+      || code === LINE_SEPARATOR || code === PARAGRAPH_SEPARATOR
+      ? `\\u${code.toString(16).padStart(4, '0')}`
+      : character;
+  }
+  return safe;
+}
 
 /**
  * Any C0/C1 control character, plus the Unicode line and paragraph separators.
@@ -205,16 +348,6 @@ function hasControlCharacters(value: string): boolean {
       || code === LINE_SEPARATOR || code === PARAGRAPH_SEPARATOR) return true;
   }
   return false;
-}
-
-/**
- * A positive integer, deliberately *not* the TCP range — see
- * `NodeAddress.fromJSON` and `ClusterOptionsValidator`, which state the same
- * rule: under `InMemoryTransport` the port is a synthetic node discriminator,
- * so capping at 65535 here would reject addresses the framework itself mints.
- */
-function isPort(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value > 0;
 }
 
 function isStringArray(value: unknown): value is string[] {

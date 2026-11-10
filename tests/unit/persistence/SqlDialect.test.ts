@@ -1,9 +1,11 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { mariaDbDialect } from '../../../src/persistence/relational/MariaDbDialect.js';
 import { msSqlDialect } from '../../../src/persistence/relational/MsSqlDialect.js';
 import { postgresDialect } from '../../../src/persistence/relational/PostgresDialect.js';
 import { sqliteDialect } from '../../../src/persistence/relational/SqliteDialect.js';
-import { expandPlaceholders } from '../../../src/persistence/relational/SqlDialect.js';
+import { expandPlaceholders, type SqlDialect } from '../../../src/persistence/relational/SqlDialect.js';
 
 /**
  * Golden statements for the SQL dialects (#389).
@@ -20,6 +22,65 @@ import { expandPlaceholders } from '../../../src/persistence/relational/SqlDiale
 const norm = (sql: string): string => sql.replace(/\s+/g, ' ').trim();
 
 const tables = { events: 'events', tags: 'events_tags', meta: 'events_meta' };
+
+/**
+ * What each known DDL emitter is called with.  `journalDdl` owns three tables
+ * and takes the name *object*; the rest take one name.  Kept explicit because
+ * deriving it is what goes wrong: handing `journalDdl` a bare string emits
+ * `CREATE TABLE IF NOT EXISTS undefined (…)` with the column list intact, so
+ * every assertion below — all of which read columns — stays green over
+ * statements no server would accept.
+ */
+const DDL_TABLE_ARGUMENTS: Readonly<Record<string, unknown>> = {
+  journalDdl: tables,
+  snapshotDdl: 'snapshots',
+  durableStateDdl: 'durable_state',
+  storageIdentityDdl: 'storage_identity',
+};
+
+/**
+ * Every DDL statement a dialect can emit, across every table family it has.
+ *
+ * Derived from the dialect's own keys rather than listed.  A literal list is
+ * complete only on the day it is written, and the thing it feeds — the #707
+ * set invariant below — is a claim about the *whole* DDL surface: "exactly
+ * `persistence_id` and `tag` are collated". A fifth family added to
+ * `SqlDialect` would have escaped it silently, because `bun run typecheck`
+ * cannot see that an array literal in a test is short and the assertion only
+ * ever reads what the list produced.
+ *
+ * An unknown family falls back to a table name derived from its key, which is
+ * the shape every single-table emitter here takes. That is deliberately a
+ * fallback and not a refusal: the point is that a new family reaches the
+ * assertion at all, and a wrong table name in a statement nobody executes
+ * costs nothing while an unexamined column list is the whole defect.
+ */
+const everyDdl = (dialect: SqlDialect): string[] =>
+  Object.keys(dialect)
+    .filter((key) => key.endsWith('Ddl'))
+    .sort()
+    .flatMap((key) => {
+      const emit = (dialect as unknown as Record<string, (argument: unknown) => string[]>)[key]!;
+      return emit(DDL_TABLE_ARGUMENTS[key] ?? key.replace(/Ddl$/u, ''));
+    });
+
+/**
+ * Character columns of one DDL statement, as `column -> collation | null`.
+ *
+ * Parsed rather than compared whole because the collation invariant (#707)
+ * is a *set* property: exactly the identity columns are pinned.  A golden
+ * string proves the text changed; only this shape tells a fix that pinned
+ * `persistence_id` everywhere from one that pinned it in the events table
+ * alone, or from one that pinned the payload as well.
+ */
+const characterColumns = (sql: string): Map<string, string | null> => {
+  const columns = new Map<string, string | null>();
+  const pattern = /\[?([a-z_]+)\]?\s+(?:N?VARCHAR\((?:MAX|\d+)\)|LONGTEXT|TEXT)(?:\s+COLLATE\s+(\w+))?/gi;
+  for (const match of norm(sql).matchAll(pattern)) {
+    columns.set(match[1] ?? '', match[2] ?? null);
+  }
+  return columns;
+};
 
 describe('postgresDialect — placeholders and error codes', () => {
   test('placeholders are one-based $n', () => {
@@ -206,26 +267,40 @@ describe('mariaDbDialect — golden DDL', () => {
     // `CREATE INDEX IF NOT EXISTS` is not portable across MariaDB/MySQL
     // versions, so indexes are declared inside CREATE TABLE.
     expect(mariaDbDialect.journalDdl(tables).map(norm)).toEqual([
-      'CREATE TABLE IF NOT EXISTS events ( persistence_id VARCHAR(255) NOT NULL, sequence_nr BIGINT NOT NULL, '
+      'CREATE TABLE IF NOT EXISTS events ( persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, '
+      + 'sequence_nr BIGINT NOT NULL, '
       + 'payload LONGTEXT NOT NULL, tags TEXT, timestamp BIGINT NOT NULL, '
       + 'PRIMARY KEY (persistence_id, sequence_nr), INDEX idx_events_pid (persistence_id) )',
-      'CREATE TABLE IF NOT EXISTS events_tags ( persistence_id VARCHAR(255) NOT NULL, sequence_nr BIGINT NOT NULL, '
-      + 'tag VARCHAR(255) NOT NULL, timestamp BIGINT NOT NULL, '
+      'CREATE TABLE IF NOT EXISTS events_tags ( persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, '
+      + 'sequence_nr BIGINT NOT NULL, '
+      + 'tag VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, timestamp BIGINT NOT NULL, '
       + 'PRIMARY KEY (tag, timestamp, persistence_id, sequence_nr), '
       + 'INDEX idx_events_tags_pid_seq (persistence_id, sequence_nr) )',
-      'CREATE TABLE IF NOT EXISTS events_meta ( persistence_id VARCHAR(255) NOT NULL, deleted_to BIGINT NOT NULL, '
+      'CREATE TABLE IF NOT EXISTS events_meta ( persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, '
+      + 'deleted_to BIGINT NOT NULL, '
       + 'PRIMARY KEY (persistence_id) )',
     ]);
   });
 
   test('snapshot and durable-state DDL', () => {
     expect(mariaDbDialect.snapshotDdl('snapshots').map(norm)).toEqual([
-      'CREATE TABLE IF NOT EXISTS snapshots ( persistence_id VARCHAR(255) NOT NULL, sequence_nr BIGINT NOT NULL, '
+      'CREATE TABLE IF NOT EXISTS snapshots ( persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, '
+      + 'sequence_nr BIGINT NOT NULL, '
       + 'payload LONGTEXT NOT NULL, timestamp BIGINT NOT NULL, PRIMARY KEY (persistence_id, sequence_nr) )',
     ]);
     expect(mariaDbDialect.durableStateDdl('durable_state').map(norm)).toEqual([
-      'CREATE TABLE IF NOT EXISTS durable_state ( persistence_id VARCHAR(255) NOT NULL, revision BIGINT NOT NULL, '
+      'CREATE TABLE IF NOT EXISTS durable_state ( persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, '
+      + 'revision BIGINT NOT NULL, '
       + 'payload LONGTEXT NOT NULL, timestamp BIGINT NOT NULL, PRIMARY KEY (persistence_id) )',
+    ]);
+  });
+
+  test('the storage-identity table stays on the server default', () => {
+    // `identity` holds a minted UUID read back by `singleton = ?`, never
+    // compared as a string — collating it would be cargo cult (#707).
+    expect(mariaDbDialect.storageIdentityDdl!('storage_identity').map(norm)).toEqual([
+      'CREATE TABLE IF NOT EXISTS storage_identity ( singleton INT NOT NULL, identity VARCHAR(64) NOT NULL, '
+      + 'PRIMARY KEY (singleton) )',
     ]);
   });
 });
@@ -328,7 +403,7 @@ describe('msSqlDialect — golden DDL', () => {
     // NVARCHAR(255) counts 510 index bytes, so tag + timestamp + pid + seq is
     // 1036 — past the clustered limit, inside the nonclustered one.
     const tagsDdl = norm(msSqlDialect.journalDdl(tables)[2]!);
-    expect(tagsDdl).toContain('[persistence_id] NVARCHAR(255) NOT NULL');
+    expect(tagsDdl).toContain('[persistence_id] NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL');
     expect(tagsDdl).toContain(
       'CONSTRAINT [PK_events_tags] PRIMARY KEY NONCLUSTERED '
       + '([tag], [timestamp], [persistence_id], [sequence_nr])',
@@ -351,6 +426,122 @@ describe('msSqlDialect — golden DDL', () => {
     }
     expect(norm(msSqlDialect.snapshotDdl('snapshots')[0]!)).toContain('[timestamp] BIGINT NOT NULL');
     expect(norm(msSqlDialect.durableStateDdl('durable_state')[0]!)).toContain('[payload] NVARCHAR(MAX) NOT NULL');
+  });
+});
+
+describe('identity columns carry a deterministic collation (#707)', () => {
+  /**
+   * `persistence_id` is the *name of an event stream* and half of the events
+   * primary key; `tag` keys the projection index.  A stock MariaDB and a
+   * stock SQL Server both compare them case-insensitively, so `Alice` and
+   * `alice` are one stream there and two on Postgres, SQLite, Mongo and
+   * DynamoDB — a cross-entity merge that `assertValidPersistenceId` cannot
+   * see, because both ids pass any character allow-list.
+   *
+   * Asserted as two sets, because that is what discriminates a correct fix:
+   * collating only the events table leaves `persistence_id` in `bare`, and
+   * collating `payload` or the minted `identity` moves them out of it.
+   */
+  const expectPinnedOnIdentityColumnsOnly = (dialect: SqlDialect, collation: string): void => {
+    const collated = new Set<string>();
+    const bare = new Set<string>();
+    for (const statement of everyDdl(dialect)) {
+      for (const [column, actual] of characterColumns(statement)) {
+        if (actual === null) bare.add(column);
+        else {
+          expect(actual).toBe(collation);
+          collated.add(column);
+        }
+      }
+    }
+    expect([...collated].sort()).toEqual(['persistence_id', 'tag']);
+    // Payloads and the minted storage identity are values, never compared
+    // as strings — pinning them would be cargo cult, and the index-key
+    // budget on both servers has no room to spare.
+    expect([...bare].sort()).toEqual(['identity', 'payload', 'tags']);
+  };
+
+  /** A dialect that grew a fifth DDL family, emitting a bare `persistence_id`. */
+  type DialectWithAuditTable = SqlDialect & {
+    readonly auditDdl: (table: string) => string[];
+  };
+
+  test('a fifth DDL family cannot slip past the set assertion', () => {
+    // `everyDdl` used to enumerate four emitters as literals. That was
+    // complete against `SqlDialect` on the day it was written, and nothing
+    // would have said otherwise once it stopped being: `bun run typecheck`
+    // cannot see that a literal array in a test is short, and the assertion
+    // below only ever reads what that array produced. So the invariant's
+    // *input* was hand-maintained while its output was pinned to the byte.
+    //
+    // This is the case that tells the two spellings apart. A fifth family
+    // emitting an uncollated `persistence_id` — precisely the defect #707 is
+    // — passes a four-literal list and fails a derived one.
+    const withAuditTable: DialectWithAuditTable = {
+      ...mariaDbDialect,
+      auditDdl: (table) => [
+        `CREATE TABLE IF NOT EXISTS ${table} ( persistence_id VARCHAR(255) NOT NULL, `
+        + 'actor VARCHAR(255) NOT NULL, timestamp BIGINT NOT NULL )',
+      ],
+    };
+    expect(() => expectPinnedOnIdentityColumnsOnly(withAuditTable, 'utf8mb4_bin')).toThrow();
+  });
+
+  test('every shipped dialect exposes its DDL families as own enumerable keys', () => {
+    // The derivation's one failure mode is reading nothing: a dialect built
+    // from a prototype rather than as an object literal would hand
+    // `Object.keys` an empty list, and an invariant over zero statements is
+    // not an invariant. Checked here rather than left to the set assertions,
+    // which would report it as a missing column.
+    for (const dialect of [postgresDialect, mariaDbDialect, sqliteDialect, msSqlDialect]) {
+      expect(Object.keys(dialect).filter((key) => key.endsWith('Ddl')).sort()).toEqual([
+        'durableStateDdl', 'journalDdl', 'snapshotDdl', 'storageIdentityDdl',
+      ]);
+    }
+  });
+
+  test('mariaDbDialect pins utf8mb4_bin', () => {
+    // Not `utf8mb4_0900_bin`: that is MySQL 8 only, and MariaDB has never
+    // had it.  Naming a collation with no CHARACTER SET also fixes the
+    // charset to utf8mb4, rather than the database default.
+    expectPinnedOnIdentityColumnsOnly(mariaDbDialect, 'utf8mb4_bin');
+  });
+
+  test('msSqlDialect pins Latin1_General_100_BIN2', () => {
+    // BIN2 compares by Unicode code point; on NVARCHAR the `Latin1_General`
+    // half only names a code page for non-Unicode types and is inert.
+    expectPinnedOnIdentityColumnsOnly(msSqlDialect, 'Latin1_General_100_BIN2');
+  });
+
+  test('postgresDialect and sqliteDialect need no COLLATE — TEXT is already byte-exact', () => {
+    for (const dialect of [postgresDialect, sqliteDialect]) {
+      for (const statement of everyDdl(dialect)) {
+        expect(norm(statement)).not.toMatch(/COLLATE/i);
+      }
+    }
+  });
+
+  test('MariaDbQuery does not claim parity with Postgres that the collation does not give', () => {
+    // `utf8mb4_bin` is PAD SPACE, so `'order '` and `'order'` are one value on
+    // MariaDB and two on Postgres — the pin closes case and accent, not
+    // trailing whitespace. `MariaDbQuery`'s JSDoc read "so the index is as
+    // selective here as on Postgres", which the dialect's own comment
+    // contradicts two files away and the fake's comment contradicts a third
+    // time. Cosmetic in its effect (`RelationalQuery`'s JS refinement discards
+    // the extra rows, so answers stay right) and not in its cost: a reader
+    // deciding whether an `ALTER TABLE` is still needed is reading exactly
+    // this paragraph.
+    //
+    // Asserted as a pair deliberately. Requiring the mechanism alone would be
+    // satisfied by a fix that names PAD SPACE and leaves the parity claim
+    // standing; forbidding the claim alone would be satisfied by deleting the
+    // caveat instead of correcting it.
+    const source = readFileSync(
+      join(import.meta.dir, '..', '..', '..', 'src', 'persistence', 'query', 'MariaDbQuery.ts'),
+      'utf8',
+    );
+    expect(source).toContain('PAD SPACE');
+    expect(source).not.toMatch(/as selective here as on Postgres/);
   });
 });
 

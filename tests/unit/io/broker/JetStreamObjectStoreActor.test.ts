@@ -15,6 +15,7 @@ import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import type { ConfigObject } from '../../../../src/config/HoconParser.js';
+import { BrokerConnected } from '../../../../src/io/broker/BrokerEvents.js';
 import {
   JetStreamObjectStoreActor,
   type JetStreamObjectStoreCommand,
@@ -23,6 +24,8 @@ import {
   type ObjectMetaLike,
   type ObjectStoreBucketOptionsLike,
   type ObjectStoreJetStreamClientLike,
+  type ObjectStoreModuleLike,
+  type JetStreamModuleLike,
   type ObjectStoreLike,
   type ObjectStoreNatsConnectionLike,
 } from '../../../../src/io/broker/JetStreamObjectStoreActor.js';
@@ -96,22 +99,19 @@ class MockObjectStore implements ObjectStoreLike {
   }
 }
 
+/**
+ * A connection is just a connection in v3: the object-store view moved to
+ * `@nats-io/obj`, reached through the JetStream client.  The bucket calls the
+ * tests assert against are therefore recorded by the `Objm` double below and
+ * kept here for the assertions that already read them.
+ */
 class MockConnection implements ObjectStoreNatsConnectionLike {
   readonly store = new MockObjectStore();
-  readonly bucketCalls: Array<{ bucket: string; options?: ObjectStoreBucketOptionsLike }> = [];
+  readonly bucketCalls: Array<{
+    method: 'create' | 'open'; bucket: string; options?: ObjectStoreBucketOptionsLike;
+  }> = [];
   private closedResolve!: (e: Error | undefined) => void;
   private readonly closedPromise = new Promise<Error | undefined>((r) => { this.closedResolve = r; });
-
-  jetstream(): ObjectStoreJetStreamClientLike {
-    return {
-      views: {
-        os: async (bucket: string, options?: ObjectStoreBucketOptionsLike): Promise<ObjectStoreLike> => {
-          this.bucketCalls.push({ bucket, options });
-          return this.store;
-        },
-      },
-    };
-  }
 
   async drain(): Promise<void> { this.closedResolve(undefined); }
   closed(): Promise<Error | undefined> { return this.closedPromise; }
@@ -121,6 +121,26 @@ class MockObjectStoreActor extends JetStreamObjectStoreActor {
   readonly mockConnection = new MockConnection();
   protected override async createNatsConnection(): Promise<ObjectStoreNatsConnectionLike> {
     return this.mockConnection;
+  }
+
+  protected override async jetStreamModule(): Promise<JetStreamModuleLike> {
+    return { jetstream: (): ObjectStoreJetStreamClientLike => ({}) };
+  }
+
+  protected override async objectStoreModule(): Promise<ObjectStoreModuleLike> {
+    const connection = this.mockConnection;
+    return {
+      Objm: class {
+        async create(bucket: string, options?: ObjectStoreBucketOptionsLike): Promise<ObjectStoreLike> {
+          connection.bucketCalls.push({ method: 'create', bucket, options });
+          return connection.store;
+        }
+        async open(bucket: string): Promise<ObjectStoreLike> {
+          connection.bucketCalls.push({ method: 'open', bucket });
+          return connection.store;
+        }
+      } as unknown as ObjectStoreModuleLike['Objm'],
+    };
   }
   /** Exposes the merged settings so the HOCON-precedence test can read them. */
   get resolvedOptions(): JetStreamObjectStoreOptionsType { return this.options; }
@@ -171,6 +191,34 @@ const baseOptions = (): JetStreamObjectStoreOptionsBuilder => JetStreamObjectSto
 
 /* ============================================================== */
 
+describe('JetStreamObjectStoreActor — endpoint label', () => {
+  test('the servers are labelled as configured, with no second nats:// in front', async () => {
+    // A server list is written as URLs, so a scheme prefixed to the joined
+    // list doubled it on the first entry — `nats://nats://a:4222,…` — in
+    // every lifecycle event.  The NATS actor itself labels the list as it was
+    // configured; the three JetStream actors do the same now.
+    const sys = newSystem('object-label');
+    try {
+      const endpoints: string[] = [];
+      sys.eventStream.subscribe(
+        sys.spawnAnonymous(() => new (class extends Actor<BrokerConnected> {
+          override onReceive(event: BrokerConnected): void { endpoints.push(event.endpoint); }
+        })()),
+        BrokerConnected,
+      );
+      const options = JetStreamObjectStoreOptions.create()
+        .withServers(['nats://a:4222', 'nats://b:4222'])
+        .withBucket('assets');
+      await boot(sys, options);
+      await awaitCondition(() => endpoints.length > 0, { label: 'BrokerConnected reached its subscriber' });
+
+      expect(endpoints).toEqual(['nats://a:4222,nats://b:4222/object/assets']);
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
 describe('JetStreamObjectStoreActor — bucket binding', () => {
   test('create=true (default) forwards the create-time settings', async () => {
     const sys = newSystem('object-create');
@@ -189,11 +237,14 @@ describe('JetStreamObjectStoreActor — bucket binding', () => {
     }
   });
 
-  test('create=false binds only', async () => {
+  test('create=false opens rather than creates', async () => {
     const sys = newSystem('object-bind');
     try {
       const { mock } = await boot(sys, baseOptions().withCreate(false));
-      expect(mock.mockConnection.bucketCalls[0]?.options).toEqual({ bindOnly: true });
+      // v3 draws the distinction with the method rather than a `bindOnly`
+      // flag: `open` refuses a bucket that is not there.
+      expect(mock.mockConnection.bucketCalls[0]?.method).toBe('open');
+      expect(mock.mockConnection.bucketCalls[0]?.options).toBeUndefined();
     } finally {
       await sys.terminate();
     }
@@ -207,7 +258,7 @@ describe('JetStreamObjectStoreActor — bucket binding', () => {
             'jetstream-object-store': {
               servers: ['nats://from-hocon:4222'],
               bucket: 'hocon-bucket',
-              maxObjectBytes: '2M',
+              'max-object-bytes': '2M',
             },
           },
         },

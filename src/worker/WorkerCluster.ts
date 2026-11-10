@@ -4,9 +4,12 @@ import type {
   BrokeredMessage,
   PortLike,
 } from '../cluster/transports/MessageChannelTransport.js';
+import type { Config } from '../config/Config.js';
+import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
 import { exponentialBackoff, type BackoffPolicy } from '../pattern/BackoffPolicy.js';
+import { availableParallelism } from '../runtime/Parallelism.js';
 import {
-  getWorkerBackend,
+  resolveWorkerBackend,
   type WorkerBackend,
   type WorkerCloseEvent,
   type WorkerErrorEvent,
@@ -15,6 +18,7 @@ import {
 import { RestartBudget } from '../Supervision.js';
 import {
   DEFAULT_MAX_RESTARTS,
+  DEFAULT_WORKER_COUNT,
   DEFAULT_RESTART_MAX_BACKOFF_MS,
   DEFAULT_RESTART_MIN_BACKOFF_MS,
   DEFAULT_RESTART_RANDOM_FACTOR,
@@ -32,7 +36,7 @@ import type {
   WorkerClusterOptionsType,
   WorkerPermanentlyDownInfo,
 } from './WorkerClusterOptions.js';
-import { WorkerBroker } from './WorkerBroker.js';
+import { WorkerBroker, describeFailure, reportThrough, type ReportLevel } from './WorkerBroker.js';
 
 export type RestartPolicy = 'always' | 'on-failure' | 'never';
 
@@ -40,12 +44,44 @@ export type WorkerHandle = {
   readonly id: number;
   readonly address: NodeAddress;
   readonly worker: WorkerLike;
+  /**
+   * Whatever the worker put on its `ready()` — `WorkerNode.join()`'s context
+   * lets the bootstrap attach a payload, and the mesh bootstrap uses it to
+   * report the actor classes the worker can spawn (#1562).  `undefined` for a
+   * bootstrap that reported nothing.
+   */
+  readonly readyData: unknown;
 };
 
+/**
+ * What a worker says to open the handshake: *I am up, send me my identity*.
+ *
+ * **Say it last.**  The parent answers the first hello and never repeats
+ * itself — see the latch in {@link WorkerCluster.handshake} — so the init
+ * frame is posted exactly once, and a worker that greets before it has a
+ * message handler installed loses it on Bun and Deno, where a frame nothing
+ * is listening for is dropped rather than queued.  The symptom is not an
+ * error but a silence: the parent waits out its whole `readyTimeoutMs` and
+ * then reports a worker that never became ready.
+ *
+ * {@link WorkerNode.join} gets this right and is the reason to use it: it
+ * installs the listener, arms its own timeout, and only then posts the hello.
+ * A hand-written bootstrap — the frames are exported so one can be written —
+ * owes the same order (#775, #1515).
+ */
 export type WorkerHelloMessage = {
   readonly kind: 'worker-hello';
 };
 
+/**
+ * The parent's answer to the first hello, and the only one it sends: the
+ * address this worker is to take, the `ActorSystem` name to build, and
+ * whatever `withInitData` carried.
+ *
+ * Every field crosses by structured clone, `data` included — a value the
+ * algorithm refuses fails the spawn rather than the worker (see
+ * {@link WorkerClusterOptionsBuilder.withInitData}).
+ */
 export type WorkerInitMessage = {
   readonly kind: 'worker-init';
   readonly self: ReturnType<NodeAddress['toJSON']>;
@@ -53,9 +89,17 @@ export type WorkerInitMessage = {
   readonly data: unknown;
 };
 
+/**
+ * What ends the handshake: the worker has built its system, joined, and is
+ * reachable at `self`.  Until it arrives the parent is holding the slot open
+ * against `readyTimeoutMs`, so a bootstrap sends it once its node is actually
+ * usable — not once `join()` returned.
+ */
 export type WorkerReadyMessage = {
   readonly kind: 'worker-ready';
   readonly self: ReturnType<NodeAddress['toJSON']>;
+  /** Optional payload the bootstrap attached to `ready()` — see {@link WorkerHandle.readyData}. */
+  readonly data?: unknown;
 };
 
 /** Wire frame flowing in both directions on every worker↔main channel. */
@@ -114,14 +158,25 @@ export class WorkerCluster {
     backend?: WorkerBackend;
     onWorkerPermanentlyDown?: (info: WorkerPermanentlyDownInfo) => void;
   };
+  /**
+   * Where every report goes — a worker's exit, its granted respawn, a failed
+   * one, a retired slot.  Required rather than optional, and resolved once in
+   * {@link WorkerCluster.spawn}: the option is what the caller may leave out,
+   * the field is what the code reads, and a field that may be `undefined`
+   * puts a "which sink?" branch at every report site.  Every line carries the
+   * `[worker]` prefix, matching `[offload]` and `[parallelism]` (#1276).
+   */
+  private readonly log: Logger;
   private closed = false;
 
   private constructor(
     broker: WorkerBroker,
+    log: Logger,
     options: WorkerClusterOptionsType,
     resolvedWorkers: number,
   ) {
     this.broker = broker;
+    this.log = log;
     this.options = {
       bootstrap: options.bootstrap,
       workers: resolvedWorkers,
@@ -146,20 +201,45 @@ export class WorkerCluster {
     });
   }
 
+  /**
+   * @param options  Explicit options — the highest-precedence layer.
+   * @param config   The configuration `actor-ts.worker-cluster` is read from.
+   *   Defaults to {@link Config.load}, the chain `ActorSystem.create` uses,
+   *   because `spawn` is a static with no system in scope to borrow one from.
+   *
+   *   Hand it `system.config` whenever a system is in scope.  A load of its
+   *   own sees only what the environment says — the files the `ACTOR_TS_*`
+   *   variables name or the working directory holds, and the profile
+   *   `ACTOR_TS_PROFILE` names — so a
+   *   file or a profile the system was given in code is invisible to it, and
+   *   a profile defined only in that file is refused (#1546).  `WorkerMesh`
+   *   hands in its main system's config for exactly that reason.
+   */
   static async spawn(
     options: WorkerClusterOptions,
+    config?: Config,
   ): Promise<WorkerCluster> {
-    const resolvedOptions = withWorkerClusterConfigDefaults(options as WorkerClusterOptionsType);
+    const resolvedOptions = withWorkerClusterConfigDefaults(options as WorkerClusterOptionsType, config);
     new WorkerClusterOptionsValidator().validate(resolvedOptions);
-    const workers = resolveWorkerCount(resolvedOptions.workers);
-    const broker = new WorkerBroker();
-    const cluster = new WorkerCluster(broker, resolvedOptions, workers);
+    const workers = await resolveWorkerCount(resolvedOptions.workers ?? DEFAULT_WORKER_COUNT);
+    // A `ConsoleLogger` at `Info` when nothing is given — the same default an
+    // `ActorSystem` falls back to, and a default sink beats silence: `spawn`
+    // is a static with no system in scope to borrow a logger from, and a pool
+    // whose crashes nobody configured a sink for still has to say so.  The one
+    // logger is handed to the broker too, so a bare pool's broker drops reach
+    // the same place its worker exits do; a caller-owned broker keeps the
+    // logger it was built with (#1276).
+    const log = resolvedOptions.logger ?? new ConsoleLogger(LogLevel.Info);
+    const broker = resolvedOptions.broker ?? new WorkerBroker(log);
+    const cluster = new WorkerCluster(broker, log, resolvedOptions, workers);
     await cluster._start();
     return cluster;
   }
 
   get addresses(): NodeAddress[] { return this.handles.map(h => h.address); }
   get size(): number { return this.handles.length; }
+  /** The live workers, with whatever each reported on `ready()`. */
+  get workers(): ReadonlyArray<WorkerHandle> { return this.handles; }
 
   /**
    * Shut the mesh down and wait for the threads to actually go.
@@ -186,9 +266,8 @@ export class WorkerCluster {
   }
 
   private async _start(): Promise<void> {
-    const total = this.options.workers === 'auto'
-      ? resolveWorkerCount('auto')
-      : (this.options.workers as number);
+    // Already a number: `spawn` resolved `'auto'` before constructing this.
+    const total = this.options.workers as number;
     const ready: Array<Promise<void>> = [];
     for (let i = 0; i < total; i++) {
       const starting = this.spawnOne(i);
@@ -216,13 +295,19 @@ export class WorkerCluster {
       this.options.basePort + index,
     );
 
-    const backend = this.options.backend ?? await getWorkerBackend();
+    // Resolved before the spawn, so a backend that declares it does not
+    // contain worker errors is reported *before* the first worker that could
+    // kill the host exists (#1288).  The helper latches per backend instance;
+    // a respawn through the same one says nothing new.
+    const backend = await resolveWorkerBackend(
+      this.options.backend,
+      (message) => this.reportUncontainedBackend(message),
+    );
     const url = this.options.bootstrap instanceof URL
       ? this.options.bootstrap
       : new URL(this.options.bootstrap);
     const worker = backend.spawn(url, { name: `worker-${index}` });
     this.starting.add(worker);
-    const handle: WorkerHandle = { id: index, address, worker };
 
     const init: WorkerInitMessage = {
       kind: 'worker-init',
@@ -230,10 +315,11 @@ export class WorkerCluster {
       systemName: this.options.systemName,
       data: this.options.initData,
     };
+    let readyData: unknown;
     try {
       // Handshake first (so only one 'message' listener is live during hello/ready),
       // then wire up the broker — otherwise Bun's multiple-listener path is finicky.
-      await this.handshake(worker, init, address);
+      readyData = await this.handshake(worker, init, address);
     } catch (error) {
       // The worker is referenced by two locals and nothing else; letting the
       // rejection propagate used to drop both and leave the thread running for
@@ -255,6 +341,7 @@ export class WorkerCluster {
     const brokerPort = this.brokerFacade(worker);
     this.broker.register(address, brokerPort);
 
+    const handle: WorkerHandle = { id: index, address, worker, readyData };
     this.handles.push(handle);
     this.attachFailureHandlers(index, worker, address);
   }
@@ -281,8 +368,9 @@ export class WorkerCluster {
     } as PortLike;
   }
 
-  private handshake(worker: WorkerLike, init: WorkerInitMessage, address: NodeAddress): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
+  /** Resolves with whatever the worker attached to its `worker-ready` frame. */
+  private handshake(worker: WorkerLike, init: WorkerInitMessage, address: NodeAddress): Promise<unknown> {
+    return new Promise<unknown>((resolve, reject) => {
       const timeout = setTimeout(() => {
         unsubscribe();
         reject(new Error(`Worker ${address} did not become ready within ${this.options.readyTimeoutMs}ms`));
@@ -292,12 +380,80 @@ export class WorkerCluster {
         worker.removeEventListener('message', onMessage);
         worker.removeEventListener('error', onError);
       };
+      /**
+       * First hello wins; every later one is dropped.
+       *
+       * `postMessage` structured-clones its argument on the *posting* thread,
+       * and `init.data` is whatever the application handed to `withInitData` —
+       * a config blob, a seed list.  Without the latch a worker stuck in
+       * `for (;;) postMessage({ kind: 'worker-hello' })` buys an arbitrarily
+       * expensive main-thread clone per one-word frame, for the whole
+       * `readyTimeoutMs` window (#775).
+       *
+       * A repeat cannot help a worker that was already listening — the frame
+       * is identical and the channel is ordered — and that is the only case
+       * the latch is safe for, which the earlier wording here overstated.  A
+       * worker that says hello *before* installing its message handler does
+       * lose the init frame on Bun and Deno, where a frame with no handler to
+       * receive it is dropped rather than queued (Node queues it), so a repeat
+       * would have rescued exactly that worker.  What makes the latch safe is
+       * that {@link WorkerNode.join} installs its listener first and only then
+       * says hello — a property of this framework's worker half, not of the
+       * wire protocol, and one a hand-written bootstrap has to keep.  It is
+       * stated on {@link WorkerHelloMessage} for that reason, and asserted by
+       * `tests/unit/worker/WorkerNode.test.ts` (#1515).
+       */
+      let helloSeen = false;
       const onWorkerHello = (): void => {
-        worker.postMessage(init);
+        if (helloSeen) return;
+        try {
+          worker.postMessage(init);
+        } catch (error) {
+          onInitFrameRefused(error);
+          return;
+        }
+        // Latched on the *successful* post, which is the order the failure
+        // handling around it already reads in (#700, #701): a post that threw
+        // sent nothing, so there is no init frame for a later hello to be a
+        // duplicate of.  Nothing can slip between the two statements —
+        // `postMessage` does not synchronously re-enter this listener on any
+        // runtime the framework targets, which is the same property
+        // `WorkerNode.join()` relies on for its own two-statement ordering.
+        helloSeen = true;
       };
-      const onWorkerReady = (): void => {
+      /**
+       * `postMessage` structured-clones on the *posting* thread, so an
+       * `initData` the algorithm refuses — a function, an object carrying one
+       * — throws a `DataCloneError` right here, inside the host's `message`
+       * listener.  Unguarded that throw had two exits and both were wrong: on
+       * Node it left the listener as an uncaught exception and took the
+       * process with it, and where something did contain it the handshake sat
+       * out the whole `readyTimeoutMs` before blaming a worker that had
+       * received nothing.  `OffloadPool.dispatch` is the same shape with the
+       * same answer (#1571); this is the handshake's (#1515).
+       *
+       * Nothing left this thread, so the worker is not at fault and there is
+       * nothing to wait for: fail the spawn now, naming the field that can
+       * carry an unclonable value.  Rendered through `describeFailure` like
+       * every other failure this class reports, which for a `DataCloneError`
+       * means the runtime's own "`() => 1` could not be cloned" — the part
+       * that says *which* value.  That echo is why `WorkerBroker` keeps the
+       * same message off its `unroutable` log line, and why it is right here:
+       * this is a rejection handed back to the caller of `spawn()`, and the
+       * value it quotes is the `initData` that caller just passed in.  The
+       * error object itself rides along as the `cause`.
+       */
+      const onInitFrameRefused = (cause: unknown): void => {
         unsubscribe();
-        resolve();
+        reject(new Error(
+          `Worker ${address} could not be sent its init frame — initData must be `
+          + `structured-cloneable (${describeFailure(cause)})`,
+          { cause },
+        ));
+      };
+      const onWorkerReady = (ready: WorkerReadyMessage): void => {
+        unsubscribe();
+        resolve(ready.data);
       };
       /**
        * A bootstrap that throws or fails to resolve an import produces an
@@ -319,7 +475,7 @@ export class WorkerCluster {
         // ignored rather than crashing the handshake.
         match(message)
           .with({ kind: 'worker-hello' }, () => onWorkerHello())
-          .with({ kind: 'worker-ready' }, () => onWorkerReady())
+          .with({ kind: 'worker-ready' }, (ready) => onWorkerReady(ready as WorkerReadyMessage))
           .otherwise(() => {});
       };
       worker.addEventListener('message', onMessage);
@@ -336,35 +492,92 @@ export class WorkerCluster {
    * which is what #700 asked for, respawns twice per crash on two of the three
    * runtimes.  Whichever event arrives first consumes the latch; the other is
    * dropped.
+   *
+   * Both paths report, and both are silent once `terminate()` has run: killing
+   * a worker is allowed to make it complain, and the synthetic `close` events
+   * termination raises are not a diagnostic anyone wants — without the guard
+   * `terminate()` printed one `exited` line per worker (#1276).
    */
   private attachFailureHandlers(index: number, worker: WorkerLike, address: NodeAddress): void {
     let consumed = false;
     const onClose = (e: WorkerCloseEvent): void => {
       if (consumed) return;
       consumed = true;
+      if (this.closed) return;
       const crashed = typeof e?.code === 'number' ? e.code !== 0 : true;
+      this.reportExit(index, address, e?.code, crashed);
       this.onWorkerDown(index, address, crashed, undefined);
     };
     const onError = (e: WorkerErrorEvent): void => {
       if (consumed) return;
       consumed = true;
-      // Not reported during shutdown: killing a worker is allowed to make it
-      // complain, and that is not a diagnostic anyone wants.
       if (this.closed) return;
-      reportWorkerFailure(`worker ${index} (${address}) failed`, e.error ?? e.message);
-      this.onWorkerDown(index, address, true, e.error ?? e.message);
+      const error = e.error ?? e.message;
+      this.report('error', `[worker] worker ${index} (${address}) failed: ${describeFailure(error)}`);
+      this.onWorkerDown(index, address, true, error);
     };
     worker.addEventListener('close', onClose);
     worker.addEventListener('error', onError);
   }
 
-  /** Apply `restartPolicy` to a worker that has gone away, and free its slot. */
+  /**
+   * Every line the pool writes goes through here.  The reports run inside
+   * the worker's `close` and `error` listeners and inside the respawn timer,
+   * where a throw from a caller-supplied `Logger` has nothing above it to
+   * catch — and on the close path it also stood in front of the respawn, so a
+   * throwing sink cost the pool its replacement worker as well as the host
+   * its process.  `reportThrough` says what the fallback is and why.
+   */
+  private report(level: ReportLevel, line: string): void {
+    reportThrough(this.log, level, line);
+  }
+
+  /**
+   * A backend that declared `containsWorkerErrors: false` — at `error`, the
+   * level the failure it predicts would be reported at, because the line is
+   * the only warning the log will hold when that failure takes the process
+   * with it (#1288).  Once per backend instance; the helper keeps the latch.
+   */
+  private reportUncontainedBackend(message: string): void {
+    this.report('error', `[worker] ${message}`);
+  }
+
+  /**
+   * The `close` path's report: the raw exit code, at `warn` when the policy
+   * will read it as a crash and `info` for a clean exit.  The code is stated
+   * as a fact and never as "crashed" — on Bun a deliberate `self.close()`
+   * reports code 1 (#1216), so the line carries what the runtime said and
+   * `crashed` stays what drives the policy.
+   */
+  private reportExit(index: number, address: NodeAddress, code: number | undefined, crashed: boolean): void {
+    const exit = typeof code === 'number'
+      ? `exited with code ${code}`
+      : 'exited without an exit code';
+    const line = `[worker] worker ${index} (${address}) ${exit}`;
+    this.report(crashed ? 'warn' : 'info', line);
+  }
+
+  /**
+   * Apply `restartPolicy` to a worker that has gone away, and free its slot.
+   *
+   * A worker the policy leaves down is reported as such — the pool is one
+   * worker smaller from here on, and nothing else says so (#1276).  The report
+   * is the whole of the change on that branch: that the slot's handle and
+   * broker registration survive the early return is #1284's defect, and the
+   * ordering is left to it.
+   */
   private onWorkerDown(index: number, address: NodeAddress, crashed: boolean, error: unknown): void {
     if (this.closed) return;
     const should =
       this.options.restartPolicy === 'always' ||
       (this.options.restartPolicy === 'on-failure' && crashed);
-    if (!should) return;
+    if (!should) {
+      this.report(
+        'info',
+        `[worker] worker ${index} (${address}) is not respawned — restartPolicy '${this.options.restartPolicy}'`,
+      );
+      return;
+    }
     const i = this.handles.findIndex(h => h.address.equals(address));
     if (i < 0) return;
     this.broker.unregister(address);
@@ -394,6 +607,18 @@ export class WorkerCluster {
     // window behind restarts from the minimum delay again instead of staying
     // pinned at the ceiling for the process lifetime.
     const delayMs = this.backoff.delayFor(state.budget.recordedRestarts - 1);
+    // A granted restart used to arm the timer in silence, so a mesh churning
+    // inside its budget looked healthy for the process lifetime (#1276).  The
+    // budget's own tally is quoted, except under an unlimited allowance:
+    // `registerRestart` records nothing when `maxRetries < 0` (#1255), so
+    // "restart 0 of -1" would be a lie and the line says what is true instead.
+    const budgetDetail = this.options.maxRestarts < 0
+      ? 'restart budget unlimited'
+      : `restart ${state.budget.recordedRestarts} of ${this.options.maxRestarts}${this.windowDetail()}`;
+    this.report(
+      'warn',
+      `[worker] respawning worker ${index} (${address}) in ${Math.round(delayMs)} ms (${budgetDetail})`,
+    );
     const timer = setTimeout(() => {
       state.timer = undefined;
       // `terminate()` may have run during the backoff.
@@ -419,10 +644,17 @@ export class WorkerCluster {
     // A respawn that lost the race with `terminate()` rejects by design — the
     // worker it started is already terminated by `spawnOne`'s own guard.
     if (this.closed) return;
-    reportWorkerFailure(`respawning worker ${index} (${address}) failed`, error);
+    this.report('error', `[worker] respawning worker ${index} (${address}) failed: ${describeFailure(error)}`);
     this.requestRestart(index, address, error);
   }
 
+  /**
+   * A retired slot: the callback when the options carry one, otherwise an
+   * `error` line through the logger.  The two are alternatives, not a pair —
+   * a caller who registered the callback has said where this goes.  The last
+   * failure is appended only when the runtime gave one: a close-driven crash
+   * carries no error, and a line ending in a bare colon says nothing.
+   */
   private reportPermanentlyDown(
     index: number,
     address: NodeAddress,
@@ -431,12 +663,12 @@ export class WorkerCluster {
   ): void {
     const listener = this.options.onWorkerPermanentlyDown;
     if (listener === undefined) {
-      // The `Dispatcher.onError` precedent: a default sink beats silence, and
-      // `src/worker/` has no logger to reach for.
-      console.error(
-        `[actor-ts] worker ${index} (${address}) is permanently down — `
-        + `${restarts} restarts inside ${this.options.restartWindowMs}ms exhausted its budget`,
-        error ?? '',
+      const cause = describeFailure(error);
+      this.report(
+        'error',
+        `[worker] worker ${index} (${address}) is permanently down — `
+        + `${restarts} restarts${this.windowDetail()} exhausted its budget`
+        + (cause === '' ? '' : `; last failure: ${cause}`),
       );
       return;
     }
@@ -444,8 +676,20 @@ export class WorkerCluster {
     try {
       listener(info);
     } catch (listenerError) {
-      console.error('[actor-ts] onWorkerPermanentlyDown threw:', listenerError);
+      this.report('error', `[worker] onWorkerPermanentlyDown threw: ${describeFailure(listenerError)}`);
     }
+  }
+
+  /**
+   * The window half of a budget line — ` inside W ms`, or nothing under
+   * `restartWindowMs: 0`.  A zero window means the budget never resets
+   * (`RestartBudget` prunes only when `withinTimeRangeMs > 0`), so the count
+   * is over the process lifetime and "inside 0 ms" would describe a window no
+   * restart could fit in.  Shared by the granted-restart and the
+   * permanently-down lines, so the two cannot drift.
+   */
+  private windowDetail(): string {
+    return this.options.restartWindowMs > 0 ? ` inside ${this.options.restartWindowMs} ms` : '';
   }
 
   private restartStateFor(index: number): RestartState {
@@ -482,9 +726,18 @@ async function terminateQuietly(worker: WorkerLike): Promise<void> {
  * Keep a pending respawn from holding the process open.
  *
  * Two dialects: Node and Bun put `unref()` on the handle, while Deno returns a
- * plain number and needs `Deno.unrefTimer(id)`.  The src-side idiom elsewhere
- * (`ClusterBootstrap`) only does the first and therefore silently no-ops on
- * Deno — #778 tracks unifying the two.
+ * plain number and needs `Deno.unrefTimer(id)`, so a bare `handle.unref?.()`
+ * silently does nothing there.
+ *
+ * This helper is deliberately *not* the answer to that split in general.  Where
+ * a timer has a success path that can cancel it, `clearTimeout` is the portable
+ * call and the right one — that is what #778 did to `WorkerNode.join()`'s init
+ * timer, and it needs no dialect handling at all.  Unreferencing is only for a
+ * timer that has to stay armed and must not be the reason the process lives,
+ * which is the respawn backoff's shape and nothing else's here.  Whether even
+ * this call is correct is itself open: #1283 argues the respawn timer should
+ * stay referenced, because an otherwise-idle host now exits during the backoff
+ * instead of restarting.  If that lands, this function goes with it.
  */
 function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
   const handle = timer as unknown as { unref?: () => void };
@@ -497,26 +750,16 @@ function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
 }
 
 /**
- * Report a worker failure the framework cannot hand to anyone else.
- *
- * `src/worker/` has no logger and `WorkerCluster` has no `ActorSystem` in scope
- * — it is a static-constructed plain object, and the workers build their own
- * systems after spawning — so this follows `Dispatcher`'s precedent of a
- * prefixed `console.error` rather than inventing a logging seam here.
+ * What `'auto'` means: the `ACTOR_TS_WORKERS` environment variable when set —
+ * the operator's override, kept because a container image cannot always carry
+ * a config file — otherwise the machine's available parallelism (#1440).  A
+ * plain count is taken as it is.
  */
-function reportWorkerFailure(what: string, error: unknown): void {
-  console.error(`[actor-ts] ${what}:`, error);
-}
-
-function resolveWorkerCount(value: number | 'auto' | undefined): number {
+async function resolveWorkerCount(value: number | 'auto'): Promise<number> {
   if (typeof value === 'number' && value > 0) return value;
   if (typeof process !== 'undefined' && process.env?.ACTOR_TS_WORKERS) {
     const workerCount = parseInt(process.env.ACTOR_TS_WORKERS, 10);
     if (Number.isFinite(workerCount) && workerCount > 0) return workerCount;
   }
-  const nav = (globalThis as unknown as { navigator?: { hardwareConcurrency?: number } }).navigator;
-  if (nav && typeof nav.hardwareConcurrency === 'number' && nav.hardwareConcurrency > 0) {
-    return nav.hardwareConcurrency;
-  }
-  return 2;
+  return availableParallelism();
 }

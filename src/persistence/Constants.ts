@@ -62,6 +62,26 @@ export const DYNAMODB_MAX_TRANSACTION_ITEMS = 100;
 export const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 1_000;
 
 /**
+ * How often a read-side poller asks the journal for new rows, in
+ * milliseconds — the built-in value behind `LiveQueryOptions.pollIntervalMs`
+ * and behind a projection's own tick.
+ *
+ * Lives here rather than beside one options type because `LiveQueryOptions`
+ * is declared in `query/PersistenceQuery.ts`, which is a capability interface
+ * and not an `XOptions.ts`, and because four read sites across two files
+ * (`InMemoryQuery`'s three live streams and `ProjectionActor.scheduleNextTick`)
+ * each carried their own copy of the literal — which is how the published
+ * default and the one in force drift apart without a diff (#875).
+ *
+ * One second is deliberately unambitious.  A projection is I/O-bound
+ * background work feeding a read model, so the cost of polling is paid once
+ * per interval per projection against the journal, while the benefit is
+ * latency nobody is waiting on synchronously.  Applications that do need
+ * sub-interval visibility want the push-based query, not a smaller number.
+ */
+export const DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS = 1_000;
+
+/**
  * Table (SQL) holding the one-row database identity (#1358).  Deliberately a
  * fixed name shared by the SQLite stores and the whole relational family, and
  * deliberately NOT stem-prefixed like the event tables: the identity belongs
@@ -72,6 +92,93 @@ export const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 1_000;
 export const STORAGE_IDENTITY_TABLE = 'storage_identity';
 
 /**
+ * Table (or collection) an event log is written to when nothing named one.
+ *
+ * Read by `RelationalJournal` — and so by the whole Postgres / MariaDB / MSSQL
+ * / libSQL / D1 family — and by the standalone `SqliteJournal`, each of which
+ * carried its own `'events'` literal.  The tags table is derived from it
+ * (`${events}_tags`) rather than defaulted separately, which is why only the
+ * stem is named here.
+ *
+ * Named at all because `reference.conf` publishes it
+ * (`…journal.sqlite.events-table`, #872) and a published default with no
+ * constant behind it is a value written down twice with nothing comparing the
+ * copies.
+ */
+export const DEFAULT_EVENTS_TABLE = 'events';
+
+/**
+ * Table a snapshot corpus is written to when nothing named one.  Same
+ * placement argument as {@link DEFAULT_EVENTS_TABLE}: `RelationalSnapshotStore`
+ * and `SqliteSnapshotStore` each held their own copy.
+ */
+export const DEFAULT_SNAPSHOTS_TABLE = 'snapshots';
+
+/**
+ * Table a durable-state record is written to when nothing named one.
+ *
+ * One read site today (`RelationalDurableStateStore`), but the default is
+ * restated in the `table` JSDoc of every relational durable-state options file
+ * — SQLite, Postgres, MariaDB, MSSQL, libSQL and D1 — so it is a value six
+ * `XOptions.ts` files describe and one file decides.  `reference.conf`
+ * publishes it as `…durable-state.sqlite.table` (#872).
+ */
+export const DEFAULT_DURABLE_STATE_TABLE = 'durable_state';
+
+/**
+ * Snapshots kept per `persistenceId`; older ones are pruned on save.  `0`
+ * disables pruning entirely.
+ *
+ * Moved here from `ObjectStorageSnapshotStoreOptions.ts` (#872), where its
+ * JSDoc argued it was object-storage-specific because "the durable-state store
+ * has no history to retain".  True, and beside the point: the value is shared
+ * by the three *snapshot* stores — object storage, the relational family
+ * through `RelationalSnapshotStore`, and the standalone `SqliteSnapshotStore`
+ * — and the latter two wrote it as an inline `?? 3`.  A default shared by more
+ * than one options type has no single `XOptions.ts` to sit in, which is
+ * exactly what `src/<subsystem>/Constants.ts` is for.
+ */
+export const DEFAULT_SNAPSHOT_KEEP_N = 3;
+
+/**
+ * Whether a relational store issues `CREATE TABLE IF NOT EXISTS` on first use.
+ *
+ * On by default because the alternative is a store that appears to work until
+ * the first write, and every dialect's DDL is `IF NOT EXISTS` — so the cost of
+ * being wrong is one statement per store, once.  A deployment that migrates
+ * with a schema tool turns it off.
+ *
+ * Read by `RelationalStore`, which is the base of every relational journal,
+ * snapshot store and durable-state store, and restated in the
+ * `autoCreateTables` JSDoc of each of their options files.  The Cassandra
+ * journal and snapshot store read it for their table DDL, and `DynamoDbStore`
+ * for its `CreateTable` on first use, where an existing table is likewise the
+ * expected case rather than a failure (#1490).  `reference.conf` publishes it
+ * as `auto-create-tables` in the block of every store that reads it — the
+ * relational, Cassandra and DynamoDB journals and snapshot stores and the
+ * relational and DynamoDB durable-state stores, `…durable-state.sqlite` among
+ * them (#872).
+ */
+export const DEFAULT_AUTO_CREATE_TABLES = true;
+
+/**
+ * Whether a MongoDB store creates its indexes on first use.
+ *
+ * MongoDB's equivalent of {@link DEFAULT_AUTO_CREATE_TABLES}, and a separate
+ * constant rather than a reuse of it: a collection needs no DDL to exist, so
+ * what this switches is the `createIndex` pass, and the uniqueness those
+ * indexes enforce is what gives the Mongo journal the same
+ * `JournalConcurrencyError` contract the relational primary key gives.  Off
+ * therefore means "I have created them myself", not "skip the DDL".
+ *
+ * Lives here rather than beside one options type because it is the
+ * `autoCreateIndexes` default of *both* `MongoJournalOptions` and
+ * `MongoSnapshotStoreOptions`, resolved once in `MongoStore`'s constructor.
+ * `reference.conf` publishes it twice (#872).
+ */
+export const DEFAULT_MONGO_AUTO_CREATE_INDEXES = true;
+
+/**
  * Sentinel partition key of the DynamoDB identity item (#1358).  Lives inside
  * each store's own table — DynamoDB's unit of divergence is the table, so the
  * identity is per table and a node on a mistyped table name mismatches too.
@@ -79,6 +186,62 @@ export const STORAGE_IDENTITY_TABLE = 'storage_identity';
  * refuses path separators, so no user stream can ever occupy this key.
  */
 export const DYNAMODB_STORAGE_IDENTITY_KEY = '_actor-ts/storage-identity';
+
+/**
+ * Billing mode a DynamoDB store creates its tables under when nothing named
+ * one — on-demand, which needs no capacity planning and suits an event
+ * journal's bursty writes.
+ *
+ * Read in two places that must agree on what "unset" means: `DynamoDbStore`'s
+ * constructor, which sends it to `CreateTable`, and
+ * `DynamoDbOptionsValidatorBase`, which refuses a `provisionedThroughput` the
+ * effective mode would ignore.  A copy in each is how a validator ends up
+ * judging a mode the store never applies.
+ *
+ * The value is AWS's own spelling, because it reaches `CreateTable` verbatim.
+ * `as const` is load-bearing: without it the type widens to `string` and stops
+ * being assignable to the `'PAY_PER_REQUEST' | 'PROVISIONED'` field both read
+ * sites hold it in.
+ *
+ * Lives here rather than beside one options type because it is the
+ * `billingMode` default of all three DynamoDB families (journal, snapshot
+ * store, durable-state store), which share the field through
+ * `DynamoDbTableProvisioning` (#1490).
+ */
+export const DEFAULT_DYNAMODB_BILLING_MODE = 'PAY_PER_REQUEST' as const;
+
+/**
+ * How long a DynamoDB store waits for a table it just created to become
+ * `ACTIVE`, in milliseconds — 30 s.
+ *
+ * Read by `DynamoDbStore`'s constructor and spent in its `waitForActive` poll.
+ * `CreateTable` returns while the table is still `CREATING`, and the store's
+ * first caller blocks until it flips — seconds on AWS, effectively instant on
+ * `dynamodb-local` — so this is the longest a first operation waits on table
+ * creation before failing with the table's name and last status.
+ *
+ * Lives here rather than beside one options type because it is the
+ * `tableReadyTimeoutMs` default of all three DynamoDB families, which share
+ * the field through `DynamoDbTableProvisioning` (#1490).
+ */
+export const DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS = 30_000;
+
+/**
+ * Read and write capacity units a DynamoDB table is created with when the
+ * billing mode is `PROVISIONED` and no `provisionedThroughput` pair was named
+ * — 5 each.
+ *
+ * Read by `DynamoDbStore`'s table creation, once for each half of the pair.  A
+ * fallback, not a sizing: the validator accepts `PROVISIONED` with no pair, and
+ * every table the store creates then gets this capacity without a word, which
+ * is why `DynamoDbTableProvisioning` states it — a deployment that provisions
+ * on purpose names its own pair.
+ *
+ * Lives here rather than beside one options type because it backs the
+ * `provisionedThroughput` field of all three DynamoDB families, which share it
+ * through `DynamoDbTableProvisioning` (#1490).
+ */
+export const DEFAULT_DYNAMODB_PROVISIONED_CAPACITY_UNITS = 5;
 
 /**
  * Ceiling on one Cloudflare D1 REST response body, in bytes — 64 MiB.
@@ -112,22 +275,178 @@ export const DYNAMODB_STORAGE_IDENTITY_KEY = '_actor-ts/storage-identity';
 export const DEFAULT_D1_MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 
 /**
+ * Deadline on one Cloudflare D1 REST request, in milliseconds — 30 s.
+ *
+ * Read by `buildD1Client` in `D1Client.ts`, which hands it to every request it
+ * posts when the connection names no `timeoutMs`.  The transport is one
+ * statement per request, and `RelationalJournal.readFrom` selects an actor's
+ * whole history in one statement, so this bounds a whole replay in time the
+ * way {@link DEFAULT_D1_MAX_RESPONSE_BYTES} bounds it in size.
+ *
+ * Equal to the generic `HttpClient` default today, and still its own constant:
+ * the D1 transport passes this value on every request rather than inheriting
+ * the client's, so a change to that default does not move the D1 deadline —
+ * the same independence the response ceiling above has.
+ *
+ * Lives here rather than beside one options type because it backs the
+ * `timeoutMs` field of *all three* D1 families (journal, snapshot store,
+ * durable-state store), which share it through `D1Connection` — the placement
+ * argument of the response ceiling, and the constant a published `timeout`
+ * leaf pins against (#1490).
+ */
+export const DEFAULT_D1_TIMEOUT_MS = 30_000;
+
+/**
+ * Replication strategy a Cassandra keyspace is created with when the
+ * connection's `replication` names no class — `SimpleStrategy`.
+ *
+ * Read by `keyspaceDdl` in `CassandraClient.ts`, the one statement
+ * `autoCreateKeyspace` runs for the journal, the snapshot store and the
+ * remember-entities store.  `SimpleStrategy` places replicas with no regard
+ * for data centers, which suits the single-node development cluster that
+ * switch exists for; a multi-DC keyspace names `NetworkTopologyStrategy` and
+ * its per-DC factors.
+ *
+ * The value is CQL's own class name, because it reaches `CREATE KEYSPACE` as
+ * spelled.  `as const` is load-bearing: without it the type widens to `string`
+ * and stops being assignable to the `'SimpleStrategy' | 'NetworkTopologyStrategy'`
+ * field `CassandraConnection` holds it in.
+ *
+ * Lives here rather than beside one options type because it backs the
+ * `replication` field that the journal's, the snapshot store's and the
+ * remember-entities store's option families all share through
+ * `CassandraConnection` (#1490).
+ */
+export const DEFAULT_CASSANDRA_REPLICATION_CLASS = 'SimpleStrategy' as const;
+
+/**
+ * Replication factor a `SimpleStrategy` keyspace is created with when the
+ * connection's `replication` names none — one copy of every row.
+ *
+ * Read by `keyspaceDdl` in `CassandraClient.ts`, which narrows it to a
+ * non-negative integer like any configured factor before splicing it into the
+ * statement.  One is right for the development cluster `autoCreateKeyspace` is
+ * for and wrong for anything that has to survive losing a node, which names
+ * its own factor or creates its keyspace itself.
+ *
+ * Lives here for the reason {@link DEFAULT_CASSANDRA_REPLICATION_CLASS} does.
+ */
+export const DEFAULT_CASSANDRA_REPLICATION_FACTOR = 1;
+
+/**
  * Longest accepted id — the width of the `persistence_id` column in every
  * relational dialect's DDL.  Anything longer cannot round-trip.
  */
 export const MAX_PERSISTENCE_ID_LENGTH = 255;
 
 /**
- * Longest accepted event tag, and most tags one event may carry.  Both cap
- * the row-size and tag-index growth an application can cause from user input
- * (#131 family) — see `TagValidator` for the full set of risks tag validation
- * closes.
+ * Longest accepted event tag.
+ *
+ * Caps, with {@link MAX_TAGS_PER_EVENT}, the row-size and tag-index growth an
+ * application can cause from user input (#131 family) — see `TagValidator`
+ * for the full set of risks tag validation closes.
  */
 export const MAX_TAG_LENGTH = 255;
+
+/**
+ * Most tags one event may carry — the count half of the bound
+ * {@link MAX_TAG_LENGTH} describes.
+ *
+ * Its own block because the two are separate rules over separate growth: one
+ * over-long tag widens a row, sixty-five short ones widen the tag index.
+ * `assertValidTags` checks them independently and names each in what it
+ * throws, and this one is per *event* rather than per append since #631.
+ */
 export const MAX_TAGS_PER_EVENT = 64;
 
 /** Sequence-number padding — matches `Number.MAX_SAFE_INTEGER`'s 16 digits with headroom. */
 export const SEQ_PADDING = 20;
+
+/**
+ * Key-namespace segment the object-storage snapshot store writes under —
+ * one half of the split that keeps the two stores' corpora apart, the other
+ * being {@link OBJECT_STORAGE_DURABLE_STATE_NAMESPACE} (#716).
+ *
+ * The two stores used to share a namespace, because `registerObjectStoragePlugins`
+ * hands them the same `backend` and the same `prefix` and each laid its
+ * `persistenceId` out directly beneath it: `<prefix><pid>/<seq>.json` for a
+ * snapshot, `<prefix><pid>/state.json` for durable state.  The same entity
+ * persisted both ways therefore put both objects in one directory — and
+ * `'state.json'` collates after every zero-padded sequence key, so the
+ * snapshot store's "the last key under the prefix is the newest snapshot"
+ * returned the durable-state record.  That body has no `sequenceNr`, so
+ * `assertTrustworthySnapshot` refused it and recovery died with a
+ * `SnapshotIntegrityError` — an actor that could not start, reachable through
+ * the framework's own one-call wiring with no application mistake at all.
+ *
+ * A namespace segment separates the two corpora at the layout level: they
+ * cannot collide because they never share a directory.  The segment sits
+ * between the operator's `prefix` and the `persistenceId` —
+ * `<prefix>snapshots/<pid>/<seq>.json`, `<prefix>state/<pid>/state.json` — so
+ * the per-entity directory that bounds every LIST is preserved, and `prefix`
+ * keeps meaning what it meant.
+ *
+ * **The split is not what closes that collision**, and the distinction is
+ * worth stating because the layout change is the expensive half.
+ * `snapshotSequenceOf` accepts a leaf only when it is exactly
+ * {@link SEQ_PADDING} digits followed by `.json` — 25 characters — so
+ * `'state.json'` fails the first of its four rules on length alone and can
+ * never be the key `loadLatest` returns, namespaces or no namespaces.
+ * Measured rather than reasoned: a well-formed durable-state body written to
+ * `<prefix>snapshots/<pid>/state.json`, where it still sorts after every
+ * sequence key, leaves `loadLatest` answering with the real snapshot.
+ *
+ * What the split buys is **defence in depth on the corpora themselves**.  Two
+ * sets of objects that are disjoint by *prefix* can be given lifecycle rules,
+ * backup selections and a `ReEncryptionSweep` scope in terms the bucket and
+ * its operator both evaluate — rather than ones that hold only because one
+ * filename fails a length check inside this package.  That is what the
+ * breaking key-layout change is for; the reported defect was closed by the
+ * filter beside it.
+ *
+ * They live here rather than beside either store because three files must
+ * agree on them: both stores write them, and `ReEncryptionSweep`'s default
+ * `pidFromKey` reads past them to recover the HKDF salt.  A second copy of a
+ * key layout is how a layout silently forks.
+ */
+export const OBJECT_STORAGE_SNAPSHOT_NAMESPACE = 'snapshots/';
+
+/**
+ * Key-namespace segment the object-storage durable-state store writes under:
+ * `<prefix>state/<persistenceId>/state.json`, one object per entity,
+ * rewritten in place.
+ *
+ * The other half of the split {@link OBJECT_STORAGE_SNAPSHOT_NAMESPACE}
+ * explains, and it lives beside it for the same reason — three files have to
+ * agree on the layout, so neither segment may be spelled out a second time.
+ *
+ * Its own block rather than a shared one because it is separately public: it
+ * is a barrel export, and `ObjectStorageDurableStateStore` links it from the
+ * key-layout note that tells an operator where their state actually is.
+ */
+export const OBJECT_STORAGE_DURABLE_STATE_NAMESPACE = 'state/';
+
+/**
+ * Every namespace segment a built-in object-storage store writes under.
+ *
+ * Derived from the two above, and read by the re-encryption sweep: a sweep
+ * aimed at the shared `prefix` sees keys one level deeper than one aimed at a
+ * single namespace, and this is the list it strips to recover the same
+ * `persistenceId` either way.
+ */
+export const OBJECT_STORAGE_KEY_NAMESPACES = [
+  OBJECT_STORAGE_SNAPSHOT_NAMESPACE,
+  OBJECT_STORAGE_DURABLE_STATE_NAMESPACE,
+] as const;
+
+/**
+ * Leaf name of a durable-state object — the single key each `persistenceId`
+ * is rewritten in place at.
+ */
+export const OBJECT_STORAGE_DURABLE_STATE_LEAF = 'state.json';
+
+/** Extension every object-storage snapshot key ends in. */
+export const OBJECT_STORAGE_SNAPSHOT_LEAF_SUFFIX = '.json';
 
 /**
  * Random hex characters in a replicated event's id — 96 bits.
@@ -212,10 +531,52 @@ export const MAX_VECTOR_CLOCK_ENTRIES = 4_096;
  *
  * 100 000 is above what the documented workload for this pattern reaches
  * (small-write / many-read entities) and far below the point at which a refold
- * storm is survivable, so an actor approaching it wants snapshots or a lower
- * `maxObservedEvents()` rather than a bigger number.
+ * storm is survivable.
+ *
+ * Reaching it is a **one-way switch for the entity**, and nothing an operator
+ * can do today undoes it.  The bound counts the observed history, which holds
+ * this replica's *own* persists as well as its peers', so a busy honest
+ * replica reaches it on its own writes; and a snapshot is the full `events`
+ * array rather than a checkpoint, which recovery re-seeds the history from —
+ * so neither snapshotting nor discarding the journal sheds an event, and the
+ * refusal comes back with the actor.  An entity that expects to approach the
+ * bound therefore wants a *larger* `maxObservedEvents()` chosen up front, or a
+ * smaller one if its legitimate history is smaller than this; compaction, the
+ * thing that would genuinely unstick it, is #535.
  */
 export const DEFAULT_MAX_REPLICATED_OBSERVED_EVENTS = 100_000;
+
+/**
+ * Compression an object-storage body is written with when neither the actor
+ * nor the plugin asked for one.
+ *
+ * `as const` is load-bearing: without it the type widens to `string` and the
+ * constant stops being assignable to `CompressionConfig['algorithm']`, which
+ * is the whole reason the two stores can share one declaration.
+ *
+ * Lives here rather than beside one options type because it backs the
+ * `compression` field of *both* `ObjectStorageSnapshotStoreOptions` and
+ * `ObjectStorageDurableStateStoreOptions` — co-locating it would put one
+ * default in two files.  Named at all because `reference.conf` publishes it
+ * (`…object-storage.compression.algorithm`, #873) and a published default
+ * with no constant behind it is a value written down twice with nothing
+ * comparing the copies.
+ */
+export const DEFAULT_OBJECT_STORAGE_COMPRESSION_ALGORITHM = 'gzip' as const;
+
+/**
+ * Encryption an object-storage body is written with when neither the actor
+ * nor the plugin asked for one — none, i.e. the bytes go out as the codec
+ * produced them.
+ *
+ * Same placement argument as the compression default above: both stores read
+ * it, and `reference.conf` publishes it as
+ * `…object-storage.encryption.mode`.  The *integrity* fallback beside it in
+ * those stores stays an inline literal on purpose — integrity has no config
+ * surface at all, because it cannot be switched on without a 32-byte key and
+ * key material must never be expressible in a config file (#873).
+ */
+export const DEFAULT_OBJECT_STORAGE_ENCRYPTION_MODE = 'none' as const;
 
 /**
  * Ceiling on one S3 object key, in UTF-8 bytes — 1024.

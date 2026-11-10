@@ -3,6 +3,8 @@ title: Worker-Mesh
 description: Mehrere Actor-Systeme innerhalb eines einzelnen OS-Prozesses — ein Hauptthread + N Worker-Threads, die alle über den MessageChannel-Transport an einem Cluster teilnehmen. Nützlich für Parallelität innerhalb eines einzelnen Bun-/Node-Prozesses.
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
 JavaScript ist pro Actor-System Single-Threaded. Für
 **Parallelität innerhalb eines einzelnen OS-Prozesses** lässt das
 **Worker-Mesh** des Frameworks mehrere `ActorSystem`s laufen —
@@ -49,17 +51,188 @@ Für **Multi-Process**-Parallelität (separate OS-Prozesse) nutze
 den regulären Cluster + TCP-Transport. Worker-Mesh ist speziell
 für den In-Process-Fall.
 
-## High-Level-API: `WorkerCluster`
+## Platzierung ohne Code: `actor-ts.parallelism`
 
-Broker, Kanäle und den Per-Worker-Handshake von Hand zu verdrahten
-(siehe [Unter der Haube](#unter-der-haube-manuelle-verdrahtung) weiter
-unten) ist genau das, was `WorkerCluster` automatisiert.  Es spawnt
-einen Worker-Pool aus einem Entrypoint-Modul, führt den
-Hello/Init/Ready-Handshake aus, registriert jeden Worker an einem
-gemeinsamen `WorkerBroker` und startet abgestürzte Worker gemäß einer
-`restartPolicy` neu.  Das zugrunde liegende Worker-Primitiv wird pro
-Runtime gewählt — Web Workers auf Bun/Deno, `node:worker_threads` auf
-Node — sodass derselbe Code überall läuft.
+Vielleicht brauchst du die API dieser Seite nie.  Mit
+`actor-ts.parallelism.workers` größer als null startet `ActorSystem.create`
+im Hintergrund ein `WorkerMesh`, und `system.spawn` platziert Actors
+darauf — der Anwendungscode ändert sich nicht.  Diese Schicht, ihre
+Grenzen und ihre gemessenen Zahlen stehen unter
+[Parallelität](/de/fundamentals/parallelism/); was folgt, ist das Mesh
+darunter, für den Fall, dass du die Threads selbst steuern willst.  Und
+wenn die Arbeit eine *Funktion* ist statt eines Actors — hash das,
+komprimiere jenes —, ist ein Mesh das falsche Gewicht:
+[`OffloadPool`](/de/fundamentals/blocking-and-cpu-bound-work/) lässt sie
+auf einem Worker laufen, ohne Actor-System auf der anderen Seite.
+
+## High-Level-API: `WorkerMesh`
+
+`WorkerMesh` macht den **Main-Thread zum Mitglied** eines Mesh, das es
+selbst spawnt.  Es schließt dein `ActorSystem` über einen `MessageChannel`
+an einen frischen Cluster an, spawnt N Worker mit einem Bootstrap, das
+das Framework mitliefert, und gibt jedem Worker dasselbe Actor-Modul —
+sodass die Worker Actors hosten, die du geschrieben hast, der
+Main-Thread sie über gewöhnliche `ActorRef`s erreicht und kein
+Anwendungscode *in* einem Worker-Skript läuft, das du hättest schreiben
+müssen:
+
+```ts
+// main.ts — der Main-Thread
+import { ActorSystem } from 'actor-ts';
+import { WorkerMesh, WorkerMeshOptions } from 'actor-ts/worker';
+
+const system = ActorSystem.create('my-app');
+const meshOptions = WorkerMeshOptions.create()
+  .withModule(new URL('./actors.js', import.meta.url))
+  .withWorkers('auto');
+const mesh = await WorkerMesh.start(system, meshOptions);
+
+const encoder = mesh.refFor<EncodeCommand>(mesh.addresses[0], '/user/encoder');
+const encoded = await encoder.ask<Encoded>({ kind: 'encode', bytes });
+
+await mesh.terminate();
+```
+
+```ts
+// actors.ts — von jedem Worker per URL importiert
+import { Actor } from 'actor-ts';
+import type { WorkerMeshSetupContext } from 'actor-ts/worker';
+
+export class Encoder extends Actor<EncodeCommand> {
+  override onReceive(command: EncodeCommand): void { /* CPU-gebundene Arbeit */ }
+}
+
+// Optional: läuft einmal pro Worker, sobald sein Node up ist.
+export function setup(context: WorkerMeshSetupContext): void {
+  context.system.spawn(Encoder, 'encoder');
+}
+```
+
+Was `start` der Reihe nach tut: Es registriert den eigenen Port des
+Main-Threads unter `system.name@main:1` an einem `WorkerBroker`, joint
+`system` über ihn in einen Cluster, spawnt die Worker mit dem
+mitgelieferten `worker-mesh-bootstrap` und löst auf, sobald jeder Worker
+den Handshake abgeschlossen hat **und** jedes Mitglied `up` ist.  Jeder
+Worker joint mit dem Main-Thread als Seed, baut sein `ActorSystem` aus
+der **effektiven** Konfiguration des Main-Systems — `system.config`,
+nicht die Datei, aus der sie kam, sodass ein per Builder auf dem
+Main-Thread gesetzter Wert der Wert ist, mit dem die Worker laufen —,
+importiert die mit `withModule` benannten Module, registriert jede
+exportierte Actor-Klasse unter ihrem **Export-Namen**, führt das `setup`
+des Moduls aus, falls es eines hat, und meldet die Registry zurück:
+`mesh.workers` listet je Worker Adresse und die Klassen, die er spawnen
+kann.  Das Mesh reicht `system.log` sowohl an den Worker-Cluster als
+auch an den Broker weiter, den es baut — jede unter [Was das Mesh
+meldet](#was-das-mesh-meldet) aufgeführte Zeile erreicht also die Sinks,
+in die dein System ohnehin loggt.
+
+Ein Worker wendet kein eigenes [Profil](/de/reference/configuration/#profile)
+an.  Das Main-System hat eines angewendet, als es seine Konfiguration lud,
+und die Werte, die es gewählt hat, stehen im Baum, mit dem die Worker
+laufen — `ACTOR_TS_PROFILE` wird also kein zweites Mal angewendet, auf eine
+Datei, die ein Worker finden könnte und die nicht die sein muss, die der
+Main-Thread im Code bekommen hat.  Die Dateien, die der eigene Load eines
+Workers liest, sind die seines Main-Threads — die Anwendungsdatei, die
+`reference.conf` des Projekts, die
+[Secrets-Datei](/de/reference/configuration/#secrets-datei) und die `.env` —,
+ob im Code benannt (`withConfigFile`, `withReferenceConfigFile`,
+`withSecretsFile`, `withEnvironmentFile`), über ihre `ACTOR_TS_*`-Variablen
+oder im Arbeitsverzeichnis gefunden, und eine Datei, die der Main-Thread mit
+`false` nicht lesen sollte, liest auch kein Worker.  Der Baum überschreibt
+jeden Key, den diese Dateien setzen, aber eine andere Datei könnte Keys
+hinzufügen, die der Main-Thread nie gesehen hat, und ein `${VAR}`, das nur
+die `.env` des Main-Threads beantwortet, ließe einen Worker nicht starten.
+Eine Datei, die sich nicht laden lässt, hält schon das Main-System an, bevor
+ein Worker startet, mit einem Fehler, der die Datei nennt und den Grund, aus
+dem sie gelesen wurde.
+
+| Option | Was |
+| --- | --- |
+| `withModule(url \| url[])` | Die Actor-Module, die jeder Worker importiert.  **Pflicht**, und nur im Code — bewusst kein Config-Key, siehe unten.  Es gilt dieselbe Schreibweisen-Regel wie für `withBootstrap` bei `WorkerCluster`, denn es ist dieselbe Art von Sache: Code, den ein Worker ausführt. |
+| `withWorkers(n \| 'auto')` | Worker-Anzahl.  `'auto'` ist die verfügbare Parallelität der Maschine **minus eins** — der Main-Thread ist ein arbeitendes Mitglied —, mindestens 1.  Default `'auto'`. |
+| `withMainHostname(host)` / `withWorkerHostname(host)` | Hostname-Komponenten der Adressen beider Seiten.  Defaults `'main'` / `'worker'` — main sortiert vorn, also **führt** main und hostet den Shard-Coordinator.  Ein Worker-Hostname, der vor main sortiert (`'core'`), verschiebt beides auf einen Worker. |
+| `withMainPort(port)` / `withBasePort(port)` | Synthetische Port-Komponenten; nichts bindet sie.  Defaults `1` / `2`. |
+| `withMainRoles(roles)` / `withWorkerRoles(roles)` | Cluster-Rollen, mit denen jede Seite joint — worauf rollenbeschränkte Singletons, Shards und Router selektieren.  Default keine. |
+| `withReadyTimeoutMs(ms)` | Handshake-Frist pro Worker und Membership-Frist für das ganze Mesh.  Default `10000`. |
+| `withMetricsRelayIntervalMs(ms)` | Wie oft der Main-Thread die Metrik-Registry jedes Workers in sein eigenes `/metrics` zieht; `0` schaltet das Relay ab.  Default `10000`.  Siehe [Metriken](#metriken-ein-scrape-für-jeden-thread) unten. |
+| `withRestartPolicy(p)` und die `withRestart…`- / `withMaxRestarts`-Knöpfe | Werden an den Worker-Cluster darunter durchgereicht — siehe dessen Tabelle unten. |
+| `withBootstrap(url)` | Notausgang für einen Bundler, der das mitgelieferte Bootstrap aus `dist/worker/` verschoben hat.  Default: das mitgelieferte. |
+| `withBackend(backend)` | Über dieses `WorkerBackend` spawnen — ein In-Memory-Fake im Test oder ein eigener Adapter für eine Runtime, die die Erkennung nicht kennt.  Ein eigenes implementiert `WorkerBackend`, liefert ein `WorkerLike` (beide aus `actor-ts/worker` exportiert) und deklariert `containsWorkerErrors`; siehe [Eigene Backends](#eigene-backends).  Default: erkannt. |
+
+`refFor(address, path)` liefert eine gewöhnliche `ActorRef`: `tell`,
+`ask`, `watch` funktionieren darüber, und der Pfad darf die nackte
+`/user/name`-Form haben.  `terminate()` nimmt zuerst die Worker herunter
+und verlässt dann den Cluster; ein System, das durch den Coordinated
+Shutdown geht, nimmt sein Mesh mit.
+
+### Metriken: ein Scrape für jeden Thread
+
+Jeder Worker hostet sein eigenes `ActorSystem`, also hat er seine eigene
+`MetricsRegistry` — und keinen eigenen Management-Endpunkt.  Das Mesh
+relayt sie: Alle `metrics-relay-interval` (Default `10s`) schickt der
+Main-Thread jedem lebenden Worker eine Anfrage, der Worker antwortet mit
+den Samples seiner Registry, und `GET /metrics` auf dem Main-Thread
+exportiert den ganzen Prozess.  Die Anfrage ist zugleich das, was die
+Registry eines Workers einschaltet, in einem Worker muss also nichts
+aktiviert werden; aktiviere Metriken auf dem Main-Thread — vor oder nach
+`start()` — und die Worker folgen beim nächsten Tick.  Jede exportierte
+Serie trägt dann `thread="main"` oder `thread="worker-N"`, wobei `N`
+der Slot in `mesh.workers` ist, und
+`worker_mesh_snapshot_age_seconds{worker="worker-N"}` sagt, wie lange
+jeder Worker zuletzt nicht geantwortet hat; ein Slot, der das Mesh
+verlässt, nimmt seine Serien mit, ein neu gestarteter kommt unter
+demselben Label mit frischen Countern zurück.  Setz das Intervall auf
+`0`, und die Exposition ist nur die des Main-Threads, exakt wie zuvor.
+Das Relay läuft für ein hier gestartetes Mesh und für das, das
+`actor-ts.parallelism.workers` startet, gleichermaßen; der
+[Geltungsbereich eines Scrapes](/de/observability/metrics/prometheus-exporter/#geltungsbereich-pro-prozess-pro-thread)
+hat das PromQL und die Vorbehalte.  Die Registry eines Workers nimmt ihre
+Kardinalitätsgrenze aus der effektiven Config des Main-Threads, also gilt
+[`actor-ts.metrics.max-series-per-family`](/de/reference/configuration/#actor-tsmetrics)
+auf jedem Thread, während eine Grenze, die dem eigenen `enable(options)` des
+Main-Threads übergeben wird, nicht mitreist.
+
+<Aside type="note" title="Warum das Actor-Modul kein Config-Key ist">
+  `withModule` benennt Code, den die Worker *ausführen*.  Eine Config-Datei
+  — `ACTOR_TS_CONFIG`, eine hineingelegte `application.conf` oder
+  `reference.conf` — ist eine
+  breitere Angriffsfläche als die Aufrufstelle, und ein Key dort ließe
+  etwas anderes als den eigenen Quellcode der Anwendung entscheiden,
+  welcher Code auf einem Thread läuft.  Dieselbe Regel hält `bootstrap`
+  aus `actor-ts.worker-cluster` heraus.  Alles andere am Mesh *ist*
+  konfigurierbar: siehe
+  [den Config-Block](#dieselben-stellschrauben-aus-einer-config-datei).
+</Aside>
+
+<Aside type="caution" title="Eine Nachricht über einen Thread wird geklont">
+  Alles, was an einen Worker-Actor geht, läuft durch Structured Clone.
+  Eine Plain-Data-Nachricht mit `kind`-Diskriminante kommt intakt an;
+  eine Klasseninstanz kommt als nacktes Objekt **ohne Prototyp und ohne
+  Methoden** an — still.  Schreibe Worker-gebundene Nachrichten als
+  Daten, nicht als Objekte — und behalte den Rückweg im Blick:
+  `context.sender` und `replyTo` funktionieren beide über die Grenze.
+</Aside>
+
+## Die manuelle Ebene: `WorkerCluster`
+
+`WorkerMesh` baut auf `WorkerCluster` auf — das ist die Ebene für alles,
+was in die automatische Form nicht passt: Worker, die *verschiedenen*
+Code ausführen, Worker, die gar keine Actors hosten, oder ein Bootstrap,
+das du selbst schreiben willst.  Es spawnt einen Worker-Pool aus einem
+Entrypoint-Modul, führt den Hello/Init/Ready-Handshake aus, registriert
+jeden Worker an einem gemeinsamen `WorkerBroker` und startet abgestürzte
+Worker gemäß einer `restartPolicy` neu.  Das zugrunde liegende
+Worker-Primitiv wird pro Runtime gewählt — Web Workers auf Bun/Deno,
+`node:worker_threads` auf Node —, und der Worker-seitige Helfer
+`WorkerNode.join()` spricht, was die Runtime anbietet: die
+Web-Worker-Globals oder Nodes `parentPort`.
+
+**Der Main-Thread ist kein Mitglied eines `WorkerCluster`.**  Er leitet
+jeden Frame über den Broker weiter und sonst nichts, was drei Folgen hat,
+die `WorkerMesh` beseitigt: Der Main-Thread kann keinen Worker-Actor
+adressieren, ein `ask` von ihm hat keinen Ort für seine Antwort, und der
+Cluster-Leader — und mit ihm der Shard-Coordinator — ist der
+niedrigst-adressierte *Worker*.
 
 ```ts
 // main.ts — Hauptthread
@@ -107,9 +280,21 @@ async function main(): Promise<void> {
 void main();
 ```
 
+**Wer den Handshake selbst schreibt, sagt zuletzt Hallo.**  Der
+Main-Thread beantwortet das *erste* `worker-hello` und wiederholt sich
+nie, der `worker-init`-Frame geht also genau einmal raus — und auf Bun
+und Deno wird ein Frame, der ankommt, bevor der Worker einen
+Message-Handler installiert hat, verworfen statt eingereiht.  Ein
+Bootstrap, das grüßt, bevor es zuhört, verliert damit seinen einzigen
+Init-Frame, und der Fehlschlag ist ein Schweigen: Der Pool wartet die
+gesamte `readyTimeoutMs` ab und meldet einen Worker, der nie bereit
+wurde.  `WorkerNode.join()` installiert zuerst den Listener und postet
+das Hallo danach — dieselbe Reihenfolge schuldet ein selbst
+geschriebenes Bootstrap.
+
 | Option | Was |
 | --- | --- |
-| `withBootstrap(url)` | Worker-Entrypoint-Modul.  **Pflicht.** |
+| `withBootstrap(url)` | Worker-Entrypoint-Modul.  **Pflicht**, und muss eine absolute `file:`-URL **ohne Host** sein, die eine **Datei** benennt — `new URL('./worker-node.js', import.meta.url)` erzeugt genau das.  Ein `data:`-, `blob:`- oder entfernter Specifier wird abgelehnt, weil er dem Worker-Konstruktor Code von außerhalb des Deployments übergeben würde, und ein Host auf der `file:`-URL ebenso: `file://ein-server/share/worker.js` ist ein UNC-Pfad, das Entrypoint-Modul käme also von jenem Server.  `file:////ein-server/share/worker.js` wird aus demselben Grund abgelehnt — der vierte Slash verschiebt diese Authority in den Pfad, wo eine Host-Prüfung sie nicht sieht, und sie löst wieder zu genau demselben UNC-Pfad auf.  Zwei Schreibweisen, die *absolut aussehen*, werden ebenfalls abgelehnt, weil der URL-Parser sie stillschweigend umschreibt und die Runtime danach mit einem Fehler scheitert, der kein Feld benennt: `file:worker.js` (und das nackte `file:`) ist schema-relativ und wird an der Wurzel des Dateisystems verankert, und `file:///srv/app/` benennt ein Verzeichnis.  Die Prüfung auf schema-relative Schreibweisen liest die übergebene **Zeichenkette**, und das ist ihre Grenze: `new URL('file:worker.js')` ist bereits `file:///worker.js`, eine selbst gebaute `URL` kommt also korrigiert an und wird nicht abgelehnt.  `file://localhost/…` bleibt akzeptiert — diesen Host löscht der URL-Parser, auf allen drei Runtimes — und ebenso das einfach geslashte `file:/srv/app/worker.js`, dieselbe absolute URI mit weggelassener leerer Authority. |
 | `withWorkers(n \| 'auto')` | Pool-Größe; `'auto'` nutzt die Hardware-Concurrency.  Default `'auto'`. |
 | `withSystemName(name)` | `ActorSystem`-Name, den jeder Worker hostet.  Default `'worker-cluster'`. |
 | `withHostname(host)` | Hostname-Komponente der Adresse jedes Workers.  Default `'worker'`. |
@@ -122,8 +307,10 @@ void main();
 | `withRestartRandomFactor(f)` | ±-Jitter-Anteil auf jede Respawn-Wartezeit, in `[0, 1]`.  Default `0.2`. |
 | `withMaxRestarts(n)` | Restarts pro Slot innerhalb des Fensters, bevor er stillgelegt wird; `-1` für unbegrenzt.  Default `10`. |
 | `withRestartWindowMs(ms)` | Gleitendes Fenster, über das das Restart-Budget zählt; `0` setzt es nie zurück.  Default `60000`. |
-| `withOnWorkerPermanentlyDown(fn)` | Wird einmal pro Slot aufgerufen, dessen Restart-Budget erschöpft ist.  Default: eine `console.error`-Zeile. |
-| `withBackend(backend)` | Startet über dieses `WorkerBackend` statt über das erkannte — für eine Runtime, die die Erkennung nicht kennt, oder ein In-Memory-Fake im Test.  Default: erkannt. |
+| `withOnWorkerPermanentlyDown(fn)` | Wird einmal pro Slot aufgerufen, dessen Restart-Budget erschöpft ist.  Default: eine `ERROR`-Zeile über den Logger des Pools. |
+| `withBackend(backend)` | Startet über dieses `WorkerBackend` statt über das erkannte — für eine Runtime, die die Erkennung nicht kennt, oder ein In-Memory-Fake im Test.  Ein eigenes implementiert `WorkerBackend`, liefert ein `WorkerLike` (beide aus `actor-ts/worker` exportiert) und deklariert `containsWorkerErrors`; siehe [Eigene Backends](#eigene-backends).  Default: erkannt. |
+| `withLogger(logger)` | Wohin der Pool Worker-Exits, Respawns, stillgelegte Slots und — wenn er seinen Broker selbst baut — Broker-Drops meldet; siehe [Was das Mesh meldet](#was-das-mesh-meldet).  Default: ein `ConsoleLogger` auf `Info`. |
+| `withBroker(broker)` | Über einen Broker routen, den der Aufrufer besitzt — so, wie `WorkerMesh` zuerst den eigenen Port des Main-Threads darauf legt.  Ein übergebener Broker behält den Logger, mit dem er gebaut wurde.  Default: ein frischer Broker, der über den Logger des Pools meldet. |
 
 Das zurückgegebene `WorkerCluster` bietet `size`, `addresses` (die
 `NodeAddress` jedes Workers), den gemeinsamen `broker` und
@@ -138,7 +325,6 @@ zurückgegeben, sodass sie sonst niemand mehr erreichen könnte.
 `terminate()` wartet darauf, dass die Threads tatsächlich verschwinden,
 statt nur abzufeuern — innerhalb der unten beschriebenen Schranke.
 
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`WorkerNode.join()` in einer async-Funktion aufrufen">
   ```ts
@@ -150,6 +336,70 @@ import { Aside } from '@astrojs/starlight/components';
   Top-Level-await im Worker den Modul-Loader, sodass eingehende
   Nachrichten nie dispatchen und der Handshake für immer hängt.
 </Aside>
+
+## Dieselben Stellschrauben aus einer Config-Datei
+
+Neun der Optionen aus der Tabelle oben sind zusätzlich
+`actor-ts.worker-cluster`-Keys, neben `workers` und `restart-policy`, sodass
+ein Deployment das Mesh ohne Rebuild nachjustieren kann:
+
+```hocon
+actor-ts.worker-cluster {
+  workers               = 4
+  system-name           = "ingest"
+  hostname              = "ingest-worker"
+  base-port             = 100
+  ready-timeout         = 30s
+  restart-policy        = "on-failure"
+  restart-min-backoff   = 500ms
+  restart-max-backoff   = 30s
+  restart-random-factor = 0.3
+  max-restarts          = 20
+  restart-window        = 5m
+}
+```
+
+Das Mesh hat einen eigenen Block für die Felder, die seine eigenen sind —
+die Restart-Knöpfe bleiben die des Worker-Clusters, und das Actor-Modul
+hat aus dem oben genannten Grund keinen Key:
+
+```hocon
+actor-ts.worker-mesh {
+  workers                = "auto"    # verfügbare Parallelität minus Main-Thread
+  main-hostname          = "main"
+  main-port              = 1
+  worker-hostname        = "worker"  # vor main-hostname sortieren lassen, damit ein Worker führt
+  base-port              = 2
+  main-roles             = []
+  worker-roles           = ["compute"]
+  metrics-relay-interval = 10s       # Worker-Registries in das /metrics des Main-Threads gezogen; 0 = aus
+}
+```
+
+Die Präzedenz ist die im Framework übliche — **explizite Optionen > HOCON >
+eingebauter Default**, und zwar pro Feld: `withWorkers(8)` im Code schlägt
+`workers = 4` in der Datei, während jedes Feld, das der Aufruf nicht setzt, auf
+sie durchfällt.  Die vier Duration-Keys lassen das `Ms`-Suffix ihrer
+Builder-Methoden weg und nehmen stattdessen ein Duration-Literal.  `initData`
+hat keinen Key, weil es Identität des einzelnen Aufrufs ist, und `backend`
+sowie `onWorkerPermanentlyDown`, weil sie lebende Objekte sind, die eine Datei
+nicht ausdrücken kann.  `bootstrap` wird bewusst zurückgehalten: Es benennt ein
+Modul, das die Runtime *ausführt*, und `ACTOR_TS_CONFIG` oder eine abgelegte
+`application.conf` oder `reference.conf` sind eine breitere Angriffsfläche als
+die Aufrufstelle.
+
+`spawn` ist ein Static ohne `ActorSystem` im Scope und lädt die Config-Kette
+daher selbst, sofern ihm keine `Config` übergeben wird: dieselbe, die
+`ActorSystem.create` verwendet, inklusive der Dateien, die die
+`ACTOR_TS_*`-Variablen nennen oder das Arbeitsverzeichnis enthält, einer
+`.env` und des Profils, das `ACTOR_TS_PROFILE` nennt.  Dieser
+Load sieht keine Datei und kein Profil, die ein System im Code bekommen hat,
+und lehnt ein Profil ab, das nur dort definiert ist — ist ein System im Scope,
+übergib deshalb seine Konfiguration als zweites Argument,
+`WorkerCluster.spawn(workerOptions, system.config)`, wie `WorkerMesh` es tut.
+Ein Wert aus der Config wird gegen die gemergten Settings validiert, ein
+falscher wirft also bei `spawn` genauso `OptionsError` wie ein falscher im
+Code.
 
 ## Unter der Haube: manuelle Verdrahtung
 
@@ -239,20 +489,47 @@ binomial(N,2). Der Broker leitet jeden Hop weiter, was die
 Verdrahtung linear hält, aber den Hauptthread zum Relay für den
 gesamten Node-übergreifenden Verkehr macht.
 
+Der Stern ist die gewählte Form, kein erster Entwurf: Direkte
+`MessagePort`s von Worker zu Worker stehen auf der Roadmap, abhängig
+von einer Messung des eigenen Anteils des Relays am Hop (#1576), und
+bis diese Zahl existiert, ist die
+Gegenmaßnahme das Dimensionieren — gib `workers` den Actors, die
+rechnen, nicht denen, die plaudern.
+
+Ein mit `new WorkerBroker()` gebauter Broker meldet die Frames, die er
+verwirft, über einen `ConsoleLogger` auf `Info`;
+`new WorkerBroker(system.log)` leitet sie stattdessen durch die Sinks
+deines Systems — genau das tut `WorkerMesh` für den Broker, den es baut.
+
 ## Wie es sich vom TCP-Cluster unterscheidet
 
 ```
 TCP-Transport:                MessageChannelTransport:
 - Sockets, Framing            - postMessage zwischen Threads
 - Serialisierte Bytes         - Structured Cloning (kein JSON)
-- Netzwerklatenz              - Sub-Mikrosekunde
+- Netzwerklatenz              - Zehner-Mikrosekunden pro Hop
 - Cross-Host                  - Nur derselbe Prozess
 ```
 
 Nachrichten zwischen Worker-Systemen gehen durch **Structured
 Clone** — schneller, als Text zu rahmen und neu zu parsen.  Er trägt
 dieselben reichen Typen (Map, Set, Date …) wie der getaggte
-JSON-Tree des TCP-Wire, nur ohne den Text-Round-Trip.
+JSON-Tree des TCP-Wire, nur ohne den Text-Round-Trip.  Eine Grenze
+bleibt es trotzdem, und neben einem lokalen `tell` keine billige:
+gemessen auf dem Actor-Pfad (`benchmarks/worker/mesh-message-cost.ts`,
+Bun 1.4, 32 Threads) kostet ein Cross-Thread-`tell` etwa **20 µs**
+gegen ~300 ns lokal, ein Cross-Thread-`ask` etwa **180 µs** gegen
+~6 µs — Envelope, Ref-Codec, der Relay-Hop des Brokers und zwei Klone.
+Dieselben zwei Nodes auf einem Thread zahlen etwa **25 µs** pro `tell`
+und **80 µs** pro `ask` — die In-Process-Stufe desselben Benchmarks —,
+die Rechnung ist also das Protokoll, nicht der Thread.  Eine
+Actor-Nachricht trägt auch keine Transferliste: Ein großer Buffer wird
+bei jedem Hop geklont (durch den Stern wäre ein Verschieben bestenfalls
+zwei Verschiebungen), verschiebe ihn also einmal über `context.offload`.
+Ein Actor, der viele kleine Nachrichten austauscht, zahlt das bei jeder
+einzelnen und gewinnt durch den Thread nichts; ein Actor, der pro
+Nachricht echte CPU-Arbeit leistet, gewinnt den Kern.  Platziere
+entsprechend.
 
 ## Anwendungsfälle
 
@@ -270,8 +547,13 @@ sharding.start(
 );
 ```
 
-Der Koordinator (auf main) allokiert Shards auf die 4 Worker.
-CPU-gebundene Entity-Arbeit parallelisiert über Cores.
+Mit `WorkerMesh` führt der Main-Thread per Default und hostet damit den
+Koordinator, der die Shards auf die Worker verteilt; rollenbeschränktes
+Sharding (`withRole('compute')` gegen `withWorkerRoles(['compute'])`)
+hält jede Entity vom Main-Thread fern.  CPU-gebundene Entity-Arbeit
+parallelisiert über Cores.  Unter einem bloßen `WorkerCluster` ist der
+Main-Thread kein Mitglied, und der Koordinator läuft stattdessen auf dem
+niedrigst-adressierten Worker.
 
 ### Per-Worker-Isolation
 
@@ -295,7 +577,15 @@ tatsächlich abdeckt — und was es kostet:
   Framework abonniert das `error`-Event des Workers auf jeder Runtime;
   ohne dieses Abonnement wirft Node den Worker-Fehler erneut im Host
   und Deno rejected eine interne Promise — beide beenden sich mit `1`,
-  bevor `restartPolicy` überhaupt gefragt wird.
+  bevor `restartPolicy` überhaupt gefragt wird.  Das Abonnement ist die
+  Hälfte des Frameworks; die andere Hälfte ist der *Adapter*, der es
+  einlöst, und das entscheidet sich im Backend, das den Worker gestartet
+  hat.  Die beiden mitgelieferten Backends tun es: Der Node-Adapter
+  reicht das Abonnement an `worker.on('error')` weiter, und der
+  Web-Adapter bricht das native `ErrorEvent` aus dem Listener heraus ab,
+  den er installiert — auf Deno hindert ein nackter Listener die Runtime
+  nicht am erneuten Werfen.  Ein eigenes Backend muss dasselbe tun und
+  sagt, ob es das tut; siehe [Eigene Backends](#eigene-backends).
 - **Ein Fehler erzeugt genau einen Respawn.** Node und Bun senden für
   einen einzigen Throw `error` *und danach* das Exit-Event, Deno nur
   `error` — was zuerst eintrifft, treibt den Restart, das andere wird
@@ -325,11 +615,156 @@ Zwei Runtime-Asymmetrien sind erwähnenswert:
   beobachten.
 </Aside>
 
-Fehlerhafter Traffic wird verworfen, nicht fatal: Der Broker validiert
+### Eigene Backends
+
+`withBackend` nimmt alles, was `WorkerBackend` implementiert — ein
+In-Memory-Fake für einen Test oder einen Adapter für eine Runtime, die
+die Erkennung nicht kennt.  `spawn(url, options)` liefert ein
+`WorkerLike`: die Teilmenge der Web-Worker-Oberfläche, die das Framework
+benutzt (`postMessage`, `addEventListener` / `removeEventListener` für
+`message`, `close` und `error`, und ein `terminate()`, das auflöst,
+sobald der Thread weg ist).  Beide Typen werden aus `actor-ts/worker`
+exportiert.
+
+Das eine, was der Compiler an einem solchen Adapter nicht prüfen kann,
+ist, ob sein `error`-Abonnement den Fehler des Workers **einfängt**.  Ein
+Adapter, der den Handler ablegt und nie verdrahtet, erfüllt den Typ
+genauso gut, und von der Elternseite gibt es keine Sonde, die den
+Unterschied erkennt — also deklariert das Backend es, und die
+Deklaration ist Pflicht:
+
+```ts
+import type { WorkerBackend, WorkerLike, WorkerSpawnOptions } from 'actor-ts/worker';
+
+class InMemoryBackend implements WorkerBackend {
+  // `true` promises that an `error` listener on the returned worker stops
+  // the failure from reaching the host — the per-runtime contract is below.
+  readonly containsWorkerErrors = true;
+
+  spawn(url: URL, options?: WorkerSpawnOptions): WorkerLike {
+    // Your adapter: the object whose `error` wiring the declaration is about.
+    return new InMemoryWorker(url, options?.name);
+  }
+}
+```
+
+Was `true` verspricht, pro Runtime: Auf **Node** wird das Abonnement an
+`worker.on('error')` weitergereicht — ein Emitter ohne `error`-Listener
+wirft im Host erneut, Exit `1`, und `exit` feuert nie; auf **Deno** ruft
+der Listener, den der Adapter installiert, `preventDefault()` auf dem
+nativen `ErrorEvent` auf — ein nackter Listener hindert die Runtime
+nicht daran, den Fehler als unbehandelte Rejection erneut zu werfen; auf
+**Bun** genügt ein weitergereichter Listener.  Ein In-Process-Fake,
+dessen `error`-Listener das Einzige sind, was ein simulierter Fehler je
+erreicht, ist trivial `true`.  Der Umfang ist das `error`-Event: ein
+nicht gefangener Throw, eine unbehandelte Rejection, ein Bootstrap, das
+sich nicht laden lässt — nicht `messageerror`.
+
+Deklariere `false` — oder deklariere nichts, wie es ein in reinem
+JavaScript geschriebenes Backend, ein Cast oder eine aus einer älteren
+Version kopierte Shape zur Laufzeit tut, am Compiler vorbei —, und das
+Framework meldet es **einmal pro Backend-Instanz, vor dem ersten
+Spawn**, über den Logger des Konsumenten — `[worker]` für ein Mesh oder
+einen nackten `WorkerCluster`, `[offload]` für einen `OffloadPool`, die
+Konsole für `ParallelMultiNodeSpec` — und macht weiter: Der Spawn wird
+nie verweigert, denn die Deklaration ändert nichts daran, was das
+Framework anders tun könnte.  Die Zeile nennt die Backend-Klasse, sagt,
+was sie vorgefunden hat (`declares containsWorkerErrors=false` oder
+`declares nothing about containment`), und was passieren wird — ein
+nicht gefangener Throw in einem Worker beendet den Prozess, statt den
+Fehler-Handler des Frameworks zu erreichen, und erreicht damit auch die
+Restart-Policy nie —, sodass ein Host, der später so stirbt, eine Zeile
+hat, die erklärt, warum.  Nur ein explizites `true` bleibt stumm.
+
+Um ein `true` zu *beweisen*, lass einen Worker abstürzen und überlebe:
+Starte über dein Backend ein Bootstrap, das beim Laden wirft, auf Node
+und auf Deno, abonniere `error`, und lass das Überleben des Prozesses
+selbst die Assertion sein — die Form des mitgelieferten Smoke-Falls
+`29-worker-crash-containment`, der dasselbe über sich selbst sagt.
+Weniger als das beweist es nicht; die Deklaration ist das, worauf das
+Framework reagieren kann.
+
+### Was das Mesh meldet
+
+Jedes der Ereignisse oben erzeugt eine Zeile über den Logger des Pools
+— `system.log` in einem `WorkerMesh`, `withLogger` auf einem nackten
+`WorkerCluster`, ein `ConsoleLogger` auf `Info`, wenn keins von beiden
+gegeben ist.  Die Zeilen des Pools selbst tragen das Präfix `[worker]`;
+die *Transport*-Zeile unten ist die eine, die das nicht tut, denn sie
+kommt vom Cluster-Transport statt vom Pool und wird auch von Nodes
+erzeugt, die gar keinen Pool haben.  Jede Zeile trägt den Sachverhalt
+in der Nachricht selbst statt als strukturiertes Argument, sodass ein
+Console-Sink und ein Log-Shipper dasselbe sehen:
+
+| Ereignis | Level | Zeile |
+| --- | --- | --- |
+| Das `error`-Event eines Workers | `ERROR` | `[worker] worker N (addr) failed: <message>` |
+| Ein `close`-Event mit einem Code ungleich null, oder ohne Code | `WARN` | `[worker] worker N (addr) exited with code C` / `… exited without an exit code` |
+| Ein `close`-Event mit Code 0 | `INFO` | `[worker] worker N (addr) exited with code 0` |
+| Die Policy lässt den Slot liegen | `INFO` | `[worker] worker N (addr) is not respawned — restartPolicy 'P'` |
+| Ein Restart wird gewährt | `WARN` | `[worker] respawning worker N (addr) in D ms (restart K of M inside W ms)` — `(restart budget unlimited)` unter `maxRestarts: -1`, und kein `inside W ms` unter `restartWindowMs: 0` |
+| Ein Ersatz wurde nie ready | `ERROR` | `[worker] respawning worker N (addr) failed: <message>` |
+| Das Budget ist erschöpft und kein `onWorkerPermanentlyDown` gesetzt | `ERROR` | `[worker] worker N (addr) is permanently down — K restarts inside W ms exhausted its budget` — ohne `inside W ms` unter `restartWindowMs: 0` |
+| Der Broker weist einen Frame ab | `WARN`; `DEBUG` für ein unbekanntes Ziel | `[worker] broker dropped K frame(s), most recently from <source> — <reason>` |
+| Der Transport eines Nodes weist einen Frame ab, den der Broker geroutet hat | `WARN` | `message-channel transport dropped K frame(s), most recently from <sender> — <reason>` — ohne `most recently from`, wenn der Umschlag selbst abgewiesen wurde, denn dann war kein Absender lesbar |
+| Das Backend deklariert `containsWorkerErrors: false` oder gar nichts — einmal pro Backend, vor dem ersten Spawn | `ERROR` | `[worker] worker backend <Class> declares containsWorkerErrors=false — an uncaught throw inside a worker will terminate this process instead of reaching the framework's error handler; …` — `declares nothing about containment (containsWorkerErrors is not true)`, wenn das Member zur Laufzeit fehlt |
+| Das Metrik-Relay lehnt den Snapshot eines Workers ab — einmal pro Grund pro Worker | `WARN` | `[worker] metrics relay dropped a snapshot from <addr> — <reason>` |
+
+Fünf Dinge an diesen Zeilen sind wissenswert:
+
+- **Deno meldet nur den Error-Pfad.** Sein elternseitiger `Worker`
+  sendet kein `close`, also erscheinen die Exit-Zeilen und die
+  "not respawned"-Zeile dort nie — ein Worker, der sich ohne Throw
+  beendet, ist für das Log so unsichtbar wie für die Restart-Policy.
+- **Bun meldet ein absichtliches `self.close()` als Code 1**, ein
+  Worker, der sich selbst herunterfährt, liest sich also als
+  `exited with code 1` und wird unter der Default-Policy `'on-failure'`
+  neu gestartet.  Die Zeile nennt den Code, den die Runtime geliefert
+  hat; sie sagt nie "crashed".
+- **Ein Worker, den die Policy liegen lässt, wird gemeldet, nicht
+  entfernt.** Die `INFO`-Zeile ist heute alles, was auf diesem Zweig
+  passiert: Handle und Broker-Registrierung des Slots werden nicht
+  freigegeben, `size` zählt ihn also weiterhin.
+- **Broker-Drops werden gefaltet.** Der erste Drop jedes Grundes wird
+  sofort gemeldet; spätere werden gezählt und alle 30 Sekunden zu einer
+  Zeile pro Grund gefaltet, die den Zähler trägt.  Ein unbekanntes Ziel
+  geht auf `DEBUG` hinaus, weil es nach einem Crash die normale Form ist
+  — jedes Geschwister gossipt weiter an die tote Adresse, bis der
+  Failure Detector konvergiert —, während ein fehlerhafter Umschlag oder
+  ein Port, der einen Frame verweigert, irgendwo ein Defekt ist und auf
+  `WARN` hinausgeht.  Der Zähler umfasst jeden Port, seit dieser Grund
+  zuletzt im Log stand; die Zeile sagt deshalb *most recently from* und
+  nennt die registrierte Adresse des Ports, auf dem der letzte Frame
+  ankam — niemals etwas aus dem Frame selbst, und für einen
+  verweigernden Port nur den Namen des Fehlers (`DataCloneError`,
+  `InvalidStateError`), nie seine Message.  `broker.dropped()` liefert
+  die laufenden Zähler pro Grund.
+- **Transport-Drops werden genauso gefaltet**, pro Grund, auf denselben
+  30 Sekunden — und der Zähler dahinter ist `transport.dropped()`, mit
+  drei eigenen Gründen: ein fehlerhafter Umschlag, eine Nutzlast, die
+  die Wire-Prüfungen abweisen, und ein Handler, der geworfen hat.  Die
+  Nutzlast-Variante zitiert den Grund, den die Prüfung geliefert hat —
+  daran unterscheidet man eine Versionsabweichung von einem feindlichen
+  Peer.  Die Zeile trägt nie den Frame, und der Absender darauf wird
+  escaped: Über einen Broker wird `from` auf den ankommenden Port
+  umgeschrieben und ist damit vom Host vergeben, aber ein
+  Port-zu-Port-verdrahteter Kanal hat keinen Broker, der das tut, und
+  eine Node-Adresse muss nur nichtleere Strings tragen.
+
+Fehlerhafter Traffic wird verworfen, nicht fatal — und auf beiden
+Hälften des Kanals wird er gezählt und gemeldet, wie die Zeilen *Der
+Broker weist einen Frame ab* und *Der Transport eines Nodes weist einen
+Frame ab* oben sagen.  Der Broker validiert
 die Adressen `to` und `from` eines Frames, bevor er ihn weiterleitet —
 ein einzelnes fehlerhaftes `postMessage` aus einem Worker wirft also
 nicht mehr im Message-Listener des Hosts.  Das `payload` des Frames
-validiert der empfangende Transport, nicht der Broker.
+validiert der empfangende Transport, nicht der Broker — es durchläuft
+dieselben Wire-Prüfungen wie die Frames eines TCP-Peers, ein Frame, der
+daran scheitert, erreicht keinen Handler, und ein Handler, der wirft,
+wird aufgefangen, statt aus dem Callback des Ports zu entkommen.  Auch
+die Absender, die dieser Transport über `peers()` meldet, sind
+begrenzt: Ein Channel ohne Broker davor kann diese Liste also nicht
+unbegrenzt wachsen lassen.
 
 ## Absender-Identität
 
@@ -395,6 +830,8 @@ durchgereicht, weil im Cluster noch nichts auf sie schlüsselt.
 
 ## Wohin als Nächstes
 
+- **[Parallelität](/de/fundamentals/parallelism/)** — Actors auf diesem
+  Mesh aus einer Konfigurationszahl, bei unveränderter Anwendung.
 - **[Cluster-Überblick](/de/cluster/overview/)** — das
   Cluster-Modell, an dem das Worker-Mesh teilnimmt.
 - **[Transports](/de/cluster/transports/)** — die

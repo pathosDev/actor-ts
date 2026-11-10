@@ -9,9 +9,10 @@
  * wall-clock time — no background timer, no per-message overhead beyond
  * a cheap subtraction.
  *
- * **Time injection.**  The constructor takes an optional `now: () =>
- * number` callback (defaults to `Date.now`).  Tests pass a mocked
- * function so they can advance time without `setTimeout`-based waits.
+ * **Time injection.**  The constructor takes an optional {@link Clock}
+ * (defaults to the wall clock).  Tests pass one they advance by hand, so the
+ * suite never waits on a real timer — and a `ManualScheduler` is a `Clock`, so
+ * a bucket inside an actor system advances with the rest of it.
  *
  * **Burst semantics.**  Tokens accumulate up to `burst` while the
  * bucket is idle, so a brief idle period lets a workload "borrow"
@@ -19,19 +20,22 @@
  * second's worth of capacity), the typical "smooth out small
  * variations" setting.
  */
+import type { Clock } from '../Clock.js';
+import { systemClock } from '../Clock.js';
+
 export type TokenBucketOptions = {
   /** Token-refill rate, tokens per second.  Required; must be > 0. */
   readonly qps: number;
   /** Bucket capacity.  Default: `qps` (one second of refill). */
   readonly burst?: number;
-  /** Time source.  Default: `Date.now`. */
-  readonly now?: () => number;
+  /** Where the bucket reads the time.  Default: the wall clock. */
+  readonly clock?: Clock;
 };
 
 export class TokenBucket {
   private readonly qps: number;
   private readonly capacity: number;
-  private readonly now: () => number;
+  private readonly clock: Clock;
   /** Current token balance — fractional during refill, never negative. */
   private tokens: number;
   /** Wall-clock instant of the last refill calculation. */
@@ -46,11 +50,11 @@ export class TokenBucket {
     }
     this.qps = options.qps;
     this.capacity = options.burst ?? options.qps;
-    this.now = options.now ?? Date.now;
+    this.clock = options.clock ?? systemClock;
     // Start full so the first burst doesn't have to wait — workloads
     // typically expect "I can fire `burst` messages immediately".
     this.tokens = this.capacity;
-    this.lastRefillAt = this.now();
+    this.lastRefillAt = this.clock.now();
   }
 
   /**
@@ -92,12 +96,12 @@ export class TokenBucket {
   /** Reset the bucket to full immediately.  Test hook. */
   resetToFull(): void {
     this.tokens = this.capacity;
-    this.lastRefillAt = this.now();
+    this.lastRefillAt = this.clock.now();
   }
 
   /** Lazy refill — compute tokens earned since the last call, cap at capacity. */
   private refill(): void {
-    const now = this.now();
+    const now = this.clock.now();
     const elapsedMs = now - this.lastRefillAt;
     if (elapsedMs <= 0) return;
     const earned = (elapsedMs / 1000) * this.qps;

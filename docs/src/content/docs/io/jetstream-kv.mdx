@@ -152,11 +152,23 @@ HOCON defaults live under `actor-ts.io.broker.jetstream-key-value`:
 
 ```hocon
 actor-ts.io.broker.jetstream-key-value {
-  servers = ["nats://localhost:4222"]
-  bucket  = "sessions"
-  history = 5
+  servers         = ["nats://localhost:4222"]   # a list, even for one server
+  name            = "sessions-cache"
+  user            = "my-app"
+  password        = ${?ACTOR_TS_NATS_PASSWORD}
+  # token         = ${?ACTOR_TS_NATS_TOKEN}     # instead of user and password
+  bucket          = "sessions"                  # required
+  history         = 5                           # create-time, like the four below
+  time-to-live    = 1h                          # unset: keep forever
+  storage         = "file"                      # "memory" or "file"
+  replicas        = 1
+  max-value-bytes = 64K
+  create          = true                        # the default
 }
 ```
+
+`time-to-live` is a duration, so `1h` and `3600000` mean the same, and
+`max-value-bytes` is a byte size.
 
 ## Object Store
 
@@ -219,9 +231,17 @@ HOCON defaults live under `actor-ts.io.broker.jetstream-object-store`:
 
 ```hocon
 actor-ts.io.broker.jetstream-object-store {
-  servers        = ["nats://localhost:4222"]
-  bucket         = "assets"
-  maxObjectBytes = 4M
+  servers          = ["nats://localhost:4222"]   # a list, even for one server
+  name             = "asset-store"
+  user             = "my-app"
+  password         = ${?ACTOR_TS_NATS_PASSWORD}
+  # token          = ${?ACTOR_TS_NATS_TOKEN}     # instead of user and password
+  bucket           = "assets"                    # required
+  description      = "uploaded assets"           # create-time, like the two below
+  storage          = "file"                      # "memory" or "file"
+  replicas         = 1
+  max-object-bytes = 4M                          # the default is 1 MiB
+  create           = true                        # the default
 }
 ```
 
@@ -256,13 +276,15 @@ change than this actor.
 ## Peer dependency
 
 ```bash
-npm install nats
-# or: bun add nats
+npm install @nats-io/transport-node @nats-io/jetstream @nats-io/kv @nats-io/obj
+# or: bun add @nats-io/transport-node @nats-io/jetstream @nats-io/kv @nats-io/obj
 ```
 
-The same `nats` package that backs [NATS](/io/nats/) and
-[JetStream](/io/jetstream/) — the KV and Object-Store views ship with
-it.
+Four packages, and that is the change worth noticing: the key-value and
+object-store views used to ship inside the same package as
+[NATS](/io/nats/) and [JetStream](/io/jetstream/), and nats.js v3 gave each
+its own. Drop `@nats-io/obj` if you only need key-value, or `@nats-io/kv` if
+you only need the object store.
 
 <Aside type="caution" title="A failed operation does not drop the connection">
   A per-key or per-object failure (a compare-and-swap conflict, a name

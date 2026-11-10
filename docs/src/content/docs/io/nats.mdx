@@ -52,6 +52,38 @@ interface NatsOptionsType extends BrokerCommonOptionsType {
 }
 ```
 
+The same settings come from HOCON, under `actor-ts.io.broker.nats`, below
+explicit options and above the built-in defaults:
+
+```hocon
+actor-ts.io.broker.nats {
+  servers  = ["nats://nats-1:4222", "nats://nats-2:4222"]   # a list, even for one server
+  name     = "my-app"
+  user     = "my-app"
+  password = ${?ACTOR_TS_NATS_PASSWORD}
+  # token  = ${?ACTOR_TS_NATS_TOKEN}   # instead of user and password
+}
+```
+
+A value from the environment is read as JSON first wherever it parses as JSON.
+A password or token that reads as a number comes back in that number's own
+spelling — `1e3` as `1000`, `1.50` as `1.5`, and a whole number past
+`Number.MAX_SAFE_INTEGER` possibly with other last digits (`20261104123456789`
+as `20261104123456788`) — and one that reads as `null`, a list or an object
+stops the start with a `ConfigError`; a plain `12345` is unchanged.  Quote such a value inside the variable
+(`ACTOR_TS_NATS_PASSWORD='"1e3"'`), or set it in code.
+
+A user and password written into a `servers` entry
+(`nats://user:secret@nats-1:4222`) are **not** credentials: nats.js never
+sends them, and they can make it misread the entry's host or port.  The
+actor refuses such an entry when it starts — the NATS actor and the three
+JetStream ones alike — and masks the credential in the refusal.
+Credentials go in `user` and `password`, or in `token`.  `subscriptions` and
+`tls` have no leaf — one names actors, the other is certificate material.  The
+reconnect, circuit-breaker and outbound-buffer leaves every broker shares go
+under the same root — see
+[BrokerActor base](/io/broker-actor-base/#reconnect-with-backoff).
+
 ## Subscriptions and reconnects
 
 `subscriptions` and the runtime `subscribe` command feed the **same**
@@ -237,11 +269,13 @@ sweet spot for "less than Kafka, more than core NATS."
 ## Peer dependency
 
 ```bash
-npm install nats
-# or: bun add nats
+npm install @nats-io/transport-node
+# or: bun add @nats-io/transport-node
 ```
 
-The `nats` package includes both core NATS and JetStream clients.
+nats.js v3 splits what used to be one `nats` package: the transport carries
+core NATS, and JetStream, key-value and the object store each ship their own.
+Install only what you use — core NATS needs the first line alone.
 
 import { Aside } from '@astrojs/starlight/components';
 

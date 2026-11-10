@@ -1,5 +1,6 @@
 import type { ActorRef } from '../ActorRef.js';
 import { ServiceKey } from './ServiceKey.js';
+import { markFrameworkMessage } from '../util/FrameworkMessage.js';
 
 /** Register `ref` under `key` on this node. */
 export class Register<T = unknown> {
@@ -115,3 +116,7 @@ export type ReceptionistGossipMessage = {
   readonly entries: Record<string, string[]>;
   readonly version: number;
 };
+
+// The framework's own messages, exempt from the message-boundary check
+// (#1386): each crosses the boundaries it needs to by its own mechanism.
+markFrameworkMessage(Register, Registered, Deregister, Find, Subscribe, Unsubscribe, SubscribeRejected, Listing);

@@ -1,9 +1,15 @@
 import { match } from 'ts-pattern';
 import type { ActorSystem } from '../ActorSystem.js';
+import { Config, isPlainObject, type ConfigObject } from '../config/Config.js';
+import { ConfigKeys } from '../config/ConfigKeys.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse, Status } from './Types.js';
 import type { WebsocketSocketAdapter } from './websocket/SocketAdapter.js';
 import type { ResolvedWebsocketPolicy } from './websocket/WebsocketPolicy.js';
-import { expandCors, type CorsRouteOptions } from './middleware/Cors.js';
+import { expandCors, resolveCorsPolicy } from './middleware/Cors.js';
+import type { CorsOptionsType } from './middleware/CorsOptions.js';
+// A cycle — `Timeout.ts` imports `configAwareMiddleware` from here — and a
+// harmless one: neither module touches the other's bindings while it loads.
+import { requestDeadlineOf } from './middleware/Timeout.js';
 import { stripSurrounding } from '../util/StripCharacters.js';
 
 /**
@@ -16,7 +22,25 @@ export type CompiledRoute = {
   readonly method: HttpMethod;
   readonly pattern: string;
   readonly handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse;
+  /** The longest `requestTimeout()` deadline wrapping the handler — see {@link EndpointDeadline}. */
+  readonly requestDeadlineMs?: number;
 };
+
+/**
+ * What every compiled endpoint records of the `requestTimeout()` around it
+ * (#1487): the longest deadline among the ones that wrap it, in milliseconds,
+ * or absent where none does.
+ *
+ * The longest and not the shortest, because the question is how long a
+ * request on this endpoint can go without a byte before the framework
+ * answers it — and nested deadlines each answer at their own, so the outer
+ * one can be the last to.  `HttpExtension.bind` takes the longest over the
+ * whole server: the Hono backend under Bun derives its idle timeout from it,
+ * since Bun closes a connection whose handler has written nothing for that
+ * long, and a `503` the server did not know was coming would not reach the
+ * client.
+ */
+type EndpointDeadline = { readonly requestDeadlineMs?: number };
 
 /**
  * Framework-owned entry point for one accepted WebSocket connection.
@@ -58,6 +82,8 @@ export type CompiledWebsocketRoute = {
   readonly connect: WebsocketConnectHandler;
   readonly resolvePolicy: WebsocketPolicyResolver;
   readonly authorize: (request: HttpRequest) => Promise<HttpResponse | null>;
+  /** The longest `requestTimeout()` deadline wrapping the upgrade check — see {@link EndpointDeadline}. */
+  readonly requestDeadlineMs?: number;
 };
 
 /**
@@ -68,6 +94,8 @@ export type CompiledWebsocketRoute = {
 export type CompiledFallback = {
   readonly kind: 'fallback';
   readonly handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse;
+  /** The longest `requestTimeout()` deadline wrapping the handler — see {@link EndpointDeadline}. */
+  readonly requestDeadlineMs?: number;
 };
 
 /** A compiled endpoint: a plain HTTP route, a WebSocket route, or the fallback. */
@@ -112,7 +140,7 @@ export type Route =
   | { readonly kind: 'middleware'; readonly middleware: Middleware; readonly child: Route }
   | { readonly kind: 'websocket'; readonly connect: WebsocketConnectHandler; readonly resolvePolicy: WebsocketPolicyResolver; readonly authorize?: (request: HttpRequest) => HttpResponse | null }
   | { readonly kind: 'fallback'; readonly handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse }
-  | { readonly kind: 'cors'; readonly settings: CorsRouteOptions; readonly child: Route };
+  | { readonly kind: 'cors'; readonly options: Partial<CorsOptionsType>; readonly child: Route };
 
 /** Compose several sibling routes (OR semantics — first matching wins). */
 export function concat(...routes: Route[]): Route {
@@ -151,6 +179,175 @@ export function pathPrefix(segment: string, child: Route): Route {
  */
 export function withMiddleware(middleware: Middleware, child: Route): Route {
   return { kind: 'middleware', middleware, child };
+}
+
+/* -------------------------- Config-aware middleware -------------------------- */
+
+/**
+ * Key of the hook a config-aware middleware carries (#1462, #1463).
+ *
+ * A middleware is built before any `ActorSystem` exists, so a factory like
+ * `hsts()` has no configuration to merge — and unlike `cors()`, which is a
+ * route node, a plain {@link Middleware} never saw the `config` that
+ * {@link compile} threads down the tree.  The hook closes that gap without
+ * changing what a middleware *is*: the value stays an ordinary
+ * `(request, next)` function, and carries beside it the way to rebuild itself
+ * once the configuration is known.
+ *
+ * Module-private for the reason {@link WEBSOCKET_ACCEPT} is: nothing outside
+ * this file can name it, so nothing outside the framework can attach one.
+ */
+const MIDDLEWARE_RESOLUTION = Symbol('actor-ts.middleware-resolution');
+
+/** What {@link compile} reads off a config-aware middleware. */
+interface MiddlewareResolution {
+  /** The HOCON block the middleware reads, e.g. `actor-ts.http.hsts`. */
+  readonly block: string;
+  /** The middleware with `config` merged in — route options > HOCON > built-in defaults. */
+  resolve(config: Config | undefined): Middleware;
+}
+
+type ConfigAwareMiddleware = Middleware & { readonly [MIDDLEWARE_RESOLUTION]?: MiddlewareResolution };
+
+/**
+ * A middleware that finishes resolving against the system's configuration
+ * when its route tree is compiled — `hsts()` against `actor-ts.http.hsts`,
+ * `requestTimeout()` against `actor-ts.http.request-timeout`.
+ *
+ * `resolve` is the whole middleware: given the configuration (or `undefined`
+ * when there is none), it merges, validates and returns the middleware that
+ * runs.  {@link compile} calls it once per `withMiddleware` node, which is
+ * where an invalid merge surfaces — from `bind()`, before the server listens.
+ *
+ * Called directly rather than through a compiled tree, the value resolves
+ * with no configuration on its first request, which is what the factories did
+ * at construction before the hook existed.  That is also what a middleware
+ * wrapped in user code gets: `(request, next) => hsts()(request, next)` is a
+ * new function without the hook, so compile cannot see what it wraps — which
+ * is why {@link compileServerRoutes} reports a configured block that nothing
+ * in the tree read.
+ *
+ * The hook is a non-enumerable property, so `Object.assign` and a spread do
+ * not copy it — a wrapper built that way keeps its own behaviour instead of
+ * being replaced by the middleware it copied from.
+ */
+export function configAwareMiddleware(
+  block: string,
+  resolve: (config: Config | undefined) => Middleware,
+): Middleware {
+  let standalone: Middleware | undefined;
+  const middleware: Middleware = (request, next) => {
+    standalone ??= resolve(undefined);
+    return standalone(request, next);
+  };
+  const resolution: MiddlewareResolution = { block, resolve };
+  Object.defineProperty(middleware, MIDDLEWARE_RESOLUTION, { value: resolution });
+  return middleware;
+}
+
+/**
+ * `middleware` with the configuration merged in, when it carries the hook;
+ * itself otherwise.  The block of every hook resolved is recorded in
+ * `resolvedBlocks` — what {@link compileServerRoutes} reports against.
+ */
+function resolveMiddleware(middleware: Middleware, config: Config | undefined, resolvedBlocks: Set<string>): Middleware {
+  const resolution = (middleware as ConfigAwareMiddleware)[MIDDLEWARE_RESOLUTION];
+  if (resolution === undefined) return middleware;
+  resolvedBlocks.add(resolution.block);
+  return resolution.resolve(config);
+}
+
+/** A block a framework middleware reads through the hook, and how bind() names it when nothing did. */
+type ConfigAwareMiddlewareBlock = {
+  readonly block: string;
+  /** The factory a route tree places, as a reader would recognise it. */
+  readonly middleware: string;
+  /** What else could look like it should have read the block, and does not. */
+  readonly note: string;
+};
+
+/**
+ * Every block a config-aware framework middleware reads.  Listed here rather
+ * than collected from the hooks, because the case worth reporting is the one
+ * where no hook for the block is in the tree at all.
+ */
+const CONFIG_AWARE_MIDDLEWARE_BLOCKS: readonly ConfigAwareMiddlewareBlock[] = [
+  {
+    block: ConfigKeys.http.hsts.root,
+    middleware: 'hsts()',
+    note: 'The hsts field of securityHeaders(...) and of withSecurityHeaders(...) is code-only and never reads it.',
+  },
+  {
+    block: ConfigKeys.http.requestTimeout.root,
+    middleware: 'requestTimeout()',
+    note: `It bounds a handler's answer; ${ConfigKeys.http.server.requestTimeout}, which bounds receiving the request, is a different key. `
+      + `The Hono backend under Bun still derives its idle timeout from it while ${ConfigKeys.http.server.idleTimeout} is unset.`,
+  },
+];
+
+/** A route tree compiled for one server, and the configuration nothing in it read. */
+export type CompiledServerRoutes = {
+  readonly endpoints: CompiledEndpoint[];
+  /**
+   * One message per block of {@link CONFIG_AWARE_MIDDLEWARE_BLOCKS} that the
+   * deployment changed from what `reference.conf` ships while no middleware in
+   * the tree resolved it.  `HttpExtension.bind` logs each as a warning.
+   */
+  readonly unreadConfiguration: readonly string[];
+};
+
+/**
+ * {@link compile} for `HttpExtension.bind`: the same endpoints, plus a report
+ * of every configured middleware block the tree left unread.
+ *
+ * The hook a config-aware middleware carries is lost to a function of the
+ * caller's own around it — `(request, next) => hsts()(request, next)` — and
+ * nothing about the wrapper shows that it holds one.  What does show is the
+ * consequence: a block the deployment configured that no middleware read.
+ * "Configured" means different from `reference.conf`, which ships the
+ * built-in defaults, so a block set to exactly those loses nothing and is not
+ * reported.  A report rather than an error: a tree with no `hsts()` at all is
+ * also a server that legitimately sends no HSTS — an internal listener, or the
+ * DevTools server, which binds through the same path.
+ */
+export function compileServerRoutes(route: Route, config: Config): CompiledServerRoutes {
+  const resolvedBlocks = new Set<string>();
+  const endpoints = compileNode(route, [], config, resolvedBlocks);
+  const unreadConfiguration = CONFIG_AWARE_MIDDLEWARE_BLOCKS
+    .filter(({ block }) => !resolvedBlocks.has(block) && configuresBlock(config, block))
+    .map(({ block, middleware, note }) =>
+      `${block} is configured, but no ${middleware} in this route tree read it, so no middleware on this server applies it. `
+      + `A ${middleware} wrapped in a function of your own is out of compile()'s sight and runs on its code options `
+      + `and the built-in defaults: hand it to withMiddleware(...) as it is. ${note}`);
+  return { endpoints, unreadConfiguration };
+}
+
+/** Whether `config` sets `block` to anything but what `reference.conf` ships. */
+function configuresBlock(config: Config, block: string): boolean {
+  if (!config.hasPath(block)) return false;
+  const reference = Config.loadReference();
+  if (!reference.hasPath(block)) return true;
+  // `getObject` refuses a scalar where the reference ships a block, and only
+  // somebody's configuration can have put one there.
+  let configured: ConfigObject;
+  try {
+    configured = config.getObject(block);
+  } catch {
+    return true;
+  }
+  return !sameConfigValue(configured, reference.getObject(block));
+}
+
+function sameConfigValue(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length
+      && left.every((item, index) => sameConfigValue(item, right[index]));
+  }
+  if (!isPlainObject(left) || !isPlainObject(right)) return false;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length
+    && keys.every((key) => Object.hasOwn(right, key) && sameConfigValue(left[key], right[key]));
 }
 
 /**
@@ -415,8 +612,35 @@ function isWebsocketAccept(response: HttpResponse): boolean {
     && response.status === WEBSOCKET_ACCEPT_SENTINEL.status;
 }
 
-/** Flatten a Route tree into the list of concrete endpoint registrations. */
-export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[] {
+/**
+ * Flatten a Route tree into the list of concrete endpoint registrations.
+ *
+ * `config` is the seam that lets a route *directive* read the system's
+ * configuration (#878).  A route tree is built before any `ActorSystem`
+ * exists, so a directive that wants a HOCON default has nowhere to read one
+ * — the websocket node solved that for itself by deferring behind a
+ * {@link WebsocketPolicyResolver} the backend calls with the system in hand,
+ * but a directive whose whole job finishes at compile time (`cors()`
+ * synthesises routes) has no later moment to defer to.  Compile time is that
+ * moment, and `HttpExtension.bind` is where both the tree and the system are
+ * in scope, so it passes `system.config` down.
+ *
+ * A plain middleware reaches it the same way once it carries the hook
+ * {@link configAwareMiddleware} attaches: the `middleware` arm resolves it
+ * against `config` before folding it in (#1462, #1463).
+ *
+ * Optional, and stays optional: `compile` is a public export, and a caller
+ * compiling a tree without a system gets the pre-#878 behaviour — built-in
+ * defaults and whatever the route named in code.  `bind()` compiles through
+ * {@link compileServerRoutes} instead, which also reports the configuration
+ * the tree left unread.
+ */
+export function compile(route: Route, prefix: string[] = [], config?: Config): CompiledEndpoint[] {
+  return compileNode(route, prefix, config, new Set());
+}
+
+/** {@link compile}'s recursion, carrying the blocks the middleware it resolved read. */
+function compileNode(route: Route, prefix: string[], config: Config | undefined, resolvedBlocks: Set<string>): CompiledEndpoint[] {
   return match(route)
     .with({ kind: 'terminal' }, (r): CompiledEndpoint[] => [{
       kind: 'http',
@@ -441,8 +665,8 @@ export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[]
           : async (): Promise<HttpResponse | null> => null,
       }];
     })
-    .with({ kind: 'path' }, (r) => compile(r.child, [...prefix, r.segment]))
-    .with({ kind: 'concat' }, (r) => r.routes.flatMap((child) => compile(child, prefix)))
+    .with({ kind: 'path' }, (r) => compileNode(r.child, [...prefix, r.segment], config, resolvedBlocks))
+    .with({ kind: 'concat' }, (r) => r.routes.flatMap((child) => compileNode(child, prefix, config, resolvedBlocks)))
     .with({ kind: 'fallback' }, (r): CompiledEndpoint[] => {
       if (prefix.length > 0) {
         throw new Error(
@@ -454,24 +678,31 @@ export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[]
       return [{ kind: 'fallback', handler: r.handler }];
     })
     .with({ kind: 'middleware' }, (r): CompiledEndpoint[] => {
+      // A config-aware middleware is resolved here, once per node and before
+      // its subtree compiles, so one merged-and-validated value serves all
+      // three fold sites below — and an invalid merge fails the compile, which
+      // inside bind() means before the server listens (#1462, #1463).
+      const middleware = resolveMiddleware(r.middleware, config, resolvedBlocks);
+      // Read off the resolved value, which is the only one that knows it.
+      const deadline = longerDeadline(requestDeadlineOf(middleware));
       // Compile the subtree, then fold the middleware in.  For HTTP
       // children it wraps the handler (nested middlewares stack
       // outside-in).  For WebSocket children it folds into `authorize`:
       // the middleware runs once, against the upgrade request.
-      return compile(r.child, prefix).map((c): CompiledEndpoint => {
+      return compileNode(r.child, prefix, config, resolvedBlocks).map((c): CompiledEndpoint => {
         if (c.kind === 'http') {
-          return { ...c, handler: wrapHandler(r.middleware, c.handler) };
+          return { ...c, ...deadline(c), handler: wrapHandler(middleware, c.handler) };
         }
         if (c.kind === 'fallback') {
           // A fallback under middleware: wrap its handler the same way
           // (the fallback stays root-scoped — middleware doesn't add a
           // path prefix, so the compile-time root guard still holds).
-          return { ...c, handler: wrapHandler(r.middleware, c.handler) };
+          return { ...c, ...deadline(c), handler: wrapHandler(middleware, c.handler) };
         }
         const inner = c.authorize;
         const authorize = async (request: HttpRequest): Promise<HttpResponse | null> => {
           try {
-            const response = await r.middleware(request, async (override?: HttpRequest) => (await inner(override ?? request)) ?? WEBSOCKET_ACCEPT_SENTINEL);
+            const response = await middleware(request, async (override?: HttpRequest) => (await inner(override ?? request)) ?? WEBSOCKET_ACCEPT_SENTINEL);
             // Structural: the middleware returned something descended from
             // the sentinel → accept.  That covers both passing it through
             // untouched and decorating it (`securityHeaders()`, `hsts()`,
@@ -491,11 +722,22 @@ export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[]
             return defaultErrorResponse(err);
           }
         };
-        return { ...c, authorize };
+        return { ...c, ...deadline(c), authorize };
       });
     })
-    .with({ kind: 'cors' }, (r) => expandCors(compile(r.child, prefix), r.settings))
+    .with({ kind: 'cors' }, (r) => expandCors(compileNode(r.child, prefix, config, resolvedBlocks), resolveCorsPolicy(r.options, config)))
     .exhaustive();
+}
+
+/**
+ * The {@link EndpointDeadline} an endpoint carries once `middlewareDeadlineMs`
+ * wraps it: the longer of that and what it already records.  Nothing when the
+ * middleware holds no deadline, so the endpoint keeps what it has — an absent
+ * field stays absent rather than becoming an own `undefined`.
+ */
+function longerDeadline(middlewareDeadlineMs: number | undefined): (endpoint: EndpointDeadline) => EndpointDeadline {
+  if (middlewareDeadlineMs === undefined) return () => ({});
+  return (endpoint) => ({ requestDeadlineMs: Math.max(endpoint.requestDeadlineMs ?? 0, middlewareDeadlineMs) });
 }
 
 function wrapHandler(
@@ -524,19 +766,28 @@ function buildPattern(segments: string[]): string {
 /* ------------------------ Parameter convenience ---------------------------- */
 
 /**
- * Extract a query parameter as a trimmed string, or undefined.  Array-valued
- * params (e.g. `?x=1&x=2`) return the first value.
+ * Extract a query parameter as a string, or undefined.  Array-valued params
+ * (e.g. `?x=1&x=2`) return the first value.
+ *
+ * Only the request's own parameters answer.  The query is a record of the
+ * names the client sent, so a name it did not send is absent, never a member
+ * the record inherits, such as `constructor` or `toString`.
  */
 export function queryParam(request: HttpRequest, name: string): string | undefined {
+  if (!Object.hasOwn(request.query, name)) return undefined;
   const value = request.query[name];
   if (value === undefined) return undefined;
   if (Array.isArray(value)) return value[0];
   return value;
 }
 
-/** Extract a path parameter (guaranteed present by the pattern). */
+/**
+ * Extract a path parameter (guaranteed present by the pattern).  Only the
+ * request's own parameters answer, as for {@link queryParam}: a name the
+ * pattern never bound is missing, whatever the record inherits.
+ */
 export function pathParam(request: HttpRequest, name: string): string {
-  const value = request.params[name];
+  const value = Object.hasOwn(request.params, name) ? request.params[name] : undefined;
   if (value === undefined) throw new HttpError(500, `Missing path parameter "${name}"`);
   return value;
 }

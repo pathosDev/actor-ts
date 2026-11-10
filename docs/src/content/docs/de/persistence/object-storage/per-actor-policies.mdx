@@ -162,13 +162,15 @@ class CreditCardActor extends DurableStateActor<...> {
 }
 ```
 
-Alte (unverschlüsselte) Reads funktionieren — keine Metadaten →
-Plaintext-Pfad.  Neue Writes verschlüsseln.  Schließlich:
-
-- Ein **Re-Encryption-Sweep**, gefiltert auf die
-  persistenceIds dieses Actors, migriert den Rest.
-
-Siehe [Schlüsselrotation](/de/persistence/object-storage/key-rotation/).
+Neue Writes verschlüsseln.  Ein alter, unverschlüsselter Body dieses
+Actors wird beim Lesen jetzt **abgelehnt**: Ob ein Body verschlüsselt
+ist, ist ein Byte im Body, also ist ein Plaintext-Body von einer
+Fälschung nicht zu unterscheiden (#965).  Öffne am Store das
+Migrationsfenster mit `withAllowUnencryptedBodies(true)`, lass jede
+`persistenceId` einmal laden und schreiben — der Write verschlüsselt sie
+— und entferne die Option wieder.  Der Re-Encryption-Sweep verschlüsselt
+keine Plaintext-Bodies; er rotiert verschlüsselte.  Siehe
+[Alte Payloads lesen](/de/persistence/object-storage/encryption/#alte-payloads-lesen).
 
 ## Mit dem Snapshot-Store arbeiten
 
@@ -191,8 +193,11 @@ class Account extends PersistentActor<Command, Event, State> {
 ```
 
 Gleiche Methoden gelten, wenn der Snapshot-Store durch Object
-Storage gestützt wird.  Persistent Actors und Durable State
-Actors honorieren beide.
+Storage gestützt wird — für die Snapshots und für nichts sonst.
+Die Hooks eines Durable State Actors decken seinen ganzen State
+ab; die eines Persistent Actors decken seine Snapshots ab und nie
+seine Events, die das Journal im Klartext hält (siehe die Warnung
+unten).
 
 ## Integrität pro Actor
 
@@ -224,22 +229,58 @@ sobald der Read-then-Write-Sweep abgeschlossen ist.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="danger" title="Nur die Object-Storage-Stores lesen diesen Hook">
-  Zehn der elf Snapshot-Stores und neun der zehn
+<Aside type="danger" title="Nur die Object-Storage- und SQL-Stores lesen diesen Hook">
+  Vier der elf Snapshot-Stores und drei der zehn
   Durable-State-Stores nehmen `PersistenceOptions` entgegen und
   sehen es nie an
-  ([#960](https://github.com/mknorr/actor-ts/issues/960)).  Auf
-  SQLite, Postgres, Cassandra, Mongo, DynamoDB und dem
-  In-Memory-Referenz-Store bringt ein `integrity()`-Override
-  **keine Manipulationserkennung und wirft keinen Fehler** — die
-  Direktive wird fallen gelassen.  Dasselbe gilt für
-  `encryption()` und `compression()`.
+  ([#960](https://github.com/pathosDev/actor-ts/issues/960)).  Auf
+  Cassandra, Mongo, DynamoDB und dem In-Memory-Referenz-Store **verweigert** ein
+  `integrity()`- oder `encryption()`-Override den Actor jetzt
+  **beim Start**, statt still gar nichts zu bringen: Jeder
+  ausgelieferte Store deklariert ein
+  `persistenceOptionSupport`-Tripel, und einer, der eine
+  Sicherheitskontrolle nicht honorieren kann, wirft
+  `UnsupportedPersistenceOptionError` mit Store- und Feldnamen.
 
-  Lies diese Seite nicht als Zusage, dass das Framework die
-  Kontrolle überall durchsetzt.  Prüfe sie gegen den Store, den du
-  tatsächlich betreibst: Heute sind das der
-  Object-Storage-Snapshot- und der Durable-State-Store, die alle
-  drei Hooks auf Schreib- und Lesepfad honorieren.
+  `compression()` ist die bewusste Ausnahme.  Es ist ein
+  Performance-Hinweis, keine Kontrolle, also warnt eine nicht
+  honorierbare Anfrage einmal und der Body wird unkomprimiert
+  geschrieben — einen Actor deswegen scheitern zu lassen, würde
+  jede systemweite Kompressions-Vorgabe unbrauchbar machen, sobald
+  ein Store im Deployment nicht komprimieren kann.
+
+  Die Kontrolle wird also durchgesetzt, wo das geht, und gemeldet,
+  wo nicht.  Die Stores, die alle drei Hooks auf Schreib- und
+  Lesepfad honorieren, sind die Object-Storage- und die SQL-Stores
+  (SQLite, Postgres, MariaDB, MSSQL, libSQL, D1) für Snapshots und
+  Durable State — die SQL-Stores als versiegelte Zeile in derselben
+  Spalte ([#1802](https://github.com/pathosDev/actor-ts/issues/1802)) —, und jeder andere Snapshot- oder
+  Durable-State-Store verweigert oder warnt.  Zwei Fälle bleiben
+  still: `{ mode: 'none' }`, womit du "bewusst ungeschützt" sagst,
+  und ein Fremd-Store, der gar kein Tripel deklariert und damit als
+  unbekannt statt als nicht unterstützt gilt.
+
+  Das Journal liegt außerhalb von alledem.  `encryption()` und
+  `integrity()` an einem `PersistentActor` schützen nur seine
+  Snapshots: Jedes Journal speichert Events als Klartext-JSON,
+  nichts erkennt ein an Ort und Stelle manipuliertes Event, und
+  datenbankseitige Kontrollen — Transparent Data Encryption, ein
+  verschlüsseltes Volume, Zugriffskontrolle — sind heute der
+  einzige Schutz für Events.  Kein Journal wird gefragt, also
+  verweigert nichts und warnt nichts: Ein Actor mit beiden Hooks
+  über dem Object-Storage-Snapshot-Store startet, schreibt
+  verschlüsselte, signierte Snapshots und hängt seine Events im
+  Klartext an, und eine Event-Zeile, die von `"amount":10` auf
+  `"amount":1000000` geändert wurde, wird bei der Recovery ohne
+  Fehler gefaltet.
+
+  Das ist ein dokumentiertes Nicht-Ziel und kein Fehler, der auf
+  eine Korrektur wartet: Vertraulichkeit und Integrität des
+  Event-Journals at rest sind an die Datenbank delegiert, und
+  [`SECURITY.md`](https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md#out-of-scope--the-event-journal-at-rest)
+  hält die Entscheidung fest — samt der Hälfte, die die Delegation
+  offen lässt, denn Transparent Data Encryption erkennt keine
+  Manipulation.
 </Aside>
 
 <Aside type="caution" title="Unterschiedliche keyRings über Cluster-Nodes">
@@ -270,7 +311,7 @@ import { Aside } from '@astrojs/starlight/components';
   }
   ```
   Für die Korrektheit in Ordnung; leicht verschwenderisch
-  (allokiert pro Persist).  Heve es zu einer Konstante hoch, wenn
+  (allokiert pro Persist).  Hebe es zu einer Konstante hoch, wenn
   perf-sensitiv:
   ```ts
   private static readonly GZIP6 = { algorithm: 'gzip' as const, level: 6 };

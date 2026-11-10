@@ -12,7 +12,7 @@ import type { DurableStateStore } from '../persistence/DurableStateStore.js';
  */
 export const DEFAULT_MAX_PENDING_QUORUM_REQUESTS = 1_000;
 
-/** Built-in default ceiling on a caller-supplied quorum `timeoutMs`. */
+/** Built-in default ceiling on a quorum deadline — a caller's `timeoutMs` or the configured default. */
 export const DEFAULT_MAX_QUORUM_TIMEOUT_MS = 30_000;
 
 /**
@@ -45,10 +45,64 @@ export const DEFAULT_MAX_QUORUM_TIMEOUT_MS = 30_000;
  */
 export const DEFAULT_MAX_GOSSIP_BYTES = 1024 * 1024;
 
+/**
+ * Built-in default for {@link DistributedDataOptionsType.logDataSizeExceeding}
+ * — 100 KiB, roughly a tenth of {@link DEFAULT_MAX_GOSSIP_BYTES}.
+ *
+ * *Roughly*, because the two are round numbers in the same unit and not
+ * multiples of each other: 100 KiB is 9.77 % of 1 MiB.  A literal tenth would
+ * be 104 857.6 bytes, which is neither an integer nor something an operator
+ * can write in HOCON, and the reasoning below is about an order of magnitude
+ * rather than a ratio, so the round number is the honest spelling.
+ *
+ * Derived from the budget rather than picked, because "large" has no absolute
+ * meaning for a CRDT: the framework cannot know whether a key holds four
+ * counters or a shopping cart.  What it can measure is the key's share of one
+ * gossip tick, and a tenth is where that share starts governing everybody
+ * else's convergence — ten such keys fill a whole frame, so every remaining
+ * key in the store waits an extra sweep for each of them.  Below that the
+ * packer absorbs the key without anyone noticing, which is the correct
+ * outcome and the reason the threshold is not lower.
+ *
+ * Against the same wire measurement {@link DEFAULT_MAX_GOSSIP_BYTES} was
+ * chosen on — a three-replica `GCounter` under an `actor-ts@host:port`
+ * replica id costs ~131 bytes — this is ~780 ordinary entries' worth in a
+ * single key, so no legitimate small value reaches it by accident.
+ *
+ * Deliberately **not** Akka's 10 KiB.  That number is a tenth of *this* one
+ * and was chosen against Akka's own frame sizing; here it would sit at 1 % of
+ * a tick and fire on the first honest `ORSet` a deployment stores, which ends
+ * the way every over-eager warning ends — filtered out, taking the one case
+ * that mattered with it.
+ *
+ * `0` disables the warning entirely, the project's spelling for "off".
+ */
+export const DEFAULT_LOG_DATA_SIZE_EXCEEDING_BYTES = 100 * 1024;
+
 /** Plain options-object shape accepted by {@link DistributedData.start}. */
 export type DistributedDataOptionsType = {
   /** Period between gossip pushes.  Default: 1 s. */
   readonly gossipInterval?: number;
+  /**
+   * Deadline in ms for an `updateAsync` / `getAsync` whose call names no
+   * `timeoutMs`.  Default: 5 s — `DEFAULT_ASK_TIMEOUT_MS`, the framework's
+   * built-in ask deadline.  A per-call `timeoutMs` still wins, and
+   * {@link maxQuorumTimeout} clamps this the same way it clamps that.
+   *
+   * Its own setting rather than an inherited `actor-ts.actor.ask-timeout`,
+   * although the two share a built-in value.  That key moves the default of
+   * `ActorRef.ask`, which is a different wait: a quorum deadline is how long a
+   * replica holds a pending slot for peers to answer, and tuning one should
+   * not retune the other.  Nor is it derived from {@link gossipInterval} —
+   * acknowledgments travel on the request, not on the gossip tick.
+   *
+   * Positive, never `0`.  The ceiling's `0` switches a bound off; a deadline's
+   * cannot, because the replicator arms it like any other value: it expires at
+   * the next timer tick — a write fails there and a read settles for what this
+   * replica alone holds — unless every replica it waits on has already
+   * answered.
+   */
+  readonly quorumTimeout?: number;
   /**
    * Most quorum requests (`updateAsync` + `getAsync` together) that may be
    * unsettled at once.  A request past the cap is rejected outright instead
@@ -70,9 +124,10 @@ export type DistributedDataOptionsType = {
    */
   readonly maxPendingQuorumRequests?: number;
   /**
-   * Ceiling on the per-call `timeoutMs` of `updateAsync` / `getAsync`.  A
-   * larger caller-supplied value is clamped down to this one.  `0` disables
-   * the ceiling.
+   * Ceiling on the deadline of `updateAsync` / `getAsync` — the call's own
+   * `timeoutMs`, or {@link quorumTimeout} when it names none.  A larger value
+   * is clamped down to this one, wherever it came from.  `0` disables the
+   * ceiling.
    *
    * A pending quorum request holds a promise, a timer and a target set until
    * its deadline passes, and it occupies one of the
@@ -108,6 +163,54 @@ export type DistributedDataOptionsType = {
    * byte size, so one legitimate `ORSet` can reach this on its own.
    */
   readonly maxGossipBytes?: number;
+  /**
+   * Warn when one key's own encoded size passes this many bytes.  `0` never
+   * warns.  Default: {@link DEFAULT_LOG_DATA_SIZE_EXCEEDING_BYTES} (100 KiB).
+   *
+   * The early warning {@link maxGossipBytes} does not give.  That cap only
+   * says something once a key has grown past a *whole* frame, at which point
+   * the key has already stopped converging.  A key at a large fraction of the
+   * budget is invisible by comparison and still expensive: it travels fine,
+   * but it consumes that fraction of every tick it appears in, so the rest of
+   * the store sweeps proportionally slower and nothing anywhere says why.
+   *
+   * **Warns, never skips.**  This is a report about a value the operator
+   * chose, not a bound on it — the packer keeps packing the key exactly as it
+   * would have. Its own rate limiter is separate from the oversize warning's
+   * on purpose: the two lines call for different actions (split the value
+   * versus raise the budget), and one must not suppress the other.
+   *
+   * **Measured once per sweep, not once per tick.**  The packer visits keys
+   * from its cursor until the budget fills, so a key in a store larger than
+   * one frame is measured every `ceil(store / budget)` ticks.  That is the
+   * right cadence for a warning that is already rate-limited to a minute, and
+   * the running total in the line covers the windows it skipped.
+   */
+  readonly logDataSizeExceeding?: number;
+  /**
+   * Which keys {@link durableStore} persists.  **Empty means every key** —
+   * the behaviour of every release before this option existed — and never
+   * "persist nothing"; the way to persist nothing is to configure no store.
+   *
+   * An entry is either an exact key name or a prefix ending in a single `*`
+   * (`session-*`).  That is the whole syntax, and the restriction is a
+   * security decision rather than a shortcut: a fuller glob means compiling a
+   * matcher out of operator-supplied text, and `new RegExp(fromConfig)` is a
+   * ReDoS surface reachable from a configuration file.  `ActorSelection` made
+   * the same call for actor paths.
+   *
+   * **Narrowing the list drops what it no longer names.**
+   * `DurableDistributedDataStore.save` replaces the replica's whole record on
+   * every mutation, so a key that stops matching is not merely no longer
+   * updated — it is gone from the persisted record on the next save, and a
+   * cold start will not bring it back. Widening is safe: the next save writes
+   * whatever the live view holds.
+   *
+   * Inert without a {@link durableStore}.  A non-empty list with no store
+   * configured is warned about at startup rather than ignored silently — it
+   * is a whitelist for a persistence layer that is not running.
+   */
+  readonly durableKeys?: readonly string[];
   /**
    * Optional durable backend.  When provided, the local CRDT view
    * is loaded from the store on `preStart` and re-saved after every
@@ -147,12 +250,17 @@ export class DistributedDataOptionsBuilder extends OptionsBuilder<DistributedDat
     return this.set('gossipInterval', ms);
   }
 
+  /** Deadline in ms for a quorum call that names no `timeoutMs`.  Default 5 s; positive. */
+  withQuorumTimeout(ms: number): this {
+    return this.set('quorumTimeout', ms);
+  }
+
   /** Cap on unsettled quorum requests (writes + reads).  `0` disables it. */
   withMaxPendingQuorumRequests(maxPendingQuorumRequests: number): this {
     return this.set('maxPendingQuorumRequests', maxPendingQuorumRequests);
   }
 
-  /** Ceiling in ms on a caller's quorum `timeoutMs`.  `0` disables it. */
+  /** Ceiling in ms on a quorum deadline, a caller's `timeoutMs` or the default.  `0` disables it. */
   withMaxQuorumTimeout(ms: number): this {
     return this.set('maxQuorumTimeout', ms);
   }
@@ -160,6 +268,16 @@ export class DistributedDataOptionsBuilder extends OptionsBuilder<DistributedDat
   /** Byte budget for one gossip frame's payload.  `0` removes it. */
   withMaxGossipBytes(maxGossipBytes: number): this {
     return this.set('maxGossipBytes', maxGossipBytes);
+  }
+
+  /** Warn about a key whose encoding passes this many bytes.  `0` never warns. */
+  withLogDataSizeExceeding(logDataSizeExceeding: number): this {
+    return this.set('logDataSizeExceeding', logDataSizeExceeding);
+  }
+
+  /** Keys the durable store persists — exact names or one trailing `*`.  Empty = all. */
+  withDurableKeys(durableKeys: readonly string[]): this {
+    return this.set('durableKeys', durableKeys);
   }
 
   /** Durable per-replica backend — load on start, re-save after each mutation. */
@@ -173,8 +291,12 @@ export class DistributedDataOptionsValidator extends OptionsValidator<Distribute
   constructor() {
     super('DistributedDataOptions');
   }
-  protected rules(_s: Partial<DistributedDataOptionsType>): void {
+  protected rules(s: Partial<DistributedDataOptionsType>): void {
     this.positiveNumber('gossipInterval');
+    // Positive, where the ceiling below is non-negative: a deadline of `0` is
+    // armed like any other, so it cannot mean "off" — it would expire nearly
+    // every quorum request at the next timer tick.
+    this.positiveNumber('quorumTimeout');
     // Non-negative rather than positive on all three: `0` is the documented
     // "disabled" spelling, which the project prefers over `Infinity`.
     this.nonNegativeInt('maxPendingQuorumRequests');
@@ -183,6 +305,35 @@ export class DistributedDataOptionsValidator extends OptionsValidator<Distribute
     // `1M` to one.  A fractional budget would be arithmetic that never
     // matches a frame length.
     this.nonNegativeInt('maxGossipBytes');
+    // Same reasoning again: a byte count, and `0` is how it is switched off.
+    this.nonNegativeInt('logDataSizeExceeding');
+    // Cross-field rather than a helper, because there is no list helper and
+    // the rule is about a pattern's *shape*: an entry that matches nothing is
+    // silently a no-op, and on a whitelist a no-op entry is a key an operator
+    // believes is being persisted and is not.  `*` is rejected anywhere but
+    // the last character so an entry never reads as a glob the matcher will
+    // not honour — `a*b` would match the literal key `a*b` and nothing else,
+    // which is the sort of surprise a durable whitelist cannot afford.
+    for (const pattern of s.durableKeys ?? []) {
+      if (typeof pattern !== 'string' || pattern.trim().length === 0) {
+        this.fail('durableKeys', 'must contain only non-blank key patterns', pattern);
+      }
+      const star = pattern.indexOf('*');
+      if (star !== -1 && star !== pattern.length - 1) {
+        this.fail(
+          'durableKeys',
+          'allows "*" only as the last character of an entry, meaning a prefix match',
+          pattern,
+        );
+      }
+      if (pattern === '*') {
+        this.fail(
+          'durableKeys',
+          'does not take a bare "*" — an empty list already means every key',
+          pattern,
+        );
+      }
+    }
   }
 }
 
@@ -205,6 +356,9 @@ export function readDistributedDataOptionsFromConfig(
   if (config.hasPath(keys.gossipInterval)) {
     out.gossipInterval = config.getDuration(keys.gossipInterval);
   }
+  if (config.hasPath(keys.quorumTimeout)) {
+    out.quorumTimeout = config.getDuration(keys.quorumTimeout);
+  }
   if (config.hasPath(keys.maxPendingQuorumRequests)) {
     out.maxPendingQuorumRequests = config.getInt(keys.maxPendingQuorumRequests);
   }
@@ -213,6 +367,12 @@ export function readDistributedDataOptionsFromConfig(
   }
   if (config.hasPath(keys.maxGossipBytes)) {
     out.maxGossipBytes = config.getBytes(keys.maxGossipBytes);
+  }
+  if (config.hasPath(keys.logDataSizeExceeding)) {
+    out.logDataSizeExceeding = config.getBytes(keys.logDataSizeExceeding);
+  }
+  if (config.hasPath(keys.durableKeys)) {
+    out.durableKeys = config.getStringList(keys.durableKeys);
   }
   return out;
 }

@@ -16,7 +16,10 @@ export interface SseOptionsType extends BrokerCommonOptionsType {
   readonly url?: string;
   /** Custom request headers. */
   readonly headers?: Readonly<Record<string, string>>;
-  /** Subscriber for inbound events.  Required. */
+  /**
+   * Subscriber for inbound events.  Required.  No HOCON leaf: an `ActorRef`
+   * names a live actor in this process, which a config file cannot denote.
+   */
   readonly target?: ActorRef<SseEvent>;
   /**
    * Declare the stream lost after this many milliseconds without a single

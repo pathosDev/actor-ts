@@ -7,13 +7,17 @@
  * mean no node could ever join), and an active peer may assert third-party
  * records.  Nothing answered *"how many believable claims may one peer make?"*
  *
- * Two caps now do, and the split between them is the point.  A phantom in an
- * active status is a member the failure detector is watching, so it is downed
- * and deleted `downAfterMs` after the attacker stops feeding it — seconds, at
- * the default.  A record gossiped as `removed` is not watched by anything, so
- * only `tombstoneTtlMs` reclaims it, a day later.  The tombstone cap is
- * therefore the load-bearing one, which is the opposite of how the issue
- * ranked the two.
+ * Two caps now do, and the split between them is the point: the two residues
+ * have different lifetimes.  A phantom in an active status is a member the
+ * failure detector watches and never hears from, so it is declared `down` —
+ * and then deleted under the shipped `failure-detector.auto-down = on`, to be
+ * gossiped straight back by any node still carrying it, or parked at
+ * `unreachable` with a strategy or with auto-down off (#1426), where it holds
+ * a live slot until a strategy or an operator removes it.  A record gossiped
+ * as `removed` is not
+ * watched by anything, so only `tombstoneTtlMs` reclaims it, a day later.
+ * `maxMembers` is therefore the whole bound on the live residue, and
+ * `maxTombstones` on the other.
  *
  * Both caps are charged on the **bucket a record moves into**, not on record
  * creation.  Charging only creation left the two caps trading headroom for
@@ -36,6 +40,7 @@ import {
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
 } from '../../../src/cluster/ClusterOptions.js';
+import type { FailureDetectorLike } from '../../../src/cluster/FailureDetector.js';
 import type { Member } from '../../../src/cluster/Member.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import type { MemberData, MemberStatus, WireMessage } from '../../../src/cluster/Protocol.js';
@@ -46,6 +51,8 @@ type CapOptions = {
   readonly maxTombstones?: number;
   readonly tombstoneTtlMs?: number;
   readonly tombstoneMinRetentionMs?: number;
+  /** `failure-detector.auto-down` in code; unset leaves the shipped `on`. */
+  readonly autoDown?: boolean;
 };
 
 type NodeHandle = {
@@ -84,6 +91,7 @@ async function startNode(systemName: string, port: number, caps: CapOptions = {}
   if (caps.tombstoneMinRetentionMs !== undefined) {
     clusterOptions.withTombstoneMinRetentionMs(caps.tombstoneMinRetentionMs);
   }
+  if (caps.autoDown !== undefined) clusterOptions.withFailureDetectorAutoDown(caps.autoDown);
   const cluster = await Cluster.join(system, clusterOptions);
   return { system, cluster, address };
 }
@@ -93,6 +101,8 @@ interface ClusterInternals {
   handleWire(from: NodeAddress, message: WireMessage): void;
   mergeMember(from: NodeAddress, senderStatus: MemberStatus | undefined, data: MemberData): void;
   tombstonePruneTick(): void;
+  failureDetectionTick(): void;
+  readonly failureDetector: FailureDetectorLike;
   readonly members: Map<string, Member>;
   readonly tombstoneCount: number;
 }
@@ -178,12 +188,12 @@ describe('the member-map caps (#138)', () => {
     expect(liveIn(node.cluster)).toBe(4);
   });
 
-  test('the sender fallback outside mergeMember is capped too', async () => {
-    // `onGossip` records any sender it does not already know, and that insert
-    // never went through the merge path's guards — it was the one door #138
-    // left open even with the merge capped.  `sender` is the payload's
-    // self-declaration, so it is the cheaper of the two addresses to forge:
-    // one connection can walk through a whole address range.
+  test("a frame's sender field files no member at all", async () => {
+    // `onGossip` used to record any sender it did not already know, outside
+    // the merge path's guards — capped here once #138 noticed, and removed by
+    // #939, since it filed a member with no authority check.  `sender` is the
+    // payload's self-declaration, the cheaper of the two addresses to forge:
+    // one connection could walk through a whole address range.
     const node = await startNode('cap-sender', 9_204, { maxMembers: 3 });
     nodes.push(node);
     const connection = new NodeAddress('cap-sender', '10.0.138.2', 9_290);
@@ -200,7 +210,8 @@ describe('the member-map caps (#138)', () => {
       });
     }
 
-    expect(liveIn(node.cluster)).toBe(3);
+    // Self, and nothing the frames named.
+    expect(liveIn(node.cluster)).toBe(1);
   });
 
   test('0 disables a cap — and shows what the map did before', async () => {
@@ -214,6 +225,52 @@ describe('the member-map caps (#138)', () => {
     floodAsActivePeer(node.cluster, peer, 'removed', 500);
 
     expect(tombstonesIn(node.cluster)).toBe(500);
+  });
+
+  test('under auto-down off, gossiped phantoms park at unreachable and hold their slots until downed (#1426)', async () => {
+    // The live residue, and why `maxMembers` is its whole bound.  A phantom is
+    // never heard from, so the detector declares it `down` — and with no
+    // strategy and auto-down off it parks the phantom rather than removing it.
+    // The slot stays taken: a legitimate node announcing itself is refused,
+    // and it takes a `down` to give the slot back.  Under the shipped `on` the
+    // detector would delete the phantom at down-after instead, and any node
+    // still carrying it would gossip it straight back.
+    const node = await startNode('cap-phantom-residue', 9_213, { maxMembers: 4, autoDown: false });
+    nodes.push(node);
+    const peer = new NodeAddress('cap-phantom-residue', '10.0.138.2', 9_290);
+    const joiner = new NodeAddress('cap-phantom-residue', '10.0.138.5', 9_590);
+    const announceSelf = (address: NodeAddress): void => {
+      internals(node.cluster).mergeMember(address, undefined, {
+        address: address.toJSON(), status: 'joining', version: Date.now(), roles: [],
+      });
+    };
+
+    // Self, a real peer, and two phantoms the peer's gossip introduced: full.
+    announceSelf(peer);
+    floodAsActivePeer(node.cluster, peer, 'up', 2);
+    const phantoms = Array.from(membersOf(node.cluster).keys())
+      .filter((key) => key.includes('10.0.138.99'));
+    expect(phantoms).toHaveLength(2);
+    expect(liveIn(node.cluster)).toBe(4);
+
+    // Nothing ever speaks for the phantoms; the real peer keeps talking.
+    const detector = internals(node.cluster).failureDetector;
+    for (const key of phantoms) detector.heardFrom(NodeAddress.parse(key), Date.now() - 600_000);
+    detector.heardFrom(peer, Date.now());
+    for (let tick = 0; tick < 5; tick++) internals(node.cluster).failureDetectionTick();
+
+    expect(phantoms.map((key) => membersOf(node.cluster).get(key)?.status))
+      .toEqual(['unreachable', 'unreachable']);
+    expect(liveIn(node.cluster)).toBe(4);
+
+    announceSelf(joiner);
+    expect(membersOf(node.cluster).has(joiner.toString())).toBe(false);
+
+    // The operator's way out — the slot comes back, and the joiner gets in.
+    expect(node.cluster.down(phantoms[0]!)).toBe(true);
+    expect(liveIn(node.cluster)).toBe(3);
+    announceSelf(joiner);
+    expect(membersOf(node.cluster).has(joiner.toString())).toBe(true);
   });
 
   test('ordinary membership is untouched at the default caps', async () => {
@@ -323,9 +380,10 @@ describe('cap accounting stays in step with the map', () => {
   });
 
   test('a live member gossiped as removed is refused when the tombstone bucket is full', async () => {
-    // The mirror image.  Refusing leaves the member live, where the failure
-    // detector reclaims it within `downAfterMs` — slower, but it cannot be used
-    // to free a live slot while keeping the map entry.
+    // The mirror image.  Refusing leaves the member live, where it is removed
+    // the way any silent member is — by a strategy or an operator, or by the
+    // detector under auto-down — but it cannot be used to free a live slot
+    // while keeping the map entry.
     const node = await startNode('cap-conversion-full', 9_211, { maxMembers: 8, maxTombstones: 1 });
     nodes.push(node);
     const peer = new NodeAddress('cap-conversion-full', '10.0.138.2', 9_290);

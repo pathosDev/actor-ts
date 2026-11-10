@@ -1,6 +1,8 @@
 import { Lazy } from '../../util/Lazy.js';
 import type {
   FetchHandler,
+  HonoServeOptions,
+  HonoServeTls,
   HonoServerHandle,
   HonoServerRunner,
   HonoWebsocketBridge,
@@ -12,23 +14,42 @@ import type {
  * `server.close()` (waits for in-flight) with a timeout after which
  * `closeAllConnections()` forces the kill.
  *
+ * `serveOptions` reaches `serve()` beneath the runner's own fields, with its
+ * `serverOptions` merged under the TLS material and stripped of every
+ * `node:tls` option — see `nodeServeOptions`.
+ * The typed `maxHeaderBytes` is the one tuning member this runtime can take:
+ * it goes into `serverOptions` as `node:http`'s `maxHeaderSize`, and the
+ * handle reports it applied only once the server reads it back.
+ *
  * `@hono/node-server` is an optional peer dependency: install it only if
- * you run under Node.  On Bun/Deno this module is never imported at
- * runtime (the factory dispatches elsewhere).
+ * you run under Node.  It is imported when `serve()` first runs, never at
+ * module load, so this module is safe on every runtime — which matters,
+ * because the Fastify and Express backends import
+ * {@link nodeTlsServerOptions} from here wherever they run.
  */
 export class NodeHonoRunner implements HonoServerRunner {
-  async serve(options: { host: string; port: number; fetch: FetchHandler; serveOptions?: object }): Promise<HonoServerHandle> {
-    const mod = await loadHonoNodeServer();
+  /**
+   * How `@hono/node-server` is reached, injectable so a test can stand in a
+   * module that records the option bag `serve()` is handed — the bag is
+   * otherwise consumed where nothing can see it.  A module mock is no
+   * substitute: the default loader caches the first module it resolves for
+   * the whole process, and `mock.restore()` does not undo `mock.module()`.
+   * The seam is the loader rather than the import, so how the default
+   * resolves the peer can change without touching it.
+   */
+  constructor(
+    private readonly loadServerModule: () => Promise<HonoNodeServerModule> = loadHonoNodeServer,
+  ) {}
+
+  async serve(options: HonoServeOptions): Promise<HonoServerHandle> {
+    const mod = await this.loadServerModule();
+    const secure = options.tls ? await nodeSecureServerFactory(options.tls, options.http2 === true) : undefined;
 
     // `serve()` returns a node:http Server; we wait for its 'listening'
     // event (via the optional callback) to know the bound port.
     const server = await new Promise<NodeHttpServer>((resolve, reject) => {
       try {
-        const serveResult = mod.serve({
-          hostname: options.host,
-          port: options.port,
-          fetch: options.fetch,
-        }, (info) => {
+        const serveResult = mod.serve(nodeServeOptions(options, secure), (info) => {
           resolve(Object.assign(serveResult, { _info: info }) as unknown as NodeHttpServer);
         });
       } catch (e) {
@@ -44,6 +65,13 @@ export class NodeHonoRunner implements HonoServerRunner {
       host: options.host,
       port: actualPort,
       raw: server,
+      // Read back rather than assumed: the cap reached `createServer`, but only
+      // a server that reports holding it is holding it.  Node and Bun do;
+      // Deno's `node:http` shim reads it back as `undefined` and lets a 4 KiB
+      // header through (deno 2.6.8).
+      appliedServeOptions: {
+        maxHeaderBytes: options.maxHeaderBytes !== undefined && server.maxHeaderSize === options.maxHeaderBytes,
+      },
       stop(graceful: boolean): Promise<void> {
         return new Promise<void>((resolve) => {
           const timer = !graceful
@@ -165,11 +193,189 @@ interface NodeHttpServer {
   close(callback?: () => void): void;
   closeAllConnections?(): void;
   address?(): { port: number; address: string } | string | null;
+  /** The header cap the server was built with; absent where the runtime keeps none. */
+  readonly maxHeaderSize?: number;
+}
+
+/**
+ * `@hono/node-server`'s `createServer` / `serverOptions` pair: which
+ * `node:*` factory builds the listener and what it is handed.  Typed as the
+ * slice this runner writes, since the module is an optional peer.
+ */
+type NodeServerFactory = {
+  readonly createServer: (options: object, listener?: unknown) => NodeHttpServer;
+  readonly serverOptions: object;
+};
+
+/**
+ * Pick the `node:*` factory a TLS listener needs.
+ *
+ * TLS alone is `https.createServer`; TLS with HTTP/2 is
+ * `http2.createSecureServer` with `allowHTTP1`, which is the one shape that
+ * negotiates `h2` through ALPN *and* keeps HTTP/1.1 on the same port —
+ * measured on Node 26.7: a `node:http2` client gets `alpn=h2`, an `https`
+ * client gets `httpVersion=1.1`, both `200`, against one listener.  Without
+ * `allowHTTP1` the second would be refused with "no application protocol",
+ * which is exactly what the plain `https` server does when an h2 client
+ * tries it (#1522).
+ *
+ * The TLS fields map through {@link nodeTlsServerOptions}.
+ */
+async function nodeSecureServerFactory(tls: HonoServeTls, http2: boolean): Promise<NodeServerFactory> {
+  const serverOptions = nodeTlsServerOptions(tls);
+  if (http2) {
+    const { createSecureServer } = await import('node:http2');
+    return {
+      createServer: createSecureServer as unknown as NodeServerFactory['createServer'],
+      serverOptions: { ...serverOptions, allowHTTP1: true },
+    };
+  }
+  const { createServer } = await import('node:https');
+  return { createServer: createServer as unknown as NodeServerFactory['createServer'], serverOptions };
+}
+
+/** What {@link nodeTlsServerOptions} returns: the server side of `node:tls`'s option names. */
+export type NodeTlsServerFields = {
+  cert?: string | Uint8Array;
+  key?: string | Uint8Array;
+  ca?: string | Uint8Array;
+  requestCert?: boolean;
+  rejectUnauthorized?: boolean;
+};
+
+/**
+ * The `node:tls` server options a {@link HonoServeTls} asks for — the one
+ * spelling of that mapping, shared by the three listeners that hand it to a
+ * `node:*` server factory: this runner's `https` and `http2` servers,
+ * Fastify's `https` factory option (`fastifyFactoryOptions`), and the `https`
+ * server the Express backend builds.  It lives here because this runner was
+ * its first user and is the one of the three in the runtime layer, which the
+ * HTTP backends import and which imports none of them back.
+ *
+ * `cert`, `key` and `ca` go in as given; `requestClientCert` becomes
+ * `requestCert`, the `node:tls` spelling; `rejectUnauthorized` passes through.
+ * `cert` and `key` are always present, the other three only when set, so an
+ * unset one is left to `node:tls`: no client certificate is requested, and one
+ * that is requested has to verify — against `ca`, which
+ * `HttpServerOptionsValidator` does not let a demand go without.
+ *
+ * @internal — exported for `FastifyBackend` and `ExpressBackend`.
+ */
+export function nodeTlsServerOptions(tls: HonoServeTls): NodeTlsServerFields {
+  const options: NodeTlsServerFields = { cert: tls.cert, key: tls.key };
+  if (tls.ca !== undefined) options.ca = tls.ca;
+  if (tls.requestClientCert !== undefined) options.requestCert = tls.requestClientCert;
+  if (tls.rejectUnauthorized !== undefined) options.rejectUnauthorized = tls.rejectUnauthorized;
+  return options;
+}
+
+/**
+ * The bag `@hono/node-server`'s `serve()` receives.  The named members are the
+ * ones this runner writes; the index signature carries whatever else a
+ * caller's `serveOptions` holds — `overrideGlobalObjects`,
+ * `autoCleanupIncoming`, `websocket` — which the module reads and this runner
+ * passes on unread.
+ */
+type HonoNodeServeOptions = {
+  readonly hostname: string;
+  readonly port: number;
+  readonly fetch: FetchHandler;
+  readonly createServer?: NodeServerFactory['createServer'];
+  readonly serverOptions: object;
+  readonly [option: string]: unknown;
+};
+
+/** The two `serveOptions` members the runner does not pass on as they come. */
+type CallerServeOptions = {
+  readonly serverOptions?: object;
+  readonly createServer?: unknown;
+};
+
+/**
+ * Fold the caller's `serveOptions` into `serve()`'s bag, beneath the runner's
+ * own fields (#1486).
+ *
+ * The caller's keys go in first, so nothing in them can move the listener:
+ * `hostname`, `port` and `fetch` are the runner's, and so is `createServer` —
+ * the TLS factory under `tls`, the module's own `node:http` one otherwise —
+ * because the factory decides whether the socket speaks TLS or HTTP/2 at all,
+ * which is `tls`'s and `http2`'s to say.  A caller's factory is dropped even
+ * without TLS: `http2.createServer` there would be the h2c listener the
+ * options validator refuses (#1522).
+ *
+ * `serverOptions` is the one member both sides write, so it is merged rather
+ * than replaced.  It is where the `node:http` tuning goes (`maxHeaderSize`,
+ * `connectionsCheckingInterval`), and under TLS it carries the certificate
+ * too, spread last so the configured material wins a collision.  Spreading
+ * either bag over the other loses a side: the caller's tuning, or the
+ * certificate — and a listener that no longer terminates TLS with the
+ * material it was configured with is what #1522 rules out.  Winning a
+ * collision is not enough on its own, though, since the typed `tls` leaves
+ * most `node:tls` options unset: the caller's never reach the listener at
+ * all — see {@link LISTENER_SHAPE_SERVER_OPTIONS}.
+ *
+ * The typed `maxHeaderBytes` goes in between, as `maxHeaderSize`: over the
+ * caller's bag, because the bag sits beneath everything the runner writes,
+ * and under the TLS material, which it never collides with.  Under TLS this
+ * is the `serverOptions` the TLS factory is handed — the only place a header
+ * cap reaches an `https` or HTTP/2 listener at all (#1488).
+ */
+function nodeServeOptions(options: HonoServeOptions, secure: NodeServerFactory | undefined): HonoNodeServeOptions {
+  const { serverOptions, createServer: _callerFactory, ...caller } = (options.serveOptions ?? {}) as CallerServeOptions;
+  const headerCap = options.maxHeaderBytes !== undefined ? { maxHeaderSize: options.maxHeaderBytes } : {};
+  return {
+    ...caller,
+    hostname: options.host,
+    port: options.port,
+    fetch: options.fetch,
+    serverOptions: { ...withoutListenerShape(serverOptions), ...headerCap, ...secure?.serverOptions },
+    ...(secure ? { createServer: secure.createServer } : {}),
+  };
+}
+
+/**
+ * The `serverOptions` names a caller's bag may not set, because the typed
+ * `tls` and `http2` decide them, set or unset (#1486): every option `node:tls`
+ * reads when it builds a server — `@types/node`'s `TlsOptions` with the
+ * `SecureContextOptions` and `CommonConnectionOptions` it extends — and
+ * `allowHTTP1`, which keeps HTTP/1.1 beside h2 on every runtime.
+ *
+ * Merged beneath the TLS material, a name the typed `tls` leaves unset reached
+ * the listener from the bag.  Measured on node v26.10.0: a bag `pfx` or
+ * `SNICallback` presented another certificate in place of the configured one,
+ * `requestCert: true` made a one-way listener demand a client certificate with
+ * no `ca` to verify it against, and a bag that switched `rejectUnauthorized`
+ * off admitted a client without one past a configured demand.  So the typed
+ * `tls` is the whole TLS configuration: what the listener presents, whom it
+ * admits and which TLS it speaks.  A bound such as `handshakeTimeout` that a
+ * deployment should be able to tune belongs in the server policy beside
+ * `header-timeout`, not in a bag.
+ *
+ * Without TLS the listener is `node:http`, which reads none of these, so they
+ * are dropped there too and the rule needs no condition.
+ */
+const LISTENER_SHAPE_SERVER_OPTIONS: ReadonlySet<string> = new Set([
+  // What the listener presents.
+  'pfx', 'key', 'cert', 'passphrase', 'secureContext', 'SNICallback', 'privateKeyEngine', 'privateKeyIdentifier',
+  // Whom it admits.
+  'ca', 'crl', 'requestCert', 'rejectUnauthorized', 'clientCertEngine', 'allowPartialTrustChain',
+  'pskCallback', 'pskIdentityHint',
+  // Which TLS it speaks.
+  'ALPNProtocols', 'ALPNCallback', 'minVersion', 'maxVersion', 'secureProtocol', 'secureOptions', 'ciphers',
+  'sigalgs', 'ecdhCurve', 'dhparam', 'honorCipherOrder', 'sessionIdContext', 'sessionTimeout', 'ticketKeys',
+  'enableTrace', 'handshakeTimeout', 'requestOCSP',
+  // Whether HTTP/1.1 stays beside h2.
+  'allowHTTP1',
+]);
+
+/** A caller's `serverOptions` without the names {@link LISTENER_SHAPE_SERVER_OPTIONS} reserves. */
+function withoutListenerShape(serverOptions: object | undefined): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(serverOptions ?? {}).filter(([name]) => !LISTENER_SHAPE_SERVER_OPTIONS.has(name)));
 }
 
 interface HonoNodeServerModule {
   serve(
-    options: { hostname: string; port: number; fetch: FetchHandler },
+    options: HonoNodeServeOptions,
     onReady?: (info: { address: string; port: number }) => void,
   ): NodeHttpServer;
 }

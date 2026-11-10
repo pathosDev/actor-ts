@@ -14,14 +14,19 @@ import {
 } from '../runtime/tcp/index.js';
 import { NodeAddress } from './NodeAddress.js';
 import { certificateVouchesFor } from './PeerIdentity.js';
+import type { ReadConstraintsOptions } from '../serialization/ReadConstraintsOptions.js';
+import { TcpTransportOptionsValidator } from './TcpTransportOptions.js';
+import type { TcpTransportOptions, TcpTransportOptionsType } from './TcpTransportOptions.js';
 import {
   encodeFrame,
   FrameDecoder,
   DEFAULT_MAX_FRAME_BYTES,
   type HelloMessage,
   type HelloAcknowledgmentMessage,
+  type HelloRefusedMessage,
   type WireMessage,
 } from './Protocol.js';
+import { CLUSTER_WIRE_VERSION, MIN_CLUSTER_WIRE_VERSION, wireVersionRefusal } from './WireVersion.js';
 import { validateWireFrame } from './WireValidation.js';
 
 export type WireHandler = (from: NodeAddress, message: WireMessage) => void;
@@ -34,6 +39,18 @@ export type { TlsTransportOptionsType };
  */
 export interface Transport {
   readonly self: NodeAddress;
+  /**
+   * Take this node's run identity — the same address, now naming the
+   * incarnation `Cluster.join` minted (#823).
+   *
+   * A transport is often built before the cluster that uses it — every
+   * injected one is — so the address it was given names no run, and cluster
+   * wire v2 requires one on every handshake.  `Cluster` hands its own address
+   * over here before it starts the transport.  An address naming a different
+   * `host:port` is ignored: an injected transport may announce another one
+   * than the cluster advertises, and that choice is the caller's.
+   */
+  adoptIdentity?(self: NodeAddress): void;
   /**
    * Per-frame payload cap this transport enforces, when it enforces one —
    * `undefined` where framing does not apply at all.
@@ -53,9 +70,10 @@ export interface Transport {
    * figure here would be fiction.  Read it as "the cap this transport will
    * reject on", not "how large a message may be".
    *
-   * It is the *local* cap.  There is no protocol negotiation yet (#823), so a
-   * peer configured lower than this node is still able to reject a frame this
-   * node considered safe; homogeneous configuration is the assumption.
+   * It is the *local* cap.  The handshake negotiates the wire version, not the
+   * caps (#823), so a peer configured lower than this node is still able to
+   * reject a frame this node considered safe; homogeneous configuration is the
+   * assumption.
    */
   readonly maxFrameBytes?: number;
   start(): Promise<void>;
@@ -67,6 +85,35 @@ export interface Transport {
   disconnect(peer: NodeAddress): void;
   /** Peers currently connected (either inbound or outbound). */
   peers(): NodeAddress[];
+  /**
+   * Whether `send(peer, …)` would go out over a connection this transport
+   * already holds — acked, or still dialling and handshaking — rather than
+   * open a new one.
+   *
+   * `Cluster` asks it before a payload frame leaves for a node that is not a
+   * member (#936): sending over a held connection dials nothing, while a send
+   * to anything else would make this node connect to an address that may have
+   * come out of a message body.  {@link peers} cannot answer it, because it
+   * lists acked connections only, and a `tell` to a seed straight after
+   * `Cluster.join` resolves is queued on a connection that is still in its
+   * handshake.
+   *
+   * Optional so a custom transport keeps compiling; `Cluster` falls back to
+   * {@link peers} for one that does not implement it, which refuses a send in
+   * that window instead of queueing it.  The exported `holdsConnectionTo`
+   * function below is the one place that fallback is written.
+   */
+  holdsConnectionTo?(peer: NodeAddress): boolean;
+}
+
+/**
+ * Ask `transport` whether a send to `peer` would reuse a connection it holds,
+ * falling back to {@link Transport.peers} for a transport that cannot say —
+ * shared by `Cluster`'s outbound gate and the decorators that wrap a transport.
+ */
+export function holdsConnectionTo(transport: Transport, peer: NodeAddress): boolean {
+  if (transport.holdsConnectionTo !== undefined) return transport.holdsConnectionTo(peer);
+  return transport.peers().some((connected) => connected.equals(peer));
 }
 
 /* ============================== TCP Transport ============================= */
@@ -79,6 +126,14 @@ type Connection = {
   pending: WireMessage[];
   outbound: boolean;
   /**
+   * Whether the runtime has reported the socket open.  Accepted sockets are
+   * open by the time they exist; a dial becomes open once, on its first
+   * `onOpen`, and a second report changes nothing (#1475) — an adapter that
+   * maps two native events to `onOpen` would otherwise announce the dial
+   * twice.
+   */
+  opened: boolean;
+  /**
    * For an outbound dial: the address key it was registered under, captured
    * at `openOutbound` time.  `peer` only appears once the handshake lands, so
    * without this a dial that never completes owns its `byPeer` slot forever —
@@ -86,13 +141,48 @@ type Connection = {
    */
   targetKey: string | null;
   /**
+   * Every `byPeer` key this connection was registered under: the address a
+   * dial was opened to, and each identity a `hello` or `hello-ack` announced
+   * on it.  {@link TcpTransport.releasePeerSlot} gives all of them back.
+   *
+   * `peer` and `targetKey` name two at most — the identity announced last and
+   * the dialled address — and a connection that announced a second identity
+   * holds more.  Released by those two alone, the earlier identity stayed
+   * mapped to a closed connection: every `send` to it went into that
+   * connection instead of a new dial, and the real peer's `hello` under it was
+   * turned away as a claim on an address already held (#1476).
+   */
+  readonly peerKeys: Set<string>;
+  /**
+   * For an outbound dial: what gives the dial up, handed to the backend as
+   * `connect`'s `signal` and fired once, when the connection is retired —
+   * however it is retired (#1475).
+   *
+   * Without it the transport could only *forget* a dial.  Its deadline
+   * dropped the `Connection` and the socket under it went on connecting —
+   * about 21 s past the deadline on Bun and on Node, where `end()` on a socket
+   * still connecting does not stop the connect.  Aborted, the backend destroys
+   * the socket while it connects, and does nothing at all to one it has
+   * already handed over, so retiring an established connection still closes it
+   * the way the caller chose.
+   */
+  dial: AbortController | null;
+  /**
+   * For an outbound dial: the deadline to open by, armed with the handshake
+   * deadline and cleared by the dial's first `onOpen` (#1475).  A dial that
+   * misses it could not connect; one that opened is the handshake deadline's
+   * to end.  `null` on an accepted socket, which is open by the time it exists.
+   * See {@link TcpTransport.connectTimeoutMs}.
+   */
+  connectTimer: ReturnType<typeof setTimeout> | null;
+  /**
    * Deadline for the handshake, armed the moment the connection exists and
    * cleared by the `hello` / `hello-ack` that completes it.  See
-   * {@link HANDSHAKE_TIMEOUT_MS}.
+   * {@link TcpTransport.handshakeTimeoutMs}.
    *
    * **Both directions get one.**  A dial that never receives its `hello-ack`
    * strands a `byPeer` slot (#697); an accepted socket that never sends a
-   * `hello` strands one of the {@link MAX_INBOUND_CONNECTIONS} — the same bug
+   * `hello` strands one of the {@link TcpTransport.maxInboundConnections} — the same bug
    * on the two sides of the same handshake, and only the first of the two was
    * ever bounded (#588).
    */
@@ -100,17 +190,29 @@ type Connection = {
   /**
    * Armed whenever the decoder is left holding part of a frame, re-armed on
    * every chunk and cleared when the buffer drains.  See
-   * {@link INCOMPLETE_FRAME_IDLE_MS}.
+   * {@link TcpTransport.incompleteFrameIdleMs}.
    */
   incompleteFrameTimer: ReturnType<typeof setTimeout> | null;
   /**
-   * Whether this connection still counts against {@link MAX_INBOUND_CONNECTIONS}.
+   * Whether this connection still counts against the transport's inbound cap.
    * A flag rather than `!outbound`, because the slot is given back exactly once
    * and both `onClose` and `dropConnection` can be the one to do it.
    */
   holdsInboundSlot: boolean;
   /** Set once when `pending` first overflows, so the warning is not per-frame. */
   pendingOverflowed: boolean;
+  /**
+   * Set when the connection is torn down, and never cleared (#1476).
+   *
+   * Tearing a connection down does not stop everything it already set in
+   * motion, and every one of those checks this.  Retiring a dial aborts it
+   * (see {@link dial}), but a backend that cannot honour the abort — Deno over
+   * TLS, a `TcpBackend` of the caller's own — can still run `onOpen` and
+   * resolve `connect` after the dial was given up, and would otherwise install
+   * its socket, write its hello and re-enter `byPeer` on the `hello-ack`,
+   * alive again with no deadline left on it.
+   */
+  dropped: boolean;
 };
 
 /**
@@ -130,42 +232,115 @@ export class TcpTransport implements Transport {
   private bySocket = new WeakMap<TcpSocketLike, Connection>();
   private handler: WireHandler = () => {};
   private stopped = false;
-  /** Live inbound sockets, bounded by {@link MAX_INBOUND_CONNECTIONS} (#588). */
+  /** Live inbound sockets, bounded by {@link maxInboundConnections} (#588). */
   private inboundConnections = 0;
+  /**
+   * What every socket refused at the inbound cap maps to in `bySocket`: a
+   * connection retired from the start, holding no slot and no peer.  One for
+   * all of them, because nothing in it is per-socket — it exists only so that
+   * whatever a refused socket still delivers is recognised as a dead
+   * connection's bytes and discarded.  See {@link acceptInbound}.
+   */
+  private readonly refusedInbound: Connection;
   /** Set while the cap is saturated, so the refusal is one WARN per episode. */
   private inboundCapReported = false;
 
+  /**
+   * Per-frame size cap (security).  Frames whose length-prefix exceeds this
+   * are rejected before any payload bytes are buffered — closes the
+   * 4-GiB-claim DoS vector documented on {@link FrameDecoder}.
+   *
+   * Public because a sender has to be able to read it — see
+   * {@link Transport.maxFrameBytes} for why the send side needs the number at
+   * all.
+   */
+  readonly maxFrameBytes: number;
+  /** TLS material for both listener and dialer; `null` is plaintext. */
+  private readonly tls: TlsTransportOptionsType | null;
+  /**
+   * Interface and port to bind, which need not be what {@link self}
+   * advertises — a container binds `0.0.0.0` on its own port and tells its
+   * peers one dialable address (#944, #845).  Used for exactly one thing, the
+   * `listen` call: `self` stays the identity everywhere else, in the handshake
+   * announcement and in the peer keys, because a wildcard would identify
+   * nothing there and a remapped port would name something unreachable.
+   */
+  private readonly bindHost: string;
+  private readonly bindPort: number;
+  /** Decode ceilings for every {@link FrameDecoder} this transport builds (#880). */
+  private readonly readConstraints: ReadConstraintsOptions;
+  /** The four association-lifecycle bounds, resolved once (#846). */
+  private readonly handshakeTimeoutMs: number;
+  private readonly outboundQueueSize: number;
+  private readonly maxInboundConnections: number;
+  private readonly incompleteFrameIdleMs: number;
+  /**
+   * How long a dial has to open, resolved once (#1475): the handshake
+   * deadline when nothing set one, which is what every dial ran before.
+   */
+  private readonly connectTimeoutMs: number;
+
+  /** This node's address as the handshake announces it — see {@link adoptIdentity}. */
+  private identity: NodeAddress;
+
+  get self(): NodeAddress { return this.identity; }
+
+  adoptIdentity(self: NodeAddress): void {
+    if (self.toString() === this.identity.toString()) this.identity = self;
+  }
+
+  /**
+   * `self` and `log` stay positional; everything else arrives as
+   * {@link TcpTransportOptions} (#846).
+   *
+   * The list this replaces was seven positional parameters deep, and the four
+   * lifecycle bounds would have made it eleven — a call site that wanted only
+   * the inbound cap would have been five `undefined`s and a number, with
+   * nothing on the line saying which bound it set.  `self` and `log` are the
+   * two every construction site has an opinion about and neither has a default
+   * to fall through to, so they keep their places.
+   *
+   * Validation runs here, once, on the merged settings: this is the consume
+   * time for a transport, and it is the only point that sees an explicit
+   * option and a HOCON value in the same shape (`Cluster` merges the block
+   * into `ClusterOptions` before building this).
+   */
   constructor(
-    readonly self: NodeAddress,
+    self: NodeAddress,
     private readonly log: Logger,
-    /** Optional TLS configuration — when set, both listener and dialer use TLS. */
-    private readonly tls: TlsTransportOptionsType | null = null,
-    /**
-     * Per-frame size cap (security).  Frames whose length-prefix
-     * exceeds this are rejected before any payload bytes are
-     * buffered — closes the 4-GiB-claim DoS vector documented on
-     * {@link FrameDecoder}.  Default: {@link DEFAULT_MAX_FRAME_BYTES}
-     * (16 MiB).  Raise it only if you genuinely send larger
-     * envelopes; the cap is per-frame, not aggregate.
-     *
-     * Public because a sender has to be able to read it — see
-     * {@link Transport.maxFrameBytes} for why the send side needs the number
-     * at all.
-     */
-    readonly maxFrameBytes: number = DEFAULT_MAX_FRAME_BYTES,
-    /**
-     * Interface to bind, when it differs from the one {@link self} advertises
-     * — a container binds `0.0.0.0` and tells its peers a single dialable
-     * address (#944).
-     *
-     * Defaults to `self.host`, which is what every caller that has no opinion
-     * gets and what this class did before the two were separable.  It is used
-     * for exactly one thing, the `listen` call: `self` stays the identity
-     * everywhere else, in the handshake announcement and in the peer keys,
-     * because a wildcard would identify nothing there.
-     */
-    private readonly bindHost: string = self.host,
-  ) {}
+    options: TcpTransportOptions = {},
+  ) {
+    this.identity = self;
+    const settings = options as TcpTransportOptionsType;
+    new TcpTransportOptionsValidator().validate(settings);
+    this.tls = settings.tls ?? null;
+    this.maxFrameBytes = settings.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES;
+    this.bindHost = settings.bindHost ?? self.host;
+    this.bindPort = settings.bindPort ?? self.port;
+    this.readConstraints = settings.readConstraints ?? {};
+    this.handshakeTimeoutMs = settings.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS;
+    this.connectTimeoutMs = settings.connectTimeoutMs ?? this.handshakeTimeoutMs;
+    this.outboundQueueSize = settings.outboundQueueSize ?? MAX_PENDING_FRAMES;
+    this.maxInboundConnections = settings.maxInboundConnections ?? MAX_INBOUND_CONNECTIONS;
+    this.incompleteFrameIdleMs = settings.incompleteFrameIdleMs ?? INCOMPLETE_FRAME_IDLE_MS;
+    this.refusedInbound = {
+      socket: null,
+      peer: null,
+      decoder: new FrameDecoder(this.maxFrameBytes, this.readConstraints),
+      pending: [],
+      outbound: false,
+      opened: true,
+      targetKey: null,
+      peerKeys: new Set(),
+      dial: null,
+      connectTimer: null,
+      handshakeTimer: null,
+      incompleteFrameTimer: null,
+      holdsInboundSlot: false,
+      pendingOverflowed: false,
+      dropped: true,
+    };
+  }
 
   setHandler(handler: WireHandler): void { this.handler = handler; }
 
@@ -173,7 +348,7 @@ export class TcpTransport implements Transport {
     this.backend = await getTcpBackend();
     this.listener = await this.backend.listen({
       host: this.bindHost,
-      port: this.self.port,
+      port: this.bindPort,
       tls: this.tls ?? undefined,
       handlers: {
         onOpen: (sock) => this.attachInbound(sock),
@@ -185,21 +360,30 @@ export class TcpTransport implements Transport {
     // Both addresses when they differ: one line that answers "what did it
     // bind" and "what will peers dial", which are the two questions a node
     // that binds a wildcard makes separable.
+    //
+    // Compared whole rather than host-against-host: with the port separable
+    // too (#845), a node that binds 2552 and advertises 3000 differs on the
+    // half a host comparison cannot see, and would log a single address that
+    // reads as though nothing were split — the exact silence #944 was filed
+    // to end.
+    const bound = `${this.bindHost}:${this.bindPort}`;
+    const advertised = `${this.self.host}:${this.self.port}`;
     this.log.info(
-      this.bindHost === this.self.host
-        ? `cluster transport listening on ${this.self.host}:${this.self.port}`
-        : `cluster transport listening on ${this.bindHost}:${this.self.port}, `
-          + `advertising ${this.self.host}:${this.self.port}`,
+      bound === advertised
+        ? `cluster transport listening on ${bound}`
+        : `cluster transport listening on ${bound}, advertising ${advertised}`,
     );
   }
 
   async shutdown(): Promise<void> {
     this.stopped = true;
-    for (const connection of this.byPeer.values()) {
-      this.clearHandshakeTimer(connection);
-      this.clearIncompleteFrameTimer(connection);
-      try { connection.socket?.end(); } catch { /* ignore */ }
-    }
+    // Retired, not just closed (#1476).  A dial still connecting has no socket
+    // to close yet, and unmarked its `connect` installed one into the stopped
+    // transport and registered it on the `hello-ack`; an established
+    // connection unmarked went on handing the handler whatever the peer sent
+    // until the peer closed its half.  A set, because one connection can hold
+    // two keys.
+    for (const connection of new Set(this.byPeer.values())) this.closeConnection(connection);
     this.byPeer.clear();
     if (this.listener) {
       try { await this.listener.close(); } catch { /* ignore */ }
@@ -214,12 +398,12 @@ export class TcpTransport implements Transport {
       this.writeFrame(connection, message);
     } else {
       // Wait for hello / hello-ack, but never without a bound.
-      if (connection.pending.length >= MAX_PENDING_FRAMES) {
+      if (connection.pending.length >= this.outboundQueueSize) {
         connection.pending.shift();
         if (!connection.pendingOverflowed) {
           connection.pendingOverflowed = true;
           this.log.warn(
-            `handshake buffer for ${to} hit ${MAX_PENDING_FRAMES} frames; dropping oldest`,
+            `handshake buffer for ${to} hit ${this.outboundQueueSize} frames; dropping oldest`,
           );
         }
       }
@@ -228,19 +412,31 @@ export class TcpTransport implements Transport {
   }
 
   disconnect(peer: NodeAddress): void {
+    // Every key the connection holds goes with it, not just the one asked for:
+    // a dial is registered under the address it dialled and, once acked, under
+    // the one the peer announced — two different keys whenever a seed names a
+    // host the peer does not advertise itself as — and a connection holds one
+    // more for each further identity a handshake frame announced on it.
     const connection = this.byPeer.get(peer.toString());
-    if (!connection) return;
-    this.clearHandshakeTimer(connection);
-    this.clearIncompleteFrameTimer(connection);
-    this.releaseInboundSlot(connection);
-    try { connection.socket?.end(); } catch { /* ignore */ }
-    this.byPeer.delete(peer.toString());
+    if (connection) this.closeConnection(connection);
   }
 
   peers(): NodeAddress[] {
+    // A set, because one connection can hold two keys: a dial is registered
+    // under the address it dialled and, once acked, under the one the peer
+    // announced.  Walking the keys listed that peer twice.
     const out: NodeAddress[] = [];
-    for (const connection of this.byPeer.values()) if (connection.peer) out.push(connection.peer);
+    for (const connection of new Set(this.byPeer.values())) if (connection.peer) out.push(connection.peer);
     return out;
+  }
+
+  /**
+   * The lookup {@link send} makes before it falls back to dialling, under the
+   * same key — so a connection still dialling or handshaking counts, which is
+   * what {@link peers} cannot see.
+   */
+  holdsConnectionTo(peer: NodeAddress): boolean {
+    return !this.stopped && this.byPeer.has(peer.toString());
   }
 
   /* --------------------------- internals -------------------------------- */
@@ -277,19 +473,21 @@ export class TcpTransport implements Transport {
   }
 
   /**
-   * Register an inbound socket, unless {@link MAX_INBOUND_CONNECTIONS} is
-   * already saturated — then the socket is closed straight away and `null`
-   * comes back (#588).
+   * Register an inbound socket, unless {@link TcpTransport.maxInboundConnections} is
+   * already saturated — then the socket is aborted straight away, mapped to
+   * {@link refusedInbound} so that nothing it still sends is ever taken for a
+   * new connection, and `null` comes back (#588).
    *
    * Idempotent, because `onData` can beat `onOpen` on Bun and both routes end
    * here: attaching twice would replace a decoder mid-frame *and* count the
-   * same socket against the cap twice.
+   * same socket against the cap twice.  A socket whose connection was torn
+   * down gets that dead connection back, never a fresh one (#1476).
    *
    * The slot is handed out against a handshake deadline, never open-ended.  A
    * socket that sends *no bytes at all* reaches neither the frame decoder nor
    * `trackIncompleteFrame`, so before that deadline existed the cheapest attack
    * on the cap was also the only one it did not cover: open
-   * {@link MAX_INBOUND_CONNECTIONS} connections, say nothing, and every
+   * {@link TcpTransport.maxInboundConnections} connections, say nothing, and every
    * subsequent peer and `ClusterClient` is refused for the process's lifetime.
    * On Bun that is reachable even under mTLS, because the socket's `open`
    * callback fires *before* the TLS handshake completes — the slot is taken
@@ -298,28 +496,39 @@ export class TcpTransport implements Transport {
   private acceptInbound(sock: TcpSocketLike): Connection | null {
     const existing = this.bySocket.get(sock);
     if (existing) return existing;
-    if (this.inboundConnections >= MAX_INBOUND_CONNECTIONS) {
+    if (this.inboundConnections >= this.maxInboundConnections) {
       if (!this.inboundCapReported) {
         this.inboundCapReported = true;
         this.log.warn(
-          `refusing inbound connections: ${MAX_INBOUND_CONNECTIONS} are already open`,
+          `refusing inbound connections: ${this.maxInboundConnections} are already open`,
         );
       }
-      try { sock.end(); } catch { /* ignore */ }
+      // Aborted, and remembered as dead.  Half-closed and forgotten, a refused
+      // socket stayed with a peer that never answered the FIN, and on Node it
+      // went on delivering: every chunk came back here as a stranger's first
+      // bytes, and the first one after a slot freed was adopted — its fresh
+      // decoder starting in the middle of whatever frame the peer was sending.
+      this.bySocket.set(sock, this.refusedInbound);
+      this.abortSocket(sock);
       return null;
     }
     this.inboundConnections += 1;
     const connection: Connection = {
       socket: sock,
       peer: null,
-      decoder: new FrameDecoder(this.maxFrameBytes),
+      decoder: new FrameDecoder(this.maxFrameBytes, this.readConstraints),
       pending: [],
       outbound: false,
+      opened: true,
       targetKey: null,
+      peerKeys: new Set(),
+      dial: null,
+      connectTimer: null,
       handshakeTimer: null,
       incompleteFrameTimer: null,
       holdsInboundSlot: true,
       pendingOverflowed: false,
+      dropped: false,
     };
     this.bySocket.set(sock, connection);
     this.armHandshakeTimer(connection);
@@ -335,16 +544,25 @@ export class TcpTransport implements Transport {
     const connection: Connection = {
       socket: null,
       peer: null,
-      decoder: new FrameDecoder(this.maxFrameBytes),
+      decoder: new FrameDecoder(this.maxFrameBytes, this.readConstraints),
       pending: [],
       outbound: true,
+      opened: false,
       targetKey,
+      peerKeys: new Set(),
+      dial: new AbortController(),
+      connectTimer: null,
       handshakeTimer: null,
       incompleteFrameTimer: null,
       holdsInboundSlot: false,
       pendingOverflowed: false,
+      dropped: false,
     };
-    this.byPeer.set(targetKey, connection);
+    this.claimPeerSlot(targetKey, connection);
+    // Connect first, from the same moment: with the two deadlines equal —
+    // what an unset connect deadline is — the connect one still fires first
+    // for a dial that never opened, and takes the handshake one with it.
+    this.armConnectTimer(connection);
     this.armHandshakeTimer(connection);
 
     // Kick off the connect — when it resolves, install the socket into the
@@ -359,24 +577,56 @@ export class TcpTransport implements Transport {
           host: to.host,
           port: to.port,
           tls: this.tls ?? undefined,
+          signal: connection.dial?.signal,
           handlers: {
             onOpen: (s) => {
+              // Every backend runs this *before* `connect` resolves, so the
+              // check after the `await` below comes too late to keep a dial
+              // that was given up from announcing itself (#1476).
+              if (connection.dropped || this.stopped) return;
+              if (connection.opened) return;
+              connection.opened = true;
+              // Connected, so no longer a connect problem: from here only the
+              // handshake deadline decides, and it reports a silent peer.
+              this.clearConnectTimer(connection);
               // Send hello; remote will ack and we'll flush `pending` then.
-              const hello: HelloMessage = { kind: 'hello', self: this.self.toJSON() };
+              const hello: HelloMessage = {
+                kind: 'hello',
+                self: this.self.toJSON(),
+                wireVersion: CLUSTER_WIRE_VERSION,
+                minWireVersion: MIN_CLUSTER_WIRE_VERSION,
+              };
               s.write(encodeFrame(hello));
             },
-            onData: (s, chunk) => this.onData(s, chunk),
-            // Pass the connection explicitly: a socket that closes or errors
-            // before the `await` below installs it is absent from `bySocket`,
-            // and cleaning up by socket alone would strand its `byPeer` slot.
+            // Both pass the connection explicitly: the socket is absent from
+            // `bySocket` until the `await` below installs it, and never enters
+            // it at all when the dial was given up first.  By socket alone, a
+            // close would strand the `byPeer` slot (#697) and a `hello-ack`
+            // would reach `acceptInbound` as a stranger's first bytes (#1476).
+            onData: (s, chunk) => this.onData(s, chunk, connection),
             onClose: (s) => this.onClose(s, connection),
             onError: (_s, err) => this.log.warn(`outbound error -> ${to}`, err),
           },
         });
+        // The dial may have been given up while `connect` was pending and
+        // resolved anyway — a backend that could not honour the abort (Deno
+        // over TLS closes such a connection itself; a caller's own backend may
+        // not) lands here after its own deadline (#1476).  Installing the
+        // socket would revive a connection nothing tracks any more; nobody is
+        // waiting for it, so it is aborted rather than closed.
+        if (connection.dropped || this.stopped) {
+          this.abortSocket(sock);
+          return;
+        }
         connection.socket = sock;
         this.bySocket.set(sock, connection);
       } catch (err) {
-        this.log.warn(`failed to connect to ${to}`, err as Error);
+        // A dial given up — by its deadline, a fault, `disconnect` or
+        // `shutdown` — rejects with its signal's reason, and whatever gave it
+        // up has already said so, or had nothing to say.  Reporting it again
+        // here was a second WARN for the same dead dial (#1476).
+        if (connection.dropped || this.stopped) return;
+        this.log.warn(this.couldNotConnect(connection), err as Error);
         this.dropConnection(connection);
       }
     })();
@@ -384,12 +634,29 @@ export class TcpTransport implements Transport {
     return connection;
   }
 
-  private onData(sock: TcpSocketLike, chunk: Uint8Array): void {
+  /**
+   * Bytes from a socket.  `fallback` is the dial's own connection when the
+   * socket is a dial's — the one case where the socket may be in no map yet.
+   */
+  private onData(sock: TcpSocketLike, chunk: Uint8Array, fallback?: Connection): void {
     // Bun delivers `data` before `open` completes its microtask in some edge
     // cases — attach a fresh inbound Connection lazily, subject to the same
     // inbound cap the `onOpen` route goes through.
-    const connection = this.bySocket.get(sock) ?? this.acceptInbound(sock);
-    if (connection === null) return;
+    const connection = this.bySocket.get(sock) ?? fallback ?? this.acceptInbound(sock);
+    // A torn-down connection's bytes are nobody's: a dial's `hello-ack` that
+    // arrived after the dial was given up, or whatever a runtime still delivers
+    // on a socket it was told to close (#1476).  Decoding them would re-arm a
+    // stall deadline on a dead connection, and handing them on would revive it.
+    if (connection === null || connection.dropped) return;
+    // A stopped transport takes nothing from anyone.  `shutdown` retires every
+    // connection in `byPeer`, but one still waiting for its hello is in no map
+    // it walks, and that hello would register a peer — and hand the handler
+    // its frames — on a transport that has stopped (#1476).  Its deadline
+    // would close it eventually; its first byte after the stop closes it now.
+    if (this.stopped) {
+      this.dropConnection(connection);
+      return;
+    }
     let frames: WireMessage[];
     try {
       frames = connection.decoder.push(chunk);
@@ -431,9 +698,20 @@ export class TcpTransport implements Transport {
   }
 
   private onMessage(connection: Connection, message: WireMessage): void {
+    // Before either hijack guard and any `byPeer.set`: a connection can be
+    // torn down halfway through a chunk — a guard below refuses one frame and
+    // `onData` goes on to the next — and nothing after that is a handshake or
+    // a message from anyone (#1476).
+    if (connection.dropped) return;
     if (message.kind === 'hello') {
       const peer = NodeAddress.fromJSON(message.self);
+      if (this.refuseOwnAddress(connection, peer, 'hello')) return;
       if (!this.certificateAdmits(connection, peer, 'hello')) return;
+      const refusal = wireVersionRefusal(message, message.self);
+      if (refusal !== null) {
+        this.refuseHello(connection, peer, refusal);
+        return;
+      }
       const peerKey = peer.toString();
       // Security: reject a duplicate-identity hello on a different
       // socket.  Without this, a second connection claiming the
@@ -455,10 +733,21 @@ export class TcpTransport implements Transport {
       const existing = this.byPeer.get(peerKey);
       if (existing && existing !== connection) {
         if (!this.crossingDialYieldsTo(existing, peerKey)) {
-          this.log.warn(
-            `hello hijack rejected: peer ${peerKey} already has an active connection; ` +
-            `closing the new socket`,
-          );
+          // Only a claim on an *acked* connection is a hijack.  A slot that
+          // holds our own unfinished dial is the other half of a crossing
+          // dial, on the side whose dial the tie-break keeps — the ordinary
+          // race of two seeds starting together, which this used to report
+          // at WARN as a hijack (#1476).  Turned away the same either way;
+          // and under mTLS `certificateAdmits` has already established that
+          // the hello really is that peer's.
+          if (this.isUnfinishedDial(existing)) {
+            this.log.debug(`crossing dial with ${peerKey}: keeping our outbound, refusing theirs`);
+          } else {
+            this.log.warn(
+              `hello hijack rejected: peer ${peerKey} already has an active connection; ` +
+              `closing the new socket`,
+            );
+          }
           this.dropConnection(connection);
           return;
         }
@@ -469,14 +758,31 @@ export class TcpTransport implements Transport {
       }
       connection.peer = peer;
       this.clearHandshakeTimer(connection);
-      this.byPeer.set(peerKey, connection);
-      const ack: HelloAcknowledgmentMessage = { kind: 'hello-ack', self: this.self.toJSON() };
+      this.claimPeerSlot(peerKey, connection);
+      const ack: HelloAcknowledgmentMessage = {
+        kind: 'hello-ack',
+        self: this.self.toJSON(),
+        wireVersion: CLUSTER_WIRE_VERSION,
+      };
       connection.socket?.write(encodeFrame(ack));
+      return;
+    }
+    if (message.kind === 'hello-refused') {
+      this.onHelloRefused(connection, message);
       return;
     }
     if (message.kind === 'hello-ack') {
       const peer = NodeAddress.fromJSON(message.self);
+      if (this.refuseOwnAddress(connection, peer, 'hello-ack')) return;
       if (!this.certificateAdmits(connection, peer, 'hello-ack')) return;
+      // The acceptor speaks the version it acknowledged with; an older one
+      // acknowledges with none, and this side refuses the pair just the same.
+      const refusal = wireVersionRefusal({ wireVersion: message.wireVersion }, message.self);
+      if (refusal !== null) {
+        this.log.warn(`cluster handshake with ${peer} refused: ${refusal}`);
+        this.dropConnection(connection);
+        return;
+      }
       const peerKey = peer.toString();
       const existing = this.byPeer.get(peerKey);
       if (existing && existing !== connection) {
@@ -491,7 +797,7 @@ export class TcpTransport implements Transport {
       }
       connection.peer = peer;
       this.clearHandshakeTimer(connection);
-      this.byPeer.set(peerKey, connection);
+      this.claimPeerSlot(peerKey, connection);
       const buffered = connection.pending.splice(0, connection.pending.length);
       for (const bufferedMessage of buffered) this.writeFrame(connection, bufferedMessage);
       return;
@@ -501,6 +807,64 @@ export class TcpTransport implements Transport {
       return;
     }
     this.handler(connection.peer, message);
+  }
+
+  /**
+   * Turn a `hello` away over the wire version, telling the peer why before the
+   * connection closes, and saying so here (#823).
+   */
+  private refuseHello(connection: Connection, peer: NodeAddress, reason: string): void {
+    this.log.warn(`cluster handshake from ${peer} refused: ${reason}`);
+    const refused: HelloRefusedMessage = {
+      kind: 'hello-refused',
+      self: this.self.toJSON(),
+      wireVersion: CLUSTER_WIRE_VERSION,
+      minWireVersion: MIN_CLUSTER_WIRE_VERSION,
+      reason,
+    };
+    const socket = connection.socket;
+    socket?.write(encodeFrame(refused));
+    // Half-closed, not aborted: an abort discards what is still buffered, and
+    // the refusal is the whole point of answering at all.  `closeConnection`
+    // would abort here — the connection has no peer yet, a hello being exactly
+    // what it is still waiting for — so the socket is ended directly.
+    if (!this.retireConnection(connection)) return;
+    try { socket?.end(); } catch { /* the peer already went */ }
+  }
+
+  /** The peer turned this node's `hello` away: say why, and give the dial up (#823). */
+  private onHelloRefused(connection: Connection, message: HelloRefusedMessage): void {
+    const peer = NodeAddress.fromJSON(message.self);
+    this.log.warn(
+      `cluster handshake with ${peer} refused by the peer (it speaks cluster wire `
+      + `v${message.minWireVersion}..v${message.wireVersion}): ${message.reason}`,
+    );
+    this.dropConnection(connection);
+  }
+
+  /**
+   * Refuse a handshake frame that names this node itself, and say whether it
+   * did.
+   *
+   * A peer is never the node it is talking to.  Neither guard after this one
+   * can say so: a node holds no connection to itself, so the duplicate-identity
+   * check finds nothing under its own address to defend, and without a
+   * certificate {@link certificateAdmits} has nothing to hold the claim
+   * against.  So it is asked first, of the `hello` an accepted socket opens
+   * with and of the `hello-ack` that answers a dial alike, and a claim on this
+   * node's own address gets the connection dropped with no identity and
+   * nothing registered under the address.
+   *
+   * The line renders {@link self}, which the claim equals field for field, so
+   * it names the claimed address without carrying a byte the peer wrote.
+   */
+  private refuseOwnAddress(connection: Connection, claimed: NodeAddress, frame: 'hello' | 'hello-ack'): boolean {
+    if (!claimed.equals(this.self)) return false;
+    this.log.warn(
+      `${frame} refused: the peer claims ${this.self.toString()}, this node's own address — closing the connection`,
+    );
+    this.dropConnection(connection);
+    return true;
   }
 
   /**
@@ -546,12 +910,7 @@ export class TcpTransport implements Transport {
 
   private onClose(sock: TcpSocketLike, fallback?: Connection): void {
     const connection = this.bySocket.get(sock) ?? fallback;
-    if (!connection) return;
-    this.bySocket.delete(sock);
-    this.clearHandshakeTimer(connection);
-    this.clearIncompleteFrameTimer(connection);
-    this.releaseInboundSlot(connection);
-    this.releasePeerSlot(connection);
+    if (connection) this.retireConnection(connection);
   }
 
   /* ----------------------- connection bookkeeping ----------------------- */
@@ -569,25 +928,42 @@ export class TcpTransport implements Transport {
   private crossingDialYieldsTo(existing: Connection, peerKey: string): boolean {
     // An acked peer connection is the thing the hijack guard exists to
     // protect; only our own unfinished dial is negotiable.
-    if (existing.peer !== null || !existing.outbound) return false;
+    if (!this.isUnfinishedDial(existing)) return false;
     return peerKey < this.self.toString();
   }
 
+  /** Our own dial that has not been acked yet — the one connection a crossing dial may contest. */
+  private isUnfinishedDial(connection: Connection): boolean {
+    return connection.peer === null && connection.outbound;
+  }
+
   /**
-   * Release the `byPeer` slots a connection owns.  A dialled connection is
-   * registered under `targetKey` *before* the handshake, so keying cleanup on
-   * `peer` alone (as this did) stranded the slot whenever the handshake never
-   * completed — the address could then never be re-dialled (#697).
+   * Register `connection` under `key`, and remember that it holds the key — the
+   * one way into `byPeer`, so {@link releasePeerSlot} can give back every key
+   * a connection was ever registered under (#1476).
+   */
+  private claimPeerSlot(key: string, connection: Connection): void {
+    this.byPeer.set(key, connection);
+    connection.peerKeys.add(key);
+  }
+
+  /**
+   * Release every `byPeer` slot a connection holds.  A dial is registered under
+   * its target *before* the handshake, so keying cleanup on `peer` alone
+   * stranded the slot whenever the handshake never completed — the address
+   * could then never be re-dialled (#697).  And `peer` is only the identity
+   * announced last: keying it on `peer` and the target stranded every earlier
+   * identity a connection announced (#1476).  So it walks
+   * {@link Connection.peerKeys}, which every registration goes through.
    *
-   * Both deletes are guarded on the map still pointing at this connection, so
-   * a slot already taken over by its replacement is left alone.
+   * Each delete is guarded on the map still pointing at this connection, so a
+   * slot already taken over by its replacement is left alone.
    */
   private releasePeerSlot(connection: Connection): void {
-    for (const key of [connection.peer?.toString(), connection.targetKey]) {
-      if (key !== undefined && key !== null && this.byPeer.get(key) === connection) {
-        this.byPeer.delete(key);
-      }
+    for (const key of connection.peerKeys) {
+      if (this.byPeer.get(key) === connection) this.byPeer.delete(key);
     }
+    connection.peerKeys.clear();
   }
 
   /**
@@ -617,15 +993,26 @@ export class TcpTransport implements Transport {
    * deadline: the handshake is a single small frame, so re-arming would let a
    * socket dripping one byte every few seconds hold its slot for as long as it
    * cares to. Nothing legitimate is punished by the hard bound either — the
-   * peer on the other end runs the same {@link HANDSHAKE_TIMEOUT_MS} from an
+   * peer on the other end runs the same {@link handshakeTimeoutMs} from an
    * *earlier* moment (its clock starts before the TCP connect and the TLS
    * handshake, this one starts after the accept), so a peer that is still
-   * trying has always given up first.
+   * trying has always given up first.  On a dial it bounds the whole dial and
+   * is armed together with the connect deadline ({@link armConnectTimer}),
+   * which gives up a dial that never opened before this one can: what reaches
+   * this deadline on a dial is one that connected and was never answered.
+   *
+   * "The same" survives the value becoming configurable (#846) because there
+   * is **one** key for both directions: an operator raising or lowering
+   * `actor-ts.remote.handshake-timeout` moves the dial and the accept together
+   * on the node that reads it, and a homogeneous deployment keeps the ordering
+   * for free.  Splitting it in two would put the invariant in an operator's
+   * hands, where an accept deadline below the dial deadline makes a healthy
+   * peer unreachable with nothing in the log that says why.
    */
   private armHandshakeTimer(connection: Connection): void {
     connection.handshakeTimer = setTimeout(
       () => this.onHandshakeTimeout(connection),
-      HANDSHAKE_TIMEOUT_MS,
+      this.handshakeTimeoutMs,
     );
     // Don't let a pending handshake hold the process open — the cluster's own
     // lifecycle decides when the runtime may exit, not a handshake in flight.
@@ -636,6 +1023,50 @@ export class TcpTransport implements Transport {
     if (connection.handshakeTimer === null) return;
     clearTimeout(connection.handshakeTimer);
     connection.handshakeTimer = null;
+  }
+
+  /**
+   * Put a dial on the connect clock (#1475): {@link connectTimeoutMs} to open,
+   * counted from the moment the dial is registered, and cleared by its first
+   * `onOpen`.
+   *
+   * The handshake deadline used to be the only one a dial had, which made
+   * a blackholed connect and a peer that accepted and never spoke the same
+   * failure at the same moment.  They are not: the first is known once the
+   * connect has had its chance, the second deserves the whole handshake
+   * deadline.  The validators keep this one at or below the handshake one, and
+   * it is armed first, so it is always the deadline that gives up a dial that
+   * never opened — the handshake one then only ever sees dials that did.
+   */
+  private armConnectTimer(connection: Connection): void {
+    connection.connectTimer = setTimeout(
+      () => this.onConnectTimeout(connection),
+      this.connectTimeoutMs,
+    );
+    // Unreferenced for the handshake timer's reason: a dial in flight is not
+    // what decides when the runtime may exit.
+    (connection.connectTimer as { unref?: () => void }).unref?.();
+  }
+
+  private clearConnectTimer(connection: Connection): void {
+    if (connection.connectTimer === null) return;
+    clearTimeout(connection.connectTimer);
+    connection.connectTimer = null;
+  }
+
+  /**
+   * The dial never opened within {@link connectTimeoutMs}: report it as one
+   * that could not connect and give it up — `dropConnection` aborts the
+   * connect, so the socket under it is destroyed rather than left connecting,
+   * and clears the handshake deadline with everything else the dial held.
+   */
+  private onConnectTimeout(connection: Connection): void {
+    connection.connectTimer = null;
+    if (connection.dropped || connection.opened) return;
+    // A `byPeer` slot already taken over by a replacement dial is not ours.
+    if (this.byPeer.get(connection.targetKey ?? '') !== connection) return;
+    this.log.warn(this.couldNotConnect(connection));
+    this.dropConnection(connection);
   }
 
   /**
@@ -652,7 +1083,7 @@ export class TcpTransport implements Transport {
     if (connection.decoder.pendingBytes() === 0) return;
     connection.incompleteFrameTimer = setTimeout(
       () => this.onIncompleteFrameTimeout(connection),
-      INCOMPLETE_FRAME_IDLE_MS,
+      this.incompleteFrameIdleMs,
     );
     // Same reasoning as the handshake timer: a half-received frame must not be
     // what keeps the runtime from exiting.
@@ -671,32 +1102,138 @@ export class TcpTransport implements Transport {
     const pending = connection.decoder.pendingBytes();
     if (pending === 0) return;
     this.log.warn(
-      `no data from ${connection.peer ?? '<unknown peer>'} for ${INCOMPLETE_FRAME_IDLE_MS} ms `
+      `no data from ${connection.peer ?? '<unknown peer>'} for ${this.incompleteFrameIdleMs} ms `
       + `while ${pending} byte(s) of an incomplete frame are buffered; closing the connection`,
     );
     this.dropConnection(connection);
   }
 
-  /** Tear a connection down and give up whatever it was still holding. */
+  /**
+   * Tear a connection down for a fault and give up whatever it was still
+   * holding: a deadline that passed, a frame or a handshake that was refused,
+   * a dial that failed or gave way.
+   *
+   * The socket is aborted, not half-closed (#1096, #1476).  `end()` sends a
+   * FIN and leaves the peer's half open, so a peer that never answers keeps
+   * the socket and its descriptor for as long as it likes — and on Node the
+   * socket stays readable meanwhile, which is the door a dropped connection's
+   * late bytes used to come back through.  Nothing written to a connection
+   * dropped for a fault is worth flushing.
+   */
   private dropConnection(connection: Connection): void {
+    if (!this.retireConnection(connection)) return;
+    if (connection.socket) this.abortSocket(connection.socket);
+  }
+
+  /**
+   * Close a connection in order — for the closes this transport is asked for,
+   * `disconnect` and `shutdown`, where {@link dropConnection} is for the ones
+   * it decides on after a fault.
+   *
+   * Retired the same way, so nothing the connection set in motion brings it
+   * back (#1476).  But the socket is half-closed rather than aborted, so what
+   * was written to it still reaches the peer: `Cluster.leave` writes its leave
+   * frames immediately before `shutdown()`, and an abort discards whatever is
+   * still buffered.
+   *
+   * Except on a connection that never completed its handshake, which is
+   * aborted like a fault (#1475).  Nothing but its own `hello` was ever written
+   * to it — frames wait in `pending` for the `hello-ack` — so there is nothing
+   * to flush, and a half-close leaves the socket open for as long as a peer
+   * that accepted and never spoke keeps its own half.
+   */
+  private closeConnection(connection: Connection): void {
+    if (!this.retireConnection(connection)) return;
+    const socket = connection.socket;
+    if (socket === null) return;
+    if (connection.peer === null) {
+      this.abortSocket(socket);
+      return;
+    }
+    try { socket.end(); } catch { /* ignore */ }
+  }
+
+  /**
+   * Mark a connection dead and give back everything it holds — its deadlines,
+   * its inbound slot, its `byPeer` entries and the frames it was buffering —
+   * once; `false` when it was already retired.  The socket is the caller's,
+   * because how to close it depends on why the connection is going.
+   *
+   * The `bySocket` entry is deliberately left in place (#1476).  It is a
+   * `WeakMap`, so it costs nothing once the socket is gone, and while the
+   * socket is not gone it is what makes anything a runtime still delivers on
+   * it bytes for a dead connection — rather than a stranger's first bytes,
+   * which is what `onData` makes of a socket it cannot find.  Node delivers on
+   * a socket this side half-closed until the peer closes its own half, so
+   * forgetting the socket turned a dropped dial's late `hello-ack` into a new
+   * inbound connection, and re-armed the inbound handshake deadline for a
+   * socket that drips one byte per deadline.
+   *
+   * A dial still connecting is aborted here, the one place every way a
+   * connection dies passes through (#1475) — a deadline, a fault, a crossing
+   * dial giving way, `disconnect`, `shutdown`, the socket's own close.  The
+   * backend destroys the socket under a connect in flight, and ignores an
+   * abort that comes after it handed the socket over, so the socket's fate on
+   * an established connection is still the caller's to decide.
+   */
+  private retireConnection(connection: Connection): boolean {
+    if (connection.dropped) return false;
+    connection.dropped = true;
+    connection.dial?.abort();
+    this.clearConnectTimer(connection);
     this.clearHandshakeTimer(connection);
     this.clearIncompleteFrameTimer(connection);
     this.releaseInboundSlot(connection);
-    const sock = connection.socket;
-    if (sock) {
-      try { sock.end(); } catch { /* ignore */ }
-      this.bySocket.delete(sock);
-    }
     this.releasePeerSlot(connection);
     connection.pending.length = 0;
+    return true;
+  }
+
+  /**
+   * Close both halves of a socket at once, for one nobody is going to read
+   * from (#1096) — falling back to `end()` where the socket offers no
+   * `destroy()`, since a half-close still beats leaving it open.
+   *
+   * Written out rather than as `destroy?.() ?? end()`: `destroy()` returns
+   * `undefined`, so that spelling half-closes every socket it has just aborted.
+   */
+  private abortSocket(socket: TcpSocketLike): void {
+    try {
+      if (socket.destroy) socket.destroy();
+      else socket.end();
+    } catch { /* already closing */ }
+  }
+
+  /**
+   * The line for a dial that never got a connection — its connect deadline
+   * passed first, or its connect failed first.  Either way it names the
+   * connect deadline, the bound a dial that never opened ran against.
+   *
+   * Worded from what the transport knows, never from the runtime's error code:
+   * on Windows Bun 1.4.2 reports an unanswered SYN as `ECONNREFUSED`, so a line
+   * that quoted the code would call a blackholed peer a refusal.  The runtime's
+   * error, when there is one, travels as the WARN's argument, and the line is
+   * the same on every runtime because every backend reports a failed dial the
+   * same way, by rejecting `connect` (#1475).
+   */
+  private couldNotConnect(connection: Connection): string {
+    return `could not connect to ${connection.targetKey} within ${this.connectTimeoutMs} ms; `
+      + `dropping the connection and ${connection.pending.length} buffered frame(s)`;
   }
 
   /**
    * The handshake never landed.  What that strands differs by direction — a
    * dial owns a `byPeer` entry, an accepted socket owns one of the
-   * {@link MAX_INBOUND_CONNECTIONS} — but `dropConnection` gives back whatever
+   * {@link TcpTransport.maxInboundConnections} — but `dropConnection` gives back whatever
    * this connection was holding, so only the diagnosis and the "is this still
    * the connection that matters?" test are per-direction.
+   *
+   * A dial that reaches this deadline reached its peer and was never answered
+   * — a peer that is up and not speaking the protocol.  One that never opened
+   * is the connect deadline's ({@link onConnectTimeout}): armed first, never
+   * later than this one, and it clears this one when it gives the dial up.
+   * The two failures used to read the same, though the other one is a network
+   * problem (#1475).
    */
   private onHandshakeTimeout(connection: Connection): void {
     connection.handshakeTimer = null;
@@ -705,9 +1242,9 @@ export class TcpTransport implements Transport {
       // A `byPeer` slot already taken over by a replacement dial is not ours.
       if (this.byPeer.get(connection.targetKey ?? '') !== connection) return;
       this.log.warn(
-        `handshake with ${connection.targetKey} did not complete within ` +
-        `${HANDSHAKE_TIMEOUT_MS} ms; dropping the connection and ` +
-        `${connection.pending.length} buffered frame(s)`,
+        `connected to ${connection.targetKey}, but no hello-ack came within `
+        + `${this.handshakeTimeoutMs} ms; dropping the connection and `
+        + `${connection.pending.length} buffered frame(s)`,
       );
     } else if (!this.stopped) {
       // Guarded because `shutdown` cannot reach an un-handshaken inbound
@@ -716,7 +1253,7 @@ export class TcpTransport implements Transport {
       // right; calling it a timeout in the log is not.
       this.log.warn(
         `inbound socket from ${connection.socket?.remoteAddress ?? '<unknown address>'} sent no ` +
-        `hello within ${HANDSHAKE_TIMEOUT_MS} ms; closing it and releasing its inbound slot`,
+        `hello within ${this.handshakeTimeoutMs} ms; closing it and releasing its inbound slot`,
       );
     }
     this.dropConnection(connection);
@@ -736,7 +1273,14 @@ export class InMemoryTransport implements Transport {
   private handler: WireHandler = () => {};
   private stopped = false;
 
-  constructor(readonly self: NodeAddress) {}
+  constructor(private identity: NodeAddress) {}
+
+  get self(): NodeAddress { return this.identity; }
+
+  /** See {@link Transport.adoptIdentity}; the registry key is the address, which does not change. */
+  adoptIdentity(self: NodeAddress): void {
+    if (self.toString() === this.identity.toString()) this.identity = self;
+  }
 
   setHandler(handler: WireHandler): void { this.handler = handler; }
 
@@ -782,5 +1326,16 @@ export class InMemoryTransport implements Transport {
     return Array.from(InMemoryTransport.registry.keys())
       .filter(k => k !== this.self.toString())
       .map(k => NodeAddress.parse(k));
+  }
+
+  /**
+   * Every started transport in the registry is one hop away and nothing is
+   * dialled, so "held" means what {@link peers} lists: registered, and not this
+   * one.  An address nobody registered — the stranger a hostile ref names — is
+   * not.
+   */
+  holdsConnectionTo(peer: NodeAddress): boolean {
+    const key = peer.toString();
+    return key !== this.self.toString() && InMemoryTransport.registry.has(key);
   }
 }

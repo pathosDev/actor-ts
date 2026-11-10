@@ -85,6 +85,11 @@ final class ResultFile {
                     .name("completedOperations").value(result.completedOperations());
             // ΔRSS is deliberately absent: a JVM heap against a JavaScript heap
             // measures the collector's appetite, not the framework's footprint.
+            if (result.actorCount() != null) {
+                json.name("actorCount").value(result.actorCount())
+                        .name("workIterationsPerMessage").value(result.workIterationsPerMessage())
+                        .name("checksum").value(result.checksum());
+            }
             if (result.notes() != null) {
                 json.name("notes").value(result.notes());
             }

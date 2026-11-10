@@ -24,6 +24,337 @@ export const DEFAULT_NUM_SHARDS = 64;
 export const DEFAULT_PASSIVATION_IDLE_MS = 300_000;
 
 /**
+ * Which resident entity a region at `maxEntities` gives up to make room for a
+ * new one (#848).
+ *
+ *   - `least-recently-used` — the entity untouched for longest.  What every
+ *     release before this one did, and still the default.
+ *   - `segmented-least-recently-used` — a probationary segment for entities
+ *     seen once and a protected one for entities seen again, evicting from
+ *     probation first.  The policy the composite exists for: plain LRU cannot
+ *     tell "touched once, ever" from "touched constantly until a moment ago",
+ *     so a scan over cold ids evicts a hot working set one entity at a time.
+ *   - `least-frequently-used` — the entity accessed fewest times, with every
+ *     count halved periodically so the ranking follows recent traffic rather
+ *     than a lifetime total.
+ *
+ * `most-recently-used` is deliberately absent.  It appears in no acceptance
+ * criterion of #848, has no caller anywhere in the tree, and its one real use —
+ * a workload that will never revisit what it just read — is the case where a
+ * sharded entity should not have been created at all.  Adding a value to this
+ * union later is not a breaking change; removing one is, so the narrow set is
+ * the reversible choice.
+ */
+export type EntityReplacementPolicy =
+  | 'least-recently-used'
+  | 'segmented-least-recently-used'
+  | 'least-frequently-used';
+
+/** Every accepted {@link EntityReplacementPolicy} — the set the validator checks against. */
+export const ENTITY_REPLACEMENT_POLICIES: readonly EntityReplacementPolicy[] = [
+  'least-recently-used',
+  'segmented-least-recently-used',
+  'least-frequently-used',
+];
+
+/**
+ * Whether a newcomer has to earn its place against the entity it would displace
+ * (#848).
+ *
+ *   - `off` — it does not; the replacement policy alone decides.
+ *   - `frequency-sketch` — a count-min sketch of how often each entity id has
+ *     been touched decides, so an id seen once cannot displace one seen many
+ *     times.  The sketch remembers ids the region no longer holds, which is
+ *     precisely the history a cache cannot keep for the entities it evicted.
+ *
+ * Requires {@link ShardingOptionsType.passivationAdmissionWindowProportion} to
+ * be greater than zero — see that field for why the filter has nothing to
+ * decide without a window.
+ */
+export type EntityAdmissionFilter = 'off' | 'frequency-sketch';
+
+/** Every accepted {@link EntityAdmissionFilter} — the set the validator checks against. */
+export const ENTITY_ADMISSION_FILTERS: readonly EntityAdmissionFilter[] = [
+  'off',
+  'frequency-sketch',
+];
+
+/**
+ * Built-in default for {@link ShardingOptionsType.passivationReplacement}
+ * (#848).  Mirrors `actor-ts.sharding.passivation.replacement`.
+ *
+ * Plain LRU on purpose: this is pre-1.0 and a hard cut is allowed, but silently
+ * reordering every capped deployment's evictions is not a cut anyone asked for.
+ * The composite costs nothing until a policy is named, because a region without
+ * a cap builds no strategy at all.
+ */
+export const DEFAULT_PASSIVATION_REPLACEMENT: EntityReplacementPolicy = 'least-recently-used';
+
+/**
+ * Built-in default for
+ * {@link ShardingOptionsType.passivationSegmentedProtectedProportion} (#848).
+ * Mirrors `actor-ts.sharding.passivation.segmented-protected-proportion`.
+ *
+ * Four fifths protected, one fifth probation — the split the segmented-LRU
+ * literature settles on, and the one the shape of the problem argues for: the
+ * probationary segment only has to be large enough that a newcomer gets a
+ * second chance before the next one arrives, while everything that has proven
+ * itself belongs on the other side of the line.
+ *
+ * Inert unless `passivationReplacement` is `segmented-least-recently-used`.
+ */
+export const DEFAULT_PASSIVATION_SEGMENTED_PROTECTED_PROPORTION = 0.8;
+
+/**
+ * Built-in default for
+ * {@link ShardingOptionsType.passivationAdmissionWindowProportion} (#848).
+ * Mirrors `actor-ts.sharding.passivation.admission-window-proportion`.
+ *
+ * `0` — no window, which is the shape every release before this one had.  A
+ * window costs a slot of the cap for every entity in it and only pays for
+ * itself once something is filtering at its far end, so it ships off and is
+ * turned on together with `passivationAdmissionFilter`.
+ */
+export const DEFAULT_PASSIVATION_ADMISSION_WINDOW_PROPORTION = 0;
+
+/**
+ * Built-in default for {@link ShardingOptionsType.passivationAdmissionFilter}
+ * (#848).  Mirrors `actor-ts.sharding.passivation.admission-filter`.
+ */
+export const DEFAULT_PASSIVATION_ADMISSION_FILTER: EntityAdmissionFilter = 'off';
+
+/**
+ * Built-in default for {@link ShardingOptionsType.passivationStopTimeoutMs} —
+ * how long a passivating entity may take to stop before the shard stops it
+ * outright (#848).  Mirrors `actor-ts.sharding.passivation.stop-timeout`.
+ *
+ * **Off**, and that is the compatibility decision rather than a taste in
+ * numbers.  `Passivate`'s stop-message is a *request*: the entity is told what
+ * to send itself and decides when to act on it, and an entity mid-drain — a
+ * long flush, a slow final write — is entitled to take as long as the drain
+ * takes.  A backstop that is on by default turns that into a deadline for every
+ * deployment that upgrades, including ones that never heard of the key, and the
+ * forced stop abandons the flush.  #848 shipped it at `10s` and claimed a
+ * deployment configuring nothing was unaffected; both could not be true.
+ *
+ * So an operator opts in, which is also what keeps the key orthogonal to
+ * `maxEntities`: it arms on its own value, with or without a cap.  Gating it on
+ * the cap instead would have narrowed the silent change rather than removed it
+ * — a deployment that already set `max-entities` would still have gained the
+ * forced stop — and would have left a configured `stop-timeout` silently doing
+ * nothing, which is the shape `admission-filter` is rejected for.
+ */
+export const DEFAULT_PASSIVATION_STOP_TIMEOUT_MS = 0;
+
+/**
+ * Built-in default for {@link ShardingOptionsType.bufferSize} — how many
+ * messages one region may hold, across every shard, while their homes are
+ * unknown or in transition, or while their shard backs off after a failure
+ * (#849, #461, #1437) — and how many one shard may hold for its entities
+ * backing off after a stop nobody asked for.  Mirrors
+ * `actor-ts.sharding.buffer-size` in `reference.conf`.
+ *
+ * Large enough that an ordinary rebalance never reaches it — buffering is the
+ * mechanism that makes a handoff loss-free, and a cap that trips during one
+ * would turn a routine event into message loss.  Bounded at all because the
+ * states that fill the buffer (no leader, an unacquirable lease, a refused
+ * registration) do not necessarily end: unbounded, the region's answer to a
+ * coordinator that never replies is to consume the heap.
+ */
+export const DEFAULT_SHARD_REGION_BUFFER_SIZE = 100_000;
+
+/**
+ * Built-in default for {@link ShardingOptionsType.registerRetryIntervalMs} —
+ * how often a region re-sends an unacknowledged `Register` to the coordinator
+ * (#849).  Mirrors `actor-ts.sharding.register-retry-interval`.
+ *
+ * Short on purpose: the retry exists because `Register` is fire-and-forget at
+ * a path that need not exist yet, and every message for the type buffers until
+ * the coordinator answers.  Raising it lengthens exactly that window.
+ */
+export const DEFAULT_REGISTER_RETRY_INTERVAL_MS = 500;
+
+/**
+ * How a region brings *remembered* entities back once it is handed a shard
+ * (#851).
+ *
+ *   - `all` — start every remembered entity the moment the registry arrives.
+ *     Back to full service fastest, and what every release before this one
+ *     did unconditionally.  A node handed thousands of remembered entities
+ *     spawns them in one synchronous burst, and each spawn that is a
+ *     persistent entity opens a journal replay.
+ *   - `constant-rate` — start at most
+ *     {@link ShardingOptionsType.entityRecoveryConstantRateNumberOfEntities}
+ *     of them every
+ *     {@link ShardingOptionsType.entityRecoveryConstantRateFrequencyMs} ms,
+ *     counted **across every shard this region owns**, until the backlog is
+ *     drained.
+ *
+ * What `constant-rate` bounds is the **start rate**, not the number of
+ * replays in flight: a replay is asynchronous, so one that outlasts the
+ * window still overlaps the next batch.  Replays in flight are bounded one
+ * layer down, by `actor-ts.persistence.max-concurrent-recoveries` (#874);
+ * this spreads the arrivals that feed it, and the two compose.
+ */
+export type EntityRecoveryStrategy = 'all' | 'constant-rate';
+
+/** Every accepted {@link EntityRecoveryStrategy} — the set the validator checks against. */
+export const ENTITY_RECOVERY_STRATEGIES: readonly EntityRecoveryStrategy[] = [
+  'all',
+  'constant-rate',
+];
+
+/**
+ * Built-in default for {@link ShardingOptionsType.entityRecoveryStrategy}
+ * (#851).  Mirrors `actor-ts.sharding.entity-recovery.strategy`.
+ *
+ * `all` on purpose: pacing changes *when* an entity comes back, and a
+ * default that delayed recovery would alter the observable behaviour of every
+ * deployment that never asked for it.  Turning it on is a decision about a
+ * particular journal's capacity, which nothing here can guess.
+ */
+export const DEFAULT_ENTITY_RECOVERY_STRATEGY: EntityRecoveryStrategy = 'all';
+
+/**
+ * Built-in default for
+ * {@link ShardingOptionsType.entityRecoveryConstantRateFrequencyMs} — the gap
+ * between two recovery batches, in ms (#851).  Mirrors
+ * `actor-ts.sharding.entity-recovery.constant-rate.frequency`.
+ *
+ * Inert until `entityRecoveryStrategy` is `constant-rate`, so the value is a
+ * starting point rather than a measurement: nothing in this repository
+ * measures entity-spawn or replay cost, and the right pace is a property of
+ * the journal behind the entities, not of the sharding layer.  Together with
+ * the count below it reads as "50 entity starts a second, per sharded type
+ * on this node".
+ */
+export const DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_FREQUENCY_MS = 100;
+
+/**
+ * Built-in default for
+ * {@link ShardingOptionsType.entityRecoveryConstantRateNumberOfEntities} —
+ * how many entities one recovery batch starts (#851).  Mirrors
+ * `actor-ts.sharding.entity-recovery.constant-rate.number-of-entities`.
+ */
+export const DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_NUMBER_OF_ENTITIES = 5;
+
+/**
+ * Built-in default for {@link ShardingOptionsType.regionHeartbeatIntervalMs} —
+ * how often a region tells the coordinator it is still there (#853).  Mirrors
+ * `actor-ts.sharding.stale-region-detection.heartbeat-interval = 5s`.
+ *
+ * Inert unless {@link ShardingOptionsType.staleRegionDetection} is on, which it
+ * is not by default, so nothing beats on an upgrade that changes no config.
+ *
+ * The number is chosen against the *count* of beats rather than against any
+ * measurement.  The beat is **per sharded type**, not per node — each type has
+ * its own region and its own coordinator — so N types on a node cost N frames
+ * per interval on top of the cluster's own full-mesh heartbeats, which #1174
+ * already flags as O(n²) with no documented ceiling.  At 5 s the backstop adds
+ * a frame every five seconds per type, and the detection latency that buys is
+ * bounded by {@link ShardCoordinatorOptionsType.regionStaleAfterMs}, not by
+ * this.
+ */
+export const DEFAULT_REGION_HEARTBEAT_INTERVAL_MS = 5_000;
+
+/**
+ * Built-in default for {@link ShardingOptionsType.shardFailureBackoffMinMs} —
+ * how long a shard that stopped unexpectedly stays down before its region
+ * re-creates it the first time (#1437).  Mirrors
+ * `actor-ts.sharding.shard-failure-backoff.min`.
+ *
+ * What it replaced was no wait at all, and that was measured rather than
+ * guessed: a shard whose entity escalates a failing start came straight back,
+ * and under `rememberEntities` the region asked the coordinator for the
+ * shard's registry on every death and re-created the shard on the answer, with
+ * no traffic involved — 13 294 respawns in one idle second when the defect was
+ * triaged, 9 297 at 7abe64d6, each with two warnings and a `started` append to
+ * the remember-entities store.
+ *
+ * All four `DEFAULT_SHARD_FAILURE_BACKOFF_*` values are starting points, not
+ * measurements: nothing here measures what a crashing shard costs the store
+ * behind it, and the right pace depends on why the shard keeps failing.  The
+ * first wait is short so a shard that died once comes back promptly, and the
+ * doubling makes one that keeps dying cheap.
+ */
+export const DEFAULT_SHARD_FAILURE_BACKOFF_MIN_MS = 200;
+
+/**
+ * Built-in default for {@link ShardingOptionsType.shardFailureBackoffMaxMs} —
+ * the ceiling the doubling wait grows to (#1437).  Mirrors
+ * `actor-ts.sharding.shard-failure-backoff.max`.  A starting point, like
+ * {@link DEFAULT_SHARD_FAILURE_BACKOFF_MIN_MS}: long enough that a shard dying
+ * on every start costs a few re-creations a minute, short enough that one
+ * whose cause has gone away is back within seconds.
+ */
+export const DEFAULT_SHARD_FAILURE_BACKOFF_MAX_MS = 10_000;
+
+/**
+ * Built-in default for
+ * {@link ShardingOptionsType.shardFailureBackoffRandomFactor} — the jitter on
+ * every wait (#1437).  Mirrors
+ * `actor-ts.sharding.shard-failure-backoff.random-factor`, and the value
+ * `exponentialBackoff` defaults to, which is what builds the waits.
+ */
+export const DEFAULT_SHARD_FAILURE_BACKOFF_RANDOM_FACTOR = 0.2;
+
+/**
+ * Built-in default for
+ * {@link ShardingOptionsType.shardFailureBackoffResetAfterMs} — how long a
+ * shard has to go without failing, since it came back, for its next death to
+ * wait the first wait again (#1437).  Mirrors
+ * `actor-ts.sharding.shard-failure-backoff.reset-after`.  A
+ * starting point too; a minute is the window the default supervision budget
+ * already counts restarts in.
+ */
+export const DEFAULT_SHARD_FAILURE_BACKOFF_RESET_AFTER_MS = 60_000;
+
+/**
+ * Built-in default for {@link ShardingOptionsType.entityRestartBackoffMinMs} —
+ * how long an entity that stopped without being passivated stays down before
+ * its shard re-creates it the first time (#1437).  Mirrors
+ * `actor-ts.sharding.entity-restart-backoff.min`.
+ *
+ * What it replaced was no wait at all, and that was measured too: once its
+ * shard's restart budget is spent an entity is stopped, and the next message
+ * for it created a fresh one — thirty instances for thirty messages to an
+ * entity failing on each, every one of them opening its recovery against
+ * whatever was failing it.  The restarts inside the budget are untouched and
+ * stay immediate; this is the wait after them.
+ *
+ * The four `DEFAULT_ENTITY_RESTART_BACKOFF_*` values are the shard backoff's,
+ * and starting points for the same reason: nothing here measures what a
+ * failing entity costs the store behind it.
+ */
+export const DEFAULT_ENTITY_RESTART_BACKOFF_MIN_MS = 200;
+
+/**
+ * Built-in default for {@link ShardingOptionsType.entityRestartBackoffMaxMs} —
+ * the ceiling the doubling wait grows to (#1437).  Mirrors
+ * `actor-ts.sharding.entity-restart-backoff.max`.
+ */
+export const DEFAULT_ENTITY_RESTART_BACKOFF_MAX_MS = 10_000;
+
+/**
+ * Built-in default for
+ * {@link ShardingOptionsType.entityRestartBackoffRandomFactor} — the jitter on
+ * every wait (#1437).  Mirrors
+ * `actor-ts.sharding.entity-restart-backoff.random-factor`, and the value
+ * `exponentialBackoff` defaults to, which is what builds the waits.
+ */
+export const DEFAULT_ENTITY_RESTART_BACKOFF_RANDOM_FACTOR = 0.2;
+
+/**
+ * Built-in default for
+ * {@link ShardingOptionsType.entityRestartBackoffResetAfterMs} — how long an
+ * entity has to go without stopping unasked, since it came back, for its next
+ * such stop to wait the first wait again (#1437).  Mirrors
+ * `actor-ts.sharding.entity-restart-backoff.reset-after`: the window the
+ * default supervision budget counts restarts in, like the shard backoff's.
+ */
+export const DEFAULT_ENTITY_RESTART_BACKOFF_RESET_AFTER_MS = 60_000;
+
+/**
  * Plain options-object shape for a sharded region.  Consumed by
  * {@link ShardRegion.settingsToConfig} and extended by
  * {@link StartShardingOptionsType} — the coordinator-side superset that
@@ -101,6 +432,247 @@ export type ShardingOptionsType<TMessage> = {
    * upper bound rather than a strict instantaneous one.
    */
   readonly maxEntities?: number;
+  /**
+   * Which resident entity the cap gives up when a new one arrives (#848).
+   * Default: `'least-recently-used'`.  Inert while `maxEntities` is `0`.
+   *
+   * Nested under `passivation` in HOCON and flat here, the translation
+   * `entity-recovery.*` and `stale-region-detection.*` already make: `mergeOptions`
+   * is a shallow spread, so a nested field would let a caller who sets one knob
+   * blow away everything the config file supplied beside it.
+   */
+  readonly passivationReplacement?: EntityReplacementPolicy;
+  /**
+   * Share of the cap held by the *protected* segment under
+   * `'segmented-least-recently-used'` (#848).  Default: `0.8`; the remainder is
+   * the probationary segment.  Ignored under every other policy.
+   *
+   * A scalar rather than a list of level proportions, and #848 asked the
+   * question explicitly: two levels is what "keep what has proven itself, evict
+   * what has not" needs, an N-level split has no caller here, and a list would
+   * be the first array leaf in `reference.conf` with no matching reader kind in
+   * the documented-defaults guard.  A list can be added beside this later; a
+   * shipped key cannot be renamed.
+   */
+  readonly passivationSegmentedProtectedProportion?: number;
+  /**
+   * Share of the cap held as a probationary *admission window* in front of the
+   * replacement policy (#848).  Default: `0` — no window.
+   *
+   * The window is what makes an admission filter expressible at all.  A region
+   * cannot refuse the entity a message has just arrived for, because it is
+   * being created to receive that message; with a window it does not have to.
+   * The newcomer enters the window, and the candidate judged against the
+   * incumbent is whatever falls out of the window's far end — an entity that
+   * arrived some time ago and can be passivated like any other.
+   */
+  readonly passivationAdmissionWindowProportion?: number;
+  /**
+   * Whether a candidate leaving the admission window has to out-rank the entity
+   * it would displace (#848).  Default: `'off'`.
+   *
+   * `'frequency-sketch'` requires `passivationAdmissionWindowProportion > 0`;
+   * `ShardingOptionsValidator` rejects the pair rather than degrading silently
+   * to no filter, which would be a configuration that reads as armed and is not.
+   */
+  readonly passivationAdmissionFilter?: EntityAdmissionFilter;
+  /**
+   * How long an entity that was sent its `Passivate` stop-message may take to
+   * stop before the shard stops it outright, in ms (#848).  Default: `0` — wait
+   * forever, which is what every release before #848 did.
+   *
+   * The stop-message path is cooperative by design — the entity chooses when to
+   * finish — and without a backstop it is cooperative with no bound: an entity
+   * that never acts on the message never terminates, `EntityStopped` never
+   * reaches the region, and its slot is held against `maxEntities` for the
+   * lifetime of the node.  Setting this bounds that, at the price of a stop
+   * that can land while the entity is still draining, so it is the operator who
+   * knows the drain who picks the number.
+   *
+   * Independent of `maxEntities`: a positive value arms the backstop whether or
+   * not a cap is configured.
+   */
+  readonly passivationStopTimeoutMs?: number;
+  /**
+   * Cap the region's routing buffer — the messages it holds while a shard's
+   * home is unknown or in transition, or while the shard backs off after a
+   * failure (#849, #461, #1437).
+   *
+   * Default: `100000`.  **A region-wide total, not a per-shard one**: the
+   * buffer is keyed by shard id, and a per-queue cap would multiply by
+   * `numShards` into a bound no operator picked.
+   *
+   * `0` means **never buffer** — every message that cannot be routed right
+   * now goes straight to dead letters.  Note the polarity against
+   * {@link maxEntities} in the same block, where `0` means *no* cap: here `0`
+   * is the tightest setting there is, not the loosest.
+   *
+   * On overflow the *newest* message is dropped, not the oldest, and it is
+   * dead-lettered with its sender.  Evicting from the front would hand the
+   * shard a torn prefix of what a caller sent, which is the one property the
+   * buffer exists to preserve.
+   *
+   * The same cap also bounds, **per shard**, the messages a shard holds for its
+   * entities backing off after a stop nobody asked for
+   * ({@link entityRestartBackoffMinMs}, #1437), with the same drop-newest rule.
+   * Per shard there because each shard holds its own, so the region's total of
+   * those is not bounded by this one number.
+   */
+  readonly bufferSize?: number;
+  /**
+   * How often an unacknowledged region registration is re-sent to the
+   * coordinator, in ms (#849).
+   *
+   * Default: `500`.  The retry is what makes a lost `Register` recoverable —
+   * the frame is fire-and-forget at a path that need not exist yet — and
+   * everything routed for the type buffers until the coordinator answers, so
+   * this interval is also the granularity of that stall.  Raise it only if the
+   * frames themselves are a cost you have measured.
+   */
+  readonly registerRetryIntervalMs?: number;
+  /**
+   * How remembered entities are brought back after this region is handed a
+   * shard (#851).  Default: `'all'` — every remembered entity at once.
+   *
+   * The burst is the reason to change it.  A region that is handed a shard
+   * under `rememberEntities` receives the whole registry for it and, under
+   * `'all'`, spawns every entity in one synchronous pass; a node restart or a
+   * rebalance does that for every shard it is given.  When those entities are
+   * event-sourced, each spawn opens a journal replay, and the resulting fan of
+   * concurrent reads lands on the store all at once.
+   *
+   * `'constant-rate'` spreads it — see {@link EntityRecoveryStrategy} for what
+   * that does and does not bound.
+   */
+  readonly entityRecoveryStrategy?: EntityRecoveryStrategy;
+  /**
+   * Gap between two `'constant-rate'` recovery batches, in ms (#851).
+   * Default: `100`.  Ignored under `'all'`.
+   */
+  readonly entityRecoveryConstantRateFrequencyMs?: number;
+  /**
+   * Entities one `'constant-rate'` batch starts (#851).  Default: `5`.
+   * Ignored under `'all'`.
+   *
+   * **A region-wide budget, not a per-shard one.**  The queue is fed by every
+   * shard this region owns, and one batch is taken from its front regardless
+   * of which shards those entities belong to — so this sharded type starts
+   * this many entities per window on this node, whatever its shard count.
+   * Read per shard it would silently mean `numShards ×` itself, which is the
+   * same conflation `maxEntities` is kept region-wide to avoid.
+   *
+   * It is also the scope `maxEntities` has: a node runs one region per
+   * sharded type, so a node recovering several paced types gives each the
+   * whole budget, and its total is their sum.
+   */
+  readonly entityRecoveryConstantRateNumberOfEntities?: number;
+  /**
+   * Opt into stale-region detection: the region beats to the coordinator, and
+   * the coordinator evicts a region that stops (#853).  Default: `false`.
+   *
+   * One switch drives both halves on purpose.  It is a deployment-wide fact
+   * rather than a per-node one — the coordinator moves with the leader, so a
+   * node that beats today is the node that sweeps tomorrow — and gating the
+   * *beat* on it as well is what keeps the frame cost at exactly zero for
+   * everyone who has not asked for the mechanism.
+   *
+   * Off by default because eviction is destructive and this is a backstop for
+   * a rare frame loss: the node-level case is already covered, and far faster,
+   * by the failure detector.  What it adds is the region-level one — a region
+   * that is gone or wedged on a node that is still up and gossiping, whose
+   * `RegionTerminated` never arrived.
+   */
+  readonly staleRegionDetection?: boolean;
+  /**
+   * How often this region tells the coordinator it is still there, in ms
+   * (#853).  Default: `5000`.  Inert while {@link staleRegionDetection} is off.
+   *
+   * Must be shorter than
+   * {@link StartShardingOptionsType.regionStaleAfterMs} — the coordinator
+   * evicts on silence, so a beat slower than the threshold evicts a healthy
+   * region every cycle.  `StartShardingOptionsValidator` checks the pair
+   * against their *resolved* values, so setting one cannot silently cross the
+   * other's default.
+   */
+  readonly regionHeartbeatIntervalMs?: number;
+  /**
+   * How long a shard that stopped unexpectedly stays down before this region
+   * re-creates it the first time, in ms (#1437).  Default: `200`.  Must be
+   * positive: every later wait is a multiple of this one.
+   *
+   * "Unexpectedly" is every stop the region did not ask for — anything but a
+   * hand-off, a passivation or a release.  Each such death in a row doubles
+   * the wait, up to {@link shardFailureBackoffMaxMs}.  Meanwhile the region
+   * keeps the shard's ownership, holds its messages against
+   * {@link bufferSize}, and under `rememberEntities` asks the coordinator for
+   * the shard's entities once it is back rather than on the death.
+   *
+   * Flat here and nested under `shard-failure-backoff` in HOCON, the
+   * translation `stale-region-detection.*` makes, for the reason
+   * {@link passivationReplacement} gives.
+   */
+  readonly shardFailureBackoffMinMs?: number;
+  /**
+   * The ceiling the doubling wait grows to, in ms (#1437).  Default: `10000`.
+   * Must be a finite number no smaller than {@link shardFailureBackoffMinMs};
+   * `ShardingOptionsValidator` checks the resolved pair, so setting one cannot
+   * silently cross the other's default.
+   */
+  readonly shardFailureBackoffMaxMs?: number;
+  /**
+   * Spread every wait by up to this fraction either way, in `[0, 1]`, so the
+   * shards of regions that failed together do not come back in step (#1437).
+   * Default: `0.2`; `0` makes every wait exact.
+   */
+  readonly shardFailureBackoffRandomFactor?: number;
+  /**
+   * How long a shard has to go without failing, counted from when it came back
+   * from its last wait, for its next death to wait
+   * {@link shardFailureBackoffMinMs} again, in ms (#1437).  Default: `60000`.
+   * A shard that dies sooner keeps doubling — one failing a few seconds after
+   * every re-creation is exactly the case the backoff is for.  A passivation in
+   * between stops a healthy shard, so it does not restart the count.
+   */
+  readonly shardFailureBackoffResetAfterMs?: number;
+  /**
+   * How long an entity that stopped without being passivated stays down before
+   * its shard re-creates it the first time, in ms (#1437).  Default: `200`.
+   * Must be positive: every later wait is a multiple of this one.
+   *
+   * "Without being passivated" is every stop but the one a `Passivate` or the
+   * region's passivation asks for — a failure past the shard's restart budget,
+   * a recovery failure the entity swallowed, a lost lease, a plain `stopSelf`.
+   * Each such stop in a row doubles the wait, up to
+   * {@link entityRestartBackoffMaxMs}.  Meanwhile the shard holds the entity's
+   * messages, with their senders, against {@link bufferSize}, and hands them
+   * over in order once it is back.  The restarts inside the budget are not
+   * delayed: supervision decides those, and it has no wait to give.
+   *
+   * Flat here and nested under `entity-restart-backoff` in HOCON, the
+   * translation `shard-failure-backoff.*` makes.
+   */
+  readonly entityRestartBackoffMinMs?: number;
+  /**
+   * The ceiling the doubling wait grows to, in ms (#1437).  Default: `10000`.
+   * Must be a finite number no smaller than {@link entityRestartBackoffMinMs};
+   * `ShardingOptionsValidator` checks the resolved pair, so setting one cannot
+   * silently cross the other's default.
+   */
+  readonly entityRestartBackoffMaxMs?: number;
+  /**
+   * Spread every wait by up to this fraction either way, in `[0, 1]`, so the
+   * entities that stopped together do not come back in step (#1437).
+   * Default: `0.2`; `0` makes every wait exact.
+   */
+  readonly entityRestartBackoffRandomFactor?: number;
+  /**
+   * How long an entity has to go without stopping unasked, counted from when
+   * it came back from its last wait, for its next such stop to wait
+   * {@link entityRestartBackoffMinMs} again, in ms (#1437).  Default: `60000`.
+   * A passivation in between is not a failure, so it does not restart the
+   * count — the rule {@link shardFailureBackoffResetAfterMs} follows.
+   */
+  readonly entityRestartBackoffResetAfterMs?: number;
 };
 
 /**
@@ -183,6 +755,109 @@ export class ShardingOptionsBuilder<
   withMaxEntities(maxEntities: number): this {
     return this.set('maxEntities', maxEntities);
   }
+
+  /** Which resident entity the cap gives up on overflow.  Default: `'least-recently-used'`. */
+  withPassivationReplacement(passivationReplacement: EntityReplacementPolicy): this {
+    return this.set('passivationReplacement', passivationReplacement);
+  }
+
+  /** Share of the cap held by the protected segment under segmented LRU.  Default: 0.8. */
+  withPassivationSegmentedProtectedProportion(passivationSegmentedProtectedProportion: number): this {
+    return this.set('passivationSegmentedProtectedProportion', passivationSegmentedProtectedProportion);
+  }
+
+  /** Share of the cap held as a probationary admission window.  Default: 0 (no window). */
+  withPassivationAdmissionWindowProportion(passivationAdmissionWindowProportion: number): this {
+    return this.set('passivationAdmissionWindowProportion', passivationAdmissionWindowProportion);
+  }
+
+  /** Make a candidate leaving the window out-rank what it displaces.  Default: `'off'`. */
+  withPassivationAdmissionFilter(passivationAdmissionFilter: EntityAdmissionFilter): this {
+    return this.set('passivationAdmissionFilter', passivationAdmissionFilter);
+  }
+
+  /** Force-stop an entity that ignored its stop-message after this long, in ms.  Default: 0 (never). */
+  withPassivationStopTimeoutMs(passivationStopTimeoutMs: number): this {
+    return this.set('passivationStopTimeoutMs', passivationStopTimeoutMs);
+  }
+
+  /**
+   * Cap the region-wide routing buffer; the newest message is dead-lettered on
+   * overflow.  Default: 100000.  `0` = never buffer.
+   */
+  withBufferSize(bufferSize: number): this {
+    return this.set('bufferSize', bufferSize);
+  }
+
+  /** Re-send an unacknowledged region registration this often, in ms.  Default: 500. */
+  withRegisterRetryIntervalMs(registerRetryIntervalMs: number): this {
+    return this.set('registerRetryIntervalMs', registerRetryIntervalMs);
+  }
+
+  /** How remembered entities come back: all at once, or paced.  Default: `'all'`. */
+  withEntityRecoveryStrategy(entityRecoveryStrategy: EntityRecoveryStrategy): this {
+    return this.set('entityRecoveryStrategy', entityRecoveryStrategy);
+  }
+
+  /** Gap between two paced recovery batches, in ms.  Default: 100. */
+  withEntityRecoveryConstantRateFrequencyMs(entityRecoveryConstantRateFrequencyMs: number): this {
+    return this.set('entityRecoveryConstantRateFrequencyMs', entityRecoveryConstantRateFrequencyMs);
+  }
+
+  /** Entities one paced recovery batch starts, region-wide.  Default: 5. */
+  withEntityRecoveryConstantRateNumberOfEntities(entityRecoveryConstantRateNumberOfEntities: number): this {
+    return this.set('entityRecoveryConstantRateNumberOfEntities', entityRecoveryConstantRateNumberOfEntities);
+  }
+
+  /** Beat to the coordinator and let it evict a region that stops.  Default: off (#853). */
+  withStaleRegionDetection(staleRegionDetection = true): this {
+    return this.set('staleRegionDetection', staleRegionDetection);
+  }
+
+  /** How often this region beats to the coordinator, in ms.  Default: 5000. */
+  withRegionHeartbeatIntervalMs(regionHeartbeatIntervalMs: number): this {
+    return this.set('regionHeartbeatIntervalMs', regionHeartbeatIntervalMs);
+  }
+
+  /** First wait before a shard that stopped unexpectedly is re-created, in ms; doubles per death in a row.  Default: 200. */
+  withShardFailureBackoffMinMs(shardFailureBackoffMinMs: number): this {
+    return this.set('shardFailureBackoffMinMs', shardFailureBackoffMinMs);
+  }
+
+  /** Ceiling of that doubling wait, in ms.  Default: 10000. */
+  withShardFailureBackoffMaxMs(shardFailureBackoffMaxMs: number): this {
+    return this.set('shardFailureBackoffMaxMs', shardFailureBackoffMaxMs);
+  }
+
+  /** Jitter on every wait, as a fraction in [0, 1].  Default: 0.2. */
+  withShardFailureBackoffRandomFactor(shardFailureBackoffRandomFactor: number): this {
+    return this.set('shardFailureBackoffRandomFactor', shardFailureBackoffRandomFactor);
+  }
+
+  /** How long a shard must go without failing for its next death to wait the first wait again, in ms.  Default: 60000. */
+  withShardFailureBackoffResetAfterMs(shardFailureBackoffResetAfterMs: number): this {
+    return this.set('shardFailureBackoffResetAfterMs', shardFailureBackoffResetAfterMs);
+  }
+
+  /** First wait before an entity that stopped without being passivated is re-created, in ms; doubles per stop in a row.  Default: 200. */
+  withEntityRestartBackoffMinMs(entityRestartBackoffMinMs: number): this {
+    return this.set('entityRestartBackoffMinMs', entityRestartBackoffMinMs);
+  }
+
+  /** Ceiling of that doubling wait, in ms.  Default: 10000. */
+  withEntityRestartBackoffMaxMs(entityRestartBackoffMaxMs: number): this {
+    return this.set('entityRestartBackoffMaxMs', entityRestartBackoffMaxMs);
+  }
+
+  /** Jitter on every entity wait, as a fraction in [0, 1].  Default: 0.2. */
+  withEntityRestartBackoffRandomFactor(entityRestartBackoffRandomFactor: number): this {
+    return this.set('entityRestartBackoffRandomFactor', entityRestartBackoffRandomFactor);
+  }
+
+  /** How long an entity must go without stopping unasked for its next such stop to wait the first wait again, in ms.  Default: 60000. */
+  withEntityRestartBackoffResetAfterMs(entityRestartBackoffResetAfterMs: number): this {
+    return this.set('entityRestartBackoffResetAfterMs', entityRestartBackoffResetAfterMs);
+  }
 }
 
 /**
@@ -233,6 +908,261 @@ export class ShardingOptionsValidator<
     }
     if (options.maxEntities !== undefined && (!Number.isInteger(options.maxEntities) || options.maxEntities < 0)) {
       this.fail('maxEntities', 'must be an integer >= 0', options.maxEntities);
+    }
+    if (
+      options.passivationReplacement !== undefined
+      && !ENTITY_REPLACEMENT_POLICIES.includes(options.passivationReplacement)
+    ) {
+      this.fail(
+        'passivationReplacement',
+        `must be one of ${ENTITY_REPLACEMENT_POLICIES.map((policy) => `'${policy}'`).join(', ')}`,
+        options.passivationReplacement,
+      );
+    }
+    if (
+      options.passivationAdmissionFilter !== undefined
+      && !ENTITY_ADMISSION_FILTERS.includes(options.passivationAdmissionFilter)
+    ) {
+      this.fail(
+        'passivationAdmissionFilter',
+        `must be one of ${ENTITY_ADMISSION_FILTERS.map((filter) => `'${filter}'`).join(', ')}`,
+        options.passivationAdmissionFilter,
+      );
+    }
+    // Both bounds are open at the ends the degenerate cases sit at.  A protected
+    // share of `0` or `1` is a segmented policy with one empty segment, which is
+    // plain LRU under a longer name; a window of `1` leaves no main region for a
+    // candidate to be promoted into.  `0` for the window IS a real value — "no
+    // window" — so only that bound is closed below.
+    if (
+      options.passivationSegmentedProtectedProportion !== undefined
+      && (typeof options.passivationSegmentedProtectedProportion !== 'number'
+        || !Number.isFinite(options.passivationSegmentedProtectedProportion)
+        || options.passivationSegmentedProtectedProportion <= 0
+        || options.passivationSegmentedProtectedProportion >= 1)
+    ) {
+      this.fail(
+        'passivationSegmentedProtectedProportion',
+        'must be a number in (0, 1)',
+        options.passivationSegmentedProtectedProportion,
+      );
+    }
+    if (
+      options.passivationAdmissionWindowProportion !== undefined
+      && (typeof options.passivationAdmissionWindowProportion !== 'number'
+        || !Number.isFinite(options.passivationAdmissionWindowProportion)
+        || options.passivationAdmissionWindowProportion < 0
+        || options.passivationAdmissionWindowProportion >= 1)
+    ) {
+      this.fail(
+        'passivationAdmissionWindowProportion',
+        'must be a number in [0, 1)',
+        options.passivationAdmissionWindowProportion,
+      );
+    }
+    // `0` is a real value — wait forever, the pre-#848 behaviour — so this is a
+    // non-negative rule rather than a positive one.
+    if (
+      options.passivationStopTimeoutMs !== undefined
+      && (typeof options.passivationStopTimeoutMs !== 'number'
+        || !Number.isFinite(options.passivationStopTimeoutMs)
+        || options.passivationStopTimeoutMs < 0)
+    ) {
+      this.fail(
+        'passivationStopTimeoutMs',
+        'must be a non-negative finite number',
+        options.passivationStopTimeoutMs,
+      );
+    }
+    // Cross-field, and checked against the resolved pair so setting only the
+    // filter cannot silently cross the window's default.  A filter with no
+    // window has nothing to decide: the only candidate would be the entity a
+    // message has just arrived for, which the region is not free to refuse.
+    // Degrading to "no filter" instead would be a configuration that reads as
+    // armed and is not (#848).
+    const admissionFilter = options.passivationAdmissionFilter ?? DEFAULT_PASSIVATION_ADMISSION_FILTER;
+    const windowProportion =
+      options.passivationAdmissionWindowProportion ?? DEFAULT_PASSIVATION_ADMISSION_WINDOW_PROPORTION;
+    if (admissionFilter !== 'off' && !(windowProportion > 0)) {
+      this.fail(
+        'passivationAdmissionFilter',
+        `'${admissionFilter}' needs passivationAdmissionWindowProportion > 0 to have a candidate to judge`,
+        admissionFilter,
+      );
+    }
+    // `0` is legal and means "never buffer" — the tightest setting, not the
+    // absence of one — so the floor is 0 rather than 1.
+    if (options.bufferSize !== undefined && (!Number.isInteger(options.bufferSize) || options.bufferSize < 0)) {
+      this.fail('bufferSize', 'must be an integer >= 0', options.bufferSize);
+    }
+    if (
+      options.registerRetryIntervalMs !== undefined &&
+      (typeof options.registerRetryIntervalMs !== 'number'
+        || !Number.isFinite(options.registerRetryIntervalMs)
+        || options.registerRetryIntervalMs <= 0)
+    ) {
+      this.fail('registerRetryIntervalMs', 'must be a positive finite number', options.registerRetryIntervalMs);
+    }
+    if (
+      options.entityRecoveryStrategy !== undefined
+      && !ENTITY_RECOVERY_STRATEGIES.includes(options.entityRecoveryStrategy)
+    ) {
+      this.fail(
+        'entityRecoveryStrategy',
+        `must be one of ${ENTITY_RECOVERY_STRATEGIES.map((strategy) => `'${strategy}'`).join(', ')}`,
+        options.entityRecoveryStrategy,
+      );
+    }
+    // Both bounds are strictly positive: a zero frequency is a busy loop and a
+    // zero batch is a queue that never drains — under `constant-rate` either
+    // one turns "recover slowly" into "never recover", which is worse than the
+    // burst the setting exists to avoid.
+    if (
+      options.entityRecoveryConstantRateFrequencyMs !== undefined
+      && (typeof options.entityRecoveryConstantRateFrequencyMs !== 'number'
+        || !Number.isFinite(options.entityRecoveryConstantRateFrequencyMs)
+        || options.entityRecoveryConstantRateFrequencyMs <= 0)
+    ) {
+      this.fail(
+        'entityRecoveryConstantRateFrequencyMs',
+        'must be a positive finite number',
+        options.entityRecoveryConstantRateFrequencyMs,
+      );
+    }
+    if (
+      options.entityRecoveryConstantRateNumberOfEntities !== undefined
+      && (!Number.isInteger(options.entityRecoveryConstantRateNumberOfEntities)
+        || options.entityRecoveryConstantRateNumberOfEntities < 1)
+    ) {
+      this.fail(
+        'entityRecoveryConstantRateNumberOfEntities',
+        'must be an integer >= 1',
+        options.entityRecoveryConstantRateNumberOfEntities,
+      );
+    }
+    // Strictly positive: `0` here is not "no beat" but a timer that fires as
+    // fast as the scheduler will run it, and turning the mechanism off is what
+    // `staleRegionDetection` is for (#853).
+    if (
+      options.regionHeartbeatIntervalMs !== undefined
+      && (typeof options.regionHeartbeatIntervalMs !== 'number'
+        || !Number.isFinite(options.regionHeartbeatIntervalMs)
+        || options.regionHeartbeatIntervalMs <= 0)
+    ) {
+      this.fail(
+        'regionHeartbeatIntervalMs',
+        'must be a positive finite number',
+        options.regionHeartbeatIntervalMs,
+      );
+    }
+    // Strictly positive, both: every wait is a multiple of the first, so a zero
+    // first wait is the respawn loop the backoff exists to end, and a zero
+    // reset window counts every death as the first, so the wait never grows
+    // (#1437).
+    if (
+      options.shardFailureBackoffMinMs !== undefined
+      && (typeof options.shardFailureBackoffMinMs !== 'number'
+        || !Number.isFinite(options.shardFailureBackoffMinMs)
+        || options.shardFailureBackoffMinMs <= 0)
+    ) {
+      this.fail(
+        'shardFailureBackoffMinMs',
+        'must be a positive finite number',
+        options.shardFailureBackoffMinMs,
+      );
+    }
+    if (
+      options.shardFailureBackoffResetAfterMs !== undefined
+      && (typeof options.shardFailureBackoffResetAfterMs !== 'number'
+        || !Number.isFinite(options.shardFailureBackoffResetAfterMs)
+        || options.shardFailureBackoffResetAfterMs <= 0)
+    ) {
+      this.fail(
+        'shardFailureBackoffResetAfterMs',
+        'must be a positive finite number',
+        options.shardFailureBackoffResetAfterMs,
+      );
+    }
+    if (
+      options.shardFailureBackoffRandomFactor !== undefined
+      && (typeof options.shardFailureBackoffRandomFactor !== 'number'
+        || !Number.isFinite(options.shardFailureBackoffRandomFactor)
+        || options.shardFailureBackoffRandomFactor < 0
+        || options.shardFailureBackoffRandomFactor > 1)
+    ) {
+      this.fail(
+        'shardFailureBackoffRandomFactor',
+        'must be a number in [0, 1]',
+        options.shardFailureBackoffRandomFactor,
+      );
+    }
+    // Cross-field, against the resolved pair, the shape the admission-filter
+    // rule above uses: a first wait set above the shipped ceiling, or a ceiling
+    // set below the shipped first wait, passes field by field and makes the
+    // region's backoff policy throw when the region starts.
+    const backoffMinMs = options.shardFailureBackoffMinMs ?? DEFAULT_SHARD_FAILURE_BACKOFF_MIN_MS;
+    const backoffMaxMs = options.shardFailureBackoffMaxMs ?? DEFAULT_SHARD_FAILURE_BACKOFF_MAX_MS;
+    if (typeof backoffMaxMs !== 'number' || !Number.isFinite(backoffMaxMs) || backoffMaxMs < backoffMinMs) {
+      this.fail(
+        'shardFailureBackoffMaxMs',
+        `must be a finite number >= shardFailureBackoffMinMs (${backoffMinMs})`,
+        backoffMaxMs,
+      );
+    }
+    // The entity half of the same backoff, under the same four rules and for
+    // the same reasons: a zero first wait re-creates the entity per message
+    // again, a zero reset window never lets the wait grow, and a pair that
+    // crosses at its resolved values gives every shard of the type a ceiling
+    // below its first wait (#1437).
+    if (
+      options.entityRestartBackoffMinMs !== undefined
+      && (typeof options.entityRestartBackoffMinMs !== 'number'
+        || !Number.isFinite(options.entityRestartBackoffMinMs)
+        || options.entityRestartBackoffMinMs <= 0)
+    ) {
+      this.fail(
+        'entityRestartBackoffMinMs',
+        'must be a positive finite number',
+        options.entityRestartBackoffMinMs,
+      );
+    }
+    if (
+      options.entityRestartBackoffResetAfterMs !== undefined
+      && (typeof options.entityRestartBackoffResetAfterMs !== 'number'
+        || !Number.isFinite(options.entityRestartBackoffResetAfterMs)
+        || options.entityRestartBackoffResetAfterMs <= 0)
+    ) {
+      this.fail(
+        'entityRestartBackoffResetAfterMs',
+        'must be a positive finite number',
+        options.entityRestartBackoffResetAfterMs,
+      );
+    }
+    if (
+      options.entityRestartBackoffRandomFactor !== undefined
+      && (typeof options.entityRestartBackoffRandomFactor !== 'number'
+        || !Number.isFinite(options.entityRestartBackoffRandomFactor)
+        || options.entityRestartBackoffRandomFactor < 0
+        || options.entityRestartBackoffRandomFactor > 1)
+    ) {
+      this.fail(
+        'entityRestartBackoffRandomFactor',
+        'must be a number in [0, 1]',
+        options.entityRestartBackoffRandomFactor,
+      );
+    }
+    const entityBackoffMinMs = options.entityRestartBackoffMinMs ?? DEFAULT_ENTITY_RESTART_BACKOFF_MIN_MS;
+    const entityBackoffMaxMs = options.entityRestartBackoffMaxMs ?? DEFAULT_ENTITY_RESTART_BACKOFF_MAX_MS;
+    if (
+      typeof entityBackoffMaxMs !== 'number'
+      || !Number.isFinite(entityBackoffMaxMs)
+      || entityBackoffMaxMs < entityBackoffMinMs
+    ) {
+      this.fail(
+        'entityRestartBackoffMaxMs',
+        `must be a finite number >= entityRestartBackoffMinMs (${entityBackoffMinMs})`,
+        entityBackoffMaxMs,
+      );
     }
   }
 }

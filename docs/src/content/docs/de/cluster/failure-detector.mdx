@@ -14,7 +14,7 @@ stateDiagram-v2
   healthy --> unreachable: kein Heartbeat für unreachableAfterMs
   unreachable --> healthy: Heartbeat empfangen
   unreachable --> down: Stille erreicht insgesamt downAfterMs
-  down --> [*]: entfernt (empfohlen)
+  down --> [*]: entfernt durch eine Strategie, einen Operator oder auto-down
   classDef ok   fill:#312e81,stroke:#818cf8,color:#f1f5f9;
   classDef warn fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
   classDef gone fill:#1e293b,stroke:#475569,color:#94a3b8;
@@ -27,8 +27,12 @@ stateDiagram-v2
 - **`unreachable`** — über dem Schwellwert; der Cluster vermeidet
   es, dorthin zu routen. Offiziell noch Mitglied; kann sich
   erholen.
-- **`down`** — über dem längeren Schwellwert; der Cluster
-  betrachtet den Peer als endgültig weg. Löst Downing aus.
+- **`down`** — über dem längeren Schwellwert; das Urteil des
+  Detectors, dass der Peer weg ist. Ohne
+  [Downing-Strategie](/de/cluster/downing-strategies/) entfernt der
+  Detector den Peer dann selbst — `auto-down` ist per Default an —,
+  mit einer entscheidet die Strategie. Siehe
+  [was der Detector entscheidet](#was-der-detector-entscheidet--und-was-nicht).
 
 Der Detector ist **pro Peer** — verschiedene Peers können
 gleichzeitig in verschiedenen Zuständen sein. Das Gesamtverhalten
@@ -50,8 +54,9 @@ funktionieren diese Defaults gut. Sie ergeben:
 
 - **2-Sekunden-Erkennungsfenster** für "dieser Peer hat
   möglicherweise Probleme."
-- **5-Sekunden-Entscheidungsfenster** für "dieser Peer ist endgültig
-  weg."
+- **5-Sekunden-Urteil** "dieser Peer ist weg" — bei dem der
+  Detector ihn ohne konfigurierte Strategie entfernt, und die
+  überlebenden Nodes übernehmen seine Shards und Singletons.
 
 ## Tuning
 
@@ -88,21 +93,62 @@ ist das **Flap-Toleranzfenster**: ein als unreachable markierter
 Peer kann sich zurück auf healthy erholen, ohne downed zu werden,
 solange ein Heartbeat innerhalb der Differenz eintrifft.
 
-## Heartbeats sind implizit
+## Heartbeats sind explizit; Lebenszeichen ist jeder Frame
 
-```
-Jeder Gossip-Austausch zählt als Heartbeat.
-Jede direkte Nachricht über den Cluster-Transport zählt ebenfalls.
-```
+Jeder Node schickt einmal pro `heartbeat-interval` einen Heartbeat an
+jedes erreichbare Mitglied, und das Mitglied beantwortet jeden mit einer
+Bestätigung.  Auf diese Schleife verlassen sich die Detectoren, also
+wird ein leerlaufender Cluster genauso genau beobachtet wie ein
+beschäftigter.
 
-Das Framework schickt keine separaten "Ping"-Nachrichten — jeglicher
-Cluster-Verkehr von einem Peer setzt dessen Last-Seen-Timestamp
-zurück. Gossip ist die zuverlässigste Quelle (regelmäßiges
-Intervall), aber Anwendungsnachrichten tragen auch bei.
+Wofür ein Frame von einem Peer *zählt*, hängt von der Frage ab:
 
-Das bedeutet: ein Cluster mit sehr gesprächigen Actors bekommt
-*besser* Failure Detection (mehr Heartbeats); ein leerlaufender
-Cluster ist ganz auf Gossip angewiesen.
+- **Jeder Frame ist ein Lebenszeichen, für beide Detectoren** — ein
+  Heartbeat, eine Bestätigung, Gossip, eine Anwendungsnachricht.  Er
+  verschiebt den Zeitpunkt, ab dem die Stille des Peers gemessen wird.
+  Für den einfachen Detector ist das schon das ganze Modell.
+- **Nur Heartbeat-Frames speisen φs Historie.**  Der φ-Accrual-Detector
+  modelliert genau eine Sache: die Zwischenankunftszeiten der Heartbeats
+  eines Peers.  Als ihn jeder Frame speiste, beschrieb die Historie
+  stattdessen den Verkehr — nach einem Schwall von 300 Nachrichten
+  enthielt das Fenster 200 Proben von 0 ms, und bei der damals
+  ausgelieferten Pause von 0 s galt ein Peer 562 ms nach seinem
+  Verstummen als unreachable und nach 704 ms als down.  Bestätigungen
+  bleiben aus einem zweiten Grund draußen: Sie beantworten die
+  Heartbeats *dieses* Nodes, kommen also in dessen Takt an, und neben
+  den eigenen Heartbeats des Peers verschränken sie zwei Zeitpläne — die
+  Schwellen wandern dann je nach Phase zwischen den beiden Nodes
+  zwischen 0,8 s und 1,4 s.
+
+Der Vertrag, den ein Detector implementiert, sagt dasselbe in zwei
+Methoden: `heardFrom` ist ein Frame beliebiger Art, `heartbeat` ein
+Heartbeat-Frame.
+
+Beides zählt nur für einen Peer, den dieser Node **beobachtet**: ein
+Mitglied, das kein Tombstone ist, oder einen seiner konfigurierten
+Seeds, der ebenfalls keiner ist. Ein Frame von jemand anderem wird
+trotzdem verarbeitet — er kann zum Beispiel seinen Absender
+aufnehmen —, legt aber keinen Zustand im Detector an. Der Detector
+wird nur nach Mitgliedern gefragt, und die Verbindungsidentität,
+unter der ein Frame ankommt, ist ohne mTLS die eigene Behauptung des
+Peers. Jeden Frame anzurechnen ließ einen Peer den Detector also um
+einen Eintrag pro behauptetem Namen wachsen, über die
+`max-members`-Grenze der Mitgliederliste hinaus (#1103).
+
+Der Eintrag eines Mitglieds beginnt, wenn das Mitglied aufgenommen
+wird, gleich über welchen Weg, und endet, wenn es die lebenden
+Mitglieder verlässt: wenn dieser Node es als Tombstone ablegt — aus
+eigener Entscheidung oder weil ein gegossipter Eintrag es so sagt —
+oder es aus der Mitgliedertabelle löscht. Jedes lebende Mitglied wird
+also beobachtet, der Detector hält nichts über die lebenden
+Mitglieder und die Seeds hinaus, und ein Mitglied, das nach seiner
+Entfernung zurückkommt, wird ab seiner Rückkehr beurteilt und nicht
+nach der Stille seines vorigen Laufs. Ein beitretender Node verliert
+dadurch nichts: Der Frame, der ihn aufnimmt, registriert ihn, und das
+startet seine Stille-Uhr im selben Moment wie früher die Anrechnung.
+Seeds werden ab dem ersten Anwählen beobachtet, ein spät antwortender
+Seed wird also nach seiner Antwort beurteilt und nicht nach der
+Stille davor.
 
 ## Was der Detector entscheidet — und was nicht
 
@@ -112,14 +158,154 @@ Was der Cluster *damit* macht:
 | Entscheidung | Cluster-Verhalten |
 | --- | --- |
 | `healthy` | Normales Routing. Kein Effekt. |
-| `unreachable` | Markiere das Mitglied in der Mitgliedertabelle als `unreachable`. Router überspringen es; Sharding allokiert keine neuen Shards mehr darauf. Singleton-Manager wählt keinen Leader von einer unerreichbaren Seite. |
-| `down` | Löse Downing aus. Wenn eine [Downing-Strategie](/de/cluster/downing-strategies/) konfiguriert ist, entscheidet sie, welche Adressen zwangsweise entfernt werden; der Cluster verkündet diese Nodes als `removed`. |
+| `unreachable` | Markiere das Mitglied in der Mitgliedertabelle als `unreachable`. Sharding allokiert keine neuen Shards mehr darauf. Router überspringen es noch nicht: Ein Cluster-Router baut seine Routees nur bei `MemberUp` und `MemberRemoved` neu auf, ein unerreichbares Mitglied bleibt also Routee bis zum nächsten dieser Ereignisse ([Issue #942](https://github.com/pathosDev/actor-ts/issues/942)). Leader ist das erste `up`-Mitglied, ein unerreichbarer Leader wird in der Sicht dieses Nodes also ersetzt — und ein Singleton oder Shard-Koordinator, der dem Leader folgt, zieht mit um. |
+| `down`, eine [Downing-Strategie](/de/cluster/downing-strategies/) konfiguriert | Parke das Mitglied auf `unreachable` und halte an. Die Strategie entscheidet, welche Adressen entfernt werden; der Cluster verkündet diese als `down` und `removed`. Der Detector entfernt selbst nichts, was immer `auto-down` sagt. |
+| `down`, keine Strategie, `auto-down = on` (der Default) | Der Detector entfernt den Peer selbst: erst `down`, dann direkt als `removed` aus der Mitgliedertabelle. Die überlebenden Nodes übernehmen seine Shards und Singletons. |
+| `down`, keine Strategie, `auto-down = off` (das Opt-out) | Parke das Mitglied auf `unreachable` und halte an, mit einer Warnung im Log. Nichts entfernt es, bis ein Operator es tut — `Cluster.down` oder `POST /cluster/down` — oder eine Strategie konfiguriert ist. |
 
-**Entscheidend:** dass der Detector `down` entscheidet, entfernt den
-Peer nicht automatisch. Entfernung läuft durch die
-Downing-Strategie — der Detector ist das *Signal*, nicht die
-Aktion. Ohne Downing-Strategie bleibt eine `down`-Entscheidung
-nur beratend.
+**Welche Zeile du bekommst, entscheidet zuerst eine Strategie, und
+`auto-down` nur, wenn es keine gibt.** Mit einer Strategie ist der
+Detector das *Signal*, nicht die Aktion — er parkt den Peer, und die
+Strategie besitzt das Entfernen, was immer
+`failure-detector.auto-down` sagt. Ohne Strategie entfernt der
+Detector den Peer bei `down-after` selbst, also läuft ein Cluster aus
+n Nodes bis hinunter zu seinem letzten verfügbaren Node weiter, der
+alles übernimmt, was die toten Peers gehostet haben. Der Preis ist
+die Partition. Der Detector kann einen abgestürzten Node nicht von
+einem abgetrennten unterscheiden, und auf sein Urteil hin zu
+entfernen ist für den ersten richtig und für den zweiten falsch:
+Dort entfernt jede Seite die andere im selben Moment, und beide
+Hälften laufen als zwei Cluster weiter — jeder mit eigenen
+Singletons und einer eigenen Kopie jedes Shards —, die nicht wieder
+zusammenfinden, wenn das Netz heilt
+([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
+Eine Strategie zu konfigurieren ist der Weg zu Failover ohne
+Spaltung: Für Produktion konfiguriere `lease-majority` oder eine
+andere [Downing-Strategie](/de/cluster/downing-strategies/).
+`auto-down = off` ist das Opt-out — der Detector parkt den Peer
+stattdessen, und ein abgestürzter Node bleibt Mitglied, bis ein
+Operator oder eine Strategie ihn entfernt oder er auf derselben
+Adresse neu startet.
+
+`auto-down` löscht das Mitglied, statt einen Tombstone anzulegen,
+also bleibt danach nichts, das die Adresse abweisen würde: Ein Peer,
+dessen Sicht das Mitglied noch führt, führt es mit seinem nächsten
+Gossip wieder ein, als `unreachable`, und der Detector entfernt es
+bei `down-after` erneut. Mit zwei oder mehr Überlebenden, die nicht
+im selben Augenblick löschen, kommt ein abgestürztes Mitglied immer
+wieder — gemessen an drei In-Process-Nodes verkündete jeder
+Überlebende 50-mal in 20 Sekunden `MemberRemoved` für den toten.
+Die erste Meldung ist die, die Shards bewegt und Death Watch auslöst;
+Code, der Entfernungen zählt oder loggt, sieht alle. Das Entfernen
+durch eine Strategie legt einen Tombstone an und tut das nicht.
+
+### Ein geparktes Mitglied bleibt geparkt
+
+Ein Mitglied, das auf `unreachable` geparkt ist — von einer
+Strategie, die noch zu keinem Urteil gekommen ist, oder vom Detector
+unter dem Opt-out `auto-down = off` —, bleibt dort **unbegrenzt**.
+Dahinter steht bewusst kein Auffangnetz des Detectors: Mit Strategie
+ist ein Auffangnetz genau die Umgehung, die die Strategie verhindern
+soll, und eines, das nach einem Vielfachen von `down-after` auslöst,
+verschiebt die Umgehung nur nach hinten; unter dem Opt-out wäre ein
+Auffangnetz das Entfernen des Defaults unter anderem Namen, samt
+Spaltung. Zwei Dinge holen ein geparktes Mitglied zurück, ohne dass
+jemand es entfernt. Der Peer selbst: Der nächste Heartbeat, den er
+diesem Node schickt, setzt ihn wieder auf `up` — das beendet eine
+Pause oder eine einseitige Stille, aber nie eine symmetrische
+Partition (siehe unten). Und ein Neustart auf derselben Adresse, der
+den geparkten Lauf beendet, bevor der neue beitritt — siehe
+[ein Neustart beendet den vorherigen Lauf](#ein-neustart-beendet-den-vorherigen-lauf).
+
+Das hat Konsequenzen, die man einplanen sollte. Parken verhindert
+das *Entfernen* und alles, was daran hängt: Es gibt keinen Tombstone
+und kein Löschen, das Mitglied belegt also weiterhin seinen Platz
+gegen `max-members` — auch ein Phantom, das Gossip eingeführt hat,
+weshalb diese Grenze die Schranke für sie ist; kein Shard wird neu
+verteilt, denn der `ShardCoordinator` verteilt nur auf
+`MemberRemoved` neu; die entfernten Watcher des Mitglieds bekommen
+kein `Terminated` für den Verlust des Nodes, solange es geparkt
+bleibt, denn das feuert bei `MemberDown` oder `MemberRemoved`; und
+Receptionist, Pub-Sub und Distributed Data räumen es nicht ab, denn
+sie räumen bei `MemberRemoved`. Unter dem Opt-out ohne Strategie
+loggt der Node pro geparktem Peer eine Warnung, die beide Schlüssel
+und die drei Auswege nennt: `Cluster.down`, `POST /cluster/down`
+(hinter `actor-ts.management.enable-down-endpoint`) oder eine
+Strategie.
+
+Drei Dinge funktionieren unter dem Opt-out trotzdem weiter. Die
+Bereitschaft des Überlebenden: Der `cluster-transport`-Check des
+Frameworks erwartet keinen Peer, den dieser Node geparkt hat, also
+ist ein Überlebender, dessen einziger Peer abgestürzt ist, nur so
+lange aus der Rotation, wie dieser Peer bloß `unreachable` ist, und
+ab dem Moment wieder bereit, in dem er den Peer bei `down-after`
+parkt — dem Moment, in dem der Default ihn entfernt hätte. Ein
+geparkter Peer, der wieder Heartbeats schickt, wird wieder erwartet,
+und ein Peer, über den eine Strategie noch entscheidet, bleibt
+erwartet, bis sie entscheidet. Ein Neustart auf derselben Adresse,
+der den geparkten Lauf beendet und seinen entfernten Watchern ihr
+`Terminated` schickt (unten). Und das Aufgeben des Joins: Ein Node,
+der noch auf seine Beförderung wartet, zählt einen Peer, der über
+`down-after` hinaus geparkt ist, als weg, also gibt
+`actor-ts.cluster.shutdown-after-unsuccessful-join` zu seiner Frist
+auf, statt auf ein Mitglied zu warten, das nichts entfernen wird —
+ein Peer, der nur `unreachable` ist, vor `down-after`, zählt
+weiterhin als lebendig.
+
+Was Parken **nicht** tut, ist einen partitionierten Cluster bei
+einem Singleton zu halten. Leader ist das erste `up`-Mitglied in der
+Sicht jedes Nodes, das Parken des Leaders macht auf dieser Seite
+also ein anderes Mitglied zum Leader, und ein Singleton oder
+Shard-Koordinator, der dem Leader folgt, zieht mit um — jede Seite
+einer Partition kann am Ende ihren eigenen haben. Nur eine
+Strategie, die eine Seite entfernt, klärt das. Und eine geheilte
+symmetrische Partition holt ein geparktes Mitglied derzeit nicht
+nach `up` zurück: Heartbeats und Gossip gehen nur an erreichbare
+Mitglieder, also spricht keine Seite die andere je wieder an, und
+der Cluster bleibt gespalten, bis ein Operator handelt
+([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
+
+Parken ist Integrität vor Verfügbarkeit: Es ist das, was ein
+Deployment wählt, wenn ein gespaltener Cluster mehr kostet als ein
+abgestürzter Node, der als Mitglied gehalten wird. Wähle eine
+Strategie, die auf deiner Cluster-Form immer zu einem Urteil kommt —
+eine ungerade Mitgliederzahl für `KeepMajority`, einen
+Schiedsrichter oder ein Lease für eine gerade — statt einer, die für
+immer "pending" antworten kann. Unter dem Opt-out ohne Strategie ist
+ein Operator derjenige, der einen abgestürzten Node entfernt.
+
+### Ein Neustart beendet den vorherigen Lauf
+
+Ein Node, der auf demselben `host:port` neu gestartet wird, ist ein
+neuer Prozess mit einer neuen Inkarnation, und sein Eintrag erreicht
+die Überlebenden — über seinen eigenen Join oder per Gossip
+weitergereicht —, während sie den alten Lauf womöglich noch als
+Mitglied führen: geparkt unter `auto-down = off`, für eine Strategie
+gehalten oder noch nicht entfernt, weil der Neustart innerhalb von
+`down-after` kam. Ein Node, der einen lebenden Eintrag für die
+Adresse hält und einen einer anderen Inkarnation mit höherer Version
+empfängt, beendet zuerst den alten Lauf. Er verkündet `MemberDown`
+(außer der alte Eintrag war schon `down`) und `MemberRemoved` für
+die alte Inkarnation, verwirft den Eintrag samt seinem
+Erreichbarkeitsurteil, seiner Park-Warnung und seiner
+Gossip-Replay-Marke, vergisst die Historie des Detectors für die
+Adresse und lässt erst dann den neuen Lauf mit `MemberJoined`
+beitreten. Eine Info-Zeile nennt beide Inkarnationen. Remote Death
+Watch liefert also jedem Watcher eines Actors auf dem alten Lauf das
+`Terminated` für den Verlust des Nodes, und Shards und Singletons
+folgen dem `MemberRemoved` — unter dem Default wie unter dem
+Opt-out. Ein Heartbeat des neuen Laufs, der einen Node vor seinem
+Eintrag erreicht, kann den alten Eintrag kurz wieder auf `up` setzen;
+das Entfernen des alten Laufs folgt, sobald der Eintrag ankommt.
+
+Nichts wird für eine Wiederverbindung desselben Laufs verkündet: Ein
+Heartbeat oder ein neuerer Eintrag derselben Inkarnation bringt ihn
+zurück auf `up`. Ebenso wenig für einen Eintrag ohne Inkarnation —
+von einem Peer, der älter ist als das Feld, oder über einen
+weitergereicht, der es entfernt hat —, der den alten Eintrag still
+ersetzt, wie es jeder Eintrag vorher tat: Der Frame sagt nicht,
+welcher Prozess ihn geschrieben hat, und einen Lauf auf eine
+Vermutung hin zu beenden, würde Watches beenden, die noch leben.
 
 ## Die Sicht des lokalen Nodes
 
@@ -146,23 +332,151 @@ Mitglied gilt global als unreachable, wenn *genug* Peers es so
 melden — der Schwellwert ist in manchen Downing-Strategien
 konfigurierbar (siehe KeepMajority, KeepReferee).
 
-## Eigener Failure Detector
+## Den φ-Accrual-Detector wählen
 
-Der eingebaute Detector des Clusters ist bewusst einfach — einfache
+Der oben beschriebene Detector ist bewusst einfach — einfache
 Zeitschwellen, kein Tracking statistischer Varianz. Für LAN-Skala
-reicht das aus. Die `failureDetector`-Cluster-Option stellt nur seine
-Schwellwerte ein — sie nimmt `Partial<FailureDetectorOptionsType>`
-(die drei `*Ms`-Stellschrauben oben), keine Detector-Instanz; es gibt
-also keinen "eigenen Detector einhängen"-Hook an `Cluster.join`.
+reicht das aus, deshalb ist er der Default.
 
-Falls dein Netzwerk Phi-Accrual braucht (varianzbewusst, adaptive
-Schwellwerte), bringt das Framework bereits einen mit:
-`PhiAccrualFailureDetector` (mit `PhiAccrualOptions`) ist eine
-öffentliche, exportierte Klasse, die die Verteilung der jüngsten
-Zwischenankunftszeiten verfolgt und einen kontinuierlichen
-Verdachtswert erzeugt. Er ist noch nicht als auswählbarer Detector
-in den Cluster eingebunden — der Cluster fährt immer den einfachen
-`FailureDetector` — daher nutzt du ihn vorerst eigenständig.
+Das Framework bringt einen zweiten mit. `PhiAccrualFailureDetector`
+verfolgt die Verteilung der jüngsten Heartbeat-Zwischenankunftszeiten
+eines Peers und erzeugt einen kontinuierlichen Verdachtswert φ, den der
+Cluster über Schwellwerte in `unreachable` / `down` übersetzt. Wo der
+einfache Detector fragt *"war es länger als 2s still?"*, fragt
+φ-Accrual *"wie überraschend ist diese Stille, gemessen daran, wie sich
+dieser Peer tatsächlich verhält?"* — ein Peer, dessen Heartbeats wie ein
+Uhrwerk ankommen, kann also früher auffallen, und einer hinter einer
+zappeligen Verbindung bekommt mehr Spielraum, ohne dass eine der beiden
+Zahlen vorab geraten werden muss.
+
+Wähle ihn pro Node, im Code:
+
+```ts
+const clusterOptions = ClusterOptions.create()
+  .withHost(host)
+  .withPort(port)
+  .withFailureDetectorImplementation('phi')
+  .withPhiAccrual({ unreachableThreshold: 10, downThreshold: 14 });
+Cluster.join(
+  system,
+  clusterOptions,
+);
+```
+
+oder in der `application.conf`:
+
+```hocon
+actor-ts.cluster.failure-detector {
+  implementation = phi
+
+  # Shared by both implementations: the cadence of the cluster's own
+  # heartbeat loop, which is why `phi` below has no copy of it.
+  heartbeat-interval = 500ms
+
+  phi {
+    unreachable-threshold      = 8       # φ above which the peer is unreachable
+    down-threshold             = 12      # φ above which it is down; must exceed the above
+    max-sample-size            = 200     # inter-arrival times kept per peer
+    min-std-deviation          = 100ms   # floor, so a very steady peer is not flagged on noise
+    acceptable-heartbeat-pause = 3s      # grace added to the last heartbeat before φ rises
+    expected-response-after    = "auto"  # φ's estimate until a peer's first measured interval
+  }
+}
+```
+
+Explizite Optionen gewinnen **pro Feld** über die Datei: setzt du eine
+Schwelle im Code, bleiben die anderen fünf aus der `application.conf`
+erhalten.
+
+Was du vor dem Umschalten wissen solltest:
+
+- **`heartbeat-interval` gilt für beide und bleibt, wo es ist.** Es ist
+  die Kadenz der Heartbeat-Schleife des Clusters und keine Eigenschaft
+  eines der Algorithmen; deshalb gibt es bewusst kein
+  `failure-detector.phi.heartbeat-interval`: ein Wechsel der
+  Implementierung kann nicht ändern, wie oft dieser Node mit seinen
+  Peers spricht.
+- **`unreachable-after` / `down-after` gehören dem einfachen Detector**
+  und werden unter `phi` ignoriert; das Paar `phi.*-threshold` ersetzt
+  sie. Das sind φ-Werte, keine Zeitdauern — ein kontinuierlicher Score,
+  bei dem 8 grob "eine Verzögerung von 1 zu 10⁸" bedeutet, und
+  Nachkommastellen sind ein ganz normaler Tuning-Schritt.
+- **φ endet bei etwa 14,9.**  Die Normalverteilungs-Näherung dahinter
+  hört bei z = 8 auf: φ steigt dort auf etwa 14,9 und springt dann
+  direkt auf unendlich.  Ein `down-threshold` über ~14,9 verhält sich
+  deshalb genau wie 14,9 — bleib innerhalb dieses Bereichs, wie es das
+  Beispiel oben mit 14 tut.
+- **`acceptable-heartbeat-pause` startet bei `3s`, per Messung
+  gewählt.**  Die Pause ist ein reiner Versatz auf die Stille, bevor φ
+  zu steigen beginnt, also verschiebt sie jede Schwelle unten um genau
+  ihren Wert.  Sie ist für Stillstände da, für die ein gesunder Node
+  nichts kann: einen gedrosselten Container, eine suspendierte VM, einen
+  langen synchronen Handler, der die Event-Loop festhält.  Garbage
+  Collection gehört nicht dazu — gemessen bei einem Heap von ~300 MB hat
+  sie die Loop um einige zehn Millisekunden verzögert, eine vollständige
+  Collection um etwa 0,1 s.  Erhöhe sie, wenn dein Deployment längere
+  bekannte Pausen hat; `0s` ist die strengste Lesart, die φ geben kann.
+- **`min-std-deviation` bleibt bei `100ms`.**  Eine höhere Untergrenze
+  würde die Toleranz ebenfalls weiten, aber sie skaliert mit den
+  Schwellwerten und stumpft die Erkennung eines wirklich gleichmäßigen
+  Peers ab.  Die Pause ist ein Versatz, der die Form der Verteilung
+  unangetastet lässt, also lebt die Toleranz dort.
+- **`expected-response-after` ist φs Schätzung, bevor es eine Historie
+  hat.**  Unter `auto` ist sie `heartbeat-interval` — welcher Takt dem
+  Detector auch gegeben wird, aus der Datei oder aus dem Code — und eine
+  Dauer entkoppelt die beiden.  Ab dem ersten Frame eines Peers nimmt φ
+  diesen Mittelwert mit einer Standardabweichung von einem Viertel davon
+  an (nie unter `min-std-deviation`), bis das erste Heartbeat-Intervall
+  des Peers gemessen ist.  Dieses Intervall ersetzt die Schätzung, die
+  ab da nichts mehr zu sagen hat — eine Dauer ändert also den ersten
+  Kontakt und nichts danach.  Sie beurteilt auch ein Mitglied, das dieser
+  Node über Gossip kennengelernt und nie gehört hat, ab dem Moment seiner
+  Registrierung — wie es der einfache Detector immer schon tut.
+
+### Was die ausgelieferten Einstellungen tolerieren
+
+Stille nach dem letzten Frame eines Peers, bis φ `unreachable` und
+`down` sagt, bei den ausgelieferten Schwellwerten (8 und 12), der Pause
+von 3 s und `expected-response-after = auto`:
+
+| `heartbeat-interval` | Gleichmäßige Heartbeats | Erster Kontakt |
+| --- | --- | --- |
+| `500ms` (Standard) | 4,06 s / 4,20 s | 4,20 s / 4,38 s |
+| `1s` | 4,56 s / 4,70 s | 5,40 s / 5,76 s |
+| `2s` | 5,56 s / 5,70 s | 7,81 s / 8,52 s |
+
+*Gleichmäßige Heartbeats* ist ein Peer mit einem gemessenen Intervall
+hinter sich — ein pünktliches Intervall liest sich wie ein volles
+Fenster davon; *erster Kontakt* ist ein Peer, von dem einmal etwas kam
+oder der registriert und nie gehört wurde.  Der einfache Detector
+sagt bei jedem Takt 2 s / 5 s.  Das sind die Schwellen des Detectors:
+Der Cluster fragt einmal pro `heartbeat-interval` nach einem Urteil,
+also landet ein angekündigtes Urteil auf dem ersten Detection-Tick nach
+der Schwelle — höchstens einen Takt später.  Jede Sekunde Pause
+verschiebt beide Spalten um eine Sekunde.
+
+Gemessen über `TcpTransport` auf Loopback, mit den beiden Nodes in
+getrennten Prozessen (Windows 11, Bun 1.4.2 und Node 26.10,
+2026-10-14): Ein Node, der 0,5, 1, 2 oder 3 s synchron blockiert war,
+zog auf keiner Runtime ein Urteil auf sich — der Beobachter sah
+höchstens 3,18 s Stille und ein φ von höchstens 0,09 —, während jede
+Blockade von 4 s, 4,14–4,18 s Stille, φ = 8 überschritt, und eine von
+vieren wurde angekündigt, bevor der Node zurückkam.  Der blockierte Node
+hat seinen Peer nie markiert.  Ein 20-ms-Timer unter
+Allokationslast bei einem Heap von ~300 MB lief auf Bun höchstens 87 ms
+und auf Node 14 ms zu spät, und eine erzwungene vollständige Collection
+dauerte 71–113 ms.  Bei einer Pause von 0 s überschritt schon eine
+Blockade von 1 s φ = 8.  Jede Zelle der Tabelle ist durch einen
+deterministischen Test an der echten Klasse festgehalten, also zeigt
+sich ein geänderter Default als roter Test statt als Drift.
+
+Einen Hook für eine eigene Detector-Klasse gibt es weiterhin nicht: die
+Wahl besteht zwischen den beiden mitgelieferten Implementierungen, beim
+Namen genannt. `Cluster` spricht mit der jeweils installierten über
+einen kleinen Vertrag, `FailureDetectorLike` (`register` / `heartbeat` /
+`heardFrom` / `decide` / `forget` / `lastSeen` / `interval`), der
+exportiert ist, falls du nachlesen willst, was ein Detector dem Cluster
+schuldet.
 
 ## Failure-Detector-Entscheidungen diagnostizieren
 
@@ -193,9 +507,11 @@ zum falschen Signal für zwei Fragen, die es zu beantworten scheint:
   auch für einen Peer, von dem *jemand anderes* nichts mehr hört,
   während die eigenen Heartbeats dorthin normal ankommen.
 - **Es feuert nur für ein Member, das `up` war.** Ein Peer, der
-  während `joining`, `weakly-up` oder `leaving` verstummt, erzeugt gar
-  kein Reachability-Event — das Nächste, was du von ihm hörst, ist die
-  Entfernung.
+  während `joining`, `weakly-up` oder `leaving` verstummt, erzeugt bei
+  `unreachable-after` kein `MemberUnreachable` — das Nächste, was du von
+  ihm hörst, kommt bei `down-after`: seine Entfernung unter dem
+  Default oder das `MemberUnreachable` seines Parkens mit einer
+  Strategie oder unter `auto-down = off`.
 
 `ReachabilityChanged` ist das eigene Urteil des lokalen Detectors, ohne
 beide Einschränkungen:
@@ -213,9 +529,11 @@ cluster.subscribe((evt) => {
 Es feuert **nur bei Übergängen** — einmal, wenn der Detector einen Peer
 aus den Augen verliert, einmal, wenn er ihn wiedersieht — und nie für
 einen Peer, der seit dem ersten Kontakt gesund war. Das Urteil wird
-einmal pro `heartbeatIntervalMs` neu berechnet und kippt bei
-`unreachableAfterMs`, ist also die früheste Warnung des Detectors,
-lange vor jeder Downing-Entscheidung.
+einmal pro `heartbeatIntervalMs` neu berechnet und kippt beim einfachen
+Detector bei `unreachableAfterMs`, bei φ-Accrual dort, wo φ den
+`unreachable-threshold` überschreitet — bei den ausgelieferten
+Einstellungen nach etwa 4,06 s Stille —, ist also die früheste Warnung
+des Detectors, lange vor jeder Downing-Entscheidung.
 
 Dieses Urteil gegen den gegossipten `status` des Members zu halten, ist
 der Weg, eine Partition von einem toten Peer zu unterscheiden: eine
@@ -245,9 +563,14 @@ import { Aside } from '@astrojs/starlight/components';
   Die `down`-Entscheidung des Detectors ist statistisch — basiert
   auf vergangener Stille. Ein Peer, der nur langsam, aber sich
   erholend ist, kann als `down` markiert werden und dann wiederkommen.
-  Ohne eine Downing-Strategie, die ihn tatsächlich entfernt, bekommst
-  du **flatternde Mitglieder**, die zwischen `unreachable` und
-  `down` driften. Konfiguriere eine Downing-Strategie.
+  Ohne Strategie handelt der Detector selbst nach dieser Vermutung
+  und entfernt den Peer — `auto-down` ist per Default an —, eine
+  GC-Pause, die lang genug ist, um `down-after` zu überschreiten,
+  kostet dich also einen Node. Unter dem Opt-out `auto-down = off`
+  parkt er den Peer nur, was dessen nächster Heartbeat rückgängig
+  macht; und mit einer Strategie ist die Vermutung nur eine Eingabe,
+  die gegen die übrige Sicht des Clusters abgewogen wird, bevor
+  irgendetwas entfernt wird. Konfiguriere eine Downing-Strategie.
 </Aside>
 
 <Aside type="caution" title="Enge Schwellwerte in unruhigen Netzwerken">

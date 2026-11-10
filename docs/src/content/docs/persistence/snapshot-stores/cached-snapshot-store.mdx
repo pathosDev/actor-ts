@@ -46,6 +46,10 @@ Three patterns:
 
 1. **Slow underlying store** — object storage with multi-hop
    network latency, encrypted state with expensive decryption.
+   For the encrypted case read
+   [Security — the cache holds plaintext](#security--the-cache-holds-plaintext)
+   first: it is the strongest reason to reach for the cache and the
+   one that needs a decision.
 2. **Frequent actor churn** — sharded entities passivating /
    re-spawning constantly, each load re-reading the same
    snapshot.
@@ -61,9 +65,10 @@ underlying store has measurable read latency.**
 
 ```ts
 type CachedSnapshotStoreOptionsType = {
-  cache:      Cache;   // backing cache (required)
-  ttlMs?:     number;  // cache TTL in ms, default 5 minutes
-  keyPrefix?: string;  // key prefix, default 'snap:'
+  cache:                 Cache;    // backing cache (required)
+  ttlMs?:                number;   // cache TTL in ms, default 5 minutes
+  keyPrefix?:            string;   // key prefix, default 'snap:'
+  allowPlaintextCache?:  boolean;  // cache encrypted state anyway, default false
 };
 ```
 
@@ -72,15 +77,109 @@ type CachedSnapshotStoreOptionsType = {
 | `cache` | Backing cache (**required**) — typically Redis in production.  Any `Cache`: in-memory, Redis, or Memcached. |
 | `ttlMs` | Cache TTL in milliseconds.  Default: 5 minutes. |
 | `keyPrefix` | Key prefix (default `'snap:'`) — prevents collisions in shared caches. |
+| `allowPlaintextCache` | Acknowledge that the cache may hold the plaintext of state the wrapped store encrypts at rest, and cache it anyway.  Default `false` — see below. |
 
 The underlying store is the constructor's **first argument** —
 `new CachedSnapshotStore(underlying, options)` — not an option.
+
+## Security — the cache holds plaintext
+
+What gets cached is whatever `loadLatest` returns, and that is the
+**decoded** domain state: decompressed, and for the object-storage
+stores decrypted.  Compose this decorator with
+[client-side snapshot encryption](/persistence/object-storage/encryption/)
+and the deployment holds two copies of the state — one encrypted in
+the bucket, one in plaintext in a cache you own, share with other
+subsystems, and often run unauthenticated on a "private" network.
+Reading the second copy needs neither the bucket nor the master key,
+and a Redis RDB dump keeps it readable afterwards.
+
+Nothing at rest in the bucket is weakened by this; the second copy
+is the whole exposure.  That makes it a composition hazard rather
+than a flaw in either piece — and the composition is one this page
+recommends, which is why it is spelled out here.
+
+So a `loadLatest` whose state the wrapped store keeps encrypted at
+rest is **served straight from the wrapped store, uncached**, and
+the decorator warns once.  It also **evicts** whatever the cache
+already holds under that `persistenceId`: an entry cached before the
+actor gained its `encryption()` hook, or before the store was
+configured to encrypt, would otherwise stay readable in plaintext
+until the next `save` or the end of `ttlMs`.  The price is one cache
+round-trip per refused load — every refused load, not only the one
+that warns — on a path that already pays the wrapped store's full
+read.  Both routes to the refusal count — a per-call `encryption`
+directive with a mode other than `'none'`, and the store's own
+`withEncryption(...)`, which never appears in any call's options:
+
+```text
+persistence: CachedSnapshotStore caches decoded snapshot state, and on
+'ObjectStorageSnapshotStore' this loadLatest asked for encryption — …
+
+persistence: CachedSnapshotStore caches decoded snapshot state, and on
+'ObjectStorageSnapshotStore' the store's own configuration keeps this
+persistenceId encrypted — …
+```
+
+`withAllowPlaintextCache(true)` is your acknowledgement that the
+cache is as protected as the bucket, and restores the caching:
+
+```ts
+const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create()
+  .withCache(cache)
+  .withTtlMs(60_000)
+  .withAllowPlaintextCache(true);
+```
+
+Reasonable answers to the question it asks:
+
+- **In-process `InMemoryCache`** — the plaintext never leaves the
+  node that already decrypted it.  Set the flag.
+- **Redis or Memcached inside the same trust boundary**, with
+  authentication, encryption in transit and no persistence to
+  disk — set the flag, and record the reasoning where your other
+  key-management decisions live.
+- **A shared cache that also backs HTTP middleware**, or one whose
+  operators are not the operators of the bucket — do not set the
+  flag.  Give the encrypted store its own cache, or accept the
+  cold-start cost.
+
+### What the check sees, and what it does not
+
+It sees both routes a deployment can take to confidentiality: the
+**per-call** `PersistenceOptions` your actor's `encryption()` hook
+produces, and the wrapped store's **own configuration**, which it
+reads through the optional `encryptsAtRest(persistenceId)` member of
+`SnapshotStore`.  `ObjectStorageSnapshotStore` implements that from
+the same `encryption` config its codec uses, per `persistenceId`, so
+a resolver that encrypts one prefix and not another is decided per
+entity rather than once for the store.
+
+A per-call directive wins over the store's config, here as
+everywhere else, so an explicit per-call `{ mode: 'none' }` is an
+opt-out even over a store configured to encrypt.
+
+Two things it still cannot see:
+
+- **A store that encrypts and declares nothing.**  The member is
+  optional, absence means *unknown*, and unknown never refuses —
+  the rule the whole capability family follows, so that a
+  third-party store does not change behaviour on upgrade for
+  having declared nothing.  A store of your own that encrypts
+  should implement `encryptsAtRest`.
+- **Encryption applied below the store** — a bucket's server-side
+  default, or a backend that encrypts on the way out.  No member of
+  this contract reports it, and the decorator has nothing to warn
+  about; that decision is yours alone.
 
 ## Cache semantics
 
 - **`loadLatest(persistenceId)`** — read-through with TTL.  Check cache; on
   hit, return.  On miss, load from underlying, cache the result with `ttlMs`,
-  return.
+  return.  A load the
+  [security section](#security--the-cache-holds-plaintext) refuses
+  skips the lookup, **deletes** the entry instead, and is served from
+  the underlying store.
 - **`save(persistenceId, seq, state)`** — write-through-with-invalidate:
   delegate to the underlying store, then **delete** the cache entry.  It
   deliberately does *not* write the new snapshot back — in a cluster two

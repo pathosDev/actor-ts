@@ -209,7 +209,7 @@ unstashAll(): void;
 readonly stashSize: number;
 ```
 
-Vier Details, die zählen:
+Fünf Details, die zählen:
 
 - **`stash()` muss aus einem User-Nachrichten-Handler heraus
   aufgerufen werden.**  Es parkt die *gerade behandelte* Nachricht.
@@ -235,6 +235,15 @@ Vier Details, die zählen:
   wirft unter `reject` `MailboxFullError`, wobei der Batch gestasht
   bleibt.  Siehe
   [Mailboxes](/de/fundamentals/mailboxes/#mailboxes--stash).
+- **Ein `Terminated` aus der Death Watch ist die eine Nachricht, die
+  nicht zurückkommt.**  `watch(ref)` registriert ein Interesse, das der
+  Tod selbst verbraucht — die abgespielte Benachrichtigung erreicht
+  also einen Actor, der nicht mehr beobachtet, und wird zum
+  [Dead Letter](/de/operations/dead-letters/) statt zu einer zweiten
+  Zustellung.  `watchWith(ref, message)` ist die Form, die den Rundlauf
+  übersteht: geparkt wird dort eine Nachricht aus deinem eigenen
+  Protokoll, und die behandelt der Stash wie jede andere.  Siehe
+  [Death Watch](/de/fundamentals/death-watch/).
 
 ### `stash` + `become` — die kanonische Kombination
 

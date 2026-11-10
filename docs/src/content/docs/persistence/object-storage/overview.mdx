@@ -169,14 +169,19 @@ other local processes may write to.  If untrusted users can create
 entries inside the storage root, that is already the larger
 problem.
 
-And it does not cover the per-key lock file.  Taking the lock is
-an exclusive create, which refuses a link rather than following
-it — but the stale-lock recovery that runs once the acquisition
-timeout is exhausted `stat`s that name, and `stat` does follow
-one.  So a link planted at `<key>.lock` lets a file outside the
-root decide whether the lock is treated as abandoned, and a
-*dangling* link there keeps `put` and `delete` on that one key
-retrying instead of returning.
+The per-key lock file is covered differently, because the
+question there is not containment.  Taking the lock is an
+exclusive create, which refuses a link rather than following it.
+The stale-lock recovery that runs once the acquisition timeout is
+exhausted then asks two things about that name, and asks them with
+`lstat`: how old the entry is, and whether it is a regular file at
+all.  Both matter.  `stat` would report the *target's* age, so a
+link aimed at an ancient file could declare the lock abandoned;
+and anything that is not a regular file was never written by this
+backend, so the recovery refuses it instead of removing it.  The
+recovery also runs at most once per acquisition — it is reached
+only after the timeout is already spent, so an entry that keeps
+giving the same answer would otherwise retry without end.
 
 ### S3
 
@@ -220,6 +225,70 @@ const s3ObjectStorage3Options = S3ObjectStorageOptions.create()
 new S3ObjectStorageBackend(s3ObjectStorage3Options);
 ```
 
+## From configuration
+
+Everything above is the builder-first form, and it stays the primary style.
+The same wiring is also reachable from HOCON, which is what a fleet needs when
+the bucket, the region and the prefix differ per environment:
+
+```hocon
+actor-ts.persistence.snapshot-store {
+  plugin = "actor-ts.persistence.snapshot-store.object-storage"
+
+  object-storage {
+    backend = "s3"
+    prefix  = "env-prod/"
+    keep-n  = 5
+
+    compression { algorithm = "zstd" }
+    encryption  { mode = "sse-kms", kms-key-id = "arn:aws:kms:eu-central-1:…" }
+
+    s3 {
+      bucket = "my-app-state"
+      region = "eu-central-1"
+    }
+  }
+}
+```
+
+```ts
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerObjectStoragePlugins, type ObjectStoragePluginHandles } from 'actor-ts/persistence';
+
+let objectStorage: ObjectStoragePluginHandles | undefined;
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [async (persistence) => {
+    objectStorage = await registerObjectStoragePlugins(persistence);
+  }],
+});
+const system = ActorSystem.create('my-app', systemOptions);
+await system.whenReady();
+```
+
+No options argument at all: the plugin reads its block through the extension.
+One block configures **both** stores the call returns, because the snapshot
+store and the durable-state store share a single backend.  The plug-in runs
+inside `ActorSystem.create` and the startup awaits the promise it returns, so
+a codec probe that fails — a compression peer that is not installed, say —
+fails the startup rather than the first persisted snapshot; see [opening the
+stores at startup](/persistence/overview/#opening-the-stores-at-startup).
+Once `whenReady()` resolves, `objectStorage` holds the handles: the
+durable-state store, and `close()`, which releases the shared backend once the
+system has terminated.  Passing options as
+well still works and wins field by field — an option you do not set falls
+through to HOCON rather than shadowing it.  See
+[Configuration reference](/reference/configuration/#actor-tspersistence) for
+every leaf.
+
+**Credentials and keys have no path in that block.**  There is no leaf for S3
+credentials, for a client-side master key or for an integrity key, so a config
+file cannot carry one: omitting S3 credentials uses the SDK's default chain
+(`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, an EC2 instance profile, IAM
+Roles for Service Accounts), and `encryption.mode = client-aes256-gcm` is
+refused with an `OptionsError` pointing at
+`ObjectStoragePluginOptions.withEncryption(…)` instead of silently writing
+plaintext.  `kms-key-id` is an ARN — a name — and is fine.
+
 ## Optional features
 
 | Feature | Page |
@@ -258,6 +327,11 @@ operations.  Compensate with:
 
 - **Snapshot policies** that bound recovery.
 - **CachedSnapshotStore** decorator for read-through caching.
+  If the snapshots are encrypted, that cache holds their
+  *plaintext* — see
+  [Security — the cache holds plaintext](/persistence/snapshot-stores/cached-snapshot-store/#security--the-cache-holds-plaintext),
+  which is also why the decorator refuses to cache an encrypted
+  load until you acknowledge it.
 - **Batching** wherever the framework allows.
 
 import { Aside } from '@astrojs/starlight/components';

@@ -1,7 +1,11 @@
 import { postgresDialect } from '../relational/PostgresDialect.js';
 import { RelationalSnapshotStore } from '../relational/RelationalSnapshotStore.js';
 import { adaptPgPool, buildPgPool } from '../journals/PostgresClient.js';
-import type { PostgresSnapshotStoreOptions, PostgresSnapshotStoreOptionsType } from './PostgresSnapshotStoreOptions.js';
+import {
+  PostgresSnapshotStoreOptionsValidator,
+  type PostgresSnapshotStoreOptions,
+  type PostgresSnapshotStoreOptionsType,
+} from './PostgresSnapshotStoreOptions.js';
 
 /**
  * SnapshotStore backed by PostgreSQL (`pg`).  Behaviour lives in
@@ -11,6 +15,7 @@ import type { PostgresSnapshotStoreOptions, PostgresSnapshotStoreOptionsType } f
 export class PostgresSnapshotStore extends RelationalSnapshotStore {
   constructor(options: PostgresSnapshotStoreOptions = {}) {
     const resolvedOptions = (options as PostgresSnapshotStoreOptionsType);
+    new PostgresSnapshotStoreOptionsValidator().validate(resolvedOptions);
     super({
       storeName: 'PostgresSnapshotStore',
       dialect: postgresDialect,
@@ -18,6 +23,7 @@ export class PostgresSnapshotStore extends RelationalSnapshotStore {
       keepN: resolvedOptions.keepN,
       autoCreateTables: resolvedOptions.autoCreateTables,
       serializer: resolvedOptions.serializer,
+      allowPlaintextRows: resolvedOptions.allowPlaintextRows,
       ownsPool: resolvedOptions.pool === undefined,
       openPool: async () => adaptPgPool(await buildPgPool(resolvedOptions)),
     });

@@ -59,7 +59,7 @@ new ConsumerController<T>({
 
 Wenn der Consumer zwischen **2** und **4** crasht, erreicht das
 ACK den Producer nie.  Der Producer retransmittiert nach
-`resendTimeoutMs`.  Der In-Memory-Dedup des Controllers ist nach
+`resendTimeout`.  Der In-Memory-Dedup des Controllers ist nach
 dem Crash weg, also läuft der Handler für dieselbe Seq erneut —
 mach ihn idempotent oder persistiere die processed-Seq zusammen
 mit dem Business-State.
@@ -112,10 +112,14 @@ Bei Crash zwischen Schritt 2 und Schritt 3's Resolve:
   Journal-Seite springt sofort raus und der Controller ACKt
   sofort.  Netto: keine Duplizierung.
 
-Für End-to-End-Durability paare das mit **persistentem
-Producer-State** — speichere den In-Flight-Buffer des Producers
-in einem Journal, damit ein Producer-seitiger Crash keine
-unbestätigten Nachrichten verliert.
+Für End-to-End-Durability muss auch die Producer-Seite
+persistieren, und diese Hälfte baust Du selbst: das Framework
+hat noch keine durable Producer-Queue
+([#460](https://github.com/pathosDev/actor-ts/issues/460)).
+*Es gibt noch keine durable Producer-Queue* auf der Seite
+[ProducerController](/de/delivery/producer-controller/)
+beschreibt den Wrapper und was er versprechen kann und was
+nicht.
 
 ## Crash-Szenarien
 
@@ -125,10 +129,16 @@ unbestätigten Nachrichten verliert.
 Producer sendet msg #5 → Crash, bevor das Transmit abgeschlossen ist
 ```
 
-Recovery: Producer startet neu.  Ohne Persistenz ist msg #5
-verloren.  Mit Persistenz ist die Nachricht im
-Unacked-Buffer-Journal des Producers; wird beim Recovery
-gesendet.
+Recovery: Producer startet neu — und msg #5 wird von nichts im
+Framework erneut gesendet, denn der Producer führt kein Journal
+unbestätigter Sends.  Ein Supervisor-Restart schließt sie über
+ihr `confirm` mit `Error('producer stopped')` ab, und so erfährt
+Dein Code, was erneut zu senden ist; ein Prozess, der stirbt,
+nimmt sie unabgeschlossen mit.  Ein Producer, der beides
+übersteht, ist ein `PersistentActor`-Wrapper, den Du baust, bis
+[#460](https://github.com/pathosDev/actor-ts/issues/460) einen
+liefert — siehe *Es gibt noch keine durable Producer-Queue* auf
+der Seite [ProducerController](/de/delivery/producer-controller/).
 
 Alles, was der neu gestartete Producer *danach* sendet, kommt normal an.  Der
 Restart erzeugt eine neue Producer-Inkarnation, der Consumer eröffnet also ein
@@ -183,7 +193,7 @@ Consumer auf node-A verarbeitet msg #5; Controller queued das ACK
 node-A crasht, bevor das ACK-Tell abgeschlossen ist
 ```
 
-Producer sieht im `resendTimeoutMs`-Fenster kein ACK →
+Producer sieht im `resendTimeout`-Fenster kein ACK →
 retransmittiert.
 
 Wenn der Consumer **sharded** ist (die Entity wandert beim
@@ -203,7 +213,7 @@ zurück, und Du bekommst volle Wiederverarbeitung.
 Das ACK ist **Fire-and-Forget** vom Controller zum `replyTo` des
 Producers.  Der Controller wartet nicht auf die Zustellung —
 wenn das Netzwerk das ACK verliert, retransmittiert der Producer
-nach `resendTimeoutMs`, und der Dedup des Controllers re-ACKt
+nach `resendTimeout`, und der Dedup des Controllers re-ACKt
 sofort.
 
 Das heißt: **Dein Handler zahlt keine Latenz-Kosten für das
@@ -227,7 +237,7 @@ const consumer = ReliableDelivery.consumer<OrderEvent>(system, {
   },
 });
 
-const producerOptions = ProducerControllerOptions.create<OrderEvent>().withConsumer(consumer.ref as never);
+const producerOptions = ProducerControllerOptions.create<OrderEvent>().withConsumer(consumer.ref);
 const producer = ReliableDelivery.producer<OrderEvent>(system, producerOptions);
 
 producer.tell(order, (err) => {
@@ -256,6 +266,43 @@ stillschweigend auf At-most-once herabgestuft und dabei Erfolg melden.  Beachte,
 was das Signal weiterhin *nicht* verspricht: es sagt, dass der Consumer die
 Verantwortung für die Seq übernommen hat — bei einer erneuten Zustellung heißt
 das, der Handler lief bei einem *früheren* Versuch, nicht bei diesem.
+
+Der **Geltungsbereich des Tokens ist ein Producer, nicht eine Nachricht**.  Es
+wird einmal pro `ProducerController`-Konstruktion gezogen und auf jedes
+Delivery gestempelt, das diese Inkarnation sendet — alles, was legitim ein
+Delivery erhält (Dein Consumer, ein Handler, der es weiterreicht, ein
+Router-Fan-out), kann damit jede andere in-flight-Seq dieses Producers
+settlen, solange der Actor lebt.  Das ist Absicht und kein Versehen: Wer ein
+Delivery hält, ist ohnehin diejenige Partei, die es ACKen soll, und ohne
+Delivery hat sie überhaupt kein `replyTo`, um den Producer zu erreichen.  Es
+hält außerdem den Dedup-Key des Consumers stabil, denn dieser Key ist
+`(producerId, incarnation)` — ein Token pro Nachricht würde das Fenster bei
+jeder Sequenz zurücksetzen.  Was es *nicht* gibt, ist eine Capability, die Du
+pro Nachricht weitergeben kannst: ein Delivery an eine weniger vertraute
+Komponente weiterzureichen, gibt ihr den ganzen Producer.
+
+Die Prüfung sitzt beim Producer, weil nur diese Seite etwas Unerratbares hat,
+gegen das sie prüfen kann.  Der Consumer ACKt an das `replyTo` des Envelopes
+und kann es nicht besser: ein `Delivery` kommt ohne Sender an — ein Producer
+tellt mit einem Argument, und der Envelope-Dispatch des Clusters ebenso —, es
+gibt also keine authentifizierte Identität, gegen die sich `replyTo` halten
+ließe, und jedes andere Feld des Envelopes hat geschrieben, wer ihn gesendet
+hat.
+
+Wie viel daran hängt, wird hier nicht entschieden.  Ein `ActorRef` überquert
+das Cluster-Wire sehr wohl: ein `replyTo` in einem Delivery reist als
+Adress-Marker, und der empfangende Knoten dekodiert ihn zurück in eine lebende
+Ref — einen lokalen Actor, wenn der Marker diesen Knoten nennt, sonst einen
+entfernten.  Ein Peer, der an einen Consumer unter `/user` senden kann, kann das
+ACK also auf einen Actor seiner Wahl richten, auch auf einen auf dem Knoten des
+Consumers, und das Auflösen eines Markers, der diesen Knoten nennt, durchläuft
+keine der Trust-Prüfungen, die das Ziel eines Envelopes selbst durchläuft.  Dort
+kommt pro Delivery ein `Acknowledgment` an, mit vier Feldern, die der Peer
+selbst geschrieben hat, und ein echter Producer unter dieser Adresse verwirft
+es, weil die Inkarnation nicht passt.  Ob eine Ref vom Wire überhaupt zu einem
+beliebigen Actor aufgelöst werden sollte, ist eine Frage an den Ref-Decoder und
+nicht an dieses Protokoll;
+[#1572](https://github.com/pathosDev/actor-ts/issues/1572) verfolgt sie.
 
 ## Wann du die Controller NICHT einsetzt
 

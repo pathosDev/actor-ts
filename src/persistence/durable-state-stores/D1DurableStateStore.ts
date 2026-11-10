@@ -26,6 +26,7 @@ export class D1DurableStateStore extends RelationalDurableStateStore {
       table: resolvedOptions.table,
       autoCreateTables: resolvedOptions.autoCreateTables,
       serializer: resolvedOptions.serializer,
+      allowPlaintextRows: resolvedOptions.allowPlaintextRows,
       ownsPool: resolvedOptions.client === undefined,
       openPool: async () => adaptD1Client(buildD1Client(resolvedOptions)),
     });

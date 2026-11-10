@@ -5,30 +5,66 @@ description: What a dead letter is, what actor-ts does with one by default, and 
 
 A **dead letter** is a message the system could not deliver: a `tell` to a
 ref whose actor has stopped, a selection that resolved to nothing, a
-behavior that answered `unhandled`, a cluster singleton with no host.
-Nothing was lost by accident — the framework noticed, and this is how it
-says so.
+behavior that answered `unhandled`, an actor that declined one with
+[`this.unhandled(m)`](/fundamentals/actor/#declining-a-message--unhandled),
+a cluster singleton with no host. Nothing was lost by accident — the
+framework noticed, and this is how it says so.
+
+The two `unhandled` entries are a different animal from the rest: the
+message *was* delivered, and a live actor turned it down. A counter tells
+them apart — `actor_unhandled_total{class}` rises only for a declined
+message, and unlike `actor_dead_letters_total` it does not need the queue
+below to be switched on first.
+
+Three framework base classes decline this way by default.  The
+`onSelfMessage` hook of `WebsocketServerActor`, `WebsocketClientActor` and
+`MqttActor` receives whatever none of the actor's own kinds matched — an
+application message your subclass never handles, or a body a remote node
+addressed to the actor's path — and unless you override it, it turns that
+message into a dead letter naming the actor, after one `warn` that names
+the message's class and never its payload.
 
 ## What happens by default
 
-Every dead letter is wrapped in a `DeadLetter` and **published on the
-[event stream](/fundamentals/event-stream/)**. That is the whole of the
-default behaviour.
+Every dead letter is wrapped in a `DeadLetter`, **logged**, and **published
+on the [event stream](/fundamentals/event-stream/)**. That is the whole of
+the default behaviour.
 
-In particular the framework does **not** log dead letters. `DeadLetterRef`
-holds no logger; if nothing subscribes to the stream, the letter is gone.
-That is fine for a development run and a poor answer to "what did we drop
-during last night's incident?", which is what the queue below is for.
+The record is one `info` line naming the recipient path, the sender when
+there is one, and the message's **class** — never the payload, for the same
+data-protection reason `store` below defaults to `off`. It is throttled: the
+first ten dead letters are logged in full, then a single `warn` line says
+logging is suspending, and the next five minutes are silent. When it
+resumes, one more `warn` line says how many letters went unreported. Both
+numbers are settings — see
+[`actor-ts.diagnostics`](/reference/configuration/) — and `0` means "never
+log" for the count and "never suspend" for the window.
+
+The burst `terminate()` produces while draining mailboxes is **not** logged
+unless you ask for it with `log-dead-letters-during-shutdown = on`: an
+orderly shutdown drains every queued and stashed message to dead letters,
+and reporting that makes a clean stop read as an incident. An individual
+`ref.stop()` still logs, because the system is not terminating.
+
+What the log line is not is a *record*. It carries no payload and nothing
+keeps it in the process; if nothing subscribes to the stream either, the
+letter itself is gone. That is fine for a development run and a poor answer
+to "what did we drop during last night's incident?", which is what the
+queue below is for.
 
 ```ts
-import { DeadLetter } from 'actor-ts';
+import { Actor, DeadLetter } from 'actor-ts';
+import { classNameOf } from 'actor-ts/util';
 
 class Watcher extends Actor<DeadLetter> {
   override preStart(): void {
     this.system.eventStream.subscribe(this.self, DeadLetter);
   }
   override onReceive(letter: DeadLetter): void {
-    this.system.log.warn(`undelivered: ${letter.message} -> ${letter.recipient.path}`);
+    // The class, never the payload: interpolating the message prints a
+    // string payload verbatim and throws on a decoded body with no usable
+    // toString.
+    this.system.log.warn(`undelivered: ${classNameOf(letter.message)} -> ${letter.recipient.path}`);
   }
 }
 ```
@@ -106,11 +142,11 @@ compose; neither replaces the other.
 :::
 
 Every key in this block decides **what is retained**, which is why they live
-under `actor-ts.dead-letters` and not beside the eventual logging and
-rate-limiting knobs: those decide how loudly a letter is *announced*, are
-read on the publish path rather than by the queue, and sit downstream of
-capture by design — so a suppression setting can never quietly make this
-record incomplete.
+under `actor-ts.dead-letters` and not beside the logging knobs in
+[`actor-ts.diagnostics`](/reference/configuration/): those decide how loudly
+a letter is *announced*, are read on the publish path rather than by the
+queue, and sit downstream of capture by design — so a suppression setting
+can never quietly make this record incomplete.
 
 ## Inspecting
 
@@ -282,6 +318,42 @@ confirmation — and leave it off for the telemetry firehose the bound exists
 for. See [mailbox sizing](/operations/tuning/mailbox-sizing/).
 
 The letter carries the message, its sender and the actor it never reached —
-the same three fields every other loss path records. The envelope's MDC
-context and its tracing span do not survive it; `DeadLetter` has no slot for
-either.
+the same three fields every other loss path records — and, in `attribution`,
+the envelope's MDC context and its tracing span:
+
+```ts
+class Auditor extends Actor<DeadLetter> {
+  override preStart(): void {
+    this.system.eventStream.subscribe(this.self, DeadLetter);
+  }
+  override onReceive(letter: DeadLetter): void {
+    const { context, trace } = letter.attribution;
+    this.system.log
+      .withFields({ ...context, traceId: trace?.traceId ?? 'none' })
+      .warn(`undelivered -> ${letter.recipient.path}`);
+  }
+}
+```
+
+That pair is what a counter can never give you: not that a message was lost,
+but which *request* lost it. Both are absent when the send carried neither —
+a `tell` outside any `LogContext.run`, or a system with tracing disabled —
+and `attribution` itself is always present, so reading through it needs no
+guard.
+
+Only a loss path that still knows where the message came from can fill it.
+An overflow drop copies both fields straight off the discarded envelope; a
+`BackoffSupervisor` stash eviction carries the MDC its entry captured when
+the message was buffered, and no span — nothing exposes an arriving
+envelope's span to actor code, so the supervisor has none to copy. A letter
+built from a bare message — a projection event, a singleton hand-off —
+carries an empty attribution, and that is the truth rather than an omission.
+
+**The attribution stays on the event.** A captured `DeadLetterEntry` — what
+[`list()`](#inspecting) returns — does not carry it, deliberately. An
+entry is retained for `retentionMs` and, under `store: 'persistent'`, written
+to a journal that outlives the process — while an MDC routinely carries
+tenant, user and request identifiers. That is the same decision that keeps
+the store `off` by default and the payload out of the log line, taken one
+layer down. Subscribe to `DeadLetter` if you want the attribution durably,
+under a retention you chose.

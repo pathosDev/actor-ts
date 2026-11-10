@@ -17,7 +17,6 @@ import {
   CASSANDRA_SNAPSHOT_PLUGIN_ID,
   CassandraJournalOptions,
   CassandraSnapshotStoreOptions,
-  PersistenceExtensionId,
   PersistentActor,
   RegisterCassandraPluginsOptions,
   registerCassandraPlugins,
@@ -57,25 +56,30 @@ class Counter extends PersistentActor<Command, Event, number> {
 
 async function main(): Promise<void> {
   const client = new FakeCassandraClient();
-  const systemOptions = ActorSystemOptions.create().withConfig({
+  const journalOptions = CassandraJournalOptions.create()
+    .withContactPoints(['fake'])
+    .withKeyspace('app')
+    .withAutoCreateKeyspace(true);
+  const snapshotOptions = CassandraSnapshotStoreOptions.create()
+    .withContactPoints(['fake'])
+    .withKeyspace('app');
+  const cassandraPluginsOptions = RegisterCassandraPluginsOptions.create()
+    .withClient(client)
+    .withJournal(journalOptions)
+    .withSnapshotStore(snapshotOptions);
+  // The config selects the Cassandra plug-ins; the `plugins` slot registers
+  // them inside `create`, so both are in place before the first actor starts.
+  const systemOptions = ActorSystemOptions.create()
+    .withConfig({
       'actor-ts': {
         persistence: {
           journal: { plugin: CASSANDRA_JOURNAL_PLUGIN_ID },
           'snapshot-store': { plugin: CASSANDRA_SNAPSHOT_PLUGIN_ID },
         },
       },
-    });
+    })
+    .withPersistence({ plugins: [(persistence) => registerCassandraPlugins(persistence, cassandraPluginsOptions)] });
   const system = ActorSystem.create('cassandra-hello', systemOptions);
-  const ext = system.extension(PersistenceExtensionId);
-  const journalOptions = CassandraJournalOptions.create()
-    .withContactPoints(['fake']).withKeyspace('app').withAutoCreateKeyspace(true);
-  const snapshotOptions = CassandraSnapshotStoreOptions.create()
-    .withContactPoints(['fake']).withKeyspace('app');
-  const cassandraPluginsOptions = RegisterCassandraPluginsOptions.create()
-    .withClient(client)
-    .withJournal(journalOptions)
-    .withSnapshotStore(snapshotOptions);
-  registerCassandraPlugins(ext, cassandraPluginsOptions);
 
   let counter = system.spawnAnonymous(Counter);
   counter.tell({ kind: 'increment', amount: 10 });

@@ -1,6 +1,7 @@
 import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import { DEFAULT_FRAMING, readFramingFromConfig } from './TcpFraming.js';
@@ -43,20 +44,14 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
 
   constructor(options: TcpSocketOptions = {}) { super(options); }
 
-  protected configKey(): string { return ConfigKeys.io.broker.tcp; }
+  protected configKey(): string { return ConfigKeys.io.broker.tcp.root; }
   protected builtInDefaultOptions(): Partial<TcpSocketOptionsType> {
     return { framing: DEFAULT_FRAMING, keepAliveMs: DEFAULT_TCP_KEEP_ALIVE_MS };
   }
   protected readOptionsFromConfig(config: Config): Partial<TcpSocketOptionsType> {
-    const out: { -readonly [K in keyof TcpSocketOptionsType]?: TcpSocketOptionsType[K] } = {};
-    if (config.hasPath('host')) out.host = config.getString('host');
-    if (config.hasPath('port')) out.port = config.getInt('port');
-    if (config.hasPath('framing')) out.framing = readFramingFromConfig(config.getConfig('framing'));
-    if (config.hasPath('idleTimeoutMs')) out.idleTimeoutMs = config.getDuration('idleTimeoutMs');
-    if (config.hasPath('connectTimeoutMs')) out.connectTimeoutMs = config.getDuration('connectTimeoutMs');
-    if (config.hasPath('keepAliveMs')) out.keepAliveMs = config.getDuration('keepAliveMs');
-    return out;
+    return readTcpSocketOptionsFromConfig(config);
   }
+  protected override retiredLeaves(): RetiredLeaves { return RETIRED_TCP_SOCKET_LEAVES; }
   protected requiredOptions(): ReadonlyArray<keyof TcpSocketOptionsType> {
     return ['host', 'port', 'target'];
   }
@@ -242,6 +237,41 @@ export class TcpSocketActor extends BrokerActor<TcpSocketOptionsType, TcpSocketC
   }
 }
 
+/* ----------------------------- HOCON reader ----------------------------- */
+
+/**
+ * The camelCase spellings the TCP client's own leaves had before #1443,
+ * mapped to the leaves that replaced them — see `BrokerActor.retiredLeaves`.
+ */
+const RETIRED_TCP_SOCKET_LEAVES: RetiredLeaves = {
+  idleTimeoutMs: 'idle-timeout',
+  connectTimeoutMs: 'connect-timeout',
+  keepAliveMs: 'keep-alive',
+};
+
+/**
+ * Read the `actor-ts.io.broker.tcp` block's own leaves off the system config,
+ * at the full paths `keys` holds; the reconnect / breaker / buffer leaves are
+ * `BrokerActor`'s.  An unset leaf is omitted.  The three deadlines are
+ * durations, so `30s` and a bare millisecond count read alike.  The `framing`
+ * block is read by `readFramingFromConfig`, the reader the listener shares,
+ * which also refuses the retired spellings of its two caps.  `target` names an
+ * actor and has no leaf.
+ */
+export function readTcpSocketOptionsFromConfig(
+  config: Config,
+  keys: typeof ConfigKeys.io.broker.tcp = ConfigKeys.io.broker.tcp,
+): Partial<TcpSocketOptionsType> {
+  const out: { -readonly [K in keyof TcpSocketOptionsType]?: TcpSocketOptionsType[K] } = {};
+  if (config.hasPath(keys.host)) out.host = config.getString(keys.host);
+  if (config.hasPath(keys.port)) out.port = config.getInt(keys.port);
+  if (config.hasPath(keys.framing.root)) out.framing = readFramingFromConfig(config, keys.framing);
+  if (config.hasPath(keys.idleTimeout)) out.idleTimeoutMs = config.getDuration(keys.idleTimeout);
+  if (config.hasPath(keys.connectTimeout)) out.connectTimeoutMs = config.getDuration(keys.connectTimeout);
+  if (config.hasPath(keys.keepAlive)) out.keepAliveMs = config.getDuration(keys.keepAlive);
+  return out;
+}
+
 /* ----------------------------- internals -------------------------------- */
 
 interface NetSocket {
@@ -261,6 +291,18 @@ interface NetSocket {
    * go missing without anyone noticing (#751 is that bug, one interface over).
    * The call site catches instead, so an absence is a logged warning on a
    * working connection rather than a silent no-op.
+   *
+   * The socket's own `setTimeout` is absent from this contract for the
+   * opposite reason — refused, not overlooked.  It measures inactivity in
+   * *either* direction, which is a different question from "is the peer still
+   * there" wearing the same units: a connection this actor keeps writing to
+   * never trips it however dead the far end is, and a healthy but quiet one
+   * trips it although nothing is wrong.  Keepalive answers the liveness
+   * question because the peer's kernel replies whether or not its application
+   * has anything to say, and inbound silence is `idleTimeoutMs`' question,
+   * answered on the actor's own clock where arriving bytes can reset it.
+   * Leaving it undeclared makes the refusal a compile error rather than a
+   * comment (#753).
    */
   setKeepAlive(enable: boolean, initialDelayMs: number): void;
 }

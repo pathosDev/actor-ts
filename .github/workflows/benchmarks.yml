@@ -87,14 +87,14 @@ jobs:
         # measurement.  Catches what the typecheck cannot: wiring that is
         # type-correct but wrong at runtime.
         #
-        # `worker` is excluded on hosted runners for the same reason the
-        # worker-thread multi-node test suites are quarantined there (see
-        # test.yml + #538): Bun on GitHub's runners cannot respawn functional
-        # worker threads after the first, and worker-count-scaling.ts spawns
-        # 1 → 2 → 4 → 8 → auto in one process.  It runs locally via
-        # `bun run bench:smoke`.  The exclusion shares the quarantine's exit
-        # criterion — `nightly-flakes.yml` is what measures it.
-        run: bun run bench:smoke -- --exclude=worker
+        # `worker` is included again.  It was excluded for the same reason the
+        # worker-thread test suites were quarantined (#538) — Bun on hosted
+        # runners was said not to respawn functional worker threads, and
+        # worker-count-scaling.ts spawns 1 → 2 → 4 → 8 → auto in one process —
+        # and it shared that quarantine's exit criterion, which
+        # `nightly-flakes.yml` has now met.  Easy to have missed on the way out,
+        # because it is not a test and no grep for the env var finds it.
+        run: bun run bench:smoke
 
   # The framework-comparison tree (#27) is invisible to every job above: it
   # carries its OWN package.json and lockfile, so `run-all.ts` skips it and

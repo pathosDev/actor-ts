@@ -164,9 +164,14 @@ export class PriorityMailbox<T = unknown> extends DroppingMailbox<T> {
     this.insert(envelope);
     const shed = this.removeOldest();
     // Undefined only when every entry — the arrival included — is a lifecycle
-    // notification that may not be dropped, which `prependUser` can produce by
-    // replaying a stashed one (#729).  The guard was already here for the
-    // discipline #407 established: count removals, not intentions.
+    // notification that may not be dropped, which a direct `enqueue` of an
+    // undroppable envelope can produce (#729).  A stash replay no longer can:
+    // {@link prependUser} routes an undroppable envelope to `enqueueSignal`,
+    // which is exempt from the bound and never reaches this method.  Worth
+    // stating, because a guard explained by a route that can no longer arrive
+    // reads as dead code to whoever considers deleting it.  The guard was
+    // already here for the discipline #407 established: count removals, not
+    // intentions.
     if (shed !== undefined) this.reportDrop(shed === envelope ? 'drop-new' : 'drop-head', shed);
   }
 
@@ -302,9 +307,31 @@ export class PriorityMailbox<T = unknown> extends DroppingMailbox<T> {
    * the answer to both questions at once.  The consequence is the same on
    * either mailbox and is worth knowing: on a bounded one, `unstashAll()` can
    * drop messages, or throw under `reject`.
+   *
+   * **Except an {@link Envelope.undroppable} one**, which takes
+   * {@link enqueueSignal} instead — the same exempt door it would have taken
+   * arriving fresh, and the same rule `BoundedMailbox.prependUser` applies
+   * (#729).  Re-entering `enqueue` was the whole bug: that capacity check
+   * never reads the marker, so a `Terminated` that round-tripped through a
+   * stash came back droppable and two of the three policies destroyed it —
+   * `drop-new` discarded it and counted it as an ordinary shed message, and
+   * `reject` threw `MailboxFullError` on the replaying actor's own stack.
+   * `drop-lowest-priority` was already safe by accident, because it sheds
+   * through {@link removeOldest}, which does read the marker; relying on that
+   * accident would have left the guarantee holding for one policy out of
+   * three.  Nothing is reported either way, because nothing is discarded.
+   *
+   * `enqueueSignal` rather than {@link insert} directly, so a subclass that
+   * overrides the exempt lane keeps owning it on the replay path too.  The
+   * position is identical — both re-rank — so a notification still comes back
+   * wherever `priorityFor` puts it, exempt from the bound but not from the
+   * order.
    */
   override prependUser(envelopes: Array<Envelope<T>>): void {
-    for (const envelope of envelopes) this.enqueue(envelope);
+    for (const envelope of envelopes) {
+      if (envelope.undroppable === true) this.enqueueSignal(envelope);
+      else this.enqueue(envelope);
+    }
   }
 
   /**

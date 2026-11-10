@@ -3,10 +3,16 @@ import { Config } from '../../../src/config/Config.js';
 import { ConfigKeys } from '../../../src/config/ConfigKeys.js';
 import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import {
+  DistributedDataOptions,
   DistributedDataOptionsValidator,
   readDistributedDataOptionsFromConfig,
+  type DistributedDataOptionsBuilder,
+  type DistributedDataOptionsType,
 } from '../../../src/crdt/DistributedDataOptions.js';
+import { InMemoryDurableStateStore } from '../../../src/persistence/durable-state-stores/InMemoryDurableStateStore.js';
+import { OptionsBuilder } from '../../../src/util/OptionsBuilder.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 /**
  * #856 — DistributedData read no HOCON at all before this: there was no
@@ -15,7 +21,8 @@ import { OptionsError } from '../../../src/util/OptionsValidator.js';
  * (kebab HOCON leaf → camelCase option field) and the "absent means absent"
  * rule — a key nobody set has to stay out of the returned object entirely, or
  * it lands as an explicit `undefined` and shadows the built-in default
- * underneath it.
+ * underneath it.  `toEqual` cannot see that second half, so the exact-object
+ * cases go through `expectExactOptions` (#1447).
  */
 
 describe('readDistributedDataOptionsFromConfig', () => {
@@ -23,40 +30,93 @@ describe('readDistributedDataOptionsFromConfig', () => {
     const config = Config.parseString(`
       actor-ts.distributed-data {
         gossip-interval             = 250ms
+        quorum-timeout              = 2s
         max-pending-quorum-requests = 32
         max-quorum-timeout          = 4s
         max-gossip-bytes            = 512K
+        log-data-size-exceeding     = 64K
+        durable-keys                = ["cart-42", "session-*"]
       }
     `);
 
-    expect(readDistributedDataOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readDistributedDataOptionsFromConfig(config), {
       gossipInterval: 250,
+      quorumTimeout: 2_000,
       maxPendingQuorumRequests: 32,
       maxQuorumTimeout: 4_000,
       maxGossipBytes: 512 * 1024,
+      logDataSizeExceeding: 64 * 1024,
+      durableKeys: ['cart-42', 'session-*'],
     });
   });
 
   test('an absent block yields nothing at all, not a bag of undefined', () => {
-    expect(readDistributedDataOptionsFromConfig(Config.parseString('actor-ts.system.name = x')))
-      .toEqual({});
+    const options = readDistributedDataOptionsFromConfig(Config.parseString('actor-ts.system.name = x'));
+
+    expectExactOptions(options, {});
   });
 
   test('a partial block leaves the unset leaves out', () => {
     const config = Config.parseString('actor-ts.distributed-data.max-quorum-timeout = 90ms');
 
-    expect(readDistributedDataOptionsFromConfig(config)).toEqual({ maxQuorumTimeout: 90 });
+    expectExactOptions(readDistributedDataOptionsFromConfig(config), { maxQuorumTimeout: 90 });
   });
 
   test('the shipped reference.conf resolves to the documented defaults', () => {
     // Locks the published values to the reader: a rename on either side turns
     // into a failure here rather than into a key that quietly stops applying.
-    expect(readDistributedDataOptionsFromConfig(Config.parseString(REFERENCE_CONF))).toEqual({
+    expectExactOptions(readDistributedDataOptionsFromConfig(Config.parseString(REFERENCE_CONF)), {
       gossipInterval: 1_000,
+      quorumTimeout: 5_000,
       maxPendingQuorumRequests: 1_000,
       maxQuorumTimeout: 30_000,
       maxGossipBytes: 1024 * 1024,
+      logDataSizeExceeding: 100 * 1024,
+      durableKeys: [],
     });
+  });
+
+  test('the shipped quorum deadline sits under the shipped ceiling', () => {
+    // The relationship, not the numbers.  `max-quorum-timeout` clamps the
+    // default deadline as it clamps a caller's, so a default above the ceiling
+    // would be a published value no call ever waits out — every quorum request
+    // that names no `timeoutMs` would quietly run on the ceiling instead (#856).
+    const shipped = readDistributedDataOptionsFromConfig(Config.parseString(REFERENCE_CONF));
+
+    expect(shipped.quorumTimeout).toBeGreaterThan(0);
+    expect(shipped.quorumTimeout!).toBeLessThanOrEqual(shipped.maxQuorumTimeout!);
+  });
+
+  test('the shipped reporting threshold is about a tenth of the shipped gossip budget', () => {
+    // The relationship, not the number.  "Large" has no absolute meaning for a
+    // CRDT, so the threshold is only defensible as a share of one tick: around
+    // a tenth, ten such keys fill a whole frame and every other key waits an
+    // extra sweep per offender, which is the moment one value starts governing
+    // everybody else's convergence.  Akka's 10 KiB is a tenth of *this* — 1 %
+    // of a tick — and would fire on the first honest ORSet a deployment
+    // stores (#856).
+    //
+    // A band rather than an equality, and deliberately so: both values are
+    // round numbers in the same unit, so 100 KiB is 9.77 % of 1 MiB and no
+    // HOCON size literal is exactly a tenth of `1M`.  The band still fails the
+    // two changes worth catching — Akka's 10 KiB (1 %) and a threshold that
+    // has drifted up to the budget itself.
+    const shipped = readDistributedDataOptionsFromConfig(Config.parseString(REFERENCE_CONF));
+    const share = shipped.logDataSizeExceeding! / shipped.maxGossipBytes!;
+
+    expect(shipped.logDataSizeExceeding).toBeGreaterThan(0);
+    expect(share).toBeGreaterThan(0.05);
+    expect(share).toBeLessThan(0.15);
+  });
+
+  test('the shipped durable whitelist is empty, which means every key', () => {
+    // Pinned because the *other* reading of `[]` — persist nothing — is the
+    // one that loses data silently, and nothing in the type says which it is.
+    // `DurableDistributedData.test.ts` asserts the behaviour this value
+    // selects; this asserts that the shipped value selects it.
+    const shipped = readDistributedDataOptionsFromConfig(Config.parseString(REFERENCE_CONF));
+
+    expect(shipped.durableKeys).toEqual([]);
   });
 
   test('the shipped gossip budget sits well under the shipped wire cap', () => {
@@ -108,6 +168,18 @@ describe('DistributedDataOptionsValidator over config-sourced values', () => {
       .toThrow(OptionsError);
   });
 
+  test('takes a positive default quorum deadline and refuses 0 — unlike the ceiling, 0 is not "off" here', () => {
+    // The ceiling's `0` switches a bound off; a deadline of 0 is armed like
+    // any other, so it would expire nearly every request at the next timer
+    // tick.  There is no honest reading of it, so it is refused rather than
+    // translated (#856).
+    const validator = new DistributedDataOptionsValidator();
+
+    expect(() => validator.validate({ quorumTimeout: 1 })).not.toThrow();
+    expect(() => validator.validate({ quorumTimeout: 0 })).toThrow(/quorumTimeout/);
+    expect(() => validator.validate({ quorumTimeout: -1 })).toThrow(OptionsError);
+  });
+
   test('accepts 0 for the gossip budget and rejects a negative or fractional one', () => {
     const validator = new DistributedDataOptionsValidator();
 
@@ -116,7 +188,92 @@ describe('DistributedDataOptionsValidator over config-sourced values', () => {
     expect(() => validator.validate({ maxGossipBytes: 1.5 })).toThrow(/maxGossipBytes/);
   });
 
+  test('accepts 0 for the reporting threshold and rejects a negative or fractional one', () => {
+    const validator = new DistributedDataOptionsValidator();
+
+    expect(() => validator.validate({ logDataSizeExceeding: 0 })).not.toThrow();
+    expect(() => validator.validate({ logDataSizeExceeding: -1 })).toThrow(/logDataSizeExceeding/);
+    expect(() => validator.validate({ logDataSizeExceeding: 1.5 })).toThrow(/logDataSizeExceeding/);
+  });
+
+  test('accepts the two durable-key forms and nothing else', () => {
+    const validator = new DistributedDataOptionsValidator();
+
+    expect(() => validator.validate({ durableKeys: [] })).not.toThrow();
+    expect(() => validator.validate({ durableKeys: ['cart-42', 'session-*'] })).not.toThrow();
+    // A blank entry matches nothing, and on a whitelist an entry that matches
+    // nothing is a key the operator believes is persisted and is not.
+    expect(() => validator.validate({ durableKeys: ['   '] })).toThrow(OptionsError);
+    // `*` in the middle is not a glob here — it would match the literal key
+    // `a*b` and nothing else, which is exactly the surprise a durable
+    // whitelist cannot afford, so it is refused rather than reinterpreted.
+    expect(() => validator.validate({ durableKeys: ['a*b'] })).toThrow(/durableKeys/);
+    // A bare `*` has a spelling already: the empty list.
+    expect(() => validator.validate({ durableKeys: ['*'] })).toThrow(/durableKeys/);
+  });
+
   test('an unset optional always passes', () => {
     expect(() => new DistributedDataOptionsValidator().validate({})).not.toThrow();
+  });
+});
+
+/**
+ * The code route to the same fields (#856).  A builder is its settings — each
+ * `withX` writes one own field — so every setter is called here on a fresh
+ * builder and the whole bag is read back.
+ *
+ * `withQuorumTimeout` is the route the quorum page shows, and nothing called
+ * it.  Wired to `maxQuorumTimeout`, its neighbour, it passed every suite: the
+ * ceiling clamps the 5 s default to the very number the deadline should have
+ * been, so the one observable a quorum test reads came out the same.
+ */
+type DistributedDataSetter = Extract<keyof DistributedDataOptionsBuilder, `with${string}`>;
+
+const DISTRIBUTED_DATA_SETTERS: ReadonlyArray<readonly [DistributedDataSetter, keyof DistributedDataOptionsType, unknown]> = [
+  ['withGossipInterval', 'gossipInterval', 250],
+  ['withQuorumTimeout', 'quorumTimeout', 2_000],
+  ['withMaxPendingQuorumRequests', 'maxPendingQuorumRequests', 32],
+  ['withMaxQuorumTimeout', 'maxQuorumTimeout', 4_000],
+  ['withMaxGossipBytes', 'maxGossipBytes', 512 * 1024],
+  ['withLogDataSizeExceeding', 'logDataSizeExceeding', 64 * 1024],
+  ['withDurableKeys', 'durableKeys', ['cart-42', 'session-*']],
+  ['withDurableStore', 'durableStore', new InMemoryDurableStateStore()],
+];
+
+/** Every `with…` method on the builder's prototype chain, above the shared mechanics. */
+function setterNamesOf(builder: object): string[] {
+  const names: string[] = [];
+  for (
+    let prototype: object | null = Object.getPrototypeOf(builder) as object | null;
+    prototype !== null && prototype !== OptionsBuilder.prototype;
+    prototype = Object.getPrototypeOf(prototype) as object | null
+  ) {
+    names.push(...Object.getOwnPropertyNames(prototype).filter((name) => name.startsWith('with')));
+  }
+  return names.sort();
+}
+
+/** The fields a builder holds — its own enumerable properties, which is all a spread copies. */
+const fieldsOf = (builder: object): Record<string, unknown> => ({ ...builder });
+
+describe('DistributedDataOptions — each withX sets its own field and nothing else', () => {
+  for (const [setter, field, value] of DISTRIBUTED_DATA_SETTERS) {
+    test(`${setter} sets ${field} alone, and returns the builder`, () => {
+      const builder = DistributedDataOptions.create();
+
+      expect(Reflect.apply(builder[setter], builder, [value])).toBe(builder);
+      expectExactOptions(fieldsOf(builder), { [field]: value });
+    });
+  }
+
+  test('the quorum page sample sets the default deadline, not the ceiling', () => {
+    const distributedDataOptions = DistributedDataOptions.create().withQuorumTimeout(2_000);
+
+    expectExactOptions(fieldsOf(distributedDataOptions), { quorumTimeout: 2_000 });
+  });
+
+  test('the table names every setter the builder has', () => {
+    expect(setterNamesOf(DistributedDataOptions.create()))
+      .toEqual(DISTRIBUTED_DATA_SETTERS.map(([setter]) => setter).sort());
   });
 });

@@ -4,6 +4,10 @@ export {
   type ConnectionState,
   type OutboundEnvelope,
 } from './BrokerActor.js';
+// What `BrokerActor.retiredLeaves()` returns, so a broker written outside the
+// package can override the hook and refuse the old spellings of its own leaves
+// (#1443).
+export type { RetiredLeaves } from '../../config/RetiredKeys.js';
 export {
   type BrokerCommonOptionsType,
   BrokerOptionsError,
@@ -17,6 +21,7 @@ export {
   BrokerReconnectFailed,
   BrokerBufferOverflow,
   BrokerNotConnected,
+  BrokerCircuitBreakerStateChanged,
 } from './BrokerEvents.js';
 // Client-side TLS material (#743).  `TlsTransportOptionsType` is the shape
 // every `withTls` on this side takes; re-exported here because reaching it
@@ -135,9 +140,12 @@ export type {
   StreamEndMessage,
   StreamErrorMessage,
   RpcErrorMessage,
-  // Exported so a `createServiceClient` override — the test seam in front
-  // of the client's call sites — can be typed without `@grpc/grpc-js`.
+  // Exported so a `createServiceClient` / `instantiateServiceClient`
+  // override — the test seam in front of the client's call sites — can be
+  // typed without `@grpc/grpc-js`.
   GrpcServiceClient,
+  GrpcServiceConstructor,
+  GrpcCredentialsLike,
   GrpcCallOptions,
   GrpcUnaryFunction,
   GrpcServerStreamFunction,
@@ -148,7 +156,7 @@ export type {
   GrpcDuplexCall,
 } from './GrpcClientActor.js';
 export { GrpcClientOptions, GrpcClientOptionsBuilder, GrpcClientOptionsValidator } from './GrpcClientOptions.js';
-export type { GrpcClientOptionsType } from './GrpcClientOptions.js';
+export type { GrpcChannelOptions, GrpcClientOptionsType } from './GrpcClientOptions.js';
 export {
   GrpcServerActor,
   GRPC_HEALTH_SERVICE_NAME,
@@ -174,6 +182,12 @@ export type {
   GrpcServerReadableCall,
   GrpcCallMetadata,
   GrpcUnaryCallback,
+  // Exported so a `loadGrpcModule` / `loadProtoLoader` override — the test
+  // seam in front of the server's bind — can be typed without
+  // `@grpc/grpc-js`.
+  GrpcServerLike,
+  GrpcServerModule,
+  GrpcProtoLoaderModule,
 } from './GrpcServerActor.js';
 export { GrpcServerOptions, GrpcServerOptionsBuilder } from './GrpcServerOptions.js';
 export type { GrpcServerOptionsType } from './GrpcServerOptions.js';
@@ -197,7 +211,8 @@ export type {
   // Test seams (re-exported so subclasses can satisfy the mock shape).
   NatsConnectionLike,
   JetStreamClientLike,
-  JetStreamSubscriptionLike,
+  JetStreamMessageStreamLike,
+  PushConsumerLike,
   JetStreamMessageHandleLike,
   JetStreamMessageInfoLike,
   JetStreamManagerLike,

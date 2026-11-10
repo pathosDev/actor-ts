@@ -5,8 +5,10 @@
  * tooling and so this file stays a thin parsing layer.
  *
  * The intended UX for the local 3-node demo is "no flags, just
- * three terminals":
+ * three terminals" — the one thing it does need is a session-token
+ * secret, which every node refuses to start without (#791):
  *
+ *   export CHAT_ALLOW_DEMO_SECRET=1            # or CHAT_TOKEN_SECRET
  *   bun examples/chat/backend/main.ts          # node 1
  *   bun examples/chat/backend/main.ts          # node 2
  *   bun examples/chat/backend/main.ts          # node 3
@@ -125,6 +127,16 @@ function printUsage(): void {
   process.stdout.write(
     [
       'Usage: bun examples/chat/backend/main.ts [options]',
+      '',
+      'Secret: session tokens are HMAC-signed, so the node refuses to',
+      'start without a signing secret.  Export one of these first —',
+      'every command below needs it:',
+      '',
+      '  export CHAT_TOKEN_SECRET="$(openssl rand -hex 32)"   # anything real',
+      '  export CHAT_ALLOW_DEMO_SECRET=1                      # local demo only',
+      '',
+      'CHAT_TOKEN_SECRET must be the same value on every node, or a',
+      'session stops resuming when the HTTP singleton fails over.',
       '',
       'With no options the node auto-discovers a cluster port and',
       'seeds via SameHostScanSeedProvider — three terminals, no flags:',

@@ -1,7 +1,9 @@
 import { ActorPath } from '../ActorPath.js';
 import { ActorRef } from '../ActorRef.js';
+import { armChainedTimeout, type Cancellable } from '../Scheduler.js';
 import { Terminated } from '../SystemMessages.js';
 import { LocalActorRef } from '../internal/LocalActorRef.js';
+import { MAX_TIMER_DELAY_MS } from '../util/Constants.js';
 import { randomId } from '../util/RandomString.js';
 
 /**
@@ -44,34 +46,61 @@ const TEMP_SEGMENT = 'temp';
  * router's remote routee) the stop is still delivered, but there is nothing
  * local to confirm it with, so this resolves `false` when the budget runs out.
  * Watch it from inside an actor with `context.watch(ref)` instead.
+ *
+ * A budget of `Infinity` never runs out, so it arms no timer at all: a local
+ * actor's stop resolves `true` once it has terminated and is never escalated,
+ * and for any other ref the promise never settles — without keeping the
+ * process alive while it does not.
  */
 export function gracefulStop(ref: ActorRef, timeoutMs: number): Promise<boolean> {
   ref.stop();
+  // A timer for a budget that never runs out can do nothing but hold the event
+  // loop open.  Armed as a chain, it re-arms a referenced 24.9-day link for as
+  // long as nobody cancels it — and for a ref with no local cell nobody can,
+  // so an un-awaited infinite stop kept the process alive for good.
+  const budgetRunsOut = timeoutMs !== Number.POSITIVE_INFINITY;
   if (!(ref instanceof LocalActorRef)) {
-    return new Promise<boolean>((resolve) => { setTimeout(() => resolve(false), timeoutMs); });
+    return new Promise<boolean>((resolve) => {
+      if (!budgetRunsOut) return;
+      const giveUp = (): void => resolve(false);
+      // A host timer fires a budget past its ceiling (~24.9 days) early —
+      // after 1 ms on Bun and Node — so such a budget is a chain of them, as
+      // the scheduler behind the local branch arms it.
+      if (timeoutMs > MAX_TIMER_DELAY_MS) armChainedTimeout(giveUp, timeoutMs);
+      else setTimeout(giveUp, timeoutMs);
+    });
   }
 
   const cell = ref.getCell();
   return new Promise<boolean>((resolve) => {
     let settled = false;
+    let timer: Cancellable | null = null;
     const watcher = new TerminationWatcher(ref.path.systemName, () => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      timer?.cancel();
       resolve(true);
     });
     // Registered after the watcher exists, because `_addWatcher` answers a
     // target that is already gone on the spot rather than through the
     // mailbox — the callback has to be in place before the call, not after.
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      cell._removeWatcher(watcher);
-      // Escalate: a system command is not queued behind the user messages
-      // the PoisonPill is still waiting on.
-      cell.enqueueSystem({ kind: 'terminate' });
-      resolve(false);
-    }, timeoutMs);
+    //
+    // Through the cell's own system scheduler rather than a host timer, so a
+    // `ManualScheduler` can advance past the budget.  Unconditionally, unlike
+    // the ask deadline: a graceful stop happens once per actor at shutdown, so
+    // there is no hot path to protect and no reason for two branches (#1424).
+    // A budget that never runs out has no escalation to arm.
+    if (budgetRunsOut) {
+      timer = cell.system.scheduler.scheduleOnceFunction(timeoutMs, () => {
+        if (settled) return;
+        settled = true;
+        cell._removeWatcher(watcher);
+        // Escalate: a system command is not queued behind the user messages
+        // the PoisonPill is still waiting on.
+        cell.enqueueSystem({ kind: 'terminate' });
+        resolve(false);
+      });
+    }
     cell._addWatcher(watcher);
   });
 }

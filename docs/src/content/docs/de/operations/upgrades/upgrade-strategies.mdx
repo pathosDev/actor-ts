@@ -27,19 +27,22 @@ also greift auch keines der additiven Muster weiter unten.
 | --- | --- | --- |
 | **v0.15.x → v0.16.0** | **Nicht sicher** (#112) | Jeder Gossip-Frame trägt eine `sequence`, und `GossipMessage` bekommt ein Pflichtfeld. Ein aktualisierter Peer weist die Frames eines alten Nodes zurück; ein alter Node ignoriert die eines aktualisierten. Nichts wirft einen Fehler — **die Membership konvergiert still nie**, solange beide Versionen laufen, der Cluster einigt sich also nie darauf, wer dazugehört. |
 | **v0.16.0 → v0.17.0** | **Nicht sicher** (#450) | Frames sind ein getaggter JSON-Baum statt blanker `JSON.stringify`-Ausgabe. Der meiste Alt-Verkehr dekodiert unverändert; ein Legacy-Body, der bereits die Gestalt eines reservierten Tags hatte, nicht. `__map__`, `__set__`, `__regexp__`, `__bigint__`, `__url__`, `__number__` und `__error__` **werfen in beliebiger Tiefe**, und ein Decoder-Throw kostet die **ganze Verbindung** mitsamt jedem Frame, der in denselben Chunk gebatcht wurde. Zwei scheitern stattdessen still: `__bytes__` dekodiert zu einem `Uint8Array`, `__date__` zu einer Invalid Date. Die Gegenrichtung ist schlicht verlustbehaftet — ein älterer Node liest den Tag-Wrapper als gewöhnliche Daten. |
+| **v0.17.x → v0.18.0** | **Nicht sicher** (#823) | Das Cluster-Wire erhält eine Version, die jeder Handshake ankündigt, und Version 2 verlangt, dass jede Node-Adresse auf einem Frame ihre Inkarnation nennt.  Anders als die beiden Zeilen darüber **scheitert diese laut**: Ein v0.18.0-Node weist das `hello` eines älteren Nodes mit einem `hello-refused` ab und schreibt auf seiner Seite eine WARN mit beiden Versionen, und ein älterer Node loggt diesen Frame als nicht zugeordnet, mit dem Grund darin.  Die beiden bilden nie einen Cluster. |
 
 **Aktualisiere den Cluster in einem Schritt.** Alle Nodes stoppen, dann alle
-Nodes auf der neuen Version starten. Keine Zwischenversion macht eine der
-beiden Etappen rollbar, ein Sprung von v0.15.x direkt auf v0.17.0 kreuzt
-also beide Brüche und braucht dieselbe Behandlung — einmal statt zweimal.
+Nodes auf der neuen Version starten. Keine Zwischenversion macht eine dieser
+Etappen rollbar, ein Sprung über mehrere davon braucht also dieselbe
+Behandlung — einmal statt einmal pro Etappe.
 
-**Wann das endet.** Beide Brüche existieren aus demselben Grund: Das
-Cluster-Protokoll hat keine Versionsaushandlung, ein Node kann einen Peer
-also nicht fragen, was der spricht, und sich darauf einstellen.
-[#823](https://github.com/pathosDev/actor-ts/issues/823) fügt diesen
-Handshake hinzu. Bis dahin ist ein Mixed-Version-Fenster eine Gefahr und
-kein unterstützter Zustand, und diese Tabelle ist das, was vor einem Upgrade
-zu prüfen ist.
+**Ab v0.18.0 sagt es der Handshake.** Jedes `hello` und `hello-ack` trägt die
+Cluster-Wire-Versionen, die der Node spricht
+([#823](https://github.com/pathosDev/actor-ts/issues/823)), und zwei Nodes
+ohne gemeinsame Version weisen einander beim Handshake ab — ein
+`hello-refused` mit dem Grund und eine WARN auf beiden Seiten —, statt halb zu
+funktionieren.  Ein künftiges Release, das das Wire ändert, kann dann einen
+Bereich von Versionen sprechen und ein Rolling Upgrade möglich halten; eines,
+das das Minimum anhebt, ist wieder ein Upgrade mit Stopp und Start, und diese
+Tabelle sagt, welches.
 
 ## Code-only-Upgrades
 
@@ -65,6 +68,49 @@ Konfiguration; siehe
 - Replicas ≥ 2. Ein-Replica-Cluster können nicht sauber drainen.
 - Coordinated Shutdown mit vernünftigen Phasen-Timeouts konfiguriert.
 - Health-Checks gaten Readiness korrekt.
+
+### Den Rollout am Cluster ablesen
+
+Ein Rolling Update ist ein Fenster, in dem zwei Releases deiner Anwendung in
+einem Cluster laufen, und die Frage, die sich ein Betreiber dabei immer
+wieder stellt, ist, welcher Node welches fährt. Lass jeden Node sein Release
+nennen:
+
+```hocon
+actor-ts.cluster.app-version = ${?APP_VERSION}
+```
+
+Setze `APP_VERSION` im Deployment neben dem Image-Tag, und jedes Mitglied
+trägt das Label im Gossip.
+[`GET /cluster/members`](/de/observability/management/http-endpoints/#get-clustermembers)
+listet es dann pro Mitglied, und jede Logzeile, die ein Mitglied ausgibt,
+zeigt es als `app-version=…` — ein hängender Rollout lässt sich so als Zahl
+der Mitglieder lesen, die noch auf dem alten Release sind, statt als
+Vermutung. Das Label ist rein informativ: nichts platziert, routet oder downt
+danach, und ein Node, der keines nennt, erscheint einfach ohne.
+
+Ein Wert aus der Umgebung wird zuerst als JSON gelesen, wo immer er sich als
+JSON parsen lässt.  Eine Version, die sich wie eine Zahl liest, kommt in der
+Schreibweise dieser Zahl zurück — `1.10` als `1.1`, `2.0` als `2`, `1e3` als
+`1000` —, die Releases `1.1` und `1.10` tragen also dasselbe Label, eine ganze
+Zahl jenseits von `Number.MAX_SAFE_INTEGER` kann mit anderen letzten Ziffern
+zurückkommen (`20261104123456789` als `20261104123456788`), und eine, die sich
+wie `null`, eine Liste oder ein Objekt liest, lässt den Start mit einem
+`ConfigError` scheitern; eine Version mit einem zweiten Punkt (`1.2.3`) oder
+einem Buchstaben (`v1.10`) bleibt unverändert.  Einen solchen Wert in der Variablen selbst quoten
+(`APP_VERSION='"1.10"'`) oder im Code mit `withAppVersion(...)` setzen.
+
+Das Label gehört zu dem Lauf, der es nennt. Ein Node, der ohne Label neu
+startet — zurückgerollt auf ein Release, das keines setzt, oder ohne
+`APP_VERSION` deployt —, erscheint ohne, nie mit dem Label des Laufs davor:
+Ein Peer, der vom Neustart noch nichts gehört hat, gossipt weiter den Eintrag
+des vorigen Laufs, und dieser Eintrag zählt für die Adresse nicht mehr.
+
+Das erste Upgrade auf ein actor-ts-Release, das das Feld kennt, ist selbst
+schon ein Rollout, den das Label abdeckt. Ein Node, der noch auf dem älteren
+actor-ts läuft, lässt das Label aus jedem Eintrag fallen, den er weitergibt;
+für einen Moment kann ein Peer ein Mitglied also ohne Label zeigen — und der
+eigene Gossip des Mitglieds setzt es innerhalb weniger Runden wieder.
 
 ## Schema-brechende Upgrades
 

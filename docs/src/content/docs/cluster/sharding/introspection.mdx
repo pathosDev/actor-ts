@@ -82,6 +82,20 @@ slow, or that left between the map snapshot and the fan-out, contributes
 `entityCount: 0` rather than failing the whole call.  You get a complete
 shard list with one conservative count, not an exception.
 
+### How long a query waits
+
+`shards()` and `shardRefFor()` wait `actor-ts.sharding.shard-region-query-timeout`
+(5 s), or what `withShardRegionQueryTimeoutMs` gave the type, or a
+`timeoutMs` you pass as the last argument.  The region keeps a waiting query
+for a minute, or for `actor-ts.actor.ask-timeout` or the type's query timeout
+when either is longer — it cannot see a per-call `timeoutMs`.  So a
+`timeoutMs` above that lifetime is not waited out in full: an answer that
+arrives after it reaches nobody, and the call fails with `AskTimeoutError`
+when its own `timeoutMs` runs out.  For `shards()` that includes the
+coordinator's partial answer, which comes after 0.6 × `timeoutMs` when a
+region is slow.  To wait longer than a minute, raise the type's query
+timeout rather than the argument; the lifetime rises with it.
+
 ## A ref to one shard
 
 ```ts
@@ -92,6 +106,11 @@ If shard 7 has no home yet, this **places it** — exactly what a first
 message for it would have done — and answers once the coordinator has
 decided.
 
+An id that cannot be a shard of the type — anything but an integer from
+0 to `numShards - 1` — is refused at once with a `RangeError` naming the
+range.  No coordinator would ever place it, so waiting would only end in a
+timeout that says nothing about why.
+
 A shard that
 [passivated while empty](/cluster/sharding/overview/#shards-passivate-too)
 needs no special handling: the ref stays valid across the gap and the
@@ -100,7 +119,11 @@ as soon as you ask, because a handle to an actor that is not running
 would be a handle to nothing; for a shard on another node the ref
 delivers through that node's region, which materialises the shard before
 forwarding.  So `shardRefFor()` on a local shard wakes it, and on a
-remote one the first `tell` does.
+remote one the first `tell` does.  The exceptions are a local shard
+[backing off after a failure](/cluster/sharding/overview/#when-shards-and-entities-keep-failing)
+and one caught mid-stop, handing off or passivating: the ref then relays
+through the region, which holds what arrives until the shard can take it,
+or sends it on to wherever a hand-off moved the shard.
 
 The ref is the real thing.  A shard is an actor
 (`/system/cluster/sharding/region-counter/shard-7`), and the ref carries that path as its
@@ -126,6 +149,11 @@ And to ask what a shard is holding:
 const stats = await shard.ask<ShardStats>({ kind: 'sharding.GetShardStats' });
 // { shardId: 7, entityCount: 2, entityIds: ['user-42', 'user-99'] }
 ```
+
+`StartEntity` and `GetShardStats` are shard messages: told to the region
+rather than to a shard ref, they are not forwarded but declined — a dead
+letter naming the region, counted in
+`actor_unhandled_total{class="ShardRegion"}`.
 
 <Aside type="caution" title="`ask` on a *remote* shard ref will time out">
   `ask` synthesises a one-shot reply ref, and that ref is not
@@ -230,6 +258,135 @@ is participating", `shardHome` for "what is placed".
 Reach for [`shards()`](#listing-the-shards) instead when you need entity
 counts or live refs, and for `ShardMapChanged` when you need the changes
 rather than the latest state.
+
+## Is the region ready to route?
+
+A region registers with the coordinator that runs on the leader, over a
+retry timer of its own. That is a separate step from joining the cluster,
+and **membership convergence is not a proxy for it**: a fully converged
+cluster can still hold a region that has not registered.
+
+```ts
+if (cluster.sharding.isRegistered('cart')) { /* the coordinator acknowledged this node's region */ }
+```
+
+Synchronous and free, like [`shardMap`](#following-the-map), and fed the
+same way — from a `ShardRegionRegistered` event this node's region
+publishes once the coordinator acknowledges it. `false` for a type this
+node never started; for one whose registration was refused over a
+`numShards` mismatch; for one whose region was told it had been [evicted for
+going silent](/reference/configuration/#detecting-a-region-that-went-silent),
+until its new registration is acknowledged; and for one whose region has
+stopped. In each of those the coordinator places no shard of the type on
+this node, so a readiness probe built on this signal takes the node out of
+rotation rather than reporting it ready.
+
+It is this node's account of its registration, built from what its region
+was told, and two situations are worth knowing exactly:
+
+- **A leader change does not turn it `false`.** Every region registers again
+  with the new leader's coordinator, and the node keeps reading as
+  registered while it does, so an election does not take every node out of
+  rotation at once. That holds even when the new leader runs no coordinator
+  for the type at all: the reading cannot tell that apart from a
+  re-registration still in flight. A refusal the old leader issued lapses
+  with it — from the leader change until the new coordinator answers,
+  `registrationRefusal` is `null` and the type reads as not registered:
+  waiting, not refused.
+- **An eviction is learnt from the coordinator's notice**, a single,
+  unacknowledged frame. If it is lost, the region keeps its shards and this
+  keeps reading `true` while the coordinator holds no entry for the region —
+  until the region's next beat reaches the coordinator, which answers a beat
+  from a region it does not know with a request to register. The window is
+  one `heartbeat-interval` and a round trip, and registering again takes the
+  region's stale copies of the re-homed shards down. Without stale-region
+  detection nothing is evicted, so there is no such window.
+
+That probe ships with the framework. Name the type, and `Cluster.join`
+installs a `shard-region:cart` readiness check for it, whose `detail` says
+which of those cases is keeping it red:
+
+```hocon
+actor-ts.sharding.healthcheck.names = ["cart"]
+```
+
+For a type only the code knows about, register
+`shardRegionRegistered(cluster, 'cart')` from `actor-ts/management` yourself —
+see [gating on a shard region](/observability/management/health-checks/#gating-on-a-shard-region).
+
+```ts
+cluster.subscribe((event) => {
+  if (event instanceof ShardRegionRegistered) console.log(event.type, 'can route');
+});
+```
+
+The event is node-local, like every cluster event: it says something about
+*this* node's region. To watch every node's registrations from one place,
+bridge it — it originates on a single node, which makes it a sound thing to
+bridge:
+
+```ts
+cluster.eventStream.bridge(ShardRegionRegistered);
+```
+
+<Aside type="note" title="It is not a precondition for sending">
+  A message sent before registration completes is **not** lost. The region
+  buffers anything whose shard home is unknown and asks the coordinator for
+  one; when it registers, it re-asks for everything already buffered, so the
+  message is delivered late rather than dropped. The same holds for
+  `shards()` and `shardRefFor()`: a query made before registration is asked
+  again as soon as the coordinator acknowledges the region.
+
+  What can still expire is an `ask` wrapped around such a message, or one of
+  those queries, because each carries its own deadline and that deadline runs
+  while it waits. So this is the signal to wait on before an `ask` with a
+  tight budget — and the thing a readiness probe should report — not a gate
+  you need in front of `tell`.
+</Aside>
+
+## When the coordinator refuses a region
+
+A coordinator refuses a region whose `numShards` disagrees with the count it
+governs the type with. That is the shape of a rolling deploy that changed the
+setting on some nodes and not others, and it is the one sharding failure that
+gets worse the longer it goes unnoticed: the refused region keeps running and
+keeps accepting traffic for the type, and everything it accepts **buffers**.
+The end state is a node out of memory.
+
+```ts
+const refusal = cluster.sharding.registrationRefusal('cart');
+if (refusal) {
+  console.error(
+    `refused: this node has ${refusal.regionNumShards},`
+    + ` the coordinator governs ${refusal.coordinatorNumShards}`,
+  );
+}
+```
+
+`null` when there is no refusal, and cleared once a later registration is
+accepted — so a deploy that fixes the mismatch stops reporting one — and
+when the leader moves: a refusal is the verdict of the coordinator that
+issued it, and until the new leader's coordinator answers there is none to
+report. The same refusal is published as a `ShardRegionRegistrationRefused`
+cluster event, for code that wants to react rather than poll.
+
+**The thing to alert on** is the counter, which needs no code of yours:
+
+```
+cluster_sharding_registrations_refused_total{type="cart",reason="num-shards-mismatch"}
+```
+
+Any non-zero value is worth paging on — a refusal is never transient and
+never resolves on its own. It follows the label shape of
+`cluster_gossip_records_refused_total`, and like every metric here it is only
+recorded when metrics are enabled on the system.
+
+<Aside type="caution" title="The log line is not the signal">
+  The refusal also produces one `error` line naming both counts and the HOCON
+  key to set. That line is for the person already reading logs; it is not
+  something an alert can be built on, which is why the counter and the event
+  exist.
+</Aside>
 
 ## Where to next
 

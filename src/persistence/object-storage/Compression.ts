@@ -5,26 +5,40 @@ import { Lazy } from '../../util/Lazy.js';
  * Per-body compression.  Three modes:
  *   - `none` — store raw bytes.  Right choice for already-compressed payloads
  *     or very small ones where overhead beats savings.
- *   - `gzip` — `node:zlib` everywhere (Bun, Node, Deno).  No extra deps.
- *     Optional level 0–9 (default 6).
+ *   - `gzip` — `node:zlib`'s ASYNC forms everywhere (Bun, Node, Deno).  No
+ *     extra deps.  Optional level 0–9 (default 6).
  *   - `zstd` — preferred for large state blobs.  Optional level 1–22
  *     (default 3).
  *
+ * Every native call here goes through the runtime's async API — `zlib.gzip`,
+ * not `gzipSync` — because a compressor is called from inside an actor's
+ * turn, and a `*Sync` there holds the one thread every actor in the process
+ * runs on: a 24 MiB body took the event loop away for its whole encode, so
+ * the p99 of every UNRELATED actor carried this store's compression cost
+ * (#1540).  On Bun and Node the async forms run the deflate on the libuv
+ * pool and the loop keeps turning (measured: 30–115 one-millisecond timer
+ * ticks land during a 24 MiB call).  On Deno 2.6 they defer the call and then
+ * run it as one main-thread block — still correct, zero ticks — so on Deno
+ * a large body is `OffloadPool` work (see `docs/…/fundamentals/
+ * blocking-and-cpu-bound-work.mdx`); persistence deliberately does not route
+ * through `src/worker` itself.  `tests/unit/ci/NoSyncWorkInHandlers.test.ts`
+ * refuses a `*Sync` mention returning here.
+ *
  * Runtime support differs by DIRECTION:
- *   - COMPRESS (write): native only — Bun (`Bun.zstdCompressSync`) then
- *     Node (`zlib.zstdCompressSync`; every supported Node ships it).  The
- *     order is free here: neither takes an output bound, and only reads
- *     need one.  There is NO pure-JS
- *     fallback for writing: `fzstd` is decompress-only (it exposes no
- *     `compress`).  Selecting `zstd` on a runtime without native support
- *     throws a clear error — eagerly at plugin-init via
+ *   - COMPRESS (write): native only — Bun (`Bun.zstdCompress`) then Node
+ *     (`zlib.zstdCompress`; every supported Node ships it).  The order is
+ *     free here: neither takes an output bound, and only reads need one.
+ *     There is NO pure-JS fallback for writing: `fzstd` is decompress-only
+ *     (it exposes no `compress`).  Selecting `zstd` on a runtime without
+ *     native support throws a clear error — eagerly at plugin-init via
  *     `probeCompressionAvailability`, not cryptically on first write.
  *   - DECOMPRESS (read): `node:zlib` first — it is the only implementation
  *     that takes an allocation-time output bound (#580) — then Bun's
  *     global, then the optional `fzstd` peer-dep so a non-native runtime
  *     can still READ zstd bodies written elsewhere.  `fzstd` caps the
  *     back-reference window at 2^25 (32 MB) and may reject ultra-level
- *     (≥20) frames.
+ *     (≥20) frames — and, pure JS with no async form, it is the one rung
+ *     that still decodes on the main thread.
  *
  * Both resolvers pick by CALLING a candidate, never by testing that the
  * symbol exists — see {@link decodesZstdCanary}.
@@ -59,6 +73,32 @@ export interface Compressor {
   decompress(input: Uint8Array, maxOutputBytes?: number): Promise<Uint8Array>;
 }
 
+/* ------------------------------ zlib async ------------------------------ */
+
+/** The `(error, result)` callback every `node:zlib` async form takes last. */
+type ZlibCallback = (error: Error | null, result: Uint8Array) => void;
+
+/**
+ * Run one callback-style zlib call as a promise.
+ *
+ * A five-line local rather than `node:util`'s `promisify`, so this file keeps
+ * loading exactly one built-in — lazily, through the dynamic import below —
+ * and so the options argument is spelled at every call site: the three
+ * runtimes shuffle `(buffer, options?, callback)` differently, and `{}` is the
+ * one shape all of them accept where `undefined` is not.  A synchronous throw
+ * out of `start` (Deno's zstd binding does that) becomes a rejection, which is
+ * what lets the canaries below treat "threw" and "called back with an error"
+ * as the same answer.
+ */
+function callbackToPromise(start: (done: ZlibCallback) => void): Promise<Uint8Array> {
+  return new Promise<Uint8Array>((resolve, reject) => {
+    start((error, result) => {
+      if (error) reject(error);
+      else resolve(result);
+    });
+  });
+}
+
 /* ------------------------------- gzip ----------------------------------- */
 
 const gzipLazy: Lazy<Promise<{
@@ -67,16 +107,21 @@ const gzipLazy: Lazy<Promise<{
 }>> = Lazy.of(async () => {
   const name = 'node:zlib';
   const zlib = (await import(name)) as {
-    gzipSync(input: Uint8Array, opts?: { level?: number }): Uint8Array;
-    gunzipSync(input: Uint8Array, opts?: { maxOutputLength?: number }): Uint8Array;
+    gzip(input: Uint8Array, options: { level?: number }, callback: ZlibCallback): void;
+    gunzip(input: Uint8Array, options: { maxOutputLength?: number }, callback: ZlibCallback): void;
   };
   return {
-    gzip: async (input: Uint8Array, level?: number): Promise<Uint8Array> =>
-      zlib.gzipSync(input, level !== undefined ? { level: clampGzipLevel(level) } : undefined),
+    gzip: (input: Uint8Array, level?: number): Promise<Uint8Array> =>
+      callbackToPromise((done) =>
+        zlib.gzip(input, level !== undefined ? { level: clampGzipLevel(level) } : {}, done)),
     // `maxOutputLength` makes zlib abort (RangeError) BEFORE allocating past
     // the cap — real protection against a gzip bomb, not just a post-check.
-    gunzip: async (input: Uint8Array, maxOutputBytes?: number): Promise<Uint8Array> =>
-      zlib.gunzipSync(input, capApplies(maxOutputBytes) ? { maxOutputLength: maxOutputBytes } : undefined),
+    // The abort survives the callback form unchanged: the error arrives with
+    // `code === 'ERR_BUFFER_TOO_LARGE'` on every supported runtime, which is
+    // what `decompressWithinCap` keys its translation off.
+    gunzip: (input: Uint8Array, maxOutputBytes?: number): Promise<Uint8Array> =>
+      callbackToPromise((done) =>
+        zlib.gunzip(input, capApplies(maxOutputBytes) ? { maxOutputLength: maxOutputBytes } : {}, done)),
   };
 });
 
@@ -110,12 +155,17 @@ type ZstdDecompressFunction = (input: Uint8Array, maxOutputBytes?: number) => Pr
  *
  * It exists because "is the symbol there?" and "does it work?" are
  * different questions on some runtimes: Deno's `node:zlib` exports a
- * `zstdDecompressSync` whose native binding is absent, so a presence check
+ * `zstdDecompress` whose native binding is absent, so a presence check
  * accepts it and every zstd read then dies on
  * `binding.ZstdDecompress is not a constructor` — with the documented
  * `fzstd` fallback sitting unreachable underneath.  Resolution therefore
  * CALLS each candidate against this frame.  The cost is one 17-byte decode
  * per process, memoised by `Lazy` along with the implementation it picked.
+ *
+ * The probe calls the ASYNC form — the same function that will serve every
+ * read and write afterwards, so what it proves is the capability actually in
+ * use.  Deno's async binding throws the same `is not a constructor`, so the
+ * steering to `fzstd` there is unchanged by the probe going async.
  */
 const ZSTD_CANARY_FRAME = new Uint8Array([
   0x28, 0xb5, 0x2f, 0xfd, 0x20, 0x08, 0x41, 0x00, 0x00,
@@ -129,36 +179,18 @@ const ZSTD_CANARY_PLAINTEXT = ZSTD_CANARY_FRAME.slice(9);
 const ZSTD_MAGIC = ZSTD_CANARY_FRAME.slice(0, 4);
 
 /** True when `decode` really decodes — see {@link ZSTD_CANARY_FRAME} for why this is a call. */
-function decodesZstdCanary(decode: (input: Uint8Array) => Uint8Array): boolean {
+async function decodesZstdCanary(decode: (input: Uint8Array) => Promise<Uint8Array>): Promise<boolean> {
   try {
-    return bytesEqual(decode(ZSTD_CANARY_FRAME), ZSTD_CANARY_PLAINTEXT);
+    return bytesEqual(await decode(ZSTD_CANARY_FRAME), ZSTD_CANARY_PLAINTEXT);
   } catch {
     return false;
-  }
-}
-
-/**
- * True when `decode` ABORTS on a `maxOutputLength` below the frame's output
- * size — the property that makes an implementation bomb-safe (#580) rather
- * than merely correct.  Accepting the option is not evidence of enforcing
- * it: one that quietly ignored it would decode the canary perfectly and
- * still hand a bomb all the memory it asked for.
- */
-function enforcesZstdOutputCap(
-  decode: (input: Uint8Array, options: { maxOutputLength: number }) => Uint8Array,
-): boolean {
-  try {
-    decode(ZSTD_CANARY_FRAME, { maxOutputLength: 1 });
-    return false;
-  } catch {
-    return true;
   }
 }
 
 /** True when `encode` produces a real zstd frame rather than throwing — the compress-side canary. */
-function encodesZstdCanary(encode: (input: Uint8Array) => Uint8Array): boolean {
+async function encodesZstdCanary(encode: (input: Uint8Array) => Promise<Uint8Array>): Promise<boolean> {
   try {
-    return bytesEqual(encode(ZSTD_CANARY_PLAINTEXT).subarray(0, ZSTD_MAGIC.length), ZSTD_MAGIC);
+    return bytesEqual((await encode(ZSTD_CANARY_PLAINTEXT)).subarray(0, ZSTD_MAGIC.length), ZSTD_MAGIC);
   } catch {
     return false;
   }
@@ -169,59 +201,140 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
 }
 
 /**
- * zstd COMPRESS resolution — native only.  Bun (`Bun.zstdCompressSync`)
- * then Node (`zlib.zstdCompressSync`).  Deliberately NO `fzstd`
- * fallback: fzstd is decompress-only (exposes no `compress`), so a
- * runtime without native zstd cannot WRITE zstd — we throw a clear error
- * here instead of the cryptic `fzstd.compress is not a function` the
- * combined resolver used to produce on first write.
+ * zstd COMPRESS resolution — native only.  Bun (`Bun.zstdCompress`) then
+ * Node (`zlib.zstdCompress`).  Deliberately NO `fzstd` fallback: fzstd is
+ * decompress-only (exposes no `compress`), so a runtime without native
+ * zstd cannot WRITE zstd — we throw a clear error here instead of the
+ * cryptic `fzstd.compress is not a function` the combined resolver used to
+ * produce on first write.
  *
  * Each candidate is accepted only once it has ENCODED the canary, for the
  * same reason the decompress side does (#321's guarantee — a clear error,
  * never a cryptic native one — otherwise regresses on Deno, whose
- * `zlib.zstdCompressSync` is present and throws
+ * `zlib.zstdCompress` is present and throws
  * `binding.ZstdCompress is not a constructor` on first use, downstream of
  * the `probeCompressionAvailability` call that exists to catch exactly
  * this at plugin-init).
  *
  * Level spelling differs by runtime — Bun takes `{ level }`, Node takes
  * `{ params: { [ZSTD_c_compressionLevel]: N } }` — but the 1..22 scale
- * (default 3) is the same.
+ * (default 3) is the same.  Bun's global returns a promise of its own; the
+ * Node form is callback-style and goes through {@link callbackToPromise}.
  */
 const zstdCompressLazy: Lazy<Promise<ZstdCompressFunction>> = Lazy.of<Promise<ZstdCompressFunction>>(async () => {
   const bun = (globalThis as { Bun?: {
-    zstdCompressSync?: (input: Uint8Array, opts?: { level?: number }) => Uint8Array;
+    zstdCompress?: (input: Uint8Array, options?: { level?: number }) => Promise<Uint8Array>;
   } }).Bun;
-  const bunCompress = bun?.zstdCompressSync;
-  if (bunCompress && encodesZstdCanary((i) => bunCompress(i))) {
-    return async (i: Uint8Array, level?: number): Promise<Uint8Array> =>
+  const bunCompress = bun?.zstdCompress;
+  if (bunCompress && await encodesZstdCanary((i) => bunCompress(i))) {
+    return (i: Uint8Array, level?: number): Promise<Uint8Array> =>
       bunCompress(i, level !== undefined ? { level: clampZstdLevel(level) } : undefined);
   }
 
   try {
     const zlibName = 'node:zlib';
     const zlib = (await import(zlibName)) as {
-      zstdCompressSync?: (input: Uint8Array, opts?: { params?: Record<number, number> }) => Uint8Array;
+      zstdCompress?: (
+        input: Uint8Array,
+        options: { params?: Record<number, number> },
+        callback: ZlibCallback,
+      ) => void;
       constants?: { ZSTD_c_compressionLevel?: number };
     };
-    const compressFunction = zlib.zstdCompressSync;
-    if (compressFunction && encodesZstdCanary((i) => compressFunction(i))) {
+    const compressFunction = zlib.zstdCompress;
+    if (compressFunction
+      && await encodesZstdCanary((i) => callbackToPromise((done) => compressFunction(i, {}, done)))) {
       const levelParam = zlib.constants?.ZSTD_c_compressionLevel;
-      return async (i: Uint8Array, level?: number): Promise<Uint8Array> =>
-        level !== undefined && levelParam !== undefined
-          ? compressFunction(i, { params: { [levelParam]: clampZstdLevel(level) } })
-          : compressFunction(i);
+      return (i: Uint8Array, level?: number): Promise<Uint8Array> =>
+        callbackToPromise((done) => compressFunction(
+          i,
+          level !== undefined && levelParam !== undefined
+            ? { params: { [levelParam]: clampZstdLevel(level) } }
+            : {},
+          done,
+        ));
     }
   } catch { /* node:zlib unavailable — fall through to the error */ }
 
   throw new Error(
-    'zstd compression requires native runtime support — Bun (zstdCompressSync) '
-    + 'or Node (zlib.zstdCompressSync).  The optional `fzstd` peer '
+    'zstd compression requires native runtime support — Bun (zstdCompress) '
+    + 'or Node (zlib.zstdCompress).  The optional `fzstd` peer '
     + 'dependency can only DECOMPRESS, so it cannot write zstd bodies.  '
     + "Either run on a native-zstd runtime, or use compression: { algorithm: "
     + "'gzip' } which works everywhere.",
   );
 });
+
+/**
+ * The two NATIVE zstd decoders the read path probes before falling through to
+ * `fzstd`, each `undefined` on a runtime that does not carry it.  Reading both
+ * through one value is what gives the fallback arm a seam — see
+ * {@link setNativeZstdDecompressCandidatesOverride}.
+ */
+type NativeZstdDecompressCandidates = {
+  /**
+   * `zlib.zstdDecompress`, promise-shaped.  The only candidate that takes an
+   * allocation-time bound, which is why it is probed first (#580).
+   */
+  readonly nodeZlib?: (input: Uint8Array, options?: { maxOutputLength?: number }) => Promise<Uint8Array>;
+  /** `Bun.zstdDecompress`.  Takes no options, so it can carry no bound. */
+  readonly bunGlobal?: (input: Uint8Array) => Promise<Uint8Array>;
+};
+
+let nativeZstdDecompressCandidatesOverride: NativeZstdDecompressCandidates | null = null;
+
+/**
+ * @internal Test-only seam: force what the zstd read resolver sees as this
+ * runtime's native decoders, or `null` to restore real detection.  Pass `{}`
+ * to model a runtime with no native zstd at all.
+ *
+ * That is the only way to reach the `fzstd` arm below from a test, and the arm
+ * needs reaching: it is the ONLY zstd read path on a runtime without native
+ * zstd, which AGENTS.md lists as supported, yet on both Bun and Node
+ * `node:zlib` decodes the canary and enforces the bound, so resolution returns
+ * two tiers above it.  A `return` added higher up, or a reordering, would
+ * therefore break zstd object-storage reads on such a runtime with `bun test`,
+ * the smoke matrix and the coverage badge all green (#780).
+ *
+ * The seam SUPPRESSES candidates and never supplies a decoder of its own — the
+ * `fzstd` arm still imports the real package — so a test drives the production
+ * path rather than a rehearsal of it.
+ *
+ * Deliberately not re-exported from any barrel, exactly like
+ * `setRuntimeOverride`: it is an internal seam, and suppressing `node:zlib` in
+ * production would give up the allocation-time bound that preferring it exists
+ * to buy.  {@link resetCompressionCache} clears it, and the memoised
+ * resolution has to be dropped along with it for either to take effect.
+ */
+export function setNativeZstdDecompressCandidatesOverride(
+  candidates: NativeZstdDecompressCandidates | null,
+): void {
+  nativeZstdDecompressCandidatesOverride = candidates;
+}
+
+/** Read both native candidates out of the runtime — or out of the test override. */
+async function loadNativeZstdDecompressCandidates(): Promise<NativeZstdDecompressCandidates> {
+  if (nativeZstdDecompressCandidatesOverride !== null) return nativeZstdDecompressCandidatesOverride;
+  let nodeZlib: NativeZstdDecompressCandidates['nodeZlib'];
+  try {
+    const zlibName = 'node:zlib';
+    const zlib = (await import(zlibName)) as {
+      zstdDecompress?: (
+        input: Uint8Array,
+        options: { maxOutputLength?: number },
+        callback: ZlibCallback,
+      ) => void;
+    };
+    const zstdDecompress = zlib.zstdDecompress;
+    if (zstdDecompress) {
+      nodeZlib = (input, options) => callbackToPromise((done) => zstdDecompress(input, options ?? {}, done));
+    }
+  } catch { /* node:zlib unavailable — leave it unset and let Bun's global answer */ }
+  const bun = (globalThis as { Bun?: {
+    zstdDecompress?: (input: Uint8Array) => Promise<Uint8Array>;
+  } }).Bun;
+  return { nodeZlib, bunGlobal: bun?.zstdDecompress };
+}
 
 /**
  * zstd DECOMPRESS resolution — `node:zlib` first, then Bun's global, then
@@ -231,7 +344,7 @@ const zstdCompressLazy: Lazy<Promise<ZstdCompressFunction>> = Lazy.of<Promise<Zs
  * `CompressionConfig.level`.
  *
  * **`node:zlib` outranks Bun's own global on Bun, and that ordering is the
- * security control (#580).**  `Bun.zstdDecompressSync` takes no options at
+ * security control (#580).**  `Bun.zstdDecompress` takes no options at
  * all: it materialises the frame's full output and returns it, so a cap
  * checked afterwards is a post-mortem, not a defence.  Measured on Bun
  * 1.3.1 against a 9,619-byte frame declaring 300 MB of output — the Bun
@@ -239,42 +352,58 @@ const zstdCompressLazy: Lazy<Promise<ZstdCompressFunction>> = Lazy.of<Promise<Zs
  * while `zlib.zstdDecompressSync(frame, { maxOutputLength: 1024 })` threw
  * `ERR_BUFFER_TOO_LARGE` and grew the resident set by 0 MB.  Bun's
  * `node:zlib` shim honours the bound exactly as Node's does, so preferring
- * it costs nothing and closes the hole on both native runtimes.
+ * it costs nothing and closes the hole on both native runtimes.  Re-measured
+ * on the async form (Bun 1.4.2, Node 26.7, #1540): a 256 MiB bomb under
+ * `maxOutputLength: 1024` is refused with the same code and +0 MB resident.
  *
- * A candidate has to prove BOTH properties by being called — that it
- * decodes at all ({@link decodesZstdCanary}) and that it enforces the
- * bound ({@link enforcesZstdOutputCap}).  One that decodes but ignores the
- * bound is not rejected outright, it just loses its priority: falling
- * through to an equally uncapped implementation would trade a working
- * decoder for nothing.
+ * A candidate proves ONE property by being called: that it decodes at all
+ * ({@link decodesZstdCanary}).  The ORDER of the rungs is what carries #580
+ * — `node:zlib` is first because it is the only one that can take the bound
+ * — so the first candidate that decodes serves the read.
+ *
+ * There is deliberately no second probe ranking candidates on whether they
+ * honour `maxOutputLength`, and the reason is worth stating so it is not
+ * re-added: nothing below `node:zlib` can take the option at all, so such a
+ * probe has no capped candidate to promote and could never reorder anything.
+ * One stood here until this was measured — deleting it changed no test, and
+ * its early `return` masked the ordering above, so swapping the two rungs
+ * also changed no test (#780).  A `node:zlib` that accepts `maxOutputLength`
+ * and ignores it is caught where it always was, by the post-decode assertion
+ * in {@link decompressWithinCap}, which costs the memory but never the
+ * correctness.
  */
+/**
+ * Which implementation answers a zstd decode in this process.
+ *
+ * The distinction is not cosmetic and it is the whole of #580: only
+ * `node-zlib` takes `maxOutputLength`, so only it can refuse an over-cap frame
+ * *before* the output is allocated.  The other two decode first and are
+ * refused afterwards by {@link decompressWithinCap} — correct, but at exactly
+ * the cost the cap exists to avoid, which is what makes a decompression bomb a
+ * bomb.
+ */
+export type ZstdDecompressorRung = 'node-zlib' | 'bun-global' | 'fzstd';
+
+/** Set by whichever rung {@link zstdDecompressLazy} returns from. */
+let resolvedZstdDecompressorRung: ZstdDecompressorRung | undefined;
+
 const zstdDecompressLazy: Lazy<Promise<ZstdDecompressFunction>> = Lazy.of<Promise<ZstdDecompressFunction>>(async () => {
-  let uncappedFallback: ZstdDecompressFunction | undefined;
+  const candidates = await loadNativeZstdDecompressCandidates();
 
-  try {
-    const zlibName = 'node:zlib';
-    const zlib = (await import(zlibName)) as {
-      zstdDecompressSync?: (input: Uint8Array, options?: { maxOutputLength?: number }) => Uint8Array;
-    };
-    const decompressFunction = zlib.zstdDecompressSync;
-    if (decompressFunction && decodesZstdCanary((i) => decompressFunction(i))) {
-      const capped = async (i: Uint8Array, maxOutputBytes?: number): Promise<Uint8Array> =>
-        decompressFunction(i, capApplies(maxOutputBytes) ? { maxOutputLength: maxOutputBytes } : undefined);
-      if (enforcesZstdOutputCap(decompressFunction)) return capped;
-      uncappedFallback = capped;
-    }
-  } catch { /* node:zlib unavailable — fall through to Bun's global */ }
+  const nodeZlibDecompress = candidates.nodeZlib;
+  if (nodeZlibDecompress && await decodesZstdCanary((i) => nodeZlibDecompress(i))) {
+    resolvedZstdDecompressorRung = 'node-zlib';
+    return (i: Uint8Array, maxOutputBytes?: number): Promise<Uint8Array> =>
+      nodeZlibDecompress(i, capApplies(maxOutputBytes) ? { maxOutputLength: maxOutputBytes } : undefined);
+  }
 
-  const bun = (globalThis as { Bun?: {
-    zstdDecompressSync?: (input: Uint8Array) => Uint8Array;
-  } }).Bun;
-  const bunDecompress = bun?.zstdDecompressSync;
-  if (bunDecompress && decodesZstdCanary(bunDecompress)) {
+  const bunDecompress = candidates.bunGlobal;
+  if (bunDecompress && await decodesZstdCanary(bunDecompress)) {
     // No options parameter to pass a bound through, so `maxOutputBytes` is
     // dropped here and only the post-decode assertion remains.
-    uncappedFallback ??= async (i: Uint8Array): Promise<Uint8Array> => bunDecompress(i);
+    resolvedZstdDecompressorRung = 'bun-global';
+    return (i: Uint8Array): Promise<Uint8Array> => bunDecompress(i);
   }
-  if (uncappedFallback) return uncappedFallback;
 
   try {
     const fzstdName = 'fzstd';
@@ -286,17 +415,47 @@ const zstdDecompressLazy: Lazy<Promise<ZstdDecompressFunction>> = Lazy.of<Promis
     // sizes its own output buffer and takes no bound, so this branch too
     // rests on the post-decode assertion.
     //
+    // It is also the one rung that stays SYNCHRONOUS: the package exposes no
+    // async form, so a decode here runs on the main thread for its whole
+    // duration.  That is the documented residual of #1540 on a runtime
+    // without native zstd, not an oversight — the `async` wrapper below
+    // defers nothing.
+    //
     // That shortcut is an assumption about the PACKAGE, not about this code,
     // and it is checked directly now that fzstd is a devDependency (#676 —
     // it had none before, so nothing here was ever installed):
     // `tests/unit/ci/OptionalPeerModuleShapes.test.ts` decodes both the
     // canary frame above and a frame this file's own compress path wrote,
     // which is the interoperability the fallback actually promises.
-    // Reaching this BRANCH from a test is a separate problem and still open:
-    // on Bun and Node `node:zlib` wins the canary, so the resolver returns
-    // before it gets here and forcing it would need a seam.
+    //
+    // Reaching this BRANCH was the separate problem, and the seam it needed is
+    // `setNativeZstdDecompressCandidatesOverride`: on Bun and Node `node:zlib`
+    // wins the canary, so nothing but suppressing the native candidates gets
+    // the resolver down here.  `ZstdDecompressResolution.test.ts` does that and
+    // reads a natively-written frame back through the real package (#780).
+    //
+    // Reaching it and BEING it are two claims, and the first does not imply the
+    // second: swap this call for a plain `zstdDecompressSync(i)` and every test
+    // that gets the resolver down here still passes, because both decode a
+    // well-formed frame to the same bytes.  Two properties of the package
+    // itself separate them, and the same test file now asserts both — fzstd
+    // walks past the frame's optional content checksum without hashing what it
+    // decoded, so it accepts a frame every native decoder refuses; and it
+    // reports a truncated frame in the `ZstdErrorCode` vocabulary it exports,
+    // which no native decoder can produce.
+    resolvedZstdDecompressorRung = 'fzstd';
     return async (i: Uint8Array): Promise<Uint8Array> => fzstd.decompress(i);
   } catch (e) {
+    // The ladder's last arm, and the one region of this file no in-process test
+    // can reach: it needs the two native candidates suppressed AND the `import`
+    // above to fail, and nothing inside `bun test` can produce the second half.
+    // `mock.module` cannot — bun evaluates the factory at registration, so a
+    // throwing one throws out of `mock.module(…)` and leaves the specifier
+    // resolving — and a `Bun.plugin` that refused to resolve it has no uninstall,
+    // so it would take `fzstd` away from every suite after it (#1422).  So the
+    // arm is executed from a child process instead, by
+    // `tests/unit/persistence/object-storage/__fixtures__/zstd-no-decompressor.ts`
+    // through `ZstdDecompressResolution.test.ts` (#1419).
     throw new Error(
       'No zstd decompressor available.  Either run on Bun / Node, '
       + 'or install the `fzstd` peer dependency: '
@@ -412,11 +571,46 @@ export async function probeCompressionAvailability(algorithm: CompressionAlgo): 
     .exhaustive();
 }
 
-/** Test hook — clear cached lazy implementations. */
+/**
+ * Test hook — clear cached lazy implementations.
+ *
+ * Also drops any {@link setNativeZstdDecompressCandidatesOverride}, mirroring
+ * `Lazy.reset()`, which clears its own override for the same reason: bun runs
+ * every test file in one process, so a suppressed `node:zlib` left behind here
+ * would silently move an unrelated suite onto the pure-JS read path.
+ */
 export function resetCompressionCache(): void {
   gzipLazy.reset();
   zstdCompressLazy.reset();
   zstdDecompressLazy.reset();
+  nativeZstdDecompressCandidatesOverride = null;
+  resolvedZstdDecompressorRung = undefined;
+}
+
+/**
+ * The rung this process decodes zstd with, resolving the ladder if nothing has
+ * decoded yet.
+ *
+ * Operationally it answers "can a decompression bomb still allocate here?" —
+ * below the first rung, it can.  It exists because a test could not ask that
+ * from the outside: the error message's tail is the only other observable, and
+ * a suite that establishes which path it is on by reading the tail is
+ * establishing the thing it is trying to prove.
+ *
+ * That gap was real rather than theoretical.  A `mock.module` is process-wide
+ * and permanent — `mock.restore()` does not undo one — so a file suppressing
+ * the native candidates to reach `fzstd` moved three cap tests onto the
+ * fallback, where they went on asserting the security property of a path they
+ * were no longer on (#1422).  They failed loudly, which was luck: a
+ * differently-worded assertion would have passed.
+ *
+ * Not re-exported from any barrel, like the two seams above it.
+ */
+export async function zstdDecompressorRung(): Promise<ZstdDecompressorRung> {
+  await zstdDecompressLazy.get();
+  // The ladder cannot resolve without returning from one of its three
+  // branches, and each sets this before returning.
+  return resolvedZstdDecompressorRung as ZstdDecompressorRung;
 }
 
 /* ------------------------------- levels --------------------------------- */

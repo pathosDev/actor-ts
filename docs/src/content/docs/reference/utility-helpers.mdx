@@ -1,6 +1,6 @@
 ---
 title: Utilities
-description: Everything the root entry point exports from its own toolbox — Option, Try and Either for results without null; Lazy for compute-once values; RingBuffer for a queue that stays fast when it gets deep; BidirectionalMap and BidirectionalMultiMap for relations with a maintained inverse; randomString, safeStringify and lazyImportModule for naming, logging and optional peer dependencies.
+description: "The framework's own toolbox — Option, Try and Either for results without null; Lazy for compute-once values; RingBuffer for a queue that stays fast when it gets deep; BidirectionalMap and BidirectionalMultiMap for relations with a maintained inverse; randomString, safeStringify and lazyImportModule for naming, logging and optional peer dependencies. On the root entry point, and in full on the actor-ts/util subpath: mergeOptions, TokenBucket, the HTML escapers, the CIDR and address-pin matchers, wrapError and the cross-subsystem defaults."
 ---
 
 The framework solves a handful of problems for itself that turn up again in the
@@ -11,9 +11,13 @@ naming something unguessably, printing a value on a path where throwing would
 replace the error you were reporting, and depending on a package you do not
 want to make mandatory.
 
-These are the answers it already uses, exported from the root entry point. None
-of them are required to use `actor-ts` — reach for one when you have the problem
-it solves.
+These are the answers it already uses. The ones you meet while using the
+framework itself are exported from the root entry point, and everything below
+imports from `'actor-ts'` for that reason; the whole directory — including the
+pieces the root does not carry — is on the `actor-ts/util` subpath
+(*[The whole toolbox](#the-whole-toolbox--actor-tsutil)*, below). None of them
+are required to use `actor-ts` — reach for one when you have the problem it
+solves.
 
 ```ts
 import {
@@ -463,15 +467,97 @@ recognises the value they typed. It is a strict no-op on anything without a
 a value that only *might* be a URL (`':memory:'`, `'file:local.db'`,
 `'not a url'` all come back verbatim). This is what the framework's own
 [option validation](/reference/configuration/) puts into every `OptionsError`
-that rejects a URL.
+that rejects a URL. A password with an unescaped `/`, `?` or `#` in it is
+masked too, by this function and by both below — RFC 3986 wants all three
+percent-encoded, but a pasted password carries them as they are, so the
+userinfo runs to the last `@` before the next `://`. The price is paid by an
+`@` further on in a path or a query, which reads the same way:
+`https://host/a@b` comes back as `https://***@b` — the `***` says that what
+follows it is what followed the last `@`, not necessarily the host. The
+userinfo stays on its own line: once an `@` has been seen, a line break ends
+it, and before the first `@` the scan goes on past a line break only up to the
+first space or tab. So the next frame of a stack trace — every frame of a
+scoped package carries an `@` — or the next line of a log is never taken for a
+password, while a secret read from a file is still masked whole: a line break
+that an `@` follows, such as a trailing newline in front of the `@`, is part
+of the userinfo, and so is a secret wrapped over several lines. The rule gives
+up two shapes of secret, and neither is masked whole. A space or a tab after a
+line break ends the scan before it reaches the `@`, so
+`'amqp://user:pa\n ss@rabbit'` comes back unchanged, and an `@` in front of a
+line break ends the userinfo there, so `'amqp://user:p@ss\nword@rabbit'` comes
+back as `'amqp://***@ss\nword@rabbit'`, which keeps `ss` and `word`.
+`redactedUrlLabel` hides both in a value it rebuilds from its parse — one URL,
+with no `,` and no second `://` in front of a `?` or `#` — but not in every
+value it masks instead: `'nats://a:b@h1,nats://u:pa\n ss@h2'` comes back as
+`'nats://***@h1,nats://u:pa\n ss@h2'`.
+
+A URL the runtime has already parsed needs no such guess. For the one a
+request went to, or a redirect target resolved against it,
+`redactParsedUrlCredentials(url)` masks exactly its `username` and `password`
+and keeps an `@` that its path or query carries:
+
+```ts
+import { redactParsedUrlCredentials } from 'actor-ts';
+
+redactParsedUrlCredentials(new URL('https://registry.npmjs.org/@types%2fnode'));
+// → 'https://registry.npmjs.org/@types%2fnode'
+
+redactParsedUrlCredentials(new URL('https://user:pass@idp.example/authorize?login_hint=a@b'));
+// → 'https://***@idp.example/authorize?login_hint=a@b'
+```
+
+What follows the host still goes through the scan above, so a URL written into
+a path or a query (`?target=http://user:pass@inner/`) keeps its own credential
+masked. The result is the URL's `href`, normalised the way the runtime sends
+it — which is why this is the rendering for a URL a request is made with, and
+not for a value someone typed: a mistyped password with a `/` in it
+(`user:12/PW1@host`) parses as a host, a port and a path, so parsing a
+configured string only to render it would print the very password it was
+meant to hide. `HttpClient` names the URLs in its redirect and size errors
+this way, and `SseActor` the target of a redirect it refuses; a `Location`
+that does not parse falls back to the scan.
 
 `redactedUrlLabel(value)` goes further and reduces a URL to a stable identity:
 scheme, host, port and path, with the userinfo *and* the query string dropped —
 a WebSocket endpoint is commonly authenticated with a `?token=…`. The path is
 kept deliberately, since it is what tells two connections to the same host
-apart. Use it wherever a remote peer influences how often a line is written —
-which is to say wherever the URL would otherwise be replayed into the log at
-someone else's discretion. The `WebsocketClientActor` uses it for its
+apart. A value that is not one URL is masked instead of parsed: a scheme-less
+`user:password@host` — the server form memjs and nats.js accept — comes back
+as `***@host`, and a comma-joined list keeps every entry, each with its
+userinfo masked.
+
+The label masks every userinfo the way the scan does — to the last `@` before
+the next `://` — and, but for the two multi-line shapes above, shows no
+credential that the v0.17.0 label kept out. Three cases follow, each held
+against a copy of the released label:
+
+- **An `@` past the host names no host.**
+  `https://user:pass@hooks.example/notify?to=ops@example.com` is a URL for
+  `hooks.example` with an `@` in its query, and byte for byte also a password
+  ending in `ops` for the host `example.com`. No host is right for both
+  readings, so the label names none and comes back as `https://***`. The same
+  holds with no credential at all — `wss://chat.example.com/rooms/@general` and
+  `https://host/a@b` come back as `wss://***` and `https://***` — and the label
+  never shows what follows a `?` or `#`, so a query token with an `@` in it
+  gives none of its tail away: `wss://feed.example.com/ws?token=a@b` comes back
+  as `wss://***`. Where WHATWG reads no valid host in front of the `/`, the
+  scan's reading is the only one and its host is named:
+  `amqp://user:pa/PW1@host:5672/vhost` comes back as `amqp://host:5672/vhost`.
+- **A comma in a password is masked with it**, wherever an `@` stands:
+  `amqp://user:a,b@host` comes back as `amqp://host`, and
+  `amqp://user:a@b,c@host` as `amqp://***@host`. A credentialed list whose
+  entries do not each open with a `scheme://` is the same string as such a
+  password, so the hosts in front of its last `@` go with the mask, and the
+  `***@` stays to say so: `nats://h1:4222,u:p@h2:4222` comes back as
+  `nats://***@h2:4222`. Give every entry its own `scheme://` and every host
+  stays: `nats://u:p@a:4222,nats://u:p@b:4222` comes back as
+  `nats://***@a:4222,nats://***@b:4222`.
+- **A scheme-less `user:a,b@host`** has nothing to say where its userinfo
+  begins, and still comes back as `user:a,***@host`.
+
+Use it wherever a remote peer influences how often a line is
+written — which is to say wherever the URL would otherwise be replayed into
+the log at someone else's discretion. The `WebsocketClientActor` uses it for its
 oversize-frame warning. That line is no longer written per frame: the breach
 closes the connection, so a peer gets one line per dial. The redaction stands
 regardless, because a peer that provokes reconnects still decides how many
@@ -483,15 +569,38 @@ dials there are.
 which are published on the system-wide `EventStream`. That audience is wider
 than a log file — `subscribe` has no authorization concept — and the events
 fire on the happy path, once per connect and once per reconnect attempt. It
-also shows the fallback doing real work: a joined server list is not a
-parseable URL, so it takes the scan path and comes back as
+also shows the fallback doing real work: a joined server list is never handed
+to the URL parser, so it takes the scan path and comes back as
 `nats://***@a:4222,nats://***@b:4222` rather than being flattened to one
 host.
 
+A third rendering exists for the case where the string is not yours to begin
+with. `redactErrorCredentials(error)` applies the first one to an `Error` some
+driver threw — several put the connection target, userinfo included, into the
+message they raise — and returns a **copy**, because that error belongs to the
+driver and may still be held or already handed to listeners of its own.
+
+```ts
+import { redactErrorCredentials } from 'actor-ts';
+
+const safe = redactErrorCredentials(driverError);
+// message, stack, own string properties and the `cause` chain, all masked
+```
+
+The copy is made to answer the questions a subscriber actually asks: it carries
+the original's prototype, so `instanceof` still holds, and its own enumerable
+properties, so `code` / `errno` / `syscall` survive. What it deliberately does
+not carry is anything reachable only through a getter — a getter can recompute
+the secret, and a redaction that a property read can undo is not one. This is
+what puts `BrokerDisconnected.cause` and `BrokerReconnectFailed.cause` on the
+same footing as the `endpoint` beside them; without it an operator reading
+"broker events no longer carry my password" would have been right about one
+field and wrong about the event.
+
 <Aside type="tip" title="One place to catch what slipped through">
-  Neither function can help with a credential that reached a log record's
+  None of these can help with a credential that reached a log record's
   fields rather than its message. For that, `MultiSinkLogger` takes a
-  `transform` — one hook, applied once before fan-out — and these two functions
+  `transform` — one hook, applied once before fan-out — and these functions
   are what you call inside it. See [logging](/fundamentals/logging/).
 </Aside>
 
@@ -577,6 +686,43 @@ Validation runs once, at consume time, on the merged settings — so the builder
 a plain object and HOCON are all covered, and cross-field rules see the final
 values. See [configuration](/reference/configuration/) for how the layers
 resolve.
+
+## The whole toolbox — `actor-ts/util`
+
+Everything above is on the root entry point because you meet it while using the
+framework. The rest of `src/util/` solves problems that are one step further
+out, and it is reachable on its own subpath:
+
+```ts
+import { TokenBucket, mergeOptions, wrapError } from 'actor-ts/util';
+```
+
+The subpath is a superset: every name the root carries is on it too, so a file
+that needs `some` and `mergeOptions` can take both from `actor-ts/util` rather
+than importing twice.
+
+| Export | What it does |
+| --- | --- |
+| `mergeOptions(defaults, fromConfig, explicit)` | The one implementation of the options precedence *explicit > HOCON > defaults*. `undefined` on a higher layer means "not set" and falls through instead of blanking out the layer below — which is what you want, and not what a plain spread does. |
+| `stripUndefined(partial)` | Drops the keys whose value is `undefined`, which is how `mergeOptions` gets that property. |
+| `TokenBucket` | Rate limiting with a `qps` refill rate and a `burst` capacity, refilled lazily from elapsed time — no background timer. The clock is injectable, so a test advances time instead of waiting for it. |
+| `wrapError(error, ErrorClass, message)` | Re-throw a caught exception as a typed framework error with a contextual message, carrying the original as `cause`. An error already of the target class is returned unchanged rather than wrapped twice. |
+| `escapeHtml`, `html`, `rawHtml`, `SafeHtml` | Escaping for HTML **element content and quoted attribute values**. The `html` tagged template escapes every interpolation by default; `rawHtml` is the escape hatch for a string you have already made safe. Not a sanitizer for untrusted *markup*. |
+| `stripTrailing(value, char)`, `stripSurrounding(value, char)` | Strip a repeated character off the ends in linear time. The regex spelling of this backtracks quadratically, which matters when the value is a request path or a hostname a remote peer chose. |
+| `parseCidr`, `cidrMatches`, `isCidrEntry` | CIDR parsing and matching, IPv4 and IPv6, with IPv4-mapped IPv6 handled so a plain IPv4 range still matches a dual-stack peer. |
+| `parseAddressPin`, `addressMatchesPins`, `addressPinRejection` | The address-pin rules built on those: an entry is a CIDR (matched against IPs) or a host suffix (matched against hostnames **on a label boundary**, so `evilsvc.cluster.local` does not slip past `svc.cluster.local`). `addressPinRejection` returns the reason an entry is unusable, for your own validator to report. |
+| `DEFAULT_ASK_TIMEOUT_MS`, `DEFAULT_GOSSIP_INTERVAL_MS`, `DEFAULT_EXPLAIN_CAPACITY` | The cross-subsystem defaults, so a timeout of your own that has to stay below the ask timeout can read it rather than copy the number. |
+| `PATH_TRAVERSAL_SEGMENTS`, `MAXIMUM_DRAW_ATTEMPTS` | The traversal denylist actor paths and persistence ids are both checked against, and the bound a uniqueness redraw gives up at. |
+
+<Aside type="note" title="Why a subpath and not more root exports">
+`src/util/` is the one directory under `src/` with no outward import at all —
+that is what makes it the tier every subsystem may depend on without any of
+them depending on each other, and it is why the whole of it can be published as
+one entry point without dragging a subsystem in behind it. Keeping the root a
+curated set is deliberate: it is the surface a reader scans to learn what the
+framework offers, and a rate limiter or a CIDR matcher is not part of that
+answer.
+</Aside>
 
 ## Where to next
 

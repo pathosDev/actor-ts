@@ -1,4 +1,6 @@
 import type { ActorSystem } from '../../ActorSystem.js';
+import { Lazy } from '../../util/Lazy.js';
+import { mergeOptions } from '../../util/OptionsMerge.js';
 import type { PersistenceExtension } from '../PersistenceExtension.js';
 import { mergeLeafOptions } from '../relational/RelationalPlugin.js';
 import { DynamoDbDurableStateStore } from '../durable-state-stores/DynamoDbDurableStateStore.js';
@@ -7,6 +9,11 @@ import { DynamoDbSnapshotStore } from '../snapshot-stores/DynamoDbSnapshotStore.
 import type { DynamoDbSnapshotStoreOptionsType } from '../snapshot-stores/DynamoDbSnapshotStoreOptions.js';
 import { DynamoDbJournal } from './DynamoDbJournal.js';
 import type { DynamoDbJournalOptionsType } from './DynamoDbJournalOptions.js';
+import {
+  readDynamoDbDurableStateStoreOptionsFromConfig,
+  readDynamoDbJournalOptionsFromConfig,
+  readDynamoDbSnapshotStoreOptionsFromConfig,
+} from './DynamoDbPluginOptions.js';
 import type {
   RegisterDynamoDbPluginsOptions,
   RegisterDynamoDbPluginsOptionsType,
@@ -19,23 +26,46 @@ export const DYNAMODB_DURABLE_STATE_PLUGIN_ID = 'actor-ts.persistence.durable-st
 
 export type DynamoDbPluginHandles = {
   /**
-   * The DurableState store instance.  `PersistenceExtension` carries no
-   * DurableState registry (same as every other plugin), so callers who want
-   * DurableState read it from the return value and pass it into their
-   * `DurableStateActor` options.
+   * The DurableState store instance, for a caller that wires
+   * `DurableStateOptions.store` by hand rather than selecting the store with
+   * `actor-ts.persistence.durable-state.plugin`.
+   *
+   * A **getter**, and built on first read rather than at registration (#872) —
+   * see `PostgresPluginHandles` for the full reasoning.  Either route yields
+   * the one object; a caller that never touches durable state builds none.
    */
   readonly durableStateStore: DynamoDbDurableStateStore;
 };
 
 /**
- * One-shot registration of the DynamoDB journal + snapshot store against the
- * running `PersistenceExtension`, returning a ready-to-use DurableState store
- * handle.  Mirrors `registerPostgresPlugins` / `registerMongoPlugins`.
+ * One-shot registration of the DynamoDB journal, snapshot store and
+ * durable-state store with a `PersistenceExtension`.  Mirrors
+ * `registerPostgresPlugins` / `registerMongoPlugins`.
  *
- * After this call, activate the journal + snapshot store via:
- *   `actor-ts.persistence.journal.plugin = "actor-ts.persistence.journal.dynamodb"`
+ * Pass it to `ActorSystemOptions.withPersistence({ plugins })` as
+ * `(persistence) => registerDynamoDbPlugins(persistence)`: a plug-in runs inside
+ * `ActorSystem.create`, so the stores the configuration selects are
+ * registered before the system opens them at startup (#1473).  A selected
+ * store registered after `create` fails the startup instead.
+ *
+ * Select the stores with:
+ *   `actor-ts.persistence.journal.plugin        = "actor-ts.persistence.journal.dynamodb"`
  *   `actor-ts.persistence.snapshot-store.plugin = "actor-ts.persistence.snapshot-store.dynamodb"`
+ *   `actor-ts.persistence.durable-state.plugin  = "actor-ts.persistence.durable-state.dynamodb"`
  * either via HOCON or a `{ config: { … } }` override.
+ *
+ * **Everything except the live objects and the credentials can come from
+ * configuration** (#872): `region`, `endpoint` and the table names have leaves
+ * under the three blocks named above, so `registerDynamoDbPlugins(ext)` with no
+ * options at all is a complete wiring when `application.conf` fills them in.
+ * So does table provisioning — `billing-mode`, the `provisioned-throughput`
+ * pair, `table-ready-timeout` and `auto-create-tables` — and the client's
+ * retry and timeout settings, `max-attempts`, `retry-mode`, `request-timeout`
+ * and `connection-timeout` (#1490).  `clientConfig` deliberately does not: it
+ * is the SDK's whole option surface and stays code-only, credentials with it.
+ * Precedence is the project-wide one: explicit options > HOCON > built-in
+ * defaults, per field, with an unset field falling through rather than
+ * shadowing.
  *
  * Pass `operations` to share one client across all three stores — one
  * `DynamoDBClient` pools connections for every table, so sharing is the normal
@@ -48,11 +78,18 @@ export function registerDynamoDbPlugins(
   options: RegisterDynamoDbPluginsOptions = {},
 ): DynamoDbPluginHandles {
   const resolvedOptions = (options as RegisterDynamoDbPluginsOptionsType);
-  const { operations, region, endpoint, clientConfig, serializer } = resolvedOptions;
-  // A shared façade overrides a leaf's own; shared connection details and the
-  // serializer only fill in where the leaf is silent.
+  const {
+    operations, region, endpoint, clientConfig, maxAttempts, retryMode, requestTimeoutMs, connectionTimeoutMs,
+    serializer,
+  } = resolvedOptions;
+  // A shared façade overrides a leaf's own; every other shared connection
+  // field, typed ones included, and the serializer only fill in where the leaf
+  // is silent — so a leaf's own clientConfig beside a shared typed field is
+  // refused by that store's validator, like the same pair set on the leaf itself.
   const shared = { operations };
-  const connection = { region, endpoint, clientConfig, serializer };
+  const connection = {
+    region, endpoint, clientConfig, maxAttempts, retryMode, requestTimeoutMs, connectionTimeoutMs, serializer,
+  };
 
   const journal = mergeLeafOptions<Partial<DynamoDbJournalOptionsType>>(resolvedOptions.journal, shared, connection);
   const snapshotStore = mergeLeafOptions<Partial<DynamoDbSnapshotStoreOptionsType>>(resolvedOptions.snapshotStore, shared, connection);
@@ -60,12 +97,28 @@ export function registerDynamoDbPlugins(
 
   ext.registerJournal(
     DYNAMODB_JOURNAL_PLUGIN_ID,
-    (_system: ActorSystem) => new DynamoDbJournal(journal),
+    (system: ActorSystem) => new DynamoDbJournal(mergeOptions<DynamoDbJournalOptionsType>(
+      {},
+      readDynamoDbJournalOptionsFromConfig(system.config, DYNAMODB_JOURNAL_PLUGIN_ID),
+      journal,
+    )),
   );
   ext.registerSnapshotStore(
     DYNAMODB_SNAPSHOT_PLUGIN_ID,
-    (_system: ActorSystem) => new DynamoDbSnapshotStore(snapshotStore),
+    (system: ActorSystem) => new DynamoDbSnapshotStore(mergeOptions<DynamoDbSnapshotStoreOptionsType>(
+      {},
+      readDynamoDbSnapshotStoreOptionsFromConfig(system.config, DYNAMODB_SNAPSHOT_PLUGIN_ID),
+      snapshotStore,
+    )),
   );
-  const durableStateStore = new DynamoDbDurableStateStore(durableState);
-  return { durableStateStore };
+  // One instance, whichever way it is reached — see `registerPostgresPlugins`.
+  const durableStateStoreLazy = Lazy.of(() => new DynamoDbDurableStateStore(
+    mergeOptions<DynamoDbDurableStateStoreOptionsType>(
+      {},
+      readDynamoDbDurableStateStoreOptionsFromConfig(ext.config, DYNAMODB_DURABLE_STATE_PLUGIN_ID),
+      durableState,
+    ),
+  ));
+  ext.registerDurableStateStore(DYNAMODB_DURABLE_STATE_PLUGIN_ID, () => durableStateStoreLazy.get());
+  return { get durableStateStore(): DynamoDbDurableStateStore { return durableStateStoreLazy.get(); } };
 }

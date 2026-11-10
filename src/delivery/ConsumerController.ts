@@ -5,11 +5,16 @@ import { DeadLetter } from '../SystemMessages.js';
 import type { Acknowledgment, Delivery } from './Messages.js';
 import {
   ConsumerControllerOptionsValidator,
+  DEFAULT_MAX_OUT_OF_ORDER,
   DEFAULT_MAX_PRODUCERS,
   DEFAULT_PRODUCER_IDLE_TTL_MS,
 } from './ConsumerControllerOptions.js';
 import type { ConsumerControllerOptions, ConsumerControllerOptionsType } from './ConsumerControllerOptions.js';
-import { EVICTION_REPORT_INTERVAL_MS, MAX_DELIVERY_IDENTIFIER_LENGTH } from './Constants.js';
+import {
+  DEDUPLICATION_REPORT_INTERVAL_MS,
+  MAX_DELIVERY_IDENTIFIER_LENGTH,
+  UNHANDLED_REPORT_INTERVAL_MS,
+} from './Constants.js';
 
 type DeduplicationState = {
   /**
@@ -45,14 +50,19 @@ type DeduplicationState = {
  * handler, and Acks back to the producer.  Handles out-of-order redelivery
  * correctly by tracking each delivered seq, not just the highest one.
  *
- * The dedup state is on a **resource budget** rather than kept forever: at
- * most `maxProducers` entries, least-recently-used evicted, and entries idle
- * for `producerIdleTtlMs` swept out.  Retaining it forever made the map's
- * size a function of how many distinct `producerId`s had ever arrived —
- * sender-chosen from the wire, and freshly random per anonymous producer even
- * with no sender in the picture (#728).  The budget is what turns that into a
- * bounded cost; what it costs in exchange is at-least-once duplicates around
- * an eviction, which the protocol already permits.
+ * The dedup state is on a **resource budget** rather than kept forever, in
+ * both of its dimensions.  The map holds at most `maxProducers` entries,
+ * least-recently-used evicted, with entries idle for `producerIdleTtlMs`
+ * swept out; and each entry retains at most `maxOutOfOrder` sequences above
+ * an open gap.  Retaining the map forever made its size a function of how
+ * many distinct `producerId`s had ever arrived — sender-chosen from the wire,
+ * and freshly random per anonymous producer even with no sender in the
+ * picture — while the per-entry set grew for as long as a sender withheld one
+ * sequence and kept sending the ones after it (#728).  The budget is what
+ * turns both into a bounded cost.  What it costs in exchange is at-least-once
+ * duplicates around an eviction, which the protocol already permits, and a
+ * stalled producer at the out-of-order cap, which its own retransmit
+ * recovers from.
  */
 export class ConsumerController<T> extends Actor<Delivery<T>> {
   /**
@@ -70,10 +80,29 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
 
   private readonly maxProducers: number;
   private readonly producerIdleTtlMs: number;
+  private readonly maxOutOfOrder: number;
   private idleSweepTimer: Cancellable | null = null;
   /** Evictions not yet named in a warning — see {@link reportEvictions}. */
   private evictedSinceReport = 0;
   private lastEvictionReportAtMs = 0;
+  /**
+   * Out-of-order refusals not yet named in a warning — see
+   * {@link reportOutOfOrderRefusals}.  Counted separately from the evictions
+   * above, and paced off its own timestamp, so a flood of one kind cannot
+   * suppress the first sighting of the other.
+   */
+  private refusedSinceReport = 0;
+  private lastRefusalReportAtMs = 0;
+  /** Declines not yet named in a warning — see {@link reportUnhandled}. */
+  private unhandledSinceReport = 0;
+  /**
+   * When the last decline warning went out, on `system.clock`.
+   *
+   * `-Infinity` rather than 0, so the first decline is always reported: a
+   * virtual clock starts at 0, where a zero here would read as "reported a
+   * moment ago" and swallow the one line the pacing exists to let through.
+   */
+  private lastUnhandledReportAtMs = Number.NEGATIVE_INFINITY;
 
   public readonly options: ConsumerControllerOptionsType<T>;
 
@@ -84,6 +113,7 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
     this.options = resolvedOptions;
     this.maxProducers = resolvedOptions.maxProducers ?? DEFAULT_MAX_PRODUCERS;
     this.producerIdleTtlMs = resolvedOptions.producerIdleTtlMs ?? DEFAULT_PRODUCER_IDLE_TTL_MS;
+    this.maxOutOfOrder = resolvedOptions.maxOutOfOrder ?? DEFAULT_MAX_OUT_OF_ORDER;
   }
 
   /**
@@ -97,6 +127,21 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
    */
   get trackedProducers(): number {
     return this.deduplication.size;
+  }
+
+  /**
+   * Out-of-order seqs currently retained for `producerId`'s live incarnation,
+   * or 0 when nothing is tracked for it.
+   *
+   * The companion to {@link trackedProducers}, for the same reason: what
+   * `maxOutOfOrder` bounds also had no symptom short of the OOM.  It sits at
+   * 0 for a producer whose stream is arriving in order, and rises only while
+   * a gap is open; parked at `maxOutOfOrder` it means that producer is
+   * stalled — this consumer is refusing to acknowledge past the cap while it
+   * waits for a sequence that has not arrived.
+   */
+  outOfOrderFor(producerId: string): number {
+    return this.deduplication.get(producerId)?.above.size ?? 0;
   }
 
   /**
@@ -120,9 +165,87 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
     this.deduplication.clear();
   }
 
-  override onReceive(message: Delivery<T>): void {
-    if (message.kind !== 'reliable-delivery.delivery') return;
-    void this.handleDelivery(message);
+  /**
+   * Hands the delivery's promise back to the cell, which is what makes the
+   * handler run one at a time.
+   *
+   * `void this.handleDelivery(message)` returned `undefined`, and
+   * `ActorCell.run` awaits only what a receive actually returns — so the cell
+   * dequeued the next delivery while the user handler was still running, and
+   * a queued burst became that many overlapping invocations (#643).  Two
+   * things this class documents rest on the serialisation and were untrue
+   * without it.  `ConsumerControllerOptionsType.handler` promises the
+   * acknowledgment happens *after* the handler returns.  And the duplicate
+   * check in {@link handleDelivery} reads a window that
+   * {@link markDelivered} only writes once the handler has returned, so a
+   * retransmit arriving in between was read-check-act against state its own
+   * predecessor had not written yet, and re-entered the handler for a
+   * sequence still in flight.
+   *
+   * The `kind` is read through optional chaining because the declared type is
+   * what the sender promised, not what arrived: a `null` used to throw on
+   * this line, and a throw is a supervised fault whose restart discards every
+   * producer's deduplication window.
+   */
+  override onReceive(message: Delivery<T>): void | Promise<void> {
+    const kind: unknown = (message as { readonly kind?: unknown } | null | undefined)?.kind;
+    if (kind !== 'reliable-delivery.delivery') {
+      this.onUnhandled(message);
+      return;
+    }
+    return this.handleDelivery(message);
+  }
+
+  /**
+   * Decline a message that is not a delivery, and keep the window.
+   *
+   * This used to be a bare `return`: no dead letter, no metric, no log line.
+   * The consumer's ref is not private — every producer delivering here holds
+   * it, a handler can pass it on, and a controller under `/user` is
+   * addressable from a cluster peer — so whatever reached it and was not a
+   * delivery vanished without a trace.  The first message work-pulling needs
+   * (#1470) travels between the two controllers, and a consumer that predates
+   * it would have swallowed every one in silence.
+   *
+   * `this.unhandled` makes the decline visible everywhere but the log: a dead
+   * letter naming this consumer, and `actor_unhandled_total{class}` for the
+   * rate.  The warning is the log's share, paced by {@link reportUnhandled}.
+   * Nothing else moves — the deduplication state and the handler are not
+   * consulted — which is `ProducerController.onUnhandled`'s contract as well.
+   */
+  private onUnhandled(message: unknown): void {
+    this.reportUnhandled();
+    this.unhandled(message);
+  }
+
+  /**
+   * Name declines in the log at most once per
+   * {@link UNHANDLED_REPORT_INTERVAL_MS}, each line carrying how many it
+   * stands for — the producer's pacing, and for the producer's reason: the ref
+   * that reaches this consumer can reach it at message rate, and a line per
+   * decline would hand that party this process's log.
+   *
+   * Nothing from the message is in the line.  Its `kind` would be the most
+   * useful word there, and it is text the sender chose with nothing bounding
+   * its length; the dead letter carries the whole message to whoever
+   * subscribes to it.
+   *
+   * Timed on `system.clock` and not the wall clock, so the interval is
+   * virtual time under a `ManualScheduler` and a test reaches its far edge
+   * without holding still for a minute.
+   */
+  private reportUnhandled(): void {
+    this.unhandledSinceReport++;
+    const now = this.system.clock.now();
+    if (now - this.lastUnhandledReportAtMs < UNHANDLED_REPORT_INTERVAL_MS) return;
+    this.lastUnhandledReportAtMs = now;
+    const count = this.unhandledSinceReport;
+    this.unhandledSinceReport = 0;
+    this.log.warn(
+      `consumer declined ${count} message${count === 1 ? ' that was' : 's that were'} not a delivery — `
+      + 'each one is a dead letter now, and the deduplication state and the handler are untouched.  '
+      + 'A sender may speak a newer delivery protocol than this consumer',
+    );
   }
 
   private async handleDelivery(message: Delivery<T>): Promise<void> {
@@ -133,17 +256,39 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
     const state = this.deduplicationStateFor(message.producerId, message.incarnation);
     if (message.seq <= state.contiguous || state.above.has(message.seq)) {
       // Duplicate — re-ack so the producer can release its slot, but don't
-      // re-run the user handler.
+      // re-run the user handler.  Ahead of the out-of-order cap below on
+      // purpose: a duplicate costs the set nothing, and refusing to re-ack one
+      // at the cap would strand a producer whose acknowledgment was lost.
       this.sendAcknowledgment(message);
+      return;
+    }
+    if (!this.hasOutOfOrderRoom(state, message.seq)) {
+      this.reportOutOfOrderRefusals(state);
       return;
     }
     try {
       await this.options.handler(message.body);
     } catch (err) {
       this.log.warn(`consumer handler threw on seq=${message.seq}`, err);
-      // Do NOT ack — let the producer retry.
+      // Do NOT ack — let the producer retry.  No re-stamp either: nothing was
+      // marked delivered, so an entry the sweep took while the handler was
+      // running has no window worth restoring, and the retransmit this refusal
+      // invites is supposed to re-enter the handler.
       return;
     }
+    // Re-stamp before the write.  `touch` ran on *arrival*, so the handler's
+    // own duration is not part of the idle TTL it was measured against — and
+    // {@link sweepIdleProducers} runs from a raw scheduler callback rather than
+    // through the mailbox, making it the one thing that can delete this entry
+    // while the `await` above is outstanding.  Then `markDelivered` writes to
+    // an object the map no longer reaches, the sequence is not in the live
+    // window, and the producer's retransmit runs the handler a second time.
+    //
+    // Re-inserting cannot breach `maxProducers`: deliveries are serialised, so
+    // no new producer can be admitted while this one is awaited, and the sweep
+    // only ever removes — the map can therefore only be smaller than it was
+    // when this entry was admitted.
+    this.touch(message.producerId, state);
     this.markDelivered(state, message.seq);
     this.sendAcknowledgment(message);
   }
@@ -154,12 +299,17 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
    * Every field checked here is declared non-optional on {@link Delivery},
    * which is exactly why nothing guarded them: a peer that simply omits
    * `replyTo` satisfies the type at compile time and dereferences to
-   * `undefined` at run time.  Because the handling below is detached from
-   * `onReceive`, that `TypeError` used to settle as a rejected promise no
-   * `try` was watching and took the whole process with it — an actor fault
-   * would at least have been supervised (#727).  `producerId` becoming a
-   * `Map` key and `seq` becoming arithmetic before anything has looked at
-   * either is the same shape of exposure (#728).
+   * `undefined` at run time.  `producerId` becoming a `Map` key and `seq`
+   * becoming arithmetic before anything has looked at either is the same
+   * shape of exposure (#728).
+   *
+   * What that `TypeError` *costs* is no longer what this check was first
+   * written against.  While the handling below was detached from
+   * `onReceive`, it settled as a rejected promise no `try` was watching and
+   * took the whole process with it (#727); now that the promise is returned
+   * to the cell (#643) the same throw is an ordinary supervised fault.  So
+   * the crash argument is spent, and the reason the check has to stay is the
+   * one in the next paragraph, which was always the stronger half.
    *
    * A refusal is a dead letter rather than a fault: a malformed envelope is
    * bad *input*, and faulting the consumer on it would restart the actor and
@@ -171,6 +321,9 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
     if (!this.isIdentifier(message.incarnation)) return false;
     if (!Number.isSafeInteger(message.seq) || message.seq <= 0) return false;
     // The declared type says this is always an ActorRef; the wire disagrees.
+    // Shape is all this can ask of it, and deliberately so: binding `replyTo`
+    // to an authenticated identity is refused in writing on
+    // {@link sendAcknowledgment}, because a delivery carries none.
     const replyTo = message.replyTo as ActorRef<Acknowledgment> | undefined;
     return typeof replyTo?.tell === 'function';
   }
@@ -260,7 +413,7 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
    * never hears about it has no way to tell a `maxProducers` that is too low
    * from one that is doing its job against a flood.  But the flood is
    * precisely when this fires on every message, so the line is paced by
-   * {@link EVICTION_REPORT_INTERVAL_MS} and carries the count it stands for.
+   * {@link DEDUPLICATION_REPORT_INTERVAL_MS} and carries the count it stands for.
    *
    * The victim's id is deliberately not in the message: it is peer-supplied
    * text, and length is the only thing admission checks about it.
@@ -268,7 +421,7 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
   private reportEvictions(evicted: number): void {
     this.evictedSinceReport += evicted;
     const now = Date.now();
-    if (now - this.lastEvictionReportAtMs < EVICTION_REPORT_INTERVAL_MS) return;
+    if (now - this.lastEvictionReportAtMs < DEDUPLICATION_REPORT_INTERVAL_MS) return;
     this.lastEvictionReportAtMs = now;
     this.log.warn(
       `consumer evicted ${this.evictedSinceReport} least-recently-used producer dedup `
@@ -305,6 +458,61 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
     }
   }
 
+  /**
+   * Whether `seq` can be admitted without pushing this producer's
+   * out-of-order set past `maxOutOfOrder`.
+   *
+   * A seq that closes the gap is admissible however full the set is: it
+   * slides `contiguous` and drains from the set rather than adding to it, and
+   * it is the *only* thing that ever releases the set — refusing it would
+   * turn a recoverable stall into a deadlock.  `Infinity` needs no branch of
+   * its own, since every finite size is below it.
+   *
+   * The check is here, before the handler, and {@link markDelivered} inserts
+   * after it — which is only a reliable pairing because `onReceive` hands the
+   * cell the delivery's promise (#643).  Detached, every in-flight delivery
+   * passed this check before any of them had inserted, so the set overshot
+   * the cap by the concurrency.
+   */
+  private hasOutOfOrderRoom(state: DeduplicationState, seq: number): boolean {
+    if (seq === state.contiguous + 1) return true;
+    return state.above.size < this.maxOutOfOrder;
+  }
+
+  /**
+   * Surface a delivery refused at the out-of-order cap, paced the same way
+   * {@link reportEvictions} is and for the same reason.
+   *
+   * Refusing means no handler call *and* no acknowledgment, which is the
+   * maintainer's choice over the alternative of evicting the oldest retained
+   * sequence.  Both bound the heap; they differ in what they spend.  A drop
+   * re-runs the handler for a message this consumer had already handled and
+   * acknowledged — an at-least-once duplicate the sender cannot anticipate —
+   * whereas withholding the acknowledgment leaves the send in the producer's
+   * own window, where it is already being retransmitted.  The stall
+   * propagates back to the sender, which is where the missing sequence is,
+   * and the protocol's "no silent drop of a message" property survives.
+   *
+   * The awaited seq is in the message because it is the number an operator
+   * needs and it is a bounded integer by {@link isAdmissible}.  The
+   * `producerId` is not, for the same reason {@link reportEvictions} omits
+   * it: it is peer-supplied text.
+   */
+  private reportOutOfOrderRefusals(state: DeduplicationState): void {
+    this.refusedSinceReport++;
+    const now = Date.now();
+    if (now - this.lastRefusalReportAtMs < DEDUPLICATION_REPORT_INTERVAL_MS) return;
+    this.lastRefusalReportAtMs = now;
+    this.log.warn(
+      `consumer refused ${this.refusedSinceReport} out-of-order deliver`
+      + `${this.refusedSinceReport === 1 ? 'y' : 'ies'} with a full out-of-order window `
+      + `(maxOutOfOrder=${this.maxOutOfOrder}); it is waiting for seq ${state.contiguous + 1} and `
+      + 'will not acknowledge past the cap until that arrives, so the producer stalls rather '
+      + 'than this consumer retaining sequences without bound',
+    );
+    this.refusedSinceReport = 0;
+  }
+
   private markDelivered(state: DeduplicationState, seq: number): void {
     if (seq === state.contiguous + 1) {
       state.contiguous++;
@@ -316,18 +524,68 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
   }
 
   /**
-   * The `tell` is guarded because this method runs on a detached promise: a
-   * throw out of it — a remote `replyTo` whose transport send fails, a ref
-   * whose cell is already gone — would otherwise escape as an unhandled
-   * rejection rather than as anything the framework can supervise (#727).
+   * The `tell` is guarded because an acknowledgment is best-effort by design
+   * and a `replyTo` that cannot be reached is not this consumer's failure: a
+   * remote ref whose transport send fails, or one whose cell is already gone,
+   * throws here for reasons that have nothing to do with the message the
+   * handler just processed successfully.
    *
-   * Swallowing it is the right answer specifically for an *acknowledgment*.
-   * The ack is best-effort by design: losing one costs a retransmit, which is
-   * the mechanism the protocol already has for exactly this.  Faulting
-   * instead would restart the consumer, and since `deduplication` is a field
-   * initialiser the restart would discard the dedup window — so a failing ack
-   * would cost duplicate handler invocations for every producer on the node,
-   * and then loop, because the retransmit arrives and fails to ack again.
+   * The swallow used to be justified by detachment — this ran on a promise
+   * nobody held, so a throw escaped as an unhandled rejection instead of as
+   * anything the framework could supervise (#727).  That reason is gone:
+   * `onReceive` returns the promise and the cell awaits it (#643), so a throw
+   * here would now fault the actor properly.  The swallow survives on the
+   * reason that actually holds, which is what supervision would *do*.  Losing
+   * an ack costs a retransmit, which is the mechanism the protocol already
+   * has for exactly this.  Faulting instead restarts the consumer, and since
+   * `deduplication` is a field initialiser the restart discards every
+   * producer's dedup window — so one unreachable reply address would cost
+   * duplicate handler invocations across the whole node, and then loop,
+   * because the retransmit arrives and fails to ack again.
+   *
+   * **The address is `message.replyTo`, and #730's fourth suggested fix — "on
+   * the consumer side, refuse to acknowledge to a `replyTo` other than the
+   * envelope's authenticated sender" — is refused rather than implemented.**
+   * There is no authenticated sender to compare it against on any path this
+   * protocol has.  A `ProducerController` ships a delivery with
+   * `consumer.tell(delivery)`, one argument, so `this.sender` is `None` for
+   * every legitimate delivery — pinned by "a delivery carries no authenticated
+   * sender" in `tests/unit/delivery`, which fails the moment a producer starts
+   * telling with one.  The cluster's generic path resolution attaches no
+   * sender either (`cluster/EnvelopeTrust.ts` says so in its module header),
+   * and it cannot reach a controller under `/system/delivery/` by name in the
+   * first place.  Enforcing the clause literally would refuse every
+   * acknowledgment this protocol will ever send, which is the same ground the
+   * sibling clause was refused on one file over — see
+   * `ProducerController.onAcknowledgment`.
+   *
+   * Nothing else on a `Delivery` is unforgeable either.  `producerId`,
+   * `incarnation`, `seq` and `replyTo` are all written by whoever built the
+   * envelope, so binding the reply target to the first `replyTo` seen for an
+   * incarnation would pin it to a value the same party chose: trust on first
+   * use, not authentication.
+   *
+   * What a forged `replyTo` can reach is wider than this note used to claim.
+   * It argued that an `ActorRef` has no wire representation, so only a party
+   * already holding a ref in this process could name its actor.  It has one:
+   * `cluster/RefCodec.ts` encodes a ref inside a message body as an address
+   * marker, and the receiving node decodes the marker back into a live ref —
+   * a local actor when it names this node — which {@link isAdmissible} then
+   * accepts like any other.  `ConsumerReplyToAcrossNodes.test.ts` in
+   * `tests/unit/delivery` pins it across two nodes: a delivery a peer wrote
+   * with `replyTo` naming a `/user` actor on the consumer's node is handled,
+   * and the `Acknowledgment` reaches that actor.  So a peer able to send to a
+   * consumer under `/user` chooses where the acknowledgment goes,
+   * and resolving a same-node marker consults none of the trust checks an
+   * envelope's own target goes through.  Whether a wire-supplied ref should
+   * resolve like that is the decoder's question — #1572 — and nothing here
+   * decides it.
+   *
+   * What reaches that target is one `Acknowledgment` per delivery, carrying
+   * four fields the sender wrote itself; and a real producer on the receiving
+   * end discards it, because the incarnation will not match.  That echo is
+   * what actually authenticates an acknowledgment, and it stays where it can
+   * be checked against something unguessable — on the producer, not here.
    */
   private sendAcknowledgment(message: Delivery<T>): void {
     const ack: Acknowledgment = {

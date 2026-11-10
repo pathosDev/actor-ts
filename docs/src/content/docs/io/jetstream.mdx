@@ -50,13 +50,13 @@ class OrderProcessor extends Actor<JetStreamMessage> {
   async onReceive(message: JetStreamMessage): Promise<void> {
     try {
       await db.insertOrder(JSON.parse(new TextDecoder().decode(message.payload)));
-      this.jetStream.tell({ kind: 'acknowledgment', streamSeq: message.streamSeq });
+      this.jetStream.tell({ kind: 'acknowledgment', ackToken: message.ackToken });
     } catch {
       // redeliver after 5 s
       this.jetStream.tell({
-        kind:      'negativeAcknowledgment',
-        streamSeq: message.streamSeq,
-        delayMs:   5_000,
+        kind:     'negativeAcknowledgment',
+        ackToken: message.ackToken,
+        delayMs:  5_000,
       });
     }
   }
@@ -103,9 +103,14 @@ connect time (`create` defaults to `true`).
 | `subjects` | Subjects captured by the stream, e.g. `['orders.>']` (required). |
 | `retention` | `'limits'` *(default)*, `'interest'`, or `'workqueue'`. |
 | `storage` | `'file'` (durable) or `'memory'`. |
-| `maxMessages` / `maxBytes` | Retention caps. |
-| `maxAge` | Max age in **nanoseconds** (passed through verbatim). |
+| `maxMessages` / `maxBytes` | Retention caps.  `-1` means **no limit**. |
+| `maxAge` | Max age in **nanoseconds** (passed through verbatim).  `0` means **no limit**. |
 | `create` | Create/update the stream at connect time.  Default `true`. |
+
+The "no limit" spellings are NATS's own and are **not** symmetric: the two
+count caps take `-1`, `maxAge` takes `0` — a nanosecond span, where a negative
+value would mean nothing.  They pass through to the server verbatim.  Any
+*other* non-positive value is refused at startup, so `-2` stays the typo it is.
 
 ### Consumer config
 
@@ -115,12 +120,97 @@ Set `consumer` to bind a durable subscription.
 | --- | --- |
 | `durable` | Durable consumer name (required — survives restarts). |
 | `mode` | `'push'` *(default)* or `'pull'` (see below). |
-| `deliverPolicy` | `'all'` *(default)*, `'last'`, `'new'`, `{ kind: 'byStartSeq', startSeq }`, or `{ kind: 'byStartTime', startTimeMs }`. |
+| `deliverPolicy` | `'all'` *(default)*, `'last'`, `'new'`, `{ kind: 'by-start-sequence', startSeq }`, or `{ kind: 'by-start-time', startTimeMs }`. |
 | `ackPolicy` | `'explicit'` *(default — ack/nak/term required)*, `'none'`, or `'all'`. |
 | `ackWaitMs` | Time before the server redelivers without an ack.  Default `30_000`. |
 | `filterSubject` | Subject filter — defaults to all subjects in the stream. |
-| `maxAcknowledgmentPending` | Max in-flight unacked messages.  Default `1024`. |
+| `maxAcknowledgmentPending` | Max in-flight unacked messages.  Default `1024`; `-1` means **no limit**. |
 | `create` | Create/update the consumer at connect time.  Default `true`. |
+
+`ackWaitMs` has no such spelling — NATS reads a zero ack-wait as "use the
+server default", which is what leaving the field unset already says — so it
+must be positive.
+
+### Both groups, from HOCON
+
+Which stream an actor owns and which durable it binds is deployment shape, not
+application logic, so both groups are readable under
+`actor-ts.io.broker.jetstream` — as are the connection, the way the
+[NATS page](/io/nats/) spells it, and the ack-wait ceiling:
+
+```hocon
+actor-ts.io.broker.jetstream {
+  servers  = ["nats://nats-1:4222", "nats://nats-2:4222"]   # a list, even for one server
+  name     = "billing"
+  user     = "billing"
+  password = ${?ACTOR_TS_NATS_PASSWORD}
+  # token  = ${?ACTOR_TS_NATS_TOKEN}   # instead of user and password
+
+  acknowledgment-timeout = 45s
+
+  stream {
+    name         = "BILLING"
+    subjects     = ["billing.>"]
+    retention    = "workqueue"
+    storage      = "file"
+    max-messages = 1000000
+    max-bytes    = 8M
+    max-age      = 3600000000000   # NANOseconds, passed through verbatim
+    create       = true
+  }
+
+  consumer {
+    durable                   = "billing-proc"
+    mode                      = "push"
+    deliver-policy            = "all"
+    ack-policy                = "explicit"
+    ack-wait                  = 30s
+    filter-subject            = "billing.charges"
+    max-acknowledgment-pending = 1024
+    create                    = true
+  }
+}
+```
+
+`deliver-policy` also takes its two parameterised forms, as an object.  The
+`kind` keeps its TypeScript spelling because it is a *value* that lands in the
+union unchanged, and that spelling is kebab-case like every value a HOCON key
+takes:
+
+```hocon
+consumer {
+  durable        = "billing-proc"
+  deliver-policy { kind = "by-start-sequence", start-seq = 4242 }
+  # deliver-policy { kind = "by-start-time", start-time = 1767225600000 }  # or this; epoch ms
+}
+```
+
+An unrecognised `kind` is refused at startup rather than quietly falling back
+to `all`, which would replay a whole stream on a typo.  That holds for an
+object built in code as well, where a cast or plain JavaScript can hand over
+any `kind`: it is refused at startup with an `OptionsError` naming the kinds
+there are — or, for a retired spelling, the one that replaced it.
+
+The start value is checked at startup too, so a consumer the server would
+refuse at connect, and the reconnect loop would retry for ever, fails before
+it gets there, naming the field.  `start-seq` (`startSeq`) is a positive
+integer up to `Number.MAX_SAFE_INTEGER`: stream sequences start at 1, and past
+that bound a number no longer holds every integer, so the sequence sent would
+not always be the one written.  `start-time` (`startTimeMs`) is an instant in
+epoch milliseconds from `0` up to `253402300799999`, which is
+`9999-12-31T23:59:59.999Z`: the server reads it as an RFC 3339 time, whose year
+has four digits, and an epoch in microseconds mistaken for milliseconds lands
+far past that.
+
+Both groups are read **whole**: `withStream({ … })` / `withConsumer({ … })` in
+code replace the configured block rather than merging into it, which is the
+ordinary precedence (constructor > HOCON > defaults) applied at the field each
+object *is*.  `name` + `subjects` and `durable` are required, and a block
+missing one is refused at start, naming the leaf.
+
+`target` has no config key — an `ActorRef` names a live actor in this process,
+which a config file cannot denote.  Neither has `tls`, which carries the
+certificate material itself.
 
 ## Commands
 
@@ -129,29 +219,58 @@ Set `consumer` to bind a durable subscription.
 | `kind` | Fields | Purpose |
 | --- | --- | --- |
 | `publish` | `publish: JetStreamPublish` | Publish a message (see [idempotent publish](#idempotent-publish)). |
-| `acknowledgment` | `streamSeq` | Ack a delivered message — the server marks it consumed. |
-| `negativeAcknowledgment` | `streamSeq`, `delayMs?` | Redeliver (optionally after `delayMs`). |
-| `terminate` | `streamSeq`, `reason?` | Terminal failure — server drops the message permanently. |
-| `inProgress` | `streamSeq` | Heartbeat — extend the ack-wait window for a long handler. |
+| `acknowledgment` | `ackToken` | Ack a delivered message — the server marks it consumed. |
+| `negativeAcknowledgment` | `ackToken`, `delayMs?` | Redeliver (optionally after `delayMs`). |
+| `terminate` | `ackToken`, `reason?` | Terminal failure — server drops the message permanently. |
+| `inProgress` | `ackToken` | Heartbeat — extend the ack-wait window for a long handler. |
 | `fetch` | `batch`, `expiresMs?` | **Pull mode only** — request up to `batch` messages. |
 
 Every inbound `JetStreamMessage` carries `subject`, `payload`
-(`Uint8Array`), `replyTo`, `streamSeq`, `consumerSeq`, `deliveries`
-(delivery count — `1` on first try), `timestamp`, and `headers`.
+(`Uint8Array`), `replyTo`, `streamSequence`, `consumerSequence`, `deliveries`
+(delivery count — `1` on first try), `ackToken`, `timestamp`, and
+`headers`.
 
 ## The ack handshake
 
 With the default `ackPolicy: 'explicit'`, every delivered message must
 be resolved with exactly one of `acknowledgment`, `negativeAcknowledgment`,
-or `terminate`, keyed by `streamSeq`:
+or `terminate`, keyed by `ackToken`:
 
 - **`acknowledgment`** — processing succeeded; the server advances the consumer.
 - **`negativeAcknowledgment`** — retry; the server redelivers (after `delayMs` if given).
 - **`terminate`** — give up permanently; the server will not redeliver.
 - **`inProgress`** — not terminal; resets the ack-wait timer so a slow handler isn't redelivered mid-flight.
 
+`ackToken` is an opaque number the actor mints per **delivery** and hands
+you on the message.  It is deliberately not `streamSequence`: a stream sequence
+identifies the *message*, and JetStream reuses it verbatim on every
+redelivery (only `consumerSequence` and `deliveries` move).  Two deliveries of
+one message can be in flight at once — routinely so in pull mode, where
+fetch batches overlap — and only `ackToken` tells them apart.  Never send
+it back to the broker or persist it: it means nothing outside the actor
+instance that issued it, and it does not survive a reconnect.
+
 Set `ackPolicy: 'none'` for pure fire-and-hose delivery where no ack is
-expected.
+expected.  Messages still carry an `ackToken` in that mode, but **the token
+names nothing**: the actor registers no delivery, so every
+`acknowledgment` / `negativeAcknowledgment` / `terminate` / `inProgress`
+naming it is ignored.  A consumer that settles defensively is not doing
+anything wrong — the drop is reported at `debug` there, not at `warn`.
+
+A settle command that misses in any *other* mode **is** reported at `warn`,
+by all four commands, naming the command and the token: the delivery it
+addressed already timed out, was settled, or predates a reconnect, so the
+message will be redelivered and reprocessed.
+
+**A connection loss settles every in-flight delivery locally.**  Each one is
+failed, `nak`'d best-effort so the server redelivers it, and its ack-timeout
+disarmed — the reconnect then starts from an empty pending map, and any
+settle command still travelling for a pre-disconnect delivery misses (see
+above).  The loss is **one** `warn` naming how many deliveries were in
+flight; the per-delivery detail goes to `debug`, because a flapping
+connection on a consumer with `maxAcknowledgmentPending` in the hundreds
+would otherwise write hundreds of warnings per flap.  An ack-timeout stays
+at `warn`: that one names a single handler that did not answer in time.
 
 ## Push vs pull consumers
 
@@ -164,6 +283,13 @@ expected.
   every message still goes through the same ack handshake.  Fits
   slow/bursty consumers better than push fan-out.
 
+**Fetches overlap, by design.** A `fetch` command returns the mailbox turn
+immediately, so a second `fetch` is served while the first batch's acks are
+still outstanding — it has to be, because those acks arrive as mailbox
+messages and a `fetch` that held its turn open would deadlock on them.
+Pipelining fetches is therefore supported, and it is why a delivery is
+addressed by `ackToken` rather than by `streamSequence`.
+
 ## Idempotent publish
 
 `JetStreamPublish` supports JetStream's server-side dedup and
@@ -173,10 +299,10 @@ optimistic concurrency:
 jetStream.tell({
   kind: 'publish',
   publish: {
-    subject:         'orders.created',
-    payload:         JSON.stringify(order),
-    messageId:       order.id,   // sent as Nats-Msg-Id — dedupes re-publishes in the stream's window
-    expectedLastSeq: lastSeq,    // server rejects the publish if the stream head moved (optimistic concurrency)
+    subject:              'orders.created',
+    payload:              JSON.stringify(order),
+    messageId:            order.id,       // sent as Nats-Msg-Id — dedupes re-publishes in the stream's window
+    expectedLastSequence: lastSequence,   // server rejects the publish if the stream head moved (optimistic concurrency)
   },
 });
 ```
@@ -184,19 +310,25 @@ jetStream.tell({
 ## Peer dependency
 
 ```bash
-npm install nats
-# or: bun add nats
+npm install @nats-io/transport-node @nats-io/jetstream
+# or: bun add @nats-io/transport-node @nats-io/jetstream
 ```
 
-The `nats` package includes both core NATS and the JetStream client.
+Two packages since nats.js v3: the transport connects, and
+`@nats-io/jetstream` carries the streams, consumers and their
+acknowledgments.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="ackWaitMs must exceed handler time">
+<Aside type="caution" title="A handler slower than ackWaitMs gets the message twice">
   If a handler routinely takes longer than `ackWaitMs`, the server
-  redelivers the message mid-processing.  Either raise `ackWaitMs`, or
-  send `{ kind: 'inProgress', streamSeq }` to extend the window for a
-  long-running handler.
+  redelivers **while the first delivery is still being processed** — so the
+  work runs twice and two deliveries of one message are in flight at once.
+  That is a correctness matter, not a tuning preference: your handler must
+  be idempotent, and it must settle each delivery by that delivery's own
+  `ackToken`.  To stop the overlap happening, send
+  `{ kind: 'inProgress', ackToken }` to extend the window for a handler
+  that is still working, or raise `ackWaitMs`.
 </Aside>
 
 <Aside type="caution" title="`fetch` is pull-mode only">

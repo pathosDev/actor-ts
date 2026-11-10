@@ -83,7 +83,13 @@ type Victim = {
  * merely had nobody left to tell.
  */
 type CoordinatorState = {
-  readonly regions: Map<string, { readonly node: NodeAddress; readonly path: string; readonly shards: Set<number> }>;
+  readonly regions: Map<string, {
+    readonly node: NodeAddress;
+    readonly path: string;
+    readonly shards: Set<number>;
+    readonly lastSeenAtMs: number;
+    readonly lastHeartbeatAtMs: number | null;
+  }>;
   readonly shardHome: Map<number, string>;
 };
 
@@ -308,6 +314,37 @@ describe('ShardCoordinator sender authority (#712)', () => {
     expect(entityIsUp(victim)).toBe(true);
   });
 
+  test('a forged RegionHeartbeat does not keep a dead region looking alive (#853)', async () => {
+    // A liveness frame that names a node is a claim about that node, so it has
+    // to be in `claimedNode` — `maySpeakFor` returns true for a `null` claim,
+    // and an unlisted kind is therefore accepted from any peer that can
+    // complete a `hello`.  What that would buy an attacker is the inverse of
+    // the usual eviction attack: keep a region the coordinator should have
+    // swept looking alive indefinitely, so its shards are never re-homed and
+    // every entity under them stays unreachable.
+    const victim = await startVictim('coordinator-heartbeat', 47_374);
+    const evil = await attacker('evil-heartbeat', 47_375);
+
+    const key = coordinatorState(victim).shardHome.get(victim.shardId)!;
+    const before = coordinatorState(victim).regions.get(key)!;
+    // The registration stamped `lastSeenAtMs`; nothing has beaten, so this
+    // victim's own region is not a sweep candidate to begin with.
+    expect(before.lastHeartbeatAtMs).toBeNull();
+
+    forge(evil, victim, victim.coordinatorPath, {
+      kind: 'sharding.RegionHeartbeat',
+      region: victim.regionPath,
+      node: victim.cluster.selfAddress.toJSON(),
+    });
+    // The assertion is an absence: the forged frame gets a turn and must still
+    // have moved neither stamp.
+    await sleep(200);
+
+    const after = coordinatorState(victim).regions.get(key)!;
+    expect(after.lastHeartbeatAtMs).toBeNull();
+    expect(after.lastSeenAtMs).toBe(before.lastSeenAtMs);
+  });
+
   test('a forged GetClusterShardingStats does not make the coordinator dial the named address', async () => {
     // The arm the issue body omits.  A statistics query is answered at the
     // address in its own payload, through `replyTo` → `Cluster._sendEnvelope` →
@@ -353,7 +390,9 @@ describe('ShardCoordinator sender authority (#712)', () => {
       node: evil.self.toJSON(),
       // A proxy so the claim exercises the `hostedShards` write path without
       // also becoming an allocation candidate — placement is a separate
-      // question, and #948 owns the live-owner conflict this still leaves open.
+      // question.  The live-owner conflict this claim also stages is #948's,
+      // and it landed: the victim's own shard is adjudicated away below, and
+      // `ShardRegisterConflict.test.ts` is where that half is asserted.
       proxy: true,
       hostedShards: [
         ...outOfRange,
@@ -375,8 +414,12 @@ describe('ShardCoordinator sender authority (#712)', () => {
       .find((info) => info.path === '/self-declared');
     // The identity gate lets this one in — it speaks for itself.
     expect(claimant).toBeDefined();
-    expect(Array.from(claimant!.shards).sort((a, b) => a - b))
-      .toEqual([0, 1, 2, 3]);
+    // Every in-range id survives the bound and the dedupe; the one the victim's
+    // own region already owns is then adjudicated away by #948, which is what
+    // separates "the array was cleaned up" from "the claim was believed".
+    const expected = Array.from({ length: NUM_SHARDS }, (_unused, shardId) => shardId)
+      .filter((shardId) => shardId !== victim.shardId);
+    expect(Array.from(claimant!.shards).sort((a, b) => a - b)).toEqual(expected);
 
     // Nothing outside `0..numShards-1` reached the allocation map, and it cannot
     // have grown past one entry per shard.

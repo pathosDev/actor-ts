@@ -150,10 +150,85 @@ hour), this is real overhead.  Consider:
 - Skip `rememberEntities` for short-lived workloads.
 - Use a fast store (in-memory Redis) instead of the default
   journal.
-- Batch writes if you're implementing a custom store.
+- Don't plan on batching in a custom store: the coordinator hands
+  `append` one event at a time, and the next one only after the
+  previous one has settled, so a store has no batch to write until
+  the store interface gains a batch entry point.
 
 For low-churn workloads (10K stable entities), the cost is
 negligible.
+
+## Pacing a restore
+
+Coming back is the expensive half, and by default it happens all at once.
+When a region is handed a shard it is shipped that shard's whole registry
+and spawns every entity in it in one pass — for every shard it is given.
+A node restart, or a rebalance after one node leaves, therefore opens one
+journal replay per remembered entity in the same tick.  With a few hundred
+entities that is fine.  With tens of thousands it is a thundering herd
+against the store, at the exact moment the cluster is least healthy.
+
+`entityRecoveryStrategy: 'constant-rate'` spreads those starts:
+
+```ts
+const shardingOptions = StartShardingOptions.create<DeviceCommand>()
+  .withTypeName('device')
+  .withEntityActor(DeviceEntity)
+  .withExtractEntityId((command) => command.deviceId)
+  .withRememberEntities()
+  .withEntityRecoveryStrategy('constant-rate')
+  .withEntityRecoveryConstantRateFrequencyMs(100)
+  .withEntityRecoveryConstantRateNumberOfEntities(5);
+
+cluster.sharding.start(shardingOptions);
+```
+
+or, for the whole deployment at once:
+
+```hocon
+actor-ts.sharding.entity-recovery {
+  strategy = constant-rate
+  constant-rate.frequency = 100ms
+  constant-rate.number-of-entities = 5
+}
+```
+
+Three properties are worth knowing before you reach for it.
+
+**The budget is region-wide, per sharded type.**  Five entities per
+100 ms is five *for this sharded type on this node*, whatever number of
+shards the node happens to hold.  Each sharded type a node starts runs its
+own region with its own queue, so a node recovering a `device` type and an
+`order` type at these settings starts up to ten per window — five of each.
+This is not how the equivalent Akka setting reads — there the rate is per
+shard, so a node holding 21 of 64 shards recovers 21 × the configured
+number per window.  Region-wide is the same choice `maxEntities` makes for
+the same reason, and with the same scope: a bound the shard count
+multiplies is not a bound an operator picked.
+
+**It paces starts, not replays.**  Each spawned entity replays
+asynchronously, so a replay that outlasts the window still overlaps the
+next batch.  This key smooths the *arrival* rate; how many recoveries may
+be in flight at once is capped one layer down, by
+[`actor-ts.persistence.max-concurrent-recoveries`](/persistence/persistent-actor/#when-the-stores-are-down)
+(50 by default, system-wide).  The two compose: pacing decides how fast
+entities are created, the permit how many of their replays read the
+journal at the same time.
+
+**Nothing is shed.**  The backlog drains until every remembered entity is
+back, and a message routed to an entity still waiting in the queue creates
+it immediately — only the recovery burst waits, never live traffic.  A
+long queue does not cost a shard either: the
+[empty-shard sweep](/cluster/sharding/overview/#shards-passivate-too)
+leaves a shard alone while a remembered entity of it still waits its
+turn, and the batch that finally starts one is no reason to stop the
+shard on the next sweep — the shard itself declines to stop while it
+runs the entity the batch just started.
+
+The default is `'all'`, the behaviour described at the top of this section.
+Pacing changes *when* an entity comes back, and how fast your journal can
+take the replays is a fact about your journal, so it is a decision to make
+rather than one to inherit.
 
 ## When to use it
 
@@ -182,8 +257,30 @@ The framework's behavior:
 - **Idle-timeout passivation** (`passivationIdleMs`) — appends a
   `stopped` event.  Next message respawns it; the store
   receives a `started` event again.
-- **`maxEntities` LRU passivation** — same.
+- **`maxEntities` passivation** — same.
 - **`Passivate` from the entity itself** — same.
+- **A stop without `Passivate`** — a failure past the shard's restart
+  budget, a recovery failure the entity swallowed, a lost lease, a plain
+  `stopSelf` — appends a `stopped` event as well, so the entity is not
+  revived from the registry.  It comes back for the next message
+  addressed to it, no sooner than its
+  [`entity-restart-backoff`](/cluster/sharding/overview/#an-entity-that-keeps-stopping)
+  allows: a message inside the wait is held until the wait ends.
+
+### Remembered entities count against `maxEntities`
+
+A remembered entity is *pre-created*: the region is handed a shard's registry
+and starts every entity in it, without anything having been routed to them.
+Those starts now go through the same cap and the same replacement policy as a
+message-driven one, so a node handed a registry larger than `maxEntities`
+settles back at the cap by passivating down to it, rather than exceeding it by
+the size of the registry and staying there.
+
+That is worth pairing with [`entity-recovery`](#pacing-a-restore) when the two
+disagree: with a small cap and a large registry, an unpaced `all` restore
+spawns every entity and then passivates most of them again immediately.  Either
+raise the cap above the registry you expect a node to hold, or accept that the
+cap is the real bound and the registry is a superset of what stays resident.
 
 For workloads where you want **eager re-spawn even of recently-idle
 entities**, set `passivationIdleMs: 0` so they stay around.
@@ -204,16 +301,29 @@ exactly this reason.
 
 ### After an unexpected shard death
 
-A shard actor can die outside a rebalance — past its supervision budget,
-say.  The region keeps ownership (that is how the next message
-re-creates the shard) and asks the coordinator to re-send what it
-remembers for that shard, so the entities come back on their own without
-waiting for traffic.  Nothing is recorded as `stopped` in that case: the
-entities were never meant to go.
+A shard actor can die outside a rebalance — an entity escalated a
+failure to it, say, which the region answers by stopping the shard.
+The region keeps ownership, waits out the shard's failure backoff
+(`shard-failure-backoff`, about 200 ms the first time), re-creates the shard,
+and then asks the coordinator to re-send what it remembers for it, so
+the entities come back on their own without waiting for traffic.
+Nothing is recorded as `stopped` in that case: the entities were never
+meant to go.
+
+A shard that keeps dying does not loop.  Each death in a row doubles
+the wait, up to `max` (10 s by default), and the registry is asked for
+only when the shard comes back.  Before the backoff a shard whose
+entity failed on every start was re-created on the coordinator's
+answer, thousands of times a second and with no traffic at all, and
+every round appended a `started` record to the store.  See
+[when shards and entities keep failing](/cluster/sharding/overview/#when-shards-and-entities-keep-failing)
+for the whole picture.
 
 Shard *passivation* does not interact with the registry at all — only an
 empty shard is ever passivated, and its entities have already reported
-their own `stopped` events by then.
+their own `stopped` events by then.  The shard itself confirms that it is
+empty before it goes, so a remembered entity a recovery batch has just
+started is never stopped along with it.
 
 import { Aside } from '@astrojs/starlight/components';
 

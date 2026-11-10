@@ -199,17 +199,17 @@ describe('#114 — the version cap cannot be walked up in two steps', () => {
     expect(stored!.version).toBeGreaterThanOrEqual(ownVersion);
   });
 
-  test('the sender fallback does not hand the next frame the wider cap', async () => {
+  test('a frame with no records files nothing, so the next one still meets the first-sighting cap', async () => {
     const node = await startNode('fallback-door', 9_603);
     nodes.push(node);
     const claimed = squatTarget('fallback-door');
 
-    // Frame 1: no member records at all.  `onGossip` still puts the connection's
-    // self-declared address on file — that fallback is what makes a refusal
-    // cost one gossip round instead of being permanent, and it is also what
-    // used to turn the *next* frame into an `existing`-branch merge.
+    // Frame 1: no member records at all.  `onGossip` used to put the frame's
+    // self-declared sender on file anyway, which turned the *next* frame into
+    // an `existing`-branch merge under the wider cap.  That door is gone
+    // (#939): a sender is introduced by its own record or not at all.
     gossipFrom(node.cluster, claimed, []);
-    expect(memberIn(node.cluster, claimed)).toBeDefined();
+    expect(memberIn(node.cluster, claimed)).toBeUndefined();
 
     // Frame 2: the squat, 23 h ahead, with the roles.
     gossipFrom(node.cluster, claimed, [{
@@ -219,9 +219,7 @@ describe('#114 — the version cap cannot be walked up in two steps', () => {
       roles: ATTACKER_ROLES,
     }]);
 
-    const stored = memberIn(node.cluster, claimed);
-    expect(Array.from(stored!.roles)).toEqual([]);
-    expect(stored!.version).toBeLessThan(Date.now() + HOUR_MS);
+    expect(memberIn(node.cluster, claimed)).toBeUndefined();
     expect(node.cluster.upMembersWithRole('singleton-host')).toHaveLength(0);
   });
 

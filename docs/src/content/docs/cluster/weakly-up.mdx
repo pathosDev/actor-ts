@@ -108,24 +108,31 @@ stateDiagram-v2
   joining --> weakly_up: delay (optional)
   joining --> up: leader confirms
   weakly_up --> up: leader confirms
+  up --> unreachable: failure detector
+  unreachable --> up: heartbeat resumes
+  unreachable --> down: strategy, operator or auto-down
   up --> leaving: cluster.leave()
-  leaving --> exiting
-  exiting --> removed
+  leaving --> removed
+  down --> removed
   removed --> [*]
   classDef start fill:#1e293b,stroke:#475569,color:#cbd5e1;
   classDef warn  fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
   classDef ok    fill:#312e81,stroke:#818cf8,color:#f1f5f9;
   classDef gone  fill:#1e293b,stroke:#475569,color:#94a3b8;
   class joining start
-  class weakly_up warn
+  class weakly_up,unreachable warn
   class up ok
-  class leaving,exiting,removed gone
+  class leaving,down,removed gone
 ```
 
 `weakly-up` is **transient** — once the leader becomes reachable
-and gossip converges, the member transitions to `up`.  It can also
-go straight from `weakly-up` to `leaving` or `removed` if it's
-stopped without ever reaching `up`.
+and gossip converges, the member transitions to `up`.  A member
+stopped gracefully before it reaches `up` goes straight from
+`weakly-up` to `leaving`.  One that crashes is removed by the failure
+detector at `down-after` when no downing strategy is configured —
+`failure-detector.auto-down` is on by default — or, under the opt-out
+`auto-down = off`, parked at `unreachable` until an operator or a
+strategy downs it.
 
 ## Observing the transition
 
@@ -173,8 +180,12 @@ import { Aside } from '@astrojs/starlight/components';
   // ✗ no downingProvider
   ```
   Weakly-up helps **join** during partition; it doesn't help the
-  partition *resolve*.  After the partition heals, you still need
-  a downing strategy to evict the losing side.  Use both.
+  partition *resolve*.  Without a downing strategy, each side of a
+  real partition removes the other at `down-after`, and both halves
+  run on as two clusters that do not merge again when the network
+  heals.  Configure `lease-majority` or another
+  [downing strategy](/cluster/downing-strategies/) to evict the
+  losing side instead.  Use both.
 </Aside>
 
 <Aside type="caution" title="Weakly-up members may surprise you">
@@ -189,14 +200,49 @@ import { Aside } from '@astrojs/starlight/components';
   logic considers "live."
 </Aside>
 
-<Aside type="caution" title="Very-short `weaklyUpAfterMs` thrashes">
+<Aside type="caution" title="`minimumMembersBeforeUp` is the other half of the same knob">
+  ```ts
+  const clusterOptions = ClusterOptions.create()
+    .withWeaklyUpAfterMs(3_000)
+    .withMinimumMembersBeforeUp(3);
+  ```
+  The two are read together and act on opposite sides of the same
+  transition.  `weaklyUpAfterMs` decides how long a `joining`
+  member waits before it is given a *partial* membership;
+  `minimumMembersBeforeUp` decides whether the leader may hand out
+  a full one at all.  With both set, `weakly-up` is precisely the
+  state a node sits in while the membership threshold is unmet —
+  and a `weakly-up` member still counts toward that threshold, so
+  the promotion does not push the goal further away.  The wait is
+  reported all the same: after a few seed-contact rounds a
+  `weakly-up` node logs the key and the current count once, just
+  as a `joining` one does.  See
+  [Joining and seeds](/cluster/joining-and-seeds/).
+</Aside>
+
+<Aside type="caution" title="Very-short `weaklyUpAfterMs` makes routine joins look like partitions">
   ```ts
   weaklyUpAfterMs: 200;
   ```
   Below the failure-detector's `unreachableAfterMs`, you'd
-  promote members during routine gossip-round-trip delays — and
-  then demote them again when the leader's response finally
-  arrives.  Keep `weaklyUpAfterMs > unreachableAfterMs`.
+  promote members to `weakly-up` during routine gossip-round-trip
+  delays, before the leader's response arrives.  Nothing demotes
+  them again — no transition leads from `weakly-up` back to
+  `joining`.  The leader's response moves them on to `up`, but it
+  can tie with the timer: the leader promotes the `joining` record
+  it holds at version `E` to `up` at `E + 1`, while the node's own
+  timer has already written `weakly-up` at `E + 1` too.  A seed
+  that starts just after the timer fires produces exactly that
+  order.  The merge used to drop any record that was not strictly
+  newer, so the node stayed `weakly-up` in its own view for good —
+  no `SelfUp`, `isReady()` false — while every peer counted it
+  `up` ([#935](https://github.com/pathosDev/actor-ts/issues/935)).
+  That tie now resolves toward `up` on every node; #935 stays open
+  for equal-version ties between other statuses.  The cost that
+  remains is the signal: ordinary joins now emit
+  `MemberWeaklyUp`, and counting those events, as suggested above,
+  no longer tells a partition from a slow gossip round.  Keep
+  `weaklyUpAfterMs > unreachableAfterMs`.
 </Aside>
 
 ## Where to next

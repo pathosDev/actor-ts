@@ -51,13 +51,17 @@ const waitFor = (
   label = 'the awaited shard-introspection state',
 ): Promise<void> => awaitCondition(predicate, { timeoutMs, intervalMs: stepMs, label });
 
-type Node = {
+/** A cluster member that has not started the sharded type (yet). */
+type Member = {
   system: ActorSystem;
   cluster: Cluster;
+};
+
+type Node = Member & {
   region: ActorRef<Command>;
 };
 
-async function startNode(systemName: string, port: number, seeds: string[] = []): Promise<Node> {
+async function joinNode(systemName: string, port: number, seeds: string[] = []): Promise<Member> {
   const systemOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
@@ -69,16 +73,24 @@ async function startNode(systemName: string, port: number, seeds: string[] = [])
     .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
     .withGossipIntervalMs(30);
   const cluster = await Cluster.join(system, clusterOptions);
+  return { system, cluster };
+}
+
+function startType(cluster: Cluster): ActorRef<Command> {
   const shardingOptions = StartShardingOptions.create<Command>()
     .withTypeName(TYPE_NAME)
     .withEntityActor(CounterEntity)
     .withExtractEntityId((m) => m.id)
     .withNumShards(NUM_SHARDS);
-  const region = cluster.sharding.start<Command>(shardingOptions);
-  return { system, cluster, region };
+  return cluster.sharding.start<Command>(shardingOptions);
 }
 
-async function stopAll(nodes: Node[]): Promise<void> {
+async function startNode(systemName: string, port: number, seeds: string[] = []): Promise<Node> {
+  const member = await joinNode(systemName, port, seeds);
+  return { ...member, region: startType(member.cluster) };
+}
+
+async function stopAll(nodes: Member[]): Promise<void> {
   for (const node of nodes) { await node.cluster.leave(); await node.system.terminate(); }
 }
 
@@ -100,11 +112,16 @@ describe('Shard actors', () => {
     const nodes = [seed, other];
 
     await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
-    // Membership has converged above, but the region's registration with the
-    // coordinator has no observable of its own, and an ask issued before it
-    // lands races the coordinator instead of being buffered.  Nothing is
-    // asserted on the wait itself — every ask below carries its own budget.
-    await sleep(200);
+    // Membership convergence is not registration: a region registers with the
+    // coordinator on the leader, over a retry timer of its own, so a converged
+    // cluster can still hold an unregistered region.  This waits on the
+    // registration itself, which the fixed sleep here only approximated (#1317).
+    //
+    // The sleep was never protecting the message: one sent before registration
+    // is buffered by the region and delivered once a shard home arrives.  What
+    // it was protecting is the ask below, whose own deadline runs while the
+    // message waits in that buffer.
+    await waitFor(() => nodes.every((node) => node.cluster.sharding.isRegistered(TYPE_NAME)));
 
     // Two ids that hash into different shards, so at least one of them very
     // likely lands on the non-seed node.
@@ -137,11 +154,16 @@ describe('ShardMapChanged', () => {
     }
 
     await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
-    // Membership has converged above, but the region's registration with the
-    // coordinator has no observable of its own, and an ask issued before it
-    // lands races the coordinator instead of being buffered.  Nothing is
-    // asserted on the wait itself — every ask below carries its own budget.
-    await sleep(200);
+    // Membership convergence is not registration: a region registers with the
+    // coordinator on the leader, over a retry timer of its own, so a converged
+    // cluster can still hold an unregistered region.  This waits on the
+    // registration itself, which the fixed sleep here only approximated (#1317).
+    //
+    // The sleep was never protecting the message: one sent before registration
+    // is buffered by the region and delivered once a shard home arrives.  What
+    // it was protecting is the ask below, whose own deadline runs while the
+    // message waits in that buffer.
+    await waitFor(() => nodes.every((node) => node.cluster.sharding.isRegistered(TYPE_NAME)));
 
     for (const entityId of ['m-1', 'm-2', 'm-3', 'm-4']) {
       seed.region.tell({ id: entityId, kind: 'increment' });
@@ -181,11 +203,16 @@ describe('ClusterSharding.shards', () => {
     const nodes = [seed, other];
 
     await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
-    // Membership has converged above, but the region's registration with the
-    // coordinator has no observable of its own, and an ask issued before it
-    // lands races the coordinator instead of being buffered.  Nothing is
-    // asserted on the wait itself — every ask below carries its own budget.
-    await sleep(200);
+    // Membership convergence is not registration: a region registers with the
+    // coordinator on the leader, over a retry timer of its own, so a converged
+    // cluster can still hold an unregistered region.  This waits on the
+    // registration itself, which the fixed sleep here only approximated (#1317).
+    //
+    // The sleep was never protecting the message: one sent before registration
+    // is buffered by the region and delivered once a shard home arrives.  What
+    // it was protecting is the ask below, whose own deadline runs while the
+    // message waits in that buffer.
+    await waitFor(() => nodes.every((node) => node.cluster.sharding.isRegistered(TYPE_NAME)));
 
     const entityIds = ['s-1', 's-2', 's-3', 's-4', 's-5', 's-6'];
     for (const entityId of entityIds) seed.region.tell({ id: entityId, kind: 'increment' });
@@ -252,6 +279,28 @@ describe('ClusterSharding.shardRefFor', () => {
     await stopAll([seed]);
   }, 20_000);
 
+  test('refuses a shard id outside the type\'s range at once, with a RangeError (#1436)', async () => {
+    const systemName = 'shard-ref-range';
+    const base = 46_650;
+    const seed = await startNode(systemName, base);
+
+    await waitFor(() => seed.cluster.upMembers().length === 1);
+
+    for (const shardId of [NUM_SHARDS, 9_999, -1, 1.5]) {
+      // The coordinator drops a request for such an id, so it used to wait out
+      // the whole query timeout for an AskTimeoutError that said nothing about
+      // the id.  A second bounds that failure; a refusal needs none of it.
+      const outcome = await seed.cluster.sharding.shardRefFor<Command>(TYPE_NAME, shardId, 1_000).then(
+        () => new Error(`shard id ${shardId} was answered with a ref`),
+        (error: unknown) => error,
+      );
+      expect(outcome).toBeInstanceOf(RangeError);
+      expect((outcome as RangeError).message).toContain(`0..${NUM_SHARDS - 1}`);
+    }
+
+    await stopAll([seed]);
+  }, 20_000);
+
   test('a local shard ref answers GetShardStats and starts entities', async () => {
     const systemName = 'shard-stats';
     const base = 46_700;
@@ -289,11 +338,16 @@ describe('ClusterSharding.shardRefFor', () => {
     const nodes = [seed, other];
 
     await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
-    // Membership has converged above, but the region's registration with the
-    // coordinator has no observable of its own, and an ask issued before it
-    // lands races the coordinator instead of being buffered.  Nothing is
-    // asserted on the wait itself — every ask below carries its own budget.
-    await sleep(200);
+    // Membership convergence is not registration: a region registers with the
+    // coordinator on the leader, over a retry timer of its own, so a converged
+    // cluster can still hold an unregistered region.  This waits on the
+    // registration itself, which the fixed sleep here only approximated (#1317).
+    //
+    // The sleep was never protecting the message: one sent before registration
+    // is buffered by the region and delivered once a shard home arrives.  What
+    // it was protecting is the ask below, whose own deadline runs while the
+    // message waits in that buffer.
+    await waitFor(() => nodes.every((node) => node.cluster.sharding.isRegistered(TYPE_NAME)));
 
     const candidates = ['r-1', 'r-2', 'r-3', 'r-4', 'r-5', 'r-6', 'r-7', 'r-8'];
     for (const entityId of candidates) seed.region.tell({ id: entityId, kind: 'increment' });
@@ -330,6 +384,44 @@ describe('ClusterSharding.shardRefFor', () => {
   }, 20_000);
 });
 
+describe('queries made before the region registered (#1436)', () => {
+  test('a follower that asks before the leader has started the type is answered once it does', async () => {
+    const systemName = 'shard-query-early';
+    const base = 46_950;
+    const leader = await joinNode(systemName, base);
+    const follower = await joinNode(systemName, base + 1, [`${systemName}@h:${base}`]);
+    const nodes = [leader, follower];
+
+    await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
+    // The lower address leads, so the coordinator for the type belongs on
+    // `leader` — and it does not exist until `leader` starts the type below.
+    await waitFor(() => {
+      const believed = follower.cluster.leader();
+      return believed.isSome() && believed.value.address.equals(leader.cluster.selfAddress);
+    });
+
+    startType(follower.cluster);
+    const location = follower.cluster.sharding.shardRefFor<Command>(TYPE_NAME, 3, 4_000);
+    const listing = follower.cluster.sharding.shards<Command>(TYPE_NAME, 4_000);
+    // The refusal is answered behind both queries, so by the time it is back
+    // both requests have been sent — and the in-memory transport delivers in
+    // order, so the leader has already dropped them as frames for a coordinator
+    // it does not run.  That drop is the window these queries were lost in.
+    await follower.cluster.sharding.shardRefFor<Command>(TYPE_NAME, -1).catch(() => undefined);
+
+    startType(leader.cluster);
+
+    const shard = await location;
+    expect(shard.path.toString()).toContain(`${shardRegionName(TYPE_NAME)}/shard-3`);
+    // Answering at all is the assertion — both used to end in an AskTimeoutError.
+    // What the listing holds depends on how far placement got when the
+    // coordinator answered, so it is not pinned.
+    expect(Array.isArray(await listing)).toBe(true);
+
+    await stopAll(nodes);
+  }, 20_000);
+});
+
 describe('ClusterSharding.entityRefFor', () => {
   test('addresses an entity by id, without a routing key in the message', async () => {
     const systemName = 'entity-ref-local';
@@ -359,11 +451,16 @@ describe('ClusterSharding.entityRefFor', () => {
     const nodes = [seed, other];
 
     await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
-    // Membership has converged above, but the region's registration with the
-    // coordinator has no observable of its own, and an ask issued before it
-    // lands races the coordinator instead of being buffered.  Nothing is
-    // asserted on the wait itself — every ask below carries its own budget.
-    await sleep(200);
+    // Membership convergence is not registration: a region registers with the
+    // coordinator on the leader, over a retry timer of its own, so a converged
+    // cluster can still hold an unregistered region.  This waits on the
+    // registration itself, which the fixed sleep here only approximated (#1317).
+    //
+    // The sleep was never protecting the message: one sent before registration
+    // is buffered by the region and delivered once a shard home arrives.  What
+    // it was protecting is the ask below, whose own deadline runs while the
+    // message waits in that buffer.
+    await waitFor(() => nodes.every((node) => node.cluster.sharding.isRegistered(TYPE_NAME)));
 
     // Warm every candidate id from the seed, then pick one the *other* node
     // ended up hosting — that is the ref path we actually want to exercise.

@@ -1,6 +1,6 @@
 ---
 title: Mailboxes
-description: Die Per-Actor-Queue — per Default unbounded FIFO, BoundedMailbox mit Overflow-Policies, PriorityMailbox, System-Message-Vorrang und wie du eine per ActorOptions anhängst.
+description: Die Per-Actor-Queue — per Default unbounded FIFO, BoundedMailbox mit Overflow-Policies, PriorityMailbox, ControlAwareMailbox für Control-Nachrichten, die einen Backlog überholen, System-Message-Vorrang und wie du eine per ActorOptions anhängst.
 ---
 
 Jeder Actor hat genau **eine Mailbox** — eine FIFO-Queue von
@@ -37,19 +37,35 @@ Speicherdecke gewinnen", und er ging nicht auf:
   die liefen durch dieselbe Queue.  Aus jedem dieser Fälle wurde ein
   gemeldeter Defekt.
 
-  Zwei Nachrichten, die das Framework in deinem Namen sendet, sind
-  inzwischen für jede Policy unerreichbar: das `Terminated` der Death
-  Watch und das Kommando, das den Actor einer
+  Drei Nachrichten sind inzwischen für jede Policy unerreichbar: das
+  `Terminated` der Death Watch, das Kommando, das den Actor einer
   [WebSocket](/de/http/websocket/#die-mailbox-des-hubs-begrenzen)-Verbindung
-  spawnt.  Beide nehmen eine Spur, die keine Schranke abwerfen kann
-  (siehe [Death Watch](/de/fundamentals/death-watch/) und *Eine eigene
-  Mailbox* weiter unten).  Der Test, den sie bestehen: das Framework hat
-  sie gebaut, genau einmal gesendet und nichts behalten, womit es sie
-  erneut senden könnte.  Der Rest ist Anwendungsverkehr, und nur du
+  spawnt, und das `close` eben dieser Verbindung.  Alle drei nehmen eine
+  Spur, die keine Schranke abwerfen kann (siehe
+  [Death Watch](/de/fundamentals/death-watch/) und *Eine eigene Mailbox*
+  weiter unten).  Der Test, den sie bestehen: jede wird genau einmal
+  gesendet, und nichts hält mehr, was zum erneuten Senden nötig wäre —
+  und wer eine davon verliert, verliert keine *Nachricht*, sondern einen
+  Zustand außerhalb der Mailbox, den nichts mehr korrigiert: einen
+  Watcher, der einen toten Actor für lebendig hält, einen aufgewerteten
+  Socket, an dem niemand hängt, einen Peer, den du trennen wolltest und
+  nicht getrennt hast.  Der Rest ist Anwendungsverkehr, und nur du
   weißt, welcher davon verzichtbar ist.
 
-Der Verlust ist jetzt also etwas, das du pro Actor anforderst, und das
-Wachstum etwas, von dem du erfährst: ein Actor, dessen Queue 10 000
+Der Verlust ist jetzt also etwas, das du anforderst — pro Actor an der
+Spawn-Stelle, pro Pfad aus der Konfiguration über einen
+`actor-ts.deployment`-Eintrag, oder einmal für ein ganzes Deployment über
+`actor-ts.mailbox.default.capacity`, das jeden Actor begrenzt, den deine
+Anwendung geschrieben hat — Sharded Entities und Cluster Singletons
+eingeschlossen, obwohl das Framework diese spawnt — und die eigenen
+Actors des Frameworks in Ruhe lässt.
+Dieser Key wird als `0` ausgeliefert, also aus, und ihn einzuschalten
+ist dieselbe Entscheidung wie das Begrenzen eines Actors, nur für alle
+auf einmal: siehe
+[Mailbox-Dimensionierung](/de/operations/tuning/mailbox-sizing/) dafür,
+was er erreicht und was nicht.
+
+Das Wachstum wiederum ist etwas, von dem du erfährst: ein Actor, dessen Queue 10 000
 Nachrichten erreicht, loggt eine Warnung — und erneut bei jeder
 Verdopplung.  Mit aktivierten Metriken meldet `actor_mailbox_size` die
 Tiefe pro Actor oberhalb dieser Marke, und `actor_mailbox_depth` die
@@ -98,7 +114,20 @@ Die Kapazität ist das, was den Bound erzeugt; `withMailboxOverflow`
 entscheidet, welche Nachricht verloren geht, und steht per Default auf
 `drop-head`.  Eine Policy ohne Kapazität wird abgelehnt statt still
 ignoriert — eine unbounded Mailbox läuft nie über, hätte also nichts
-zu tun.
+zu tun.  Diese Ablehnung gilt auch dort, wo die Konfiguration eine
+Schranke liefert — `actor-ts.mailbox.default.capacity` oder ein
+Deployment-Eintrag: der Validator läuft am Spawn-Aufruf und weiß nichts
+über das System, in das der Actor gespawnt wird — nenne die Kapazität also
+mit, wenn du eine konfigurierte Schranke für einen einzelnen Actor umformen
+willst.
+
+Unter beiden Feldern liegen zwei Config-Ebenen: der
+[`actor-ts.deployment`](/de/reference/configuration/#actor-tsdeployment)-Eintrag,
+der zum Pfad des Actors passt, mit seinem `mailbox-capacity` und
+`mailbox-overflow`, und darunter `actor-ts.mailbox.default.capacity` und
+`.overflow`.  Die Spawn-Stelle gewinnt immer; der Eintrag entscheidet für
+die Pfade, die er nennt, und der Block für jeden anderen Actor, der nichts
+gesagt hat.
 
 Die drei Policies und wie du zwischen ihnen wählst, stehen unten unter
 [`BoundedMailbox`](#boundedmailbox) — inklusive der Frage, warum
@@ -126,8 +155,9 @@ Siehe [Mailbox-Sizing](/de/operations/tuning/mailbox-sizing/#behalten-was-du-ver
 ### Eine eigene Mailbox mitbringen
 
 `withMailbox` ersetzt die Queue vollständig — für eine
-`PriorityMailbox`, für eine `BoundedMailbox` jenseits dessen, was die
-zwei Optionen oben ausdrücken, oder für eine eigene Subklasse:
+`PriorityMailbox`, eine `ControlAwareMailbox`, eine `BoundedMailbox`
+jenseits dessen, was die zwei Optionen oben ausdrücken, oder für eine
+eigene Subklasse:
 
 ```ts
 import { ActorOptions, PriorityMailbox } from 'actor-ts';
@@ -182,12 +212,18 @@ Konfigurationsfehler, keine stille Vorrangregel.
 #### Eine Pflicht: `enqueueSignal`
 
 Eine Queue, die abwirft, hat eine kurze Liste von Dingen, die sie nicht
-abwerfen darf.  Das Framework kündigt einen Tod genau einmal an — siehe
-[Death Watch](/de/fundamentals/death-watch/) — und übergibt einem
-WebSocket-Hub das Kommando, das den Actor einer Verbindung spawnt,
-ebenfalls genau einmal; deshalb kommen beide über `enqueueSignal` statt
-über `enqueue`, und der Vertrag lautet: *reihe es ein, was deine
-Schranke auch sagt*:
+abwerfen darf: die vier Envelopes, die das Framework genau einmal
+schickt, ohne dass irgendwo noch etwas läge, aus dem es sie erneut
+schicken könnte.  Ein `Terminated` der Death Watch — siehe
+[Death Watch](/de/fundamentals/death-watch/) — kommt bei einem lokalen
+Tod direkt vom sterbenden Actor und bei einem Tod, den ein anderer Node
+gemeldet hat, nach einem Hop über die System-Queue; ein WebSocket-Hub
+bekommt das Kommando, das den Actor einer Verbindung spawnt; der Actor
+einer Verbindung bekommt sein eigenes `close`; und ein Actor, der einen
+Key von [DistributedData](/de/distributed-data/overview/) subscribed
+hat, bekommt das `DistributedDataChanged`, das ihm den neuesten Wert des
+Keys mitteilt.  Alle kommen über `enqueueSignal` statt über `enqueue`,
+und der Vertrag lautet: *reihe es ein, was deine Schranke auch sagt*:
 
 ```ts
 class SheddingMailbox<T> extends Mailbox<T> {
@@ -203,7 +239,8 @@ class SheddingMailbox<T> extends Mailbox<T> {
 Die Basisimplementierung delegiert an dein `enqueue`, was für eine Queue
 richtig ist, die nichts verwirft, und für eine, die es tut, falsch —
 also **überschreibe sie immer dann, wenn du `enqueue` zum Abwerfen
-überschreibst**.  `BoundedMailbox` und `PriorityMailbox` tun das schon.
+überschreibst**.  `BoundedMailbox`, `PriorityMailbox` und
+`ControlAwareMailbox` tun das schon.
 Dass die Basis delegiert statt direkt in die Basis-Queue zu schreiben,
 ist Absicht: eine Subklasse kann ihre Nachrichten ganz woanders halten,
 und ein Envelope, das in einem Speicher versteckt liegt, den dein
@@ -215,7 +252,36 @@ aufsetzt, überspringt es damit gratis und muss nicht wissen, warum.
 Wirft dein `enqueue` stattdessen, macht das Framework aus der
 Verweigerung ein [Dead Letter](/de/operations/dead-letters/) und der
 Abbau des sterbenden Actors läuft weiter; was es nicht kann, ist eine
-zweite Kopie der Benachrichtigung erfinden.
+zweite Kopie der Benachrichtigung erfinden.  Ein abgelehntes
+`DistributedDataChanged` loggt stattdessen der Replicator, und die
+nächste Änderung am Key versucht es erneut.
+
+Das `DistributedDataChanged` ist das neueste der vier, und es steht aus
+demselben Grund auf der Liste wie die anderen, nicht wegen seines
+Inhalts.  Der Replicator hält pro Subscriber und Key höchstens eine
+Benachrichtigung in der Schwebe: Solange eine in deiner Queue wartet,
+überschreiben spätere Änderungen ihren Wert an Ort und Stelle, und die
+nächste wird erst gepostet, wenn dein Actor sie übergeben bekommen hat.
+Wirfst du sie ab, wird sie nie übergeben — der Replicator wartet weiter,
+jede spätere Änderung landet in einer Nachricht, die niemand liest, und
+der Actor erfährt nie wieder etwas über diesen Key.  Das kostet deine
+Schranke höchstens ein Envelope pro subscribtem Key, und die
+Benachrichtigung behält ihren Platz am Ende, während ihr Wert
+überschrieben wird.
+
+**Nicht verwerfbar heißt nicht vordrängeln.**  Die Tür entscheidet, dass
+ein Signal deine Schranke übersteht, nie, wo es landet: reihe es dort
+ein, wo du jede andere Nachricht einreihen würdest, auf einer FIFO-Queue
+also am Ende.  Zwei der vier verlassen sich darauf — die Death Watch
+verspricht, dass alles, was dem Watcher bereits gesagt wurde, vor dem
+`Terminated` behandelt wird, und eine Antwort, die vor einem
+WebSocket-`close()` eingereiht wurde, wird geschrieben, bevor der Socket
+schließt.  Eine Queue, die Nachrichten nach ihrer eigenen Regel ordnet,
+ordnet Signale nach derselben Regel: `PriorityMailbox` rangiert ein
+`Terminated` mit deinem `priorityFor`.  Und eine Queue, die manche
+Nachrichten den Rest überholen lassen soll, sagt das, indem sie sie
+klassifiziert, so wie es [`ControlAwareMailbox`](#controlawaremailbox)
+tut — nie, indem sie alles nach vorne zieht, was durch diese Tür kam.
 
 ## System-Nachrichten kommen immer zuerst
 
@@ -242,7 +308,38 @@ Das ist wichtig, weil:
   ankommen, was dem Watcher bereits gesagt wurde, damit ein Handler,
   der auf einen Tod reagiert, die Arbeit davor gesehen hat.  Nicht
   verwerfbar heißt nicht vordrängeln — es behält seinen Platz in der
-  Reihe und kann nur nicht mehr daraus entfernt werden.
+  Reihe und kann nur nicht mehr daraus entfernt werden.  Das gilt für
+  jedes Signal, das das Framework auf diesem Weg schickt, nicht nur für
+  dieses: eine Nachricht überholt die User-Queue nur auf einer Mailbox,
+  die Nachrichten klassifiziert, wie
+  [`ControlAwareMailbox`](#controlawaremailbox), und nur, wenn ihr
+  Prädikat es sagt — deins, oder auf einem WebSocket-Hub das des
+  Frameworks.
+
+**Eine Mailbox-Kapazität begrenzt nur die User-Queue.**  Die
+System-Queue wird nie gedeckelt — weder von `BoundedMailbox` noch von
+einer eigenen Mailbox —, weil Supervision- und Lifecycle-Signale niemals
+verworfen werden dürfen.  Ihre Tiefe begrenzt stattdessen das, was sie
+erzeugt: ein `create` pro Actor und ein `terminate` pro Stopp, ein
+`childTerminated` pro Kind, das fertig gestoppt hat, ein `failure` pro
+Supervisor-Entscheidung plus das `suspend` / `resume` / `recreate`, das
+diese Entscheidung über den betroffenen Teilbaum verteilt, ein
+`receiveTimeout` pro abgelaufenem Timer und ein `watchNotify` pro
+`Terminated`, das von *einem anderen Node* eintrifft — für einen
+Remote-Actor, den die eigenen Actors dieses Nodes beobachtet haben, oder
+für einen Node, in den sie Watches hielten und der den Cluster verlassen
+hat.  Für jedes davon musste vorher ein Actor existieren, der es bezahlt
+hat, oder ein Watch, den einer von ihnen registriert hat.
+
+Eine lokale Death-Watch-Benachrichtigung steht **nicht** auf dieser
+Liste.  Das `Terminated` eines lokal beobachteten Actors landet in der
+*User*-Queue seines Watchers — an der Schranke vorbei, wie oben, aber
+weiterhin hinter allem, was diesem Watcher schon gesagt wurde.  Tausend
+lokal beobachtete Actors erhöhen die System-Queue also um gar nichts.
+Ein `Terminated`, das ein anderer Node meldet, nimmt einen Hop über die
+System-Queue, um zu genau diesem User-Queue-Signal zu werden; ein Peer
+kann höchstens eines pro Watch schicken, den dieser Node eröffnet hat,
+und ein unaufgefordertes trifft auf nichts.
 
 Du siehst diese Unterscheidung normalerweise nicht —
 System-Nachrichten werden vom Framework emittiert, nicht von deinem
@@ -301,9 +398,11 @@ nicht-positive `capacity` und eine unbekannte Overflow-Policy werfen
 `capacity` begrenzt die Nachrichten, die die Mailbox verwerfen *darf* —
 in einer Mailbox, die nur noch nicht zugestellte Todesmeldungen enthält,
 liegt die Queue also darüber, statt eine davon zu verlieren.  Der
-Überschuss ist durch die Zahl der beobachteten Actors begrenzt und ist
-der Preis der Ausnahme, die [Death Watch](/de/fundamentals/death-watch/)
-beschreibt: bemiss eine Kapazität an deinem Verkehr, nicht aufs Byte.
+Überschuss ist durch die Zahl der beobachteten Actors begrenzt — und
+durch die Zahl der DistributedData-Keys, die der Actor subscribed hat,
+eine Benachrichtigung je Key — und ist der Preis der Ausnahme, die
+[Death Watch](/de/fundamentals/death-watch/) beschreibt: bemiss eine
+Kapazität an deinem Verkehr, nicht aufs Byte.
 
 Die Wahl zwischen ihnen ist ein Backpressure-vs-Verlust-Trade-off:
 
@@ -534,6 +633,164 @@ Nachricht ist das Unwichtigste in der Queue, unter
 `drop-lowest-priority` wird also die Ankunft abgeworfen und als
 `drop-new` gemeldet.
 
+## `ControlAwareMailbox`
+
+```ts
+import { Actor, ActorOptions, ActorSystem, ControlAwareMailbox, ControlAwareMailboxOptions } from 'actor-ts';
+
+type PauseCommand = { readonly kind: 'pause' };
+type ResumeCommand = { readonly kind: 'resume' };
+type ReadingCommand = { readonly kind: 'reading'; readonly value: number };
+type IngestCommand = PauseCommand | ResumeCommand | ReadingCommand;
+
+class Ingest extends Actor<IngestCommand> {
+  override onReceive(command: IngestCommand): void {
+    this.log.info(`handled ${command.kind}`);
+  }
+}
+
+// Name the control kinds rather than excluding the rest — see the cautions below.
+const isControl = (command: IngestCommand): boolean =>
+  command.kind === 'pause' || command.kind === 'resume';
+
+const ingestMailboxOptions = ControlAwareMailboxOptions.create<IngestCommand>()
+  .withIsControl(isControl)
+  .withCapacity(10_000)
+  .withOverflow('drop-head');
+
+const newIngestMailbox = () => new ControlAwareMailbox<IngestCommand>(ingestMailboxOptions);
+const ingestOptions = ActorOptions.create<IngestCommand>().withMailbox(newIngestMailbox);
+
+const system = ActorSystem.create('demo');
+const ingest = system.spawn(Ingest, 'ingest', ingestOptions);
+
+ingest.tell({ kind: 'reading', value: 1 });
+ingest.tell({ kind: 'reading', value: 2 });
+ingest.tell({ kind: 'pause' });
+// → handled order: pause → reading → reading
+```
+
+Eine `ControlAwareMailbox` hält zwei FIFO-Queues und gibt dem Actor jede
+**Control**-Nachricht vor jeder **gewöhnlichen**, innerhalb jeder Klasse in
+Ankunftsreihenfolge.  Welche welche ist, entscheidet das Prädikat, das du
+als `isControl` übergibst — einmal pro Nachricht, beim Eintreffen.  Sonst
+ändert sich nichts: System-Nachrichten kommen weiterhin zuerst, und von
+sich aus stuft das Framework Nachrichten nur bei einem einzigen Actor als
+Control ein — beim WebSocket-Hub, siehe unten.
+
+Greif zu ihr, wenn einige wenige Sorten von Nachrichten nicht hinter einem
+Backlog des Rests warten dürfen — ein Pause- oder
+Rekonfigurations-Kommando vor einer Flut von Messwerten, ein
+administratives Kommando vor einem Datenstrom.  Wo du eine vollständige
+Ordnung nach Wichtigkeit willst statt zweier Klassen, ist eine
+`PriorityMailbox` das Werkzeug; wo alles in der gesendeten Reihenfolge
+bleiben muss, keine von beiden.
+
+### Der WebSocket-Hub hat standardmäßig eine
+
+Ein [`WebsocketServerActor`](/de/http/websocket/#die-mailbox-des-hubs-begrenzen)
+bekommt eine `ControlAwareMailbox`, ohne dass man ihn darum bitten muss —
+es sei denn, er wird mit einer eigenen Mailbox gespawnt.  Seine
+Control-Nachrichten sind das Kommando, das ihm einen aufgewerteten Socket
+übergibt, und das Signal `onClientConnected`, das die neue Verbindung
+meldet; Frames, Disconnects und deine eigenen Nachrichten an den Hub
+bleiben gewöhnlich.  Eine neue Verbindung wird also vor dem Rückstau jeder
+anderen Verbindung aufgebaut und von keiner Grenze verworfen, während die
+Reihenfolge pro Verbindung — connected, Nachrichten, disconnected — bleibt,
+wie sie war.  Eine Kapazität, die der Hub sonst gehabt hätte, aus
+`withMailboxCapacity()`, einem `actor-ts.deployment`-Eintrag für seinen Pfad
+oder `actor-ts.mailbox.default.capacity`, wird zur Kapazität der
+gewöhnlichen Klasse.  `withMailbox(...)` ersetzt die Queue
+und die Control-Spur gleich mit.
+
+### Eine Control-Aware-Mailbox begrenzen
+
+Eine `capacity` begrenzt nur die **gewöhnliche** Klasse, und die drei
+`BoundedMailbox`-Policies — `'drop-head'`, `'drop-new'`, `'reject'` —
+wirken allein auf sie.  Eine Control-Nachricht wird nie abgeworfen, nie
+abgelehnt, nie als Drop gezählt und lässt `reject` nie werfen: die Flut,
+die eine Schranke abwirft, ist genau der Traffic, den die
+Control-Nachricht überholen soll.  Die Capacity ist also eine Obergrenze
+für die gewöhnliche Klasse, und die Control-Klasse begrenzt, was sie
+schickt — ein Grund mehr, das Prädikat auf die wenigen Sorten zu
+beschränken, die überholen müssen.  Ohne Policy angegeben bedeutet eine
+Capacity `reject`, wie bei jeder Mailbox, die du selbst konstruierst.
+
+`unstashAll()` setzt jede Nachricht an den Kopf ihrer eigenen Klasse
+zurück, und die gewöhnliche Hälfte trifft auf die Schranke wie das
+Replay einer `BoundedMailbox`.  Drops erreichen
+`actor_mailbox_dropped_total` und dein `onDrop`, und
+`deadLetterDrops: true` macht aus jedem einen
+[Dead Letter](/de/operations/dead-letters/).
+
+Die Options werden bei der Konstruktion validiert: ein fehlendes oder
+nicht aufrufbares `isControl`, eine nicht-positive `capacity`, eine
+unbekannte Policy sowie eine Policy oder `deadLetterDrops` ohne Capacity
+werfen alle `OptionsError`.
+
+### Wenn `isControl` nicht antworten kann
+
+`isControl` läuft im `tell` des **Senders** und wird deshalb genauso
+eingehegt wie `priorityFor`: wirft es oder antwortet es irgendetwas
+anderes als `true`, ist die Nachricht gewöhnlich, und das `tell` geht
+durch.  Gewöhnlich ist dabei nicht nur die sichere Antwort, sondern die
+richtige — es ist die Klasse, die die Nachricht auf jeder anderen Mailbox
+gehabt hätte.
+
+Eingehegt heißt nicht stumm.  Ein Prädikat, das bei jeder Nachricht wirft —
+meist eine Methode, die ohne ihre Instanz übergeben wurde —, macht aus der
+Mailbox eine schlichte FIFO-Queue, während jede Nachricht weiter ankommt;
+deshalb loggt die Mailbox den ersten Wurf auf warn.  Einmal pro Mailbox,
+weil das Prädikat bei jedem `tell` läuft; und nur mit Klassennamen — der
+Klasse der Nachricht, bei der es geworfen hat, und der dessen, was es
+geworfen hat, nie mit der Nachricht oder dem Text des Fehlers, denn der
+Fehler eines erschöpfenden Matchers zitiert den Wert, den er nicht zuordnen
+konnte.  Um jeden Wurf zu sehen oder ihn an deinen eigenen Logger zu geben,
+übergib `onControlError`:
+
+```ts
+const ingestMailboxOptions = ControlAwareMailboxOptions.create<IngestCommand>()
+  .withIsControl(isControl)
+  .withOnControlError((cause) => {
+    log.warn(`isControl threw: ${String(cause)}`);
+  });
+```
+
+`cause` ist, was das Prädikat geworfen hat.  Ein Hook, den du übergibst,
+ersetzt die Log-Zeile, und es gilt dieselbe Regel wie bei
+`onPriorityError`: **Aufzeichnen und zurückkehren** — er läuft auf dem Stack
+des Senders.  Eine Antwort, die nicht `true` ist, ist kein Fehler und
+erreicht den Hook nie; sie macht die Nachricht gewöhnlich, wie oben.
+
+<Aside type="caution" title="Eine Control-Nachricht überholt die früheren Nachrichten ihres eigenen Senders">
+  Control zuerst ist eine Eigenschaft der Queue, nicht jedes einzelnen
+  Senders.  Eine Control-Nachricht, die derselbe Sender *nach*
+  gewöhnlichen geschickt hat, wird trotzdem zuerst behandelt — alles, was
+  sich über die beiden Klassen hinweg auf "in der Reihenfolge, in der ich
+  sie geschickt habe" verlässt, bricht also.  Beschränke die
+  Control-Klasse auf Nachrichten, die außer der Reihe Sinn ergeben, und
+  lass alles gewöhnlich, dessen Bedeutung davon abhängt, was davor kam.
+</Aside>
+
+<Aside type="caution" title="Nenne die Control-Sorten — auch die Nachrichten des Frameworks erreichen das Prädikat">
+  `ref.stop()` und `ref.kill()` schicken `PoisonPill` und `Kill` als
+  gewöhnliche User-Nachrichten, und keine von beiden hat ein `kind`.  Ein
+  Prädikat der Form `command.kind !== 'reading'` antwortet für beide mit
+  `true`, und `stop()` würde den Backlog überholen, statt ihn
+  abzuarbeiten.  Prüfe auf die Control-Sorten (`command.kind === 'pause'`),
+  dann bleibt alles andere gewöhnlich, die Nachrichten des Frameworks
+  eingeschlossen.
+</Aside>
+
+<Aside type="note" title="Die Death Watch behält ihre Reihenfolge">
+  Ein `Terminated` der Death Watch erreicht diese Mailbox durch dieselbe
+  ausgenommene Tür wie jede andere: an der Schranke vorbei, an der
+  Position, die die Mailbox ihm gibt.  Hier ist das das Ende der
+  gewöhnlichen Klasse, hinter allem, was dem Watcher bereits gesagt wurde
+  — es sei denn, dein Prädikat stuft das `Terminated` selbst als Control
+  ein; dann überholt es die Arbeit, die dem Tod vorausging.
+</Aside>
+
 ## Per-Actor-Mailbox via ActorOptions
 
 Drei Knöpfe auf `ActorOptions`:
@@ -566,8 +823,24 @@ Konfigurationsfehler statt einer stillen Vorrangregel, und das
 Framework verdrahtet keine Drop-Telemetrie in das, was du
 zurückgibst.
 
-Es gibt keine systemweite Mailbox-Einstellung: der Default ist
-unbounded, und jeder Bound wird pro Actor gewählt.
+Der Default ist unbounded: eine Schranke wählst du pro Actor mit diesen
+Knöpfen, oder einmal für ein ganzes Deployment mit
+`actor-ts.mailbox.default.capacity`, gegen den die eigene Einstellung
+der Spawn-Stelle immer gewinnt — siehe
+[Mailbox-Dimensionierung](/de/operations/tuning/mailbox-sizing/) für die
+Actors, die er erreicht.
+
+Für einen Actor, dessen Spawn-Stelle du nicht ändern kannst, gibt es
+dieselben zwei Knöpfe in der Konfiguration, pro Pfad: ein
+[`actor-ts.deployment`](/de/reference/configuration/#actor-tsdeployment)-Eintrag
+setzt `mailbox-capacity` und `mailbox-overflow` (und `throughput`) für die
+Actors, die sein Key trifft — `"/user/ingest"`, die Routees von
+`"/user/pool/routee-*"`, die Verbindungen von `"/user/chat/ws-*"`.  Er
+liegt unter den Knöpfen oben und über dem globalen Block:
+`withMailboxCapacity` und `withMailbox` gewinnen weiterhin, die Kapazität
+eines Eintrags gewinnt gegen `actor-ts.mailbox.default.capacity`, und sein
+`0` lässt die getroffenen Actors unbegrenzt, egal wie der globale Block
+gesetzt ist.
 
 <Aside type="caution" title="Teile keine Mailbox-Instanz über Actors hinweg">
   ```ts
@@ -592,13 +865,16 @@ aufruft, wird die aktuelle Nachricht geparkt.  Wenn der Actor später
 `unstashAll()` aufruft, werden die geparkten Nachrichten an die
 Front der Mailbox re-prepended.
 
-Das funktioniert für alle drei Mailbox-Typen gleich — das Framework
+Das funktioniert für jeden Mailbox-Typ gleich — das Framework
 ruft `mailbox.prependUser(envs)`, und die Mailbox entscheidet, wie
 sie re-inserted.  Besonders bei `PriorityMailbox`: unstashed
 Nachrichten werden *re-priorisiert*: eine gestashte
 `bulk`-Nachricht reiht sich wieder in die `bulk`-Schicht ein, selbst
 wenn du sie gestasht hast, während dringende Nachrichten ankamen.
-Stash-Reihenfolge wird innerhalb einer Priority-Schicht bewahrt.
+Stash-Reihenfolge wird innerhalb einer Priority-Schicht bewahrt.  Eine
+`ControlAwareMailbox` setzt jede Nachricht an den Kopf ihrer eigenen
+Klasse zurück; eine gestashte Control-Nachricht wird also weiterhin vor
+den gewöhnlichen übergeben.
 
 **Ein Bound gilt auch für das Replay.**  Welche begrenzte Mailbox du
 auch gewählt hast: `unstashAll()` unterliegt der Capacity und der
@@ -607,12 +883,60 @@ wieder in die Queue eintritt, keine Hintertür daran vorbei.
 Unterschiedlich ist nur, woher der Platz kommt: `PriorityMailbox`
 re-priorisiert, und `BoundedMailbox` setzt das Replay an die Front und
 schafft am Ende der Queue Platz — eine volle Mailbox verliert also ihre
-neuesten Nachrichten statt der bewusst geparkten.  Unter `reject` geht
+neuesten Nachrichten statt der bewusst geparkten; eine
+`ControlAwareMailbox` tut dasselbe auf ihrer gewöhnlichen Klasse.  Unter `reject` geht
 gar nichts verloren: `unstashAll()` wirft `MailboxFullError`, der
 gesamte Batch bleibt gestasht, und der Fehler erreicht den Supervisor
 deines Actors wie jeder andere.  Dimensioniere die Capacity für den
 Backlog *plus* das, was du zu stashen erwartest — oder nimm die Drops
 als Preis des Bounds in Kauf.
+
+**Eine Ausnahme, und es ist dieselbe wie überall sonst.**  Ein Envelope
+mit `undroppable` — ein `Terminated` aus der Death Watch, ein
+WebSocket-Accept- oder -Close-Command, eine Änderungsbenachrichtigung
+von DistributedData — wird auch auf dem Rückweg an der Schranke vorbei
+aufgenommen.  Die Markierung reist auf dem Envelope
+mit, statt von der Queue erinnert zu werden, genau damit sie einen
+`context.stash()`/`unstashAll()`-Rundlauf übersteht: Eine Schranke
+bekommt eine Gelegenheit, eine Benachrichtigung abzuwerfen, und nicht
+eine zweite, nur weil der Actor sie zwischendurch geparkt hat.
+
+**Das ist eine Aussage über die Schranke, nicht darüber, was der Actor
+zu sehen bekommt.**  Ein `Terminated`, das unter einem einfachen
+`watch` geparkt wurde, kommt hier hinein und wird dann vom Dispatch
+abgelehnt — denn die Registrierung, die der Tod verbraucht hat, ist
+genau das, was es eingelassen hätte.  Es endet als
+[Dead Letter](/de/operations/dead-letters/) statt als zweite
+Zustellung.  Das ist nicht das Werk der Schranke, und darum lohnt es
+sich, beides auseinanderzuhalten: eine Benachrichtigung, die die
+Schranke abgeworfen hat, erreicht den Dispatch gar nicht erst und
+hinterlässt also auch keinen Dead Letter.  Siehe
+[Death Watch](/de/fundamentals/death-watch/) für die Registrierung, die
+einen Stash übersteht — `watchWith`, über dessen Domain-Nachricht die
+Death Watch keine Meinung mehr hat.  Die WebSocket-Accept- und
+-Close-Commands haben keine solche Buchführung und werden normal
+erneut zugestellt, und ebenso eine Änderungsbenachrichtigung von
+DistributedData — der Replicator hat aufgehört, sie zu überschreiben,
+als der Actor sie zum ersten Mal übergeben bekam, sie wird also mit dem
+Wert von damals erneut abgespielt.
+
+<Aside type="caution" title="Der typisierte Stash trägt die Markierung noch nicht">
+  Diese Ausnahme gilt für `context.stash()` — den untypisierten Stash,
+  der das Envelope parkt, das der Actor gerade bearbeitet, und dasselbe
+  Objekt wieder abspielt.  `Behaviors.withStash` aus der typisierten DSL
+  kann das nicht: `stash.stash(message)` nimmt einen beliebigen Wert
+  entgegen, der Buffer hält also blanke Nachrichten, und das Replay baut
+  daraus neue Envelopes.  Alles, was das Envelope getragen hat, ist dann
+  weg — `undroppable` eingeschlossen.
+
+  Ein **typisierter** Actor mit einem `withStash`-Behavior und einer
+  begrenzten Mailbox kann ein gestashtes `Terminated` also weiterhin an
+  die eigene Schranke verlieren.  Bis das behoben ist: gib so einem
+  Actor eine unbegrenzte Mailbox, oder unstashe, bevor die Queue
+  volllaufen kann.  Am untypisierten Pfad ändert das nichts, und solange
+  die Mailbox unbegrenzt ist — der Default — ist keiner der beiden Pfade
+  betroffen.
+</Aside>
 
 Siehe [Become und Stash](/de/fundamentals/become-and-stash/) für die
 volle Behavior-Switching-Geschichte.
@@ -620,7 +944,7 @@ volle Behavior-Switching-Geschichte.
 ## Wann die Mailbox-Wahl wichtig ist
 
 Für die meisten Actors ist die unbounded Default-FIFO richtig.
-Greife in drei Situationen zu einer Alternative:
+Greife in vier Situationen zu einer Alternative:
 
 1. **Producer/Consumer-Mismatch.**  Der Producer kann schneller
    emittieren, als der Consumer drainen kann.  Begrenze die Mailbox
@@ -645,6 +969,11 @@ Greife in drei Situationen zu einer Alternative:
    `actor_mailbox_depth` ist das, woraus du die Zahl selbst wählst: Eine
    Kapazität ist eine Wette auf den schlimmsten Ausschlag, und dieses
    Histogramm ist die Messung davon.
+4. **Ein Kommando hängt hinter einem Backlog.**  Einige wenige Sorten von
+   Nachrichten — eine Pause, eine Rekonfiguration, eine administrative
+   Anfrage — dürfen nicht hinter einer Flut von allem anderen warten, und
+   der Rest hat keine Rangfolge, die eine Priority-Mailbox wert wäre.
+   `ControlAwareMailbox`; nenne diese Sorten in ihrem Prädikat.
 
 ## Wie es weitergeht
 
@@ -659,6 +988,7 @@ Greife in drei Situationen zu einer Alternative:
   was mit ausstehenden Mailbox-Nachrichten während des sauberen
   Shutdowns passiert.
 
-Die [`BoundedMailbox`](/api/classes/boundedmailbox/)- und
-[`PriorityMailbox`](/api/classes/prioritymailbox/)-API-Referenzen
+Die [`BoundedMailbox`](/api/classes/boundedmailbox/)-,
+[`PriorityMailbox`](/api/classes/prioritymailbox/)- und
+[`ControlAwareMailbox`](/api/classes/controlawaremailbox/)-API-Referenzen
 decken die volle Settings-Form ab.

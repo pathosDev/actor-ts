@@ -1,6 +1,9 @@
 import type { Actor, ActorClassOrFactory } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
+import type { Lease } from '../../coordination/Lease.js';
+import { configuredLeaseFor } from '../../coordination/LeaseFromConfig.js';
 import { actorFactoryOf } from '../../internal/ActorBlueprint.js';
 import { SystemGroups, assertSpawnedAt, singletonManagerName } from '../../internal/SystemPaths.js';
 import { extensionId, type Extension, type ExtensionId } from '../../Extension.js';
@@ -10,6 +13,7 @@ import type { Cluster } from '../Cluster.js';
 import type { NodeAddress } from '../NodeAddress.js';
 import type { EnvelopeMessage } from '../Protocol.js';
 import { fromNullable, type Option } from '../../util/Option.js';
+import { mergeOptions } from '../../util/OptionsMerge.js';
 import {
   ClusterSingletonManager,
   singletonManagerPath,
@@ -18,9 +22,10 @@ import {
 import { AuthenticatedSingletonMessage, isSingletonMessage } from './SingletonProtocol.js';
 import type { SingletonHandOverAcknowledgment, SingletonMessage } from './SingletonProtocol.js';
 import { ClusterSingletonManagerOptions } from './ClusterSingletonManagerOptions.js';
-import { StartSingletonOptionsValidator } from './StartSingletonOptions.js';
+import { StartSingletonOptionsValidator, readSingletonOptionsFromConfig } from './StartSingletonOptions.js';
 import type { StartSingletonOptions, StartSingletonOptionsType } from './StartSingletonOptions.js';
 import { ClusterSingletonProxy } from './ClusterSingletonProxy.js';
+import type { SingletonRoleOrigin } from './ClusterSingletonProxy.js';
 import {
   SingletonKey,
   singletonKeyOf,
@@ -135,15 +140,22 @@ export class ClusterSingleton implements Extension {
   ): ActorRef<TCommand>;
   start<TCommand>(options: StartSingletonOptions<TCommand>): ActorRef<TCommand>;
   start<TCommand>(arg1: unknown, arg2?: unknown, arg3?: unknown): ActorRef<TCommand> {
-    const options = this.resolveStartOptions<TCommand>(arg1, arg2, arg3);
+    const explicitOptions = this.resolveStartOptions<TCommand>(arg1, arg2, arg3);
+    const options = this.withConfigDefaults(explicitOptions);
     new StartSingletonOptionsValidator<TCommand>().validate(options);
     this.ensureManager(options);
     // The role goes onto the key so the proxy resolves the same host the
     // managers do.  Options win over a key-declared role, and the shorthand
     // forms have already folded the class's key into `options` — so reading it
     // back off `options` covers every calling shape with one line.
+    //
+    // Its provenance is read off the *pre-merge* options for the same reason:
+    // after the merge a configured role is indistinguishable from a
+    // `withRole(…)`, and the proxy needs to tell them apart to arbitrate
+    // against a role a `ref()` on this node already gave it (#855).
     return this.proxyFor(
       SingletonKey.of<TCommand>(options.typeName, options.role),
+      explicitOptions.role !== undefined ? 'explicit' : 'configured',
       options.bufferSize,
     );
   }
@@ -156,11 +168,29 @@ export class ClusterSingleton implements Extension {
    * node currently hosts the singleton.  If that node later calls `start`, the
    * same ref begins delivering through the local mailbox instead of over the
    * wire — the manager is resolved per delivery, not captured.
+   *
+   * This is the one door with no options object, which is why it reads
+   * `actor-ts.cluster.singleton.*` itself (#855).  Both leaves it takes from
+   * there matter to a proxy-only node and neither was reachable before:
+   * `buffer-size` is the cap on what it holds while nobody hosts, and `role`
+   * is *which node* it considers a host at all — a configured role that
+   * reached only `start()` would leave this node routing at the plain leader
+   * while the managers host on the role member.  A role on the key still wins,
+   * because it is code — and it wins whether the key reached this node through
+   * `ref` or through a `start()` that follows, which is what the provenance
+   * handed to {@link proxyFor} buys (#855).
    */
   ref<TCommand>(key: SingletonKey<TCommand> | SingletonKeyedClass<TCommand>): ActorRef<TCommand>;
   ref<TCommand>(typeName: string): ActorRef<TCommand>;
   ref<TCommand>(reference: SingletonReference<TCommand>): ActorRef<TCommand> {
-    return this.proxyFor(singletonKeyOf(reference));
+    const key = singletonKeyOf(reference);
+    const fromConfig = readSingletonOptionsFromConfig(this.system.config);
+    if (key.role !== undefined) return this.proxyFor(key, 'explicit', fromConfig.bufferSize);
+    return this.proxyFor(
+      SingletonKey.of<TCommand>(key.typeName, fromConfig.role),
+      'configured',
+      fromConfig.bufferSize,
+    );
   }
 
   /**
@@ -260,6 +290,37 @@ export class ClusterSingleton implements Extension {
     } as StartSingletonOptionsType<TCommand>;
   }
 
+  /**
+   * Layer the `actor-ts.cluster.singleton.*` block under the caller's options,
+   * giving a singleton the precedence the rest of the framework documents:
+   * **explicit options > HOCON > built-in defaults** (#855).
+   *
+   * It runs *before* the validator, so validation sees the values this node
+   * will actually run with — a configured `hand-over-timeout = 0` has to be
+   * refused by name, not silently used.
+   *
+   * The defaults layer is empty on purpose, exactly as
+   * `ClusterSharding.withConfigDefaults` leaves it: the built-in fallbacks
+   * already live at their read sites (`ClusterSingletonManager`'s `??` chain,
+   * `ClusterSingletonProxy`'s default parameter), and duplicating them here
+   * would give the project two places to disagree about what `1000` means.
+   *
+   * A role declared on the actor class's `SingletonKey` also wins over the
+   * config file, because {@link shorthandOptions} has already folded it into
+   * the explicit layer.  That is the right way round — the key is code — but
+   * it is the opposite of the "the config file wins" intuition, so it is
+   * stated in the docs as well as here.
+   */
+  private withConfigDefaults<TCommand>(
+    options: StartSingletonOptionsType<TCommand>,
+  ): StartSingletonOptionsType<TCommand> {
+    return mergeOptions<StartSingletonOptionsType<TCommand>>(
+      {},
+      readSingletonOptionsFromConfig(this.system.config),
+      options,
+    );
+  }
+
   /** Spawn this node's manager for `options`, unless one is already running. */
   private ensureManager<TCommand>(options: StartSingletonOptionsType<TCommand>): void {
     const { typeName } = options;
@@ -271,6 +332,9 @@ export class ClusterSingleton implements Extension {
       return;
     }
     const cluster = this.clusterOrThrow();
+    // Resolved before the path is claimed and the manager spawned, so a switch
+    // with no backend behind it is refused by `start()` itself (#1454).
+    const lease = options.lease ?? this.leaseFromConfiguration(options, cluster);
 
     // Claim the manager path *before* spawning, so a proxy that fires during
     // the spawn window is not answered as if this node were not hosting.
@@ -285,7 +349,7 @@ export class ClusterSingleton implements Extension {
         .withSingletonActor(options.actor);
       if (options.actorOptions !== undefined) managerOptions.withSingletonActorOptions(options.actorOptions);
       if (options.role !== undefined) managerOptions.withRole(options.role);
-      if (options.lease !== undefined) managerOptions.withLease(options.lease);
+      if (lease !== undefined) managerOptions.withLease(lease);
       if (options.acquireRetryIntervalMs !== undefined) {
         managerOptions.withAcquireRetryIntervalMs(options.acquireRetryIntervalMs);
       }
@@ -329,6 +393,27 @@ export class ClusterSingleton implements Extension {
     // past the `singleton-deliver` wrapping instead of failing.
     assertSpawnedAt(singletonManagerPath(this.system.name, typeName), managerRef);
     this.managers.set(typeName, managerRef);
+  }
+
+  /**
+   * The singleton's lease when `useLease` asks for one and no `withLease(…)`
+   * supplied it — built from `actor-ts.coordination.lease` in this system's
+   * config, named after the singleton and owned by this node (#1454).  The
+   * system's scheduler arms the renewal, which keeps the lease on the system's
+   * clock and stops it with the system.
+   */
+  private leaseFromConfiguration<TCommand>(
+    options: StartSingletonOptionsType<TCommand>,
+    cluster: Cluster,
+  ): Lease | undefined {
+    if (options.useLease !== true) return undefined;
+    const requestedBy = `${ConfigKeys.cluster.singleton.useLease} (or withUseLease(true)) `
+      + `for singleton '${options.typeName}'`;
+    return configuredLeaseFor(this.system.config, requestedBy).build(
+      { kind: 'singleton', typeName: options.typeName },
+      cluster.selfAddress,
+      this.system.scheduler,
+    );
   }
 
   /**
@@ -419,7 +504,6 @@ export class ClusterSingleton implements Extension {
       to: singletonManagerPath(peer.systemName, typeName),
       from: null,
       body: acknowledgment,
-      tag: 'Singleton',
     });
   }
 
@@ -464,9 +548,20 @@ export class ClusterSingleton implements Extension {
   private proxyFor<TCommand>(
     key: SingletonKey<TCommand>,
     /**
-     * Only `start()` has one.  A `ref()`-only proxy takes the default — unlike
-     * the role, a buffer cap is a local resource bound, so nodes disagreeing
-     * about it costs nothing.
+     * Which layer `key.role` came from.  Both doors know: `start()` reads it
+     * off the caller's options *before* the config merge, `ref()` off whether
+     * the key carried a role of its own.  It is what lets the memoised proxy
+     * arbitrate a second role by precedence instead of by arrival order.
+     */
+    roleOrigin: SingletonRoleOrigin,
+    /**
+     * Both doors have one since #855 — `start()` from the merged options,
+     * `ref()` from `actor-ts.cluster.singleton.buffer-size` — and it is
+     * `undefined` only when neither the caller nor the file named one, where
+     * the proxy's own default applies.  Unlike the role it is not arbitrated
+     * when a second caller brings a different one: a buffer cap is a local
+     * resource bound rather than a claim about which node hosts, so the
+     * memoised proxy simply keeps the one it was built with.
      */
     bufferSize?: number,
   ): ActorRef<TCommand> {
@@ -477,10 +572,13 @@ export class ClusterSingleton implements Extension {
     const existing = this.proxies.get(key.typeName);
     if (existing) {
       // The memo is keyed on typeName alone, so a proxy taken earlier from a
-      // bare `ref('name')` — which carries no role — can predate the `start()`
-      // that knows the singleton is role-restricted.  Left alone it would keep
-      // routing at the plain leader while the managers host elsewhere.
-      existing._adoptRole(key.role);
+      // bare `ref('name')` — which carries no role of its own — can predate the
+      // `start()` that knows the singleton is role-restricted.  Left alone it
+      // would keep routing at the plain leader while the managers host
+      // elsewhere; adopting the role blindly would let the file's role outrank
+      // the code's on that ordering alone, which is why the origin travels
+      // with it.
+      existing._adoptRole(key.role, roleOrigin);
       return existing as unknown as ActorRef<TCommand>;
     }
     const proxy = new ClusterSingletonProxy<TCommand>(
@@ -491,6 +589,7 @@ export class ClusterSingleton implements Extension {
       // later — a captured ref would be impossible to obtain or permanently stale.
       () => this.managers.get(key.typeName) ?? null,
       key.role,
+      roleOrigin,
       bufferSize,
     );
     this.proxies.set(key.typeName, proxy as unknown as ClusterSingletonProxy<never>);

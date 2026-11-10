@@ -86,4 +86,103 @@ describe('Cluster — WeaklyUp', () => {
     await nodeA.leave(); await sysA.terminate();
     await nodeB.leave(); await sysB.terminate();
   });
+
+  test('a member weakly-up before its seed has started reaches up once the seed does (#1493)', async () => {
+    // A's own timer moves it to weakly-up well inside the first retry interval,
+    // while B — its only seed — does not exist yet.  Gossip and heartbeats only
+    // ever go to members already in the map, so from then on the seed-retry
+    // loop is the one thing that can still introduce A to B: it has to outlive
+    // the promotion, or A waits, weakly-up and unknown, for good.
+    const systemOptionsA = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const systemA = ActorSystem.create('wup-3', systemOptionsA);
+    const clusterOptionsA = ClusterOptions.create()
+      .withHost('h')
+      .withPort(55201)
+      .withSeeds(['wup-3@h:55202'])
+      .withTransport(new InMemoryTransport(new NodeAddress('wup-3', 'h', 55201)))
+      .withWeaklyUpAfterMs(20)
+      .withSeedRetryIntervalMs(50)
+      .withGossipIntervalMs(60);
+    const nodeA = await Cluster.join(systemA, clusterOptionsA);
+    let systemB: ActorSystem | null = null;
+    let nodeB: Cluster | null = null;
+    try {
+      await awaitCondition(() => nodeA.selfMember()?.status === 'weakly-up', {
+        timeoutMs: 4_000, intervalMs: 5, label: 'A was promoted to weakly-up by its own timer',
+      });
+
+      // B arrives late and with no seeds of its own: it forms the cluster and
+      // leads it, but it has never heard of A and has no reason to look.
+      const systemOptionsB = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withLogLevel(LogLevel.Off);
+      systemB = ActorSystem.create('wup-3', systemOptionsB);
+      const clusterOptionsB = ClusterOptions.create()
+        .withHost('h')
+        .withPort(55202)
+        .withTransport(new InMemoryTransport(new NodeAddress('wup-3', 'h', 55202)))
+        .withGossipIntervalMs(60);
+      nodeB = await Cluster.join(systemB, clusterOptionsB);
+
+      await awaitCondition(() => nodeA.selfMember()?.status === 'up', {
+        timeoutMs: 4_000, intervalMs: 20, label: 'A reached up through the seed that started late',
+      });
+      expect(nodeA.selfMember()?.status).toBe('up');
+      expect(nodeB.getMembers().some((member) => member.address.equals(nodeA.selfAddress))).toBe(true);
+    } finally {
+      await nodeA.leave();
+      await systemA.terminate();
+      if (nodeB) await nodeB.leave();
+      if (systemB) await systemB.terminate();
+    }
+  });
+
+  test('a node its own timer moves on before the leader answers still reaches up (#935)', async () => {
+    // The seed is up already, so its first answer is a promotion — from the
+    // `joining@E` record the join carried, to `up@E+1`.  A 1 ms timer has
+    // moved the node to `weakly-up@E+1` by then: the same version.  The merge
+    // used to drop the promotion as not newer, and the node stayed weakly-up
+    // in its own view for good — no `SelfUp`, not ready — while the seed
+    // counted it up.
+    const systemOptionsB = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+    const systemB = ActorSystem.create('wup-4', systemOptionsB);
+    const clusterOptionsB = ClusterOptions.create()
+      .withHost('h')
+      .withPort(55302)
+      .withTransport(new InMemoryTransport(new NodeAddress('wup-4', 'h', 55302)))
+      .withGossipIntervalMs(60);
+    const nodeB = await Cluster.join(systemB, clusterOptionsB);
+    let systemA: ActorSystem | null = null;
+    let nodeA: Cluster | null = null;
+    try {
+      await awaitCondition(() => nodeB.selfMember()?.status === 'up', {
+        timeoutMs: 4_000, intervalMs: 5, label: 'the seed formed its cluster',
+      });
+
+      const systemOptionsA = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+      systemA = ActorSystem.create('wup-4', systemOptionsA);
+      const clusterOptionsA = ClusterOptions.create()
+        .withHost('h')
+        .withPort(55301)
+        .withSeeds(['wup-4@h:55302'])
+        .withTransport(new InMemoryTransport(new NodeAddress('wup-4', 'h', 55301)))
+        .withWeaklyUpAfterMs(1)
+        .withSeedRetryIntervalMs(50)
+        .withGossipIntervalMs(60);
+      const joined = nodeA = await Cluster.join(systemA, clusterOptionsA);
+
+      await awaitCondition(() => joined.selfMember()?.status === 'up', {
+        timeoutMs: 4_000, intervalMs: 10, label: 'the node reached up in its own view',
+      });
+      expect(joined.isReady()).toBe(true);
+      expect(nodeB.getMembers().find((member) => member.address.equals(joined.selfAddress))?.status).toBe('up');
+    } finally {
+      if (nodeA) await nodeA.leave();
+      if (systemA) await systemA.terminate();
+      await nodeB.leave();
+      await systemB.terminate();
+    }
+  });
 });

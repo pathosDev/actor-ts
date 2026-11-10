@@ -1,7 +1,7 @@
-import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
-import type { PgPoolLike, PostgresConnection } from '../journals/PostgresClient.js';
+import { SealedPayloadOptionsBuilder, type SealedPayloadOptionsBase } from '../storage/SealedPayloadOptions.js';
+import { PostgresOptionsValidatorBase, type PgPoolLike, type PostgresConnection } from '../journals/PostgresClient.js';
 
-export interface PostgresDurableStateStoreOptionsType extends PostgresConnection, StoreSerializerOptionsBase {
+export interface PostgresDurableStateStoreOptionsType extends PostgresConnection, SealedPayloadOptionsBase {
   /** Table name.  Default: `durable_state`. */
   readonly table?: string;
   /** Run `CREATE TABLE IF NOT EXISTS` on first use.  Default: true. */
@@ -13,10 +13,11 @@ export interface PostgresDurableStateStoreOptionsType extends PostgresConnection
  *
  *     new PostgresDurableStateStore(PostgresDurableStateStoreOptions.create().withUrl('postgres://…').withTable('state'))
  *
- * The connection fields (`withUrl` / `withPoolConfig` / `withPool`) come
- * from the shared {@link PostgresConnection} mixin.
+ * The connection fields (`withUrl` / `withPoolConfig` / `withPool`, and the
+ * typed `withMaxPoolSize` … `withCaFile`) come from the shared
+ * {@link PostgresConnection} mixin.
  */
-export class PostgresDurableStateStoreOptionsBuilder extends StoreSerializerOptionsBuilder<PostgresDurableStateStoreOptionsType> {
+export class PostgresDurableStateStoreOptionsBuilder extends SealedPayloadOptionsBuilder<PostgresDurableStateStoreOptionsType> {
   /** Start a fresh builder.  Equivalent to `new PostgresDurableStateStoreOptionsBuilder()`. */
   static create(): PostgresDurableStateStoreOptionsBuilder {
     return new PostgresDurableStateStoreOptionsBuilder();
@@ -27,7 +28,16 @@ export class PostgresDurableStateStoreOptionsBuilder extends StoreSerializerOpti
     return this.set('url', url);
   }
 
-  /** Extra node-postgres `Pool` config, merged over `{ connectionString: url }`. */
+  /**
+   * Extra node-postgres `Pool` config, merged over `{ connectionString: url }`
+   * — e.g.
+   * `{ max: 10, ssl: { rejectUnauthorized: true, ca: fs.readFileSync('rds-ca.pem') } }`.
+   *
+   * Supply the signing CA rather than switching certificate verification off:
+   * encryption without verification authenticates nobody, and this link
+   * carries the durable state.  See
+   * https://actor-ts.dev/operations/security/tls-everywhere/.
+   */
   withPoolConfig(poolConfig: Record<string, unknown>): this {
     return this.set('poolConfig', poolConfig);
   }
@@ -35,6 +45,29 @@ export class PostgresDurableStateStoreOptionsBuilder extends StoreSerializerOpti
   /** Pre-built pool — bypasses the lazy `pg` import; share it across stores. */
   withPool(pool: PgPoolLike): this {
     return this.set('pool', pool);
+  }
+
+  /** Most connections the pool holds — pg-pool's `max`.  Unset: the driver's 10. */
+  withMaxPoolSize(maxPoolSize: number): this {
+    return this.set('maxPoolSize', maxPoolSize);
+  }
+
+  /** Idle time before the pool closes a connection, in ms — pg-pool's `idleTimeoutMillis`.  Unset: 10 000. */
+  withIdleTimeoutMs(idleTimeoutMs: number): this {
+    return this.set('idleTimeoutMs', idleTimeoutMs);
+  }
+
+  /** Time allowed to open a connection, in ms — pg's `connectionTimeoutMillis`.  Unset: no limit. */
+  withConnectTimeoutMs(connectTimeoutMs: number): this {
+    return this.set('connectTimeoutMs', connectTimeoutMs);
+  }
+
+  /**
+   * PEM file of the CA that signed the server's certificate, read when the
+   * pool opens and handed to pg as `ssl.ca` — see `PostgresConnection.caFile`.
+   */
+  withCaFile(caFile: string): this {
+    return this.set('caFile', caFile);
   }
 
   /** Table name.  Default: `durable_state`. */
@@ -55,3 +88,13 @@ export class PostgresDurableStateStoreOptionsBuilder extends StoreSerializerOpti
 export type PostgresDurableStateStoreOptions = PostgresDurableStateStoreOptionsBuilder | Partial<PostgresDurableStateStoreOptionsType>;
 /** Value alias so `PostgresDurableStateStoreOptions.create()` / `new PostgresDurableStateStoreOptions()` resolve to the builder. */
 export const PostgresDurableStateStoreOptions = PostgresDurableStateStoreOptionsBuilder;
+
+/** The connection rules every Postgres store shares — see `PostgresOptionsValidatorBase`. */
+export class PostgresDurableStateStoreOptionsValidator
+  extends PostgresOptionsValidatorBase<PostgresDurableStateStoreOptionsType> {
+  constructor() { super('PostgresDurableStateStoreOptions'); }
+
+  protected rules(s: Partial<PostgresDurableStateStoreOptionsType>): void {
+    this.checkConnection(s);
+  }
+}

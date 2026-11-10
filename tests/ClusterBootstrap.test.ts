@@ -1,16 +1,25 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import {
+  ActorSystem,
+  ClusterJoinUnsuccessfulReason,
+  ClusterLeavingReason,
+  Config,
+  CoordinatedShutdownId,
   LogLevel,
   NoopLogger,
   OptionsError,
+  Phases,
+  type Reason,
 } from '../src/index.js';
 import {
   Cluster,
   ClusterBootstrapOptions,
+  ClusterBootstrapOptionsBuilder,
   ClusterReadyTimeoutError,
   InMemoryTransport,
   NodeAddress,
   bootstrapCluster,
+  type BootstrappedCluster,
   type Transport,
   type WireHandler,
 } from '../src/cluster/index.js';
@@ -28,6 +37,7 @@ import {
   type SeedProvider,
 } from '../src/discovery/index.js';
 import { awaitCondition } from './util/AwaitCondition.js';
+import { RecordingLogger } from './util/RecordingLogger.js';
 
 /**
  * Delegating transport that counts `shutdown()` calls — the observable that
@@ -52,6 +62,71 @@ class RecordingTransport implements Transport {
   send(to: NodeAddress, message: WireMessage): void { this.inner.send(to, message); }
   disconnect(peer: NodeAddress): void { this.inner.disconnect(peer); }
   peers(): NodeAddress[] { return this.inner.peers(); }
+}
+
+/** The join's own deadline (#1500), named in full where a message must name it. */
+const GIVE_UP_KEY = 'actor-ts.cluster.shutdown-after-unsuccessful-join';
+
+/** Short enough to fire inside a test, and six seed rounds at the interval below. */
+const GIVE_UP_MS = 300;
+
+/**
+ * The give-up in the HOCON layer, with a seed round short enough that the
+ * deadline clears the validator's one-round floor.  The bootstrap options
+ * carry it too (`withShutdownAfterUnsuccessfulJoinMs`, #860); the cases that
+ * set both pin which one the join arms.
+ */
+function giveUpAfter(ms: number): Config {
+  return Config.parseString(`actor-ts.cluster {
+    seed-retry-interval = 50ms
+    shutdown-after-unsuccessful-join = ${ms}ms
+  }`);
+}
+
+async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
+  try {
+    await promise;
+  } catch (e) {
+    return e;
+  }
+  throw new Error('expected the bootstrap to reject, and it resolved');
+}
+
+type ObservedBootstrap = {
+  /** The reason every coordinated-shutdown run on a bootstrapped system was handed. */
+  readonly reasons: Reason[];
+  /** Every system bootstrap created while observed. */
+  readonly systems: ActorSystem[];
+};
+
+/**
+ * Observe what bootstrap's own system goes through.  `bootstrapCluster` builds
+ * that system itself, so the one way in is `ActorSystem.create`, spied for the
+ * duration of `run`: the wrapper registers a `before-service-unbind` task the
+ * moment the system exists, before bootstrap has done anything with it.
+ * `spyOn` replaces one property and `mockRestore` puts it back — the opposite
+ * of `mock.module`, which is process-wide and permanent.  A system an assertion
+ * left running is terminated on the way out.
+ */
+async function recordingShutdownReasons<T>(run: (observed: ObservedBootstrap) => Promise<T>): Promise<T> {
+  const observed: ObservedBootstrap = { reasons: [], systems: [] };
+  const create = ActorSystem.create.bind(ActorSystem);
+  const spy = spyOn(ActorSystem, 'create').mockImplementation((...args: Parameters<typeof ActorSystem.create>) => {
+    const system = create(...args);
+    observed.systems.push(system);
+    system.extension(CoordinatedShutdownId).addTask(Phases.BeforeServiceUnbind, 'record-the-reason', (reason) => {
+      observed.reasons.push(reason);
+    });
+    return system;
+  });
+  try {
+    return await run(observed);
+  } finally {
+    spy.mockRestore();
+    for (const system of observed.systems) {
+      if (!system.isTerminated) await system.terminate().catch(() => {});
+    }
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -272,6 +347,201 @@ describe('Cluster.bootstrap', () => {
     expect(transport.shutdownCalls).toBe(1);
   });
 
+  test('await-ready shorter than the join give-up: the readiness error, one teardown, the join reason (#1500)', async () => {
+    const address = new NodeAddress('bootstrap-4c', '127.0.0.1', 50115);
+    const transport = new RecordingTransport(new InMemoryTransport(address));
+    const joinGiveUp = giveUpAfter(10_000);
+    const clusterBootstrapOptions = ClusterBootstrapOptions.create('bootstrap-4c')
+      .withHost('127.0.0.1')
+      .withPort(50115)
+      .withTransport(transport)
+      .withSeeds(['127.0.0.1:59115'])
+      .withReceptionist(false)
+      .withAwaitReady(300)
+      .withConfig(joinGiveUp)
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withShutdownOnSignals(false);
+
+    const { caught, reasons } = await recordingShutdownReasons(async (observed) => ({
+      caught: await rejectionOf(Cluster.bootstrap(clusterBootstrapOptions)),
+      reasons: [...observed.reasons],
+    }));
+
+    // The wait's own deadline, as before — the give-up never had its turn.
+    expect(caught).toBeInstanceOf(ClusterReadyTimeoutError);
+    expect((caught as ClusterReadyTimeoutError).timeoutMs).toBe(300);
+    expect((caught as ClusterReadyTimeoutError).message).not.toContain(GIVE_UP_KEY);
+    // One teardown: the pipeline's leave cancelled the armed give-up with the
+    // other timers, so it cannot leave or run a second time.
+    expect(transport.shutdownCalls).toBe(1);
+    // A node that never became a member did not leave: the join's reason, the
+    // one the give-up passes, so both deadlines read the same to a task.
+    expect(reasons).toEqual([ClusterJoinUnsuccessfulReason.instance]);
+  });
+
+  test('the join give-up shorter than await-ready: bootstrap stops waiting at once and names the key (#1500)', async () => {
+    const awaitReadyMs = 3_000;
+    const address = new NodeAddress('bootstrap-4d', '127.0.0.1', 50116);
+    const transport = new RecordingTransport(new InMemoryTransport(address));
+    const joinGiveUp = giveUpAfter(GIVE_UP_MS);
+    const clusterBootstrapOptions = ClusterBootstrapOptions.create('bootstrap-4d')
+      .withHost('127.0.0.1')
+      .withPort(50116)
+      .withTransport(transport)
+      .withSeeds(['127.0.0.1:59116'])
+      .withReceptionist(false)
+      .withAwaitReady(awaitReadyMs)
+      .withConfig(joinGiveUp)
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withShutdownOnSignals(false);
+
+    const startedAt = Date.now();
+    const { caught, reasons, terminatedAtRejection } = await recordingShutdownReasons(async (observed) => {
+      const rejection = await rejectionOf(Cluster.bootstrap(clusterBootstrapOptions));
+      return {
+        caught: rejection,
+        reasons: [...observed.reasons],
+        terminatedAtRejection: observed.systems.map((system) => system.isTerminated),
+      };
+    });
+    const elapsedMs = Date.now() - startedAt;
+
+    expect(caught).toBeInstanceOf(ClusterReadyTimeoutError);
+    const error = caught as ClusterReadyTimeoutError;
+    expect(error.message).toContain(GIVE_UP_KEY);
+    expect(error.timeoutMs).toBe(GIVE_UP_MS);
+    expect(error.selfStatus).toBe('joining');
+    // Well before the await-ready deadline.  The wait used to outlive the
+    // give-up, hold the start until its own budget ran out and then report
+    // that budget, about a system already gone.
+    expect(elapsedMs).toBeLessThan(awaitReadyMs / 2);
+    // It waited for the run the give-up started before rejecting.
+    expect(terminatedAtRejection).toEqual([true]);
+    expect(transport.shutdownCalls).toBe(1);
+    expect(reasons).toEqual([ClusterJoinUnsuccessfulReason.instance]);
+  }, 10_000);
+
+  test('a give-up set on the bootstrap options outranks the file\'s (#1500, #860)', async () => {
+    // The file's deadline is past the readiness budget, so had the join armed
+    // it, the wait's own deadline would have rejected first — and without the
+    // key in its message.
+    const awaitReadyMs = 3_000;
+    const address = new NodeAddress('bootstrap-4g', '127.0.0.1', 50119);
+    const transport = new RecordingTransport(new InMemoryTransport(address));
+    const fileGiveUp = giveUpAfter(10_000);
+    const clusterBootstrapOptions = ClusterBootstrapOptions.create('bootstrap-4g')
+      .withHost('127.0.0.1')
+      .withPort(50119)
+      .withTransport(transport)
+      .withSeeds(['127.0.0.1:59119'])
+      .withReceptionist(false)
+      .withAwaitReady(awaitReadyMs)
+      .withConfig(fileGiveUp)
+      .withShutdownAfterUnsuccessfulJoinMs(GIVE_UP_MS)
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withShutdownOnSignals(false);
+
+    const { caught, reasons } = await recordingShutdownReasons(async (observed) => ({
+      caught: await rejectionOf(Cluster.bootstrap(clusterBootstrapOptions)),
+      reasons: [...observed.reasons],
+    }));
+
+    expect(caught).toBeInstanceOf(ClusterReadyTimeoutError);
+    const error = caught as ClusterReadyTimeoutError;
+    expect(error.message).toContain(GIVE_UP_KEY);
+    expect(error.timeoutMs).toBe(GIVE_UP_MS);
+    expect(transport.shutdownCalls).toBe(1);
+    expect(reasons).toEqual([ClusterJoinUnsuccessfulReason.instance]);
+  }, 10_000);
+
+  test('a give-up of 0 on the bootstrap options turns the file\'s off (#1500, #860)', async () => {
+    // `0` is "no deadline", an answer of its own: forwarded, it outranks the
+    // file's 300 ms and the readiness wait is the only deadline left.
+    const awaitReadyMs = 1_000;
+    const address = new NodeAddress('bootstrap-4h', '127.0.0.1', 50120);
+    const transport = new RecordingTransport(new InMemoryTransport(address));
+    const fileGiveUp = giveUpAfter(GIVE_UP_MS);
+    const clusterBootstrapOptions = ClusterBootstrapOptions.create('bootstrap-4h')
+      .withHost('127.0.0.1')
+      .withPort(50120)
+      .withTransport(transport)
+      .withSeeds(['127.0.0.1:59120'])
+      .withReceptionist(false)
+      .withAwaitReady(awaitReadyMs)
+      .withConfig(fileGiveUp)
+      .withShutdownAfterUnsuccessfulJoinMs(0)
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withShutdownOnSignals(false);
+
+    const { caught } = await recordingShutdownReasons(async () => ({
+      caught: await rejectionOf(Cluster.bootstrap(clusterBootstrapOptions)),
+    }));
+
+    expect(caught).toBeInstanceOf(ClusterReadyTimeoutError);
+    const error = caught as ClusterReadyTimeoutError;
+    expect(error.timeoutMs).toBe(awaitReadyMs);
+    expect(error.message).not.toContain(GIVE_UP_KEY);
+    expect(transport.shutdownCalls).toBe(1);
+  }, 10_000);
+
+  test('awaitReady false: bootstrap resolves, and the join give-up tears the node down afterwards (#1500)', async () => {
+    const address = new NodeAddress('bootstrap-4e', '127.0.0.1', 50117);
+    const transport = new RecordingTransport(new InMemoryTransport(address));
+    const joinGiveUp = giveUpAfter(GIVE_UP_MS);
+    const clusterBootstrapOptions = ClusterBootstrapOptions.create('bootstrap-4e')
+      .withHost('127.0.0.1')
+      .withPort(50117)
+      .withTransport(transport)
+      .withSeeds(['127.0.0.1:59117'])
+      .withReceptionist(false)
+      .withAwaitReady(false)
+      .withConfig(joinGiveUp)
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withShutdownOnSignals(false);
+
+    await recordingShutdownReasons(async (observed) => {
+      const node = await Cluster.bootstrap(clusterBootstrapOptions);
+      // Returned at once, still joining: the give-up is the only deadline left.
+      expect(node.cluster.selfMember()?.status).toBe('joining');
+      expect(observed.reasons).toEqual([]);
+
+      await awaitCondition(() => node.system.isTerminated, {
+        timeoutMs: 4_000, label: 'the join give-up to terminate the bootstrapped node',
+      });
+
+      expect(transport.shutdownCalls).toBe(1);
+      expect(observed.reasons).toEqual([ClusterJoinUnsuccessfulReason.instance]);
+      // The run already happened, so shutdown() joins it and adds nothing.
+      await node.shutdown();
+      expect(observed.reasons).toHaveLength(1);
+    });
+  });
+
+  test('shutdown() of a node that started still passes ClusterLeavingReason (#1500)', async () => {
+    const transport = new InMemoryTransport(new NodeAddress('bootstrap-4f', '127.0.0.1', 50118));
+    const clusterBootstrapOptions = ClusterBootstrapOptions.create('bootstrap-4f')
+      .withHost('127.0.0.1')
+      .withPort(50118)
+      .withTransport(transport)
+      .withReceptionist(false)
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withShutdownOnSignals(false);
+
+    await recordingShutdownReasons(async (observed) => {
+      const node = await Cluster.bootstrap(clusterBootstrapOptions);
+      await node.shutdown();
+      // A member leaving on purpose — only a start that never got there
+      // passes the join's reason.
+      expect(observed.reasons).toEqual([ClusterLeavingReason.instance]);
+    });
+  });
+
   test('custom SeedProvider via discovery: SeedProvider', async () => {
     const aTransport = new InMemoryTransport(new NodeAddress('bootstrap-5', '127.0.0.1', 50105));
     const bTransport = new InMemoryTransport(new NodeAddress('bootstrap-5', '127.0.0.1', 50106));
@@ -324,6 +594,94 @@ describe('Cluster.bootstrap', () => {
       await nodeB.shutdown();
     }
   });
+});
+
+/**
+ * A start whose readiness wait failed, under `exit-process` (D-M5 1): a
+ * failure never exits 0, and it is logged first.  Both deadlines the wait
+ * answers to — its own, and the join give-up's — end in a run with
+ * `ClusterJoinUnsuccessfulReason`, and that run used to exit with `exit-code`,
+ * `0` by default, before the readiness error could reach `main`, which then
+ * never saw it.  `process.exit` is replaced; the replacement returns, so the
+ * rejection still follows, and the case can tell the line it found names it.
+ */
+describe('Cluster.bootstrap — a failed readiness wait under exit-process', () => {
+  type ReadinessExit = { readonly status: number; readonly errors: string[]; readonly warnings: string[] };
+
+  const messagesAt = (log: RecordingLogger, level: string): string[] =>
+    log.records.filter((record) => record.level === level).map((record) => record.message);
+
+  /**
+   * Bootstrap `options` with `process.exit` replaced, recording what had been
+   * logged when it was called.  A system the bootstrap left up is torn down
+   * bare before the real `process.exit` is put back.
+   */
+  async function failedStart(
+    options: ClusterBootstrapOptionsBuilder,
+    log: RecordingLogger,
+  ): Promise<{ caught: unknown; exits: ReadinessExit[] }> {
+    const exits: ReadinessExit[] = [];
+    const realExit = process.exit;
+    process.exit = ((code?: number): never => {
+      exits.push({ status: code ?? Number.NaN, errors: messagesAt(log, 'error'), warnings: messagesAt(log, 'warn') });
+      return undefined as never;
+    }) as typeof process.exit;
+    try {
+      return await recordingShutdownReasons(async (observed) => {
+        try {
+          return { caught: await rejectionOf(Cluster.bootstrap(options)), exits };
+        } finally {
+          for (const system of observed.systems) {
+            if (!system.isTerminated) await system.terminate({ runCoordinatedShutdown: false }).catch(() => {});
+          }
+        }
+      });
+    } finally {
+      process.exit = realExit;
+    }
+  }
+
+  /** A node whose one seed nobody answers, so neither deadline can be met. */
+  function unanswered(name: string, port: number, awaitReadyMs: number, hocon: string, log: RecordingLogger) {
+    const address = new NodeAddress(name, '127.0.0.1', port);
+    return ClusterBootstrapOptions.create(name)
+      .withHost('127.0.0.1')
+      .withPort(port)
+      .withTransport(new InMemoryTransport(address))
+      .withSeeds([`127.0.0.1:${port + 9_000}`])
+      .withReceptionist(false)
+      .withAwaitReady(awaitReadyMs)
+      .withConfig(Config.parseString(`actor-ts.coordinated-shutdown.exit-process = on\n${hocon}`))
+      .withLogger(log)
+      .withShutdownOnSignals(false);
+  }
+
+  test('the wait\'s own deadline: the readiness error is logged at error, then the exit status is 1', async () => {
+    const log = new RecordingLogger();
+
+    const { caught, exits } = await failedStart(unanswered('readiness-exit-own', 50_131, 300, '', log), log);
+
+    expect(caught).toBeInstanceOf(ClusterReadyTimeoutError);
+    expect(exits.map((exit) => exit.status)).toEqual([1]);
+    expect(exits[0]!.errors.some((line) => line.includes((caught as Error).message))).toBe(true);
+  });
+
+  test('the join give-up\'s deadline: both lines are on record, then the exit status is 1', async () => {
+    const log = new RecordingLogger();
+    const giveUp = `actor-ts.cluster {
+      seed-retry-interval = 50ms
+      shutdown-after-unsuccessful-join = ${GIVE_UP_MS}ms
+    }`;
+
+    const { caught, exits } = await failedStart(unanswered('readiness-exit-give-up', 50_133, 3_000, giveUp, log), log);
+
+    expect(caught).toBeInstanceOf(ClusterReadyTimeoutError);
+    expect((caught as Error).message).toContain(GIVE_UP_KEY);
+    expect(exits.map((exit) => exit.status)).toEqual([1]);
+    // The join's own WARN says why it gave up; the bootstrap's ERROR says the start failed.
+    expect(exits[0]!.warnings.some((line) => line.includes('giving up the join'))).toBe(true);
+    expect(exits[0]!.errors.some((line) => line.includes((caught as Error).message))).toBe(true);
+  }, 10_000);
 });
 
 /* -------------------------------------------------------------------------- */
@@ -581,6 +939,58 @@ describe('bootstrapCluster (free function)', () => {
       expect(cluster.upMembers().length).toBe(1);
     } finally {
       await shutdown();
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* shutdownOnSignals — unset now defers to config, and only unset does (#866)  */
+/* -------------------------------------------------------------------------- */
+
+describe('bootstrapCluster and actor-ts.coordinated-shutdown.run-by-process-signals', () => {
+  const bootstrapWith = async (
+    name: string,
+    port: number,
+    // The builder, not the accepted-input union: the union has no methods.
+    build: (options: ClusterBootstrapOptionsBuilder) => void,
+  ): Promise<BootstrappedCluster> => {
+    const clusterBootstrapOptions = ClusterBootstrapOptions.create(name)
+      .withHost('127.0.0.1')
+      .withPort(port)
+      .withTransport(new InMemoryTransport(new NodeAddress(name, '127.0.0.1', port)))
+      .withReceptionist(false)
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({ 'actor-ts': { 'coordinated-shutdown': { 'run-by-process-signals': false } } });
+    build(clusterBootstrapOptions);
+    return bootstrapCluster(clusterBootstrapOptions);
+  };
+
+  test('an unset shutdownOnSignals takes the config key, and arms nothing when it is off', async () => {
+    // `?? true` used to collapse "unset" to "yes" before the config was
+    // consulted, so this key could never reach a bootstrapped node.
+    const before = process.listenerCount('SIGTERM');
+    const { shutdown, system } = await bootstrapWith('signals-config-off', 50111, () => {});
+    try {
+      expect(process.listenerCount('SIGTERM')).toBe(before);
+      expect(system.extension(CoordinatedShutdownId).runByProcessSignals).toBe(false);
+    } finally {
+      await shutdown();
+      system.extension(CoordinatedShutdownId).removeProcessHooks();
+    }
+  });
+
+  test('an explicit signal list still installs over an off key', async () => {
+    const before = process.listenerCount('SIGTERM');
+    const { shutdown, system } = await bootstrapWith('signals-explicit', 50112, (options) => {
+      options.withShutdownOnSignals(['SIGTERM']);
+    });
+    try {
+      expect(process.listenerCount('SIGTERM')).toBe(before + 1);
+    } finally {
+      await shutdown();
+      system.extension(CoordinatedShutdownId).removeProcessHooks();
+      expect(process.listenerCount('SIGTERM')).toBe(before);
     }
   });
 });

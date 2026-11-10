@@ -36,7 +36,11 @@ import { ObjectStorageDurableStateStoreOptions, type ObjectStorageDurableStateSt
 import { ObjectStorageSnapshotStore } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStore.js';
 import { ObjectStorageSnapshotStoreOptions } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
 import { reEncryptObjectStorage } from '../../../../../src/persistence/object-storage/ReEncryptionSweep.js';
-import { SEQ_PADDING } from '../../../../../src/persistence/Constants.js';
+import {
+  OBJECT_STORAGE_DURABLE_STATE_NAMESPACE,
+  OBJECT_STORAGE_SNAPSHOT_NAMESPACE,
+  SEQ_PADDING,
+} from '../../../../../src/persistence/Constants.js';
 import { JournalError } from '../../../../../src/persistence/JournalTypes.js';
 import {
   FLAG_CONTEXT_BOUND,
@@ -54,20 +58,55 @@ const info = 'acme/test/state/v1';
 const INTEGRITY_KEY = new Uint8Array(32).fill(7);
 const MASTER_KEY = new Uint8Array(32).fill(9);
 
+/**
+ * Budget for the per-test temp tree, stated rather than inherited.
+ *
+ * These hooks build and delete a real object-storage tree per test.  Idle they
+ * cost single-digit milliseconds; under whole-suite disk contention a hook here
+ * has been seen at 11.4 s and, in a sibling file, at 69 s — against bun's
+ * undeclared 5 000 ms cap, which reports as `(unnamed)` and "a
+ * beforeEach/afterEach hook timed out" without naming the file, the hook kind or
+ * a cause.
+ *
+ * Neither observation reproduced, and the budget is sized for that: it is a
+ * bound on a hook whose work is unbounded in principle (a recursive delete of a
+ * tree whose size the test decides, on a disk the rest of the suite is also
+ * using), not a number tuned until a red run went away.  What it buys is that
+ * transient contention costs a slow run instead of an unattributable failure —
+ * and that the cap is a decision somebody made. *
+ * Verified rather than assumed: a 6 s `beforeEach` and a 6 s `afterEach` both
+ * pass under a 20 s budget on bun 1.4.0, and the same hook without one dies at
+ * 5 000 ms.  The second argument works on every hook kind, not only `beforeAll`.
+ */
+const TEMP_TREE_BUDGET_MS = 30_000;
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'actor-ts-context-'));
   const backendOptions = FilesystemObjectStorageOptions.create()
     .withDir(dir);
   backend = new FilesystemObjectStorageBackend(backendOptions);
-});
-afterEach(() => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } });
+}, TEMP_TREE_BUDGET_MS);
+afterEach(
+  () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } },
+  TEMP_TREE_BUDGET_MS,
+);
 
-function bodyFileFor(persistenceId: string): string {
-  return join(dir, persistenceId, 'state.json');
+/**
+ * On-disk path of a durable-state record, and of a snapshot.  Both carry the
+ * namespace segment their store owns (#716) — the two corpora no longer share
+ * a directory even when they share a `prefix`.
+ */
+function bodyFileFor(persistenceId: string, prefix = ''): string {
+  return join(dir, prefix, OBJECT_STORAGE_DURABLE_STATE_NAMESPACE, persistenceId, 'state.json');
 }
 
 function snapshotFileFor(persistenceId: string, seq: number): string {
-  return join(dir, persistenceId, `${String(seq).padStart(SEQ_PADDING, '0')}.json`);
+  return join(
+    dir,
+    OBJECT_STORAGE_SNAPSHOT_NAMESPACE,
+    persistenceId,
+    `${String(seq).padStart(SEQ_PADDING, '0')}.json`,
+  );
 }
 
 const utf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -157,10 +196,7 @@ describe('#612 — cross-persistenceId replay under unencrypted + HMAC', () => {
 
     await staging.upsert('acct', 0, { balance: 999 });
     await production.upsert('acct', 0, { balance: 1 });
-    writeFileSync(
-      join(dir, 'production', 'acct', 'state.json'),
-      readFileSync(join(dir, 'staging', 'acct', 'state.json')),
-    );
+    writeFileSync(bodyFileFor('acct', 'production'), readFileSync(bodyFileFor('acct', 'staging')));
 
     production.forgetEtagForTest('acct');
     const error = await caught(() => production.load('acct'));
@@ -391,8 +427,10 @@ describe('#612 — reEncryptObjectStorage migrates a corpus to bound bodies', ()
     const keyring = { active: { version: 0, key: MASTER_KEY } };
     const encryption = { mode: 'client-aes256-gcm', masterKeys: keyring, info } as const;
 
-    // Write the pre-#612 shape by hand: same key version, no binding.
-    const storageKey = 'p/00000000000000000001.json';
+    // Write the pre-#612 shape by hand: same key version, no binding.  The
+    // key carries the snapshot namespace (#716), and the sweep runs at the
+    // shared prefix, so this also exercises the extractor reading past it.
+    const storageKey = `${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}p/00000000000000000001.json`;
     const { deriveSubkey } = await import('../../../../../src/persistence/object-storage/Encryption.js');
     const subKey = await deriveSubkey(MASTER_KEY, 'p', info);
     const unbound = await encodeBody(
@@ -436,7 +474,7 @@ describe('#612 — reEncryptObjectStorage migrates a corpus to bound bodies', ()
     const encryption = { mode: 'client-aes256-gcm', masterKeys: keyring, info } as const;
     const integrity = { mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY } as const;
 
-    const storageKey = 'q/00000000000000000001.json';
+    const storageKey = `${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}q/00000000000000000001.json`;
     const { deriveSubkey } = await import('../../../../../src/persistence/object-storage/Encryption.js');
     const subKey = await deriveSubkey(MASTER_KEY, 'q', info);
     const unbound = await encodeBody(
@@ -471,7 +509,7 @@ describe('#612 — reEncryptObjectStorage migrates a corpus to bound bodies', ()
     await expect(decodeBody(rewritten, {
       encryption: { subKey },
       integrity: { integrityKey: INTEGRITY_KEY },
-      context: 'q/00000000000000000002.json',
+      context: `${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}q/00000000000000000002.json`,
     })).rejects.toThrow(/integrity check failed/);
 
     // And the store reads it back with both strict settings on.

@@ -92,6 +92,24 @@ export const DEFAULT_ACTOR_THROUGHPUT = 16;
 export const DEFAULT_HYBRID_DISPATCHER_YIELD_UNITS = 64;
 
 /**
+ * The dispatcher kind the system builds when `actor-ts.dispatcher.default`
+ * names none — unset, or set to a word no dispatcher answers to.
+ *
+ * One value for both on purpose: `readDispatcherOptionsFromConfig` answers a
+ * typo exactly as it answers an unset key, so "what runs when nobody chose?"
+ * has a single answer, and it is the one an operator who mistyped a kind meets
+ * too.  `hybrid` because neither obvious scheduler is right on its own; the
+ * measurements are under {@link DEFAULT_HYBRID_DISPATCHER_YIELD_UNITS}.
+ *
+ * Mirrors `actor-ts.dispatcher.default = "hybrid"` in `reference.conf`, which
+ * the configuration page publishes too, so changing one of the three alone
+ * turns a docs guard red.  Not an options default in the `XOptions.ts` sense:
+ * the system is handed a built `Dispatcher`, never a kind, so this is only the
+ * value the HOCON path falls back to.
+ */
+export const DEFAULT_DISPATCHER_KIND = 'hybrid' as const;
+
+/**
  * Default per-phase timeout in the `CoordinatedShutdown` pipeline.
  * A phase that overruns it is abandoned so the next one still gets
  * to run — 5 s balances letting a slow task finish against blocking
@@ -105,12 +123,52 @@ export const DEFAULT_HYBRID_DISPATCHER_YIELD_UNITS = 64;
 export const DEFAULT_PHASE_TIMEOUT_MS = 5_000;
 
 /**
+ * Status the process exits with once the `CoordinatedShutdown` pipeline
+ * finishes and `actor-ts.coordinated-shutdown.exit-process` is on.
+ *
+ * `0` because the pipeline running to the end *is* the success case: the
+ * phases were walked, the tasks were given their budget, and a task that
+ * overran was logged.  A run for a failed startup, a run for a node that
+ * could not join, and a run a phase with `recover = false` halted are not
+ * that case, and exit `1` where this is `0`.  A node that its own downing
+ * decision stands down is that case, and exits with this.
+ *
+ * A non-zero value is the status of every run `exit-process` ends, whatever
+ * its reason, and the failures exit with it instead of `1`, so it no longer
+ * tells a failed run from an orderly stop.  What a value other than `1` does
+ * tell apart is an exit through the pipeline from a crash outside it, which
+ * exits `1` on an uncaught error or reports the signal that killed it.  And a
+ * supervisor that restarts only after a failure reads every stop as one,
+ * which brings back a node its own downing decision stood down.  Those two
+ * are the reasons to set one, and why the value is configurable at all
+ * rather than being the literal it was.
+ *
+ * Not an options default, for the same reason as
+ * {@link DEFAULT_PHASE_TIMEOUT_MS}: `CoordinatedShutdown` has no `XOptions`
+ * type, and its leaves reach the constructor through
+ * `readCoordinatedShutdownOptionsFromConfig`, not through a builder this
+ * could be the default of.
+ */
+export const DEFAULT_SHUTDOWN_EXIT_CODE = 0;
+
+/**
+ * Largest status `actor-ts.coordinated-shutdown.exit-code` may carry.
+ *
+ * A wait status keeps eight bits for the exit code, so `process.exit(256)`
+ * is reported as `0` and `process.exit(-1)` as `255` — a configured failure
+ * that the supervisor reads as a clean stop.  The read rejects anything
+ * outside the range rather than passing on a number the operating system
+ * will quietly rewrite.
+ */
+export const MAX_PROCESS_EXIT_CODE = 255;
+
+/**
  * How long `ActorSystem.terminate()` lets the `/user` subtree finish the work
  * it already has before the stop cascade begins (#663).
  *
  * Deliberately **under** {@link DEFAULT_PHASE_TIMEOUT_MS}, and that is the
  * whole reason it is not 5 s too.  `CoordinatedShutdown`'s last phase is a
- * task that awaits `terminate()`, bounded by the phase timeout; a drain
+ * task that awaits the teardown, bounded by the phase timeout; a drain
  * budget equal to it could burn the entire phase before a single actor had
  * been told to stop, and the phase would then be abandoned with the system
  * still up.  2 s leaves the teardown itself three, and still gives a backlog
@@ -146,6 +204,30 @@ export const QUIESCENCE_POLL_INTERVAL_MS = 1;
 export const QUIESCENCE_POLL_MAX_INTERVAL_MS = 25;
 
 /**
+ * How many macrotask yields `ActorSystem._settle()` spends before giving up.
+ *
+ * A bound rather than a duration, because settling is not a wait: the work is
+ * already armed and only needs the event loop to reach it.
+ *
+ * **Measured, because the obvious guess is wrong.**  One yield looks like it
+ * should settle one hop and no more, so a chain of actors should need a yield
+ * each.  It does not: the default dispatcher spends a microtask budget before
+ * it yields, so a whole ping-pong resolves inside a single macrotask turn.
+ * Every settle in this repository's own suite — a timer's `tell`, a relay
+ * forwarding to a second actor, sixty ticks delivered from one `advance` —
+ * completes with `maxTurns` set to **1**.
+ *
+ * So the ceiling is not sized for depth.  It exists so an exchange that is
+ * never going to become quiet — two actors volleying, a handler that re-sends
+ * to itself every turn — **fails the assertion instead of hanging the runner**,
+ * which is the failure mode a drain with no bound has and which bun's per-test
+ * timeout does not rescue (#1360).  200 is simply far enough above 1 that
+ * reaching it means the system is not settling, not that it needed one more
+ * turn.
+ */
+export const SETTLE_MAX_TURNS = 200;
+
+/**
  * How often the keep-alive timer inside `ActorSystem.runUntilTerminated()`
  * fires while it waits to be signalled.
  *
@@ -167,3 +249,28 @@ export const QUIESCENCE_POLL_MAX_INTERVAL_MS = 25;
  * ceiling and still costs 24 wakeups a day.
  */
 export const EVENT_LOOP_KEEPALIVE_INTERVAL_MS = 3_600_000;
+
+/**
+ * How deeply callback deliveries may nest on one stack before the bus stops
+ * calling callbacks for the nested event (#1433).
+ *
+ * A callback runs inside `publish`, on the publisher's stack, so a callback
+ * that publishes runs the nested `publish` — and every callback that one
+ * reaches — before its own call returns.  A chain of callbacks across channels
+ * nests one level per hop and is legal.  A callback whose publish leads back to
+ * its own channel nests without end, calling itself once per level until the
+ * stack overflows; an actor subscriber cannot do that, because its mailbox
+ * takes the delivery off the stack.  Once a cascade reaches this depth, nothing
+ * it publishes from then on reaches a callback; the observer and every actor
+ * subscriber, which add no depth, still receive it, and the bus says so once
+ * per cut cascade, at warn.
+ *
+ * Sixteen is far past any chain of channels a design builds on purpose.
+ * Reaching it cuts the cascade it is reached in, so a loop through one
+ * callback stops after sixteen calls, and every other callback the loop's
+ * events reach adds at most one call per level of it — long before the stack
+ * is at risk.  A publish starts one cascade for each callback that wants it,
+ * each cut on its own: k callbacks that each publish back onto the channel
+ * they share cost one publish k * (16 + 15 * (k - 1)) calls and k warnings.
+ */
+export const MAX_EVENT_STREAM_CALLBACK_DEPTH = 16;

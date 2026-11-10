@@ -1,7 +1,7 @@
 name: integration-brokers
 
 # Live broker integration suites — Phase B from the test-coverage
-# audit.  Each suite brings up a real broker in Docker (MinIO,
+# audit.  Each suite brings up a real broker in Docker (Silo,
 # Mosquitto, Redpanda, RabbitMQ, NATS, Redis, gRPC echo, k3s) and
 # runs scenarios against the live socket.  Matrix-parallel so wall
 # clock ≈ wall clock of the slowest suite (Kafka, ~30s), not the
@@ -42,8 +42,12 @@ on:
       - '.github/workflows/integration-brokers.yml'
   workflow_dispatch:
   schedule:
-    # Nightly run catches upstream-image regressions (each suite
-    # tracks `:latest` for its broker — that's the whole point).
+    # Nightly run.  Every broker image is pinned now and Dependabot moves
+    # the pins as PRs that run this matrix (#1597), so an upstream image
+    # regression arrives attributed to a bump rather than here.  What the
+    # night still catches is the part that floats by design — the runner
+    # images install the brokers manifest unfrozen, so a driver patch
+    # inside a declared range lands underneath a run — plus any flake.
     # 03:30 UTC, half-hour offset from integration.yml's 03:00.
     - cron: '30 3 * * *'
 
@@ -77,7 +81,7 @@ jobs:
         # added without a leg here is a red test rather than a suite that
         # silently never runs.
         broker:
-          - { dir: s3,            image: "MinIO" }
+          - { dir: s3,            image: "Silo" }
           - { dir: mqtt,          image: "Mosquitto" }
           - { dir: kafka,         image: "Redpanda" }
           - { dir: amqp,          image: "RabbitMQ" }
@@ -120,7 +124,16 @@ jobs:
         # The driver passes `--exit-code-from runner`, which propagates
         # the runner's exit status from inside the container, so a
         # failing scenario turns this step red.
-        run: bun run test:integration:broker ${{ matrix.broker.dir }}
+        #
+        # The matrix value reaches the script through `env:` rather than being
+        # interpolated into it.  It was never an exposure — the matrix is a
+        # literal in this file — but an expression inside a `run:` body is
+        # substituted before bash parses it, so the safe cases and the unsafe
+        # ones are written identically, and only one of them is checkable.
+        # `tests/unit/ci/WorkflowHygiene.test.ts` therefore forbids all of them.
+        env:
+          BROKER_DIRECTORY: ${{ matrix.broker.dir }}
+        run: bun run test:integration:broker "$BROKER_DIRECTORY"
 
       - name: Capture container logs on failure
         if: failure()
@@ -129,8 +142,12 @@ jobs:
         # locally and pray for repro.  JSON-formatted by JsonLogger where
         # applicable.  Through the driver so the compose path is built in
         # exactly one place.
-        run: bun scripts/integration-compose.mjs ${{ matrix.broker.dir }} --logs || true
+        env:
+          BROKER_DIRECTORY: ${{ matrix.broker.dir }}
+        run: bun scripts/integration-compose.mjs "$BROKER_DIRECTORY" --logs || true
 
       - name: Tear down
         if: always()
-        run: bun run test:integration:broker:teardown ${{ matrix.broker.dir }}
+        env:
+          BROKER_DIRECTORY: ${{ matrix.broker.dir }}
+        run: bun run test:integration:broker:teardown "$BROKER_DIRECTORY"

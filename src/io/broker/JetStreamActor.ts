@@ -1,17 +1,20 @@
 import { match } from 'ts-pattern';
+import { ConfigError } from '../../config/Config.js';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
+import { safeStringify } from '../../util/SafeStringify.js';
+import { JETSTREAM_FETCH_DEFAULT_EXPIRES_MS, JETSTREAM_FETCH_MINIMUM_EXPIRES_MS } from '../Constants.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import { toBrokerDriverTls } from './BrokerTls.js';
 import type { BrokerDriverTlsOptions } from './BrokerTls.js';
-import { JetStreamOptionsValidator } from './JetStreamOptions.js';
+import { JetStreamOptionsValidator, RETIRED_DELIVER_POLICY_KINDS } from './JetStreamOptions.js';
 import type { JetStreamOptions, JetStreamOptionsType } from './JetStreamOptions.js';
 
 /**
  * JetStream durable-streaming actor (#3).  Sister to {@link NatsActor}
- * — same `nats` peer-dep, same broker scaffold, but the consumer
+ * — same NATS connection, same broker scaffold, but the consumer
  * binds a **push consumer** to a durable JetStream subscription so
  * recovery, replay, and explicit acks all work.  Where NatsActor is
  * fire-and-forget pub/sub, JetStreamActor is durable streaming with
@@ -57,9 +60,9 @@ import type { JetStreamOptions, JetStreamOptionsType } from './JetStreamOptions.
  *     async onReceive(message: JetStreamMessage) {
  *       try {
  *         await db.insertOrder(JSON.parse(new TextDecoder().decode(message.payload)));
- *         this.js.tell({ kind: 'acknowledgment', streamSeq: message.streamSeq });
+ *         this.js.tell({ kind: 'acknowledgment', ackToken: message.ackToken });
  *       } catch (e) {
- *         this.js.tell({ kind: 'negativeAcknowledgment', streamSeq: message.streamSeq, delayMs: 5_000 });
+ *         this.js.tell({ kind: 'negativeAcknowledgment', ackToken: message.ackToken, delayMs: 5_000 });
  *       }
  *     }
  *   }
@@ -72,11 +75,35 @@ export type JetStreamMessage = {
   /** Reply subject (for request/reply patterns); empty when not set. */
   readonly replyTo: string;
   /** Stream sequence — unique within the stream, monotonic per stream. */
-  readonly streamSeq: number;
+  readonly streamSequence: number;
   /** Consumer delivery sequence — bumps on every (re-)delivery. */
-  readonly consumerSeq: number;
+  readonly consumerSequence: number;
   /** Number of times this message has been delivered (1 = first try). */
   readonly deliveries: number;
+  /**
+   * Acknowledgment token — forward it as
+   * `{ kind: 'acknowledgment', ackToken }` (or `negativeAcknowledgment` /
+   * `terminate` / `inProgress`) to settle **this** delivery.
+   *
+   * Opaque and actor-local, the same shape `AmqpDelivery.ackToken` uses: it
+   * names one *delivery*, where `streamSequence` names a *message*.
+   * JetStream reuses `streamSequence` verbatim on every redelivery and bumps
+   * only `consumerSequence` / `deliveries`, so two in-flight deliveries of one
+   * message — which pull mode reaches routinely, since fetch batches overlap —
+   * are indistinguishable by `streamSequence` and the second would evict the
+   * first from the pending-ack map (#710).  Never send it back to the broker;
+   * it means nothing outside this actor instance and does not survive a
+   * reconnect.
+   *
+   * **Inert under `ackPolicy: 'none'`.**  The token is still minted and
+   * shipped in that mode, because the field is not optional and the delivery
+   * is otherwise identical — but nothing is registered against it, so it
+   * names no delivery and every settle command carrying it is ignored.  The
+   * drop is reported at `debug` there rather than at `warn`, since in that
+   * mode it is the documented behaviour and not a lost acknowledgment
+   * (#1510).
+   */
+  readonly ackToken: number;
   /** Server-assigned timestamp in ms since epoch. */
   readonly timestamp: number;
   /** Optional per-message headers (e.g. `Nats-Msg-Id`). */
@@ -96,7 +123,7 @@ export type JetStreamPublish = {
    * Optional expected last sequence — server rejects the publish if
    * the stream's last seq doesn't match (optimistic concurrency).
    */
-  readonly expectedLastSeq?: number;
+  readonly expectedLastSequence?: number;
   /** Extra headers (free-form). */
   readonly headers?: Readonly<Record<string, string>>;
 };
@@ -114,6 +141,12 @@ export type JetStreamStreamConfig = {
   readonly create?: boolean;
 };
 
+/** Start a new consumer at one stream sequence. */
+type ByStartSequenceDeliverPolicy = { readonly kind: 'by-start-sequence'; readonly startSeq: number };
+
+/** Start a new consumer at the first message stored at or after an instant, in epoch milliseconds. */
+type ByStartTimeDeliverPolicy = { readonly kind: 'by-start-time'; readonly startTimeMs: number };
+
 /** Push or pull consumer config (#62). */
 export type JetStreamConsumerConfig = {
   /** Durable name — required so the consumer survives restarts. */
@@ -128,11 +161,14 @@ export type JetStreamConsumerConfig = {
    * which fits slow/bursty consumers better than push fan-out.
    */
   readonly mode?: 'push' | 'pull';
-  /** Where in the stream to start the new consumer.  Default `'all'`. */
-  readonly deliverPolicy?:
-    | 'all' | 'last' | 'new'
-    | { readonly kind: 'byStartSeq'; readonly startSeq: number }
-    | { readonly kind: 'byStartTime'; readonly startTimeMs: number };
+  /**
+   * Where in the stream to start the new consumer.  Default `'all'`.
+   *
+   * The object kinds spell their words out, as nats.js's own
+   * `by_start_sequence` does; `startSeq` stays short because it mirrors the
+   * driver's `opt_start_seq`, the name its value is handed on as.
+   */
+  readonly deliverPolicy?: 'all' | 'last' | 'new' | ByStartSequenceDeliverPolicy | ByStartTimeDeliverPolicy;
   /** `'explicit'` (default — ack/nak/term required), `'none'`, or `'all'`. */
   readonly ackPolicy?: 'explicit' | 'none' | 'all';
   /** Max time before the consumer redelivers without an ack.  Default 30s. */
@@ -148,17 +184,23 @@ export type JetStreamConsumerConfig = {
 /** Publish a message via the actor's JetStream client. */
 type PublishCommand = { readonly kind: 'publish'; readonly publish: JetStreamPublish };
 
+/*
+ * The four settle commands are keyed by `ackToken` — the delivery-scoped
+ * token carried on the `JetStreamMessage` they answer — and never by
+ * `streamSequence`.  See {@link JetStreamMessage.ackToken} for why (#710).
+ */
+
 /** Acknowledge a delivered message — server marks consumed. */
-type AcknowledgmentCommand = { readonly kind: 'acknowledgment'; readonly streamSeq: number };
+type AcknowledgmentCommand = { readonly kind: 'acknowledgment'; readonly ackToken: number };
 
 /** Negative-ack — server redelivers (after optional `delayMs`). */
-type NegativeAcknowledgmentCommand = { readonly kind: 'negativeAcknowledgment'; readonly streamSeq: number; readonly delayMs?: number };
+type NegativeAcknowledgmentCommand = { readonly kind: 'negativeAcknowledgment'; readonly ackToken: number; readonly delayMs?: number };
 
 /** Terminal failure — server drops the message permanently. */
-type TerminateCommand = { readonly kind: 'terminate'; readonly streamSeq: number; readonly reason?: string };
+type TerminateCommand = { readonly kind: 'terminate'; readonly ackToken: number; readonly reason?: string };
 
 /** Heartbeat — extend the ack-wait window for a long-running handler. */
-type InProgressCommand = { readonly kind: 'inProgress'; readonly streamSeq: number };
+type InProgressCommand = { readonly kind: 'inProgress'; readonly ackToken: number };
 
 /**
  * Pull-mode (#62) — fetch up to `batch` messages, returning early
@@ -177,44 +219,80 @@ export type JetStreamCommand =
   | InProgressCommand
   | FetchCommand;
 
+/**
+ * The four commands that settle one delivery, by the `kind` they carry.
+ *
+ * It is the `kind` rather than a prose verb because the log line built from
+ * it is read next to the call site that sent the command: an operator
+ * correlating a drop against their own `tell` wants the word they wrote.
+ */
+type SettleCommandKind =
+  | AcknowledgmentCommand['kind']
+  | NegativeAcknowledgmentCommand['kind']
+  | TerminateCommand['kind']
+  | InProgressCommand['kind'];
+
 export class JetStreamActor extends BrokerActor<
   JetStreamOptionsType, JetStreamCommand, JetStreamPublish
 > {
   private nc: NatsConnectionLike | null = null;
   private js: JetStreamClientLike | null = null;
-  private subscription: JetStreamSubscriptionLike | null = null;
+  private subscription: JetStreamMessageStreamLike | null = null;
   /** Pull-consumer handle (#62).  Non-null when consumer.mode === 'pull'. */
   private pullConsumer: PullConsumerLike | null = null;
-  /** Map of streamSeq → in-flight ack handle for the manual-ack pump. */
+  /**
+   * Map of `ackToken` → in-flight ack handle for the manual-ack pump.
+   *
+   * Keyed on the **delivery**, not on the message: `streamSequence` is reused
+   * verbatim on every redelivery, and this map is shared by every delivery
+   * path, so keying it on `streamSequence` made two in-flight deliveries of one
+   * message collide — the later `set` evicted the earlier entry, whose
+   * ack-timeout then deleted the *live* one and dropped its acknowledgment
+   * (#710).  Push mode reaches that only across a reconnect; pull mode
+   * reaches it in steady state, because fetch batches overlap by design (see
+   * {@link onFetch}).
+   */
   private readonly pending = new Map<number, PendingAcknowledgment>();
+  /**
+   * Source of {@link JetStreamMessage.ackToken}.  Monotonic per actor
+   * instance and never reset — a token minted before a reconnect must not
+   * collide with one minted after it, or a settle command that raced the
+   * disconnect would land on an unrelated delivery.
+   */
+  private nextAcknowledgmentToken = 1;
 
   constructor(options: JetStreamOptions = {}) { super(options); }
 
-  protected configKey(): string { return ConfigKeys.io.broker.jetstream; }
+  protected configKey(): string { return ConfigKeys.io.broker.jetstream.root; }
   protected builtInDefaultOptions(): Partial<JetStreamOptionsType> { return {}; }
   protected readOptionsFromConfig(config: Config): Partial<JetStreamOptionsType> {
-    const out: { -readonly [K in keyof JetStreamOptionsType]?: JetStreamOptionsType[K] } = {};
-    if (config.hasPath('servers')) out.servers = config.getStringList('servers');
-    if (config.hasPath('token')) out.token = config.getString('token');
-    if (config.hasPath('user')) out.user = config.getString('user');
-    if (config.hasPath('password')) out.password = config.getString('password');
-    if (config.hasPath('name')) out.name = config.getString('name');
-    return out;
+    return readJetStreamOptionsFromConfig(config);
   }
   protected requiredOptions(): ReadonlyArray<keyof JetStreamOptionsType> { return ['servers']; }
   protected override optionsValidator(): JetStreamOptionsValidator { return new JetStreamOptionsValidator(); }
   protected endpointLabel(): string {
     const servers = this.options.servers;
-    if (Array.isArray(servers)) return `nats://${servers.join(',')}`;
-    return `nats://${typeof servers === 'string' ? servers : ''}`;
+    if (Array.isArray(servers)) return servers.join(',');
+    return typeof servers === 'string' ? servers : '';
   }
 
-  /** @internal Test seam — override to inject a fake `nats` module. */
+  /** @internal Test seam — override to inject a fake transport module. */
   protected natsModule(): Promise<NatsModuleLike> { return natsLazy.get(); }
 
   /**
+   * @internal Test seam — override to inject a fake JetStream module.
+   *
+   * Separate from {@link natsModule} because nats.js v3 split the package:
+   * `connect()` lives in the transport, `jetstream()` and
+   * `jetstreamManager()` are free functions in `@nats-io/jetstream` that take
+   * the connection.  A fake connection therefore no longer carries the
+   * JetStream entry points, and a test that wants them has to say so here.
+   */
+  protected jetStreamModule(): Promise<JetStreamModuleLike> { return jetStreamLazy.get(); }
+
+  /**
    * Build a `NatsConnectionLike`.  Override in a test subclass to
-   * inject a mock connection (the `nats` peer-dep is heavy and not
+   * inject a mock connection (the transport peer-dep is heavy and not
    * necessary for unit tests).
    *
    * Overriding this replaces the connect options, TLS included — override
@@ -237,35 +315,44 @@ export class JetStreamActor extends BrokerActor<
 
   protected async connectImplementation(): Promise<void> {
     this.nc = await this.createNatsConnection();
-    this.js = this.nc.jetstream();
+    const jetStream = await this.jetStreamModule();
+    this.js = jetStream.jetstream(this.nc);
 
     // Stream lifecycle: create-or-update if asked.
     if (this.options.stream && (this.options.stream.create ?? true)) {
-      const jsm = await this.nc.jetstreamManager();
+      const jsm = await jetStream.jetstreamManager(this.nc);
       await upsertStream(jsm, this.options.stream);
     }
 
     // Consumer + subscription (push) or pull handle.
     if (this.options.consumer) {
+      const mode = this.options.consumer.mode ?? 'push';
       if (this.options.consumer.create ?? true) {
         if (!this.options.stream?.name) {
           throw new Error('JetStreamActor: consumer.create requires stream.name');
         }
-        const jsm = await this.nc.jetstreamManager();
-        await upsertConsumer(jsm, this.options.stream.name, this.options.consumer);
+        const jsm = await jetStream.jetstreamManager(this.nc);
+        await upsertConsumer(
+          jsm,
+          this.options.stream.name,
+          this.options.consumer,
+          mode === 'push' ? pushDeliverSubject(this.options.stream.name, this.options.consumer.durable) : undefined,
+        );
       }
       if (!this.options.stream?.name) {
         throw new Error('JetStreamActor: consumer requires stream.name');
       }
-      const mode = this.options.consumer.mode ?? 'push';
       if (mode === 'push') {
-        this.subscription = await this.js.subscribe(
-          this.options.consumer.filterSubject ?? `${this.options.stream.name}.>`,
-          {
-            stream: this.options.stream.name,
-            consumer: this.options.consumer.durable,
-          },
+        // A push consumer is one the *server* delivers to, which it only
+        // does when the consumer carries a `deliver_subject`.  v3 enforces
+        // that split at the accessor: `consumers.get` refuses a push
+        // consumer and `getPushConsumer` refuses a pull one, so the mode
+        // chosen here and the config written above have to agree.
+        const pushConsumer = await this.js.consumers.getPushConsumer(
+          this.options.stream.name,
+          this.options.consumer.durable,
         );
+        this.subscription = await pushConsumer.consume();
         void this.runPump();
       } else {
         // Pull mode (#62) — grab the consumer handle but DON'T start
@@ -283,15 +370,44 @@ export class JetStreamActor extends BrokerActor<
   }
 
   protected async disconnectImplementation(): Promise<void> {
-    // Reject every still-pending ack so the consumer pump unwinds.
+    // *Settle* every still-pending ack, rather than naking the handle and
+    // clearing the map.  Clearing alone dropped the entry but left its
+    // ack-timeout armed and its promise pending: the timer then fired long
+    // after the reconnect had installed fresh entries, and its delete —
+    // unconditional, and keyed on `streamSequence` before #710 — evicted the live
+    // entry for the very message the server had just redelivered.  Every
+    // reconnect that completed inside `ackTimeoutMs` reached that, push mode
+    // included.  `fail` clears the timer and rejects the awaiting
+    // `deliverAndAwaitAcknowledgment`, whose catch does the same best-effort
+    // `handle.nak()` this used to do inline — so the wire behaviour is
+    // unchanged and the orphan is gone (#710).
     if (this.pending.size > 0) {
-      for (const pendingAck of this.pending.values()) {
-        try { pendingAck.handle.nak(); } catch { /* best-effort */ }
-      }
+      // Snapshot and clear first: `fail` rejects synchronously and the
+      // rejection handler runs off this loop, so iterating the live map
+      // while it settles would be iterating a map that is being mutated.
+      const inFlight = [...this.pending.values()];
       this.pending.clear();
+      // One line per disconnect, not one per delivery.  Every entry reaches
+      // the shared catch in `deliverAndAwaitAcknowledgment` separately, and a
+      // push consumer with `maxAcknowledgmentPending` in the hundreds turns a
+      // flapping connection into hundreds of warn lines per flap.  The count
+      // is what an operator acts on; the individual sequences are detail, and
+      // `PendingSettleFailure` is what routes them to `debug` (#1510).
+      this.log.warn(
+        `JetStreamActor: connection lost with ${inFlight.length} `
+        + `${inFlight.length === 1 ? 'delivery' : 'deliveries'} in flight `
+        + `— letting the consumer redeliver`,
+      );
+      for (const pendingAck of inFlight) {
+        pendingAck.fail(new PendingSettleFailure(
+          'connectionLost',
+          `connection lost before ack/nak/term for `
+          + `streamSequence=${pendingAck.streamSequence} (ackToken=${pendingAck.ackToken})`,
+        ));
+      }
     }
     if (this.subscription) {
-      try { await this.subscription.destroy(); } catch { /* */ }
+      try { this.subscription.stop(); } catch { /* */ }
       this.subscription = null;
     }
     // Pull consumer doesn't own a long-lived subscription — drop the
@@ -312,8 +428,8 @@ export class JetStreamActor extends BrokerActor<
       : publish.payload;
     await this.js.publish(publish.subject, bytes, {
       msgID: publish.messageId,
-      expect: publish.expectedLastSeq !== undefined
-        ? { lastSequence: publish.expectedLastSeq }
+      expect: publish.expectedLastSequence !== undefined
+        ? { lastSequence: publish.expectedLastSequence }
         : undefined,
       headers: publish.headers,
     });
@@ -349,9 +465,18 @@ export class JetStreamActor extends BrokerActor<
    * Pull-mode fetch (#62) — request up to `batch` messages, fan them
    * to `target`, and wait per-message for ack/nak/term using the same
    * `deliverAndAwaitAcknowledgment` helper as the push pump.  Returns once every
-   * message in the batch has been acked or its ack-timeout has
-   * fired; subsequent `fetch` cmds are processed serially by the
-   * mailbox.
+   * message in the batch has been acked or its ack-timeout has fired.
+   *
+   * **Fetches overlap, and must.**  The `fetch` arm of {@link onCommand}
+   * dispatches this with `void`, so the mailbox turn ends immediately and a
+   * second `fetch` runs while the first batch's acks are still outstanding.
+   * That is not an oversight to be tightened up later: the acks this call
+   * waits for arrive *as mailbox messages*, so a `fetch` arm that returned
+   * the promise would hold the turn open on a handshake only a later turn
+   * can complete — a deadlock, not a serialisation.  Overlapping batches are
+   * therefore a supported steady state, and they are what makes two
+   * deliveries of one `streamSequence` concurrent; the pending map is keyed per
+   * delivery so that stays harmless (#710).
    */
   private async onFetch(command: FetchCommand): Promise<void> {
     const { batch, expiresMs } = command;
@@ -367,7 +492,12 @@ export class JetStreamActor extends BrokerActor<
     try {
       messages = await this.pullConsumer.fetch({
         max_messages: batch,
-        expires: expiresMs ?? 5_000,
+        // nats.js rejects anything under a second client-side, before the
+        // request reaches the server ("'expires' must be at least 1000ms"),
+        // so a caller asking for less would get a thrown fetch rather than a
+        // short one.  Clamp instead: a fetch is a batching hint, and the
+        // caller's intent — "do not wait long" — is served by the floor.
+        expires: Math.max(expiresMs ?? JETSTREAM_FETCH_DEFAULT_EXPIRES_MS, JETSTREAM_FETCH_MINIMUM_EXPIRES_MS),
       });
     } catch (err) {
       this.log.warn(`JetStreamActor: fetch failed: ${(err as Error).message}`);
@@ -398,14 +528,20 @@ export class JetStreamActor extends BrokerActor<
       ?? 30_000;
     const handle: JetStreamMessageHandleLike = messageHandle;
     const info = handle.info;
+    // Minted per delivery, before the tell: the token the application sends
+    // back is the only thing that distinguishes this delivery from the next
+    // redelivery of the same message.
+    const ackToken = this.nextAcknowledgmentToken++;
+    const streamSequence = info.streamSequence;
     if (target) {
       target.tell({
         subject: handle.subject,
         payload: handle.data,
         replyTo: handle.reply ?? '',
-        streamSeq: info.streamSequence,
-        consumerSeq: info.deliverySequence,
+        streamSequence,
+        consumerSequence: info.deliverySequence,
         deliveries: info.deliveryCount,
+        ackToken,
         timestamp: info.timestampNanos !== undefined
           ? Math.floor(info.timestampNanos / 1_000_000)
           : Date.now(),
@@ -413,48 +549,123 @@ export class JetStreamActor extends BrokerActor<
       });
     }
 
+    // No pending entry in this mode — the token above was minted and shipped
+    // anyway, and {@link findPendingAcknowledgment} is where that is accounted
+    // for: a settle command naming it is ignored at `debug` rather than at
+    // `warn`, because here the miss is the mode rather than a lost ack.
     if (this.options.consumer?.ackPolicy === 'none') return;
 
-    const seq = info.streamSequence;
     try {
       await new Promise<void>((resolve, reject) => {
+        let entry: PendingAcknowledgment | undefined;
         const timer = setTimeout(() => {
-          this.pending.delete(seq);
-          reject(new Error(`JetStreamActor: no ack/nak/term for streamSeq=${seq} within ${ackTimeoutMs}ms`));
+          // Identity-checked, not a bare `delete(ackToken)`.  A per-delivery
+          // key already makes a collision impossible, so today this can only
+          // ever be true — but the delete is the one unconditional mutation
+          // on a path that runs long after its own entry may have been
+          // settled and replaced, and an unconditional one is exactly how
+          // #710 turned a superseded entry into an evictor of the live one.
+          // Cheap, and it keeps this correct under any future re-keying.
+          if (this.pending.get(ackToken) === entry) this.pending.delete(ackToken);
+          reject(new PendingSettleFailure(
+            'acknowledgmentTimeout',
+            `no ack/nak/term for streamSequence=${streamSequence} `
+            + `(ackToken=${ackToken}) within ${ackTimeoutMs}ms`,
+          ));
         }, ackTimeoutMs);
-        this.pending.set(seq, {
-          streamSeq: seq,
+        entry = {
+          ackToken,
+          streamSequence,
           handle,
           done: () => { clearTimeout(timer); resolve(); },
           fail: (err) => { clearTimeout(timer); reject(err); },
-        });
+        };
+        this.pending.set(ackToken, entry);
       });
     } catch (err) {
-      this.log.warn(`JetStreamActor: pump ${(err as Error).message} — letting consumer redeliver`);
+      // One prefix, not two.  Both messages above used to carry
+      // `JetStreamActor: ` themselves, so every line this wrote read
+      // `JetStreamActor: pump JetStreamActor: …` — inherited from the
+      // ack-timeout message and then copied by the connection-lost one
+      // (#1510).  The prefix belongs to the site that logs, not to the site
+      // that builds the reason.
+      const line = `JetStreamActor: pump ${(err as Error).message} — letting consumer redeliver`;
+      // The level is read off the failure's tag, never off its text: a
+      // connection loss is already summarised by the one aggregate line
+      // `disconnectImplementation` wrote, and this is the detail behind it.
+      // An ack-timeout names one handler that did not answer and stays WARN.
+      if (err instanceof PendingSettleFailure && err.failureKind === 'connectionLost') {
+        this.log.debug(line);
+      } else {
+        this.log.warn(line);
+      }
       try { handle.nak(); } catch { /* best-effort */ }
     }
   }
 
-  private onAcknowledgment(command: AcknowledgmentCommand): void {
-    const { streamSeq } = command;
-    const pendingAck = this.pending.get(streamSeq);
-    if (!pendingAck) {
-      this.log.debug(`JetStreamActor: ack for unknown streamSeq=${streamSeq} — ignored`);
-      return;
+  /**
+   * The pending entry a settle command names, or `undefined` with the miss
+   * already reported — the one door all four settle handlers go through.
+   *
+   * `warn`, not `debug`: a miss means a settle command for a delivery that is
+   * genuinely no longer in flight, so the message will be redelivered and
+   * reprocessed — an at-least-once contract the operator wants to see.  At
+   * `debug` (below the `LogLevel.Info` default) the drop was invisible in
+   * every default deployment, which is what let #710 run silently.
+   *
+   * Only `onAcknowledgment` had that line; the other three were a bare
+   * `if (!pendingAck) return;` and dropped the command with no signal at any
+   * level.  The characteristic bug of the #710 migration is a caller who
+   * converts three of its four settle call sites to the delivery-scoped token
+   * and misses one, and three of the four gave that caller nothing — worst of
+   * them a dropped `terminate`, where the caller asked for a permanent drop
+   * and instead gets the ack-timeout's `nak()` and endless redelivery, which
+   * is the silent-reprocessing outcome #710 was filed about, reached through
+   * a door the fix left open (#1510).
+   *
+   * Under `ackPolicy: 'none'` the miss is the *normal* case rather than a
+   * symptom, so it goes to `debug` there: nothing is ever registered in that
+   * mode (see {@link deliverAndAwaitAcknowledgment}), so a consumer that
+   * settles defensively would take the warn once per message at full delivery
+   * rate — carrying an explanation that is false in that mode, since no
+   * delivery timed out, was settled, or predates anything.
+   */
+  private findPendingAcknowledgment(
+    settleKind: SettleCommandKind, ackToken: number,
+  ): PendingAcknowledgment | undefined {
+    const pendingAck = this.pending.get(ackToken);
+    if (pendingAck) return pendingAck;
+    if (this.options.consumer?.ackPolicy === 'none') {
+      this.log.debug(
+        `JetStreamActor: ackPolicy none: ${settleKind} for ackToken=${ackToken} — ignored; `
+        + `the token is minted per delivery but names nothing in this mode`,
+      );
+      return undefined;
     }
+    this.log.warn(
+      `JetStreamActor: ${settleKind} for unknown ackToken=${ackToken} — ignored; `
+      + `the delivery it names already timed out, was settled, or predates a reconnect`,
+    );
+    return undefined;
+  }
+
+  private onAcknowledgment(command: AcknowledgmentCommand): void {
+    const { ackToken } = command;
+    const pendingAck = this.findPendingAcknowledgment(command.kind, ackToken);
+    if (!pendingAck) return;
     try { pendingAck.handle.ack(); }
     catch (err) {
       pendingAck.fail(err instanceof Error ? err : new Error(String(err)));
-      this.pending.delete(streamSeq);
+      this.pending.delete(ackToken);
       return;
     }
     pendingAck.done();
-    this.pending.delete(streamSeq);
+    this.pending.delete(ackToken);
   }
 
   private onNegativeAcknowledgment(command: NegativeAcknowledgmentCommand): void {
-    const { streamSeq, delayMs } = command;
-    const pendingAck = this.pending.get(streamSeq);
+    const { ackToken, delayMs } = command;
+    const pendingAck = this.findPendingAcknowledgment(command.kind, ackToken);
     if (!pendingAck) return;
     try {
       if (typeof delayMs === 'number' && delayMs > 0) {
@@ -464,38 +675,245 @@ export class JetStreamActor extends BrokerActor<
       }
     } catch { /* best-effort — nakWithDelay may be missing on older clients */ }
     pendingAck.done();
-    this.pending.delete(streamSeq);
+    this.pending.delete(ackToken);
   }
 
   private onTerminate(command: TerminateCommand): void {
-    const { streamSeq, reason } = command;
-    const pendingAck = this.pending.get(streamSeq);
+    const { ackToken, reason } = command;
+    const pendingAck = this.findPendingAcknowledgment(command.kind, ackToken);
     if (!pendingAck) return;
     this.log.warn(
-      `JetStreamActor: term for streamSeq=${streamSeq}${reason ? ` (${reason})` : ''} — `
-      + `message dropped permanently`,
+      `JetStreamActor: term for streamSequence=${pendingAck.streamSequence}`
+      + `${reason ? ` (${reason})` : ''} — message dropped permanently`,
     );
     try { pendingAck.handle.term(); } catch { /* */ }
     pendingAck.done();
-    this.pending.delete(streamSeq);
+    this.pending.delete(ackToken);
   }
 
   private onInProgress(command: InProgressCommand): void {
-    const { streamSeq } = command;
-    const pendingAck = this.pending.get(streamSeq);
+    const { ackToken } = command;
+    const pendingAck = this.findPendingAcknowledgment(command.kind, ackToken);
     if (!pendingAck) return;
     try { pendingAck.handle.working(); } catch { /* */ }
   }
 }
 
+/* ---------------------------- HOCON readers ----------------------------- */
+
+/**
+ * Read the `actor-ts.io.broker.jetstream` block off the system config, at the
+ * full paths `keys` holds; the reconnect / breaker / buffer leaves are
+ * `BrokerActor`'s.  An unset leaf is omitted.  Every leaf here was kebab-case
+ * or a single word before #1443, so the block has no retired spelling of its
+ * own.  `target` names an actor and `tls` is certificate material, so neither
+ * has a leaf.
+ */
+export function readJetStreamOptionsFromConfig(
+  config: Config,
+  keys: typeof ConfigKeys.io.broker.jetstream = ConfigKeys.io.broker.jetstream,
+): Partial<JetStreamOptionsType> {
+  const out: { -readonly [K in keyof JetStreamOptionsType]?: JetStreamOptionsType[K] } = {};
+  if (config.hasPath(keys.servers)) out.servers = config.getStringList(keys.servers);
+  if (config.hasPath(keys.token)) out.token = config.getString(keys.token);
+  if (config.hasPath(keys.user)) out.user = config.getString(keys.user);
+  if (config.hasPath(keys.password)) out.password = config.getString(keys.password);
+  if (config.hasPath(keys.name)) out.name = config.getString(keys.name);
+  if (config.hasPath(keys.stream.root)) out.stream = readStreamFromConfig(config, keys.stream);
+  if (config.hasPath(keys.consumer.root)) out.consumer = readConsumerFromConfig(config, keys.consumer);
+  if (config.hasPath(keys.acknowledgmentTimeout)) {
+    out.acknowledgmentTimeout = config.getDuration(keys.acknowledgmentTimeout);
+  }
+  return out;
+}
+
+/**
+ * Read a `stream { … }` block.
+ *
+ * Free functions rather than inline blocks in the reader, for the reason
+ * {@link readFramingFromConfig} is one: what comes back is a whole nested
+ * value, not a leaf, and `mergeOptions` is a shallow spread — so this
+ * *reconstructs* the object rather than layering onto whatever sits below.
+ * `name` and `subjects` are required by {@link JetStreamStreamConfig}, so an
+ * absent one becomes the empty value here and {@link JetStreamOptionsValidator}
+ * rejects it at start, naming the leaf.  That is the failure an operator can
+ * act on; passing an unnamed stream to `jsm.streams.add` is not.  Every other
+ * unset leaf is omitted.
+ *
+ * `max-age` is read with `getInt`, not `getDuration`: the field is
+ * **nanoseconds**, passed through to nats.js verbatim, and a duration string
+ * would be parsed as milliseconds and silently mean a million times less.  And
+ * not `getNumber`, which takes `7.5`: a fraction of a nanosecond is no span a
+ * stream can have, and passed through it would surface at connect, from the
+ * server, if at all — rather than at the start, on the key.
+ */
+function readStreamFromConfig(
+  config: Config,
+  streamKeys: typeof ConfigKeys.io.broker.jetstream.stream,
+): JetStreamStreamConfig {
+  const stream: { -readonly [K in keyof JetStreamStreamConfig]: JetStreamStreamConfig[K] } = {
+    name: config.hasPath(streamKeys.name) ? config.getString(streamKeys.name) : '',
+    subjects: config.hasPath(streamKeys.subjects) ? config.getStringList(streamKeys.subjects) : [],
+  };
+  if (config.hasPath(streamKeys.retention)) {
+    stream.retention = config.getString(streamKeys.retention) as JetStreamStreamConfig['retention'];
+  }
+  if (config.hasPath(streamKeys.storage)) {
+    stream.storage = config.getString(streamKeys.storage) as JetStreamStreamConfig['storage'];
+  }
+  if (config.hasPath(streamKeys.maxMessages)) stream.maxMessages = config.getInt(streamKeys.maxMessages);
+  if (config.hasPath(streamKeys.maxBytes)) stream.maxBytes = config.getBytes(streamKeys.maxBytes);
+  if (config.hasPath(streamKeys.maxAge)) stream.maxAge = config.getInt(streamKeys.maxAge);
+  if (config.hasPath(streamKeys.create)) stream.create = config.getBoolean(streamKeys.create);
+  return stream;
+}
+
+/**
+ * Read a `consumer { … }` block.  Same reconstruct-the-whole-object contract
+ * as {@link readStreamFromConfig}; `durable` is the required leaf the
+ * validator checks.
+ */
+function readConsumerFromConfig(
+  config: Config,
+  consumerKeys: typeof ConfigKeys.io.broker.jetstream.consumer,
+): JetStreamConsumerConfig {
+  const consumer: { -readonly [K in keyof JetStreamConsumerConfig]: JetStreamConsumerConfig[K] } = {
+    durable: config.hasPath(consumerKeys.durable) ? config.getString(consumerKeys.durable) : '',
+  };
+  if (config.hasPath(consumerKeys.mode)) {
+    consumer.mode = config.getString(consumerKeys.mode) as JetStreamConsumerConfig['mode'];
+  }
+  const deliverPolicy = readDeliverPolicyFromConfig(config, consumerKeys.deliverPolicy);
+  if (deliverPolicy !== undefined) consumer.deliverPolicy = deliverPolicy;
+  if (config.hasPath(consumerKeys.ackPolicy)) {
+    consumer.ackPolicy = config.getString(consumerKeys.ackPolicy) as JetStreamConsumerConfig['ackPolicy'];
+  }
+  if (config.hasPath(consumerKeys.ackWait)) consumer.ackWaitMs = config.getDuration(consumerKeys.ackWait);
+  if (config.hasPath(consumerKeys.filterSubject)) consumer.filterSubject = config.getString(consumerKeys.filterSubject);
+  if (config.hasPath(consumerKeys.maxAcknowledgmentPending)) {
+    consumer.maxAcknowledgmentPending = config.getInt(consumerKeys.maxAcknowledgmentPending);
+  }
+  if (config.hasPath(consumerKeys.create)) consumer.create = config.getBoolean(consumerKeys.create);
+  return consumer;
+}
+
+/**
+ * Read `consumer.deliver-policy`, whose three simple arms are strings and
+ * whose two parameterised arms are `kind`-tagged objects.
+ *
+ * The presence of a nested `kind` is what tells the two apart — the same
+ * discrimination {@link readFramingFromConfig} makes, and the reason the
+ * object arms keep their TypeScript `kind` spelling (`by-start-sequence`)
+ * verbatim as a HOCON *value*: a value round-trips into the union unchanged,
+ * where a second spelling would need a translation table nothing else in this
+ * file has.  That spelling is kebab-case, like every value a HOCON key takes,
+ * and the camelCase one it replaced is refused by name rather than read.
+ *
+ * `start-time` is epoch **milliseconds**, so it is read with `getInt` rather
+ * than `getDuration` — it names an instant, not a span.  `start-seq` is a
+ * stream sequence.  Both are whole numbers: `getNumber` would take `7.5` and
+ * pass it on to the consumer provisioning at connect, where `getInt` fails the
+ * start naming the key.
+ *
+ * An unrecognised `kind` is a `ConfigError` here rather than something the
+ * validator sorts out later, because it has no representation in the union at
+ * all — and because the alternative that {@link readFramingFromConfig} takes
+ * for its own unknown kind, falling back to the default, would mean replaying
+ * a whole stream from the start on a typo.  The string arms *are* left to the
+ * validator: they are representable, so they reach it.  So does an object
+ * built in code, whose unknown or retired `kind`
+ * {@link JetStreamOptionsValidator} refuses, naming the same replacement from
+ * the same table.
+ */
+function readDeliverPolicyFromConfig(
+  config: Config,
+  policyKeys: typeof ConfigKeys.io.broker.jetstream.consumer.deliverPolicy,
+): JetStreamConsumerConfig['deliverPolicy'] {
+  if (config.hasPath(policyKeys.kind)) {
+    const kind = config.getString(policyKeys.kind);
+    if (kind === 'by-start-sequence') {
+      return { kind: 'by-start-sequence', startSeq: config.getInt(policyKeys.startSeq) };
+    }
+    if (kind === 'by-start-time') {
+      return { kind: 'by-start-time', startTimeMs: config.getInt(policyKeys.startTime) };
+    }
+    const replacement = RETIRED_DELIVER_POLICY_KINDS.get(kind);
+    if (replacement !== undefined) {
+      throw new ConfigError(
+        `${policyKeys.kind} = '${kind}' has been renamed to '${replacement}' — every `
+        + 'value a HOCON key takes is kebab-case now, and the retired spelling is read by '
+        + 'nothing.  Change the value in your application.conf; code that builds the object '
+        + 'arm changes the same way, since the TypeScript union was renamed with it.',
+      );
+    }
+    throw new ConfigError(
+      `${policyKeys.kind} = '${kind}' is not a delivery policy — the `
+      + "object form is { kind = \"by-start-sequence\", start-seq = N } or "
+      + '{ kind = "by-start-time", start-time = <epoch ms> }.  For the simple '
+      + 'policies write the string form: deliver-policy = "all" | "last" | "new".',
+    );
+  }
+  if (!config.hasPath(policyKeys.root)) return undefined;
+  return config.getString(policyKeys.root) as JetStreamConsumerConfig['deliverPolicy'];
+}
+
 /* ----------------------------- internals -------------------------------- */
 
 type PendingAcknowledgment = {
-  readonly streamSeq: number;
+  /** The map key this entry is stored under — one delivery, not one message. */
+  readonly ackToken: number;
+  /** The delivery's stream sequence.  For log lines only; never a key (#710). */
+  readonly streamSequence: number;
   readonly handle: JetStreamMessageHandleLike;
   readonly done: () => void;
   readonly fail: (err: Error) => void;
 };
+
+/** The two ways a delivery's ack wait ends without a settle command. */
+type PendingSettleFailureKind = 'connectionLost' | 'acknowledgmentTimeout';
+
+/**
+ * The rejection `deliverAndAwaitAcknowledgment` catches, carrying which of
+ * the two ways the wait ended.
+ *
+ * The tag is what keeps the two log levels apart, and it is a field rather
+ * than a substring match on the message because a level read off prose makes
+ * the wording of a log line load-bearing.  An ack-timeout names one handler
+ * that did not answer in time and stays WARN; a connection loss fails every
+ * in-flight entry at once and is summarised by the single aggregate line
+ * `disconnectImplementation` writes, so its per-delivery detail is `debug`
+ * (#1510).
+ */
+class PendingSettleFailure extends Error {
+  readonly failureKind: PendingSettleFailureKind;
+
+  constructor(failureKind: PendingSettleFailureKind, message: string) {
+    super(message);
+    this.name = 'PendingSettleFailure';
+    this.failureKind = failureKind;
+  }
+}
+
+/**
+ * JetStream API error codes, as the server reports them.
+ *
+ * Driver and protocol vocabulary rather than tuned values, so they stay
+ * beside the code that interprets them — the same call
+ * `RedisStreamsActor` makes for its error table. Both mean "the thing you
+ * asked me to create is already there", which is the one rejection these
+ * upserts treat as benign.
+ */
+const STREAM_NAME_IN_USE_CODE = 10058;
+const CONSUMER_ALREADY_EXISTS_CODE = 10148;
+
+/**
+ * Prefix for the subject a push consumer's deliveries are published to.
+ *
+ * Protocol vocabulary: it exists to stay clear of the application subject
+ * space a stream is configured with, because a deliver subject the stream
+ * itself captures is refused by the server as a cycle.
+ */
+const PUSH_DELIVER_SUBJECT_PREFIX = '_deliver';
 
 async function upsertStream(
   jsm: JetStreamManagerLike, config: JetStreamStreamConfig,
@@ -511,10 +929,10 @@ async function upsertStream(
       max_age: config.maxAge,
     });
   } catch (e) {
-    // If the stream exists, update it; the nats client raises a
-    // 10058 ("stream name in use") error code we treat as benign.
-    const message = e instanceof Error ? e.message : String(e);
-    if (!/in use|already exists|10058/i.test(message)) throw e;
+    // If the stream exists, update it.  v3 raises a typed `JetStreamApiError`
+    // carrying the JetStream API code, so the code is the check and the
+    // message match is the fallback for anything that reports only prose.
+    if (!isJetStreamApiCode(e, STREAM_NAME_IN_USE_CODE, /in use|already exists/i)) throw e;
     await jsm.streams.update(config.name, {
       subjects: [...config.subjects],
       retention: config.retention,
@@ -526,8 +944,21 @@ async function upsertStream(
   }
 }
 
+/**
+ * The subject the server publishes a push consumer's deliveries to.
+ *
+ * It must sit **outside** the stream's own subjects, or the server refuses
+ * the consumer with "deliver subject forms a cycle" — the stream would
+ * capture its own deliveries.  The `_deliver.` prefix keeps it clear of the
+ * application subject space a stream is configured with.
+ */
+function pushDeliverSubject(streamName: string, durable: string): string {
+  return `${PUSH_DELIVER_SUBJECT_PREFIX}.${streamName}.${durable}`;
+}
+
 async function upsertConsumer(
   jsm: JetStreamManagerLike, streamName: string, config: JetStreamConsumerConfig,
+  deliverSubject?: string,
 ): Promise<void> {
   const ackWaitNs = (config.ackWaitMs ?? 30_000) * 1_000_000;
   const consumerConfig: ConsumerAddConfig = {
@@ -536,27 +967,58 @@ async function upsertConsumer(
     ack_wait: ackWaitNs,
     filter_subject: config.filterSubject,
     max_ack_pending: config.maxAcknowledgmentPending,
-    deliver_policy: 'all',
+    // Present only in push mode.  Its presence is what makes the consumer a
+    // push consumer server-side; omitting it yields a pull consumer, which
+    // is what the pull path then asks for.
+    deliver_subject: deliverSubject,
   };
-  if (config.deliverPolicy === 'last') consumerConfig.deliver_policy = 'last';
-  else if (config.deliverPolicy === 'new') consumerConfig.deliver_policy = 'new';
-  else if (typeof config.deliverPolicy === 'object' && 'kind' in config.deliverPolicy) {
-    if (config.deliverPolicy.kind === 'byStartSeq') {
-      consumerConfig.deliver_policy = 'by_start_sequence';
-      consumerConfig.opt_start_seq = config.deliverPolicy.startSeq;
-    } else if (config.deliverPolicy.kind === 'byStartTime') {
-      consumerConfig.deliver_policy = 'by_start_time';
-      consumerConfig.opt_start_time = new Date(config.deliverPolicy.startTimeMs).toISOString();
-    }
+  // Each arm is spelled out and nothing defaults to `all`, because a default
+  // turns every value this chain does not know into a consumer that replays
+  // the stream from its first message.  The final branch is the compiler's:
+  // an arm added to the union without a branch here does not build.  At run
+  // time the validator has refused every other value in preStart, so one
+  // arrives here only past it — a subclass that skips it, a getter that
+  // answers it differently — and then no consumer is provisioned.
+  const deliverPolicy = config.deliverPolicy;
+  if (deliverPolicy === undefined || deliverPolicy === 'all') consumerConfig.deliver_policy = 'all';
+  else if (deliverPolicy === 'last') consumerConfig.deliver_policy = 'last';
+  else if (deliverPolicy === 'new') consumerConfig.deliver_policy = 'new';
+  else if (deliverPolicy.kind === 'by-start-sequence') {
+    consumerConfig.deliver_policy = 'by_start_sequence';
+    consumerConfig.opt_start_seq = deliverPolicy.startSeq;
+  } else if (deliverPolicy.kind === 'by-start-time') {
+    consumerConfig.deliver_policy = 'by_start_time';
+    consumerConfig.opt_start_time = new Date(deliverPolicy.startTimeMs).toISOString();
+  } else {
+    const unknownPolicy: never = deliverPolicy;
+    throw new Error(
+      `JetStreamActor: consumer.deliverPolicy ${safeStringify(unknownPolicy)} is not a delivery `
+      + "policy — the consumer is left unprovisioned rather than started at 'all'",
+    );
   }
 
   try {
     await jsm.consumers.add(streamName, consumerConfig);
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    if (!/already exists|in use|10148/i.test(message)) throw e;
+    if (!isJetStreamApiCode(e, CONSUMER_ALREADY_EXISTS_CODE, /already exists|in use/i)) throw e;
     await jsm.consumers.update(streamName, config.durable, consumerConfig);
   }
+}
+
+/**
+ * Does this rejection mean "the thing is already there"?
+ *
+ * v3 throws `JetStreamApiError` with the JetStream API code on `.code`, which
+ * is the precise signal.  The message pattern stays as a fallback rather than
+ * as the primary check: it is what an older driver, a proxy, or a wrapped
+ * error reports, and the cost of keeping it is one regex on a path that has
+ * already failed.
+ */
+function isJetStreamApiCode(cause: unknown, code: number, fallback: RegExp): boolean {
+  if (typeof (cause as { code?: unknown })?.code === 'number') {
+    return (cause as { code: number }).code === code;
+  }
+  return fallback.test(cause instanceof Error ? cause.message : String(cause));
 }
 
 function extractHeaders(headers: HeadersLike | undefined): Record<string, string> {
@@ -568,8 +1030,9 @@ function extractHeaders(headers: HeadersLike | undefined): Record<string, string
 
 /* -------------------- nats peer-dep type stubs --------------------- */
 /*
- * Hand-written on purpose — not a placeholder for the real `nats` types.
- * `nats` is declared only in `tests/integration/brokers/package.json`, which
+ * Hand-written on purpose — not a placeholder for the real nats.js types.
+ * The `@nats-io/*` packages are declared only in
+ * `tests/integration/brokers/package.json`, which
  * the root install deliberately does not materialise, so the build compile
  * cannot resolve it; and these types are exported through `src/io/index.ts`,
  * so importing the module here would emit that specifier into a published
@@ -583,11 +1046,14 @@ function extractHeaders(headers: HeadersLike | undefined): Record<string, string
  * Minimal `NatsConnection` surface the actor depends on.  Exported so
  * test seams (subclasses of `JetStreamActor` overriding
  * `createNatsConnection`) can satisfy the same shape without pulling
- * the real `nats` peer-dep.
+ * the real transport peer-dep.
+ *
+ * The JetStream entry points are **not** here any more: nats.js v3 turned
+ * `nc.jetstream()` and `nc.jetstreamManager()` into free functions that take
+ * the connection, so a connection is once again just a connection.  They live
+ * on {@link JetStreamModuleLike}.
  */
 export interface NatsConnectionLike {
-  jetstream(): JetStreamClientLike;
-  jetstreamManager(): Promise<JetStreamManagerLike>;
   drain(): Promise<void>;
   closed(): Promise<Error | undefined>;
 }
@@ -598,22 +1064,35 @@ export interface JetStreamClientLike {
     expect?: { lastSequence?: number };
     headers?: Readonly<Record<string, string>>;
   }): Promise<unknown>;
-  subscribe(subject: string, options: {
-    stream: string;
-    consumer: string;
-  }): Promise<JetStreamSubscriptionLike>;
   /**
-   * Pull-consumer accessor (#62).  Returns a handle that exposes
-   * `fetch` for batched on-demand delivery — see the nats.js
-   * `consumers.get(stream, durable)` API.
+   * Consumer accessors.  The two are **not** interchangeable: v3 refuses
+   * `get` on a consumer that has a `deliver_subject` and `getPushConsumer` on
+   * one that has not, so the accessor the actor reaches for has to match the
+   * consumer its own `upsertConsumer` wrote.
    */
   readonly consumers: {
+    /** Pull consumer (#62) — batched, on-demand delivery through `fetch`. */
     get(stream: string, durable: string): Promise<PullConsumerLike>;
+    /** Push consumer — continuous delivery, iterated through `consume`. */
+    getPushConsumer(stream: string, durable: string): Promise<PushConsumerLike>;
   };
 }
 
-export interface JetStreamSubscriptionLike extends AsyncIterable<JetStreamMessageHandleLike> {
-  destroy(): Promise<void>;
+/**
+ * A push consumer handle.  `consume()` opens the delivery stream; it replaces
+ * v2's `JetStreamClient.subscribe`, which is gone.
+ */
+export interface PushConsumerLike {
+  consume(): Promise<JetStreamMessageStreamLike>;
+}
+
+/**
+ * An open delivery stream.  Async-iterable, and stopped rather than
+ * destroyed — `stop()` ends the iteration and releases the consumer's
+ * client-side resources.
+ */
+export interface JetStreamMessageStreamLike extends AsyncIterable<JetStreamMessageHandleLike> {
+  stop(): void;
 }
 
 /**
@@ -656,6 +1135,7 @@ export interface JetStreamMessageHandleLike {
 
 type ConsumerAddConfig = {
   durable_name: string;
+  deliver_subject?: string;
   ack_policy?: 'explicit' | 'none' | 'all';
   ack_wait?: number;
   filter_subject?: string;
@@ -682,7 +1162,9 @@ export type JetStreamManagerLike = {
   };
 };
 
-/** The `nats` module surface we use.  Exported as a test seam. */
+/**
+ * The `@nats-io/transport-node` surface we use.  Exported as a test seam.
+ */
 export interface NatsModuleLike {
   connect(options: {
     servers: string[]; token?: string; user?: string; pass?: string; name?: string;
@@ -695,6 +1177,21 @@ export interface NatsModuleLike {
   }): Promise<NatsConnectionLike>;
 }
 
+/**
+ * The `@nats-io/jetstream` surface we use.  Exported as a test seam.
+ *
+ * `jetstream` and `jetstreamManager` take the connection because v3 made them
+ * free functions — the same objects v2 hung off the connection itself.
+ */
+export interface JetStreamModuleLike {
+  jetstream(connection: NatsConnectionLike): JetStreamClientLike;
+  jetstreamManager(connection: NatsConnectionLike): Promise<JetStreamManagerLike>;
+}
+
 const natsLazy: Lazy<Promise<NatsModuleLike>> = Lazy.of(
-  () => lazyImportModule<NatsModuleLike>('nats', { context: 'JetStreamActor' }),
+  () => lazyImportModule<NatsModuleLike>('@nats-io/transport-node', { context: 'JetStreamActor' }),
+);
+
+const jetStreamLazy: Lazy<Promise<JetStreamModuleLike>> = Lazy.of(
+  () => lazyImportModule<JetStreamModuleLike>('@nats-io/jetstream', { context: 'JetStreamActor' }),
 );

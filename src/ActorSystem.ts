@@ -3,15 +3,28 @@ import { ActorRef } from './ActorRef.js';
 import { ActorSelection, parseSelectionPath } from './ActorSelection.js';
 import {
   DEFAULT_ACTOR_THROUGHPUT,
+  DEFAULT_DISPATCHER_KIND,
   DEFAULT_DISPATCHER_THROUGHPUT,
   DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS,
   EVENT_LOOP_KEEPALIVE_INTERVAL_MS,
   QUIESCENCE_POLL_INTERVAL_MS,
   QUIESCENCE_POLL_MAX_INTERVAL_MS,
 } from './Constants.js';
+import { DEFAULT_ASK_TIMEOUT_MS } from './util/Constants.js';
+import { SETTLE_MAX_TURNS } from './Constants.js';
+import { DEFAULT_SCATTER_GATHER_TIMEOUT_MS, MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATHER_MS } from './ScatterGatherOptions.js';
+import { OptionsError } from './util/OptionsValidator.js';
 import { Config } from './config/Config.js';
 import { ConfigKeys } from './config/ConfigKeys.js';
-import { CoordinatedShutdownId, Phases } from './CoordinatedShutdown.js';
+import {
+  ActorSystemTerminateReason,
+  CoordinatedShutdownId,
+  Phases,
+  readCoordinatedShutdownOptionsFromConfig,
+  type CoordinatedShutdown,
+  type Reason,
+} from './CoordinatedShutdown.js';
+import { CoordinatedStartup, CoordinatedStartupId, type StartupFailedReason } from './CoordinatedStartup.js';
 import type { ProcessSignal } from './util/ProcessSignal.js';
 import { none, some, type Option } from './util/Option.js';
 import { mergeOptions } from './util/OptionsMerge.js';
@@ -25,18 +38,27 @@ import {
   ThroughputDispatcher,
 } from './Dispatcher.js';
 import { EventStream } from './EventStream.js';
-import { ConsoleLogger, Logger } from './Logger.js';
+import { ConsoleLogger, Logger, type LogLevel } from './Logger.js';
 import { DispatcherError, SchedulerError } from './SystemMessages.js';
 import { buildLoggerFromConfig, readLoggerLevelFromConfig } from './logging/LoggerFromConfig.js';
 import { MultiSinkLogger } from './logging/MultiSinkLogger.js';
 import { DEFAULT_SINK_CLOSE_TIMEOUT_MS } from './logging/MultiSinkLoggerOptions.js';
 import type { ActorClassOrFactory } from './Actor.js';
-import type { ActorOptions } from './ActorOptions.js';
+import type { ActorOptions, DefaultMailboxConfiguration } from './ActorOptions.js';
+import { readDefaultMailboxFromConfig } from './ActorOptions.js';
+import type { Clock } from './Clock.js';
 import { Scheduler, type SchedulerErrorSink } from './Scheduler.js';
 import type { ActorSystemOptions, ActorSystemOptionsType } from './ActorSystemOptions.js';
 import { ActorCell } from './internal/ActorCell.js';
+import { compileDeployment, readDeploymentFromConfig, type DeploymentIndex } from './internal/Deployment.js';
 import type { CellInspection, DispatchObserver } from './internal/Instrumentation.js';
 import type { MetricsRegistry } from './metrics/Metrics.js';
+import { otelLogger } from './tracing/OtelLogsAdapter.js';
+import {
+  readOtelLogsAdapterOptionsFromConfig,
+  type OtelLogsAdapterOptions,
+  type OtelLogsAdapterOptionsType,
+} from './tracing/OtelLogsAdapterOptions.js';
 import type { Tracer } from './tracing/Tracer.js';
 import { DeadLetterRef } from './internal/DeadLetterRef.js';
 import { DeadLetterQueue } from './deadletters/DeadLetterQueue.js';
@@ -44,6 +66,20 @@ import {
   readDeadLetterQueueOptionsFromConfig,
   type DeadLetterQueueOptionsType,
 } from './deadletters/DeadLetterQueueOptions.js';
+import { configDumpLines } from './diagnostics/ConfigDump.js';
+import {
+  DEFAULT_DEBUG_EVENT_STREAM,
+  DEFAULT_DEBUG_LIFECYCLE,
+  DEFAULT_DEBUG_UNHANDLED,
+  DEFAULT_LOG_CONFIG_ON_START,
+  DEFAULT_LOG_DEAD_LETTERS,
+  DEFAULT_LOG_DEAD_LETTERS_DURING_SHUTDOWN,
+  DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS,
+  DiagnosticsOptionsValidator,
+  readDiagnosticsOptionsFromConfig,
+  type DiagnosticsOptionsType,
+  type ResolvedDiagnostics,
+} from './diagnostics/DiagnosticsOptions.js';
 import {
   GUARDIAN_SHUTDOWN_ORDER,
   Guardian,
@@ -56,11 +92,45 @@ import { LocalActorRef } from './internal/LocalActorRef.js';
 import { systemGroupPolicy, type SystemGroup } from './internal/SystemPaths.js';
 import type { Cluster } from './cluster/Cluster.js';
 import { ClusterExtensionId } from './cluster/ClusterExtension.js';
-import { PersistenceExtensionId } from './persistence/PersistenceExtension.js';
+import { ParallelismExtension, ParallelismExtensionId } from './parallelism/ParallelismExtension.js';
+import { MessageBoundaryCheck } from './diagnostics/MessageBoundaryCheck.js';
+import {
+  MessageBoundaryOptionsValidator,
+  readMessageBoundaryOptionsFromConfig,
+  type MessageBoundaryOptionsType,
+} from './diagnostics/MessageBoundaryOptions.js';
+import { SerializationExtensionId } from './serialization/SerializationExtension.js';
+import type { ParallelismOptionsType } from './parallelism/ParallelismOptions.js';
+import type {
+  PersistenceBehaviorOptions,
+  PersistenceBehaviorOptionsType,
+} from './persistence/PersistenceBehaviorOptions.js';
+import { holdsUnknownPersistenceKey, PersistenceExtensionId, selectsPersistencePlugin } from './persistence/PersistenceExtension.js';
 import type { HttpServerBackend } from './http/backend/HttpServerBackend.js';
+import { DEFAULT_HTTP_BIND_HOST } from './http/Constants.js';
 import { HttpExtensionId, type ServerBuilder } from './http/HttpExtension.js';
 import type { Behavior } from './typed/Behavior.js';
 import { typedActor } from './typed/Spawn.js';
+
+/**
+ * Per-call choices for {@link ActorSystem.terminate}.
+ *
+ * A plain parameter bag with no builder, like `ClusterReadinessOptions`: it is
+ * read once, by the call it is handed to, and nothing layers HOCON over it.
+ */
+export type TerminateOptions = {
+  /**
+   * Run the coordinated-shutdown pipeline before the teardown, with
+   * `ActorSystemTerminateReason` — every task in every phase, so the HTTP
+   * unbind, the broker close and the cluster leave the framework registers
+   * there, and whatever the application added.  `false` is the bare teardown
+   * `terminate()` has always been, which reaches none of them.  Unset takes
+   * the choice from `actor-ts.coordinated-shutdown.run-by-actor-system-terminate`,
+   * which is off unless configured (#1455) — so a value here beats the config,
+   * as an explicit option does everywhere.
+   */
+  readonly runCoordinatedShutdown?: boolean;
+};
 
 /**
  * The ActorSystem is the top-level container for actors.  It owns the root
@@ -78,6 +148,36 @@ export class ActorSystem {
   readonly startedAtMs: number;
   readonly dispatcher: Dispatcher;
   readonly scheduler: Scheduler;
+
+  /**
+   * What time it is, according to this system.
+   *
+   * The same object as {@link scheduler}, narrowed to the one method, and the
+   * narrowing is the point: a component that only reads the time should take
+   * `system.clock` rather than the whole scheduler, so its dependency says
+   * what it actually needs and a test can supply a clock without also
+   * granting it the power to arm timers.
+   *
+   * Under a `ManualScheduler` this is virtual time, which is the whole point:
+   * a component reading it advances with `advance()` instead of with the wall
+   * clock, and a test can say "a minute passed" in a millisecond.
+   */
+  get clock(): Clock { return this.scheduler; }
+
+  /**
+   * @internal This system's scheduler when its time is virtual, `null` when it
+   * is the wall clock.
+   *
+   * A field resolved once at construction rather than a check per use, because
+   * the caller is `ActorRef.ask` and the answer cannot change: a system's
+   * scheduler is fixed for its lifetime.
+   *
+   * The narrowing is what keeps the deadline seam free in production. Arming
+   * every ask through the scheduler costs ~13% of `ask-throughput`; arming only
+   * the ones a test can actually advance past costs nothing, because the branch
+   * that reads this is already there.
+   */
+  readonly _virtualScheduler: Scheduler | null;
   readonly eventStream: EventStream;
   readonly log: Logger;
   /** How long `terminate()` waits for the logger to flush and close. */
@@ -87,6 +187,58 @@ export class ActorSystem {
    * stop cascade starts.  0 skips the drain — see {@link terminate}.
    */
   private readonly shutdownDrainTimeoutMs: number;
+  /**
+   * What a `terminate()` that names no `runCoordinatedShutdown` does —
+   * `actor-ts.coordinated-shutdown.run-by-actor-system-terminate`, off unless
+   * configured (#1455).
+   */
+  private readonly runCoordinatedShutdownByDefault: boolean;
+  /**
+   * @internal The same budget, for the parallelism extension: a worker's
+   * system terminates with the identical `shutdown-drain-timeout`, so that is
+   * how long the main thread waits for it before stopping the thread.
+   */
+  get _shutdownDrainTimeoutMs(): number { return this.shutdownDrainTimeoutMs; }
+  /**
+   * @internal What `ActorSystemOptions.withParallelism` carried, kept for the
+   * extension's factory — the one extension the system constructs itself.
+   */
+  readonly _explicitParallelismOptions: ParallelismOptionsType | undefined;
+  /**
+   * @internal What `ActorSystemOptions.withPersistence({ behavior })` carried,
+   * kept for the persistence extension's factory: the explicit layer of its
+   * behaviour, whether the extension is built inside `create` or on first use.
+   */
+  readonly _explicitPersistenceBehavior: PersistenceBehaviorOptions | undefined;
+  /**
+   * @internal The message-boundary check (#1386) when either of its modes is
+   * on, and `null` otherwise — read by `ActorCell.postUserEnvelope` on every
+   * local `tell`, which is why off costs one comparison and nothing else.
+   */
+  readonly _messageBoundary: MessageBoundaryCheck | null;
+  /**
+   * The parallelism extension when `actor-ts.parallelism.workers` is above
+   * zero, and `null` otherwise — which is what keeps `workers = 0` the code
+   * path it always was: `spawn` pays one null check and takes the local path.
+   */
+  private readonly _parallelism: ParallelismExtension | null;
+  /**
+   * Work that has to finish *before* the actors are stopped — the parallelism
+   * extension terminating the workers' systems, so an offloaded actor gets
+   * its `postStop` while the main thread's cluster node is still up to hear
+   * back.  Empty on a system that offloads nothing, and then `terminate()` is
+   * the code it always was.
+   */
+  private readonly _terminationPreludes: Array<() => Promise<void>> = [];
+  /**
+   * The startup graph (#1473): built from `ActorSystemOptions.coordinatedStartup`
+   * early in the constructor, so an option it refuses fails `create` before
+   * anything has started, and run as the constructor's last step.  Kept as a
+   * field because three paths need it whether or not anyone asked for the
+   * extension: `whenReady()`, the abandonment in `terminate()` and the error
+   * `runUntilTerminated()` ends with.
+   */
+  private readonly coordinatedStartup: CoordinatedStartup;
   /**
    * @internal Default batch budget for every cell that does not set its own
    * `ActorOptions.throughput` (#409).
@@ -99,6 +251,53 @@ export class ActorSystem {
    * in this file.
    */
   readonly _actorThroughput: number;
+  /**
+   * @internal Deadline `ActorRef.ask` arms when the caller names no
+   * `timeoutMs` — `actor-ts.actor.ask-timeout` (#863).
+   *
+   * Resolved here rather than at the ask site for the reason above and one
+   * more: a ref is not a config reader either, and there are fourteen of them.
+   * Reached through `ActorRef._defaultAskTimeoutMs()`, which each ref that
+   * can see a system overrides; the ones that cannot — dead letters, `Nobody`,
+   * an unresolved path, the reply ref itself — keep the built-in constant, and
+   * the reference comment says so rather than implying uniform coverage.
+   */
+  readonly _defaultAskTimeoutMs: number;
+  /**
+   * @internal What `actor-ts.mailbox.default.*` says, for every cell that
+   * does not name its own mailbox (#862).
+   *
+   * Resolved here for the same reason `_actorThroughput` above is: a cell
+   * reads no config, and this is the framework's most-created object.  Empty
+   * unless an operator asked for a bound, so the shipped answer stays the
+   * unbounded mailbox #1148 restored.
+   */
+  readonly _defaultMailbox: DefaultMailboxConfiguration;
+  /**
+   * @internal The compiled `actor-ts.deployment` block — the per-path layer
+   * between a spawn site and the two fields above (#868) — or `null` when it
+   * holds no entry, which is the shipped answer: the block is comment-only.
+   *
+   * Resolved here for the reason `_defaultMailbox` is, and compiled rather
+   * than kept as the record: a cell asks it once per spawn, so the patterns
+   * are compiled and ranked once per system instead.  `null` rather than an
+   * empty index, so that without the block a spawn pays one null check.  No
+   * `ActorSystemOptions` field behind it, for the reason
+   * `DefaultMailboxConfiguration` gives: in code, the spawn site already says
+   * the same thing better.
+   */
+  readonly _deployment: DeploymentIndex | null;
+  /**
+   * @internal The resolved `actor-ts.diagnostics.*` settings, for the sites
+   * that emit a gated record (#867).
+   *
+   * Here for the third time and for the third instance of one reason: a cell
+   * reads no config, and neither does the per-message path in
+   * `recordUnhandled`.  Every field is decided, so a read site is a plain
+   * boolean test — a `?? DEFAULT_…` at the read site would be a second place
+   * the default lives, free to disagree with the merge that produced this.
+   */
+  readonly _diagnostics: ResolvedDiagnostics;
   readonly deadLetters: ActorRef;
   /**
    * Bounded record of the messages this system could not deliver.
@@ -186,6 +385,13 @@ export class ActorSystem {
 
   private _terminating = false;
   private _terminated = false;
+  /**
+   * The teardown's flushes have run: the dead-letter queue settled and the log
+   * sinks closed.  Later than {@link _terminated}, which turns true before
+   * them — see {@link _flushBeforeExit}, the one reader that needs the
+   * difference.
+   */
+  private _sinksClosed = false;
   private _terminationResolvers: Array<() => void> = [];
 
   /**
@@ -200,24 +406,63 @@ export class ActorSystem {
    */
   private readonly schedulerErrorSink: SchedulerErrorSink;
 
+  /**
+   * Did this system construct {@link scheduler} itself?
+   *
+   * Decides whether `terminate()` may shut it down.  A scheduler handed in
+   * through `ActorSystemOptions` belongs to whoever handed it over, exactly as
+   * the dispatcher does — and unlike the dispatcher it used to be shut down
+   * anyway, which is only invisible while one system holds it.  Share a
+   * `ManualScheduler` across two systems and the first `terminate()` disarms
+   * every handle the second one still owns (#1424).
+   */
+  private readonly ownsScheduler: boolean;
+
   private constructor(name: string | undefined, options: ActorSystemOptionsType) {
     this.startedAtMs = Date.now();
     // Config first: the name may come out of it, and nothing in the build
     // depends on the name.
     this.config = buildConfig(options);
-    this.name = name ?? systemNameFromConfig(this.config);
-    this.dispatcher = options.dispatcher ?? dispatcherFromConfig(this.config);
+    this.name = name ?? readSystemNameFromConfig(this.config) ?? 'default';
+    this.dispatcher =
+      options.dispatcher ?? createDispatcher(readDispatcherOptionsFromConfig(this.config));
+    // Whether this system built its own scheduler, which is the same question
+    // as "may this system shut it down" — see `_rootTerminated`.
+    this.ownsScheduler = options.scheduler === undefined;
     this.scheduler = options.scheduler ?? new Scheduler();
+    this._virtualScheduler = this.scheduler.isVirtual ? this.scheduler : null;
     this.eventStream = new EventStream();
-    this.loggerCloseTimeoutMs = loggerCloseTimeoutFromConfig(this.config);
-    this.shutdownDrainTimeoutMs = shutdownDrainTimeoutFromConfig(this.config);
-    this._actorThroughput = actorThroughputFromConfig(this.config);
+    this.loggerCloseTimeoutMs =
+      readLoggerCloseTimeoutFromConfig(this.config) ?? DEFAULT_SINK_CLOSE_TIMEOUT_MS;
+    this.shutdownDrainTimeoutMs =
+      readShutdownDrainTimeoutFromConfig(this.config) ?? DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS;
+    this._actorThroughput = readActorThroughputFromConfig(this.config) ?? DEFAULT_ACTOR_THROUGHPUT;
+    // Throws on a value no ask could arm, and does so here rather than at the
+    // first ask: the mistake is in the config file, so the failure belongs at
+    // the moment the config file is read (#863).
+    this._defaultAskTimeoutMs = readAskTimeoutFromConfig(this.config) ?? DEFAULT_ASK_TIMEOUT_MS;
+    // Read from the config, through the coordinated-shutdown block's own
+    // reader, rather than by asking the extension: a `terminate()` that leaves
+    // the choice to this must not build the pipeline to find out (#1455).
+    // Read here, once, for the reason the ask timeout is — a block the reader
+    // refuses fails `create` rather than the call that first needs it.
+    this.runCoordinatedShutdownByDefault =
+      readCoordinatedShutdownOptionsFromConfig(this.config).runByActorSystemTerminate ?? false;
+    // Before the guardian cells are built below: the first cell constructed
+    // reads this, so a later assignment would leave the root and the two
+    // guardians looking at `undefined`.
+    this._defaultMailbox = readDefaultMailboxFromConfig(this.config);
+    // Before the guardian cells for the same reason; and a block it refuses
+    // fails `create` here, before any cell exists.
+    this._deployment = compileDeployment(readDeploymentFromConfig(this.config));
     this.log = resolveLogger(options, this.config, this.loggerCloseTimeoutMs);
     // Sinks are built before any system exists, so anything system-shaped —
     // the scheduler a batching sink ticks on, the name a remote sink sends
     // as its service identity — has to reach them here.  Structural, so a
     // third-party logger that grew an `attach` benefits too.
     attachLogger(this.log, { scheduler: this.scheduler, systemName: this.name });
+    // Needs a logger, so it cannot ride along with the read above.
+    warnIfAskTimeoutUndercutsScatterGather(this.log, this._defaultAskTimeoutMs);
     // Wire the system logger into the bus so a throwing subscriber
     // predicate (#85) gets surfaced rather than silently dropped.
     this.eventStream.log = this.log;
@@ -238,9 +483,74 @@ export class ActorSystem {
     // is even more often the caller's than the dispatcher is.
     this.schedulerErrorSink = (error) => this._reportSchedulerError(error);
     this.scheduler.onError ??= this.schedulerErrorSink;
-    const deadLetterRef = new DeadLetterRef(this.name, this.eventStream);
+    // Diagnostics are resolved before the ref that reads them, and the
+    // built-in layer is a real one here rather than the empty layer the
+    // queue merge below uses: there is no `Diagnostics` object downstream
+    // to apply defaults of its own, so this merge is where every published
+    // default in the block actually takes effect.
+    const diagnostics = mergeOptions<ResolvedDiagnostics>(
+      {
+        logDeadLetters: DEFAULT_LOG_DEAD_LETTERS,
+        logDeadLettersDuringShutdown: DEFAULT_LOG_DEAD_LETTERS_DURING_SHUTDOWN,
+        logDeadLettersSuspendDurationMs: DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS,
+        logConfigOnStart: DEFAULT_LOG_CONFIG_ON_START,
+        debugUnhandled: DEFAULT_DEBUG_UNHANDLED,
+        debugLifecycle: DEFAULT_DEBUG_LIFECYCLE,
+        debugEventStream: DEFAULT_DEBUG_EVENT_STREAM,
+      },
+      readDiagnosticsOptionsFromConfig(this.config),
+      { ...(options.diagnostics as Partial<DiagnosticsOptionsType> | undefined) },
+    );
+    new DiagnosticsOptionsValidator().validate(diagnostics);
+    // Before the guardian cells are built below, for the same reason
+    // `_defaultMailbox` is: the first cell constructed reads this, so a later
+    // assignment would leave the root and the two guardians looking at
+    // `undefined`.
+    this._diagnostics = diagnostics;
+    this.eventStream.traceSubscriptions = diagnostics.debugEventStream;
+    // Before the guardians, like the diagnostics above: the first `tell` can
+    // happen the moment the first cell exists.  Explicit over HOCON over the
+    // built-in `off`, field by field, so naming one mode leaves the other to
+    // the file.
+    const messageBoundary = mergeOptions<MessageBoundaryOptionsType>(
+      {},
+      readMessageBoundaryOptionsFromConfig(this.config),
+      { ...(options.messageBoundary as Partial<MessageBoundaryOptionsType> | undefined) },
+    );
+    new MessageBoundaryOptionsValidator().validate(messageBoundary);
+    this._messageBoundary = MessageBoundaryCheck.isEnabled(messageBoundary)
+      ? new MessageBoundaryCheck(
+        { log: this.log, serialization: () => this.extensions.get(SerializationExtensionId) },
+        messageBoundary,
+      )
+      : null;
+    // After `attachLogger` above, so the dump reaches the configured sinks
+    // rather than only whatever the logger writes to before it is wired; and
+    // before the guardians, so a system that fails to finish starting has
+    // still said what it was configured with — which is when the answer is
+    // wanted most.  Once by construction: there is one constructor.
+    if (diagnostics.logConfigOnStart) this.log.info(configDumpLines(this.config));
+    const deadLetterRef = new DeadLetterRef(this.name, this.eventStream, {
+      log: this.log,
+      logDeadLetters: diagnostics.logDeadLetters,
+      logDeadLettersDuringShutdown: diagnostics.logDeadLettersDuringShutdown,
+      logDeadLettersSuspendDurationMs: diagnostics.logDeadLettersSuspendDurationMs,
+      // A predicate, not `this`: the ref is built before the guardians and
+      // must not hold the half-constructed system for the sake of one
+      // boolean.  An arrow keeps the binding without a `bind` call.
+      isTerminating: () => this._terminating,
+    });
     this.deadLetters = deadLetterRef;
+    // Before the registry exists, so whatever builds the persistence extension
+    // from here on — the persistence block below, or a first use later — sees
+    // the behaviour set in code.
+    this._explicitPersistenceBehavior = options.persistence?.behavior;
     this.extensions = new Extensions(this);
+    // The startup graph is put together here, before anything with a side
+    // effect — the guardians, the mesh start — so a startup option it refuses
+    // fails `create` with nothing left running.  It is started last, below.
+    this.coordinatedStartup = new CoordinatedStartup(this, options.coordinatedStartup);
+    this.extensions.put(CoordinatedStartupId, this.coordinatedStartup);
     // Built here, before the guardians exist, because the first dead letter
     // can be produced by the very first `spawn` — a queue installed later
     // would be missing exactly the letters an early failure produced.
@@ -286,14 +596,61 @@ export class ActorSystem {
     // GUARDIAN_SHUTDOWN_ORDER for why `/user` has to drain first.
     this.rootCell._terminationOrder = GUARDIAN_SHUTDOWN_ORDER;
 
-    // Apply persistence overrides AFTER the guardians are wired up so the
-    // extension registry exists.  Either field is independent — omitted
-    // slots keep the auto-default in-memory plugin
-    // (see PersistenceExtension.journal / snapshotStore getters).
-    if (options.persistence) {
-      const ext = this.extensions.get(PersistenceExtensionId);
-      if (options.persistence.journal) ext.setJournal(options.persistence.journal);
-      if (options.persistence.snapshotStore) ext.setSnapshotStore(options.persistence.snapshotStore);
+    // Persistence, built here rather than on first use whenever the system has
+    // any: options in code, or a configuration that selects a plug-in other
+    // than the in-memory one (#1473).  The plug-ins first: they run inside
+    // `create` and in the order given, so every factory they register is in
+    // place when `create` returns, and a promise one returns becomes a
+    // `persistence-start` task while the startup graph still takes tasks.
+    // Then the instances, each the explicit layer over the plug-in its axis
+    // selects.  Then the warm-up: the selection is resolved now — so a
+    // registration after `create` is never what it finds — and the stores are
+    // opened in `persistence-start`, failing the startup if one cannot be.
+    // All before the mesh start and the graph's own start, the two steps
+    // below that arm handles, so a plug-in that throws fails `create` before
+    // either exists.  A system with neither stays lazy, as it always was.
+    //
+    // `autoStart: false` set in code opts out of opening the stores whatever
+    // the file says, so it is answered without reading the behaviour block —
+    // and so without validating it, which the warm-up does before it looks at
+    // `autoStart`.  On its own, over a valid file, it gives `create` nothing
+    // to do: that is the whole of a WorkerMesh worker's `withPersistence`, and
+    // building the extension for it failed every worker on an invalid block
+    // its main thread never read.  The block is still read, and refused, on
+    // first use; the extension built then still finds the opt-out through
+    // `_explicitPersistenceBehavior`.  Under the opt-out the warm-up is still
+    // prepared, answered from that explicit layer, because a key under
+    // `actor-ts.persistence` that no reader takes fails the startup whatever
+    // `autoStart` says (#1729): with stores or plug-ins in code it is built
+    // for those anyway, and with nothing else in code it is built for exactly
+    // that key — asked through `holdsUnknownPersistenceKey`, not
+    // `selectsPersistencePlugin`, whose yes for a valid selection is the file
+    // a worker inherits without the plug-ins that selection needs.  A worker
+    // over such a file therefore fails its own startup, as its main thread
+    // does.
+    const persistenceOptions = options.persistence;
+    const warmUpOptedOut =
+      (persistenceOptions?.behavior as Partial<PersistenceBehaviorOptionsType> | undefined)?.autoStart === false;
+    const persistenceWorkInCreate = (persistenceOptions?.plugins?.length ?? 0) > 0
+      || persistenceOptions?.journal !== undefined
+      || persistenceOptions?.snapshotStore !== undefined
+      || persistenceOptions?.durableStateStore !== undefined
+      || (!warmUpOptedOut && (persistenceOptions !== undefined || selectsPersistencePlugin(this.config)))
+      || (warmUpOptedOut && holdsUnknownPersistenceKey(this.config));
+    if (persistenceWorkInCreate) {
+      const persistence = this.extensions.get(PersistenceExtensionId);
+      // Before the plug-ins, which cannot see the instances yet: a plug-in
+      // asks this so it skips refusing a selection code replaces (#1492).
+      persistence._markSetInCode([
+        ...(persistenceOptions?.journal ? ['journal' as const] : []),
+        ...(persistenceOptions?.snapshotStore ? ['snapshotStore' as const] : []),
+        ...(persistenceOptions?.durableStateStore ? ['durableStateStore' as const] : []),
+      ]);
+      persistence._runPlugins(persistenceOptions?.plugins ?? []);
+      if (persistenceOptions?.journal) persistence.setJournal(persistenceOptions.journal);
+      if (persistenceOptions?.snapshotStore) persistence.setSnapshotStore(persistenceOptions.snapshotStore);
+      if (persistenceOptions?.durableStateStore) persistence.setDurableStateStore(persistenceOptions.durableStateStore);
+      persistence._prepareWarmUp();
     }
 
     // Only when the operator asked for a queue.  Off — the default — this
@@ -306,6 +663,26 @@ export class ActorSystem {
         () => this.deadLetterQueue.flush(),
       );
     }
+
+    // Last, because a mesh start spawns under `/system` and the extension's
+    // constructor validates `actor-ts.parallelism.*` whether or not it is
+    // enabled — a bad `offload` pattern is a config mistake and fails here,
+    // where every other config mistake fails.  Off, the extension is
+    // constructed and never started; the instance is registered so
+    // `system.extension(ParallelismExtensionId)` answers either way.
+    this._explicitParallelismOptions = options.parallelism as ParallelismOptionsType | undefined;
+    const parallelism = new ParallelismExtension(this, this._explicitParallelismOptions);
+    this.extensions.put(ParallelismExtensionId, parallelism);
+    this._parallelism = parallelism.enabled ? parallelism : null;
+    parallelism._start();
+
+    // The very last step: the startup graph is sealed here, synchronously, so
+    // nothing registered after `create` returns is ever part of it — and its
+    // first task runs a microtask later, never inside `create` itself.
+    this.coordinatedStartup._start(
+      (reason, error) => this.onStartupFailed(reason, error),
+      () => this.coordinatedShutdownHasBegun(),
+    );
   }
 
   /**
@@ -350,8 +727,19 @@ export class ActorSystem {
    * with the framework's default Fastify backend.  Equivalent to:
    *
    *     system.extension(HttpExtensionId)
-   *           .newServerAt(host ?? '0.0.0.0', port)
+   *           .newServerAt(host ?? '127.0.0.1', port)
    *           .useBackend(backend ?? new FastifyBackend())
+   *
+   * **The default host is loopback, and that is a change** (#1408).  It used
+   * to be the IPv4 wildcard, which made the shortest and most-copied form of
+   * this call the one that published the server on every interface — a
+   * decision nothing at the call site recorded and most callers never made.
+   * A server that should be reachable from outside the host now says so, by
+   * passing the interface it means through `options.host`.
+   *
+   * The wildcard is deliberately not spelled out here: this comment is a
+   * copy-paste surface, and `tests/unit/ci/ExampleBindAddresses.test.ts`
+   * flags one baked into a snippet for exactly that reason (#756).
    *
    * For non-default backends, pass `backend:` — typically
    * `new ExpressBackend(opts)` or `new HonoBackend(opts)`.  Returns
@@ -366,7 +754,8 @@ export class ActorSystem {
     port: number,
     options: { readonly host?: string; readonly backend?: HttpServerBackend } = {},
   ): ServerBuilder {
-    const builder = this.extensions.get(HttpExtensionId).newServerAt(options.host ?? '0.0.0.0', port);
+    const builder = this.extensions.get(HttpExtensionId)
+      .newServerAt(options.host ?? DEFAULT_HTTP_BIND_HOST, port);
     return options.backend ? builder.useBackend(options.backend) : builder;
   }
 
@@ -385,6 +774,10 @@ export class ActorSystem {
     if (this._terminating || this._terminated) {
       throw new Error(`Cannot create actors on a terminated ActorSystem '${this.name}'`);
     }
+    if (this._parallelism !== null) {
+      const placed = this._parallelism._place(actor, name, options, 'caller');
+      if (placed !== null) return placed;
+    }
     return this.userGuardianCell.spawn(actor, name, options);
   }
 
@@ -398,8 +791,43 @@ export class ActorSystem {
     if (this._terminating || this._terminated) {
       throw new Error(`Cannot create actors on a terminated ActorSystem '${this.name}'`);
     }
+    if (this._parallelism !== null) {
+      // The name is minted here so the ref's path is settled before the
+      // worker has heard of it; a placement that stays local reuses it.
+      const name = this.userGuardianCell._nextAnonymousName();
+      const placed = this._parallelism._place(actor, name, options, 'generated');
+      if (placed !== null) return placed;
+      return this.userGuardianCell._spawnWithGeneratedName(actor, name, options);
+    }
     return this.userGuardianCell.spawnAnonymous(actor, options);
   }
+
+  /**
+   * @internal Spawn under `/user` with a name the framework generated —
+   * on another node, for an anonymous actor the parallelism extension placed
+   * here.  The reserved `$` prefix is what `spawn` refuses from a caller.
+   */
+  _spawnWithGeneratedName<T>(actor: ActorClassOrFactory<T>, name: string, options?: ActorOptions<T>): ActorRef<T> {
+    if (this._terminating || this._terminated) {
+      throw new Error(`Cannot create actors on a terminated ActorSystem '${this.name}'`);
+    }
+    return this.userGuardianCell._spawnWithGeneratedName(actor, name, options);
+  }
+
+  /**
+   * @internal Register work the teardown runs before the actors are stopped —
+   * after a bare `terminate()` and at the end of the pipeline alike.
+   */
+  _beforeTerminate(prelude: () => Promise<void>): void {
+    this._terminationPreludes.push(prelude);
+  }
+
+  /**
+   * @internal Whether the teardown has started.  Not merely whether
+   * `terminate()` was called: one that runs the pipeline first leaves this
+   * false until the pipeline's last phase gets there.
+   */
+  _isTerminating(): boolean { return this._terminating || this._terminated; }
 
   /**
    * Spawn a typed Behavior under `/user` with a deterministic name —
@@ -576,27 +1004,263 @@ export class ActorSystem {
    * Bounded by `actor-ts.system.shutdown-drain-timeout`; set it to 0 to skip
    * the drain entirely.  See {@link awaitQuiescence} for what "quiet" means
    * and which mailboxes are deliberately not waited on.
+   *
+   * **The coordinated-shutdown pipeline runs only when asked for.**  On its
+   * own this is the teardown above and nothing more: no task registered with
+   * {@link CoordinatedShutdown} runs, so the HTTP unbind, the cluster leave
+   * and every phase task the application added are skipped — a bound port
+   * keeps answering and a joined node stays `up` for its peers.  Pass
+   * `runCoordinatedShutdown: true` and every phase runs first, with
+   * {@link ActorSystemTerminateReason}; the promise then resolves once the
+   * pipeline has finished *and* the system is down, as `runUntilTerminated()`
+   * does.  The teardown follows the run even when the run does not end in one
+   * — `terminate-actor-system = false` leaves the last phase without its
+   * terminator, and a failing phase with `recover = false` halts the pipeline
+   * short of it — because the caller asked for a terminated system, and a
+   * `terminate()` that left one running would be the worse surprise (#1455).
+   * Unless `exit-process` ends the process where the run ends — at the halt,
+   * or after a last phase with no terminator in it — once the dead-letter
+   * queue and the log sinks are flushed: nothing follows `process.exit`, this
+   * teardown included.
+   * `actor-ts.coordinated-shutdown.run-by-actor-system-terminate = true` makes
+   * that the default for every call that does not choose; a call's own
+   * `runCoordinatedShutdown` still wins over the config, `false` included.
+   *
+   * Outside a run, once a teardown has started, a later call joins it
+   * whichever form it takes: a pipeline started over a half-stopped tree would
+   * unbind and leave after the actors it exists to protect have already gone.
+   *
+   * **While a coordinated-shutdown run is in flight, `terminate()` starts
+   * nothing and resolves at once, in either form** — whoever started the run,
+   * a signal, a `run()` or another `terminate()`.  Joining the run instead
+   * would stall the commonest such caller: a task of that run awaiting
+   * `terminate()` waits on its own run, and holds its phase until the phase's
+   * budget abandons it.  Tearing down on the spot would stop the actors in
+   * the middle of the pipeline and run every later phase on a dead system.
+   * The run ends in the teardown anyway; a caller outside the pipeline that
+   * needs the system down awaits {@link whenTerminated}.  A task of the run
+   * must not: the teardown it would wait for is in the last phase, which
+   * cannot start before the task's own phase ends, so the wait is the same
+   * stall — only a task of `actor-system-terminate` runs beside the
+   * terminator.  Nor is the request dropped: a run that does not end in the
+   * teardown — no terminator in its last phase, or a halt before it — is
+   * followed by one, unless `exit-process` ends the process at the end of
+   * that run, which nothing follows.
+   *
+   * **A startup still running is abandoned, in either form** (#1473): the
+   * running tasks' signals abort, no further phase starts, and
+   * {@link whenReady} rejects with an abandonment error.  That is not a
+   * startup failure — the caller asked for the system to go — so it starts no
+   * shutdown of its own and `runUntilTerminated()` resolves as usual.
    */
-  terminate(): Promise<void> {
+  terminate(options?: TerminateOptions): Promise<void> {
+    return this.terminateWith(options?.runCoordinatedShutdown, ActorSystemTerminateReason.instance);
+  }
+
+  /**
+   * @internal {@link terminate} for a system whose start failed outside its
+   * startup graph — a `Cluster.bootstrap` that refused to go on after it had
+   * built the system, today — with `reason` for the run it starts.
+   *
+   * The same choices a plain `terminate()` makes: a run in flight or a
+   * teardown under way is joined, and
+   * `actor-ts.coordinated-shutdown.run-by-actor-system-terminate` decides
+   * whether the pipeline runs first.  Only the reason differs, and the reason
+   * is the point.  `ActorSystemTerminateReason` says a program decided to stop,
+   * a clean stop, which `exit-process` exits with `exit-code` — `0` by default
+   * — so a refused start used to end the process with that status, from inside
+   * the bootstrap and before the refusal could reach its caller (#1455).  A
+   * reason that reports a failure makes the exit a failed one.
+   */
+  _terminateFor(reason: Reason): Promise<void> {
+    return this.terminateWith(undefined, reason);
+  }
+
+  /** {@link terminate}'s body: the call's own `runCoordinatedShutdown`, and the reason a run it starts passes. */
+  private terminateWith(runCoordinatedShutdownChoice: boolean | undefined, reason: Reason): Promise<void> {
+    if (this._terminated) return Promise.resolve();
+    this.coordinatedStartup._abandon();
+    const runInProgress = this.coordinatedShutdownRunInProgress();
+    if (runInProgress !== null) {
+      const teardownAfterRun = (): void => { void this._teardown(); };
+      runInProgress.then(teardownAfterRun, teardownAfterRun);
+      return Promise.resolve();
+    }
+    // The call's own choice, else the config's — where the default is chosen,
+    // so an explicit `false` still beats a configured `true` (#1455).
+    const runCoordinatedShutdown = runCoordinatedShutdownChoice ?? this.runCoordinatedShutdownByDefault;
+    if (!runCoordinatedShutdown || this._terminating) return this._teardown();
+    return this.runCoordinatedShutdownThenTeardown((coordinatedShutdown) => coordinatedShutdown.run(reason));
+  }
+
+  /**
+   * The coordinated-shutdown run in flight, if there is one — asked without
+   * building the extension.  A system that never touched the pipeline has no
+   * run to find, and building the extension here would read, and could
+   * refuse, its config inside a call that has nothing to do with it.
+   */
+  private coordinatedShutdownRunInProgress(): Promise<void> | null {
+    return this.extensions.has(CoordinatedShutdownId)
+      ? this.extensions.get(CoordinatedShutdownId)._runInProgress
+      : null;
+  }
+
+  /**
+   * Whether a coordinated-shutdown run has ever begun — asked by the startup
+   * graph at each of its steps, the second line behind
+   * {@link _abandonStartup} for a run that began before the graph was
+   * running, and without building the extension, for the reason
+   * {@link coordinatedShutdownRunInProgress} gives.  "Ever", not "in flight":
+   * a run that ended and left the system up — no terminator in its last
+   * phase — still unbound and left.
+   */
+  private coordinatedShutdownHasBegun(): boolean {
+    return this.extensions.has(CoordinatedShutdownId)
+      && this.extensions.get(CoordinatedShutdownId).isRunning;
+  }
+
+  /**
+   * Start the run `startRun` asks for — every phase with
+   * {@link ActorSystemTerminateReason} for a `terminate()`, with the bootstrap's
+   * reason for {@link _terminateFor}, the failure form with a
+   * `StartupFailedReason` for a failed startup — then the teardown:
+   * after a run that completed, after one that halted, and in place of one
+   * the extension could not even be built for.  Unless `exit-process` ends
+   * the process at the end of the run, at a halt as after a last phase: then
+   * neither handler below runs, because nothing follows `process.exit`.
+   *
+   * Both failures are reported here and nowhere else on this path: the
+   * promise `terminate()` hands back settles once the system is down rather
+   * than with the pipeline's error, because a `void system.terminate(…)`
+   * must not turn a halted phase into an unhandled rejection.  The task that
+   * failed has already logged its own WARN.
+   */
+  private runCoordinatedShutdownThenTeardown(
+    startRun: (coordinatedShutdown: CoordinatedShutdown) => Promise<void>,
+  ): Promise<void> {
+    let run: Promise<void>;
+    try {
+      run = startRun(this.extension(CoordinatedShutdownId));
+    } catch (error) {
+      this.log.error('the coordinated-shutdown pipeline could not be built; tearing the system down without it', error);
+      return this._teardown();
+    }
+    return run.then(
+      () => this._teardown(),
+      (error: unknown) => {
+        this.log.error('the coordinated-shutdown pipeline halted; tearing the system down regardless', error);
+        return this._teardown();
+      },
+    );
+  }
+
+  /**
+   * @internal Abandon a startup still running — what `CoordinatedShutdown`
+   * calls as a run begins, before its first phase starts.
+   *
+   * `terminate()` abandons the startup before it starts its pipeline, but a
+   * run started any other way — a signal's, an explicit `run()`, a node that
+   * could not join — never passes through `terminate()`.  Left to meet such
+   * a run at its own next step ({@link coordinatedShutdownHasBegun}), a task
+   * waiting inside a thirty-second budget ran on through the unbind and the
+   * leave; asked here, every run aborts the tasks' signals the moment it
+   * begins (#1473).  A no-op once the startup has ended.
+   */
+  _abandonStartup(): void {
+    this.coordinatedStartup._abandon();
+  }
+
+  /**
+   * @internal The teardown itself — drain, preludes, stop cascade — behind
+   * none of {@link terminate}'s choices.
+   *
+   * Public only for the built-in `terminate-actor-system` task.  That task
+   * runs inside a coordinated-shutdown run, where `terminate()` deliberately
+   * starts nothing, so it needs a way in that is not `terminate()`.
+   *
+   * It abandons a startup still running, as `terminate()` does — a no-op
+   * after a run, which abandoned it as it began ({@link _abandonStartup}),
+   * and the one abandonment a teardown outside any run gets.
+   */
+  _teardown(): Promise<void> {
     if (this._terminated) return Promise.resolve();
     if (this._terminating) return this.whenTerminated();
+    this.coordinatedStartup._abandon();
     this._terminating = true;
     const terminated = this.whenTerminated();
+    const startStopCascade = (): void => { this.rootCell.enqueueSystem({ kind: 'terminate' }); };
     if (this.shutdownDrainTimeoutMs <= 0) {
-      this.rootCell.enqueueSystem({ kind: 'terminate' });
+      if (this._terminationPreludes.length === 0) {
+        startStopCascade();
+      } else {
+        void this.runTerminationPreludes().then(startStopCascade, startStopCascade);
+      }
       return terminated;
     }
-    // Not awaited: `terminate()` stays synchronous up to its first suspension
+    // Not awaited: the teardown stays synchronous up to its first suspension
     // point so `_terminating` is set before any caller can re-enter, and the
     // promise it hands back is `whenTerminated()` either way.
-    const startTeardown = (): void => { this.rootCell.enqueueSystem({ kind: 'terminate' }); };
+    //
     // Same handler on both settlements on purpose.  Nothing in the drain is
     // supposed to throw, and if something ever does, the failure mode must not
     // be a system that never tears down and a `terminate()` that never
     // settles — the drain is an optimisation over the teardown, not a
-    // precondition for it.
-    void this.awaitQuiescence(this.shutdownDrainTimeoutMs).then(startTeardown, startTeardown);
+    // precondition for it.  The preludes come after the drain and before the
+    // stop cascade: the drain lets in-flight replies land, the preludes take
+    // down what lives outside this tree, and only then do the actors stop.
+    const runPreludes = (): Promise<void> => this.runTerminationPreludes();
+    void this.awaitQuiescence(this.shutdownDrainTimeoutMs)
+      .then(runPreludes, runPreludes)
+      .then(startStopCascade, startStopCascade);
     return terminated;
+  }
+
+  /**
+   * @internal Flush what the teardown flushes on its way down — the
+   * dead-letter queue's writes, then the log sinks — for a process about to
+   * exit without that teardown.  `CoordinatedShutdown` calls it right before
+   * `exit-process` calls `process.exit`, and which case it is decides what it
+   * does:
+   *
+   * - **The teardown has run** — a completed run whose built-in terminator
+   *   took the system down.  It flushed and closed both on the way, so this
+   *   resolves at once instead of flushing a closed logger a second time.
+   * - **No teardown has** — a run a phase halted, which never reached the
+   *   terminator, or a completed run with `terminate-actor-system = false`.
+   *   Nothing has flushed either, and nothing will after `process.exit`: a
+   *   buffering sink would take its last records down with the process,
+   *   after a halt the ERROR line that says why among them.
+   *
+   * The logger is flushed, and closed only where it has no `flush`: the
+   * process is about to go, but `process.exit` returns where a test replaces
+   * it, and the teardown that follows then still finds an open logger to
+   * close.  The queue goes first for the teardown's reason — a write that
+   * fails reports through the logger.
+   *
+   * Each step is bounded by `actor-ts.logger.close-timeout`, the budget the
+   * teardown gives the same two flushes, and the promise never rejects: an
+   * exit held open by a sink that never answers would be the very hang
+   * `exit-process` exists to end.
+   */
+  async _flushBeforeExit(): Promise<void> {
+    if (this._sinksClosed) return;
+    if (this.deadLetterQueue.store !== 'off') {
+      await withinBudget(() => this.deadLetterQueue.flush(), this.loggerCloseTimeoutMs, 'dead-letter flush');
+    }
+    const flushLogger = flushOf(this.log) ?? closeOf(this.log);
+    if (flushLogger !== undefined) {
+      await withinBudget(flushLogger, this.loggerCloseTimeoutMs, 'logger flush');
+    }
+  }
+
+  /** Every prelude, together; one that throws is logged and does not hold the others up. */
+  private async runTerminationPreludes(): Promise<void> {
+    const preludes = this._terminationPreludes.splice(0);
+    await Promise.all(preludes.map((prelude) =>
+      prelude().catch((error: unknown) => {
+        this.log.error('a termination prelude failed; shutting the actors down regardless', error);
+      }),
+    ));
   }
 
   /**
@@ -645,6 +1309,48 @@ export class ActorSystem {
     return this.isUserTreeQuiescent();
   }
 
+  /**
+   * @internal Let every actor turn that is already armed run, and every turn
+   * those arm, until the `/user` tree is quiet.
+   *
+   * **The primitive the TestKit's `advance` needed and did not have.**
+   * `ManualScheduler.advance` fires a timer *synchronously*, but the `tell` the
+   * timer performs is delivered by the dispatcher on a later turn — so
+   * `scheduler.advance(100); expect(probe.received).toHaveLength(1)` reads an
+   * empty probe, and the two flagship determinism samples in the documentation
+   * did not work as written (#1025).  Virtual time makes *when* a timer fires
+   * deterministic; it says nothing about when its effects have landed.
+   *
+   * Distinct from {@link awaitQuiescence}, which this deliberately does not
+   * reuse. That one is a **drain with a deadline**: it backs off from 1 ms to
+   * 25 ms because it runs on every `terminate()` and may be waiting on a real
+   * system doing real work. This one is a **settle with a turn budget**: it
+   * never sleeps, because there is nothing to wait *for* — the work is already
+   * armed and only needs the event loop to reach it. Sleeping here would put a
+   * fixed delay into the one place the test suite is trying to remove them
+   * from.
+   *
+   * The yield is a macrotask, not a microtask, and that is load-bearing: the
+   * default dispatcher spends a microtask budget before yielding, so a
+   * microtask-only loop can spin against it forever without the runner's own
+   * timeout ever firing (#1360).
+   *
+   * Only `/user` is inspected, for the reason {@link awaitQuiescence} gives:
+   * the framework actors under `/system` are never quiet by design.
+   *
+   * @returns whether the tree actually became quiet. A `false` means the budget
+   *   ran out, which is a finding rather than a timing accident.
+   */
+  async _settle(maxTurns: number = SETTLE_MAX_TURNS): Promise<boolean> {
+    if (this._terminated) return true;
+    for (let turn = 0; turn < maxTurns; turn++) {
+      // Probed before the first yield, so an already-quiet system pays nothing.
+      if (this.isUserTreeQuiescent()) return true;
+      await sleep(0);
+    }
+    return this.isUserTreeQuiescent();
+  }
+
   /** Is every cell under `/user` — the guardian included — out of work? */
   private isUserTreeQuiescent(): boolean {
     const busy = (cell: ActorCell<unknown>): boolean => {
@@ -654,6 +1360,49 @@ export class ActorSystem {
       return childBusy;
     };
     return !busy(this.userGuardianCell);
+  }
+
+  /**
+   * Resolves once the startup graph has run every phase — the tasks passed to
+   * `ActorSystemOptions.withCoordinatedStartup`, and those the framework adds
+   * itself, such as opening the selected persistence stores — which the
+   * system starts by itself as the last step of {@link create} (#1473).
+   *
+   * Rejects with an error naming the phase and the task when a task fails or
+   * outlives its phase's budget — by then the system is already shutting down
+   * — and with an abandonment error when the system is terminated before
+   * startup finished.  The same promise every call; a system with no startup
+   * tasks is ready at once.
+   *
+   * Nothing has to await it: the `startup` readiness check keeps `/ready`
+   * false while the graph runs, and a failed startup takes the system down on
+   * its own.  It is for the code that must not run before startup has — a
+   * first message that needs the journal open, say.
+   */
+  whenReady(): Promise<void> {
+    return this.coordinatedStartup.whenReady();
+  }
+
+  /**
+   * A startup task failed: one ERROR line naming it, then the coordinated
+   * shutdown with the reason, then the teardown whatever the pipeline did.
+   *
+   * The whole pipeline rather than a bare teardown, because by the time a task
+   * fails the earlier phases may have bound a port or joined a cluster, and
+   * their framework tasks are what take those back.  The teardown follows
+   * even a pipeline that does not end in one, because a system whose startup
+   * failed must not stay up — `runUntilTerminated()` ends with the startup's
+   * error once it is down, and a `main` awaiting it exits with it — unless
+   * `exit-process` ends the process at the halt, which leaves nothing up
+   * either.  The
+   * failure form of the run, so that with `exit-process` on the process does
+   * not exit `0` either: that status tells a supervisor it stopped cleanly.
+   */
+  private onStartupFailed(reason: StartupFailedReason, error: Error): void {
+    this.log.error(`${error.message} — shutting the system down`, reason.cause);
+    void this.runCoordinatedShutdownThenTeardown(
+      (coordinatedShutdown) => coordinatedShutdown._runForFailure(reason),
+    );
   }
 
   /** Promise that resolves when the system has finished shutting down. */
@@ -671,10 +1420,17 @@ export class ActorSystem {
    * the whole of a service's `main` after the actors are wired:
    *
    * ```ts
-   * const system = ActorSystem.create('orders');
-   * await system.http.bind(routes);
+   * const system = ActorSystem.create('orders', systemOptions);
+   * await system.http(8080).bind(routes);
    * await system.runUntilTerminated();
    * ```
+   *
+   * The startup graph needs no call of its own here: the system starts it as
+   * the last step of `create`, `/ready` stays false until it completes, and a
+   * startup task that fails takes the system down — at which point this
+   * promise **rejects with the startup's error**, after the handlers and the
+   * keep-alive below have come off.  A `main` that awaits it therefore exits
+   * by itself, non-zero, without catching anything (#1473).
    *
    * Installs SIGTERM/SIGINT handlers that start
    * {@link CoordinatedShutdown}, resolves once the system is fully down,
@@ -687,7 +1443,7 @@ export class ActorSystem {
    *
    * What replaces the hand-rolled `process.on('SIGTERM', () => { … })` is
    * not just the signal plumbing but the **ordering**.  A handler that
-   * calls `terminate()` stops the actors first and only then, if ever,
+   * calls a bare `terminate()` stops the actors first and only then, if ever,
    * releases the port and leaves the cluster; the pipeline unbinds in
    * `service-unbind`, closes brokers in `service-stop` and leaves the
    * cluster in `cluster-leave`, all before `actor-system-terminate` — so a
@@ -717,23 +1473,50 @@ export class ActorSystem {
    *   platform difference.  Note that skipping them *all* does not turn this
    *   into a no-op: the promise still waits, and the process still stays
    *   alive, until something shuts the system down from inside.
+   *
+   *   Naming any signal here is an explicit request and always installs.
+   *   Leaving it unset takes the default from
+   *   `actor-ts.coordinated-shutdown.run-by-process-signals`, which a host
+   *   process that owns SIGTERM itself can turn off — the wait and the
+   *   keep-alive are unaffected, only the handlers go.
    */
   async runUntilTerminated(
     signals?: ReadonlyArray<ProcessSignal>,
   ): Promise<void> {
     const coordinatedShutdown = this.extension(CoordinatedShutdownId);
-    coordinatedShutdown.installProcessHooks(signals);
+    // `signals !== undefined` is an explicit request and outranks the config
+    // key, which only decides the default.  Gating inside
+    // `installProcessHooks` would invert that: the key ships as a leaf, so
+    // reference.conf always answers it and HOCON would beat the caller.
+    if (signals !== undefined || coordinatedShutdown.runByProcessSignals) {
+      coordinatedShutdown.installProcessHooks(signals);
+    }
     const releaseEventLoop = holdEventLoopOpen();
+    let pipelineHalted: { readonly error: unknown } | null = null;
     try {
       await this.whenTerminated();
-      // Only when one is already in flight: `run()` on an idle pipeline
-      // would *start* it, which would be a second shutdown of a system that
-      // has just finished its first.
+      // Only when something started the pipeline — a signal, an explicit
+      // `run()`, or `terminate({ runCoordinatedShutdown: true })` — and then to
+      // wait out the tasks that share the final phase with the terminator.  A
+      // bare `terminate()` leaves it idle, and `run()` on an idle pipeline
+      // would *start* it: a second shutdown of a system that has just
+      // finished its first.
       if (coordinatedShutdown.isRunning) await coordinatedShutdown.run();
+    } catch (error) {
+      pipelineHalted = { error };
     } finally {
       coordinatedShutdown.removeProcessHooks();
       releaseEventLoop();
     }
+    // A system that went down because its startup failed did not go down
+    // because anybody asked it to, and the caller's `main` has nothing but this
+    // promise to learn that from.  Thrown after the `finally`, so nothing of
+    // ours is left holding the process open while the error travels up — and
+    // ahead of a pipeline that halted on the way down, which is the
+    // consequence rather than the cause and has already been logged.
+    const startupFailure = this.coordinatedStartup.failure;
+    if (startupFailure !== undefined) throw startupFailure;
+    if (pipelineHalted !== null) throw pipelineHalted.error;
   }
 
   /**
@@ -814,30 +1597,44 @@ export class ActorSystem {
   /** @internal — called by the root cell once it has finished terminating. */
   _rootTerminated(_cell: ActorCell<any>): void {
     this._terminated = true;
-    this.scheduler.shutdown();
+    // A callback subscription has no actor whose stop would end it, so the
+    // system's end does (#1433).  Here and not in `terminate()`: the root's
+    // own ActorStopped has just been published, so a callback has seen every
+    // stop of the shutdown, and `isTerminated` turned true on the line above,
+    // so no callback runs from here on — not during the flushes below, which
+    // `terminate()` waits for, and not after it resolves.
+    this.eventStream._endCallbackSubscriptions();
+    // Only a scheduler this system built.  One passed in belongs to the caller,
+    // the same rule the dispatcher below has always followed — and the reason
+    // it matters is that a shared one is still in use: the second of two
+    // systems on one `ManualScheduler` would find every handle disarmed by the
+    // first one's teardown (#1424).
+    if (this.ownsScheduler) this.scheduler.shutdown();
     // Stop reporting into a logger that is about to be closed.  Only our
     // own sink is removed: a dispatcher passed in through
     // `ActorSystemOptions` outlives this system, and one the owner wired
     // themselves is theirs to keep.
     if (this.dispatcher.onError === this.dispatcherErrorSink) this.dispatcher.onError = undefined;
-    // Same for the scheduler.  `shutdown()` above already disarmed every
-    // handle this system owns, so nothing of ours can still fire — but a
-    // `ManualScheduler` handed in through `ActorSystemOptions` outlives the
-    // system and is advanced by the test afterwards, and its ticks must not
-    // report into a logger that is about to be closed.
+    // Same for the scheduler, and for a borrowed one this is the whole of the
+    // cleanup: it stays armed and advancing for whoever still holds it, so its
+    // ticks must not report into a logger that is about to be closed.
     if (this.scheduler.onError === this.schedulerErrorSink) this.scheduler.onError = undefined;
     const resolvers = this._terminationResolvers;
     this._terminationResolvers = [];
-    const finish = (): void => { for (const resolve of resolvers) resolve(); };
+    const finish = (): void => {
+      this._sinksClosed = true;
+      for (const resolve of resolvers) resolve();
+    };
 
     // Settle the dead-letter queue's writes, then flush the log sinks,
     // before anyone learns the system is down.  This is the only seam that
-    // catches both shutdown paths: `CoordinatedShutdown` ends by calling
-    // `terminate()`, so a task registered in a phase would miss every
-    // program that terminates directly.  It also runs *after* every
-    // `postStop`, so a last message from a stopping actor is still in the
-    // queue being drained.  Structural, so any logger with a `close()` is
-    // flushed — not just the framework's own.
+    // catches every shutdown path: the pipeline ends in the same teardown a
+    // bare `terminate()` runs, so a task registered in a phase would miss
+    // every program that terminates without the pipeline — which a plain
+    // `terminate()` still does.  It also runs *after* every `postStop`, so a
+    // last message from a stopping actor is still in the queue being
+    // drained.  Structural, so any logger with a `close()` is flushed — not
+    // just the framework's own.
     //
     // Ordering matters for the queue and not only for tidiness: the bulk of
     // a shutdown's dead letters — stashes discarded, mailboxes emptied past
@@ -887,25 +1684,42 @@ function buildConfig(options: ActorSystemOptionsType): Config {
       ? Config.empty()
       : options.config instanceof Config
         ? options.config
+        // A spread of a `Config`, and a class instance anywhere in the tree,
+        // are refused there, for every route that builds one from an object
+        // (#1473).
         : Config.fromObject(options.config);
   return Config.load({
     appConfPath: options.configFile,
+    referenceConfPath: options.referenceConfigFile,
+    secretsConfPath: options.secretsFile,
+    environmentFilePath: options.environmentFile,
+    profile: options.profile,
     overrides: userLayer,
   });
 }
 
-/** `actor-ts.system.name`, or the historical `"default"` when unset. */
-function systemNameFromConfig(config: Config): string {
+/*
+ * The readers below are the constructor's only view of the leaves they name,
+ * and they are exported so that what a system reads can be checked without
+ * building one (#1425).  Each returns the config's own answer and nothing
+ * more: an unset leaf comes back `undefined`, never as the built-in default,
+ * which the constructor applies once, with `??`.  A reader that defaulted its
+ * leaf in would make "configured" and "fell through" indistinguishable in its
+ * output while every system-level test still saw the right number.
+ */
+
+/** `actor-ts.system.name`; the system calls itself `"default"` when it is unset. */
+export function readSystemNameFromConfig(config: Config): string | undefined {
   return config.hasPath(ConfigKeys.system.name)
     ? config.getString(ConfigKeys.system.name)
-    : 'default';
+    : undefined;
 }
 
 /** `actor-ts.system.shutdown-drain-timeout` — the `terminate()` drain budget. */
-function shutdownDrainTimeoutFromConfig(config: Config): number {
+export function readShutdownDrainTimeoutFromConfig(config: Config): number | undefined {
   return config.hasPath(ConfigKeys.system.shutdownDrainTimeout)
     ? config.getDuration(ConfigKeys.system.shutdownDrainTimeout)
-    : DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS;
+    : undefined;
 }
 
 /**
@@ -950,11 +1764,20 @@ function holdEventLoopOpen(): () => void {
 
 /**
  * Pick the system logger.  Precedence is **atomic**: an explicit `logger`
- * wins outright, then an explicit `logSinks` list, then the sinks enabled
- * in HOCON, then the historical single `ConsoleLogger`.  Code and config
- * never merge into one sink set — a half-configured destination is worse
- * than either whole answer, and merging would mean validating options
- * somewhere other than the constructor that owns them.
+ * wins outright, then the `otelLogs` slot, then an explicit `logSinks` list,
+ * then the sinks enabled in HOCON, then the historical single
+ * `ConsoleLogger`.  Code and config never merge into one sink set — a
+ * half-configured destination is worse than either whole answer, and merging
+ * would mean validating options somewhere other than the constructor that
+ * owns them.  Two fields set at once is not an error: the lower one is simply
+ * not built, which is what `withLogger` over `withLogSinks` has always done.
+ *
+ * The OpenTelemetry logger is built here, by the system, rather than by the
+ * tracing extension that builds the OpenTelemetry tracer, because the logger
+ * has to exist before anything that captures it: this runs before the
+ * extension registry does, `log` is read-only, the event stream, the
+ * dead-letter ref and the message-boundary check keep the instance they were
+ * handed, and every actor caches a logger derived from it on first use.
  */
 function resolveLogger(
   options: ActorSystemOptionsType,
@@ -963,16 +1786,43 @@ function resolveLogger(
 ): Logger {
   if (options.logger !== undefined) return options.logger;
   const level = options.logLevel ?? readLoggerLevelFromConfig(config);
+  if (options.otelLogs !== undefined) return buildOtelLogsLogger(options.otelLogs, config, level);
   if (options.logSinks !== undefined) {
     return new MultiSinkLogger({ sinks: options.logSinks, level, closeTimeoutMs });
   }
   return buildLoggerFromConfig(config, { level, closeTimeoutMs }) ?? new ConsoleLogger(level);
 }
 
-function loggerCloseTimeoutFromConfig(config: Config): number {
+/**
+ * The logger the `otelLogs` slot asks for, through `otelLogger` — the factory
+ * `withLogger(otelLogger(...))` calls too, so the two routes cannot disagree
+ * about what a record looks like.
+ *
+ * The name and version are **the slot's options > `actor-ts.tracing.logger-name`
+ * and `logger-version` > `DEFAULT_OTEL_LOGGER_NAME`**, per field, so a name set
+ * in code keeps a configured version; the floor is `otelLogger`'s own rather
+ * than a layer here, so the two routes cannot disagree about it either.
+ * `level` is the system's (`logLevel`, else `actor-ts.logger.level`) and sits
+ * in the floor layer, so the options' own `level` wins over it.
+ *
+ * It has no `close`: flushing belongs to the OpenTelemetry SDK's
+ * `LoggerProvider`, which the application built and shuts down, so
+ * `terminate()` has nothing of it to wait for.
+ */
+function buildOtelLogsLogger(otelLogs: OtelLogsAdapterOptions, config: Config, level: LogLevel): Logger {
+  const settings = mergeOptions<OtelLogsAdapterOptionsType>(
+    { level },
+    readOtelLogsAdapterOptionsFromConfig(config),
+    otelLogs as Partial<OtelLogsAdapterOptionsType>,
+  );
+  return otelLogger(settings);
+}
+
+/** `actor-ts.logger.close-timeout` — the grace `terminate()` gives the logger to flush. */
+export function readLoggerCloseTimeoutFromConfig(config: Config): number | undefined {
   return config.hasPath(ConfigKeys.logger.closeTimeout)
     ? config.getDuration(ConfigKeys.logger.closeTimeout)
-    : DEFAULT_SINK_CLOSE_TIMEOUT_MS;
+    : undefined;
 }
 
 /** A logger's `attach`, if it has one — a structural, not nominal, check. */
@@ -993,6 +1843,12 @@ function attachLogger(log: Logger, context: { scheduler: Scheduler; systemName: 
 function closeOf(log: Logger): (() => Promise<void>) | undefined {
   const close = (log as Partial<MultiSinkLogger>).close;
   return typeof close === 'function' ? () => close.call(log) : undefined;
+}
+
+/** A logger's `flush`, bound, if it has one — structural, like {@link closeOf}. */
+function flushOf(log: Logger): (() => Promise<void>) | undefined {
+  const flush = (log as Partial<MultiSinkLogger>).flush;
+  return typeof flush === 'function' ? () => flush.call(log) : undefined;
 }
 
 /**
@@ -1031,7 +1887,7 @@ async function withinBudget(
 }
 
 /**
- * Resolve the system-wide per-actor batch budget (#409).
+ * Read the system-wide per-actor batch budget (#409).
  *
  * A non-positive value is clamped rather than rejected: `0` would leave every
  * actor accepting mail and never reading it, and a config file is exactly the
@@ -1039,29 +1895,141 @@ async function withinBudget(
  * `1` reproduces the pre-#409 message-at-a-time loop, which is the honest
  * reading of "as little batching as possible".
  */
-function actorThroughputFromConfig(config: Config): number {
-  if (!config.hasPath(ConfigKeys.actor.throughput)) return DEFAULT_ACTOR_THROUGHPUT;
+export function readActorThroughputFromConfig(config: Config): number | undefined {
+  if (!config.hasPath(ConfigKeys.actor.throughput)) return undefined;
   return Math.max(1, config.getInt(ConfigKeys.actor.throughput));
 }
 
 /**
- * The absent-key case and the unrecognised-value case both land on the default
- * rather than on a named kind, so "what runs when nobody chose?" has exactly
- * one answer — including for a typo, which is the case most likely to reach
- * someone wondering why their tuning did nothing.
+ * Read the system-wide default ask deadline (#863).
+ *
+ * **Rejected, not clamped — deliberately unlike its neighbour above.**
+ * `throughput = 0` has a nearest honest reading ("as little batching as
+ * possible" is 1) so clamping loses nothing.  `ask-timeout = 0` has none: an
+ * ask that arms no deadline can never settle, because the reply ref is neither
+ * returned to the caller nor exported, which is why {@link ActorRef.ask}
+ * refuses the same value as a positional argument (#765).  Clamping to 1 ms
+ * would honour the letter of that rule while producing asks that reject before
+ * anything can answer them — a working deadline that is never the one anybody
+ * asked for.
+ *
+ * Throwing here rather than leaving it to `assertAskTimeout` moves the failure
+ * from every ask site in the application to the one line that caused it, and
+ * names the key in the message.
  */
-function dispatcherFromConfig(config: Config): Dispatcher {
-  const kind = config.hasPath(ConfigKeys.dispatcher.default)
-    ? config.getString(ConfigKeys.dispatcher.default).toLowerCase()
-    : 'hybrid';
-  return match(kind)
-    .with('immediate',  () => new ImmediateDispatcher() as Dispatcher)
-    .with('microtask',  () => new MicrotaskDispatcher() as Dispatcher)
-    .with('throughput', () => {
-      const throughput = config.hasPath(ConfigKeys.dispatcher.throughput)
-        ? config.getInt(ConfigKeys.dispatcher.throughput)
-        : DEFAULT_DISPATCHER_THROUGHPUT;
-      return new ThroughputDispatcher(throughput) as Dispatcher;
-    })
-    .otherwise(() => new HybridDispatcher() as Dispatcher);
+export function readAskTimeoutFromConfig(config: Config): number | undefined {
+  if (!config.hasPath(ConfigKeys.actor.askTimeout)) return undefined;
+  const timeoutMs = config.getDuration(ConfigKeys.actor.askTimeout);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new OptionsError(
+      `${ConfigKeys.actor.askTimeout} must be a positive finite duration `
+      + `(got ${String(timeoutMs)}) — an ask that arms no deadline can never settle`,
+      'actor-ts.actor',
+      'ask-timeout',
+      timeoutMs,
+    );
+  }
+  return timeoutMs;
+}
+
+/**
+ * Say so when the configured ask deadline has made the default scatter-gather
+ * router unable to report (#863, #1088).
+ *
+ * {@link DEFAULT_SCATTER_GATHER_TIMEOUT_MS} exists only to sit under the ask
+ * default, so that a bare `pool.ask(message)` sees the router's
+ * `AggregateError` naming the failing routees rather than its own
+ * `AskTimeoutError`.  Lowering `ask-timeout` past it silently restores exactly
+ * the defect #1088 fixed, and nothing downstream can notice: the scatter
+ * default is resolved in `scatterGatherRouterFactory`, at a call site with no
+ * system in scope.
+ *
+ * A WARN and not a rejection, and not a derived scatter default either.  The
+ * combination is legal — a router that names its own `timeoutMs` is unaffected,
+ * and so is an application with no scatter-gather router at all — so refusing
+ * to start would punish a configuration that may be entirely correct.  Deriving
+ * `min(4_500, resolved - 500)` inside the router would fix it without a word,
+ * but it moves validation away from the factory that its JSDoc argues should
+ * own it, and it makes one knob quietly retune another.  One line at startup
+ * naming both knobs is what the operator needs to decide which of the two they
+ * actually meant.
+ */
+function warnIfAskTimeoutUndercutsScatterGather(log: Logger, askTimeoutMs: number): void {
+  if (askTimeoutMs >= MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATHER_MS) return;
+  log.warn(
+    `${ConfigKeys.actor.askTimeout} = ${askTimeoutMs}ms is below `
+    + `${MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATHER_MS}ms, the least a scatter-gather router left `
+    + `on its ${DEFAULT_SCATTER_GATHER_TIMEOUT_MS}ms default needs to report before the caller `
+    + 'gives up — so `pool.ask(message)` will raise AskTimeoutError instead of the '
+    + 'AggregateError naming the failing routees (#1088).  Raise the ask timeout, or give the '
+    + 'router its own ScatterGatherOptions.withTimeoutMs().',
+  );
+}
+
+/** The dispatchers `actor-ts.dispatcher.default` can name. */
+export type DispatcherKind = 'hybrid' | 'immediate' | 'microtask' | 'throughput';
+
+/**
+ * What `actor-ts.dispatcher` says, as plain data.  A `Dispatcher` instance is
+ * not something two reads can be compared by, so the reading stops here and
+ * {@link createDispatcher} builds from the result.
+ *
+ * Not an options triad: code never hands the system dispatcher *settings* —
+ * `ActorSystemOptions.withDispatcher` takes a built instance — so, like
+ * `DefaultMailboxConfiguration`, this is only the shape the config layer
+ * reads into.
+ */
+export type DispatcherConfiguration = {
+  /** The configured kind; absent when unset, and when no dispatcher answers to the name. */
+  readonly kind?: DispatcherKind;
+  /**
+   * Units a `ThroughputDispatcher` drains per tick.  Present only under the
+   * throughput kind, the one dispatcher that has ever consulted it.
+   */
+  readonly throughput?: number;
+};
+
+/**
+ * Read `actor-ts.dispatcher` without building anything.
+ *
+ * An unrecognised kind is answered exactly as an unset one is — absent — so
+ * the single default {@link createDispatcher} applies covers both, and "what
+ * runs when nobody chose?" has one answer: including for a typo, which is the
+ * case most likely to reach someone wondering why their tuning did nothing.
+ *
+ * `throughput` is read under the throughput kind only.  No other dispatcher
+ * has a use for it, and reading it regardless would turn a malformed value
+ * that nothing consults into a startup failure.
+ */
+export function readDispatcherOptionsFromConfig(config: Config): DispatcherConfiguration {
+  const keys = ConfigKeys.dispatcher;
+  const out: {
+    -readonly [K in keyof DispatcherConfiguration]?: DispatcherConfiguration[K]
+  } = {};
+  if (config.hasPath(keys.default)) {
+    const kind = dispatcherKindOf(config.getString(keys.default));
+    if (kind !== undefined) out.kind = kind;
+  }
+  if (out.kind === 'throughput' && config.hasPath(keys.throughput)) {
+    out.throughput = config.getInt(keys.throughput);
+  }
+  return out;
+}
+
+/** The kind a configured name means, whatever its case; `undefined` when no dispatcher answers to it. */
+function dispatcherKindOf(name: string): DispatcherKind | undefined {
+  return match(name.toLowerCase())
+    .with('hybrid', 'immediate', 'microtask', 'throughput', (known) => known)
+    .otherwise(() => undefined);
+}
+
+/** Build the dispatcher a {@link DispatcherConfiguration} names, and the {@link DEFAULT_DISPATCHER_KIND} one when it names none. */
+function createDispatcher(configured: DispatcherConfiguration): Dispatcher {
+  return match(configured.kind ?? DEFAULT_DISPATCHER_KIND)
+    .with('hybrid', () => new HybridDispatcher() as Dispatcher)
+    .with('immediate', () => new ImmediateDispatcher() as Dispatcher)
+    .with('microtask', () => new MicrotaskDispatcher() as Dispatcher)
+    .with('throughput', () =>
+      new ThroughputDispatcher(configured.throughput ?? DEFAULT_DISPATCHER_THROUGHPUT) as Dispatcher)
+    .exhaustive();
 }

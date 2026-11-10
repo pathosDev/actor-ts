@@ -50,6 +50,43 @@ export type RegisterRefused = {
   readonly regionNumShards: number;
 };
 
+/**
+ * Coordinator → region: this coordinator holds no registration of yours —
+ * register (#853, #849).
+ *
+ * A region registers off cluster events: its own start and every `MemberUp`,
+ * `MemberRemoved` and `LeaderChanged`, plus a retry until it gets an answer.
+ * A coordinator that loses its registry without any of those firing is left
+ * with nobody to tell it what is there.  Three things do exactly that:
+ *
+ * - **a restart** — the coordinator's supervisor rebuilds it after one of its
+ *   handlers throws, a user `AllocationStrategy` included, and the leader does
+ *   not move, so no region sees a reason to register again.  Without a
+ *   coordinator-state store the replacement knows no region at all and the
+ *   type is headless; with one it re-seeds every region from the snapshot, and
+ *   a seeded entry that never registers is swept once `stale-after` runs out —
+ *   which evicted live regions that simply do not beat;
+ * - **a snapshot load** on a new leader, which seeds entries the same way;
+ * - **a lost {@link RegionEvicted}**, which leaves a live region believing it is
+ *   registered while the coordinator holds no entry for it; its next beat
+ *   names a region the coordinator does not know.
+ *
+ * So the coordinator asks, and the region answers with its ordinary
+ * {@link RegisterRegion} — `hostedShards` and all, so the claim is adjudicated
+ * like any other.  It is sent only to regions the coordinator has a concrete
+ * reason to believe in — its predecessor's registry, a snapshot's entries, a
+ * beat it just received — never to every member: a node that runs nothing for
+ * the type would count the frame as a refused envelope.
+ *
+ * The answer is idempotent.  A region that is already registered re-registers
+ * harmlessly, and one whose registration stands refused stays silent, as it
+ * does for its own register loop, until the leader moves.
+ */
+export type RegistrationRequest = {
+  readonly kind: 'sharding.RegistrationRequest';
+  readonly coordinator: string;
+};
+
 export type GetShardHome = {
   readonly kind: 'sharding.GetShardHome';
   readonly shardId: number;
@@ -95,6 +132,76 @@ export type RegionTerminated = {
   readonly kind: 'sharding.RegionTerminated';
   readonly region: string;
   readonly node: NodeAddressData;
+};
+
+/**
+ * Region → coordinator: this region is still there (#853).
+ *
+ * The one signal the coordinator never had.  A region goes permanently silent
+ * the moment it is acknowledged — `ShardRegion.register()` arms a retry that
+ * `onRegisterAcknowledgment` cancels, and nothing beats afterwards — so a
+ * region that is gone without having managed to send its
+ * {@link RegionTerminated} is indistinguishable from a healthy idle one.  That
+ * frame is single-shot and its send error is swallowed on the way down, which
+ * is exactly the gap this is the backstop for.
+ *
+ * **It carries no `hostedShards`, and that is the whole design.**  The obvious
+ * beat is a periodic re-`Register`, and since #948 a repeated claim is
+ * *adjudicated* rather than ignored: a region whose `localShards` has drifted
+ * would earn a `HandOff` per colliding shard on every beat — periodic entity
+ * teardown on the wrong side — and each re-registration also re-runs the
+ * `numShards` refusal, re-ships remembered entities and re-arms the register
+ * retry.  A claim-free frame says only "I am here", which is all the sweep
+ * needs.
+ *
+ * `node` is what {@link ShardCoordinator}'s authority gate compares against
+ * the authenticated peer; a kind that names a node and is missing from that
+ * map is accepted from anybody (#712).
+ */
+export type RegionHeartbeat = {
+  readonly kind: 'sharding.RegionHeartbeat';
+  readonly region: string;
+  readonly node: NodeAddressData;
+};
+
+/**
+ * Coordinator → region: you have been removed from the registry and your
+ * shards have been re-homed (#853).
+ *
+ * The other half of the stale sweep, and without it the sweep is a
+ * double-hosting bug rather than a backstop.  Eviction rewrites the
+ * coordinator's own map and nothing else: {@link ShardMapUpdate} goes out over
+ * the surviving registry, so the region that was just deleted is the one node
+ * that is never told; nothing on the region side re-enters `ensureRegistered`
+ * either, because the node is still up and the leader has not moved.  It
+ * therefore kept `localShards`, kept its shard actors, and kept serving live
+ * entities for shards a second region had just been given — two homes for one
+ * shard, indefinitely, in exactly the case the sweep exists to catch.
+ *
+ * A region that is genuinely gone or wedged — the case the sweep is *for* —
+ * never processes this, and the eviction stands unchanged.  One that was only
+ * silent releases and registers again, which is the self-heal: the coordinator
+ * cannot tell those apart from the outside, and this frame is what makes the
+ * benign one converge instead of splitting.
+ *
+ * It carries no shard ids.  What the region has to give up is everything it
+ * holds for the type — it is not registered any more, so an id-by-id list
+ * could only be a second, staler copy of a set the region already has.
+ */
+export type RegionEvicted = {
+  readonly kind: 'sharding.RegionEvicted';
+  readonly coordinator: string;
+  /**
+   * How long the coordinator had heard nothing when it decided, in ms —
+   * counted, for a region whose node was unreachable meanwhile, from the last
+   * sweep that found the node parked rather than from the region's last frame
+   * (`ShardCoordinator`'s `RegionInfo.lastSeenAtMs`).
+   *
+   * For the region's log line only, and deliberately: an operator reading
+   * "evicted" on a node that is plainly healthy needs the number that
+   * triggered it to know whether `stale-after` is set too tight.
+   */
+  readonly silentForMs: number;
 };
 
 export type EntityStarted = {
@@ -341,12 +448,15 @@ export type ShardingMessage =
   | RegisterRegion
   | RegisterAcknowledgment
   | RegisterRefused
+  | RegistrationRequest
   | GetShardHome
   | ShardHome
   | BeginHandOffAcknowledgment
   | HandOff
   | HandOffComplete
   | RegionTerminated
+  | RegionHeartbeat
+  | RegionEvicted
   | EntityStarted
   | EntityStopped
   | RememberedEntities
@@ -379,17 +489,17 @@ export function isShardingMessage(message: unknown): message is ShardingMessage 
  *
  * Used in **both** directions, because both ends acted on the `kind` string
  * alone.  Several of the region's inbound kinds are coordinator directives —
- * `HandOff` tears a shard's entities down, `ShardHome` moves ownership,
- * `RememberedEntities` pre-creates entities, `ShardMapUpdate` publishes an
- * allocation map to every local subscriber, `RegisterAcknowledgment` settles
- * the register loop — and the region used to honour all of them on the word of
- * anything that could complete a `hello` (#584).  Every one of the
- * coordinator's inbound kinds is in turn a claim about the sender's own node —
- * which shards it hosts, that its region is gone, where to send a reply — and
- * the coordinator read those out of the payload while the authenticated peer
- * went in the bin (#712).  The identity is known at the transport, but it has to
- * survive the trip through the actor's mailbox to be worth anything, which is
- * what this wrapper is for.
+ * `HandOff` tears a shard's entities down, {@link RegionEvicted} tears every
+ * shard's down, `ShardHome` moves ownership, `RememberedEntities` pre-creates
+ * entities, `ShardMapUpdate` publishes an allocation map to every local
+ * subscriber, `RegisterAcknowledgment` settles the register loop — and the
+ * region used to honour all of them on the word of anything that could complete
+ * a `hello` (#584).  Every one of the coordinator's inbound kinds is in turn a
+ * claim about the sender's own node — which shards it hosts, that its region is
+ * gone, where to send a reply — and the coordinator read those out of the
+ * payload while the authenticated peer went in the bin (#712).  The identity is
+ * known at the transport, but it has to survive the trip through the actor's
+ * mailbox to be worth anything, which is what this wrapper is for.
  *
  * **Deliberately a class, not a `{ kind }` tag.**  A wire body is always plain
  * JSON, so a class instance is a shape the wire cannot mint — `instanceof` is

@@ -299,11 +299,11 @@ import { Aside } from '@astrojs/starlight/components';
   retried yet is the first thing dropped once a cap is reached.
 
   Pass a dedicated instance — or `ext.cache('idempotency')` — and size
-  its `maxEntries` for the keys you expect within one `ttlMs`, under
+  its `max-entries` for the keys you expect within one `ttlMs`, under
   that cache's own name:
 
   ```hocon
-  actor-ts.cache.idempotency.in-memory.maxEntries = 200000
+  actor-ts.cache.idempotency.in-memory.max-entries = 200000
   ```
 
   Where one instance genuinely has to be shared, reserve this
@@ -311,8 +311,8 @@ import { Aside } from '@astrojs/starlight/components';
 
   ```hocon
   actor-ts.cache.shared.in-memory {
-    maxEntries = 10000
-    prefixQuotas { "idem:" = 8000, "rl:" = 2000 }
+    max-entries   = 10000
+    prefix-quotas { "idem:" = 8000, "rl:" = 2000 }
   }
   ```
 

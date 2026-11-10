@@ -1,6 +1,7 @@
+import { armChainedTimeout, type Cancellable, type Scheduler } from './Scheduler.js';
 import { ActorPath } from './ActorPath.js';
 import { AskTimeoutError, PoisonPill, Kill } from './SystemMessages.js';
-import { DEFAULT_ASK_TIMEOUT_MS } from './util/Constants.js';
+import { DEFAULT_ASK_TIMEOUT_MS, MAX_TIMER_DELAY_MS } from './util/Constants.js';
 import { OptionsError } from './util/OptionsValidator.js';
 import { randomId } from './util/RandomString.js';
 
@@ -77,8 +78,13 @@ const TEMP_SEGMENT = 'temp';
  * `ScatterGatherOptions.timeoutMs`, `ClusterClientOptions.askTimeoutMs` and
  * `ClusterClientReceptionistOptions.askTimeoutMs` all validate with
  * `positiveNumber`, which rejects it — and makes the documented "mandatory in
- * spirit" deadline mandatory in fact.  Omitting the argument still yields
- * {@link DEFAULT_ASK_TIMEOUT_MS}, as does an explicit `undefined`.
+ * spirit" deadline mandatory in fact.  Omitting the argument still yields a
+ * deadline, as does an explicit `undefined`: whatever
+ * {@link ActorRef._defaultAskTimeoutMs} answers, which is
+ * `actor-ts.actor.ask-timeout` where the ref can see a system and
+ * {@link DEFAULT_ASK_TIMEOUT_MS} where it cannot.  A configured value is
+ * refused by `ActorSystem` at startup, so nothing this function would reject
+ * can arrive through that door (#863).
  *
  * Written out rather than run through an `OptionsValidator` subclass on
  * purpose: the rule is one comparison on one positional argument, and the
@@ -88,10 +94,14 @@ const TEMP_SEGMENT = 'temp';
  */
 function assertAskTimeout(timeoutMs: number): void {
   // `Number.isFinite` does not coerce, so it also rejects a non-number that
-  // reached here from untyped JavaScript.
+  // reached here from untyped JavaScript — which is also why the value is
+  // rendered through {@link OptionsError.renderValue} rather than `String`:
+  // the one arrival this check is claimed to catch is the one a bare `String`
+  // reports as the number it is not.
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new OptionsError(
-      `ActorRef.ask: timeoutMs must be a positive finite number (got ${String(timeoutMs)})`
+      'ActorRef.ask: timeoutMs must be a positive finite number'
+      + ` (got ${OptionsError.renderValue(timeoutMs)})`
       + ' — an ask that arms no deadline can never settle',
       'ActorRef.ask',
       'timeoutMs',
@@ -125,24 +135,32 @@ export abstract class ActorRef<TMessage = unknown> {
    *
    *     const value = await counter.ask<number>({ kind: 'get' });
    *
-   * `timeoutMs` must be a positive finite number; omit it to get
-   * {@link DEFAULT_ASK_TIMEOUT_MS}.  `0`, a negative value, `NaN` and
-   * `Infinity` throw {@link OptionsError} — see {@link assertAskTimeout} for
-   * why an ask has no "no deadline" mode.
+   * `timeoutMs` must be a positive finite number; omit it (or pass
+   * `undefined`) to get {@link ActorRef._defaultAskTimeoutMs} — the configured
+   * `actor-ts.actor.ask-timeout` on a ref that can reach its `ActorSystem`,
+   * and {@link DEFAULT_ASK_TIMEOUT_MS} on one that cannot.  `0`, a negative
+   * value, `NaN` and `Infinity` throw {@link OptionsError} — see
+   * {@link assertAskTimeout} for why an ask has no "no deadline" mode.
    */
   ask<TResponse = unknown>(
     message: OmitReplyTo<TMessage>,
-    timeoutMs: number = DEFAULT_ASK_TIMEOUT_MS,
+    timeoutMs?: number,
   ): Promise<TResponse> {
+    // `??`, so the override is consulted only when the caller said nothing —
+    // an explicit argument never pays for the virtual call, and the resolved
+    // value is what the reply ref and the error message both quote.
+    const resolvedTimeoutMs = timeoutMs ?? this._defaultAskTimeoutMs();
     // Before anything is allocated or sent, and thrown rather than returned as
     // a rejected promise: an argument outside its domain is a defect at the
     // call site, so the failure belongs on the caller's stack.  A rejected
     // promise would instead surface as an unhandled rejection for the
     // fire-and-forget `void ref.ask(...)` shape the cluster client uses.
-    assertAskTimeout(timeoutMs);
+    assertAskTimeout(resolvedTimeoutMs);
     const name = nextAskName();
     const systemName = this.path.systemName;
-    const ref = new AskResponseRef<TResponse>(systemName, name, timeoutMs, this.path.toString());
+    const ref = new AskResponseRef<TResponse>(
+      systemName, name, resolvedTimeoutMs, this.path.toString(), this._virtualScheduler(),
+    );
     // Inject `replyTo: ref` into the message so recipients that read
     // `msg.replyTo` work without the caller supplying it.  Recipients
     // that read `this.sender` see the same ref (passed via `tell`'s
@@ -160,6 +178,57 @@ export abstract class ActorRef<TMessage = unknown> {
     this.tell(enriched, ref as unknown as ActorRef);
     return ref.promise;
   }
+
+  /**
+   * @internal The deadline {@link ask} arms when the caller names none.
+   *
+   * A method rather than a field because the answer belongs to the ref's
+   * `ActorSystem`, and the refs do not agree on whether they have one.  The
+   * seven that do — {@link LocalActorRef}, `TestProbe`, `RemoteActorRef`,
+   * `ClusterSingletonProxy`, `RemoteShardRef`, `ShardSenderRef`, and
+   * `EntityRef` through its region — override this with
+   * `system._defaultAskTimeoutMs`, so `actor-ts.actor.ask-timeout` reaches
+   * every ask a caller is likely to make (#863).  The other six hold a
+   * `systemName` string and no system — {@link NobodyRef},
+   * {@link AskResponseRef}, `DeadLetterRef`, `UnresolvedPathRef`,
+   * `WebsocketConnectionImplementation` and `GracefulStop`'s
+   * `TerminationWatcher` — and keep the built-in constant.  None of them has
+   * an actor behind it, so an ask on one is waiting for a reply that is not
+   * coming; the deadline decides how fast that is discovered, not whether.
+   * That split is documented rather than papered
+   * over: the alternative, a process-global `Map<systemName, number>`, buys
+   * uniformity with a lookup on the ask path and mutable state two systems in
+   * one process would share by name.
+   *
+   * Public (not `protected`) because {@link EntityRef} delegates through a
+   * region typed as a bare `ActorRef`, which TypeScript will not let a
+   * sibling subclass reach a `protected` member on.
+   */
+  _defaultAskTimeoutMs(): number { return DEFAULT_ASK_TIMEOUT_MS; }
+
+  /**
+   * @internal The scheduler an ask's deadline is armed on when that scheduler
+   * is **virtual**, and `null` otherwise — including on a real one.
+   *
+   * The same question {@link _defaultAskTimeoutMs} answers, with the same split
+   * and for the same reason — the refs do not agree on whether they can see an
+   * `ActorSystem` — so the refs that can override both together.
+   *
+   * What it buys is a deadline a test can advance past.  Without it, a test for
+   * "the reply never came" has to let the deadline elapse on the wall clock, so
+   * it is written with an unrealistically short one and then fails on a loaded
+   * machine — the commonest shape in this repository's flake catalogue (#1424).
+   *
+   * **Virtual only, and that is measured, not cautious.**  Arming every ask
+   * through the scheduler costs ~13% of `ask-throughput` (195k → 170k ask/s,
+   * p50 2.8 → 3.1 µs) in cancellable allocation and set bookkeeping.  A
+   * wall-clock scheduler offers nothing in return for it — nobody can advance
+   * past a real deadline — so a real one answers `null` here and the
+   * `setTimeout` branch in {@link AskResponseRef} is exactly the code it always
+   * was.  The lookup itself is free: keeping this call and bypassing the
+   * scheduler restores the baseline figure.
+   */
+  _virtualScheduler(): Scheduler | null { return null; }
 
   /** Gracefully stop this actor after it drains its mailbox. */
   stop(): void { this.tell(PoisonPill.instance as unknown as TMessage, null); }
@@ -214,7 +283,7 @@ export class AskResponseRef<T = unknown> extends ActorRef<unknown> {
   private resolveFunction!: (value: T) => void;
   private rejectFunction!: (err: Error) => void;
   private settled = false;
-  private timer: ReturnType<typeof setTimeout> | null = null;
+  private timer: Cancellable | ReturnType<typeof setTimeout> | null = null;
   /**
    * `null` until something registers, which for a local ask is never.
    *
@@ -223,7 +292,13 @@ export class AskResponseRef<T = unknown> extends ActorRef<unknown> {
    */
   private settleCallbacks: Array<() => void> | null = null;
 
-  constructor(systemName: string, name: string, timeoutMs: number, targetLabel: string) {
+  constructor(
+    systemName: string,
+    name: string,
+    timeoutMs: number,
+    targetLabel: string,
+    scheduler: Scheduler | null = null,
+  ) {
     super();
     // Two of the three path constructions per ask were the same constant
     // prefix, rebuilt (and re-validated, character by character) every time.
@@ -250,13 +325,30 @@ export class AskResponseRef<T = unknown> extends ActorRef<unknown> {
     // exercise the wire registration, which settle on a reply rather than a
     // clock — arming a real timer for those would race the reply under test.
     if (timeoutMs > 0) {
-      this.timer = setTimeout(() => {
+      const expire = (): void => {
         if (this.settled) return;
         this.settle();
         this.rejectFunction(new AskTimeoutError(
           `Ask timed out after ${timeoutMs}ms waiting for reply from ${targetLabel}`,
         ));
-      }, timeoutMs);
+      };
+      // The scheduler where the ref could reach one, so a `ManualScheduler`
+      // makes the deadline virtual; a raw timer otherwise, unchanged (#1424).
+      // Virtual time where there is any, so a test can advance past the
+      // deadline; the host timer otherwise, unchanged and uncosted (#1424).
+      //
+      // Unless the deadline is longer than one host timer holds: `setTimeout`
+      // fires anything past `MAX_TIMER_DELAY_MS` (~24.9 days) early — after
+      // 1 ms on Bun and Node — so a 30-day deadline used to reject almost at
+      // once.  Those are chained, as the scheduler chains them; the comparison
+      // is all the common case pays.
+      if (scheduler !== null) {
+        this.timer = scheduler.scheduleOnceFunction(timeoutMs, expire);
+      } else if (timeoutMs > MAX_TIMER_DELAY_MS) {
+        this.timer = armChainedTimeout(expire, timeoutMs);
+      } else {
+        this.timer = setTimeout(expire, timeoutMs);
+      }
     }
   }
 
@@ -283,7 +375,18 @@ export class AskResponseRef<T = unknown> extends ActorRef<unknown> {
 
   private settle(): void {
     this.settled = true;
-    if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+    if (this.timer) {
+      // A `Cancellable` when a scheduler or a chain armed it, a host timer
+      // handle otherwise. Distinguished structurally rather than by a second field:
+      // the alternative is another per-ask property on the path the message
+      // spread is documented as the last allocation worth keeping.
+      if (typeof (this.timer as Cancellable).cancel === 'function') {
+        (this.timer as Cancellable).cancel();
+      } else {
+        clearTimeout(this.timer as ReturnType<typeof setTimeout>);
+      }
+      this.timer = null;
+    }
     if (this.settleCallbacks !== null) {
       for (const callback of this.settleCallbacks) callback();
       this.settleCallbacks = null;

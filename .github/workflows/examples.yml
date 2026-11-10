@@ -31,6 +31,11 @@ name: examples
 #                       treats a desynced lockfile as an error rather
 #                       than quietly rewriting it.
 #   - `npm run build` — a dependency bump that breaks the build.
+#   - `bun install --frozen-lockfile`
+#                     — a `bun.lock` that contradicts the
+#                       `package.json` beside it.  These directories
+#                       carry two lockfiles and only the npm one was
+#                       ever installed here.  #1402.
 #
 # There is no committed bundle here to check for staleness any more: the
 # output under `examples/*/static/{angular,next,react,svelte}/` is gitignored
@@ -94,6 +99,7 @@ permissions:
 jobs:
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     strategy:
       # fail-fast: false so an Angular-only regression doesn't mask a
       # Next-only one.  Each frontend gets its own red mark — the same
@@ -116,6 +122,36 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The bundled frontends carry two lockfiles: the `package-lock.json`
+      # the `npm ci` below installs, and a `bun.lock` that nothing in CI
+      # ever read.  #1401 is what that cost — Dependabot's npm updater
+      # patched `fast-uri` in both Angular `package-lock.json` files and
+      # left `bun.lock` on the vulnerable resolution, with no check
+      # anywhere able to see it.  #1402.
+      #
+      # Before the Node setup deliberately: a desynced lockfile is cheaper
+      # to report than an install and a build.
+      #
+      # Scope, measured rather than assumed.  This catches a `bun.lock`
+      # that contradicts its own manifest — the state this repo was in:
+      # both Angular `package.json` files declare `overrides` pinning
+      # @hono/node-server to ^2.1.0 while `bun.lock` still resolved
+      # 1.19.14, which exits 1 with `overrides in package.json changed`.
+      # It does NOT catch a transitive dependency that is merely stale:
+      # reverting `fast-uri` alone to 3.1.0 and re-running exits 0,
+      # because `fast-uri` appears in no `package.json` and 3.1.0 still
+      # satisfies the `^3.0.1` that `ajv` asks for.  That class — the one
+      # #1401 actually was — needs a cross-lockfile version-map
+      # comparison, and this step is not it.
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      - name: Check bun.lock is in sync with package.json (no install)
+        working-directory: ${{ matrix.directory }}
+        run: bun install --frozen-lockfile --dry-run
+
       # 24 for the same reason multi-runtime.yml pins its Node leg there:
       # it is the `engines` floor the package claims to support, so the
       # examples are exercised on the oldest runtime a user might have.
@@ -125,7 +161,7 @@ jobs:
       # need 24.15 or newer.  `node-version: '24'` resolves to the latest
       # 24.x and satisfies that; pinning a narrower 24.x would not.
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
           cache: npm

@@ -61,7 +61,11 @@ Causes:
    jitter.  See
    [failure-detector tuning](/operations/tuning/failure-detector/).
 2. **Network partitions** (real ones — diagnose at the
-   infrastructure level).
+   infrastructure level).  With no downing strategy, one that lasts
+   past `down-after` is no longer a flap: each side removes the other
+   and runs on as a cluster of its own.  Configure `lease-majority` or
+   another [downing strategy](/cluster/downing-strategies/) for
+   production.
 3. **GC pauses** longer than the unreachable threshold.
 
 Diagnostics:
@@ -93,7 +97,11 @@ Causes:
    sent before the coordinator is ready get buffered.
 2. **No nodes match the `role`** — empty up-member set, so no
    shards are allocated.
-3. **extractEntityId returns undefined** — the message routing
+3. **No hosting member is `up`** — regions that could host the type
+   are registered, but every one of them is on a member that is
+   `unreachable` (or still joining), and a shard is only ever placed
+   on a member that is up.  New shards wait until one is.
+4. **extractEntityId returns undefined** — the message routing
    has nothing to hash.
 
 Diagnostics:
@@ -113,6 +121,16 @@ kubectl logs pod-1 | grep -i shard
 If you see "no candidates," your `role` filter rejects every
 node.  Check role tags in `Cluster.join`.
 
+If the coordinator warns that none of the registered regions that can
+host the type "is on a member that is up", the role is fine and the
+hosting nodes are not.  It says so once per episode, and the request
+stays pending until a member comes back.  Under the default a member
+that stops answering is removed at `down-after` and its shards move to
+the survivors; one parked at `unreachable` — by a split-brain strategy
+that has not decided, or under `failure-detector.auto-down = off` —
+stays there until it recovers or something downs it, so check the
+member list before the sharding settings.
+
 ### Symptom: rebalance storm
 
 **Sharding metrics show continuous rebalances; entities
@@ -122,8 +140,17 @@ Causes:
 
 1. **Aggressive allocation strategy** — `LeastShardAllocationStrategy`
    with `rebalanceThreshold: 1` and frequent membership changes.
-2. **Flapping cluster** (see above) — every change triggers
-   rebalance.
+2. **Flapping cluster** (see above) — a member that keeps going
+   `unreachable` and coming back postpones rebalancing rather than
+   triggering it.  The coordinator rebalances only once the set of `up`
+   members has held still for the settle window (`down-after`, or
+   `stable-after` with a split-brain strategy), so a flap shorter than
+   that moves no shard placed before it.  Shards first asked for during
+   the flap land on the members that are up, and those can be handed
+   off once the member is back and the window has run out — see
+   [rebalance](/cluster/sharding/rebalance/).  A storm here comes from
+   membership that changes more slowly than the window — real joins and
+   removals, not blips.
 
 Fix:
 
@@ -208,6 +235,94 @@ Causes:
 
 Diagnostics: compare the actor's state after recovery to
 what's in the journal.  Replay manually in a test to isolate.
+
+### Symptom: the journal is unavailable and the actors just stop responding
+
+**No error, no restart, no dead letters.  Persistent actors
+accept commands and never answer; heap grows; the only log line
+is `mailbox high-water mark` at 10 000 and again at every
+doubling.**
+
+Cause: **an `append` that neither succeeds nor fails.**  A
+backend that refuses connections fails fast on its own.  One that
+*accepts* the connection and then stalls — a failed-over primary
+still holding the socket, a saturated connection pool, a network
+path that blackholes — leaves `await this.persist(...)` pending
+forever.  The actor's turn never ends, so its commands queue in
+the mailbox, which is unbounded by default; nothing throws and
+supervision never runs.
+
+Fix: **give the append a deadline.**  The journal is called
+through a circuit breaker, and the breaker's per-call timeout is
+what bounds a single append.  That covers every journal call of a
+`PersistentActor`, and a `ReplicatedEventSourcedActor`'s own
+`persist` and recovery — but not yet its append of an event a peer
+sent, which waits for #958.  It ships unset, because omitting it
+is what expresses "no deadline":
+
+```hocon
+actor-ts.circuit-breaker.persistence-journal.call-timeout = 10s
+```
+
+With it set, the stall surfaces as a `CircuitBreakerTimeoutError`
+thrown out of your own `onCommand` — at the stall, naming it —
+and after `max-failures` of them (10 by default) the breaker
+opens and every later `persist` fails immediately with
+`CircuitBreakerOpenError` until `reset-timeout` (15 s) lets a
+probe through.  Pick the timeout from the backend's own P99 write
+latency with headroom, not from how long you are willing to wait.
+With metrics enabled that P99 is measured for you, at the breaker:
+
+```promql
+histogram_quantile(0.99, sum by (le) (rate(persistence_journal_latency_seconds_bucket{operation="append"}[5m])))
+```
+
+Once the timeout is set, the same families tell the failures apart:
+`persistence_journal_failures_total{reason="timeout"}` climbing is the
+stall being cut, and `persistence_breaker_state{breaker="journal"} == 2`
+is the breaker refusing every append.  A call that never settles is
+never timed, so before a `call-timeout` exists the stall itself does
+not show up in the histogram — only as the appends that stop arriving
+in it.  See [Persistence
+metrics](/observability/metrics/stock-metrics/#persistence-metrics).
+
+The timeout gives up rather than cancelling, so a write that blew
+it may still land.  That is safe — the throw skips the state fold
+and leaves `lastSequenceNr` untouched, so the restart re-reads the
+true head — but a non-replayable side effect in the handler has
+already run.  A `ReplicatedEventSourcedActor` is the exception: a
+timed-out write that lands is never folded live and never reaches
+its peers, because only a successful `persist` folds and broadcasts.
+A later recovery folds it only if it replays it — a snapshot taken
+after the landing counts the event as covered, so a recovery from
+that snapshot never folds it, while a full replay does — see
+[replicated event
+sourcing](/persistence/replicated-event-sourcing/overview/#when-the-stores-are-down).
+
+Related knobs, same block:
+
+- `actor-ts.persistence.recovery-timeout` (30s) does the same job
+  for a *recovery* that never finishes: past it a `PersistentActor`
+  fails with a `RecoveryTimeoutError` through `onRecoveryFailure`,
+  and a `ReplicatedEventSourcedActor` — which has no such hook —
+  fails its `preStart` with it, instead of sitting in `preStart`.
+- `actor-ts.persistence.max-concurrent-recoveries` (50) keeps a
+  restart storm from opening thousands of concurrent reads
+  against a pool sized for tens.
+- `actor-ts.persistence.snapshot-is-optional` lets an actor
+  recover by full journal replay when only the *snapshot* store
+  is down.  It does not apply to an actor that set `integrity()`
+  or `encryption()` — see
+  [PersistentActor](/persistence/persistent-actor/#when-the-stores-are-down).
+
+A `JournalConcurrencyError` never counts towards `max-failures`,
+so a burst of losing conditional appends cannot open the breaker
+for everyone.  If a breaker is opening for something else you
+consider benign, name it rather than raising the budget:
+
+```hocon
+actor-ts.circuit-breaker.persistence-journal.ignored-error-names = ["MyTransientError"]
+```
 
 ## Memory + performance
 
@@ -294,6 +409,40 @@ afterEach(async () => {
 
 See [TestKit](/testing/testkit/).
 
+### Symptom: my message vanished
+
+**A `tell` returned normally, the recipient never handled it, and
+nothing threw.**
+
+`tell` is fire-and-forget: it cannot report a recipient that has
+stopped, a selection that matched nothing, or a behavior that answered
+`unhandled`.  Every one of those becomes a **dead letter**, and since
+#1000 a default system says so in the log:
+
+```text
+[…] INFO dead letter to actor-ts://app/user/worker: OrderPlaced from actor-ts://app/user/api
+```
+
+Search the log for `dead letter to` and read the recipient path — that
+is the actor the message failed to reach, not the dead-letter office.
+Three things to know before concluding there was only one:
+
+- **The record is throttled.**  After ten letters a single `warn` line
+  announces that logging is suspending for five minutes; a second one
+  reports the tally when it resumes.  Raise
+  `actor-ts.diagnostics.log-dead-letters`, or set
+  `actor-ts.diagnostics.log-dead-letters-suspend-duration = 0` to log
+  every one, while you are looking.
+- **The payload is not in the log**, only the message's class — that is
+  deliberate.  To see the message itself, subscribe to `DeadLetter` on
+  the event stream, or turn on the queue with
+  `actor-ts.dead-letters.store = "memory"` and read it back with
+  `system.deadLetterQueue.list()`.
+- **Shutdown is silent by default.**  If the message went missing during
+  `terminate()`, see the next symptom.
+
+See [Dead letters](/operations/dead-letters/).
+
 ### Symptom: shutdown dropped my messages
 
 **Work that was queued when `terminate()` was called never ran, and
@@ -309,8 +458,8 @@ backlog is handled.  Four things it will not wait for:
   it.  Raise the budget, and raise
   `actor-ts.coordinated-shutdown.default-phase-timeout` with it if you
   shut down through the pipeline.
-- **The mailbox was parked.**  `context.throttle(...)` and a
-  supervisor-suspended mailbox both count as quiet, because neither
+- **The mailbox was parked.**  [`context.throttle(...)`](/fundamentals/throttling/)
+  and a supervisor-suspended mailbox both count as quiet, because neither
   drains at a rate a shutdown can wait for.  Cancel the throttle before
   shutting down if the backlog matters.
 - **The work was not in a mailbox yet.**  A `context.timers` tick that
@@ -322,12 +471,14 @@ backlog is handled.  Four things it will not wait for:
 
 To confirm which, subscribe to `DeadLetter` on the event stream before
 shutting down — the dead letter names the message and the recipient.
-Subscribing has to happen *before*, because publishing is all that
-happens by default: nothing keeps a dead letter, so there is nothing to
-go back and read afterwards.  Set
-`actor-ts.dead-letters.store = "persistent"` if you would rather have
-the record without knowing in advance that you will want it — see
-[Dead letters](/operations/dead-letters/).
+Subscribing has to happen *before*, because nothing keeps a dead letter
+by default, so there is nothing to go back and read afterwards.  The log
+will not help here either: this particular burst is the one case that is
+**not** logged, because an orderly shutdown produces it every time (set
+`actor-ts.diagnostics.log-dead-letters-during-shutdown = on` if you want
+it anyway).  Set `actor-ts.dead-letters.store = "persistent"` if you
+would rather have the record without knowing in advance that you will
+want it — see [Dead letters](/operations/dead-letters/).
 
 ### Symptom: flaky timing-sensitive tests
 
@@ -358,6 +509,106 @@ suites CI does not run at all.
    trace backend.
 5. Reproduce in a multi-node-spec test if you can.
 ```
+
+## Making the framework talk
+
+The framework is quiet by default and stays that way unless you ask.  Four
+switches under `actor-ts.diagnostics` turn on what it can say about itself:
+
+```hocon
+actor-ts {
+  logger.level = debug        # the second switch — see below
+  diagnostics {
+    log-config-on-start = on  # one info record: every key, and which layer set it
+    debug {
+      unhandled    = on       # a message an actor was handed and declined
+      lifecycle    = on       # actor start, stop, restart
+      event-stream = on       # subscribe / unsubscribe, never publish
+    }
+  }
+}
+```
+
+`log-config-on-start` is the one to reach for first when a setting is not
+doing what you wrote.  It writes the **merged** tree — every key, sorted, each
+with the layer that won (`reference`, `project-reference`, `application`,
+`profile`, `secrets` or `override`), whether it displaced a lower one and the
+environment variables its value came from — so “my `application.conf` is
+being ignored” and “my `application.conf` says something else” stop looking
+alike.  `reference` is the `reference.conf` bundled with actor-ts,
+`project-reference` your project's
+[own one](/reference/configuration/#the-project-referenceconf), its active
+profile included, `profile` is the active profile's block of the application
+file, `secrets` is the [secrets file](/reference/configuration/#secrets-file),
+its own active profile included, and `override` is what your code passed.
+The header names the active profile and the four files that were looked
+for — the project `reference.conf`, `application.conf`, the secrets file and
+the `.env` file — and says when one was not there, which settles the first
+of those on its own.  A key
+that holds a dot — a host name, say — prints in double quotes, as HOCON writes
+it: `webhooks."hooks.example.com"` is one key, where
+`webhooks.hooks.example.com` would be four.  An excerpt, with `production`
+active:
+
+```text
+  actor-ts.diagnostics.log-config-on-start = "on"  [application, overrides a lower layer]
+  actor-ts.diagnostics.log-dead-letters = 10  [reference]
+  my-app.auth-header = <redacted>  [application]
+  my-app.db.dsn = <redacted>  [application, from $DB_PASSWORD]
+  my-app.db.host = "db.internal"  [profile, overrides a lower layer]
+  my-app.db.password = <redacted>  [secrets]
+  my-app.db.pool-size = 8  [project-reference]
+  my-app.db.user = <redacted>  [override, overrides a lower layer]
+  my-app.payments.api-key = <redacted>  [application]
+  my-app.upstreams = [{"host":"db-1","password":"<redacted>"}]  [application]
+```
+
+Two things to know before you paste that record into a ticket.  It is an
+`info` record, so it needs no second switch — but it **prints your
+configuration**, and four rules decide what it withholds.  A value is
+withheld when any whole word of its *key name* — of the key itself or of a
+branch above it, wherever in the name the word stands — is `password`,
+`passphrase`, `passwd`, `pass`, `secret`, `token`, `key`, `credential`, `auth`
+or `authorization`, singular or plural, and the value is not a boolean: the
+`auth-header` and the `api-key` above.  A name is cut into words at every
+character that is not a letter or a digit, at each camelCase hump and in
+front of a digit after a letter, so `apiKey` holds `key`, `password2` holds
+the word it numbers and `passivation-idle` holds no `pass`.  Those words
+glued onto another (`pgpassword`, `clientsecret`, `ghtoken`) count too, all
+but `key`, `pass` and `auth`, which end ordinary words; of the `…key` names
+`apikey`, `accesskey`, `secretkey` and `privatekey` count, and `pwd` counts
+beside another word of the key's path, as in `mysql-pwd` or `db.pwd` — only
+a variable called just `PWD`, a shell's working directory, does not.  A
+value an environment variable supplied is withheld when the
+variable's name reads as a credential by the same rule, whatever its key is
+called: the `dsn` above, built from `${DB_PASSWORD}` out of a `.env` file,
+and every value that refers to it.  Every value the secrets file sets is
+withheld whatever its key is called — even after a higher layer overrides
+the key, like the `user` above.  Both hold in a `WorkerMesh` worker's dump
+too.  And a list is one key, so the objects inside it are read field by
+field by the first rule: their `password` prints as `"<redacted>"`, the rest
+of the list as written.  The one thing masked by value is the userinfo of a
+URL: `redis://default:s3cret@redis.example:6379` prints as
+`redis://***@redis.example:6379` under any key, `dsn` and `connection-string`
+included.  Every other secret outside the secrets file, under a key and out
+of a variable that do not name one, is printed in full — a bare password
+written out in a `dsn`, a `?password=` or `?authToken=` in a query string,
+SQL Server's `Server=…;Password=…` form, and memcached's scheme-less
+`user:password@host` server list.  Ordinary tuning values are *not* withheld
+just for spelling one
+of those words inside a longer one — `passivation-idle` and `keyspace` print,
+as they must for the dump to be worth reading.  One that holds such a word
+whole is withheld with it: a `token-bucket-size` of your own prints as
+`<redacted>`, and only the keys `reference.conf` ships, such as
+`cache.redis.key-prefix`, are exempted by name.
+[Configuration](/reference/configuration/) states the limits in full.
+
+The three `debug.*` switches need **two** switches, and this is the usual
+reason one of them appears not to work: the key decides whether a record is
+produced, `logger.level = debug` decides whether it is written.  Each is off
+by default because each is one record per event on a path your application
+drives — per declined message, per actor transition, per subscription — so
+turn on the one that matches the symptom rather than all three.
 
 ## Where to next
 

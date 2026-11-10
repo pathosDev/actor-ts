@@ -30,13 +30,18 @@
  * the burst produced, so "the fence arrived and nothing else did" is a fact
  * rather than a timeout that happened to expire quietly.
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
 import { ActorOptions } from '../../../src/ActorOptions.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
+import { LogContext } from '../../../src/LogContext.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { DeadLetter } from '../../../src/SystemMessages.js';
+import { RecordingTracer } from '../../../src/tracing/RecordingTracer.js';
+import { TracingExtensionId } from '../../../src/tracing/TracingExtension.js';
 import { BoundedMailbox } from '../../../src/mailbox/BoundedMailbox.js';
 import { PriorityMailbox } from '../../../src/mailbox/PriorityMailbox.js';
 import type { Envelope, MailboxDropReason } from '../../../src/internal/Mailbox.js';
@@ -283,5 +288,251 @@ describe('the drop seam carries the envelope (#773)', () => {
     // over the notification still sitting at the head.
     mailbox.enqueue({ message: 'later', sender: null });
     expect(seen).toEqual([['drop-head', 'ordinary']]);
+  });
+
+  test('the priority bound reports nothing when there is nothing it may shed', () => {
+    // `BoundedMailbox`'s twin of this is the test above, and it is caught by
+    // two tests; the priority one was caught by none.  Replacing
+    // `shedLeastImportant`'s `if (shed !== undefined)` with an unconditional
+    // `this.reportDrop(…, shed ?? envelope)` — the #407 "count removals, not
+    // intentions" defect, extended by #729 to the all-undroppable case — left
+    // the whole suite green.
+    //
+    // The state it guards: `shedLeastImportant` inserts the arrival and then
+    // asks `removeOldest` for the least important entry, which steps over
+    // every `undroppable` one.  When the arrival is undroppable too there is
+    // nothing left to shed, and the unguarded version then reports a drop for
+    // a message that is still sitting in the queue — and, under
+    // `deadLetterDrops`, mints a `DeadLetter` for it, so #773's forensic
+    // record carries an entry for a message nobody lost.
+    const seen: Array<[MailboxDropReason, unknown]> = [];
+    const mailbox = new PriorityMailbox<string>({
+      // Ranks a notification LAST, the adversarial order: the marker rather
+      // than the priority has to be what keeps it.
+      priorityFor: (message) => (message.startsWith('death') ? 9 : 0),
+      capacity: 1,
+      overflow: 'drop-lowest-priority',
+      deadLetterDrops: true,
+    });
+    mailbox.observeDrops((reason, envelope) => seen.push([reason, envelope.message]));
+
+    const notification = (label: string): Envelope<string> =>
+      ({ message: label, sender: null, undroppable: true });
+    mailbox.enqueueSignal(notification('death-first'));
+    // At capacity, and the arrival may not be dropped either.
+    mailbox.enqueue(notification('death-second'));
+
+    expect(seen).toEqual([]);
+    expect(mailbox.droppedCount).toBe(0);
+    // Both are still queued, which is what makes the absence above a
+    // correctness claim rather than a coincidence: the unguarded version
+    // reports `death-second` as lost while handing it to the actor.
+    expect(mailbox.drainUser().map((envelope) => envelope.message))
+      .toEqual(['death-first', 'death-second']);
+  });
+});
+
+/**
+ * The second half of #773, and the one the first pass deferred: what the
+ * letter can say about *which request* lost the message.
+ *
+ * The message and the sender name what was lost and who sent it; the MDC
+ * `context` and the tracing `trace` are what tie the loss back to the work
+ * that produced it.  `DeadLetter` had no slot for either, so the fidelity the
+ * issue asks for was unreachable in the type rather than merely unwired — and
+ * this is the only loss path in the framework that still holds a whole
+ * envelope at the moment it gives up on it, so it is the only one that could
+ * have filled such a slot.
+ */
+describe('a mailbox-drop letter carries what the envelope was attributed to (#773)', () => {
+  test('the MDC in force at tell time rides along', async () => {
+    const system = startSystem('773-attribution-mdc');
+    const capture = await captureDeadLetters(system);
+
+    // `drop-head` deliberately, not `drop-new`.  Under `drop-new` the
+    // discarded envelope *is* the arriving one, so a drop site that read
+    // `LogContext.get()` off the sender's live scope instead of copying the
+    // envelope's own would produce the right answer by coincidence.  Here the
+    // evicted message is an older one whose context is long out of scope.
+    const sink = system.spawn(Sink, 'sink', ActorOptions.create<unknown>().withMailbox(
+      () => new BoundedMailbox({ capacity: 2, overflow: 'drop-head', deadLetterDrops: true }),
+    ));
+    // Each send under its own context, so a letter that carried the wrong one
+    // — or the same one for every drop — is visible rather than plausible.
+    for (const n of [1, 2, 3, 4]) {
+      LogContext.run({ requestId: `request-${n}` }, () => sink.tell(n));
+    }
+    await capture.settle();
+
+    // 1 and 2 fill the bound; 3 evicts 1 and 4 evicts 2.
+    const lost = capture.letters.filter((l) => l.message !== FENCE);
+    expect(lost.map((l) => l.message)).toEqual([1, 2]);
+    expect(lost.map((l) => l.attribution.context)).toEqual([
+      { requestId: 'request-1' },
+      { requestId: 'request-2' },
+    ]);
+  });
+
+  test('the span context in force at tell time rides along', async () => {
+    const system = startSystem('773-attribution-trace');
+    const tracer = new RecordingTracer();
+    system.extension(TracingExtensionId).enable(tracer);
+    const capture = await captureDeadLetters(system);
+
+    const sink = system.spawn(Sink, 'sink', ActorOptions.create<unknown>().withMailbox(
+      () => new BoundedMailbox({ capacity: 1, overflow: 'drop-head', deadLetterDrops: true }),
+    ));
+    // Two unrelated requests, and the second is what evicts the first — so a
+    // drop site that read the *live* active span rather than the envelope's
+    // would name `second` on a letter about `first`.  Under one span, or under
+    // `drop-new`, the two answers coincide and the test would prove nothing.
+    const first = tracer.startSpan('client.first-request');
+    tracer.withActiveSpan(first, () => sink.tell(1));
+    first.end();
+    const second = tracer.startSpan('client.second-request');
+    tracer.withActiveSpan(second, () => sink.tell(2));
+    second.end();
+    await capture.settle();
+
+    const lost = capture.letters.filter((l) => l.message !== FENCE);
+    expect(lost.map((l) => l.message)).toEqual([1]);
+    // The sender's span, copied off the envelope — so the loss lands in the
+    // trace of the request that produced the message, and both spans have
+    // ended by now: the context is a value the envelope carried, not a handle
+    // into a live span.
+    expect(lost[0]!.attribution.trace?.traceId).toBe(first.context().traceId);
+    expect(lost[0]!.attribution.trace?.spanId).toBe(first.context().spanId);
+    expect(lost[0]!.attribution.trace?.spanId).not.toBe(second.context().spanId);
+  });
+
+  test('a letter with nothing to attribute carries an empty attribution', async () => {
+    // The default, and it is the truth rather than a gap: a `tell` outside any
+    // `LogContext.run` on a system with tracing disabled carries neither
+    // field, so there is nothing for the drop site to copy.  Reading
+    // `attribution` therefore never needs a `?.` — the object is always there.
+    const system = startSystem('773-attribution-absent');
+    const capture = await captureDeadLetters(system);
+
+    const sink = system.spawn(Sink, 'sink', ActorOptions.create<unknown>().withMailbox(
+      () => new BoundedMailbox({ capacity: 1, overflow: 'drop-new', deadLetterDrops: true }),
+    ));
+    for (const n of [1, 2]) sink.tell(n);
+    await capture.settle();
+
+    const lost = capture.letters.filter((l) => l.message !== FENCE);
+    expect(lost.map((l) => l.message)).toEqual([2]);
+    expect(lost[0]!.attribution).toEqual({ context: undefined, trace: undefined });
+    // The fence is built by `DeadLetterRef` from a bare message and never had
+    // an envelope at all, so it gets the shared empty singleton.
+    const fence = capture.letters.find((l) => l.message === FENCE)!;
+    expect(fence.attribution).toEqual({});
+  });
+
+  test('toString stays free of the attribution', () => {
+    // The MDC routinely carries tenant, user and request identifiers, and this
+    // string is what ends up pasted into an issue.  `DeadLetterRef` already
+    // keeps the payload out of its log line for that reason; printing the
+    // context here would put the same class of data back through another door.
+    const system = startSystem('773-attribution-tostring');
+    const recipient = system.spawn(Sink, 'sink');
+    const letter = new DeadLetter('payload', null, recipient, {
+      context: { tenantId: 'acme', userId: 'u-42' },
+    });
+
+    expect(letter.toString()).not.toContain('acme');
+    expect(letter.toString()).not.toContain('tenantId');
+    expect(letter.attribution.context).toEqual({ tenantId: 'acme', userId: 'u-42' });
+  });
+});
+
+/**
+ * The description a caller reads before turning the switch on describes the
+ * event the switch produces (#773, #1509).
+ *
+ * `BoundedMailboxOptionsType.deadLetterDrops` is the door, and its JSDoc is
+ * where someone decides whether the record is worth the cost.  It went stale
+ * inside the very change that made the record worth more: the widening that
+ * added `DeadLetter.attribution` updated `ActorCell._onMailboxDrop`,
+ * `DeadLetterQueue` and four documentation pages, and left this one saying
+ * the letter carries "what every other loss path in the framework carries" —
+ * which is precisely what this one does *not*, and the reason the widening
+ * happened here rather than anywhere else.  `PriorityMailboxOptionsType`'s
+ * twin never made the claim, so the two options types described different
+ * events for the same switch.
+ *
+ * A prose pin rather than another behavioural test because the behaviour is
+ * already bound three times over in the block above.  What was wrong was the
+ * sentence, and a sentence is what this reads.
+ */
+describe('the deadLetterDrops JSDoc describes the letter it produces — #1509', () => {
+  /**
+   * The JSDoc block immediately above a declaration, as one line of prose.
+   *
+   * The line-leading `*` goes before the whitespace is collapsed, for the
+   * reason `UndroppableStashReplay.test.ts` records about its own scan: a
+   * phrase that wraps across two JSDoc lines reads as `loss path in the *
+   * framework` against the raw text and matches nothing — so a refused phrase
+   * would come back the moment someone reflowed the paragraph it lives in,
+   * which is the likeliest way for it to come back at all.  Measured: the
+   * stale sentence re-introduced wrapped passes the raw check and fails this
+   * one.
+   */
+  const jsDocAbove = (source: string, declaration: string): string => {
+    const at = source.indexOf(declaration);
+    expect(at).toBeGreaterThan(-1);
+    const open = source.lastIndexOf('/**', at);
+    expect(open).toBeGreaterThan(-1);
+    const close = source.indexOf('*/', open);
+    return source.slice(open, close).replace(/^\s*\*\s?/gm, ' ').replace(/\s+/g, ' ');
+  };
+
+  test('it names the attribution, which is the part that is its own', () => {
+    const source = readFileSync(
+      join(import.meta.dir, '..', '..', '..', 'src', 'mailbox', 'BoundedMailboxOptions.ts'),
+      'utf8',
+    );
+    const jsDoc = jsDocAbove(source, 'readonly deadLetterDrops?: boolean;');
+
+    // The identifier, not a phrase: it is the name on the letter, it is
+    // identical in both languages the docs are written in, and it is what a
+    // reader greps for next.
+    expect(jsDoc).toContain('attribution');
+    // And the claim that made it wrong rather than merely incomplete — this
+    // path carries more than every other one, so saying it carries the same
+    // is the error to keep out.
+    expect(jsDoc).not.toContain('what every other loss path in the framework carries');
+  });
+
+  /** A run of `//` lines, from a sentence unique to it up to the code it guards. */
+  const commentBefore = (source: string, opening: string, terminator: string): string => {
+    const start = source.indexOf(opening);
+    expect(start).toBeGreaterThan(-1);
+    const end = source.indexOf(terminator, start);
+    expect(end).toBeGreaterThan(start);
+    return source.slice(start, end).replace(/^\s*\/\/\s?/gm, ' ').replace(/\s+/g, ' ');
+  };
+
+  test("shedLeastImportant's guard names a route that can still reach it", () => {
+    const source = readFileSync(
+      join(import.meta.dir, '..', '..', '..', 'src', 'mailbox', 'PriorityMailbox.ts'),
+      'utf8',
+    );
+    const clause = commentBefore(
+      source,
+      'Undefined only when every entry',
+      'if (shed !== undefined)',
+    );
+
+    // The clause used to attribute the all-undroppable state to a stash
+    // replay, and that was true when it was written — `prependUser` then
+    // re-entered `enqueue` for every envelope.  It is not true now:
+    // `PriorityMailbox.prependUser` routes an undroppable envelope to
+    // `enqueueSignal`, which is exempt from the bound and never reaches
+    // `shedLeastImportant` at all.  A guard explained by a route that can no
+    // longer arrive reads as dead code to whoever considers deleting it.
+    expect(clause).not.toContain('replaying a stashed one');
+    // The lane the replay takes instead, named so the correction stays
+    // checkable rather than only current.
+    expect(clause).toContain('enqueueSignal');
   });
 });

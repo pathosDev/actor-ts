@@ -1,13 +1,22 @@
 ---
 title: Event-Stream
-description: Ein systemweiter Pub/Sub-Bus — abonniere eine Klasse von Event oder einen `kind`-diskriminierten Type, empfange es via `tell`, wann immer jemand publisht. Predicate-Filterung, Class-Hierarchy-Auslieferung und wo du ihn statt direkter Messages verwendest.
+description: Der Pub/Sub-Bus eines ActorSystems — abonniere eine Klasse von Event oder einen `kind`-diskriminierten Type, empfange es via `tell`, wann immer jemand publisht. Node-lokal by design, mit Predicate-Filterung, Class-Hierarchy-Auslieferung und wo du ihn statt direkter Messages verwendest.
 ---
 
-Der **Event-Stream** ist ein systemweiter Bus für
+Der **Event-Stream** ist der Bus *eines* `ActorSystem` für
 One-to-Many-Messaging, das nicht in die Eltern-Kind- oder
 Sender-Empfänger-Form passt.  Jeder Actor kann eine Klasse von Event
-oder einen `kind`-diskriminierten Type abonnieren; jeder Code kann
-publishen; der Bus matcht und `tell`t das Event an jeden Subscriber.
+oder einen `kind`-diskriminierten Type abonnieren — und ebenso ein
+einfacher Callback; jeder Code kann publishen; der Bus matcht, `tell`t
+das Event an jeden abonnierten Actor und ruft jeden abonnierten
+Callback auf.
+
+**Er ist node-lokal**, und das ist Absicht: ein `ActorSystem` ist eine
+Node, ein Publish hier erreicht also die Subscriber dieser Node und
+sonst niemanden.  Das Gegenstück über Node-Grenzen hinweg ist
+[`cluster.eventStream`](/de/cluster/event-stream/) — dieselben
+Channel-Formen, clusterweit.  Alles Weitere hier betrifft den lokalen
+Bus.
 
 ```ts
 import { Actor, ActorSystem } from 'actor-ts';
@@ -66,22 +75,44 @@ class EventStream {
 
   unsubscribe<TEvent>(subscriber: ActorRef, channel?: EventChannel<TEvent>): boolean;
 
+  subscribeFunction<TEvent>(
+    channel: EventChannel<TEvent>,
+    callback: (event: TEvent) => void,
+  ): () => void;
+
   publish(event: object): void;
 }
 ```
 
-Drei Operationen:
+Vier Operationen:
 
-- **`subscribe(ref, channel)`** — Interesse registrieren.  Der
-  Channel ist eine Klasse, ein `EventKey` oder ein kind-String.  Gibt
-  `true` zurück, wenn ein neues Abo hinzugefügt wurde, `false`, wenn
-  ein Duplikat ignoriert wurde — und **wirft**, wenn der Channel
-  unbrauchbar ist (siehe die Caution unten).
-- **`unsubscribe(ref, channel?)`** — Abos entfernen.  Mit einem
-  Channel: nur diesen; ohne: jedes Abo für diese Ref.
+- **`subscribe(ref, channel)`** — das Interesse eines Actors
+  registrieren.  Der Channel ist eine Klasse, ein `EventKey` oder ein
+  kind-String.  Gibt `true` zurück, wenn ein neues Abo hinzugefügt
+  wurde, `false`, wenn ein Duplikat ignoriert wurde — und **wirft**
+  einen `TypeError`, wenn der Channel unbrauchbar ist (siehe die
+  Caution unten) oder `ref` keine `ActorRef` ist, also kein
+  aufrufbares `tell` und `equals` und keinen `path` hat.  Auch eine als
+  `ref` übergebene Funktion wird so abgelehnt: `subscribeFunction` ist
+  die Form, die eine nimmt.
+- **`unsubscribe(ref, channel?)`** — die Abos eines Actors entfernen.
+  Mit einem Channel: nur diesen; ohne: jedes Abo für diese Ref.  Wirft
+  bei denselben beiden Fehlern, auch wenn gar nichts abonniert ist: ein
+  Aufräumen mit einem Tippfehler darin schlägt fehl, statt zu melden,
+  es habe nichts zu entfernen gegeben.
+- **`subscribeFunction(channel, callback)`** — einen einfachen
+  Callback abonnieren, ohne einen Actor zu spawnen, zu benennen oder zu
+  stoppen.  Gibt das `() => void`-Handle zurück, das das Abo beendet;
+  die Regeln stehen unter [Callback-Abos](#callback-abos).  Hier kommt
+  der Channel zuerst, wo `subscribe` die Ref zuerst nimmt, deshalb
+  **wirft** es einen `TypeError`, der diese Reihenfolge nennt, wenn an
+  der Stelle des Callbacks eine Klasse, ein `EventKey` oder ein String
+  steht — der Aufruf andersherum geschrieben —, wie es das auch für
+  einen unbrauchbaren Channel und jeden anderen Callback tut, der keine
+  Funktion ist.
 - **`publish(event)`** — Fire-and-Forget.  Der Bus läuft seine
   Abo-Liste durch, matcht den Channel jedes Abos und `tell`t jeden
-  Match.
+  passenden Actor; danach ruft er jeden passenden Callback auf.
 
 Klassen-Channels matchen via `instanceof`, **Subklassen-Instanzen
 erreichen also Base-Class-Subscriber**:
@@ -203,6 +234,85 @@ Drei Details:
   Publishers.  Halte sie schnell und rein — ein schwerer Predicate
   verlangsamt jedes Publish.
 
+## Callback-Abos
+
+Ein Actor ist der Standard-Subscriber: seine Mailbox ordnet, puffert
+und isoliert, was er empfängt.  Wenn es nichts zu spawnen gibt — einen
+Zähler, einen Test, eine Brücke zu Code außerhalb des Actor-Baums —,
+abonniere stattdessen eine einfache Funktion:
+
+```ts
+import { ActorStopped, ActorSystem } from 'actor-ts';
+
+const system = ActorSystem.create('demo');
+const stopped = new Set<string>();
+const unsubscribe = system.eventStream.subscribeFunction(ActorStopped, (event) => {
+  stopped.add(event.actor.path.toString());
+});
+
+// When the code that subscribed is torn down:
+unsubscribe();
+```
+
+Der Channel wird genau wie bei `subscribe` benannt — eine Klasse, ein
+`EventKey` oder ein kind-String —, und eine Klasse oder ein Key
+typisiert den Parameter des Callbacks.  Der Rest folgt daraus, dass es
+keine Mailbox gibt:
+
+- **Die Zustellung ist synchron.**  Der Callback läuft innerhalb von
+  `publish`, auf dem Stack des Publishers, nachdem jeder
+  Actor-Subscriber sein `tell` bekommen hat.  Ein langsamer Callback
+  verlangsamt jedes Publish seines Channels, und für die eigenen
+  Events des Frameworks heißt das: jeden Actor-Start, jeden Stopp,
+  jeden Dead Letter.  Arbeit, die Zeit braucht, gehört in einen Actor.
+- **Das Handle beendet genau ein Abo.**  Jeder Aufruf abonniert neu,
+  auch mit derselben Funktion, und ein Handle zweimal aufzurufen tut
+  nichts.  Sobald das Handle zurückgekehrt ist, wird der Callback nicht
+  mehr aufgerufen — auch nicht mit einem Event, das gerade zugestellt
+  wurde.  Ein während einer Zustellung abonnierter Callback beginnt mit
+  dem nächsten Event.
+- **Ein fehlschlagender Callback bleibt sein eigenes Problem.**  Ein
+  Throw wird auf `warn` geloggt und überspringt diesen Callback für
+  dieses Event; er bleibt abonniert, und alle anderen erhalten das
+  Event trotzdem.  Ein zurückgegebenes Promise wird nicht abgewartet,
+  und seine Rejection wird genauso geloggt, statt als Unhandled
+  Rejection aufzuschlagen.  Das gilt für alles, was geworfen wird, wie
+  für jeden Fehler, den der Bus abfängt: Kann der Logger den Wert nicht
+  darstellen — etwa einen Error, dessen `message`-Getter wirft —, wird
+  die Warnung ohne ihn geschrieben.
+- **Kein Actor-Stopp beendet ein Callback-Abo; das Ende des Systems
+  schon.**  Der Callback sieht den ganzen Shutdown, jedes
+  `ActorStopped` eingeschlossen, und wird nicht mehr aufgerufen, sobald
+  das System terminiert ist.  Danach zu abonnieren wirft, weil nichts
+  mehr übrig wäre, das das Abo beendet.  Solange das System noch
+  terminiert, funktioniert das Abonnieren — es gibt keinen Actor zu
+  spawnen.
+
+<Aside type="caution" title="Ein Callback darf nicht auf seinem eigenen Channel publishen">
+  Ein Callback, der publisht, führt das verschachtelte `publish` — und
+  jeden Callback, den es erreicht — aus, bevor sein eigener Aufruf
+  zurückkehrt.  Auf einem anderen Channel zu publishen ist in Ordnung.
+  Auf seinem eigenen Channel zu publishen, direkt oder über einen
+  anderen Callback, lässt ihn sich selbst aufrufen, Ebene um Ebene.
+  Jenseits von 16 verschachtelten Ebenen schneidet der Bus die Kaskade
+  ab — alles, was der Aufruf eines Callbacks für das publizierte Event
+  angestoßen hat: Von da an erreicht nichts, was die Kaskade publisht,
+  noch einen Callback, und der Bus loggt dafür eine Warnung.  Die
+  Actor-Subscriber erhalten weiterhin jedes Event, und die schon
+  laufenden Zustellungen werden zu Ende geführt, sodass jedes unterhalb
+  der Grenze publizierte Event jeden Callback erreicht, der es will.
+  Jeder Callback, den das publizierte Event erreicht, hat seine eigene
+  Kaskade, eine Schleife in einer Kaskade schneidet also nie eine andere
+  ab, und publishen mehrere Callbacks auf ihrem eigenen Channel, warnt
+  der Bus einmal pro Kaskade — eine Schleife über sechzehn Ebenen durch
+  zwei Callbacks kostet 62 Aufrufe und zwei Warnungen, nicht die
+  131 070 Aufrufe aller Pfade durch sie.  Die Grenze hält die Schleife
+  auf; richtig macht sie sie nicht.  Ein Actor-Subscriber kann so nicht
+  kreisen, weil seine Mailbox die Zustellung vom Stack nimmt — muss eine
+  Reaktion auf ihrem eigenen Channel publishen, ist er der richtige
+  Subscriber.
+</Aside>
+
 ## Live zusehen
 
 DevTools hat ein
@@ -216,10 +326,14 @@ Drei gute Passungen:
 
 1. **Querschnitt-Beobachtung** — Logging, Metriken, Audit.  Viele
    Subscriber, von denen der Publisher keinen kennen soll.
-2. **Systemweite Benachrichtigungen** — "der Cluster hat ein Mitglied
+2. **Node-weite Benachrichtigungen** — "der Cluster hat ein Mitglied
    gewonnen", "der Cache wurde geflusht".  Die Cluster-Extension
    publisht ihre eigenen Events hier; du kannst abonnieren und
-   reagieren.
+   reagieren.  Die Mitgliedschaftsevents lohnen genaues Lesen, weil
+   sie wie eine Ausnahme aussehen und keine sind: du siehst
+   Mitgliedschaftsänderungen anderer Nodes, weil *jede* Node ihre
+   eigene Kopie publisht, abgeleitet aus dem Gossip, den sie gemerged
+   hat — nicht weil das Event über die Leitung gegangen wäre.
 3. **Entkoppeln von Actor-Verdrahtung** in Tests — statt eine
    Spy-Ref durch fünf Schichten zu legen, publishe auf dem Stream
    und lass den Spy direkt abonnieren.
@@ -270,7 +384,7 @@ Das Framework publisht mehrere Event-Typen, die du abonnieren kannst:
 
 | Event | Woher es kommt |
 | --- | --- |
-| `DeadLetter` | Jede an `/deadLetters` geroutete Nachricht wird hier publisht — und Publishen ist *alles*, was mit ihr passiert: nichts loggt sie, nichts bewahrt sie auf, ohne Abonnent ist sie also weg.  Jede trägt den `recipient`, den sie nicht erreicht hat.  Für eine begrenzte, optional dauerhafte Aufzeichnung mit erneutem Zustellen siehe [Dead Letters](/de/operations/dead-letters/). |
+| `DeadLetter` | Jede an `/deadLetters` geroutete Nachricht wird hier publisht und geloggt — eine gedrosselte `info`-Zeile mit Empfänger, Sender und der Klasse der Nachricht, nie der Payload.  *Aufbewahrt* wird sie nicht, ohne Abonnent und ohne Queue ist die Nachricht also weg.  Jede trägt den `recipient`, den sie nicht erreicht hat.  Für eine begrenzte, optional dauerhafte Aufzeichnung mit erneutem Zustellen siehe [Dead Letters](/de/operations/dead-letters/). |
 | `DispatcherError` | Eine auf einem Dispatcher geplante Arbeitseinheit hat geworfen, wo kein Supervisor es sehen konnte.  Trägt die `id` des Dispatchers, die `cause` und die `ActorRef`, deren Zug es war (`null` für Arbeit, die zu keinem Actor gehört).  Von Natur aus ruhig — siehe [Dispatcher](/de/fundamentals/dispatchers/#wenn-eine-arbeitseinheit-wirft). |
 | `SchedulerError` | Ein Task, der an `scheduler.scheduleOnceFunction` / `scheduleAtFixedRateFunction` übergeben wurde, hat in einem rohen Timer-Callback geworfen, wo kein Supervisor es sehen konnte.  Trägt die `cause` — und nichts weiter, denn ein geplanter Task ist ein anonymes Closure und ein System hat genau einen Scheduler.  Die Nachrichten-Zustellformen publizieren hier nicht.  Siehe [Timer und Scheduling](/de/fundamentals/timers-and-scheduling/#fehler-in-timer-callbacks). |
 | `MemberUp`, `MemberRemoved`, `MemberUnreachable`, … | Konkrete Cluster-Mitgliedschaftsevents, publisht von der Cluster-Extension.  Abonniere jede Klasse direkt — `ClusterEvent` ist ein Union-Typ, keine abonnierbare Basisklasse.  Siehe [Cluster](/de/cluster/overview/). |
@@ -292,9 +406,13 @@ sie publisht.
 
 ## Wie es weitergeht
 
+- **[Cluster-Event-Stream](/de/cluster/event-stream/)** — dieser Bus,
+  aber clusterweit: dieselben Klassen- und `kind`-Channels, auf jeder
+  Node.  Dort steht auch, wie man einen Channel dieses Busses auf
+  jenen *bridgt*.
 - **[DistributedPubSub](/de/cluster/pubsub/)** —
-  cluster-weites Publish/Subscribe mit Topic-Routing; komplementär
-  zum lokalen Event-Stream.
+  cluster-weites Publish/Subscribe mit Topic-Routing; zur Laufzeit
+  gewählte String-Topics und Anycast.
 - **[Actor-System](/de/fundamentals/actor-system/)** —
   `system.eventStream` ist, wo du den Bus erreichst.
 - **[Nachrichten](/de/fundamentals/messages/)** — die

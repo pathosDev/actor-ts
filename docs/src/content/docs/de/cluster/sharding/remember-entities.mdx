@@ -155,10 +155,91 @@ Stunde) ist das echter Overhead. Erwäge:
 - `rememberEntities` für kurzlebige Workloads überspringen.
 - Einen schnellen Store (In-Memory-Redis) statt des
   Default-Journals nutzen.
-- Writes batchen, wenn du einen eigenen Store implementierst.
+- In einem eigenen Store nicht aufs Batchen setzen: der Coordinator
+  übergibt `append` ein Event nach dem anderen, und das nächste erst,
+  wenn das vorige abgeschlossen ist — ein Store hat also nichts zu
+  batchen, bis das Store-Interface einen Batch-Einstiegspunkt bekommt.
 
 Für Low-Churn-Workloads (10K stabile Entities) sind die Kosten
 vernachlässigbar.
+
+## Einen Restore drosseln
+
+Das Zurückkommen ist die teure Hälfte, und per Default passiert es auf
+einen Schlag.  Bekommt eine Region einen Shard zugeteilt, wird ihr dessen
+komplettes Register zugeschickt, und sie spawnt jede Entität daraus in
+einem Durchgang — für jeden Shard, den sie bekommt.  Ein Node-Neustart
+oder ein Rebalance nach einem Node-Ausfall öffnet damit einen
+Journal-Replay pro erinnerter Entität im selben Tick.  Bei ein paar
+hundert Entities ist das unproblematisch.  Bei Zehntausenden ist es ein
+Ansturm auf den Store, genau in dem Moment, in dem der Cluster am
+wenigsten gesund ist.
+
+`entityRecoveryStrategy: 'constant-rate'` verteilt diese Starts:
+
+```ts
+const shardingOptions = StartShardingOptions.create<DeviceCommand>()
+  .withTypeName('device')
+  .withEntityActor(DeviceEntity)
+  .withExtractEntityId((command) => command.deviceId)
+  .withRememberEntities()
+  .withEntityRecoveryStrategy('constant-rate')
+  .withEntityRecoveryConstantRateFrequencyMs(100)
+  .withEntityRecoveryConstantRateNumberOfEntities(5);
+
+cluster.sharding.start(shardingOptions);
+```
+
+oder für das ganze Deployment auf einmal:
+
+```hocon
+actor-ts.sharding.entity-recovery {
+  strategy = constant-rate
+  constant-rate.frequency = 100ms
+  constant-rate.number-of-entities = 5
+}
+```
+
+Drei Eigenschaften solltest du kennen, bevor du danach greifst.
+
+**Das Budget gilt regionsweit, pro Sharded Type.**  Fünf Entities pro
+100 ms sind fünf *für diesen Sharded Type auf diesem Node*, egal wie viele
+Shards der Node gerade hält.  Jeder Sharded Type, den ein Node startet,
+läuft in einer eigenen Region mit eigener Queue — ein Node, der einen
+`device`- und einen `order`-Typ wiederherstellt, startet mit diesen
+Einstellungen also bis zu zehn pro Fenster, fünf von jedem.  Das
+entsprechende Akka-Setting liest sich anders — dort gilt die Rate pro
+Shard, ein Node mit 21 von 64 Shards erholt also 21 × die konfigurierte
+Zahl pro Fenster.  Regionsweit ist dieselbe Entscheidung, die
+`maxEntities` aus demselben Grund und mit demselben Geltungsbereich
+trifft: eine Schranke, die die Shard-Anzahl multipliziert, ist keine, die
+jemand gewählt hat.
+
+**Es drosselt Starts, keine Replays.**  Jede gespawnte Entität repliziert
+asynchron; ein Replay, der länger dauert als das Fenster, überlappt also
+weiterhin den nächsten Batch.  Dieser Key glättet die *Ankunftsrate*; wie
+viele Recoveries gleichzeitig laufen dürfen, begrenzt eine Ebene tiefer
+[`actor-ts.persistence.max-concurrent-recoveries`](/de/persistence/persistent-actor/#wenn-die-stores-ausfallen)
+(per Default 50, systemweit).  Beides greift ineinander: das Drosseln
+entscheidet, wie schnell Entities entstehen, das Permit, wie viele ihrer
+Replays gleichzeitig das Journal lesen.
+
+**Nichts geht verloren.**  Der Rückstand wird abgearbeitet, bis jede
+erinnerte Entität wieder da ist, und eine Nachricht an eine Entität, die
+noch in der Queue wartet, erzeugt sie sofort — nur der Recovery-Schwall
+wartet, nie der Live-Traffic.  Auch einen Shard kostet eine lange Queue
+nichts: Der
+[Sweep für leere Shards](/de/cluster/sharding/overview/#shards-passivieren-ebenfalls)
+lässt einen Shard in Ruhe, solange eine seiner erinnerten Entitäten noch
+auf ihren Zug wartet, und der Batch, der sie schließlich startet, ist kein
+Grund, den Shard beim nächsten Sweep zu stoppen — der Shard selbst lehnt
+das Stoppen ab, solange er die Entität betreibt, die der Batch gerade
+gestartet hat.
+
+Der Default ist `'all'`, das oben beschriebene Verhalten.  Drosseln
+verändert, *wann* eine Entität zurückkommt, und wie schnell dein Journal
+die Replays verträgt, ist eine Eigenschaft deines Journals — also eine
+Entscheidung, die du triffst, statt sie zu erben.
 
 ## Wann verwenden
 
@@ -187,8 +268,34 @@ Verhalten des Frameworks:
 - **Idle-Timeout-Passivierung** (`passivationIdleMs`) — hängt ein
   `stopped`-Event an. Nächste Nachricht spawnt sie neu; der
   Store empfängt erneut ein `started`-Event.
-- **`maxEntities`-LRU-Passivierung** — dasselbe.
+- **`maxEntities`-Passivierung** — dasselbe.
 - **`Passivate` von der Entity selbst** — dasselbe.
+- **Ein Stopp ohne `Passivate`** — ein Ausfall jenseits des
+  Neustart-Budgets des Shards, ein Recovery-Fehler, den die Entity
+  verschluckt hat, ein verlorenes Lease, ein schlichtes `stopSelf` —
+  hängt ebenfalls ein `stopped`-Event an; die Entity wird also nicht aus
+  der Registry wiederbelebt. Sie kommt mit der nächsten Nachricht für
+  sie zurück, frühestens wenn ihr
+  [`entity-restart-backoff`](/de/cluster/sharding/overview/#eine-entity-die-immer-wieder-stoppt)
+  es erlaubt: Eine Nachricht innerhalb der Wartezeit wird bis zu deren
+  Ende zurückgehalten.
+
+### Erinnerte Entities zählen gegen `maxEntities`
+
+Eine erinnerte Entity wird *vorab erzeugt*: die Region bekommt die Registry
+eines Shards und startet jede Entity darin, ohne dass irgendetwas dorthin
+geroutet worden wäre. Diese Starts laufen jetzt durch dasselbe Cap und dieselbe
+Ersetzungsstrategie wie ein nachrichtengetriebener Start — ein Node, dem eine
+Registry größer als `maxEntities` gereicht wird, passiviert also auf das Cap
+herunter, statt es um die Größe der Registry zu überschreiten und dort zu
+bleiben.
+
+Das gehört mit [`entity-recovery`](#einen-restore-drosseln) zusammengedacht,
+wenn die beiden nicht zueinander passen: bei kleinem Cap und großer Registry
+spawnt ein ungedrosselter `all`-Restore jede Entity und passiviert die meisten
+sofort wieder. Entweder hebst du das Cap über die Registry, die ein Node halten
+soll, oder du akzeptierst, dass das Cap die tatsächliche Grenze ist und die
+Registry eine Obermenge dessen, was resident bleibt.
 
 Für Workloads, in denen du **eager Re-Spawn auch von kürzlich
 inaktiven Entities** willst, setze `passivationIdleMs: 0`, damit
@@ -211,16 +318,30 @@ das `rememberEntities: true` erzwingt, setzt aus genau diesem Grund
 
 ### Nach einem unerwarteten Shard-Tod
 
-Ein Shard-Actor kann außerhalb eines Rebalance sterben — etwa jenseits
-seines Supervision-Budgets. Die Region behält die Ownership (so
-erstellt die nächste Nachricht den Shard neu) und fragt beim
-Koordinator nach, was er sich für diesen Shard merkt, sodass die
-Entities von allein zurückkommen, ohne auf Verkehr zu warten. Es wird
-dabei nichts als `stopped` verzeichnet: die Entities sollten nie gehen.
+Ein Shard-Actor kann außerhalb eines Rebalance sterben — etwa weil eine
+Entity einen Fehler an ihn eskaliert hat, worauf die Region den Shard
+stoppt. Die Region behält die Ownership, wartet den Failure-Backoff des
+Shards ab (`shard-failure-backoff`, beim ersten Mal etwa 200 ms), erstellt
+den Shard neu und fragt dann beim Koordinator nach, was er sich für ihn
+merkt, sodass die Entities von allein zurückkommen, ohne auf Verkehr zu
+warten. Es wird dabei nichts als `stopped` verzeichnet: die Entities
+sollten nie gehen.
+
+Ein Shard, der immer wieder stirbt, läuft nicht in eine Schleife. Jeder
+Tod in Folge verdoppelt die Wartezeit, bis `max` (standardmäßig 10 s),
+und nach der Registry wird erst gefragt, wenn der Shard zurückkommt.
+Vor dem Backoff wurde ein Shard, dessen Entity bei jedem Start
+ausfiel, auf die Antwort des Koordinators hin neu erstellt — tausende
+Male pro Sekunde und ganz ohne Verkehr —, und jede Runde hängte einen
+`started`-Eintrag an den Store an. Siehe
+[wenn Shards und Entities immer wieder ausfallen](/de/cluster/sharding/overview/#wenn-shards-und-entities-immer-wieder-ausfallen)
+für das Gesamtbild.
 
 Shard-*Passivierung* berührt die Registry gar nicht — passiviert wird
 immer nur ein leerer Shard, und seine Entities haben ihre eigenen
-`stopped`-Events zu diesem Zeitpunkt längst gemeldet.
+`stopped`-Events zu diesem Zeitpunkt längst gemeldet.  Der Shard bestätigt
+selbst, dass er leer ist, bevor er geht, sodass eine erinnerte Entity, die
+ein Recovery-Batch gerade gestartet hat, nie mit ihm gestoppt wird.
 
 import { Aside } from '@astrojs/starlight/components';
 

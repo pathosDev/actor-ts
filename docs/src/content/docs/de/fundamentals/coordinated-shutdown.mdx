@@ -9,9 +9,9 @@ import { Aside } from '@astrojs/starlight/components';
 Produktions-App hat normalerweise vor dem Stopp noch Arbeit:
 laufende HTTP-Requests drainen, dem Cluster sagen, dass du gehst,
 ein Journal flushen, Broker-Verbindungen schließen.  Und diese
-Schritte haben eine Reihenfolge — verlasse den Cluster *bevor* du
-die Sharding-Region stoppst; stoppe den HTTP-Server *bevor* die
-Actors, die Requests behandeln.
+Schritte haben eine Reihenfolge — übergib die Shards der
+Sharding-Region *bevor* du den Cluster verlässt; stoppe den
+HTTP-Server *bevor* die Actors, die Requests behandeln.
 
 **Coordinated Shutdown** ist das DSL dafür.  Du registrierst Tasks
 gegen benannte **Phasen**; das Framework führt sie in
@@ -70,7 +70,7 @@ du etwas registrierst.
 | 3 | `service-requests-done` | — | Auf das Ende laufender Requests warten; den Rest abbrechen. |
 | 4 | `service-stop` | Broker-Actors (MQTT, Kafka, NATS, AMQP, …) | Client-Verbindungen schließen, Sockets freigeben. |
 | 5 | `before-cluster-shutdown` | — | Optionale Pre-Cluster-Leave-Hooks. |
-| 6 | `cluster-sharding-shutdown-region` | — | Der Sharding-Region sagen, Entitäten zu übergeben. |
+| 6 | `cluster-sharding-shutdown-region` | `Cluster.join(...)` | Der Sharding-Region sagen, Entitäten zu übergeben. |
 | 7 | `cluster-leave` | `Cluster.join(...)` | Ein `Cluster.leave()` ausgeben — Leaving-Status gossipen. |
 | 8 | `cluster-exiting` | — | Warten, bis der Cluster den Leave bestätigt. |
 | 9 | `cluster-exiting-done` | — | Cluster-Übergang als abgeschlossen bestätigen. |
@@ -82,14 +82,23 @@ Du musst nicht jede Phase verwenden.  Leere Phasen sind No-Ops; nur
 Phasen mit registrierten Tasks tun etwas.
 
 <Aside type="note" title="Phase 8 wartet auf keine Bestätigung">
-  `cluster.leave()` ist ein einzelner Best-Effort-Broadcast: er setzt
-  diesen Knoten auf `leaving`, informiert jeden erreichbaren Peer und
-  stoppt den Transport.  Es gibt keine vom Leader sequenzierte
-  Entfernung, auf die zu warten wäre — ein Task, den du in
-  `cluster-exiting` registrierst, hat also nichts abzuwarten, und die
-  Phase ist ein reiner App-Level-Hook.  Bemiss deine
-  Kubernetes-Grace-Period danach, nicht nach einer Bestätigung, die
-  nicht kommt.
+  `cluster.leave()` übergibt zuerst die Shards dieses Knotens und
+  wartet darauf: Erst stoppen seine Regionen, dann seine Koordinatoren,
+  jeweils innerhalb des `hand-off-timeout` ihres Typs (Default 10 s).
+  Führt diese Pipeline den Leave aus, hat Phase 6 die Übergabe schon
+  begonnen, und der Leave teilt ihr Warten.  Der Rest ist ein einzelner
+  Best-Effort-Broadcast: er setzt diesen Knoten auf `leaving`,
+  informiert jeden erreichbaren Peer und stoppt den Transport, während
+  der Downing-Provider zurückgibt, was er hält — eine
+  `lease-majority`-Lease wird released.  Ein Knoten, den seine eigene
+  Downing-Entscheidung entfernt hat, oder einer, der seinen Join
+  aufgegeben hat, geht auf dieselbe Weise sofort, ohne auf eine
+  Übergabe zu warten; sein Sharding stoppt neben dem Abgang.  Es gibt
+  keine vom Leader sequenzierte Entfernung, auf die zu warten wäre —
+  ein Task, den du in `cluster-exiting` registrierst, hat also nichts
+  abzuwarten, und die Phase ist ein reiner App-Level-Hook.  Bemiss
+  deine Kubernetes-Grace-Period danach — die Übergabe plus ein
+  Broadcast —, nicht nach einer Bestätigung, die nicht kommt.
 </Aside>
 
 ### Die verdrahteten Tasks abwählen
@@ -132,9 +141,18 @@ coordinatedShutdown.addTask('flush-metrics', 'push-prometheus', async () => {
 ```
 
 Das `dependsOn`-Feld macht die Ordnung DAG-förmig statt linear —
-deine Phase läuft nach `before-actor-system-terminate`, aber **vor**
-`actor-system-terminate` (weil letzteres ersteres in seiner eigenen
-impliziten Kette hat).
+deine Phase läuft nach `before-actor-system-terminate`.
+
+Sie landet damit aber **nicht** automatisch vor
+`actor-system-terminate`.  Beide werden in derselben Runde der
+topologischen Sortierung fertig — `actor-system-terminate` hat dieselbe
+einzelne Abhängigkeit —, und dann entscheidet der alphabetische
+Tie-Breaker der Sortierung: `flush-metrics` oben läuft also *nachdem*
+das System terminiert ist.  Erst die Gegenkante platziert die Phase,
+und die gibt es als `depends-on` aus der Konfiguration (unten), das
+den bestehenden Kanten einer kanonischen Phase hinzugefügt wird.  Aus
+dem Code heraus: benenne eine Phase, deren Nachfolger nicht die ist,
+der du vorangehen musst.
 
 Weil `addPhase` verlangt, dass jeder `dependsOn`-Eintrag eine
 bereits registrierte Phase benennt, lässt sich ein Zyklus gar
@@ -142,6 +160,52 @@ nicht erst bilden.  Die Reihenfolge selbst wird durch einen
 topologischen Sort berechnet, wenn `run()` ausgeführt wird —
 dieser Sort würde `Error: cycle in phase dependencies` werfen,
 falls je ein Zyklus entstünde.
+
+### Aus der Konfiguration
+
+Derselbe Graph lässt sich in HOCON ausdrücken, unter
+`actor-ts.coordinated-shutdown.phases` — ein Kind pro Phasenname,
+jedes mit `timeout`, `recover` und `depends-on`:
+
+```hocon
+actor-ts.coordinated-shutdown.phases {
+  flush-metrics {
+    timeout    = 3s
+    recover    = true
+    depends-on = ["before-actor-system-terminate"]
+  }
+  actor-system-terminate { depends-on = ["flush-metrics"] }
+}
+```
+
+Ein Name, der eine der zwölf kanonischen Phasen benennt,
+**verschmilzt** mit ihr; jeder andere **deklariert** eine neue, und
+dort ist `depends-on` Pflicht — eine Phase ohne Kanten landet im
+ersten fertigen Batch und liefe vor `before-service-unbind`.
+
+Beachte, was das zweite Kind bringt.  `depends-on` an einer
+kanonischen Phase wird der bestehenden Kante *hinzugefügt*, nie
+ersetzt; `flush-metrics` dort zu nennen ist also das, was deine
+Phase tatsächlich **vor** `actor-system-terminate` setzt statt
+lediglich hinter `before-actor-system-terminate` — sonst würden
+beide in derselben Runde fertig und der alphabetische Tie-Breaker
+des Sorts entschiede.  Dieselbe additive Regel verhindert, dass
+eine Config-Datei `cluster-leave` vor `service-unbind` umhängt:
+der Sort fängt Zyklen ab, nicht eine Pipeline, die still in der
+falschen Reihenfolge läuft.
+
+Die Reihenfolge in der Datei ist egal — zwei Phasen dürfen einander
+benennen und werden abhängigkeitsweise registriert.  Ein nicht
+auflösbarer Name, ein Zyklus, ein unbekanntes Setting unter einer
+Phase oder eine deklarierte Phase ohne `depends-on` ist ein
+`ConfigError` beim Bau der Extension, nicht beim Shutdown.
+
+Was die Verschmelzung ergeben hat, verrät `phaseDefinition`:
+
+```ts
+coordinatedShutdown.phaseDefinition('flush-metrics');
+// { name: 'flush-metrics', timeoutMs: 3000, dependsOn: [...], recover: true }
+```
 
 ## Task-Semantik
 
@@ -169,10 +233,39 @@ Eingebaute `Reason`-Klassen:
 | Klasse | Wann |
 | --- | --- |
 | `ProcessTerminateReason(signal)` | SIGTERM/SIGINT, aus `runUntilTerminated()` oder `installProcessHooks()`. |
-| `ActorSystemTerminateReason` | Übergib sie selbst, wenn der Trigger ein gewöhnlicher Shutdown ist. |
-| `ClusterLeavingReason` | Was `shutdown()` von `Cluster.bootstrap` übergibt. |
-| `ClusterDowningReason` | Übergib sie, wenn du die Pipeline startest, weil der Cluster diesen Knoten herausgezwungen hat. |
+| `ActorSystemTerminateReason` | Was `system.terminate()` übergibt, wenn es die Pipeline ausführt — verlangt mit `runCoordinatedShutdown: true` oder per Default mit `actor-ts.coordinated-shutdown.run-by-actor-system-terminate` an.  Ein gewöhnlicher Shutdown, den dein Programm beschließt, ist dieser Aufruf statt eines `run()`, dem du diesen Grund übergibst: Der Aufruf fährt das System auch dann herunter, wenn der Lauf es nicht tut. |
+| `ClusterLeavingReason` | Was `shutdown()` von `Cluster.bootstrap` übergibt — ein Mitglied, das absichtlich geht. |
+| `ClusterDowningReason` | Was ein Knoten übergibt, wenn ihn seine eigene Downing-Entscheidung entfernt und `actor-ts.cluster.run-coordinated-shutdown-when-down` an ist — siehe [wenn der Cluster diesen Knoten downt](#wenn-der-cluster-diesen-knoten-downt). |
+| `ClusterJoinUnsuccessfulReason` | Was ein Knoten übergibt, wenn er seinen Join aufgibt — `actor-ts.cluster.shutdown-after-unsuccessful-join` ist abgelaufen, ohne dass ihn etwas befördern kann —, und was `Cluster.bootstrap` übergibt, wenn sein Readiness-Warten scheitert oder wenn es nach dem Aufbau seines Systems den Start verweigert; siehe [wenn kein Seed je antwortet](/de/cluster/joining-and-seeds/#wenn-kein-seed-je-antwortet).  Ein Lauf damit endet nie mit `0`. |
+| `StartupFailedReason(phase, task, cause)` | Was das System übergibt, wenn ein Task des [Starts](/de/fundamentals/actor-system/#hochfahren) fehlgeschlagen ist oder das Budget seiner Phase überschritten hat — sie nennt Phase und Task und trägt die Ursache. |
 | `UnknownReason` | Der Default, wenn `run()` ohne Argument aufgerufen wird. |
+
+Auch ein fehlgeschlagener Start führt diese Pipeline aus: das System
+startet sie mit einem `StartupFailedReason` und fährt danach herunter,
+was auch immer die Pipeline getan hat — ein Task hier kann also einen
+Knoten, der nie fertig hochgefahren ist, von einem unterscheiden, der
+gestoppt wird.  Den Prozess beendet er auch nicht mit einem Status, der
+sich wie ein sauberer Stopp liest: Mit `exit-process = on` endet er mit
+`exit-code`, wenn dieser nicht `0` ist, und mit `1`, wenn er es ist —
+nach derselben Regel wie ein Lauf, der [anhält](#timeouts).
+Beim Default `exit-process = off` scheitert stattdessen
+`runUntilTerminated()` mit dem Fehler des Starts, und ein `main`, das
+darauf wartet, endet von selbst mit einem Status ungleich null.
+
+Ein Knoten, der nicht beitreten konnte, führt sie ebenfalls aus, und sein
+Grund sagt es. `ClusterJoinUnsuccessfulReason` kommt, wenn der Join
+aufgibt, wenn das Readiness-Warten von `Cluster.bootstrap` scheitert — das
+früher `ClusterLeavingReason` übergab; ein Task, der einen gescheiterten
+Start an diesem Grund erkannte, sieht jetzt diesen — und wenn der Bootstrap
+nach dem Aufbau seines Systems nicht weitermacht, sofern
+`run-by-actor-system-terminate` diesen Abbau zu einem Lauf macht. Keiner
+davon beendet den Prozess von selbst: Der eingebaute Terminator beendet das
+Actor-System, und der Prozess endet nur mit
+`actor-ts.coordinated-shutdown.exit-process = on`, und dann nach der Regel
+oben: Ein Knoten, der nicht beitreten konnte, hat ebenfalls nicht sauber
+gestoppt, und ein Fehlschlag endet nie mit `0`. Der Bootstrap nennt den
+Grund auf ERROR, bevor der Lauf beginnt, weil der Exit kommt, bevor sein
+Fehler dein `main` erreichen könnte.
 
 Du kannst `Reason` für app-spezifische Trigger subklassen
 (`AdminEndpointReason`, `HotReloadReason`, etc.).
@@ -194,7 +287,35 @@ fertig wird, wird geloggt und entweder:
 - **Wiederhergestellt** (die Phase fährt fort, `recover: true` —
   der Default).  Die nächste Phase startet.
 - **Hält die Pipeline an** (`recover: false`).  Nachfolgende Phasen
-  werden *nicht* ausgeführt; der Shutdown stoppt mitten im Flug.
+  werden *nicht* ausgeführt; der Shutdown stoppt mitten im Flug.  Ein
+  Lauf, den `terminate({ runCoordinatedShutdown: true })` gestartet
+  hat, endet trotzdem im Teardown, denn dieser Aufruf hat ein
+  terminiertes System verlangt; ebenso ein Lauf, den ein Signal, die
+  eigene Downing-Entscheidung dieses Knotens oder ein Join, der nicht
+  zustande kam, gestartet hat — auf diese Läufe wartet niemand, also
+  beantwortet der Lauf seinen Halt selbst —, es sei denn,
+  `terminate-actor-system = false` legt fest, dass die Pipeline das
+  System nie herunterfährt.  In beiden Fällen wird der Halt als ERROR
+  geloggt.  Ein `run()`, das du selbst mit einem anderen Grund aufrufst,
+  scheitert mit dem Fehler des Tasks und lässt das System so, wie der
+  Halt es vorgefunden hat.
+
+  Mit `exit-process = on` endet stattdessen der Prozess am Halt, gleich
+  welcher Auslöser den Lauf gestartet hat — ein Signal, `terminate()`,
+  dein eigenes `run()` oder der Cluster —, und zwar mit einem Status, der
+  sich nicht wie ein sauberer Stopp liest: `exit-code`, wo dieser nicht
+  `0` ist, `1`, wo er es ist.  Nach dem Exit läuft nichts mehr, er tritt
+  also an die Stelle dieser Teardowns — nicht aber an die Stelle dessen,
+  was sie auf dem Weg nach unten flushen: Die Schreibvorgänge der
+  Dead-Letter-Queue und danach die Log-Sinks werden vor dem Exit geflusht,
+  jeweils innerhalb von `actor-ts.logger.close-timeout`, sodass die
+  ERROR-Zeile mit dem Namen der Phase, unmittelbar davor geloggt, auch
+  einen bündelnden Sink erreicht.  Ein abgeschlossener Lauf, der das
+  System stehen ließ (`terminate-actor-system = false`), wird vor seinem
+  Exit genauso geflusht; einen, dessen Terminator das System
+  heruntergefahren hat, hat dieser Teardown bereits geflusht.  Der Lauf
+  ist bis zu seinem Exit im Gange, ein `terminate()`, das während dieser
+  Flushes eintrifft, startet also nichts.
 
 Überschreibe pro Phase:
 
@@ -213,24 +334,43 @@ coordinatedShutdown.addPhase({
 });
 ```
 
+Beides geht auch aus der Konfiguration, pro Phase und ohne Rebuild —
+derselbe `phases`-Block wie oben, und er retimet nur die Phase, die er
+benennt:
+
+```hocon
+actor-ts.coordinated-shutdown {
+  default-phase-timeout = 5s               # every phase that says nothing
+  phases {
+    service-requests-done { timeout = 30s }   # …except this one
+    service-stop          { recover = false } # a failure here halts the run
+  }
+}
+```
+
 ### Das Drain-Budget steckt in der letzten Phase
 
-`actor-system-terminate` ist ein Task, der `system.terminate()`
-awaited, und `terminate()` beginnt damit, die Actors unter `/user` zu
-leeren — siehe
+`actor-system-terminate` ist ein Task, der den Teardown des Systems
+awaited — das, was ein einfaches `system.terminate()` ausführt —, und
+der Teardown beginnt damit, die Actors unter `/user` zu leeren — siehe
 [Terminieren](/de/fundamentals/actor-system/#terminieren).  Damit sind
 zwei Budgets ineinander verschachtelt, und das innere muss das kleinere
 sein:
 
 | Budget | Key | Default |
 | --- | --- | --- |
-| Die gesamte Phase `actor-system-terminate` | `actor-ts.coordinated-shutdown.default-phase-timeout` | 5 s |
+| Die gesamte Phase `actor-system-terminate` | `actor-ts.coordinated-shutdown.phases.actor-system-terminate.timeout`, ersatzweise `…default-phase-timeout` | 5 s |
 | Der Drain darin | `actor-ts.system.shutdown-drain-timeout` | 2 s |
 
 Setzt du das Drain-Budget über das Phasen-Timeout, wird die Phase
 abgebrochen, während der Drain noch läuft — bevor auch nur einem Actor
 gesagt wurde, dass er stoppen soll.  Erhöhe beide zusammen oder zuerst
 das Phasen-Timeout.
+
+Greife zum Per-Phasen-Key, wenn nur der Terminate-Schritt mehr Luft
+braucht.  `default-phase-timeout` anzuheben gibt dasselbe größere Budget
+elf weiteren Phasen — und jede davon ist eine Phase, in der ein
+hängender Task den Shutdown nun entsprechend länger festhalten kann.
 
 ## SIGTERM / SIGINT-Hooks
 
@@ -283,6 +423,22 @@ nie einen Listener an, den es nicht selbst installiert hat — ein
 zweites `ActorSystem` im selben Prozess, oder das eigene
 SIGTERM-Handling der Anwendung, bleibt unberührt.
 
+Der *Default* kommt aus der Konfiguration: ein Host, dem die Signale
+gehören, kann die Handler bei jedem Node abschalten, ohne den Code
+anzufassen:
+
+```hocon
+actor-ts.coordinated-shutdown.run-by-process-signals = false
+```
+
+Das schaltet um, was `runUntilTerminated()` und der Cluster-Bootstrap
+tun, wenn der Aufrufer keine Signale genannt hat.  Wer sie nennt —
+`runUntilTerminated(['SIGTERM'])`, `shutdownOnSignals` in den
+Bootstrap-Optionen oder `installProcessHooks()` selbst —, installiert
+trotzdem, denn explizite Optionen schlagen die Konfiguration.  Mit dem
+Key auf `false` hält `runUntilTerminated()` seine beiden anderen
+Zusagen weiterhin ein: es wartet, und es hält die Event-Loop offen.
+
 ## K8s-PreStop-Integration
 
 In Kubernetes ist die Pod-Shutdown-Sequenz:
@@ -334,24 +490,92 @@ app.post('/shutdown', async (req, res) => {
   res.send('ok');
 });
 
-// Ein Cluster-Downing ist keiner davon — siehe unten.
+// Cluster-Downing-Pfad: run-coordinated-shutdown-when-down = on — siehe unten.
 ```
 
-Beide führen am Ende dieselbe Shutdown-Sequenz einmal aus.
+Jeder davon führt am Ende dieselbe Shutdown-Sequenz aus, einmal.
 
-Vom Cluster *gedownt zu werden* startet die Pipeline nicht: keine
-Reason-Klasse führt sie für dich aus, und `ClusterDowningReason`
-existiert für ein `run()`, das du selbst auslöst.  Wenn ein
-gedownter Knoten sich selbst herunterfahren soll, abonniere das und
-sag es:
+### Wenn der Cluster diesen Knoten downt
+
+Ein Knoten, den seine **eigene** Downing-Entscheidung entfernt — das Urteil
+einer [Strategie](/de/cluster/downing-strategies/), das diesen Knoten
+einschließt, oder `down-all-when-unstable` —, verlässt den Cluster immer.  Ob
+er auch herunterfährt, entscheidet `run-coordinated-shutdown-when-down`:
 
 ```ts
-cluster.subscribe((event) => {
-  if (event instanceof MemberDown && event.member.address.equals(cluster.selfAddress)) {
-    void coordinatedShutdown.run(ClusterDowningReason.instance);
-  }
-});
+const clusterOptions = ClusterOptions.create()
+  .withDowning(new KeepMajority())
+  .withRunCoordinatedShutdownWhenDown(true);
 ```
+
+```hocon
+actor-ts.cluster.run-coordinated-shutdown-when-down = on
+```
+
+Ist er an, verlässt der Knoten zuerst den Cluster und führt danach diese
+Pipeline mit `ClusterDowningReason` aus, auch wenn das Verlassen fehlschlägt:
+seine Services werden entbunden, und der eingebaute Terminator beendet das
+Actor-System und mit ihm jede Entity und jeden Singleton, die der Knoten
+hielt.  `terminate-actor-system` und `exit-process` entscheiden, worin der
+Lauf endet, wie bei einem Signal — ein Lauf, den eine Phase
+[anhält](#timeouts), endet trotzdem im Teardown, weil ein gedownter Knoten
+seine Actors nicht neben der Seite weiterlaufen lassen darf, die gewonnen hat
+—, und `auto-register-tasks = off` unterdrückt ihn nicht: Dieser Schalter hält
+die eigenen Tasks des Frameworks zurück und entscheidet nichts darüber, wann
+die Pipeline läuft.  Der Knoten meldet das auf `warn`, bevor der Lauf beginnt.
+Eine Entscheidung, die nur Peers downt, ändert an diesem Knoten nichts: Der
+Schalter beantwortet seine eigene Entfernung, nicht ein Downing, das er
+entscheidet.
+
+Ausgeliefert wird **an**:
+
+- **An** beendet ein falsches Selbst-Downing den Knoten.  Die beiden
+  bekannten — `static-quorum` downte einen Cluster, der noch kleiner als
+  `quorum-size` war ([Issue #933](https://github.com/pathosDev/actor-ts/issues/933)),
+  und `keep-oldest` downte jeden Überlebenden, sobald der Knoten mit der
+  niedrigsten Adresse abstürzte
+  ([Issue #932](https://github.com/pathosDev/actor-ts/issues/932)) — sind
+  behoben, und erst damit wurde der Default umgestellt.
+- **Aus** verlässt der Knoten den Cluster und lässt seine Actors weiterlaufen
+  — die Entities und Singletons, die er hielt, jede HTTP-Bindung — neben der
+  Seite, die gewonnen hat.  Das ist ein zweiter Schreiber, genau das, was eine
+  Downing-Entscheidung verhindern soll.
+
+Nur das eigene Urteil dieses Knotens erreicht den Schalter.  Die Behauptung
+eines Peers über den eigenen Eintrag dieses Knotens wird abgelehnt, die
+Gewinnerseite kann ihn also nicht direkt downen.  Das muss sie auch nicht:
+Ein Peer, der diesen Knoten entfernt hat, beantwortet seine Heartbeats mit
+einer Ablehnung, der Knoten parkt jeden solchen Peer als unreachable, und
+sobald ihn jeder Peer abgelehnt hat, wird seine eigene Strategie sofort
+gefragt — ein Knoten, der über das Downing-Fenster hinaus pausiert war, tritt
+binnen einer Heartbeat-Runde nach dem Aufwachen ab
+([Issue #940](https://github.com/pathosDev/actor-ts/issues/940)).  Ein
+Selbst-Downing endet in `removed` und meldet `SelfRemoved` für diesen Knoten,
+ob an oder aus — eine Anwendung, die zu eigenen Bedingungen abtreten will,
+kann es abonnieren.
+
+Ein Knoten, den der Schalter herunterfährt, beendet seinen Prozess so, wie
+ein sauberer Stopp es tut.  Mit `exit-process = on` endet der Lauf mit
+`exit-code`, der als `0` ausgeliefert wird: Ein Downing ist keiner der
+Fehlschläge, die nie mit `0` enden — ein fehlgeschlagener Start, ein Knoten,
+der nicht beitreten konnte, ein Lauf, den eine Phase anhält, der auch hier
+mit `1` endet.  Beim Default `exit-process = off` endet der Prozess so, wie
+dein `main` endet, sobald `runUntilTerminated()` auflöst: mit `0`, bei der
+Produktions-Main unten.  Ein Supervisor, der einen Prozess nur nach einem
+Fehlschlag neu startet — systemds `Restart=on-failure`, wie die
+[systemd-Unit](/de/operations/deployment/process-manager/#systemd) es
+setzt —, holt den Knoten also nicht zurück.  Zwei Wege tun es:
+
+- **Neustart unabhängig vom Status**: `Restart=always` oder dieselbe Policy
+  eines anderen Supervisors.
+- **Ein `exit-code` ungleich null**, mit `exit-process = on`.  Dieser Status
+  gehört nicht dem Downing allein: Jeder Lauf, den `exit-process` beendet,
+  endet mit ihm, gleich aus welchem Grund — der Lauf eines Signals und der
+  eines `system.terminate()`, das die Pipeline ausführt, genauso wie dieser
+  —, und die Läufe für einen Fehlschlag enden mit ihm statt mit `1`.  Ein
+  Supervisor liest dann jeden Stopp als Fehlschlag, und der Status
+  unterscheidet einen gescheiterten Start, einen gescheiterten Join oder einen
+  angehaltenen Lauf nicht mehr von einem geordneten Stopp.
 
 ## Was nach `coordinatedShutdown.run()`-Abschluss läuft
 
@@ -423,14 +647,51 @@ Prozess beendet sich, weil nichts mehr die Loop am Leben hält.
 
 <Aside type="caution" title="`system.terminate()` direkt aufrufen">
   ```ts
-  await system.terminate();   // umgeht CoordinatedShutdown
+  await system.terminate();                                   // the config decides — the bare teardown by default
+  await system.terminate({ runCoordinatedShutdown: true });   // every phase first, then the teardown
+  await system.terminate({ runCoordinatedShutdown: false });  // the bare teardown, whatever the config says
   ```
-  Direktes `terminate()` überspringt jeden Task, den du registriert
-  hast — der HTTP-Server wird nicht gedrained, der Cluster nicht
-  benachrichtigt, das Journal nicht geflusht.  In Produktions-Code
-  gehe immer über `coordinatedShutdown.run()`.  Reserviere `system.terminate()` für
-  Tests, in denen das Shutdown-DSL ein Overhead ist, den du nicht
-  brauchst.
+  Ein einfaches `terminate()` überspringt jeden Task, den du registriert
+  hast — der HTTP-Server wird nicht abgebunden, der Cluster nicht
+  benachrichtigt, das Journal nicht geflusht —, und es ist weiterhin der
+  Default.  Mit `runCoordinatedShutdown: true` führt derselbe Aufruf
+  zuerst die ganze Pipeline aus, mit `ActorSystemTerminateReason`, und
+  danach den Teardown: er resolved, sobald die Pipeline fertig *und* das
+  System unten ist — auch dann, wenn `terminate-actor-system = false` den
+  Terminator aus der letzten Phase nimmt oder eine Phase mit
+  `recover: false` den Lauf davor anhält.  Mit `exit-process = on`
+  beendet ein Halt stattdessen den Prozess, bevor dieser Teardown
+  beginnt — siehe [Timeouts](#timeouts).  In einem Service ist
+  `runUntilTerminated()` der Weg, auf ein Signal hin herunterzufahren,
+  und `terminate({ runCoordinatedShutdown: true })` der Weg, wenn dein
+  Programm selbst den Shutdown beschließt.
+
+  Um die Pipeline zum Default für jeden Aufruf zu machen, der nicht
+  wählt, setze
+  `actor-ts.coordinated-shutdown.run-by-actor-system-terminate = true`:
+  Jedes einfache `terminate()`, in deinem Code oder in dem einer
+  Bibliothek, bindet dann ab und verlässt den Cluster, bevor die Actors
+  stoppen.  Der Default ist aus, und ein Aufruf, der
+  `runCoordinatedShutdown` übergibt, bekommt in beiden Fällen, was er
+  übergeben hat, denn explizite Optionen stehen über der Config.  Das
+  System eines Worker-Threads erbt die Config und terminiert trotzdem
+  ohne Pipeline: Der Main-Thread führt die Pipeline aus, der Worker
+  antwortet ihr nur.
+
+  Innerhalb einer laufenden Pipeline — aus einem ihrer Tasks oder von
+  irgendwo, solange ein Lauf unterwegs ist — startet `terminate()` nichts
+  und resolved sofort, egal in welcher Form du es aufrufst.  Der Lauf
+  endet ohnehin im Teardown, und ein Task, der darauf wartete, hielte
+  seine eigene Phase fest, bis deren Timeout ihn aufgibt.  Außerhalb der
+  Pipeline — etwa neben einem durch ein Signal ausgelösten Shutdown —
+  await `system.whenTerminated()`, wenn du das System unten brauchst.
+  Nicht aus einem Task: Der Teardown, auf den er warten würde, läuft in
+  der letzten Phase, die nicht beginnen kann, bevor die eigene Phase des
+  Tasks zu Ende ist; das Warten hält diese Phase also ihr ganzes Budget
+  lang fest und wird als `timed out` geloggt — derselbe Stillstand.  Nur
+  ein Task von `actor-system-terminate` läuft neben dem Terminator;
+  Arbeit, die das System unten braucht, gehört hinter den Lauf, nicht in
+  ihn.
 </Aside>
 
 <Aside type="caution" title="Tasks mit Seiteneffekten auf das Actor-System">
@@ -451,8 +712,8 @@ Prozess beendet sich, weil nichts mehr die Loop am Leben hält.
 - **[Actor-System](/de/fundamentals/actor-system/)** —
   das `terminate()`, das am Ende der Pipeline läuft.
 - **[Cluster-Überblick](/de/cluster/overview/)** — `Cluster.join()`
-  registriert den `cluster-leave`-Task; die übrigen Cluster-Phasen
-  füllst du selbst.
+  registriert die Tasks `cluster-sharding-shutdown-region` und
+  `cluster-leave`; die übrigen Cluster-Phasen füllst du selbst.
 - **[Kubernetes-Deployment](/de/operations/deployment/kubernetes/)** —
   das vollständige PreStop + SIGTERM + Grace-Period-Rezept.
 - **[Persistenz — Migration](/de/persistence/migration/overview/)** —

@@ -28,45 +28,242 @@ Entity vorbei rast.
 
 ## Was Rebalance auslöst
 
-Drei Pfade:
+Vier Pfade:
 
-1. **Mitgliedschaftsgetrieben** — `MemberUp` (ein neuer Node),
-   `MemberRemoved` (ein gehender Node) oder jeder
-   Cluster-Übergang, der die Kandidatenmenge ändert. Der
-   Koordinator führt die Allokationsstrategie für jeden besessenen
-   Shard erneut aus.
+1. **Mitgliedschaftsgetrieben** — `MemberRemoved` (ein gehender Node)
+   und ein Leader-Wechsel. Das sind die einzigen beiden
+   Cluster-Events, die der Koordinator abonniert; alles andere,
+   `MemberUp` und `MemberUnreachable` eingeschlossen, landet in einem
+   Handler, der nichts tut. **Ein hinzukommender Node verschiebt also
+   im Moment des Beitritts keinen Shard** — er ändert nur die Menge der
+   Mitglieder, die `up` sind, und die liest der Koordinator bei seiner
+   nächsten Allokation oder seinem nächsten Tick. Das Rebalancing wartet
+   dann, bis diese Menge für das Beruhigungsfenster stillgehalten hat
+   (siehe [Mitglieder, die nicht up sind](#mitglieder-die-nicht-up-sind)
+   unten). Genau deshalb kommt der Churn eines Beitritts als ein
+   einziger Schwall und nicht als Rinnsal.
 2. **Strategiegetrieben** — alle `rebalanceIntervalMs` (Default 2 s)
    fragt der Koordinator die
    [Allokationsstrategie](/de/cluster/sharding/allocation-strategy/)
-   nach ihren Rebalance-Empfehlungen.
+   nach ihren Rebalance-Empfehlungen, und zwar über die Regionen, deren
+   Mitglied `up` ist, und erst, wenn deren Menge zur Ruhe gekommen ist.
    `LeastShardAllocationStrategy` gibt Shards zum Drainen von
    beschäftigten Nodes zurück; `HashAllocationStrategy` gibt
-   Shards zurück, deren Hash-Ziel gewandert ist.
+   Shards zurück, deren Hash-Ziel gewandert ist. Beide geben auch die
+   Shards einer Region zurück, die kein Kandidat ist (siehe
+   [Mitglieder, die nicht up sind](#mitglieder-die-nicht-up-sind)).
 3. **Eine Region, die stoppt** — eine Region meldet sich beim
    Koordinator ab, während sie herunterfährt, und ihre Shards werden
    sofort neu verteilt. Das deckt eine Region ab, die auf einem Node
    gestoppt wird, der im Cluster bleibt — dort feuert überhaupt kein
    Membership-Event.
+4. **Eine Region, die verstummt** — opt-in, und das Auffangnetz für
+   eine verlorene Meldung aus Pfad 3. Mit
+   `actor-ts.sharding.stale-region-detection.enabled = on` schlägt
+   jede Region an den Koordinator, und eine Region, die
+   `stale-after` lang nicht mehr schlägt, wird aus der Registry
+   gestrichen und ihre Shards werden neu verteilt. Der Koordinator
+   *meldet* dieser Region danach, dass sie entfernt wurde — was Pfad 3
+   nie tun muss; unten steht, warum die beiden nicht dasselbe sind.
+   Eine Region auf einem Node, der nicht `up` ist — etwa `unreachable`
+   hinter einer Partition —, bleibt stattdessen der
+   Mitgliedschaftsentscheidung überlassen: Der Node kann ihre Shards
+   noch ausführen, und sie hier neu zu verteilen gäbe jedem ein zweites
+   lebendes Zuhause. Der Sweep überspringt eine solche Region und startet
+   ihre Stille-Uhr bei jedem Tick neu; ist der Node wieder `up`, hat die
+   Region ein frisches `stale-after`, um sich zu melden.
+   Per Default aus; siehe [Eine verstummte
+   Region erkennen](/de/reference/configuration/#eine-verstummte-region-erkennen)
+   dazu, was der Pfad abdeckt und was nicht.
 
-Die ersten beiden speisen den Handoff-Mechanismus unten. Der dritte
-nicht: Die Region ist bereits weg, es gibt also nichts zu übergeben —
-der Koordinator streicht sie schlicht aus der Registry und alloziert
-neu.
+Die ersten beiden speisen den Handoff-Mechanismus unten. Die letzten
+beiden nicht: Es gibt niemanden, an den zu übergeben *wäre* — der
+Koordinator streicht die Region aus der Registry und alloziert in einem
+Schritt neu.
 
 Ohne diesen dritten Pfad ließ eine gestoppte Region ihre Shards
 **verwaist** zurück: Der Koordinator nannte sie weiterhin als deren
 Zuhause, Sender cachten dieses Zuhause und stellten in einen
 gestoppten Actor zu, und die Nachrichten wurden zu Dead Letters.
 Es erholte sich auch nichts — die Kandidatenmenge wird aus der
-Registry abgeleitet, ohne Liveness-Prüfung, der Rebalance-Tick sah
-also einen ausgeglichenen Cluster und verschob nichts. Das blieb so,
-bis der Node den Cluster ganz verließ.
+Registry abgeleitet und prüft nur, ob der *Node* einer Region `up` ist,
+nie, ob die Region selbst noch lebt; der Rebalance-Tick sah also einen
+ausgeglichenen Cluster und verschob nichts. Das blieb so, bis der Node
+den Cluster ganz verließ.
 
 Die Meldung ist Best-Effort und idempotent: Sie entfällt, wenn die
 Region nie einen Koordinator gefunden hat, ein Transportfehler auf dem
 Weg nach unten wird geloggt und geschluckt, und der `MemberRemoved`-
 Pfad, der einem kompletten Node-Shutdown folgt, findet die Region
 bereits weg und tut nichts.
+
+Genau deshalb gibt es den vierten Pfad. Eine verlorene Meldung
+versetzt den Cluster exakt in den verwaisten Zustand oben zurück, und
+nur der Schlag kann das bemerken — der Node läuft ja noch, es wird
+also nie ein Membership-Event feuern. Der Sweep läuft auf demselben
+periodischen Tick wie Pfad 2 mit, innerhalb derselben „bin ich der
+aktive Koordinator?"-Prüfung, und entfernt über denselben Code-Pfad
+wie Pfad 3 — eine Region, die sich noch abmelden konnte, ist also
+bereits aus der Registry verschwunden und kann nicht zweimal entfernt
+werden.
+
+**Eine Entfernung ist aber keine Abmeldung, und dieser Unterschied ist
+die ganze Sicherheit des Pfades.** Pfad 3 beginnt bei einer Region, die
+heruntergefahren wird und das weiß. Pfad 4 beginnt bei einem
+Koordinator, der aus dem Ausbleiben eines Schlags *geschlossen* hat,
+dass eine Region weg ist — und dieser Schluss kann falsch sein, denn
+ein verlorener Frame sieht von dort aus genauso aus. Eine Region, die
+noch lebt, erfährt aus einer Shard-Map, in der sie nicht mehr steht,
+gar nichts: Sich selbst überlassen behielte sie ihre Shards, ließe
+deren Entities weiterlaufen und bediente weiter jeden Sender, der das
+alte Zuhause gecacht hat — ein Shard, zwei lebende Zuhause, so lange
+der Node oben bleibt.
+
+Deshalb schickt der Koordinator der entfernten Region eine Meldung.
+Eine Region, die sie erhält, gibt jeden gehaltenen Shard auf — die
+Shard-Actors stoppen, die Entities darunter laufen also durch
+`postStop`, und eine persistente flusht — und registriert sich sofort
+neu. Dass sie die Meldung überhaupt erhält, ist der Beleg dafür, dass
+die Entfernung ein Fehlalarm war, und die Neuregistrierung ist die
+Reparatur: Der Node ist gesund, also soll er Shards hosten. Eine
+Region, die wirklich weg oder verklemmt ist, verarbeitet die Meldung
+nie, und die Entfernung bleibt genau wie bisher bestehen.
+
+Die Meldung selbst kann verloren gehen, und eine lebende Region, die sie
+nie erhält, hält sich weiter für registriert — sie behält die Shards, die
+gerade umverteilt wurden, und `isRegistered` liefert auf ihrem Node
+weiter `true`. Verraten wird sie durch ihren Schlag: Der nächste nennt
+eine Region, die der Koordinator nicht mehr führt, und einen solchen
+Schlag beantwortet der Koordinator mit einem `RegistrationRequest`. Die
+Region registriert sich neu und beansprucht dabei weiter die Shards, die
+sie behalten hat; der Koordinator lässt sie, wo er sie hingelegt hat, und
+lässt die veralteten Kopien per Hand-off abgeben. Eine verlorene Meldung
+kostet also ein `heartbeat-interval`, kein Exil.
+
+Die Meldung kann keine Schleife auslösen. Eine neu registrierte Region
+ist ein **neuer** Registry-Eintrag, der zu diesem Koordinator null Mal
+geschlagen hat, und eine registrierte Region, die nie geschlagen hat,
+wird nie entfernt — eine Region, deren Schläge durchgehend verloren
+gehen, wird also einmal entfernt und nicht alle `stale-after` erneut.
+Nur ein aus einem Koordinator-Snapshot übernommener Eintrag, der sich im
+neuen Term nie registriert, wird ohne Schlag entfernt, sobald er seit
+seiner Übernahme `stale-after` lang still war.
+
+Ein übernommener Eintrag, dessen Region *da* ist, verlässt diesen
+Zustand nach einem Round-Trip, denn der Koordinator wartet nicht darauf,
+dass sich die Region von selbst registriert: Jeder Eintrag, den er aus
+dem Snapshot übernimmt, bekommt einen `RegistrationRequest`, und die
+Region antwortet mit ihrem gewöhnlichen `Register`. Am meisten zählt das
+nach einem **Neustart des Koordinators** — sein Supervisor baut ihn neu
+auf, wenn einer seiner Handler wirft, eine eigene `AllocationStrategy`,
+die aus `allocate` wirft, eingeschlossen —, denn der bewegt keinen
+Leader und gibt damit keiner Region einen eigenen Grund, sich zu
+registrieren. Der neu gestartete Koordinator fragt außerdem jede Region,
+die die Instanz vor ihm kannte; dasselbe gilt also auch ohne
+Koordinator-State-Store, wo ein Neustart den Typ früher kopflos
+zurückließ: keine Region bekannt, kein Shard platzierbar, nichts
+zugestellt, das den Koordinator brauchte. Die Anfrage geht nur an
+Regionen, an die der Koordinator einen Grund hat zu glauben, nie an jedes
+Mitglied — ein Node, der für den Typ nichts betreibt, würde sie als
+abgewiesenes Envelope zählen.
+
+## Mitglieder, die nicht up sind
+
+Ein Shard wird nur einer Region zugewiesen, deren Mitglied **`up`** ist.
+Eine Region auf einem Node, der `unreachable`, noch `joining` oder
+`weakly-up`, `leaving` oder `down` ist — oder auf einer Adresse, die gar
+kein Mitglied ist —, bekommt nie einen neuen Shard, was immer die
+Strategie wählt. Ob die Region *selbst* noch lebt, ist eine andere
+Frage, die diese Regel nicht beantwortet; dafür ist Pfad 4 oben da.
+
+Der Koordinator führt die Menge der Regionen, deren Mitglied `up` ist —
+die **zulässigen** Regionen —, und wann sich diese Menge zuletzt
+geändert hat:
+
+- **Solange die Menge noch nicht zur Ruhe gekommen ist**, wird ein Shard
+  zuerst über alle registrierten Regionen erfragt, und die Wahl der
+  Strategie gilt, wenn deren Mitglied `up` ist. Nur eine Wahl auf ein
+  Mitglied, das nicht `up` ist, wird noch einmal erfragt, über die
+  zulässigen Regionen. Um ein Rebalancing wird die Strategie gar nicht
+  erst gebeten.
+- **Sobald die Menge für das Beruhigungsfenster stillgehalten hat**,
+  legen Allokation und Rebalancing Shards beide nur auf die zulässigen
+  Regionen, und ein vorgeschlagener Umzug weg von einem Besitzer, der
+  nicht `up` ist, wird verworfen, gleich welche Strategie ihn
+  vorgeschlagen hat. Das Rebalancing sieht dabei auch die Shards einer
+  Region, die auf einem Mitglied registriert ist, das `up` ist, die aber
+  kein Kandidat ist — wegen ihrer Shard-Anzahl abgewiesen oder ohne die
+  Rolle des Typs —, sodass beide eingebauten Strategien diese auf die
+  zulässigen Regionen verschieben.
+
+Das Fenster wird aus den Downing-Zeiten abgeleitet, nicht konfiguriert:
+`failure-detector.down-after` ohne Split-Brain-Strategie, und mit einer
+das Größere davon und `split-brain-resolver.stable-after`. Bei den
+ausgelieferten Defaults sind das **5 s** ohne Strategie und **20 s** mit
+einer. Es läuft ab dem ersten Blick des Koordinators auf die geänderte
+Menge — seiner nächsten Allokation oder seinem nächsten Rebalance-Tick,
+der bis zu einen Tick (2 s) nach der Änderung kommen kann —, und das
+erste Rebalancing läuft beim ersten Tick, nachdem es abgelaufen ist. Der
+erste Umzug kann also bis zu zwei Ticks (4 s) später kommen, als das
+Fenster allein sagen würde. Ein neuer Leader beginnt ein eigenes Fenster
+und kommt damit ebenfalls erst zur Ruhe, bevor er umverteilt.
+
+Was daraus folgt:
+
+- **Ein kurzer Ausfall verschiebt nichts.** Ein Mitglied, das
+  `unreachable` wird und innerhalb des Fensters zurückkommt, löst für
+  keinen Shard, der vorher platziert war, einen Handoff aus — weder
+  während des Ausfalls noch danach. Shards, die währenddessen angefragt
+  werden, landen auf Mitgliedern, die `up` sind.
+- **Kein Handoff von einem geparkten Besitzer.** Ein Handoff, der von
+  einem Node verlangt wird, der nicht antworten kann, kann nur in eine
+  zwangsweise Neuallokation auslaufen — ein zweites lebendes Zuhause für
+  den Shard, während der abgeschnittene Node ihn weiter ausführt —, also
+  startet der Koordinator keinen.
+- **Die Shards eines geparkten Nodes warten auf die
+  Downing-Entscheidung.** Mit einer Split-Brain-Strategie ist das deren
+  Urteil. Ohne eine hängt es an `failure-detector.auto-down`: an, entfernt
+  der Failure-Detector den Node bei `down-after`; aus, bleibt der Node
+  geparkt, bis ein Operator ihn auf `down` setzt (`Cluster.down` oder
+  `POST /cluster/down`). Neu verteilt werden die Shards aus dem folgenden
+  `MemberRemoved`, nicht früher.
+- **Eine Runde Umzüge, wenn ein Mitglied geparkt bleibt.** Läuft das
+  Fenster ab, während ein Mitglied noch geparkt ist, verteilt die
+  Default-Strategie `HashAllocationStrategy` die Shards der *gesunden*
+  Mitglieder über eine um eins kleinere Menge und verschiebt damit
+  diejenigen, deren Platz sich mit der Größe geändert hat, und zwar
+  einmal — 21 oder 22 der ausgelieferten 64, wenn einer von drei Nodes
+  geparkt ist, denn die Plätze folgen der Adressreihenfolge: 21, wenn der
+  geparkte Node zuletzt kommt, sonst 22. Die Allokation fragt danach über
+  dieselbe Menge, der nächste Tick findet also nichts mehr zu tun.
+- **Ein neuer Shard ohne Ziel wartet.** Sind alle Regionen, die den Typ
+  hosten könnten, auf Mitgliedern, die nicht `up` sind, bleibt eine
+  Anfrage nach einem neuen Shard offen, bis die Mitgliedschaft
+  entscheidet, und der Koordinator loggt eine Warnung pro Episode. Ein
+  Mitglied, das zurückkommt, sendet erneut `MemberUp`, jede Region
+  registriert sich neu und fragt die gepufferten Shards erneut an, und
+  dann wird die Anfrage beantwortet; ein Mitglied, das entfernt wird,
+  nimmt seine Regionen mit, und die Anfrage wartet auf eine Region, die
+  den Typ hosten kann. Solange #930 offen ist, hört man von einem
+  Mitglied, das eine symmetrische Partition abgeschnitten hat, nach dem
+  Heilen des Netzes nichts mehr; es kommt also nicht von selbst zurück,
+  und die Anfrage bleibt offen, bis Auto-Down, eine
+  Split-Brain-Strategie oder ein Operator das Mitglied entfernt.
+- **Ein flatterndes Mitglied hält das Rebalancing auf.** Jedes Mal, wenn
+  ein Mitglied die Menge der Mitglieder, die `up` sind, verlässt oder
+  wieder betritt, beginnt das Fenster von vorn. Eines, das schneller
+  wechselt als das Fenster, hält den Koordinator also ganz vom
+  Rebalancing ab — auch auf eine neu beigetretene Region —, solange es
+  flattert. Die Allokation läuft derweil weiter, auf Mitglieder, die
+  `up` sind.
+
+Die Regel gilt **je Koordinator**. Unter einer Partition wählt die
+abgeschnittene Seite einen eigenen Leader und mit ihm einen eigenen
+Koordinator, der Shards auf die Mitglieder legt, die *er* als `up`
+sieht. Einen Shard daran zu hindern, auf beiden Seiten einer Partition
+ein Zuhause zu bekommen, ist Sache einer
+[Downing-Strategie](/de/cluster/downing-strategies/) oder eines
+[Leases](/de/cluster/sharding/with-lease/), nicht der Platzierung.
 
 ## Die Handoff-Sequenz
 
@@ -95,14 +292,87 @@ Das Ganze dauert üblicherweise **sub-Sekunde bis ein paar
 Sekunden**, abhängig davon, wie viele Entities im Shard sind und
 wie lang ihre `postStop`-Arbeit dauert.
 
+### Ein Handoff, der kein Rebalance ist
+
+Derselbe Frame hat eine vierte Verwendung, und die hat mit Last
+nichts zu tun. Eine Region registriert sich beim Koordinator, indem
+sie die Shards nennt, die sie zu hosten glaubt — und diese Liste
+kann **veraltet** sein: Nichts löscht sie, wenn ein Node durch einen
+False Positive heruntergestuft wird, und die Region registriert sich
+bei jeder Mitgliedschaftsänderung sowie über einen 500-ms-Retry neu,
+bis sie eine Antwort bekommt. Ein nach so einem Downing wieder
+aufgenommener Node sagt als Erstes also, dass er noch alles hostet,
+was er vorher hostete.
+
+Der Koordinator beurteilt diesen Anspruch, statt ihm zu glauben.
+Ids, die niemandem gehören, werden übernommen wie bisher; eine Id,
+die bereits einer anderen **registrierten** Region gehört, bleibt,
+wo sie ist, und der Anspruchsteller bekommt dafür einen `HandOff`.
+Diese Antwort ist die geordnete Freigabe von oben — die Entities des
+Anspruchstellers laufen durch `postStop`, eine persistente flusht,
+bevor die Kopie des echten Besitzers Verkehr annimmt — und nicht
+eine bloße Korrektur, die zwar seine Routing-Tabelle richtigstellen,
+seinen Shard-Actor und dessen Entities aber weiterlaufen lassen
+würde.
+
+Zwei Details folgen daraus, was der Frame hier bedeutet. Die
+Registrierung wird **zuerst** bestätigt, damit der Anspruchsteller
+sich nicht mehr neu registriert, wenn die Direktive eintrifft. Und
+die Freigabe wird bewusst *nicht* als Rebalance verbucht: Ein
+Rebalance trägt den `handOffTimeoutMs`-Fallback von unten, dessen
+Ablauf den Shard zwangsweise neu alloziert — was hier dem Node das
+Eigentum entzöge, der es nie abgegeben hat. Das `HandOffComplete`
+des Anspruchstellers passt deshalb zu keinem laufenden Rebalance und
+ist ein No-op, was zugleich verhindert, dass es ein echtes Rebalance
+desselben Shards vorzeitig beendet.
+
+### Ein neuer Leader wartet auf die Ansprüche
+
+Ein Leader-Wechsel leert die Allokationskarte, und die Regions der
+anderen Mitglieder erfahren per Gossip davon, jede zu ihrem eigenen
+Zeitpunkt. Ein Coordinator, der sofort Shards platzierte, entschiede
+auf einer Karte, die die Region noch nicht enthält, die einen Shard
+bereits betreibt — ein Knoten, der an der niedrigsten Adresse neu
+startet oder mit ihr beitritt, wird sofort Leader und würde diesen
+Shard bei sich selbst platzieren (#1272).
+
+Ein Coordinator, der gerade Leader geworden ist, **platziert deshalb
+keinen Shard, bis sich die Regions aller anderen `up`-Mitglieder
+registriert haben** — eingeschränkt auf die Rolle des Typs, wenn er
+eine hat. Jede Region registriert sich beim Leader-Wechsel, den sie
+beobachtet, mit ihren `hostedShards` neu; gefragt werden muss also
+niemand. Ein Shard, den eine Registrierung bereits einem Home
+zugeordnet hat, wird sofort beantwortet; nur was ein *neues* Home
+bräuchte, wartet — drei Gossip-Runden plus einen Register-Retry lang,
+nie länger als `handOffTimeoutMs`, auch wenn sich jedes Mitglied, das er
+kennt, schon registriert hat: Ein gerade beigetretener Node, allen
+voran die neu gestartete niedrigste Adresse, hat womöglich noch nicht
+von jedem Mitglied gehört.  Eine neue Platzierung kostet bei einem
+Leader-Wechsel also höchstens dieses Fenster.
+
+Läuft das Fenster ab, platziert der Coordinator trotzdem und
+protokolliert, von welchen Mitgliedern keine Registrierung kam.
+Betreibt eines davon den Typ doch — seine Ansprüche kommen spät, oder
+es ist unreachable —, kann ein Shard, den es noch hostet, ein zweites
+Mal gestartet werden, bis seine Registrierung eintrifft und die
+veraltete Kopie freigibt. Eine
+[Lease auf dem Coordinator](/de/cluster/sharding/with-lease/) schließt
+das aus.
+
+Auch ein Coordinator-State-Snapshot kann einem neu gestarteten Knoten
+nicht mehr die Shards seines vorigen Laufs zuordnen: Registriert sich
+eine Region, deren Eintrag aus dem Snapshot stammt, aus einer anderen
+Inkarnation ihres Knotens, werden die Homes, die sie nicht beansprucht,
+freigegeben und bei Bedarf neu platziert.
+
 ## Wer einen Handoff anordnen darf
 
 Ein `HandOff` stoppt jede Entity eines Shards, deshalb prüft die
 Region **woher er kam**, bevor sie ihn ausführt — nicht nur, was
 darin steht. Die Regel gilt für jede Direktive, die ausschließlich
 der Koordinator aussprechen darf: `HandOff`, `ShardHome`,
-`RememberedEntities`, `ShardMapUpdate` und
-`RegisterAcknowledgment`.
+`RememberedEntities`, `ShardMapUpdate`, `RegionEvicted`,
+`RegistrationRequest` und `RegisterAcknowledgment`.
 
 Zwei Bedingungen müssen erfüllt sein:
 
@@ -145,6 +415,19 @@ Besitz uneins sind, und genau dafür ist `handOffTimeoutMs` weiter
 unten der Rückfallpfad: Der Shard wird zwangsweise neu allokiert,
 statt endlos zu warten.
 
+Eine Region antwortet, statt zu verweigern: eine, deren Registrierung
+der Koordinator wegen ihrer Shard-Anzahl abgelehnt hat. Sie hat alles,
+was sie hostete, aufgegeben, als die Ablehnung sie erreichte, und
+bekommt danach nichts mehr zugewiesen — was immer der Koordinator noch
+unter ihr führt, die Shards, die ein Koordinator-Snapshot ihr vor der
+Ablehnung ihres `Register` zugewiesen hat, läuft dort also nicht. Einen
+solchen `HandOff` beantwortet sie sofort mit `HandOffComplete`, oder,
+für einen Shard, den ihre Freigabe noch stoppt, sobald dieser Stopp
+abgeschlossen ist — diese Shards ziehen also um, ohne
+`handOffTimeoutMs` abzusitzen. Der Koordinator seinerseits beendet einen
+Hand-off nur auf das Wort der Region, an die er ihn geschickt hat: Ein
+`HandOffComplete` von irgendeiner anderen Region beendet nichts.
+
 :::note[Das ist Autorisierung, keine Authentifizierung]
 Die Prüfung sagt *„nur der Node des Koordinators"*, und in einem
 Cluster ohne Peer-Zertifikate kann jeder, der den Port erreicht,
@@ -158,8 +441,9 @@ nicht vollständig vertrauenswürdig ist — siehe
 ```ts
 const shardingOptions = StartShardingOptions.create()
   // ...
-  .withRebalanceIntervalMs(2_000)   // Strategie-getriebenes Rebalance alle 2s
-  .withHandOffTimeoutMs(10_000);    // nach 10s aufgeben + zwangsweise neu allokieren
+  .withRebalanceIntervalMs(2_000)      // strategy-driven rebalance every 2s
+  .withHandOffTimeoutMs(10_000)        // give up + force-reallocate after 10s
+  .withRebalanceRelativeLimit(0.1);    // at most 10% of the shards in flight
 sharding.start(shardingOptions);
 ```
 
@@ -167,6 +451,48 @@ sharding.start(shardingOptions);
 | --- | --- | --- |
 | `rebalanceIntervalMs` | 2000 | Wie oft die Strategie nach Rebalance-Empfehlungen befragt wird. |
 | `handOffTimeoutMs` | 10_000 | Wenn die Quellregion nicht innerhalb dieses Fensters `HandOffComplete` sendet, gibt der Koordinator das Warten auf und allokiert zwangsweise neu. |
+| `rebalanceAbsoluteLimit` | 0 | Feste Obergrenze für Shards **gleichzeitig in Bewegung**. `0` = keine absolute Obergrenze. |
+| `rebalanceRelativeLimit` | 0.1 | Dieselbe Obergrenze als Anteil von `numShards`. `0` = keine relative Obergrenze; `0` für beide heißt ungedeckelt. Sind beide gesetzt, gewinnt die kleinere — nie unter einem Shard. |
+
+### Die Obergrenze für Churn
+
+Was die Strategie auch empfiehlt: der Koordinator übergibt höchstens
+die konfigurierte Obergrenze **gleichzeitig**. Die Default-Strategie
+[`HashAllocationStrategy`](/de/cluster/sharding/allocation-strategy/)
+platziert einen Shard über `shardId % candidates.length`; ein
+hinzukommender Node ändert die Antwort also für die meisten Shards
+gleichzeitig: bei den ausgelieferten `numShards = 64` verschiebt ein
+Beitritt 2 → 3 Nodes **42 bis 44 Shards** (42, wenn der neue Node in
+Adressreihenfolge zuletzt kommt, 44, wenn er zuerst kommt), jeder davon
+ein Stopp, eine
+Neuzuweisung, eine Neuerzeugung und — bei persistenten oder erinnerten
+Entities — ein Journal-Replay. Alles im selben Tick: Ein `MemberUp`
+verschiebt von sich aus nichts, und der erste Tick, nachdem die Menge
+der `up`-Mitglieder für das Beruhigungsfenster stillgehalten hat,
+schlägt sie alle auf einmal vor.
+
+Drei Eigenschaften dieser Grenze sollte man kennen:
+
+- **Gezählt wird, was gleichzeitig läuft, nicht was pro Tick startet.**
+  Ein Tick feuert alle `rebalanceIntervalMs`, während eine Übergabe ein
+  ganzes `handOffTimeoutMs` stehen darf — bei den Defaults ließen sechs
+  pro Tick also rund dreißig gleichzeitig zu. Das Budget je Tick ist
+  die Obergrenze *minus dem, was schon unterwegs ist*.
+- **Gedeckelt wird nur der freiwillige Pfad.** Eine gestorbene Region
+  hinterlässt Shards ganz ohne Besitzer; die werden sofort neu
+  vergeben, mit oder ohne Obergrenze.
+- **Nichts geht verloren, und kein Node wird zuerst leergeräumt.** Der
+  Rest wird im nächsten Tick erneut vorgeschlagen, bis die Map
+  ausgeglichen ist, und welche Shards zuerst gehen, entscheidet ein
+  Round-Robin über ihre aktuellen Besitzer — eine Obergrenze, die einen
+  Node leert, bevor sie den nächsten anfasst, wäre schlechter als gar
+  keine.
+
+Die Limits der Strategie und dieses hier stapeln sich, sie konkurrieren
+nicht: `maxSimultaneousRebalance` von `LeastShardAllocationStrategy`
+begrenzt, was sie **vorschlägt**, diese Obergrenze begrenzt, was der
+Koordinator von einer beliebigen Strategie **annimmt** — auch von einer
+selbst geschriebenen.
 
 ## Was gepufferte Nachrichten bedeuten
 
@@ -224,7 +550,7 @@ Identität](/de/persistence/overview/#storage-lokalität--identität).
 Wenn `HandOffComplete` nicht innerhalb von `handOffTimeoutMs`
 eintrifft:
 
-- Der Koordinator loggt eine Warnung ("handoff timed out").
+- Der Koordinator loggt eine Warnung: `[sharding] handoff timeout for shard <id>; forcing reallocate`.
 - Er allokiert den Shard zwangsweise auf seinen neuen Besitzer.
 - Gepufferte Nachrichten leiten weiter, als wäre der Handoff
   normal abgeschlossen.
@@ -261,22 +587,43 @@ leerlaufender Node bekommt aus Sicht von
 werden, aber er bekommt keine existierenden Shards in sich
 *verschoben*, nur weil er ruhig ist.
 
-Für einen "immer-balanciert"-Effekt starte den Koordinator
-periodisch neu (was Allokation von Null neu laufen lässt) — oder
-konfiguriere `rebalanceThreshold: 1`, um auf jedes Ungleichgewicht
-zu reagieren.
+Für einen "immer-balanciert"-Effekt konfiguriere
+`rebalanceThreshold: 1`, um auf jedes Ungleichgewicht zu reagieren.
+Ein Neustart des Koordinators lässt die Allokation nicht von Null
+neu laufen: Der neu gestartete Koordinator bittet seine Regionen, sich
+erneut zu registrieren, jede beansprucht die Shards, die sie hostet,
+und die Karte kommt so zurück, wie sie war.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Gepufferte Nachrichten haben Speicherkosten">
+<Aside type="caution" title="Gepufferte Nachrichten haben Speicherkosten — und eine Obergrenze">
   ```ts
   // Shard X handing off; 10 000 Nachrichten stapeln sich vor Abschluss
   ```
-  Der Puffer ist unbegrenzt. In einem beschäftigten Cluster, wo
-  ein langsamer Handoff mit hoher Nachrichtenrate zusammenfällt,
-  kann der Puffer groß werden. Das ist kein Leak — gepufferte
-  Nachrichten drainen bei Abschluss — aber überwache den Speicher
-  unter Last.
+  Der Puffer ist auf `sharding.buffer-size` gedeckelt (per Default
+  100 000), und zwar **über alle Shards der Region zusammen**, nicht
+  pro Shard. Bis dorthin ist das kein Leak — gepufferte Nachrichten
+  drainen bei Abschluss — darüber hinaus verwirft die Region die
+  *neueste* Ankunft mitsamt ihrem Sender an die Dead Letters und
+  loggt eine Warnung pro Überlauf-Episode. Die neueste zu verwerfen
+  ist Absicht: was schon in der Queue steht, behält die Reihenfolge
+  seines Senders.
+
+  Ein gewöhnliches Rebalance kommt dem Cap nie nahe. Was ihm nahe
+  kommt, ist ein Koordinator, der nie antwortet — kein Leader, ein
+  Lease, das er nicht bekommt, oder eine Registrierung, die er
+  verweigert hat, während die Region weiter Traffic annimmt. Genau
+  dafür ist die Grenze da: die Alternative zu begrenztem
+  Nachrichtenverlust ist dort ein Prozess ohne Speicher. Anheben
+  lässt sie sich mit `StartShardingOptions.withBufferSize(n)` oder
+  `actor-ts.sharding.buffer-size`; `0` heißt: überhaupt nicht
+  puffern.
+
+  Dieselbe Zahl begrenzt einen zweiten Puffer, und zwar **pro Shard**:
+  die Nachrichten, die ein Shard für seine Entities zurückhält, die
+  [nach einem Stopp, um den niemand gebeten hat, im Backoff sind](/de/cluster/sharding/overview/#eine-entity-die-immer-wieder-stoppt).
+  Darüber hinaus verwirft der Shard die neueste genauso, mit ihrem
+  Sender, und warnt einmal pro Episode.
 </Aside>
 
 <Aside type="caution" title="Häufiges Rebalance ist teuer">

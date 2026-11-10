@@ -6,7 +6,12 @@ import {
   ClusterClientReceptionistOptionsValidator,
   type ClusterClientReceptionistOptionsType,
 } from '../../../src/cluster/ClusterClientReceptionistOptions.js';
-import { ClusterOptionsValidator, type ClusterOptionsType } from '../../../src/cluster/ClusterOptions.js';
+import { ClusterClientOptionsValidator, type ClusterClientOptionsType } from '../../../src/cluster/ClusterClientOptions.js';
+import {
+  ClusterOptionsValidator,
+  DEFAULT_SEED_RETRY_INTERVAL_MS,
+  type ClusterOptionsType,
+} from '../../../src/cluster/ClusterOptions.js';
 import {
   ClusterBootstrapOptionsValidator,
   type ClusterBootstrapOptionsType,
@@ -14,6 +19,7 @@ import {
 import { WebsocketClientOptionsValidator, type WebsocketClientOptionsType } from '../../../src/http/websocket/WebsocketClientOptions.js';
 import { ExpressBackendOptionsValidator, type ExpressBackendOptionsType } from '../../../src/http/backend/ExpressBackendOptions.js';
 import { HonoBackendOptionsValidator, type HonoBackendOptionsType } from '../../../src/http/backend/HonoBackendOptions.js';
+import { HttpServerOptionsValidator, type HttpServerOptionsType } from '../../../src/http/HttpServerOptions.js';
 import { LeaseOptionsValidator, type LeaseOptionsType } from '../../../src/coordination/LeaseOptions.js';
 import {
   KubernetesLeaseOptionsValidator,
@@ -36,16 +42,29 @@ import {
   ClusterSingletonManagerOptionsValidator,
   type ClusterSingletonManagerOptionsType,
 } from '../../../src/cluster/singleton/ClusterSingletonManagerOptions.js';
-import { WorkerClusterOptionsValidator, type WorkerClusterOptionsType } from '../../../src/worker/WorkerClusterOptions.js';
+import { checkWorkerModuleUrl, WorkerClusterOptionsValidator, type WorkerClusterOptionsType } from '../../../src/worker/WorkerClusterOptions.js';
+import { WorkerMeshOptionsValidator } from '../../../src/worker/WorkerMeshOptions.js';
+import { OffloadPoolOptionsValidator } from '../../../src/worker/OffloadPoolOptions.js';
+import { ParallelismOptionsValidator } from '../../../src/parallelism/ParallelismOptions.js';
 import {
+  DEFAULT_WINDOW_SIZE,
   ProducerControllerOptionsValidator,
   type ProducerControllerOptionsType,
 } from '../../../src/delivery/ProducerControllerOptions.js';
 import {
   ConsumerControllerOptionsValidator,
+  DEFAULT_MAX_OUT_OF_ORDER,
+  DEFAULT_MAX_PRODUCERS,
+  DEFAULT_PRODUCER_IDLE_TTL_MS,
   type ConsumerControllerOptionsType,
 } from '../../../src/delivery/ConsumerControllerOptions.js';
+import {
+  ThrottleOptionsValidator,
+  type ThrottleOptionsType,
+  type ThrottleOnExcess,
+} from '../../../src/ThrottleOptions.js';
 import { MAX_DELIVERY_IDENTIFIER_LENGTH } from '../../../src/delivery/Constants.js';
+import { HANDSHAKE_TIMEOUT_MS, INCOMPLETE_FRAME_IDLE_MS } from '../../../src/cluster/Constants.js';
 import { AutoDiscoveryOptionsValidator, type AutoDiscoveryOptionsType } from '../../../src/discovery/AutoDiscoveryOptions.js';
 import {
   ConfigSeedProviderOptionsValidator,
@@ -78,6 +97,7 @@ import { KeepRefereeOptionsValidator, type KeepRefereeOptionsType } from '../../
 import { LeaseMajorityOptionsValidator, type LeaseMajorityOptionsType } from '../../../src/cluster/downing/LeaseMajorityOptions.js';
 import { ClusterRouterOptionsValidator, type ClusterRouterOptionsType } from '../../../src/cluster/router/ClusterRouterOptions.js';
 import { TestProbeOptionsValidator, type TestProbeOptionsType } from '../../../src/testkit/TestProbeOptions.js';
+import { PersistenceBehaviorOptionsValidator, type PersistenceBehaviorOptionsType } from '../../../src/persistence/PersistenceBehaviorOptions.js';
 
 // Direct validator tests for the non-broker options. Each consumer calls the
 // same validator in its constructor / start method after merging defaults.
@@ -112,6 +132,38 @@ describe('ClusterClientReceptionistOptionsValidator', () => {
   });
 });
 
+describe('ClusterClientOptionsValidator', () => {
+  const check = (s: Partial<ClusterClientOptionsType>): void =>
+    new ClusterClientOptionsValidator().validate(s);
+  const dialable = ['sys@127.0.0.1:2551'];
+
+  test('rejects absent or empty contactPoints', () => {
+    // By hand rather than through a field helper: every helper is a no-op on
+    // `undefined` by design, so required-ness has to be checked separately.
+    expect(() => check({})).toThrow(OptionsError);
+    expect(() => check({ contactPoints: [] })).toThrow(OptionsError);
+  });
+
+  test('rejects a non-positive askTimeoutMs or connectTimeoutMs', () => {
+    expect(() => check({ contactPoints: dialable, askTimeoutMs: 0 })).toThrow(OptionsError);
+    expect(() => check({ contactPoints: dialable, connectTimeoutMs: 0 })).toThrow(OptionsError);
+    expect(() => check({ contactPoints: dialable, connectTimeoutMs: -1 })).toThrow(OptionsError);
+  });
+
+  test('names the field it rejected, so a bad HOCON leaf is attributable', () => {
+    // The validator now runs on the *merged* settings, so this same message is
+    // what a bad `actor-ts.cluster.client.connect-timeout` produces (#858).
+    expect(() => check({ contactPoints: dialable, connectTimeoutMs: 0 }))
+      .toThrow(/connectTimeoutMs/);
+  });
+
+  test('accepts unset timeouts alongside a dialable contact point', () => {
+    expect(() => check({ contactPoints: dialable })).not.toThrow();
+    expect(() => check({ contactPoints: dialable, askTimeoutMs: 3_000, connectTimeoutMs: 1_500 }))
+      .not.toThrow();
+  });
+});
+
 describe('ClusterOptionsValidator', () => {
   const check = (s: Partial<ClusterOptionsType>): void => new ClusterOptionsValidator().validate(s);
 
@@ -134,6 +186,92 @@ describe('ClusterOptionsValidator', () => {
 
   test('accepts weaklyUpAfterMs 0 (disabled) and a valid config', () => {
     expect(() => check({ host: '127.0.0.1', port: 2552, weaklyUpAfterMs: 0 })).not.toThrow();
+  });
+
+  test('the join give-up is 0 or at least the seed-retry interval it runs against (#1500)', () => {
+    const refusalOf = (s: Partial<ClusterOptionsType>): OptionsError | undefined => {
+      try { check(s); } catch (e) { return e as OptionsError; }
+      return undefined;
+    };
+    // `0` is the shipped value and arms no deadline, so it stands beside any
+    // interval — an interval longer than the deadline is not a conflict when
+    // there is no deadline.
+    expect(refusalOf({ shutdownAfterUnsuccessfulJoinMs: 0 })).toBeUndefined();
+    expect(refusalOf({ shutdownAfterUnsuccessfulJoinMs: 0, seedRetryIntervalMs: 60_000 })).toBeUndefined();
+    // Not a duration at all, in both directions.
+    for (const value of [-1, Number.POSITIVE_INFINITY, Number.NaN]) {
+      const refusal = refusalOf({ shutdownAfterUnsuccessfulJoinMs: value });
+      expect(refusal).toBeInstanceOf(OptionsError);
+      expect(refusal?.field).toBe('shutdownAfterUnsuccessfulJoinMs');
+    }
+    // Shorter than the interval the node will actually dial at — resolved
+    // against the built-in one when unset, the gap #846's ordering rule had:
+    // a lone `shutdown-after-unsuccessful-join = 1s` must not slip through
+    // because the interval it races was never written down.
+    const underDefault = refusalOf({ shutdownAfterUnsuccessfulJoinMs: DEFAULT_SEED_RETRY_INTERVAL_MS - 1 });
+    expect(underDefault).toBeInstanceOf(OptionsError);
+    expect(underDefault?.field).toBe('shutdownAfterUnsuccessfulJoinMs');
+    expect(underDefault?.message).toContain(`seedRetryIntervalMs (${DEFAULT_SEED_RETRY_INTERVAL_MS} ms)`);
+    expect(refusalOf({ shutdownAfterUnsuccessfulJoinMs: DEFAULT_SEED_RETRY_INTERVAL_MS })).toBeUndefined();
+    // ... and against a configured one when it is set, in both directions.
+    const underConfigured = refusalOf({ shutdownAfterUnsuccessfulJoinMs: 999, seedRetryIntervalMs: 1_000 });
+    expect(underConfigured?.field).toBe('shutdownAfterUnsuccessfulJoinMs');
+    expect(underConfigured?.message).toContain('seedRetryIntervalMs (1000 ms)');
+    expect(refusalOf({ shutdownAfterUnsuccessfulJoinMs: 1_000, seedRetryIntervalMs: 1_000 })).toBeUndefined();
+    expect(refusalOf({ shutdownAfterUnsuccessfulJoinMs: 1_000, seedRetryIntervalMs: 100 })).toBeUndefined();
+  });
+
+  test('the four association-lifecycle bounds have no "off" spelling (#846)', () => {
+    // Unlike `weaklyUpAfterMs` above, `0` is not "disabled" for any of these —
+    // it is a distinct way of breaking the node for each: no handshake window,
+    // no room to buffer a send racing the handshake, no inbound connection
+    // admitted, no connection allowed to end off a frame boundary.
+    expect(() => check({ handshakeTimeoutMs: 0 })).toThrow(/handshakeTimeoutMs/);
+    expect(() => check({ outboundQueueSize: 0 })).toThrow(/outboundQueueSize/);
+    expect(() => check({ maxInboundConnections: 0 })).toThrow(/maxInboundConnections/);
+    expect(() => check({ incompleteFrameIdleMs: 0 })).toThrow(/incompleteFrameIdleMs/);
+    expect(() => check({ outboundQueueSize: 1.5 })).toThrow(OptionsError);
+  });
+
+  test('the stall deadline must outlast the handshake deadline (#846)', () => {
+    // A socket that sends nothing at all never reaches the stall deadline, so
+    // the handshake timer is the only thing that reclaims it.  Inverting the
+    // two swaps their roles for a peer that sends three bytes and stops.
+    expect(() => check({ handshakeTimeoutMs: 5_000, incompleteFrameIdleMs: 5_000 }))
+      .toThrow(/incompleteFrameIdleMs/);
+    expect(() => check({ handshakeTimeoutMs: 5_000, incompleteFrameIdleMs: 1_000 }))
+      .toThrow(/must be greater than handshakeTimeoutMs/);
+    expect(() => check({ handshakeTimeoutMs: 5_000, incompleteFrameIdleMs: 30_000 }))
+      .not.toThrow();
+  });
+
+  test('the ordering rule is checked against the resolved pair, not the supplied one (#846)', () => {
+    // The five cases the rule has, and the two that used to slip through.
+    //
+    // Guarding on "both supplied" made the rule vacuous for exactly the inputs
+    // an operator is most likely to write — one of the two keys — because the
+    // unsupplied half is not absent at run time.  It falls through to the
+    // constant the transport applies, so a lone `incomplete-frame-idle = 1s`
+    // resolved to the inverted pair (5000, 1000) and was accepted.  A helper
+    // being a no-op on an unset field is right for a per-field rule; a
+    // cross-field rule about the pair the node will run with has to resolve
+    // the pair first.
+    //
+    // Neither set: the shipped pair is ordered, so the common case passes.
+    expect(() => check({})).not.toThrow();
+    // Stall deadline alone, under the default handshake deadline — the
+    // measured hole.
+    expect(() => check({ incompleteFrameIdleMs: 1_000 }))
+      .toThrow(new RegExp(`must be greater than handshakeTimeoutMs \\(${HANDSHAKE_TIMEOUT_MS} ms`));
+    // ... and it may still be lowered below its own default, as long as it
+    // stays above the handshake deadline it will actually run against.
+    expect(() => check({ incompleteFrameIdleMs: HANDSHAKE_TIMEOUT_MS + 1 })).not.toThrow();
+    // Handshake deadline alone, raised past the default stall deadline — the
+    // same inversion approached from the other side, and the message names the
+    // half the caller actually wrote.
+    expect(() => check({ handshakeTimeoutMs: INCOMPLETE_FRAME_IDLE_MS }))
+      .toThrow(new RegExp(`handshakeTimeoutMs must be less than incompleteFrameIdleMs \\(${INCOMPLETE_FRAME_IDLE_MS} ms`));
+    expect(() => check({ handshakeTimeoutMs: INCOMPLETE_FRAME_IDLE_MS - 1 })).not.toThrow();
   });
 });
 
@@ -202,6 +340,51 @@ describe('HTTP backend option validators', () => {
     const check = (s: Partial<HonoBackendOptionsType>): void =>
       new HonoBackendOptionsValidator().validate(s);
     expect(() => check({ maxBodyBytes: -5 })).toThrow(OptionsError);
+  });
+});
+
+describe('HttpServerOptionsValidator', () => {
+  const check = (s: Partial<HttpServerOptionsType>): void =>
+    new HttpServerOptionsValidator().validate(s);
+
+  test('admits 0 on all three timeouts — it is the runtime\'s own "no bound"', () => {
+    // The asymmetry with HttpClientOptions.defaultTimeoutMs is deliberate and
+    // is the reason this case is pinned: `requestTimeout = 0` is exactly what
+    // Fastify sets today, so refusing it would leave an operator who wants
+    // that behaviour back with nothing to write.
+    expect(() => check({ idleTimeoutMs: 0, headerTimeoutMs: 0, requestTimeoutMs: 0 })).not.toThrow();
+  });
+
+  test('rejects the values that arm a guard which never fires', () => {
+    expect(() => check({ idleTimeoutMs: -1 })).toThrow(/idleTimeoutMs/);
+    expect(() => check({ headerTimeoutMs: NaN })).toThrow(/headerTimeoutMs/);
+    expect(() => check({ requestTimeoutMs: -1 })).toThrow(/requestTimeoutMs/);
+  });
+
+  test('maxConnections is a positive integer or Infinity', () => {
+    expect(() => check({ maxConnections: Infinity })).not.toThrow();
+    expect(() => check({ maxConnections: 1 })).not.toThrow();
+    expect(() => check({ maxConnections: 0 })).toThrow(/maxConnections/);
+    expect(() => check({ maxConnections: 2.5 })).toThrow(OptionsError);
+  });
+
+  test.each(['maxContentLength', 'maxHeaderBytes'] as const)('%s is a positive integer — 0, a negative and a fraction are refused by name', (field) => {
+    // `0` is no spelling of "unbounded" here, unlike the timeouts: an unset
+    // field is how the backend's own cap is kept, and a cap of nothing would
+    // refuse every body, or every request line.  Neither runtime wraps a large
+    // header cap (2^53 - 1 read back verbatim on node v26.10.0 and bun 1.4.2),
+    // so no ceiling is needed.
+    for (const value of [0, -1, 1.5, NaN]) {
+      expect(() => check({ [field]: value })).toThrow(OptionsError);
+      expect(() => check({ [field]: value })).toThrow(new RegExp(field));
+    }
+    expect(() => check({ [field]: 1 })).not.toThrow();
+    expect(() => check({ [field]: 16 * 1024 })).not.toThrow();
+    expect(() => check({ [field]: undefined })).not.toThrow();
+  });
+
+  test('an empty bag passes — every field is optional and unset is a state', () => {
+    expect(() => check({})).not.toThrow();
   });
 });
 
@@ -315,6 +498,108 @@ describe('ShardingOptionsValidator', () => {
     // It routes but never hosts, so both are unreachable there.
     expect(() => check({ typeName: 'entity', proxy: true })).not.toThrow();
   });
+
+  test('rejects an entity-recovery strategy outside the union (#851)', () => {
+    // HOCON is untyped, so a misspelt strategy reaches the validator as a plain
+    // string.  Silently treating it as `all` would give an operator the burst
+    // they configured this key to remove.
+    expect(() => check({ ...required, entityRecoveryStrategy: 'constant_rate' as never }))
+      .toThrow(/entityRecoveryStrategy/);
+  });
+
+  test('rejects a zero or negative constant-rate bound (#851)', () => {
+    // Under `constant-rate` either one turns "recover slowly" into "never
+    // recover", which is worse than the burst the setting exists to avoid.
+    expect(() => check({ ...required, entityRecoveryConstantRateFrequencyMs: 0 }))
+      .toThrow(/entityRecoveryConstantRateFrequencyMs/);
+    expect(() => check({ ...required, entityRecoveryConstantRateNumberOfEntities: 0 }))
+      .toThrow(/entityRecoveryConstantRateNumberOfEntities/);
+    expect(() => check({ ...required, entityRecoveryConstantRateNumberOfEntities: 2.5 }))
+      .toThrow(/entityRecoveryConstantRateNumberOfEntities/);
+  });
+
+  test('rejects a zero or negative region heartbeat interval (#853)', () => {
+    // `0` is not "no beat" here — the timer would fire as fast as the scheduler
+    // runs it.  Turning the mechanism off is `staleRegionDetection`.
+    expect(() => check({ ...required, regionHeartbeatIntervalMs: 0 }))
+      .toThrow(/regionHeartbeatIntervalMs/);
+    expect(() => check({ ...required, regionHeartbeatIntervalMs: -1 })).toThrow(OptionsError);
+  });
+
+  test('accepts both strategies and a sane paced configuration', () => {
+    expect(() => check({ ...required, entityRecoveryStrategy: 'all' })).not.toThrow();
+    expect(() => check({
+      ...required,
+      entityRecoveryStrategy: 'constant-rate',
+      entityRecoveryConstantRateFrequencyMs: 100,
+      entityRecoveryConstantRateNumberOfEntities: 5,
+    })).not.toThrow();
+  });
+
+  test('rejects a replacement policy or admission filter outside its union (#848)', () => {
+    // Same reasoning as the recovery strategy above: HOCON is untyped, and a
+    // misspelt policy that fell back to LRU would give an operator the eviction
+    // order they named this key to change.
+    expect(() => check({ ...required, passivationReplacement: 'segmented-lru' as never }))
+      .toThrow(/passivationReplacement/);
+    // `most-recently-used` deliberately does not ship — the rejection is what
+    // makes that decision observable rather than a comment.
+    expect(() => check({ ...required, passivationReplacement: 'most-recently-used' as never }))
+      .toThrow(/passivationReplacement/);
+    expect(() => check({ ...required, passivationAdmissionFilter: 'sketch' as never }))
+      .toThrow(/passivationAdmissionFilter/);
+  });
+
+  test('rejects the degenerate ends of both proportions (#848)', () => {
+    // A protected share of 0 or 1 is a segmented policy with one empty segment,
+    // which is plain LRU under a longer name — a configuration that reads as
+    // segmented and is not.
+    expect(() => check({ ...required, passivationSegmentedProtectedProportion: 0 }))
+      .toThrow(/passivationSegmentedProtectedProportion/);
+    expect(() => check({ ...required, passivationSegmentedProtectedProportion: 1 }))
+      .toThrow(/passivationSegmentedProtectedProportion/);
+    // The window's `0` IS a real value — no window — so only its upper end is open.
+    expect(() => check({ ...required, passivationAdmissionWindowProportion: -0.1 }))
+      .toThrow(/passivationAdmissionWindowProportion/);
+    expect(() => check({ ...required, passivationAdmissionWindowProportion: 1 }))
+      .toThrow(/passivationAdmissionWindowProportion/);
+  });
+
+  test('rejects a frequency sketch with no admission window (#848)', () => {
+    // The cross-field rule, and it is not pedantry: without a window the only
+    // candidate the filter could refuse is the entity a message has just
+    // arrived for, which the region is not free to refuse.  Degrading to "no
+    // filter" would be a configuration that reads as armed and is not.
+    expect(() => check({ ...required, passivationAdmissionFilter: 'frequency-sketch' }))
+      .toThrow(/passivationAdmissionFilter/);
+    // Checked against the *resolved* pair, so naming the filter and leaving the
+    // window at its `0` default is the same rejection.
+    expect(() => check({
+      ...required,
+      passivationAdmissionFilter: 'frequency-sketch',
+      passivationAdmissionWindowProportion: 0,
+    })).toThrow(/passivationAdmissionWindowProportion/);
+  });
+
+  test('rejects a negative stop timeout but accepts 0 (#848)', () => {
+    // `0` waits forever, which is what every release before #848 did, and an
+    // entity whose graceful shutdown genuinely has no bound is a real shape.
+    expect(() => check({ ...required, passivationStopTimeoutMs: -1 }))
+      .toThrow(/passivationStopTimeoutMs/);
+    expect(() => check({ ...required, passivationStopTimeoutMs: 0 })).not.toThrow();
+  });
+
+  test('accepts a fully-specified composite passivation policy (#848)', () => {
+    expect(() => check({
+      ...required,
+      maxEntities: 50_000,
+      passivationReplacement: 'segmented-least-recently-used',
+      passivationSegmentedProtectedProportion: 0.8,
+      passivationAdmissionWindowProportion: 0.01,
+      passivationAdmissionFilter: 'frequency-sketch',
+      passivationStopTimeoutMs: 5_000,
+    })).not.toThrow();
+  });
 });
 
 describe('ShardedDaemonProcessOptionsValidator', () => {
@@ -351,8 +636,51 @@ describe('StartShardingOptionsValidator', () => {
     expect(() => check({ rebalanceIntervalMs: 10_000 })).toThrow(/typeName is required/);
   });
 
+  test('rejects a negative or fractional absolute rebalance limit', () => {
+    // A count of shards, so `0.5` is as meaningless as `-1`; `0` is the
+    // documented way to switch the ceiling off and must stay accepted (#850).
+    expect(() => check({ ...required, rebalanceAbsoluteLimit: -1 })).toThrow(/rebalanceAbsoluteLimit/);
+    expect(() => check({ ...required, rebalanceAbsoluteLimit: 0.5 })).toThrow(OptionsError);
+    expect(() => check({ ...required, rebalanceAbsoluteLimit: 0 })).not.toThrow();
+  });
+
+  test('rejects a relative rebalance limit outside 0..1', () => {
+    // It is a fraction of `numShards`, so anything above 1 asks for more shards
+    // than exist and reads as "6 shards" from someone who meant the absolute
+    // limit.  Both ends of the range stay legal: `0` disables it, `1` is
+    // "uncapped, spelt as a fraction" (#850).
+    expect(() => check({ ...required, rebalanceRelativeLimit: -0.1 })).toThrow(/rebalanceRelativeLimit/);
+    expect(() => check({ ...required, rebalanceRelativeLimit: 6 })).toThrow(OptionsError);
+    expect(() => check({ ...required, rebalanceRelativeLimit: 0 })).not.toThrow();
+    expect(() => check({ ...required, rebalanceRelativeLimit: 1 })).not.toThrow();
+  });
+
+  test('rejects a stale-after at or below the heartbeat interval (#853)', () => {
+    // A threshold inside one beat evicts a healthy region between two of its
+    // own beats, stopping every entity under every shard it held, and does it
+    // again after the re-registration.
+    expect(() => check({ ...required, regionHeartbeatIntervalMs: 5_000, regionStaleAfterMs: 5_000 }))
+      .toThrow(/regionStaleAfterMs/);
+    expect(() => check({ ...required, regionHeartbeatIntervalMs: 5_000, regionStaleAfterMs: 1_000 }))
+      .toThrow(OptionsError);
+    expect(() => check({ ...required, regionStaleAfterMs: 0 })).toThrow(/regionStaleAfterMs/);
+  });
+
+  test('the stale-after rule compares resolved values, not only set ones (#853)', () => {
+    // The half a "only check what was set" rule misses, and the reason this
+    // mirrors `ClusterRouterOptions`: each of these sets exactly one of the
+    // pair, and each crosses the *other's* shipped default (5s beat, 20s
+    // threshold) without either being visible at the call site.
+    expect(() => check({ ...required, regionStaleAfterMs: 3_000 })).toThrow(/regionStaleAfterMs/);
+    expect(() => check({ ...required, regionHeartbeatIntervalMs: 30_000 })).toThrow(/regionStaleAfterMs/);
+    // And the shipped pair itself has to be legal, or every default start throws.
+    expect(() => check({ ...required })).not.toThrow();
+  });
+
   test('accepts a valid coordinator config', () => {
-    expect(() => check({ ...required, numShards: 64, rebalanceIntervalMs: 10_000, handOffTimeoutMs: 5_000, acquireRetryIntervalMs: 5_000 }))
+    expect(() => check({ ...required, numShards: 64, rebalanceIntervalMs: 10_000, handOffTimeoutMs: 5_000, acquireRetryIntervalMs: 5_000, rebalanceAbsoluteLimit: 8, rebalanceRelativeLimit: 0.25 }))
+      .not.toThrow();
+    expect(() => check({ ...required, staleRegionDetection: true, regionHeartbeatIntervalMs: 1_000, regionStaleAfterMs: 4_000 }))
       .not.toThrow();
   });
 });
@@ -466,8 +794,86 @@ describe('ClusterSingletonManagerOptionsValidator', () => {
 });
 
 describe('WorkerClusterOptionsValidator', () => {
+  // `bootstrap` is required and scheme-constrained (#776), so every case that
+  // is about some *other* field supplies a valid one; the bootstrap cases below
+  // override it.
   const check = (s: Partial<WorkerClusterOptionsType>): void =>
-    new WorkerClusterOptionsValidator().validate(s);
+    new WorkerClusterOptionsValidator().validate({ bootstrap: 'file:///worker.js', ...s });
+
+  test('requires a bootstrap rather than letting new URL(undefined) throw', () => {
+    // The value of the rule is the error, not the rejection: without it an
+    // empty options object reached `new URL(undefined)` inside `spawn()` and
+    // surfaced a raw ERR_INVALID_URL naming no field at all.
+    expect(() => new WorkerClusterOptionsValidator().validate({})).toThrow(OptionsError);
+    expect(() => new WorkerClusterOptionsValidator().validate({}))
+      .toThrow(/bootstrap is required/);
+  });
+
+  test('accepts a file: bootstrap as a URL or as a string', () => {
+    expect(() => check({ bootstrap: new URL('file:///srv/app/worker.js') })).not.toThrow();
+    expect(() => check({ bootstrap: 'file:///srv/app/worker.js' })).not.toThrow();
+  });
+
+  test('rejects every scheme a Worker constructor would otherwise execute', () => {
+    // Measured per runtime, not assumed: `data:` runs on Bun, Node and Deno,
+    // `blob:` on Bun and Deno, and a remote entry is fetched and run on Deno.
+    for (const bootstrap of [
+      'data:text/javascript,console.log(1)',
+      'blob:null/2c9a1f34-0000-4000-8000-000000000000',
+      'http://example.invalid/worker.js',
+      'https://example.invalid/worker.js',
+    ]) {
+      expect(() => check({ bootstrap })).toThrow(/bootstrap must use the file: scheme/);
+    }
+  });
+
+  test('rejects a file: bootstrap that carries a host, as a string and as a URL', () => {
+    // The scheme check alone was not the allow-list it read as (#776): a
+    // `file:` URL may carry an authority, and on Windows that authority IS a
+    // remote server.  Measured on this machine (Windows 11, Node 26.7.0):
+    // `fileURLToPath('file://attacker.example.com/share/worker.js')` yields the
+    // UNC path `\\attacker.example.com\share\worker.js`, and none of the three
+    // runtimes refuses the specifier — Node's Worker fails with
+    // MODULE_NOT_FOUND on that UNC path, Deno with `Module not found
+    // "file://attacker.example.com/share/worker.js"`, Bun with an
+    // `Error in worker`.  All three ACCEPTED the URL and only the SMB fetch
+    // failed, so on a host where the share resolves the worker's entry module
+    // comes off a remote server.  Both input forms, because `parseBootstrapUrl`
+    // passes a `URL` through untouched and only the string form is parsed here.
+    for (const host of ['attacker.example.com', '127.0.0.1', '[::1]', '.']) {
+      const specifier = `file://${host}/share/worker.js`;
+      expect(() => check({ bootstrap: specifier }))
+        .toThrow(/bootstrap must be a host-less file: URL/);
+      expect(() => check({ bootstrap: new URL(specifier) }))
+        .toThrow(/bootstrap must be a host-less file: URL/);
+    }
+  });
+
+  test('keeps accepting the host-less forms, localhost included', () => {
+    // `file:///path` has an empty host and is the only form the docs and
+    // examples ever produce — `new URL('./worker.js', import.meta.url)` yields
+    // it.  `file://localhost/path` is the other host WHATWG allows, and the
+    // spec has the parser erase it: measured identically on Bun 1.4.0, Node
+    // 26.7.0 and Deno 2.6.8, `new URL('file://localhost/srv/app/worker.js')`
+    // normalises to `file:///srv/app/worker.js` with `host === ''` (and so does
+    // `LOCALHOST` — the host is lower-cased first).  So it is admitted by the
+    // host rule rather than exempted from it, and it resolves locally.
+    for (const bootstrap of [
+      'file:///srv/app/worker.js',
+      'file://localhost/srv/app/worker.js',
+      'file://LOCALHOST/srv/app/worker.js',
+    ]) {
+      expect(() => check({ bootstrap })).not.toThrow();
+      expect(() => check({ bootstrap: new URL(bootstrap) })).not.toThrow();
+    }
+  });
+
+  test('rejects a bare relative specifier with a message that names the fix', () => {
+    // `new URL('./worker.js')` throws with no base, so this never reached the
+    // Worker constructor — it just failed later, and less legibly.
+    expect(() => check({ bootstrap: './worker.js' }))
+      .toThrow(/bootstrap must be an absolute URL.*import\.meta\.url/s);
+  });
 
   test("accepts a positive integer or 'auto' for workers", () => {
     expect(() => check({ workers: 4 })).not.toThrow();
@@ -478,6 +884,18 @@ describe('WorkerClusterOptionsValidator', () => {
   test('rejects an out-of-range basePort and non-positive readyTimeoutMs', () => {
     expect(() => check({ basePort: 70_000 })).toThrow(OptionsError);
     expect(() => check({ readyTimeoutMs: 0 })).toThrow(OptionsError);
+  });
+
+  test('rejects an empty systemName or hostname', () => {
+    // Unreachable until these got config leaves (#883): every code caller was
+    // passing a real name.  An empty one reaches NodeAddress and gives every
+    // worker an address with no host, or no system name.
+    expect(() => check({ systemName: '' })).toThrow(OptionsError);
+    expect(() => check({ hostname: '' })).toThrow(OptionsError);
+    expect(() => check({ systemName: 'ingest', hostname: 'ingest-worker' })).not.toThrow();
+    // Unset still passes -- the helpers are a no-op on undefined, and the
+    // built-in defaults fill both in.
+    expect(() => check({})).not.toThrow();
   });
 
   test('accepts the restart-budget knobs at their edges', () => {
@@ -503,6 +921,240 @@ describe('WorkerClusterOptionsValidator', () => {
   test('rejects a maximum respawn backoff below the minimum', () => {
     expect(() => check({ restartMinBackoffMs: 500, restartMaxBackoffMs: 100 }))
       .toThrow(/restartMaxBackoffMs must be >= restartMinBackoffMs \(500\)/);
+  });
+
+  /**
+   * Both numbers can come from a config file since #883, and `port()` only
+   * bounds the first slot (#1439).  The boundary is checked from both sides:
+   * a pool whose last slot is exactly 65535 passes, one slot more is refused,
+   * and `'auto'` is left alone because it resolves after validation.
+   */
+  test('rejects a pool whose last slot would sit above the port range', () => {
+    expect(() => check({ basePort: 65_530, workers: 6 })).not.toThrow();
+    expect(() => check({ basePort: 65_530, workers: 7 }))
+      .toThrow(/workers .*last slot would be port 65536, above 65535/);
+    expect(() => check({ basePort: 65_530, workers: 'auto' })).not.toThrow();
+  });
+});
+
+/* ------- one worker-entry rule, six slots that carry it (#1515) --------- */
+
+/**
+ * Every options slot that names a module a worker will **execute**, with the
+ * validator that guards it.
+ *
+ * The rule lived as four hand-written copies with three different message
+ * wordings, so a new constraint had to be written four times and two of them
+ * were already shorter than the first — `OffloadPoolOptions` said only "must
+ * use the file: scheme" where `WorkerClusterOptions` explained why.  They now
+ * share `checkWorkerModuleUrl`, and this table is what says so: every row
+ * below is driven through all six slots, so a slot that drifts back to its
+ * own copy shows up as a row that stopped applying to it.
+ */
+const WORKER_ENTRY_SLOTS: ReadonlyArray<{
+  readonly slot: string;
+  readonly field: string;
+  readonly validate: (specifier: URL | string) => void;
+}> = [
+  {
+    slot: 'WorkerClusterOptions.bootstrap',
+    field: 'bootstrap',
+    validate: (bootstrap) => new WorkerClusterOptionsValidator().validate({ bootstrap }),
+  },
+  {
+    slot: 'WorkerMeshOptions.module',
+    field: 'module',
+    validate: (module) => new WorkerMeshOptionsValidator().validate({ module }),
+  },
+  {
+    slot: 'WorkerMeshOptions.bootstrap',
+    field: 'bootstrap',
+    // `module` is required there, so a valid one rides along on every row.
+    validate: (bootstrap) => new WorkerMeshOptionsValidator()
+      .validate({ module: 'file:///actors.js', bootstrap }),
+  },
+  {
+    slot: 'OffloadPoolOptions.bootstrap',
+    field: 'bootstrap',
+    validate: (bootstrap) => new OffloadPoolOptionsValidator().validate({ bootstrap }),
+  },
+  {
+    slot: 'ParallelismOptions.module',
+    field: 'module',
+    validate: (module) => new ParallelismOptionsValidator().validate({ module }),
+  },
+  {
+    slot: 'ParallelismOptions.bootstrap',
+    field: 'bootstrap',
+    validate: (bootstrap) => new ParallelismOptionsValidator().validate({ bootstrap }),
+  },
+];
+
+/**
+ * The spellings the rule refuses, and the clause each one must be refused by.
+ *
+ * The last four are the ones the shipped allow-list still admitted, probed
+ * against it across 21 candidates (#1515): WHATWG normalises `file:worker.js`,
+ * `file:` and `file:./worker.js` to `file:///worker.js` / `file:///`, so the
+ * scheme and host checks saw a perfectly ordinary host-less `file:` URL and
+ * the "must be an absolute URL" message never applied — it only ever caught
+ * the *schemeless* relative forms.  Node then threw `ERR_INVALID_FILE_URL_PATH`
+ * from inside the Worker constructor, which is late and names no field: the
+ * exact defect the required-ness guard one line above was added to fix.
+ */
+const REFUSED_WORKER_ENTRIES: ReadonlyArray<{ readonly specifier: string; readonly clause: RegExp }> = [
+  { specifier: './worker.js', clause: /must be an absolute URL/ },
+  { specifier: 'data:text/javascript,console.log(1)', clause: /must use the file: scheme/ },
+  { specifier: 'https://example.invalid/worker.js', clause: /must use the file: scheme/ },
+  { specifier: 'file://attacker.example.com/share/worker.js', clause: /must be a host-less file: URL/ },
+  // Backslashes are slashes to a special scheme, so this is the UNC path
+  // spelled the way Windows spells it and it must be refused as one — the
+  // scheme-relative clause would also match the string and say something that
+  // is not true of where the parser put it.
+  { specifier: 'file:\\\\attacker.example.com\\share\\worker.js', clause: /must be a host-less file: URL/ },
+  // The same UNC fetch with one slash more, which the host rule cannot see:
+  // WHATWG puts the authority in the *path* here, so `host` is empty and the
+  // rule that exists to stop a remote entry module passes it.  Measured on
+  // bun 1.4.2, `fileURLToPath` resolves it to
+  // `\\attacker.example.com\share\worker.js` — the exact path the row above is
+  // refused for.  The `localhost` spelling reaches the same place, because the
+  // parser erases that host and leaves the doubled slash behind.
+  { specifier: 'file:////attacker.example.com/share/worker.js', clause: /one slash more/ },
+  { specifier: 'file://localhost//attacker.example.com/share/worker.js', clause: /one slash more/ },
+  { specifier: 'file:worker.js', clause: /scheme-relative/ },
+  { specifier: 'file:', clause: /scheme-relative/ },
+  { specifier: 'file:./worker.js', clause: /scheme-relative/ },
+  // The scheme is case-insensitive to the parser — `FILE:worker.js` arrives as
+  // `file:///worker.js` like its lower-case twin — so the rule's own `i` flag
+  // is load-bearing and nothing observed it.  Dropping the flag leaves every
+  // other row here green.
+  { specifier: 'FILE:worker.js', clause: /scheme-relative/ },
+  // A backslash is a slash to a special scheme, so this lands at the root the
+  // same way `file:worker.js` does.  It is what a Windows path pasted after a
+  // bare `file:` looks like, and the single-slash exemption must not cover it:
+  // the character after the colon is `\`, not `/`.
+  { specifier: 'file:\\worker.js', clause: /scheme-relative/ },
+  // The rule reads the string; the parser normalises the string first, and
+  // the two must agree about what it says.  WHATWG drops leading and trailing
+  // C0-or-space and every interior tab/LF/CR *before* it looks at the scheme,
+  // so each of these arrives as `file:///worker.js` — the exact spelling the
+  // rule refuses — while a `^file:` match over the raw string sees nothing.
+  // Not a literal anyone types: this is a specifier out of an env var, a
+  // config leaf or a trimmed template (#1515).
+  { specifier: ' file:worker.js', clause: /scheme-relative/ },
+  { specifier: '\tfile:worker.js', clause: /scheme-relative/ },
+  { specifier: '\nfile:worker.js', clause: /scheme-relative/ },
+  { specifier: 'fi\tle:worker.js', clause: /scheme-relative/ },
+  { specifier: '\r\n  file:./worker.js', clause: /scheme-relative/ },
+  // The far side of that boundary, and the reason the strip copies WHATWG's
+  // set exactly instead of reaching for `\s`: a non-breaking space is *not*
+  // removed, so the parser never reaches a scheme at all and the refusal is
+  // the absolute-URL one.  A strip that over-reached would move this row to
+  // the scheme-relative clause, which is a different — and wrong — diagnosis.
+  { specifier: '\u00A0file:worker.js', clause: /must be an absolute URL/ },
+  { specifier: 'file:///srv/app/', clause: /names a directory/ },
+];
+
+/** What every slot has always taken, and still must. */
+const ACCEPTED_WORKER_ENTRIES: ReadonlyArray<string> = [
+  'file:///worker.js',
+  'file:///srv/app/worker.js',
+  // The one authority WHATWG erases — it reaches the host check already
+  // indistinguishable from the plain form.
+  'file://localhost/srv/app/worker.js',
+  // What `new URL('./worker.js', import.meta.url)` produces on Windows.
+  'file:///C:/srv/app/worker.js',
+  // The single-slash absolute file URI — `java.io.File.toURI()`'s shape, and
+  // what a hand-written config leaf tends to carry.  It is not scheme-relative
+  // in any sense that matters: the parser produces a byte-identical `href` to
+  // the triple-slash spelling of the same path, and the worker runs.  The
+  // first cut of the rule refused it, which is the one thing it broke that had
+  // worked before (#1515).
+  'file:/srv/app/worker.js',
+  'file:/C:/srv/app/worker.js',
+  // A space inside the path is ordinary on Windows, and the normalisation the
+  // scheme-relative rule now applies must not reach it: WHATWG removes only
+  // leading/trailing C0-or-space and interior tab/LF/CR, never an interior
+  // space, so neither does the rule.
+  'file:///C:/Program Files/app/worker.js',
+  // A doubled slash *inside* the path is benign — `fileURLToPath` gives
+  // `C:\srv\\w.js`, which the OS collapses — so the rule that refuses a path
+  // *beginning* `//` must anchor at the start and not merely look for the
+  // pair anywhere.
+  'file:///C:/srv//worker.js',
+];
+
+describe('the worker-entry URL rule', () => {
+  for (const { slot, field, validate } of WORKER_ENTRY_SLOTS) {
+    test(`${slot} refuses every spelling the rule refuses`, () => {
+      for (const { specifier, clause } of REFUSED_WORKER_ENTRIES) {
+        let caught: unknown;
+        try { validate(specifier); } catch (error) { caught = error; }
+        expect(caught, `${slot} accepted ${JSON.stringify(specifier)}`).toBeInstanceOf(OptionsError);
+        expect((caught as OptionsError).field).toBe(field);
+        expect((caught as OptionsError).message).toMatch(clause);
+      }
+    });
+
+    test(`${slot} keeps taking the forms the docs and examples produce`, () => {
+      for (const specifier of ACCEPTED_WORKER_ENTRIES) {
+        expect(() => validate(specifier), `${slot} refused ${specifier}`).not.toThrow();
+        expect(() => validate(new URL(specifier)), `${slot} refused URL(${specifier})`).not.toThrow();
+      }
+    });
+  }
+
+  test('the directory rule holds for a URL object, the scheme-relative one cannot', () => {
+    // `pathname` survives construction, so a directory is refused either way.
+    expect(() => new WorkerClusterOptionsValidator().validate({ bootstrap: new URL('file:///srv/app/') }))
+      .toThrow(/names a directory/);
+    // The scheme-relative spelling does not: `new URL('file:worker.js')` is
+    // already `file:///worker.js`, byte-identical to the form that is meant,
+    // and nothing on the object remembers how it was written.  That is why the
+    // rule is stated over the *string* input and says so — a caller who has
+    // built the `URL` has also had it corrected for them.
+    expect(() => new WorkerClusterOptionsValidator().validate({ bootstrap: new URL('file:worker.js') }))
+      .not.toThrow();
+  });
+
+  test('a spelling the parser does not rewrite gets the same verdict as a string and as a URL', () => {
+    // What separates a scheme-relative spelling from an absolute one is
+    // whether the parser had to *move* it.  `file:worker.js` is anchored at
+    // the filesystem root, so string and URL disagree and the rule has to read
+    // the string.  `file:/srv/app/worker.js` is not moved at all — it is the
+    // same URI, written with the authority's slashes omitted the way RFC 8089
+    // and `java.io.File.toURI()` write it — so a rule that refuses the string
+    // while accepting the URL is refusing a spelling, not a defect.
+    expect(new URL('file:/srv/app/worker.js').href).toBe(new URL('file:///srv/app/worker.js').href);
+    expect(new URL('file:worker.js').href).not.toBe('file:worker.js');
+    for (const specifier of ['file:/srv/app/worker.js', 'file:/C:/srv/app/worker.js']) {
+      const asString = checkWorkerModuleUrl(specifier);
+      const asUrl = checkWorkerModuleUrl(new URL(specifier));
+      expect(asUrl, `${specifier} refused as a URL`).toBeUndefined();
+      expect(asString, `${specifier} refused as a string but taken as a URL`).toBeUndefined();
+    }
+  });
+
+  test('the scheme-relative rejection shows both spellings: what was written and where it landed', () => {
+    // The whole point of this rule is that the two differ — the caller wrote
+    // one thing and the parser produced another — so the message has to carry
+    // both or it cannot explain the refusal.  Neither half was observed by any
+    // test: the table above matches `/scheme-relative/`, which the sentence
+    // still contains with the `${url.href}` interpolation deleted and with
+    // `value` set to anything at all.
+    let caught: unknown;
+    try { new WorkerClusterOptionsValidator().validate({ bootstrap: 'file:./worker.js' }); }
+    catch (error) { caught = error; }
+    expect(caught).toBeInstanceOf(OptionsError);
+    // Read the reason on its own, not the whole message: `fail` appends
+    // `(got <value>)`, so a `toContain` over the message is satisfied by the
+    // tail alone — which is how the first draft of this test passed against a
+    // build with `${url.href}` deleted and `value` set to the href instead.
+    const [reason] = (caught as OptionsError).message.split(' (got ');
+    // Where the parser put it — not the `file:./worker.js` that was written.
+    expect(reason).toContain('anchors at the filesystem root as file:///worker.js');
+    // What was written — the `(got …)` tail is the only place it survives.
+    expect((caught as OptionsError).value).toBe('file:./worker.js');
   });
 });
 
@@ -547,18 +1199,77 @@ describe('ConsumerControllerOptionsValidator', () => {
     expect(() => check({ producerIdleTtlMs: Number.NaN })).toThrow(/producerIdleTtlMs/);
   });
 
-  test('accepts Infinity on both bounds — it is the documented opt-out', () => {
-    // `Infinity` is the value that says "no cap" / "no sweep", so the generic
-    // positiveInt / positiveNumber helpers cannot be used: they reject it.
+  test('rejects a maxOutOfOrder that is not a positive integer', () => {
+    expect(() => check({ maxOutOfOrder: 0 })).toThrow(OptionsError);
+    expect(() => check({ maxOutOfOrder: -1 })).toThrow(/maxOutOfOrder/);
+    expect(() => check({ maxOutOfOrder: 2.5 })).toThrow(/maxOutOfOrder/);
+    expect(() => check({ maxOutOfOrder: Number.NaN })).toThrow(/maxOutOfOrder/);
+  });
+
+  test('accepts Infinity on all three bounds — it is the documented opt-out', () => {
+    // `Infinity` is the value that says "no cap" / "no sweep" / "retain every
+    // out-of-order sequence", so the generic positiveInt / positiveNumber
+    // helpers cannot be used: they reject it.
     expect(() => check({ maxProducers: Infinity })).not.toThrow();
     expect(() => check({ producerIdleTtlMs: Infinity })).not.toThrow();
+    expect(() => check({ maxOutOfOrder: Infinity })).not.toThrow();
   });
 
   test('accepts the built-in defaults and an unset options object', () => {
-    expect(() => check({ maxProducers: 1_024, producerIdleTtlMs: 300_000 })).not.toThrow();
+    expect(() => check({
+      maxProducers: DEFAULT_MAX_PRODUCERS,
+      producerIdleTtlMs: DEFAULT_PRODUCER_IDLE_TTL_MS,
+      maxOutOfOrder: DEFAULT_MAX_OUT_OF_ORDER,
+    })).not.toThrow();
     // Every helper is a no-op on `undefined`; `handler` is required rather
     // than bounded, and asserting it at construction is #1234.
     expect(() => check({})).not.toThrow();
+  });
+
+  test('the shipped defaults are the ones the validator would accept', () => {
+    // Reading the constants rather than repeating their values is what keeps
+    // this case honest: a default changed to something its own validator
+    // rejects would otherwise pass here forever.
+    expect(Number.isInteger(DEFAULT_MAX_PRODUCERS) && DEFAULT_MAX_PRODUCERS >= 1).toBe(true);
+    expect(Number.isInteger(DEFAULT_MAX_OUT_OF_ORDER) && DEFAULT_MAX_OUT_OF_ORDER >= 1).toBe(true);
+    // The out-of-order cap has one more constraint than the map cap, and it is
+    // a floor rather than the bound this comment used to claim.  Reaching the
+    // cap stalls a producer, and a producer whose window exceeds it stalls on
+    // its very first gap with nothing queued at all — that many sends are
+    // already in flight when the gap opens.  What it is NOT is unreachable
+    // otherwise: the consumer acknowledges every out-of-order delivery it
+    // admits, so a stock producer streams past an open gap by its send count
+    // and not by `windowSize - 1` (measured in `tests/unit/delivery`).
+    expect(DEFAULT_MAX_OUT_OF_ORDER).toBeGreaterThan(DEFAULT_WINDOW_SIZE);
+  });
+});
+
+describe('ThrottleOptionsValidator', () => {
+  const check = (s: Partial<ThrottleOptionsType>): void =>
+    new ThrottleOptionsValidator().validate(s);
+
+  test('rejects a qps that is zero, negative, NaN, or -Infinity', () => {
+    expect(() => check({ qps: 0 })).toThrow(OptionsError);
+    expect(() => check({ qps: -1 })).toThrow(/qps/);
+    expect(() => check({ qps: Number.NaN })).toThrow(/qps/);
+    expect(() => check({ qps: -Infinity })).toThrow(/qps/);
+  });
+
+  test('accepts qps: Infinity — the documented "clear the throttle" sentinel', () => {
+    // `Infinity` means "remove the limiter", so the generic positiveNumber
+    // helper cannot stand in for qps: it rejects every non-finite value.
+    expect(() => check({ qps: Infinity })).not.toThrow();
+  });
+
+  test('rejects a non-positive burst and an unknown onExcess mode', () => {
+    expect(() => check({ qps: 10, burst: 0 })).toThrow(/burst/);
+    expect(() => check({ qps: 10, burst: -2 })).toThrow(OptionsError);
+    expect(() => check({ qps: 10, onExcess: 'explode' as ThrottleOnExcess })).toThrow(/onExcess/);
+  });
+
+  test('accepts valid configs, including a sub-1 qps', () => {
+    expect(() => check({ qps: 10, burst: 2, onExcess: 'drop' })).not.toThrow();
+    expect(() => check({ qps: 1 / 60, burst: 1 })).not.toThrow();
   });
 });
 
@@ -762,5 +1473,30 @@ describe('TestProbeOptionsValidator', () => {
       new TestProbeOptionsValidator().validate(s);
     expect(() => check({ defaultTimeoutMs: 0 })).toThrow(OptionsError);
     expect(() => check({ defaultTimeoutMs: 3_000 })).not.toThrow();
+  });
+});
+
+describe('PersistenceBehaviorOptionsValidator', () => {
+  const check = (s: Partial<PersistenceBehaviorOptionsType>): void =>
+    new PersistenceBehaviorOptionsValidator().validate(s);
+
+  test('rejects a negative or fractional maxConcurrentRecoveries', () => {
+    expect(() => check({ maxConcurrentRecoveries: -1 })).toThrow(OptionsError);
+    expect(() => check({ maxConcurrentRecoveries: 2.5 })).toThrow(OptionsError);
+  });
+
+  test('rejects a negative or non-finite recoveryTimeoutMs', () => {
+    expect(() => check({ recoveryTimeoutMs: -1 })).toThrow(OptionsError);
+    expect(() => check({ recoveryTimeoutMs: Number.POSITIVE_INFINITY })).toThrow(OptionsError);
+  });
+
+  test('accepts 0 for both — it is the documented "off", not an omission', () => {
+    expect(() => check({ maxConcurrentRecoveries: 0, recoveryTimeoutMs: 0 })).not.toThrow();
+  });
+
+  test('leaves the two breaker ids alone, including the empty one', () => {
+    // `""` means "no breaker"; any other string is an id whose block may or
+    // may not exist, which is `CircuitBreakerExtension`'s question.
+    expect(() => check({ journalBreaker: '', snapshotBreaker: 'shared-database' })).not.toThrow();
   });
 });

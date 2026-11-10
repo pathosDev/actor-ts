@@ -1,6 +1,7 @@
 import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
@@ -188,27 +189,14 @@ export class JetStreamObjectStoreActor extends BrokerActor<
 
   constructor(options: JetStreamObjectStoreOptions = {}) { super(options); }
 
-  protected configKey(): string { return ConfigKeys.io.broker.jetstreamObjectStore; }
+  protected configKey(): string { return ConfigKeys.io.broker.jetstreamObjectStore.root; }
   protected builtInDefaultOptions(): Partial<JetStreamObjectStoreOptionsType> {
     return { maxObjectBytes: DEFAULT_MAX_OBJECT_BYTES };
   }
   protected readOptionsFromConfig(config: Config): Partial<JetStreamObjectStoreOptionsType> {
-    const out: {
-      -readonly [K in keyof JetStreamObjectStoreOptionsType]?: JetStreamObjectStoreOptionsType[K]
-    } = {};
-    if (config.hasPath('servers')) out.servers = config.getStringList('servers');
-    if (config.hasPath('token')) out.token = config.getString('token');
-    if (config.hasPath('user')) out.user = config.getString('user');
-    if (config.hasPath('password')) out.password = config.getString('password');
-    if (config.hasPath('name')) out.name = config.getString('name');
-    if (config.hasPath('bucket')) out.bucket = config.getString('bucket');
-    if (config.hasPath('description')) out.description = config.getString('description');
-    if (config.hasPath('storage')) out.storage = config.getString('storage') as 'memory' | 'file';
-    if (config.hasPath('replicas')) out.replicas = config.getInt('replicas');
-    if (config.hasPath('maxObjectBytes')) out.maxObjectBytes = config.getBytes('maxObjectBytes');
-    if (config.hasPath('create')) out.create = config.getBoolean('create');
-    return out;
+    return readJetStreamObjectStoreOptionsFromConfig(config);
   }
+  protected override retiredLeaves(): RetiredLeaves { return RETIRED_JETSTREAM_OBJECT_STORE_LEAVES; }
   protected requiredOptions(): ReadonlyArray<keyof JetStreamObjectStoreOptionsType> {
     return ['servers', 'bucket'];
   }
@@ -218,12 +206,12 @@ export class JetStreamObjectStoreActor extends BrokerActor<
   protected endpointLabel(): string {
     const servers = this.options.servers;
     const joined = Array.isArray(servers) ? servers.join(',') : (typeof servers === 'string' ? servers : '');
-    return `nats://${joined}/object/${this.options.bucket ?? ''}`;
+    return `${joined}/object/${this.options.bucket ?? ''}`;
   }
 
   /**
    * Build an `ObjectStoreNatsConnectionLike`.  Override in a test subclass
-   * to inject a mock connection — the `nats` peer-dep is heavy and an
+   * to inject a mock connection — the transport peer-dep is heavy and an
    * object bucket needs a live server, neither of which a unit test wants.
    */
   protected async createNatsConnection(): Promise<ObjectStoreNatsConnectionLike> {
@@ -240,12 +228,37 @@ export class JetStreamObjectStoreActor extends BrokerActor<
     });
   }
 
+  /**
+   * @internal Test seam — override to inject a fake JetStream module.
+   *
+   * Separate from {@link createNatsConnection} because nats.js v3 split the
+   * package: the view this actor uses lives in `@nats-io/jetstream` and is reached
+   * through the JetStream client rather than through the connection, so a fake
+   * connection alone no longer stands the actor up.
+   */
+  protected jetStreamModule(): Promise<JetStreamModuleLike> { return jetStreamLazy.get(); }
+
+  /**
+   * @internal Test seam — override to inject a fake object-store module.
+   *
+   * Separate from {@link createNatsConnection} because nats.js v3 split the
+   * package: the view this actor uses lives in `@nats-io/obj` and is reached
+   * through the JetStream client rather than through the connection, so a fake
+   * connection alone no longer stands the actor up.
+   */
+  protected objectStoreModule(): Promise<ObjectStoreModuleLike> { return objectStoreLazy.get(); }
+
   protected async connectImplementation(): Promise<void> {
     this.natsConnection = await this.createNatsConnection();
-    this.store = await this.natsConnection.jetstream().views.os(
-      this.options.bucket as string,
-      this.bucketOptions(),
-    );
+    const jetStream = await this.jetStreamModule();
+    const objectStore = await this.objectStoreModule();
+    const manager = new objectStore.Objm(jetStream.jetstream(this.natsConnection));
+    // `create` is create-or-open; `open` refuses a bucket that is not there.
+    // That distinction is what `create: false` asks for, and in v3 it is the
+    // method rather than a `bindOnly` flag on the options.
+    this.store = this.options.create === false
+      ? await manager.open(this.options.bucket as string)
+      : await manager.create(this.options.bucket as string, this.bucketOptions());
 
     void this.natsConnection.closed().then((err) => {
       this.handleConnectionLost(err ?? new Error('nats connection closed'));
@@ -416,13 +429,51 @@ export class JetStreamObjectStoreActor extends BrokerActor<
    * sending them would let a typo'd bucket name look like a fresh bucket.
    */
   private bucketOptions(): ObjectStoreBucketOptionsLike {
-    if (this.options.create === false) return { bindOnly: true };
     return {
       description: this.options.description,
       storage: this.options.storage,
       replicas: this.options.replicas,
     };
   }
+}
+
+/* ----------------------------- HOCON reader ----------------------------- */
+
+/**
+ * The camelCase spelling the object-store block's own leaf had before #1443,
+ * mapped to the leaf that replaced it — see `BrokerActor.retiredLeaves`.  It
+ * is the whole-object ceiling, whose old spelling, ignored, would have left
+ * the shipped default in force with nothing said.
+ */
+const RETIRED_JETSTREAM_OBJECT_STORE_LEAVES: RetiredLeaves = {
+  maxObjectBytes: 'max-object-bytes',
+};
+
+/**
+ * Read the `actor-ts.io.broker.jetstream-object-store` block off the system
+ * config, at the full paths `keys` holds; the reconnect / breaker / buffer
+ * leaves are `BrokerActor`'s.  An unset leaf is omitted.  `max-object-bytes`
+ * is a size, so `4M` reads as written.
+ */
+export function readJetStreamObjectStoreOptionsFromConfig(
+  config: Config,
+  keys: typeof ConfigKeys.io.broker.jetstreamObjectStore = ConfigKeys.io.broker.jetstreamObjectStore,
+): Partial<JetStreamObjectStoreOptionsType> {
+  const out: {
+    -readonly [K in keyof JetStreamObjectStoreOptionsType]?: JetStreamObjectStoreOptionsType[K]
+  } = {};
+  if (config.hasPath(keys.servers)) out.servers = config.getStringList(keys.servers);
+  if (config.hasPath(keys.token)) out.token = config.getString(keys.token);
+  if (config.hasPath(keys.user)) out.user = config.getString(keys.user);
+  if (config.hasPath(keys.password)) out.password = config.getString(keys.password);
+  if (config.hasPath(keys.name)) out.name = config.getString(keys.name);
+  if (config.hasPath(keys.bucket)) out.bucket = config.getString(keys.bucket);
+  if (config.hasPath(keys.description)) out.description = config.getString(keys.description);
+  if (config.hasPath(keys.storage)) out.storage = config.getString(keys.storage) as 'memory' | 'file';
+  if (config.hasPath(keys.replicas)) out.replicas = config.getInt(keys.replicas);
+  if (config.hasPath(keys.maxObjectBytes)) out.maxObjectBytes = config.getBytes(keys.maxObjectBytes);
+  if (config.hasPath(keys.create)) out.create = config.getBoolean(keys.create);
+  return out;
 }
 
 /* ----------------------------- internals -------------------------------- */
@@ -450,8 +501,9 @@ function objectInfoOf(info: ObjectInfoLike): JetStreamObjectInfo {
 
 /* -------------------- nats peer-dep type stubs --------------------- */
 /*
- * Hand-written on purpose — not a placeholder for the real `nats` types.
- * `nats` is declared only in `tests/integration/brokers/package.json`, which
+ * Hand-written on purpose — not a placeholder for the real nats.js types.
+ * The `@nats-io/*` packages are declared only in
+ * `tests/integration/brokers/package.json`, which
  * the root install deliberately does not materialise, so the build compile
  * cannot resolve it; and these types are exported through `src/io/index.ts`,
  * so importing the module here would emit that specifier into a published
@@ -468,18 +520,19 @@ function objectInfoOf(info: ObjectInfoLike): JetStreamObjectInfo {
  * slice of the JetStream client, and one widened interface would make
  * every mock in every suite carry all three.  Exported so a test subclass
  * overriding `createNatsConnection` can satisfy the shape without the real
- * `nats` peer-dep.
+ * transport peer-dep.
+ *
+ * nats.js v3 moved the object-store view out of the connection and into its
+ * own package, so a connection is once again just a connection.
  */
 export interface ObjectStoreNatsConnectionLike {
-  jetstream(): ObjectStoreJetStreamClientLike;
   drain(): Promise<void>;
   closed(): Promise<Error | undefined>;
 }
 
+/** The slice of a JetStream client `Objm` needs. */
 export interface ObjectStoreJetStreamClientLike {
-  readonly views: {
-    os(bucket: string, options?: ObjectStoreBucketOptionsLike): Promise<ObjectStoreLike>;
-  };
+  readonly _objectStore?: never;
 }
 
 /** Create-time bucket settings — nats.js `ObjectStoreOptions` spelling. */
@@ -487,8 +540,6 @@ export type ObjectStoreBucketOptionsLike = {
   readonly description?: string;
   readonly storage?: 'memory' | 'file';
   readonly replicas?: number;
-  /** Bind to an existing bucket instead of creating one. */
-  readonly bindOnly?: boolean;
 };
 
 /** Object metadata accepted by `putBlob` — nats.js `ObjectStoreMeta`. */
@@ -524,6 +575,31 @@ interface NatsModuleLike {
   }): Promise<ObjectStoreNatsConnectionLike>;
 }
 
+/** `jetstream()` is a free function in v3, and takes the connection. */
+export interface JetStreamModuleLike {
+  jetstream(connection: ObjectStoreNatsConnectionLike): ObjectStoreJetStreamClientLike;
+}
+
+/**
+ * `@nats-io/obj`.  `Objm` is the bucket manager v3 replaced
+ * `JetStreamClient.views.os` with: `create` is create-or-open, `open`
+ * refuses a bucket that does not exist.
+ */
+export interface ObjectStoreModuleLike {
+  readonly Objm: new (client: ObjectStoreJetStreamClientLike) => {
+    create(bucket: string, options?: ObjectStoreBucketOptionsLike): Promise<ObjectStoreLike>;
+    open(bucket: string): Promise<ObjectStoreLike>;
+  };
+}
+
 const natsLazy: Lazy<Promise<NatsModuleLike>> = Lazy.of(
-  () => lazyImportModule<NatsModuleLike>('nats', { context: 'JetStreamObjectStoreActor' }),
+  () => lazyImportModule<NatsModuleLike>('@nats-io/transport-node', { context: 'JetStreamObjectStoreActor' }),
+);
+
+const jetStreamLazy: Lazy<Promise<JetStreamModuleLike>> = Lazy.of(
+  () => lazyImportModule<JetStreamModuleLike>('@nats-io/jetstream', { context: 'JetStreamObjectStoreActor' }),
+);
+
+const objectStoreLazy: Lazy<Promise<ObjectStoreModuleLike>> = Lazy.of(
+  () => lazyImportModule<ObjectStoreModuleLike>('@nats-io/obj', { context: 'JetStreamObjectStoreActor' }),
 );

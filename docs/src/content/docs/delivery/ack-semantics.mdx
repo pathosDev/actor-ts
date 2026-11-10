@@ -58,7 +58,7 @@ new ConsumerController<T>({
 
 If the consumer crashes between **2** and **4**, the ack never
 reaches the producer.  Producer retransmits after
-`resendTimeoutMs`.  The controller's in-memory dedup is gone
+`resendTimeout`.  The controller's in-memory dedup is gone
 after the crash, so the same seq runs the handler again — make
 it idempotent, or persist processed-seq alongside business
 state.
@@ -110,10 +110,13 @@ On crash between step 2's start and step 3's resolve:
   and the controller re-acks immediately.  Net: zero
   duplication.
 
-For end-to-end durability, pair this with **persistent
-producer state** — store the producer's in-flight buffer in a
-journal so a producer-side crash doesn't lose unacked
-messages.
+For end-to-end durability the producer side has to persist
+too, and that half is yours to build: the framework has no
+durable producer queue yet
+([#460](https://github.com/pathosDev/actor-ts/issues/460)).
+*There is no durable producer queue yet* on the
+[ProducerController](/delivery/producer-controller/) page
+describes the wrapper and what it can and cannot promise.
 
 ## Crash scenarios
 
@@ -123,9 +126,16 @@ messages.
 Producer sends msg #5 → crash before transmit completes
 ```
 
-Recovery: producer restarts.  Without persistence, msg #5 is
-lost.  With persistence, the message is in the producer's
-unacked-buffer journal; transmits on recovery.
+Recovery: producer restarts — and msg #5 is not sent again by
+anything in the framework, because the producer keeps no
+journal of unacknowledged sends.  A supervised restart settles
+it with `Error('producer stopped')` through its `confirm`,
+which is how your code learns what to send again; a process
+that dies takes it along unsettled.  A producer that survives
+either is a `PersistentActor` wrapper you build until
+[#460](https://github.com/pathosDev/actor-ts/issues/460) ships
+one — see *There is no durable producer queue yet* on the
+[ProducerController](/delivery/producer-controller/) page.
 
 Everything the restarted producer sends *after* that lands normally.  The
 restart mints a new producer incarnation, so the consumer opens a fresh dedup
@@ -179,7 +189,7 @@ Consumer on node-A processes msg #5; controller queues the Ack
 Node-A crashes before the Ack tell completes
 ```
 
-Producer doesn't see Ack within `resendTimeoutMs` → retransmits.
+Producer doesn't see Ack within `resendTimeout` → retransmits.
 
 If the consumer is **sharded** (the entity moves during
 failover), the new instance:
@@ -198,7 +208,7 @@ every rebalance and you get full reprocessing.
 The Ack is **fire-and-forget** from the controller to the
 producer's `replyTo`.  The controller doesn't await its
 delivery — if the network drops the Ack, the producer
-retransmits after `resendTimeoutMs` and the controller's
+retransmits after `resendTimeout` and the controller's
 dedup re-acks immediately.
 
 This means: **your handler doesn't pay any latency cost for
@@ -221,7 +231,7 @@ const consumer = ReliableDelivery.consumer<OrderEvent>(system, {
   },
 });
 
-const producerOptions = ProducerControllerOptions.create<OrderEvent>().withConsumer(consumer.ref as never);
+const producerOptions = ProducerControllerOptions.create<OrderEvent>().withConsumer(consumer.ref);
 const producer = ReliableDelivery.producer<OrderEvent>(system, producerOptions);
 
 producer.tell(order, (err) => {
@@ -248,6 +258,39 @@ stream to at-most-once while reporting success.  Note what the signal still
 does *not* promise: it says the consumer accepted responsibility for the seq,
 so for a redelivery it means the handler ran on an *earlier* attempt, not on
 this one.
+
+The token's **scope is one producer, not one message**.  It is minted once per
+`ProducerController` construction and stamped on every delivery that
+incarnation sends, so anything that legitimately receives one delivery — your
+consumer, a handler that forwards it on, a router fan-out — can settle every
+other in-flight seq of that producer, for as long as the actor lives.  That is
+deliberate rather than an oversight: the party holding a delivery is the one
+expected to acknowledge it, and without a delivery it has no `replyTo` to
+reach the producer with in the first place.  It is also what keeps the
+consumer's dedup key stable, since that key is `(producerId, incarnation)` and
+a per-message token would reset the window on every sequence.  What it does
+*not* give you is a capability you can hand out per message: forwarding one
+delivery to a component you trust less hands it the whole producer.
+
+The check sits on the producer because that is the only side with something
+unguessable to check against.  The consumer Acks to the `replyTo` on the
+envelope and cannot do better: a `Delivery` arrives with no sender attached —
+a producer tells with one argument, and so does the cluster's envelope dispatch
+— so there is no authenticated identity to hold `replyTo` up against, and every
+other field on the envelope was written by whoever sent it.
+
+How much rides on that is not settled here.  An `ActorRef` does cross the
+cluster wire: a `replyTo` in a delivery travels as an address marker, and the
+receiving node decodes it back into a live ref — a local actor when the marker
+names that node, a remote one otherwise.  So a peer able to send to a consumer
+under `/user` can point the Ack at an actor of its own choosing, one on the
+consumer's node included, and resolving a marker that names that node consults
+none of the trust checks an envelope's own target goes through.  What arrives
+there is one `Acknowledgment` per delivery, carrying four fields the peer wrote
+itself, and a real producer at that address discards it, because the
+incarnation does not match.  Whether a ref from the wire should resolve to any
+actor at all is a question for the ref decoder rather than for this protocol;
+[#1572](https://github.com/pathosDev/actor-ts/issues/1572) tracks it.
 
 ## When NOT to use the controllers
 

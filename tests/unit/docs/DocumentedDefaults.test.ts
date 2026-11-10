@@ -5,21 +5,63 @@ import { isPlainObject, parseHocon } from '../../../src/config/HoconParser.js';
 import type { ConfigObject } from '../../../src/config/HoconParser.js';
 import {
   DEFAULT_ACTOR_THROUGHPUT,
+  DEFAULT_DISPATCHER_KIND,
   DEFAULT_DISPATCHER_THROUGHPUT,
   DEFAULT_PHASE_TIMEOUT_MS,
   DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS,
 } from '../../../src/Constants.js';
+import { DEFAULT_SHUTDOWN_EXIT_CODE } from '../../../src/Constants.js';
+import { DEFAULT_MAILBOX_OVERFLOW } from '../../../src/ActorOptions.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../../src/util/Constants.js';
+import { DEFAULT_ASK_TIMEOUT_MS } from '../../../src/util/Constants.js';
 import { DEFAULT_HEARTBEAT_INTERVAL_MS } from '../../../src/cluster/Constants.js';
 import { defaultFailureDetectorOptions } from '../../../src/cluster/FailureDetector.js';
+import { DEFAULT_MINIMUM_MEMBERS_BEFORE_UP } from '../../../src/cluster/ClusterOptions.js';
+import { DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS, DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE } from '../../../src/cluster/ClusterOptions.js';
+import { DEFAULT_SPLIT_BRAIN_RESOLVER_STRATEGY } from '../../../src/cluster/downing/DowningFromConfig.js';
+import { DEFAULT_DOWN_ALL_WHEN_UNSTABLE, DEFAULT_STABLE_AFTER_MS } from '../../../src/cluster/downing/SplitBrainResolverOptions.js';
+import { DEFAULT_KEEP_OLDEST_DOWN_IF_ALONE } from '../../../src/cluster/downing/KeepOldestOptions.js';
+import { DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION } from '../../../src/cluster/ClusterOptions.js';
+import { DEFAULT_FAILURE_DETECTOR_AUTO_DOWN } from '../../../src/cluster/ClusterOptions.js';
+import { DEFAULT_DOWN_SMALLER_ISLAND, DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN } from '../../../src/cluster/ClusterOptions.js';
+import { defaultPhiAccrualOptions } from '../../../src/cluster/PhiAccrualFailureDetector.js';
+import { DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS, DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS, DEFAULT_SINGLETON_MAX_HAND_OVER_STATE_BYTES, DEFAULT_SINGLETON_RESTART_ON_TERMINATION } from '../../../src/cluster/Constants.js';
+import { DEFAULT_BUFFER_SIZE as DEFAULT_SINGLETON_BUFFER_SIZE } from '../../../src/cluster/singleton/StartSingletonOptions.js';
+import { DEFAULT_CLUSTER_CLIENT_CONNECT_TIMEOUT_MS, DEFAULT_CLUSTER_CLIENT_SYSTEM_NAME } from '../../../src/cluster/ClusterClientOptions.js';
+import { DEFAULT_ASK_TIMEOUT_MS as DEFAULT_CLUSTER_CLIENT_ASK_TIMEOUT_MS } from '../../../src/util/Constants.js';
 import {
   DEFAULT_DEAD_LETTER_MAX_ENTRIES,
   DEFAULT_DEAD_LETTER_MAX_REPLAYS,
   DEFAULT_DEAD_LETTER_RETENTION_MS,
   DEFAULT_DEAD_LETTER_STORE,
 } from '../../../src/deadletters/DeadLetterQueueOptions.js';
+import { DEFAULT_LOG_DEAD_LETTERS, DEFAULT_LOG_DEAD_LETTERS_DURING_SHUTDOWN, DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS } from '../../../src/diagnostics/DiagnosticsOptions.js';
+import { DEFAULT_DEBUG_EVENT_STREAM, DEFAULT_DEBUG_LIFECYCLE, DEFAULT_DEBUG_UNHANDLED, DEFAULT_LOG_CONFIG_ON_START } from '../../../src/diagnostics/DiagnosticsOptions.js';
 import { DEFAULT_WEBSOCKET_POLICY } from '../../../src/http/websocket/WebsocketPolicy.js';
 import { DEFAULT_WORKER_RESTART_POLICY } from '../../../src/worker/WorkerClusterOptions.js';
+import { DEFAULT_MAX_RESTARTS, DEFAULT_RESTART_MAX_BACKOFF_MS, DEFAULT_RESTART_MIN_BACKOFF_MS, DEFAULT_RESTART_RANDOM_FACTOR, DEFAULT_RESTART_WINDOW_MS, DEFAULT_WORKER_BASE_PORT, DEFAULT_WORKER_COUNT, DEFAULT_WORKER_HOSTNAME, DEFAULT_WORKER_READY_TIMEOUT_MS, DEFAULT_WORKER_SYSTEM_NAME } from '../../../src/worker/WorkerClusterOptions.js';
+import {
+  DEFAULT_MESSAGE_BOUNDARY_SERIALIZER_ROUND_TRIP,
+  DEFAULT_MESSAGE_BOUNDARY_STRUCTURED_CLONE,
+} from '../../../src/diagnostics/MessageBoundaryOptions.js';
+import {
+  DEFAULT_PARALLELISM_BUFFER_SIZE,
+  DEFAULT_PARALLELISM_LEADER,
+  DEFAULT_PARALLELISM_OFFLOAD,
+  DEFAULT_PARALLELISM_PLACEMENT,
+  DEFAULT_PARALLELISM_SPAWN_TIMEOUT_MS,
+  DEFAULT_PARALLELISM_WORKERS,
+} from '../../../src/parallelism/ParallelismOptions.js';
+import {
+  DEFAULT_OFFLOAD_IDLE_TIMEOUT_MS,
+  DEFAULT_OFFLOAD_MAX_QUEUE,
+  DEFAULT_OFFLOAD_MIN_SIZE,
+  DEFAULT_OFFLOAD_OVERFLOW,
+  DEFAULT_OFFLOAD_POOL_SIZE,
+  DEFAULT_OFFLOAD_TASK_TIMEOUT_MS,
+  DEFAULT_OFFLOAD_WARM_UP,
+} from '../../../src/worker/OffloadPoolOptions.js';
+import { DEFAULT_MESH_BASE_PORT, DEFAULT_MESH_MAIN_HOSTNAME, DEFAULT_MESH_MAIN_PORT, DEFAULT_MESH_MAIN_ROLES, DEFAULT_MESH_METRICS_RELAY_INTERVAL_MS, DEFAULT_MESH_WORKER_COUNT, DEFAULT_MESH_WORKER_HOSTNAME, DEFAULT_MESH_WORKER_ROLES } from '../../../src/worker/WorkerMeshOptions.js';
 import {
   DEFAULT_MAX_WAIT_MS,
   DEFAULT_POLL_INTERVAL_MS,
@@ -28,6 +70,14 @@ import {
   DEFAULT_STABLE_MARGIN_MS,
 } from '../../../src/cluster/bootstrap/StableObservationOptions.js';
 import { DEFAULT_MINIMUM_MEMBERS } from '../../../src/cluster/ClusterReadiness.js';
+import { DEFAULT_K8S_OPERATION_TIMEOUT_MS, DEFAULT_LEASE_NAME_MAX_LENGTH, DEFAULT_SERVICE_ACCOUNT_CA_PATH, DEFAULT_SERVICE_ACCOUNT_NAMESPACE_PATH, DEFAULT_SERVICE_ACCOUNT_TOKEN_PATH, DEFAULT_TOKEN_RELOAD_INTERVAL_MS } from '../../../src/coordination/leases/KubernetesLeaseOptions.js';
+import { DEFAULT_LEASE_BACKEND } from '../../../src/coordination/LeaseFromConfig.js';
+import { DEFAULT_AUTH_PROTECT_HEALTH, DEFAULT_ENABLE_DOWN_ENDPOINT, DEFAULT_ENABLE_LEAVE_ENDPOINT, DEFAULT_ENABLE_METRICS_ENDPOINT, DEFAULT_LIVENESS_PATH, DEFAULT_READINESS_PATH } from '../../../src/management/ManagementRoutesOptions.js';
+import { DEFAULT_HEALTH_CHECK_TIMEOUT_MS } from '../../../src/management/HealthCheckRegistryOptions.js';
+import { DEFAULT_MAX_SERIES_PER_FAMILY } from '../../../src/metrics/MetricsRegistryOptions.js';
+import { DEFAULT_PROM_CLIENT_NAME_PREFIX } from '../../../src/metrics/PromClientAdapterOptions.js';
+import { DEFAULT_OTEL_TRACER_NAME } from '../../../src/tracing/OtelAdapterOptions.js';
+import { DEFAULT_OTEL_LOGGER_NAME } from '../../../src/tracing/OtelLogsAdapterOptions.js';
 import {
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
@@ -35,8 +85,10 @@ import {
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
   DEFAULT_TOMBSTONE_TTL_MS,
 } from '../../../src/cluster/ClusterOptions.js';
-import { DEFAULT_PORT } from '../../../src/cluster/ClusterBootstrapOptions.js';
 import { DEFAULT_MAX_FRAME_BYTES } from '../../../src/cluster/Protocol.js';
+import { HANDSHAKE_TIMEOUT_MS, INCOMPLETE_FRAME_IDLE_MS, MAX_INBOUND_CONNECTIONS, MAX_PENDING_FRAMES } from '../../../src/cluster/Constants.js';
+import { DEFAULT_UNTRUSTED_MODE } from '../../../src/cluster/ClusterOptions.js';
+import { DEFAULT_MAX_DOCUMENT_BYTES, DEFAULT_MAX_NESTING_DEPTH, DEFAULT_MAX_STRING_LENGTH } from '../../../src/serialization/ReadConstraintsOptions.js';
 import {
   DEFAULT_MAX_REMOTE_NODES_PER_TOPIC,
   DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC,
@@ -46,38 +98,91 @@ import {
   DEFAULT_MAX_SUBSCRIBERS_PER_KEY,
   DEFAULT_MAX_SUBSCRIPTIONS_TOTAL,
 } from '../../../src/discovery/ReceptionistOptions.js';
+import { DEFAULT_DISCOVERY_METHOD, DEFAULT_NEW_CLUSTER_ENABLED } from '../../../src/cluster/ClusterBootstrapOptions.js';
+import { DEFAULT_DNS_CACHE_TTL_MS, DEFAULT_DNS_USE_SRV } from '../../../src/discovery/DnsSeedProviderOptions.js';
+import { DEFAULT_KUBERNETES_DISCOVERY_REQUEST_TIMEOUT_MS } from '../../../src/discovery/KubernetesApiSeedProviderOptions.js';
 import {
   DEFAULT_NUM_SHARDS,
   DEFAULT_PASSIVATION_IDLE_MS,
+  DEFAULT_REGISTER_RETRY_INTERVAL_MS,
+  DEFAULT_SHARD_REGION_BUFFER_SIZE,
 } from '../../../src/cluster/sharding/ShardingOptions.js';
+import { DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_FREQUENCY_MS, DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_NUMBER_OF_ENTITIES, DEFAULT_ENTITY_RECOVERY_STRATEGY } from '../../../src/cluster/sharding/ShardingOptions.js';
+import { DEFAULT_ACQUIRE_RETRY_INTERVAL_MS } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
 import {
+  DEFAULT_COORDINATOR_STATE_LOAD_TIMEOUT_MS,
   DEFAULT_HAND_OFF_TIMEOUT_MS,
   DEFAULT_REBALANCE_INTERVAL_MS,
 } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
+import { DEFAULT_REBALANCE_ABSOLUTE_LIMIT, DEFAULT_REBALANCE_RELATIVE_LIMIT } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
+import { DEFAULT_REGION_STALE_AFTER_MS } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
+import { DEFAULT_REGION_HEARTBEAT_INTERVAL_MS } from '../../../src/cluster/sharding/ShardingOptions.js';
+import { DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS } from '../../../src/cluster/sharding/StartShardingOptions.js';
+import { DEFAULT_PASSIVATION_ADMISSION_FILTER, DEFAULT_PASSIVATION_ADMISSION_WINDOW_PROPORTION, DEFAULT_PASSIVATION_REPLACEMENT, DEFAULT_PASSIVATION_SEGMENTED_PROTECTED_PROPORTION, DEFAULT_PASSIVATION_STOP_TIMEOUT_MS } from '../../../src/cluster/sharding/ShardingOptions.js';
+import { DEFAULT_DAEMON_LIVENESS_INTERVAL_MS } from '../../../src/cluster/sharding/ShardedDaemonProcessOptions.js';
 import {
   DEFAULT_MAX_GOSSIP_BYTES,
   DEFAULT_MAX_PENDING_QUORUM_REQUESTS,
   DEFAULT_MAX_QUORUM_TIMEOUT_MS,
 } from '../../../src/crdt/DistributedDataOptions.js';
+import { DEFAULT_LOG_DATA_SIZE_EXCEEDING_BYTES } from '../../../src/crdt/DistributedDataOptions.js';
+import { DEFAULT_ASK_TIMEOUT_MS as DEFAULT_QUORUM_TIMEOUT_MS } from '../../../src/util/Constants.js';
+import { DEFAULT_OBJECT_STORAGE_COMPRESSION_ALGORITHM, DEFAULT_OBJECT_STORAGE_ENCRYPTION_MODE } from '../../../src/persistence/Constants.js';
+import { DEFAULT_MAX_DECOMPRESSED_BYTES } from '../../../src/persistence/object-storage/BodyCodec.js';
+import { DEFAULT_LOCK_TIMEOUT_MS, DEFAULT_STALE_LOCK_MS } from '../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
+import { DEFAULT_AUTO_CREATE_TABLES, DEFAULT_DURABLE_STATE_TABLE, DEFAULT_EVENTS_TABLE, DEFAULT_SNAPSHOTS_TABLE, DEFAULT_SNAPSHOT_KEEP_N, DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from '../../../src/persistence/Constants.js';
+import { DEFAULT_D1_BASE_URL } from '../../../src/persistence/journals/D1Client.js';
+import { DEFAULT_D1_MAX_RESPONSE_BYTES, DEFAULT_D1_TIMEOUT_MS } from '../../../src/persistence/Constants.js';
+import { DEFAULT_MONGO_AUTO_CREATE_INDEXES } from '../../../src/persistence/Constants.js';
+import { DEFAULT_MONGO_DATABASE } from '../../../src/persistence/journals/MongoClient.js';
+import { DEFAULT_DYNAMODB_EVENTS_TABLE } from '../../../src/persistence/journals/DynamoDbJournalOptions.js';
+import { DEFAULT_DYNAMODB_SNAPSHOTS_TABLE } from '../../../src/persistence/snapshot-stores/DynamoDbSnapshotStoreOptions.js';
+import { DEFAULT_DYNAMODB_DURABLE_STATE_TABLE } from '../../../src/persistence/durable-state-stores/DynamoDbDurableStateStoreOptions.js';
+import { DEFAULT_DYNAMODB_BILLING_MODE, DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS } from '../../../src/persistence/Constants.js';
+import { DYNAMODB_BILLING_MODES } from '../../../src/persistence/journals/DynamoDbPluginOptions.js';
+import { DEFAULT_CASSANDRA_LOCAL_DATA_CENTER, DEFAULT_CASSANDRA_PORT, DEFAULT_CASSANDRA_TAG_INDEX_TABLE } from '../../../src/persistence/journals/CassandraClient.js';
+import { DEFAULT_CASSANDRA_ALL_IDS_TABLE, DEFAULT_CASSANDRA_LIGHTWEIGHT_TRANSACTIONS, DEFAULT_CASSANDRA_METADATA_TABLE, DEFAULT_CASSANDRA_PARTITION_SIZE } from '../../../src/persistence/journals/CassandraJournalOptions.js';
+import { DEFAULT_CASSANDRA_REPLICATION_CLASS, DEFAULT_CASSANDRA_REPLICATION_FACTOR } from '../../../src/persistence/Constants.js';
+import { CASSANDRA_REPLICATION_CLASSES } from '../../../src/persistence/journals/CassandraPluginOptions.js';
 import {
   DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
   DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES,
   DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_FRAMES,
 } from '../../../src/http/Constants.js';
+import { DEFAULT_CORS_CREDENTIALS } from '../../../src/http/middleware/CorsOptions.js';
 import {
   DEFAULT_HTTP_CLIENT_MAX_REDIRECTS,
   DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES,
   DEFAULT_HTTP_CLIENT_REDIRECT_MODE,
   DEFAULT_HTTP_CLIENT_TIMEOUT_MS,
 } from '../../../src/http/HttpClientOptions.js';
-import { DEFAULT_CLEANUP_MS, DEFAULT_MAX_ENTRIES } from '../../../src/cache/InMemoryCacheOptions.js';
+import { DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS,
+  DEFAULT_HTTP_SERVER_HTTP2, DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS } from '../../../src/http/HttpServerOptions.js';
+import {
+  DEFAULT_HSTS_INCLUDE_SUB_DOMAINS,
+  DEFAULT_HSTS_MAX_AGE_SECONDS,
+  DEFAULT_HSTS_PRELOAD,
+} from '../../../src/http/middleware/HstsOptions.js';
+import { DEFAULT_REQUEST_TIMEOUT_DEADLINE_MS } from '../../../src/http/middleware/TimeoutOptions.js';
+import { DEFAULT_CLEANUP_MS, DEFAULT_MAX_ENTRIES, DEFAULT_TIME_TO_IDLE_MS, DEFAULT_TIME_TO_LIVE_MS } from '../../../src/cache/InMemoryCacheOptions.js';
+import { DEFAULT_MEMCACHED_SERVERS } from '../../../src/cache/MemcachedCacheOptions.js';
+import { DEFAULT_REDIS_DB } from '../../../src/cache/RedisCacheOptions.js';
+import { DEFAULT_BACKOFF_DRAIN_GRACE_MS, DEFAULT_BACKOFF_FORWARD, DEFAULT_BACKOFF_FORWARD_DURING_GRACE, DEFAULT_BACKOFF_MAX_MS, DEFAULT_BACKOFF_MAX_STASH_SIZE, DEFAULT_BACKOFF_MIN_MS, DEFAULT_BACKOFF_RANDOM_FACTOR, DEFAULT_BACKOFF_RESET_COUNTER, DEFAULT_BACKOFF_TRIGGER_ON } from '../../../src/pattern/BackoffSupervisorOptions.js';
+import { DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES, DEFAULT_PROJECTION_MAX_RETRIES, DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS, DEFAULT_PROJECTION_RECOVERY_STRATEGY, DEFAULT_PROJECTION_RETRY_BACKOFF_MS } from '../../../src/persistence/projection/ProjectionOptions.js';
+import { DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS } from '../../../src/persistence/Constants.js';
+import { DEFAULT_JOURNAL_BREAKER_ID, DEFAULT_MAX_CONCURRENT_RECOVERIES, DEFAULT_RECOVERY_TIMEOUT_MS, DEFAULT_SNAPSHOT_BREAKER_ID, DEFAULT_SNAPSHOT_IS_OPTIONAL } from '../../../src/persistence/PersistenceBehaviorOptions.js';
+import { DEFAULT_PERSISTENCE_AUTO_START } from '../../../src/persistence/PersistenceBehaviorOptions.js';
+import { DEFAULT_STARTUP_PHASE_TIMEOUT_MS } from '../../../src/CoordinatedStartupOptions.js';
 import { DEFAULT_SINK_CLOSE_TIMEOUT_MS } from '../../../src/logging/MultiSinkLoggerOptions.js';
+import { DEVTOOLS_DEFAULTS } from '../../../src/devtools/DevToolsOptions.js';
 import {
   DEFAULT_DELIVERY_FLUSH_INTERVAL_MS,
   DEFAULT_DELIVERY_MAX_BATCH_SIZE,
   DEFAULT_DELIVERY_OVERFLOW,
   DEFAULT_DELIVERY_QUEUE_CAPACITY,
 } from '../../../src/logging/DeliveryOptions.js';
+import { DEFAULT_MAX_OUT_OF_ORDER, DEFAULT_MAX_PRODUCERS, DEFAULT_PRODUCER_IDLE_TTL_MS, DEFAULT_RESEND_TIMEOUT_MS, DEFAULT_WINDOW_SIZE } from '../../../src/delivery/index.js';
+import { DEFAULT_CIRCUIT_BREAKER_BACKOFF_FACTOR, DEFAULT_CIRCUIT_BREAKER_MAX_FAILURES, DEFAULT_CIRCUIT_BREAKER_MAX_RESET_TIMEOUT_MS, DEFAULT_CIRCUIT_BREAKER_RANDOM_FACTOR, DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS } from '../../../src/pattern/CircuitBreakerOptions.js';
 import {
   DEFAULT_CONSOLE_SINK_FORMAT,
   DEFAULT_CONSOLE_SINK_STREAM,
@@ -120,6 +225,13 @@ import {
   DEFAULT_SYSLOG_PORT,
   DEFAULT_SYSLOG_TRANSPORT,
 } from '../../../src/logging/SyslogSinkOptions.js';
+import type { ConfigValue } from '../../../src/config/HoconParser.js';
+import { parseDuration } from '../../../src/config/Duration.js';
+import { parseSize } from '../../../src/config/Size.js';
+import { baselineOf, inferKind, observeLeaf, type ConfigProbe, type LeafVerdict } from '../../util/ConfigPerturbation.js';
+import { CONFIG_READER_REGISTRY, entryLabel } from '../../util/ConfigReaderRegistry.js';
+import { DEFAULT_SHARD_FAILURE_BACKOFF_MAX_MS, DEFAULT_SHARD_FAILURE_BACKOFF_MIN_MS, DEFAULT_SHARD_FAILURE_BACKOFF_RANDOM_FACTOR, DEFAULT_SHARD_FAILURE_BACKOFF_RESET_AFTER_MS } from '../../../src/cluster/sharding/ShardingOptions.js';
+import { DEFAULT_ENTITY_RESTART_BACKOFF_MAX_MS, DEFAULT_ENTITY_RESTART_BACKOFF_MIN_MS, DEFAULT_ENTITY_RESTART_BACKOFF_RANDOM_FACTOR, DEFAULT_ENTITY_RESTART_BACKOFF_RESET_AFTER_MS } from '../../../src/cluster/sharding/ShardingOptions.js';
 
 /**
  * Every default this project documents is written down twice: once as a
@@ -129,9 +241,10 @@ import {
  * The gap it closes is specific.  `ReferenceConfDocs.test.ts` already pins the
  * `reference-conf.mdx` pages byte-for-byte to `REFERENCE_CONF`, and
  * `NoDeadConfigKeys.test.ts` already proves every key is reachable from
- * `ConfigKeys` and read somewhere — but both stop at the same ceiling, which
- * `NoDeadConfigKeys` states in its own words: they prove a *reference*, not a
- * correct *value*.  `REFERENCE_CONF` is a hand-maintained string, so a wrong
+ * `ConfigKeys` and read by a registered reader — but both stop short of the
+ * value: the pages copy whatever `REFERENCE_CONF` holds, and
+ * `NoDeadConfigKeys` says in its own words that it proves a read, not that the
+ * value is right.  `REFERENCE_CONF` is a hand-maintained string, so a wrong
  * number typed into it is copied faithfully into both language pages and
  * every existing guard stays green.  That is the drift #470 exists to stop:
  * the published default and the shipped default disagreeing, with nothing
@@ -167,16 +280,80 @@ import {
  * very drift being guarded.
  */
 
-/** How to read a key — picks the `Config` accessor that matches its literal. */
-type DefaultKind = 'duration' | 'bytes' | 'int' | 'string';
+/**
+ * How to read a key: the `Config` accessor its reader uses, which the per-row
+ * test checks rather than trusts (#1438).
+ *
+ * Reading the published literal with the label proves little on its own.  A
+ * bare number reads the same through `getNumber`, `getDuration` and
+ * `getBytes`, and through `getInt` when it is whole, so labelling
+ * `restart-random-factor = 0.2` a duration passed while asserting nothing
+ * about it being a fraction (#883).  Each row is therefore also set, one at a
+ * time, through every reader in `tests/util/ConfigReaderRegistry.ts`:
+ *
+ *   - a value of the labelled kind must be taken — some reader's answer
+ *     changes, or a reader refuses the value on its merits — and no getter may
+ *     refuse it as the wrong kind.  `int` sets an integer, `number` a
+ *     fraction, `duration` a time with its unit, `bytes` a size with its unit,
+ *     and `string`, `bool` and `list` another value of their own;
+ *   - for the four numeric kinds, the values the labelled getter refuses must
+ *     be refused, and taken by no reader: a fraction for `int`, a duration
+ *     and a size for `int` and `number`, a size for `duration`, a duration
+ *     for `bytes`.
+ *     This half is what tells `int` from `number` on a whole literal, which
+ *     the literal cannot: `1.0` parses as `1`.
+ *
+ * And a `duration` or `bytes` row may not publish a bare non-zero number,
+ * since that literal names no unit; UNIT_LESS_LITERALS lists the rows that
+ * still do, each until its literal carries one.
+ *
+ * What stays unchecked: a `string` row relabelled `bool` passes both halves,
+ * because `getString` reads a boolean back as text, and only the value
+ * assertion notices, since the constant is a string; and whether a `string`
+ * leaf is free text or an enum, because an enum reader refusing a perturbed
+ * word has taken a string first.  The rows in UNION_ROWS are checked on one
+ * arm only.
+ *
+ * `list` is the one kind whose values are compared by contents rather than by
+ * identity, and it exists because the alternative was worse (#844).  The four
+ * list-valued leaves that predate it are all `[]` sentinels filed under
+ * FEATURE_SWITCHES with the same stated reason — an empty list and an unset
+ * key produce the identical behaviour, so there is no constant to disagree
+ * with.  `configuration-compatibility-check.checked-paths` publishes a
+ * **non-empty** default that a constant does hold, so filing it beside them
+ * would have recorded a reason that is not true of it, and leaving it
+ * unasserted would have put a published default on the docs site with nothing
+ * checking it.
+ */
+type DefaultKind = 'duration' | 'bytes' | 'int' | 'number' | 'string' | 'bool' | 'list';
 
 type DocumentedDefault = {
   /** Full dotted HOCON path as it appears in `REFERENCE_CONF`. */
   readonly key: string;
   readonly kind: DefaultKind;
-  /** The `DEFAULT_*` constant, imported so a rename is a compile error. */
-  readonly constant: number | string;
+  /**
+   * The `DEFAULT_*` constant, imported so a rename is a compile error.
+   *
+   * `boolean` joined the union with the `bool` kind (#1000).  Before it, a
+   * published `off` had nowhere to go but `FEATURE_SWITCHES`, whose stated
+   * reason for existing is that its members have *no* constant to disagree
+   * with — so a switch that grew one would have been filed under an
+   * explanation that no longer applied to it.
+   */
+  readonly constant: number | string | boolean | readonly string[];
 };
+
+/**
+ * The HOCON value an enum reader's table maps to `value` — how a published
+ * kebab-case default is pinned to a constant spelled the way its consumer
+ * takes it (`pay-per-request` to `PAY_PER_REQUEST`).  Reading the table rather
+ * than restating the word is the point: a row holding the literal would agree
+ * with the published value whatever the constant said.  `undefined` when no
+ * value maps there, which the table's own sanity check reports.
+ */
+function hoconSpellingOf<T>(table: Readonly<Record<string, T>>, value: T): string {
+  return Object.keys(table).find((key) => table[key] === value) as string;
+}
 
 /**
  * The seven sinks that batch through `DeliveryOptions` and take its built-in
@@ -193,8 +370,12 @@ const deliveryDefaults: readonly DocumentedDefault[] = BATCHING_SINKS.flatMap((s
 const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   /* --- core --- */
   { key: 'actor-ts.actor.throughput', kind: 'int', constant: DEFAULT_ACTOR_THROUGHPUT },
+  { key: 'actor-ts.actor.ask-timeout', kind: 'duration', constant: DEFAULT_ASK_TIMEOUT_MS },
+  { key: 'actor-ts.dispatcher.default', kind: 'string', constant: DEFAULT_DISPATCHER_KIND },
   { key: 'actor-ts.dispatcher.throughput', kind: 'int', constant: DEFAULT_DISPATCHER_THROUGHPUT },
+  { key: 'actor-ts.coordinated-startup.default-phase-timeout', kind: 'duration', constant: DEFAULT_STARTUP_PHASE_TIMEOUT_MS },
   { key: 'actor-ts.coordinated-shutdown.default-phase-timeout', kind: 'duration', constant: DEFAULT_PHASE_TIMEOUT_MS },
+  { key: 'actor-ts.coordinated-shutdown.exit-code', kind: 'int', constant: DEFAULT_SHUTDOWN_EXIT_CODE },
   { key: 'actor-ts.system.shutdown-drain-timeout', kind: 'duration', constant: DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS },
 
   /* --- cluster --- */
@@ -202,14 +383,103 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cluster.pub-sub.gossip-interval', kind: 'duration', constant: DEFAULT_GOSSIP_INTERVAL_MS },
   { key: 'actor-ts.cluster.receptionist.gossip-interval', kind: 'duration', constant: DEFAULT_GOSSIP_INTERVAL_MS },
   { key: 'actor-ts.distributed-data.gossip-interval', kind: 'duration', constant: DEFAULT_GOSSIP_INTERVAL_MS },
+  { key: 'actor-ts.cluster.split-brain-resolver.active-strategy', kind: 'string', constant: DEFAULT_SPLIT_BRAIN_RESOLVER_STRATEGY },
+  { key: 'actor-ts.cluster.split-brain-resolver.stable-after', kind: 'duration', constant: DEFAULT_STABLE_AFTER_MS },
+  // In the table rather than in FEATURE_SWITCHES, though the published value is
+  // `off`, for the reason `configuration-compatibility-check.enforce` is: it
+  // HAS a constant to disagree with.  The escalation's off state is not "the
+  // field is absent at the read site" — `Cluster` resolves the field to a
+  // boolean either way and branches on it, so a published `on` against a
+  // shipped `false` would be a real divergence this row catches (#839).
+  { key: 'actor-ts.cluster.split-brain-resolver.down-all-when-unstable', kind: 'bool', constant: DEFAULT_DOWN_ALL_WHEN_UNSTABLE },
+  { key: 'actor-ts.cluster.split-brain-resolver.keep-oldest.down-if-alone', kind: 'bool', constant: DEFAULT_KEEP_OLDEST_DOWN_IF_ALONE },
+  { key: 'actor-ts.cluster.failure-detector.implementation', kind: 'string', constant: DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION },
+  // In the table rather than in FEATURE_SWITCHES for the reason the
+  // down-all-when-unstable row gives: `Cluster` resolves the field to a boolean
+  // either way and branches on it, so a published `off` against a shipped
+  // `true` would be a real divergence this row catches (#1426).
+  { key: 'actor-ts.cluster.failure-detector.auto-down', kind: 'bool', constant: DEFAULT_FAILURE_DETECTOR_AUTO_DOWN },
   { key: 'actor-ts.cluster.failure-detector.heartbeat-interval', kind: 'duration', constant: DEFAULT_HEARTBEAT_INTERVAL_MS },
   { key: 'actor-ts.cluster.failure-detector.unreachable-after', kind: 'duration', constant: defaultFailureDetectorOptions.unreachableAfterMs },
   { key: 'actor-ts.cluster.failure-detector.down-after', kind: 'duration', constant: defaultFailureDetectorOptions.downAfterMs },
+  // `number`, not `int`: φ is a continuous suspicion score and the reader is
+  // `getNumber`, which the fractional thresholds the block exists to allow
+  // need (#840).  8 and 12 happen to be whole, so the literals cannot tell the
+  // labels apart; an `int` label fails on the fraction the per-row check
+  // offers, which `getNumber` takes (#1438).
+  { key: 'actor-ts.cluster.failure-detector.phi.unreachable-threshold', kind: 'number', constant: defaultPhiAccrualOptions.unreachableThreshold },
+  { key: 'actor-ts.cluster.failure-detector.phi.down-threshold', kind: 'number', constant: defaultPhiAccrualOptions.downThreshold },
+  { key: 'actor-ts.cluster.failure-detector.phi.max-sample-size', kind: 'int', constant: defaultPhiAccrualOptions.maxSampleSize },
+  { key: 'actor-ts.cluster.failure-detector.phi.min-std-deviation', kind: 'duration', constant: defaultPhiAccrualOptions.minStdDeviationMs },
+  { key: 'actor-ts.cluster.failure-detector.phi.acceptable-heartbeat-pause', kind: 'duration', constant: defaultPhiAccrualOptions.acceptableHeartbeatPauseMs },
+  // The word `auto` or a duration, labelled by the arm the published `auto`
+  // is in; UNION_ROWS sets the duration arm.  Published as the word, so it
+  // keeps following a heartbeat-interval tuned anywhere (#1451).
+  { key: 'actor-ts.cluster.failure-detector.phi.expected-response-after', kind: 'string', constant: defaultPhiAccrualOptions.expectedResponseAfterMs },
   { key: 'actor-ts.cluster.seed-retry-interval', kind: 'duration', constant: DEFAULT_SEED_RETRY_INTERVAL_MS },
   { key: 'actor-ts.cluster.max-members', kind: 'int', constant: DEFAULT_MAX_MEMBERS },
   { key: 'actor-ts.cluster.max-tombstones', kind: 'int', constant: DEFAULT_MAX_TOMBSTONES },
+  // In the table rather than in FEATURE_SWITCHES, though `1` is the "off"
+  // value: the off state here is not a field being absent at the read site but
+  // a real threshold that a real comparison evaluates, so there is a constant
+  // for it to disagree with.  The per-role siblings ship comment-only — role
+  // names are the deployment's — and so carry no leaf to assert (#837).
+  { key: 'actor-ts.cluster.minimum-members-before-up', kind: 'int', constant: DEFAULT_MINIMUM_MEMBERS_BEFORE_UP },
+  // In the table rather than in FEATURE_SWITCHES for the reason the auto-down
+  // row gives: `Cluster` resolves the field to a boolean either way and
+  // branches on it, so a published `on` against a shipped `false` would be a
+  // real divergence this row catches (#1456).
+  { key: 'actor-ts.cluster.run-coordinated-shutdown-when-down', kind: 'bool', constant: DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN },
+  { key: 'actor-ts.cluster.down-smaller-island', kind: 'bool', constant: DEFAULT_DOWN_SMALLER_ISLAND },
   { key: 'actor-ts.cluster.tombstone.time-to-live', kind: 'duration', constant: DEFAULT_TOMBSTONE_TTL_MS },
   { key: 'actor-ts.cluster.tombstone.prune-interval', kind: 'duration', constant: DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS },
+  // The configuration-agreement pair (#844).  `enforce` is in the table rather
+  // than in FEATURE_SWITCHES for the reason `remote.untrusted-mode` is: it has
+  // a constant to disagree with, since `Cluster` reads
+  // `options.configurationCompatibilityEnforce ?? DEFAULT_…_ENFORCE`.
+  { key: 'actor-ts.cluster.configuration-compatibility-check.enforce', kind: 'bool', constant: DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE },
+  // The first `list` entry, and the whole reason that kind exists — see
+  // `DefaultKind`.  The seeded path is a real published default with a
+  // constant behind it, not the `[]` sentinel its four list-valued
+  // predecessors are.
+  { key: 'actor-ts.cluster.configuration-compatibility-check.checked-paths', kind: 'list', constant: DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS },
+
+  /* --- cluster client --- */
+  // The outside-in `ClusterClient` and its cluster-side endpoint (#858).
+  // `contact-points` ships comment-only — a list is per-deployment identity
+  // and `[]` is refused by the validator rather than meaning "unset" — so it
+  // carries no leaf to assert.  `system-name` is in the table rather than in
+  // LITERAL_AT_THE_READ_SITE because publishing the key is what gave the
+  // constructor's `?? 'cluster-client'` a name to disagree with.
+  //
+  // Both ask deadlines resolve to the framework-wide `DEFAULT_ASK_TIMEOUT_MS`,
+  // aliased at the import so the name at each use site says which block is
+  // being pinned.  They stay two keys: the client's bounds the round trip the
+  // caller waits out, the receptionist's bounds the hop this node makes on the
+  // client's behalf, and the two are configured on different machines.
+  { key: 'actor-ts.cluster.client.system-name', kind: 'string', constant: DEFAULT_CLUSTER_CLIENT_SYSTEM_NAME },
+  { key: 'actor-ts.cluster.client.ask-timeout', kind: 'duration', constant: DEFAULT_CLUSTER_CLIENT_ASK_TIMEOUT_MS },
+  { key: 'actor-ts.cluster.client.connect-timeout', kind: 'duration', constant: DEFAULT_CLUSTER_CLIENT_CONNECT_TIMEOUT_MS },
+  { key: 'actor-ts.cluster.client.receptionist.ask-timeout', kind: 'duration', constant: DEFAULT_CLUSTER_CLIENT_ASK_TIMEOUT_MS },
+
+  /* --- singleton --- */
+  // The `role` sibling is a PLACEHOLDERS entry, for the reason `sharding.role`
+  // gives there.  `restart-on-termination` is in the table rather than in
+  // FEATURE_SWITCHES because it has a constant to disagree with: giving the
+  // manager's `?? true` a name is part of publishing the key (#855).
+  { key: 'actor-ts.cluster.singleton.buffer-size', kind: 'int', constant: DEFAULT_SINGLETON_BUFFER_SIZE },
+  { key: 'actor-ts.cluster.singleton.hand-over-timeout', kind: 'duration', constant: DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS },
+  { key: 'actor-ts.cluster.singleton.acquire-retry-interval', kind: 'duration', constant: DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS },
+  { key: 'actor-ts.cluster.singleton.max-hand-over-state-bytes', kind: 'bytes', constant: DEFAULT_SINGLETON_MAX_HAND_OVER_STATE_BYTES },
+  { key: 'actor-ts.cluster.singleton.restart-on-termination', kind: 'bool', constant: DEFAULT_SINGLETON_RESTART_ON_TERMINATION },
+
+  /* --- serialization --- */
+  { key: 'actor-ts.serialization.read-constraints.max-nesting-depth', kind: 'int', constant: DEFAULT_MAX_NESTING_DEPTH },
+  // `bytes` on a published `0`: `getBytes` reads a bare number straight
+  // through, so the sentinel is asserted by the same accessor the reader uses
+  // rather than being filed away as a feature switch with no constant (#880).
+  { key: 'actor-ts.serialization.read-constraints.max-document-bytes', kind: 'bytes', constant: DEFAULT_MAX_DOCUMENT_BYTES },
+  { key: 'actor-ts.serialization.read-constraints.max-string-length', kind: 'bytes', constant: DEFAULT_MAX_STRING_LENGTH },
 
   /* --- cluster bootstrap --- */
   { key: 'actor-ts.cluster.bootstrap.poll-interval', kind: 'duration', constant: DEFAULT_POLL_INTERVAL_MS },
@@ -220,10 +490,72 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // `await-ready` is comment-only in reference.conf (unset selects the
   // grace-aware computed default, #1086) — no leaf, so nothing to assert.
   { key: 'actor-ts.cluster.bootstrap.minimum-members', kind: 'int', constant: DEFAULT_MINIMUM_MEMBERS },
+  // The selector half of the block (#860).  In the table rather than in
+  // LITERAL_AT_THE_READ_SITE because the `?? 'auto'` literals it used to be
+  // were named into a constant in the same change, precisely so the published
+  // enum's default has something to disagree with.  Its `service-name`
+  // sibling is a PLACEHOLDERS entry — "" is the shape of the key, and the
+  // reader drops it rather than passing it on.
+  { key: 'actor-ts.cluster.bootstrap.discovery.method', kind: 'string', constant: DEFAULT_DISCOVERY_METHOD },
+  // The formation switch (#860).  In the table rather than in
+  // FEATURE_SWITCHES, though it is an on/off, because it has a constant to
+  // disagree with: `bootstrapCluster` reads `… ?? DEFAULT_NEW_CLUSTER_ENABLED`,
+  // and its off state is not a field being absent but a `'never'` policy and a
+  // refused `seeds: []`.
+  { key: 'actor-ts.cluster.bootstrap.new-cluster-enabled', kind: 'bool', constant: DEFAULT_NEW_CLUSTER_ENABLED },
+
+  /* --- discovery --- */
+  // Per-provider seed-discovery settings (#860).  `use-srv` is in the table
+  // and not in FEATURE_SWITCHES for the reason `remote.untrusted-mode` is:
+  // that group's stated reason is having no constant to disagree with, and
+  // this one has `DnsSeedProvider` reading `options.useSrv ?? DEFAULT_DNS_USE_SRV`.
+  // These three are also the whole of the block that MAY carry a published
+  // value: a leaf here occupies the config layer on a node that configured
+  // nothing, and `cache-ttl`, `use-srv` and `kubernetes.request-timeout` are
+  // the three with no environment variable underneath them to shadow.
+  //
+  // The other four are comment-only in reference.conf and so have no leaf to
+  // assert.  The two pin lists for expressiveness — an always-present empty
+  // list cannot say "no pinning".  `kubernetes.namespace` and `config.seeds`
+  // for precedence: each has a variable beneath it, and the first cut of this
+  // block shipped `namespace = "default"`, which made `CLUSTER_NAMESPACE`
+  // unreachable on the `Cluster.bootstrap` path — `DEFAULT_KUBERNETES_NAMESPACE`
+  // is now the bottom of that fallback chain rather than a published default.
+  // For `config.seeds` even a published `[]` would silence `CLUSTER_SEEDS`,
+  // since an empty list drops the static rung rather than meaning "unset"
+  // (#1499).
+  { key: 'actor-ts.discovery.dns.cache-ttl', kind: 'duration', constant: DEFAULT_DNS_CACHE_TTL_MS },
+  { key: 'actor-ts.discovery.dns.use-srv', kind: 'bool', constant: DEFAULT_DNS_USE_SRV },
+  { key: 'actor-ts.discovery.kubernetes.request-timeout', kind: 'duration', constant: DEFAULT_KUBERNETES_DISCOVERY_REQUEST_TIMEOUT_MS },
 
   /* --- remote --- */
-  { key: 'actor-ts.remote.tcp.port', kind: 'int', constant: DEFAULT_PORT },
+  // The bind pair `remote.tcp.host` / `remote.tcp.port` ships comment-only
+  // (#1435): `CLUSTER_HOST` / `POD_IP` / `HOSTNAME` and `CLUSTER_PORT` sit
+  // beneath it on the bootstrap path, and a published leaf would make them
+  // unreachable.  No leaf, so nothing to assert here; the built-in pair is
+  // `DEFAULT_BIND_HOST` / `DEFAULT_PORT`, pinned where the join applies it, in
+  // `ClusterConfigDefaults.test.ts`.
   { key: 'actor-ts.remote.max-frame-bytes', kind: 'bytes', constant: DEFAULT_MAX_FRAME_BYTES },
+  // In the table rather than in FEATURE_SWITCHES beside `tls.enabled`, because
+  // it does have a constant to disagree with: `Cluster` reads
+  // `options.untrustedMode ?? DEFAULT_UNTRUSTED_MODE`, so the published `false`
+  // and the shipped one are the same boolean, checkably (#877).
+  { key: 'actor-ts.remote.untrusted-mode', kind: 'bool', constant: DEFAULT_UNTRUSTED_MODE },
+  // The four association-lifecycle bounds (#846).  Their constants keep their
+  // pre-config names and stay in `cluster/Constants.ts` rather than moving into
+  // a `TcpTransportOptions.ts` default block: each one now defaults a field on
+  // *two* options types — `ClusterOptionsType`, so `actor-ts.remote.*` can
+  // reach it, and `TcpTransportOptionsType`, so a hand-built transport can —
+  // which is the case that module exists for.
+  { key: 'actor-ts.remote.handshake-timeout', kind: 'duration', constant: HANDSHAKE_TIMEOUT_MS },
+  { key: 'actor-ts.remote.outbound-queue-size', kind: 'int', constant: MAX_PENDING_FRAMES },
+  { key: 'actor-ts.remote.max-inbound-connections', kind: 'int', constant: MAX_INBOUND_CONNECTIONS },
+  { key: 'actor-ts.remote.incomplete-frame-idle', kind: 'duration', constant: INCOMPLETE_FRAME_IDLE_MS },
+  // `remote.connect-timeout` (#1475) sits beside them and ships comment-only:
+  // unset, a dial's connect deadline is its handshake deadline, which is why
+  // it has no constant either — so it carries no leaf and there is nothing
+  // here to assert.  The exact-object reader pins in
+  // `ClusterConfigDefaults.test.ts` bind it.
 
   /* --- pub-sub / receptionist --- */
   { key: 'actor-ts.cluster.pub-sub.max-subscribers-per-topic', kind: 'int', constant: DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC },
@@ -237,11 +569,67 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.sharding.passivation-idle', kind: 'duration', constant: DEFAULT_PASSIVATION_IDLE_MS },
   { key: 'actor-ts.sharding.rebalance-interval', kind: 'duration', constant: DEFAULT_REBALANCE_INTERVAL_MS },
   { key: 'actor-ts.sharding.hand-off-timeout', kind: 'duration', constant: DEFAULT_HAND_OFF_TIMEOUT_MS },
+  { key: 'actor-ts.sharding.coordinator-state-load-timeout', kind: 'duration', constant: DEFAULT_COORDINATOR_STATE_LOAD_TIMEOUT_MS },
+  { key: 'actor-ts.sharding.rebalance-absolute-limit', kind: 'int', constant: DEFAULT_REBALANCE_ABSOLUTE_LIMIT },
+  // `number`, not `int`: the relative limit is a fraction of `numShards` and
+  // `getInt` throws on the 0.1 that ships, so the wrong kind is loud here
+  // rather than silent (#850).
+  { key: 'actor-ts.sharding.rebalance-relative-limit', kind: 'number', constant: DEFAULT_REBALANCE_RELATIVE_LIMIT },
+  { key: 'actor-ts.sharding.buffer-size', kind: 'int', constant: DEFAULT_SHARD_REGION_BUFFER_SIZE },
+  { key: 'actor-ts.sharding.register-retry-interval', kind: 'duration', constant: DEFAULT_REGISTER_RETRY_INTERVAL_MS },
+  { key: 'actor-ts.sharding.acquire-retry-interval', kind: 'duration', constant: DEFAULT_ACQUIRE_RETRY_INTERVAL_MS },
+  { key: 'actor-ts.sharding.shard-region-query-timeout', kind: 'duration', constant: DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS },
+  { key: 'actor-ts.sharding.entity-recovery.strategy', kind: 'string', constant: DEFAULT_ENTITY_RECOVERY_STRATEGY },
+  { key: 'actor-ts.sharding.entity-recovery.constant-rate.frequency', kind: 'duration', constant: DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_FREQUENCY_MS },
+  { key: 'actor-ts.sharding.entity-recovery.constant-rate.number-of-entities', kind: 'int', constant: DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_NUMBER_OF_ENTITIES },
+  // The `enabled` sibling is a FEATURE_SWITCHES entry — its published `off` is
+  // the mechanism being absent, not a tuned value.  These two ship regardless,
+  // because an operator who cannot see them cannot judge what turning the
+  // switch on would cost (#853).
+  { key: 'actor-ts.sharding.stale-region-detection.heartbeat-interval', kind: 'duration', constant: DEFAULT_REGION_HEARTBEAT_INTERVAL_MS },
+  { key: 'actor-ts.sharding.stale-region-detection.stale-after', kind: 'duration', constant: DEFAULT_REGION_STALE_AFTER_MS },
+  // The shard failure backoff ships on — what it replaced was no wait at all
+  // (#1437).  `random-factor` is `number`, not `int`: the 0.2 that ships is a
+  // fraction, and `getInt` throws on it.
+  { key: 'actor-ts.sharding.shard-failure-backoff.min', kind: 'duration', constant: DEFAULT_SHARD_FAILURE_BACKOFF_MIN_MS },
+  { key: 'actor-ts.sharding.shard-failure-backoff.max', kind: 'duration', constant: DEFAULT_SHARD_FAILURE_BACKOFF_MAX_MS },
+  { key: 'actor-ts.sharding.shard-failure-backoff.random-factor', kind: 'number', constant: DEFAULT_SHARD_FAILURE_BACKOFF_RANDOM_FACTOR },
+  { key: 'actor-ts.sharding.shard-failure-backoff.reset-after', kind: 'duration', constant: DEFAULT_SHARD_FAILURE_BACKOFF_RESET_AFTER_MS },
+  // The entity restart backoff ships on for the same reason (#1437); the same
+  // `number` kind for its fraction.
+  { key: 'actor-ts.sharding.entity-restart-backoff.min', kind: 'duration', constant: DEFAULT_ENTITY_RESTART_BACKOFF_MIN_MS },
+  { key: 'actor-ts.sharding.entity-restart-backoff.max', kind: 'duration', constant: DEFAULT_ENTITY_RESTART_BACKOFF_MAX_MS },
+  { key: 'actor-ts.sharding.entity-restart-backoff.random-factor', kind: 'number', constant: DEFAULT_ENTITY_RESTART_BACKOFF_RANDOM_FACTOR },
+  { key: 'actor-ts.sharding.entity-restart-backoff.reset-after', kind: 'duration', constant: DEFAULT_ENTITY_RESTART_BACKOFF_RESET_AFTER_MS },
+  // The five `passivation.*` leaves are all real defaults rather than feature
+  // switches, `admission-window-proportion = 0` included: `settingsToConfig`
+  // resolves every one of them whether or not there is a cap, so the off state
+  // is a resolved `0` and not the field being absent (#848).
+  { key: 'actor-ts.sharding.passivation.replacement', kind: 'string', constant: DEFAULT_PASSIVATION_REPLACEMENT },
+  { key: 'actor-ts.sharding.passivation.segmented-protected-proportion', kind: 'number', constant: DEFAULT_PASSIVATION_SEGMENTED_PROTECTED_PROPORTION },
+  { key: 'actor-ts.sharding.passivation.admission-window-proportion', kind: 'number', constant: DEFAULT_PASSIVATION_ADMISSION_WINDOW_PROPORTION },
+  { key: 'actor-ts.sharding.passivation.admission-filter', kind: 'string', constant: DEFAULT_PASSIVATION_ADMISSION_FILTER },
+  { key: 'actor-ts.sharding.passivation.stop-timeout', kind: 'duration', constant: DEFAULT_PASSIVATION_STOP_TIMEOUT_MS },
 
   /* --- distributed data --- */
+  // `quorum-timeout` resolves to the framework-wide `DEFAULT_ASK_TIMEOUT_MS`,
+  // the replicator's fallback when neither a call nor this key names one —
+  // aliased at the import, as the two cluster-client deadlines are, so the use
+  // site says which block it pins.  The constant is shared and the key is not:
+  // `actor.ask-timeout` moves `ActorRef.ask` and leaves this one alone (#856).
+  { key: 'actor-ts.distributed-data.quorum-timeout', kind: 'duration', constant: DEFAULT_QUORUM_TIMEOUT_MS },
   { key: 'actor-ts.distributed-data.max-pending-quorum-requests', kind: 'int', constant: DEFAULT_MAX_PENDING_QUORUM_REQUESTS },
   { key: 'actor-ts.distributed-data.max-quorum-timeout', kind: 'duration', constant: DEFAULT_MAX_QUORUM_TIMEOUT_MS },
   { key: 'actor-ts.distributed-data.max-gossip-bytes', kind: 'bytes', constant: DEFAULT_MAX_GOSSIP_BYTES },
+  { key: 'actor-ts.distributed-data.log-data-size-exceeding', kind: 'bytes', constant: DEFAULT_LOG_DATA_SIZE_EXCEEDING_BYTES },
+
+  /* --- mailbox --- */
+  // The sibling leaf, `mailbox.default.capacity`, is a FEATURE_SWITCHES entry:
+  // its published `0` says the global bound is off, and the off state IS the
+  // field being absent from what the reader returns (#862).  This one is a
+  // real default — the policy any bounded mailbox takes when its spawn site
+  // names none — so it pins to the constant the cell falls back to.
+  { key: 'actor-ts.mailbox.default.overflow', kind: 'string', constant: DEFAULT_MAILBOX_OVERFLOW },
 
   /* --- dead letters --- */
   { key: 'actor-ts.dead-letters.store', kind: 'string', constant: DEFAULT_DEAD_LETTER_STORE },
@@ -249,32 +637,420 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.dead-letters.retention', kind: 'duration', constant: DEFAULT_DEAD_LETTER_RETENTION_MS },
   { key: 'actor-ts.dead-letters.max-replays', kind: 'int', constant: DEFAULT_DEAD_LETTER_MAX_REPLAYS },
 
+  /* --- diagnostics --- */
+  { key: 'actor-ts.diagnostics.log-dead-letters', kind: 'int', constant: DEFAULT_LOG_DEAD_LETTERS },
+  { key: 'actor-ts.diagnostics.log-dead-letters-during-shutdown', kind: 'bool', constant: DEFAULT_LOG_DEAD_LETTERS_DURING_SHUTDOWN },
+  { key: 'actor-ts.diagnostics.log-dead-letters-suspend-duration', kind: 'duration', constant: DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS },
+  // The four #867 switches are in the table rather than in `FEATURE_SWITCHES`,
+  // and the distinction that list draws is the reason: its members have no
+  // `DEFAULT_*` constant to disagree with, because their off state IS the
+  // field being absent at the read site.  These four are resolved into
+  // `ActorSystem._diagnostics` with every field decided, so each has a
+  // constant, and a constant that exists belongs where it can be compared.
+  { key: 'actor-ts.diagnostics.log-config-on-start', kind: 'bool', constant: DEFAULT_LOG_CONFIG_ON_START },
+  { key: 'actor-ts.diagnostics.debug.unhandled', kind: 'bool', constant: DEFAULT_DEBUG_UNHANDLED },
+  { key: 'actor-ts.diagnostics.debug.lifecycle', kind: 'bool', constant: DEFAULT_DEBUG_LIFECYCLE },
+  { key: 'actor-ts.diagnostics.debug.event-stream', kind: 'bool', constant: DEFAULT_DEBUG_EVENT_STREAM },
+
+  /* --- reliable delivery --- */
+  // The three consumer bounds publish `0` as their opt-out while the fields
+  // document `Infinity`, so the reader translates — and the published literal
+  // is still the constant, which is what these three entries pin (#861,
+  // #1471).
+  { key: 'actor-ts.reliable-delivery.producer.resend-timeout', kind: 'duration', constant: DEFAULT_RESEND_TIMEOUT_MS },
+  { key: 'actor-ts.reliable-delivery.producer.window-size', kind: 'int', constant: DEFAULT_WINDOW_SIZE },
+  { key: 'actor-ts.reliable-delivery.consumer.max-producers', kind: 'int', constant: DEFAULT_MAX_PRODUCERS },
+  { key: 'actor-ts.reliable-delivery.consumer.producer-idle-time-to-live', kind: 'duration', constant: DEFAULT_PRODUCER_IDLE_TTL_MS },
+  { key: 'actor-ts.reliable-delivery.consumer.max-out-of-order', kind: 'int', constant: DEFAULT_MAX_OUT_OF_ORDER },
+
+  /* --- circuit breaker --- */
+  // `call-timeout` is comment-only in reference.conf and so is not part of the
+  // partition: omitting `callTimeoutMs` is what disables the per-call timeout,
+  // and the validator refuses `0`, so "no deadline" is a state only a missing
+  // key can express.  `ignored-error-names` is a list and has no constant —
+  // see FEATURE_SWITCHES (#864).
+  { key: 'actor-ts.circuit-breaker.default.max-failures', kind: 'int', constant: DEFAULT_CIRCUIT_BREAKER_MAX_FAILURES },
+  { key: 'actor-ts.circuit-breaker.default.reset-timeout', kind: 'duration', constant: DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS },
+  { key: 'actor-ts.circuit-breaker.default.max-reset-timeout', kind: 'duration', constant: DEFAULT_CIRCUIT_BREAKER_MAX_RESET_TIMEOUT_MS },
+  // `number`, not `int`, because `readCircuitBreakerOptionsFromConfig` takes
+  // both with `getNumber`.  The literals do not decide it: `1.0` and `0.0`
+  // parse as 1 and 0, which `getInt` reads without complaint.  An `int` label
+  // fails on the fraction the per-row check offers, which `getNumber` takes.
+  { key: 'actor-ts.circuit-breaker.default.backoff-factor', kind: 'number', constant: DEFAULT_CIRCUIT_BREAKER_BACKOFF_FACTOR },
+  { key: 'actor-ts.circuit-breaker.default.random-factor', kind: 'number', constant: DEFAULT_CIRCUIT_BREAKER_RANDOM_FACTOR },
+
+  /* --- coordination --- */
+  // The three sibling keys — `lease.ttl`, `lease.renewal-interval` and
+  // `lease.kubernetes.namespace` — are comment-only in reference.conf, so they
+  // carry no leaf and there is nothing here to assert about them (#859).
+  // `backend` ships `none`, the selector's own default (#1454).
+  { key: 'actor-ts.coordination.lease.backend', kind: 'string', constant: DEFAULT_LEASE_BACKEND },
+  { key: 'actor-ts.coordination.lease.kubernetes.namespace-path', kind: 'string', constant: DEFAULT_SERVICE_ACCOUNT_NAMESPACE_PATH },
+  { key: 'actor-ts.coordination.lease.kubernetes.token-path', kind: 'string', constant: DEFAULT_SERVICE_ACCOUNT_TOKEN_PATH },
+  { key: 'actor-ts.coordination.lease.kubernetes.ca-path', kind: 'string', constant: DEFAULT_SERVICE_ACCOUNT_CA_PATH },
+  { key: 'actor-ts.coordination.lease.kubernetes.token-reload-interval', kind: 'duration', constant: DEFAULT_TOKEN_RELOAD_INTERVAL_MS },
+  { key: 'actor-ts.coordination.lease.kubernetes.operation-timeout', kind: 'duration', constant: DEFAULT_K8S_OPERATION_TIMEOUT_MS },
+  { key: 'actor-ts.coordination.lease.kubernetes.lease-name-max-length', kind: 'int', constant: DEFAULT_LEASE_NAME_MAX_LENGTH },
+
+  /* --- backoff supervisor --- */
+  { key: 'actor-ts.backoff-supervisor.min-backoff', kind: 'duration', constant: DEFAULT_BACKOFF_MIN_MS },
+  { key: 'actor-ts.backoff-supervisor.max-backoff', kind: 'duration', constant: DEFAULT_BACKOFF_MAX_MS },
+  // `number`, not `int`: a jitter fraction is legitimately fractional and
+  // `getInt` throws outright on `0.2` — the trap #883 hit on the
+  // `worker-cluster.restart-random-factor` leaf that pairs with this one.
+  { key: 'actor-ts.backoff-supervisor.random-factor', kind: 'number', constant: DEFAULT_BACKOFF_RANDOM_FACTOR },
+  { key: 'actor-ts.backoff-supervisor.max-stash-size', kind: 'int', constant: DEFAULT_BACKOFF_MAX_STASH_SIZE },
+  // `string`, though the field is a union with an object variant: what is
+  // published here is the literal, and a duration in its place is the caller's
+  // own value rather than a default this can be checked against.
+  { key: 'actor-ts.backoff-supervisor.reset-counter', kind: 'string', constant: DEFAULT_BACKOFF_RESET_COUNTER },
+  { key: 'actor-ts.backoff-supervisor.forward', kind: 'string', constant: DEFAULT_BACKOFF_FORWARD },
+  { key: 'actor-ts.backoff-supervisor.trigger-on', kind: 'string', constant: DEFAULT_BACKOFF_TRIGGER_ON },
+  // `string`, the `worker-cluster.workers` shape: the default is derived from
+  // `min-backoff`, so what is published is the sentinel, and the sentinel is
+  // what the constant pins.
+  { key: 'actor-ts.backoff-supervisor.drain-grace', kind: 'string', constant: DEFAULT_BACKOFF_DRAIN_GRACE_MS },
+  { key: 'actor-ts.backoff-supervisor.forward-during-grace', kind: 'bool', constant: DEFAULT_BACKOFF_FORWARD_DURING_GRACE },
+
+  /* --- management --- */
+  // The four endpoint switches are in the table rather than in
+  // FEATURE_SWITCHES, and the difference is real: that group's stated reason
+  // is that its members have *no* `DEFAULT_*` constant to disagree with,
+  // because their off state is the field being absent at the read site.  These
+  // four are present at the read site — `defaultManagementRoutesOptions` is
+  // the floor `mergeOptions` starts from — so each does have a constant, and
+  // `enable-metrics-endpoint` published as `false` while the code shipped
+  // `true` is exactly the drift worth catching (#882).
+  { key: 'actor-ts.management.enable-leave-endpoint', kind: 'bool', constant: DEFAULT_ENABLE_LEAVE_ENDPOINT },
+  { key: 'actor-ts.management.enable-down-endpoint', kind: 'bool', constant: DEFAULT_ENABLE_DOWN_ENDPOINT },
+  { key: 'actor-ts.management.enable-metrics-endpoint', kind: 'bool', constant: DEFAULT_ENABLE_METRICS_ENDPOINT },
+  { key: 'actor-ts.management.auth-protect-health', kind: 'bool', constant: DEFAULT_AUTH_PROTECT_HEALTH },
+  { key: 'actor-ts.management.liveness-path', kind: 'string', constant: DEFAULT_LIVENESS_PATH },
+  { key: 'actor-ts.management.readiness-path', kind: 'string', constant: DEFAULT_READINESS_PATH },
+  { key: 'actor-ts.management.health-checks.check-timeout', kind: 'duration', constant: DEFAULT_HEALTH_CHECK_TIMEOUT_MS },
+
+  /* --- metrics (#1466) --- */
+  // `name-prefix` is in the table rather than in PLACEHOLDERS although it
+  // publishes `""`: an empty prefix is the default the bridge actually runs
+  // with, and it has a constant to disagree with.
+  { key: 'actor-ts.metrics.max-series-per-family', kind: 'int', constant: DEFAULT_MAX_SERIES_PER_FAMILY },
+  { key: 'actor-ts.metrics.name-prefix', kind: 'string', constant: DEFAULT_PROM_CLIENT_NAME_PREFIX },
+
+  /* --- tracing (#1466) --- */
+  // `tracer-version` and `logger-version` are comment-only in reference.conf
+  // and so are not part of the partition: unset is what passes no version to
+  // `getTracer` / `getLogger`, and no default could stand for the version of
+  // whatever is being traced or logged.
+  { key: 'actor-ts.tracing.tracer-name', kind: 'string', constant: DEFAULT_OTEL_TRACER_NAME },
+  { key: 'actor-ts.tracing.logger-name', kind: 'string', constant: DEFAULT_OTEL_LOGGER_NAME },
+
+  /* --- sharded daemon process --- */
+  // The `role` sibling is a PLACEHOLDERS entry, reading exactly like
+  // `sharding.role` above it: `""` is the published shape of the key, and the
+  // reader drops it rather than passing it on (#854).
+  { key: 'actor-ts.sharded-daemon-process.liveness-interval', kind: 'duration', constant: DEFAULT_DAEMON_LIVENESS_INTERVAL_MS },
+
+  /* --- message boundary (#1386) --- */
+  { key: 'actor-ts.diagnostics.message-boundary.structured-clone', kind: 'string', constant: DEFAULT_MESSAGE_BOUNDARY_STRUCTURED_CLONE },
+  { key: 'actor-ts.diagnostics.message-boundary.serializer-round-trip', kind: 'string', constant: DEFAULT_MESSAGE_BOUNDARY_SERIALIZER_ROUND_TRIP },
+
+  /* --- parallelism (#1563): the module is code-only, so the block has exactly these six leaves --- */
+  { key: 'actor-ts.parallelism.workers', kind: 'int', constant: DEFAULT_PARALLELISM_WORKERS },
+  { key: 'actor-ts.parallelism.offload', kind: 'list', constant: DEFAULT_PARALLELISM_OFFLOAD },
+  { key: 'actor-ts.parallelism.placement', kind: 'string', constant: DEFAULT_PARALLELISM_PLACEMENT },
+  { key: 'actor-ts.parallelism.leader', kind: 'string', constant: DEFAULT_PARALLELISM_LEADER },
+  { key: 'actor-ts.parallelism.spawn-timeout', kind: 'duration', constant: DEFAULT_PARALLELISM_SPAWN_TIMEOUT_MS },
+  { key: 'actor-ts.parallelism.buffer-size', kind: 'int', constant: DEFAULT_PARALLELISM_BUFFER_SIZE },
+
+  /* --- offload pool (#1558): the bootstrap is code-only, so the block has exactly these nine leaves --- */
+  { key: 'actor-ts.offload-pool.size', kind: 'string', constant: DEFAULT_OFFLOAD_POOL_SIZE },
+  { key: 'actor-ts.offload-pool.min-size', kind: 'int', constant: DEFAULT_OFFLOAD_MIN_SIZE },
+  { key: 'actor-ts.offload-pool.max-queue', kind: 'int', constant: DEFAULT_OFFLOAD_MAX_QUEUE },
+  { key: 'actor-ts.offload-pool.overflow', kind: 'string', constant: DEFAULT_OFFLOAD_OVERFLOW },
+  { key: 'actor-ts.offload-pool.idle-timeout', kind: 'duration', constant: DEFAULT_OFFLOAD_IDLE_TIMEOUT_MS },
+  { key: 'actor-ts.offload-pool.task-timeout', kind: 'duration', constant: DEFAULT_OFFLOAD_TASK_TIMEOUT_MS },
+  { key: 'actor-ts.offload-pool.max-restarts', kind: 'int', constant: DEFAULT_MAX_RESTARTS },
+  { key: 'actor-ts.offload-pool.restart-window', kind: 'duration', constant: DEFAULT_RESTART_WINDOW_MS },
+  { key: 'actor-ts.offload-pool.warm-up', kind: 'bool', constant: DEFAULT_OFFLOAD_WARM_UP },
+
   /* --- worker cluster --- */
+  { key: 'actor-ts.worker-cluster.workers', kind: 'string', constant: DEFAULT_WORKER_COUNT },
+  // The mesh (#1562): its module and bootstrap are code-only like
+  // `worker-cluster.bootstrap`, so the block has exactly these eight leaves.
+  { key: 'actor-ts.worker-mesh.workers', kind: 'string', constant: DEFAULT_MESH_WORKER_COUNT },
+  { key: 'actor-ts.worker-mesh.main-hostname', kind: 'string', constant: DEFAULT_MESH_MAIN_HOSTNAME },
+  { key: 'actor-ts.worker-mesh.main-port', kind: 'int', constant: DEFAULT_MESH_MAIN_PORT },
+  { key: 'actor-ts.worker-mesh.worker-hostname', kind: 'string', constant: DEFAULT_MESH_WORKER_HOSTNAME },
+  { key: 'actor-ts.worker-mesh.base-port', kind: 'int', constant: DEFAULT_MESH_BASE_PORT },
+  { key: 'actor-ts.worker-mesh.main-roles', kind: 'list', constant: DEFAULT_MESH_MAIN_ROLES },
+  { key: 'actor-ts.worker-mesh.worker-roles', kind: 'list', constant: DEFAULT_MESH_WORKER_ROLES },
+  { key: 'actor-ts.worker-mesh.metrics-relay-interval', kind: 'duration', constant: DEFAULT_MESH_METRICS_RELAY_INTERVAL_MS },
+  { key: 'actor-ts.worker-cluster.system-name', kind: 'string', constant: DEFAULT_WORKER_SYSTEM_NAME },
+  { key: 'actor-ts.worker-cluster.hostname', kind: 'string', constant: DEFAULT_WORKER_HOSTNAME },
+  { key: 'actor-ts.worker-cluster.base-port', kind: 'int', constant: DEFAULT_WORKER_BASE_PORT },
+  { key: 'actor-ts.worker-cluster.ready-timeout', kind: 'duration', constant: DEFAULT_WORKER_READY_TIMEOUT_MS },
   { key: 'actor-ts.worker-cluster.restart-policy', kind: 'string', constant: DEFAULT_WORKER_RESTART_POLICY },
+  { key: 'actor-ts.worker-cluster.restart-min-backoff', kind: 'duration', constant: DEFAULT_RESTART_MIN_BACKOFF_MS },
+  { key: 'actor-ts.worker-cluster.restart-max-backoff', kind: 'duration', constant: DEFAULT_RESTART_MAX_BACKOFF_MS },
+  { key: 'actor-ts.worker-cluster.restart-random-factor', kind: 'number', constant: DEFAULT_RESTART_RANDOM_FACTOR },
+  { key: 'actor-ts.worker-cluster.max-restarts', kind: 'int', constant: DEFAULT_MAX_RESTARTS },
+  { key: 'actor-ts.worker-cluster.restart-window', kind: 'duration', constant: DEFAULT_RESTART_WINDOW_MS },
 
   /* --- http --- */
-  { key: 'actor-ts.http.websocket.maxFrameBytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_MAX_FRAME_BYTES },
-  { key: 'actor-ts.http.websocket.maxBufferedBytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_POLICY.maxBufferedBytes },
-  { key: 'actor-ts.http.websocket.onOversizeFrame', kind: 'string', constant: DEFAULT_WEBSOCKET_POLICY.onOversizeFrame },
-  { key: 'actor-ts.http.websocket.onInvalidMessage', kind: 'string', constant: DEFAULT_WEBSOCKET_POLICY.onInvalidMessage },
-  { key: 'actor-ts.http.websocket.onBackpressure', kind: 'string', constant: DEFAULT_WEBSOCKET_POLICY.onBackpressure },
-  { key: 'actor-ts.http.websocket.maxPreAttachFrames', kind: 'int', constant: DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_FRAMES },
-  { key: 'actor-ts.http.websocket.maxPreAttachBytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES },
-  { key: 'actor-ts.http.websocket.acceptTimeoutMs', kind: 'duration', constant: DEFAULT_WEBSOCKET_POLICY.acceptTimeoutMs },
-  { key: 'actor-ts.http.client.defaultTimeoutMs', kind: 'duration', constant: DEFAULT_HTTP_CLIENT_TIMEOUT_MS },
-  { key: 'actor-ts.http.client.maxRedirects', kind: 'int', constant: DEFAULT_HTTP_CLIENT_MAX_REDIRECTS },
-  { key: 'actor-ts.http.client.maxResponseBytes', kind: 'bytes', constant: DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES },
+  { key: 'actor-ts.http.websocket.max-frame-bytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_MAX_FRAME_BYTES },
+  { key: 'actor-ts.http.websocket.max-buffered-bytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_POLICY.maxBufferedBytes },
+  { key: 'actor-ts.http.websocket.on-oversize-frame', kind: 'string', constant: DEFAULT_WEBSOCKET_POLICY.onOversizeFrame },
+  { key: 'actor-ts.http.websocket.on-invalid-message', kind: 'string', constant: DEFAULT_WEBSOCKET_POLICY.onInvalidMessage },
+  { key: 'actor-ts.http.websocket.on-backpressure', kind: 'string', constant: DEFAULT_WEBSOCKET_POLICY.onBackpressure },
+  { key: 'actor-ts.http.websocket.max-pre-attach-frames', kind: 'int', constant: DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_FRAMES },
+  { key: 'actor-ts.http.websocket.max-pre-attach-bytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES },
+  { key: 'actor-ts.http.websocket.accept-timeout', kind: 'duration', constant: DEFAULT_WEBSOCKET_POLICY.acceptTimeoutMs },
+  // The two connection-mailbox leaves (#1432) ship comment-only, and unset is
+  // their documented default rather than a gap: it leaves each connection
+  // actor to `actor-ts.mailbox.default.*`, so there is no constant behind them
+  // to disagree with and no leaf here to assert.  A published value would be
+  // a second global bound for connections alone; publishing one makes the
+  // coverage case above demand an entry here, and the exact-object
+  // reference.conf case in `WebsocketPolicy.test.ts` fails on it too.
+  { key: 'actor-ts.http.client.default-timeout', kind: 'duration', constant: DEFAULT_HTTP_CLIENT_TIMEOUT_MS },
+  { key: 'actor-ts.http.client.max-redirects', kind: 'int', constant: DEFAULT_HTTP_CLIENT_MAX_REDIRECTS },
+  { key: 'actor-ts.http.client.max-response-bytes', kind: 'bytes', constant: DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES },
   { key: 'actor-ts.http.client.redirect', kind: 'string', constant: DEFAULT_HTTP_CLIENT_REDIRECT_MODE },
+  // The one CORS leaf with a scalar constant behind it (#878).  `off` here and
+  // `credentials: merged.credentials ?? DEFAULT_CORS_CREDENTIALS` in
+  // `resolveCorsPolicy` are the same `false`, checkably — which is what keeps
+  // it out of FEATURE_SWITCHES, whose members are the ones with nothing to
+  // disagree with.  Its four comment-only siblings — `origins`, `methods`,
+  // `allowed-headers`, `max-age` — carry no leaf, so there is nothing here to
+  // assert about them.
+  { key: 'actor-ts.http.cors.credentials', kind: 'bool', constant: DEFAULT_CORS_CREDENTIALS },
+  // The two server leaves that carry a value.  Both are the number
+  // `http.createServer` already uses, so publishing them changed nothing on
+  // Express or Hono — but `requestTimeout` reads 0 on Fastify, so on the
+  // default backend the published 300s is a bound where there was none (#870).
+  // Their four comment-only siblings — `idle-timeout`, `max-connections`,
+  // `max-content-length` and `max-header-bytes` — carry no leaf, so there is
+  // nothing here to assert about them; the exact-object reader case in
+  // HttpConfigDefaults.test.ts is what binds them.
+  { key: 'actor-ts.http.server.header-timeout', kind: 'duration', constant: DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS },
+  { key: 'actor-ts.http.server.request-timeout', kind: 'duration', constant: DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS },
+  { key: 'actor-ts.http.server.http2', kind: 'bool', constant: DEFAULT_HTTP_SERVER_HTTP2 },
+  // All three HSTS leaves ship the built-in default itself (#1462).  `int`,
+  // not `duration`, for max-age: the leaf is a count of seconds and its
+  // reader takes it with getInt.  Both accessors read the published 15552000
+  // the same, so the pin cannot tell them apart — the duration-string refusal
+  // in HttpConfigDefaults.test.ts is what does.
+  { key: 'actor-ts.http.hsts.max-age', kind: 'int', constant: DEFAULT_HSTS_MAX_AGE_SECONDS },
+  { key: 'actor-ts.http.hsts.include-sub-domains', kind: 'bool', constant: DEFAULT_HSTS_INCLUDE_SUB_DOMAINS },
+  { key: 'actor-ts.http.hsts.preload', kind: 'bool', constant: DEFAULT_HSTS_PRELOAD },
+  // The handler deadline requestTimeout() holds (#1463) — a different number
+  // from http.server.request-timeout above, which bounds receiving only.
+  { key: 'actor-ts.http.request-timeout.deadline', kind: 'duration', constant: DEFAULT_REQUEST_TIMEOUT_DEADLINE_MS },
 
   /* --- cache --- */
-  { key: 'actor-ts.cache.in-memory.maxEntries', kind: 'int', constant: DEFAULT_MAX_ENTRIES },
-  { key: 'actor-ts.cache.in-memory.cleanupMs', kind: 'int', constant: DEFAULT_CLEANUP_MS },
+  { key: 'actor-ts.cache.in-memory.max-entries', kind: 'int', constant: DEFAULT_MAX_ENTRIES },
+  // `duration`, not `int`: #1405 republished this as `60s`, which `getInt`
+  // rejects outright.  `DEFAULT_CLEANUP_MS` is unchanged — only the accessor
+  // that has to read the literal moved.
+  { key: 'actor-ts.cache.in-memory.cleanup-interval', kind: 'duration', constant: DEFAULT_CLEANUP_MS },
+  // The two expiry policies (#876).  `0` here is a real shipped default with a
+  // constant behind it — `InMemoryCache` reads `settings.timeToLiveMs ??
+  // DEFAULT_TIME_TO_LIVE_MS` — so it belongs in the table rather than in
+  // FEATURE_SWITCHES, whose entries are the ones with nothing to disagree with.
+  { key: 'actor-ts.cache.in-memory.time-to-live', kind: 'duration', constant: DEFAULT_TIME_TO_LIVE_MS },
+  { key: 'actor-ts.cache.in-memory.time-to-idle', kind: 'duration', constant: DEFAULT_TIME_TO_IDLE_MS },
+  // The two backend blocks' only non-placeholder leaves (#876).  Both are read
+  // at construction — `settings.db ?? DEFAULT_REDIS_DB`, `settings.servers ??
+  // DEFAULT_MEMCACHED_SERVERS` — so the published value and the shipped one
+  // are the same number and the same string, checkably.
+  { key: 'actor-ts.cache.redis.db', kind: 'int', constant: DEFAULT_REDIS_DB },
+  { key: 'actor-ts.cache.memcached.servers', kind: 'string', constant: DEFAULT_MEMCACHED_SERVERS },
+
+  /* --- persistence --- */
+  // System-wide behaviour (#874) — the six leaves that are not a plugin id.
+  // They sit directly under `actor-ts.persistence` and are read once by
+  // `PersistenceExtension`, so the published number and the shipped one are
+  // the same constant on both sides.
+  { key: 'actor-ts.persistence.max-concurrent-recoveries', kind: 'int', constant: DEFAULT_MAX_CONCURRENT_RECOVERIES },
+  { key: 'actor-ts.persistence.recovery-timeout', kind: 'duration', constant: DEFAULT_RECOVERY_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.snapshot-is-optional', kind: 'bool', constant: DEFAULT_SNAPSHOT_IS_OPTIONAL },
+  { key: 'actor-ts.persistence.journal-breaker', kind: 'string', constant: DEFAULT_JOURNAL_BREAKER_ID },
+  { key: 'actor-ts.persistence.snapshot-breaker', kind: 'string', constant: DEFAULT_SNAPSHOT_BREAKER_ID },
+  // In the table rather than in FEATURE_SWITCHES, though it is an on/off (#1473):
+  // the merge falls back to `DEFAULT_PERSISTENCE_AUTO_START` when nothing is
+  // set, so the published `on` has a constant to disagree with, and the off
+  // state is an explicit `false` at the read site rather than an absent field.
+  { key: 'actor-ts.persistence.auto-start', kind: 'bool', constant: DEFAULT_PERSISTENCE_AUTO_START },
+  // The three SQLite blocks (#872).  `busy-timeout` is published under each of
+  // them and pinned to one constant, because it is one pragma applied to every
+  // handle the package opens — three copies of the number would be three ways
+  // for it to drift from the one `applySqliteBusyTimeout` actually uses.
+  { key: 'actor-ts.persistence.journal.sqlite.events-table', kind: 'string', constant: DEFAULT_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.journal.sqlite.busy-timeout', kind: 'duration', constant: DEFAULT_SQLITE_BUSY_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.snapshot-store.sqlite.snapshots-table', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.sqlite.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.sqlite.busy-timeout', kind: 'duration', constant: DEFAULT_SQLITE_BUSY_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.durable-state.sqlite.table', kind: 'string', constant: DEFAULT_DURABLE_STATE_TABLE },
+  { key: 'actor-ts.persistence.durable-state.sqlite.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.durable-state.sqlite.busy-timeout', kind: 'duration', constant: DEFAULT_SQLITE_BUSY_TIMEOUT_MS },
+  // The relational family (#872, slice 2).  Fifteen blocks, five constants: the
+  // five backends share `RelationalJournal` / `RelationalSnapshotStore` /
+  // `RelationalDurableStateStore`, so the table names and the auto-create switch
+  // are decided in one place each and published fifteen times.  Pinning every
+  // copy is the point — a published default that drifts from the read site is
+  // the same lie whether it drifts once or five times.
+  { key: 'actor-ts.persistence.journal.postgres.events-table', kind: 'string', constant: DEFAULT_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.journal.postgres.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.snapshot-store.postgres.snapshots-table', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.postgres.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.postgres.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.durable-state.postgres.table', kind: 'string', constant: DEFAULT_DURABLE_STATE_TABLE },
+  { key: 'actor-ts.persistence.durable-state.postgres.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.journal.mariadb.events-table', kind: 'string', constant: DEFAULT_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.journal.mariadb.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.snapshot-store.mariadb.snapshots-table', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.mariadb.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.mariadb.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.durable-state.mariadb.table', kind: 'string', constant: DEFAULT_DURABLE_STATE_TABLE },
+  { key: 'actor-ts.persistence.durable-state.mariadb.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.journal.mssql.events-table', kind: 'string', constant: DEFAULT_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.journal.mssql.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.snapshot-store.mssql.snapshots-table', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.mssql.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.mssql.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.durable-state.mssql.table', kind: 'string', constant: DEFAULT_DURABLE_STATE_TABLE },
+  { key: 'actor-ts.persistence.durable-state.mssql.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.journal.libsql.events-table', kind: 'string', constant: DEFAULT_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.journal.libsql.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.snapshot-store.libsql.snapshots-table', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.libsql.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.libsql.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.durable-state.libsql.table', kind: 'string', constant: DEFAULT_DURABLE_STATE_TABLE },
+  { key: 'actor-ts.persistence.durable-state.libsql.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.journal.cloudflare-d1.events-table', kind: 'string', constant: DEFAULT_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.journal.cloudflare-d1.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.snapshot-store.cloudflare-d1.snapshots-table', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.cloudflare-d1.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.cloudflare-d1.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.durable-state.cloudflare-d1.table', kind: 'string', constant: DEFAULT_DURABLE_STATE_TABLE },
+  { key: 'actor-ts.persistence.durable-state.cloudflare-d1.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  // D1's API endpoint is a real default rather than a placeholder — every
+  // deployment uses it, and `buildD1Client` falls back to the same constant, so
+  // the three published copies are checkable against the one in force.
+  { key: 'actor-ts.persistence.journal.cloudflare-d1.base-url', kind: 'string', constant: DEFAULT_D1_BASE_URL },
+  { key: 'actor-ts.persistence.snapshot-store.cloudflare-d1.base-url', kind: 'string', constant: DEFAULT_D1_BASE_URL },
+  { key: 'actor-ts.persistence.durable-state.cloudflare-d1.base-url', kind: 'string', constant: DEFAULT_D1_BASE_URL },
+  // D1's two transport bounds (#1490), published with their units under all
+  // three blocks and pinned to the two constants `buildD1Client` falls back
+  // to.  A bare `30000` would read the same through every numeric getter, so
+  // the unit is what lets the label say duration and bytes rather than count.
+  { key: 'actor-ts.persistence.journal.cloudflare-d1.timeout', kind: 'duration', constant: DEFAULT_D1_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.journal.cloudflare-d1.max-response-bytes', kind: 'bytes', constant: DEFAULT_D1_MAX_RESPONSE_BYTES },
+  { key: 'actor-ts.persistence.snapshot-store.cloudflare-d1.timeout', kind: 'duration', constant: DEFAULT_D1_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.snapshot-store.cloudflare-d1.max-response-bytes', kind: 'bytes', constant: DEFAULT_D1_MAX_RESPONSE_BYTES },
+  { key: 'actor-ts.persistence.durable-state.cloudflare-d1.timeout', kind: 'duration', constant: DEFAULT_D1_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.durable-state.cloudflare-d1.max-response-bytes', kind: 'bytes', constant: DEFAULT_D1_MAX_RESPONSE_BYTES },
+  // The non-relational family (#872, slice 3).  Mongo reuses the three shared
+  // name constants because its collections hold the same three corpora — the
+  // JSDoc on `DEFAULT_EVENTS_TABLE` already says "table (or collection)" — while
+  // DynamoDB gets three of its own: a DynamoDB table name is account- and
+  // region-global rather than scoped by a database, so its defaults carry an
+  // `actor_ts_` prefix the SQL family has no need of.
+  { key: 'actor-ts.persistence.journal.mongodb.database-name', kind: 'string', constant: DEFAULT_MONGO_DATABASE },
+  { key: 'actor-ts.persistence.journal.mongodb.events-collection', kind: 'string', constant: DEFAULT_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.journal.mongodb.auto-create-indexes', kind: 'bool', constant: DEFAULT_MONGO_AUTO_CREATE_INDEXES },
+  { key: 'actor-ts.persistence.snapshot-store.mongodb.database-name', kind: 'string', constant: DEFAULT_MONGO_DATABASE },
+  { key: 'actor-ts.persistence.snapshot-store.mongodb.snapshots-collection', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.mongodb.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.mongodb.auto-create-indexes', kind: 'bool', constant: DEFAULT_MONGO_AUTO_CREATE_INDEXES },
+  { key: 'actor-ts.persistence.durable-state.mongodb.database-name', kind: 'string', constant: DEFAULT_MONGO_DATABASE },
+  { key: 'actor-ts.persistence.durable-state.mongodb.collection', kind: 'string', constant: DEFAULT_DURABLE_STATE_TABLE },
+  { key: 'actor-ts.persistence.journal.dynamodb.events-table', kind: 'string', constant: DEFAULT_DYNAMODB_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.dynamodb.snapshots-table', kind: 'string', constant: DEFAULT_DYNAMODB_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.dynamodb.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.durable-state.dynamodb.table', kind: 'string', constant: DEFAULT_DYNAMODB_DURABLE_STATE_TABLE },
+  // DynamoDB's table provisioning (#1490), under all three blocks.  The billing
+  // mode is published kebab-case and the constant is AWS's spelling, so the
+  // row is pinned through the reader's own table: change the constant and the
+  // published value it expects changes with it.  The capacity pair ships as a
+  // comment, so it has no row.
+  { key: 'actor-ts.persistence.journal.dynamodb.billing-mode', kind: 'string', constant: hoconSpellingOf(DYNAMODB_BILLING_MODES, DEFAULT_DYNAMODB_BILLING_MODE) },
+  { key: 'actor-ts.persistence.journal.dynamodb.table-ready-timeout', kind: 'duration', constant: DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.journal.dynamodb.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.snapshot-store.dynamodb.billing-mode', kind: 'string', constant: hoconSpellingOf(DYNAMODB_BILLING_MODES, DEFAULT_DYNAMODB_BILLING_MODE) },
+  { key: 'actor-ts.persistence.snapshot-store.dynamodb.table-ready-timeout', kind: 'duration', constant: DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.snapshot-store.dynamodb.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.durable-state.dynamodb.billing-mode', kind: 'string', constant: hoconSpellingOf(DYNAMODB_BILLING_MODES, DEFAULT_DYNAMODB_BILLING_MODE) },
+  { key: 'actor-ts.persistence.durable-state.dynamodb.table-ready-timeout', kind: 'duration', constant: DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.durable-state.dynamodb.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  // Cassandra's two blocks.  The topology pair is published under both because
+  // the journal and the snapshot store are selected independently and may name
+  // different clusters, and both copies are pinned to the one constant
+  // `createCassandraClient` reads — two published numbers with one number
+  // behind them is exactly what this table exists to keep honest.
+  { key: 'actor-ts.persistence.journal.cassandra.local-data-center', kind: 'string', constant: DEFAULT_CASSANDRA_LOCAL_DATA_CENTER },
+  { key: 'actor-ts.persistence.journal.cassandra.port', kind: 'int', constant: DEFAULT_CASSANDRA_PORT },
+  { key: 'actor-ts.persistence.journal.cassandra.events-table', kind: 'string', constant: DEFAULT_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.journal.cassandra.metadata-table', kind: 'string', constant: DEFAULT_CASSANDRA_METADATA_TABLE },
+  { key: 'actor-ts.persistence.journal.cassandra.all-ids-table', kind: 'string', constant: DEFAULT_CASSANDRA_ALL_IDS_TABLE },
+  { key: 'actor-ts.persistence.journal.cassandra.tag-index-table', kind: 'string', constant: DEFAULT_CASSANDRA_TAG_INDEX_TABLE },
+  { key: 'actor-ts.persistence.journal.cassandra.partition-size', kind: 'int', constant: DEFAULT_CASSANDRA_PARTITION_SIZE },
+  { key: 'actor-ts.persistence.journal.cassandra.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  // On, and asserted rather than filed as a feature switch: the off state is
+  // NOT the field being absent — absent means on, because a Cassandra INSERT is
+  // an upsert and without the Paxos claim two concurrent appends silently
+  // overwrite one another.  A published `off` would be a correctness change.
+  { key: 'actor-ts.persistence.journal.cassandra.lightweight-transactions', kind: 'bool', constant: DEFAULT_CASSANDRA_LIGHTWEIGHT_TRANSACTIONS },
+  { key: 'actor-ts.persistence.snapshot-store.cassandra.local-data-center', kind: 'string', constant: DEFAULT_CASSANDRA_LOCAL_DATA_CENTER },
+  { key: 'actor-ts.persistence.snapshot-store.cassandra.port', kind: 'int', constant: DEFAULT_CASSANDRA_PORT },
+  { key: 'actor-ts.persistence.snapshot-store.cassandra.snapshots-table', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.cassandra.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.cassandra.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  // The keyspace replication auto-create-keyspace uses (#1490), under both
+  // blocks.  The class is published kebab-case and the constant is CQL's class
+  // name, so the row goes through the reader's table, as the DynamoDB billing
+  // mode's does.  The data-center list ships as a comment, so it has no row.
+  { key: 'actor-ts.persistence.journal.cassandra.replication.class', kind: 'string', constant: hoconSpellingOf(CASSANDRA_REPLICATION_CLASSES, DEFAULT_CASSANDRA_REPLICATION_CLASS) },
+  { key: 'actor-ts.persistence.journal.cassandra.replication.replication-factor', kind: 'int', constant: DEFAULT_CASSANDRA_REPLICATION_FACTOR },
+  { key: 'actor-ts.persistence.snapshot-store.cassandra.replication.class', kind: 'string', constant: hoconSpellingOf(CASSANDRA_REPLICATION_CLASSES, DEFAULT_CASSANDRA_REPLICATION_CLASS) },
+  { key: 'actor-ts.persistence.snapshot-store.cassandra.replication.replication-factor', kind: 'int', constant: DEFAULT_CASSANDRA_REPLICATION_FACTOR },
+
+  /* --- object storage --- */
+  { key: 'actor-ts.persistence.snapshot-store.object-storage.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.object-storage.max-decompressed-bytes', kind: 'bytes', constant: DEFAULT_MAX_DECOMPRESSED_BYTES },
+  { key: 'actor-ts.persistence.snapshot-store.object-storage.compression.algorithm', kind: 'string', constant: DEFAULT_OBJECT_STORAGE_COMPRESSION_ALGORITHM },
+  { key: 'actor-ts.persistence.snapshot-store.object-storage.encryption.mode', kind: 'string', constant: DEFAULT_OBJECT_STORAGE_ENCRYPTION_MODE },
+  { key: 'actor-ts.persistence.snapshot-store.object-storage.filesystem.lock-timeout', kind: 'duration', constant: DEFAULT_LOCK_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.snapshot-store.object-storage.filesystem.stale-lock', kind: 'duration', constant: DEFAULT_STALE_LOCK_MS },
+
+  /* --- projection --- */
+  { key: 'actor-ts.projection.recovery-strategy', kind: 'string', constant: DEFAULT_PROJECTION_RECOVERY_STRATEGY },
+  { key: 'actor-ts.projection.max-retries', kind: 'int', constant: DEFAULT_PROJECTION_MAX_RETRIES },
+  { key: 'actor-ts.projection.retry-backoff', kind: 'duration', constant: DEFAULT_PROJECTION_RETRY_BACKOFF_MS },
+  { key: 'actor-ts.projection.max-retry-backoff', kind: 'duration', constant: DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS },
+  { key: 'actor-ts.projection.poll-interval', kind: 'duration', constant: DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS },
+  { key: 'actor-ts.projection.group-after-envelopes', kind: 'int', constant: DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES },
 
   /* --- logging: pipeline --- */
   { key: 'actor-ts.logger.close-timeout', kind: 'duration', constant: DEFAULT_SINK_CLOSE_TIMEOUT_MS },
   ...deliveryDefaults,
   { key: 'actor-ts.logger.sinks.file.delivery.queue-capacity', kind: 'int', constant: DEFAULT_DELIVERY_QUEUE_CAPACITY },
   { key: 'actor-ts.logger.sinks.file.delivery.overflow', kind: 'string', constant: DEFAULT_DELIVERY_OVERFLOW },
+
+  /* --- devtools --- */
+  { key: 'actor-ts.devtools.host', kind: 'string', constant: DEVTOOLS_DEFAULTS.host },
+  { key: 'actor-ts.devtools.port', kind: 'int', constant: DEVTOOLS_DEFAULTS.port },
+  { key: 'actor-ts.devtools.allow-remote', kind: 'bool', constant: DEVTOOLS_DEFAULTS.allowRemote },
+  { key: 'actor-ts.devtools.serve-ui', kind: 'bool', constant: DEVTOOLS_DEFAULTS.serveUi },
+  { key: 'actor-ts.devtools.mailbox-sample-interval', kind: 'duration', constant: DEVTOOLS_DEFAULTS.mailboxSampleIntervalMs },
+  { key: 'actor-ts.devtools.mailbox-sample-limit', kind: 'int', constant: DEVTOOLS_DEFAULTS.mailboxSampleLimit },
+  { key: 'actor-ts.devtools.stats-interval', kind: 'duration', constant: DEVTOOLS_DEFAULTS.statsIntervalMs },
+  { key: 'actor-ts.devtools.span-buffer-capacity', kind: 'int', constant: DEVTOOLS_DEFAULTS.spanBufferCapacity },
+  { key: 'actor-ts.devtools.span-flush-interval', kind: 'duration', constant: DEVTOOLS_DEFAULTS.spanFlushIntervalMs },
+  { key: 'actor-ts.devtools.capture-payloads', kind: 'bool', constant: DEVTOOLS_DEFAULTS.capturePayloads },
+  { key: 'actor-ts.devtools.event-buffer-capacity', kind: 'int', constant: DEVTOOLS_DEFAULTS.eventBufferCapacity },
+  { key: 'actor-ts.devtools.event-flush-interval', kind: 'duration', constant: DEVTOOLS_DEFAULTS.eventFlushIntervalMs },
+  { key: 'actor-ts.devtools.replay-auto-capture', kind: 'bool', constant: DEVTOOLS_DEFAULTS.replayAutoCapture },
 
   /* --- logging: console + file sinks --- */
   { key: 'actor-ts.logger.sinks.console.format', kind: 'string', constant: DEFAULT_CONSOLE_SINK_FORMAT },
@@ -293,7 +1069,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.logger.sinks.gelf.host', kind: 'string', constant: DEFAULT_GELF_HOST },
   { key: 'actor-ts.logger.sinks.gelf.port', kind: 'int', constant: DEFAULT_GELF_PORT },
   { key: 'actor-ts.logger.sinks.gelf.compression', kind: 'string', constant: DEFAULT_GELF_COMPRESSION },
-  { key: 'actor-ts.logger.sinks.gelf.max-chunk-bytes', kind: 'int', constant: DEFAULT_GELF_MAX_CHUNK_BYTES },
+  { key: 'actor-ts.logger.sinks.gelf.max-chunk-bytes', kind: 'bytes', constant: DEFAULT_GELF_MAX_CHUNK_BYTES },
   { key: 'actor-ts.logger.sinks.gelf.request-timeout', kind: 'duration', constant: DEFAULT_GELF_REQUEST_TIMEOUT_MS },
   { key: 'actor-ts.logger.sinks.loki.request-timeout', kind: 'duration', constant: DEFAULT_LOKI_REQUEST_TIMEOUT_MS },
   { key: 'actor-ts.logger.sinks.otlp.url', kind: 'string', constant: DEFAULT_OTLP_URL },
@@ -359,6 +1135,38 @@ const LOG_LEVEL_NAMES: readonly string[] = [
  */
 const PLACEHOLDERS: readonly string[] = [
   'actor-ts.dead-letters.persistence-id',
+  // Same reading as `sharding.role` below, one layer down: `""` is the shape
+  // of the key and `readShardedDaemonProcessOptionsFromConfig` drops it rather
+  // than passing it on.  Here the empty string means "no daemon-specific
+  // opinion" rather than "unrestricted" — dropped, the daemon region inherits
+  // `sharding.role` like every other sharded type, which is precisely what
+  // returning `''` would have broken (#854).
+  'actor-ts.sharded-daemon-process.role',
+  // "" = unrestricted.  Not a default anyone runs with; the shipped empty
+  // string is what lets the reader tell "no opinion" from a role named "",
+  // and the role a deployment actually wants is per-deployment (#847).
+  'actor-ts.sharding.role',
+  // "" = any node may host, and the same reading as `sharding.role` above with
+  // one extra consequence: `role: ''` would not merely shadow an explicit
+  // `withRole`, it would fail `StartSingletonOptionsValidator`'s non-empty
+  // check on every node that copied `reference.conf` unedited — so the
+  // reader's empty-string skip is load-bearing rather than tidy (#855).
+  'actor-ts.cluster.singleton.role',
+  // The three split-brain-resolver role narrowings (#838).  Same reading as
+  // `sharding.role` above and the same reason there is no constant: `""` is
+  // the published shape of the key, every strategy tests `!options.role`, and
+  // `readDowningFromConfig` drops the empty string rather than passing it on —
+  // so the role a deployment wants is per-deployment and nothing else.
+  'actor-ts.cluster.split-brain-resolver.keep-majority.role',
+  'actor-ts.cluster.split-brain-resolver.keep-oldest.role',
+  'actor-ts.cluster.split-brain-resolver.static-quorum.role',
+  // The same reading one block over (#860): "" is the published shape of the
+  // key, and `readClusterBootstrapDefaultsFromConfig` drops it rather than
+  // passing it on — which is what lets an unset key fall through to
+  // CLUSTER_SERVICE_NAME instead of shadowing it with a service name nobody
+  // wrote.  There is no constant it could be compared against: the service
+  // whose members are this cluster's peers is per-deployment by definition.
+  'actor-ts.cluster.bootstrap.discovery.service-name',
   'actor-ts.logger.sinks.gelf.url',
   'actor-ts.logger.sinks.gelf.host-name',
   'actor-ts.logger.sinks.otlp.service-name',
@@ -378,6 +1186,103 @@ const PLACEHOLDERS: readonly string[] = [
   'actor-ts.logger.sinks.splunk.host-name',
   'actor-ts.logger.sinks.syslog.app-name',
   'actor-ts.logger.sinks.syslog.host-name',
+  // The two cache backend blocks (#876).  Every one of these is the operator's
+  // own coordinate — a server URL, a namespace prefix, a credential — and the
+  // reader treats `""` as unset for exactly that reason, so the empty string
+  // never reaches ioredis or memjs.  It has to: `RedisCacheOptionsValidator`
+  // runs `new URL('')`, which throws, so a published `url = ""` passed through
+  // verbatim would refuse every config-built Redis cache.
+  'actor-ts.cache.redis.url',
+  'actor-ts.cache.redis.key-prefix',
+  'actor-ts.cache.redis.password',
+  'actor-ts.cache.memcached.username',
+  'actor-ts.cache.memcached.password',
+  'actor-ts.cache.memcached.key-prefix',
+  // Object storage (#873).  `backend = ""` is the shape of the selector, not a
+  // default — empty leaves the backend to code.  The rest are the operator's
+  // own coordinates, required at the point of use: a bucket, a region, an
+  // endpoint for a non-AWS store, a directory, and the KMS key ARN that
+  // `encryption.mode = sse-kms` demands.  Deliberately NOT a credential
+  // anywhere — those have no path in the block at all.
+  'actor-ts.persistence.snapshot-store.object-storage.backend',
+  'actor-ts.persistence.snapshot-store.object-storage.encryption.kms-key-id',
+  'actor-ts.persistence.snapshot-store.object-storage.s3.bucket',
+  'actor-ts.persistence.snapshot-store.object-storage.s3.region',
+  'actor-ts.persistence.snapshot-store.object-storage.s3.endpoint',
+  'actor-ts.persistence.snapshot-store.object-storage.filesystem.dir',
+  // The three SQLite database paths (#872).  `""` is the shape of the key, not
+  // a value: the reader drops it, and there is no default behind it — a
+  // selected store left without a path is refused at registration (#1492).
+  // Published empty rather than as `":memory:"` on purpose — three blocks each
+  // shipping a real default would let a deployment point the journal at a
+  // file, leave the snapshot store alone, and lose every snapshot on restart
+  // with the config file reading as if that were chosen.
+  'actor-ts.persistence.journal.sqlite.path',
+  'actor-ts.persistence.snapshot-store.sqlite.path',
+  'actor-ts.persistence.durable-state.sqlite.path',
+  // The relational family's connection halves (#872, slice 2).  Every one is a
+  // coordinate of the operator's own database — a URL, an account, a database
+  // id, a token — required at the point of use and impossible to default.  `""`
+  // reads as unset, so the published placeholder never reaches a driver: an
+  // empty `url` handed to `new pg.Pool({ connectionString: '' })` would connect
+  // to whatever `PG*` environment variables happen to be set, which is a
+  // sharper failure than not connecting at all.
+  //
+  // The two credentials here — libSQL's token and D1's — have leaves because
+  // they are *strings the operator supplies*, and the documented route is a
+  // substitution (`auth-token = ${?TURSO_AUTH_TOKEN}`), the same treatment
+  // `cache.redis.password` and `logger.sinks.splunk.token` already get.  That
+  // is the opposite case from object storage's key material above, which has no
+  // path at all because a 32-byte key must never be expressible in a file.
+  'actor-ts.persistence.journal.postgres.url',
+  'actor-ts.persistence.snapshot-store.postgres.url',
+  'actor-ts.persistence.durable-state.postgres.url',
+  'actor-ts.persistence.journal.mariadb.url',
+  'actor-ts.persistence.snapshot-store.mariadb.url',
+  'actor-ts.persistence.durable-state.mariadb.url',
+  'actor-ts.persistence.journal.mssql.url',
+  'actor-ts.persistence.snapshot-store.mssql.url',
+  'actor-ts.persistence.durable-state.mssql.url',
+  'actor-ts.persistence.journal.libsql.url',
+  'actor-ts.persistence.journal.libsql.auth-token',
+  'actor-ts.persistence.snapshot-store.libsql.url',
+  'actor-ts.persistence.snapshot-store.libsql.auth-token',
+  'actor-ts.persistence.durable-state.libsql.url',
+  'actor-ts.persistence.durable-state.libsql.auth-token',
+  'actor-ts.persistence.journal.cloudflare-d1.account-id',
+  'actor-ts.persistence.journal.cloudflare-d1.database-id',
+  'actor-ts.persistence.journal.cloudflare-d1.api-token',
+  'actor-ts.persistence.snapshot-store.cloudflare-d1.account-id',
+  'actor-ts.persistence.snapshot-store.cloudflare-d1.database-id',
+  'actor-ts.persistence.snapshot-store.cloudflare-d1.api-token',
+  'actor-ts.persistence.durable-state.cloudflare-d1.account-id',
+  'actor-ts.persistence.durable-state.cloudflare-d1.database-id',
+  'actor-ts.persistence.durable-state.cloudflare-d1.api-token',
+  // The non-relational family's connection halves (#872, slice 3).  Same
+  // reading as the relational ones above: each is a coordinate of the
+  // operator's own deployment, required at the point of use and impossible to
+  // default, and `""` reads as unset so the published placeholder never reaches
+  // a driver.  DynamoDB's `endpoint` is the one whose empty value is also its
+  // *meaning* — unset points at the real AWS service, and only a LocalStack or
+  // dynamodb-local deployment overrides it.
+  'actor-ts.persistence.journal.mongodb.url',
+  'actor-ts.persistence.snapshot-store.mongodb.url',
+  'actor-ts.persistence.durable-state.mongodb.url',
+  'actor-ts.persistence.journal.dynamodb.region',
+  'actor-ts.persistence.journal.dynamodb.endpoint',
+  'actor-ts.persistence.snapshot-store.dynamodb.region',
+  'actor-ts.persistence.snapshot-store.dynamodb.endpoint',
+  'actor-ts.persistence.durable-state.dynamodb.region',
+  'actor-ts.persistence.durable-state.dynamodb.endpoint',
+  // Cassandra's two, and `contact-points` is the group's one LIST-shaped
+  // placeholder rather than an empty string.  The reading is identical — `[]`
+  // is the shape of the key, `readStoreStringList` drops it, and an empty seed
+  // list handed to the driver fails far from its cause — but the shape is a
+  // list because a Cassandra client is seeded from several nodes, not one.
+  'actor-ts.persistence.journal.cassandra.contact-points',
+  'actor-ts.persistence.journal.cassandra.keyspace',
+  'actor-ts.persistence.snapshot-store.cassandra.contact-points',
+  'actor-ts.persistence.snapshot-store.cassandra.keyspace',
 ];
 
 /**
@@ -403,16 +1308,157 @@ const FEATURE_SWITCHES: readonly string[] = [
   'actor-ts.logger.sinks.seq.enabled',
   'actor-ts.logger.sinks.splunk.enabled',
   'actor-ts.logger.sinks.syslog.enabled',
+  // The ten DevTools panel switches (#881).  Every clause of the reason above
+  // holds literally: the published `true` says the panel exists, not how big
+  // it is; none of them has a `DEFAULT_*` constant, because `DEVTOOLS_DEFAULTS`
+  // carries no `panels`; and the off state *is* the field being absent at the
+  // read site — `DevToolsServer` disables a panel only on an explicit `false`.
+  'actor-ts.devtools.panels.actors',
+  'actor-ts.devtools.panels.cluster',
+  'actor-ts.devtools.panels.tracing',
+  'actor-ts.devtools.panels.explain',
+  'actor-ts.devtools.panels.time-travel',
+  'actor-ts.devtools.panels.profiler',
+  'actor-ts.devtools.panels.dead-letters',
+  'actor-ts.devtools.panels.event-stream',
+  'actor-ts.devtools.panels.config',
+  'actor-ts.devtools.panels.send',
+  // `[]` is the sentinel for "no extra origins": same-origin is the floor and
+  // this list only widens it, so an empty list and an unset key produce the
+  // same guard.  No constant either — the read site branches on `undefined`.
+  'actor-ts.devtools.allowed-origins',
+  // 0 = no global mailbox bound, which is the shipped behaviour since #1148.
+  // `readDefaultMailboxFromConfig` turns it into an ABSENT capacity rather
+  // than a number, so there is no constant for it to disagree with — and a
+  // constant would be the wrong shape anyway, since the value it would hold
+  // is "nothing" (#862).
+  'actor-ts.mailbox.default.capacity',
+  // `[]` is the sentinel for "expose nothing", the same shape as
+  // `devtools.allowed-origins` above and for the same reason: an empty list
+  // and an unset key produce the identical response, because the read site is
+  // `exposedHeaders && exposedHeaders.length > 0`.  There is no constant
+  // either — `CorsRouteOptions.exposedHeaders` is optional and the default is
+  // the field being absent (#878).
+  'actor-ts.http.cors.exposed-headers',
+  // The third empty-list sentinel, and the one where the reading is
+  // load-bearing: `[]` means "persist EVERY key", which is what every release
+  // before the option did, so an empty list and an unset key produce the same
+  // durable record.  Reading it the other way — "persist nothing" — would make
+  // adopting a newer version silent total data loss, which is why the
+  // behaviour is asserted in `DurableDistributedData.test.ts` rather than only
+  // written down.  No constant either: the default is the field being absent,
+  // and `durableSnapshot` short-circuits on `length === 0` (#856).
+  'actor-ts.distributed-data.durable-keys',
+  // The fourth empty-list sentinel, and it reads exactly like the three above:
+  // `[]` and an unset key produce the identical classifier, because the read
+  // site is `this.options.ignoredErrorNames?.includes(error.name)`.  No
+  // constant either — which error name a deployment wants excused is the
+  // deployment's business, and the framework has no candidate to name (#864).
+  'actor-ts.circuit-breaker.default.ignored-error-names',
   'actor-ts.cluster.weakly-up-after', // 0s = no auto weakly-up promotion
+  // 0s = arm no stats timer, which is what every release before #842 did.  The
+  // off state IS the field being absent at the read site — `Cluster._start`
+  // schedules the tick only for a positive value — so there is no constant for
+  // it to disagree with, exactly like the two sentinels around it.
+  'actor-ts.cluster.publish-stats-interval',
+  // 0s = no join deadline, which is what every release before #1500 did.  The
+  // same shape as the stats cadence above: the off state is a give-up timer
+  // `Cluster._start` never arms, so a `DEFAULT_*` constant would hold nothing.
+  'actor-ts.cluster.shutdown-after-unsuccessful-join',
   'actor-ts.cluster.tombstone.min-retention', // 0s = derive from down-after
   'actor-ts.cluster.pub-sub.send-to-dead-letters-when-no-subscribers',
+  // Two more empty-list sentinels (#836), and they read exactly like the
+  // others in this group: `Cluster.join` does `resolvedOptions.seeds ?? []` and
+  // the constructor does `options.roles ?? []`, so an empty list and an unset
+  // key produce the identical node.  No constant either — which peers to dial
+  // and which tags to carry are the deployment's, and the framework has no
+  // candidate to name.  `[]` is load-bearing for `seed-nodes` in the way
+  // `durable-keys` is: it is the documented "I am the first node", not "no
+  // seeds configured yet", which is why the behaviour is pinned in
+  // `ClusterSeedsAndRolesFromConfig.test.ts` rather than only written here.
+  'actor-ts.cluster.seed-nodes',
+  'actor-ts.cluster.roles',
+  // Their per-deployment sibling `cluster.app-version` ships comment-only
+  // (#843): unset is what states no version and keeps the label off the wire,
+  // so it carries no leaf and there is nothing here to assert.  The
+  // exact-object reader pins in `ClusterConfigDefaults.test.ts` bind it.
   'actor-ts.remote.tls.enabled',
+  // `[]` = admit nothing beyond the registered framework endpoints — the same
+  // sentinel shape as `devtools.allowed-origins` and `http.cors.exposed-headers`
+  // above, and the same reason there is no constant: the read site is
+  // `options.trustedSelectionPaths ?? []`, so an empty list and an unset field
+  // produce the identical policy.  It is also only consulted while
+  // `remote.untrusted-mode` is on, which is the switch this one qualifies (#877).
+  'actor-ts.remote.trusted-selection-paths',
   'actor-ts.http.shutdown-grace-period', // 0ms = close listeners at once
   'actor-ts.sharding.remember-entities',
   'actor-ts.sharding.max-entities', // 0 = unbounded
+  // `[]` = gate readiness on no sharded type, the same empty-list sentinel as
+  // `cluster.roles` and `remote.trusted-selection-paths` and for the same
+  // reason there is no constant: `readShardingHealthCheckNamesFromConfig`
+  // reads an unset key as `[]`, and `registerClusterHealthChecks` installs one
+  // check per entry, so an empty list and an unset key install the identical
+  // nothing.  Which types a node cannot serve without is the deployment's
+  // business, and the framework has no candidate to name (#1465).
+  'actor-ts.sharding.healthcheck.names',
+  // off = no region beats and no coordinator sweeps, which is the shipped
+  // behaviour and the state every release before #853 was in.  The off state is
+  // a timer that is never armed and a sweep that returns at its first line, so
+  // there is nothing for a `DEFAULT_*` constant to hold — `settingsToConfig`
+  // reads it as `s.staleRegionDetection ?? false`, the same shape `proxy` has.
+  'actor-ts.sharding.stale-region-detection.enabled',
+  // off = no lease is built for the coordinator or the singleton, which is
+  // what every release before #1454 did.  The off state IS the field being
+  // absent at the read site — `ClusterSharding` and `ClusterSingleton` build a
+  // lease only on `useLease === true` — so there is no constant to disagree with.
+  'actor-ts.sharding.use-lease',
+  'actor-ts.cluster.singleton.use-lease',
+  // off = no coordinator-state store is wired, which is what every release
+  // before #1188 did.  The off state IS the store being absent —
+  // `ClusterSharding` wires one only on `persistCoordinatorState === true` —
+  // so there is no constant to disagree with, the shape `use-lease` has.
+  'actor-ts.sharding.persist-coordinator-state',
   'actor-ts.coordinated-shutdown.terminate-actor-system',
   'actor-ts.coordinated-shutdown.exit-process',
   'actor-ts.coordinated-shutdown.auto-register-tasks',
+  // The published `true` says the two defaulting call sites arm SIGTERM for
+  // you, not how long anything takes; the off state is the branch not taken
+  // in `runUntilTerminated` and `installSignalHandlers`, so there is nothing
+  // for a `DEFAULT_*` constant to hold (#866).
+  'actor-ts.coordinated-shutdown.run-by-process-signals',
+  // The same shape one call site over (#1455): the published `false` says a
+  // `terminate()` that does not choose stays the bare teardown, not how long
+  // anything takes, and the off state is the branch not taken where
+  // `terminate()` picks its default, so a `DEFAULT_*` constant would hold
+  // nothing.
+  'actor-ts.coordinated-shutdown.run-by-actor-system-terminate',
+  // off = virtual-host style, which is what AWS S3 itself wants; the switch
+  // exists for MinIO and most non-AWS stores.  The off state is the field
+  // being absent on `S3ObjectStorageOptions`, so there is no constant (#873).
+  'actor-ts.persistence.snapshot-store.object-storage.s3.force-path-style',
+  // off = SQLite's default rollback journal.  The published `off` says WAL is
+  // not switched on, not how big anything is, and the off state IS the field
+  // being absent at the read site — `SqliteJournal.init` runs the pragma only
+  // when `options.wal` is truthy, so there is no constant to disagree with
+  // (#872).
+  'actor-ts.persistence.journal.sqlite.wal',
+  // off = the keyspace must already exist, which is what a production cluster
+  // wants; the switch is a development convenience.  The off state IS the field
+  // being absent at the read site — both stores run `if (options
+  // .autoCreateKeyspace)` — so there is no constant to disagree with (#872).
+  'actor-ts.persistence.journal.cassandra.auto-create-keyspace',
+  'actor-ts.persistence.snapshot-store.cassandra.auto-create-keyspace',
+  // off = no `events_by_tag` side table, which is what every release before the
+  // option did and what an existing schema still expects.  Same shape: the read
+  // site is `options.useTagIndex === true`, so absent and `false` are the same
+  // journal (#872).
+  'actor-ts.persistence.journal.cassandra.use-tag-index',
+  // 0 = keep every snapshot, and the polarity is inverted from the persistent
+  // stores' `keep-n = 3` on purpose: this is the store an unconfigured
+  // application gets, so a bound here would silently start discarding
+  // snapshots. `keepN ?? 0` at the read site means the off state IS the field
+  // being absent, so there is no constant for it to disagree with (#872).
+  'actor-ts.persistence.snapshot-store.in-memory.keep-n',
 ];
 
 /**
@@ -425,13 +1471,19 @@ const FEATURE_SWITCHES: readonly string[] = [
  */
 const LITERAL_AT_THE_READ_SITE: readonly string[] = [
   'actor-ts.system.name', // 'default' — ActorSystem.ts
-  'actor-ts.dispatcher.default', // 'immediate' — ActorSystem.ts
   'actor-ts.logger.sinks.loki.format', // 'text' — LokiSink.ts
-  'actor-ts.remote.tcp.host', // '0.0.0.0' — ActorSystem.ts
   'actor-ts.http.backend', // 'fastify' — HttpExtension.ts
   'actor-ts.persistence.journal.plugin', // the in-memory journal id — PersistenceExtension.ts
   'actor-ts.persistence.snapshot-store.plugin', // the in-memory store id — PersistenceExtension.ts
-  'actor-ts.worker-cluster.workers', // 'auto' — WorkerCluster.ts
+  // '' — ObjectStorageSnapshotStore.ts / ObjectStorageDurableStateStore.ts
+  // (`prefix ?? ''`).  Not a placeholder: the empty string IS the shipped
+  // default, it is simply written at the read site rather than named (#873).
+  'actor-ts.persistence.snapshot-store.object-storage.prefix',
+  // the in-memory durable-state store id — PersistenceExtension.ts.  Reads
+  // exactly like the two selectors above it: the fallback is
+  // `readPersistencePluginIdsFromConfig`'s — the id the extension's own
+  // constructor registers its in-memory store under (#872).
+  'actor-ts.persistence.durable-state.plugin',
 ];
 
 /** The four unasserted groups, flattened — the rest of the partition. */
@@ -453,7 +1505,39 @@ function leafPaths(tree: ConfigObject, prefix = ''): string[] {
   return out;
 }
 
-const referenceLeaves = leafPaths(parseHocon(REFERENCE_CONF));
+/**
+ * `REFERENCE_CONF` as the parser leaves it, before any getter reads it: the
+ * literal a row publishes, which is what the unit check below looks at.
+ */
+const referenceTree = parseHocon(REFERENCE_CONF);
+const referenceLeaves = leafPaths(referenceTree);
+
+/**
+ * The literal `key` publishes, or `undefined` for a key the tree does not
+ * hold.  Own properties only, so a segment that names something on
+ * `Object.prototype` reads as absent rather than as a function.
+ */
+function rawLiteral(key: string): ConfigValue | undefined {
+  let node: ConfigValue | undefined = referenceTree;
+  for (const segment of key.split('.')) {
+    if (!isPlainObject(node) || !Object.hasOwn(node, segment)) return undefined;
+    node = (node as ConfigObject)[segment];
+  }
+  return node;
+}
+
+/**
+ * The number a literal is when it names no unit, or `undefined` when it names
+ * one or is no number at all.  A quoted numeral counts: `getDuration` reads
+ * `"1000"` as milliseconds and `getBytes` as bytes, exactly as they read the
+ * bare `1000`.
+ */
+function bareNumber(literal: ConfigValue | undefined): number | undefined {
+  if (typeof literal === 'number') return literal;
+  if (typeof literal === 'string' && /^[+-]?\d+(?:\.\d+)?$/.test(literal.trim())) return Number(literal);
+  return undefined;
+}
+
 const assertedKeys = new Set<string>([
   ...DOCUMENTED_DEFAULTS.map((entry) => entry.key),
   ...DELIBERATE_DIVERGENCES,
@@ -466,8 +1550,194 @@ const readers = {
   duration: (key: string) => reference.getDuration(key),
   bytes: (key: string) => reference.getBytes(key),
   int: (key: string) => reference.getInt(key),
+  number: (key: string) => reference.getNumber(key),
   string: (key: string) => reference.getString(key),
-} as const satisfies Record<DefaultKind, (key: string) => number | string>;
+  bool: (key: string) => reference.getBoolean(key),
+  list: (key: string) => reference.getStringList(key),
+} as const satisfies Record<
+  DefaultKind,
+  (key: string) => number | string | boolean | readonly string[]
+>;
+
+/* ------------------------ each label against its reader ------------------------ */
+
+/**
+ * Every registered reader, and each context it reads a branch under: the
+ * probes the dead-key gate (`tests/unit/config/NoDeadConfigKeys.test.ts`)
+ * runs, built the same way, with their answers to the reference config.
+ */
+const probes: readonly ConfigProbe[] = CONFIG_READER_REGISTRY.flatMap((entry) => [
+  { label: entryLabel(entry), read: entry.read },
+  ...(entry.contexts ?? []).map((context): ConfigProbe => ({
+    label: `${entryLabel(entry)} [${context.name}]`,
+    read: entry.read,
+    overlay: context.overlay,
+  })),
+]);
+const baselines = probes.map((probe) => baselineOf(probe, reference));
+
+/** The value a union row is checked with in place of its label's, and why. */
+type UnionRow = {
+  readonly value: ConfigValue;
+  readonly reason: string;
+};
+
+const WORD_OR_COUNT = 'the leaf is the word auto or a count: the reader hands any other word to getInt, '
+  + 'which refuses it as the wrong kind, so the check sets a count';
+
+/**
+ * Rows whose leaf takes a word or a quantity.  The label names the arm the
+ * published literal is in, `string`, and a perturbed word is in neither arm:
+ * the reader hands it to the other arm's getter, which refuses it as the
+ * wrong kind.  That refusal says nothing about the label, so the positive
+ * half sets the other arm's value instead.  An entry stands only while the
+ * labelled value still meets that refusal, which a test below checks.
+ */
+const UNION_ROWS: ReadonlyMap<string, UnionRow> = new Map<string, UnionRow>([
+  ['actor-ts.offload-pool.size', { value: 3, reason: WORD_OR_COUNT }],
+  ['actor-ts.worker-cluster.workers', { value: 3, reason: WORD_OR_COUNT }],
+  ['actor-ts.worker-mesh.workers', { value: 3, reason: WORD_OR_COUNT }],
+  ['actor-ts.backoff-supervisor.reset-counter', {
+    value: '5s',
+    reason: 'the leaf is the word after-min-stable or a duration: the reader parses any other word as a '
+      + 'duration and refuses it as one, so the check sets a duration',
+  }],
+  ['actor-ts.backoff-supervisor.drain-grace', {
+    value: '5ms',
+    reason: 'the leaf is the word auto or a duration: the reader parses any other word as a duration and '
+      + 'refuses it as one, so the check sets a duration',
+  }],
+  ['actor-ts.cluster.failure-detector.phi.expected-response-after', {
+    value: '5s',
+    reason: 'the leaf is the word auto or a duration: the reader parses any other word as a duration and '
+      + 'refuses it as one, so the check sets a duration',
+  }],
+]);
+
+/**
+ * Duration and size rows that publish a bare non-zero number all the same,
+ * each with what has to change.  Not a category: an entry is a literal that
+ * names no unit, written down, and it fails once the literal carries one.
+ */
+const UNIT_LESS_LITERALS: ReadonlyMap<string, string> = new Map<string, string>();
+
+/** The whole part of a numeric literal, or 0 for a literal that is no number. */
+function wholeOf(literal: ConfigValue | undefined): number {
+  return typeof literal === 'number' ? Math.trunc(literal) : 0;
+}
+
+/** What a literal stands for under `parse`, in milliseconds or bytes; 0 where it stands for nothing. */
+function quantityOf(literal: ConfigValue | undefined, parse: (input: string) => number): number {
+  if (typeof literal === 'number') return literal;
+  if (typeof literal !== 'string') return 0;
+  try {
+    return parse(literal);
+  } catch {
+    return 0;
+  }
+}
+
+const SWITCH_FLIPS: ReadonlyMap<string, string> = new Map([
+  ['on', 'off'], ['off', 'on'], ['yes', 'no'], ['no', 'yes'], ['true', 'false'], ['false', 'true'],
+]);
+
+/** The other value of a switch (`false` for `true`, `on` for `off`); `true` for a literal that is none. */
+function flippedSwitch(literal: ConfigValue | undefined): ConfigValue {
+  if (typeof literal === 'boolean') return !literal;
+  return (typeof literal === 'string' && SWITCH_FLIPS.get(literal.toLowerCase())) || true;
+}
+
+type ValueOfKind = (literal: ConfigValue | undefined) => ConfigValue;
+
+/**
+ * A value of each kind that differs from the literal: what the positive half
+ * sets.  Durations and sizes carry a unit only their own getter reads (`s`,
+ * `KiB`), never `m`, which `getDuration` reads as minutes and `getBytes` as
+ * mebibytes.
+ */
+const IN_KIND: Readonly<Record<DefaultKind, ValueOfKind>> = {
+  int: (literal) => wholeOf(literal) + 1,
+  number: (literal) => (wholeOf(literal) + 0.5 === literal ? wholeOf(literal) + 0.25 : wholeOf(literal) + 0.5),
+  duration: (literal) => `${Math.trunc(quantityOf(literal, parseDuration) / 1_000) + 1}s`,
+  bytes: (literal) => `${Math.trunc(quantityOf(literal, parseSize) / 1_024) + 1}KiB`,
+  string: (literal) => (literal === '' ? 'perturbed' : `${String(literal)}-perturbed`),
+  bool: (literal) => flippedSwitch(literal),
+  list: (literal) => [...(Array.isArray(literal) ? literal : []), 'perturbed'],
+};
+
+/**
+ * The values each numeric kind's getter refuses and a neighbouring getter
+ * takes, which a bare literal cannot tell apart.  The other three kinds have
+ * none; `DefaultKind` says what that leaves unchecked.
+ *
+ * `int` and `number` get a size as well as a duration (#1438).  With only the
+ * duration, a `getBytes` reader passed every `number` row: it took the
+ * positive half's fraction as it was, and refuses a duration exactly as
+ * `getNumber` does, so a bytes row relabelled `number` was caught by nothing
+ * but the value read, and not even that where the literal is a bare count.
+ * A size is a whole number of bytes now (#1728), so `getBytes` refuses that
+ * fraction as the wrong kind too; the size here is a whole count of KiB for
+ * the same reason.
+ */
+const OFF_KIND: Readonly<Record<DefaultKind, (literal: ConfigValue | undefined) => readonly ConfigValue[]>> = {
+  int: (literal) => [wholeOf(literal) + 0.5, `${wholeOf(literal) + 1}s`, `${wholeOf(literal) + 1}KiB`],
+  number: (literal) => [`${wholeOf(literal) + 1}s`, `${wholeOf(literal) + 1}KiB`],
+  duration: (literal) => [`${Math.trunc(quantityOf(literal, parseDuration) / 1_000) + 1}KiB`],
+  bytes: (literal) => [`${Math.trunc(quantityOf(literal, parseSize) / 1_024) + 1}s`],
+  string: () => [],
+  bool: () => [],
+  list: () => [],
+};
+
+/** What every probe does with `key` set to `value`. */
+function observe(key: string, value: ConfigValue): LeafVerdict {
+  return observeLeaf({ leaf: key, kind: inferKind(value), literal: rawLiteral(key), value }, baselines);
+}
+
+/**
+ * The positive half: a value of the labelled kind is taken by some reader,
+ * and no getter on the way refuses it as the wrong kind.  A reader refusing
+ * it on its merits has taken it: an enum refusing `off-perturbed` read a
+ * string first.
+ */
+function expectTakenAsLabelled(key: string, kind: DefaultKind): void {
+  const value = UNION_ROWS.get(key)?.value ?? IN_KIND[kind](rawLiteral(key));
+  const verdict = observe(key, value);
+  expect(
+    verdict.kindMismatches,
+    `${key} is labelled ${kind}, and ${JSON.stringify(value)}, a value of that kind, is refused as the wrong `
+    + `kind by ${verdict.kindMismatches.join('; ')}. Relabel the row to the kind its reader takes; a leaf that `
+    + 'takes a word or a quantity goes into UNION_ROWS with the other arm\'s value.',
+  ).toEqual([]);
+  expect(
+    verdict.observedBy.length + verdict.refusedBy.length,
+    `${key} is labelled ${kind}, and no registered reader answers to ${JSON.stringify(value)}: none of the `
+    + `${probes.length} probes changed its answer or refused it. Register the reader that reads the key in `
+    + 'tests/util/ConfigReaderRegistry.ts, or fix the one that should.',
+  ).toBeGreaterThan(0);
+}
+
+/**
+ * The negative half: each value the labelled getter refuses is refused by
+ * some reader and taken by none.  A reader that takes it and answers
+ * differently reads the key with an accessor of another kind.
+ */
+function expectOffKindRefused(key: string, kind: DefaultKind): void {
+  for (const value of OFF_KIND[kind](rawLiteral(key))) {
+    const verdict = observe(key, value);
+    expect(
+      verdict.observedBy,
+      `${key} is labelled ${kind}, whose getter refuses ${JSON.stringify(value)}, but `
+      + `${verdict.observedBy.join(', ')} took it and answered differently: that reader takes the key with an `
+      + 'accessor of another kind. Relabel the row to the kind it takes.',
+    ).toEqual([]);
+    expect(
+      verdict.kindMismatches.length + verdict.refusedBy.length,
+      `${key} is labelled ${kind}, and no registered reader refused ${JSON.stringify(value)}, which its getter `
+      + 'refuses: the reader drops the value without a word, or does not read the key at all.',
+    ).toBeGreaterThan(0);
+  }
+}
 
 describe('documented defaults match the constants they are published from', () => {
   test('the table actually covers the reference configuration', () => {
@@ -515,13 +1785,72 @@ describe('documented defaults match the constants they are published from', () =
   // `T[]`, so a `readonly` table is rejected outright (TS2769).
   test.each([...DOCUMENTED_DEFAULTS])('$key is published as $constant', ({ key, kind, constant }) => {
     expect(reference.hasPath(key), `${key} is not in REFERENCE_CONF at all`).toBe(true);
-    expect(
-      readers[kind](key),
-      `reference.conf publishes a different default for ${key} than the constant it is `
+    // The label against what its reader takes, before the value is read with
+    // it, and first, so a wrong label is reported with the reader that
+    // disagrees: see `DefaultKind` for the two halves and what they leave
+    // unchecked.
+    expectTakenAsLabelled(key, kind);
+    expectOffKindRefused(key, kind);
+    // A duration or a size published without its unit.  A bare number reads
+    // the same through every numeric getter, so the literal shows a count
+    // where the reader takes a quantity, and the docs page prints it that
+    // way.  0 stays legal: it is the same quantity in every unit, and three
+    // rows publish it on purpose (`max-document-bytes`, and the in-memory
+    // cache's `time-to-live` and `time-to-idle`).  UNIT_LESS_LITERALS holds
+    // the rows still waiting for their unit.
+    if ((kind === 'duration' || kind === 'bytes') && !UNIT_LESS_LITERALS.has(key)) {
+      const bare = bareNumber(rawLiteral(key));
+      expect(
+        bare === undefined || bare === 0,
+        `${key} is labelled ${kind} but publishes the bare number ${String(bare)}, which names no unit: `
+        + 'getNumber, getDuration and getBytes read it alike, and getInt too when it is whole. Publish it with '
+        + 'its unit, in REFERENCE_CONF and both reference-conf.mdx pages, or relabel the row int or number if '
+        + 'its reader takes a plain number.',
+      ).toBe(true);
+    }
+    const published = readers[kind](key);
+    const message = `reference.conf publishes a different default for ${key} than the constant it is `
       + 'documented from. Both language reference-conf.mdx pages are byte-pinned to '
       + 'REFERENCE_CONF, so this value is already on the docs site — change whichever '
-      + 'of the two is wrong, not just the one that made this test red.',
-    ).toBe(constant);
+      + 'of the two is wrong, not just the one that made this test red.';
+    // `toEqual` for the one kind whose value is a list and `toBe` for every
+    // scalar, rather than widening the whole table to `toEqual`: on a scalar
+    // the two agree, but the narrower matcher is the one that says the
+    // assertion is about a single value, and a table of a hundred entries
+    // should not loosen because one of them is an array (#844).
+    //
+    // The two casts read the table's own discriminant rather than guessing,
+    // and the copy is only there because bun's matcher parameter is a mutable
+    // `string[]` — `toEqual` compares contents, so copying changes nothing it
+    // asserts.
+    if (kind === 'list') {
+      expect(published, message).toEqual([...(constant as readonly string[])]);
+      return;
+    }
+    expect(published, message).toBe(constant as number | string | boolean);
+  });
+
+  test.each([...UNION_ROWS.keys()])('%s still needs its UNION_ROWS entry', (key) => {
+    // Otherwise the entry outlives the union, and the row is checked on
+    // another value than its label's for no reason.
+    const row = DOCUMENTED_DEFAULTS.find((entry) => entry.key === key);
+    expect(row, `${key} is in UNION_ROWS but not in DOCUMENTED_DEFAULTS`).toBeDefined();
+    const verdict = observe(key, IN_KIND[row!.kind](rawLiteral(key)));
+    expect(
+      verdict.kindMismatches.length,
+      `a value of ${key}'s own label is taken now: drop it from UNION_ROWS`,
+    ).toBeGreaterThan(0);
+  });
+
+  test.each([...UNIT_LESS_LITERALS.keys()])('%s still publishes a bare number', (key) => {
+    // Otherwise the entry outlives the literal it excuses.
+    const row = DOCUMENTED_DEFAULTS.find((entry) => entry.key === key);
+    expect(row?.kind === 'duration' || row?.kind === 'bytes', `${key} is no duration or bytes row`).toBe(true);
+    const bare = bareNumber(rawLiteral(key));
+    expect(
+      bare !== undefined && bare !== 0,
+      `${key} publishes its unit now: drop it from UNIT_LESS_LITERALS`,
+    ).toBe(true);
   });
 
   test.each([...DELIBERATE_DIVERGENCES])('%s is still a deliberate divergence', (key) => {

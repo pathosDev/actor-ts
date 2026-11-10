@@ -1,3 +1,4 @@
+import type { ManualScheduler } from './ManualScheduler.js';
 import type { MultiNodeSpecOptions, MultiNodeSpecOptionsType } from './MultiNodeSpecOptions.js';
 import { ActorSystem } from '../ActorSystem.js';
 import { ActorSystemOptions } from '../ActorSystemOptions.js';
@@ -8,6 +9,12 @@ import { type Member } from '../cluster/Member.js';
 import { NodeAddress } from '../cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../Logger.js';
 import { MultiNodeTransport } from './internal/MultiNodeTransport.js';
+import { describeTimeFactor, scaledMs } from './TimeFactor.js';
+import { FaultyTransport } from './FaultyTransport.js';
+import {
+  DEFAULT_TRANSPORT_FAULT_SEED,
+  type TransportFaultProfileType,
+} from './FaultyTransportOptions.js';
 
 /**
  * Multi-node-spec test harness — runs multiple `ActorSystem` + `Cluster`
@@ -20,7 +27,8 @@ import { MultiNodeTransport } from './internal/MultiNodeTransport.js';
  *   - **Cluster API access** per role — `clusterFor('a')`, `systemFor('b')`.
  *   - **Crash simulation** — `crash(role)` shuts down a node's transport
  *     ungracefully (other nodes detect via failure-detection); `leave(role)`
- *     does a graceful exit.
+ *     does a graceful exit; `restart(role)` brings a role back at the same
+ *     address as a new process.
  *   - **Network partition** — `partition(roleA, roleB)` bidirectionally
  *     blocks messages between the two roles; `heal(...)` undoes it.
  *   - **Synchronization helpers** — `awaitMembers`, `awaitMemberStatus`,
@@ -49,6 +57,17 @@ type NodeRecord = {
   readonly role: string;
   readonly address: NodeAddress;
   readonly transport: MultiNodeTransport;
+  /**
+   * The fault layer wrapping {@link transport}, and the transport the cluster
+   * was actually given.
+   *
+   * Both are kept because they answer different questions: partition and crash
+   * are properties of the inner link, and loss/reordering/duplication/latency
+   * are properties of the wrapper. Folding them into one would mean either the
+   * partition controls growing fault logic or the reverse — the thing
+   * decorating exists to avoid (#1023).
+   */
+  readonly faults: FaultyTransport;
   system: ActorSystem;
   cluster: Cluster;
   /** True after the node was crashed or removed.  Idempotent guard. */
@@ -72,8 +91,14 @@ type BarrierEntry = {
 };
 
 export class MultiNodeSpec {
-  private readonly options: Required<Omit<MultiNodeSpecOptionsType, 'addresses' | 'failureDetector' | 'downing'>>
-    & Pick<MultiNodeSpecOptionsType, 'addresses' | 'failureDetector' | 'downing'>;
+  private readonly options: Required<Omit<
+    MultiNodeSpecOptionsType,
+    'addresses' | 'failureDetector' | 'downing' | 'failureDetectorAutoDown' | 'scheduler' | 'nodeSetup'
+  >>
+    & Pick<
+      MultiNodeSpecOptionsType,
+      'addresses' | 'failureDetector' | 'downing' | 'failureDetectorAutoDown' | 'scheduler' | 'nodeSetup'
+    >;
   private readonly nodes = new Map<string, NodeRecord>();
   private started = false;
   private readonly barriers = new Map<string, BarrierEntry>();
@@ -90,11 +115,24 @@ export class MultiNodeSpec {
       roles: options.roles,
       seedRoles: options.seedRoles ?? [options.roles[0]!],
       gossipIntervalMs: options.gossipIntervalMs ?? 100,
-      awaitTimeoutMs: options.awaitTimeoutMs ?? 10_000,
+      // Scaled once, at resolution, so every `await*` helper and every
+      // barrier inherits the machine's factor (#1376).
+      awaitTimeoutMs: scaledMs(options.awaitTimeoutMs ?? 10_000),
       logLevel: options.logLevel ?? LogLevel.Off,
+      // Test-scale like the two intervals above: the shipped stability window
+      // is 20 s, twice `awaitTimeoutMs`, so a spec inheriting it would time
+      // out before its resolver had been consulted once (#839).
+      stableAfterMs: options.stableAfterMs ?? 100,
+      faultSeed: options.faultSeed ?? DEFAULT_TRANSPORT_FAULT_SEED,
       addresses: options.addresses,
       failureDetector: options.failureDetector,
       downing: options.downing,
+      // Unset stays unset rather than becoming `false` here: the node then
+      // takes whatever its config layers say, which is the shipped default
+      // unless a test's HOCON says otherwise.
+      failureDetectorAutoDown: options.failureDetectorAutoDown,
+      scheduler: options.scheduler,
+      nodeSetup: options.nodeSetup,
     };
   }
 
@@ -127,33 +165,63 @@ export class MultiNodeSpec {
       ...this.options.roles.filter((r) => !this.options.seedRoles.includes(r)),
     ];
     for (const role of orderedRoles) {
-      const address = addressByRole.get(role)!;
-      const transport = new MultiNodeTransport(address);
-      const system = ActorSystem.create(role, ActorSystemOptions.create()
-        .withLogger(new NoopLogger())
-        .withLogLevel(this.options.logLevel));
-      const clusterOptions = ClusterOptions.create()
-        .withHost(address.host)
-        .withPort(address.port)
-        .withSeeds(seeds)
-        .withTransport(transport)
-        .withGossipIntervalMs(this.options.gossipIntervalMs)
-        .withSeedRetryIntervalMs(100);
-      if (this.options.failureDetector) {
-        clusterOptions.withFailureDetector(this.options.failureDetector);
-      }
-      const downing = this.options.downing?.(role);
-      if (downing) clusterOptions.withDowning(downing);
-      const cluster = await Cluster.join(system, clusterOptions);
-      this.nodes.set(role, {
-        role,
-        address,
-        transport,
-        system,
-        cluster,
-        removed: false,
-      });
+      this.nodes.set(role, await this.startNode(role, addressByRole.get(role)!, seeds));
     }
+  }
+
+  /**
+   * One role's transport, system and cluster, joined and set up — what `start`
+   * does for every role and `restart` for one.
+   */
+  private async startNode(role: string, address: NodeAddress, seeds: ReadonlyArray<string>): Promise<NodeRecord> {
+    const transport = new MultiNodeTransport(address);
+    // Always wrapped, never conditionally: `degrade` has to be able to
+    // start a fault after `start()`, and a spec that decided at construction
+    // whether it might later want one would be back to a network that can
+    // only be broken before the nodes come up.  A clean link costs one map
+    // lookup per frame — see `FaultyTransport.send`.
+    const faults = new FaultyTransport(transport, {
+      seed: this.options.faultSeed,
+      ...(this.options.scheduler ? { scheduler: this.options.scheduler } : {}),
+    });
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(this.options.logLevel);
+    // One scheduler for the whole cluster, so `advance` moves every node's
+    // gossip, heartbeat and detection ticks by the same amount at the same
+    // instant.  Giving each node its own would put them on separate virtual
+    // clocks, which is worse than sharing a real one.
+    if (this.options.scheduler) systemOptions.withScheduler(this.options.scheduler);
+    const system = ActorSystem.create(role, systemOptions);
+    const clusterOptions = ClusterOptions.create()
+      .withHost(address.host)
+      .withPort(address.port)
+      .withSeeds([...seeds])
+      .withTransport(faults)
+      .withGossipIntervalMs(this.options.gossipIntervalMs)
+      .withSeedRetryIntervalMs(100)
+      .withSplitBrainResolver({ stableAfterMs: this.options.stableAfterMs });
+    if (this.options.failureDetector) {
+      clusterOptions.withFailureDetector(this.options.failureDetector);
+    }
+    const downing = this.options.downing?.(role);
+    if (downing) clusterOptions.withDowning(downing);
+    if (this.options.failureDetectorAutoDown !== undefined) {
+      clusterOptions.withFailureDetectorAutoDown(this.options.failureDetectorAutoDown);
+    }
+    let cluster: Cluster;
+    try {
+      cluster = await Cluster.join(system, clusterOptions);
+      await this.options.nodeSetup?.(role, system, cluster);
+    } catch (error) {
+      // A refused join — options a spec can configure itself into, such as
+      // a gossip interval or a stability window the validator rejects —
+      // must not leave this role's system running behind a node `stop()`
+      // cannot see: it is recorded only after the join and its setup succeeded.
+      await system.terminate();
+      throw error;
+    }
+    return { role, address, transport, faults, system, cluster, removed: false };
   }
 
   /** Tear down every node.  Idempotent — safe to call after `crash()`. */
@@ -185,8 +253,13 @@ export class MultiNodeSpec {
 
   /**
    * Hard crash — shut down the transport so the node disappears
-   * abruptly.  Other nodes notice via failure detection (typically
-   * within `failureDetector.acceptableHeartbeatPause + threshold` ms).
+   * abruptly.  The other nodes' failure detectors flag it `unreachable`
+   * once `failureDetector.unreachableAfterMs` passes without a frame from
+   * it, and reach `down` at `downAfterMs`.  What `down` does then is the
+   * spec's choice: a role's {@link MultiNodeSpecOptionsType.downing}
+   * provider decides; without one the shipped
+   * {@link MultiNodeSpecOptionsType.failureDetectorAutoDown} removes the
+   * node, and with that switched off it stays a member at `unreachable`.
    * The terminated node's `cluster` and `system` references stay live
    * for assertion purposes; calls to them post-crash will error.
    */
@@ -194,7 +267,9 @@ export class MultiNodeSpec {
     const node = this.requireNode(role);
     if (node.removed) return;
     node.removed = true;
-    await node.transport.shutdown();
+    // Through the wrapper, so anything its reorder window is still holding is
+    // dropped rather than delivered from a node that has crashed.
+    await node.faults.shutdown();
   }
 
   /** Graceful leave — node sends a Leaving gossip, then shuts down. */
@@ -203,6 +278,55 @@ export class MultiNodeSpec {
     if (node.removed) return;
     node.removed = true;
     await node.cluster.leave();
+  }
+
+  /**
+   * Bring `role` back at the same address as a new process (#1382): its old
+   * system is terminated, and a fresh system and cluster join in its place —
+   * a new incarnation, as a restarted pod is, which the other members take as
+   * the old run ending and a new one joining.  `nodeSetup` runs on the new
+   * node, so whatever the spec starts on every node exists there again.
+   *
+   * Crashes the role first if it still runs, so a restart is always a crash
+   * followed by a start, never a graceful leave.  The new node's seeds are the
+   * other roles that still run, by default, so a restarted *seed* rejoins the
+   * cluster it founded; pass `seeds` — `[]` or its own address — to have it
+   * found a cluster of its own instead, which is the fork #1176 is about.
+   *
+   * References taken from `systemFor` / `clusterFor` before the restart name
+   * the old node; ask again afterwards.  A partition recorded against the
+   * role on another node's side still applies to the new one.
+   */
+  async restart(role: string, options: { readonly seeds?: ReadonlyArray<string> } = {}): Promise<void> {
+    const old = this.requireNode(role);
+    await this.crash(role);
+    await this.terminateDuringRestart(old.system);
+    const seeds = options.seeds ?? [...this.nodes.values()]
+      .filter((node) => node.role !== role && !node.removed)
+      .map((node) => node.address.toString());
+    this.nodes.set(role, await this.startNode(role, old.address, seeds));
+  }
+
+  /**
+   * Terminate a crashed node's system.  On a virtual clock its coordinated
+   * shutdown waits on timers only the spec can move, so the clock is advanced
+   * in gossip-sized steps until the termination settles.
+   */
+  private async terminateDuringRestart(system: ActorSystem): Promise<void> {
+    const scheduler = this.options.scheduler;
+    if (scheduler === undefined || !scheduler.isVirtual) {
+      await system.terminate();
+      return;
+    }
+    let terminated = false;
+    const termination = system.terminate().then(() => { terminated = true; });
+    const clock = scheduler as ManualScheduler;
+    const deadline = clock.now() + this.options.awaitTimeoutMs;
+    while (!terminated && clock.now() < deadline) {
+      clock.advance(this.options.gossipIntervalMs);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    await termination;
   }
 
   /** Bidirectional partition between two roles.  Both sides drop traffic to the other. */
@@ -220,6 +344,45 @@ export class MultiNodeSpec {
     nodeA.transport.unblockOutgoing(nodeB.address);
     nodeB.transport.unblockOutgoing(nodeA.address);
   }
+
+  /**
+   * Degrade the link between two roles without severing it (#1023).
+   *
+   * The verb `partition` and `crash` could not express: a network that is
+   * *working badly* rather than not at all.  Bidirectional, like `partition`,
+   * because a one-way degradation is a different and rarer scenario — reach
+   * for `transportFor(role).degradeTo(address, profile)` when that is what is
+   * wanted.
+   *
+   * Deterministic: every decision comes from the spec's seed, so a run that
+   * goes red reproduces from the number in its failure message.
+   *
+   * ```ts
+   * spec.degrade('a', 'b', { dropProbability: 0.2, reorderWindow: 4 });
+   * await spec.advance(5_000);
+   * await spec.awaitMembers('a', 3);   // still converges, just later
+   * ```
+   */
+  degrade(roleA: string, roleB: string, profile: TransportFaultProfileType): void {
+    const nodeA = this.requireNode(roleA);
+    const nodeB = this.requireNode(roleB);
+    nodeA.faults.degradeTo(nodeB.address, profile);
+    nodeB.faults.degradeTo(nodeA.address, profile);
+  }
+
+  /** Undo `degrade(roleA, roleB)`, releasing whatever the link was holding. */
+  restore(roleA: string, roleB: string): void {
+    const nodeA = this.requireNode(roleA);
+    const nodeB = this.requireNode(roleB);
+    nodeA.faults.restoreTo(nodeB.address);
+    nodeB.faults.restoreTo(nodeA.address);
+  }
+
+  /**
+   * The fault layer in front of one role's transport, for the asymmetric cases
+   * {@link degrade} deliberately does not cover.
+   */
+  faultsFor(role: string): FaultyTransport { return this.requireNode(role).faults; }
 
   /* --------------------------- await helpers --------------------------- */
 
@@ -291,6 +454,72 @@ export class MultiNodeSpec {
     return node;
   }
 
+  /**
+   * The shared virtual clock, or `null` when this spec runs on real time.
+   *
+   * @throws when asked for and absent, because a silent no-op would make every
+   *   assertion that follows a race rather than a failure.
+   */
+  private requireVirtualClock(caller: string): ManualScheduler {
+    const scheduler = this.options.scheduler;
+    if (scheduler === undefined || !scheduler.isVirtual) {
+      throw new Error(
+        `MultiNodeSpec.${caller}: this spec has no virtual clock to advance. `
+        + 'Build it with `MultiNodeSpecOptions.create().withScheduler(new ManualScheduler())`.',
+      );
+    }
+    return scheduler as ManualScheduler;
+  }
+
+  /**
+   * Advance every node's clock by `ms`, then let each node's actors run.
+   *
+   * The multi-node twin of `TestKit.advance`, and it settles every system
+   * rather than one: a gossip tick on node A produces work on node B, so
+   * settling only the node whose timer fired would leave the cluster
+   * half-way through the round the advance started.
+   */
+  async advance(ms: number): Promise<void> {
+    this.requireVirtualClock('advance').advance(ms);
+    for (const node of this.nodes.values()) await node.system._settle();
+  }
+
+  /**
+   * Advance in `stepMs` slices until `cond()` holds, or until `budgetMs` of
+   * **virtual** time has passed.
+   *
+   * The replacement for polling a real-time deadline, which cannot work on a
+   * virtual clock at all: nothing advances while the poller sleeps, so the
+   * condition can never become true and the wait can only ever time out.
+   *
+   * `stepMs` defaults to the gossip interval — the cadence at which anything in
+   * a cluster actually changes, so a smaller slice costs settles that observe
+   * nothing and a larger one can step over a window entirely.
+   */
+  async advanceUntil(
+    cond: () => boolean,
+    options: { readonly budgetMs?: number; readonly stepMs?: number; readonly description?: string } = {},
+  ): Promise<void> {
+    const budgetMs = options.budgetMs ?? this.options.awaitTimeoutMs;
+    const stepMs = options.stepMs ?? this.options.gossipIntervalMs;
+    const scheduler = this.requireVirtualClock('advanceUntil');
+    const deadline = scheduler.now() + budgetMs;
+
+    // Probed before the first advance, so a condition that already holds costs
+    // no virtual time — the same rule `awaitQuiescence` follows for real time.
+    for (const node of this.nodes.values()) await node.system._settle();
+    if (cond()) return;
+
+    while (scheduler.now() < deadline) {
+      await this.advance(stepMs);
+      if (cond()) return;
+    }
+    throw new Error(
+      `MultiNodeSpec.advanceUntil: ${options.description ?? 'condition'} did not hold within `
+      + `${budgetMs} ms of virtual time (${stepMs} ms steps)${this.reproductionHint()}`,
+    );
+  }
+
   private async awaitCondition(
     cond: () => boolean, description: string, timeoutMs: number,
   ): Promise<void> {
@@ -299,7 +528,28 @@ export class MultiNodeSpec {
       if (cond()) return;
       await new Promise((r) => setTimeout(r, 25));
     }
-    throw new Error(`MultiNodeSpec: timeout after ${timeoutMs} ms — ${description}`);
+    throw new Error(
+      `MultiNodeSpec: timeout after ${timeoutMs} ms${describeTimeFactor()} — `
+      + `${description}${this.reproductionHint()}`,
+    );
+  }
+
+  /**
+   * What to say after a timeout on a network that was deliberately broken.
+   *
+   * Empty on a clean spec, because a hint about a seed nothing used would send
+   * the reader looking for a fault that is not there.  When faults *are* in
+   * play the seed is the whole reproduction: it is the difference between a
+   * chaos test and an unreproducible red run, which is the trade #1023 accepts
+   * by fixing the seed in the first place.
+   */
+  private reproductionHint(): string {
+    const faulty = [...this.nodes.values()].filter((node) => node.faults.hasFaults);
+    if (faulty.length === 0) return '';
+    const seed = faulty[0]!.faults.seed;
+    return `
+  Faults were injected on: ${faulty.map((node) => node.role).join(', ')}.`
+      + ` Reproduce with withFaultSeed(${seed}).`;
   }
 
   /* --------------------------- enterBarrier (#198) ---------------------------- */

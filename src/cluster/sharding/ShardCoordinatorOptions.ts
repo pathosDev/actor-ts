@@ -20,6 +20,87 @@ export const DEFAULT_REBALANCE_INTERVAL_MS = 2_000;
  */
 export const DEFAULT_HAND_OFF_TIMEOUT_MS = 10_000;
 
+/**
+ * Built-in default for {@link ShardCoordinatorOptionsType.coordinatorStateLoadTimeoutMs}
+ * — how long a coordinator that has just become leader waits for its
+ * `coordinatorStateStore` to load before it places shards without the
+ * snapshot (#1188).  Mirrors
+ * `actor-ts.sharding.coordinator-state-load-timeout = 10s` in `reference.conf`.
+ *
+ * As long as the hand-off timeout, and for the same reason: both bound how
+ * long a new term may hold placement back, and a load slower than that is a
+ * backend in trouble rather than one that is merely remote.
+ */
+export const DEFAULT_COORDINATOR_STATE_LOAD_TIMEOUT_MS = 10_000;
+
+/**
+ * Built-in default for {@link ShardCoordinatorOptionsType.rebalanceAbsoluteLimit}
+ * — a flat ceiling on shards in flight, off by default so the relative one
+ * (which scales with `numShards`) decides alone.  Mirrors
+ * `actor-ts.sharding.rebalance-absolute-limit = 0` (#850).
+ */
+export const DEFAULT_REBALANCE_ABSOLUTE_LIMIT = 0;
+
+/**
+ * Built-in default for {@link ShardCoordinatorOptionsType.rebalanceRelativeLimit}
+ * — the ceiling as a fraction of `numShards`, so it scales with the entity
+ * space rather than pinning one number to every deployment.  Mirrors
+ * `actor-ts.sharding.rebalance-relative-limit = 0.1` (#850).
+ *
+ * `0.1` is borrowed from Akka's key of the same name rather than measured here,
+ * and it is a real behaviour change: at the shipped `number-of-shards = 64` a
+ * 2 → 3 node join moved 42 to 44 shards in one 2 s tick, depending on where
+ * the new node sorts in address order, and now moves 6 at a time.
+ * The quantity that should actually set it is what a journal absorbs per
+ * rebalance round — that needs a run against a real backend, and until one
+ * exists a borrowed bound beats no bound.  Set the leaf to `0` to restore the
+ * unbounded behaviour exactly.
+ */
+export const DEFAULT_REBALANCE_RELATIVE_LIMIT = 0.1;
+
+/**
+ * Built-in default for {@link ShardCoordinatorOptionsType.acquireRetryIntervalMs}
+ * — how long the coordinator waits before re-`acquire()`ing a lease it failed to
+ * take.  Mirrors `actor-ts.sharding.acquire-retry-interval = 5s` (#847).
+ *
+ * Only reachable where the coordinator has a {@link Lease} — passed in code, or
+ * built from `actor-ts.coordination.lease` by `actor-ts.sharding.use-lease`
+ * (#1454).  It is configurable because the retry cadence is the whole recovery
+ * latency of a partition that heals: until an acquire succeeds the coordinator
+ * issues no `AllocateShard`, and everything routed for the type buffers in the
+ * regions meanwhile.
+ */
+export const DEFAULT_ACQUIRE_RETRY_INTERVAL_MS = 5_000;
+
+/**
+ * Built-in default for {@link ShardCoordinatorOptionsType.regionStaleAfterMs} —
+ * how long a registered region may stay silent before the coordinator declares
+ * it gone and re-homes its shards (#853).  Mirrors
+ * `actor-ts.sharding.stale-region-detection.stale-after = 20s`.
+ *
+ * Four missed beats at the shipped
+ * {@link DEFAULT_REGION_HEARTBEAT_INTERVAL_MS} of 5 s.  A single missed beat
+ * would make one dropped datagram evict a healthy region, and the eviction is
+ * destructive — every entity under every shard it holds is re-created
+ * elsewhere — so the threshold is deliberately several intervals rather than
+ * one.  It is not a *node*-liveness figure and should not be compared with
+ * `actor-ts.cluster.failure-detector.down-after`.  A node that stops answering
+ * is the failure detector's to notice: it is marked `unreachable` and stays a
+ * member until it is removed — by the split-brain strategy's verdict when one
+ * is configured, and otherwise by the detector itself at `down-after` while
+ * `actor-ts.cluster.failure-detector.auto-down` is on, or by an operator while
+ * it is off — and the sweep leaves its regions to that decision.  This covers
+ * only what the detector cannot see — a region gone or wedged on a node that
+ * is still up, where the placement candidates, derived from the registry,
+ * never check whether the region itself is alive.
+ *
+ * The sweep rides the existing rebalance tick (2 s), so the effective latency
+ * is this plus at most one tick.  There is deliberately no `check-interval`
+ * key: a second timer would give an operator two dials that both mean "how
+ * often does the coordinator look at the shard map".
+ */
+export const DEFAULT_REGION_STALE_AFTER_MS = 20_000;
+
 /** Plain options-object shape consumed by a {@link ShardCoordinator}. */
 export type ShardCoordinatorOptionsType = {
   readonly typeName: string;
@@ -40,7 +121,44 @@ export type ShardCoordinatorOptionsType = {
   readonly role?: string;
   readonly rebalanceIntervalMs?: number;
   readonly handOffTimeoutMs?: number;
+  /**
+   * Flat ceiling on shards a rebalance may have **in flight**.  `0` = no
+   * absolute ceiling.  See {@link rebalanceRelativeLimit} for how the two
+   * compose.
+   */
+  readonly rebalanceAbsoluteLimit?: number;
+  /**
+   * Ceiling on shards in flight as a fraction of `numShards`, floored at one
+   * shard so a small cluster still rebalances.  `0` = no relative ceiling; `0`
+   * for both leaves the rebalance uncapped, which is what it was before #850.
+   *
+   * Where both are set the **lower** wins.  The bound is on shards in flight
+   * rather than per tick because a tick fires every `rebalanceIntervalMs` while
+   * a hand-off may stand for a whole `handOffTimeoutMs` — at the shipped 2 s and
+   * 10 s a per-tick cap of six would permit thirty concurrent hand-offs.
+   */
+  readonly rebalanceRelativeLimit?: number;
   readonly rememberEntities?: boolean;
+  /**
+   * Evict a registered region that has gone silent, and re-home its shards
+   * (#853).  Default: `false`.
+   *
+   * The same deployment-wide switch the regions read
+   * ({@link ShardingOptionsType.staleRegionDetection}): with it off nothing
+   * beats and nothing sweeps, so the mechanism costs nothing at all until it is
+   * asked for.  Only a region that has actually beaten at least once is ever a
+   * sweep candidate — see `ShardCoordinator.sweepStaleRegions` for why that
+   * matters during a rolling deploy.
+   */
+  readonly staleRegionDetection?: boolean;
+  /**
+   * Silence after which a region is declared gone, in ms (#853).  Default:
+   * `20000`.  Inert while {@link staleRegionDetection} is off.
+   *
+   * Must exceed {@link ShardingOptionsType.regionHeartbeatIntervalMs}, or the
+   * coordinator evicts a healthy region between two of its beats.
+   */
+  readonly regionStaleAfterMs?: number;
   /** Resolver for local actor paths — used when coordinator lives on the same node as a region. */
   readonly localResolver: (path: string) => ActorRef | null;
   /**
@@ -87,6 +205,13 @@ export type ShardCoordinatorOptionsType = {
    * Register behaviour (backwards-compat).
    */
   readonly coordinatorStateStore?: CoordinatorStateStore;
+  /**
+   * How long, in ms, a coordinator that has just become leader waits for
+   * {@link coordinatorStateStore} to load before it places shards without the
+   * snapshot (#1188).  Default {@link DEFAULT_COORDINATOR_STATE_LOAD_TIMEOUT_MS}.
+   * Inert without a store.
+   */
+  readonly coordinatorStateLoadTimeoutMs?: number;
 };
 
 /**
@@ -141,9 +266,29 @@ export class ShardCoordinatorOptionsBuilder extends OptionsBuilder<ShardCoordina
     return this.set('handOffTimeoutMs', handOffTimeoutMs);
   }
 
+  /** Flat ceiling on shards in flight during a rebalance.  `0` disables it.  Default: 0. */
+  withRebalanceAbsoluteLimit(rebalanceAbsoluteLimit: number): this {
+    return this.set('rebalanceAbsoluteLimit', rebalanceAbsoluteLimit);
+  }
+
+  /** Ceiling on shards in flight as a fraction of `numShards`.  `0` disables it.  Default: 0.1. */
+  withRebalanceRelativeLimit(rebalanceRelativeLimit: number): this {
+    return this.set('rebalanceRelativeLimit', rebalanceRelativeLimit);
+  }
+
   /** Track entity lifecycle so entities can be re-created on the new owner. */
   withRememberEntities(rememberEntities = true): this {
     return this.set('rememberEntities', rememberEntities);
+  }
+
+  /** Evict a registered region that stops beating, and re-home its shards.  Default: off (#853). */
+  withStaleRegionDetection(staleRegionDetection = true): this {
+    return this.set('staleRegionDetection', staleRegionDetection);
+  }
+
+  /** Silence after which a region is declared gone, in ms.  Default: 20000. */
+  withRegionStaleAfterMs(regionStaleAfterMs: number): this {
+    return this.set('regionStaleAfterMs', regionStaleAfterMs);
   }
 
   /** Resolver for local actor paths — used when coordinator and region share a node. */
@@ -169,6 +314,11 @@ export class ShardCoordinatorOptionsBuilder extends OptionsBuilder<ShardCoordina
   /** Persistence backend for the allocation state (`regions` + `shardHome`). */
   withCoordinatorStateStore(coordinatorStateStore: CoordinatorStateStore): this {
     return this.set('coordinatorStateStore', coordinatorStateStore);
+  }
+
+  /** How long a new leader waits for the coordinator-state load, in ms.  Default 10 s. */
+  withCoordinatorStateLoadTimeoutMs(coordinatorStateLoadTimeoutMs: number): this {
+    return this.set('coordinatorStateLoadTimeoutMs', coordinatorStateLoadTimeoutMs);
   }
 }
 

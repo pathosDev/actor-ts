@@ -30,7 +30,14 @@ export class MultiNodeTransport implements Transport {
   private stopped = false;
   private readonly blockedOutgoing = new Set<string>();
 
-  constructor(readonly self: NodeAddress) {}
+  constructor(private identity: NodeAddress) {}
+
+  get self(): NodeAddress { return this.identity; }
+
+  /** See `Transport.adoptIdentity`; the registry key is the address, which does not change. */
+  adoptIdentity(self: NodeAddress): void {
+    if (self.toString() === this.identity.toString()) this.identity = self;
+  }
 
   setHandler(handler: WireHandler): void { this.handler = handler; }
 
@@ -40,7 +47,11 @@ export class MultiNodeTransport implements Transport {
 
   async shutdown(): Promise<void> {
     this.stopped = true;
-    MultiNodeTransport.registry.delete(this.self.toString());
+    // Only this instance's own entry: a node restarted at the same address
+    // registers a new transport under the same key, and the old one shutting
+    // down afterwards must not unregister its successor.
+    const key = this.self.toString();
+    if (MultiNodeTransport.registry.get(key) === this) MultiNodeTransport.registry.delete(key);
   }
 
   send(to: NodeAddress, message: WireMessage): void {
@@ -64,6 +75,12 @@ export class MultiNodeTransport implements Transport {
     return Array.from(MultiNodeTransport.registry.keys())
       .filter((k) => k !== this.self.toString())
       .map((k) => NodeAddressConstructor.parse(k));
+  }
+
+  /** As `InMemoryTransport`'s: registered and not this one — nothing here is dialled. */
+  holdsConnectionTo(peer: NodeAddress): boolean {
+    const key = peer.toString();
+    return key !== this.self.toString() && MultiNodeTransport.registry.has(key);
   }
 
   /* ---------------------------- partition controls --------------------------- */

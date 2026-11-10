@@ -333,6 +333,41 @@ Eingebaute Implementierungen leben unter
 [`persistence/journals/*`](/de/persistence/journals/in-memory/)
 und [`persistence/snapshot-stores/*`](/de/persistence/snapshot-stores/in-memory/).
 
+Ein Backend kommt über den `plugins`-Slot der Optionen des Systems
+herein.  Jeder Eintrag ist ein `PersistencePlugin` — eine Funktion, der
+das System seine `PersistenceExtension` übergibt — und macht
+typischerweise einen `register*Plugins`-Aufruf;
+`actor-ts.persistence.<axis>.plugin` in der Konfiguration entscheidet
+dann, welches registrierte Plug-in jede Achse verwendet:
+
+```ts
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerPostgresPlugins } from 'actor-ts/persistence';
+
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerPostgresPlugins(persistence)],
+});
+const system = ActorSystem.create('orders', systemOptions);
+```
+
+Die Plug-ins laufen innerhalb von `ActorSystem.create`, in der
+angegebenen Reihenfolge, sodass das Backend, das ein Selektor nennt,
+registriert ist, bevor `create` zurückkehrt, und die ausgewählten
+Stores als Teil des Starts öffnen — siehe [Stores beim Start
+öffnen](#stores-beim-start-öffnen).  Gibt ein Plug-in ein Promise
+zurück, wartet der Start auch darauf, sodass eine Registrierung, die
+spät scheitert, den Start scheitern lässt statt erst die erste
+persistierte Nachricht.
+
+Ein ausgewähltes Backend registriert so ein Plug-in trotzdem vor
+seinem ersten `await`.  Die ausgewählten Stores werden innerhalb von
+`create` aufgelöst, direkt nachdem die Plug-ins aufgerufen wurden,
+also ist eine Factory, die nach einem `await` registriert wird, noch
+nicht da, und der Start scheitert mit einem `Unknown … plugin`-Fehler,
+der die Id nennt.  Was die Stores brauchen, sobald sie öffnen — eine
+Probe, ein Schlüssel aus einem Vault —, darf danach kommen: Die Stores
+öffnen erst, wenn das Promise erledigt ist.
+
 Du schreibst ein eigenes?  `Journal.read()` ist die Methode, deren
 Vertrag der Replay einfordert: Die zurückgegebenen Events müssen
 nach Sequenznummer aufsteigen, lückenlos sein und im angefragten
@@ -342,6 +377,23 @@ fehlendes `ORDER BY`, ein halb geschriebener Append, ein Store, in
 den auch andere schreiben können.  Der Replay wirft dann
 `JournalIntegrityError`, statt zu falten; siehe [was der Replay
 ablehnt](/de/persistence/persistent-actor/#was-der-replay-ablehnt).
+
+Ein Store, der sich mit etwas verbindet, sollte außerdem das
+optionale `start?()` implementieren: jetzt öffnen statt bei der
+ersten Operation, damit das Warm-up des Systems beim Booten — siehe
+[Stores beim Start öffnen](#stores-beim-start-öffnen) — einen
+falschen Connection-String schon beim Start scheitern lässt statt erst
+bei der ersten persistierten Nachricht.  Die mitgelieferten Stores halten
+sich dabei an eine Regel, und deiner sollte es auch.  `start()` ist
+idempotent und teilt sich ein einziges Öffnen mit der ersten
+Operation.  Ein Start, der fehlschlägt, wirft, gibt frei, was er
+halb geöffnet hatte, und wird nicht gemerkt — der nächste Aufruf
+öffnet neu; ein einzelner Datenbank-Aussetzer beim Booten darf
+keinen Store hinterlassen, der für die gesamte Laufzeit des Prozesses
+scheitert.  Nach `close()` wirft `start()` wie jede Operation, und
+ein `close()`, das eintrifft, während ein Start noch läuft, lässt
+nichts offen zurück.  Ein Store ohne etwas zu öffnen — die
+In-Memory-Stores, Object Storage — lässt `start?()` undefiniert.
 
 Für Produktion deckt die **SQLite**-Kombination aus Journal +
 Snapshot Single-Node-Deployments ab; ein geteiltes Backend —
@@ -412,6 +464,125 @@ Jedes Backend speichert Payloads im selben getaggten
 JSON-Tree-Format, sodass `Date` / `Map` / `Set` / `bigint` /
 `Uint8Array` überall round-trippen — siehe
 [was Events und State enthalten dürfen](/de/persistence/persistent-actor/#was-events-und-state-enthalten-dürfen).
+
+## Stores beim Start öffnen
+
+Ein System öffnet seine Persistence-Stores als Teil seines Starts,
+nicht erst bei der ersten persistierten Nachricht.  Innerhalb von
+`ActorSystem.create` löst es Journal, Snapshot-Store und
+Durable-State-Store auf — die, die `actor-ts.persistence.<axis>.plugin`
+auswählt, oder die Instanzen, die `withPersistence` im Code setzt —
+und in der Phase `persistence-start` des Starts ruft es auf jedem
+davon `start()` auf.  Das geschieht, nachdem die Promises, die die
+Plug-ins zurückgegeben haben, erledigt sind, und die drei öffnen
+parallel.  Ein Store, der nichts zu öffnen hat, etwa die
+In-Memory-Stores, bleibt, wie er ist; ein System, das Persistence
+weder im Code verdrahtet noch in seiner Konfiguration ein Plug-in
+auswählt, öffnet überhaupt nichts.
+
+Der Fehler wandert dorthin, wo ein Operator ihn haben will.  Eine
+Plug-in-ID, die niemand registriert hat, ein Connection-String mit dem
+falschen Host, eine Datenbank, die der Knoten nicht erreicht — jedes
+davon lässt den Start mit einem Fehler scheitern, der den Store nennt:
+`system.whenReady()` wird abgelehnt, das System fährt herunter, und
+`runUntilTerminated()` wird mit demselben Fehler abgelehnt, sodass der
+Prozess mit einem Status ungleich null endet, statt Traffic
+anzunehmen, den er nicht persistieren kann.  Ein relationaler Store
+erreicht seine Datenbank, ob er seine Tabellen selbst anlegt oder
+nicht: Mit `autoCreateTables: false` schickt er ein `SELECT 1`, wo er
+sonst sein DDL ausführen würde, also lässt eine unerreichbare Datenbank
+den Start auch hinter einem Schema scheitern, das der Operator
+verwaltet.  Die Ausnahme sind der Object-Storage-Snapshot-Store und
+der Object-Storage-Durable-State-Store: Sie haben kein `start()`, also
+wird vorab nichts geöffnet, und an einem Bucket, den sie nicht
+erreichen, scheitert ihre erste Operation statt des Starts — genauso
+bei einem eigenen Store ohne `start()`.  Ein Store, der weder
+öffnet noch scheitert, hinter einem Host, der Pakete verwirft, lässt
+den Start scheitern, sobald das Budget seiner Phase abläuft (30 s,
+sofern weder `withCoordinatedStartup` noch
+[`actor-ts.coordinated-startup`](/de/reference/configuration/#actor-tscoordinated-startup)
+ein anderes setzt).  Solange die Stores öffnen, hält der Readiness-Check
+`startup` `/ready` auf false.
+
+Die Auswahl wird innerhalb von `create` aufgelöst, also muss das
+Plug-in, das sie nennt, ebenfalls dort registriert werden — über den
+`plugins`-Slot, wie [Austauschbare Backends](#austauschbare-backends)
+zeigt.  Ein `register*Plugins`-Aufruf auf der Extension nach `create`
+kommt für einen ausgewählten Store zu spät, und der Start scheitert mit
+`Unknown journal plugin`.  Ein Actor, der in der Zeile nach `create`
+gespawnt wird, ist kein Problem: Sein erstes Lesen teilt sich das eine
+Öffnen des Stores, statt mit ihm um die Wette zu laufen.
+
+Jede Achse, die die Konfiguration auswählt, wird geöffnet, auch eine,
+die dieser Service nie nutzt — ein Durable-State-Plug-in, ausgewählt in
+einer `application.conf`, die er mit Services teilt, die es nutzen —,
+also lässt ein Fehler dort auch diesen Start scheitern: Stell diese
+Achse für diesen Service zurück auf den In-Memory-Store, oder schalte
+das Öffnen beim Start ab, wie unten gezeigt.
+Scheitern lassen ihn die Fehler in dem, was die Auswahl liest — eine Id,
+die niemand registriert hat, ein Wert dort, wo der Block der Achse
+hingehört (`actor-ts.persistence.journal = "…"`), ein ausgewählter
+Store, der nicht öffnen kann — und ein Schlüssel unter
+`actor-ts.persistence`, den gar nichts liest.  `plugn = "…"` im
+Journal-Block oder ein `jornal`-Block daneben lässt den Start mit einem
+`ConfigError` scheitern, der den vollen Schlüssel nennt,
+`actor-ts.persistence.journal.plugn` oder `actor-ts.persistence.jornal`.
+Als nicht gesetzt gelesen, ließ er die Achse früher auf dem
+In-Memory-Store, den `reference.conf` auswählt, ohne Fehler und ohne
+Warnung, und ein Journal im Speicher hatte seine Events beim nächsten
+Neustart verloren.  Korrigiere die Schreibweise, oder verschiebe die
+Einstellungen eines Plug-ins in seinen Block.  Das Framework prüft die
+beiden Ebenen, die es selbst liest: Direkt unter `actor-ts.persistence`
+stehen die drei Achsen-Blöcke und die Verhaltensschlüssel, direkt in einem
+Achsen-Block steht sein `plugin` neben den Blöcken seiner Plug-ins.  Den
+Block eines Plug-ins — `actor-ts.persistence.journal.my-plugin { … }`,
+auch den eines fremden — überlässt es dem Plug-in, das ihn liest; ein
+vertipptes Leaf darin abzulehnen ist Sache dieses Plug-ins.
+
+Nichts im Framework schließt die Stores, die es aufgelöst hat
+([#388](https://github.com/pathosDev/actor-ts/issues/388)), und ein
+gescheiterter Start ist keine Ausnahme — er durchläuft den Coordinated
+Shutdown, also wird ein Store, der geöffnet hat, bevor ein anderer
+scheiterte, nur von einem Shutdown-Task geschlossen, den die Anwendung
+registriert, wie es der `close-persistence`-Task des
+[Chat-Beispiels](/de/examples/chat-sample/) tut; einer, der direkt nach
+`create` hinzugefügt wird, läuft auch auf diesem Weg.  Ohne ihn kann ein
+offener Pool oder Client den Prozess am Leben halten, nachdem sein
+Start gescheitert ist.
+
+Um die Stores stattdessen bei der ersten Verwendung zu öffnen, schalte
+das Öffnen beim Start im Code ab — `autoStart` im Persistence-Verhalten:
+
+```ts
+const persistenceBehavior = PersistenceBehaviorOptions.create().withAutoStart(false);
+const systemOptions = ActorSystemOptions.create().withPersistence({ behavior: persistenceBehavior });
+```
+
+Ein Deployment schaltet es in seiner Konfigurationsdatei genauso um, mit dem
+Leaf, das `reference.conf` als `on` ausliefert; eine Einstellung im Code
+gewinnt darüber:
+
+```hocon
+actor-ts.persistence.auto-start = off
+```
+
+Abgeschaltet wird nichts aufgelöst oder geöffnet, bis die erste
+Operation danach fragt — die übrigen Fehler oben lassen dann diese
+Operation scheitern statt des Starts —, und ein nach `create`
+registriertes Plug-in wird dann noch gefunden.  Ein Schlüssel unter
+`actor-ts.persistence`, den nichts liest, lässt den Start trotzdem
+scheitern, mit dem Schalter in der Datei oder im Code abgeschaltet und
+mit jedem Store im Code gesetzt: Der Schalter entscheidet, wann die
+Stores öffnen, und den Schlüssel abzulehnen öffnet keinen.  Das gilt
+auch für ein System, das den Schalter im Code abschaltet und dort weder
+einen Store noch ein Plug-in setzt, also die ganze Persistence eines
+`WorkerMesh`-Workers: Über einer gültigen Datei baut es innerhalb von
+`create` nichts von der Persistence auf, und über einer Datei mit einem
+solchen Schlüssel scheitert sein Start, ebenso wie der Start des
+Haupt-Threads, dessen Konfiguration die Worker erben.  Die Worker eines `WorkerMesh` laufen immer
+mit abgeschaltetem `autoStart`, was auch immer die Konfiguration sagt,
+die sie erben — siehe
+[Parallelität](/de/fundamentals/parallelism/).
 
 ## Wann NICHT persistieren
 

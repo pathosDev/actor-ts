@@ -1,11 +1,39 @@
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { Lease } from '../../coordination/Lease.js';
+import { rejectAbsentLeaseKeys } from '../../coordination/LeaseOptions.js';
+import type { AbsentLeaseKeys } from '../../coordination/LeaseOptions.js';
 import type { AllocationStrategy } from './AllocationStrategy.js';
 import type { CoordinatorStateStore } from './CoordinatorState.js';
 import type { RememberEntitiesStore } from './RememberEntitiesStore.js';
-import { ShardingOptionsBuilder, ShardingOptionsValidator } from './ShardingOptions.js';
-import type { ShardingOptionsType } from './ShardingOptions.js';
+import { DEFAULT_REGION_STALE_AFTER_MS } from './ShardCoordinatorOptions.js';
+import {
+  DEFAULT_REGION_HEARTBEAT_INTERVAL_MS,
+  ShardingOptionsBuilder,
+  ShardingOptionsValidator,
+} from './ShardingOptions.js';
+import type {
+  EntityAdmissionFilter,
+  EntityRecoveryStrategy,
+  EntityReplacementPolicy,
+  ShardingOptionsType,
+} from './ShardingOptions.js';
+
+/**
+ * Built-in default for {@link StartShardingOptionsType.shardRegionQueryTimeoutMs}
+ * — how long {@link ClusterSharding.shards} and
+ * {@link ClusterSharding.shardRefFor} wait when the caller names no timeout
+ * (#849).  Mirrors `actor-ts.sharding.shard-region-query-timeout`.
+ *
+ * Deliberately **not** the region's `asksTtlMs` — how long the region keeps a
+ * caller it has not answered yet, a remote entity `ask` or one of these
+ * queries — which is the largest of a minute, `actor-ts.actor.ask-timeout` and
+ * this value (#1436).  This value can raise that lifetime and never lower it.
+ * Binding the two outright would silently discard the reply to every
+ * cross-node ask outliving the query timeout, including one at the framework's
+ * own `DEFAULT_ASK_TIMEOUT_MS`.
+ */
+export const DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS = 5_000;
 
 /**
  * Plain options-object shape accepted by {@link ClusterSharding.start} —
@@ -20,14 +48,40 @@ export interface StartShardingOptionsType<TMessage> extends ShardingOptionsType<
   /** Time to wait for HandOffComplete before force-reallocating. */
   readonly handOffTimeoutMs?: number;
   /**
+   * Flat ceiling on shards a rebalance may have **in flight**.  `0` = no
+   * absolute ceiling.  See `ShardCoordinatorOptionsType.rebalanceRelativeLimit`
+   * for how the two compose (#850).
+   */
+  readonly rebalanceAbsoluteLimit?: number;
+  /**
+   * Ceiling on shards in flight as a fraction of `numShards`, floored at one.
+   * `0` = no relative ceiling; `0` for both leaves the rebalance uncapped
+   * (#850).
+   */
+  readonly rebalanceRelativeLimit?: number;
+  /**
    * Optional split-brain protection for the coordinator.  When set,
    * the elected leader's coordinator must hold the lease before it
    * processes shard messages — under a network partition that
    * produces two leader views, only the side that successfully
    * acquires the lease ever issues `AllocateShard` / `HandOff`
    * directives.  See `ShardCoordinatorOptionsType.lease`.
+   *
+   * Wins over {@link useLease}: a lease passed here is the one used.
    */
   readonly lease?: Lease;
+  /**
+   * Give the coordinator a lease built from `actor-ts.coordination.lease`
+   * when no {@link lease} is passed (#1454).  Default: `false`.
+   *
+   * The lease is named `<system>-sharding-<typeName>` and owned by this node —
+   * its cluster address and incarnation — so the file chooses the backend and
+   * nothing about identity.  With `coordination.lease.backend = none` it is
+   * refused when the type starts, rather than leaving the coordinator
+   * unprotected while the option reads as protection.  `false` opts one type
+   * out of a deployment-wide `actor-ts.sharding.use-lease = on`.
+   */
+  readonly useLease?: boolean;
   /** Retry interval for `lease.acquire()` after a failed attempt.  Default: 5 s. */
   readonly acquireRetryIntervalMs?: number;
   /**
@@ -57,6 +111,47 @@ export interface StartShardingOptionsType<TMessage> extends ShardingOptionsType<
    * Without it, the v1 rebuild-from-Register behaviour is preserved.
    */
   readonly coordinatorStateStore?: CoordinatorStateStore;
+  /**
+   * Keep the coordinator's allocation state in the persistence extension's
+   * journal — `ClusterSharding` wires a `JournalCoordinatorStateStore` for
+   * this type, unless {@link coordinatorStateStore} names one (#1188).
+   * Default `false`.
+   *
+   * The journal has to be one database for the whole cluster: the next leader
+   * reads what the previous one wrote, so a node-local journal on a node that
+   * expects remote peers is refused at start, as it is for
+   * `rememberEntities` (#1356).
+   */
+  readonly persistCoordinatorState?: boolean;
+  /**
+   * How long a coordinator that has just become leader waits for the
+   * coordinator-state load before it places shards without it, in ms.
+   * Default 10 000.  Inert without a coordinator-state store.
+   */
+  readonly coordinatorStateLoadTimeoutMs?: number;
+  /**
+   * Default timeout, in ms, for {@link ClusterSharding.shards} and
+   * {@link ClusterSharding.shardRefFor} on this type (#849).  Default: 5000.
+   *
+   * A start-time option rather than a region field, because it configures how
+   * *this node queries* the region rather than anything the region itself
+   * does.  An explicit `timeoutMs` argument at the call still wins, so the
+   * precedence a caller sees is **argument > option > HOCON > 5 s**.
+   *
+   * The region keeps a query's caller at least this long, so a wait longer than
+   * a minute is not cut short by the region forgetting the query (#1436).  A
+   * per-call `timeoutMs` longer than that lifetime gets no such guarantee.
+   */
+  readonly shardRegionQueryTimeoutMs?: number;
+  /**
+   * Silence after which the coordinator declares a registered region gone and
+   * re-homes its shards, in ms (#853).  Default: `20000`.
+   *
+   * The coordinator half of `staleRegionDetection`, whose region half is
+   * `regionHeartbeatIntervalMs`.  Inert while the switch is off, and required
+   * to exceed the beat interval — see {@link StartShardingOptionsValidator}.
+   */
+  readonly regionStaleAfterMs?: number;
 }
 
 /**
@@ -91,9 +186,34 @@ export class StartShardingOptionsBuilder<TMessage> extends ShardingOptionsBuilde
     return this.set('handOffTimeoutMs', handOffTimeoutMs);
   }
 
-  /** Optional split-brain protection for the coordinator (a {@link Lease}). */
+  /** Flat ceiling on shards in flight during a rebalance.  `0` disables it.  Default: 0. */
+  withRebalanceAbsoluteLimit(rebalanceAbsoluteLimit: number): this {
+    return this.set('rebalanceAbsoluteLimit', rebalanceAbsoluteLimit);
+  }
+
+  /** Ceiling on shards in flight as a fraction of `numShards`.  `0` disables it.  Default: 0.1. */
+  withRebalanceRelativeLimit(rebalanceRelativeLimit: number): this {
+    return this.set('rebalanceRelativeLimit', rebalanceRelativeLimit);
+  }
+
+  /** Optional split-brain protection for the coordinator (a {@link Lease}).  Wins over `withUseLease`. */
   withLease(lease: Lease): this {
     return this.set('lease', lease);
+  }
+
+  /** Give the coordinator a lease built from `actor-ts.coordination.lease`.  Default: `false`. */
+  withUseLease(useLease: boolean): this {
+    return this.set('useLease', useLease);
+  }
+
+  /** Keep the coordinator's allocation state in the journal (#1188).  Default false. */
+  withPersistCoordinatorState(persistCoordinatorState = true): this {
+    return this.set('persistCoordinatorState', persistCoordinatorState);
+  }
+
+  /** How long a new leader waits for the coordinator-state load, in ms.  Default 10 000. */
+  withCoordinatorStateLoadTimeoutMs(coordinatorStateLoadTimeoutMs: number): this {
+    return this.set('coordinatorStateLoadTimeoutMs', coordinatorStateLoadTimeoutMs);
   }
 
   /** Retry interval for `lease.acquire()` after a failed attempt.  Default: 5 s. */
@@ -113,6 +233,16 @@ export class StartShardingOptionsBuilder<TMessage> extends ShardingOptionsBuilde
   withCoordinatorStateStore(coordinatorStateStore: CoordinatorStateStore): this {
     return this.set('coordinatorStateStore', coordinatorStateStore);
   }
+
+  /** Default timeout for `shards()` / `shardRefFor()` on this type, in ms.  Default: 5000. */
+  withShardRegionQueryTimeoutMs(shardRegionQueryTimeoutMs: number): this {
+    return this.set('shardRegionQueryTimeoutMs', shardRegionQueryTimeoutMs);
+  }
+
+  /** Silence after which the coordinator declares a region gone, in ms.  Default: 20000. */
+  withRegionStaleAfterMs(regionStaleAfterMs: number): this {
+    return this.set('regionStaleAfterMs', regionStaleAfterMs);
+  }
 }
 
 /**
@@ -128,7 +258,32 @@ export class StartShardingOptionsValidator<TMessage>
     this.commonRules(s);
     this.positiveNumber('rebalanceIntervalMs');
     this.positiveNumber('handOffTimeoutMs');
+    this.positiveNumber('coordinatorStateLoadTimeoutMs');
     this.positiveNumber('acquireRetryIntervalMs');
+    this.positiveNumber('shardRegionQueryTimeoutMs');
+    // `0` is a real value on both — it switches that ceiling off — so neither
+    // is a `positive*` rule.  The relative one is a fraction and not a count:
+    // `nonNegativeInt` would reject the 0.1 that ships (#850).
+    this.nonNegativeInt('rebalanceAbsoluteLimit');
+    this.numberInRange('rebalanceRelativeLimit', 0, 1);
+    this.positiveNumber('regionStaleAfterMs');
+    // Checked against the *resolved* pair, the shape `ClusterRouterOptions`
+    // uses for the same class of rule, so overriding one of the two cannot
+    // silently cross the other's default.  A threshold at or below the beat
+    // interval means the coordinator judges a region on a window it may not
+    // have had a chance to speak in: it evicts a perfectly healthy region,
+    // stops every entity under every shard it held, waits for the
+    // re-registration, and does it again — a destructive loop out of a
+    // mechanism whose whole purpose is to be a rare backstop (#853).
+    const heartbeatIntervalMs = s.regionHeartbeatIntervalMs ?? DEFAULT_REGION_HEARTBEAT_INTERVAL_MS;
+    const staleAfterMs = s.regionStaleAfterMs ?? DEFAULT_REGION_STALE_AFTER_MS;
+    if (staleAfterMs <= heartbeatIntervalMs) {
+      this.fail(
+        'regionStaleAfterMs',
+        `must be greater than regionHeartbeatIntervalMs (${heartbeatIntervalMs})`,
+        staleAfterMs,
+      );
+    }
   }
 }
 
@@ -140,33 +295,97 @@ export class StartShardingOptionsValidator<TMessage>
  *
  * The polymorphic fields (`entityActor`, the extractors, `allocationStrategy`,
  * `lease`, the stores) are absent by nature: HOCON has no way to express a
- * class or a closure, so those stay code-only.
+ * class or a closure, so those stay code-only.  A lease is still reachable from
+ * the file — `useLease` asks for one built from `actor-ts.coordination.lease`
+ * (#1454) — but as a switch, never as a name: the name is derived per type.
+ *
+ * `role` is the one member here that is placement rather than tuning, and it is
+ * in on purpose: *which* role hosts a type is uniform across a deployment,
+ * while *which* roles a node carries is not — that half is assigned separately,
+ * by `actor-ts.cluster.roles` (#836).  `proxy` is
+ * the counter-example and stays out: it is per-node topology, a second `start`
+ * disagreeing about it throws, and a deployment-wide `proxy = on` would leave
+ * nothing hosting anything (#847).
  */
 export type ShardingConfigDefaults = Pick<
   StartShardingOptionsType<unknown>,
   | 'numShards'
+  | 'role'
   | 'rememberEntities'
   | 'passivationIdleMs'
   | 'shardPassivationIdleMs'
   | 'maxEntities'
+  | 'passivationReplacement'
+  | 'passivationSegmentedProtectedProportion'
+  | 'passivationAdmissionWindowProportion'
+  | 'passivationAdmissionFilter'
+  | 'passivationStopTimeoutMs'
+  | 'bufferSize'
+  | 'registerRetryIntervalMs'
   | 'rebalanceIntervalMs'
   | 'handOffTimeoutMs'
+  | 'rebalanceAbsoluteLimit'
+  | 'rebalanceRelativeLimit'
+  | 'acquireRetryIntervalMs'
+  | 'useLease'
+  | 'persistCoordinatorState'
+  | 'coordinatorStateLoadTimeoutMs'
+  | 'shardRegionQueryTimeoutMs'
+  | 'entityRecoveryStrategy'
+  | 'entityRecoveryConstantRateFrequencyMs'
+  | 'entityRecoveryConstantRateNumberOfEntities'
+  | 'staleRegionDetection'
+  | 'regionHeartbeatIntervalMs'
+  | 'regionStaleAfterMs'
+  | 'shardFailureBackoffMinMs'
+  | 'shardFailureBackoffMaxMs'
+  | 'shardFailureBackoffRandomFactor'
+  | 'shardFailureBackoffResetAfterMs'
+  | 'entityRestartBackoffMinMs'
+  | 'entityRestartBackoffMaxMs'
+  | 'entityRestartBackoffRandomFactor'
+  | 'entityRestartBackoffResetAfterMs'
 >;
+
+/**
+ * The lease spelling the sharding block deliberately lacks (#1454): one name
+ * for the block would put every sharded type's coordinator on one record.
+ */
+const ABSENT_SHARDING_LEASE_KEYS: AbsentLeaseKeys = {
+  'actor-ts.sharding.lease-name':
+    'a sharded type\'s lease is named <system>-sharding-<type>, one per type, and one name for the block would '
+    + 'put every type\'s coordinator on one record; pass a lease built in code with withLease(...) to choose its name',
+};
 
 /**
  * Read the `actor-ts.sharding.*` block into the shape
  * {@link ClusterSharding.start} merges under the caller's options.
  *
+ * All of the block but `healthcheck.names`, which is no start option: it says
+ * which types this node is not ready without rather than how a type runs, so
+ * the `Cluster` constructor reads it once per join, through
+ * `readShardingHealthCheckNamesFromConfig` (#1465).
+ *
  * Only keys actually present are returned.  That is the whole point of the
  * `hasPath` guards: a key read unconditionally would come back `undefined`
  * and, once spread, shadow the built-in default it was supposed to fall
- * through to.
+ * through to.  A lease spelling the block lacks is refused first.
  */
 export function readShardingOptionsFromConfig(config: Config): ShardingConfigDefaults {
+  rejectAbsentLeaseKeys(config, ABSENT_SHARDING_LEASE_KEYS);
   const keys = ConfigKeys.sharding;
   // Mutable while being filled; consumers see the readonly shape.
   const out: { -readonly [K in keyof ShardingConfigDefaults]: ShardingConfigDefaults[K] } = {};
   if (config.hasPath(keys.numberOfShards)) out.numShards = config.getInt(keys.numberOfShards);
+  if (config.hasPath(keys.role)) {
+    // `""` is how a HOCON file says "no opinion" for a string whose absence is
+    // the real default — the same shape `dead-letters.persistence-id` uses.
+    // `reference.conf` merges under everything, so the shipped placeholder makes
+    // `hasPath` true forever; read unguarded it would put `role: ''` into every
+    // merged options object on every node that configured nothing.
+    const role = config.getString(keys.role);
+    if (role.length > 0) out.role = role;
+  }
   if (config.hasPath(keys.rememberEntities)) out.rememberEntities = config.getBoolean(keys.rememberEntities);
   if (config.hasPath(keys.passivationIdle)) out.passivationIdleMs = config.getDuration(keys.passivationIdle);
   // Absent from reference.conf on purpose, so this stays genuinely optional:
@@ -175,8 +394,121 @@ export function readShardingOptionsFromConfig(config: Config): ShardingConfigDef
     out.shardPassivationIdleMs = config.getDuration(keys.shardPassivationIdle);
   }
   if (config.hasPath(keys.maxEntities)) out.maxEntities = config.getInt(keys.maxEntities);
+  // The five `passivation.*` leaves (#848).  All of them are inert while
+  // `max-entities = 0` — a region without a cap builds no strategy at all — but
+  // they are read unconditionally, because the cap can arrive from the layer
+  // above and a key read only when another key is set is a key that silently
+  // does nothing.
+  if (config.hasPath(keys.passivationReplacement)) {
+    // Narrowed rather than cast, the shape `entity-recovery.strategy` uses:
+    // HOCON is untyped, so leaving an unrecognised literal in place is what lets
+    // `ShardingOptionsValidator` name the field and the bad value instead of the
+    // policy switch quietly falling back to LRU.
+    out.passivationReplacement = config.getString(keys.passivationReplacement) as EntityReplacementPolicy;
+  }
+  if (config.hasPath(keys.passivationSegmentedProtectedProportion)) {
+    // `getNumber`, not `getInt`: the leaf is a fraction and `getInt` throws on
+    // the 0.8 that ships.
+    out.passivationSegmentedProtectedProportion =
+      config.getNumber(keys.passivationSegmentedProtectedProportion);
+  }
+  if (config.hasPath(keys.passivationAdmissionWindowProportion)) {
+    out.passivationAdmissionWindowProportion =
+      config.getNumber(keys.passivationAdmissionWindowProportion);
+  }
+  if (config.hasPath(keys.passivationAdmissionFilter)) {
+    out.passivationAdmissionFilter = config.getString(keys.passivationAdmissionFilter) as EntityAdmissionFilter;
+  }
+  if (config.hasPath(keys.passivationStopTimeout)) {
+    out.passivationStopTimeoutMs = config.getDuration(keys.passivationStopTimeout);
+  }
+  if (config.hasPath(keys.bufferSize)) out.bufferSize = config.getInt(keys.bufferSize);
+  if (config.hasPath(keys.registerRetryInterval)) {
+    out.registerRetryIntervalMs = config.getDuration(keys.registerRetryInterval);
+  }
   if (config.hasPath(keys.rebalanceInterval)) out.rebalanceIntervalMs = config.getDuration(keys.rebalanceInterval);
   if (config.hasPath(keys.handOffTimeout)) out.handOffTimeoutMs = config.getDuration(keys.handOffTimeout);
+  if (config.hasPath(keys.rebalanceAbsoluteLimit)) {
+    out.rebalanceAbsoluteLimit = config.getInt(keys.rebalanceAbsoluteLimit);
+  }
+  if (config.hasPath(keys.rebalanceRelativeLimit)) {
+    // `getNumber`, not `getInt`: the leaf is a fraction of `numShards` and
+    // `getInt` throws on 0.1 — the shipped default (#850).
+    out.rebalanceRelativeLimit = config.getNumber(keys.rebalanceRelativeLimit);
+  }
+  if (config.hasPath(keys.acquireRetryInterval)) {
+    out.acquireRetryIntervalMs = config.getDuration(keys.acquireRetryInterval);
+  }
+  // Read as a flag only: whether a backend exists to honour it is decided where
+  // the coordinator is built, so a `withLease(…)` in code can still satisfy it.
+  if (config.hasPath(keys.useLease)) out.useLease = config.getBoolean(keys.useLease);
+  if (config.hasPath(keys.persistCoordinatorState)) {
+    out.persistCoordinatorState = config.getBoolean(keys.persistCoordinatorState);
+  }
+  if (config.hasPath(keys.coordinatorStateLoadTimeout)) {
+    out.coordinatorStateLoadTimeoutMs = config.getDuration(keys.coordinatorStateLoadTimeout);
+  }
+  if (config.hasPath(keys.shardRegionQueryTimeout)) {
+    out.shardRegionQueryTimeoutMs = config.getDuration(keys.shardRegionQueryTimeout);
+  }
+  if (config.hasPath(keys.entityRecoveryStrategy)) {
+    // Narrowed rather than cast: HOCON is untyped, so a misspelt strategy would
+    // otherwise reach `settingsToConfig` as a value the switch there does not
+    // know and be silently treated as `all` — the burst the operator was trying
+    // to remove.  Leaving an unrecognised literal in place is what lets
+    // `ShardingOptionsValidator` name the field and the bad value instead.
+    out.entityRecoveryStrategy = config.getString(keys.entityRecoveryStrategy) as EntityRecoveryStrategy;
+  }
+  if (config.hasPath(keys.entityRecoveryConstantRateFrequency)) {
+    out.entityRecoveryConstantRateFrequencyMs =
+      config.getDuration(keys.entityRecoveryConstantRateFrequency);
+  }
+  if (config.hasPath(keys.entityRecoveryConstantRateNumberOfEntities)) {
+    out.entityRecoveryConstantRateNumberOfEntities =
+      config.getInt(keys.entityRecoveryConstantRateNumberOfEntities);
+  }
+  // The three halves of stale-region detection (#853).  `enabled` reaches both
+  // the region (which beats) and the coordinator (which sweeps); the other two
+  // reach one side each, and `ClusterSharding.ensureCoordinator` is what splits
+  // them.
+  if (config.hasPath(keys.staleRegionDetection.enabled)) {
+    out.staleRegionDetection = config.getBoolean(keys.staleRegionDetection.enabled);
+  }
+  if (config.hasPath(keys.staleRegionDetection.heartbeatInterval)) {
+    out.regionHeartbeatIntervalMs = config.getDuration(keys.staleRegionDetection.heartbeatInterval);
+  }
+  if (config.hasPath(keys.staleRegionDetection.staleAfter)) {
+    out.regionStaleAfterMs = config.getDuration(keys.staleRegionDetection.staleAfter);
+  }
+  // The shard failure backoff (#1437).  `random-factor` is read as a plain
+  // number and bounded where the merged options are validated, like every
+  // range here: the file is one layer of several, and only the merged value is
+  // the one a region runs with.
+  if (config.hasPath(keys.shardFailureBackoff.min)) {
+    out.shardFailureBackoffMinMs = config.getDuration(keys.shardFailureBackoff.min);
+  }
+  if (config.hasPath(keys.shardFailureBackoff.max)) {
+    out.shardFailureBackoffMaxMs = config.getDuration(keys.shardFailureBackoff.max);
+  }
+  if (config.hasPath(keys.shardFailureBackoff.randomFactor)) {
+    out.shardFailureBackoffRandomFactor = config.getNumber(keys.shardFailureBackoff.randomFactor);
+  }
+  if (config.hasPath(keys.shardFailureBackoff.resetAfter)) {
+    out.shardFailureBackoffResetAfterMs = config.getDuration(keys.shardFailureBackoff.resetAfter);
+  }
+  // The entity restart backoff (#1437), read the way the shard backoff above is.
+  if (config.hasPath(keys.entityRestartBackoff.min)) {
+    out.entityRestartBackoffMinMs = config.getDuration(keys.entityRestartBackoff.min);
+  }
+  if (config.hasPath(keys.entityRestartBackoff.max)) {
+    out.entityRestartBackoffMaxMs = config.getDuration(keys.entityRestartBackoff.max);
+  }
+  if (config.hasPath(keys.entityRestartBackoff.randomFactor)) {
+    out.entityRestartBackoffRandomFactor = config.getNumber(keys.entityRestartBackoff.randomFactor);
+  }
+  if (config.hasPath(keys.entityRestartBackoff.resetAfter)) {
+    out.entityRestartBackoffResetAfterMs = config.getDuration(keys.entityRestartBackoff.resetAfter);
+  }
   return out;
 }
 

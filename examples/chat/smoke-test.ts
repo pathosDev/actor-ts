@@ -3,6 +3,13 @@
  *
  *   bun examples/chat/smoke-test.ts                          # default :8080
  *   bun examples/chat/smoke-test.ts ws://127.0.0.1:8080/ws   # explicit
+ *
+ * The first two talk to a backend you already started, so they need
+ * nothing of their own.  `--spawn-backend` starts one, and the child
+ * inherits this environment — so it needs the session-token secret
+ * every backend needs (#791):
+ *
+ *   export CHAT_ALLOW_DEMO_SECRET=1                          # or CHAT_TOKEN_SECRET
  *   bun examples/chat/smoke-test.ts --spawn-backend          # brings its own
  *
  * Verifies:
@@ -23,8 +30,10 @@
  *      token resumes a session, a revoked token resume is rejected,
  *      a tampered token resume is rejected.
  *
- * Run against a **single-node bootstrap** for reliable verification:
+ * Run against a **single-node bootstrap** for reliable verification
+ * (the backend wants its secret here too):
  *
+ *   export CHAT_ALLOW_DEMO_SECRET=1
  *   bun examples/chat/backend/main.ts --port 2551
  *   bun examples/chat/smoke-test.ts
  *

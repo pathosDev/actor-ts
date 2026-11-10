@@ -1,4 +1,7 @@
 import type { ActorRef } from './ActorRef.js';
+import type { LogContextData } from './LogContext.js';
+import type { SpanContext } from './tracing/Tracer.js';
+import { markFrameworkMessage } from './util/FrameworkMessage.js';
 
 /**
  * Gracefully stops an actor after it has processed all currently
@@ -70,11 +73,27 @@ const FRAMEWORK_TERMINATIONS = new WeakSet<Terminated>();
  * cell to `terminated` before calling it, which is what makes "branded"
  * equivalent to "the subject really is gone".
  */
-export function frameworkTerminated(actor: ActorRef): Terminated {
-  const terminated = new Terminated(actor);
+export function frameworkTerminated(actor: ActorRef, flags?: TerminatedFlags): Terminated {
+  const terminated = new Terminated(
+    actor,
+    flags?.existenceConfirmed ?? true,
+    flags?.addressTerminated ?? false,
+  );
   FRAMEWORK_TERMINATIONS.add(terminated);
   return terminated;
 }
+
+/**
+ * The two `Terminated` fields only a remote death can set (#918).  A local
+ * death has always seen its subject exist and never loses a node, so the
+ * local sites pass nothing and keep the constructor defaults.
+ */
+export type TerminatedFlags = {
+  /** `false` when the far node resolved the watched path to nothing. */
+  readonly existenceConfirmed?: boolean;
+  /** `true` when the notification was synthesised from the node leaving the cluster. */
+  readonly addressTerminated?: boolean;
+};
 
 /**
  * Did this runtime emit that `Terminated`?
@@ -97,6 +116,50 @@ export class ReceiveTimeout {
 }
 
 /**
+ * What the lost envelope was carrying besides its payload — the fields that
+ * say which *request* the loss belongs to rather than what was in it (#773).
+ *
+ * Both are the envelope's own, copied verbatim: `context` is the MDC snapshot
+ * `LocalActorRef.tell` took from the sender's scope, and `trace` is the span
+ * context that was active at the same moment.  Together they are what turns
+ * "a message to this actor was lost" into "*that* request lost a message" —
+ * the whole reason a counter is not an answer.
+ *
+ * **Grouped rather than two more positional parameters**, because
+ * {@link DeadLetter} is constructed at two dozen sites and a fourth and fifth
+ * argument of similar shape is a transposition waiting to happen.  It also
+ * leaves room: anything else the envelope carries that is worth preserving
+ * belongs here rather than in another parameter.
+ *
+ * Both fields are optional and normally absent.  A `tell` outside any
+ * `LogContext.run` carries no MDC, and a system with the tracing extension
+ * disabled carries no span — the envelope omits them in exactly those cases,
+ * and a letter built from one has nothing to copy.
+ */
+export type DeadLetterAttribution = {
+  /** The MDC snapshot the envelope carried.  See {@link LogContext}. */
+  readonly context?: LogContextData;
+  /** The span context the envelope carried.  See {@link Tracer}. */
+  readonly trace?: SpanContext;
+};
+
+/**
+ * Shared by every letter built without attribution — the overwhelming
+ * majority, since only the loss paths that still hold the envelope can supply
+ * one.
+ *
+ * A frozen singleton rather than a fresh `{}` default so the field can be
+ * non-optional at the reader (`letter.attribution.trace`, never
+ * `letter.attribution?.trace`) without charging an allocation to twenty-odd
+ * construction sites that have nothing to put in it.
+ *
+ * Stays in this file rather than moving to a `Constants.ts`: it is a sentinel
+ * over a type declared beside it, which is the same reason `Behaviors.ts`
+ * keeps its five `{ kind }` objects.
+ */
+const NO_ATTRIBUTION: DeadLetterAttribution = Object.freeze({});
+
+/**
  * Wraps an undeliverable message sent to dead letters.
  */
 export class DeadLetter {
@@ -104,7 +167,28 @@ export class DeadLetter {
     public readonly message: unknown,
     public readonly sender: ActorRef | null,
     public readonly recipient: ActorRef,
+    /**
+     * What the envelope was carrying beyond its payload, where the loss path
+     * still had the envelope to copy it from (#773).
+     *
+     * Empty everywhere else, and that is honest rather than lazy: a letter
+     * built from a bare message — a projection event, a singleton hand-off, a
+     * `Terminated` with no provenance — never had an MDC snapshot or a span
+     * context to lose, so an absent field says "there was none", not "we did
+     * not bother".
+     */
+    public readonly attribution: DeadLetterAttribution = NO_ATTRIBUTION,
   ) {}
+  /**
+   * Deliberately unchanged by the attribution (#773).
+   *
+   * The MDC routinely carries tenant, user and request identifiers, and this
+   * string is what an operator pastes into an issue.  `DeadLetterRef` already
+   * keeps the *payload* out of its log line for exactly that reason, and a
+   * `toString` that printed the context would put the same class of data back
+   * into the same place through a different door.  Anything that wants the
+   * attribution reads the field.
+   */
   toString(): string {
     return `DeadLetter(msg=${String(this.message)}, from=${this.sender ?? 'none'}, to=${this.recipient})`;
   }
@@ -246,3 +330,7 @@ export class AskTimeoutError extends Error {
     this.name = 'AskTimeoutError';
   }
 }
+
+// The framework's own messages, exempt from the message-boundary check
+// (#1386): each crosses the boundaries it needs to by its own mechanism.
+markFrameworkMessage(PoisonPill, Kill, Terminated, ReceiveTimeout, DeadLetter, ActorStarted, ActorStopped, ActorRestarted, DispatcherError, SchedulerError);

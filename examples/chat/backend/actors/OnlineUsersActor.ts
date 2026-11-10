@@ -11,6 +11,9 @@
  *      per room they care about; the actor lazily attaches a single
  *      DD-level subscription per room and broadcasts every change to
  *      all interested sessions.  Avoids N DD subscribers per room.
+ *      That subscription is this actor's own ref, so a change arrives
+ *      as a `DistributedDataChanged` and the broadcast runs on this
+ *      actor's turn, not on the replicator's.
  *   3. Lifecycle hygiene: when the last session unsubscribes from a
  *      room, the DD-level subscription is dropped too — clean
  *      resource teardown.
@@ -22,7 +25,7 @@
  */
 import { match } from 'ts-pattern';
 import { Actor, type ActorRef } from '../../../../src/index.js';
-import { DistributedDataId } from '../../../../src/crdt/index.js';
+import { DistributedDataId, type DistributedDataChanged } from '../../../../src/crdt/index.js';
 import type { DistributedDataHandle } from '../../../../src/crdt/DistributedData.js';
 import { ORSet } from '../../../../src/crdt/ORSet.js';
 import type { RoomName } from '../../shared/rooms.js';
@@ -48,6 +51,13 @@ export type UsersChanged = {
   readonly users: ReadonlyArray<string>;
 };
 
+/**
+ * Everything this actor is told: the protocol above, plus the change
+ * notifications of its own per-room subscriptions.  Spawned as this and
+ * handed to sessions as {@link OnlineUsersCommand}.
+ */
+type OnlineUsersInbox = OnlineUsersCommand | DistributedDataChanged<ORSet<string>>;
+
 /** DD key for a room's online-user set. */
 function ddKey(room: RoomName): string {
   return `online-users.${room}`;
@@ -56,18 +66,21 @@ function ddKey(room: RoomName): string {
 /* ------------------------------- internals ----------------------------- */
 
 type RoomState = {
+  /** The room this state's key belongs to — what a change is mapped back to. */
+  readonly room: RoomName;
   readonly subscribers: Set<ActorRef<UsersChanged>>;
   ddUnsubscribe: (() => void) | null;
-  /** Last fanned-out user list — reused for late `GetUsers` replies. */
+  /** Last known user list — what a session subscribing to the room is told first. */
   lastUsers: ReadonlyArray<string>;
 };
 
 /* ------------------------------- actor --------------------------------- */
 
-export class OnlineUsersActor extends Actor<OnlineUsersCommand> {
+export class OnlineUsersActor extends Actor<OnlineUsersInbox> {
   private dd!: DistributedDataHandle;
   private replicaId!: string;
-  private readonly rooms = new Map<RoomName, RoomState>();
+  /** Per DD key, so a change notification finds its room by the key it carries. */
+  private readonly rooms = new Map<string, RoomState>();
 
   override preStart(): void {
     // The DD extension must already have been started by main.ts
@@ -84,13 +97,14 @@ export class OnlineUsersActor extends Actor<OnlineUsersCommand> {
     this.rooms.clear();
   }
 
-  override onReceive(command: OnlineUsersCommand): void {
-    match(command)
+  override onReceive(message: OnlineUsersInbox): void {
+    match(message)
       .with({ kind: 'AddToRoom' }, (m) => this.onAddToRoom(m))
       .with({ kind: 'RemoveFromRoom' }, (m) => this.onRemoveFromRoom(m))
       .with({ kind: 'Subscribe' }, (m) => this.onSubscribe(m))
       .with({ kind: 'Unsubscribe' }, (m) => this.onUnsubscribe(m))
       .with({ kind: 'GetUsers' }, (m) => this.onGetUsers(m))
+      .with({ kind: 'distributed-data-changed' }, (m) => this.onDistributedDataChanged(m))
       .exhaustive();
   }
 
@@ -122,20 +136,19 @@ export class OnlineUsersActor extends Actor<OnlineUsersCommand> {
     state.subscribers.add(ref);
     // Replay the last-known value to the new subscriber so they don't
     // wait for the next change to populate their UI.
-    if (state.lastUsers.length > 0 || state.ddUnsubscribe) {
-      ref.tell({ kind: 'UsersChanged', room, users: state.lastUsers });
-    }
+    ref.tell({ kind: 'UsersChanged', room, users: state.lastUsers });
   }
 
   private onUnsubscribe(m: UnsubscribeCommand): void {
     const { room, ref } = m;
-    const state = this.rooms.get(room);
+    const key = ddKey(room);
+    const state = this.rooms.get(key);
     if (!state) return;
     state.subscribers.delete(ref);
     if (state.subscribers.size === 0) {
       // No locally interested sessions — drop the DD subscription too.
       state.ddUnsubscribe?.();
-      this.rooms.delete(room);
+      this.rooms.delete(key);
     }
   }
 
@@ -147,26 +160,43 @@ export class OnlineUsersActor extends Actor<OnlineUsersCommand> {
   }
 
   private ensureRoomState(room: RoomName): RoomState {
-    const existing = this.rooms.get(room);
+    const key = ddKey(room);
+    const existing = this.rooms.get(key);
     if (existing) return existing;
+    // The subscription replays the key's value as a message, handled
+    // after the `Subscribe` that got here — start from it now, or that
+    // session would first be told an empty list.
+    const current = this.dd.get<ORSet<string>>(key);
     const state: RoomState = {
+      room,
       subscribers: new Set(),
       ddUnsubscribe: null,
-      lastUsers: [],
+      lastUsers: current ? [...current.value()] : [],
     };
-    this.rooms.set(room, state);
-    state.ddUnsubscribe = this.dd.subscribe<ORSet<string>>(ddKey(room), (next) => {
-      const users = [...next.value()];
-      state.lastUsers = users;
-      const evt: UsersChanged = { kind: 'UsersChanged', room, users };
-      for (const sub of state.subscribers) {
-        try {
-          sub.tell(evt);
-        } catch (e) {
-          this.log.warn(`OnlineUsersActor: subscriber for ${room} threw`, e);
-        }
-      }
-    });
+    this.rooms.set(key, state);
+    state.ddUnsubscribe = this.dd.subscribe<ORSet<string>>(key, this.self);
     return state;
+  }
+
+  /* ------------------------ DistributedData change --------------------- */
+
+  /**
+   * A room's key changed, told on this actor's turn.  A key with no state
+   * here had its last session leave after this notification was queued:
+   * the subscription ended with that session, and nobody is left to tell.
+   */
+  private onDistributedDataChanged(m: DistributedDataChanged<ORSet<string>>): void {
+    const state = this.rooms.get(m.key);
+    if (state === undefined) return;
+    const users = [...m.value.value()];
+    state.lastUsers = users;
+    const event: UsersChanged = { kind: 'UsersChanged', room: state.room, users };
+    for (const subscriber of state.subscribers) {
+      try {
+        subscriber.tell(event);
+      } catch (e) {
+        this.log.warn(`OnlineUsersActor: subscriber for ${state.room} threw`, e);
+      }
+    }
   }
 }

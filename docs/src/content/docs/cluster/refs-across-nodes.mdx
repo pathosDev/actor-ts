@@ -140,6 +140,32 @@ the cluster's own machinery (sharding region, singleton proxy,
 event-stream subscriber) — `actorSelection` is the lookup
 escape hatch.
 
+### Building a ref by hand
+
+When you already know the node's address and the actor's name — a
+worker mesh's `mesh.refFor(address, path)` is exactly this — a
+`RemoteActorRef` can be built directly.  Its constructor accepts two
+spellings of the path: the bare `/user/name` form and the full
+`actor-ts://<system>/user/name` form.  The bare form resolves against
+the **target node's** system name, and whichever you write, the ref
+carries the full form everywhere it matters — as the envelope's target
+on the wire, in the `watch` frame, in `ref.path` and in `equals` — so
+the two spellings name one actor.  (Before #1568 the bare form was
+accepted and silently addressed the system root: every message to it
+was dropped on the far side, and an `ask` timed out naming
+`actor-ts://my-app/`.)
+
+```ts
+import { Cluster, NodeAddress, RemoteActorRef } from 'actor-ts/cluster';
+
+const cluster = await Cluster.join(system, clusterOptions);
+const worker = new NodeAddress('my-app', '10.0.0.6', 2552);
+
+const bare = new RemoteActorRef<Job>(worker, '/user/worker', cluster);
+const full = new RemoteActorRef<Job>(worker, 'actor-ts://my-app/user/worker', cluster);
+bare.equals(full);       // true — both carry actor-ts://my-app/user/worker
+```
+
 ## What happens when the remote node disappears
 
 ```ts
@@ -160,14 +186,28 @@ Two ways to detect this:
 
 - **`context.watch(remoteRef)`** — receive a `Terminated`
   notification when the remote actor stops *or* the remote node
-  goes unreachable+downed.  The `Terminated.addressTerminated`
-  flag distinguishes "actor stopped" from "node lost."
+  is downed or removed.  The `Terminated.addressTerminated`
+  flag distinguishes "actor stopped" from "node lost", and
+  `existenceConfirmed` is `false` for a path the far node could
+  not resolve.
 - **Subscribe to cluster events** — `MemberRemoved` /
   `MemberUnreachable` for the host's address tells you the
   whole node is gone.
 
 See [Death watch](/fundamentals/death-watch/) for the
 per-actor variant.
+
+### The sender comes along
+
+A message told to a `RemoteActorRef` carries its sender's path in
+the envelope, and the receiving node rebuilds it: inside the
+target actor `context.sender` is a `RemoteActorRef` back to the
+actor that sent the message, on whichever node it lives, exactly
+as it would be a local ref for a local sender.  So replying
+through `this.sender` works across nodes, and a sender-less `tell`
+still arrives with `context.sender` empty.  Nothing about the
+message has to change for this — the path was always on the wire;
+it used to be dropped on delivery.
 
 ## Serialization
 
@@ -197,7 +237,8 @@ still does not survive:
   being an invisible data loss.
 - **Symbols** — refused the same way.
 - **Class identity** — methods are lost and the value arrives as a
-  plain object; only the `tag` string (the constructor name) travels.
+  plain object, and nothing about its class travels with it: the
+  envelope carries no type name.  Tell messages apart by their `kind`.
 
 Registering a custom serializer changes none of this — the cluster
 wire never consults the registry

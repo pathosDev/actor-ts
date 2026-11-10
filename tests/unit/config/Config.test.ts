@@ -158,6 +158,45 @@ describe('Config.load', () => {
     const config = Config.load({ appConfPath: '/no/such/file.conf' });
     expect(config.getInt('actor-ts.sharding.number-of-shards')).toBe(64);
   });
+
+  test('ignores a missing secrets file silently (#1546)', () => {
+    const config = Config.load({ appConfPath: '/no/such/file.conf', secretsConfPath: '/no/such/secrets.conf' });
+    expect(config.getInt('actor-ts.sharding.number-of-shards')).toBe(64);
+    expect(config._sources()!.secretsFound).toBe(false);
+  });
+
+  test('a parse keeps a profiles block as an ordinary key — only load reads it as profiles (#1546)', () => {
+    // `parseString` and `parseFile` are the raw parser, and a `Config` built
+    // from them has no layers to lay a profile over.
+    const config = Config.parseString('profiles.production.my-app.x = 1');
+    expect(config.getInt('profiles.production.my-app.x')).toBe(1);
+  });
+});
+
+describe('Config._hasPathSegments — a path already cut into its keys (#1546)', () => {
+  // A quoted HOCON key may hold a dot.  A dotted path cannot name it — `hasPath`
+  // cuts at every dot — so the config dump asks by segments instead.
+  const config = Config.parseString('my-app { "stripe.live" = "x", region { name = "eu" } }');
+
+  test('a quoted key holding a dot is one segment', () => {
+    expect(config._hasPathSegments(['my-app', 'stripe.live'])).toBe(true);
+    expect(config._hasPathSegments(['my-app', 'stripe', 'live'])).toBe(false);
+    expect(config.hasPath('my-app.stripe.live')).toBe(false);
+  });
+
+  test('it answers what hasPath answers for the same keys', () => {
+    expect(config._hasPathSegments(['my-app', 'region', 'name'])).toBe(true);
+    expect(config._hasPathSegments(['my-app', 'region'])).toBe(true);
+    expect(config._hasPathSegments(['my-app', 'region.name'])).toBe(false);
+    expect(config._hasPathSegments(['my-app', 'region', 'name', 'deeper'])).toBe(false);
+  });
+
+  test('it reads own properties only, as hasPath does', () => {
+    for (const member of ['toString', 'constructor', '__proto__']) {
+      expect(config._hasPathSegments([member])).toBe(false);
+      expect(config._hasPathSegments(['my-app', member])).toBe(false);
+    }
+  });
 });
 
 describe('Config reads own properties only (#589)', () => {
@@ -202,5 +241,157 @@ describe('Config reads own properties only (#589)', () => {
     const config = Config.fromObject(JSON.parse('{"outer":{"__proto__":{"nestedPwned":1},"b":2}}'));
     expect(config.toJSON()).toEqual({ outer: { b: 2 } });
     expect(({} as Record<string, unknown>).nestedPwned).toBeUndefined();
+  });
+});
+
+// #589 hardened the config *key* path; this is the *value* path it left open.
+// The two keys below are the reason it matters rather than being caught
+// downstream: neither has an options validator between the parse and the
+// runtime effect, so the NaN used to arrive intact at a timer.
+describe('Config reads durations and sizes own-property-only (#785)', () => {
+  test('a poisoned unit on shutdown-drain-timeout throws instead of yielding NaN', () => {
+    const config = Config.parseString('actor-ts { system { shutdown-drain-timeout = 1constructor } }');
+    expect(() => config.getDuration('actor-ts.system.shutdown-drain-timeout')).toThrow(
+      /Unknown duration unit "constructor"/,
+    );
+  });
+
+  test('a poisoned unit on default-phase-timeout throws instead of yielding NaN', () => {
+    const config = Config.parseString(
+      'actor-ts { coordinated-shutdown { default-phase-timeout = 1constructor } }',
+    );
+    expect(() => config.getDuration('actor-ts.coordinated-shutdown.default-phase-timeout')).toThrow(
+      /Unknown duration unit "constructor"/,
+    );
+  });
+
+  test('a poisoned unit on a byte bound throws instead of disabling the cap', () => {
+    // `limit > NaN` is false, so a NaN cap compares false against everything.
+    const config = Config.parseString('actor-ts { cluster { remote { max-frame-bytes = 1constructor } } }');
+    expect(() => config.getBytes('actor-ts.cluster.remote.max-frame-bytes')).toThrow(
+      /Unknown size unit "constructor"/,
+    );
+  });
+
+  test('a legitimate duration and size are unaffected', () => {
+    const config = Config.parseString('d = 2s\nsz = 4 KiB');
+    expect(config.getDuration('d')).toBe(2_000);
+    expect(config.getBytes('sz')).toBe(4096);
+  });
+});
+
+// #785 hardened `parseDuration` / `parseSize`, which is only half the path.
+// `getDuration` and `getBytes` short-circuit on `typeof value === 'number'` and
+// hand the value back without ever calling a parser, so the postcondition those
+// two functions now promise was simply not on the numeric branch — and `NaN` and
+// `Infinity` are both `'number'` to `typeof`.
+//
+// The two branches are reachable from different places, which is why both are
+// pinned below.  A *numeric* non-finite value needs a code-supplied overrides
+// object (`ActorSystemOptions.withConfig`, `Config.fromObject`) — HOCON text
+// cannot carry one, because `HoconParser` tests `Number.isFinite` on a numeric
+// literal and falls back to a string.  That fallback is exactly what leaves
+// `getNumber` open on its *string* branch: the overflowing literal arrives as a
+// string, `getNumber`'s own numeric regex matches it, and `Number(...)` returns
+// the `Infinity` the parser refused to produce.  So `getNumber` is reachable
+// from an `application.conf` a user wrote, not only from code.
+describe('Config refuses a non-finite number, duration or size (#1513)', () => {
+  test('a NaN drain budget is refused, and the error names the key', () => {
+    // `Number(process.env.DRAIN_MS)` with the variable unset is the realistic
+    // origin, and it is nowhere near the key it lands on — so naming the path
+    // is the whole value of failing here rather than at the timer.
+    const config = Config.fromObject({
+      'actor-ts': { system: { 'shutdown-drain-timeout': Number.NaN } },
+    });
+    expect(() => config.getDuration('actor-ts.system.shutdown-drain-timeout')).toThrow(ConfigError);
+    expect(() => config.getDuration('actor-ts.system.shutdown-drain-timeout')).toThrow(
+      /Config at "actor-ts\.system\.shutdown-drain-timeout" is not a finite duration \(got NaN\)/,
+    );
+  });
+
+  test('an infinite duration is refused in both signs', () => {
+    const positive = Config.fromObject({ d: Number.POSITIVE_INFINITY });
+    expect(() => positive.getDuration('d')).toThrow(/is not a finite duration \(got Infinity\)/);
+    const negative = Config.fromObject({ d: Number.NEGATIVE_INFINITY });
+    expect(() => negative.getDuration('d')).toThrow(/is not a finite duration \(got -Infinity\)/);
+  });
+
+  test('a non-finite byte bound is refused instead of disabling the cap', () => {
+    // `limit > NaN` and `limit > Infinity` are both false, so either one turns
+    // a frame cap into no cap at all.
+    const notANumber = Config.fromObject({
+      'actor-ts': { cluster: { remote: { 'max-frame-bytes': Number.NaN } } },
+    });
+    expect(() => notANumber.getBytes('actor-ts.cluster.remote.max-frame-bytes')).toThrow(
+      /Config at "actor-ts\.cluster\.remote\.max-frame-bytes" is not a finite size \(got NaN\)/,
+    );
+    const infinite = Config.fromObject({
+      'actor-ts': { cluster: { remote: { 'max-frame-bytes': Number.POSITIVE_INFINITY } } },
+    });
+    expect(() => infinite.getBytes('actor-ts.cluster.remote.max-frame-bytes')).toThrow(
+      /is not a finite size \(got Infinity\)/,
+    );
+  });
+
+  test('getNumber refuses a non-finite numeric override', () => {
+    // The same class one branch over: `getInt` was already safe by accident,
+    // because `Number.isInteger` is false for both, but `getNumber` feeds
+    // thresholds that are compared with `>` — `unreachable-threshold`,
+    // `down-threshold` — where an Infinity never trips and downing stops.
+    expect(() => Config.fromObject({ n: Number.NaN }).getNumber('n')).toThrow(
+      /Config at "n" is not a finite number \(got NaN\)/,
+    );
+    expect(() => Config.fromObject({ n: Number.POSITIVE_INFINITY }).getNumber('n')).toThrow(
+      /is not a finite number \(got Infinity\)/,
+    );
+  });
+
+  test('getNumber refuses an overflowing literal written in HOCON text', () => {
+    // Not a code override: the parser keeps a literal this long as a *string*
+    // precisely because it is not finite, and `getNumber`'s string branch then
+    // `Number()`s it back into the Infinity the parser declined to build.
+    const config = Config.parseString(`n = ${'9'.repeat(400)}`);
+    expect(() => config.getNumber('n')).toThrow(/is not a finite number \(got Infinity\)/);
+    expect(() => config.getInt('n')).toThrow(ConfigError);
+  });
+
+  // The other direction, and the one that catches an over-broad fix: routing
+  // the numeric branch through `parseDuration` / `parseSize` instead of
+  // checking it would change what comes back.  Every finite duration and
+  // number has to come back exactly as it went in, fractions included, and so
+  // does every size that is a whole number of bytes.
+  test('a finite numeric value is returned unchanged, a fraction included wherever it is no size', () => {
+    const config = Config.fromObject({ whole: 1_500, fraction: 1.7, negative: -500, zero: 0 });
+    expect(config.getDuration('whole')).toBe(1_500);
+    expect(config.getDuration('fraction')).toBe(1.7);
+    expect(config.getDuration('negative')).toBe(-500);
+    expect(config.getBytes('whole')).toBe(1_500);
+    expect(config.getBytes('zero')).toBe(0);
+    expect(config.getNumber('fraction')).toBe(1.7);
+    expect(config.getNumber('zero')).toBe(0);
+  });
+
+  // A size is a whole number of bytes (#1728), and a bare number never reaches
+  // `parseSize`, so `getBytes` checks it itself — where, unlike the parser, it
+  // knows the key.  It used to hand a bare fraction back as it was.
+  test('getBytes refuses a bare fraction, from code and from HOCON alike, naming the key', () => {
+    const fromCode = Config.fromObject({ fraction: 1.7 });
+    expect(() => fromCode.getBytes('fraction')).toThrow(ConfigError);
+    expect(() => fromCode.getBytes('fraction')).toThrow('Config at "fraction" is not a whole number of bytes (got 1.7)');
+    const fromHocon = Config.parseString('a.max-bytes = 10.5');
+    expect(() => fromHocon.getBytes('a.max-bytes')).toThrow(
+      'Config at "a.max-bytes" is not a whole number of bytes (got 10.5)',
+    );
+    // A whole number written with a decimal point is a whole number of bytes.
+    expect(Config.parseString('a = 1420.0').getBytes('a')).toBe(1_420);
+  });
+
+  test('the string branches keep the messages #785 gave them', () => {
+    // A fix applied to the wrong layer — hardening `requireValue`, say — would
+    // change what a bad *string* reports, and these two messages are what
+    // `Duration.test.ts` and `Size.test.ts` pin the parsers on.
+    const config = Config.parseString('d = 1constructor\nsz = 1constructor');
+    expect(() => config.getDuration('d')).toThrow(/Unknown duration unit "constructor"/);
+    expect(() => config.getBytes('sz')).toThrow(/Unknown size unit "constructor"/);
   });
 });

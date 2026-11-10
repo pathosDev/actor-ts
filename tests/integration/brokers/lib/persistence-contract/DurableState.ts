@@ -3,8 +3,23 @@
  * the live Docker suites (#390).
  */
 import { DurableStateConcurrencyError } from '../../../../../src/persistence/DurableStateStore.js';
+import type { PersistenceOptions } from '../../../../../src/persistence/PersistenceOptions.js';
 import { assert, assertEqual, expectThrows } from './Assert.js';
 import { closeQuietly, type ContractScenario, type DurableStateHarness } from './Types.js';
+
+/** Fixture master key for the capability-conformance scenario — 32 bytes (#960). */
+const CAPABILITY_MASTER_KEY = new Uint8Array(32).fill(0x2f);
+
+/** HKDF context string; required on every client-side encryption config (#108). */
+const CAPABILITY_HKDF_INFO = 'actor-ts/contract/durable-state/v1';
+
+const capabilityProbeOptions: PersistenceOptions = {
+  encryption: {
+    mode: 'client-aes256-gcm',
+    masterKey: CAPABILITY_MASTER_KEY,
+    info: CAPABILITY_HKDF_INFO,
+  },
+};
 
 export function durableStateContractScenarios(): ContractScenario<DurableStateHarness>[] {
   return [
@@ -150,6 +165,50 @@ export function durableStateContractScenarios(): ContractScenario<DurableStateHa
           // high-water mark, durable state has no history to protect.
           const reinserted = await store.upsert(persistenceId, 0, { v: 'b' });
           assertEqual(reinserted.revision, 1, 're-insert starts at revision 1');
+        } finally {
+          await closeQuietly(store);
+        }
+      },
+    },
+    {
+      /**
+       * Twin of the snapshot family's capability-conformance scenario — see
+       * the commentary there for why the probe reads back keyless (#960).
+       * It matters more on this contract, because `DurableStateActor`
+       * *reads* in `preStart` before it ever writes: a declaration that lied
+       * about encryption here would hand the actor a plaintext record it
+       * believes was ciphertext, with no write involved at all.
+       */
+      name: 'the persistenceOptionSupport declaration matches what encryption does',
+      async run(harness) {
+        const store = await harness.make();
+        const persistenceId = harness.pid('option-support');
+        type Probe = { readonly secret: string };
+        try {
+          // Sniffed here, not in `skip`, which runs before `make()`.
+          const support = store.persistenceOptionSupport;
+          if (support === undefined) return;
+          await store.upsert<Probe>(persistenceId, 0, { secret: 'probe' }, capabilityProbeOptions);
+          let plain: Probe | null | 'unreadable';
+          try {
+            plain = (await store.load<Probe>(persistenceId)).toNullable()?.state ?? null;
+          } catch {
+            plain = 'unreadable';
+          }
+          if (support.encryption) {
+            assert(
+              plain === 'unreadable' || plain?.secret !== 'probe',
+              'a store declaring encryption support must not yield the plaintext to a keyless read',
+            );
+            const keyed = (await store.load<Probe>(persistenceId, capabilityProbeOptions)).toNullable();
+            assertEqual(keyed?.state.secret, 'probe', 'the keyed read recovers the state');
+          } else {
+            assertEqual(
+              plain, { secret: 'probe' },
+              'a store declaring no encryption support must have stored the state unchanged — '
+              + 'if this read failed, the store acts on options it declares it ignores',
+            );
+          }
         } finally {
           await closeQuietly(store);
         }

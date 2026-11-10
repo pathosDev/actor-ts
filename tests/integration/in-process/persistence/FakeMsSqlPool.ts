@@ -47,6 +47,19 @@ const tableAfter = (sql: string, keyword: string): string => {
 };
 /** Strip brackets so the shared and dialect-owned statements match one branch. */
 const unbracket = (sql: string): string => sql.replace(/\[([A-Za-z_][A-Za-z0-9_]*)\]/g, '$1');
+/**
+ * What a stock SQL Server instance puts on a character column that names no
+ * collation — and a case-*insensitive* one, which is the whole of #707.
+ * Modelling it rather than reporting "no collation" is what lets the startup
+ * advisory's catalogue read be exercised here: the identity columns come back
+ * with the `BIN2` pin the DDL wrote, the payloads with this, and the advisory
+ * has to tell those apart.
+ */
+const INSTANCE_DEFAULT_COLLATION = 'SQL_Latin1_General_CP1_CI_AS';
+/** Character columns of one `CREATE TABLE`, as `column -> declared collation`. */
+const CHARACTER_COLUMNS = /(\w+)\s+N?VARCHAR\((?:MAX|\d+)\)(?:\s+COLLATE\s+(\w+))?/gi;
+/** Everything else the DDL declares — `sys.columns` reports those with no collation. */
+const NON_CHARACTER_COLUMNS = /(\w+)\s+(?:BIGINT|INT)\b/gi;
 
 export class FakeMsSqlPool implements MsSqlPoolLike {
   private readonly events = new Map<string, EventRow[]>();
@@ -55,6 +68,8 @@ export class FakeMsSqlPool implements MsSqlPoolLike {
   private readonly states = new Map<string, Map<string, StateRow>>();
   /** Compaction high-water mark: meta table → persistence id → deleted_to. */
   private readonly meta = new Map<string, Map<string, number>>();
+  /** Catalogue: table → column → collation, as the DDL declared it (#1412). */
+  private readonly collations = new Map<string, Map<string, string | null>>();
   closed = false;
   /** Every statement text, in order — lets tests assert on the issued SQL. */
   readonly log: string[] = [];
@@ -93,7 +108,18 @@ export class FakeMsSqlPool implements MsSqlPoolLike {
     const argument = (name: string): unknown => params.get(name);
 
     if (/^IF OBJECT_ID/i.test(sql) || /^IF NOT EXISTS \(SELECT 1 FROM sys\.indexes/i.test(sql)) {
+      if (/CREATE TABLE/i.test(sql)) this.recordCollations(tableAfter(sql, 'CREATE TABLE'), sql);
       return rowsOnly([]);
+    }
+
+    // The startup collation advisory's catalogue read (#1412).  Answered
+    // rather than rejected because the probe swallows a failure by design, so
+    // a fake that threw here would leave the whole path unexercised in the
+    // fast pass — which is exactly how the identity columns' pin could regress
+    // without anything noticing.
+    if (/^SELECT c\.name AS column_name/i.test(sql)) {
+      const declared = this.collations.get(String(argument('p1'))) ?? new Map<string, string | null>();
+      return rowsOnly([...declared].map(([column_name, collation_name]) => ({ column_name, collation_name })));
     }
 
     /* ------------------------------- journal ------------------------------ */
@@ -293,6 +319,26 @@ export class FakeMsSqlPool implements MsSqlPoolLike {
     }
 
     throw new Error(`FakeMsSqlPool: unrecognised statement: ${sql}`);
+  }
+
+  /**
+   * Remember what collation each column of a `CREATE TABLE` was declared with,
+   * so the catalogue read above answers what an instance would.  A character
+   * column with no `COLLATE` clause inherits the (case-insensitive) instance
+   * default; everything else has no collation at all.
+   */
+  private recordCollations(table: string, sql: string): void {
+    // The guarded `CREATE TABLE` is a no-op on a table that already exists —
+    // which is exactly the #707 trap the advisory reports, so the fake has to
+    // model it: a table created before the pin keeps the collation it was
+    // created with, however often the store re-issues its DDL.
+    if (this.collations.has(table)) return;
+    const declared = new Map<string, string | null>();
+    for (const [, column, collation] of sql.matchAll(CHARACTER_COLUMNS)) {
+      declared.set(column!, collation ?? INSTANCE_DEFAULT_COLLATION);
+    }
+    for (const [, column] of sql.matchAll(NON_CHARACTER_COLUMNS)) declared.set(column!, null);
+    this.collations.set(table, declared);
   }
 }
 

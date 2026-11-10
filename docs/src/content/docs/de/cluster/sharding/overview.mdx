@@ -268,7 +268,8 @@ type ShardingOptionsType<TMessage> = {
   rememberEntities?:       boolean;           // Entities bei Failover neu spawnen (#)
   passivationIdleMs?:      number;            // idle Entities auto-stoppen, Default 5 min
   shardPassivationIdleMs?: number;            // leere Shards auto-stoppen, folgt obigem
-  maxEntities?:            number;            // LRU-Cap pro Node
+  maxEntities?:            number;            // Cap für residente Entities, pro Typ pro Node
+  passivationReplacement?: EntityReplacementPolicy;  // welche Entity das Cap hergibt
 };
 ```
 
@@ -278,16 +279,58 @@ type ShardingOptionsType<TMessage> = {
 | `extractEntityId(message)` | Zieh die Entity-ID aus einer Nachricht. Das ist der Key, der zu einem Shard gehasht wird. |
 | `extractEntityMessage(message)` | *(Optional)* Wenn der Nachrichten-Envelope Routing-Info plus eine Payload enthält, entfernt das den Envelope, bevor die Entity ihn sieht. Default ist die Nachricht unverändert. |
 | `numShards` | In wie viele Shards der Entity-Raum aufgeteilt wird. 64 reichen für die meisten Cluster; setze auf 1000 für sehr große Cluster (>50 Nodes). **Muss auf jedem Node identisch sein, der diesen Typ startet oder proxyt** — siehe unten. |
-| `role` | Nur Mitglieder mit dieser Rolle hosten Shards dieses Typs. Nützlich, um compute-schwere Entities auf dedizierten Nodes zu platzieren. |
+| `role` | Nur Mitglieder mit dieser Rolle hosten Shards dieses Typs. Nützlich, um compute-schwere Entities auf dedizierten Nodes zu platzieren. Auch node-weit setzbar als `actor-ts.sharding.role` — siehe [Platzierung aus der Config-Datei](#platzierung-aus-der-config-datei). |
 | `proxy` | Dieser Node *leitet* Nachrichten an die Region weiter, hostet aber nie lokale Entities. Wird für Client-Nodes in einem asymmetrischen Cluster verwendet. |
 | `rememberEntities` | Persistiere die Menge der *aktiven* Entity-IDs. Nach einem Koordinator-Failover (oder vollem Cluster-Neustart) werden diese IDs eager gespawnt, sodass Nachrichten nicht die gesamte Flotte neu erstellen müssen. |
 | `passivationIdleMs` | Stoppt eine Entity nach so viel Leerlaufzeit. Befreit Speicher; die nächste Nachricht für dieselbe ID erstellt die Entity neu. Default sind **5 Minuten**; `0` schaltet es ab. |
 | `shardPassivationIdleMs` | Stoppt einen Shard, nachdem er so lange leer stand. Ungesetzt folgt er `passivationIdleMs`; `0` hält leere Shards resident, während Entities weiterhin passivieren. |
-| `maxEntities` | Per-Node-Cap. Wird er überschritten, wird die LRU-Entity passiviert. |
+| `maxEntities` | Wie viele Entities **dieses Typs** auf **diesem Node** resident sein dürfen. Wird das überschritten, wird eine passiviert, um Platz zu machen. `0` (Default) heißt kein Cap. Nicht node-weit: zwei gestartete Typen bekommen je die volle Zahl. |
+| `passivationReplacement` | Welche residente Entity das Cap hergibt — `'least-recently-used'` (Default), `'segmented-least-recently-used'` oder `'least-frequently-used'`. Bei `maxEntities` `0` wirkungslos; siehe [Wählen, was ein voller Node hergibt](#wählen-was-ein-voller-node-hergibt). |
 
 Die Defaults sind sinnvoll für kleine Cluster. Für Produktion
 willst du meistens `rememberEntities: true` und ein
 `passivationIdleMs` passend zu deinem Verkehrsmuster.
+
+### Platzierung aus der Config-Datei
+
+`role` ist die einzige Platzierungsoption mit einem HOCON-Key, denn *welche*
+Rolle einen Typ hostet, ist über ein Deployment hinweg einheitlich:
+
+```hocon
+actor-ts.sharding.role = "backend"
+```
+
+Der Key gilt für jeden auf dem Node gestarteten Sharded Type ohne eigenes
+`withRole`, und ein explizites `withRole` sticht ihn weiterhin — die übliche
+Reihenfolge **explizite Optionen > HOCON > Built-in-Defaults**, pro Feld.
+
+Was er nicht tut: einem Node die Rolle geben. Die *eigenen* Rollen eines Nodes
+sind eine eigene Einstellung, und zwar eine pro Node, während `sharding.role`
+überall gleich ist: `ClusterOptions.withRoles` im Code oder
+[`actor-ts.cluster.roles`](/de/reference/configuration/#actor-tscluster) in
+der Config des Nodes, meist aus seiner Umgebung befüllt:
+
+```hocon
+actor-ts.cluster.roles = [ ${?NODE_ROLE} ]
+```
+
+```ts
+const clusterOptions = ClusterOptions.create()
+  .withHost('10.0.0.7')
+  .withPort(2551)
+  .withRoles(['backend']);
+```
+
+Setzt du nur `sharding.role` und kein Mitglied passt dazu, findet der
+Koordinator keinen Kandidaten, es wird nie etwas zugeteilt, und jede Nachricht
+für den Typ staut sich im Routing-Puffer der Region. Still ist das nicht — der
+Koordinator warnt einmal mit der Rolle, der Zahl der ausgeschlossenen
+registrierten Regionen und beiden Stellen, an denen ein Node seine Rollen
+deklariert — aber es ist eine Warnung und kein Startfehler, also lies sie.
+
+`proxy` hat bewusst keinen Key: Es ist Topologie pro Node, ein zweites `start`
+mit abweichendem Wert wirft, und ein von allen Nodes geteiltes `proxy = on`
+ließe niemanden mehr etwas hosten.
 
 ### `numShards` ist eine clusterweite Vereinbarung
 
@@ -373,9 +416,11 @@ lokal ein Shard landet.
 Fünf davon sind auch HOCON-Keys — `number-of-shards`,
 `remember-entities`, `passivation-idle`, `shard-passivation-idle` und
 `max-entities` — ebenso die Koordinator-Keys `rebalance-interval` und
-`hand-off-timeout`. Sie setzen die node-weite Grundeinstellung für
-jeden sharded Typ und liegen *unter* dem, was `start(...)` explizit
-übergibt — ein Per-Typ-Wert im Builder gewinnt also weiterhin. Siehe
+`hand-off-timeout` sowie der ganze `passivation`-Unterblock, der
+entscheidet, welche Entity das Cap hergibt. Sie setzen die node-weite
+Grundeinstellung für jeden sharded Typ und liegen *unter* dem, was
+`start(...)` explizit übergibt — ein Per-Typ-Wert im Builder gewinnt also
+weiterhin. Siehe
 [Konfiguration](/de/reference/configuration/#actor-tssharding).
 
 ```hocon
@@ -383,6 +428,7 @@ actor-ts.sharding {
   number-of-shards = 128
   passivation-idle = 2 minutes
   max-entities     = 50000
+  passivation.replacement = segmented-least-recently-used
 }
 ```
 
@@ -410,12 +456,12 @@ auf, oder setze für diesen Typ `passivationIdleMs: 0`.
 :::
 
 **Automatisch** — wenn `passivationIdleMs` ohne Verkehr abläuft oder
-`maxEntities` überschritten wird (die LRU-Entity wird verdrängt), wird
-die Entity gestoppt. Es wird nichts an die Entity geschickt, und es
-gibt keine Quittung. Die *Entscheidung* trifft die Region, weil nur sie
-den Verkehr über alle Shards dieses Nodes sieht — deshalb ist
-`maxEntities` eine Obergrenze pro Node, nicht pro Shard — und der Shard,
-dem die Entity gehört, führt sie aus.
+`maxEntities` überschritten wird (verdrängt wird die Entity, die die
+Ersetzungsstrategie benennt), wird die Entity gestoppt. Es wird nichts an
+die Entity geschickt, und es gibt keine Quittung. Die *Entscheidung*
+trifft die Region, weil nur sie den Verkehr über alle Shards dieses Nodes
+sieht — deshalb ist `maxEntities` eine Obergrenze pro Typ pro Node, nicht
+pro Shard — und der Shard, dem die Entity gehört, führt sie aus.
 
 **Manuell (graceful)** — eine Entity bittet darum, passiviert zu
 werden, indem sie ein `Passivate` an ihren Parent schickt, also an ihren
@@ -456,6 +502,66 @@ class CartActor extends Actor<CartCommand> {
 }
 ```
 
+Die Stop-Nachricht ist eine *Bitte*: die Entity entscheidet, wann sie darauf
+reagiert. Tut sie es nie, terminiert sie nie — und ihr Platz bleibt für die
+Lebensdauer des Nodes gegen `maxEntities` belegt. `passivationStopTimeoutMs`
+(`actor-ts.sharding.passivation.stop-timeout`) ist die Rückfallebene dafür:
+danach stoppt der Shard die Entity hart, genau so, wie es eine von der Region
+getriebene Passivierung tut.
+
+Sie ist **standardmäßig aus** (`0`, unbegrenztes Warten), und zwar weil der
+kooperative Vertrag der Punkt ist. Eine Entity mitten im Leeren — ein langer
+Flush, ein langsamer letzter Write — darf so lange brauchen, wie das Leeren
+dauert, und ein harter Stopp bricht diesen Flush ab; nur du weißt, wie lange
+deiner legitim laufen darf. Setze sie dort, wo eine Entity, die nie auf die
+Nachricht reagiert, ein Fehler wäre, den es einzudämmen gilt. Sie ist von
+`maxEntities` unabhängig: ein positiver Wert schärft sie mit oder ohne Cap.
+
+### Wählen, was ein voller Node hergibt
+
+`maxEntities` sagt, **wie viele** Entities resident bleiben;
+`passivationReplacement` sagt, **welche geht**, wenn eine neue dazukommt. Jeder
+Regler hier ist wirkungslos, solange `maxEntities` `0` ist — der Default.
+
+Die Default-Strategie `'least-recently-used'` hat einen blinden Fleck:
+Aktualität kann *einmal überhaupt benutzt* nicht von *bis eben ständig benutzt*
+unterscheiden. Ein Durchlauf über einen großen kalten Schlüsselraum — ein
+nächtlicher Export, ein Crawler, ein Backfill — verdrängt dein Arbeitsset also
+Entity für Entity und hinterlässt einen Node voller IDs, nach denen nie wieder
+jemand fragt. Zwei Optionen beheben das, und sie greifen ineinander:
+
+```ts
+const shardingOptions = StartShardingOptions.create<CartCommand>()
+  .withTypeName('cart')
+  .withEntityActor(CartActor)
+  .withExtractEntityId((command) => command.entityId)
+  .withMaxEntities(50_000)
+  // Bewährung für eine einmal gesehene Entity, geschützt für eine erneut
+  // gesehene; verdrängt wird aus der Bewährung, ein Scan kann also nur einen
+  // anderen Scan verdrängen.
+  .withPassivationReplacement('segmented-least-recently-used')
+  .withPassivationSegmentedProtectedProportion(0.8)
+  // Ein kleines Fenster vor der Strategie, damit die bei der Aufnahme
+  // beurteilte Entity nie die ist, auf die eine Nachricht wartet.
+  .withPassivationAdmissionWindowProportion(0.01)
+  // …und was beurteilt: ein kompakter Sketch darüber, wie oft jede ID gesehen
+  // wurde — er erinnert sich auch an IDs, die der Node nicht mehr hält.
+  .withPassivationAdmissionFilter('frequency-sketch');
+```
+
+`'least-frequently-used'` ist die dritte Strategie — die wenigsten Zugriffe
+verlieren, wobei die Zähler periodisch halbiert werden, damit die Rangfolge dem
+jüngeren Verkehr folgt statt einer Lebenszeitsumme. Sie passt zu einem
+Arbeitsset, das stabil, aber nicht aktuell ist, etwa eine Geräteflotte, die in
+langsamem Takt meldet.
+
+Der Filter braucht ein Fenster: eine Region kann die Entity, für die gerade
+eine Nachricht eingetroffen ist, nicht ablehnen — `'frequency-sketch'` mit
+`passivationAdmissionWindowProportion: 0` wird deshalb bei `start(...)`
+abgelehnt, statt still nichts zu tun. Alle fünf Regler sind zugleich
+HOCON-Keys unter
+[`actor-ts.sharding.passivation`](/de/reference/configuration/#actor-tssharding).
+
 ### Shards passivieren ebenfalls
 
 Alle Entities eines Shards zu passivieren ließ früher den Shard selbst
@@ -492,10 +598,193 @@ beiden Fällen unberührt — sie laufen für die Lebensdauer des Nodes.
 Gestoppt wird immer nur ein *leerer* Shard, es steht also kein
 Entity-State auf dem Spiel, und Nachrichten, die während des Stoppens
 eintreffen, werden genauso gepuffert und nachgespielt wie bei einer
-Entity. Auch eine Shard-Ref bleibt über die Lücke hinweg gültig — siehe
+Entity. „Leer“ ist dabei die Antwort des Shards, nicht die Vermutung der
+Region: Die Region bittet einen Shard, den sie für leer hält, zu
+stoppen, und der Shard stoppt nur, wenn er weiterhin nichts hat — keine
+Entity, die die Nachricht direkt vor der Bitte erstellt hat, keine
+gemerkte Entity, die ein Recovery-Batch gerade gestartet hat, keine
+Entity [im Backoff](#eine-entity-die-immer-wieder-stoppt). Sonst bleibt
+er, die Region routet wieder zu ihm, und ein späterer Sweep fragt
+erneut. Auch eine Shard-Ref bleibt über die Lücke hinweg gültig — siehe
 [Introspection](/de/cluster/sharding/introspection/), wo `ShardInfo`
 zusätzlich ein `resident`-Flag meldet, das einen passivierten Shard von
 einem bloß leeren unterscheidet.
+
+## Wenn Shards und Entities immer wieder ausfallen
+
+Eine Entity, die ihre Arbeit nicht tun kann — eine Poison-Nachricht, ein
+Store, der nicht erreichbar ist, ein Start, der wirft —, fällt jedes Mal
+erneut aus, wenn sie neu erstellt wird. Drei Wege erstellen sie neu, und
+sie verhalten sich unterschiedlich:
+
+1. **Eine Entity in ihrem Shard.** Der Shard beaufsichtigt seine
+   Entities wie jeder Parent: Eine ausgefallene Entity wird an Ort und
+   Stelle neu gestartet, sofort, bis zu zehnmal pro Minute. Dieses
+   Budget gehört dem **Shard**, alle Entities des Shards zehren also vom
+   selben. Ist es aufgebraucht, wird die Entity gestoppt, und der Shard
+   erstellt sie erst nach einer Wartezeit neu, `entity-restart-backoff` —
+   siehe [eine Entity, die immer wieder stoppt](#eine-entity-die-immer-wieder-stoppt).
+2. **Ein Shard in seiner Region.** Ein Fehler, den der Shard nicht
+   auffängt — eine Entity, deren eigene Strategie eskaliert, oder ein
+   Fehler im Shard selbst —, erreicht die Region, und die **stoppt** den
+   Shard, statt ihn neu zu starten. Jede Entity unter dem Shard stoppt
+   mit ihm, und die Region vergisst sie.
+3. **Ein Shard, der zurückkommt.** Ein Shard, der gestoppt ist, ohne dass
+   die Region es verlangt hat — also alles außer einer Übergabe, einer
+   Passivierung oder einer Freigabe —, wird nach einer Wartezeit neu
+   erstellt, `shard-failure-backoff`, nicht bei der nächsten Nachricht.
+   Ist die Wartezeit um, erstellt die Region ihn neu, spielt nach, was
+   auf ihn gewartet hat, und fragt bei
+   [`rememberEntities`](/de/cluster/sharding/remember-entities/#nach-einem-unerwarteten-shard-tod)
+   den Koordinator nach den Entities des Shards, sodass sie ganz ohne
+   Verkehr zurückkommen.
+
+Solange der Shard unten ist, behält die Region seine **Ownership**:
+Nichts wird neu vergeben, und der Koordinator platziert den Shard
+weiterhin hier. Nachrichten für ihn warten im Region-Puffer gegen
+`buffer-size` — jenseits des Caps geht die neueste mit ihrem Sender an
+die Dead Letters — und werden mit ihren Sendern zugestellt, sobald der
+Shard zurück ist. Das betrifft, was die Region *nach* dem Tod des Shards
+routet. Was sie schon in einen Shard geroutet hatte, der ausfällt — Fall 2
+oben —, und was seine Entity noch nicht erreicht hat, geht mit dem Shard
+verloren: Die Region erfährt vom Ausfall erst durch den Tod des Shards,
+und was in einem stoppenden Shard oder seinen Entities noch wartet, geht
+an die Dead Letters, jede Nachricht mit ihrem Sender. Eine Nachricht an
+eine gesunde Entity, die genau dann geschickt wird, wenn der Fehler ihrer
+Geschwister-Entity eskaliert, kann also verloren gehen. Der Neustart an
+Ort und Stelle, den das Stoppen ersetzt hat, behielt die Mailbox des
+Shards, riss aber jede Entity unter dem Shard mit, ohne dass die Region
+davon erfuhr. Nichts anderes holt den Shard früher zurück: keine
+Nachricht, keine Shard-Ref aus `shardRefFor()` (die bis dahin über die
+Region weiterleitet), keine wiederholte Platzierung und keine erneut
+geschickte Registry. Eine Nachricht an eine Shard-Ref, die nicht für
+eine Entity ist — etwa `GetShardStats` —, geht an die Dead Letters.
+
+Jeder Tod in Folge verdoppelt die Wartezeit, von `min` bis `max`,
+gestreut um `random-factor` in beide Richtungen; ein Shard, der seit
+seiner Rückkehr `reset-after` lang nicht ausgefallen ist, beginnt beim
+nächsten Tod wieder bei `min` — eine Passivierung dazwischen ist kein
+Ausfall, ein kalter Shard, den eine Poison-Nachricht neu erstellt, wird
+also danach beurteilt, wie lange er gesund war, nicht nach den wenigen
+Millisekunden seiner neuen Inkarnation. Mit
+den ausgelieferten Werten ist ein Shard, der ab und zu ausfällt, nach
+etwa 200 ms zurück, und einer, der bei jedem Start ausfällt, wird etwa
+alle zehn Sekunden neu erstellt statt tausende Male pro Sekunde:
+
+```hocon
+actor-ts.sharding.shard-failure-backoff {
+  min = 200ms          # the first wait; must be > 0
+  max = 10s            # the doubling stops here
+  random-factor = 0.2  # each wait spread by up to 20 % either way
+  reset-after = 60s    # no failure for this long, and the next death waits min
+}
+```
+
+Der Builder nimmt dieselben vier, in Millisekunden und als Anteil:
+
+```ts
+const shardingOptions = StartShardingOptions.create<CartCommand>()
+  .withTypeName('cart')
+  .withEntityActor(CartActor)
+  .withExtractEntityId((command) => command.entityId)
+  .withRememberEntities(true)
+  // The store behind these entities takes seconds to fail over: wait at
+  // least one, and never more than a minute.
+  .withShardFailureBackoffMinMs(1_000)
+  .withShardFailureBackoffMaxMs(60_000);
+```
+
+Was das für die eigene `supervisorStrategy` einer Entity bedeutet,
+gesetzt über `entityOptions`:
+
+- **Ihre Neustarts geschehen sofort und gehen vom Budget des Shards
+  ab.** Eine Entity in einer Neustart-Schleife kann das Kontingent
+  aufbrauchen, das ihre Geschwister gebraucht hätten, und nichts bremst
+  sie, bis dieses Budget erschöpft ist; von da an bremst sie der
+  Entity-Restart-Backoff unten.
+- **Eine Strategie, die eskaliert, übergibt den Fehler dem ganzen
+  Shard.** Jedes Geschwister stoppt mit, und alle warten den Backoff des
+  Shards ab. Eskaliere nur bei Fehlern, die bedeuten, dass der Shard
+  selbst nicht weiterkann.
+
+### Eine Entity, die immer wieder stoppt
+
+Jenseits des Neustart-Budgets wird eine Entity gestoppt, und die nächste
+Nachricht für sie hat bisher eine neue erstellt: Eine Entity, die bei
+jeder Nachricht ausfiel, wurde pro Nachricht neu erstellt — dreißig
+Instanzen für dreißig Nachrichten —, und jede öffnete ihre Recovery
+gegen das, woran sie scheiterte. Jetzt hält der Shard sie zuerst eine
+Weile unten, `entity-restart-backoff`, und die Wartezeit wächst, solange
+sie immer wieder stoppt.
+
+Ein Shard kann nicht sehen, *warum* eine Entity gestoppt ist, also
+schickt er **jeden Stopp, um den er nicht gebeten hat**, in den Backoff:
+einen Ausfall jenseits des Budgets, einen Start oder eine Recovery, die
+immer wieder scheitert, einen Recovery-Fehler, den die Entity verschluckt
+hat, ein verlorenes Lease, ein schlichtes `stopSelf`. Der eine Stopp, um
+den er bittet, ist eine **Passivierung** — das eigene `Passivate` der
+Entity oder die Idle- und Kapazitäts-Passivierung der Region —, und eine
+so gestoppte Entity kommt bei der nächsten Nachricht sofort zurück.
+Stoppe eine Entity also mit `Passivate`, wenn du es so meinst, nicht mit
+`stopSelf`.
+
+Die Neustarts innerhalb des Budgets bleiben sofort: Eine
+`SupervisorStrategy` hat keine Verzögerung zu vergeben, und dies ist die
+Wartezeit danach. Währenddessen:
+
+- **Nachrichten für die Entity werden zurückgehalten**, jede mit ihrem
+  Sender, und in Reihenfolge übergeben, sobald sie zurück ist. Das
+  Zurückhalten ist **pro Shard** auf `buffer-size` begrenzt, über die
+  Entities des Shards zusammen; darüber hinaus geht die neueste mit
+  ihrem Sender an die Dead Letters, mit einer Warnung pro Episode. Ein
+  Shard, der stoppt, während er Nachrichten zurückhält, gibt sie ebenso
+  an die Dead Letters.
+- **Der Shard bleibt für die Wartezeit stehen.** Ein Shard, dessen
+  Entity im Backoff ist, ist nicht leer, auch wenn die Entity nicht läuft:
+  Der [Sweep für leere Shards](#shards-passivieren-ebenfalls) lässt ihn
+  in Ruhe, bis die Wartezeit um und nichts mehr zurückgehalten ist. Ein
+  `shardPassivationIdleMs`, das kürzer ist als die Wartezeit, verwirft
+  also weder, was zurückgehalten wird, noch beginnt es den Backoff von
+  vorn.
+- **Auch ein Start wartet.** Ein `StartEntity` für die Entity — etwa an
+  eine Shard-Ref geschickt — erstellt sie, wenn ihre Wartezeit endet,
+  nicht sofort. Ist die Wartezeit um und nichts zurückgehalten, erstellt
+  die nächste Nachricht die Entity sofort.
+- **Die Region erfährt vom Stopp weiterhin**: Bei `rememberEntities`
+  wird die Entity als `stopped` verzeichnet, und sie
+  [wird nicht wiederbelebt](/de/cluster/sharding/remember-entities/#interaktion-mit-passivierung),
+  bis eine Nachricht für sie kommt.
+
+Die Wartezeiten verdoppeln sich und setzen sich zurück wie die des
+Shards: Eine Entity, die seit ihrer Rückkehr `reset-after` lang nicht
+ungefragt gestoppt ist, beginnt wieder bei `min`, und eine Passivierung
+dazwischen ist kein Ausfall. Mit den ausgelieferten Werten wird eine
+Entity, die bei jeder Nachricht ausfällt, etwa alle zehn Sekunden neu
+erstellt: Dreißig Nachrichten im Abstand von 5 ms ergeben jetzt zwölf
+Instanzen — die erste, ihre zehn Neustarts innerhalb des Budgets und
+eine, wenn die Wartezeit endet — statt dreißig.
+
+```hocon
+actor-ts.sharding.entity-restart-backoff {
+  min = 200ms          # the first wait after the restart budget; must be > 0
+  max = 10s            # the doubling stops here
+  random-factor = 0.2  # each wait spread by up to 20 % either way
+  reset-after = 60s    # no unasked stop for this long, and the next one waits min
+}
+```
+
+Der Builder nimmt dieselben vier:
+
+```ts
+const shardingOptions = StartShardingOptions.create<CartCommand>()
+  .withTypeName('cart')
+  .withEntityActor(CartActor)
+  .withExtractEntityId((command) => command.entityId)
+  // A cart's recovery reads a store that takes seconds to fail over:
+  // give it one before the first retry, and at most half a minute.
+  .withEntityRestartBackoffMinMs(1_000)
+  .withEntityRestartBackoffMaxMs(30_000);
+```
 
 ## Rebalancing
 
@@ -522,6 +811,52 @@ Nachrichten an einer halb-verschobenen Entity vorbeisausen.
 Siehe [Rebalance](/de/cluster/sharding/rebalance/) für das
 vollständige Protokoll.
 
+## Den Cluster verlassen
+
+`cluster.leave()` übergibt die Shards dieses Nodes, bevor es
+irgendwem sagt, dass der Node geht, und wartet darauf:
+
+1. Jede Region, die der Node gestartet hat, stoppt ihre Shards und
+   deren Entities.  Jede Entity beendet die Nachricht, die sie gerade
+   bearbeitet — der Schreibvorgang einer persistenten Entity landet —
+   und durchläuft `postStop`; danach meldet die Region dem
+   Koordinator, dass sie weg ist, und der verteilt ihre Shards neu.
+2. Die Koordinatoren des Nodes stoppen nach seinen Regionen, sodass
+   ein Koordinator, der auf einem gehenden Leader noch aktiv ist, das
+   Ende seiner eigenen Regionen mitbekommt und ihre Shards sofort neu
+   verteilt — gemerkte Entities starten auf ihrem neuen Zuhause neu,
+   ohne dass ihnen etwas geschickt wird.
+3. Erst dann wechselt der Node zu `leaving` und benachrichtigt seine
+   Peers.
+
+So verteilt kein Peer einen Shard neu, solange er hier noch läuft: Ein
+Shard hat nie zwei lebende Zuhause, und eine persistente Entity nie
+einen zweiten Schreiber.  Das Warten ist durch das `hand-off-timeout`
+jedes Typs begrenzt.  Eine Region, die bis dahin nicht gestoppt hat —
+eine Entity, die in ihrem Handler hängt, hält sie auf —, wird
+angewiesen, sofort zu stoppen, eine Warnung nennt sie, und das
+Verlassen geht ohne sie weiter; bis sie weg ist, kann diese eine
+Entity noch laufen, wenn ihr neues Zuhause sie startet.
+
+Die Coordinated-Shutdown-Pipeline tut dasselbe in ihrer Phase
+`cluster-sharding-shutdown-region`, vor `cluster-leave`.  Ein Node,
+den seine eigene Downing-Entscheidung entfernt hat, oder einer, der
+seinen Join aufgegeben hat, geht stattdessen sofort und stoppt sein
+Sharding neben dem Abgang: Die Peers, die ihn entfernt haben, warten
+auf keine Übergabe.
+
+Sobald `leave()` aufgelöst ist, sind die Namen der Regionen und
+Koordinatoren wieder frei, sodass ein erneuter Beitritt auf demselben
+`ActorSystem` dieselben Typen über das `sharding` des neuen Clusters
+startet.  Die Fassade des verlassenen Clusters verweigert jeden Start:
+Darüber gestartete Aktoren wären an einen Cluster gebunden, den es
+nicht mehr gibt.
+
+Eine Nachricht, die unterwegs zum gehenden Node ist, während die
+Übergabe läuft, wird nicht zum neuen Zuhause mitgenommen — sie geht
+verloren, wie bei jeder Region, die stoppt.  Die Übergabe bewegt
+Shards, keine Nachrichten im Flug.
+
 ## State über Failover
 
 Sharded Entities unterliegen denselben Neustart-Semantiken wie
@@ -543,6 +878,39 @@ Für State, der überleben soll:
 
 Ohne eine dieser Lösungen gibt dir Sharding Platzierung und
 Routing, aber keine Durability.
+
+### Die eigene Karte des Coordinators
+
+Der Coordinator hält **wo jeder Shard lebt** im Speicher, und ein neuer Leader
+beginnt mit einer leeren Karte, die er aus den Registrierungen der Regions
+wieder aufbaut.  `actor-ts.sharding.persist-coordinator-state = on` (oder
+`withPersistCoordinatorState()`) hält diese Karte stattdessen im Journal der
+Persistence-Extension, sodass ein neuer Leader — oft ein gerade neu
+gestarteter Node, weil der Leader die niedrigste Adresse ist — mit der Karte
+beginnt, die der vorige zuletzt geschrieben hat (#1188):
+
+```hocon
+actor-ts.sharding {
+  persist-coordinator-state      = on
+  coordinator-state-load-timeout = 10s
+}
+```
+
+Das Journal muss **eine Datenbank für den ganzen Cluster** sein — der nächste
+Leader liest, was der vorige geschrieben hat —, deshalb wird ein node-lokales
+Journal auf einem Node, der entfernte Peers erwartet, beim Start des Typs
+abgelehnt.  Gehalten wird nur die jüngste Karte: Jedes Speichern kompaktiert
+die vorige, und ein Speichern von einem Coordinator, dessen Sicht auf den
+Stream veraltet ist, schlägt fehl, statt zu überschreiben.
+
+Die Platzierung wartet nach einem Leader-Wechsel trotzdem auf die eigenen
+Ansprüche der Regions: Die Karte kann der letzten Zuteilung hinterherhinken,
+und erst die Registrierung einer Region belegt, was sie wirklich betreibt.
+Was die Karte beiträgt, sind die Regions selbst — ein neuer Leader bittet jede,
+die sie nennt, sich zu registrieren — und die Homes von Shards, die noch
+niemand beansprucht hat.  Ein neuer Leader wartet höchstens
+`coordinator-state-load-timeout` auf das Laden der Karte und platziert danach
+ohne sie.
 
 ## Wann zu Sharding greifen
 

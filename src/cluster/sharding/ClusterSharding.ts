@@ -1,8 +1,13 @@
 import { match, P } from 'ts-pattern';
 import type { Actor, ActorClassOrFactory } from '../../Actor.js';
+import { parsePathSegments } from '../../ActorPath.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
+import type { Lease } from '../../coordination/Lease.js';
+import { configuredLeaseFor } from '../../coordination/LeaseFromConfig.js';
 import { actorFactoryOf } from '../../internal/ActorBlueprint.js';
+import { gracefulStop } from '../../pattern/GracefulStop.js';
 import { PersistenceExtensionId } from '../../persistence/PersistenceExtension.js';
 import { StorageLocalityError } from '../../persistence/StorageLocality.js';
 import { mergeOptions } from '../../util/OptionsMerge.js';
@@ -13,13 +18,19 @@ import {
   shardRegionName,
 } from '../../internal/SystemPaths.js';
 import type { Cluster } from '../Cluster.js';
-import { ShardMapChanged, type ClusterEvent } from '../ClusterEvents.js';
+import {
+  ShardMapChanged,
+  ShardRegionRegistered,
+  ShardRegionRegistrationRefused,
+  type ClusterEvent,
+} from '../ClusterEvents.js';
 import type { EnvelopeMessage } from '../Protocol.js';
 import { HashAllocationStrategy } from './AllocationStrategy.js';
 import {
   JournalRememberEntitiesStore,
   type RememberEntitiesStore,
 } from './RememberEntitiesStore.js';
+import { JournalCoordinatorStateStore, type CoordinatorStateStore } from './CoordinatorState.js';
 import { EntityRef } from './EntityRef.js';
 import type { ShardMessage } from './Shard.js';
 import type { ShardInfo } from './ShardInfo.js';
@@ -30,7 +41,7 @@ import {
   coordinatorPath,
 } from './ShardRegion.js';
 import { ShardCoordinator } from './ShardCoordinator.js';
-import { ShardCoordinatorOptions } from './ShardCoordinatorOptions.js';
+import { DEFAULT_HAND_OFF_TIMEOUT_MS, ShardCoordinatorOptions } from './ShardCoordinatorOptions.js';
 import {
   ShardKey,
   shardKeyOf,
@@ -38,7 +49,11 @@ import {
   type ShardKeyedClass,
   type ShardReference,
 } from './ShardKey.js';
-import { StartShardingOptionsValidator, readShardingOptionsFromConfig } from './StartShardingOptions.js';
+import {
+  DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS,
+  StartShardingOptionsValidator,
+  readShardingOptionsFromConfig,
+} from './StartShardingOptions.js';
 import type { StartShardingOptions, StartShardingOptionsType } from './StartShardingOptions.js';
 import { isShardingMessage } from './ShardingProtocol.js';
 import type { GetShardLocation, GetShards } from './ShardingProtocol.js';
@@ -71,6 +86,20 @@ export class ClusterSharding {
   /** Whether the region started for a type is a proxy — see {@link start}. */
   private readonly proxyByType = new Map<string, boolean>();
   /**
+   * Type name → the default wait its {@link shards} / {@link shardRefFor}
+   * queries use when the caller names no timeout (#849).
+   *
+   * Held here rather than on the region, because it configures how *this node
+   * queries* rather than anything the region does.  The region is handed the
+   * same value for one purpose only: it keeps a query's caller at least this
+   * long, so a query that waits longer than a minute is not forgotten before
+   * its answer arrives (#1436).
+   * Filled from the same merged options every other per-type default arrives
+   * through, so `actor-ts.sharding.shard-region-query-timeout` reaches it and
+   * an explicit `withShardRegionQueryTimeoutMs` beats the file.
+   */
+  private readonly queryTimeoutByType = new Map<string, number>();
+  /**
    * Type name → the last shard map this node was told about.  Read by
    * {@link shardMap}, fed by the `ShardMapChanged` subscription below.
    *
@@ -82,6 +111,49 @@ export class ClusterSharding {
    */
   private readonly shardMapsByType = new Map<string, ShardMapView>();
 
+  /**
+   * Types whose region on *this* node is registered with the coordinator
+   * (#1317).  Added to by `ShardRegionRegistered`, through the same
+   * subscription that feeds {@link shardMapsByType}; taken out again by
+   * `ShardRegionRegistrationRefused`, and by the region itself when the
+   * coordinator evicts it or it stops (#1465) — see
+   * {@link onShardRegionRegistrationLost}.
+   *
+   * A set rather than a per-type flag on some region record, because there is
+   * no such record here: this class holds refs, and the registration state
+   * lives inside the region actor where nothing outside its mailbox can read
+   * it.  Mirroring the one bit is what makes it readable without an `ask` —
+   * and a mirror is only worth reading while every way the bit can clear
+   * reaches it.
+   */
+  private readonly registeredTypes = new Set<string>();
+
+  /**
+   * The last refusal per type (#1300), fed by `ShardRegionRegistrationRefused`
+   * and cleared when a later registration is accepted.
+   *
+   * The event itself is kept rather than a boolean, because "refused" without
+   * "and here are the two shard counts" is the report that sends an operator
+   * back to the logs — which is the thing this replaces.
+   */
+  private readonly registrationRefusals = new Map<string, ShardRegionRegistrationRefused>();
+
+  /**
+   * Type name → how long its region may take to hand its shards off when the
+   * cluster leaves (#1465): the type's `hand-off-timeout`, the bound the
+   * coordinator already gives a region to hand off one shard.  Filled from the
+   * same merged options as every other per-type setting here.
+   */
+  private readonly handOffTimeoutByType = new Map<string, number>();
+
+  /**
+   * The stop {@link _shutdown} began when this facade's cluster started to
+   * leave, or `null` while it has not (#1465).  One promise rather than a flag,
+   * so the shutdown phase's task and `leave()` itself wait on the same stop
+   * instead of racing two — and `start` refuses once it is set.
+   */
+  private shutdownBegun: Promise<void> | null = null;
+
   private constructor(
     public readonly system: ActorSystem,
     public readonly cluster: Cluster,
@@ -91,19 +163,56 @@ export class ClusterSharding {
     // between construction and the first region: a type started later still
     // sees its own first broadcast.  `snapshot` replay because this listener
     // discards membership anyway — one event to ignore instead of N.  Never
-    // unsubscribed: the instance is memoised per ActorSystem and both it and
-    // the listener die with the Cluster that holds them.
+    // unsubscribed: the instance is memoised per cluster (see `get`) and both
+    // it and the listener die with the Cluster that holds them.
     cluster.subscribe((event) => this.onClusterEvent(event), { replayMode: 'snapshot' });
   }
 
-  private static instances = new WeakMap<ActorSystem, ClusterSharding>();
+  private static instances = new WeakMap<ActorSystem, WeakMap<Cluster, ClusterSharding>>();
 
+  /**
+   * The facade for `cluster` on `system`, built on first use and memoised per
+   * system **and per cluster** (#1465).
+   *
+   * Everything a facade does goes through the cluster it was built with: its
+   * regions register and route over that cluster, and it subscribes to that
+   * cluster's events.  It used to be memoised per `ActorSystem` alone and
+   * ignore the cluster it was asked for, so after a `leave()` and a new
+   * `Cluster.join` on the same system the new cluster was handed the facade of
+   * the one that had left — a region started through it never registered, and
+   * a `shard-region:<type>` readiness check stayed red for good.  Any first
+   * touch pinned it, including the one `Cluster.join` makes itself when
+   * `actor-ts.sharding.healthcheck.names` is set.
+   *
+   * So each incarnation of a system's cluster gets a facade of its own, and
+   * repeated reads through one cluster still return one instance.  Keyed
+   * weakly at both levels, so a facade goes with the cluster it belongs to.
+   * The regions and coordinators a left cluster's facade started are not
+   * carried over: they belong to that cluster, and leaving stops them — see
+   * {@link _shutdown} — which also frees their well-known names, so the new
+   * cluster's facade can start the same type again.
+   */
   static get(system: ActorSystem, cluster: Cluster): ClusterSharding {
-    const existing = ClusterSharding.instances.get(system);
+    let byCluster = ClusterSharding.instances.get(system);
+    if (byCluster === undefined) {
+      byCluster = new WeakMap<Cluster, ClusterSharding>();
+      ClusterSharding.instances.set(system, byCluster);
+    }
+    const existing = byCluster.get(cluster);
     if (existing) return existing;
     const created = new ClusterSharding(system, cluster);
-    ClusterSharding.instances.set(system, created);
+    byCluster.set(cluster, created);
     return created;
+  }
+
+  /**
+   * @internal The facade `cluster` was given on `system`, or `undefined` when
+   * nothing has asked for one — {@link get} without building one.  A cluster
+   * on its way out asks this, because a facade built then would subscribe to
+   * a cluster that is leaving and have nothing to stop (#1465).
+   */
+  static _existing(system: ActorSystem, cluster: Cluster): ClusterSharding | undefined {
+    return ClusterSharding.instances.get(system)?.get(cluster);
   }
 
   /**
@@ -158,6 +267,16 @@ export class ClusterSharding {
   start<TMessage>(arg1: unknown, arg2?: unknown, arg3?: unknown): ActorRef<TMessage> {
     const options = this.withConfigDefaults(this.resolveStartOptions<TMessage>(arg1, arg2, arg3));
     new StartShardingOptionsValidator<TMessage>().validate(options);
+    // A start after the shutdown would bind fresh actors to a cluster that has
+    // left — the very state the shutdown exists to end — and take the names a
+    // re-join needs for the same type (#1465).
+    if (this.shutdownBegun !== null) {
+      throw new Error(
+        `[sharding] cannot start '${options.typeName}': the cluster this sharding belongs to `
+        + `(${this.cluster.selfAddress}) has left, or is leaving, and its regions and coordinators `
+        + "are stopped.  After a re-join, start the type through the new cluster's `sharding`.",
+      );
+    }
 
     // Resolve the config BEFORE anything reads a shard count.  This used to
     // sit below `ensureCoordinator`, which read `numShardsByType` — a map
@@ -170,11 +289,22 @@ export class ClusterSharding {
     // unbounded buffer.  `settingsToConfig` is pure, so hoisting it is safe;
     // the count now travels as an argument and no longer depends on which
     // statement ran first.
-    const config = ShardRegion.settingsToConfig(
-      options,
-      this.cluster,
-      (path: string) => this.regionsByPath.get(path) ?? null,
-    );
+    const queryTimeoutMs = options.shardRegionQueryTimeoutMs ?? DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS;
+    const config = {
+      ...ShardRegion.settingsToConfig(
+        options,
+        this.cluster,
+        (path: string) => this.regionsByPath.get(path) ?? null,
+      ),
+      // The region keeps a query's caller at least as long as the query waits,
+      // so the answer to a long one is not forgotten before it arrives (#1436).
+      queryTimeoutMs,
+      // How the region takes back an `isRegistered` it can no longer stand
+      // behind — evicted, or stopped (#1465).
+      onRegistrationLost: () => this.onShardRegionRegistrationLost(options.typeName),
+      // And a refusal whose leader term has ended (#1465).
+      onRegistrationRefusalLapsed: () => this.onShardRegionRegistrationRefusalLapsed(options.typeName),
+    };
 
     this.ensureCoordinator(options as StartShardingOptionsType<unknown>, config.numShards);
     const existing = this.findRegionByType(options.typeName);
@@ -200,6 +330,8 @@ export class ClusterSharding {
 
     this.numShardsByType.set(options.typeName, config.numShards);
     this.proxyByType.set(options.typeName, config.proxy);
+    this.queryTimeoutByType.set(options.typeName, queryTimeoutMs);
+    this.handOffTimeoutByType.set(options.typeName, options.handOffTimeoutMs ?? DEFAULT_HAND_OFF_TIMEOUT_MS);
     const ref = this.system._spawnSystemActor<TMessage>(
       // ShardRegion internally handles extra envelope types; cast to Actor<TMessage>
       // so the returned ref presents the user-facing signature.
@@ -415,20 +547,36 @@ export class ClusterSharding {
    * coordinator has had no reason to allocate them.  Use
    * {@link shardRefFor} to place one on purpose.
    *
+   * `timeoutMs` defaults to `actor-ts.sharding.shard-region-query-timeout`
+   * (5 s out of the box), or to whatever `withShardRegionQueryTimeoutMs`
+   * this type was started with — an explicit argument still wins over both.
+   *
+   * A `timeoutMs` longer than the region's lifetime for a waiting query is not
+   * waited out in full.  The region cannot see a per-call wait, so it forgets
+   * an unanswered query after a minute, or after `actor-ts.actor.ask-timeout`
+   * or this type's query timeout when either is longer (#1436).  An answer
+   * that arrives later reaches nobody — and that includes the coordinator's
+   * partial answer, which comes after 0.6 × `timeoutMs` when a region is
+   * slow — so the call fails with `AskTimeoutError` once its own `timeoutMs`
+   * runs out.  To wait longer, raise this type's query timeout instead, which
+   * raises the lifetime with it.
+   *
    * @throws if no region for `typeName` has been started on this node, or if
    *   the coordinator does not answer within `timeoutMs` (`AskTimeoutError`) —
-   *   which is what a leader election in flight looks like from here.
+   *   which is what a leader election in flight looks like from here — or
+   *   answers only after the region stopped waiting (above).
    */
   async shards<TMessage = unknown>(
     typeName: string,
-    timeoutMs = 5_000,
+    timeoutMs?: number,
   ): Promise<ReadonlyArray<ShardInfo<TMessage>>> {
     const region = this.regionOrThrow(typeName);
+    const waitMs = timeoutMs ?? this.queryTimeoutOf(typeName);
     // Leave the coordinator's fan-out a shorter fuse than our own ask, so a
     // slow region degrades into a partial answer instead of no answer at all.
-    const fanOutTimeoutMs = Math.max(250, Math.floor(timeoutMs * 0.6));
+    const fanOutTimeoutMs = Math.max(250, Math.floor(waitMs * 0.6));
     const query: GetShards = { kind: 'sharding.GetShards', timeoutMs: fanOutTimeoutMs };
-    return await region.ask<ReadonlyArray<ShardInfo<TMessage>>>(query as never, timeoutMs);
+    return await region.ask<ReadonlyArray<ShardInfo<TMessage>>>(query as never, waitMs);
   }
 
   /**
@@ -462,6 +610,84 @@ export class ClusterSharding {
   }
 
   /**
+   * Has the region this node started for `typeName` registered with the
+   * coordinator (#1317)?
+   *
+   * The question a readiness probe asks, and the one **membership convergence
+   * does not answer**: a region registers with the coordinator on the leader,
+   * over a retry timer of its own, so a fully converged cluster can still hold
+   * an unregistered region.  Synchronous and free — it reads a set fed by the
+   * `ShardRegionRegistered` subscription, the same way {@link shardMap} reads
+   * one fed by `ShardMapChanged`.
+   *
+   * `false` for a type this node never started; for one whose registration the
+   * coordinator refused over a `numShards` mismatch; for one whose region was
+   * told it had been evicted for going silent (stale-region detection), until
+   * the region's new registration is acknowledged; and for one whose region has
+   * stopped (#1465).  In each of those the coordinator places no shard of the
+   * type here, which is what a readiness probe reading this must not report as
+   * ready.
+   *
+   * It is this node's account, built from what its region was told, and two
+   * situations are worth knowing exactly:
+   *
+   * - **A leader change does not turn it `false`.**  The region re-registers
+   *   with the new coordinator and the node keeps reading as registered while
+   *   it does, so an election does not take every node out of rotation at once
+   *   — also when the new leader runs no coordinator for the type at all, which
+   *   this reading cannot tell apart from a re-registration still in flight.  A
+   *   refusal the old leader issued lapses with it: from the change until the
+   *   new coordinator answers, {@link registrationRefusal} is `null` and this
+   *   stays `false`, waiting rather than refused.
+   * - **An eviction is learnt from the coordinator's notice**, a single,
+   *   unacknowledged frame.  Should it be lost, this keeps reading `true` while
+   *   the coordinator holds no entry for the region — until the region's next
+   *   beat reaches it, which the coordinator answers with a request to register:
+   *   one `heartbeat-interval` and a round trip.  Without stale-region detection
+   *   nothing is evicted, so there is no such window.
+   *
+   * **What it does *not* gate is message loss.**  A message sent before
+   * registration lands is buffered by the region and delivered once the
+   * coordinator answers with a shard home — `route` buffers whenever the home
+   * is unknown, and `register` re-asks for everything buffered.  A
+   * {@link shards} or {@link shardRefFor} query made in that window is asked
+   * again once the coordinator acknowledges the region (#1436).  What can
+   * still expire is an `ask` wrapped around such a message, or such a query,
+   * because each carries its own deadline and that deadline runs while it
+   * waits.  So this is the signal to wait on before an `ask` with a tight
+   * budget, not a precondition for `tell`.
+   */
+  isRegistered(typeName: string): boolean {
+    return this.registeredTypes.has(typeName);
+  }
+
+  /**
+   * Why the coordinator refused this node's region for `typeName`, or `null`
+   * if it did not (#1300).
+   *
+   * The refusal used to be one `log.error` and nothing else, which is not
+   * something an alert can be built on — and the consequence of missing it is
+   * not a missing diagnostic: a refused region keeps running and keeps
+   * accepting traffic for the type, everything it accepts buffers, and the end
+   * state of an unnoticed refusal is a node out of memory.
+   *
+   * Carries both shard counts, because "refused" on its own is the report that
+   * sends an operator back to the logs.  There is also a counter,
+   * `cluster_sharding_registrations_refused_total { type, reason }`, for the
+   * alert itself.
+   *
+   * Cleared when a later registration is accepted, so a rolling deploy that
+   * fixes the mismatch stops reporting one — and when the leader moves: a
+   * refusal is the verdict of the coordinator that issued it, and from the
+   * leader change until the next coordinator answers there is none to report
+   * (#1465).  A stop or an eviction leaves it standing; neither says anything
+   * about the shard counts it reports.
+   */
+  registrationRefusal(typeName: string): ShardRegionRegistrationRefused | null {
+    return this.registrationRefusals.get(typeName) ?? null;
+  }
+
+  /**
    * A ref to one shard.  Allocates the shard if it has no home yet — the same
    * thing a first message for it would have done.
    *
@@ -473,17 +699,126 @@ export class ClusterSharding {
    * a remote shard, send `GetShardStats` with your own actor's `self` as
    * `replyTo`, or use {@link shards} for the cluster-wide picture.
    *
-   * @throws if no region for `typeName` has been started on this node, or if
-   *   the shard cannot be placed within `timeoutMs` (`AskTimeoutError`).
+   * `timeoutMs` defaults to `actor-ts.sharding.shard-region-query-timeout`,
+   * exactly as {@link shards} does, and the same lifetime bounds it: a
+   * `timeoutMs` longer than a minute — or than `actor-ts.actor.ask-timeout` or
+   * this type's query timeout, when either is longer — is not waited out in
+   * full.  A placement reported after the region forgot the caller reaches
+   * nobody, and the call fails with `AskTimeoutError` once its own `timeoutMs`
+   * runs out (#1436).
+   *
+   * @throws if no region for `typeName` has been started on this node; a
+   *   `RangeError`, at once, if `shardId` is not an integer in
+   *   `0..numShards - 1` — no coordinator places such a shard, so there is
+   *   nothing to wait for (#1436); or if the shard cannot be placed within
+   *   `timeoutMs` (`AskTimeoutError`), or only after the region stopped
+   *   waiting (above).
    */
   async shardRefFor<TMessage = unknown>(
     typeName: string,
     shardId: number,
-    timeoutMs = 5_000,
+    timeoutMs?: number,
   ): Promise<ActorRef<ShardMessage<TMessage>>> {
     const region = this.regionOrThrow(typeName);
     const query: GetShardLocation = { kind: 'sharding.GetShardLocation', shardId };
-    return await region.ask<ActorRef<ShardMessage<TMessage>>>(query as never, timeoutMs);
+    return await region.ask<ActorRef<ShardMessage<TMessage>>>(
+      query as never,
+      timeoutMs ?? this.queryTimeoutOf(typeName),
+    );
+  }
+
+  /**
+   * @internal Hand off this node's shards for every type started through this
+   * facade, then stop its coordinators — the cluster is leaving (#1465).  Run
+   * by the `cluster-sharding-shutdown-region` phase task and by
+   * `Cluster.leave()` before anything else it does; both get the same promise.
+   *
+   * Leaving used to stop none of it.  The regions, their entities and the
+   * coordinators stayed alive, bound to a cluster that had gone, while the
+   * remaining members re-homed the shards on `MemberRemoved` — so a shard had
+   * two live homes until the process ended, a second writer for a persistent
+   * entity fed by local traffic.  And a re-join on the same system could not
+   * start a type the left incarnation ran: the old actors held its names.
+   *
+   * **Regions first, and to the end.**  Stopping a region stops its shards and
+   * their entities — each finishes the message it is handling, so a persistent
+   * one's write lands, and runs `postStop` — and only then does the region tell
+   * the coordinator it is gone.  That makes the coordinator's re-home of those
+   * shards start after the last entity here stopped, and the caller holds the
+   * leave broadcast back until this resolves, so a peer's `MemberRemoved`
+   * cannot overtake it either.  Each region gets its type's `hand-off-timeout`;
+   * past it the stop escalates and the leave goes on without it, so an entity
+   * stuck in its handler can still overlap its new home — the bound is what
+   * keeps a stuck entity from holding the node in the cluster for good.
+   * **Coordinators after**: one here may be the
+   * active coordinator, and the notices its own regions sent it on the way down
+   * are queued ahead of its stop.
+   *
+   * Resolves once every name is free again, not merely once every actor has
+   * stopped — see {@link stopReleasingName}.
+   */
+  _shutdown(): Promise<void> {
+    this.shutdownBegun ??= this.stopShardingActors();
+    return this.shutdownBegun;
+  }
+
+  private async stopShardingActors(): Promise<void> {
+    await Promise.all(Array.from(this.regionPathsByType, ([typeName, path]) => {
+      const region = this.regionsByPath.get(path);
+      return region === undefined ? undefined : this.stopReleasingName(region, typeName, 'region');
+    }));
+    await Promise.all(Array.from(this.coordinators, ([typeName, coordinator]) =>
+      this.stopReleasingName(coordinator, typeName, 'coordinator')));
+  }
+
+  /**
+   * Stop `actor` gracefully, within `typeName`'s hand-off timeout, and resolve
+   * once its name is free.
+   *
+   * `gracefulStop` resolves on the `Terminated`, and the runtime tells a
+   * watcher before it tells the parent — so for a turn or two after that the
+   * parent still holds the name, and a re-join starting the type on the next
+   * line collided on it.  The parent's notice is already queued by then; only
+   * the event loop has to reach it, which is all the loop below waits for, with
+   * the same budget as a bound.
+   */
+  private async stopReleasingName(
+    actor: ActorRef<unknown>,
+    typeName: string,
+    role: 'region' | 'coordinator',
+  ): Promise<void> {
+    const budgetMs = this.handOffTimeoutByType.get(typeName) ?? DEFAULT_HAND_OFF_TIMEOUT_MS;
+    let expired = false;
+    const deadline = this.system.scheduler.scheduleOnceFunction(budgetMs, () => { expired = true; });
+    try {
+      const stopped = await gracefulStop(actor, budgetMs);
+      const segments = parsePathSegments(actor.path.toString());
+      while (!expired && this.system._resolvePath(segments).exists((current) => current === actor)) {
+        await nextMacrotask();
+      }
+      if (!stopped || expired) {
+        this.system.log.warn(
+          `[sharding] the ${role} for '${typeName}' did not stop within its hand-off timeout of `
+          + `${budgetMs} ms while the cluster was leaving; it has been told to stop at once and the leave `
+          + 'goes on without it.  Until it has gone, what it still runs may overlap its new home, and a '
+          + 're-join cannot start the type',
+        );
+      }
+    } finally {
+      deadline.cancel();
+    }
+  }
+
+  /**
+   * The configured query wait for a type, or the built-in one.
+   *
+   * The fallback covers a type started before this node learned about it —
+   * there is none today, since {@link regionOrThrow} runs first and every
+   * `start` fills the map, but a lookup that can miss should not return
+   * `undefined` into an `ask`.
+   */
+  private queryTimeoutOf(typeName: string): number {
+    return this.queryTimeoutByType.get(typeName) ?? DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS;
   }
 
   private regionOrThrow(typeName: string): ActorRef<unknown> {
@@ -507,7 +842,52 @@ export class ClusterSharding {
   private onClusterEvent(event: ClusterEvent): void {
     match(event)
       .with(P.instanceOf(ShardMapChanged), (e) => this.onShardMapChanged(e))
+      .with(P.instanceOf(ShardRegionRegistered), (e) => this.onShardRegionRegistered(e))
+      .with(
+        P.instanceOf(ShardRegionRegistrationRefused),
+        (e) => this.onShardRegionRegistrationRefused(e),
+      )
       .otherwise(() => this.onOtherClusterEvent());
+  }
+
+  private onShardRegionRegistered(event: ShardRegionRegistered): void {
+    this.registeredTypes.add(event.type);
+    // An accepted registration ends the refusal it may have followed: a
+    // rolling deploy that fixes `numShards` re-registers, and a stale refusal
+    // left standing here would keep reporting a problem that is over.
+    this.registrationRefusals.delete(event.type);
+  }
+
+  private onShardRegionRegistrationRefused(event: ShardRegionRegistrationRefused): void {
+    this.registrationRefusals.set(event.type, event);
+    this.registeredTypes.delete(event.type);
+  }
+
+  /**
+   * This node's region for `typeName` stopped being registered without a
+   * refusal: the coordinator evicted it for going silent, or the region
+   * stopped (#1465).  Called by the region itself — see
+   * `ShardRegionConfig.onRegistrationLost` — on its own turn, so it lands in
+   * order with the `ShardRegionRegistered` that announces the registration
+   * after it.
+   *
+   * A refusal on record is left alone: an eviction or a stop says nothing about
+   * the shard counts the refusal reports.
+   */
+  private onShardRegionRegistrationLost(typeName: string): void {
+    this.registeredTypes.delete(typeName);
+  }
+
+  /**
+   * The leader moved while this node's region for `typeName` stood refused
+   * (#1465).  A refusal is a verdict of one leader term — the region drops its
+   * own latch and asks the new coordinator — so the record goes too, rather
+   * than naming a coordinator that no longer governs the type for as long as
+   * no new one answers.  The type is not registered either way: a new verdict,
+   * acceptance or refusal, arrives as an event of its own.
+   */
+  private onShardRegionRegistrationRefusalLapsed(typeName: string): void {
+    this.registrationRefusals.delete(typeName);
   }
 
   /**
@@ -537,6 +917,9 @@ export class ClusterSharding {
    */
   private ensureCoordinator(options: StartShardingOptionsType<unknown>, numShards: number): void {
     if (this.coordinators.has(options.typeName)) return;
+    // Resolved before anything is spawned, so a switch with no backend behind
+    // it is refused by `start()` itself and leaves no coordinator behind.
+    const lease = options.lease ?? this.leaseFromConfiguration(options);
     const coordinatorOptions = ShardCoordinatorOptions.create()
       .withTypeName(options.typeName)
       .withCluster(this.cluster)
@@ -549,12 +932,23 @@ export class ClusterSharding {
     if (options.role !== undefined) coordinatorOptions.withRole(options.role);
     if (options.rebalanceIntervalMs !== undefined) coordinatorOptions.withRebalanceIntervalMs(options.rebalanceIntervalMs);
     if (options.handOffTimeoutMs !== undefined) coordinatorOptions.withHandOffTimeoutMs(options.handOffTimeoutMs);
+    if (options.rebalanceAbsoluteLimit !== undefined) coordinatorOptions.withRebalanceAbsoluteLimit(options.rebalanceAbsoluteLimit);
+    if (options.rebalanceRelativeLimit !== undefined) coordinatorOptions.withRebalanceRelativeLimit(options.rebalanceRelativeLimit);
     if (options.rememberEntities !== undefined) coordinatorOptions.withRememberEntities(options.rememberEntities);
     const store = this.resolveRememberEntitiesStore(options);
     if (store !== undefined) coordinatorOptions.withRememberEntitiesStore(store);
-    if (options.coordinatorStateStore !== undefined) coordinatorOptions.withCoordinatorStateStore(options.coordinatorStateStore);
-    if (options.lease !== undefined) coordinatorOptions.withLease(options.lease);
+    const coordinatorStateStore = this.resolveCoordinatorStateStore(options);
+    if (coordinatorStateStore !== undefined) coordinatorOptions.withCoordinatorStateStore(coordinatorStateStore);
+    if (options.coordinatorStateLoadTimeoutMs !== undefined) {
+      coordinatorOptions.withCoordinatorStateLoadTimeoutMs(options.coordinatorStateLoadTimeoutMs);
+    }
+    if (lease !== undefined) coordinatorOptions.withLease(lease);
     if (options.acquireRetryIntervalMs !== undefined) coordinatorOptions.withAcquireRetryIntervalMs(options.acquireRetryIntervalMs);
+    // The coordinator half of stale-region detection (#853).  The region reads
+    // the switch too — it is what makes it beat — and `regionHeartbeatIntervalMs`
+    // never comes here, the same split `rebalanceIntervalMs` has in reverse.
+    if (options.staleRegionDetection !== undefined) coordinatorOptions.withStaleRegionDetection(options.staleRegionDetection);
+    if (options.regionStaleAfterMs !== undefined) coordinatorOptions.withRegionStaleAfterMs(options.regionStaleAfterMs);
     const ref = this.system._spawnSystemActor(
       () => new ShardCoordinator(coordinatorOptions),
       SystemGroups.clusterSharding,
@@ -566,6 +960,24 @@ export class ClusterSharding {
     // the spawn location would silently route past this handler.
     assertSpawnedAt(wellKnownPath, ref);
     this.regionsByPath.set(wellKnownPath, ref as ActorRef<unknown>);
+  }
+
+  /**
+   * The coordinator's lease when `useLease` asks for one and no `withLease(…)`
+   * supplied it — built from `actor-ts.coordination.lease` in this system's
+   * config, named after the type and owned by this node (#1454).
+   *
+   * The system's scheduler arms the renewal, which keeps the lease on the
+   * system's clock and stops it with the system.
+   */
+  private leaseFromConfiguration(options: StartShardingOptionsType<unknown>): Lease | undefined {
+    if (options.useLease !== true) return undefined;
+    const requestedBy = `${ConfigKeys.sharding.useLease} (or withUseLease(true)) for sharded type '${options.typeName}'`;
+    return configuredLeaseFor(this.system.config, requestedBy).build(
+      { kind: 'sharding', typeName: options.typeName },
+      this.cluster.selfAddress,
+      this.system.scheduler,
+    );
   }
 
   /**
@@ -611,6 +1023,33 @@ export class ClusterSharding {
   }
 
   /**
+   * The coordinator's state store: an explicit `coordinatorStateStore`, or —
+   * with `persistCoordinatorState` on — one over the persistence extension's
+   * journal (#1188).
+   *
+   * Guarded like the remember-entities registry above, for the same reason:
+   * the next leader reads what the previous one wrote, so the journal has to be
+   * one database for the whole cluster, and a node-local one on a node that
+   * expects remote peers would hand every new leader an empty or stale map.
+   */
+  private resolveCoordinatorStateStore(options: StartShardingOptionsType<unknown>): CoordinatorStateStore | undefined {
+    if (options.coordinatorStateStore !== undefined) return options.coordinatorStateStore;
+    if (options.persistCoordinatorState !== true) return undefined;
+    const persistenceExtension = this.system.extension(PersistenceExtensionId);
+    const journal = persistenceExtension.journal;
+    if (journal.storageLocality === 'node-local' && this.cluster.expectsRemotePeers()) {
+      throw new StorageLocalityError(
+        `cluster.sharding: persistCoordinatorState=true wired the coordinator state of '${options.typeName}' to `
+        + `this node's journal, but '${journal.constructor.name}' declares node-local storage and the cluster `
+        + 'expects remote peers — the next leader would read ITS OWN journal and find a stale or empty map '
+        + '(#1188, #1356). Wire a shared journal, or pass an explicit coordinatorStateStore.',
+      );
+    }
+    persistenceExtension.noteStoreUse('coordinator-state', journal, 'error');
+    return new JournalCoordinatorStateStore(journal);
+  }
+
+  /**
    * Recover a typeName from a coordinator path — the inverse of
    * `coordinatorPath`, used by the local resolver to answer for a coordinator
    * this node hosts.  Anchored on the group segment so a region path
@@ -634,6 +1073,15 @@ export class ClusterSharding {
     }
     ref.tell(env.body as never);
   }
+}
+
+/**
+ * One trip round the event loop.  A host timer rather than the system
+ * scheduler on purpose: what {@link ClusterSharding} waits for with it is a
+ * dispatcher turn, and a virtual scheduler nobody advances would never fire.
+ */
+function nextMacrotask(): Promise<void> {
+  return new Promise<void>((resolve) => { setTimeout(resolve, 0); });
 }
 
 export { isShardingMessage };

@@ -20,19 +20,32 @@ export class NodeAddress {
    * per-process identifier is what lets "the node that used to be here" and
    * "the node that is here now" be different subjects.
    *
-   * **It is carried, not yet acted on.**  Nothing in the merge path compares
-   * two incarnations to decide whether a claim is believable, and that is a
-   * decision rather than an omission.  The field is *optional* on the wire
-   * (see {@link NodeAddressData}), because a required one breaks every one of
-   * the eight address-bearing frame fields at once and this wire has no version
-   * handshake to break them behind (#823).  An optional field, though, is
-   * bypassed by *stripping* it — so a refusal keyed on a mismatch would be a
-   * refusal an attacker opts out of, while still being a refusal a legitimate
-   * peer of the previous version runs into.  The identifier has to be required
-   * before it can carry a rule; carrying it first is what makes that step a
-   * wire break and nothing else.
+   * **It drives an announcement, never a refusal.**  Nothing in the merge path
+   * compares two incarnations to decide whether a claim is believable, and
+   * that is a decision rather than an omission.  The field is *optional* on
+   * the wire (see {@link NodeAddressData}), because a required one breaks
+   * every one of the eight address-bearing frame fields at once and this wire
+   * has no version handshake to break them behind (#823).  An optional field,
+   * though, is bypassed by *stripping* it — so a refusal keyed on a mismatch
+   * would be a refusal an attacker opts out of, while still being a refusal a
+   * legitimate peer of the previous version runs into.  The identifier has to
+   * be required before it can carry a rule; carrying it first is what makes
+   * that step a wire break and nothing else.
    *
-   * What it may be used for meanwhile is strictly local: this node knows its
+   * What a mismatch does decide is what the merge *announces* about a record
+   * it has accepted by the same rules as any other (#1426).  When a record
+   * naming one incarnation replaces the stored record of another, and is not
+   * itself `down` or `removed`, the previous run is announced `MemberDown`
+   * (unless it was down already) and `MemberRemoved` before the new one
+   * joins, so the watchers of the previous run's actors are told it is gone
+   * (`Cluster.replaceIncarnation`).  Stripping the field opts a record out of
+   * that announcement and changes nothing else — it replaces the old record
+   * silently, as every record did before — and the announcement gives a
+   * sender no reach it lacked: whoever the merge takes such a record from,
+   * the address itself or a member with standing, could as well have sent
+   * the address `down` outright.
+   *
+   * Every other use meanwhile is strictly local: this node knows its
    * own incarnation, so a record a peer sends *about this node* can be held to
    * it (`Cluster.withLocalSelfIdentity`).  That direction only ever discards a
    * peer's claim in favour of local truth, which is the one comparison that
@@ -93,6 +106,36 @@ export class NodeAddress {
       && value.length <= MAX_NODE_INCARNATION_LENGTH;
   }
 
+  /**
+   * Whether `value` is a port this node will accept off the wire.
+   *
+   * A **safe** positive integer, deliberately *not* a TCP port — the same rule
+   * `ClusterOptionsValidator` states and for the same reason: under
+   * `InMemoryTransport` the port is a synthetic node discriminator (tests use
+   * five-digit values), and an address is transport-agnostic.  Whether a port
+   * is dialable is `TcpTransport`'s business.
+   *
+   * *Safe* rather than merely integral, because {@link toString} is what the
+   * rest of the cluster identifies a node by and it is not injective over the
+   * integers.  `Number.prototype.toString` switches to exponent notation at
+   * 1e21, so `port: 1e21` renders as `sys@host:1e+21`, and {@link parse} reads
+   * that back with `parseInt` — which stops at the `e` and yields port **1**.
+   * An address admitted that way is recorded under one identity and comes back
+   * as another, and `peers()` feeds `transportReachesCluster`, which compares
+   * exactly those strings (#1515).  Above `Number.MAX_SAFE_INTEGER` there is a
+   * second reason: adjacent integers stop being distinct doubles, so two peers
+   * that wrote different ports would compare `equals`.  The safe-integer bound
+   * is below 1e21 and closes both.
+   *
+   * Lives here rather than in `WireValidation` for the same reason
+   * {@link isIncarnation} does: {@link fromJSON} throws on what the wire guard
+   * admits, so a second copy of the rule is a host-killing throw waiting for
+   * the two to drift.  `isNodeAddressData` spends this one.
+   */
+  static isPort(value: unknown): value is number {
+    return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+  }
+
   toJSON(): NodeAddressData {
     const data: NodeAddressData = { systemName: this.systemName, host: this.host, port: this.port };
     // Omitted when unset rather than written as `null`, for the reason
@@ -120,11 +163,9 @@ export class NodeAddress {
    * frame guard rejects malformed addresses before they get here. This is the
    * backstop for the paths that reach it another way.
    *
-   * `port` is checked as a **positive integer, not a TCP port** — the same rule
-   * `ClusterOptionsValidator` states and for the same reason: under
-   * `InMemoryTransport` the port is a synthetic node discriminator (tests use
-   * five-digit values), and an address is transport-agnostic.  Whether a port
-   * is dialable is `TcpTransport`'s business.
+   * `port` is checked by {@link isPort} — a **safe positive integer, not a TCP
+   * port** — which is the one place that rule lives, so this and the wire
+   * guard cannot disagree about what an address is.
    *
    * `incarnation` is optional and validated only when present: a peer running a
    * version that predates the field sends none, and refusing its addresses
@@ -134,10 +175,11 @@ export class NodeAddress {
     const { systemName, host, port, incarnation } = data ?? {};
     if (typeof systemName !== 'string' || systemName.length === 0
       || typeof host !== 'string' || host.length === 0
-      || typeof port !== 'number' || !Number.isInteger(port) || port <= 0
+      || !NodeAddress.isPort(port)
       || (incarnation !== undefined && !NodeAddress.isIncarnation(incarnation))) {
       throw new Error(
-        `Invalid node address: expected { systemName: string, host: string, port: positive integer, `
+        `Invalid node address: expected { systemName: string, host: string, `
+        + `port: positive integer up to ${Number.MAX_SAFE_INTEGER}, `
         + `incarnation?: string of 1..${MAX_NODE_INCARNATION_LENGTH} chars }, `
         + `got ${JSON.stringify(data)}`,
       );

@@ -25,14 +25,15 @@ drei unterstützten Runtimes.
 bun add mssql
 ```
 
-Das Framework importiert sie lazy, erst wenn ein SQL-Server-Store zum ersten
-Mal genutzt wird — bis dahin bleibt sie aus deinem Bundle heraus.
+Das Framework importiert sie erst, wenn ein SQL-Server-Store öffnet — beim
+Start, oder bei der ersten Verwendung, wenn das Öffnen beim Start
+abgeschaltet ist —; bis dahin bleibt sie aus deinem Bundle heraus.
 
 ## Einrichtung
 
-Registriere Journal + Snapshot-Store an der `PersistenceExtension` und erhalte
-einen einsatzbereiten Durable-State-Store.  Übergib einen geteilten `pool`,
-damit alle drei Komponenten denselben Connection-Pool nutzen:
+Registriere alle drei Stores über den `plugins`-Slot der Optionen des
+Systems und wähle sie in seiner Konfiguration aus.  Übergib einen geteilten
+`pool`, damit alle drei Komponenten denselben Connection-Pool nutzen:
 
 ```ts
 import sql from 'mssql';
@@ -44,24 +45,10 @@ import {
   MsSqlDurableStateStoreOptions,
   MsSqlJournalOptions,
   MsSqlSnapshotStoreOptions,
-  PersistenceExtensionId,
   RegisterMsSqlPluginsOptions,
   registerMsSqlPlugins,
 } from 'actor-ts/persistence';
 
-const systemOptions = ActorSystemOptions.create()
-  // Die SQL-Server-Plugins als aktives Journal + Snapshot-Store auswählen.
-  .withConfig({
-    'actor-ts': {
-      persistence: {
-        journal: { plugin: 'actor-ts.persistence.journal.mssql' },
-        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.mssql' },
-      },
-    },
-  });
-const system = ActorSystem.create('my-app', systemOptions);
-
-const ext = system.extension(PersistenceExtensionId);
 const pool = await new sql.ConnectionPool({
   server: 'db.example.com',
   port: 1433,
@@ -74,24 +61,50 @@ const pool = await new sql.ConnectionPool({
 const msSqlSnapshotStoreOptions = MsSqlSnapshotStoreOptions.create()
   .withKeepN(3);
 const registerOptions = RegisterMsSqlPluginsOptions.create()
-  // Ein Pool für Journal + Snapshot + Durable-State (empfohlen).
+  // One pool shared by journal + snapshot + durable-state (recommended).
   .withPool(pool)
   .withJournal(MsSqlJournalOptions.create() /* .withEventsTable(...).withTagsTable(...) */)
   .withSnapshotStore(msSqlSnapshotStoreOptions)
   .withDurableStateStore(MsSqlDurableStateStoreOptions.create() /* .withTable(...) */);
-const { durableStateStore } = registerMsSqlPlugins(ext, registerOptions);
+const systemOptions = ActorSystemOptions.create()
+  // Select the SQL Server plugins for all three stores.
+  .withConfig({
+    'actor-ts': {
+      persistence: {
+        journal: { plugin: 'actor-ts.persistence.journal.mssql' },
+        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.mssql' },
+        'durable-state': { plugin: 'actor-ts.persistence.durable-state.mssql' },
+      },
+    },
+  })
+  .withPersistence({ plugins: [(persistence) => registerMsSqlPlugins(persistence, registerOptions)] });
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
-`registerMsSqlPlugins` registriert Journal + Snapshot-Store über die Extension
-(ausgewählt durch die Plugin-IDs in der Config oben) und **gibt** den
-Durable-State-Store zurück.  `PersistenceExtension` hat keine
-Durable-State-Registry — übergib `durableStateStore` direkt an die Settings
-deines `DurableStateActor` (dasselbe Muster wie beim Postgres- und beim
-Object-Storage-Plugin).
+Das Plug-in läuft innerhalb von `ActorSystem.create`, also sind alle drei
+Stores registriert, bevor `create` zurückkehrt, und die, die die
+Konfiguration auswählt, öffnen als Teil des Starts: Eine Datenbank, die der
+Knoten nicht erreicht, lässt den Start scheitern statt erst die erste
+persistierte Nachricht — siehe [Stores beim Start
+öffnen](/de/persistence/overview/#stores-beim-start-öffnen).
+Das gilt auch mit `autoCreateTables: false`, weil das Öffnen dann ein
+`SELECT 1` schickt, wo es sonst das DDL ausführen würde, und solange das
+Öffnen beim Start an ist, der Default: Ist das Öffnen beim Start abgeschaltet,
+wandert der Fehler zur ersten Operation des Stores.  Das gilt für diese Stores,
+nicht für jede Achse: Ein Object-Storage-Snapshot- oder -Durable-State-Store,
+der daneben ausgewählt ist, oder ein eigener Store ohne `start()` hat vorab
+nichts zu öffnen und scheitert stattdessen bei seiner ersten Operation.
+`registerMsSqlPlugins` **gibt** außerdem den Durable-State-Store **zurück**,
+falls du ihn lieber von Hand verdrahtest; ein Plug-in behält ihn, indem es
+das Ergebnis zuweist,
+`(persistence) => { msSql = registerMsSqlPlugins(persistence, registerOptions); }`.
+Seit #872 ist das eine Bequemlichkeit und nicht mehr der einzige Weg, und ein
+von Hand verdrahteter Store ist kein ausgewählter, er öffnet also bei der
+ersten Verwendung statt mit dem Start.
 
 Ein geteilter Pool gehört dem **Caller**: kein Store beendet ihn, du schließt
 ihn also selbst beim Shutdown.  Ohne ihn baut jede Komponente ihren eigenen aus
-`poolConfig` / `url` und schließt ihn bei `close()`:
+`poolConfig` / `url`, wenn sie öffnet, und schließt ihn bei `close()`:
 
 ```ts
 const poolConfig = {
@@ -102,6 +115,96 @@ const poolConfig = {
 const msSqlJournalOptions = MsSqlJournalOptions.create()
   .withPoolConfig(poolConfig);
 ```
+
+## Aus HOCON konfigurieren
+
+Die Plugin-Id **ist** der Config-Abschnitt: Der Block, der nach der Id benannt
+ist, ist der Block, den dieses Plugin liest (#872).  Alles außer den lebenden
+Objekten kann aus der `application.conf` kommen, `registerMsSqlPlugins(persistence)` braucht damit
+gar keine Optionen mehr:
+
+```ts
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerMsSqlPlugins } from 'actor-ts/persistence';
+
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerMsSqlPlugins(persistence)],
+});
+const system = ActorSystem.create('my-app', systemOptions);
+```
+
+```hocon
+actor-ts.persistence {
+  journal        { plugin = "actor-ts.persistence.journal.mssql" }
+  snapshot-store { plugin = "actor-ts.persistence.snapshot-store.mssql" }
+  durable-state  { plugin = "actor-ts.persistence.durable-state.mssql" }
+
+  journal.mssql        { url = ${?MSSQL_URL}, events-table = "events" }
+  snapshot-store.mssql { url = ${?MSSQL_URL}, keep-n = 5 }
+  durable-state.mssql  { url = ${?MSSQL_URL}, table = "durable_state" }
+}
+```
+
+An `registerMsSqlPlugins` übergebene Optionen gewinnen weiterhin, Feld für Feld, und ein
+nicht gesetztes Feld fällt auf den Block durch, statt ihn zu leeren — ein
+geteilter `Pool` im Code und die Tabellennamen in HOCON sind also eine
+normale Mischung.  Ein vorab gebauter `Pool` und ein `serializer` haben
+**gar kein Blatt**: Das sind lebende Objekte, die eine Config-Datei nicht
+ausdrücken kann.  `poolConfig` ebenso wenig — die gesamte Optionsfläche des
+Treibers, die code-only bleibt.  `tags-table` wird gelesen, wird aber als
+*Kommentar* statt als Schlüssel ausgeliefert, weil sein Default aus
+`events-table` abgeleitet wird und genau die Abwesenheit beide im Gleichlauf
+hält.
+
+Was du am Pool tatsächlich einstellst, hat **typisierte Blätter** (#1490), jedes
+in der Referenzkonfiguration nur als Kommentar, damit Weglassen den eigenen
+Default von node-mssql behält:
+
+```hocon
+actor-ts.persistence.journal.mssql {
+  url             = ${?MSSQL_URL}            # Server=...;Database=...;Encrypt=true
+  max-pool-size   = 20                       # pool.max (default 10)
+  idle-timeout    = 1m                       # pool.idleTimeoutMillis (default 30s)
+  connect-timeout = 5s                       # connectionTimeout (default 15s)
+  request-timeout = 2m                       # requestTimeout (default 15s)
+  ca-file         = "/etc/ssl/mssql-ca.pem"  # read when the pool opens, verified against by tedious
+}
+```
+
+Jedes erreicht den Treiber nur, wenn es gesetzt ist — über die URL gelegt, wie
+node-mssqls eigener Parser sie liest, damit Server, Datenbank und Zugangsdaten
+erhalten bleiben.  Der Store prüft sie beim Bau: eine Größe oder ein Timeout,
+das keine positive ganze Zahl ist, oder ein Connect- oder Request-Timeout,
+länger als ein Timer halten kann, wird mit einem `OptionsError` abgelehnt —
+ebenso ein Blatt neben derselben Einstellung in `poolConfig` oder im
+Connection-String (`max-pool-size` neben `Max Pool Size`, `connect-timeout`
+neben `Connect Timeout`), das dann beide nennt, statt eine Seite still gewinnen
+zu lassen.  `ca-file` ist ein Pfad, den das Framework liest, nie das Zertifikat
+selbst.
+
+**Eine `url`, die die TLS-Verifizierung abschaltet, wird abgelehnt.**  Ein
+Connection-String, dessen `TrustServerCertificate` irgendetwas ist, das
+node-mssql als true liest — `true`, `yes`, `1`, jeder Wert außer `false`, `no`,
+`0` oder einem leeren —, lässt den Reader einen `ConfigError` werfen, der das
+Blatt nennt, in jeder Groß- und Kleinschreibung des Schlüssels und gleich, ob
+die URL ausgeschrieben oder aus `${?MSSQL_URL}` substituiert ist.  Für die
+Datei ist die Ablehnung strikt: Die `url` des Blocks wird auch dann abgelehnt,
+wenn `registerMsSqlPlugins` eine eigene URL oder einen eigenen Pool bekommt.
+Inspiziert wird nur HOCON — derselbe String, an `withUrl(...)` übergeben, ist
+die Entscheidung deines Codes.  Ein Connection-String hat keinen Schlüssel für
+eine CA, ein Server hinter einer privaten CA wird also daneben genannt, mit
+`ca-file`; das wird zusammen mit einem `Encrypt` oder einem
+`TrustServerCertificate` abgelehnt, das die CA ungenutzt ließe.
+`Encrypt=false` allein ist Klartext statt unverifiziertem TLS und bleibt
+erlaubt.  Die Begründung steht unter
+[TLS everywhere](/de/operations/security/tls-everywhere/#sql-server).
+
+**`durable-state.plugin` wählt jetzt den Durable-State-Store dieses Backends
+aus.**  Früher wurde er eifrig gebaut und von `registerMsSqlPlugins` zurückgegeben, ließ
+sich also nur verdrahten, indem man diese Instanz durch den Anwendungscode
+reichte.  Das zurückgegebene Handle funktioniert weiterhin und liefert dieselbe
+Instanz — sie wird nur gebaut, wenn sie zum ersten Mal angefragt wird, statt
+bei der Registrierung, und bei einem ausgewählten Store ist das der Start.
 
 ## Wann du es einsetzt
 
@@ -122,23 +225,28 @@ Server).
 
 ```ts
 type MsSqlConnection = {
-  url?:        string;                    // Server=…;Database=… oder mssql://user:pass@host:1433/db
-  poolConfig?: Record<string, unknown>;   // mssql-Config-Objekt; hat Vorrang vor url
-  pool?:       MsSqlPoolLike;             // vorgebauter / geteilter Pool
+  url?:              string;                   // Server=…;Database=… (an mssql:// URL is refused)
+  poolConfig?:       Record<string, unknown>;  // mssql config object; takes precedence over url
+  pool?:             MsSqlPoolLike;            // pre-built / shared pool
+  maxPoolSize?:      number;                   // pool.max, default 10                  (max-pool-size)
+  idleTimeoutMs?:    number;                   // pool.idleTimeoutMillis, default 30 000 (idle-timeout)
+  connectTimeoutMs?: number;                   // connectionTimeout, default 15 000     (connect-timeout)
+  requestTimeoutMs?: number;                   // requestTimeout, default 15 000        (request-timeout)
+  caFile?:           string;                   // PEM file tedious verifies against     (ca-file)
 };
 
 interface MsSqlJournalOptions extends MsSqlConnection {
-  eventsTable?:      string;   // Default 'events'
-  tagsTable?:        string;   // Default '<eventsTable>_tags'
-  autoCreateTables?: boolean;  // Default true
+  eventsTable?:      string;   // default 'events'
+  tagsTable?:        string;   // default '<eventsTable>_tags'
+  autoCreateTables?: boolean;  // default true
 }
 interface MsSqlSnapshotStoreOptions extends MsSqlConnection {
-  snapshotsTable?:   string;   // Default 'snapshots'
-  keepN?:            number;   // neueste N pro pid; Default 3, <=0 behält alle
+  snapshotsTable?:   string;   // default 'snapshots'
+  keepN?:            number;   // keep newest N per pid; default 3, <=0 keeps all
   autoCreateTables?: boolean;
 }
 interface MsSqlDurableStateStoreOptions extends MsSqlConnection {
-  table?:            string;   // Default 'durable_state'
+  table?:            string;   // default 'durable_state'
   autoCreateTables?: boolean;
 }
 ```
@@ -151,13 +259,14 @@ String-Konkatenation zusammengesetzt.
 
 ## Schema
 
-Mit `autoCreateTables` (dem Default) führt das Backend beim ersten Zugriff
-abgesicherte `CREATE TABLE`-Statements aus.  T-SQL kennt kein `CREATE TABLE IF
+Mit `autoCreateTables` (dem Default) führt das Backend abgesicherte
+`CREATE TABLE`-Statements aus, wenn der Store öffnet — beim Start, oder bei
+der ersten Verwendung, wenn das Öffnen beim Start abgeschaltet ist.  T-SQL kennt kein `CREATE TABLE IF
 NOT EXISTS`, daher ist jedes in eine `IF OBJECT_ID(…) IS NULL`-Prüfung gefasst:
 
 ```sql
 CREATE TABLE events (
-  persistence_id NVARCHAR(255) NOT NULL,
+  persistence_id NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL,
   sequence_nr    BIGINT NOT NULL,
   payload        NVARCHAR(MAX) NOT NULL,   -- JSON
   tags           NVARCHAR(MAX) NULL,       -- CSV (zusätzlich in events_tags gespiegelt)
@@ -165,27 +274,27 @@ CREATE TABLE events (
   CONSTRAINT PK_events PRIMARY KEY (persistence_id, sequence_nr)
 );
 CREATE TABLE events_tags (                 -- indizierte Tag-Lookups für Projections
-  persistence_id NVARCHAR(255) NOT NULL,
+  persistence_id NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL,
   sequence_nr    BIGINT NOT NULL,
-  tag            NVARCHAR(255) NOT NULL,
+  tag            NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL,
   timestamp      BIGINT NOT NULL,
   CONSTRAINT PK_events_tags PRIMARY KEY NONCLUSTERED
     (tag, timestamp, persistence_id, sequence_nr)
 );
 CREATE TABLE events_meta (                 -- High-Water-Mark der Kompaktierung
-  persistence_id NVARCHAR(255) NOT NULL,
+  persistence_id NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL,
   deleted_to     BIGINT NOT NULL,
   CONSTRAINT PK_events_meta PRIMARY KEY (persistence_id)
 );
 CREATE TABLE snapshots (
-  persistence_id NVARCHAR(255) NOT NULL,
+  persistence_id NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL,
   sequence_nr    BIGINT NOT NULL,
   payload        NVARCHAR(MAX) NOT NULL,
   timestamp      BIGINT NOT NULL,
   CONSTRAINT PK_snapshots PRIMARY KEY (persistence_id, sequence_nr)
 );
 CREATE TABLE durable_state (
-  persistence_id NVARCHAR(255) NOT NULL,
+  persistence_id NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL,
   revision       BIGINT NOT NULL,
   payload        NVARCHAR(MAX) NOT NULL,
   timestamp      BIGINT NOT NULL,
@@ -197,11 +306,155 @@ Der Primary Key der Tags-Tabelle ist bewusst **nonclustered**.  `NVARCHAR(n)`
 zählt 2n Bytes zum Index-Key, `(tag, timestamp, persistence_id, sequence_nr)`
 braucht damit 1036 Bytes — über dem 900-Byte-Limit für clustered Indizes, aber
 innerhalb des 1700-Byte-Limits für nonclustered.  Genau deshalb ist **SQL Server
-2016 oder neuer** Voraussetzung.
+2016 oder neuer** Voraussetzung.  Die Kollation ist Metadatum, keine Breite, und
+kostet in diesem Budget also nichts.
 
 Leg die Tabellen vorab an (mit nur `INSERT/SELECT/UPDATE/DELETE`-Rechten) und
 setze `autoCreateTables: false`, wenn die Datenbankrolle kein DDL ausführen
-darf.
+darf.  Ist es aus, schickt der Store ein `SELECT 1`, wo er sonst das DDL
+ausführen würde, und erreicht die Datenbank also trotzdem, wenn er öffnet.
+
+### Warum `persistence_id` und `tag` kollationiert sind
+
+Jede `persistence_id`- und `tag`-Spalte trägt ein explizites `COLLATE
+Latin1_General_100_BIN2`.  Ohne das erbt die Spalte den Datenbank-Standard —
+`SQL_Latin1_General_CP1_CI_AS` auf einer Standardinstanz, und der ist
+**case-insensitiv**.
+
+Eine `persistence_id` ist nicht bloß ein Wert: sie ist der *Name eines
+Event-Streams* und die Hälfte des `events`-Primary-Keys.  Unter einer faltenden
+Kollation sind `Alice` und `alice` deshalb **ein** Stream hier und **zwei** auf
+Postgres, SQLite, MongoDB und DynamoDB.  Ein als `Alice` gestarteter Actor liest
+`alice`s Events, faltet sie in seinen eigenen State und schreibt in `alice`s
+Stream — ein Cross-Entity-Read, dessen einziges Symptom eine Serie von
+`JournalConcurrencyError`s ist, die wie ein Speicherfehler aussieht.  Dieselbe
+Spalte ist der Schlüssel für Durable-State-Load, Revisions-CAS und Delete; dort
+überschreibt und löscht eine Kollision den State einer anderen Entität.
+
+Eine Id-Validierung kann das nicht beheben: `Alice` und `alice` sind beide
+völlig legale Ids.  Was sich unterscheidet, ist der *Vergleich*, und der ist
+eine Eigenschaft der Spalte.
+
+`BIN2` vergleicht nach Unicode-Codepoint, so wie es jedes andere Backend ohnehin
+tut.  Der `Latin1_General`-Teil des Namens wählt nur eine Codepage für
+Nicht-Unicode-Typen; auf `NVARCHAR` ist er wirkungslos, das hier ist also ein
+vollständig unicodefähiger Ordinalvergleich und keine westeuropäische
+Einschränkung.  Version `100` gibt es seit SQL Server 2008 und damit weit
+unterhalb der 2016er-Grenze, die der nonclustered Key der Tags-Tabelle ohnehin
+setzt.
+
+### Bestehendes Schema migrieren
+
+Das DDL ist mit `IF OBJECT_ID(…) IS NULL` abgesichert, und `autoCreateTables`
+ist standardmäßig `true` — eine **bestehende Datenbank übernimmt das also
+nicht**: das Framework fasst eine vorgefundene Tabelle nie wieder an.  Neue
+Deployments bekommen die Kollation stillschweigend; eine ältere Datenbank
+behält den Instanz-Standard, bis du die Migration unten ausführst — aber
+nicht mehr unbemerkt.  Jeder Store liest seine eigenen Tabellen aus
+`sys.columns`, wenn er öffnet, und **warnt**, wenn eine `persistence_id`-
+oder `tag`-Spalte mit einer nicht-binären Kollation zurückkommt; er nennt
+Tabelle, Spalte und die gefundene Kollation.  Ein ausgewählter Store öffnet
+als Teil des Starts, die Warnung steht also im Startlog; ist das Öffnen beim
+Start abgeschaltet, verbindet sich der Store erst bei Bedarf und
+warnt beim ersten Zugriff, also bei der ersten Persistenz-Operation.  Dieser Lesezugriff braucht keine
+DDL-Rechte und läuft unabhängig davon, ob `autoCreateTables` gesetzt ist —
+denn ein vom Betrieb selbst verwaltetes Schema, also genau der Fall, den
+diese Seite zum Vorab-Anlegen empfiehlt, ist am ehesten älter als der Pin.
+
+SQL Server weigert sich, eine Spalte umzukollationieren, von der ein Index oder
+Constraint abhängt (Fehler 5074) — pro Tabelle heißt das also: droppen, ändern,
+neu anlegen.  Führe das einmal pro Datenbank aus, als **eine Transaktion**,
+während kein Knoten schreibt:
+
+```sql
+SET XACT_ABORT ON;
+BEGIN TRANSACTION;
+
+ALTER TABLE events DROP CONSTRAINT PK_events;
+DROP INDEX idx_events_pid ON events;
+ALTER TABLE events ALTER COLUMN persistence_id
+  NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL;
+ALTER TABLE events ADD CONSTRAINT PK_events
+  PRIMARY KEY (persistence_id, sequence_nr);
+CREATE INDEX idx_events_pid ON events (persistence_id);
+
+ALTER TABLE events_tags DROP CONSTRAINT PK_events_tags;
+DROP INDEX idx_events_tags_pid_seq ON events_tags;
+ALTER TABLE events_tags ALTER COLUMN persistence_id
+  NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL;
+ALTER TABLE events_tags ALTER COLUMN tag
+  NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL;
+ALTER TABLE events_tags ADD CONSTRAINT PK_events_tags
+  PRIMARY KEY NONCLUSTERED (tag, timestamp, persistence_id, sequence_nr);
+CREATE INDEX idx_events_tags_pid_seq ON events_tags (persistence_id, sequence_nr);
+
+ALTER TABLE events_meta DROP CONSTRAINT PK_events_meta;
+ALTER TABLE events_meta ALTER COLUMN persistence_id
+  NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL;
+ALTER TABLE events_meta ADD CONSTRAINT PK_events_meta PRIMARY KEY (persistence_id);
+
+ALTER TABLE snapshots DROP CONSTRAINT PK_snapshots;
+ALTER TABLE snapshots ALTER COLUMN persistence_id
+  NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL;
+ALTER TABLE snapshots ADD CONSTRAINT PK_snapshots
+  PRIMARY KEY (persistence_id, sequence_nr);
+
+ALTER TABLE durable_state DROP CONSTRAINT PK_durable_state;
+ALTER TABLE durable_state ALTER COLUMN persistence_id
+  NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL;
+ALTER TABLE durable_state ADD CONSTRAINT PK_durable_state PRIMARY KEY (persistence_id);
+
+COMMIT;
+```
+
+`ALTER COLUMN` ersetzt die **gesamte** Definition, `NOT NULL` muss also
+wiederholt werden — lässt du es weg, wird die Spalte stillschweigend nullable.
+Setze deine eigenen Tabellennamen ein, wenn du `eventsTable`, `tagsTable`,
+`snapshotsTable` oder `table` überschrieben hast.
+
+Die Transaktion ist kein Zeremoniell.  Tag-Queries joinen `events_tags` über
+`persistence_id` an `events`, und zwischen dem Block, der `events`
+umkollationiert, und dem Block, der `events_tags` umkollationiert, tragen die
+beiden Spalten verschiedene Kollationen — SQL Server verweigert den Join dann
+rundheraus mit Fehler 468, *Cannot resolve the collation conflict*: ein hartes
+Scheitern, keine falsche Antwort, nichts weiter unten kann es also
+überdecken.  DDL ist auf SQL Server transaktional, und genau das schließt
+dieses Fenster: ein Leser blockiert bis zum `COMMIT` am Schema-Lock, statt den
+gemischten Zustand zu sehen, und mit eingeschaltetem `XACT_ABORT` rollt ein
+scheiterndes Statement — etwa ein Index, der anders heißt als der Standard —
+den gesamten Batch zurück, statt die Hälfte der Tabellen umgestellt
+zurückzulassen.  Beides ersetzt nicht das Anhalten der Writer; es macht das
+Fenster unsichtbar für das, was du anzuhalten vergessen hast.
+
+Derselbe Konflikt ist dauerhaft statt vorübergehend bei einer `tagsTable`, die
+auf eine *neue* Tabelle neben einem alten `events` zeigt: die neue Tabelle
+wird mit dem `BIN2`-Pin angelegt, die alte behält den Instanz-Standard, und
+jede Tag-Query scheitert mit 468, bis auch `events` umkollationiert ist.
+
+Die Startwarnung meldet **pro Spalte**, und genau das unterscheidet diesen
+Zustand von einem unangetasteten Schema: sie nennt nur die Spalten, die noch
+auf einer faltenden Kollation stehen, und sagt, dass das Schema halb migriert
+ist und eine Tag-Query über beide rundheraus mit 468 scheitern kann.  Eine
+`tagsTable` neben einem alten `events` liest sich genauso — bei jedem Öffnen
+des Stores, bis `events` umgestellt ist.
+
+Prüfe **vor** der Migration auf Schaden, solange `GROUP BY` noch die faltende
+Kollation benutzt:
+
+```sql
+SELECT MIN(persistence_id) AS sample,
+       COUNT(DISTINCT persistence_id COLLATE Latin1_General_100_BIN2) AS spellings
+  FROM events
+ GROUP BY persistence_id
+HAVING COUNT(DISTINCT persistence_id COLLATE Latin1_General_100_BIN2) > 1;
+```
+
+Jede Zeile bedeutet, dass sich zwei Ids bereits einen Stream teilen.  Die
+Migration trennt sie wieder, und jeder Hälfte fehlen dann die Events der anderen
+— diese Actors scheitern beim Recovery also laut mit `JournalIntegrityError`
+(eine Lücke in der Sequenz), statt stillschweigend eine verschmolzene Historie
+auszuliefern.  Das ist das bessere Scheitern, aber es bleibt ein Scheitern:
+entscheide *vor* der Migration, was diese Streams sein sollen, nicht danach.
 
 ## Concurrency-Modell
 
@@ -237,11 +490,46 @@ import { Aside } from '@astrojs/starlight/components';
   abgelehnt, nicht still abgeschnitten.
 </Aside>
 
+<Aside type="caution" title="Eine bestehende Datenbank behält die alte Kollation">
+  Das abgesicherte `CREATE TABLE` fasst eine bereits vorhandene Tabelle nie
+  wieder an — eine vor dem `COLLATE Latin1_General_100_BIN2` angelegte
+  Datenbank behält also den case-insensitiven Instanz-Standard.  Zwei Ids, die
+  sich nur in der Groß-/Kleinschreibung unterscheiden, teilen sich dann auf
+  diesem Backend einen Event-Stream (und eine Durable-State-Zeile) und bleiben
+  auf jedem anderen getrennt.  Findet der Store das beim Öffnen vor,
+  **warnt** er und nennt Tabelle, Spalte und gelesene Kollation — einmal pro
+  Store, beim Start, sofern das Öffnen beim Start nicht abgeschaltet ist, und
+  nie als Fehler: ein Hinweis, der eine laufende Datenbank
+  lahmlegen kann, wäre ein schlechterer Tausch als das, was er meldet.  Führe
+  die [Migration](#bestehendes-schema-migrieren) aus; prüfe vorher auf bereits
+  verschmolzene Streams.  Eine andere binäre Kollation, die du selbst gewählt
+  hast — eine andere `BIN2` oder eine der UTF-8-Binärkollationen von SQL
+  Server 2019 wie `Latin1_General_100_BIN2_UTF8` —, bleibt stumm: geprüft
+  wird auf einen faltenden Vergleich, nicht auf die Schreibweise dieser Seite.
+</Aside>
+
 <Aside type="caution" title="TLS ist im Treiber standardmäßig an">
-  `mssql` setzt `encrypt: true` als Default.  Gegen einen Server mit
-  selbstsigniertem Zertifikat musst du dieses entweder installieren oder
-  `options: { trustServerCertificate: true }` setzen — letzteres schaltet die
-  Chain-Prüfung ab, also bitte nur in der Entwicklung.
+  ```ts
+  poolConfig: {
+    server: 'db.example.com', database: 'app',
+    user: 'actor_ts', password: process.env.MSSQL_PASSWORD,
+    options: { encrypt: true, cryptoCredentialsDetails: { ca: fs.readFileSync('rds-ca.pem') } },
+  }
+  ```
+  `mssql` verschlüsselt per Default (`encrypt: true`) und prüft das
+  Server-Zertifikat.  Gegen eine private CA oder ein selbstsigniertes
+  Zertifikat gibst du dem Treiber die signierende CA in
+  `cryptoCredentialsDetails` mit — tedious reicht dieses Objekt an
+  `tls.createSecureContext` durch — und setzt `serverName`, wenn der Name im
+  Zertifikat von `server` abweicht.  Das andere Angebot des Treibers, dem
+  Server-Zertifikat blind zu vertrauen (ein Connection-String schreibt es als
+  `TrustServerCertificate=`), schaltet die Prüfung ab: die Verbindung bleibt
+  verschlüsselt, authentifiziert aber niemanden, und alles auf dem Weg zur
+  Datenbank kann ein eigenes Zertifikat vorlegen und das Journal lesen oder
+  umschreiben.  Die vollständige Begründung steht unter
+  [TLS everywhere](/de/operations/security/tls-everywhere/#sql-server).
+  Aus der Konfiguration ist dieselbe CA ein Pfad neben dem Connection-String:
+  `actor-ts.persistence.journal.mssql.ca-file = "/etc/ssl/rds-ca.pem"`.
 </Aside>
 
 <Aside type="caution" title="Kein In-Process-Event-Bus">
@@ -250,11 +538,25 @@ import { Aside } from '@astrojs/starlight/components';
   `PersistenceQuery`-Live-Subscriber fallen auf Polling zurück.
 </Aside>
 
-<Aside type="caution" title="Compression- / Encryption-Optionen werden ignoriert">
-  Per-Call-`PersistenceOptions` (Compression, Encryption) gelten nur für die
-  Object-Storage-Stores.  Die SQL-Backends speichern JSON als Text — die
-  Optionen werden hier still ignoriert, genau wie bei SQLite, Postgres, MariaDB
-  und Cassandra.
+<Aside type="caution" title="Per-Actor-Verschlüsselung und -Integrität schützen keine Events">
+  Per-Call-`PersistenceOptions` (Compression, Encryption, Integrity)
+  werden vom SQL-Server-Snapshot-Store und vom SQL-Server-Durable-State-Store
+  honoriert, wie von jedem SQL- und Object-Storage-Store: Eine Zeile,
+  die unter einem Hook geschrieben wird, ist der Object-Storage-Frame in
+  Base64 hinter einem `ats1:`-Präfix, in derselben Text-Spalte,
+  gebunden an ihre Persistence-ID und ihre Sequenznummer bzw. Revision
+  ([#1802](https://github.com/pathosDev/actor-ts/issues/1802)).  Eine Zeile ohne den Schutz, den der Actor verlangt, wird
+  verweigert, sofern der Store nicht für eine Migration mit
+  `withAllowPlaintextRows(true)` gebaut wurde.
+
+  Das Journal wird nie gefragt.  `encryption()` und `integrity()` an
+  einem `PersistentActor` schützen nur seine Snapshots: Jedes Journal
+  speichert Events als Klartext-JSON, nichts erkennt ein an Ort und
+  Stelle manipuliertes Event, und datenbankseitige Kontrollen —
+  Transparent Data Encryption, ein verschlüsseltes Volume,
+  Zugriffskontrolle — sind heute der einzige Schutz für Events.  Ein
+  Actor, der dieses Journal mit dem Object-Storage-Snapshot-Store
+  kombiniert, startet sauber und schreibt seine Events hier im Klartext.
 </Aside>
 
 ## Wie geht's weiter

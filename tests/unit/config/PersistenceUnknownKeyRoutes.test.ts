@@ -1,0 +1,158 @@
+import { describe, expect, test } from 'bun:test';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
+import { bootstrapCluster } from '../../../src/cluster/ClusterBootstrap.js';
+import { ClusterBootstrapOptions } from '../../../src/cluster/ClusterBootstrapOptions.js';
+import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
+import { InMemoryTransport } from '../../../src/cluster/Transport.js';
+import { ConfigError } from '../../../src/config/Config.js';
+import type { ConfigObject } from '../../../src/config/HoconParser.js';
+import { CoordinatedStartupId } from '../../../src/CoordinatedStartup.js';
+import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { PersistenceExtensionId } from '../../../src/persistence/PersistenceExtension.js';
+import { runWorkerMeshNode, type WorkerMeshInitData } from '../../../src/worker/WorkerMeshBootstrap.js';
+import type { WorkerNodeContext } from '../../../src/worker/WorkerNode.js';
+
+/**
+ * #1729 — the refusal of a key under `actor-ts.persistence` that no reader
+ * takes, on each route that builds a system from a configuration file:
+ * `ActorSystem.create` itself (`PersistenceSelectorStartup.test.ts`),
+ * `Cluster.bootstrap`, and a WorkerMesh worker, which inherits its main
+ * thread's file.
+ */
+
+/** A selector misspelt in the file every route here is handed. */
+const MISSPELT: ConfigObject = {
+  'actor-ts': { persistence: { journal: { plugn: 'actor-ts.persistence.journal.sqlite' } } },
+};
+const KEY = 'actor-ts.persistence.journal.plugn';
+const REFUSAL = `Config at "${KEY}" is not a key the journal block takes`;
+
+/** The error `promise` rejects with; fails the case when it resolves instead. */
+async function rejectionOf(promise: Promise<unknown>): Promise<Error> {
+  try {
+    await promise;
+  } catch (error) {
+    return error as Error;
+  }
+  throw new Error('expected the promise to reject, and it resolved');
+}
+
+/** The init frame a WorkerMesh worker receives, carrying its main thread's effective `config`. */
+function workerContextOver(name: string, config: ConfigObject): WorkerNodeContext<WorkerMeshInitData> {
+  const address = new NodeAddress(name, '127.0.0.1', 2552);
+  const init: WorkerMeshInitData = {
+    kind: 'worker-mesh-init',
+    config,
+    secretPaths: [],
+    seeds: [],
+    roles: [],
+    modules: [],
+  };
+  return {
+    self: address,
+    systemName: name,
+    transport: new InMemoryTransport(address),
+    initData: init,
+    ready: () => {},
+  } as unknown as WorkerNodeContext<WorkerMeshInitData>;
+}
+
+describe('the refusal on every route that builds a system from the file (#1729)', () => {
+  test('a WorkerMesh worker over a valid file that selects a plug-in its main thread wires builds no persistence inside create', async () => {
+    // The deferral the refusal must not disturb: the worker inherits the
+    // selection without the plug-in, so building the extension there would
+    // fail every worker on a file its main thread runs on.
+    const selecting: ConfigObject = {
+      'actor-ts': { persistence: { journal: { plugin: 'acme.persistence.journal' } } },
+    };
+    const { system: worker } = await runWorkerMeshNode(
+      workerContextOver('valid-selection-mesh-worker', selecting),
+      async () => ({}),
+    );
+    try {
+      await worker.whenReady();
+
+      expect(worker.extensions.has(PersistenceExtensionId)).toBe(false);
+      expect(worker.extension(CoordinatedStartupId).hasTasks).toBe(false);
+    } finally {
+      await worker.terminate();
+    }
+  }, 20_000);
+
+  test('Cluster.bootstrap: the system it creates fails its startup, naming the key', async () => {
+    const name = 'unknown-key-bootstrap';
+    // No port is bound: the in-memory transport carries the join.
+    const transport = new InMemoryTransport(new NodeAddress(name, '127.0.0.1', 2552));
+    const bootstrapOptions = ClusterBootstrapOptions.create(name)
+      .withHost('127.0.0.1')
+      .withPort(2552)
+      .withSeeds([])
+      .withTransport(transport)
+      .withReceptionist(false)
+      .withShutdownOnSignals(false)
+      .withLogger(new NoopLogger())
+      .withConfig(MISSPELT)
+      .withPersistence({ plugins: [] });
+    // The bootstrap does not wait for the system's startup — for this failure
+    // as for every other the persistence-start phase reports — so the refusal
+    // is the system's to report, through the readiness it hands back.
+    const { system, shutdown } = await bootstrapCluster(bootstrapOptions);
+    try {
+      const error = await rejectionOf(system.whenReady());
+
+      expect(error.message).toContain('"persistence-warm-up"');
+      expect(error.cause).toBeInstanceOf(ConfigError);
+      expect((error.cause as Error).message).toStartWith(REFUSAL);
+    } finally {
+      await shutdown();
+    }
+  });
+
+  test('a WorkerMesh worker over its main thread\'s file fails its own startup on the key, as its main thread does', async () => {
+    // The worker inherits the file without the plug-ins and opens no store at
+    // its startup (#1473), but a key nothing reads still builds the extension
+    // inside `create`, so the refusal fails the worker's startup and takes it
+    // down, the same failure its main thread reports.  The bootstrap itself
+    // does not wait for the startup, as `Cluster.bootstrap` does not.
+    const main = ActorSystem.create(
+      'unknown-key-mesh-main',
+      ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off).withConfig(MISSPELT),
+    );
+    const address = new NodeAddress('unknown-key-mesh-worker', '127.0.0.1', 2552);
+    const init: WorkerMeshInitData = {
+      kind: 'worker-mesh-init',
+      config: MISSPELT,
+      secretPaths: [],
+      seeds: [],
+      roles: [],
+      modules: [],
+    };
+    const context = {
+      self: address,
+      systemName: 'unknown-key-mesh-worker',
+      transport: new InMemoryTransport(address),
+      initData: init,
+      ready: () => {},
+    } as unknown as WorkerNodeContext<WorkerMeshInitData>;
+    try {
+      const mainFailure = await rejectionOf(main.whenReady());
+      expect((mainFailure.cause as Error).message).toStartWith(REFUSAL);
+
+      const { system: worker } = await runWorkerMeshNode(context, async () => ({}));
+      try {
+        const workerFailure = await rejectionOf(worker.whenReady());
+
+        expect(workerFailure.message).toContain('"persistence-warm-up"');
+        expect(workerFailure.cause).toBeInstanceOf(ConfigError);
+        expect((workerFailure.cause as Error).message).toStartWith(REFUSAL);
+        await worker.whenTerminated();
+        expect(worker.isTerminated).toBe(true);
+      } finally {
+        await worker.terminate();
+      }
+    } finally {
+      await main.terminate();
+    }
+  }, 20_000);
+});

@@ -72,10 +72,11 @@ Einige Einstellungen leisten die meiste Arbeit:
 
 | Einstellung | Zweck |
 | --- | --- |
-| `host` + `port` | Das Interface, an das dieser Node **bindet**. `0.0.0.0` heißt "jedes Interface" und ist der Default. |
-| `advertisedHost` | Die Adresse, die Peers **wählen** — die Identität dieses Nodes. Ungesetzt wird sie aus `host` abgeleitet, sofern der routebar ist, dann aus `CLUSTER_HOST` / `POD_IP` / `HOSTNAME`, dann Loopback. |
+| `host` + `port` | Interface und Port, an die dieser Node **bindet**. `0.0.0.0` heißt "jedes Interface" und ist der Default. |
+| `advertisedHost` + `advertisedPort` | Die Adresse, die Peers **wählen** — die Identität dieses Nodes. Ungesetzt wird der Host aus `host` abgeleitet, sofern der routebar ist, dann aus `CLUSTER_HOST` / `POD_IP` / `HOSTNAME`, dann Loopback; der Port ist schlicht `port`. |
 | `seeds` | Adressen anderer Nodes. Beim Start kontaktiert dieser Node sie, um dem bestehenden Cluster beizutreten. Eine leere Liste = "ich bin der erste" (wird automatisch zum Leader). |
 | `roles` | Tags, die dieser Node trägt. Router und Shard-Regionen können danach filtern (`role: 'compute'` überspringt Nodes ohne dieses Tag). |
+| `appVersion` | Die Anwendungsversion, die dieser Node seinen Peers nennt — ein Label für Betreiber, angezeigt von `/cluster/members` und überall, wo ein Mitglied ausgegeben wird, sodass sich das gemischte Fenster eines Rolling Updates am Cluster ablesen lässt. Nichts platziert, routet oder downt danach. Meist vom Deployment gesetzt: `actor-ts.cluster.app-version = ${?APP_VERSION}` — eine Version, die wie eine Zahl aussieht, in der Variablen selbst quoten (`APP_VERSION='"1.10"'`): ein Wert aus der Umgebung wird zuerst als JSON gelesen, ein ungequotetes `1.10` erreicht die Peers also als `1.1`. |
 
 <Aside type="tip" title="Binden und Verteilen sind zwei verschiedene Adressen">
   `0.0.0.0` zu binden ist für einen Container richtig: er nimmt Verkehr
@@ -89,6 +90,13 @@ Einige Einstellungen leisten die meiste Arbeit:
   routebarer `host` deckt weiterhin beides ab, und ein
   unkonfigurierter Node verteilt `127.0.0.1`. In Kubernetes setzt man
   das Paar: `0.0.0.0` binden, `POD_IP` verteilen.
+
+  Der Port teilt sich genauso auf und muss es fast nie. `advertisedPort`
+  ist `port`, solange nichts ihn *umbiegt* — ein veröffentlichter
+  Container-Port etwa, bei dem `docker run -p 3000:2552` bedeutet, dass
+  Peers `3000` wählen müssen, während der Listener `2552` aufmacht.
+  Kubernetes biegt nichts um: Pod-zu-Pod-Gossip wählt den Container-Port
+  direkt.
 </Aside>
 
 Nachdem `Cluster.join` aufgelöst ist, befindet sich der Node im
@@ -158,16 +166,17 @@ stateDiagram-v2
   weaklyUp --> up: Leader bestätigt
   up --> unreachable: Failure Detector
   unreachable --> up: Heartbeat kehrt zurück
+  unreachable --> down: Strategie, Operator oder auto-down
   up --> leaving: cluster.leave()
-  leaving --> exiting
-  exiting --> removed
-  removed --> [*]: Tombstone-TTL
+  leaving --> removed
+  down --> removed
+  removed --> [*]: Tombstone-TTL, bei auto-down sofort
   classDef happy   fill:#312e81,stroke:#818cf8,color:#f1f5f9;
   classDef warn    fill:#7c2d12,stroke:#fb923c,color:#fed7aa;
   classDef gone    fill:#1e293b,stroke:#475569,color:#94a3b8;
   class joining,weaklyUp,up happy
   class unreachable warn
-  class leaving,exiting,removed gone
+  class leaving,down,removed gone
 ```
 
 - **`joining`** — hat sich gerade angekündigt. Andere Peers wissen
@@ -179,14 +188,30 @@ stateDiagram-v2
   Normalzustand.
 - **`unreachable`** — der Failure Detector hat den Peer als nicht
   heartbeatend markiert. Offiziell weiterhin Mitglied, aber das
-  Routing umgeht ihn. Transient; springt zurück auf `reachable`,
-  wenn Heartbeats wieder ankommen.
-- **`leaving` / `exiting`** — das Mitglied verlässt den Cluster
-  geordnet (per `cluster.leave()`).
-- **`removed`** — formal aus dem Cluster entfernt. Bleibt für eine
-  TTL (Standard 24 h) als Tombstone erhalten, damit veralteter
-  Gossip von einem langsamen Peer ihn nicht versehentlich
-  wiederbelebt.
+  Routing umgeht ihn. Springt zurück auf `up`, wenn er diesem Node
+  wieder Heartbeats schickt — nach einer Pause, nicht aber nach einer
+  symmetrischen Partition, nach der keine Seite der anderen mehr
+  Heartbeats schickt
+  ([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
+  Bleibt er still, entfernt ihn der Failure Detector bei
+  `down-after` — der Default ohne konfigurierte Strategie —, oder er
+  bleibt hier, bis ihn etwas entfernt — siehe `down`.
+- **`leaving`** — das Mitglied verlässt den Cluster geordnet (per
+  `cluster.leave()`). Seine Peers führen es als `removed`, sobald
+  sein Leave sie erreicht.
+- **`down`** — durch eine Entscheidung entfernt: die einer
+  [Downing-Strategie](/de/cluster/downing-strategies/), die eines
+  Operators (`Cluster.down`, `POST /cluster/down`) oder — ohne
+  konfigurierte Strategie, unter dem Default
+  `failure-detector.auto-down = on` — die des Failure Detectors
+  selbst. Geht direkt weiter zu `removed`.
+- **`removed`** — nicht mehr im Cluster. Ein Leave, die Entscheidung
+  einer Strategie und das Downing durch einen Operator halten es für
+  eine TTL (Standard 24 h) als Tombstone, damit veralteter Gossip von
+  einem langsamen Peer es nicht versehentlich wiederbelebt. Der
+  `auto-down`-Weg löscht den Eintrag stattdessen, weshalb ein Peer,
+  der das Mitglied noch führt, es zurückbringen kann — siehe
+  [den Failure Detector](/de/cluster/failure-detector/#was-der-detector-entscheidet--und-was-nicht).
 
 Der Event-Stream des Clusters legt jeden Übergang offen — abonniere
 `MemberUp` / `MemberRemoved` / `MemberUnreachable` etc. und
@@ -234,6 +259,89 @@ vor, und jedes Member wird in dem Status angekündigt, den es
 tatsächlich hat — ein `unreachable`-Peer wird als unreachable
 abgespielt, nicht als frischer Join.
 
+Live-Events folgen drei Regeln:
+
+- **Ein Event geht an die Listener, die beim Emittieren abonniert
+  waren** und es noch sind, wenn sie an der Reihe sind (#1294). Ein
+  Listener, der sich aus einem Callback heraus anmeldet, beginnt mit
+  dem nächsten Event — sein Replay spiegelt die laufende Änderung
+  bereits wider —, und einer, dessen Unsubscribe gelaufen ist, wird
+  nicht mehr aufgerufen, auch nicht mit dem laufenden Event.
+- **Jeder Statusübergang wird genau einmal angekündigt** (#1428).
+  Vier Pfade haben ihn früher doppelt angekündigt — die Urteile
+  `unreachable` und `down` des Failure Detectors, eine angewandte
+  Downing-Entscheidung und `Cluster.down` —, sodass zwei Nodes
+  dieselbe Änderung unterschiedlich zählen konnten.
+- **Der Versand ist synchron und Tiefe zuerst.** Ändert ein Listener
+  die Mitgliedschaft in seinem Callback — downt einen Peer, verlässt
+  den Cluster —, erreichen die verschachtelten Events jeden Listener,
+  bevor das äußere Event bei den nach ihm angemeldeten Listenern
+  ankommt. Mit einem Listener, der bei `MemberUnreachable` einen Peer
+  downt, und einem zweiten dahinter bekommt der zweite
+  `ReachabilityChanged`, `MemberDown`, `MemberRemoved` und erst dann
+  `MemberUnreachable`, noch mit dem Status `unreachable`.
+
+Wenn die Reihenfolge zählt, abonniere die Cluster-Events stattdessen
+auf `system.eventStream`. Der Cluster veröffentlicht jedes Event dort,
+bevor er irgendeinen Listener aufruft, also bekommt ein dort
+abonnierter Actor sie in der Reihenfolge, in der sie emittiert
+wurden, und ein `Cluster.subscribe`-Listener, der die Mitgliedschaft
+ändert, kann daran nichts umstellen.
+
+### Eine periodische Momentaufnahme, wenn du eine willst
+
+Jedes Event oben beschreibt eine *Änderung*.  Wenn du stattdessen
+„sag mir alle N Sekunden, wo die Mitgliedschaft steht“ willst, setze
+eine Taktung und abonniere `ClusterStatsPublished`:
+
+```hocon
+actor-ts.cluster.publish-stats-interval = 30s   # 0 (der Default) startet keinen Timer
+```
+
+```ts
+import { ClusterStatsPublished } from 'actor-ts/cluster';
+
+cluster.subscribe((evt) => {
+  if (evt instanceof ClusterStatsPublished) {
+    console.log(`${evt.up}/${evt.members} up, ${evt.unreachable} unreachable`);
+  }
+});
+```
+
+Es trägt die Mitgliederzahl, die `up`-Zahl, die `unreachable`-Zahl, den
+Leader als `Option<Member>` und die eigene Adresse dieses Nodes —
+jedes davon ohnehin über die `Cluster`-API erreichbar, und genau das
+ist der Punkt: Was der Key bringt, ist die **Taktung**, damit ein
+Dashboard keine eigene Polling-Schleife braucht.
+
+Drei Eigenschaften sind wissenswert:
+
+- **Node-lokal**, wie jedes andere Cluster-Event, und erreichbar über
+  `system.eventStream` ebenso wie über `cluster.subscribe`.  Bewusst
+  *nicht* auf [`cluster.eventStream`](/de/cluster/event-stream/): eine
+  periodische Momentaufnahme pro Node kostet auf dem clusterweiten Bus
+  N Frames pro Node und Intervall, um zu sagen, was jeder Node lokal
+  ohnehin lesen kann.  Bridge es selbst, wenn du eine flottenweite
+  Sicht willst — `selfAddress` ist dafür da, dass die Proben dann
+  unterscheidbar bleiben.
+- **Wird nie abgespielt.**  Ein später hinzukommender Subscriber
+  bekommt das oben beschriebene Mitgliedschafts-Replay und keine
+  Stats-Probe: eine Messung von vor deinem Zuhören erneut zu liefern
+  ist schlicht eine veraltete Zahl.
+- **Standardmäßig aus.**  `0` startet gar keinen Timer — das Verhalten
+  jeder Version vor diesem Key.
+
+Es ist nicht der einzige Ort, an dem diese Zahlen auftauchen, und die
+drei beantworten nicht ganz dieselbe Frage.  Das
+[DevTools-Dashboard](/de/observability/devtools/overview/) tastet sie
+mit eigenem Ticker ab und zählt zusätzlich kürzlich *gegangene* Nodes
+mit, sodass ein Cluster aus dreien, der einen verloren hat, weiterhin
+„2 / 3 up“ liest — dieses Event zählt stattdessen die lebende
+Mitgliederkarte.  Die Metrik `cluster_members_up`
+([Metriken](/de/observability/metrics/stock-metrics/)) ist eine
+Pull-Oberfläche ohne Callback.  Dieses hier ist der Framework-eigene
+Push.
+
 ### Der Leader
 
 `cluster.leader()` liefert das **niedrigst-adressierte** `up`-Member —
@@ -275,21 +383,30 @@ Für den tiefen Einstieg siehe
 
 ## Was der Failure Detector macht
 
-Das Framework verwendet einen einfachen, deterministischen Failure
-Detector auf Basis von **abgelaufenen Zeitschwellen**. Jedes
-Mitglied verfolgt pro Peer einen Zuletzt-gesehen-Zeitstempel — jede
-Nachricht zählt als Heartbeat; bleibt ein Peer länger als eine
-Schwelle still, markiert ihn der Detector.
+Der Default-Failure-Detector ist ein einfacher, deterministischer
+Detector auf Basis von **abgelaufenen Zeitschwellen**. Jeder Node
+schickt jedem erreichbaren Mitglied in festem Takt einen Heartbeat
+und verfolgt pro Peer, wann er zuletzt von ihm gehört hat: Jeder
+Frame zählt als Lebenszeichen, und ein Peer, der länger als eine
+Schwelle still bleibt, wird markiert. (Der optionale
+φ-Accrual-Detector liest dasselbe Lebenszeichen, lernt sein Timing
+aber nur aus Heartbeat-Frames — siehe
+[Lebenszeichen ist jeder Frame](/de/cluster/failure-detector/#heartbeats-sind-explizit-lebenszeichen-ist-jeder-frame).)
 
 - **`unreachableAfterMs`** — sobald ein Peer diese Zeit lang still
   war, wird das Mitglied als `unreachable` markiert.
-- **`downAfterMs`** — hält die Stille *diese* Zeit lang an, wird das
-  Mitglied heruntergefahren (Split-Brain-Auflösung).
+- **`downAfterMs`** — hält die Stille *diese* Zeit lang an, lautet
+  das Urteil des Detectors `down`. Ohne Downing-Strategie entfernt
+  dieses Urteil das Mitglied — `failure-detector.auto-down` ist per
+  Default an —, und die überlebenden Nodes übernehmen seine Shards
+  und Singletons; unter dem Opt-out `auto-down = off` bleibt es auf
+  `unreachable` geparkt, bis ein Operator oder eine Strategie es
+  entfernt — siehe [Split-Brain und Downing](#split-brain-und-downing).
 
 Schlichte abgelaufene Zeitgrenzen, kein Tracking statistischer
 Varianz — ausreichend für Cluster auf LAN-Skala. Siehe
-[Failure Detector](/de/cluster/failure-detector/) für Tuning und die
-WAN-Vorbehalte.
+[Failure Detector](/de/cluster/failure-detector/) für Tuning, die
+φ-Accrual-Alternative und die WAN-Vorbehalte.
 
 ## Split-Brain und Downing
 
@@ -310,9 +427,31 @@ actor-ts liefert mehrere **Downing-Strategien** mit:
 | `LeaseMajority` | Die Mehrheitsseite gewinnt, aber nur solange sie eine Koordinations-Lease hält. |
 
 Siehe [Downing-Strategien](/de/cluster/downing-strategies/) für die
-vollständige Liste. Wähle bewusst — der Standard (keine
-Downing-Strategie) erfordert manuelles Eingreifen während einer
-Partition.
+vollständige Liste. Wähle bewusst. Ohne Strategie — der Standard —
+entfernt der Failure Detector ein unerreichbares Mitglied selbst,
+sobald sein Urteil `down` lautet
+(`actor-ts.cluster.failure-detector.auto-down` wird `on`
+ausgeliefert), und der letzte verfügbare Node übernimmt die Shards
+und Singletons des toten Mitglieds. Für einen abgestürzten Node ist
+das richtig, bei einer Partition spaltet es den Cluster, weil jede
+Seite die anderen im selben Moment entfernt und beide Hälften als
+zwei Cluster weiterlaufen, die nicht wieder zusammenfinden, wenn das
+Netz heilt ([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
+Für Produktion konfiguriere also `lease-majority` oder eine andere
+Strategie. Mit zwei oder mehr Überlebenden kann der Gossip des einen
+ein Mitglied, das der andere gerade entfernt hat, als `unreachable`
+zurückbringen, bis es wieder entfernt wird — siehe
+[den Failure Detector](/de/cluster/failure-detector/#was-der-detector-entscheidet--und-was-nicht).
+`auto-down = off` ist das Opt-out: Der Detector parkt das Mitglied
+auf `unreachable`, seine Shards bleiben ihm zugeordnet, und seine
+entfernten Watcher bekommen kein `Terminated`, bis ein Operator es
+downt (`Cluster.down` oder `POST /cluster/down` mit
+`actor-ts.management.enable-down-endpoint = on`), eine Strategie
+konfiguriert ist oder es auf derselben Adresse neu startet. Keine
+der beiden Einstellungen hält den Leader an seinem
+Platz: Leader ist das erste `up`-Mitglied in der Sicht eines Nodes,
+die Mitglieder, die einander noch erreichen, wählen also einen
+anderen, und ein Singleton ohne Rolle zieht mit um.
 
 ## Knotenübergreifende Nachrichten
 

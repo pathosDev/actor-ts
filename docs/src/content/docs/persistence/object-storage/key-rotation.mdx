@@ -249,18 +249,30 @@ must not touch.  Two rules follow, and both are enforced:
   them on `put`, so a key this framework writes is always a key the
   sweep accepts.  Reads and deletes stay permissive, so an object
   written by an older version is still reachable.
-- **Exactly `<keyPrefix><persistenceId>/<leaf>`.**  That is the
-  layout both built-in stores use — `<pid>/<seq>.json` for
-  snapshots, `<pid>/state.json` for durable state.  A key with an
-  extra level is refused rather than read as its first segment: a
-  `persistenceId` containing `/`, or a `keyPrefix` shorter than the
-  store's own `prefix`, would otherwise yield a *plausible but
-  wrong* salt for the whole corpus.  A different layout supplies its
-  own `pidFromKey`.
+- **Exactly `<keyPrefix><persistenceId>/<leaf>`**, optionally
+  behind one store namespace.  Both built-in stores write
+  `<prefix><namespace><pid>/<leaf>` — `snapshots/<pid>/<seq>.json`
+  for snapshots, `state/<pid>/state.json` for durable state — so
+  the extractor reads the id whether you aim `keyPrefix` at one
+  store's namespace (`'acme/snapshots/'`, the narrower and
+  preferred form) or at the `prefix` the two share (`'acme/'`).
+  The id it recovers is the same either way, which is what it has
+  to be: the id is the HKDF salt, and a salt that depended on how
+  the corpus was addressed would re-encrypt bodies under a key the
+  owning store never derives again.
 
-Set `keyPrefix` to the store's `prefix` exactly.  Sweeping
-`'snapshots/'` when the store writes under `'snapshots/prod/'` is
-the second case above, and the sweep refuses it.
+  A key with an extra level *below* the pid is still refused
+  rather than read as its first segment: a `persistenceId`
+  containing `/`, or a `keyPrefix` shorter than the store's own
+  `prefix`, would otherwise yield a *plausible but wrong* salt for
+  the whole corpus.  A different layout supplies its own
+  `pidFromKey`.
+
+Set `keyPrefix` to the store's `prefix`, or to that prefix plus
+one store namespace.  Sweeping `'snapshots/'` when the store's
+`prefix` is `'snapshots/prod/'` is the second case above, and the
+sweep refuses it — `snapshots/` there is your prefix's first
+segment, not the namespace.
 
 ## Confirming completion
 

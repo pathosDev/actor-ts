@@ -1,0 +1,382 @@
+/**
+ * #840 — the φ-accrual detector shipped as a public, exported, documented
+ * class that nothing could ever install.  `Cluster` typed its detector field
+ * as the concrete `FailureDetector` and constructed one unconditionally, so
+ * `PhiAccrualFailureDetector` was reachable only by instantiating it yourself
+ * and never handing it to anything.  The config keys the issue asked for had
+ * nowhere to land until that seam existed.
+ *
+ * What is pinned here is the seam, not the algorithm — `PhiAccrualFailureDetector`
+ * has its own suite.  Three separable promises:
+ *
+ *  - `createFailureDetector` returns the implementation it is asked for, and
+ *    imposes the cluster's heartbeat cadence on it whatever the φ settings say
+ *    (#1142 — swapping the algorithm must not change how often the node talks
+ *    to its peers, which is why there is no `phi.heartbeat-interval` leaf);
+ *  - the choice survives `Cluster.join`, from HOCON and from explicit options,
+ *    with explicit winning;
+ *  - and the installed detector actually *decides differently* — an
+ *    `instanceof` alone would still pass if the cluster kept consulting a
+ *    second, simple detector it built for itself.
+ */
+import { afterEach, describe, expect, test } from 'bun:test';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
+import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { Cluster } from '../../../src/cluster/Cluster.js';
+import { ClusterOptions, ClusterOptionsBuilder } from '../../../src/cluster/ClusterOptions.js';
+import {
+  createFailureDetector,
+  defaultFailureDetectorOptions,
+  FailureDetector,
+  type FailureDetectorLike,
+} from '../../../src/cluster/FailureDetector.js';
+import {
+  defaultPhiAccrualOptions,
+  PhiAccrualFailureDetector,
+} from '../../../src/cluster/PhiAccrualFailureDetector.js';
+import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
+import { InMemoryTransport } from '../../../src/cluster/Transport.js';
+import { Config } from '../../../src/config/Config.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
+
+const SELF_HOST = '10.0.840.1';
+const PEER_HOST = '10.0.840.2';
+
+/** The private field these tests read — the whole point is *which* one it is. */
+interface ClusterInternals {
+  readonly failureDetector: FailureDetectorLike;
+}
+
+const internals = (cluster: Cluster): ClusterInternals => cluster as unknown as ClusterInternals;
+
+const started: ActorSystem[] = [];
+
+afterEach(async () => {
+  const systems = started.splice(0, started.length);
+  for (const system of systems) {
+    try { await system.terminate(); } catch { /* teardown is best-effort */ }
+  }
+});
+
+/**
+ * A one-node cluster over `InMemoryTransport`, with every periodic task pushed
+ * past the test's lifetime.  `hocon` is layered over the shipped defaults, the
+ * same way `ActorSystem.create` layers a deployment's `application.conf`, so
+ * the reference `implementation = simple` is genuinely underneath.
+ */
+async function joinNode(
+  name: string,
+  port: number,
+  hocon: string,
+  tune: (options: ClusterOptionsBuilder) => ClusterOptionsBuilder = (o) => o,
+): Promise<Cluster> {
+  const address = new NodeAddress(name, SELF_HOST, port);
+  const systemOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off)
+    .withConfig(Config.parseString(hocon));
+  const system = ActorSystem.create(name, systemOptions);
+  started.push(system);
+  const clusterOptions = ClusterOptions.create()
+    .withHost(address.host)
+    .withPort(port)
+    .withTransport(new InMemoryTransport(address))
+    .withGossipIntervalMs(60_000)
+    .withTombstonePruneIntervalMs(60_000);
+  return Cluster.join(system, tune(clusterOptions));
+}
+
+const peer = (port: number): NodeAddress => new NodeAddress('peer', PEER_HOST, port);
+
+describe('createFailureDetector builds the implementation it is named', () => {
+  test("'simple' builds the elapsed-time detector, thresholds intact", () => {
+    const detector = createFailureDetector('simple', {
+      heartbeatIntervalMs: 700,
+      unreachableAfterMs: 1_000,
+      downAfterMs: 4_000,
+    });
+
+    expect(detector).toBeInstanceOf(FailureDetector);
+    expect(detector.interval).toBe(700);
+    const target = peer(1);
+    detector.heartbeat(target, 0);
+    expect(detector.decide(target, 1_500)).toBe('unreachable');
+    expect(detector.decide(target, 4_500)).toBe('down');
+  });
+
+  test("'phi' builds the φ-accrual detector", () => {
+    const detector = createFailureDetector('phi', defaultFailureDetectorOptions);
+
+    expect(detector).toBeInstanceOf(PhiAccrualFailureDetector);
+  });
+
+  test('the φ detector runs on the cluster heartbeat cadence, not its own (#1142)', () => {
+    // The trap: `defaultPhiAccrualOptions` carries a `heartbeatIntervalMs` of
+    // its own, and `Cluster` schedules both its heartbeat tick and its
+    // detection tick from `failureDetector.interval`.  A φ detector that kept
+    // its own copy would change how often the node talks to its peers purely
+    // by being selected — which is what aff9d371 collapsed onto one constant,
+    // and why no `phi.heartbeat-interval` leaf exists to reinstate it.
+    const detector = createFailureDetector(
+      'phi',
+      { ...defaultFailureDetectorOptions, heartbeatIntervalMs: 1_750 },
+    );
+
+    expect(detector.interval).toBe(1_750);
+    expect(detector.interval).not.toBe(defaultPhiAccrualOptions.heartbeatIntervalMs);
+  });
+
+  test('a φ heartbeat interval smuggled in through the options is overruled', () => {
+    // Unreachable from HOCON — there is no leaf for it — but reachable from
+    // `withPhiAccrual({ heartbeatIntervalMs })`, and the cadence has to be
+    // single-sourced from whichever door it is pushed at.
+    const detector = createFailureDetector(
+      'phi',
+      { ...defaultFailureDetectorOptions, heartbeatIntervalMs: 900 },
+      { heartbeatIntervalMs: 60_000, downThreshold: 20 },
+    );
+
+    expect(detector.interval).toBe(900);
+  });
+
+  test('unset φ fields fall through to the built-in defaults, per field', () => {
+    // One field set must not blank the other five: the detector spreads
+    // `defaultPhiAccrualOptions` underneath, which is what makes a partial
+    // object from config or code safe to pass.
+    const detector = createFailureDetector(
+      'phi',
+      defaultFailureDetectorOptions,
+      { maxSampleSize: 4 },
+    ) as PhiAccrualFailureDetector;
+    const target = peer(2);
+
+    // Only reachable through behaviour.  With the pause, the thresholds and
+    // the first-contact estimate all left at their defaults, a single
+    // heartbeat crosses φ = 8 about 4.2 s later: past the 3 s pause, then
+    // 5.6 deviations of 125 ms beyond a 500 ms mean.  A blanked field shows —
+    // no pause, or no estimate, moves the crossing by seconds.
+    detector.heartbeat(target, 0);
+    expect(detector.decide(target, 0)).toBe('healthy');
+    expect(detector.decide(target, 4_150)).toBe('healthy');
+    expect(detector.decide(target, 4_250)).not.toBe('healthy');
+  });
+
+  test('an explicitly undefined φ field does not shadow the default', () => {
+    const detector = createFailureDetector(
+      'phi',
+      defaultFailureDetectorOptions,
+      { downThreshold: undefined },
+    );
+
+    expect(detector).toBeInstanceOf(PhiAccrualFailureDetector);
+    expect(detector.interval).toBe(defaultFailureDetectorOptions.heartbeatIntervalMs);
+  });
+});
+
+describe('Cluster.join installs the configured detector', () => {
+  test('the shipped default is still the simple detector', async () => {
+    const cluster = await joinNode('fd-default', 28_401, 'actor-ts.cluster.gossip-interval = 60s');
+
+    expect(internals(cluster).failureDetector).toBeInstanceOf(FailureDetector);
+  });
+
+  test('implementation = phi in HOCON installs the φ-accrual detector', async () => {
+    const cluster = await joinNode(
+      'fd-phi',
+      28_402,
+      'actor-ts.cluster.failure-detector.implementation = phi',
+    );
+
+    expect(internals(cluster).failureDetector).toBeInstanceOf(PhiAccrualFailureDetector);
+  });
+
+  test('an explicit implementation beats the file, in both directions', async () => {
+    const overCode = await joinNode(
+      'fd-explicit-simple',
+      28_403,
+      'actor-ts.cluster.failure-detector.implementation = phi',
+      (options) => options.withFailureDetectorImplementation('simple'),
+    );
+    expect(internals(overCode).failureDetector).toBeInstanceOf(FailureDetector);
+
+    const overFile = await joinNode(
+      'fd-explicit-phi',
+      28_404,
+      'actor-ts.cluster.failure-detector.implementation = simple',
+      (options) => options.withFailureDetectorImplementation('phi'),
+    );
+    expect(internals(overFile).failureDetector).toBeInstanceOf(PhiAccrualFailureDetector);
+  });
+
+  test('the installed φ detector decides by φ, not by the elapsed-time thresholds', async () => {
+    // `instanceof` on its own would still pass if the cluster consulted a
+    // simple detector it kept alongside, so the discriminating assertion is a
+    // verdict the two implementations do not share.  At 2 s of silence after a
+    // single heartbeat the simple detector says `unreachable` (2 s ≤ elapsed
+    // < 5 s); φ, with the pause set to 0 so the verdict is about selection
+    // and not about the shipped grace, sees a 12-σ gap against a 500 ms
+    // estimate with a 125 ms deviation, and says `down`.
+    const cluster = await joinNode(
+      'fd-phi-decides',
+      28_405,
+      `
+        actor-ts.cluster.failure-detector {
+          implementation = phi
+          phi.acceptable-heartbeat-pause = 0s
+        }
+      `,
+    );
+    const detector = internals(cluster).failureDetector;
+    const target = peer(28_406);
+
+    detector.heartbeat(target, 0);
+
+    expect(detector.decide(target, 2_000)).toBe('down');
+    // The control: the same input, heartbeat included, through the detector
+    // the default installs — which reaches a verdict of its own, and a
+    // different one.
+    const simple = createFailureDetector('simple', defaultFailureDetectorOptions);
+    simple.heartbeat(target, 0);
+    expect(simple.decide(target, 2_000)).toBe('unreachable');
+  });
+
+  test('the φ block from HOCON reaches the installed detector', async () => {
+    // Thresholds far enough from the shipped 8 / 12 that the verdict at a
+    // fixed instant can only have come from the file.
+    // `unreachable-threshold` is fractional on purpose: the reader is
+    // `getNumber`, and `getInt` would have thrown on the way in — so this
+    // cluster does not start at all if the block is read with the wrong
+    // accessor.
+    // The pause is set to 0 on both sides, so the only difference between the
+    // two detectors is the pair of thresholds — the shipped 3 s grace would
+    // hold both at `healthy` and the comparison would say nothing.
+    const cluster = await joinNode(
+      'fd-phi-tuned',
+      28_407,
+      `
+        actor-ts.cluster.failure-detector {
+          implementation = phi
+          phi {
+            unreachable-threshold      = 0.5
+            down-threshold             = 1000000
+            acceptable-heartbeat-pause = 0s
+          }
+        }
+      `,
+    );
+    const detector = internals(cluster).failureDetector;
+    const target = peer(28_408);
+    const shipped = createFailureDetector('phi', defaultFailureDetectorOptions, { acceptableHeartbeatPauseMs: 0 });
+
+    detector.heartbeat(target, 0);
+    shipped.heartbeat(target, 0);
+
+    // One second of silence against a 500 ms estimate with a 125 ms deviation
+    // is a φ of about 4.5: past the file's 0.5 and nowhere near its 1e6, but
+    // short of the shipped 8.  Stated as the *difference* between the two
+    // detectors rather than as a number, so the assertion survives a change
+    // to the normal-CDF approximation that would move φ without moving the
+    // ordering.
+    expect(detector.decide(target, 1_000)).toBe('unreachable');
+    expect(shipped.decide(target, 1_000)).toBe('healthy');
+  });
+
+  describe('the first-contact estimate follows the cadence the detector is given (#1451)', () => {
+    /**
+     * Silence after a single heartbeat until the installed detector first
+     * leaves `healthy` — the window a new peer gets before φ has a history.
+     * The pause is pinned in each case, so the number is about the estimate.
+     */
+    function firstContactCrossing(cluster: Cluster, target: NodeAddress): number {
+      const detector = internals(cluster).failureDetector;
+      detector.heartbeat(target, 0);
+      let low = 0;
+      let high = 120_000;
+      while (low < high) {
+        const middle = Math.floor((low + high) / 2);
+        if (detector.decide(target, middle) !== 'healthy') high = middle; else low = middle + 1;
+      }
+      return low;
+    }
+
+    function expectNear(actual: number, expected: number): void {
+      expect(actual).toBeGreaterThanOrEqual(expected - 10);
+      expect(actual).toBeLessThanOrEqual(expected + 10);
+    }
+
+    test('heartbeat-interval = 2s from the file, the key unset: ~7.8 s rather than ~4.2 s', async () => {
+      const cluster = await joinNode('fd-phi-cadence-file', 28_410, `
+        actor-ts.cluster.failure-detector {
+          implementation     = phi
+          heartbeat-interval = 2s
+          phi.acceptable-heartbeat-pause = 3s
+        }
+      `);
+
+      // E = 2 s, σ₀ = E/4 = 500 ms, plus the 3 s pause.
+      expectNear(firstContactCrossing(cluster, peer(28_411)), 7_807);
+    });
+
+    test('the same cadence from withFailureDetector in code', async () => {
+      const cluster = await joinNode(
+        'fd-phi-cadence-code',
+        28_412,
+        'actor-ts.cluster.failure-detector.implementation = phi',
+        (options) => options
+          .withFailureDetector({ heartbeatIntervalMs: 2_000 })
+          .withPhiAccrual({ acceptableHeartbeatPauseMs: 3_000 }),
+      );
+
+      expectNear(firstContactCrossing(cluster, peer(28_413)), 7_807);
+    });
+
+    test('expected-response-after = 2s at the 500 ms cadence moves the estimate, not the cadence', async () => {
+      const cluster = await joinNode('fd-phi-estimate', 28_414, `
+        actor-ts.cluster.failure-detector {
+          implementation = phi
+          phi {
+            acceptable-heartbeat-pause = 3s
+            expected-response-after    = 2s
+          }
+        }
+      `);
+
+      expectNear(firstContactCrossing(cluster, peer(28_415)), 7_807);
+      expect(internals(cluster).failureDetector.interval).toBe(defaultFailureDetectorOptions.heartbeatIntervalMs);
+    });
+
+    test('control: the shipped 500 ms cadence, the key unset', async () => {
+      const cluster = await joinNode('fd-phi-estimate-control', 28_416, `
+        actor-ts.cluster.failure-detector {
+          implementation = phi
+          phi.acceptable-heartbeat-pause = 3s
+        }
+      `);
+
+      expectNear(firstContactCrossing(cluster, peer(28_417)), 4_202);
+    });
+  });
+
+  test('an unknown implementation is refused at join, naming the field', async () => {
+    // It arrives from HOCON as often as from code, and the two legal spellings
+    // have to be in the message: a cluster that quietly ran the detector the
+    // operator did not ask for is the failure this key exists to prevent.
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig(Config.parseString('actor-ts.cluster.failure-detector.implementation = phi-accrual'));
+    const system = ActorSystem.create('fd-bad', systemOptions);
+    started.push(system);
+    const address = new NodeAddress('fd-bad', SELF_HOST, 28_409);
+    const clusterOptions = ClusterOptions.create()
+      .withHost(address.host)
+      .withPort(address.port)
+      .withTransport(new InMemoryTransport(address));
+
+    await expect(Cluster.join(system, clusterOptions)).rejects.toThrow(OptionsError);
+    await expect(Cluster.join(system, clusterOptions))
+      .rejects.toThrow(/failureDetectorImplementation/);
+    await expect(Cluster.join(system, clusterOptions)).rejects.toThrow(/simple/);
+  });
+});

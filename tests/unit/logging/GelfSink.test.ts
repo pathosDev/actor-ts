@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { gunzipSync } from 'node:zlib';
+import { Config } from '../../../src/config/Config.js';
 import { DISPLAY_NAME_FIELD, LogLevel } from '../../../src/Logger.js';
 import {
   chunkGelfDatagram,
@@ -10,10 +11,11 @@ import {
 } from '../../../src/logging/GelfChunking.js';
 import { additionalFieldName, encodeGelf, gelfPayloadFor } from '../../../src/logging/GelfPayload.js';
 import { GelfSink, UdpGelfTransport, type DgramSocketLike } from '../../../src/logging/GelfSink.js';
-import { GelfSinkOptions } from '../../../src/logging/GelfSinkOptions.js';
+import { GelfSinkOptions, readGelfSinkOptionsFromConfig } from '../../../src/logging/GelfSinkOptions.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import type { FetchLike } from '../../../src/logging/HttpDelivery.js';
 import type { LogRecord } from '../../../src/logging/LogRecord.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 const TIMESTAMP_MS = Date.UTC(2026, 7, 12, 9, 41, 2, 113);
 
@@ -321,7 +323,47 @@ describe('GelfSinkOptions', () => {
     expect(() => new GelfSink({ maxChunkBytes: 70_000 })).toThrow(OptionsError);
   });
 
+  it('rejects a chunk size that is not a whole number of bytes', () => {
+    // The chunker slices the payload on this number.
+    expect(() => new GelfSink({ maxChunkBytes: 1420.5 }))
+      .toThrow('GelfSinkOptions: maxChunkBytes must be an integer in [512, 65467] (got 1420.5)');
+  });
+
   it('rejects an invalid port', () => {
     expect(() => new GelfSink({ port: 0 })).toThrow(OptionsError);
+  });
+});
+
+describe('actor-ts.logger.sinks.gelf.max-chunk-bytes', () => {
+  function chunkBytesFrom(value: string): ReturnType<typeof readGelfSinkOptionsFromConfig> {
+    return readGelfSinkOptionsFromConfig(Config.parseString(`actor-ts.logger.sinks.gelf.max-chunk-bytes = ${value}`));
+  }
+
+  it('takes a byte size, as every other byte-size leaf does', () => {
+    expectExactOptions(chunkBytesFrom('8K'), { maxChunkBytes: 8_192 });
+    expectExactOptions(chunkBytesFrom('1.5K'), { maxChunkBytes: 1_536 });
+  });
+
+  it('reads a bare count as that many bytes', () => {
+    expectExactOptions(chunkBytesFrom('1420'), { maxChunkBytes: 1_420 });
+  });
+
+  it('refuses a size with a unit that does not come to a whole number of bytes, naming it', () => {
+    // It used to be rounded first, so 1420.5B reached the validator as 1421.
+    expect(() => chunkBytesFrom('1420.5B')).toThrow('Invalid size: 1420.5B is not a whole number of bytes');
+  });
+
+  it('still refuses a fractional count, naming it', () => {
+    // The byte-size getter refuses it while reading, as the integer getter it
+    // replaced did; it used to hand a bare number through as it was, and left
+    // the refusal to the validator.
+    expect(() => chunkBytesFrom('1420.5')).toThrow(
+      'Config at "actor-ts.logger.sinks.gelf.max-chunk-bytes" is not a whole number of bytes (got 1420.5)',
+    );
+  });
+
+  it('refuses a size past the datagram limit, whatever unit it is written in', () => {
+    expect(() => new GelfSink(chunkBytesFrom('64KiB')))
+      .toThrow('GelfSinkOptions: maxChunkBytes must be an integer in [512, 65467] (got 65536)');
   });
 });

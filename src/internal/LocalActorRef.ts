@@ -1,3 +1,4 @@
+import type { Scheduler } from '../Scheduler.js';
 import { ActorRef } from '../ActorRef.js';
 import type { ActorPath } from '../ActorPath.js';
 import { LogContext } from '../LogContext.js';
@@ -34,6 +35,16 @@ export class LocalActorRef<TMessage = unknown> extends ActorRef<TMessage> {
     if (span) (env as { trace?: ReturnType<typeof span.context> }).trace = span.context();
     this.cell.postUserEnvelope(env);
   }
+
+  /**
+   * @internal `actor-ts.actor.ask-timeout`, reached the same way the tracer
+   * above is — off the cell's system rather than through a lookup (#863).
+   */
+  override _defaultAskTimeoutMs(): number {
+    return this.cell.system._defaultAskTimeoutMs;
+  }
+
+  override _virtualScheduler(): Scheduler | null { return this.cell.system._virtualScheduler; }
 
   /** @internal */
   getCell(): ActorCell<TMessage> {

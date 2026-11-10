@@ -5,13 +5,13 @@
 <p align="center">
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml"><img alt="build workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml/badge.svg?branch=main"/></a>
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml"><img alt="tests workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml/badge.svg?branch=main"/></a>
-  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-8440%20of%208440-22c55e?style=flat-square&logo=bun"/></a>
-  <a href="#"><img alt="coverage" src="https://img.shields.io/badge/coverage-~93%25-22c55e?style=flat-square"/></a>
+  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-22579%20of%2022579-22c55e?style=flat-square&logo=bun"/></a>
+  <a href="#"><img alt="coverage" src="https://img.shields.io/badge/coverage-~96%25-22c55e?style=flat-square"/></a>
 </p>
 
 <p align="center">
   <a href="#"><img alt="typescript" src="https://img.shields.io/badge/typescript-5.6+-3178c6?style=flat-square&logo=typescript&logoColor=white"/></a>
-  <a href="#"><img alt="bun" src="https://img.shields.io/badge/bun-%3E%3D1.3-f7bf88?style=flat-square&logo=bun&logoColor=white"/></a>
+  <a href="#"><img alt="bun" src="https://img.shields.io/badge/bun-%3E%3D1.4-f7bf88?style=flat-square&logo=bun&logoColor=white"/></a>
   <a href="#"><img alt="node" src="https://img.shields.io/badge/node-%3E%3D24-339933?style=flat-square&logo=node.js&logoColor=white"/></a>
   <a href="#"><img alt="deno" src="https://img.shields.io/badge/deno-%3E%3D2.0-000000?style=flat-square&logo=deno&logoColor=white"/></a>
 </p>
@@ -28,17 +28,15 @@
 > the actor-model stack (actors, supervision, cluster, sharding, persistence,
 > HTTP) to TypeScript, running on Bun, Node.js, and Deno.  Large parts were
 > written with AI pair-programming and **have not been battle-tested in
-> production**.  Test coverage is good (~8440 tests, ~93 % line) but the
+> production**.  Test coverage is good (~22579 tests, ~96 % line) but the
 > surface area is enormous.  **Do not deploy this to anything that matters
 > yet.**  Use it to learn, to prototype, to benchmark ideas — not to handle
 > real money, users, or data.
 >
-> Those figures are measured on GitHub's hosted runners, where **three
-> multi-node suites are skipped** — Bun there cannot respawn functional
-> worker threads after the first worker test, so `ACTOR_TS_SKIP_FLAKY_MNS=1`
-> removes `LeaseMajority`, `ParallelPubSub` and the `ParallelMultiNodeSpec`
-> self-tests from the run.  They execute on a local `bun test` and in Docker,
-> and a nightly job re-runs them with the flag off; see
+> Those figures are measured on GitHub's hosted runners over the whole suite.
+> Three multi-node suites used to be skipped there and are not any more; the
+> reasons they came back, and the two mechanisms that keep a suite from
+> quietly leaving CI again, are in
 > [Diagnosing test flakes](https://actor-ts.dev/testing/diagnosing-flakes/).
 
 ---
@@ -56,18 +54,47 @@ A short tour of what's in the box:
   timers, become/unbecome, supervision (restart / resume / stop / escalate).
 - **Cluster** — gossip membership, φ-accrual failure detection, split-brain
   resolvers, weakly-up, readiness gating (`cluster.awaitReady`), multiple
-  transports (TCP, MessageChannel, in-memory).
+  transports (TCP, MessageChannel, in-memory), death watch and `context.sender`
+  across nodes.
+- **Parallelism from config alone** — `actor-ts.parallelism.workers = auto`
+  puts top-level actors on worker threads (Bun, Node, Deno) with the
+  application code unchanged: `system.spawn` returns a ref that buffers until
+  the worker acknowledges, `ask`, `watch` and `context.sender` cross the
+  thread, `terminate()` takes the threads down.  Offloaded actors stay
+  visible on `/metrics`: the mesh pulls every worker's registry into the
+  main thread's exposition, each series labelled `thread="main"` or
+  `thread="worker-N"`.  `workers = 0` is today's system, bit for bit;
+  children stay with their parent; what cannot cross — a factory closure, a
+  class the actor module does not export — fails loudly.
+- **Offload pool** — `context.offload(task, args)` runs a pure function on
+  a worker thread and resolves with the result: the single-threaded runtime's
+  blocking dispatcher, with a queue bound, deadlines that stop a busy thread,
+  a restart budget and structured-clone arguments; `defineOffloadTask` names
+  the function by module URL and export, because a function cannot cross a
+  thread.
+- **Worker mesh** — `WorkerMesh` joins the main thread to N worker threads
+  (Bun, Node, Deno) that host actors from a module you name; refs, `ask`,
+  sharding and role-restricted singletons work across the threads — the
+  layer underneath the config knob.
 - **Cluster sharding + singleton + pub-sub + reliable delivery + receptionist**
   — production patterns from the actor-model tradition.
+- **Two event streams, and the owner says which** — `system.eventStream` is
+  node-local, `cluster.eventStream` carries the same class and `kind`
+  channels to every node, and a local channel can be bridged onto the
+  cluster one per channel.
 - **Distributed Data** — nine CRDTs (counters, registers, sets, maps) with
   durable-storage backend, quorum reads/writes, automatic gossip.
 - **Persistence** — `PersistentActor`, `DurableState`, snapshots, projections
-  (with a per-projection handler-failure strategy: retry with backoff, skip to
-  dead letters, or stop), persistence-query, replicated event sourcing.  Journals for in-memory,
+  (event by event or a group per call with `withHandleGroup`, and a
+  per-projection handler-failure strategy: retry with backoff, skip to dead
+  letters, or stop), persistence-query, replicated event sourcing.  Journals for in-memory,
   SQLite (built-in driver on every runtime — `bun:sqlite`, `node:sqlite`, or
   `better-sqlite3`), libSQL / Turso, PostgreSQL, MariaDB,
   Microsoft SQL Server, MongoDB, DynamoDB, Cloudflare D1,
-  Cassandra / ScyllaDB.
+  Cassandra / ScyllaDB.  The SQL and object-storage snapshot and
+  durable-state stores honour per-actor `encryption()` / `integrity()` /
+  `compression()` (client-side AES-256-GCM, HMAC-SHA256); events in the
+  journal stay plaintext.
 - **Object storage** — S3 / MinIO / R2 / filesystem with optional gzip/zstd
   compression and client-side AES-256-GCM encryption (per-tenant subkeys via
   HKDF).
@@ -78,7 +105,7 @@ A short tour of what's in the box:
   connect/disconnect hooks); `WebsocketClientActor` is the reconnecting
   client half.  Scoped error handling (`handleErrors`) + `fallback` routes;
   a security-middleware suite (CORS, CSRF, HSTS, CSP, security headers,
-  Basic auth, request-id, timeout); HTML-escaping helpers; and
+  Basic auth, JWT auth, request-id, timeout); HTML-escaping helpers; and
   backend-agnostic **static file serving** (`getFromFile` /
   `getFromDirectory` — MIME detection, conditional requests, Range,
   directory browsing).
@@ -91,6 +118,12 @@ A short tour of what's in the box:
   configurable thing (or a plain object), with values validated once on the
   merged settings (builder / object / HOCON alike) — a bad port, timeout, or
   URL throws an `OptionsError` at startup, not deep in a later code path.
+  Configuration loads in layers — the bundled `reference.conf`, the
+  project's own `reference.conf`, `application.conf`, an optional profile
+  and a `secrets.conf` — with `${VAR}` read from the environment or a
+  `.env` file on all three runtimes, and the opt-in boot dump and the
+  DevTools panel name the layer and the variable every value came from,
+  secrets withheld.
 - **Utility primitives + helpers** — `Option<T>`, `Try<T>`, `Either<L, R>` and
   `Lazy<T>` for Scala-style ergonomics; `BidirectionalMap<K, V>`, a `Map` that
   also answers `value → key` and keeps the inverse in step for you, and
@@ -140,7 +173,10 @@ A short tour of what's in the box:
   unauthenticated by default, and it refuses a routable bind without a
   gate.
 - **TestKit** — `TestProbe`, `ManualScheduler`, `MultiNodeSpec` for
-  deterministic tests including cluster scenarios.
+  deterministic tests including cluster scenarios; the message-boundary check
+  is on by default there, so a message that would lose its prototype on a
+  worker hop fails the test that sends it instead of the first deployment
+  with `workers = auto`.
 
 Everything works under any of the three runtimes — runtime-specific backends
 (TCP sockets, worker threads, SQLite, HTTP serve) live behind small
@@ -398,9 +434,12 @@ SvelteKit) talking the same WebSocket protocol to a clustered backend:
   audio streaming over WebSocket.  Same cluster infrastructure, different
   protocol shape.
 
-Run either with `bun examples/chat/backend/main.ts --port 2551` (then
+Run either with
+`CHAT_ALLOW_DEMO_SECRET=1 bun examples/chat/backend/main.ts --port 2551` (then
 `--seeds localhost:2551` on additional terminals), open
-`http://localhost:8080`, pick a frontend, and poke.
+`http://localhost:8080`, pick a frontend, and poke.  The backend refuses to
+start without a secret for its session tokens — beyond a laptop that is
+`CHAT_TOKEN_SECRET`, the same strong random value on every node.
 
 ---
 

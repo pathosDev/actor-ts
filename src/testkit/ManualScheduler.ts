@@ -74,8 +74,16 @@ export class ManualScheduler extends Scheduler {
 
   /* --------------------------- Virtual-time controls --------------------------- */
 
-  /** Current virtual time in ms (monotonic, advances only via `advance`). */
-  now(): number { return this._now; }
+  /**
+   * Current virtual time in ms (monotonic, advances only via `advance`).
+   *
+   * The `Clock` half of the scheduler, and the reason a component that takes
+   * `system.clock` becomes deterministic for free.
+   */
+  override now(): number { return this._now; }
+
+  /** Time here moves only through {@link advance}, which is the whole point. */
+  override get isVirtual(): boolean { return true; }
 
   /** Number of scheduled non-cancelled tasks. */
   get pendingCount(): number {

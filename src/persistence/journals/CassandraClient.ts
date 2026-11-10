@@ -1,10 +1,12 @@
 /**
  * Narrow interface over the subset of the DataStax `cassandra-driver` API
- * that the journal / snapshot-store plug-ins actually use.  Kept separate
- * so tests can supply an in-memory stand-in without pulling in the real
- * driver, and so the driver itself stays an *optional* peer dependency.
+ * that the journal, the snapshot store and the sharding remember-entities
+ * store actually use.  Kept separate so tests can supply an in-memory
+ * stand-in without pulling in the real driver, and so the driver itself
+ * stays an *optional* peer dependency.
  */
 import { lazyImportModule } from '../../util/LazyImport.js';
+import { DEFAULT_CASSANDRA_REPLICATION_CLASS, DEFAULT_CASSANDRA_REPLICATION_FACTOR } from '../Constants.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 
 export type CassandraRowResult = {
@@ -33,30 +35,83 @@ export interface CassandraClientLike {
 export type CassandraConnection = {
   /** Node(s) to seed the cluster topology from. */
   readonly contactPoints: ReadonlyArray<string>;
-  /** Local DC — required for DCAwareRoundRobinPolicy.  Defaults to `datacenter1`. */
+  /**
+   * Local DC — required for DCAwareRoundRobinPolicy.  Defaults to `datacenter1`
+   * (`DEFAULT_CASSANDRA_LOCAL_DATA_CENTER`).
+   */
   readonly localDataCenter?: string;
-  /** Keyspace to `USE` after connect.  Must already exist, or pass `autoCreateKeyspace: true`. */
+  /**
+   * Keyspace that qualifies every statement (`keyspace.table`); the client is
+   * never bound to it with `USE`.  Must already exist, or pass
+   * `autoCreateKeyspace: true`.
+   */
   readonly keyspace: string;
   /** Optional username/password for PLAIN auth. */
   readonly credentials?: { username: string; password: string };
-  /** Port — defaults to 9042. */
+  /** Port — defaults to 9042 (`DEFAULT_CASSANDRA_PORT`). */
   readonly port?: number;
-  /** If true, create the keyspace on startup (simple strategy, rf=1).  Dev-friendly default. */
+  /**
+   * If true, create the keyspace on startup — `SimpleStrategy` at replication
+   * factor 1 unless `replication` says otherwise.  Dev-friendly default.
+   */
   readonly autoCreateKeyspace?: boolean;
   /** Replication options used by autoCreateKeyspace.  Ignored otherwise. */
   readonly replication?: {
+    /** Default `SimpleStrategy` (`DEFAULT_CASSANDRA_REPLICATION_CLASS`). */
     readonly class?: 'SimpleStrategy' | 'NetworkTopologyStrategy';
+    /** For SimpleStrategy only.  Default 1 (`DEFAULT_CASSANDRA_REPLICATION_FACTOR`). */
     readonly replicationFactor?: number;
     /** For NetworkTopologyStrategy, map of DC → replication factor. */
     readonly dataCenters?: Readonly<Record<string, number>>;
   };
   /**
-   * CQL consistency level to use for all reads and writes.  Default:
-   * `LOCAL_QUORUM` (value 6 in the driver).  Pass the numeric value from
-   * `cassandra-driver`'s `types.consistencies`.
+   * CQL consistency level to use for all reads and writes.  Pass the numeric
+   * value from `cassandra-driver`'s `types.consistencies` — `LOCAL_QUORUM` (6)
+   * is the level to reach for on a multi-DC keyspace.
+   *
+   * **Unset, the level is the driver's**, not the framework's: all three
+   * stores built on this connection — the journal, the snapshot store and the
+   * remember-entities store — branch on the field being absent and send no
+   * `consistency` at all, so `cassandra-driver`'s own default applies.  That
+   * is deliberate and is why `reference.conf` publishes the key as a
+   * *comment* rather than a value (#872) — a published number would pin a
+   * level nothing here chose.  The remember-entities store has no key there
+   * at all: nothing builds it from config, so its level arrives only through
+   * its options (#1491).
    */
   readonly consistency?: number;
 };
+
+/**
+ * CQL port a Cassandra or Scylla node listens on when nothing named one, and
+ * the data center `DCAwareRoundRobinPolicy` treats as local.
+ *
+ * Both live here rather than beside one options type because they are
+ * defaults of {@link CassandraConnection}, which the journal's, the snapshot
+ * store's and the remember-entities store's option families all extend — and
+ * because {@link createCassandraClient} below is the single place either is
+ * read.  Same placement and same argument as `DEFAULT_MONGO_DATABASE` in
+ * `MongoClient.ts` and `DEFAULT_D1_BASE_URL` in `D1Client.ts`.
+ *
+ * `9042` is Cassandra's registered CQL native-transport port and `datacenter1`
+ * is the name a single-node `cassandra.yaml` ships with, so both are the value
+ * a local cluster answers on rather than a tuning choice.  `reference.conf`
+ * publishes them under both Cassandra blocks (#872).
+ */
+export const DEFAULT_CASSANDRA_PORT = 9042;
+export const DEFAULT_CASSANDRA_LOCAL_DATA_CENTER = 'datacenter1';
+
+/**
+ * Side table an indexed `eventsByTag` query reads when nothing named one.
+ *
+ * Lives beside {@link tagIndexDdl} rather than in `CassandraJournalOptions.ts`
+ * with the journal's other table names because the DDL helper is a second read
+ * site — it is exported for operators applying the schema by hand, and it is
+ * called without a table name — so a constant in the options file would have to
+ * be imported *back* into this one, against the direction every other
+ * `XxxClient.ts` edge runs.
+ */
+export const DEFAULT_CASSANDRA_TAG_INDEX_TABLE = 'events_by_tag';
 
 /**
  * DDL for the `events_by_tag` side table populated by `CassandraJournal`
@@ -75,7 +130,7 @@ export function tagIndexDdl(args: {
   readonly keyspace: string;
   readonly tagIndexTable?: string;
 }): string {
-  const table = args.tagIndexTable ?? 'events_by_tag';
+  const table = args.tagIndexTable ?? DEFAULT_CASSANDRA_TAG_INDEX_TABLE;
   return `CREATE TABLE IF NOT EXISTS ${assertSafeIdentifier(args.keyspace, 'keyspace')}`
     + `.${assertSafeIdentifier(table, 'tag index table')} (`
     + ` tag text,`
@@ -130,12 +185,25 @@ function assertReplicationFactor(value: unknown, what: string): number {
  * with no guard of its own at all — so a hostile keyspace would otherwise
  * reach the cluster inside one `CREATE KEYSPACE` before anything rejected it
  * (security audit #616).  Validate here, at the choke point.
+ *
+ * A `NetworkTopologyStrategy` with no data center is refused here too, by
+ * name, for code and config alike: rendered, it is a statement with a trailing
+ * comma and no replica map, which Cassandra rejects with a syntax error that
+ * names nothing the operator set.  Here rather than in the config reader,
+ * which only reads what the block says.
  */
 export function keyspaceDdl(connection: CassandraConnection): string {
   const keyspace = assertSafeIdentifier(connection.keyspace, 'keyspace');
-  const replicationClass = connection.replication?.class ?? 'SimpleStrategy';
+  const replicationClass = connection.replication?.class ?? DEFAULT_CASSANDRA_REPLICATION_CLASS;
   if (replicationClass === 'NetworkTopologyStrategy') {
     const dataCenters = connection.replication?.dataCenters ?? {};
+    if (Object.keys(dataCenters).length === 0) {
+      throw new Error(
+        `keyspace ${keyspace}: NetworkTopologyStrategy needs at least one data center — set `
+        + 'replication.dataCenters (replication.data-centers in HOCON); with none the CREATE KEYSPACE '
+        + 'statement is not valid CQL',
+      );
+    }
     const pairs = Object.entries(dataCenters).map(([dataCenter, replicationFactor]) => {
       const replicas = assertReplicationFactor(
         replicationFactor, `replication factor for data center ${JSON.stringify(dataCenter)}`,
@@ -145,7 +213,7 @@ export function keyspaceDdl(connection: CassandraConnection): string {
     return `CREATE KEYSPACE IF NOT EXISTS ${keyspace} WITH replication = { 'class': 'NetworkTopologyStrategy', ${pairs} }`;
   }
   const replicationFactor = assertReplicationFactor(
-    connection.replication?.replicationFactor ?? 1, 'replicationFactor',
+    connection.replication?.replicationFactor ?? DEFAULT_CASSANDRA_REPLICATION_FACTOR, 'replicationFactor',
   );
   return `CREATE KEYSPACE IF NOT EXISTS ${keyspace} WITH replication = { 'class': 'SimpleStrategy', 'replication_factor': ${replicationFactor} }`;
 }
@@ -212,8 +280,8 @@ export async function createCassandraClient(connection: CassandraConnection): Pr
   });
   const options: Record<string, unknown> = {
     contactPoints: connection.contactPoints,
-    localDataCenter: connection.localDataCenter ?? 'datacenter1',
-    protocolOptions: { port: connection.port ?? 9042 },
+    localDataCenter: connection.localDataCenter ?? DEFAULT_CASSANDRA_LOCAL_DATA_CENTER,
+    protocolOptions: { port: connection.port ?? DEFAULT_CASSANDRA_PORT },
   };
   if (connection.credentials) options.credentials = connection.credentials;
   // We deliberately don't set `keyspace` here — we may need to CREATE it first.

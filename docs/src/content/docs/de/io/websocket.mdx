@@ -50,7 +50,7 @@ die **dekodierten Server-Nachrichten**, die er empfängt.
 `WebsocketClientActor` erweitert die gemeinsame
 [BrokerActor-Basis](/de/io/broker-actor-base/) und erbt damit
 Reconnect-mit-Backoff, den Outbound-Buffer über Reconnects hinweg
-und den Circuit-Breaker kostenlos.
+und einen Circuit Breaker um den Connect — aus, bis du einen benennst.
 
 ## Settings
 
@@ -64,17 +64,20 @@ interface WebsocketClientOptionsType<TOut, TIn> extends BrokerCommonOptionsType 
   codec?:           WebsocketCodec<TOut, TIn>;             // default jsonCodec()
   maxFrameBytes?:   number;                         // default 1 MiB; oversize inbound closes with 1009
   onInvalidMessage?: 'drop' | 'hook' | 'disconnect'; // default 'drop'
-  pingIntervalMs?:  number;                         // application-level ping; default off
+  pingIntervalMs?:  number;                         // keepalive interval; default off, payload from keepAliveFrame()
   idleTimeoutMs?:   number;                         // read-idle deadline; default 0 (off)
   connectTimeoutMs?: number;                        // connect deadline; default 0 (off)
+  inboundHighWaterMark?: number;                    // pause the socket at this many queued inbound frames; default off
+  inboundLowWaterMark?: number;                     // resume at this many; default a quarter of the high-water mark
 }
 ```
 
-Da die Settings `BrokerCommonOptionsType` erweitern, gelten die
-Blöcke `reconnect` (`{ initialDelayMs, maxDelayMs, factor, maxAttempts,
-randomFactor }`), `outboundBuffer` und `circuitBreaker` allesamt —
-ihre Semantik steht in der
-[BrokerActor-Basis](/de/io/broker-actor-base/).
+Da die Settings `BrokerCommonOptionsType` erweitern, gelten der
+Block `reconnect` (`{ initialDelayMs, maxDelayMs, factor, maxAttempts,
+randomFactor }`), `outboundBuffer` und `circuitBreaker` — eine Breaker-Id,
+deren Zahlen unter `actor-ts.circuit-breaker.<id>` liegen — allesamt; ihre
+Semantik steht in der [BrokerActor-Basis](/de/io/broker-actor-base/), die des
+Breakers unter [Circuit Breaker](/de/io/broker-actor-base/#circuit-breaker).
 
 ## Senden und Empfangen
 
@@ -126,7 +129,7 @@ Der Rest sind optionale Overrides:
 | `onConnected()` | Die Verbindung ist (wieder) aufgebaut.  Guter Ort für einen Handshake / Re-Subscribe. |
 | `onDisconnected(cause?: Error)` | Die Verbindung ist abgerissen; `cause` ist bei fehlergetriebenen Abbrüchen gesetzt. |
 | `onInvalidMessage(error: WebsocketDecodeError)` | Ein Frame ließ sich nicht dekodieren (nur bei `onInvalidMessage: 'hook'`). |
-| `onSelfMessage(message: TSelf)` | Behandelt den optionalen dritten Typparameter — Nachrichten, die der Actor an sich selbst sendet. |
+| `onSelfMessage(message: TSelf)` | Behandelt den optionalen dritten Typparameter — Nachrichten, die der Actor an sich selbst sendet — und alles andere an seine Ref, das keinen seiner eigenen Kinds trifft, auch den Body eines entfernten Knotens.  Default: ein Warn mit der Klasse der Nachricht (nie ihrem Payload), dann [`this.unhandled(message)`](/de/fundamentals/actor/#eine-nachricht-ablehnen--unhandled) — ein Dead Letter, der diesen Actor nennt, gezählt in `actor_unhandled_total{class}`. |
 | `onTerminated(signal: Terminated)` | Ein Aktor, den du mit `context.watch` beobachtest, hat gestoppt.  Von `BrokerActor` geerbt. |
 
 `onReceive` und `onCommand` sind **versiegelt** — die Basisklassen
@@ -219,15 +222,21 @@ Was das Schließen bringt: Das Gegenüber kann diesen Heap nicht *erneut* auf
 derselben Verbindung ausgeben — ohne den Close ließe sich eine einzige
 Verbindung dazu bringen, die Allokation für jeden beliebigen weiteren Frame
 zu wiederholen.  Eine weitere Runde kostet das Gegenüber jetzt einen
-vollständigen Reconnect, den der `reconnect`-Backoff und der Circuit Breaker
-bereits drosseln.  Siehe
+vollständigen Reconnect — und nur das.  Ein gelungener Connect setzt den
+`reconnect`-Backoff zurück und zählt für einen Circuit Breaker als Erfolg,
+sodass keins von beiden ein Gegenüber bremst, das jeden Connect annimmt und
+dann einen übergroßen Frame schickt: Der Client ist etwa alle
+`initialDelayMs` wieder bei ihm.  Siehe
 [Untrusted Input begrenzen](/de/http/security/#untrusted-input-begrenzen).
 
 Begleitet wird der Close von einer Warnzeile.  Sie benennt die Verbindung
 mit einem redigierten Label (`wss://feed.example.com/ws/orders`) statt mit
 `url`: Userinfo und Query-String fallen weg, denn ein WebSocket-Endpunkt
 wird üblicherweise mit einem `?token=…` authentifiziert, und der Pfad bleibt
-erhalten, weil er zwei Verbindungen zum selben Host unterscheidet.
+erhalten, weil er zwei Verbindungen zum selben Host unterscheidet.  Eine URL
+mit einem `@` hinter dem Host — in einem Pfad wie `/rooms/@general` oder in
+einem Query-Token — heißt stattdessen `wss://***`: Dieselben Bytes könnten ein
+Passwort sein, und der Host hinter dem `@` wäre dann der falsche.
 Dieselbe Maskierung steht deinem eigenen Code als
 [`redactedUrlLabel`](/de/reference/utility-helpers/) zur Verfügung.
 
@@ -247,32 +256,86 @@ Eine unerwartete Trennung übernimmt der
 
 **Ausgehende Nachrichten**, die während der Trennung gesendet
 werden, werden gemäß der Outbound-Buffer-Policy **gepuffert** und
-nach dem Reconnect erneut gesendet.  Der geerbte
-**Circuit-Breaker** löst nach wiederholten Verbindungsfehlern aus,
-damit ein toter Endpoint die Reconnect-Schleife nicht endlos
-drehen lässt.
+nach dem Reconnect erneut gesendet.
+
+Einen **Circuit Breaker** gibt es erst, wenn `circuitBreaker` einen nennt,
+und `maxAttempts` ist standardmäßig `Infinity` — für sich genommen wird ein
+toter Endpoint also endlos wiederholt, im Backoff von oben.  Mit einem Breaker
+hört der Client nach `max-failures` fehlgeschlagenen Connects in Folge für
+das Fenster des Breakers auf zu wählen und schickt danach eine einzige
+Probe.  Clients, die sich die Id teilen, machen höchstens einen Versuch je
+Fenster, und eine Probe antwortet nur so lange für alle, wie ein
+fehlschlagender Connect kurz ist gegenüber der Streuung ihres Aufwachens — ein
+Connect, der hängt, läuft noch, wenn der nächste Client aufwacht, und der
+probt ebenfalls (siehe
+[Circuit Breaker](/de/io/broker-actor-base/#circuit-breaker)).  Er
+versucht es weiterhin, solange `maxAttempts` es erlaubt; der Breaker streckt
+die Versuche, er beendet sie nicht.
 
 ## Ping / Keep-Alive
+
+`pingIntervalMs` startet einen Keep-Alive-Timer, damit ein
+zwischengeschalteter Proxy oder Load-Balancer die Verbindung nicht
+wegen Untätigkeit schließt.  **Was dieser Timer sendet, lieferst du
+selbst** — überschreibe dazu `keepAliveFrame()`:
 
 ```ts
 class KeepAlive extends WebsocketClientActor<ClientMessage, ServerMessage> {
   constructor() {
     const webSocketClientOptions = WebsocketClientOptions.create<ClientMessage, ServerMessage>()
       .withUrl('wss://...')
-      .withPingIntervalMs(30_000);
+      .withPingIntervalMs(30_000)
+      .withIdleTimeoutMs(90_000);
     super(webSocketClientOptions);
+  }
+
+  protected override keepAliveFrame(): WebsocketFrame {
+    return { kind: 'text', data: JSON.stringify({ kind: 'heartbeat' }) };
   }
 
   onMessage(message: ServerMessage): void {}
 }
 ```
 
-Ein Ping auf Anwendungsebene alle `pingIntervalMs` verhindert,
-dass zwischengeschaltete Proxies / Load-Balancer Idle-Verbindungen
-schließen — die meisten produktiven Setups wollen das.  Der
-WebSocket-Ping auf Protokollebene (Control-Frame) ist separat und
-wird von der Runtime übernommen; der Ping auf Anwendungsebene ist
-für **Proxies, die Payloads inspizieren, keine Frames**.
+Der Frame umgeht den Codec — kodiere ihn selbst.  Das Framework
+liefert bewusst keinen Default-Frame: erfundene Bytes wären eine
+unangekündigte Nachricht in *deinem* Protokoll, und ein Peer, der bei
+einer unbekannten Nachricht schließt, würde von seinem eigenen
+Keep-Alive gekappt.
+
+**Ein Keep-Alive wird direkt auf den offenen Socket geschrieben,
+niemals über den Outbound-Buffer.**  Es ist nicht `sendRaw()` unter
+anderem Namen, und der Unterschied zeigt sich genau dann, wenn die
+Verbindung in Schwierigkeiten ist.  Ein Tick, der keine offene
+Verbindung vorfindet, sendet überhaupt nichts: er wird nicht gepuffert,
+solange die Verbindung getrennt ist, nach dem Reconnect nicht erneut
+gesendet und belegt nie einen Slot, den eine Anwendungsnachricht
+innehatte.  Ein wiederholt gesendetes Heartbeat wäre ein Keep-Alive für
+eine Verbindung, die es nicht mehr gibt, gemessen gegen eine bereits
+verstrichene Periode — und bei vollem Buffer würde es dafür eine echte
+Nachricht verdrängen.  Ein Frame, den du *sehr wohl* erneut gesendet
+haben willst, gehört in `sendRaw()`, das genau das Gegenteil zusagt.
+
+**Ohne die Überschreibung hat der Timer womöglich nichts zu senden.**
+Er fällt dann auf das native `WebSocket.ping()` der Runtime zurück, und
+das ist ein Control-Frame auf *Protokollebene*, den es **nur auf Bun**
+gibt — das WHATWG-`WebSocket` von Node und Deno hat überhaupt keine
+`ping()`-Methode.  Auf diesen beiden Runtimes kann ein nicht
+überschriebener Hook nichts senden; der Client **startet deshalb keinen
+Timer** und schreibt stattdessen zur Connect-Zeit eine einzige Warnung
+(#751).  Ein Timer, der nachweislich nichts sendet, ist schlechter als
+gar keiner: er ist genau das, was dich glauben lässt, die Verbindung
+werde warm gehalten.
+
+Nur ein Frame auf Anwendungsebene erreicht einen Proxy, der
+**Payloads statt Frames** inspiziert, und nur ein Frame auf
+Anwendungsebene zählt gegen die Lese-Deadline des Peers — ein Pong auf
+Protokollebene wird auf keiner unterstützten Runtime an den
+`message`-Listener zugestellt.
+
+Kombiniere es mit `idleTimeoutMs` (nächster Abschnitt).  Ein Keep-Alive
+verhindert, dass ein Proxy eine untätige Verbindung *schließt*; nur die
+Lese-Deadline bemerkt eine, die trotzdem gekappt wurde.
 
 ## Eine still gekappte Verbindung erkennen
 
@@ -309,6 +372,46 @@ standardmäßig aus.
 annimmt und den Upgrade nie abschließt, den Actor unbegrenzt in
 `connecting`.
 
+## Eingehende Flusskontrolle
+
+Alles, was auf dieser Seite bisher *Backpressure* hieß, regelt die
+**ausgehende** Richtung: den Sende-Buffer, `maxBufferedBytes`, die
+`BackpressurePolicy`.  Auf der Empfangsseite hat der Client per Default
+gar keine Flusskontrolle — jeder Frame wird dekodiert und in dem Moment
+an die Mailbox gereicht, in dem er ankommt.  Ein Peer, der schneller
+publiziert, als `onMessage` abarbeitet, findet nichts, wogegen er drücken
+könnte, und eine begrenzte Mailbox verwirft dann *dekodierte
+Anwendungsnachrichten* — genau das Falsche.
+
+Eine eingehende Hochwassermarke pausiert stattdessen den Socket, sodass
+TCP das Zurückdrücken übernimmt:
+
+```ts
+const webSocketClientOptions = WebsocketClientOptions.create<ClientMessage, ServerMessage>()
+  .withUrl('wss://realtime.example.com/feed')
+  .withInboundHighWaterMark(256)   // frames queued in the mailbox before pause()
+  .withInboundLowWaterMark(64);    // resume() once the backlog is down to this
+```
+
+Gezählt werden dekodierte Frames, die in der Mailbox warten — an den
+Actor gereicht, aber noch nicht an `onMessage`.  An der Hochwassermarke
+wird der Socket pausiert; sobald der Rückstau auf die Niedrigwassermarke
+abgebaut ist, läuft er weiter.  Die Niedrigwassermarke ist per Default
+ein Viertel der hohen, und am ersten freien Platz weiterzulaufen ist
+bewusst nicht der Default: der Socket würde pro Frame zwischen pausiert
+und lesend flattern.
+
+**In der Praxis nur Bun.**  `pause()` und `resume()` gibt es auf dem
+Client-`WebSocket` von Bun 1.4.1+ und weder auf dem WHATWG-`WebSocket`
+von Node noch dem von Deno.  Der Actor prüft den Socket, nicht den
+Runtime-Namen; fehlt das Paar, bleibt es beim Verhalten oben und er sagt
+das beim Verbinden **einmal** — ein Limit, das angewendet aussieht und es
+nicht ist, ist schlimmer als keins.
+
+`websocket_client_inbound_paused_seconds_total` summiert die Zeit, die
+der Socket pausiert war, sodass der Zustand beobachtbar ist statt aus
+einem Stau auf der Gegenseite gefolgert.
+
 ## HOCON-Config
 
 Client-Defaults lassen sich unter
@@ -318,18 +421,49 @@ Client-Defaults lassen sich unter
 actor-ts.io.broker.websocket {
   url             = "wss://realtime.example.com/feed"
   protocols       = ["my-proto-v1"]
-  pingIntervalMs  = 30000
-  idleTimeoutMs   = 90000
-  connectTimeoutMs = 10000
-  maxFrameBytes   = 1048576
-  reconnect       { initialDelayMs = 500, maxDelayMs = 30000, factor = 2.0, randomFactor = 0.2 }   // maxAttempts omitted = unlimited (the default)
-  circuitBreaker  { /* ... */ }
-  outboundBuffer  { /* ... */ }
+  ping-interval   = 30s
+  idle-timeout    = 90s
+  connect-timeout = 10s
+  max-frame-bytes = 1M
+  inbound-high-water-mark = 256   # pause the socket at this many queued inbound frames (Bun 1.4.1+)
+  inbound-low-water-mark  = 64    # resume once the backlog is down to this many
+  on-invalid-message = "drop"   # drop | hook | disconnect
+  reconnect       { initial-delay = 500ms, max-delay = 30s, factor = 2.0, random-factor = 0.2 }   // max-attempts omitted = unlimited (the default)
+  circuit-breaker = "realtime-feed"   // a breaker id; none when unset (the default)
+  outbound-buffer = 1000        // messages held while disconnected; 0 = fail-fast
 }
+
+actor-ts.circuit-breaker.realtime-feed { max-failures = 5, reset-timeout = 30s }
 ```
 
 Die Präzedenz folgt der Broker-Konvention: Konstruktor-Argument >
 HOCON > eingebaute Defaults.
+
+Einige Hinweise zu diesem Block.
+
+Jedes Blatt ist das kebab-case seiner Option ohne Einheiten-Suffix, die drei
+Intervalle sind also Dauern und `max-frame-bytes` ist eine Größe.  Die
+camelCase-Schreibweisen, die diese Blätter vorher hatten — `pingIntervalMs`,
+`maxFrameBytes` und die übrigen —, werden mit einem `ConfigError` abgelehnt,
+der den neuen Key nennt, statt ignoriert zu werden: Gerade die Frame-Grenze
+fiele sonst still auf ihren Default zurück.  Der Client ist ein Broker-Actor,
+die Ablehnung kommt also, wenn er startet, in seinem `preStart` — nicht bei
+`ActorSystem.create`.
+
+`circuit-breaker` enthält die Id eines Breakers, nicht seine Einstellungen:
+Die gehören unter `actor-ts.circuit-breaker.<id>`, wie in der letzten Zeile,
+über die Defaults, die sich alle Breaker teilen.  Ein Block an seiner Stelle —
+das alte `circuit-breaker { failure-threshold, reset }` oder die eigenen
+Blätter des Breakers unter dem Root des Clients — wird beim Start abgelehnt,
+mit dem Hinweis auf die Id-Form.
+
+`on-invalid-message` hat ein Gegenstück auf
+der **Server**-Seite, `actor-ts.http.websocket.on-invalid-message`, und dessen
+Werteliste ist *nicht* dieselbe — dort heißt der dritte Wert `close`, hier
+`disconnect`.  Die beiden lassen sich also nicht voneinander abschreiben.
+
+`codec` hat gar keinen Config-Key: es ist ein Paar von Funktionen, und eine
+Funktion kann nicht aus einer Config-Datei kommen.
 
 ## Wann einsetzen
 

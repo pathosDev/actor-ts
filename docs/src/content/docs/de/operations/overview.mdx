@@ -26,6 +26,9 @@ Für ein nicht-triviales Actor-System, das in Produktion geht:
    (SQLite für Single-Node; Multi-Node braucht EINE von allen
    Knoten geteilte Datenbank-Instanz — Cassandra, PostgreSQL, … —
    nicht eine pro Knoten)
+□ Journal im Ruhezustand durch die Datenbank geschützt
+   (TDE oder ein verschlüsseltes Volume, dazu Zugriffskontrolle —
+   das Framework verschlüsselt und signiert keine Events)
 □ Cluster verdrahtet (falls Multi-Node) mit konkreter Seed-Strategie
 □ Downing-Strategie konfiguriert (Split-Brain-Schutz)
 □ Coordinated Shutdown mit SIGTERM-Hooks konfiguriert
@@ -33,7 +36,7 @@ Für ein nicht-triviales Actor-System, das in Produktion geht:
 □ Metriken via Prometheus oder OTel exponiert
 □ Log-Aggregation angeschlossen (strukturiertes Logging via withFields/MDC)
 □ TLS auf dem Cluster-Transport aktiviert
-□ Secrets via Env-Vars, NICHT in application.conf
+□ Secrets via Env-Vars, eine .env oder die Secrets-Datei, NICHT in application.conf
 □ Kubernetes-Manifeste mit PreStop-Hook + Grace Period
 □ Tracing optional, aber konfiguriert, falls Multi-Actor-Flows existieren
 □ Runbook für "Actor X crasht ständig" / "Cluster bildet sich nicht"
@@ -76,13 +79,26 @@ Drei Ebenen:
 | Anliegen | Seite |
 | --- | --- |
 | **Cluster-Transport TLS + Auth** | [Cluster-Sicherheit](/de/operations/security/cluster-security/) |
-| **Verschlüsselung at-rest für persistierte Daten** | [Master-Key-Rotation](/de/operations/security/master-key-rotation/) |
+| **Verschlüsselung at-rest für Snapshots und Durable State** | [Master-Key-Rotation](/de/operations/security/master-key-rotation/) |
 | **TLS everywhere** (HTTP, Broker, Journals) | [TLS everywhere](/de/operations/security/tls-everywhere/) |
 
 Der Cluster-Transport ist standardmäßig **unauthentifiziertes TCP** —
 ok in einem privaten Netzwerk, gefährlich im öffentlichen Internet.
 Aktiviere immer TLS + Shared-Secret-Auth für jeden Cluster, der
 unsichere Grenzen überschreitet.
+
+Die Master-Key-Rotation schlüsselt neu, was das Framework
+verschlüsselt, und das Event-Journal gehört nicht dazu.
+`encryption()` und `integrity()` an einem `PersistentActor`
+schützen nur seine Snapshots: Jedes Journal speichert Events als
+Klartext-JSON, nichts erkennt ein an Ort und Stelle manipuliertes
+Event, und datenbankseitige Kontrollen — Transparent Data
+Encryption, ein verschlüsseltes Volume, Zugriffskontrolle — sind
+heute der einzige Schutz für Events.  Das ist ein dokumentiertes
+Nicht-Ziel und kein offener Fehler:
+[`SECURITY.md`](https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md#out-of-scope--the-event-journal-at-rest)
+hält fest, warum, und was die Delegation an die Datenbank offen
+lässt.
 
 ## Upgrades
 
@@ -123,11 +139,13 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Der erste Anlaufpunkt sind Logs">
   Jede Supervisor-Entscheidung, jedes Cluster-Event, jeder Dead-Letter
-  wird geloggt. Mit `LogContext` MDC (Correlation IDs, die über
-  `tell` propagieren) fügt sich der Verlauf eines Multi-Actor-Requests
-  in einer einzigen Log-Abfrage zusammen. Konfiguriere strukturiertes
-  Logging vom ersten Tag an — siehe
-  [Logging](/de/fundamentals/logging/).
+  wird geloggt — Letzteres nach zehn Einträgen gedrosselt, lies die
+  Aussetz-Zeile also als „es gab mehr“ und nicht als Ende der
+  Geschichte (siehe [Dead Letters](/de/operations/dead-letters/)). Mit
+  `LogContext` MDC (Correlation IDs, die über `tell` propagieren) fügt
+  sich der Verlauf eines Multi-Actor-Requests in einer einzigen
+  Log-Abfrage zusammen. Konfiguriere strukturiertes Logging vom ersten
+  Tag an — siehe [Logging](/de/fundamentals/logging/).
 </Aside>
 
 <Aside type="caution" title="Der zweite Anlaufpunkt sind Metriken">

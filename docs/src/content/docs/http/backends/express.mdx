@@ -37,7 +37,26 @@ new ExpressBackend(
 
 Express-style settings. `maxBodyBytes` defaults to **1 MiB**, the shared
 cap every backend applies — raise it only for an endpoint that genuinely
-takes more, as above.
+takes more, as above. The server-wide
+`actor-ts.http.server.max-content-length` says the same for every backend and
+is the one to reach for: a backend built without `withMaxBodyBytes` takes the
+key, and one built with a different number is **refused** at `bind()`, naming
+both — one server does not hold two body caps, and picking either would leave
+the other silently unenforced. That holds in both directions: an endpoint built
+deliberately tighter than a looser server-wide key is refused too, never widened
+to it. The same number in both places binds.
+
+The backend builds the server it listens on — `node:http`, or `node:https`
+under `withTls(...)` (see [TLS](#tls)) — handing the app over exactly as
+`app.listen()` would, but with the server options `app.listen()` has no way to
+take: `max-header-bytes`, when set, is built into it, and a request whose
+header block is larger never reaches a handler. The connection-level bounds under
+[`actor-ts.http.server`](/reference/configuration/) are installed on the same
+server, so they hold here whether the backend was built by the framework or
+handed to `useBackend(...)` — including on a bring-your-own app. Express
+touches none of them itself, so what applies without configuration is
+`node:http`'s own: a 5 s keep-alive window, a 300 s receive deadline and a
+16 KiB header cap.
 
 ## Behind a reverse proxy
 
@@ -141,27 +160,67 @@ connection close instead.  Either way the handshake is refused.
 
 ## TLS
 
+Set it where every backend takes it, on the server options
+(see [TLS and HTTP/2](/http/overview/#tls-and-http2)):
+
 ```ts
-import express from 'express';
-import https from 'node:https';
+import { readFileSync } from 'node:fs';
+import { ExpressBackend, HttpServerOptions } from 'actor-ts/http';
 
-// TLS is set up on a bring-your-own Express app, wrapped in Node's
-// `https` server; pass the app to the backend via `.withApp(app)`.
-const app = express();
-https.createServer(
-  {
-    cert: fs.readFileSync('./tls/cert.pem'),
-    key:  fs.readFileSync('./tls/key.pem'),
-  },
-  app,
-);
+const serverOptions = HttpServerOptions.create()
+  .withTls({ cert: readFileSync('./tls/cert.pem'), key: readFileSync('./tls/key.pem') });
 
-const expressBackendOptions = ExpressBackendOptions.create().withApp(app);
-new ExpressBackend(expressBackendOptions);
+await http.newServerAt('0.0.0.0', 8443)
+  .useBackend(new ExpressBackend())
+  .withServerOptions(serverOptions)
+  .bind(routes);
 ```
 
-Backed by Node's `https` module.  Same caveats as the Fastify
-backend — typically TLS terminates at the load balancer.
+The backend then builds its server with `https.createServer`, handing the app
+over the way Express's own HTTPS recipe does, so a bring-your-own app changes
+nothing: its middleware sees every request, a `websocket()` route upgrades as
+`wss://` through that same middleware, and `max-header-bytes` and the
+connection-level bounds hold on the TLS server as they do on a plain one. The
+header deadline follows each connection into TLS, so a slow-loris is answered
+`408` inside it. Deno is the exception, as it is for plain HTTP: its `node:http`
+and `node:https` emit none of the connection events the guards rest on and
+ignore the header cap, so there `header-timeout`, `max-connections` and
+`max-header-bytes` do not hold, and `bind()` names each one that is set in a
+warning. `idle-timeout` and `request-timeout` hold from deno 2.7.13 on, as on
+Node; before it Deno accepts `keepAliveTimeout` and `requestTimeout` without
+applying either, and both are reported not in effect too. Measured under
+`idle-timeout = 600ms` and `request-timeout = 2s`: on deno 2.6.8 a keep-alive
+connection was still open 3 s after its response, and a body that stopped
+arriving was still open after 40 s with no `408`; on deno 2.7.13 and later, as
+on Node and Bun, the first closed at 1.6 s and the second was answered at 30 s.
+`requestClientCert` becomes `node:tls`'s `requestCert` and
+`rejectUnauthorized` passes through, as on the Hono backend under Node. The
+demand needs a `ca` to verify against: without one `bind()` refuses it, on
+every backend, because `node:tls` would otherwise check client certificates
+against the runtime's default trust store and admit any certificate a public
+CA issued. On Deno a client-certificate demand is **refused** at `bind()`
+either way, because Deno's `node:https` accepts the option and enforces
+nothing — measured on deno 2.6.8, a client presenting no certificate was
+answered.
+
+**HTTP/2 is refused.** `withHttp2()` fails at `bind()` rather than answering
+HTTP/1.1 under a setting that says h2. Express reassigns every request and
+response onto `node:http`'s own prototypes, and the compatibility objects of
+`node:http2` do not survive that: measured with express 5.2.1 behind
+`http2.createSecureServer({ allowHTTP1: true })`, an h2 request was negotiated
+and never answered on node v26.10.0 and bun 1.4.2, while HTTP/1.1 on the same
+port was; deno 2.6.8 does not implement `http2.createSecureServer` at all. For
+HTTP/2, use the [Fastify](/http/backends/fastify/#tls) or
+[Hono](/http/backends/hono/) backend.
+
+Wrapping a bring-your-own app in `https.createServer(…, app)` yourself, as
+earlier versions of this page did, still does not work: the backend listens on
+a server of its own, so that wrapper never receives a connection.
+`withTls(...)` is the way in.
+
+Behind a reverse proxy, an ingress or a load balancer that terminates TLS for
+you, leave `tls` unset and let the backend speak plain HTTP behind it — still
+how most production setups run.
 
 ## Peer dependency
 

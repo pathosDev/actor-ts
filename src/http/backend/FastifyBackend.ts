@@ -1,13 +1,26 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { HttpError, type HttpRequest, type HttpResponse } from '../Types.js';
 import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
-import { DEFAULT_RESPONSE_SECURITY_HEADERS, PAYLOAD_TOO_LARGE_RESPONSE, transportFrameCapOf } from './HttpServerBackend.js';
+import {
+  applyServerOptions,
+  DEFAULT_RESPONSE_SECURITY_HEADERS,
+  headerCapReachesHttp2Streams,
+  PAYLOAD_TOO_LARGE_RESPONSE,
+  serverOptionsReportOf,
+  transportFrameCapOf,
+} from './HttpServerBackend.js';
 import type {
   HttpServerBackend,
+  NodeHttpServerLike,
   RouteRegistration,
   ServerBinding,
   WebsocketRouteRegistration,
 } from './HttpServerBackend.js';
+import type { HttpServerOptions, HttpServerOptionsType, HttpTlsOptionsType } from '../HttpServerOptions.js';
+import { detectRuntime } from '../../runtime/Detect.js';
+import { refuseClientCertificateDemand } from '../../runtime/http/DenoHonoRunner.js';
+import { nodeTlsServerOptions, type NodeTlsServerFields } from '../../runtime/http/NodeHonoRunner.js';
 import { Lazy } from '../../util/Lazy.js';
 import { websocketPackageAdapter, type WebsocketPackageSocket } from '../websocket/SocketAdapter.js';
 
@@ -51,9 +64,138 @@ export function isBodyTooLargeError(err: unknown): boolean {
  * user code never interacts with Fastify types unless they explicitly opt
  * in via `backend.withPlugin(...)`.
  */
+/**
+ * The `Fastify({ … })` factory options that a resolved `HttpServerOptions`
+ * asks for — `bodyLimit` for `maxContentLength`, `maxHeaderSize` for
+ * `maxHeaderBytes`, `https` and `http2` for TLS — or `{}` when it asks for
+ * none of them.
+ *
+ * Fastify takes all of them at *construction*, not at `listen()`, so this is
+ * how the framework-built backend gets them: `HttpExtension` resolves the
+ * server options first and constructs the backend with the answer.  A backend
+ * constructed by hand and handed to `useBackend(...)` has to do the same,
+ * which is why `listen` refuses a `tls` it cannot retrofit (#1522) and a body
+ * or header cap it was not built with (#1488).
+ *
+ * `maxHeaderSize` goes into the bag Fastify hands its server factory, which
+ * is `https` once TLS is on — Fastify passes only that bag on then, so the
+ * same number in `http` would be inert on a TLS listener (measured on node
+ * v26.10.0 and bun 1.4.2: a 4 KiB header reached the handler).  Without TLS
+ * it goes into `http`.  The TLS fields map through `nodeTlsServerOptions`,
+ * the spelling the Hono runner on Node and the Express backend share —
+ * `requestClientCert` becomes `requestCert`, the `node:tls` name.
+ *
+ * Takes the {@link HttpServerOptions} union, so the builder an application
+ * hands `withServerOptions(...)` goes in as it is: typed as a bare
+ * `Partial<HttpServerOptionsType>`, a builder is refused by TypeScript's
+ * weak-type check, and the documented `fastifyFactoryOptions(serverOptions)`
+ * did not compile without a cast.
+ */
+export function fastifyFactoryOptions(options: HttpServerOptions): object {
+  const serverOptions = options as Partial<HttpServerOptionsType>;
+  const factory: Record<string, unknown> = {};
+  if (serverOptions.maxContentLength !== undefined) factory.bodyLimit = serverOptions.maxContentLength;
+  const headerCap = serverOptions.maxHeaderBytes !== undefined ? { maxHeaderSize: serverOptions.maxHeaderBytes } : undefined;
+  const tls = serverOptions.tls;
+  if (tls === undefined) return headerCap === undefined ? factory : { ...factory, http: headerCap };
+  const { cert, key, ...verification } = nodeTlsServerOptions(tls);
+  const https: Record<string, unknown> = { cert, key, ...headerCap, ...verification };
+  // `allowHTTP1` keeps HTTP/1.1 on the same port; Fastify hands it to
+  // `http2.createSecureServer`, the same shape the Hono/Node runner builds.
+  return serverOptions.http2 === true
+    ? { ...factory, https: { ...https, allowHTTP1: true }, http2: true }
+    : { ...factory, https };
+}
+
+/** The client-verification half of `node:tls`'s server options. */
+type ClientVerificationFields = Pick<NodeTlsServerFields, 'ca' | 'requestCert' | 'rejectUnauthorized'>;
+
+/** PEM text and bytes as the bytes they are, so material read twice compares equal. */
+function materialBytes(value: unknown): Uint8Array | undefined {
+  if (typeof value === 'string') return new TextEncoder().encode(value);
+  if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  return undefined;
+}
+
+/** Whether two `ca` values name the same certificates — by content, not identity. */
+function sameAuthority(left: unknown, right: unknown): boolean {
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return left.length === right.length && left.every((entry, index) => sameAuthority(entry, right[index]));
+  }
+  const leftBytes = materialBytes(left);
+  const rightBytes = materialBytes(right);
+  if (leftBytes === undefined || rightBytes === undefined) return left === right;
+  return leftBytes.length === rightBytes.length && leftBytes.every((byte, index) => byte === rightBytes[index]);
+}
+
+/**
+ * Whether a server built with `held` verifies client certificates the way
+ * `asked` says.  Without a demand on either side there is nothing to verify
+ * and `ca` decides nothing about clients; with one, the demand, the rejection
+ * switch and the trust anchor all have to agree — `node:tls`'s defaults
+ * (`requestCert` off, `rejectUnauthorized` on) filling in what either leaves
+ * unset.
+ */
+function verifiesClientsAlike(asked: ClientVerificationFields, held: ClientVerificationFields): boolean {
+  const askedDemand = asked.requestCert ?? false;
+  const heldDemand = held.requestCert ?? false;
+  if (!askedDemand && !heldDemand) return true;
+  return askedDemand === heldDemand
+    && (asked.rejectUnauthorized ?? true) === (held.rejectUnauthorized ?? true)
+    && sameAuthority(asked.ca, held.ca);
+}
+
+/**
+ * Refuse a client-certificate demand on the runtime that would accept it and
+ * enforce nothing.
+ *
+ * Fastify serves through `node:https`, and Deno's takes `requestCert` and
+ * ignores it: measured on deno 2.6.8, the framework-built Fastify backend
+ * bound under `requestClientCert` with a `ca` and answered a client that
+ * presented no certificate, one signed by the configured CA and one signed by
+ * an unrelated CA alike.  Fastify is the default backend, so this is the
+ * listener a demand reaches when nothing else is configured.  The rule is the
+ * one the Express backend and `DenoHonoRunner` apply, and it lives once, in
+ * {@link refuseClientCertificateDemand}; this backend adds the runtime check,
+ * since it runs everywhere, and its own reason.
+ */
+function refuseUnenforcedClientCertificate(tls: HttpTlsOptionsType): void {
+  if (detectRuntime() !== 'deno') return;
+  refuseClientCertificateDemand(
+    tls,
+    'FastifyBackend: tls.requestClientCert is not supported on Deno — Fastify serves through its node:https, which '
+    + 'accepts requestCert and enforces nothing (deno 2.6.8 answered a client that presented no certificate), so the '
+    + 'demand could only be ignored.  Terminate TLS in front of the process, or run on Node or Bun, where it is '
+    + 'enforced.',
+  );
+}
+
 export class FastifyBackend implements HttpServerBackend {
   readonly name = 'fastify';
   private readonly app: FastifyLike;
+  /**
+   * Whether `Fastify({ https })` was passed at construction — the only
+   * moment Fastify accepts it.  `listen` checks it against the `tls` it is
+   * handed, so a backend built without TLS never serves plain HTTP under a
+   * setting that says otherwise.
+   */
+  private readonly terminatesTls: boolean;
+  /**
+   * Whether `Fastify({ http2: true })` was passed at construction, which is
+   * when Fastify chooses `http2.createSecureServer` over an HTTPS server.
+   * Checked like {@link terminatesTls}: an instance built with TLS alone would
+   * otherwise serve HTTP/1.1 over TLS under a setting that says HTTP/2.
+   */
+  private readonly servesHttp2: boolean;
+  /**
+   * How the `https` passed at construction verifies a client certificate —
+   * its `requestCert`, `rejectUnauthorized` and `ca` — or `undefined` without
+   * TLS.  Checked like {@link terminatesTls}: Fastify verifies the way it was
+   * built, so a hand-built bag without the demand, or without its `ca`, would
+   * otherwise bind under a setting that demands a client certificate and check
+   * it some other way, or not at all.
+   */
+  private readonly constructedClientVerification: ClientVerificationFields | undefined;
   private readonly registered: RouteRegistration[] = [];
   private readonly wsRegistered: WebsocketRouteRegistration[] = [];
   private userErrorHandler:
@@ -71,6 +213,12 @@ export class FastifyBackend implements HttpServerBackend {
       bodyLimit: DEFAULT_HTTP_MAX_BODY_BYTES,
       ...options,
     });
+    this.terminatesTls = 'https' in options && (options as { https?: unknown }).https !== undefined;
+    this.servesHttp2 = (options as { http2?: unknown }).http2 === true;
+    const https = (options as { https?: NodeTlsServerFields }).https;
+    this.constructedClientVerification = https === undefined
+      ? undefined
+      : { ca: https.ca, requestCert: https.requestCert, rejectUnauthorized: https.rejectUnauthorized };
     // Route EVERY content-type through a raw-buffer parser — we want the
     // bytes to reach the DSL unparsed so user code picks the decoder via
     // pickRequestSerializer.  Fastify's built-in JSON parser would steal
@@ -165,7 +313,81 @@ export class FastifyBackend implements HttpServerBackend {
     this.userErrorHandler = handler;
   }
 
-  async listen(host: string, port: number): Promise<ServerBinding> {
+  async listen(host: string, port: number, serverOptions?: Partial<HttpServerOptionsType>): Promise<ServerBinding> {
+    // First, because no construction can make it hold: on Deno a demand for a
+    // client certificate would bind and verify nothing.
+    if (serverOptions?.tls !== undefined) refuseUnenforcedClientCertificate(serverOptions.tls);
+    // Fastify took its TLS material at construction or not at all; a `tls`
+    // arriving here on an instance built without one cannot be applied, and
+    // binding plain HTTP under it would be the silent failure #1522 refuses.
+    if (serverOptions?.tls !== undefined && !this.terminatesTls) {
+      throw new Error(
+        'FastifyBackend: HttpServerOptions.tls is set, but this backend was constructed without TLS.  '
+        + 'Fastify takes its certificate at construction: pass `fastifyFactoryOptions(serverOptions)` — or '
+        + '`{ https: { cert, key }, http2 }` yourself — to `new FastifyBackend(...)`, or let the framework '
+        + 'build the backend (leave useBackend unset), which does exactly that.',
+      );
+    }
+    // So was the client-certificate half: an instance built without the demand
+    // bound under one and answered a client that presented no certificate, and
+    // one built with the demand but without its `ca` verified against the
+    // runtime's default trust store instead of the `ca` the options name.
+    if (
+      serverOptions?.tls !== undefined
+      && !verifiesClientsAlike(nodeTlsServerOptions(serverOptions.tls), this.constructedClientVerification ?? {})
+    ) {
+      throw new Error(
+        'FastifyBackend: HttpServerOptions.tls verifies client certificates differently from the `https` this backend '
+        + 'was constructed with — requestClientCert, rejectUnauthorized and ca have to match its requestCert, '
+        + 'rejectUnauthorized and ca.  Fastify takes TLS at construction: pass `fastifyFactoryOptions(serverOptions)` '
+        + 'to `new FastifyBackend(...)`, or let the framework build the backend (leave useBackend unset), which does '
+        + 'exactly that.',
+      );
+    }
+    // HTTP/2 is chosen at construction too.  The validator already refuses
+    // `http2` without `tls`, so this is the instance built with a certificate
+    // and nothing else: it would answer HTTP/1.1 over TLS where the setting
+    // says HTTP/2 — the same silent partial as above.
+    if (serverOptions?.http2 === true && !this.servesHttp2) {
+      throw new Error(
+        'FastifyBackend: HttpServerOptions.http2 is set, but this backend was constructed without HTTP/2.  '
+        + 'Fastify chooses HTTP/2 at construction: pass `fastifyFactoryOptions(serverOptions)` — or '
+        + '`{ https: { cert, key }, http2: true }` yourself — to `new FastifyBackend(...)`, or let the framework '
+        + 'build the backend (leave useBackend unset), which does exactly that.',
+      );
+    }
+    // The body cap is a factory option too, and a set key this instance was
+    // not built with would leave two caps on one server with nothing to say
+    // which holds — refused, as `tls` is.  A hand-built `new FastifyBackend()`
+    // carries the built-in 1 MiB, so it binds under an unset key or an equal
+    // one and nothing else (#1488).
+    const bodyLimit = this.app.initialConfig.bodyLimit;
+    if (serverOptions?.maxContentLength !== undefined && serverOptions.maxContentLength !== bodyLimit) {
+      throw new Error(
+        `FastifyBackend: the server's max-content-length is ${serverOptions.maxContentLength} bytes `
+        + `(${ConfigKeys.http.server.maxContentLength}, or withMaxContentLength in code), but this backend was `
+        + `constructed with bodyLimit ${bodyLimit}.  Fastify takes its body limit at construction: pass `
+        + '`fastifyFactoryOptions(serverOptions)` — or `{ bodyLimit }` yourself — to `new FastifyBackend(...)`, '
+        + 'or let the framework build the backend (leave useBackend unset), which does exactly that.',
+      );
+    }
+    // The header cap the same way, checked against what the server holds
+    // rather than what the options said: a TLS instance built with the cap in
+    // the `http` bag reads as capped and holds nothing, and its server says so
+    // (`maxHeaderSize` undefined).  So does Deno's `node:http` shim, which
+    // ignores the option — Fastify on Deno is not a supported pair, and there a
+    // set key refuses rather than binds uncapped.
+    const heldHeaderCap = (this.app.server as { maxHeaderSize?: number }).maxHeaderSize;
+    if (serverOptions?.maxHeaderBytes !== undefined && serverOptions.maxHeaderBytes !== heldHeaderCap) {
+      throw new Error(
+        `FastifyBackend: the server's max-header-bytes is ${serverOptions.maxHeaderBytes} bytes `
+        + `(${ConfigKeys.http.server.maxHeaderBytes}, or withMaxHeaderBytes in code), but the server this backend `
+        + `built holds ${heldHeaderCap === undefined ? 'no header cap of its own' : `maxHeaderSize ${heldHeaderCap}`}.  `
+        + 'Fastify takes it at construction: pass `fastifyFactoryOptions(serverOptions)` to `new FastifyBackend(...)` '
+        + '— it puts maxHeaderSize in the `https` bag when TLS is on, the only one Fastify reads then — or let the '
+        + 'framework build the backend (leave useBackend unset), which does exactly that.',
+      );
+    }
     if (this.wsRegistered.length > 0) {
       const plugin = await fastifyWebsocketLazy.get();
       // Await the register so the plugin's onRoute hook is installed
@@ -184,12 +406,30 @@ export class FastifyBackend implements HttpServerBackend {
       for (const reg of this.wsRegistered) this.attachWebsocketRoute(reg);
     }
     const address = await this.app.listen({ host, port });
+    // Fastify overrides two of the four on its own — `keepAliveTimeout` to
+    // 72 s and `requestTimeout` to 0 (no bound) — so this is the write that
+    // makes a configured policy the one that governs rather than Fastify's
+    // opinion.  It runs after `listen` because these are re-read per
+    // connection.  The body and header caps took at construction, and the
+    // checks above made sure they are the ones asked for.  What took goes back
+    // on the binding, for `bind()` to warn from — the header cap as held for
+    // HTTP/1.1 only on an HTTP/2 listener whose runtime does not cap an
+    // HTTP/2 stream's header list with it, which Node's does not.
+    const headerCapOnEveryProtocol = !this.servesHttp2 || headerCapReachesHttp2Streams();
+    const serverOptionsReport = serverOptionsReportOf(
+      applyServerOptions(this.app.server as NodeHttpServerLike | undefined, serverOptions),
+      serverOptions,
+      headerCapOnEveryProtocol
+        ? { maxHeaderBytes: true }
+        : { maxHeaderBytes: false, heldForOneProtocol: { maxHeaderBytes: 'HTTP/1.1' } },
+    );
     // Fastify returns "http://<host>:<port>".
     const match = /:(\d+)$/.exec(address);
     const actualPort = match ? parseInt(match[1]!, 10) : port;
     return {
       host,
       port: actualPort,
+      serverOptionsReport,
       unbind: async (gracePeriodMs?: number) => {
         // `app.close()` waits for every in-flight request — and every
         // long-lived WebSocket connection — to drain.  Long-lived

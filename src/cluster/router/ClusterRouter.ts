@@ -202,9 +202,20 @@ class ClusterRouterActor<TMessage> extends Actor<TMessage | Broadcast<TMessage>>
   }
 
   private rebuildRoutees(): void {
+    // `placementCandidates`, not `upMembers`: with
+    // `configuration-compatibility-check.enforce` on, a peer whose checked
+    // configuration disagrees with this node's is not somewhere this node
+    // routes work (#844).  Identical to `upMembers` while enforcement is off,
+    // which is the default.
+    //
+    // Routee selection is the one consumer wired to it, deliberately.  The
+    // candidate set is a per-node view — each node compares only what its
+    // peers have gossiped against its own values — so it is asymmetric, and
+    // an asymmetric set is safe here (it costs a routee) and unsafe anywhere a
+    // role is *elected* from it, where it would produce two winners.
     const members = this.options.role
-      ? this.options.cluster.upMembersWithRole(this.options.role)
-      : this.options.cluster.upMembers();
+      ? this.options.cluster.placementCandidatesWithRole(this.options.role)
+      : this.options.cluster.placementCandidates();
     // upMembers() already sorts by address, but spell it out for clarity
     // — round-robin across rebuilds depends on a stable order.
     const sorted = [...members].sort((a, b) => a.address.compareTo(b.address));

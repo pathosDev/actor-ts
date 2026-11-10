@@ -166,8 +166,11 @@ the system reports separately — including a per-actor
 even enumerate.
 
 At rest the delay is a single hand-off: around 1 µs through
-`MicrotaskDispatcher` and 3 µs through the default `ImmediateDispatcher`.
-Under saturation it grows without bound, because the turns queue up
+`MicrotaskDispatcher` and 3 µs through `ImmediateDispatcher`.  The default,
+`HybridDispatcher`, hands most turns over through the microtask queue and
+every 64th through `setImmediate`; no at-rest figure has been measured for
+it on its own.
+Under saturation the delay grows without bound, because the turns queue up
 behind each other.  So the alert to write is on the quantile against your
 own latency budget:
 
@@ -202,16 +205,18 @@ differently on each of the three:
 
 | Runtime | `performance.eventLoopUtilization` |
 | --- | --- |
-| Bun 1.3 / 1.4 | absent |
+| Bun 1.3 / 1.4 | absent until something imports `node:perf_hooks`; from then on present, and permanently `{ idle: 0, active: 0, utilization: 0 }` (measured on 1.4.2) |
 | Node 26 | present, and a real reading |
 | Deno 2.6 | present, and permanently `{ idle: 0, active: 0, utilization: 0 }` |
 
-A feature check therefore passes on two runtimes and one of those two
-lies.  A ratio built on it would read a flat 0 % on Deno for ever, which
-is worse than publishing nothing at all: an alert on a metric that never
-fires looks identical to a system that is never saturated.  And even
-where the reading is real it covers the whole event loop, so it can
-never be attributed to one of several dispatchers.
+A feature check therefore passes on Node and Deno, and on Bun as soon
+as anything in the process has imported `node:perf_hooks` — and only
+Node's reading is real.  A ratio built on it would read a flat 0 % on
+Deno for ever, and on Bun wherever the check passed, which is worse
+than publishing nothing at all: an alert on a metric that never fires
+looks identical to a system that is never saturated.  And even where
+the reading is real it covers the whole event loop, so it can never be
+attributed to one of several dispatchers.
 
 Scheduling delay needs nothing but a clock, so it is the same
 measurement on all three, and it answers the same question in a form an
@@ -220,14 +225,15 @@ are waiting longer than my budget"*.
 
 If you want a true per-**node** loop-occupancy figure, that is a
 different signal from a different source — timer lag, sampled from the
-runtime — and it belongs to the event-loop starvation detector rather
-than here.
+runtime.  The framework does not ship one yet: an event-loop
+starvation detector built on it is planned under #886.
 
 ## Dead-letter metrics
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
 | `actor_dead_letters_total` | counter | `outcome` | Undeliverable messages the dead-letter queue captured, by outcome. |
+| `actor_unhandled_total` | counter | `class` | Messages a live actor was handed and declined, by actor class. |
 
 Only present once
 [`actor-ts.dead-letters.store`](/operations/dead-letters/) is something
@@ -265,6 +271,30 @@ sustained non-zero rate means messages are being sent to actors that are
 not there — a stale ref held past a restart, a selection built from a
 path that changed, a singleton with no host.
 
+`actor_unhandled_total` is the neighbouring signal, and the one that is
+present by default.  It counts a message that *was* delivered and then
+declined — an actor calling
+[`this.unhandled(m)`](/fundamentals/actor/#declining-a-message--unhandled),
+a behavior answering `Behaviors.unhandled`, or a cluster wire frame no
+handler claimed — and unlike the counter above it does not need the queue
+switched on, because it is incremented at the sink rather than by the
+queue.  `class` is the declining actor's constructor name, or `Cluster`
+for the wire case, which has no actor to name; it is the only label, for
+exactly the reason the paragraph above gives about `recipient`.
+
+A sustained rate here is a **protocol** problem rather than a routing one:
+something is sending this node messages it will not handle, which after a
+rolling upgrade usually means a peer speaking a newer wire protocol than
+this build knows.  Nothing detects a declined message on your behalf — an
+actor that silently ignores one still counts nothing, which is what makes
+a non-zero rate a statement rather than noise.
+
+Cluster sharding declines through the same sink: `ShardRegion`,
+`ShardCoordinator` and `Shard` count a message none of their arms takes —
+a `sharding.` kind from a newer member, or one sent to the wrong one of the
+three — and since none of them declines anything under healthy traffic, a
+rate on those classes is drift rather than load.
+
 ## Cluster metrics
 
 | Metric | Type | Labels | Meaning |
@@ -273,6 +303,8 @@ path that changed, a singleton with no host.
 | `cluster_gossip_rounds_total` | counter | — | Gossip-push rounds initiated by this node. |
 | `cluster_gossip_records_refused_total` | counter | `reason` | Gossiped member records a merge-path guard refused. |
 | `cluster_envelope_from_mismatch_total` | counter | `frame` | Envelopes whose payload named a sender other than the connection they arrived on. |
+| `cluster_envelope_refusals_total` | counter | `reason`, `frame` | Inbound envelopes refused because their target path is outside what this node accepts by name. |
+| `cluster_outbound_refusals_total` | counter | `frame` | Frames this node refused to send because the destination was neither a member nor a node it already holds a connection to. |
 
 For monitoring cluster health:
 
@@ -281,6 +313,9 @@ For monitoring cluster health:
 - `cluster_gossip_rounds_total` rate confirms gossip is flowing — a
   flat line means this node has stopped gossiping.
 - `cluster_gossip_records_refused_total` should sit at zero. Movement
+  on `reason="removed-run"` means a run this node removed is still
+  gossiping about itself — a process that was paused or cut off and
+  resumed, which stands down on its own (#940). Movement
   on `reason="version-skew"` means gossiped versions are further ahead
   of this node's clock than `maxVersionSkewMs` — either a peer's clock
   has drifted or someone is trying to pre-claim an address. Movement
@@ -305,6 +340,33 @@ For monitoring cluster health:
   deliberately *not* a label; putting it there would mint one series
   per address a sender cares to invent. Turn the node's log to
   `debug` to see which connection is carrying them.
+- `cluster_envelope_refusals_total` counts a target path this node
+  would not resolve by name.  `reason="system-path"` should sit at
+  zero on a healthy cluster: it means a peer, or an outside
+  `ClusterClient`, addressed a `/system` framework actor directly
+  rather than through the handler that actor registered.  A rolling
+  upgrade past the release that closed that route is the one benign
+  cause; anything else is worth looking at.
+  `reason="not-allow-listed"` only ever moves with
+  `actor-ts.remote.untrusted-mode` on, and on the day you turn it on
+  it is the metric to watch — every entry your
+  `trusted-selection-paths` is missing shows up here as refused
+  traffic.  Both labels are closed sets drawn from code: `reason` has
+  those two values, `frame` is `envelope` or
+  `cluster-client-envelope`, so the family is four series whatever
+  arrives.  The requested path is deliberately *not* a label, for the
+  same reason the claimed address above is not one — and it is not in
+  the log line either, since it is an unvalidated string from the
+  payload.
+- `cluster_outbound_refusals_total` counts a frame this node would
+  not send because its destination was neither a member nor a node
+  it already holds a connection to — a ref in a message body naming some other host,
+  or, far more often, a node that has just left.  A short burst after
+  a node leaves is normal; a steady rate on a stable membership means
+  something keeps handing this node refs to addresses outside the
+  cluster.  `frame` is `envelope` or `wire`, so the family is two
+  series; the destination is not a label, and the log line that
+  accompanies it at most every 30 seconds names it escaped.
 
 ## DistributedData metrics
 
@@ -317,7 +379,7 @@ and tiny, so the five families contribute eight series in total:
 | `distributed_data_quorum_pending` | gauge | — | Quorum reads and writes currently awaiting peer replies on this replica. |
 | `distributed_data_quorum_timeouts_total` | counter | `operation` | Quorum requests that hit their deadline before enough replicas replied. |
 | `distributed_data_quorum_rejected_total` | counter | `operation` | Quorum requests refused because `max-pending-quorum-requests` was reached. |
-| `distributed_data_dropped_values_total` | counter | — | Peer-supplied CRDT values this replica refused to decode. |
+| `distributed_data_dropped_values_total` | counter | — | CRDT values this replica dropped: peer-supplied ones it could not decode, and any of another CRDT kind than the value it holds for the key. |
 | `distributed_data_gossip_skipped_keys_total` | counter | `reason` | Local keys a gossip frame could not carry — over the frame budget, or unserialisable. |
 
 `operation` is `write` or `read` — those two values and no others.
@@ -333,8 +395,10 @@ and tiny, so the five families contribute eight series in total:
   in time.  See
   [Quorum reads and writes](/distributed-data/quorum-reads-writes/).
 - `distributed_data_dropped_values_total` is not a tuning signal at all
-  — a peer is sending payloads this replica cannot decode, which means a
-  broken or hostile node.
+  — it counts values this replica could not use: payloads it cannot
+  decode, which means a broken or hostile node, and values of another
+  CRDT kind than the one it holds for the key, which means two replicas
+  disagree on what the key is.
 - `distributed_data_gossip_skipped_keys_total{reason="oversize"}` above
   zero means a key is **not converging**: its own encoding exceeds
   `max-gossip-bytes` (or the wire cap it is clamped to), and one key's
@@ -343,6 +407,84 @@ and tiny, so the five families contribute eight series in total:
   names the key and its size.  `reason="unserialisable"` means a value
   the tagged-JSON codec refuses — a function or a `Promise` inside an
   `LWWRegister`, which is an application bug rather than a tuning one.
+
+## Persistence metrics
+
+The calls a [`PersistentActor`](/persistence/persistent-actor/) makes
+to its stores — recovery, `persist`, snapshots and `deleteHistory` —
+go through the circuit breaker in front of each store, and that is
+where they are measured:
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `persistence_journal_latency_seconds` | histogram | `operation` | Duration of a journal call, in seconds. |
+| `persistence_journal_failures_total` | counter | `operation`, `reason` | Journal calls that failed. |
+| `persistence_snapshot_latency_seconds` | histogram | `operation` | Duration of a snapshot-store call, in seconds. |
+| `persistence_snapshot_failures_total` | counter | `operation`, `reason` | Snapshot-store calls that failed. |
+| `persistence_breaker_state` | gauge | `breaker` | State of the breaker in front of a store: 0 closed, 1 half-open, 2 open. |
+
+`operation` is `append`, `replay` or `delete` for the journal, and
+`save`, `load` or `delete` for the snapshot store.  `replay` is the
+whole journal half of a recovery rather than one read — the snapshot's
+claimed sequence checked against the journal head, the read, the check
+on what came back, and the head probe; the fold that follows runs your
+`onEvent` and is not timed.  `load` is the snapshot read a recovery
+starts with.  Both histograms use the default seconds-scale buckets.
+
+`reason` takes five values and no others:
+
+- `outage` — the store threw something that is none of the below.
+  The breaker counts it towards `max-failures` on an append, a replay
+  or a load, and never on a journal delete or a snapshot save or
+  delete.
+- `timeout` — the breaker's own `call-timeout` cut the call.  The
+  breaker counts it on an append, a replay or a load, and not on a
+  delete or a save.
+- `breaker-open` — the breaker was open and refused the call, so the
+  store was never asked.
+- `ownership` — a conditional append lost to a second writer
+  (`JournalConcurrencyError`).
+- `integrity` — the store answered with data that failed a trust
+  check (`JournalIntegrityError`, `SnapshotIntegrityError`).  A
+  snapshot whose claimed sequence the journal contradicts is caught
+  during `replay`, so it is counted on the journal family.
+
+`breaker` is `journal` or `snapshot` — the store a breaker guards,
+never its configured id — so the gauge has at most two series, and
+none for a store whose breaker id is `""`.
+
+- The latency histogram is the **early** signal, and the only one
+  for slowness.  No `call-timeout` ships, so a slow call that succeeds
+  is a success to the breaker: a journal degrading from 2 ms to 200 ms
+  moves `persistence_journal_latency_seconds` and nothing else.  Its
+  p99 for `operation="append"` is also the number to pick a
+  `call-timeout` from.
+- Every call that reached the store is timed, failed ones included —
+  a store failing slowly is what you want to see.  A call the open
+  breaker refused is counted as `breaker-open` and **not** timed:
+  a stream of instant refusals would drag every quantile towards zero
+  exactly while the store is down.  A call that never settles is not
+  timed either, until a `call-timeout` turns it into a `timeout`.
+- `ownership` and `integrity` are the verdicts the breaker
+  deliberately does not count, and they page different people: a lost
+  race means two live instances of one entity, a failed trust check is
+  a data incident.  Neither opens the breaker, so neither shows up
+  anywhere else; both are worth an alert on any movement.
+- An error the breaker's `ignored-error-names` excuses is still
+  counted, under the reason its class gives.  The list decides what
+  trips the breaker; the counter reports what the store did.
+- `persistence_breaker_state{breaker="journal"} == 2` is the outage
+  alert: every append on the node is being refused.  A breaker
+  publishes its state when it is first used and on every transition
+  after that; half-open is entered by the first call after the reset
+  window.
+
+None of these is labelled by persistence id or by store:
+`operation`, `reason` and `breaker` are closed sets, so the series
+count is fixed however many entities you run.  Not every store call
+goes through these breakers — see
+[When the stores are down](/persistence/persistent-actor/#when-the-stores-are-down)
+for the ones that do not.
 
 ## Projection metrics
 
@@ -357,8 +499,8 @@ a read model has stopped tracking its journal:
 | `persistence_projection_events_skipped_total` | counter | `projection` | Events a `skip` strategy stepped past and published as dead letters. |
 
 `projection` is the `name` you gave it; `reason` is `handler` (your
-`handle` callback threw) or `poll` (the query layer or the offset
-store did) — those two values and no others.
+`handle` or `handleGroup` callback threw) or `poll` (the query layer or
+the offset store did) — those two values and no others.
 
 - `persistence_projection_stalled` is the alert.  It is published as
   0 when a projection starts, so the series exists for every running
@@ -387,6 +529,40 @@ stays; see the stock-label rule at the end of this page.
 
 See [Projections](/persistence/projections/) for the strategies
 these describe.
+
+## Worker-mesh metrics
+
+A [worker mesh](/cluster/worker-mesh/) relays every worker's registry
+into the main thread's exposition, and one family belongs to the relay
+itself:
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `worker_mesh_snapshot_age_seconds` | gauge | `worker` | Seconds since the main thread last received a metrics snapshot from this worker. |
+
+`worker` is the slot — `worker-0`, `worker-1`, … — the same value the
+relayed samples carry in their `thread` label, so the two join by eye.
+It is bounded by `worker-mesh.workers`, minted by the main thread from
+its own slot table and never off the wire, and the series is removed
+when the slot leaves the mesh.
+
+- Read at scrape time, not at the relay tick, so the value is the age at
+  the moment you asked.  Under the default `10s` interval a healthy
+  worker reads under ten; a worker that is alive but has stopped
+  answering the relay keeps its last snapshot exported and this gauge
+  climbing, which is the alert — `worker_mesh_snapshot_age_seconds > 30`
+  is a working expression.  A snapshot the relay refused (a name outside
+  the exposition grammar, too many samples) leaves the gauge climbing
+  too, with a `warn` line naming the reason — provided an earlier
+  snapshot from that worker was accepted.  The series is minted by the
+  first *accepted* snapshot, so a worker refused from its very first
+  answer has no age series at all, and the `warn` line is the only
+  signal.
+- The relayed families themselves are the stock families on this page,
+  minted on the worker and exported here with `thread="worker-N"` added
+  at export.  Every row above applies to them unchanged, one series per
+  thread; see the [scope of a scrape](/observability/metrics/prometheus-exporter/#scope-per-process-per-thread)
+  for the `thread` label and how to aggregate across it.
 
 ## Overhead
 
@@ -457,7 +633,26 @@ import { Aside } from '@astrojs/starlight/components';
   counter, because the only thing asserting it was a test pinning one
   family's label set.  `tests/unit/metrics/StockMetrics.test.ts` now reads
   every stock family out of `src/` and checks the whole inventory against
-  this rule, with the two per-instance labels above as named exceptions.
+  this rule.  Every label it allows beyond the rule is a named exception
+  there, with its reason beside it: the two above, the persistence
+  breaker gauge's `breaker`, the offload pool's `task` and `outcome`, the
+  sharding refusal counter's `type` and the worker mesh's `worker`.
+
+  One label is stamped **at export rather than at a call site**, and the
+  gate keeps it in a table of its own: `thread`, added to every sample
+  while a [worker mesh](/cluster/worker-mesh/) relays its threads'
+  registries into the main thread's exposition — `main` for the main
+  thread's own series, `worker-N` for a worker's.  It satisfies the rule
+  the same way `worker` above does: bounded by `worker-mesh.workers`
+  plus one, and minted from the main thread's own slot table, never from
+  a value a worker sent.  The key is reserved: `DefaultMetricsRegistry`
+  refuses `thread` as an application label when the family is minted,
+  on every thread, so a collision is a startup error at the developer's
+  desk rather than a scrape that drops a thread's series — and a snapshot
+  that arrives already carrying a `thread` label is refused whole, since
+  no registry of ours can have produced it.  It is absent — not empty,
+  absent — from a single-threaded system's exposition, so nothing about
+  the inventory above changes until the relay is on.
 </Aside>
 
 <Aside type="caution" title="Counters reset on restart">

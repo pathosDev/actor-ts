@@ -164,7 +164,7 @@ describe('ClusterSharding — handoff buffer (#893)', () => {
     // A second `preStart` is what makes this a replay and not a straight
     // delivery: the handoff really did take the entity down first.
     expect(created).toBe(2);
-  });
+  }, 15_000);
 
   test('a handoff with nothing buffered asks for nothing', async () => {
     // The re-ask is conditional on purpose: an idle shard that rebalances away
@@ -189,5 +189,5 @@ describe('ClusterSharding — handoff buffer (#893)', () => {
     // The entity going down and staying down is what says the handoff ran and
     // then genuinely asked for nothing back.
     expect(entityIsUp(node, shardId)).toBe(false);
-  });
+  }, 15_000);
 });

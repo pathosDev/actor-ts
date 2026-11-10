@@ -39,6 +39,9 @@ if (typeof workerScope.postMessage === 'function') {
   // same reason `WorkerNode.join()` uses it: Bun dispatches worker-side frames
   // to the DOM property reliably and to a listener less so.
   const post = (message) => workerScope.postMessage(message);
+  // No origin check: dedicated Worker message handler (not window.postMessage);
+  // the only sender is the parent that spawned this smoke-test worker (CodeQL
+  // js/missing-origin-check — false positive).
   workerScope.onmessage = (event) => {
     if (event?.data?.kind === 'worker-init') onInit(post);
   };

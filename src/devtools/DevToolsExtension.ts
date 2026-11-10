@@ -3,8 +3,9 @@ import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import type { Route } from '../http/index.js';
 import {
-  DEVTOOLS_DEFAULTS,
   DevToolsOptionsValidator,
+  mergeDevToolsOptions,
+  readDevToolsOptionsFromConfig,
   type DevToolsExposure,
   type DevToolsOptions,
   type DevToolsOptionsType,
@@ -35,11 +36,27 @@ export class DevToolsExtension implements Extension {
    * Start DevTools on its own HTTP port.  Attaching twice returns the
    * existing binding — a duplicate call in a dev script should not take
    * the tooling down with an error.
+   *
+   * Attaching over a {@link mount} is refused instead.  There is no
+   * binding to hand back, and the alternative — a second server beside
+   * the first — is what this used to do: the guard keyed on the binding,
+   * a mount has none, so `attach` built another `DevToolsServer`, pointed
+   * `server` at it and orphaned the mounted one.  `detach()` then stopped
+   * the newer server only, and every tap of the mounted one — the
+   * `SpanTap` teeing one root span per actor message into the
+   * application's exporter, among them — stayed installed for the life
+   * of the process while `isAttached()` said false (#1512).
    */
   async attach(options: DevToolsOptions = {}): Promise<DevToolsBinding> {
     if (this.binding !== null) {
       this.system.log.warn('DevTools is already attached; returning the existing binding');
       return this.binding;
+    }
+    if (this.server !== null) {
+      throw new Error(
+        'DevTools is already attached on this ActorSystem without a binding of its own — '
+        + 'mounted into another server, or its bind still in flight. Call detach() first.',
+      );
     }
     const server = this.createServer(options, 'attach');
     let bound: DevToolsBinding;
@@ -92,12 +109,19 @@ export class DevToolsExtension implements Extension {
    * on — the two entry points can prove different things about who will
    * be able to reach the tree — and validation runs before anything is
    * installed, so a rejected call leaves the extension exactly as it was.
+   *
+   * The `actor-ts.devtools.*` block enters here, between the built-in
+   * defaults and the caller's options (#881).  Validating the *merged*
+   * settings is what makes the security rule cover a config file for free: a
+   * `host` from `application.conf` faces the same loopback check a code-set
+   * one does, and cannot be gated by `auth` or `ipAllowlist`, which have no
+   * HOCON form.
    */
   private createServer(options: DevToolsOptions, exposure: DevToolsExposure): DevToolsServer {
-    const settings: DevToolsOptionsType = {
-      ...DEVTOOLS_DEFAULTS,
-      ...(options as Partial<DevToolsOptionsType>),
-    };
+    const settings: DevToolsOptionsType = mergeDevToolsOptions(
+      readDevToolsOptionsFromConfig(this.system.config),
+      options as Partial<DevToolsOptionsType>,
+    );
     new DevToolsOptionsValidator(exposure).validate(settings);
     const server = new DevToolsServer(this.system, settings);
     this.server = server;
@@ -126,11 +150,13 @@ export class DevToolsExtension implements Extension {
       'devtools-detach',
       () => this.detach(),
     );
-    // `system.terminate()` does NOT run CoordinatedShutdown, so the task
-    // above would never fire for the many programs that just terminate.
-    // A debugger attached to a system that no longer exists is useless
-    // and holds a port open, keeping the process alive forever — so
-    // follow the system's own lifetime as well.
+    // A bare `system.terminate()` — still the default — runs no phase, so
+    // the task above never fires for the many programs that just
+    // terminate; only a signal, an explicit `run()` or
+    // `terminate({ runCoordinatedShutdown: true })` reach it.  A debugger
+    // attached to a system that no longer exists is useless and holds a
+    // port open, keeping the process alive forever — so follow the
+    // system's own lifetime as well.
     void this.system.whenTerminated().then(() => this.detach());
   }
 }

@@ -75,6 +75,9 @@ object ResultFile:
         .name("completedOperations").value(result.completedOperations)
       // ΔRSS is deliberately absent: a JVM heap against a JavaScript heap
       // measures the collector's appetite, not the framework's footprint.
+      result.actorCount.foreach(actors => json.name("actorCount").value(actors.toLong))
+      result.workIterationsPerMessage.foreach(rounds => json.name("workIterationsPerMessage").value(rounds.toLong))
+      result.checksum.foreach(sum => json.name("checksum").value(sum))
       result.notes.foreach(note => json.name("notes").value(note))
       json.endObject()
     json.endArray()

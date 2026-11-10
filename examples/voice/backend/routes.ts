@@ -115,6 +115,12 @@ const SELECTOR_HTML = /* html */ `<!doctype html>
 `;
 
 export function buildRoutes(ingress: ActorRef<WebsocketServerMessage<WebsocketFrame, WebsocketFrame>>): Route {
+  // No origin option here on purpose: `websocket()` requires a same-origin
+  // `Origin` by default (#756), and every frontend under `/static/*` dials
+  // `${location.host}` — the socket is served by the page's own origin, so the
+  // guard admits them and a page from anywhere else is refused the upgrade.
+  // A frontend served from its own dev server would need
+  // `.withAllowedOrigins([...])`, or `.withRequireSameOrigin(false)` to opt out.
   const wsRouteOptions = WebsocketRouteOptions.create().withCodec(rawCodec());
   return concat(
     get(() =>

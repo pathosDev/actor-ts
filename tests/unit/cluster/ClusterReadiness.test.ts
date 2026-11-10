@@ -28,6 +28,7 @@ import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 const HOST = '10.0.164.1';
 
@@ -242,15 +243,16 @@ describe('readClusterBootstrapDefaultsFromConfig', () => {
       port: 9_416,
       config: { 'actor-ts': { cluster: { bootstrap: { 'await-ready': '7s', 'minimum-members': 3 } } } },
     });
-    expect(readClusterBootstrapDefaultsFromConfig(configured.system.config)).toEqual({
+    expectExactOptions(readClusterBootstrapDefaultsFromConfig(configured.system.config), {
       awaitReadyMs: 7_000,
       minimumMembers: 3,
     });
 
     const plain = await startNode({ systemName: 'reader-plain', port: 9_417 });
     // `minimum-members` ships as a real reference.conf leaf (1); `await-ready`
-    // is comment-only there, so "unset" is expressible and stays absent.
-    expect(readClusterBootstrapDefaultsFromConfig(plain.system.config)).toEqual({
+    // is comment-only there, so "unset" is expressible and stays absent —
+    // absent, not present as `undefined`, which `toEqual` alone cannot see.
+    expectExactOptions(readClusterBootstrapDefaultsFromConfig(plain.system.config), {
       minimumMembers: 1,
     });
   });

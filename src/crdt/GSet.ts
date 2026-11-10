@@ -1,4 +1,4 @@
-import type { Crdt } from './Crdt.js';
+import type { Crdt, CrdtIdentityFunction } from './Crdt.js';
 import {
   assertStringArray,
 } from './CrdtWireValidation.js';
@@ -62,6 +62,11 @@ export class GSet<E> implements Crdt<GSet<E>> {
 
   has(element: E): boolean {
     return this.elements.has(this.identity(element));
+  }
+
+  /** @see {@link Crdt.customIdentity} */
+  customIdentity(): CrdtIdentityFunction | undefined {
+    return this.identity === defaultIdentity ? undefined : this.identity;
   }
 
   /** Snapshot of every element currently in the set. */

@@ -1,6 +1,7 @@
 import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import type { ActorClassOrFactory } from '../../Actor.js';
+import type { ActorOptionsType } from '../../ActorOptions.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { DeadLetter, Terminated } from '../../SystemMessages.js';
@@ -30,8 +31,10 @@ import {
 } from '../ClusterEvents.js';
 import { asWarmHandOverActor, handOverStateFitsFrame } from './WarmHandOver.js';
 import {
+  DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS,
   DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS,
   DEFAULT_SINGLETON_MAX_HAND_OVER_STATE_BYTES,
+  DEFAULT_SINGLETON_RESTART_ON_TERMINATION,
   SINGLETON_HAND_OVER_BUFFER_SIZE,
   SINGLETON_HAND_OVER_RETRY_INTERVAL_MS,
   SINGLETON_HAND_OVER_STATE_RETENTION_MS,
@@ -126,8 +129,13 @@ export function singletonHost(cluster: Cluster, role?: string): Option<Member> {
  * The cost of excluding them is real and is the lesser one: while a role host
  * is unreachable to its peers the singleton is hosted *from their point of
  * view* nowhere, and messages routed from that side dead-letter until the
- * member is downed (`downAfterMs`) or comes back.  Availability is recoverable
- * and bounded by downing; a second live singleton is neither.  On the no-lease
+ * member is downed or comes back.  Something has to down it — the shipped
+ * `failure-detector.auto-down = on` after `downAfterMs`, a downing strategy,
+ * or an operator, the last two being all that is left once a strategy is
+ * configured or auto-down is switched off, which parks a silent member at
+ * `unreachable` (#1426).  Availability is then recoverable and bounded by
+ * downing; a second
+ * live singleton is neither.  On the no-lease
  * path the two properties cannot both be had — an unreachable node cannot be
  * asked to stand down, because reaching it is the thing that failed.  Where
  * both are needed, that is what the lease path is for: it is arbitrated by a
@@ -489,12 +497,18 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
    * lands here — and `.exhaustive()` turned an unrecognised body into an actor
    * failure, taking the singleton's supervision with it (#713).  A message we
    * do not understand is not a reason to fall over.
+   *
+   * It is a reason to leave a trace, though: `this.unhandled` puts the
+   * message on the dead-letter path and counts it (#1178), so a rolling
+   * upgrade that starts speaking a frame this manager predates is visible as
+   * a rate rather than as one warn line scrolling past.
    */
   private onUnhandled(message: unknown): Promise<void> | void {
     this.log.warn(
       `singleton manager: dropping an unrecognised message `
       + `(${(message as { kind?: string })?.kind ?? typeof message})`,
     );
+    this.unhandled(message);
   }
 
   private onReconcile(): Promise<void> {
@@ -580,7 +594,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
    */
   private onChildDiedUnexpectedly(): void {
     this.child = null;
-    if (this.options.restartOnTermination ?? true) {
+    if (this.options.restartOnTermination ?? DEFAULT_SINGLETON_RESTART_ON_TERMINATION) {
       this.log.warn(
         `singleton '${this.options.typeName}' terminated unexpectedly — `
         + `re-spawning in ${SINGLETON_RESTART_BACKOFF_MS} ms`,
@@ -1555,7 +1569,6 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
       to: singletonManagerPath(peer.systemName, this.options.typeName),
       from: null,
       body: message,
-      tag: 'Singleton',
     });
   }
 
@@ -1591,7 +1604,15 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
         ? this.options.singletonActor
         : this.warmedActorFactory(warmState),
       this.options.typeName,
-      this.options.singletonActorOptions,
+      // `applicationOwned` last, so a caller's own options cannot shadow it.
+      // This manager is the framework's actor and the class it is spawning is
+      // not (#862): the singleton instance sits on a `/system` path only
+      // because its manager does, and system-wide application policy — the
+      // global mailbox bound — has to reach it.
+      {
+        ...(this.options.singletonActorOptions as Partial<ActorOptionsType<T>> | undefined),
+        applicationOwned: true,
+      },
     );
     this.context.watch(this.child);
     // This node is hosting again, so a snapshot it left for a successor is a
@@ -1619,7 +1640,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   }
 
   private scheduleAcquireRetry(): void {
-    const interval = this.options.acquireRetryIntervalMs ?? 5_000;
+    const interval = this.options.acquireRetryIntervalMs ?? DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS;
     this.retryTimer?.cancel();
     this.retryTimer = this.system.scheduler.scheduleOnceFunction(interval, () => {
       this.self.tell({ kind: 'acquire-retry' } satisfies ManagerEvent);

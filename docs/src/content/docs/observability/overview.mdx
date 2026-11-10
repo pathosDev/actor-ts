@@ -140,6 +140,11 @@ const otelAdapterOptions = OtelAdapterOptions.create().withApi(otel);
 system.extension(TracingExtensionId).enable(otelTracer(otelAdapterOptions));
 ```
 
+`enableOtel(otelAdapterOptions)` builds and installs the same tracer, and
+takes its name and version from
+[`actor-ts.tracing`](/reference/configuration/#actor-tstracing) where the
+options do not set them.
+
 With tracing enabled, **every actor message gets its own span**.
 The span carries:
 

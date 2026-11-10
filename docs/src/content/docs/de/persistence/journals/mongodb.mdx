@@ -19,31 +19,37 @@ Es ist das erste Document-Store-Backend und braucht kein Replica Set: siehe
 
 ## Installation
 
-`mongodb` ist eine optionale Peer-Dependency.  **Pinne sie auf Version 6:**
+`mongodb` ist eine optionale Peer-Dependency.  Version 6 und Version 7 werden
+beide unterstützt:
 
 ```bash
-bun add mongodb@^6
+bun add mongodb@^7   # oder mongodb@^6
 ```
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="danger" title="mongodb@7 lässt sich auf Bun nicht importieren">
+<Aside type="caution" title="mongodb@7 braucht Bun 1.4 oder neuer">
   Version 7 bringt ein `bson` mit, das auf Modulebene
-  `v8.startupSnapshot.isBuildingSnapshot()` aufruft.  Bun implementiert diese API
-  nicht, `import 'mongodb'` wirft daher `ERR_NOT_IMPLEMENTED`, bevor irgendein
-  Framework-Code läuft — auf Bun, der primären Runtime des Projekts.  Version 6
-  importiert auf Bun, Node und Deno gleichermaßen sauber, deshalb lautet die
-  Peer-Range `^6`.  Wenn du ausschließlich auf Node läufst, funktioniert Version
-  7, aber nichts hier ist dagegen getestet.
+  `v8.startupSnapshot.isBuildingSnapshot()` aufruft.  Bun implementiert diese
+  API erst seit 1.4, auf älteren Bun-Versionen wirft `import 'mongodb'` daher
+  `ERR_NOT_IMPLEMENTED`, bevor irgendein Framework-Code läuft.  Gemessen: v7
+  wirft genau das auf Bun 1.3.0 und importiert auf 1.4.2 sauber; v6 importiert
+  auf beiden sauber, ebenso auf Node und Deno.
+
+  Die `engines`-Untergrenze ist Bun 1.4.0, jedes unterstützte Bun importiert
+  v7 also, und v7 ist das, was die Live-Integrationssuite ausübt.  Die
+  Peer-Range bleibt `^6 || ^7`; v6 stammt aus der Zeit, als die Untergrenze
+  bei 1.3 lag.
 </Aside>
 
-Das Framework importiert den Treiber lazy, erst wenn ein MongoDB-Store zum ersten
-Mal genutzt wird — bis dahin bleibt er aus deinem Bundle heraus.
+Das Framework importiert den Treiber erst, wenn ein MongoDB-Store öffnet — beim
+Start, oder bei der ersten Verwendung, wenn das Öffnen beim Start abgeschaltet
+ist —; bis dahin bleibt er aus deinem Bundle heraus.
 
 ## Einrichtung
 
-Registriere Journal + Snapshot-Store an der `PersistenceExtension` und erhalte
-einen einsatzbereiten Durable-State-Store.  Setz die Verbindung einmal am
+Registriere alle drei Stores über den `plugins`-Slot der Optionen des Systems
+und wähle sie in seiner Konfiguration aus.  Setz die Verbindung einmal am
 Composite, dann erben sie alle drei Komponenten:
 
 ```ts
@@ -55,24 +61,10 @@ import {
   MongoDurableStateStoreOptions,
   MongoJournalOptions,
   MongoSnapshotStoreOptions,
-  PersistenceExtensionId,
   RegisterMongoPluginsOptions,
   registerMongoPlugins,
 } from 'actor-ts/persistence';
 
-const systemOptions = ActorSystemOptions.create()
-  // Die MongoDB-Plugins als aktives Journal + Snapshot-Store auswählen.
-  .withConfig({
-    'actor-ts': {
-      persistence: {
-        journal: { plugin: 'actor-ts.persistence.journal.mongodb' },
-        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.mongodb' },
-      },
-    },
-  });
-const system = ActorSystem.create('my-app', systemOptions);
-
-const ext = system.extension(PersistenceExtensionId);
 const mongoSnapshotStoreOptions = MongoSnapshotStoreOptions.create()
   .withKeepN(3);
 const registerOptions = RegisterMongoPluginsOptions.create()
@@ -81,14 +73,153 @@ const registerOptions = RegisterMongoPluginsOptions.create()
   .withJournal(MongoJournalOptions.create() /* .withEventsCollection(...) */)
   .withSnapshotStore(mongoSnapshotStoreOptions)
   .withDurableStateStore(MongoDurableStateStoreOptions.create() /* .withCollection(...) */);
-const { durableStateStore } = registerMongoPlugins(ext, registerOptions);
+const systemOptions = ActorSystemOptions.create()
+  // Select the MongoDB plugins for all three stores.
+  .withConfig({
+    'actor-ts': {
+      persistence: {
+        journal: { plugin: 'actor-ts.persistence.journal.mongodb' },
+        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.mongodb' },
+        'durable-state': { plugin: 'actor-ts.persistence.durable-state.mongodb' },
+      },
+    },
+  })
+  .withPersistence({ plugins: [(persistence) => registerMongoPlugins(persistence, registerOptions)] });
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
-`registerMongoPlugins` registriert Journal + Snapshot-Store über die Extension
-(ausgewählt durch die Plugin-IDs in der Config oben) und **gibt** den
-Durable-State-Store zurück.  `PersistenceExtension` hat keine
-Durable-State-Registry — übergib `durableStateStore` direkt an die Settings
-deines `DurableStateActor`.
+Das Plug-in läuft innerhalb von `ActorSystem.create` und registriert alle drei
+Stores — Journal, Snapshot-Store und seit #872 auch den Durable-State-Store, den
+der Schlüssel `durable-state.plugin` jetzt genauso auswählt wie die beiden
+anderen —, also öffnen die, die die Konfiguration auswählt, als Teil des Starts:
+Ein Deployment, das der Knoten nicht erreicht, lässt den Start scheitern statt
+erst die erste persistierte Nachricht — siehe [Stores beim Start
+öffnen](/de/persistence/overview/#stores-beim-start-öffnen).  Das gilt, wie
+auch immer ein Store eingerichtet ist, solange das Öffnen beim Start an ist,
+der Default.  Jedes Öffnen schickt ein `{ ping: 1 }`,
+bevor es einen Index anlegt — auch mit abgeschaltetem `auto-create-indexes`,
+über einen übergebenen Client und für den Durable-State-Store, der gar keinen
+Index anlegt —, und ein abgelehnter Ping lässt das Öffnen mit einem Fehler
+scheitern, der den Store nennt.  Der Ping braucht kein Recht, liest nichts und
+legt nichts an.  Er geht über das `command` des Datenbank-Handles, das das
+Handle des Treibers immer hat; ein Ersatz, der ohne es übergeben wird, wird
+nicht angepingt.  Das gilt für diese Stores, nicht für jede Achse: Ein
+Object-Storage-Snapshot- oder -Durable-State-Store, der daneben ausgewählt ist,
+oder ein eigener Store ohne `start()` hat vorab nichts zu öffnen und scheitert
+stattdessen bei seiner ersten Operation.  Das
+zurückgegebene `durableStateStore` funktioniert weiterhin und liefert dieselbe
+Instanz; sie wird nur gebaut, wenn sie zum ersten Mal angefragt wird, statt bei
+der Registrierung, wer sie also lieber im Code an einen `DurableStateActor`
+übergibt, macht genau das weiter — ein Plug-in behält sie, indem es das
+Ergebnis zuweist,
+`(persistence) => { mongo = registerMongoPlugins(persistence, registerOptions); }`.
+Ein von Hand verdrahteter Store ist allerdings kein ausgewählter, er öffnet also
+bei der ersten Verwendung statt mit dem Start.
+
+## Aus HOCON konfigurieren
+
+Die Plugin-Id **ist** der Config-Abschnitt: Der Block, der nach der Id benannt
+ist, ist der Block, den dieses Plugin liest (#872).  Alles außer den lebenden
+Objekten kann aus der `application.conf` kommen, `registerMongoPlugins(persistence)` braucht damit
+gar keine Optionen mehr:
+
+```ts
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerMongoPlugins } from 'actor-ts/persistence';
+
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerMongoPlugins(persistence)],
+});
+const system = ActorSystem.create('my-app', systemOptions);
+```
+
+```hocon
+actor-ts.persistence {
+  journal        { plugin = "actor-ts.persistence.journal.mongodb" }
+  snapshot-store { plugin = "actor-ts.persistence.snapshot-store.mongodb" }
+  durable-state  { plugin = "actor-ts.persistence.durable-state.mongodb" }
+
+  journal.mongodb        { url = ${?MONGO_URL}, database-name = "app", events-collection = "events" }
+  snapshot-store.mongodb { url = ${?MONGO_URL}, database-name = "app", keep-n = 5 }
+  durable-state.mongodb  { url = ${?MONGO_URL}, database-name = "app", collection = "durable_state" }
+}
+```
+
+Die Blätter heißen **collection**, nicht table, und der Schalter heißt
+`auto-create-indexes` statt `auto-create-tables` — der Block spricht Mongos
+Vokabular, denn ein Blatt, das nach dem Vokabular eines anderen Backends benannt
+ist, muss man beim Lesen übersetzen.  Die Verbindung steht unter allen drei
+Wurzeln statt einmal darüber: Eine Plugin-Id *ist* ihr Config-Abschnitt, und die
+drei Achsen werden unabhängig gewählt, dürfen also legitim verschiedene
+Deployments benennen.  Wer nur eines hat, schreibt sie einmal und substituiert.
+
+An `registerMongoPlugins` übergebene Optionen gewinnen weiterhin, Feld für Feld,
+und ein nicht gesetztes Feld fällt auf den Block durch, statt ihn zu leeren — ein
+geteilter `client` im Code und die Collection-Namen in HOCON sind also eine
+normale Mischung.  Ein vorab gebauter `client` und ein `serializer` haben **gar
+kein Blatt**: Das sind lebende Objekte, die eine Config-Datei nicht ausdrücken
+kann.  `clientOptions` ebenso wenig — die ganze Optionsfläche des Treibers, die
+code-only bleibt.
+
+Was du am Client tatsächlich einstellst, hat **typisierte Blätter** (#1490), jedes
+als Kommentar in der Referenzkonfiguration, damit Weglassen den eigenen Default des
+Treibers behält:
+
+```hocon
+actor-ts.persistence.journal.mongodb {
+  url                      = ${?MONGO_URL}
+  max-pool-size            = 50                      # the driver's maxPoolSize (default 100)
+  min-pool-size            = 5                       # minPoolSize (default 0)
+  server-selection-timeout = 10s                     # serverSelectionTimeoutMS (default 30s)
+  connect-timeout          = 5s                      # connectTimeoutMS (default 30s)
+  ca-file                  = "/etc/ssl/mongo-ca.pem" # read when the client opens, handed over as ca
+}
+```
+
+Jedes erreicht den Treiber nur, wenn es gesetzt ist, unter dem eigenen Namen des
+Treibers.  Der Store prüft sie beim Bauen: Eine Pool-Größe oder ein Timeout, das
+keine positive ganze Zahl ist (eine Mindest-Pool-Größe von `0`, der Default, ist
+in Ordnung), ein Minimum über dem Maximum oder ein Timeout, das länger ist, als
+ein Timer halten kann, wird mit einem `OptionsError` abgelehnt.  Ebenso ein Blatt
+neben derselben Option in `clientOptions` oder in der Query der URL
+(`max-pool-size` neben `maxPoolSize=20` etwa), und zwar unter Nennung beider
+Seiten: Der Treiber liest alle drei ohne Rücksicht auf Groß- und Kleinschreibung,
+behält den Wert des Objekts und verwirft den der URL kommentarlos, also verlangt
+der Store, dass du es an einer Stelle setzt.  `ca-file` ist ein Pfad, den das
+Framework liest, nie das Zertifikat selbst; eine Datei, die es nicht lesen kann,
+lässt das Öffnen des Stores fehlschlagen — den Start, oder seine erste
+Benutzung, wenn das Öffnen beim Start abgeschaltet ist — und nennt dabei Blatt
+und Pfad.
+
+**Eine `url`, die die TLS-Verifizierung abschaltet, wird abgelehnt.**
+`tlsInsecure`, `tlsAllowInvalidCertificates` oder `tlsAllowInvalidHostnames`
+auf irgendetwas außer `false` gesetzt, lässt den Reader einen `ConfigError`
+werfen, der Blatt und Schalter nennt, in jeder Groß- und Kleinschreibung des
+Schlüssels und gleich, ob die URL ausgeschrieben oder aus `${?MONGO_URL}`
+substituiert ist.  Für die Datei ist die Ablehnung strikt: Die `url` des Blocks
+wird auch dann abgelehnt, wenn `registerMongoPlugins` eine eigene URL oder einen
+eigenen Client bekommt.  Inspiziert wird nur HOCON — derselbe String, an
+`withUrl(...)` übergeben, und `clientOptions` sind die Entscheidung deines
+Codes.  Eine private CA braucht gar keinen Code: Nenne ihre Datei mit dem Blatt
+`ca-file` des Blocks, das das Framework liest und mit eingeschaltetem TLS
+übergibt, oder mit `tls=true&tlsCAFile=<CA-Datei>` in der URL, das der Treiber
+selbst liest.  Das eine oder das andere: Der Treiber liest `tlsCAFile` nur, wenn
+keine CA übergeben wurde, also wird `ca-file` daneben abgelehnt, statt eines von
+beiden stillschweigend fallen zu lassen.  `tls=false` ist Klartext statt
+unverifiziertem TLS und bleibt erlaubt — nur nicht neben `ca-file`, das es
+ungenutzt ließe.
+
+Ist `ca-file` gesetzt, wird auch der Code daran gehalten.  Der Store lehnt das
+Blatt beim Bauen mit einem `OptionsError` ab, der beide Seiten nennt: neben
+einem `ca` oder einem `tlsCAFile` in `clientOptions`; neben einem `tls`, `ssl`,
+`tlsInsecure` oder `tlsAllowInvalidCertificates` dort, das die CA ungenutzt
+ließe; neben einem `rejectUnauthorized` mit `false`, in jeder Schreibweise des
+Schlüssels, also dem Schalter, den `tlsInsecure` setzt; und neben einem
+`secureContext`, das einen eigenen Trust-Store mitbringt, der statt der CA
+benutzt wird.  Auch ein vorgebauter `client` neben `ca-file` wird abgelehnt: Er
+wurde dort konfiguriert, wo er gebaut wurde, und liest das Blatt nie — gib
+diesem Client seine CA, oder übergib stattdessen `url`.  Die Begründung steht
+unter [TLS everywhere](/de/operations/security/tls-everywhere/#mongodb).
 
 ### Einen Client teilen
 
@@ -104,12 +235,17 @@ await client.connect();
 const registerMongoPluginsOptions = RegisterMongoPluginsOptions.create()
   .withClient(client)
   .withDatabaseName('app');
-registerMongoPlugins(ext, registerMongoPluginsOptions);
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerMongoPlugins(persistence, registerMongoPluginsOptions)],
+});
 ```
 
 Ein geteilter Client gehört dem **Caller**: kein Store schließt ihn, du schließt
 ihn also selbst beim Shutdown.  Übergib stattdessen `url`, dann baut jeder Store
-seinen eigenen Client und schließt ihn bei `close()`.
+seinen eigenen Client und schließt ihn bei `close()`.  Jeder Store erreicht das
+Deployment beim Öffnen trotzdem, über den geteilten Client — sein Ping nimmt
+diesen Weg —, und keiner von ihnen nimmt `ca-file` daneben an: Konfiguriere
+das TLS des Clients dort, wo du ihn baust.
 
 ## Wann du es einsetzt
 
@@ -125,30 +261,38 @@ seinen eigenen Client und schließt ihn bei `close()`.
 
 ```ts
 type MongoConnection = {
-  url?:           string;                    // mongodb:// oder mongodb+srv://
-  databaseName?:  string;                    // Default 'actor_ts'
-  clientOptions?: Record<string, unknown>;   // { tls, authSource, maxPoolSize, … }
-  client?:        MongoClientLike;           // vorgebauter / geteilter Client
+  url?:                      string;                   // mongodb:// or mongodb+srv://
+  databaseName?:             string;                   // default 'actor_ts'
+  clientOptions?:            Record<string, unknown>;  // extra MongoClient options — the code-only long tail
+  client?:                   MongoClientLike;          // pre-built / shared client
+  maxPoolSize?:              number;                   // maxPoolSize, default 100            (max-pool-size)
+  minPoolSize?:              number;                   // minPoolSize, default 0              (min-pool-size)
+  serverSelectionTimeoutMs?: number;                   // serverSelectionTimeoutMS, 30 000    (server-selection-timeout)
+  connectTimeoutMs?:         number;                   // connectTimeoutMS, 30 000            (connect-timeout)
+  caFile?:                   string;                   // PEM file read into ca, with tls on  (ca-file)
 };
 
 interface MongoJournalOptions extends MongoConnection {
-  eventsCollection?:  string;   // Default 'events'; die Mark-Collection ist '<it>_meta'
-  autoCreateIndexes?: boolean;  // Default true
+  eventsCollection?:  string;   // default 'events'; its mark collection is '<it>_meta'
+  autoCreateIndexes?: boolean;  // default true
 }
 interface MongoSnapshotStoreOptions extends MongoConnection {
-  snapshotsCollection?: string; // Default 'snapshots'
-  keepN?:               number; // neueste N pro pid; Default 3, <=0 behält alle
+  snapshotsCollection?: string; // default 'snapshots'
+  keepN?:               number; // keep newest N per pid; default 3, <=0 keeps all
   autoCreateIndexes?:   boolean;
 }
 interface MongoDurableStateStoreOptions extends MongoConnection {
-  collection?: string;          // Default 'durable_state'
+  collection?: string;          // default 'durable_state'
 }
 ```
 
 Die Optionen werden bei der Konstruktion des Stores validiert — ein falsches
 URL-Schema oder ein Datenbankname, den MongoDB ablehnen würde (mit `/`, `\`, `.`,
 `"` oder Leerzeichen), schlägt beim Verdrahten fehl, nicht erst beim ersten
-Schreiben.
+Schreiben.  Eine Seed-Liste für ein Replica Set ohne SRV, etwa
+`mongodb://h1:27017,h2:27017,h3:27017/app?replicaSet=rs`, wird angenommen, wie
+der Treiber sie annimmt; eine `mongodb+srv://`-URL nennt dagegen genau einen
+Host und keinen Port, weil DNS die Mitglieder liefert.
 
 ## Collections und Indizes
 
@@ -242,9 +386,24 @@ Vorfiltern und fällt auf den Journal-Scan zurück.
   künftiges Feature.)
 </Aside>
 
-<Aside type="caution" title="Compression- / Encryption-Optionen werden ignoriert">
-  Per-Call-`PersistenceOptions` gelten nur für die Object-Storage-Stores.  Das
-  gilt genauso für jedes SQL-Backend und Cassandra.
+<Aside type="caution" title="Per-Actor-Verschlüsselung und -Integrität schützen keine Events">
+  Per-Call-`PersistenceOptions` gelten nur für die Object-Storage-Stores und
+  die SQL-Snapshot- und -Durable-State-Stores ([#1802](https://github.com/pathosDev/actor-ts/issues/1802)); Cassandra
+  honoriert, wie MongoDB, keinen davon.  Der
+  MongoDB-Snapshot-Store und der MongoDB-Durable-State-Store deklarieren,
+  dass sie keinen der drei Hooks honorieren, also **verweigert** ein
+  `encryption()`- oder `integrity()`-Override gegen einen der beiden
+  **den Actor beim Start**, und `compression()` warnt einmal
+  ([#960](https://github.com/pathosDev/actor-ts/issues/960)).
+
+  Das Journal wird nie gefragt.  `encryption()` und `integrity()` an
+  einem `PersistentActor` schützen nur seine Snapshots: Jedes Journal
+  speichert Events als Klartext-JSON, nichts erkennt ein an Ort und
+  Stelle manipuliertes Event, und datenbankseitige Kontrollen —
+  Transparent Data Encryption, ein verschlüsseltes Volume,
+  Zugriffskontrolle — sind heute der einzige Schutz für Events.  Ein
+  Actor, der dieses Journal mit dem Object-Storage-Snapshot-Store
+  kombiniert, startet sauber und schreibt seine Events hier im Klartext.
 </Aside>
 
 ## Wie geht's weiter

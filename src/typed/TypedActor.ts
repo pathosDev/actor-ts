@@ -4,11 +4,12 @@ import type { ActorRef } from '../ActorRef.js';
 import { Directive, RestartBudget } from '../Supervision.js';
 import { DeadLetter, Terminated } from '../SystemMessages.js';
 import { LocalActorRef } from '../internal/LocalActorRef.js';
+import { recordUnhandled } from '../internal/Unhandled.js';
 import {
   StashOverflowError,
   type TimerScheduler,
 } from '../ActorContext.js';
-import { Behaviors } from './Behaviors.js';
+import { assertStashCapacity, Behaviors } from './Behaviors.js';
 import type {
   Behavior,
   BehaviorInterceptor,
@@ -538,9 +539,17 @@ export class TypedActor<T> extends Actor<T> {
    * declined the message, which is the one fact worth recording.  The
    * sender comes from the turn being processed, matching what the
    * untyped cell records for its own unhandled paths.
+   *
+   * Since #1178 that wrapping is `recordUnhandled`, shared with
+   * `Actor.unhandled` — one implementation for both halves of the API, and
+   * the reason this path finally ticks `actor_unhandled_total` instead of
+   * relying on a dead-letter counter that only moves once the store is
+   * configured on.
    */
   private forwardToDeadLetters(message: T): void {
-    this.system.deadLetters.tell(new DeadLetter(message, this.sender.toNullable(), this.self));
+    recordUnhandled(
+      this.system, this.self, this.constructor.name, this.sender.toNullable(), message,
+    );
   }
 }
 
@@ -611,13 +620,62 @@ class TypedActorContextImplementation<T> implements TypedActorContext<T> {
  * handled before the replay did — the exact inversion stashing exists to
  * prevent (#639).  `prependUserMessages` puts them back at the head instead,
  * matching `ActorContext.unstashAll`.
+ *
+ * Sharing the replay means sharing its one asymmetry, which is worth saying
+ * here because the buffer looks like it should be exempt: parking a bare
+ * `Terminated` and unstashing it dead-letters the signal rather than handing
+ * it back (#1098).  The registration is consumed by the death it describes, so
+ * it is gone before the replay reaches the dispatch, and taking the envelope
+ * out of the picture changes nothing about that.  A `watchWith` death is the
+ * case that does round-trip, on both sides for the same reason: what the
+ * behavior is handed — and therefore what gets stashed — is a protocol
+ * message, which the death-watch gate has no opinion about.
  */
 class StashBufferImplementation<T> implements StashBuffer<T> {
   private readonly buffer: T[] = [];
+  /**
+   * Re-checks the capacity `Behaviors.withStash` already checked, because this
+   * is not the only way to get here: `WithStashBehavior` is exported from
+   * `src/index.ts`, so a caller may write `{ kind: 'with-stash', capacity,
+   * factory }` as a literal and hand it straight to `spawnTyped` without the
+   * combinator ever running.  That route reaches this constructor with an
+   * unvalidated number, and the failure it admits is the silent one — an
+   * unbounded buffer behind a bound `isFull` keeps reporting `false` on (#795).
+   *
+   * The trade this makes is worth stating, because the two throws do not
+   * behave alike.  `Behaviors.withStash` rejects while the behavior is still a
+   * value, on the caller's own stack, where the stack frame names the call
+   * site.  This one runs inside `resolve`, which `preStart` drives — so it
+   * fails the actor's *construction* instead, and `ActorCell.onCreate` turns
+   * it into an `ActorInitializationError` raised to the parent.  Measured on
+   * the `spawnTypedAnonymous` path: one `Actor initialization failed` error
+   * carrying this message, the inner `factory` never invoked, and the cell
+   * stopped for good.
+   *
+   * **What ends it is the supervisor's restart budget, not the shape of the
+   * restart.**  This paragraph used to claim the throw "has no way to repeat",
+   * on the grounds that `completeRecreate` builds a fresh instance and calls
+   * `postRestart` rather than re-running `preStart`.  It does call
+   * `postRestart` — and `Actor.postRestart`'s default *is* `preStart()`, so a
+   * `Directive.Restart` walks straight back into this constructor and throws
+   * again.  Measured: with the default strategy the blueprint is built twelve
+   * times before `Restart threshold exceeded` stops the child, and with an
+   * explicit `maxRetries: 5`, seven.  Exactly one line is logged across all of
+   * it, because `completeRecreate`'s own catch fails to the parent without
+   * logging — which is why counting that line looks like proof of no loop and
+   * is not.  Terminal and bounded, then, rather than single-shot;
+   * `tests/unit/typed/Behaviors.test.ts` pins the bound and the terminal
+   * state, so the next reading of this does not have to be taken on trust.
+   *
+   * Attributed to the actor rather than to whoever wrote the bad node, which
+   * is why the combinator keeps its own guard as the one users actually meet.
+   */
   constructor(
     private readonly capacity: number,
     private readonly self: ActorRef<T>,
-  ) {}
+  ) {
+    assertStashCapacity(capacity, 'WithStashBehavior');
+  }
 
   stash(message: T): void {
     if (this.buffer.length >= this.capacity) throw new StashOverflowError(this.capacity);

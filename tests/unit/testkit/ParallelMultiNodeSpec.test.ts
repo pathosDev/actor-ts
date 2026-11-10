@@ -13,19 +13,37 @@
  * spawns one or more OS threads.  Worker spawn + cluster handshake
  * is ~200-400 ms per role.  Tests use generous timeouts to absorb
  * that startup cost without flaking under load.
+ *
+ * Not every block pays that, though: `construction`, the control-RPC
+ * correlation block, `terminateAndWait`, the control-RPC timeout, the
+ * throwing-condition block and the handshake latch all spawn nothing at all.
+ * They drive in-memory fake workers through the `backend` option, which is
+ * what lets them assert on a deadline or a teardown deterministically rather
+ * than waiting one out.  When this file was quarantined (`#538`, lifted) they
+ * were the only part of it CI ever executed; the note below is the
+ * measurement that ended that.
  */
+import { describeTimeFactor, scaledMs } from '../../../src/testkit/TimeFactor.js';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { ParallelMultiNodeSpec } from '../../../src/testkit/ParallelMultiNodeSpec.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import type { MemberSnapshot } from '../../../src/testkit/internal/ParallelMultiNodeBootstrap.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
+import {
+  autoHandshake,
+  type FakeWorker,
+  FakeWorkerBackend,
+} from '../worker/__fixtures__/InMemoryWorkerThread.js';
 
-// Quarantined on GitHub's hosted runners (ACTOR_TS_SKIP_FLAKY_MNS=1) —
-// Bun there can't respawn functional worker threads after the first test
-// (they spawn + handshake, then never run; reproducible only on the
-// hosted runners, never locally or in Docker).  Runs locally + in Docker.
-// #538 tracks the quarantine: `.github/workflows/nightly-flakes.yml` runs
-// this suite nightly with the flag OFF, and 14 consecutive green nights are
-// what removes this line.  The `construction` describe spawns no workers,
-// so it stays un-gated.
-const describeMns = process.env.ACTOR_TS_SKIP_FLAKY_MNS === '1' ? describe.skip : describe;
+// Runs in CI.  The quarantine this file carried (`ACTOR_TS_SKIP_FLAKY_MNS=1`,
+// #538) rested on the claim that Bun cannot respawn functional worker threads
+// on GitHub's hosted runners after the first worker-thread test.  Measured
+// against that claim: `.github/workflows/nightly-flakes.yml` has run exactly
+// these suites on `ubuntu-latest` with the flag off, three repeats a night, for
+// 21 consecutive nights (2026-08-17 to 2026-09-06) — 63 executions, and not one
+// hang.  The written exit criterion was fourteen.
 
 const TIGHT_FD = {
   heartbeatIntervalMs: 100,
@@ -41,9 +59,1022 @@ describe('ParallelMultiNodeSpec — construction', () => {
   test('rejects duplicate roles', () => {
     expect(() => new ParallelMultiNodeSpec({ roles: ['a', 'b', 'a'] })).toThrow(/unique/);
   });
+
+  test('holds bootstrapModule to the rule every worker entry is held to', () => {
+    // The asymmetry #1508 records: the testkit took #775's hello latch and not
+    // #776's scheme constraint, so `bootstrapModule` went to `backend.spawn`
+    // unchecked while the same specifier on `WorkerClusterOptions.bootstrap`
+    // was refused.  It is one call into the shared helper now (#1515), which
+    // is what D-Q17 decided over copying the rule a fifth time.
+    for (const bootstrapModule of [
+      new URL('data:text/javascript,1'),
+      new URL('http://example.invalid/bootstrap.js'),
+      new URL('file://attacker.example.com/share/bootstrap.js'),
+      new URL('file:///srv/app/'),
+    ]) {
+      let caught: unknown;
+      try { new ParallelMultiNodeSpec({ roles: ['a'], bootstrapModule }); }
+      catch (error) { caught = error; }
+      expect(caught, `${bootstrapModule.href} was accepted`).toBeInstanceOf(OptionsError);
+      expect((caught as OptionsError).field).toBe('bootstrapModule');
+    }
+  });
+
+  test('takes an import.meta.url-relative bootstrap, and none at all', () => {
+    expect(() => new ParallelMultiNodeSpec({
+      roles: ['a'],
+      bootstrapModule: new URL('./internal/ParallelMultiNodeBootstrap.js', import.meta.url),
+    })).not.toThrow();
+    // Unset is the ordinary case and keeps the bundled bootstrap: every check
+    // helper is a no-op on `undefined`, and so is this one.
+    expect(() => new ParallelMultiNodeSpec({ roles: ['a'] })).not.toThrow();
+  });
 });
 
-describeMns('ParallelMultiNodeSpec — bootstrap', () => {
+/* ------------------- control-RPC correlation (#777) -------------------- */
+
+/**
+ * These spawn no OS threads at all, which is why they ran in CI throughout the
+ * years this file's thread-spawning half was quarantined — and the correlation
+ * bug they pin surfaces as a 30 s `await*` timeout, exactly the shape #538
+ * taught everyone to dismiss as hosted-runner flakiness.
+ *
+ * The seam is `ParallelMultiNodeSpecOptions.backend` (#520): the fake backend
+ * hands back in-memory workers whose handshake `autoHandshake` completes on a
+ * microtask, and `deliverMessage` fires the harness's own `message` listeners
+ * synchronously.  So a stray frame and the genuine reply can be injected in a
+ * known order with no wait between them, which is what makes the assertion
+ * deterministic rather than a race the test usually wins.
+ */
+function specWithFakeWorkers(roles: ReadonlyArray<string>): {
+  readonly spec: ParallelMultiNodeSpec;
+  readonly workerFor: (role: string) => FakeWorker;
+} {
+  const backend = new FakeWorkerBackend({ onSpawn: (worker) => { autoHandshake(worker); } });
+  const spec = new ParallelMultiNodeSpec({ roles: [...roles], backend });
+  const workerFor = (role: string): FakeWorker => {
+    // `spawnRole` names each worker after its role; matching on the name rather
+    // than on spawn order keeps this honest if seed ordering ever changes.
+    const worker = backend.spawned.find((candidate) => candidate.name === `parallel-mns-${role}`);
+    if (!worker) throw new Error(`no worker was spawned for role '${role}'`);
+    return worker;
+  };
+  return { spec, workerFor };
+}
+
+/** The `reqId` the harness stamped on the last control frame it posted to `worker`. */
+function lastControlRequestId(worker: FakeWorker): number {
+  const controlFrames = worker.posted.filter(
+    (frame): frame is { kind: string; reqId: number } => {
+      const kind = (frame as { kind?: unknown } | null | undefined)?.kind;
+      return typeof kind === 'string' && kind.startsWith('mns-test.');
+    },
+  );
+  const last = controlFrames.at(-1);
+  if (last === undefined) throw new Error('the harness posted no control frame to this worker');
+  return last.reqId;
+}
+
+/**
+ * Run `body` with `console.warn` captured.  The mismatch report has no other
+ * seam — the harness owns no `ActorSystem`, so the console is where it writes —
+ * and capturing also keeps the expected warning out of the run's output.
+ */
+function captureWarnings(body: () => void): ReadonlyArray<string> {
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]): void => { warnings.push(args.map((a) => String(a)).join(' ')); };
+  try {
+    body();
+    return warnings;
+  } finally {
+    console.warn = originalWarn;
+  }
+}
+
+/** {@link captureWarnings} for a body that has to be awaited. */
+async function captureWarningsWhile(body: () => Promise<void>): Promise<ReadonlyArray<string>> {
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]): void => { warnings.push(args.map((a) => String(a)).join(' ')); };
+  try {
+    await body();
+    return warnings;
+  } finally {
+    console.warn = originalWarn;
+  }
+}
+
+/**
+ * The whole line `onMisdirectedControlFrame` writes, from the same five facts.
+ *
+ * Built here and compared in full rather than probed with `toContain`, because
+ * the two clauses of that message are not equally covered by a substring: the
+ * first names the frame that arrived, which any assertion about the drop
+ * mentions anyway, while the second — the `reqId` and the request it actually
+ * belongs to — is the half that turns "a stray frame existed" into something a
+ * reader can act on, and is exactly the half three `toContain`s over the first
+ * clause left free to be deleted without a failure.
+ */
+function misdirectedFrameWarning(report: {
+  readonly arrivedKind: string;
+  readonly arrivedFromRole: string;
+  readonly requestId: number;
+  readonly awaitedKind: string;
+  readonly awaitedFromRole: string;
+}): string {
+  return `ParallelMultiNodeSpec: dropped control frame '${report.arrivedKind}' `
+    + `from role '${report.arrivedFromRole}' (reqId ${report.requestId}) — that reqId `
+    + `belongs to a '${report.awaitedKind}' awaited from role '${report.awaitedFromRole}'`;
+}
+
+/**
+ * Whether `promise` has settled *already*, without waiting on it.
+ *
+ * Ten microtask turns is an upper bound on the two the `getMembers` chain
+ * needs — nothing on this path waits on a timer once a frame has been
+ * delivered, so draining is deterministic rather than a bet.  Asserting
+ * settledness directly is what keeps a regression legible: awaiting the value
+ * instead would hang on `controlRpc`'s 5 s timer and be reported by bun as
+ * `this test timed out after 5000ms`, the one message that names nothing.
+ */
+async function hasSettled(promise: Promise<unknown>): Promise<boolean> {
+  let done = false;
+  void promise.then(() => { done = true; }, () => { done = true; });
+  for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+  return done;
+}
+
+const MEMBERS_OF_A: MemberSnapshot[] = [
+  { address: '127.0.0.1:30500', status: 'up', roles: ['a'] },
+  { address: '127.0.0.1:30501', status: 'up', roles: ['b'] },
+];
+
+/** Deliberately a different view, so a reply from the wrong role is visible. */
+const MEMBERS_OF_B: MemberSnapshot[] = [
+  { address: '127.0.0.1:30501', status: 'up', roles: ['b'] },
+];
+
+describe('ParallelMultiNodeSpec — control-RPC correlation', () => {
+  test('a frame from another role does not settle the pending RPC', async () => {
+    const { spec, workerFor } = specWithFakeWorkers(['a', 'b']);
+    try {
+      await spec.start();
+      const membersPromise = spec.getMembers('a');
+      const requestId = lastControlRequestId(workerFor('a'));
+
+      // Role 'b' originates a frame carrying role 'a''s request id — what a
+      // custom bootstrap or a scenario posting raw frames can produce.
+      const warnings = captureWarnings(() => {
+        workerFor('b').deliverMessage({
+          kind: 'mns-test.run-command-response', reqId: requestId, result: 'stray',
+        });
+      });
+      expect(await hasSettled(membersPromise)).toBe(false);
+
+      // The genuine reply, from the role that was actually asked, still lands:
+      // the stray must be dropped WITHOUT consuming the pending entry.
+      workerFor('a').deliverMessage({
+        kind: 'mns-test.query-members-response', reqId: requestId, members: MEMBERS_OF_A,
+      });
+
+      expect(await hasSettled(membersPromise)).toBe(true);
+      expect(await membersPromise).toEqual(MEMBERS_OF_A);
+      expect(warnings).toEqual([misdirectedFrameWarning({
+        arrivedKind: 'mns-test.run-command-response',
+        arrivedFromRole: 'b',
+        requestId,
+        awaitedKind: 'mns-test.query-members-response',
+        awaitedFromRole: 'a',
+      })]);
+    } finally {
+      await spec.stop();
+    }
+  });
+
+  test('a frame of the RIGHT kind from another role does not settle it either', async () => {
+    const { spec, workerFor } = specWithFakeWorkers(['a', 'b']);
+    try {
+      await spec.start();
+      const membersPromise = spec.getMembers('a');
+      const requestId = lastControlRequestId(workerFor('a'));
+
+      // Right kind, wrong worker — the case a kind-only guard waves through,
+      // and the one that does the quiet damage: role 'b''s member view is a
+      // perfectly well-formed answer to a question role 'a' was asked.
+      const warnings = captureWarnings(() => {
+        workerFor('b').deliverMessage({
+          kind: 'mns-test.query-members-response', reqId: requestId, members: MEMBERS_OF_B,
+        });
+      });
+      expect(await hasSettled(membersPromise)).toBe(false);
+
+      workerFor('a').deliverMessage({
+        kind: 'mns-test.query-members-response', reqId: requestId, members: MEMBERS_OF_A,
+      });
+
+      expect(await hasSettled(membersPromise)).toBe(true);
+      expect(await membersPromise).toEqual(MEMBERS_OF_A);
+      expect(warnings).toEqual([misdirectedFrameWarning({
+        arrivedKind: 'mns-test.query-members-response',
+        arrivedFromRole: 'b',
+        requestId,
+        awaitedKind: 'mns-test.query-members-response',
+        awaitedFromRole: 'a',
+      })]);
+    } finally {
+      await spec.stop();
+    }
+  });
+
+  test('a frame of the wrong kind from the right role does not settle it', async () => {
+    const { spec, workerFor } = specWithFakeWorkers(['a', 'b']);
+    try {
+      await spec.start();
+      const membersPromise = spec.getMembers('a');
+      const requestId = lastControlRequestId(workerFor('a'));
+
+      // Same worker, right request id, wrong conversation — a double-reply from
+      // one role is as mis-correlated as a reply from another.
+      const warnings = captureWarnings(() => {
+        workerFor('a').deliverMessage({
+          kind: 'mns-test.run-command-response', reqId: requestId, result: 'stray',
+        });
+      });
+      expect(await hasSettled(membersPromise)).toBe(false);
+
+      workerFor('a').deliverMessage({
+        kind: 'mns-test.query-members-response', reqId: requestId, members: MEMBERS_OF_A,
+      });
+
+      expect(await hasSettled(membersPromise)).toBe(true);
+      expect(await membersPromise).toEqual(MEMBERS_OF_A);
+      expect(warnings).toEqual([misdirectedFrameWarning({
+        arrivedKind: 'mns-test.run-command-response',
+        arrivedFromRole: 'a',
+        requestId,
+        awaitedKind: 'mns-test.query-members-response',
+        awaitedFromRole: 'a',
+      })]);
+    } finally {
+      await spec.stop();
+    }
+  });
+
+  test('the matching reply from the role that was asked still settles it', async () => {
+    const { spec, workerFor } = specWithFakeWorkers(['a', 'b']);
+    try {
+      await spec.start();
+      const leaderPromise = spec.getLeader('b');
+      const requestId = lastControlRequestId(workerFor('b'));
+
+      const warnings = captureWarnings(() => {
+        workerFor('b').deliverMessage({
+          kind: 'mns-test.query-leader-response', reqId: requestId, leader: '127.0.0.1:30500',
+        });
+      });
+
+      // The other half of the guard: a correlation check that rejected the
+      // right reply too would pass every test above and break the harness.
+      expect(await hasSettled(leaderPromise)).toBe(true);
+      expect(await leaderPromise).toBe('127.0.0.1:30500');
+      expect(warnings).toEqual([]);
+    } finally {
+      await spec.stop();
+    }
+  });
+
+  test('two roles in flight at once each get their own reply', async () => {
+    const { spec, workerFor } = specWithFakeWorkers(['a', 'b']);
+    try {
+      await spec.start();
+      const membersPromise = spec.getMembers('a');
+      const leaderPromise = spec.getLeader('b');
+      const membersRequestId = lastControlRequestId(workerFor('a'));
+      const leaderRequestId = lastControlRequestId(workerFor('b'));
+      expect(membersRequestId).not.toBe(leaderRequestId);
+
+      // Answered out of order, so nothing here depends on the counter's values.
+      workerFor('b').deliverMessage({
+        kind: 'mns-test.query-leader-response', reqId: leaderRequestId, leader: null,
+      });
+      workerFor('a').deliverMessage({
+        kind: 'mns-test.query-members-response', reqId: membersRequestId, members: MEMBERS_OF_A,
+      });
+
+      expect(await hasSettled(leaderPromise)).toBe(true);
+      expect(await hasSettled(membersPromise)).toBe(true);
+      expect(await leaderPromise).toBeNull();
+      expect(await membersPromise).toEqual(MEMBERS_OF_A);
+    } finally {
+      await spec.stop();
+    }
+  });
+
+  /**
+   * The symptom #777 is named after, rather than the correlation that causes
+   * it.
+   *
+   * Every case above asserts settledness at the `getMembers` / `getLeader`
+   * level, one frame at a time.  What a spec author actually sees is one level
+   * up and much later: `awaitMembers` polls the same RPC until a condition
+   * holds, a mis-correlated reply answers each poll with a view that will never
+   * satisfy it, and thirty seconds later the run fails naming a convergence
+   * that was never the problem — the message #538 taught everyone to read as
+   * hosted-runner flakiness.  Worse, the wrong reply need not even be a member
+   * view: a `run-command-response` settling a `getMembers` yields
+   * `members === undefined`, the `.filter(…)` throws, and `awaitCondition`
+   * swallows the throw as a retry.
+   *
+   * So this drives the whole loop with a stray racing every single poll, and
+   * asserts that it converges anyway — inside a budget far below the timeout,
+   * because "it eventually gave up" is the failure being ruled out.
+   */
+  test('awaitMembers converges even with a stray reply racing every poll', async () => {
+    const { spec, workerFor } = specWithFakeWorkers(['a', 'b']);
+    try {
+      await spec.start();
+      const workerA = workerFor('a');
+      const workerB = workerFor('b');
+
+      // Role 'b' answers role 'a''s question first, every time, with its own
+      // one-member view — the count `awaitMembers` is waiting to leave behind.
+      // Role 'a''s genuine, converged answer follows in the same turn, so the
+      // only thing that decides the outcome is which of the two is allowed to
+      // settle the pending entry.
+      const postToWorkerA = workerA.postMessage.bind(workerA);
+      workerA.postMessage = (value: unknown): void => {
+        postToWorkerA(value);
+        const frame = (value ?? undefined) as { kind?: string; reqId?: number } | undefined;
+        if (frame?.kind !== 'mns-test.query-members' || frame.reqId === undefined) return;
+        workerB.deliverMessage({
+          kind: 'mns-test.query-members-response', reqId: frame.reqId, members: MEMBERS_OF_B,
+        });
+        workerA.deliverMessage({
+          kind: 'mns-test.query-members-response', reqId: frame.reqId, members: MEMBERS_OF_A,
+        });
+      };
+
+      const warnings = await captureWarningsWhile(async () => {
+        await spec.awaitMembers('a', MEMBERS_OF_A.length, 1_000);
+      });
+
+      // And the stray was reported rather than swallowed on the way past.
+      expect(warnings.length).toBeGreaterThanOrEqual(1);
+      expect(warnings[0]).toContain("from role 'b'");
+    } finally {
+      await spec.stop();
+    }
+  });
+});
+
+/* ------------------ the control-frame vocabulary (#777) ---------------- */
+
+/**
+ * Every `mns-test.*` literal in one file, in source order and de-duplicated.
+ *
+ * The bare prefix `'mns-test.'` — the `startsWith` filter in `onControlFrame` —
+ * does not match: a kind needs at least one character after the dot.
+ */
+function controlFrameKindsIn(file: string): string[] {
+  const source = readFileSync(join(import.meta.dir, '..', '..', '..', file), 'utf8');
+  const kinds = [...source.matchAll(/'(mns-test\.[a-z-]+)'/g)].map((match) => match[1]!);
+  return [...new Set(kinds)].sort();
+}
+
+/**
+ * The eight kinds the harness, the worker bootstrap and the documentation
+ * have to agree on.
+ *
+ * They are declared four times — in `ParallelMultiNodeSpec.ts` for the side
+ * that sends requests and correlates replies, in
+ * `internal/ParallelMultiNodeBootstrap.ts` for the side that answers them, and
+ * in both languages of the `parallel-multi-node` page for the third side: an
+ * author of a custom `bootstrapModule`, who replaces the second file and has
+ * nothing but that page to write against.  No two of the four reference
+ * anything in common, so `tsc` sees no relation between them at all.
+ *
+ * That was tolerable while `reqId` alone settled an RPC; since #777 the
+ * correlation also matches on `expectedKind`, i.e. on the request kind with
+ * `-response` appended, so a rename on one side turns every reply from the
+ * other into a misdirected frame and every `await*` into its uninformative
+ * timeout.  Nothing in CI would notice — and the documented copy is the one
+ * that would go stale in silence longest, because nothing compiles it at all.
+ */
+const CONTROL_FRAME_KINDS = [
+  'mns-test.leave',
+  'mns-test.leave-response',
+  'mns-test.query-leader',
+  'mns-test.query-leader-response',
+  'mns-test.query-members',
+  'mns-test.query-members-response',
+  'mns-test.run-command',
+  'mns-test.run-command-response',
+] as const;
+
+/** Where the `parallel-multi-node` page lives, per language. */
+const DOCUMENTATION_PAGES = ['testing', join('de', 'testing')].map(
+  (language) => join('docs', 'src', 'content', 'docs', language, 'parallel-multi-node.mdx'),
+);
+
+describe('ParallelMultiNodeSpec — the copies of the control vocabulary', () => {
+  for (const file of [
+    join('src', 'testkit', 'ParallelMultiNodeSpec.ts'),
+    join('src', 'testkit', 'internal', 'ParallelMultiNodeBootstrap.ts'),
+    ...DOCUMENTATION_PAGES,
+  ]) {
+    test(`${file} names exactly the agreed kinds`, () => {
+      expect(controlFrameKindsIn(file)).toEqual([...CONTROL_FRAME_KINDS]);
+    });
+  }
+
+  test('every request kind has its reply under the name the correlation builds', () => {
+    // `controlRpc` stores `expectedKind` as the request kind plus `-response`,
+    // so the pairing is not a convention the two files happen to share — it is
+    // arithmetic the harness performs on a string.
+    const requests = CONTROL_FRAME_KINDS.filter((kind) => !kind.endsWith('-response'));
+    expect(requests.map((kind) => `${kind}-response`).sort())
+      .toEqual(CONTROL_FRAME_KINDS.filter((kind) => kind.endsWith('-response')));
+  });
+});
+
+/* ------------------- the handshake's first-hello latch (#775) ----------- */
+
+/**
+ * A backend whose workers greet `helloCount` times and answer the first
+ * `worker-init` only on a later microtask.
+ *
+ * Both halves matter.  {@link autoHandshake} replies to `worker-init`
+ * synchronously, which would let the handshake resolve — and remove its
+ * `message` listener — before the second hello was ever delivered, so an
+ * unlatched implementation would look latched.  Deferring the reply keeps the
+ * listener installed for the whole flood, which is the state the real
+ * handshake is in for its entire ten-second window.
+ */
+function floodingHelloBackend(helloCount: number): FakeWorkerBackend {
+  return new FakeWorkerBackend({
+    onSpawn: (worker) => {
+      const post = worker.postMessage.bind(worker);
+      worker.postMessage = (value: unknown): void => {
+        post(value);
+        const frame = (value ?? undefined) as { kind?: string; self?: unknown } | undefined;
+        if (frame?.kind !== 'worker-init') return;
+        queueMicrotask(() => worker.deliverMessage({ kind: 'worker-ready', self: frame.self }));
+      };
+      const add = worker.addEventListener.bind(worker);
+      let greeted = false;
+      worker.addEventListener = (event, handler): void => {
+        add(event, handler);
+        // The handshake's own listener is the first `message` subscription on
+        // this worker; the control channel adds a second one after it resolves.
+        if (event !== 'message' || greeted) return;
+        greeted = true;
+        queueMicrotask(() => {
+          for (let hello = 0; hello < helloCount; hello += 1) {
+            worker.deliverMessage({ kind: 'worker-hello' });
+          }
+        });
+      };
+    },
+  });
+}
+
+describe('ParallelMultiNodeSpec — handshake', () => {
+  test('only the first hello is answered, however many a worker sends', async () => {
+    // `postMessage` structured-clones `init` on the *harness's* thread, and
+    // `init` carries the seed list and the scenario's init data — so an
+    // unlatched hello lets one worker charge the harness one clone per frame
+    // for the whole ten-second handshake window, from inside the loop that is
+    // still spawning the other roles (#775).  This is the testkit's copy of
+    // `WorkerCluster.handshake`'s latch, and it had none of its coverage.
+    const backend = floodingHelloBackend(5);
+    const spec = new ParallelMultiNodeSpec({ roles: ['a'], backend });
+    try {
+      await spec.start();
+
+      const worker = backend.spawned.find((candidate) => candidate.name === 'parallel-mns-a');
+      expect(worker).toBeDefined();
+      const inits = worker!.posted.filter(
+        (frame) => (frame as { kind?: string } | null | undefined)?.kind === 'worker-init',
+      );
+      expect(inits).toHaveLength(1);
+    } finally {
+      await spec.stop();
+    }
+  });
+
+  test('an init frame postMessage refuses fails start() instead of the whole process', async () => {
+    // The harness's `init.data` is not all harness-built: `scenarioInitDataFor`
+    // is the test's own function and its return value rides in that frame, so
+    // the same DataCloneError `WorkerCluster.handshake` can take lands here
+    // too — synchronously, inside the harness's own `message` listener, where
+    // nothing above it catches (#1515, the testkit copy of #775's latch).
+    let escaped: unknown;
+    const backend = new FakeWorkerBackend({
+      onSpawn: (worker) => {
+        worker.postMessage = (): never => {
+          throw new DOMException('cannot clone', 'DataCloneError');
+        };
+        const add = worker.addEventListener.bind(worker);
+        let greeted = false;
+        worker.addEventListener = (event, handler): void => {
+          add(event, handler);
+          if (event !== 'message' || greeted) return;
+          greeted = true;
+          // Caught so the unguarded shape is observable rather than fatal.
+          queueMicrotask(() => {
+            try { worker.deliverMessage({ kind: 'worker-hello' }); }
+            catch (error) { escaped = error; }
+          });
+        };
+      },
+    });
+    const spec = new ParallelMultiNodeSpec({
+      roles: ['a'],
+      scenarioInitDataFor: () => ({ notCloneable: () => 1 }),
+      backend,
+    });
+
+    // Raced rather than awaited: unguarded, `start()` never settles at all —
+    // it waits out the handshake's own ten-second budget, which is twice
+    // bun's per-test cap, so the assertion below would be replaced by the one
+    // message that names nothing.
+    const outcome = await Promise.race([
+      spec.start().then(() => 'started' as const, (error: unknown) => error),
+      // The elapsed time IS the assertion here: what the guard prevents is a
+      // `start()` that never settles, and nothing about a promise that is
+      // simply pending can be polled for.
+      new Promise<'still waiting'>((resolve) => { setTimeout(() => resolve('still waiting'), 500); }),
+    ]);
+
+    try {
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toMatch(/could not be sent its init frame/);
+      expect(((outcome as Error).cause as Error | undefined)?.name).toBe('DataCloneError');
+      expect(escaped).toBeUndefined();
+    } finally {
+      await spec.stop();
+    }
+  });
+});
+
+/* ------------- #1426 — the auto-down switch rides the init frame -------- */
+
+/** The `data` of the one `worker-init` frame the harness posted to `role`'s worker. */
+function initDataPostedTo(backend: FakeWorkerBackend, role: string): Record<string, unknown> {
+  const worker = backend.spawned.find((candidate) => candidate.name === `parallel-mns-${role}`);
+  if (!worker) throw new Error(`no worker was spawned for role '${role}'`);
+  const init = worker.posted.find(
+    (frame) => (frame as { kind?: string } | null | undefined)?.kind === 'worker-init',
+  ) as { data?: Record<string, unknown> } | undefined;
+  if (init?.data === undefined) throw new Error(`role '${role}' was posted no init data`);
+  return init.data;
+}
+
+describe('ParallelMultiNodeSpec — failureDetectorAutoDown reaches every role (#1426)', () => {
+  // The harness half: the switch has to be in each worker's init frame, since
+  // that frame is all a worker's bootstrap is told.  The bootstrap half —
+  // that a worker applies it — is the crash case under `failure simulation`,
+  // which runs real workers.
+  test('every role is told the switch', async () => {
+    const backend = new FakeWorkerBackend({ onSpawn: (worker) => { autoHandshake(worker); } });
+    const spec = new ParallelMultiNodeSpec({
+      roles: ['a', 'b', 'c'],
+      failureDetectorAutoDown: true,
+      backend,
+    });
+    try {
+      await spec.start();
+      for (const role of ['a', 'b', 'c']) {
+        expect(initDataPostedTo(backend, role).failureDetectorAutoDown, role).toBe(true);
+      }
+    } finally {
+      await spec.stop();
+    }
+  });
+
+  test('unset, no role is told anything — the worker keeps the shipped default', async () => {
+    const backend = new FakeWorkerBackend({ onSpawn: (worker) => { autoHandshake(worker); } });
+    const spec = new ParallelMultiNodeSpec({ roles: ['a', 'b'], backend });
+    try {
+      await spec.start();
+      for (const role of ['a', 'b']) {
+        expect(initDataPostedTo(backend, role).failureDetectorAutoDown, role).toBeUndefined();
+      }
+    } finally {
+      await spec.stop();
+    }
+  });
+});
+
+/* --------- #1288 — a backend that declares no error containment --------- */
+
+/**
+ * Run `body` with `console.error` captured into `errors` — the destination
+ * `onWorkerError` and the containment diagnostic share, because the harness
+ * owns no `ActorSystem` to log through.  The array is handed to the body
+ * live, so a hook running *during* the body can read what has been written
+ * so far.  Only the first argument is kept: the diagnostic is one string,
+ * and `onWorkerError` is not under test here.
+ */
+async function captureErrorsWhile(body: (errors: ReadonlyArray<string>) => Promise<void>): Promise<ReadonlyArray<string>> {
+  const errors: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]): void => { errors.push(String(args[0])); };
+  try {
+    await body(errors);
+    return errors;
+  } finally {
+    console.error = originalError;
+  }
+}
+
+describe('ParallelMultiNodeSpec — backend containment declaration (#1288)', () => {
+  const uncontainedLines = (lines: ReadonlyArray<string>): string[] =>
+    lines.filter((line) => /containsWorkerErrors=false/.test(line));
+
+  test('a backend declaring false is reported once for all roles, before the first worker exists', async () => {
+    // How many diagnostic lines had been written when the first worker was
+    // spawned: that worker is the one that can take the test process with it,
+    // so the line has to be there before it is.
+    let linesAtFirstSpawn = -1;
+    let written: ReadonlyArray<string> = [];
+    const backend = new FakeWorkerBackend({
+      containsWorkerErrors: false,
+      onSpawn: (worker) => {
+        if (linesAtFirstSpawn < 0) linesAtFirstSpawn = uncontainedLines(written).length;
+        autoHandshake(worker);
+      },
+    });
+    const spec = new ParallelMultiNodeSpec({ roles: ['a', 'b'], backend });
+    const errors = await captureErrorsWhile(async (live) => {
+      written = live;
+      try {
+        await spec.start();
+      } finally {
+        await spec.stop();
+      }
+    });
+    expect(backend.spawned).toHaveLength(2);
+    expect(uncontainedLines(errors)).toEqual([
+      'ParallelMultiNodeSpec: worker backend FakeWorkerBackend declares containsWorkerErrors=false — an uncaught '
+      + "throw inside a worker will terminate this process instead of reaching the framework's error handler; "
+      + 'wire error containment into its WorkerLike adapter (see cluster/worker-mesh, Failure containment)',
+    ]);
+    expect(linesAtFirstSpawn).toBe(1);
+  });
+
+  test('the default fake produces no such line', async () => {
+    const { spec } = specWithFakeWorkers(['a', 'b']);
+    const errors = await captureErrorsWhile(async () => {
+      try {
+        await spec.start();
+      } finally {
+        await spec.stop();
+      }
+    });
+    expect(uncontainedLines(errors)).toEqual([]);
+  });
+});
+
+/* ---------- terminateAndWait's fallback timer (#1508, from #777) -------- */
+
+/** One `setTimeout` armed while a {@link TimerLedger} was installed. */
+type ArmedTimer = {
+  readonly delayMs: number;
+  readonly handle: ReturnType<typeof setTimeout>;
+  /**
+   * Run this timer's callback now, cancelling the real one first so it cannot
+   * also run later.  Deadlines measured in seconds are what the harness uses
+   * to turn a hang into a message; firing one by hand is what lets a test
+   * observe the message without paying the seconds.
+   */
+  readonly fire: () => void;
+};
+
+/** What the code under test armed and what it cancelled, in order. */
+type TimerLedger = {
+  readonly armed: ArmedTimer[];
+  readonly cleared: unknown[];
+};
+
+/**
+ * Wrap the global `setTimeout` / `clearTimeout` so a test can see which
+ * deadlines the harness armed and which of them it cancelled again.
+ *
+ * There is no clock seam to inject here and there should not be one: these are
+ * teardown deadlines, not scheduling, and the harness deliberately owns no
+ * `ActorSystem` whose `Scheduler` it could borrow.  The wrappers delegate to
+ * the real functions, so nothing about the timing changes; they exist only to
+ * record.  Both are restored before any assertion runs — leaving a wrapper
+ * installed would make every later test in the file observe this one.
+ */
+function installTimerLedger(): { readonly ledger: TimerLedger; readonly restore: () => void } {
+  const armed: ArmedTimer[] = [];
+  const cleared: unknown[] = [];
+  const timers = globalThis as unknown as {
+    setTimeout: (handler: (...args: unknown[]) => void, delayMs?: number) => ReturnType<typeof setTimeout>;
+    clearTimeout: (handle: ReturnType<typeof setTimeout> | undefined) => void;
+  };
+  const realSetTimeout = timers.setTimeout;
+  const realClearTimeout = timers.clearTimeout;
+  timers.setTimeout = (handler, delayMs) => {
+    const handle = realSetTimeout(handler, delayMs);
+    armed.push({
+      delayMs: delayMs ?? 0,
+      handle,
+      fire: (): void => { realClearTimeout(handle); handler(); },
+    });
+    return handle;
+  };
+  timers.clearTimeout = (handle) => { cleared.push(handle); realClearTimeout(handle); };
+  return {
+    ledger: { armed, cleared },
+    restore: (): void => { timers.setTimeout = realSetTimeout; timers.clearTimeout = realClearTimeout; },
+  };
+}
+
+/** The timers `body` armed and cancelled, for a body that has to be awaited. */
+async function timersArmedWhile(body: () => Promise<void>): Promise<TimerLedger> {
+  const { ledger, restore } = installTimerLedger();
+  try {
+    await body();
+    return ledger;
+  } finally {
+    restore();
+  }
+}
+
+/** The same, for a body that arms its timers before it returns. */
+function timersArmedBy<T>(body: () => T): { readonly value: T; readonly ledger: TimerLedger } {
+  const { ledger, restore } = installTimerLedger();
+  try {
+    return { value: body(), ledger };
+  } finally {
+    restore();
+  }
+}
+
+/** `terminateAndWait`'s fallback bound — the literal the helper arms. */
+const TERMINATE_FALLBACK_MS = 3_000;
+
+/**
+ * Workers that terminate without ever emitting `close` — the runtime the
+ * fallback bound exists for.
+ *
+ * {@link autoHandshake} is wired first and the `close` subscription is dropped
+ * on top of it, so everything except the exit signal behaves normally.
+ */
+function silentCloseBackend(): FakeWorkerBackend {
+  return new FakeWorkerBackend({
+    onSpawn: (worker) => {
+      autoHandshake(worker);
+      const add = worker.addEventListener.bind(worker);
+      worker.addEventListener = (event, handler): void => {
+        if (event === 'close') return;
+        add(event, handler);
+      };
+    },
+  });
+}
+
+describe('ParallelMultiNodeSpec — terminateAndWait', () => {
+  test('the fallback bound is cancelled when the close event wins', async () => {
+    // The bound exists for a runtime that emits no `close` at all.  Every
+    // runtime this harness actually runs on does emit one, and the fake here
+    // emits it on the next macrotask — so on the path that is taken in
+    // practice the timer is pure residue, and `stop()` is called five times
+    // over two workers in this file alone.  Left armed, one CI run of this
+    // file ends holding ten 3 s timers it will never use.
+    const { spec } = specWithFakeWorkers(['a', 'b']);
+    await spec.start();
+
+    const ledger = await timersArmedWhile(() => spec.stop());
+
+    const fallbacks = ledger.armed.filter((timer) => timer.delayMs === TERMINATE_FALLBACK_MS);
+    expect(fallbacks).toHaveLength(2);
+    // Cancelled, not merely unref'd: an unref'd timer is still armed and still
+    // runs its callback if anything else keeps the loop alive.
+    const surviving = fallbacks.filter((timer) => !ledger.cleared.includes(timer.handle));
+    expect(surviving).toHaveLength(0);
+  });
+
+  test('a worker that never emits close still finishes teardown on the bound', async () => {
+    // The other half of the pair, and the half a cancellation in the wrong
+    // place breaks silently: `clearTimeout` after `terminate()` resolves but
+    // before `closed` is awaited passes the test above and removes the only
+    // thing that can ever finish teardown here.
+    const backend = silentCloseBackend();
+    const spec = new ParallelMultiNodeSpec({ roles: ['a'], backend });
+    await spec.start();
+
+    const { ledger, restore } = installTimerLedger();
+    try {
+      // `stop()` arms both timers synchronously, before it awaits anything:
+      // the bound, and the macrotask hop the fake's `terminate()` settles on.
+      const stopped = spec.stop();
+      const fallback = ledger.armed.find((timer) => timer.delayMs === TERMINATE_FALLBACK_MS);
+      const terminateHop = ledger.armed.find((timer) => timer.delayMs === 0);
+      expect(fallback).toBeDefined();
+      expect(terminateHop).toBeDefined();
+
+      // Let `terminate()` settle, then check the state teardown is left in:
+      // it is not finished, and the bound is still armed.  A cancellation
+      // placed on this side of `await closed` shows up exactly here.
+      terminateHop!.fire();
+      expect(await hasSettled(stopped)).toBe(false);
+      expect(ledger.cleared).not.toContain(fallback!.handle);
+
+      fallback!.fire();
+      await stopped;
+    } finally {
+      restore();
+    }
+    expect(backend.spawned[0]!.terminated).toBe(true);
+  });
+});
+
+/* ---------- what the control-RPC timeout says (#1508, from #777) -------- */
+
+/** `controlRpc`'s own budget — the literal it arms, before scaling. */
+const CONTROL_RPC_MS = 5_000;
+
+describe('ParallelMultiNodeSpec — the control-RPC timeout', () => {
+  test('names the role that went silent, not only the request kind', async () => {
+    // The pair the CHANGELOG describes is the warning plus this timer, and
+    // the warning is the only half that names a role: with three or more
+    // roles in flight the timer said which *question* went unanswered and
+    // left the reader to work out which worker had stopped answering.
+    const { spec } = specWithFakeWorkers(['a', 'b']);
+    try {
+      await spec.start();
+      // Role 'b' deliberately, not the first one: a message built from
+      // `roles[0]` reads correctly on a single-role spec and is wrong on
+      // every spec that has more than one worker to lose.
+      const { value: membersPromise, ledger } = timersArmedBy(() => spec.getMembers('b'));
+
+      const rpcTimer = ledger.armed.find((timer) => timer.delayMs === scaledMs(CONTROL_RPC_MS));
+      expect(rpcTimer).toBeDefined();
+      // Fired by hand rather than waited out.  The budget is 5 000 ms and
+      // bun's per-test cap is 5 000 ms, so a test that waits for this timer
+      // races the runner and reports `this test timed out after 5000ms` —
+      // the one message that names nothing — instead of the one under test.
+      rpcTimer!.fire();
+
+      let caught: unknown;
+      try { await membersPromise; } catch (error) { caught = error; }
+
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).toBe(
+        "controlRpc(mns-test.query-members) to role 'b': timed out after "
+        + `${scaledMs(CONTROL_RPC_MS)}ms${describeTimeFactor()}`,
+      );
+    } finally {
+      await spec.stop();
+    }
+  });
+
+  test('takes its budget from the spec option, scaled like every other deadline', async () => {
+    // The budget was a literal inside `controlRpc`, which made it the one
+    // deadline in this harness a test could not move — and 5 s is *bun's own
+    // per-test cap*, so any suite that wanted to observe the timeout had to
+    // reach past the option surface to do it (#1508).  Scaled at resolution
+    // like `awaitTimeoutMs`, not at the arming site, so a scaled run reports
+    // the number it actually waited.
+    const backend = new FakeWorkerBackend({ onSpawn: (worker) => { autoHandshake(worker); } });
+    const spec = new ParallelMultiNodeSpec({ roles: ['a'], controlRpcTimeoutMs: 800, backend });
+    try {
+      await spec.start();
+      const { value: membersPromise, ledger } = timersArmedBy(() => spec.getMembers('a'));
+
+      expect(ledger.armed.map((timer) => timer.delayMs)).toContain(scaledMs(800));
+      expect(ledger.armed.map((timer) => timer.delayMs)).not.toContain(scaledMs(CONTROL_RPC_MS));
+      ledger.armed.find((timer) => timer.delayMs === scaledMs(800))!.fire();
+
+      let caught: unknown;
+      try { await membersPromise; } catch (error) { caught = error; }
+      expect((caught as Error).message).toBe(
+        "controlRpc(mns-test.query-members) to role 'a': timed out after "
+        + `${scaledMs(800)}ms${describeTimeFactor()}`,
+      );
+    } finally {
+      await spec.stop();
+    }
+  });
+
+  test('refuses a budget that would fire before anything could answer', () => {
+    // A zero or negative budget arms a timer that fires on the next turn, so
+    // every RPC fails and the harness reports a worker that went silent.
+    expect(() => new ParallelMultiNodeSpec({ roles: ['a'], controlRpcTimeoutMs: 0 }))
+      .toThrow(/controlRpcTimeoutMs must be a positive finite number/);
+  });
+});
+
+/* ------ what a throwing condition leaves behind (#1508, from #777) ------ */
+
+describe('ParallelMultiNodeSpec — a condition that keeps throwing', () => {
+  test('the await* timeout carries the last error the condition threw', async () => {
+    // #777's own body names this as the amplifier: `awaitCondition` retries
+    // past every throw and the timeout it finally raises names only what was
+    // being waited for.  A mis-correlated reply is one way to get there — a
+    // `run-command-response` settling a `getMembers` leaves `members`
+    // undefined and the `.filter(…)` throws — but any other throw inside the
+    // condition produced the same unattributed timeout.
+    const { spec } = specWithFakeWorkers(['a', 'b']);
+    try {
+      await spec.start();
+      // A crashed role is the cheapest condition that throws on every poll,
+      // and it throws the harness's own sentence rather than an
+      // engine-worded TypeError, so the whole message can be asserted.
+      await spec.crash('b');
+
+      let caught: unknown;
+      try { await spec.awaitMembers('b', 2, 200); } catch (error) { caught = error; }
+
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).toBe(
+        `ParallelMultiNodeSpec: timeout after 200 ms${describeTimeFactor()} — `
+        + 'awaitMembers(b, expected=2); '
+        + "last error: controlRpc: role 'b' has been crashed/left",
+      );
+    } finally {
+      await spec.stop();
+    }
+  });
+
+  test('a condition that simply stays false names no error', async () => {
+    // The other half: the suffix is evidence, not decoration.  A condition
+    // that polls cleanly and is merely not true yet must not grow one.
+    const { spec, workerFor } = specWithFakeWorkers(['a', 'b']);
+    try {
+      await spec.start();
+      const workerA = workerFor('a');
+      const postToWorkerA = workerA.postMessage.bind(workerA);
+      workerA.postMessage = (value: unknown): void => {
+        postToWorkerA(value);
+        const frame = (value ?? undefined) as { kind?: string; reqId?: number } | undefined;
+        if (frame?.kind !== 'mns-test.query-members' || frame.reqId === undefined) return;
+        workerA.deliverMessage({
+          kind: 'mns-test.query-members-response', reqId: frame.reqId, members: MEMBERS_OF_A,
+        });
+      };
+
+      let caught: unknown;
+      try { await spec.awaitMembers('a', 99, 200); } catch (error) { caught = error; }
+
+      expect((caught as Error).message).toBe(
+        `ParallelMultiNodeSpec: timeout after 200 ms${describeTimeFactor()} — `
+        + 'awaitMembers(a, expected=99)',
+      );
+    } finally {
+      await spec.stop();
+    }
+  });
+
+  test('the error kept is the last one, not the first', async () => {
+    // An early throw is usually the cluster not being up yet; the one still
+    // happening when the budget ran out is the one that was never going to
+    // stop.  Bound by numbering the polls, so keeping the first would report
+    // `poll 1` against a counter that reached six.
+    const { spec, workerFor } = specWithFakeWorkers(['a', 'b']);
+    try {
+      await spec.start();
+      const workerA = workerFor('a');
+      const postToWorkerA = workerA.postMessage.bind(workerA);
+      let polls = 0;
+      workerA.postMessage = (value: unknown): void => {
+        postToWorkerA(value);
+        const frame = (value ?? undefined) as { kind?: string; reqId?: number } | undefined;
+        if (frame?.kind !== 'mns-test.query-members' || frame.reqId === undefined) return;
+        polls += 1;
+        const attempt = polls;
+        // A reply whose member view throws when `awaitMembers` filters it —
+        // the shape a mis-correlated reply leaves behind, with a message this
+        // test can tell one poll's from another's.
+        workerA.deliverMessage({
+          kind: 'mns-test.query-members-response',
+          reqId: frame.reqId,
+          members: { filter: (): never => { throw new Error(`poll ${attempt} threw`); } },
+        });
+      };
+
+      let caught: unknown;
+      try { await spec.awaitMembers('a', 2, 300); } catch (error) { caught = error; }
+
+      // ~6 polls fit in the budget; a single-poll run would need a 250 ms
+      // stall inside one in-memory iteration, and would prove nothing.
+      expect(polls).toBeGreaterThan(1);
+      expect((caught as Error).message).toBe(
+        `ParallelMultiNodeSpec: timeout after 300 ms${describeTimeFactor()} — `
+        + `awaitMembers(a, expected=2); last error: poll ${polls} threw`,
+      );
+    } finally {
+      await spec.stop();
+    }
+  });
+});
+
+describe('ParallelMultiNodeSpec — bootstrap', () => {
   test('three roles, all see each other Up via worker-side cluster', async () => {
     const spec = new ParallelMultiNodeSpec({
       roles: ['a', 'b', 'c'],
@@ -70,7 +1101,7 @@ describeMns('ParallelMultiNodeSpec — bootstrap', () => {
     } finally {
       await spec.stop();
     }
-  }, 150_000);
+  }, scaledMs(150_000));
 
   test('addressFor + allRoles work after start', async () => {
     const spec = new ParallelMultiNodeSpec({
@@ -86,10 +1117,10 @@ describeMns('ParallelMultiNodeSpec — bootstrap', () => {
     } finally {
       await spec.stop();
     }
-  }, 150_000);
+  }, scaledMs(150_000));
 });
 
-describeMns('ParallelMultiNodeSpec — failure simulation', () => {
+describe('ParallelMultiNodeSpec — failure simulation', () => {
   test('crash(role) drops the worker; other roles see only 2 members', async () => {
     const spec = new ParallelMultiNodeSpec({
       roles: ['a', 'b', 'c'],
@@ -104,9 +1135,11 @@ describeMns('ParallelMultiNodeSpec — failure simulation', () => {
         spec.awaitMembers('c', 3),
       ]);
       await spec.crash('c');
-      // Survivors converge to a 2-member view as the failure detector
-      // declares c down.  The TIGHT_FD's downAfterMs of 1 s gives a
-      // generous-but-bounded wait window.
+      // Survivors converge to two `up` members once their detectors flag c
+      // unreachable (TIGHT_FD's unreachableAfterMs, 500 ms).  Whether c is
+      // then removed is `failureDetectorAutoDown`'s call — see the next case;
+      // by default it is removed at down-after, and under `false` it stays a
+      // member at `unreachable` (#1426).
       await Promise.all([
         spec.awaitMembers('a', 2, 30_000),
         spec.awaitMembers('b', 2, 30_000),
@@ -114,7 +1147,40 @@ describeMns('ParallelMultiNodeSpec — failure simulation', () => {
     } finally {
       await spec.stop();
     }
-  }, 150_000);
+  }, scaledMs(150_000));
+
+  test('failureDetectorAutoDown: a worker applies it — under false the survivor parks a crashed seed', async () => {
+    // The bootstrap half of the pass-through (the init frame is checked with
+    // fake workers above).  `false` against the shipped `true`, so a worker
+    // that dropped the switch would remove the seed at down-after.  A non-seed
+    // survivor, so an application that only reached the seed would fail here.
+    const spec = new ParallelMultiNodeSpec({
+      roles: ['a', 'b'],
+      failureDetector: TIGHT_FD,
+      failureDetectorAutoDown: false,
+      gossipIntervalMs: 100,
+    });
+    try {
+      await spec.start();
+      await Promise.all([spec.awaitMembers('a', 2), spec.awaitMembers('b', 2)]);
+      const seedAddress = spec.addressFor('a').toString();
+      await spec.crash('a');
+      const seedStatus = async (): Promise<string | undefined> =>
+        (await spec.getMembers('b')).find((member) => member.address === seedAddress)?.status;
+      await awaitCondition(async () => (await seedStatus()) === 'unreachable', {
+        timeoutMs: 30_000, intervalMs: 100, label: 'the survivor saw the crashed seed go unreachable',
+      });
+      // The elapsed time is the subject — parked means still a member well past
+      // down-after — so it is what the wait watches.
+      const unreachableSince = Date.now();
+      await awaitCondition(() => Date.now() - unreachableSince > 3 * TIGHT_FD.downAfterMs, {
+        timeoutMs: 30_000, intervalMs: 100, label: 'three down-after periods passed',
+      });
+      expect(await seedStatus()).toBe('unreachable');
+    } finally {
+      await spec.stop();
+    }
+  }, scaledMs(150_000));
 
   test('leave(role) advertises a graceful exit to peers', async () => {
     const spec = new ParallelMultiNodeSpec({
@@ -139,7 +1205,7 @@ describeMns('ParallelMultiNodeSpec — failure simulation', () => {
     } finally {
       await spec.stop();
     }
-  }, 150_000);
+  }, scaledMs(150_000));
 
   test('partition + heal flips reachability without dropping the workers', async () => {
     const spec = new ParallelMultiNodeSpec({
@@ -168,10 +1234,10 @@ describeMns('ParallelMultiNodeSpec — failure simulation', () => {
     } finally {
       await spec.stop();
     }
-  }, 150_000);
+  }, scaledMs(150_000));
 });
 
-describeMns('ParallelMultiNodeSpec — await* timeouts', () => {
+describe('ParallelMultiNodeSpec — await* timeouts', () => {
   test('awaitMembers throws when count never converges', async () => {
     const spec = new ParallelMultiNodeSpec({
       roles: ['solo'],
@@ -187,5 +1253,5 @@ describeMns('ParallelMultiNodeSpec — await* timeouts', () => {
     } finally {
       await spec.stop();
     }
-  }, 45_000);
+  }, scaledMs(45_000));
 });

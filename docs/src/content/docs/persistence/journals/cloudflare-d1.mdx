@@ -48,24 +48,10 @@ import {
   D1DurableStateStoreOptions,
   D1JournalOptions,
   D1SnapshotStoreOptions,
-  PersistenceExtensionId,
   RegisterD1PluginsOptions,
   registerD1Plugins,
 } from 'actor-ts/persistence';
 
-const systemOptions = ActorSystemOptions.create()
-  // Select the D1 plugins as the active journal + snapshot store.
-  .withConfig({
-    'actor-ts': {
-      persistence: {
-        journal: { plugin: 'actor-ts.persistence.journal.cloudflare-d1' },
-        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.cloudflare-d1' },
-      },
-    },
-  });
-const system = ActorSystem.create('my-app', systemOptions);
-
-const ext = system.extension(PersistenceExtensionId);
 const d1SnapshotStoreOptions = D1SnapshotStoreOptions.create()
   .withKeepN(3);
 const registerOptions = RegisterD1PluginsOptions.create()
@@ -75,13 +61,93 @@ const registerOptions = RegisterD1PluginsOptions.create()
   .withJournal(D1JournalOptions.create() /* .withEventsTable(...) */)
   .withSnapshotStore(d1SnapshotStoreOptions)
   .withDurableStateStore(D1DurableStateStoreOptions.create() /* .withTable(...) */);
-const { durableStateStore } = registerD1Plugins(ext, registerOptions);
+const systemOptions = ActorSystemOptions.create()
+  // Select the D1 plugins for all three stores.
+  .withConfig({
+    'actor-ts': {
+      persistence: {
+        journal: { plugin: 'actor-ts.persistence.journal.cloudflare-d1' },
+        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.cloudflare-d1' },
+        'durable-state': { plugin: 'actor-ts.persistence.durable-state.cloudflare-d1' },
+      },
+    },
+  })
+  .withPersistence({ plugins: [(persistence) => registerD1Plugins(persistence, registerOptions)] });
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
 The API token is sent as a bearer token, so treat it like any other secret —
 read it from the environment rather than committing it. Setting only some of
-the three credentials is rejected at wiring time, since that is almost always a
-forgotten environment variable.
+the three credentials is rejected when the store is built, since that is almost
+always a forgotten environment variable.  A store is built when it is resolved
+rather than the moment `registerD1Plugins` returns, so the merged settings a
+validator sees include the HOCON block below — and the plug-in runs inside
+`ActorSystem.create`, where the system resolves the stores its configuration
+selects and then opens them as it starts, so a rejected credential set fails
+the startup; see [opening the stores at startup](/persistence/overview/#opening-the-stores-at-startup).
+
+## Configure it from HOCON
+
+The plugin id **is** the config section, so the block named after the id is the
+block that plugin reads (#872).  Everything except the live objects can come
+from `application.conf`, which means `registerD1Plugins(persistence)` needs no options at all:
+
+```ts
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerD1Plugins } from 'actor-ts/persistence';
+
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerD1Plugins(persistence)],
+});
+const system = ActorSystem.create('my-app', systemOptions);
+```
+
+```hocon
+actor-ts.persistence {
+  journal        { plugin = "actor-ts.persistence.journal.cloudflare-d1" }
+  snapshot-store { plugin = "actor-ts.persistence.snapshot-store.cloudflare-d1" }
+  durable-state  { plugin = "actor-ts.persistence.durable-state.cloudflare-d1" }
+
+  journal.cloudflare-d1 {
+    account-id  = ${?CLOUDFLARE_ACCOUNT_ID}
+    database-id = ${?D1_DATABASE_ID}
+    api-token   = ${?CLOUDFLARE_API_TOKEN}
+  }
+  snapshot-store.cloudflare-d1 {
+    account-id  = ${?CLOUDFLARE_ACCOUNT_ID}
+    database-id = ${?D1_DATABASE_ID}
+    api-token   = ${?CLOUDFLARE_API_TOKEN}
+    keep-n      = 5
+  }
+  durable-state.cloudflare-d1 {
+    account-id  = ${?CLOUDFLARE_ACCOUNT_ID}
+    database-id = ${?D1_DATABASE_ID}
+    api-token   = ${?CLOUDFLARE_API_TOKEN}
+  }
+}
+```
+
+Options passed to `registerD1Plugins` still win, field by field, and a field you leave
+unset falls through to the block rather than blanking it — so a shared
+`client` in code and the table names in HOCON is a normal mix.  A pre-built
+`client` and a `serializer` have **no leaf at all**: they are live objects, and
+a config file cannot express one.  `tags-table` is read but ships as a *comment*
+rather than a key, because its default is derived from `events-table`, and
+absence is what keeps the two in step.
+
+The transport's two bounds have leaves too (#1490), published with their units
+under all three blocks: `timeout = 30s` is the deadline on one request and
+`max-response-bytes = 64M` the ceiling on one response body.  Both bound a whole
+replay — the caution below says why — so a history that outgrew either is fixed
+in `application.conf` rather than in code.  An injected `client` bypasses the
+transport, and both values with it.
+
+**`durable-state.plugin` now selects this backend's durable-state store.**  It
+used to be built eagerly and handed back from `registerD1Plugins`, so it could only be
+wired by threading that instance through application code.  The returned handle
+still works and still yields the same instance — it is simply built when it is
+first asked for rather than at registration, which for a selected store is the
+startup.
 
 ## When to use it
 
@@ -126,7 +192,8 @@ interface D1DurableStateStoreOptions extends D1Connection {
 
 Identical to the [SQLite backend's](/persistence/journals/sqlite/#schema) —
 `events`, `events_tags`, `events_meta`, `snapshots` and `durable_state`, created
-with `CREATE TABLE IF NOT EXISTS` on first use.
+with `CREATE TABLE IF NOT EXISTS` when the store opens — at startup, or on first
+use when the boot-time open is turned off.
 
 ## Concurrency model
 
@@ -199,8 +266,9 @@ So, precisely:
   entire replay rather than a page of one. The default is 64 MiB, well above the
   `HttpClient`'s generic 8 MiB, because the peer here is your own database rather
   than an untrusted API. A recovery that outgrows it fails with
-  `HttpResponseTooLargeError`: raise the knob to get moving again, then snapshot
-  or compact, since the body is buffered in memory before it is parsed.
+  `HttpResponseTooLargeError`: raise `max-response-bytes` (`maxResponseBytes` in
+  code) to get moving again, then snapshot or compact, since the body is
+  buffered in memory before it is parsed.
 </Aside>
 
 <Aside type="caution" title="D1 has service limits">
@@ -215,8 +283,23 @@ So, precisely:
   poll. The tag path each poll takes is indexed, as on SQLite.
 </Aside>
 
-<Aside type="caution" title="Compression / encryption options are ignored">
-  Per-call `PersistenceOptions` apply only to the object-storage stores.
+<Aside type="caution" title="Per-actor encryption and integrity do not protect events">
+  Per-call `PersistenceOptions` (compression, encryption, integrity) are
+  honoured by the D1 snapshot and durable-state stores, as by every
+  SQL and object-storage store: a row written under a hook is the
+  object-storage frame in base64 behind an `ats1:` prefix, in the same
+  `TEXT` column, bound to its persistence id and its sequence number or
+  revision ([#1802](https://github.com/pathosDev/actor-ts/issues/1802)).  A row that lacks the protection the actor asks
+  for is refused unless the store was built with
+  `withAllowPlaintextRows(true)` for a migration.
+
+  The journal is never asked.  `encryption()` and `integrity()` on a
+  `PersistentActor` protect its snapshots only: every journal stores
+  events as plaintext JSON, nothing detects an event edited in place, and
+  database-side controls — transparent data encryption, an encrypted
+  volume, access control — are the only protection for events today.  An
+  actor that pairs this journal with the object-storage snapshot store
+  starts cleanly and writes its events here in plaintext.
 </Aside>
 
 ## Where to next

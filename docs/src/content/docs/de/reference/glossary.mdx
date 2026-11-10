@@ -60,12 +60,20 @@ sendet.  Siehe [Strategies](/de/routing/strategies/).
 
 **Circuit Breaker.**  Ein Drei-Zustands-Wrapper
 (closed/open/half-open), der nach anhaltenden Downstream-Fehlern
-schnell fehlschlägt.  Siehe
+schnell fehlschlägt und nach Ablauf seines Fensters eine Probe
+durchlässt.  Im Code gebaut oder per Id aus
+`actor-ts.circuit-breaker.<id>` aufgelöst — so benennen die
+Persistence-Stores und Broker-Actors ihre.  Siehe
 [Circuit Breaker](/de/patterns/circuit-breaker/).
 
 **Cluster.**  Eine Gruppe von Actor-Systemen, die Membership per
 Gossip austauschen und Nachrichten über das Netzwerk routen.  Siehe
 [Cluster Overview](/de/cluster/overview/).
+
+**Cluster-Event-Stream.**  Das clusterweite Gegenstück zum
+Event-Stream — dieselben Klassen- und `kind`-Channels, aber Subscriber
+auf jeder Node.  Erreichbar als `cluster.eventStream`.  Siehe
+[Cluster-Event-Stream](/de/cluster/event-stream/).
 
 **ClusterSharding.**  Verteilt Per-Key-Actors über Cluster-Nodes
 mit automatischem Rebalancing.  Siehe
@@ -144,9 +152,10 @@ Siehe [PersistentActor](/de/persistence/persistent-actor/).
 Wiederabspielen eines Event-Logs abgeleitet wird.  Siehe
 [Persistence Overview](/de/persistence/overview/).
 
-**Event Stream.**  Systemweiter Pub/Sub-Bus, scoped auf ein
-ActorSystem.  Siehe
-[Event Stream](/de/fundamentals/event-stream/).
+**Event Stream.**  Pub/Sub-Bus, gescoped auf ein ActorSystem — und das
+ist eine Node, ein Publish verlässt den Prozess also nie.  Siehe
+[Event Stream](/de/fundamentals/event-stream/), und *Cluster-Event-Stream*
+oben für den, der Node-Grenzen überschreitet.
 
 **Extension.**  Plugin-Mechanismus — lazy initialisierte,
 system-scoped Services (Cluster, Persistenz, Metriken, …).  Siehe

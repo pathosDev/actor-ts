@@ -101,12 +101,15 @@ describe('SqliteJournal — event_tags migration', () => {
     ins.run('bob',   2, '{"msg":"b2"}', 'orders',     4_000);
 
     // A custom driver wrapper that returns this exact DB, so
-    // SqliteJournal opens the same in-memory database we just seeded.
+    // SqliteJournal opens the same in-memory database we just seeded.  It
+    // ignores the path it is handed: the `:memory:` below opens nothing, and
+    // is there because every SQLite journal names its database (#1492).
     const wrapper = {
       open(): typeof db { return db; },
     } as unknown as SqliteDriver;
 
     const journalOptions = SqliteJournalOptions.create()
+      .withPath(':memory:')
       .withDriver(wrapper);
     const journal = new SqliteJournal(journalOptions);
     // Force init() to run + the backfill alongside.

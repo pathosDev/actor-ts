@@ -169,6 +169,39 @@ rows, which is exactly why every figure above is a mean of a hundred and
 carries its spread.
 </Aside>
 
+## The fifth scenario: `parallel-workload`
+
+The four scenarios above drive one actor, or two alternating ones — the
+actor-model invariant no framework can parallelise, so on those rows the JVM
+and .NET arms run effectively single-threaded too.  They say nothing about
+the one property multithreading exists for.  `parallel-workload` does:
+**sixty-four independent actors, one message each per iteration, every
+message a fixed number of xorshift32 rounds** — real CPU work, in two sizes:
+`load=light` (5 000 rounds, a few microseconds per message) and `load=heavy`
+(100 000 rounds, hundreds of microseconds).
+
+Every arm uses its natural parallelism.  The JVM and .NET arms spread the
+sixty-four actors over their default schedulers, which is every core.
+actor-ts places them on worker threads through
+[`actor-ts.parallelism.workers = auto`](/fundamentals/parallelism/) —
+measured exactly the way an operator switches it on, with the same
+`system.spawn` calls, and the row's note names the count `auto` resolved to.
+nact and XState run them on one thread, and their notes say so: that is the
+scenario's finding for them, not a skip.
+
+Two things make the row honest.  The work is language-neutral and cannot be
+optimised away: the loop is mirrored bit for bit in every arm (32-bit lanes,
+logical right shifts), every reply carries its result, and every arm
+publishes the checksum over every reply it received — which the report
+recomputes from the workload definition alone and refuses when it differs.
+So completion verification extends from "the messages were processed" to
+"the work was done".  And the actor-ts arm runs its four single-actor rows
+**before** it starts a mesh, on a system with `workers = 0`, so those rows
+stay the zero-overhead figures the placement feature promises.
+
+The scenario is implemented in all nine arms; its figures are published with
+the next full hundred-round measurement, whole or not at all.
+
 ## Methodology
 
 The parts that make the table worth reading:
@@ -277,7 +310,8 @@ a comparison of everything:
 
 - **No clustering or sharding.**  A throughput regression is open against
   sharding, and publishing a sharded comparison now would bake it into the
-  first number anyone sees.
+  first number anyone sees.  The `parallel-workload` scenario places actors
+  on threads without sharding for that reason.
 - **No persistence.**  The persistence benchmarks cover in-memory and SQLite
   only, so a comparable arm would be a storage-engine comparison wearing a
   framework label.

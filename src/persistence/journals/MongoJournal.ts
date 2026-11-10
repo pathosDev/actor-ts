@@ -6,7 +6,10 @@ import {
 } from '../JournalTypes.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
-import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
+import {
+  assertStringPersistenceId,
+  assertValidPersistenceId,
+} from '../storage/PersistenceIdValidator.js';
 import { assertValidEntryTags } from '../storage/TagValidator.js';
 import {
   buildMongoResource,
@@ -14,6 +17,7 @@ import {
   type MongoCollectionLike,
   type MongoDatabaseLike,
 } from './MongoClient.js';
+import { DEFAULT_EVENTS_TABLE } from '../Constants.js';
 import { MongoStore } from './MongoStore.js';
 import {
   MongoJournalOptionsValidator,
@@ -89,7 +93,7 @@ export class MongoJournal extends MongoStore implements Journal {
       ownsClient: resolvedOptions.client === undefined,
       openClient: () => buildMongoResource(resolvedOptions),
     });
-    this.eventsName = resolvedOptions.eventsCollection ?? 'events';
+    this.eventsName = resolvedOptions.eventsCollection ?? DEFAULT_EVENTS_TABLE;
     this.metaName = `${this.eventsName}_meta`;
     this._serializer = resolvedOptions.serializer;
   }
@@ -159,6 +163,7 @@ export class MongoJournal extends MongoStore implements Journal {
   }
 
   async read<E>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
+    assertStringPersistenceId(persistenceId, 'MongoJournal.read');
     const { database } = await this.ensureOpen();
     try {
       const documents = await this.eventDocuments(database)
@@ -175,6 +180,7 @@ export class MongoJournal extends MongoStore implements Journal {
   }
 
   async highestSeq(persistenceId: string): Promise<number> {
+    assertStringPersistenceId(persistenceId, 'MongoJournal.highestSeq');
     const { database } = await this.ensureOpen();
     try {
       return await this.readHead(database, persistenceId);
@@ -184,6 +190,7 @@ export class MongoJournal extends MongoStore implements Journal {
   }
 
   async delete(persistenceId: string, toSeq: number): Promise<void> {
+    assertStringPersistenceId(persistenceId, 'MongoJournal.delete');
     const { database } = await this.ensureOpen();
     try {
       await this.eventDocuments(database).deleteMany({ persistenceId, sequenceNr: { $lte: toSeq } });
@@ -203,6 +210,7 @@ export class MongoJournal extends MongoStore implements Journal {
 
   /** The same `$max` upsert `delete` ends with, without the `deleteMany`. */
   async raiseCompactionMark(persistenceId: string, throughSeq: number): Promise<void> {
+    assertStringPersistenceId(persistenceId, 'MongoJournal.raiseCompactionMark');
     const { database } = await this.ensureOpen();
     try {
       await this.meta(database).updateOne(

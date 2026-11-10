@@ -39,9 +39,18 @@ export {
   ClusterBootstrapOptions,
   ClusterBootstrapOptionsBuilder,
   ClusterBootstrapOptionsValidator,
+  DEFAULT_DISCOVERY_METHOD,
+  DEFAULT_NEW_CLUSTER_ENABLED,
+  DISCOVERY_METHODS,
   readClusterBootstrapDefaultsFromConfig,
+  readClusterBootstrapDiscoveryFromConfig,
 } from './ClusterBootstrapOptions.js';
-export type { ClusterBootstrapOptionsType, ClusterBootstrapConfigDefaults } from './ClusterBootstrapOptions.js';
+export type {
+  ClusterBootstrapConfigDefaults,
+  ClusterBootstrapDiscoveryDefaults,
+  ClusterBootstrapOptionsType,
+  DiscoveryMethod,
+} from './ClusterBootstrapOptions.js';
 export type { BootstrappedCluster } from './ClusterBootstrap.js';
 
 // Stable-observation bootstrap (#148).
@@ -64,7 +73,14 @@ export { NodeAddress } from './NodeAddress.js';
 export type { NodeAddressData } from './NodeAddress.js';
 
 export { Member } from './Member.js';
-export type { MemberData, MemberStatus, WireMessage } from './Protocol.js';
+export type {
+  MemberData,
+  MemberStatus,
+  UnwatchMessage,
+  WatchMessage,
+  WatchTerminatedMessage,
+  WireMessage,
+} from './Protocol.js';
 
 export {
   SelfUp,
@@ -80,6 +96,8 @@ export {
   MemberDown,
   MemberLeft,
   MemberRemoved,
+  MemberConfigurationMismatch,
+  ClusterStatsPublished,
   ShardMapChanged,
 } from './ClusterEvents.js';
 export type { ClusterEvent } from './ClusterEvents.js';
@@ -89,16 +107,27 @@ export { RemoteActorRef } from './RemoteActorRef.js';
 
 export { InMemoryTransport, TcpTransport } from './Transport.js';
 export type { Transport, WireHandler, TlsTransportOptionsType } from './Transport.js';
+export {
+  TcpTransportOptions,
+  TcpTransportOptionsBuilder,
+  TcpTransportOptionsValidator,
+} from './TcpTransportOptions.js';
+export type { TcpTransportOptionsType } from './TcpTransportOptions.js';
 export { MessageChannelTransport } from './transports/MessageChannelTransport.js';
 export type { PortLike, BrokeredMessage } from './transports/MessageChannelTransport.js';
 
 export {
   FailureDetector,
+  createFailureDetector,
   defaultFailureDetectorOptions,
 } from './FailureDetector.js';
 export { FailureDetectorOptions, FailureDetectorOptionsBuilder, FailureDetectorOptionsValidator } from './FailureDetectorOptions.js';
 export type { FailureDetectorOptionsType } from './FailureDetectorOptions.js';
-export type { FailureDecision } from './FailureDetector.js';
+export type {
+  FailureDecision,
+  FailureDetectorImplementation,
+  FailureDetectorLike,
+} from './FailureDetector.js';
 export {
   PhiAccrualFailureDetector,
   defaultPhiAccrualOptions,
@@ -108,6 +137,18 @@ export type { PhiAccrualOptionsType } from './PhiAccrualOptions.js';
 
 // Split-Brain Resolver strategies.
 export {
+  DEFAULT_SPLIT_BRAIN_RESOLVER_STRATEGY,
+  DEFAULT_DOWN_ALL_WHEN_UNSTABLE,
+  DEFAULT_STABLE_AFTER_MS,
+  DEFAULT_UNREACHABLE_ARBITRATION_FACTOR,
+  DEFAULT_UNSTABLE_ESCALATION_FACTOR,
+  SplitBrainResolverOptions,
+  SplitBrainResolverOptionsBuilder,
+  SplitBrainResolverOptionsValidator,
+  readDowningFromConfig,
+  readSplitBrainResolverOptionsFromConfig,
+  unreachableArbitrationDeadlineMs,
+  unstableEscalationDeadlineMs,
   KeepMajority,
   KeepOldest,
   KeepOldestOptions,
@@ -128,6 +169,8 @@ export type {
   DowningProvider,
   DowningDecision,
   ClusterPartitionView,
+  SplitBrainResolverStrategy,
+  SplitBrainResolverOptionsType,
   KeepMajorityOptionsType,
   KeepOldestOptionsType,
   StaticQuorumOptionsType,
@@ -158,6 +201,7 @@ export type {
   SingletonActorClass,
   SingletonKeyedClass,
   SingletonReference,
+  SingletonRoleOrigin,
   ClusterSingletonManagerOptionsType,
   SingletonDeliver,
   WarmHandOverActor,
@@ -188,6 +232,10 @@ export type {
   PubSubSubscribeRejectionReason,
 } from './pubsub/index.js';
 
+// Cluster-wide event stream — the counterpart to `system.eventStream`.
+export { ClusterEventStream, ClusterEventStreamId } from './eventstream/index.js';
+export type { ClusterEventDecoder } from './eventstream/index.js';
+
 // Sharding.
 export { ClusterSharding } from './sharding/ClusterSharding.js';
 export { StartShardingOptions, StartShardingOptionsBuilder, StartShardingOptionsValidator } from './sharding/StartShardingOptions.js';
@@ -212,6 +260,17 @@ export type {
 } from './sharding/ShardingProtocol.js';
 export { ShardingOptions, ShardingOptionsBuilder, ShardingOptionsValidator } from './sharding/ShardingOptions.js';
 export type { ShardingOptionsType } from './sharding/ShardingOptions.js';
+// The paced-recovery strategy is named in an option, so the union has to be
+// nameable from outside — same reason `ProjectionRecoveryStrategy` is exported
+// from `src/persistence` (#851).
+export { ENTITY_RECOVERY_STRATEGIES } from './sharding/ShardingOptions.js';
+export type { EntityRecoveryStrategy } from './sharding/ShardingOptions.js';
+// Likewise for the two passivation unions: both appear in `ShardingOptionsType`,
+// so a caller writing the options type out by hand has to be able to name them
+// (#848).  The strategy implementations behind them stay internal — the seam is
+// configured, not plugged.
+export { ENTITY_ADMISSION_FILTERS, ENTITY_REPLACEMENT_POLICIES } from './sharding/ShardingOptions.js';
+export type { EntityAdmissionFilter, EntityReplacementPolicy } from './sharding/ShardingOptions.js';
 export { ShardCoordinator } from './sharding/ShardCoordinator.js';
 export { ShardCoordinatorOptions, ShardCoordinatorOptionsBuilder } from './sharding/ShardCoordinatorOptions.js';
 export type { ShardCoordinatorOptionsType } from './sharding/ShardCoordinatorOptions.js';
@@ -230,6 +289,7 @@ export type {
 // class reached no public entry point (#682).
 export {
   DistributedDataCoordinatorStateStore,
+  JournalCoordinatorStateStore,
 } from './sharding/CoordinatorState.js';
 export type {
   CoordinatorStateStore,

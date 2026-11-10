@@ -1,5 +1,5 @@
 /**
- * DELETE is idempotent against a live MinIO bucket.  Deleting a
+ * DELETE is idempotent against a live Silo bucket.  Deleting a
  * non-existent key must succeed (200/204) — the framework's
  * adapter swallows the "object missing" case via S3's normal
  * idempotency.

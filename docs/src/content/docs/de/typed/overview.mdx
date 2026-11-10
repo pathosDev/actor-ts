@@ -157,7 +157,7 @@ Eine Handvoll Bausteine:
 | `Behaviors.receiveMessage(message => behavior)` | Shortcut, wenn du den Context nicht brauchst. |
 | `Behaviors.receiveWithSignal(handler, signalHandler)` | Fügt einen Lifecycle-Signal-Handler hinzu (postStop, preRestart, terminated). |
 | `Behaviors.withTimers(timers => behavior)` | Fängt den Per-Actor-`TimerScheduler` in einem Closure ein. |
-| `Behaviors.withStash(capacity, stash => behavior)` | Fängt einen `StashBuffer<T>` mit der gegebenen Kapazität ein. |
+| `Behaviors.withStash(capacity, stash => behavior)` | Fängt einen `StashBuffer<T>` mit der gegebenen Kapazität ein — eine ganze Zahl ≥ 1, sonst `OptionsError`. |
 | `Behaviors.supervise(behavior).onFailure(strategy)` | Wickelt ein Behavior mit einer Supervisor-Strategie. |
 | `Behaviors.intercept(behavior, interceptor)` | Lässt einen Interceptor vor jeder Nachricht laufen — beobachten, transformieren oder verwerfen. |
 | `Behaviors.monitor(observer, behavior)` | Leitet jede Nachricht an einen anderen Actor weiter, bevor sie behandelt wird. |

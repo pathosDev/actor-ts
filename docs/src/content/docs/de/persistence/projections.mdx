@@ -71,7 +71,8 @@ Der Actor:
    Offset-Store.
 2. Pollt die **Query-Schicht** für Events, die zum `tag` passen,
    ab dem Cursor.
-3. Ruft `handle` für jedes Event auf.
+3. Ruft `handle` für jedes Event auf — oder `handleGroup` für jede
+   Gruppe von Events, siehe [Gruppierte Handler](#gruppierte-handler).
 4. Persistiert den neuen Cursor.
 5. Wiederholt.
 
@@ -109,7 +110,11 @@ const byTagProjectionOptions = ByTagProjectionOptions.create<AccountEvent>()
 ```
 
 Jeder Operator ist optional, verknüpft werden sie mit UND.  Ein leeres
-`{}` matcht jedes Event.
+`{}` matcht jedes Event.  Einen Filter, den die Query-Schicht ablehnt —
+ein Tag mit mehr als 255 Zeichen, ein Operator, der keine Liste von
+Strings ist —, lehnt `ProjectionActor.byTag` mit einem `OptionsError`
+ab, der `tag` nennt, statt eine Projektion zu starten, deren Polls
+allesamt fehlschlagen.
 
 **Der Filter gehört zur Cursor-Identität.**  Ein blanker String behält
 den Cursor, den er schon hat, aber die beiden Schreibweisen teilen sich
@@ -135,6 +140,13 @@ Wenn der Handler läuft, aber der Cursor nicht persistiert wird,
 Neustart.  Das ist **At-least-once Delivery** — das Framework
 garantiert, dass kein Event verpasst wird, aber Duplikate sind
 möglich.
+
+Mit [`handleGroup`](#gruppierte-handler) ist die Gruppe die Einheit
+der Wiederholung.  Der Cursor wird einmal pro Gruppe persistiert, auf
+ihr letztes Event — ein Absturz zwischen dem Aufruf und diesem Save
+liefert also **jedes Event der Gruppe** erneut aus, nicht nur das,
+das gerade verarbeitet wurde.  Die Idempotenz muss für jedes Event
+darin gelten.
 
 Handler müssen **idempotent** sein:
 
@@ -187,14 +199,58 @@ Retries erfolgen **nicht sofort**.  Der nächste Versuch wird um
 schlechtes Event den Handler viermal erreicht, bevor die Projektion
 es aufgibt.
 
+### Dieselben Stellschrauben in HOCON
+
+Fehlerbehandlung ist meist eine *betriebliche* Entscheidung — derselbe
+Code will in Produktion `retry-and-fail` und in der Entwicklungsschleife
+`skip` — deshalb haben die vier Felder, die Poll-Kadenz und die
+Gruppengröße auch prozessweite Defaults unter `actor-ts.projection`:
+
+```hocon
+actor-ts.projection {
+  recovery-strategy     = "retry-and-skip"
+  max-retries           = 5
+  retry-backoff         = 2s
+  max-retry-backoff     = 60s
+  poll-interval         = 1s
+  group-after-envelopes = 50   # handleGroup projections only
+}
+```
+
+Die Präzedenz sind die üblichen drei Ebenen des Projekts, **pro Feld**
+angewandt: explizite `ProjectionOptions` > HOCON > eingebauter Default.
+Ein Feld, das diese Projektion nicht setzt, fällt auf den Block oben
+durch, und eines, das der Block nicht führt, auf den eingebauten Wert —
+die Konfiguration erreicht also jede Projektion, die sich zu diesem Feld
+nicht selbst festgelegt hat, und keine, die es getan hat.  Ein leeres
+`liveOptions` zu übergeben ist *keine* Festlegung: `poll-interval` gilt
+weiterhin.
+
+Setze `max-retry-backoff`, wann immer du `retry-backoff` setzt.  Beide
+werden gegeneinander auf den *gemergten* Settings geprüft — hebst du nur
+das erste über die 60-Sekunden-Grenze, wirft jede Projektion im Prozess
+beim Start `OptionsError`, allein wegen einer Konfigurationsdatei und
+ohne jede Codeänderung.
+
+`group-after-envelopes` bestimmt die Gruppengröße jeder
+[gruppierten Projektion](#gruppierte-handler), die nicht selbst
+`withGroupAfterEnvelopes` aufruft, und keiner anderen: eine
+`handle`-Projektion bekommt weiterhin ein Event pro Aufruf, was auch
+immer im Block steht.  Abgelehnt wird sie wegen des Blatts auch nicht —
+der `OptionsError` für eine Größe auf einer `handle`-Projektion gilt
+einer Größe, die ihr eigener Code geschrieben hat, und eine Datei, die
+jede Projektion im Prozess liest, ist das nicht.
+
 ### Was ein Fehlschlag erzeugt
 
 - **`onFailure`** — wird bei jedem Versuch aufgerufen, mit dem
   betroffenen `PersistentEvent`, dem Fehler, der Versuchsnummer und
-  der getroffenen Aktion (`retry` / `skip` / `stop`).  Das ist das
-  strukturierte Signal; häng dein Alerting daran.  Ein Hook, der
-  selbst wirft, wird geloggt und verschluckt — ein kaputter Reporter
-  darf die Projektion nicht mitreißen.
+  der getroffenen Aktion (`retry` / `skip` / `stop`).  Eine
+  fehlgeschlagene Gruppe liefert zusätzlich die `group` selbst — siehe
+  [Wenn eine Gruppe fehlschlägt](#wenn-eine-gruppe-fehlschlägt).  Das
+  ist das strukturierte Signal; häng dein Alerting daran.  Ein Hook,
+  der selbst wirft, wird geloggt und verschluckt — ein kaputter
+  Reporter darf die Projektion nicht mitreißen.
 - **Ein Dead Letter** — ein übersprungenes Event wird, in einen
   `DeadLetter` verpackt, auf dem System-Event-Stream veröffentlicht
   und nennt die Projektion als seinen Empfänger, damit nichts spurlos
@@ -231,6 +287,93 @@ kein bisschen nützlicher.
 
 Eine gestoppte Projektion behält ihren Cursor: Ursache beheben und
 neu starten setzt genau bei dem Event fort, das fehlgeschlagen ist.
+
+## Gruppierte Handler
+
+`handle` läuft einmal pro Event — eine Projektion zahlt ihrem
+Read-Model also einen Round Trip pro Event: ein Statement, ein
+Request.  Wo genau dieser Round Trip die Kosten sind, nimm die Events
+stattdessen in Gruppen entgegen:
+
+```ts
+import { ProjectionActor, ByTagProjectionOptions } from 'actor-ts/persistence';
+
+const byTagProjectionOptions = ByTagProjectionOptions.create<AccountEvent>()
+  .withName('account-statement-view')
+  .withTag('account')
+  .withQuery(new SqliteQuery(eventsJournal))
+  .withOffsetStore(new InMemoryOffsetStore())
+  .withGroupAfterEnvelopes(50)
+  .withHandleGroup(async (events) => {
+    // One statement per group; the conflict clause makes a replayed group harmless.
+    await viewDb.execute(
+      'INSERT INTO statement_lines (pid, seq, kind) VALUES '
+        + events.map(() => '(?, ?, ?)').join(', ')
+        + ' ON CONFLICT (pid, seq) DO NOTHING',
+      events.flatMap((event) => [event.persistenceId, event.sequenceNr, event.event.kind]),
+    );
+  });
+const projection = ProjectionActor.byTag<AccountEvent>(system, byTagProjectionOptions);
+```
+
+- **Ein Handler, nicht zwei.**  Eine Projektion setzt `withHandle`
+  *oder* `withHandleGroup`.  Die Factory wirft `OptionsError` bei
+  keinem, bei beiden, bei einem `groupAfterEnvelopes`, das keine
+  positive ganze Zahl ist, und bei einem auf einer
+  `handle`-Projektion, wo es stillschweigend nichts bewirken würde.
+- **Der Poll ist das Fenster.**  Jeder Tick schneidet, was sein Poll
+  zurückgegeben hat, in Gruppen von höchstens `groupAfterEnvelopes`
+  Events — Default 20 — und liefert jede davon in diesem Tick aus, in
+  Journal-Reihenfolge.  Nichts wird zurückgehalten, um eine Gruppe zu
+  füllen: ein stark beschriebenes Journal ergibt volle Gruppen und ein
+  ruhiges eine kurze Gruppe pro Poll, sodass, solange keine Gruppe
+  fehlschlägt, kein Event länger wartet als mit `handle`.  Eine
+  fehlschlagende Gruppe hält ihre guten Events mit zurück — siehe
+  [Wenn eine Gruppe fehlschlägt](#wenn-eine-gruppe-fehlschlägt).  Für
+  größere Gruppen bei geringerer Rate verlängere das Poll-Intervall.
+- **Ein Commit pro Gruppe**, auf ihr letztes Event.  Weniger
+  Offset-Writes sind Teil dessen, was das Gruppieren bringt, und sie
+  machen die Gruppe zur Einheit der Wiederholung — siehe
+  [At-least-once Delivery](#at-least-once-delivery).
+
+### Wenn eine Gruppe fehlschlägt
+
+Die Recovery-Strategie gilt zuerst für die Gruppe, mit dem Budget,
+das ein Event bekäme.  Ein Retry bildet die Gruppe nach dem Backoff
+neu, ab demselben ersten Event, weil sich der Cursor nicht bewegt hat:
+dieselben Events, sofern inzwischen keine weiteren ins Journal kamen —
+sonst füllt sich die Gruppe wieder bis `groupAfterEnvelopes`, und die
+Zählung der Versuche läuft für die größere Gruppe weiter.  `fail` und
+`retry-and-fail` stoppen vor dem ersten Event der Gruppe — der Cursor
+bleibt stehen, und ein Neustart liefert wieder ab diesem Event aus.
+
+Eine Gruppe wird nie übersprungen, denn das würfe ihre guten Events
+mit dem schlechten weg.  Wo die Strategie überspringen würde — `skip`
+sofort, `retry-and-skip` nach den verbrauchten Retries — wird die
+Gruppe stattdessen **aufgeteilt**: ihre Events gehen einzeln erneut
+hinaus, als `handleGroup([event])`, jedes mit eigenem Retry-Budget
+und eigenem Commit.  Das fehlschlagende Event wird dann genau wie
+unter `handle` wiederholt und übersprungen — ein Dead Letter, ein
+Schritt von `persistence_projection_events_skipped_total` —, während
+die Events davor committet werden und die danach folgen.  Sobald der
+aufgeteilte Bereich durch ist, wird wieder gruppiert ausgeliefert.
+Eine Gruppe aus einem einzigen Event, etwa der kurze Rest eines
+Polls, ist schon ein Event pro Aufruf und schlägt von Anfang an auf
+die Per-Event-Art fehl.
+
+Aufgeteilt wird erst, wenn die Versuche der Gruppe verbraucht sind,
+und das kostet Zeit, die `handle` nicht braucht: unter
+`retry-and-skip` warten die guten Events der Gruppe zuerst deren
+ganzes Retry-Budget ab, und das schlechte Event verbraucht danach
+allein ein zweites, das jedes Event dahinter ebenfalls abwartet.
+
+`onFailure` unterscheidet die beiden Arten von Versuch.  Ein
+Gruppen-Versuch trägt `group` — jedes Event des fehlgeschlagenen
+Aufrufs — mit `event` auf dem ersten davon, dem, auf das der Cursor
+wartet.  Der Versuch, der eine Gruppe an die Aufteilung übergibt,
+meldet `retry`, weil jedes ihrer Events gleich erneut versucht wird.
+Ein Fehlschlag innerhalb der Aufteilung trägt kein `group`, wie ein
+Fehlschlag von `handle`.
 
 ## OffsetStore
 
@@ -269,6 +412,82 @@ schon abgearbeitet hat, oder überspringt die, hinter denen der
 Cursor des anderen bereits steht.  Siehe [Storage-Lokalität &
 Identität](/de/persistence/overview/#storage-lokalität--identität).
 
+### Der zusammengesetzte Schlüssel hat ein Längenbudget
+
+`DurableStateOffsetStore` speichert einen Cursor nicht unter deiner
+`persistenceId`.  Er speichert ihn unter einem **zusammengesetzten**
+Schlüssel — `projection|seq|persistenceId` bei einer Projektion nach
+Persistence-Id, `projection|tag|tag` bei einer nach Tag — und diese
+Zeichenkette wird zur `persistenceId` des darunterliegenden
+`DurableStateStore`.  Diese Spalte ist `VARCHAR(255)` unter
+`MariaDbDialect` und `NVARCHAR(255)` unter `MsSqlDialect`;
+`PostgresDialect` und `SqliteDialect` deklarieren sie als `TEXT`.
+Also zwei der vier relationalen Dialekte — und ein
+`DurableStateStore` muss überhaupt nicht relational sein.
+
+Das Framework kann also einen Schlüssel zusammensetzen, den du nie
+geschrieben hast.  Eine `persistenceId` mit 250 Zeichen ist für sich
+genommen zulässig (das Limit ist 255), unter einer Projektion namens
+`orders-projection` ergibt das aber 272 Zeichen.  Der Store weist das
+zurück, statt es weiterzureichen — mit einem Fehler, der **beide
+Hälften** benennt, denn keine allein benennt das Problem: dieselbe Id
+unter einem kürzeren Projektionsnamen ist in Ordnung.
+
+```text
+Projection offset key is 272 characters, over the 255-character
+durable_state.persistence_id column: projection "orders-projection" (17)
++ "|seq|" + persistenceId "order-xxx…" (250). Shorten the projection
+name or the persistenceId — ...
+```
+
+Das Budget der zweiten Hälfte ist **255 − Projektionsname − 5**.
+Unter `orders-projection` bleiben 233 Zeichen.  Eine Projektion nach
+Tag zahlt aus demselben Budget den gerenderten Tag-Filter
+(`all(a,b)+any(c)`) — ein Filter über mehrere Tags kann es also
+sprengen, ohne dass ein einzelner Tag ungewöhnlich wäre.
+
+Die Zurückweisung hier statt in der Datenbank ist Absicht, denn die
+Datenbanken sind sich uneinig und keine der Antworten ist eine, mit
+der du etwas anfangen kannst:
+
+- SQL Server und MariaDB im Strict-Mode (Standard seit 10.2.4) werfen
+  einen Truncation-Fehler — laut, aber mit dem Namen einer Spalte, die
+  du nie geschrieben hast.
+- MariaDB ohne Strict-Mode kürzt auf 255, und zwei Projektionen mit
+  gemeinsamem Namenspräfix teilen sich dann eine Cursor-Zeile.  Nichts
+  schlägt fehl; die Projektion überspringt einfach Events.
+- Postgres und SQLite speichern `TEXT` und behalten alles, derselbe
+  Code funktioniert also, bis das Read-Model umzieht.
+
+Die Grenze ist damit eine **Portabilitätsuntergrenze, keine
+Spaltenbeschränkung** — sie gilt auch auf den beiden Dialekten, auf
+denen nichts reklamiert hätte.  Genau darum geht es: Der Fall, für den
+sie existiert, ist der Umzug weg von `TEXT`, wo aus einem Schlüssel,
+der auf SQLite passte, auf MariaDB ohne Strict-Mode eine Zeile wird,
+die sich zwei Projektionen teilen.  Eine Grenze, die nur dort gälte,
+wo die Spalte schmal ist, machte dieselbe Projektion auf einem Backend
+zulässig und auf dem anderen unzulässig — das wiederholt die Falle,
+statt sie zu schließen.  Und `DurableStateOffsetStore` hat ohnehin
+keinen Dialekt, den er fragen könnte: ein `DurableStateStore` ist
+genauso gut Object-Storage, das Dateisystem, Cassandra, DynamoDB oder
+MongoDB.
+
+Lesezugriffe werden ebenso zurückgewiesen wie Schreibzugriffe: eine
+Projektion, die ihren Cursor nie committen könnte, scheitert damit
+vor deinem Handler statt danach.  Sichtbar wird das an den
+Instrumenten der Projektion selbst und nicht als nackter
+Actor-Fehler: `persistence_projection_failures_total` zählt mit
+`reason="poll"` hoch, `persistence_projection_stalled` geht auf 1, und
+pro Startversuch nennt eine Error-Zeile die Projektion und den
+zurückgewiesenen Schlüssel.  Der Actor scheitert danach wie zuvor zu
+seinem Supervisor — wird neu gestartet und gestoppt, sobald das
+Restart-Budget aufgebraucht ist — sodass am Ende eine gestoppte
+Projektion mit stehendem Alarm übrig bleibt statt einer, die es
+stillschweigend nie gab.
+
+`InMemoryOffsetStore` hat diese Grenze nicht — seine Schlüssel sind
+`Map`-Schlüssel, keine Spaltenwerte.
+
 ## Polling
 
 ```ts
@@ -288,6 +507,10 @@ Journal-Query pro `pollIntervalMs`.  Tuning:
 - Niedriger (250-500 ms) → schnellere End-to-End-Propagation, mehr
   Datenbank-Last.
 - Höher (5-10 s) → langsame Sichtbarkeit, aber billig.
+
+`actor-ts.projection.poll-interval` setzt dieselbe Kadenz für jede
+Projektion im Prozess; `withLiveOptions` überschreibt sie für eine
+einzelne.
 
 Für sehr niedriglatente Read-Model-Updates siehe
 [Push-basierte Query](/de/persistence/push-based-query/), die
@@ -402,9 +625,15 @@ import { Aside } from '@astrojs/starlight/components';
   }
   ```
   Die Handler-Latenz begrenzt direkt den Durchsatz.  Bei
-  500 ms/Event verarbeitet die Projektion 2 Events/sec.  Für
-  Journals mit hohem Durchsatz parallelisiere innerhalb des Handlers
-  (Promise.all) oder splitte die Arbeit in mehrere Projektionen.
+  500 ms/Event verarbeitet die Projektion 2 Events/sec — und
+  `Promise.all` innerhalb von `handle` hilft nicht, denn `handle`
+  bekommt pro Aufruf ein Event.  Nimm die Events stattdessen mit
+  [`handleGroup`](#gruppierte-handler) in Gruppen entgegen: schick
+  jede Gruppe in einem Request, oder lass die Aufrufe der Gruppe, wo
+  der Dienst nur ein Event auf einmal nimmt, mit
+  `Promise.all(events.map(...))` nebeneinander laufen, was ihre
+  Reihenfolge innerhalb der Gruppe aufgibt.  Ist die Arbeit selbst
+  dann noch zu langsam, verteile sie auf mehrere Projektionen.
 </Aside>
 
 ## Wie geht's weiter

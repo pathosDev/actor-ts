@@ -8,34 +8,60 @@ import { metricsOf } from '../metrics/MetricsExtension.js';
 import { tracerOf } from '../tracing/TracingExtension.js';
 import type { Cancellable } from '../Scheduler.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
-import { COLD_START_STALL_AFTER_SEED_ROUNDS, MAX_WALL_CLOCK_SKEW_MS } from './Constants.js';
+import {
+  COLD_START_STALL_AFTER_SEED_ROUNDS,
+  MAX_REPORTED_CONFIGURATION_MISMATCHES,
+  MAX_REPORTED_UNCLAIMED_WIRE_KINDS,
+  MAX_WALL_CLOCK_SKEW_MS,
+  OUTBOUND_REFUSAL_REPORT_INTERVAL_MS,
+  SEED_REDIAL_AFTER_UP_FACTOR,
+} from './Constants.js';
+import { countUnhandled } from '../internal/Unhandled.js';
 import { none, some, type Option } from '../util/Option.js';
-import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
+import {
+  ClusterDowningReason,
+  ClusterJoinUnsuccessfulReason,
+  CoordinatedShutdownId,
+  Phases,
+} from '../CoordinatedShutdown.js';
 import { ClusterExtensionId } from './ClusterExtension.js';
-import { registerClusterHealthChecks } from './ClusterHealthChecks.js';
+import { EnvelopeTrust } from './EnvelopeTrust.js';
+import { readShardingHealthCheckNamesFromConfig, registerClusterHealthChecks } from './ClusterHealthChecks.js';
 import { awaitClusterReady, isClusterReadyNow } from './ClusterReadiness.js';
 import type { ClusterReadinessOptions } from './ClusterReadiness.js';
 import { healthChecksOf } from '../management/HealthCheckExtension.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
+import { readReadConstraintsOptionsFromConfig } from '../serialization/ReadConstraintsOptions.js';
 import {
   ADVERTISED_HOST_ENV_VARS,
   ClusterOptionsValidator,
   DEFAULT_ADVERTISED_HOST,
+  DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS,
+  DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE,
+  DEFAULT_FAILURE_DETECTOR_AUTO_DOWN,
+  DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION,
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
   DEFAULT_MAX_VERSION_SKEW_MS,
+  DEFAULT_MINIMUM_MEMBERS_BEFORE_UP,
+  DEFAULT_DOWN_SMALLER_ISLAND,
+  DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN,
   DEFAULT_SEED_RETRY_INTERVAL_MS,
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
   DEFAULT_TOMBSTONE_TTL_MS,
+  DEFAULT_UNTRUSTED_MODE,
   advertisedHostWasDerived,
   isRemoteTlsRequested,
   resolveAdvertisedHost,
+  resolveAdvertisedPort,
   withClusterConfigDefaults,
 } from './ClusterOptions.js';
 import type { ClusterOptions, ClusterOptionsType, SelfElectionPolicy } from './ClusterOptions.js';
 import {
+  ClusterStatsPublished,
   CurrentClusterState,
   LeaderChanged,
+  MemberConfigurationMismatch,
   MemberDown,
   MemberJoined,
   MemberLeft,
@@ -50,37 +76,100 @@ import {
   type ClusterEvent,
 } from './ClusterEvents.js';
 import {
+  createFailureDetector,
   defaultFailureDetectorOptions,
-  FailureDetector,
   type FailureDecision,
+  type FailureDetectorLike,
 } from './FailureDetector.js';
-import { FailureDetectorOptions, type FailureDetectorOptionsType } from './FailureDetectorOptions.js';
+import type { FailureDetectorOptionsType } from './FailureDetectorOptions.js';
 import { Member } from './Member.js';
 import { NodeAddress } from './NodeAddress.js';
-// `ClusterSharding` and `ClusterSingleton` only import `Cluster` as a type
-// (erased at runtime), so the value-imports here don't create a runtime
-// cycle — every sharding and singleton file uses `import type { Cluster }`.
+// `ClusterSharding`, `ClusterSingleton` and `ClusterEventStream` only import
+// `Cluster` as a type (erased at runtime), so the value-imports here don't
+// create a runtime cycle — every sharding, singleton and event-stream file
+// uses `import type { Cluster }`.
 import { ClusterSharding } from './sharding/ClusterSharding.js';
 import { ClusterSingleton } from './singleton/ClusterSingleton.js';
+import { ClusterEventStream } from './eventstream/ClusterEventStream.js';
+import {
+  CONFIGURATION_FACT_NAME_PATTERN,
+  DEFAULT_MAX_FRAME_BYTES,
+  MAX_CONFIGURATION_FACT_NAME_LENGTH,
+  MAX_CONFIGURATION_FACT_VALUE_LENGTH,
+  MAX_CONFIGURATION_FACTS,
+} from './Protocol.js';
 import type {
+  ConfigurationFactsData,
   EnvelopeMessage,
   GossipMessage,
   HeartbeatMessage,
   LeaveMessage,
   MemberData,
   MemberStatus,
+  MembershipRefusedMessage,
   StorageIdentitiesData,
+  UnwatchMessage,
+  WatchMessage,
+  WatchTerminatedMessage,
   WireMessage,
 } from './Protocol.js';
 import { decodeRefs, encodeRefs } from './RefCodec.js';
-import { sanitizeWireLogContext } from './WireValidation.js';
-import { InMemoryTransport, TcpTransport, type Transport } from './Transport.js';
+import { RemoteActorRef } from './RemoteActorRef.js';
+import { RemoteWatcher } from './RemoteWatcher.js';
+import { sanitizeNodeAddressForLog, sanitizeWireKindForLog, sanitizeWireLogContext } from './WireValidation.js';
+import { holdsConnectionTo, InMemoryTransport, TcpTransport, type Transport } from './Transport.js';
 import type {
   ClusterPartitionView,
   DowningProvider,
 } from './downing/DowningProvider.js';
+import {
+  DEFAULT_DOWN_ALL_WHEN_UNSTABLE,
+  DEFAULT_STABLE_AFTER_MS,
+  SplitBrainResolverOptionsValidator,
+} from './downing/SplitBrainResolverOptions.js';
+import type { SplitBrainResolverOptionsType } from './downing/SplitBrainResolverOptions.js';
+import { AppliedDecision } from './downing/AppliedDecision.js';
+import { StabilityWindow } from './downing/StabilityWindow.js';
 
 type EnvelopeHandler = (env: EnvelopeMessage, from: NodeAddress) => void;
+
+/**
+ * A self-election `minimumMembersBeforeUp` is holding back, kept whole so it
+ * can be replayed verbatim once the threshold is met (#837).
+ *
+ * The reason and level are carried rather than recomputed because they say
+ * *which* policy asked — "no seeds configured" and "no peer promoted this node
+ * within N ms" are two different decisions, and the log line that eventually
+ * lands should name the one that was actually made.
+ */
+type HeldSelfElection = { readonly reason: string; readonly level: 'debug' | 'info' };
+
+/**
+ * @internal What {@link Cluster._onJoinGivenUp} hands its listeners when the
+ * join gives up (#1500).  Not in the cluster barrel: the readiness wait is the
+ * one consumer, and a type the package does not export is one it can change.
+ */
+export type JoinGiveUpNotice = {
+  /** The deadline that passed — `shutdown-after-unsuccessful-join`, in ms. */
+  readonly deadlineMs: number;
+  /** Self's status when the node gave up, before `leave()` moved it to `leaving`. */
+  readonly selfStatus: 'joining' | 'weakly-up';
+};
+
+/**
+ * Member statuses that count toward
+ * {@link ClusterOptionsType.minimumMembersBeforeUp} (#837).
+ *
+ * The question the threshold asks is "are enough live members here", so a
+ * tombstone is not a member and neither is one on its way out: `leaving`,
+ * `unreachable`, `down` and `removed` are all excluded.  Akka counts every
+ * non-`removed` member instead; the difference shows during a rolling
+ * restart, where a `leaving` member either does or does not hold the gate
+ * open for its replacement.  It does not here.
+ */
+const UP_THRESHOLD_STATUSES: ReadonlySet<MemberStatus> = new Set<MemberStatus>([
+  'joining', 'weakly-up', 'up',
+]);
 
 /**
  * Which merge-path guard refused a gossiped member record.  Closed, and
@@ -88,7 +177,8 @@ type EnvelopeHandler = (env: EnvelopeMessage, from: NodeAddress) => void;
  * series an operator carries forever.
  */
 const GOSSIP_REFUSAL_REASONS = [
-  'map-cap', 'version-skew', 'timestamp-skew', 'replayed-frame', 'self-claim',
+  'map-cap', 'version-skew', 'timestamp-skew', 'replayed-frame', 'self-claim', 'removed-run',
+  'foreign-cluster',
 ] as const;
 
 /** One of {@link GOSSIP_REFUSAL_REASONS}. */
@@ -117,6 +207,21 @@ type GossipRefusalCounts = Record<GossipRefusalReason, number>;
 export type ClusterSubscriptionReplayMode = 'events' | 'snapshot';
 
 /**
+ * One {@link Cluster.subscribe} call: the callback, and whether its unsubscribe
+ * has run yet.
+ *
+ * The flag is what lets a dispatch walk a copy of the listener list (#1294)
+ * without calling a listener that left after the copy was taken.  A record per
+ * call rather than the bare function also makes each returned unsubscribe
+ * remove its own registration, not merely the first one holding the same
+ * function.
+ */
+type ClusterListenerRegistration = {
+  readonly listener: (event: ClusterEvent) => void;
+  subscribed: boolean;
+};
+
+/**
  * Name of the `cluster-leave` phase task {@link Cluster.join} registers and
  * {@link Cluster.leave} takes back out.
  *
@@ -126,6 +231,13 @@ export type ClusterSubscriptionReplayMode = 'events' | 'snapshot';
  * which would leave a task behind that a re-join then collides with.
  */
 const CLUSTER_LEAVE_TASK_NAME = 'cluster-leave';
+
+/**
+ * Name of the `cluster-sharding-shutdown-region` phase task {@link Cluster.join}
+ * registers and {@link Cluster.leave} takes back out (#1465) — module-local for
+ * the reasons {@link CLUSTER_LEAVE_TASK_NAME} gives, and paired the same way.
+ */
+const SHARDING_SHUTDOWN_TASK_NAME = 'cluster-sharding-shutdown-region';
 
 /**
  * The Cluster is a single-instance "extension" attached to an ActorSystem.
@@ -150,17 +262,83 @@ export class Cluster {
   readonly transport: Transport;
   private readonly log: Logger;
 
+  /**
+   * @internal Which peer-supplied paths this node resolves by name (#877).
+   *
+   * Public-but-underscored so `ClusterClientReceptionist` can apply the same
+   * policy to *its* entry point — the more exposed of the two, since a
+   * `ClusterClient` never joined the membership ring — without the two seams
+   * growing separate switches an operator would have to keep in step.  One
+   * instance per node also means one folded-log budget, so reaching both doors
+   * does not buy an attacker twice the log volume.
+   */
+  readonly _envelopeTrust: EnvelopeTrust;
+  /** @internal Death watch across nodes — both halves of it (#918). */
+  readonly _remoteWatcher: RemoteWatcher;
+  /**
+   * @internal The sharded types this node is not ready without —
+   * `actor-ts.sharding.healthcheck.names` (#1465) — for
+   * `registerClusterHealthChecks`, which installs one check per name.
+   *
+   * Read here rather than where the checks are installed: that is the last
+   * step of `_start`, after the transport is bound and every timer armed, and
+   * `join` unwinds none of it on a throw.  A list that cannot be read has to
+   * fail the join while nothing has started yet.
+   */
+  readonly _shardingHealthCheckNames: ReadonlyArray<string>;
+  /**
+   * @internal How long the set of `up` members has to hold still before the
+   * shard coordinator treats it as settled (#1467): failure-detector
+   * `down-after` with no downing provider configured, the larger of
+   * `down-after` and the split-brain resolver's `stable-after` with one.
+   *
+   * Derived rather than configured, because these are the timings that already
+   * decide what becomes of a member that stops answering.  With no provider,
+   * `down-after` is the detector's verdict — the member is removed then under
+   * the default `failure-detector.auto-down = on`, and stays parked at
+   * `unreachable` when it is off — so by `down-after` the view has either
+   * moved or will not move on its own.  With one, the resolver is consulted only after the view has
+   * held still for `stable-after`, so nothing decides about a member sooner.
+   * Both inputs are configured durations, so the window is finite by
+   * construction: a wait built on it always ends.
+   *
+   * Under the φ-accrual detector it still follows `down-after`, which φ
+   * ignores — the approximation {@link tombstoneMinRetentionMs} already makes
+   * when it derives its floor from the same value.
+   */
+  readonly _membershipSettleWindowMs: number;
+
+  /**
+   * How often this node gossips — what a sharding coordinator sizes its
+   * registration window by, since that is how fast a leader change reaches
+   * the other members' regions (#1272).  Internal, like the field above.
+   */
+  get _gossipIntervalMs(): number { return this.gossipIntervalMs; }
+
   private readonly members = new Map<string, Member>();
-  private readonly failureDetector: FailureDetector;
+  /**
+   * The contract, not one of the two classes that satisfy it: typing this
+   * field `FailureDetector` is what kept `PhiAccrualFailureDetector`
+   * unreachable from `Cluster.join` however it was configured (#840).
+   */
+  private readonly failureDetector: FailureDetectorLike;
   private readonly gossipIntervalMs: number;
   private readonly seedRetryIntervalMs: number;
   private readonly seedAddrs: NodeAddress[] = [];
+  /** Refused sends since the last report — see {@link reportOutboundRefusal}. */
+  private outboundRefusalsSuppressed = 0;
+  /** When {@link reportOutboundRefusal} last logged; the first refusal always does. */
+  private lastOutboundRefusalReportAt = Number.NEGATIVE_INFINITY;
   private readonly tombstoneTtlMs: number;
   private readonly tombstonePruneIntervalMs: number;
   private readonly tombstoneMinRetentionMs: number;
   private readonly maxVersionSkewMs: number;
   private readonly maxMembers: number;
   private readonly maxTombstones: number;
+  /** See {@link publishConfigurationFact} — the allow-list of what leaves this node (#844). */
+  private readonly configurationCheckedPaths: ReadonlySet<string>;
+  /** See {@link placementCandidates} — what a divergence does beyond being reported (#844). */
+  private readonly configurationCompatibilityEnforce: boolean;
 
   /**
    * How many entries in {@link members} are `removed` tombstones.
@@ -206,6 +384,8 @@ export class Cluster {
     'timestamp-skew': 0,
     'replayed-frame': 0,
     'self-claim': 0,
+    'removed-run': 0,
+    'foreign-cluster': 0,
   };
 
   /**
@@ -245,9 +425,30 @@ export class Cluster {
   private heartbeatTimer: Cancellable | null = null;
   private fdTimer: Cancellable | null = null;
   private seedTimer: Cancellable | null = null;
+  /** Dials the seeds this node has not met, once it is up — see {@link redialUnmetSeeds}. */
+  private seedRedialTimer: Cancellable | null = null;
+  /** Whether the smaller of two same-name clusters downs itself when they meet (#1176). */
+  private readonly downSmallerIsland: boolean;
+  /** Foreign clusters already reported, by the lowest address of each — one error line per island. */
+  private readonly reportedIslands = new Set<string>();
   private weaklyUpTimer: Cancellable | null = null;
   private tombstonePruneTimer: Cancellable | null = null;
   private selfElectionTimer: Cancellable | null = null;
+  /** Armed only when `publish-stats-interval` is positive (#842). */
+  private statsTimer: Cancellable | null = null;
+  /**
+   * The join deadline and then its re-checks, one at a time — armed only when
+   * `shutdown-after-unsuccessful-join` is positive (#1500).  See
+   * {@link onJoinDeadline}.
+   */
+  private joinGiveUpTimer: Cancellable | null = null;
+  /**
+   * What the join give-up announced, once it has — so a listener that comes
+   * late still hears it — and who is waiting to (#1500).  See
+   * {@link _onJoinGivenUp}.
+   */
+  private joinGivenUp: JoinGiveUpNotice | null = null;
+  private readonly joinGiveUpListeners = new Set<(notice: JoinGiveUpNotice) => void>();
   /** Fruitless seed-contact rounds so far, and whether the stall was reported (#1351). */
   private seedRounds = 0;
   private coldStartStallReported = false;
@@ -260,21 +461,94 @@ export class Cluster {
   private _selfElected = false;
   private currentLeader: Option<Member> = none;
   private readonly weaklyUpAfterMs: number;
+  private readonly publishStatsIntervalMs: number;
+  private readonly shutdownAfterUnsuccessfulJoinMs: number;
   private readonly selfElection: SelfElectionPolicy;
+  private readonly minimumMembersBeforeUp: number;
+  private readonly minimumMembersBeforeUpPerRole: Readonly<Record<string, number>>;
+  /**
+   * A self-election {@link minimumMembersBeforeUp} is holding, and whether the
+   * wait has been reported — see {@link selfElect} and {@link leaderActionsTick}.
+   */
+  private heldSelfElection: HeldSelfElection | null = null;
+  private upThresholdWaitReported = false;
 
   private envelopeHandler: EnvelopeHandler | null = null;
   private readonly _envelopeHandlersByPath = new Map<string, EnvelopeHandler>();
   private readonly wireHandlers = new Map<string, (message: WireMessage, from: NodeAddress) => void>();
+  /**
+   * Wire kinds this node has already named in a log line — see
+   * {@link onUnclaimedWire}.  Bounded by
+   * {@link MAX_REPORTED_UNCLAIMED_WIRE_KINDS}, because the values come off
+   * the wire.
+   */
+  private readonly reportedUnclaimedWireKinds = new Set<string>();
   private started = false;
 
   private readonly downing: DowningProvider | null;
   /**
-   * Set of unreachable address keys observed at the last downing
-   * evaluation.  We only re-invoke the provider when the set
-   * actually changes — without this debounce a steady "always one
-   * unreachable peer" state would call `decide()` on every tick.
+   * Whether a `down` verdict removes the peer when no {@link downing}
+   * provider is configured (#1426) — on by default.  Its price: under a real
+   * partition both sides remove each other and carry on, unless lease-majority
+   * or another strategy is configured.  Off, the opt-out, parks the peer
+   * instead; its price: a crashed node stays a member until a strategy,
+   * `Cluster.down` or `POST /cluster/down` removes it.  Read only when no
+   * provider is configured: a provider decides every removal.
    */
-  private lastDownedView: string | null = null;
+  private readonly failureDetectorAutoDown: boolean;
+  /**
+   * Whether a decision of {@link downing} that removes this node also runs the
+   * coordinated-shutdown pipeline, rather than only leaving (#1456) — see
+   * {@link applyDowningDecision}.
+   */
+  private readonly runCoordinatedShutdownWhenDown: boolean;
+  /**
+   * Peers parked with no provider and auto-down off — the opt-out — that this
+   * node has already logged its warning about, keyed like {@link members}.
+   *
+   * One warning per parking rather than one per tick: the verdict is `down`
+   * on every detection round until something removes the peer, and a line
+   * per round would bury the one an operator needs.  A key leaves when the
+   * peer is heard from again or leaves the map, so a peer that recovers and
+   * falls silent a second time is reported a second time.
+   */
+  private readonly parkedWithoutResolver = new Set<string>();
+  /**
+   * Peers that answered this node's heartbeat with a `membership-refused` —
+   * they hold this run as `removed` — keyed like {@link members} (#940).
+   *
+   * Such a peer still sends frames: an acknowledgment already in flight, a
+   * heartbeat queued while this node was stalled.  The peer is alive, but none
+   * of it is evidence that it will have this node back, so none of it returns
+   * the peer to `up`; the peer stays `unreachable` and this node's own downing
+   * provider decides, which is how a node the cluster removed comes to remove
+   * itself.  A key leaves with its member — a removal, a delete or a restart of
+   * the peer — or when the peer's own gossip lists this run as a member again
+   * ({@link withdrawRefusalOnGossip}).
+   */
+  private readonly refusedBy = new Set<string>();
+  /**
+   * The membership view the last applied downing decision was made on, so the
+   * same view is not decided twice — and forgotten the moment the view moves
+   * on, so a partition that recurs at the same addresses is decided again
+   * (#934).  See {@link AppliedDecision}.
+   */
+  private readonly appliedDecision = new AppliedDecision();
+  /**
+   * How long the view must hold still before {@link downing} is consulted
+   * (#839) — kept beside the window because the escalation log quotes it.
+   *
+   * Read once here rather than off `options` at each tick: the merge that
+   * layers explicit options over HOCON over the built-in defaults happens once,
+   * in `Cluster.join`, and a second read site would be a second answer.
+   */
+  private readonly stableAfterMs: number;
+  /**
+   * The stability window in front of {@link downing} (#839) — all of "may the
+   * resolver be asked yet", in a class of its own so each of its guards is
+   * reachable from a unit test with the clock supplied.
+   */
+  private readonly stabilityWindow: StabilityWindow;
 
   private constructor(system: ActorSystem, options: ClusterOptionsType) {
     this.system = system;
@@ -291,24 +565,58 @@ export class Cluster {
     // dial back, and a wildcard is not an address (#944).  `join` fills
     // `advertisedHost` in before constructing, so the `??` is for the private
     // constructor's other callers rather than a second policy.
+    //
+    // The port is the same story one axis over (#845): what goes in here is
+    // the port peers dial, which is the bound one unless the deployment
+    // published a different one.
     this.selfAddress = new NodeAddress(
       system.name,
       options.advertisedHost ?? resolveAdvertisedHost(options),
-      options.port,
+      options.advertisedPort ?? resolveAdvertisedPort(options),
       NodeAddress.mintIncarnation(),
     );
     this.selfRoles = new Set(options.roles ?? []);
+    this.selfAppVersion = options.appVersion;
     this.log = system.log.withSource(`cluster@${this.selfAddress}`);
+    this._shardingHealthCheckNames = readShardingHealthCheckNamesFromConfig(system.config);
     // The frame cap only reaches a transport this constructor builds; an
     // injected one was constructed with its own, and silently re-capping
     // someone else's transport would be a surprise.
-    // `options.host` is the *bind* target and may be a wildcard; `selfAddress`
-    // is the identity the transport announces in its handshake and keys peers
-    // on.  Passing both is what lets a container bind every interface and
-    // still tell its peers a single address to dial back (#944).
+    // `options.host` and `options.port` are the *bind* target — the host may
+    // be a wildcard and the port may be one nothing outside this container can
+    // reach; `selfAddress` is the identity the transport announces in its
+    // handshake and keys peers on.  Passing both pairs is what lets a
+    // container bind every interface on its own port and still tell its peers
+    // a single address to dial back (#944, #845).
+    // The decode ceilings come straight out of `system.config` rather than
+    // through `ClusterOptions`, and that is deliberate: what a JSON walker will
+    // descend is a serialization concern that every codec in the process shares
+    // (#880), not a per-cluster tunable, and threading it through the cluster
+    // options type would put it in `ClusterConfigDefaults` — a shape whose test
+    // asserts the exact object — for the sake of one call site.
+    // The association-lifecycle bounds ride along the same way (#846), and so
+    // does the dial's connect deadline (#1475): they are `ClusterOptionsType`
+    // fields so `actor-ts.remote.*` can reach them, and they reach the
+    // transport here rather than being re-read from config inside it — the
+    // transport is constructible without a `Config` at all, and a second read
+    // site would be a second precedence order.
     this.transport = options.transport
-      ?? new TcpTransport(this.selfAddress, this.log, null, options.maxFrameBytes, options.host);
-    // That `null` is the transport's TLS argument, and it is hard-coded: the
+      ?? new TcpTransport(this.selfAddress, this.log, {
+        tls: null,
+        maxFrameBytes: options.maxFrameBytes,
+        bindHost: options.host,
+        bindPort: options.port,
+        readConstraints: readReadConstraintsOptionsFromConfig(system.config),
+        handshakeTimeoutMs: options.handshakeTimeoutMs,
+        connectTimeoutMs: options.connectTimeoutMs,
+        outboundQueueSize: options.outboundQueueSize,
+        maxInboundConnections: options.maxInboundConnections,
+        incompleteFrameIdleMs: options.incompleteFrameIdleMs,
+      });
+    // An injected transport was built before this run's incarnation was
+    // minted, and cluster wire v2 requires it on every handshake (#823).
+    this.transport.adoptIdentity?.(this.selfAddress);
+    // That `tls: null` is written out rather than omitted, and it is hard-coded: the
     // transport this constructor builds is always plaintext until #941 wires
     // the option up.  An operator who set the HOCON flag asked for the
     // opposite and would otherwise get plaintext with no error, no log line
@@ -336,17 +644,57 @@ export class Cluster {
       ...defaultFailureDetectorOptions,
       ...(options.failureDetector ?? {}),
     };
-    this.failureDetector = new FailureDetector(
-      FailureDetectorOptions.create()
-        .withHeartbeatIntervalMs(fdOptions.heartbeatIntervalMs)
-        .withUnreachableAfterMs(fdOptions.unreachableAfterMs)
-        .withDownAfterMs(fdOptions.downAfterMs),
+    // `fdOptions` is passed whole even for the φ-accrual detector, which reads
+    // only its `heartbeatIntervalMs`: the cadence is the cluster's, and the
+    // heartbeat and detection ticks `_start` arms are both scheduled from
+    // `failureDetector.interval` whichever implementation answers it (#1142).
+    // The system's clock, not the wall clock: the heartbeat and detection ticks
+    // below are scheduled on `system.scheduler`, so under a `ManualScheduler`
+    // they are driven by virtual time — and a detector reading `Date.now()`
+    // would see a hundred of them arrive at the same instant (#1424).
+    this.failureDetector = createFailureDetector(
+      options.failureDetectorImplementation ?? DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION,
+      fdOptions,
+      options.phiAccrual,
+      this.system.clock,
     );
     this.gossipIntervalMs = options.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
     this.seedRetryIntervalMs = options.seedRetryIntervalMs ?? DEFAULT_SEED_RETRY_INTERVAL_MS;
     this.weaklyUpAfterMs = options.weaklyUpAfterMs ?? 0;
+    // Same `0` sentinel one line up: no timer, which is what an unset field
+    // means too (#842).
+    this.publishStatsIntervalMs = options.publishStatsIntervalMs ?? 0;
+    // And once more for the join deadline: `0` arms none, which is what an
+    // unset field means too (#1500).
+    this.shutdownAfterUnsuccessfulJoinMs = options.shutdownAfterUnsuccessfulJoinMs ?? 0;
     this.selfElection = options.selfElection ?? 'immediate';
+    this.minimumMembersBeforeUp = options.minimumMembersBeforeUp ?? DEFAULT_MINIMUM_MEMBERS_BEFORE_UP;
+    this.minimumMembersBeforeUpPerRole = options.minimumMembersBeforeUpPerRole ?? {};
     this.downing = options.downing ?? null;
+    // Beside `downing` because the two answer one question between them — who
+    // removes a peer the detector has given up on.  The pair is legal: with a
+    // provider configured the switch is inert, since the detector then only
+    // parks a peer and the provider decides (#929; `failureDetectionTick`).
+    this.failureDetectorAutoDown = options.failureDetectorAutoDown ?? DEFAULT_FAILURE_DETECTOR_AUTO_DOWN;
+    this.downSmallerIsland = options.downSmallerIsland ?? DEFAULT_DOWN_SMALLER_ISLAND;
+    this.runCoordinatedShutdownWhenDown =
+      options.runCoordinatedShutdownWhenDown ?? DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN;
+    // Validated here rather than in `ClusterOptionsValidator`, which is the
+    // shape the rest of `src/` uses for a nested options block: the detector
+    // and the φ block are each checked by their own validator in their own
+    // consumer's constructor (`FailureDetector`, `PhiAccrualFailureDetector`),
+    // and this block's consumer is `Cluster` itself (#839).
+    const splitBrainResolver: Partial<SplitBrainResolverOptionsType> =
+      options.splitBrainResolver ?? {};
+    new SplitBrainResolverOptionsValidator().validate(splitBrainResolver);
+    this.stableAfterMs = splitBrainResolver.stableAfterMs ?? DEFAULT_STABLE_AFTER_MS;
+    this._membershipSettleWindowMs = this.downing === null
+      ? fdOptions.downAfterMs
+      : Math.max(fdOptions.downAfterMs, this.stableAfterMs);
+    this.stabilityWindow = new StabilityWindow(
+      this.stableAfterMs,
+      splitBrainResolver.downAllWhenUnstable ?? DEFAULT_DOWN_ALL_WHEN_UNSTABLE,
+    );
     this.tombstoneTtlMs = options.tombstoneTtlMs ?? DEFAULT_TOMBSTONE_TTL_MS;
     this.tombstonePruneIntervalMs = options.tombstonePruneIntervalMs ?? DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS;
     // `0` is not "no floor" but "derive one", so it falls through exactly like
@@ -360,6 +708,37 @@ export class Cluster {
     this.maxVersionSkewMs = options.maxVersionSkewMs ?? DEFAULT_MAX_VERSION_SKEW_MS;
     this.maxMembers = options.maxMembers ?? DEFAULT_MAX_MEMBERS;
     this.maxTombstones = options.maxTombstones ?? DEFAULT_MAX_TOMBSTONES;
+    this._envelopeTrust = new EnvelopeTrust(
+      system,
+      this.log,
+      options.untrustedMode ?? DEFAULT_UNTRUSTED_MODE,
+      options.trustedSelectionPaths ?? [],
+    );
+    this._remoteWatcher = new RemoteWatcher(this, this.log);
+    this.configurationCompatibilityEnforce =
+      options.configurationCompatibilityEnforce ?? DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE;
+    this.configurationCheckedPaths = new Set(
+      options.configurationCompatibilityCheckedPaths
+      ?? DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS,
+    );
+    // Published here, from the resolved options, rather than read back out of
+    // `system.config` anywhere later: the whole point is the EFFECTIVE value,
+    // which is only assembled once — here — after the builder has been layered
+    // over HOCON over the built-in defaults (#844).  The three the framework
+    // can answer for itself; anything else arrives through
+    // `publishConfigurationFact`.
+    this.publishConfigurationFact(
+      ConfigKeys.remote.maxFrameBytes,
+      String(options.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES),
+    );
+    this.publishConfigurationFact(
+      ConfigKeys.cluster.failureDetector.heartbeatInterval,
+      String(fdOptions.heartbeatIntervalMs),
+    );
+    this.publishConfigurationFact(
+      ConfigKeys.cluster.tombstone.timeToLive,
+      String(this.tombstoneTtlMs),
+    );
   }
 
   /**
@@ -375,6 +754,20 @@ export class Cluster {
    * asking `system.cluster` must not be told there is none.  A failed
    * start puts the previous value back rather than leaving a cluster
    * that never bound its transport reachable system-wide.
+   *
+   * **A join has no deadline unless it is given one** (#1500).  A node whose
+   * seeds never answer goes on dialling them.  With
+   * {@link ClusterOptionsType.shutdownAfterUnsuccessfulJoinMs} — in HOCON
+   * `actor-ts.cluster.shutdown-after-unsuccessful-join` — it gives up once
+   * that long has passed and nothing can promote it: one warning naming the
+   * key and the seeds, `leave()`, then the coordinated-shutdown pipeline with
+   * `ClusterJoinUnsuccessfulReason`.  By
+   * {@link ClusterOptionsType.selfElection} policy: `'immediate'` with a
+   * non-empty seed list and `'never'` give up; a deferred policy does not,
+   * because its pending timer holds the verdict and then forms a cluster of
+   * one.  A node `weaklyUpAfterMs` moved on counts as not joined, and one
+   * that `minimumMembersBeforeUp` holds with peers present keeps waiting,
+   * since the members it lacks can still arrive.
    */
   static async join(
     system: ActorSystem,
@@ -390,6 +783,7 @@ export class Cluster {
     const resolvedOptions: ClusterOptionsType = {
       ...merged,
       advertisedHost: resolveAdvertisedHost(merged),
+      advertisedPort: resolveAdvertisedPort(merged),
     };
     new ClusterOptionsValidator().validate(resolvedOptions);
     if (advertisedHostWasDerived(merged)) reportDerivedAdvertisedHost(system, resolvedOptions);
@@ -412,7 +806,16 @@ export class Cluster {
     // routing to it until the failure detector gave up (#549).  Registered
     // after a successful `_start` on purpose — a cluster that never bound its
     // transport has nothing to leave.
-    system.extension(CoordinatedShutdownId).addFrameworkTask(
+    const coordinatedShutdown = system.extension(CoordinatedShutdownId);
+    // The phase before it hands this node's shards off, which `leave()` would
+    // do anyway; as a task of its own it runs under its own phase timeout, and
+    // the shards are gone before the leave is even begun (#1465).
+    coordinatedShutdown.addFrameworkTask(
+      Phases.ClusterShardingShutdownRegion,
+      SHARDING_SHUTDOWN_TASK_NAME,
+      () => cluster.shutdownSharding(),
+    );
+    coordinatedShutdown.addFrameworkTask(
       Phases.ClusterLeave,
       CLUSTER_LEAVE_TASK_NAME,
       () => cluster.leave(),
@@ -447,9 +850,10 @@ export class Cluster {
   }
 
   /**
-   * The cluster's sharding facade.  Lazily constructs (and memoises) a
-   * single `ClusterSharding` instance per `ActorSystem` so callers can
-   * start regions inline:
+   * The cluster's sharding facade.  Lazily constructs (and memoises) one
+   * `ClusterSharding` instance per cluster incarnation of the `ActorSystem` —
+   * a re-join builds a fresh one, and {@link leave} stops what the old one
+   * started (#1465) — so callers can start regions inline:
    *
    * ```ts
    * const region = cluster.sharding.start('cart', CartActor, {
@@ -481,16 +885,50 @@ export class Cluster {
   }
 
   /**
+   * The cluster-wide event stream — the counterpart to `system.eventStream`,
+   * which is one `ActorSystem` and therefore one node.  A publish here reaches
+   * subscribers on every node; a publish there never leaves the process.
+   *
+   * ```ts
+   * cluster.eventStream.subscribe(ref, 'order-placed');
+   * cluster.eventStream.publish({ kind: 'order-placed', sku: 'XYZ-1' });
+   * ```
+   *
+   * **Not to be confused with {@link Cluster.subscribe} below**, which is the
+   * narrower and older of the two: it takes a callback rather than a ref,
+   * carries only membership events, and replays the current membership on
+   * subscribe.  This one is a general bus and replays nothing.
+   *
+   * Equivalent to `ClusterEventStream.get(cluster.system, cluster)`.
+   */
+  get eventStream(): ClusterEventStream {
+    return ClusterEventStream.get(this.system, this);
+  }
+
+  /**
    * Subscribe to membership events.  The listener is immediately replayed the
    * membership that already exists, so a late subscriber still sees the world
    * it joined; `options.replayMode` chooses the form — see
    * {@link ClusterSubscriptionReplayMode}.
+   *
+   * Subscribing and unsubscribing from inside a listener are both safe
+   * (#1294).  An event goes to the listeners that were subscribed when it was
+   * emitted and still are when their turn comes:
+   *
+   * - a listener subscribed mid-dispatch starts with the next event, not the
+   *   one in flight — for a membership change its replay already says the
+   *   same thing, because the member map moves before the announcement goes
+   *   out;
+   * - a listener whose unsubscribe has run is not called again, not even with
+   *   the event in flight;
+   * - and neither shifts any other listener's delivery.
    */
   subscribe(
     listener: (event: ClusterEvent) => void,
     options?: { readonly replayMode?: ClusterSubscriptionReplayMode },
   ): () => void {
-    this._listeners.push(listener);
+    const registration: ClusterListenerRegistration = { listener, subscribed: true };
+    this._listeners.push(registration);
     // A match on this call's own argument rather than on an inbound message,
     // so the arms are the exempt kind; they still delegate, because the two
     // replays are two different shapes and reading them side by side is the
@@ -500,7 +938,8 @@ export class Cluster {
       .with('snapshot', () => this.replayAsSnapshot(listener))
       .exhaustive();
     return () => {
-      const index = this._listeners.indexOf(listener);
+      registration.subscribed = false;
+      const index = this._listeners.indexOf(registration);
       if (index >= 0) this._listeners.splice(index, 1);
     };
   }
@@ -551,7 +990,7 @@ export class Cluster {
     try { listener(event); } catch (e) { this.log.warn('listener threw during replay', e); }
   }
 
-  private _listeners: Array<(event: ClusterEvent) => void> = [];
+  private _listeners: ClusterListenerRegistration[] = [];
 
   /**
    * Current snapshot of known members.  `removed` entries are kept
@@ -627,16 +1066,30 @@ export class Cluster {
   }
 
   /**
+   * The application version this node states, fixed for the life of this
+   * incarnation (#843) — `undefined` when the deployment set none, which keeps
+   * the field off every frame.  Seeds the self member and is stamped onto
+   * every self record that leaves ({@link memberDataForGossip}); see
+   * {@link adoptAppVersion} for why it rides the overlay lane.
+   */
+  private readonly selfAppVersion: string | undefined;
+
+  /**
    * The gossiped form of a member — the self record leaves stamped with the
-   * current identity claims, whatever version it carries.  See
-   * {@link publishStorageIdentity} for why this is a stamp and not a stored
-   * member update.
+   * current identity claims, configuration facts and app version, whatever
+   * version it carries.  See {@link publishStorageIdentity} for why this is a
+   * stamp and not a stored member update.
    */
   private memberDataForGossip(member: Member): MemberData {
     if (!member.address.equals(this.selfAddress)) return member.toData();
     const identities = this.selfStorageIdentitiesSnapshot();
-    if (identities === undefined) return member.toData();
-    return { ...member.toData(), storageIdentities: identities };
+    const facts = this.selfConfigurationFactsSnapshot();
+    const data = member.toData();
+    const withIdentities = identities === undefined
+      ? data
+      : { ...data, storageIdentities: identities };
+    const withFacts = facts === undefined ? withIdentities : { ...withIdentities, configurationFacts: facts };
+    return this.selfAppVersion === undefined ? withFacts : { ...withFacts, appVersion: this.selfAppVersion };
   }
 
   /**
@@ -693,6 +1146,386 @@ export class Cluster {
     }
   }
 
+  /**
+   * THIS node's published configuration facts — the effective values
+   * {@link publishConfigurationFact} gossips on the self member and
+   * {@link checkConfigurationAgreement} compares peers against (#844).
+   *
+   * A `Map` rather than the plain object {@link selfStorageIdentities} is,
+   * because the keys here are not three names this file wrote down: a caller
+   * names them, and a plain object would put `__proto__` and every accessor on
+   * `Object.prototype` in reach of a write and of a read that finds a method
+   * where it expected a claim.  The wire record is materialised from it in
+   * {@link selfConfigurationFactsSnapshot}, where the same care applies once
+   * rather than at every call site.
+   */
+  private readonly selfConfigurationFacts = new Map<string, string>();
+  /**
+   * One report per (fact, peer) per node lifetime, bounded by
+   * {@link MAX_REPORTED_CONFIGURATION_MISMATCHES} because both halves of the
+   * key come off the wire.
+   */
+  private readonly configurationMismatchReported = new Set<string>();
+
+  /**
+   * Publish one of this node's effective settings for its peers to compare
+   * against (#844).
+   *
+   * Deliberately NOT a version-bumped member update, for the reason
+   * {@link publishStorageIdentity} tells at length: a self bump for an overlay
+   * claim races the leader's `joining → up` promotion to the same
+   * `version + 1`, and `mergeMember` has no equal-version tie-break, so the
+   * two sides wedge permanently.  The facts ride the same stamped overlay —
+   * {@link memberDataForGossip} puts them on every self record this node
+   * sends, receivers take them version-neutrally
+   * ({@link adoptConfigurationFacts}), and no membership event fires because
+   * nothing about the topology changed.
+   *
+   * **Callable at any point in a node's life, and that is the whole point.**
+   * The three facts the framework itself publishes are resolved in the
+   * constructor, before a single frame moves, but an application's own value
+   * is often resolved later — a shard count read from a migration, a partition
+   * count a broker hands back.  A call after every peer's record has settled
+   * still reaches every peer's comparison, because
+   * {@link adoptConfigurationFacts} takes a member's restatement of its own
+   * facts and not only its first statement.  It did not, until #844's repair:
+   * an overlay claim never bumps the member version, so every frame after the
+   * first took a branch that dropped it.
+   *
+   * `name` is by convention the HOCON path whose effective value this is; the
+   * value is stringified by the caller, because what is compared is equality
+   * and what is printed is a diagnostic, and both want one representation.
+   *
+   * Silently dropped when the name is not in `checked-paths`: that list is an
+   * allow-list of what **leaves this node**, so a fact nobody asked for is
+   * never gossiped rather than gossiped and ignored.  Dropped too when the
+   * name or the value would not survive the receive side's caps — publishing
+   * something every peer discards is a check that reports nothing.
+   */
+  publishConfigurationFact(name: string, value: string): void {
+    if (!this.configurationCheckedPaths.has(name)) return;
+    if (name.length > MAX_CONFIGURATION_FACT_NAME_LENGTH) return;
+    if (!CONFIGURATION_FACT_NAME_PATTERN.test(name)) return;
+    if (value.length === 0 || value.length > MAX_CONFIGURATION_FACT_VALUE_LENGTH) return;
+    if (this.selfConfigurationFacts.size >= MAX_CONFIGURATION_FACTS
+      && !this.selfConfigurationFacts.has(name)) {
+      return;
+    }
+    this.selfConfigurationFacts.set(name, value);
+  }
+
+  /**
+   * Take configuration claims off a record we otherwise ignore (equal or older
+   * version), version-neutrally so taking them cannot advance the merge clock.
+   *
+   * **Who may change them, not whether they have been seen before** — and that
+   * distinction is the #844 repair.  This began as a copy of
+   * {@link adoptStorageIdentities}, which is fill-only: a slot it has already
+   * written is never written again.  That reasoning is sound one lane over,
+   * and its JSDoc says why — a store identity is resolved once at construction,
+   * so a *genuinely* changed one arrives with a new incarnation's higher
+   * version and takes the full merge path, which makes any second claim at an
+   * unchanged version either a stale relay or a hostile one.
+   *
+   * It does not hold for these.  {@link publishConfigurationFact} is a public
+   * runtime API whose purpose is to state a value after the member record has
+   * settled, and an overlay claim deliberately does not bump the version — so
+   * under fill-only every publication after a peer's first frame was dropped
+   * on every peer, silently, and the whole check reduced to whatever each node
+   * happened to have resolved in its constructor.
+   *
+   * What the fill-only guard was actually protecting is worth keeping, and is
+   * kept: gossip is epidemic, so a record about B can reach this node from C
+   * carrying an arbitrarily old copy of B's facts, and letting one overwrite
+   * B's own statement would flap the comparison against whichever copy arrived
+   * last.  The rule that separates the two cases needs no new state: **only
+   * the member itself may restate its facts; anyone may relay them into an
+   * empty slot.**  `from` is the connection the frame arrived on, which is the
+   * same anchor {@link maySpeakFor}'s second rule already rests the whole
+   * merge path on — a payload field is the one thing an attacker fully
+   * controls, a connection is not.
+   *
+   * Three shapes were weighed against that one:
+   *
+   * - **A separate clock for the overlay**, bumped on publish and compared
+   *   independently of the member version.  It converges through relays, which
+   *   this does not, and costs a wire field that is a peer-supplied number
+   *   deciding whether a claim wins — so it would need its own plausibility
+   *   cap, or a peer pins its claim forever at `Infinity`.  The convergence it
+   *   buys is not needed: the subject's own frame is the freshest statement of
+   *   its own facts by construction, and every member gossips to every other.
+   * - **Bumping the member version on publish.**  Still refused, and the
+   *   reason has not weakened: {@link publishStorageIdentity} records that a
+   *   self bump races the leader's `joining → up` promotion to the same
+   *   `version + 1`, which `mergeMember` has no tie-break for, and the two
+   *   sides then wedge forever.  A runtime publish makes that race *more*
+   *   likely, not less, because it can happen at any moment rather than only
+   *   at startup.
+   * - **Comparing without adopting**, so a divergence is reported even where
+   *   the stored copy is left alone.  Refused because
+   *   {@link divergesInConfiguration} reads the stored record: reporting off a
+   *   copy this node did not store would print an `error` saying it has
+   *   stopped placing work on a peer that {@link placementCandidates} still
+   *   returns.  The report and the enforcement have to read the same record.
+   *
+   * An unchanged restatement — the steady state, since every round carries the
+   * whole member map — is not a write.  Without that check the member entry
+   * would be replaced once per round per peer for no change at all.
+   *
+   * It re-reads the member from the map rather than trusting `existing`,
+   * because the identity overlay one lane over may already have replaced it in
+   * this same merge — writing a stale `existing` back would drop whatever that
+   * one just filled in.
+   *
+   * Residual, and self-healing: the higher-version path merges a record
+   * wholesale from whichever peer sent it, so a relay's older copy of B's
+   * facts can land there on a status change.  B's own next frame restates the
+   * current ones and this method now takes them, which is the half that did
+   * not exist before.
+   */
+  private adoptConfigurationFacts(from: NodeAddress, existing: Member, incoming: Member): void {
+    if (incoming.configurationFacts === undefined) return;
+    if (incoming.address.equals(this.selfAddress)) return;
+    const current = this.members.get(incoming.address.toString()) ?? existing;
+    const held = current.configurationFacts;
+    if (held !== undefined) {
+      if (!incoming.address.equals(from)) return;
+      if (sameConfigurationFacts(held, incoming.configurationFacts)) return;
+    }
+    this.setMember(current.withConfigurationFacts(incoming.configurationFacts));
+    this.checkConfigurationAgreement(incoming);
+  }
+
+  /**
+   * Take a member's application version off a record we otherwise ignore
+   * (equal or older version), version-neutrally (#843).  **The label is one
+   * run's statement: the member's own frame says what it is — a label, or
+   * none — and a relay may only fill an empty slot, with a label for the run
+   * that slot holds.**
+   *
+   * **Why the run, and not just the address.**  A restart is a new
+   * incarnation at the same `host:port`, so both runs' records share a map key
+   * and `NodeAddress.equals` cannot tell them apart.  A peer that has not yet
+   * heard of the restart still holds the previous run's record — live, or the
+   * tombstone its leave left — and gossips it at the previous run's lower
+   * version, which lands here on the new run's entry.  Filling from it showed
+   * a node rolled back onto a release that states no label, or deployed
+   * without `APP_VERSION`, cluster-wide with the label of the run before it,
+   * for the whole of the new run.  So a record naming another run is no
+   * statement about this one, whoever sends it.  A relay has to name the
+   * held record's run to fill its slot; one that names none — relayed through
+   * a node that predates the incarnation field (#940) — leaves the slot to the
+   * subject's own frame, because nothing says whose label it carries.
+   *
+   * **Why the subject's silence counts.**  Within one run the first copy to
+   * fill a slot need not be the subject's, and a node that states no label
+   * sends no field, so a relay's invention used to stand for the rest of the
+   * run.  The subject's own frame is the freshest statement of its own label by
+   * construction — it is stamped from what the node states
+   * ({@link memberDataForGossip}) — so it is taken as it is, empty included.
+   * A relay's record without a label clears nothing: a node that predates the
+   * field sends every record that way.  What this cannot stop is a relay
+   * filling the slot again after the subject's frame has emptied it; the
+   * subject's next frame takes it back, and a relay able to do that is an
+   * active member that can rewrite the whole record at a higher version
+   * anyway.
+   *
+   * **Why the overlay lane, for a label that never changes within one
+   * incarnation.**  A plain record field would be enough once every node knows
+   * it, and not before: a node that predates the field drops it from every
+   * record it relays and every record it re-versions — a promotion, an
+   * `unreachable` mark — and such a node is in the cluster for exactly the
+   * window the label exists for, the first rolling update that ships it.
+   * {@link mergeMember} stores a first sighting as received and replaces
+   * wholesale on a higher version, so every member first learned through, or
+   * re-versioned by, a node of the previous release would show no label on
+   * every peer until its next status change.  With this, the subject's own
+   * next frame fills the slot.
+   *
+   * **Why not fill-only**, the way {@link adoptStorageIdentities} is: that is
+   * the relay half of the rule above, and alone it keeps a relay's invention
+   * for the rest of the run.  Keying the subject's authority on the connection
+   * the frame arrived on — the anchor {@link maySpeakFor} rests the merge on —
+   * is what lets it correct the slot without letting a stale or hostile relay
+   * overwrite what the subject said.
+   *
+   * **Never through {@link publishConfigurationFact}.**  Checked paths are
+   * *compared*, and with `enforce = on` a peer whose value differs is barred
+   * from {@link placementCandidates} — which every rolling update would do to
+   * half the cluster by definition.  The label is shown, never compared.
+   *
+   * No membership event fires, because nothing about the topology changed,
+   * and an unchanged restatement — the steady state — is not a write.  It
+   * re-reads the member from the map because the two overlays before it may
+   * already have replaced the entry in this same merge.
+   */
+  private adoptAppVersion(from: NodeAddress, existing: Member, incoming: Member): void {
+    if (incoming.address.equals(this.selfAddress)) return;
+    const current = this.members.get(incoming.address.toString()) ?? existing;
+    const heldRun = current.address.incarnation;
+    const statedRun = incoming.address.incarnation;
+    if (heldRun !== undefined && statedRun !== undefined && heldRun !== statedRun) return;
+    if (incoming.address.equals(from)) {
+      if (current.appVersion === incoming.appVersion) return;
+      this.setMember(current.withAppVersion(incoming.appVersion));
+      return;
+    }
+    if (incoming.appVersion === undefined || current.appVersion !== undefined) return;
+    if (heldRun === undefined || statedRun === undefined) return;
+    this.setMember(current.withAppVersion(incoming.appVersion));
+  }
+
+  /**
+   * The wire form of this node's facts, or `undefined` when it publishes none
+   * — which is what an empty `checked-paths` produces, and what keeps the
+   * field off the gossip frame entirely rather than shipping an empty object.
+   */
+  private selfConfigurationFactsSnapshot(): ConfigurationFactsData | undefined {
+    if (this.selfConfigurationFacts.size === 0) return undefined;
+    const snapshot: Record<string, string> = {};
+    for (const [name, value] of this.selfConfigurationFacts) {
+      // `defineProperty`, not assignment, for the reason `Member`'s sanitizer
+      // gives: the names are caller-supplied, and `[[Set]]` walks the
+      // prototype chain.
+      Object.defineProperty(snapshot, name, {
+        value, enumerable: true, writable: true, configurable: true,
+      });
+    }
+    return snapshot;
+  }
+
+  /**
+   * Two members with different effective values for a setting the deployment
+   * asked to be checked are running a cluster that only looks homogeneous
+   * (#844).  The seeded case is the wire cap: a frame over a peer's lower
+   * limit kills the association, and the sender is never told why.
+   *
+   * Only facts **both** sides state are compared, so absence stays silent —
+   * a peer that predates the field, one whose `checked-paths` is empty, and
+   * one that simply publishes something else all say nothing rather than
+   * something wrong.
+   *
+   * Reported once per fact per peer, at `warn` and at `error` when enforcing.
+   * The pair rather than the fact alone, because the second diverging peer is
+   * the interesting one and a report naming no address cannot be acted on;
+   * bounded all the same, since both halves come off the wire.
+   *
+   * Reads go through `Object.hasOwn`: `claims` is a plain object and a fact
+   * legitimately named `tostring` under
+   * {@link CONFIGURATION_FACT_NAME_PATTERN} would otherwise be answered by
+   * `Object.prototype` rather than by the peer.
+   */
+  private checkConfigurationAgreement(member: Member): void {
+    if (member.address.equals(this.selfAddress)) return;
+    const claims = member.configurationFacts;
+    if (claims === undefined) return;
+    for (const [name, ours] of this.selfConfigurationFacts) {
+      if (!Object.hasOwn(claims, name)) continue;
+      const theirs = claims[name];
+      if (theirs === undefined || theirs === ours) continue;
+      const latch = `${name}@${member.address}`;
+      if (this.configurationMismatchReported.has(latch)) continue;
+      if (this.configurationMismatchReported.size >= MAX_REPORTED_CONFIGURATION_MISMATCHES) continue;
+      this.configurationMismatchReported.add(latch);
+      this.reportConfigurationMismatch(member, name, ours, theirs);
+    }
+  }
+
+  /**
+   * One divergence, said once, in the two places an operator looks: the log
+   * and the event stream.  Both carry **both** values — "the wire cap
+   * disagrees" without them sends the reader back to the two config files the
+   * message was supposed to save them opening.
+   *
+   * `error` when enforcing and `warn` otherwise, because the two are different
+   * events: enforcing means this node has already stopped placing work on that
+   * peer, which is a capacity change somebody has to know about, while warning
+   * means nothing has changed yet.
+   */
+  private reportConfigurationMismatch(
+    member: Member,
+    fact: string,
+    ours: string,
+    theirs: string,
+  ): void {
+    const keys = ConfigKeys.cluster.configurationCompatibilityCheck;
+    const enforcing = this.configurationCompatibilityEnforce;
+    const consequence = enforcing
+      ? 'Enforcement is on, so this node has stopped placing work on that peer until the '
+        + 'values agree.'
+      : `Nothing has changed as a result: set ${keys.enforce} = on to bar a diverging peer `
+        + "from this node's placement candidates.";
+    const message = `configuration: ${fact} differs between this node (${ours}) and `
+      + `${member.address} (${theirs}) — ${keys.checkedPaths} asks for the two to agree (#844). `
+      + 'What is compared is the EFFECTIVE value, so check the code that builds the options as '
+      + `well as the config file. ${consequence}`;
+    if (enforcing) this.log.error(message); else this.log.warn(message);
+    this.emit(new MemberConfigurationMismatch(member, fact, ours, theirs, enforcing));
+  }
+
+  /**
+   * Whether any fact both this node and `member` publish disagrees — the
+   * predicate {@link placementCandidates} filters on while enforcing (#844).
+   *
+   * Derived from the member record on every call rather than remembered in a
+   * set, so it cannot go stale, cannot leak with the member map, and stays
+   * correct for peers whose divergence was past
+   * {@link MAX_REPORTED_CONFIGURATION_MISMATCHES} to report.  The record now
+   * carries a peer's *latest* statement rather than only its first
+   * ({@link adoptConfigurationFacts}), which is what makes a divergence
+   * introduced at runtime — or repaired at runtime — reach this at all.
+   *
+   * A second, independent copy of {@link checkConfigurationAgreement}'s loop,
+   * and it needs both of that one's guards for its own reasons: absence has to
+   * stay silent or every rolling deploy bars half the cluster, and the read
+   * has to go through `Object.hasOwn` or a fact legitimately named
+   * `constructor` is answered by `Object.prototype` and bars every peer that
+   * does not publish it.
+   */
+  private divergesInConfiguration(member: Member): boolean {
+    const claims = member.configurationFacts;
+    if (claims === undefined) return false;
+    for (const [name, ours] of this.selfConfigurationFacts) {
+      if (!Object.hasOwn(claims, name)) continue;
+      const theirs = claims[name];
+      if (theirs !== undefined && theirs !== ours) return true;
+    }
+    return false;
+  }
+
+  /**
+   * The up-members this node is willing to put work on — {@link upMembers}
+   * minus, while
+   * `actor-ts.cluster.configuration-compatibility-check.enforce` is on, any
+   * peer whose checked configuration disagrees with this node's (#844).
+   *
+   * A **local send decision**, and only ever that.  This node knows only what
+   * its peers have gossiped, so the set is asymmetric by construction: with A
+   * and B agreeing and C diverging, C excludes A and B while they exclude only
+   * C.  Feeding that into anything *elected* — a singleton's host, a shard's
+   * home — produces two winners, which is the split-brain the check exists to
+   * warn about, arrived at by a different road.  So `ClusterRouter` filters
+   * its routees on this and `ClusterSingletonManager` and `ShardCoordinator`
+   * deliberately do not: the singleton manager reads {@link upMembers}, and
+   * the coordinator asks each node's record in {@link getMembers} whether
+   * its status is `up` — the same set, answered per node.
+   *
+   * Self is always a candidate: a node cannot usefully refuse to place work on
+   * itself, and the peer that disagrees is the one making the same judgement
+   * in the other direction.
+   */
+  placementCandidates(): Member[] {
+    if (!this.configurationCompatibilityEnforce) return this.upMembers();
+    return this.upMembers().filter(
+      (member) => member.address.equals(this.selfAddress) || !this.divergesInConfiguration(member),
+    );
+  }
+
+  /** {@link placementCandidates}, narrowed to members carrying `role`. */
+  placementCandidatesWithRole(role: string): Member[] {
+    return this.placementCandidates().filter((member) => member.hasRole(role));
+  }
+
   /** Members in the `up` state, ordered by address — the "active set". */
   upMembers(): Member[] {
     return Array.from(this.members.values())
@@ -700,7 +1533,7 @@ export class Cluster {
       .sort((a, b) => a.address.compareTo(b.address));
   }
 
-  /** Reachable members (up + joining + leaving). */
+  /** Reachable members (up + weakly-up + joining + leaving), as {@link Member.isReachable} counts them. */
   reachableMembers(): Member[] {
     return Array.from(this.members.values()).filter(member => member.isReachable());
   }
@@ -741,10 +1574,31 @@ export class Cluster {
    * `ClusterReadyTimeoutError` when the deadline fires first.  Without
    * `timeoutMs` it waits indefinitely, like `ActorSystem.whenTerminated()` —
    * see {@link ClusterReadinessOptions.timeoutMs} for why no default
-   * deadline exists at this layer.
+   * deadline exists at this layer.  The one other deadline it answers to is
+   * the join's own: when `shutdown-after-unsuccessful-join` gives the join
+   * up, the wait rejects at once with the same error type (#1500).
    */
   awaitReady(options?: ClusterReadinessOptions): Promise<void> {
     return awaitClusterReady(this, options);
+  }
+
+  /**
+   * @internal Hear about this node giving its join up (#1500) — at once, when
+   * it already has — until the returned function is called.
+   *
+   * The readiness wait is the consumer.  A node that gave up is never going to
+   * be ready, so a wait that ran on to its own deadline would report the wrong
+   * deadline, after the system it waited on was already gone — and a
+   * `Cluster.bootstrap` whose wait outlived the give-up hung that long before
+   * rejecting.  A listener is called at most once and dropped after it.
+   */
+  _onJoinGivenUp(listener: (notice: JoinGiveUpNotice) => void): () => void {
+    if (this.joinGivenUp !== null) {
+      listener(this.joinGivenUp);
+      return () => {};
+    }
+    this.joinGiveUpListeners.add(listener);
+    return () => { this.joinGiveUpListeners.delete(listener); };
   }
 
   /**
@@ -791,16 +1645,140 @@ export class Cluster {
    * single chokepoint where every cross-node message leaves, so hooking
    * the encode step once covers all paths (sharding, pub-sub, singleton,
    * direct remote-ref).  Receiving nodes decode in `onEnvelope`.
+   *
+   * Returns `false` when {@link mayAddress} refused the destination, `true`
+   * when the envelope was handed to the transport — which is still a
+   * best-effort send, not a delivery.
    */
-  _sendEnvelope(to: NodeAddress, env: EnvelopeMessage): void {
+  _sendEnvelope(to: NodeAddress, env: EnvelopeMessage): boolean {
+    if (!this.mayAddress(to, env.kind)) return false;
     const encoded: EnvelopeMessage = { ...env, body: encodeRefs(env.body, this) };
     this.transport.send(to, encoded);
+    return true;
   }
 
   /** Register a handler for a specific wire-message discriminator. */
+  /**
+   * @internal Put one frame on the transport as-is.  For the core protocol's
+   * own extension points — remote death watch sends its three kinds through
+   * here — not for user payloads, which go through `_sendEnvelope` so that
+   * embedded refs are rewritten.
+   *
+   * Returns `false` when {@link mayAddress} refused the destination, so a
+   * caller that keeps state for an answer — remote death watch — can tell a
+   * frame that will never leave from one that is merely in flight.
+   */
+  _sendWire(to: NodeAddress, message: WireMessage): boolean {
+    if (!this.mayAddress(to, message.kind)) return false;
+    this.transport.send(to, message);
+    return true;
+  }
+
+  /**
+   * Whether a frame may leave for `to` through {@link _sendEnvelope} or
+   * {@link _sendWire} (#936).
+   *
+   * Every address these two are handed can come from a peer: a ref marker in
+   * an envelope body decodes to a `RemoteActorRef` for whatever node it names,
+   * the receptionist and pub-sub rebuild nodes out of gossip, and remote death
+   * watch sends a `watch` frame to the node of any ref an actor watches.  The
+   * transport dials whatever it is given, so an actor answering a decoded
+   * `replyTo` — the idiom every handler uses — opened a connection to an
+   * address of the sender's choosing and wrote a frame to it: a cloud metadata
+   * endpoint, an internal admin port.
+   *
+   * Two destinations are allowed:
+   *
+   * - **A member that is not a tombstone.**  Every legitimate envelope goes to
+   *   one, and a member's address came through the merge rules rather than out
+   *   of a message body.  A tombstone is a node that has left, so nothing
+   *   should be sent to it — and it would otherwise be the one kind of member a
+   *   stranger can mint by gossiping a `removed` record about an address.
+   * - **A node the transport already holds a connection to**, acked or still
+   *   dialling ({@link Transport.holdsConnectionTo}).  Sending over an existing
+   *   connection dials nothing, and it covers two sends to a node this one has
+   *   not admitted yet: the reply to a member that learnt of this node first —
+   *   during a join that is the usual order — and a `tell` to a seed straight
+   *   after `Cluster.join` resolves, which `TcpTransport` queues on the
+   *   connection the join opened until its handshake lands.  `peers()` lists
+   *   acked connections only, so asking it dropped that `tell`.
+   *
+   * The gate is here rather than inside `Transport.send` on purpose: the
+   * transport has no view of membership, and the core protocol has to dial
+   * non-members — seeds while joining, a joiner the seed has not admitted yet.
+   * Those sends go to `transport.send` directly and are not affected.
+   *
+   * A refused frame is dropped, as a frame to a node that cannot be reached
+   * is, and reported by {@link reportOutboundRefusal}.
+   */
+  private mayAddress(to: NodeAddress, kind: string): boolean {
+    const member = this.members.get(to.toString());
+    if (member !== undefined && member.status !== 'removed') return true;
+    if (holdsConnectionTo(this.transport, to)) return true;
+    this.reportOutboundRefusal(to, kind);
+    return false;
+  }
+
+  /**
+   * Count a refused send, and fold it into at most one WARN per
+   * {@link OUTBOUND_REFUSAL_REPORT_INTERVAL_MS}.
+   *
+   * The counter carries the signal and the log is rate-limited, as for inbound
+   * envelope refusals: a peer can make every message it sends carry a hostile
+   * ref, and one line per refusal would let it write this node's log at its
+   * own rate.  The counter is labelled by frame family only — `envelope` or
+   * `wire` — because the destination is exactly the unbounded value a label
+   * must not be.  The line names the most recent destination, escaped, since
+   * it may be a stranger's choice; the commonest one is a node that has just
+   * left.
+   *
+   * The interval is measured on `system.clock`, not the wall clock, so it
+   * follows whatever scheduler the system runs on.  Under a `ManualScheduler`
+   * the first refusal is still logged — the last-report mark starts at
+   * negative infinity, not zero, and virtual time may well start at zero —
+   * and later ones fold, counted, into the next line once the test advances
+   * the clock past the interval.  A test that never advances it sees one line
+   * and the counter, which is the honest reading of "nothing has elapsed".
+   * `EnvelopeTrust.report` folds the same way on the wall clock; it is a
+   * counted entry of the wall-clock ratchet (#1424) and moves with the rest.
+   */
+  private reportOutboundRefusal(to: NodeAddress, kind: string): void {
+    const frame = kind === 'envelope' ? 'envelope' : 'wire';
+    metricsOf(this.system).counter(
+      'cluster_outbound_refusals_total', { frame },
+      {
+        help: 'Cumulative count of frames this node refused to send because the destination '
+          + 'was neither a cluster member nor a node this one already holds a connection to.',
+      },
+    ).inc();
+    this.outboundRefusalsSuppressed += 1;
+    const now = this.system.clock.now();
+    if (now - this.lastOutboundRefusalReportAt < OUTBOUND_REFUSAL_REPORT_INTERVAL_MS) return;
+    this.lastOutboundRefusalReportAt = now;
+    const count = this.outboundRefusalsSuppressed;
+    this.outboundRefusalsSuppressed = 0;
+    this.log.warn(
+      `refused to send ${count} frame(s) to an address that is neither a member nor held by an open connection `
+      + `— most recently ${sanitizeWireKindForLog(kind)} to ${sanitizeNodeAddressForLog(to)}`,
+    );
+  }
+
   _onWire(kind: string, handler: (message: WireMessage, from: NodeAddress) => void): () => void {
     this.wireHandlers.set(kind, handler);
     return () => this.wireHandlers.delete(kind);
+  }
+
+  /**
+   * @internal The peers this node has parked past `down-after` because no
+   * downing provider is configured and `failure-detector.auto-down` is off,
+   * keyed like the member map (#1426).  Read live by the `cluster-transport`
+   * readiness check, which expects none of them: nothing will remove a parked
+   * peer, so a survivor that waited for it would stay out of rotation for
+   * good.  A key leaves when the peer is heard from again or leaves the map —
+   * see {@link parkedWithoutResolver}.
+   */
+  _parkedPeers(): ReadonlySet<string> {
+    return this.parkedWithoutResolver;
   }
 
   /**
@@ -815,7 +1793,10 @@ export class Cluster {
    * Intended for operator tooling — the management HTTP endpoint
    * `POST /cluster/down` calls this directly.  Don't use it as a
    * replacement for the failure detector / downing provider in normal
-   * flow; it's a manual override.
+   * flow; it's a manual override.  It is also the way out of the opt-out
+   * when no strategy is configured: with `failure-detector.auto-down` off
+   * the detector only parks a crashed peer at `unreachable`, and this is
+   * what removes it (#1426).
    */
   down(addr: NodeAddress | string): boolean {
     if (!this.started) return false;
@@ -828,27 +1809,77 @@ export class Cluster {
       return false;
     }
     const downed = member.withStatus('down');
+    // Announces `MemberDown` itself — see `emitStatusTransition` (#1428).
     this.updateMember(downed);
-    this.emit(new MemberDown(downed));
     const removed = downed.withRemoved(Date.now());
     this.setMember(removed);
-    this.failureDetector.forget(member.address);
     this.emit(new MemberRemoved(removed));
     this.log.info(`operator force-down: ${member.address}`);
     return true;
   }
 
-  /** Gracefully leave the cluster (broadcast `leave`, stop transport). */
+  /**
+   * Gracefully leave the cluster: hand off this node's shards and stop the
+   * sharding this cluster started, then broadcast `leave` and stop the
+   * transport.
+   *
+   * The hand-off comes first, and is waited out, because of what a peer does
+   * with the broadcast: it removes this node, and its coordinator re-homes the
+   * shards this node hosted.  Broadcast first, and those shards ran on both
+   * nodes until the process ended (#1465).  So when the peers hear of the
+   * leave, nothing of those shards runs here any more, and once this resolves
+   * a re-join on the same system can start the same types again.
+   */
   async leave(): Promise<void> {
-    if (!this.started) return;
+    if (!this.beginLeaving()) return;
+    // Usually done already, by the phase before this one; then this is the
+    // promise that phase waited on.
+    await this.shutdownSharding();
+    await this.depart();
+  }
+
+  /**
+   * Leave without a hand-off, for a node the cluster no longer has a use for:
+   * one its own downing decision took out (#1456), or one that gave its join up
+   * (#1500).  Both callers rely on the departure being synchronous — self is
+   * `leaving`, the peers are told, every timer is stopped before this returns —
+   * and there is nobody to hand shards to first: the peers that downed this
+   * node have already re-homed them, and a node that never joined hosts none.
+   * So the sharding stops beside the departure rather than ahead of it, and
+   * stops all the same: actors left running for a cluster that is gone are the
+   * defect {@link leave} exists to prevent (#1465).
+   */
+  private async leaveAtOnce(): Promise<void> {
+    if (!this.beginLeaving()) return;
+    const departed = this.depart();
+    await Promise.all([this.shutdownSharding(), departed]);
+  }
+
+  /**
+   * What both leaves do first, and whether this one is the first: `false`
+   * when the cluster was already leaving, or never started.
+   */
+  private beginLeaving(): boolean {
+    if (!this.started) return false;
     this.started = false;
-    // Drop the pipeline's task with the membership it named.  A process that
+    // Drop the pipeline's tasks with the membership they named.  A process that
     // leaves and re-joins — a test, a reconfiguration — would otherwise hit
     // `addTask`'s duplicate-name check on the second `Cluster.join`.  Safe to
-    // do here even though `leave()` is usually *called by* that task:
+    // do here even though `leave()` is usually *called by* one of them:
     // `runPhase` snapshots the list before invoking anything.
-    this.system.extension(CoordinatedShutdownId)
-      .removeTask(Phases.ClusterLeave, CLUSTER_LEAVE_TASK_NAME);
+    const coordinatedShutdown = this.system.extension(CoordinatedShutdownId);
+    coordinatedShutdown.removeTask(Phases.ClusterLeave, CLUSTER_LEAVE_TASK_NAME);
+    coordinatedShutdown.removeTask(Phases.ClusterShardingShutdownRegion, SHARDING_SHUTDOWN_TASK_NAME);
+    return true;
+  }
+
+  /**
+   * Stop being a member: self moves to `leaving`, the reachable peers are
+   * told, gossip, heartbeats and every other timer stop — all of it before the
+   * first `await` — and then the transport closes while the downing provider
+   * gives back what it holds.
+   */
+  private async depart(): Promise<void> {
     // The readiness checks stay registered, and this is the whole point of
     // them.  Leaving used to un-register the pair here — before self had even
     // been moved to `leaving` — which left `checkReadiness()` empty on a node
@@ -871,10 +1902,43 @@ export class Cluster {
     this.heartbeatTimer?.cancel();
     this.fdTimer?.cancel();
     this.seedTimer?.cancel();
+    this.seedRedialTimer?.cancel();
     this.weaklyUpTimer?.cancel();
     this.tombstonePruneTimer?.cancel();
     this.selfElectionTimer?.cancel();
-    await this.transport.shutdown();
+    this.statsTimer?.cancel();
+    this.joinGiveUpTimer?.cancel();
+    this._remoteWatcher.shutdown();
+    // The provider's hook comes after the failure-detector tick is cancelled,
+    // so nothing asks it to decide again once it has given its lease back
+    // (#1454), and beside the transport closing rather than ahead of it: a
+    // release still on its way to a backend does not hold the transport open.
+    await Promise.all([this.shutdownDowning(), this.transport.shutdown()]);
+  }
+
+  /**
+   * Let the downing provider give back what it holds, once nothing will ask it
+   * to decide again — a lease-majority resolver's lease, which its backend
+   * would otherwise go on renewing for as long as the process runs (#1454).  A
+   * hook that throws or rejects is logged and goes no further: a leave must not
+   * fail because a release did, and a lease left behind runs out at its TTL.
+   */
+  private async shutdownDowning(): Promise<void> {
+    try {
+      await this.downing?.shutdown?.();
+    } catch (error) {
+      this.log.warn('leaving: the downing provider could not release what it holds', error);
+    }
+  }
+
+  /**
+   * Hand off and stop what this cluster's sharding facade started, if anything
+   * did (#1465): the `cluster-sharding-shutdown-region` task, and the first
+   * thing {@link leave} does.  Never builds a facade — one nobody asked for has
+   * nothing to stop.
+   */
+  private async shutdownSharding(): Promise<void> {
+    await ClusterSharding._existing(this.system, this)?._shutdown();
   }
 
   /* ================================ Internal ================================ */
@@ -883,6 +1947,7 @@ export class Cluster {
     this.transport.setHandler((from, message) => this.handleWire(from, message));
     await this.transport.start();
     this.started = true;
+    this._remoteWatcher.start();
 
     // Self is "joining" initially; transitions to "up" once at least
     // one peer has acknowledged us (or we are the seed).  We seed
@@ -901,6 +1966,10 @@ export class Cluster {
       // Store identities that resolved before the join seed the member here;
       // later ones arrive through `publishStorageIdentity` (#1358).
       undefined, this.selfStorageIdentitiesSnapshot(),
+      // The configuration facts are not stored here — they ride the stamp in
+      // `memberDataForGossip`.  The app version is known from the options and
+      // fixed for this incarnation, so it seeds the record (#843).
+      undefined, this.selfAppVersion,
     );
     // Same seed, same argument: peers hold a high-water mark per sender, so a
     // fresh process has to start above every frame the previous incarnation of
@@ -922,16 +1991,27 @@ export class Cluster {
         `contacting ${this.seedAddrs.length} seed(s): [${this.seedAddrs.map((a) => a.toString()).join(',')}]`,
       );
       this.contactSeeds();
-      // Keep retrying seed contact until self has transitioned to up, covering
-      // the case where a seed hasn't started yet — and, since this is the one
-      // timer that runs exactly while the node is stuck, carry the diagnosis
-      // for the case where it never will (#1351).
+      // Keep dialling the seeds until self is `up` — not until one of them
+      // answers, and not merely until self leaves `joining`.  This loop is the
+      // only thing that ever reaches a seed that had not started yet: gossip
+      // and heartbeats go to members already in the map, so a node that stops
+      // dialling too early waits, unknown to that seed, for good.  `weakly-up`
+      // is too early.  It is this node's own timer moving it on, not a leader
+      // admitting it, so it leaves the node exactly as far from `up` as
+      // `joining` did — stopping there stranded every node promoted before its
+      // seed came up (#1493).  Since this is also the one timer that runs
+      // exactly while the node is stuck, it carries the diagnosis for the case
+      // where nothing will ever promote it (#1351).
       this.seedTimer = this.system.scheduler.scheduleAtFixedRateFunction(
         this.seedRetryIntervalMs, this.seedRetryIntervalMs, () => {
           const self = this.members.get(this.selfAddress.toString());
-          if (!self || self.status !== 'joining') { this.seedTimer?.cancel(); this.seedTimer = null; return; }
+          if (!self || (self.status !== 'joining' && self.status !== 'weakly-up')) {
+            this.seedTimer?.cancel();
+            this.seedTimer = null;
+            return;
+          }
           this.seedRounds += 1;
-          this.reportColdStartStall();
+          this.reportColdStartStall(self.status);
           this.contactSeeds();
         },
       );
@@ -955,9 +2035,20 @@ export class Cluster {
       );
     }
 
+    // Counted from here, the join, and not from anything before it: a
+    // bootstrap's discovery and stable observation have already run, and the
+    // question the deadline asks is how long joining takes (#1500).
+    this.armJoinGiveUp();
+
     this.gossipTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       this.gossipIntervalMs, this.gossipIntervalMs, () => this.gossipTick(),
     );
+    if (this.seedAddrs.length > 0) {
+      const redialMs = this.seedRetryIntervalMs * SEED_REDIAL_AFTER_UP_FACTOR;
+      this.seedRedialTimer = this.system.scheduler.scheduleAtFixedRateFunction(
+        redialMs, redialMs, () => this.redialUnmetSeeds(),
+      );
+    }
     this.heartbeatTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       this.failureDetector.interval, this.failureDetector.interval, () => this.heartbeatTick(),
     );
@@ -968,6 +2059,16 @@ export class Cluster {
       this.tombstonePruneIntervalMs, this.tombstonePruneIntervalMs,
       () => this.tombstonePruneTick(),
     );
+    // Armed only when asked for.  The other four timers are how the cluster
+    // works; this one is a reporting convenience, so an unconfigured node
+    // schedules nothing at all rather than a task that publishes to nobody
+    // (#842).
+    if (this.publishStatsIntervalMs > 0) {
+      this.statsTimer = this.system.scheduler.scheduleAtFixedRateFunction(
+        this.publishStatsIntervalMs, this.publishStatsIntervalMs,
+        () => this.publishStatsTick(),
+      );
+    }
 
     // Last, so a start that threw earlier leaves nothing registered: the
     // rollback in `join` puts the extension slot back but has no cluster to
@@ -977,7 +2078,10 @@ export class Cluster {
     // The undo is deliberately dropped.  Nothing on the way out of service
     // calls it — `leave()` leaves both checks reporting DOWN — and the one
     // caller that must, a later `join` on this same system, retires the
-    // previous pair from inside `registerClusterHealthChecks`.
+    // previous pair from inside `registerClusterHealthChecks`.  The
+    // shard-region checks `actor-ts.sharding.healthcheck.names` asks for go in
+    // and out with the pair; their names were read in the constructor, so a
+    // list that cannot be read never got this far (#1465).
     registerClusterHealthChecks(this, healthChecksOf(this.system));
   }
 
@@ -994,7 +2098,10 @@ export class Cluster {
       members: [this.memberDataForGossip(me)],
     };
     for (const seed of this.seedAddrs) {
-      this.failureDetector.register(seed);
+      // Not a seed this node holds as a tombstone: nothing decides about one,
+      // and an entry registered here would be the one its revival inherits —
+      // judged on the silence since this round instead of from its admission.
+      if (this.watchesLivenessOf(seed)) this.failureDetector.register(seed);
       this.transport.send(seed, initialGossip);
     }
   }
@@ -1070,6 +2177,12 @@ export class Cluster {
     const me = this.members.get(this.selfAddress.toString());
     if (!me) return;
     if (me.status !== 'joining' && me.status !== 'weakly-up') return;
+    // Held, not dropped: the founder is the one node whose promotion nothing
+    // else can retry, because `leader()` has no fallback to a non-`up` member
+    // — no `up` member means no leader means no promotion, and the count
+    // would never rise again.  {@link leaderActionsTick} replays this.
+    if (!this.upThresholdSatisfied()) return this.holdSelfElection(reason, level);
+    this.heldSelfElection = null;
     const message = `self-electing as first cluster member — ${reason}`;
     if (level === 'info') this.log.info(message); else this.log.debug(message);
     this._selfElected = true;
@@ -1077,52 +2190,397 @@ export class Cluster {
   }
 
   /**
-   * Say why this node is still `joining`, once, when nothing is going to
-   * change that (#1351).
+   * Park a self-election the membership gate is not letting through, and say
+   * so once (#837).
    *
-   * The condition is exact rather than a heuristic. `joining → up` is the
-   * leader's decision, `leader()` is the first of {@link upMembers}, and the
-   * only way a node reaches `up` without one is self-election. So a node that
-   * knows no `up` member and has no self-election pending cannot be promoted
-   * by anything: no leader exists to promote it, and none can come into being
-   * through it. The cluster is not slow, it is finished.
+   * Info, and exactly one line per incarnation: a founder that never forms its
+   * cluster is the single hardest startup failure to diagnose from the
+   * outside, and a node with an empty seed list runs no seed-retry loop — so
+   * {@link reportColdStartStall}, which is the other half of this diagnosis,
+   * never fires for it.  Repeating it per gossip tick would bury it.
    *
-   * `selfElectionTimer === null` is what covers both policies that strand a
-   * node here. `'never'` arms no timer at all. `'immediate'` arms none either,
-   * and its one chance has already passed: it self-elects only on an *empty*
-   * seed list, and this loop exists only when the list is non-empty. A
-   * deferred policy is the one that does hold a timer and will resolve this
-   * without help — which is why a pending one is the signal to stay quiet.
+   * The *first* request is the one kept.  A later one differs only in wording
+   * (a deferred timer firing after `'immediate'` already asked), and the
+   * decision that actually stands is the one the configuration made first.
+   */
+  private holdSelfElection(reason: string, level: 'debug' | 'info'): void {
+    if (this.heldSelfElection !== null) return;
+    this.heldSelfElection = { reason, level };
+    this.log.info(
+      `holding self-election — ${reason}, but ${ConfigKeys.cluster.minimumMembersBeforeUp} is not `
+      + `met yet (${this.upThresholdShortfall()}). No node moves to "up" until it is.`,
+    );
+  }
+
+  /** Members that count toward the Up threshold — see {@link UP_THRESHOLD_STATUSES}. */
+  private membersCountingTowardUpThreshold(): Member[] {
+    return Array.from(this.members.values())
+      .filter((member) => UP_THRESHOLD_STATUSES.has(member.status));
+  }
+
+  /**
+   * Whether enough members are present for anything to be promoted to `up`
+   * (#837) — the global count and every configured per-role count, as an AND.
+   *
+   * Evaluated per promotion decision and never in reverse: there is no
+   * `up → joining` transition, so a cluster that later drops below the
+   * threshold keeps the members it already promoted and holds only new ones.
+   */
+  private upThresholdSatisfied(): boolean {
+    const present = this.membersCountingTowardUpThreshold();
+    if (present.length < this.minimumMembersBeforeUp) return false;
+    for (const [role, minimum] of Object.entries(this.minimumMembersBeforeUpPerRole)) {
+      if (present.filter((member) => member.hasRole(role)).length < minimum) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Which half of the threshold is short, in the words an operator can act on.
+   *
+   * Both halves are reported when both are short: a deployment that fixed the
+   * global count and left a role threshold unmet would otherwise be told the
+   * same sentence twice with nothing having changed.
+   */
+  private upThresholdShortfall(): string {
+    const present = this.membersCountingTowardUpThreshold();
+    const parts: string[] = [];
+    if (present.length < this.minimumMembersBeforeUp) {
+      parts.push(`${present.length} of ${this.minimumMembersBeforeUp} member(s) present`);
+    }
+    for (const [role, minimum] of Object.entries(this.minimumMembersBeforeUpPerRole)) {
+      const withRole = present.filter((member) => member.hasRole(role)).length;
+      if (withRole < minimum) {
+        parts.push(`${withRole} of ${minimum} member(s) with role "${role}"`);
+      }
+    }
+    return parts.join('; ');
+  }
+
+  /**
+   * Re-run the two `up` transitions the membership gate may be holding (#837).
+   *
+   * A tick and not an `if`, because gating the two promotion sites alone
+   * deadlocks: `leader()` is the first of {@link upMembers} with no fallback
+   * to a non-`up` member, and the only route to a first `up` member is
+   * {@link selfElect}, which fires once during `start()`.  Refuse it there and
+   * no leader ever exists, so nothing promotes anyone, so the count never
+   * rises — permanent, and silent.
+   *
+   * Called from {@link gossipTick} (armed unconditionally, so it covers a map
+   * that grew by any route) and from the tail of {@link onGossip} (so the
+   * frame that takes the cluster over the threshold acts on it immediately
+   * rather than up to a gossip interval later).  Deliberately **not** called
+   * from `updateMember`, which is what both of these end up in.
+   */
+  private leaderActionsTick(): void {
+    if (!this.started) return;
+    this.runHeldSelfElection();
+    this.promoteJoiningMembers();
+  }
+
+  /** Replay a self-election the threshold was holding, once it is met. */
+  private runHeldSelfElection(): void {
+    const held = this.heldSelfElection;
+    if (held === null) return;
+    if (!this.upThresholdSatisfied()) return;
+    this.heldSelfElection = null;
+    this.selfElect(held.reason, held.level);
+  }
+
+  /**
+   * The leader's own decision: move every `joining` / `weakly-up` member to
+   * `up`.
+   *
+   * The threshold binds the *deciding* node only.  The accept side
+   * ({@link maySpeakFor} / `isOwnPromotion`) is deliberately untouched — a
+   * node whose local view lags the leader's would otherwise refuse a
+   * legitimate `up` claim about itself and stay `joining` for good.
+   *
+   * Every member this promotes is told at once (#1747).  The promotion is a
+   * fact about *its* record, and until it reads that record back it is still
+   * `joining` to itself — which is what `awaitReady`, and so
+   * `Cluster.bootstrap`'s default 5 s wait, are waiting on.  Left to
+   * `gossipTick`, it would hear only when some informed node happened to pick
+   * it as the one random target of a round: a 1/(N−1) chance per node per
+   * tick, so the wait grew with the cluster, and eight joiners starting
+   * together against twelve nodes were rejected six times in eight, every one
+   * of them already `up` everywhere else.  One frame per promoted member, sent
+   * once at the promotion, makes the wait a single hop.
+   */
+  private promoteJoiningMembers(): void {
+    if (!this.isLeader()) return;
+    if (!this.upThresholdSatisfied()) return;
+    const promoted: NodeAddress[] = [];
+    for (const member of this.members.values()) {
+      if (member.status === 'joining' || member.status === 'weakly-up') {
+        this.log.debug(`leader-promote: ${member.address} ${member.status}→up`);
+        this.updateMember(member.withStatus('up'));
+        if (!member.address.equals(this.selfAddress)) promoted.push(member.address);
+      }
+    }
+    if (promoted.length > 0) this.tellPromoted(promoted);
+  }
+
+  /**
+   * Push this node's view to members it has just promoted — see
+   * {@link promoteJoiningMembers}.  One frame for all of them, as the seed
+   * round sends one: each receiver keeps its own high-water mark for this
+   * node, so a shared sequence is delivered once per peer.
+   */
+  private tellPromoted(promoted: readonly NodeAddress[]): void {
+    const gossip: GossipMessage = {
+      kind: 'gossip',
+      from: this.selfAddress.toJSON(),
+      sequence: this.nextGossipSequence(),
+      members: Array.from(this.members.values()).map((member) => this.memberDataForGossip(member)),
+    };
+    for (const address of promoted) this.transport.send(address, gossip);
+  }
+
+  /**
+   * Say why this node is still `joining` or `weakly-up`, once, when nothing is
+   * going to change that (#1351).
+   *
+   * The verdict is {@link nothingCanPromoteThisNode} — the same predicate the
+   * join give-up evaluates at its deadline (#1500), so the line an operator
+   * reads and the action the node takes are one verdict at two moments, and
+   * can never disagree about the same member map.  When it does not hold, the
+   * one other state worth a line is a membership threshold holding peers that
+   * are present, which {@link reportUpThresholdWait} names instead.
    *
    * Held back {@link COLD_START_STALL_AFTER_SEED_ROUNDS} rounds because the
    * same condition is true, and harmless, for the first seconds of an ordinary
    * simultaneous start, while the peer that will form the cluster is still
-   * coming up.
+   * coming up.  That hold-off is this report's alone: the give-up has a
+   * deadline of its own and needs none.
    *
    * Reported once. The condition holds on every round from here on, and this
    * is a verdict on the configuration rather than an event — repeating it per
    * round would bury the one line that matters, which is the noise this whole
    * area was cleaned of in #1352.
    *
-   * **Not reachable from `weakly-up`.** The retry loop cancels itself on any
-   * status but `joining`, so a node auto-promoted by `weaklyUpAfterMs` leaves
-   * this behind and can stall unreported. That gap is real, but it belongs to
-   * the loop's cancel condition rather than here, and `weaklyUpAfterMs`
-   * defaults to 0, so nothing reaches it without being configured to.
+   * **`weakly-up` gets the same verdict** (#1493). That status is this node's
+   * own timer moving it on, not anyone admitting it, so it changes nothing
+   * above: a leader still has to promote the node, and there still is none.
+   * The loop that calls this runs until self is `up`, so a node promoted by
+   * `weaklyUpAfterMs` arrives here like any other. It used to cancel on any
+   * status but `joining`, which silenced this for every `weaklyUpAfterMs`
+   * shorter than three retry intervals. `status` is the one that loop just
+   * found, so the line names the state the node is actually in.
    */
-  private reportColdStartStall(): void {
-    if (this.coldStartStallReported) return;
+  private reportColdStartStall(status: 'joining' | 'weakly-up'): void {
     if (this.seedRounds < COLD_START_STALL_AFTER_SEED_ROUNDS) return;
-    if (this.selfElectionTimer !== null) return;
-    if (this.upMembers().length > 0) return;
+    if (this.nothingCanPromoteThisNode()) return this.reportStallVerdict(status);
+    // Something can still promote this node.  A leader or a pending election
+    // of its own needs no line; a closed membership gate with peers present
+    // does, because the cluster is short of members rather than finished, and
+    // the fix is a node rather than a config change (#837).  Its own flag, so
+    // a gate that later opens onto a genuine stall still gets the verdict.
+    if (this.upMembers().length === 0 && !this.upThresholdSatisfied()) this.reportUpThresholdWait(status);
+  }
+
+  /** The stall line itself — once per incarnation, see {@link reportColdStartStall}. */
+  private reportStallVerdict(status: 'joining' | 'weakly-up'): void {
+    if (this.coldStartStallReported) return;
     this.coldStartStallReported = true;
-    // Every member but our own record — what this node has actually heard from,
-    // which is the half of the diagnosis it cannot state from configuration.
-    const peers = this.members.size - 1;
     this.log.warn(
-      `still "joining" after ${this.seedRounds} seed-contact round(s), and nothing can promote `
+      `still "${status}" after ${this.seedRounds} seed-contact round(s), and nothing can promote `
       + `this node: no member is "up", so there is no leader, and only a leader moves a node `
-      + `from "joining" to "up" — ${this.coldStartStallRemedy(peers)}`,
+      + `from "${status}" to "up" — ${this.coldStartStallRemedy(this.livePeerCount())}`,
+    );
+  }
+
+  /**
+   * Whether nothing can promote this node to `up` any more — the one verdict
+   * behind both the cold-start stall warning and the join give-up (#1351,
+   * #1500).
+   *
+   * The verdict is a reading of this node's member map at the moment it is
+   * asked, and so of the failure detector's verdicts at that moment — not a
+   * prediction.  Moving a node to `up` — out of `joining` or out of
+   * `weakly-up` alike — is the leader's decision, `leader()` is the first of
+   * {@link upMembers}, and the only way a node reaches `up` without one is
+   * self-election.  So the node can still be promoted while:
+   *
+   * - **a member is `up`** — a leader exists, and promotion is its job;
+   * - **a self-election of its own is pending** — `selfElectionTimer` is what
+   *   tells the policies apart.  `'never'` arms no timer at all, and
+   *   `'immediate'` arms none either: its one chance has passed, since it
+   *   self-elects only on an *empty* seed list.  A deferred policy is the one
+   *   that holds a timer and resolves this without help;
+   * - **peers are present and only {@link minimumMembersBeforeUp} holds
+   *   them** — a closed gate holds every promotion including this node's own
+   *   self-election, so the cluster is short of members, not finished (#837).
+   *
+   * The third is asked only while some live peer has answered.  With nobody
+   * answering at all there is nothing for missing members to join, and the
+   * threshold wait used to pre-empt this verdict there: a node whose seeds
+   * were simply wrong was told to wait for members, and a give-up keyed on
+   * the verdict would never have fired for it (#1500).  A `removed` tombstone
+   * and a `down` record are not live peers — neither can promote this node or
+   * count toward the threshold — and neither is a peer parked past
+   * `down-after` under `auto-down = off`, for the same reason (#1426); see
+   * {@link livePeerCount}.
+   *
+   * Otherwise no leader exists to promote the node, and none can come into
+   * being through it.  The cluster is not slow, it is finished.
+   *
+   * **What the reading depends on.**  Reachability moves the answer both ways
+   * before `down-after`.  A leader that is `unreachable` at the moment of
+   * asking is not among {@link upMembers}, so a node whose only `up` peer is
+   * briefly silent reads as unpromotable — and gives up, if its deadline falls
+   * in that window — although one heartbeat would have made the leader `up`
+   * again.  The same `unreachable` record counts as a live peer while not
+   * toward the threshold, so under a threshold it reads as "wait for the
+   * missing members" instead.  Past `down-after` the reading settles: the
+   * shipped auto-down removes the peer, and the opt-out parks it, which this
+   * verdict treats as gone.
+   */
+  private nothingCanPromoteThisNode(): boolean {
+    if (this.upMembers().length > 0) return false;
+    if (this.selfElectionTimer !== null) return false;
+    if (this.livePeerCount() === 0) return true;
+    return this.upThresholdSatisfied();
+  }
+
+  /**
+   * Members other than this node that are still alive — what it has actually
+   * heard from, which is the half of the stall diagnosis it cannot state from
+   * configuration.  A `removed` tombstone and a `down` record do not count:
+   * the first is a peer that is gone, the second one on its way there.
+   *
+   * Nor does a peer parked past `down-after` under `auto-down = off`
+   * ({@link parkedWithoutResolver}, #1426).  Its record stays `unreachable` for
+   * good, which the membership threshold does not count as present, so
+   * counting it here made {@link nothingCanPromoteThisNode} ask the threshold
+   * for as long as the dead peer was parked — "the missing members may still
+   * join" — and a node whose only answering peer had died never gave up.  A
+   * peer that is `unreachable` short of `down-after` still counts, unchanged:
+   * one heartbeat makes it `up` again.
+   */
+  private livePeerCount(): number {
+    let count = 0;
+    for (const member of this.members.values()) {
+      if (member.address.equals(this.selfAddress)) continue;
+      if (member.status === 'removed' || member.status === 'down') continue;
+      if (this.parkedWithoutResolver.has(member.address.toString())) continue;
+      count += 1;
+    }
+    return count;
+  }
+
+  /** Arm the join deadline, when one is configured (#1500) — see {@link onJoinDeadline}. */
+  private armJoinGiveUp(): void {
+    if (this.shutdownAfterUnsuccessfulJoinMs <= 0) return;
+    this.joinGiveUpTimer = this.system.scheduler.scheduleOnceFunction(
+      this.shutdownAfterUnsuccessfulJoinMs, () => this.onJoinDeadline(),
+    );
+  }
+
+  /**
+   * The join deadline has passed, or one of its re-checks has come due
+   * (#1500).
+   *
+   * The deadline is when the node decides, never what decides: it gives up
+   * only while {@link nothingCanPromoteThisNode} holds — the verdict the stall
+   * warning states, so the line and the action cannot disagree.  The stall
+   * report itself would be the wrong trigger: for a `'never'` node of a
+   * stable-observation bootstrap it fires after three seed rounds, which at the
+   * defaults is before the elected founder's grace runs out — on a cluster
+   * about to form.  While something can still promote the node — a leader, an
+   * election of its own still pending, peers that only the membership
+   * threshold holds — it asks again one seed round later, and goes on asking
+   * until the node is `up` or the answer changes.  A node no longer joining
+   * has nothing to give up, and the timer simply ends.
+   */
+  private onJoinDeadline(): void {
+    this.joinGiveUpTimer = null;
+    if (!this.started) return;
+    const self = this.members.get(this.selfAddress.toString());
+    if (!self || (self.status !== 'joining' && self.status !== 'weakly-up')) return;
+    if (this.nothingCanPromoteThisNode()) return this.giveUpJoin(self.status);
+    this.joinGiveUpTimer = this.system.scheduler.scheduleOnceFunction(
+      this.seedRetryIntervalMs, () => this.onJoinDeadline(),
+    );
+  }
+
+  /**
+   * Stop being a node that can never join (#1500): say so, tell the readiness
+   * waits, leave, and run the coordinated-shutdown pipeline with
+   * `ClusterJoinUnsuccessfulReason`.
+   *
+   * Leave first, for the reason {@link leaveAfterDowningSelf} does: the
+   * synchronous departure of {@link leaveAtOnce} ends the seed loop and every
+   * other timer, and drops the pipeline's `cluster-leave` task so the run
+   * cannot leave a second time.  It is also what keeps the give-up whole where
+   * `coordinated-shutdown.auto-register-tasks` is off: that pipeline has no
+   * `cluster-leave` task at all, and without the call here the node would go
+   * on dialling its seeds beside a run that terminates everything else.
+   * `run()` is idempotent, so a run already under way is joined rather than
+   * doubled, and `terminate-actor-system` and `exit-process` still decide what
+   * it ends in.
+   */
+  private giveUpJoin(status: 'joining' | 'weakly-up'): void {
+    // At warn, like the stall line it builds on: an operator who finds this
+    // node gone has to be able to find the line that says why it went.
+    this.log.warn(
+      `giving up the join: ${ConfigKeys.cluster.shutdownAfterUnsuccessfulJoin} = `
+      + `${this.shutdownAfterUnsuccessfulJoinMs} ms has passed with this node still "${status}", and `
+      + 'nothing can promote it — no member is "up", so there is no leader, and no self-election of '
+      + `its own is pending — ${this.coldStartStallRemedy(this.livePeerCount())}. Leaving the cluster `
+      + 'and running the coordinated-shutdown pipeline with ClusterJoinUnsuccessfulReason.',
+    );
+    // Before the leave, so the notice carries the status the node gave up in
+    // rather than the `leaving` it is about to be.  A readiness wait settling
+    // here rejects a microtask later, by when the run below has started, so
+    // a caller that runs the pipeline in response joins this run.
+    this.announceJoinGivenUp({ deadlineMs: this.shutdownAfterUnsuccessfulJoinMs, selfStatus: status });
+    void this.leaveAtOnce().catch((e) => this.log.warn('leaving after the join was given up failed', e));
+    void this.system.extension(CoordinatedShutdownId).run(ClusterJoinUnsuccessfulReason.instance)
+      .catch((e: unknown) => this.log.error(
+        'the coordinated-shutdown pipeline this node started after giving up its join halted', e));
+  }
+
+  /** Tell every {@link _onJoinGivenUp} listener, once, and keep the notice for late ones. */
+  private announceJoinGivenUp(notice: JoinGiveUpNotice): void {
+    this.joinGivenUp = notice;
+    const listeners = [...this.joinGiveUpListeners];
+    this.joinGiveUpListeners.clear();
+    for (const listener of listeners) {
+      // One listener's failure must not keep the node from leaving.
+      try { listener(notice); } catch (e) { this.log.warn('a join give-up listener threw', e); }
+    }
+  }
+
+  /**
+   * Say that the cluster is waiting for members rather than stuck (#837).
+   *
+   * Held to the same round threshold as {@link reportColdStartStall} and
+   * reported once, for the same reasons: the condition is ordinary for the
+   * first seconds of a simultaneous start, and repeating it per round would
+   * bury the line that matters.
+   *
+   * A warning rather than an info, because by this point it has been true for
+   * {@link COLD_START_STALL_AFTER_SEED_ROUNDS} seed rounds — which is either a
+   * deployment still rolling out, or a threshold set above the number of nodes
+   * the deployment actually has, and the second is a misconfiguration that
+   * presents as a cluster that never comes up.  Nothing here can tell them
+   * apart, so the line names the count and lets the operator.
+   *
+   * Reached from `weakly-up` too, and names it (#1493). Such a node already
+   * counts toward the threshold it is waiting on, so the shortfall it reports
+   * includes itself.
+   */
+  private reportUpThresholdWait(status: 'joining' | 'weakly-up'): void {
+    if (this.upThresholdWaitReported) return;
+    this.upThresholdWaitReported = true;
+    this.log.warn(
+      `still "${status}" after ${this.seedRounds} seed-contact round(s): `
+      + `${ConfigKeys.cluster.minimumMembersBeforeUp} holds every promotion to "up" until enough `
+      + `members are present, and ${this.upThresholdShortfall()}. This clears itself as soon as `
+      + 'the missing member(s) join; if the deployment has no more nodes to give, the threshold '
+      + 'is set above its size.',
     );
   }
 
@@ -1136,7 +2594,14 @@ export class Cluster {
    */
   private coldStartStallRemedy(peers: number): string {
     if (peers === 0) {
-      return 'no seed has answered at all. Seeds: '
+      if (this.seedAddrs.length === 0) return this.noSeedRemedy();
+      // Records with no live peer behind them — a tombstone, a `down` record —
+      // mean something did answer and has gone again, and "nobody answered"
+      // would send the operator to check an address that demonstrably worked.
+      const opening = this.members.size > 1
+        ? 'no live peer is left: every peer that answered has left since, or was downed'
+        : 'no seed has answered at all';
+      return `${opening}. Seeds: `
         + `[${this.seedAddrs.map((a) => a.toString()).join(', ')}]. Check that these are the `
         + 'addresses those nodes advertise (not their bind addresses), that their processes are '
         + 'running, and that the port is reachable from here';
@@ -1160,20 +2625,117 @@ export class Cluster {
       .exhaustive();
   }
 
+  /**
+   * The remedy for a node that has nobody to ask (#1500): an empty seed list,
+   * or one naming only this node, which `_start` drops.
+   *
+   * The unanswered-seeds remedy is wrong here word for word — nobody was
+   * asked, and its checklist points at addresses that do not exist.  Only the
+   * give-up reaches this: the stall report runs from the seed loop, which such
+   * a list never starts.  What is true instead depends on the policy.
+   * `'never'` may not found a cluster and has nobody to join.  Any other policy
+   * founds one — `'immediate'` at once on an empty list, a deferred election
+   * once it fires — and since the give-up's verdict holds, with nothing up and
+   * no election pending, the membership threshold is what holds that
+   * self-election.
+   */
+  private noSeedRemedy(): string {
+    const opening = 'this node has no seed to contact — its seed list is empty, or names only itself';
+    if (this.selfElection === 'never') {
+      return `${opening} — and selfElection: 'never' keeps it from forming a cluster of its own, so only a `
+        + 'peer that lists it as a seed can bring it in, and none has. Give it the seeds of the cluster it '
+        + "belongs to, or let it found one with a selfElection other than 'never'";
+    }
+    return `${opening}, so it founded the cluster itself — and ${ConfigKeys.cluster.minimumMembersBeforeUp} `
+      + `has held that self-election since, until enough members are present (${this.upThresholdShortfall()}); `
+      + 'no member has joined it. Give the other nodes this address as a seed, or lower the threshold';
+  }
+
   private handleWire(from: NodeAddress, message: WireMessage): void {
-    this.failureDetector.heartbeat(from);
+    // Liveness, once per frame and before any handler can refuse it: bytes did
+    // arrive on this connection, so its peer is demonstrably alive.  Never a
+    // sample — the heartbeat handler adds that, and only for a heartbeat frame.
+    // Only for a peer this node watches, though: see `watchesLivenessOf`.
+    if (this.watchesLivenessOf(from)) this.failureDetector.heardFrom(from);
 
     match(message)
       .with({ kind: 'heartbeat' }, (m) => this.onHeartbeat(from, m))
       .with({ kind: 'heartbeat-ack' }, () => this.onHeartbeatAcknowledgment())
+      .with({ kind: 'membership-refused' }, (m) => this.onMembershipRefused(from, m))
       .with({ kind: 'gossip' }, (m) => this.onGossip(from, m))
       .with({ kind: 'envelope' }, (m) => this.onEnvelope(from, m))
       .with({ kind: 'leave' }, (m) => this.onLeave(from, m))
+      .with({ kind: 'watch' }, (m) => this.onWatch(from, m))
+      .with({ kind: 'unwatch' }, (m) => this.onUnwatch(from, m))
+      .with({ kind: 'watch-terminated' }, (m) => this.onWatchTerminated(from, m))
       .otherwise((m) => this.onUnhandledWire(m, from));
   }
 
+  /**
+   * Whether a frame from `peer` may touch the failure detector at all (#1103).
+   *
+   * The detector creates an entry for every address it is told about.  The
+   * connection identity is chosen by the peer — without mTLS it is whatever its
+   * `hello` said — so crediting every frame let one connection per claimed
+   * address grow the detector without bound, past the `maxMembers` cap the
+   * member map holds: 500 frames under distinct names left 502 entries beside
+   * 3 members.  The φ-accrual detector also allocates a `maxSampleSize`
+   * interval window per entry.
+   *
+   * The detector is only ever asked about a member (`failureDetectionTick`
+   * walks the member map), so an entry for anyone else is state nothing reads.
+   * Two kinds of peer are watched:
+   *
+   * - **A member that is not a tombstone.**  Admission registers it, which
+   *   starts its silence clock, so a joiner's first frame is still enough: the
+   *   frame admits it and the registration takes the instant the `heardFrom`
+   *   used to.  Down and unreachable members stay in — their frames are how a
+   *   parked or unreachable peer is seen again.  A tombstone is not watched:
+   *   nothing decides about it, {@link setMember} forgets its entry as it is
+   *   stored, and its frames do not create a new one.  A revival is admitted
+   *   afresh and registered at that instant.
+   * - **A configured seed that is not a tombstone.**  The seed loop registers
+   *   each one before it has answered, and that entry's silence clock runs
+   *   from the first dial.  A seed that answers late is admitted on that
+   *   answer, and the registration is a no-op by then — so without the seed's
+   *   own frames counting first, it would be judged on the silence since this
+   *   node started and read `unreachable` the moment it became a member.  The
+   *   seed list is fixed at start, so it bounds itself.  A seed held as a
+   *   tombstone is a member like any other: its revival registers it.
+   *
+   * Everything else is still dispatched; it only no longer creates detector
+   * state.  Together with the forgetting in {@link setMember} and
+   * {@link deleteMember}, the detector holds an entry for every live member
+   * other than this node, and otherwise only for a seed that is not a
+   * tombstone — so its size is bounded by `maxMembers` plus the seed list.
+   */
+  private watchesLivenessOf(peer: NodeAddress): boolean {
+    const member = this.members.get(peer.toString());
+    if (member !== undefined) return member.status !== 'removed';
+    return this.seedAddrs.some((seed) => seed.equals(peer));
+  }
+
+  private onWatch(from: NodeAddress, message: WatchMessage): void {
+    this._remoteWatcher.onWatch(from, message);
+  }
+
+  private onUnwatch(from: NodeAddress, message: UnwatchMessage): void {
+    this._remoteWatcher.onUnwatch(from, message);
+  }
+
+  private onWatchTerminated(from: NodeAddress, message: WatchTerminatedMessage): void {
+    this._remoteWatcher.onWatchTerminated(from, message);
+  }
+
+  /**
+   * Liveness only, and `handleWire` has credited it.  An acknowledgment answers
+   * *this* node's heartbeat, so it arrives on this node's cadence rather than
+   * the peer's: sampled beside the peer's own heartbeats it would interleave
+   * two schedules, and the φ-accrual detector's crossings would wander with
+   * the phase between them (#1451).
+   */
   private onHeartbeatAcknowledgment(): void {
-    /* already bumped fd */
+    /* nothing to sample */
   }
 
   /**
@@ -1188,10 +2750,59 @@ export class Cluster {
    * `sharding.ShardMapUpdate` inside an envelope, not as a wire kind of its own
    * — so the frame was validated, arrived here, matched nothing and was dropped.
    * The type went with the comment (#681).
+   *
+   * What is *not* deliberate is the silence when nothing is registered, which
+   * is the protocol-drift case: a peer speaking a kind this build has never
+   * heard of looks exactly like a healthy cluster with nothing to say. Since
+   * #1178 that tail is reported — see {@link onUnclaimedWire}.
    */
   private onUnhandledWire(message: WireMessage, from: NodeAddress): void {
     const custom = this.wireHandlers.get(message.kind);
-    if (custom) custom(message, from);
+    if (custom) { custom(message, from); return; }
+    this.onUnclaimedWire(message.kind, from);
+  }
+
+  /**
+   * A frame kind no handler claimed: count it, and name it once.
+   *
+   * `Cluster` is a plain class rather than an `Actor`, so `this.unhandled` is
+   * not available here — and there would be no recipient to name if it were,
+   * since `DeadLetter.recipient` is non-nullable and a frame nobody claimed
+   * has no addressee. `countUnhandled` is therefore the half that applies:
+   * `actor_unhandled_total{class:'Cluster'}` rises with the frames, no dead
+   * letter is produced, and widening `DeadLetter` to fit — which would ripple
+   * into `DeadLetterEntry.recipientPath`, the queue's filters and `replay` —
+   * is not on the table.
+   *
+   * **The log line is once per kind, capped**; the counter is every frame.
+   * Two things land here and only the log can tell them apart cheaply: an
+   * extension a peer started and this node did not (a receptionist gossips to
+   * every up member, whether or not that member runs a receptionist), and a
+   * kind that does not exist in this build at all. Naming the kind and the
+   * peer once is what distinguishes them; repeating it per frame is a log
+   * storm, and remembering unboundedly many peer-supplied kinds is a leak —
+   * hence {@link MAX_REPORTED_UNCLAIMED_WIRE_KINDS}.
+   *
+   * The kind is escaped and clipped *before* it is remembered rather than
+   * only before it is printed: `isWireFrame` enforces only that it is a
+   * string, so the raw value is arbitrary sender-controlled text, and what
+   * this node keeps for the length of its life should be the bounded form.
+   */
+  private onUnclaimedWire(kind: string, from: NodeAddress): void {
+    countUnhandled(this.system, 'Cluster');
+    if (this.reportedUnclaimedWireKinds.size >= MAX_REPORTED_UNCLAIMED_WIRE_KINDS) return;
+    const named = sanitizeWireKindForLog(kind);
+    if (this.reportedUnclaimedWireKinds.has(named)) return;
+    this.reportedUnclaimedWireKinds.add(named);
+    const capped = this.reportedUnclaimedWireKinds.size >= MAX_REPORTED_UNCLAIMED_WIRE_KINDS
+      ? ` — that is ${MAX_REPORTED_UNCLAIMED_WIRE_KINDS} distinct unclaimed kinds, `
+        + 'further ones are counted but not named'
+      : '';
+    this.log.warn(
+      `no handler for wire frame '${named}' from ${from.toString()}; dropping it — `
+      + 'either an extension this node did not start, or a peer speaking a '
+      + `protocol this build does not know${capped}`,
+    );
   }
 
   /**
@@ -1201,9 +2812,10 @@ export class Cluster {
    * corrupted or forged frame — dropped rather than normalised, matching how
    * `mergeMember` treats an implausible gossip version.
    *
-   * Dropping is safe: `handleWire` has already bumped the failure detector from
-   * the socket-level address by the time this runs, so refusing the frame
-   * cannot make a live peer look unreachable.
+   * Dropping is safe: `handleWire` has already credited the socket-level
+   * address with liveness by the time this runs, so refusing the frame cannot
+   * make a live peer look unreachable — it only withholds the inter-arrival
+   * sample, which a frame this implausible has no business contributing.
    *
    * Nothing consumes these fields yet — `onHeartbeatAcknowledgment` is a no-op
    * and `ts` is unread — so this is a boundary guard rather than a fix for a
@@ -1230,21 +2842,131 @@ export class Cluster {
    * which blocks the failure detector and with it singleton and shard
    * failover; and the acknowledgment was *sent* to that address, so a frame
    * naming an attacker-chosen `host:port` made the receiver dial it.
+   *
+   * `handleWire` has already credited the liveness of a watched peer, and
+   * this applies the same rule (`watchesLivenessOf`); what this adds is the one
+   * thing only a heartbeat frame may: an inter-arrival sample for the φ-accrual
+   * detector, whose model is the peer's heartbeat schedule (#1451).
    */
   private onHeartbeat(from: NodeAddress, message: HeartbeatMessage): void {
     if (!this.isPlausibleHeartbeat(from, message)) return;
     const peer = from;
-    this.failureDetector.heartbeat(peer);
-    // Reply isn't strictly needed because send() also bumps the detector,
-    // but it keeps symmetric latency information.
+    const existing = this.members.get(peer.toString());
+    if (existing !== undefined && this.holdsRemovedRunOf(existing, peer, message)) {
+      this.refuseMembership(existing, peer);
+      return;
+    }
+    if (this.watchesLivenessOf(peer)) this.failureDetector.heartbeat(peer);
+    // The peer's detector does not need the reply — our own heartbeats feed
+    // it, and an acknowledgment is liveness only there — but it keeps the
+    // round trip observable from the side that started it.
     this.transport.send(peer, { kind: 'heartbeat-ack', from: this.selfAddress.toJSON(), seq: message.seq });
 
-    // If the peer was unreachable and we see traffic again, flip it back.
-    const existing = this.members.get(peer.toString());
-    if (existing && existing.status === 'unreachable') {
+    // If the peer was unreachable and we see traffic again, flip it back —
+    // unless it has told this node it no longer has it (#940).
+    if (existing && existing.status === 'unreachable' && !this.refusedBy.has(peer.toString())) {
       this.updateMember(existing.withStatus('up'));
-      this.emit(new MemberReachable(this.members.get(peer.toString())!));
+      // `updateMember` has announced `MemberUp`, and a listener may have acted
+      // on it — downed the peer, say.  A member that is no longer `up` is not
+      // announced reachable: after its `MemberRemoved` that would be a status
+      // event about a member that is gone, the shape #1428 removed for
+      // `MemberUnreachable`.  Recovery is the way every parked peer comes back
+      // — held for a provider, or parked under `auto-down = off` (#1426).
+      const recovered = this.members.get(peer.toString());
+      if (recovered?.status === 'up') this.emit(new MemberReachable(recovered));
     }
+  }
+
+  /**
+   * Whether `stored` is this node's tombstone for the very run that sent this
+   * heartbeat over `peer`'s connection (#940).
+   *
+   * Both incarnations have to be known and equal.  A different one is a restart
+   * at the address, which the gossip merge admits as a new member
+   * ({@link isRestartOf}), so refusing it would turn a routine restart into a
+   * self-down.  A missing one is a peer that predates the field, or a tombstone
+   * learned from one, and the refusal could only name a run it cannot pin —
+   * such a peer is acknowledged as before.
+   *
+   * The run is read from the heartbeat's own `from` when that names the
+   * connection's address, and from the connection otherwise.  A transport the
+   * cluster builds announces the incarnation in its handshake, but an injected
+   * one — a TLS `TcpTransport`, an in-memory one — was constructed before the
+   * incarnation was minted and keys its peers without it, and a refusal that
+   * depended on the connection alone would never be sent there.  Trusting the
+   * payload here costs nothing: the answer goes down the connection the
+   * heartbeat came in on, so a peer that names another run only refuses
+   * itself.
+   */
+  private holdsRemovedRunOf(stored: Member, peer: NodeAddress, message: HeartbeatMessage): boolean {
+    if (stored.status !== 'removed') return false;
+    const removedRun = stored.address.incarnation;
+    if (removedRun === undefined) return false;
+    const claimed = NodeAddress.fromJSON(message.from);
+    const senderRun = claimed.toString() === peer.toString() ? claimed.incarnation : peer.incarnation;
+    return senderRun === removedRun;
+  }
+
+  /**
+   * Answer a heartbeat from a member this node removed with a refusal instead
+   * of an acknowledgment (#940).
+   *
+   * The acknowledgment was what kept a removed node running.  It is credited as
+   * liveness on arrival, so a node the cluster had downed — a process that was
+   * paused past the downing window and resumed, a VM that was suspended — went
+   * on seeing every peer that had removed it as healthy, never saw a partition
+   * for its downing provider to decide on, and kept hosting the shards and the
+   * singleton the survivors had already taken over.
+   *
+   * Sent on the heartbeat's own connection, as the acknowledgment was, and
+   * naming the tombstone's address so the receiver can check the run against
+   * its own.  What the receiver may do with it is in
+   * {@link onMembershipRefused}.
+   */
+  private refuseMembership(stored: Member, peer: NodeAddress): void {
+    const refusal: MembershipRefusedMessage = {
+      kind: 'membership-refused',
+      from: this.selfAddress.toJSON(),
+      subject: stored.address.toJSON(),
+    };
+    this.transport.send(peer, refusal);
+  }
+
+  /**
+   * A peer says it holds this run as `removed` (#940).
+   *
+   * Taken as a fact about the **peer** — it will not have this node back — and
+   * never as one about this node's own status, which stays this node's to
+   * author ({@link maySpeakFor}).  So the peer is parked at `unreachable`, its
+   * heartbeats no longer bring it back ({@link refusedBy}), and the verdict is
+   * left to this node's own downing provider, exactly as for a partition: under
+   * `KeepMajority`, a node every peer refuses is a minority of one and downs
+   * itself once the view has held still for `stable-after`.
+   *
+   * That is what keeps the frame from being a remote kill switch.  Whoever can
+   * forge it for a peer's connection achieves what dropping that peer's traffic
+   * already achieves, and nothing a provider would not also decide on a real
+   * partition.  A refusal naming another run — a tombstone a peer still holds
+   * for this address's previous process — is ignored, as is one from a
+   * connection that is not a member this node holds.
+   */
+  private onMembershipRefused(from: NodeAddress, message: MembershipRefusedMessage): void {
+    const ownRun = this.selfAddress.incarnation;
+    if (ownRun === undefined || message.subject.incarnation !== ownRun) return;
+    if (NodeAddress.fromJSON(message.subject).toString() !== this.selfAddress.toString()) return;
+    const key = from.toString();
+    const member = this.members.get(key);
+    if (member === undefined || member.status === 'removed' || member.address.equals(this.selfAddress)) return;
+    if (!this.refusedBy.has(key)) {
+      this.refusedBy.add(key);
+      this.log.warn(
+        `${from} holds this node as removed and no longer accepts it; treating it as unreachable — `
+        + (this.downing === null
+          ? 'no downing provider is configured, so nothing here will take this node out'
+          : 'this node\'s downing provider decides whether it goes'),
+      );
+    }
+    if (member.status === 'up') this.updateMember(member.withStatus('unreachable'));
   }
 
   /**
@@ -1254,57 +2976,52 @@ export class Cluster {
    * — see {@link maySpeakFor} (#562).
    */
   private onGossip(from: NodeAddress, message: GossipMessage): void {
-    // Before anything the frame could achieve, including the failure-detector
-    // refresh below: a replayed frame is a recording, not evidence that anyone
-    // is alive.  The connection itself is still credited — `handleWire` bumped
-    // the detector for `from` on arrival, and bytes did arrive.
+    // Before anything the frame could achieve: a replayed frame is a
+    // recording, not evidence that anyone is alive.  The connection itself is
+    // still credited — `handleWire` credited `from` with liveness on arrival,
+    // and bytes did arrive.
+    //
+    // Nothing here credits the failure detector, for anyone: the connection's
+    // peer is `handleWire`'s, and the payload's `from` is a claim.  Crediting
+    // the address it names let any peer keep a crashed member looking healthy
+    // by naming it once per interval, which suspends its singleton and shard
+    // failover (#939); and a gossip frame is no heartbeat, so it has no sample
+    // to give either (#1451).
     if (!this.admitsGossipSequence(from, message.sequence)) {
       this.refusalCounts['replayed-frame'] += message.members.length;
       this.reportRefusals(from, 'replayed-frame', message.members.length);
       return;
     }
-    const sender = NodeAddress.fromJSON(message.from);
-    // The failure detector's sample map is the *second* thing `message.from`
-    // could grow without bound, and capping only the member map would have
-    // moved #138 one map to the left rather than closed it: a sample is
-    // allocated per distinct address, and nothing prunes one that has no
-    // member behind it — `forget` is only called when a member is removed.
-    //
-    // The gate is an allocation bound, not a re-litigation of who may refresh
-    // whom: `sender` equals `from` for every honest frame (the connection is
-    // the peer), and a known member stays refreshable, so no legitimate
-    // heartbeat is lost.  What it refuses is an address that is neither the
-    // connection's peer nor anything this node tracks — which is only
-    // reachable by forging the payload field.
-    if (sender.equals(from) || this.members.has(sender.toString())) {
-      this.failureDetector.heartbeat(sender);
-    }
-    this.log.debug(`gossip from ${sender}: ${message.members.length} member(s)`);
+    this.log.debug(`gossip from ${from}: ${message.members.length} member(s)`);
 
     // Snapshot the sender's standing *before* merging: this frame may be the
     // one that introduces the sender, and a claim must not be authorised by a
     // membership the same frame just created.
     const senderStatus = this.members.get(from.toString())?.status;
+    if (senderStatus === undefined && this.isFromForeignCluster(from, message)) {
+      this.onForeignCluster(from, message);
+      return;
+    }
     const refusedBefore: GossipRefusalCounts = { ...this.refusalCounts };
 
     for (const data of message.members) {
       this.mergeMember(from, senderStatus, data);
     }
 
-    // Ensure we know about the sender itself.  This insert sits *outside*
-    // `mergeMember`, so it bypassed every guard the merge path grew — it is
-    // capped here explicitly rather than left as the one door #138 forgot to
-    // close.  `sender` is the payload's self-declaration, not the connection's
-    // peer, which makes it the cheaper of the two addresses to fabricate.
-    if (!this.members.has(sender.toString())) {
-      const member = new Member(sender, 'joining', 1);
-      if (this.admitsMember(member, undefined)) {
-        this.setMember(member);
-        this.emit(new MemberJoined(member));
-      }
-    }
-
+    // No member is filed from the payload's `from` (#939).  A door here used
+    // to add it as `joining` when this node held no record of it — outside
+    // `mergeMember`, so with no `maySpeakFor` at all, and keyed on a field the
+    // sender writes rather than on the connection it came in on.  One frame
+    // naming a low-sorting address made that address a member, the leader
+    // promoted it, and `leader()` moved to a node that does not exist; and a
+    // member is an address the heartbeat and gossip ticks dial, so it was also
+    // a way to make this node connect wherever the frame said (#936).  The
+    // door had no legitimate use: every gossip frame carries the sender's own
+    // record — `gossipTick` sends the whole map, self included, and a join's
+    // first frame is `[me]` — so a sender is introduced by the loop above, as
+    // a self-announcement held to the connection's identity.
     this.rememberGossipSequence(from, message.sequence);
+    this.withdrawRefusalOnGossip(from, message);
 
     // One line and one counter increment per frame and reason, not per refused
     // record: an attacker who has just lost the memory growth must not be
@@ -1315,15 +3032,175 @@ export class Cluster {
       this.reportRefusals(from, reason, this.refusalCounts[reason] - refusedBefore[reason]);
     }
 
-    // Leader promotes joining (and weakly-up) members to up.
-    if (this.isLeader()) {
-      for (const member of this.members.values()) {
-        if (member.status === 'joining' || member.status === 'weakly-up') {
-          this.log.debug(`leader-promote: ${member.address} ${member.status}→up`);
-          this.updateMember(member.withStatus('up'));
-        }
-      }
+    // Leader promotes joining (and weakly-up) members to up — and, when this
+    // frame is the one that took the member map over `minimumMembersBeforeUp`,
+    // runs the self-election that threshold was holding.  On the founder there
+    // is no leader yet, so the second half is the only one that can act (#837).
+    this.leaderActionsTick();
+  }
+
+  /**
+   * Dial, once more, every seed this node is up without having met (#1176).
+   *
+   * Seed contact used to stop once this node was up, and gossip and
+   * heartbeats only ever go to members already in the map — so two clusters
+   * of the same name that formed while a startup partition kept them apart
+   * never sent each other a frame again, and the fork lasted until one side
+   * restarted.  A slow re-dial is what lets them meet; what then happens is
+   * {@link onForeignCluster}'s.  The frame carries the whole membership, so the
+   * other side can tell how large this island is.
+   */
+  private redialUnmetSeeds(): void {
+    if (this.members.get(this.selfAddress.toString())?.status !== 'up') return;
+    const unmet = this.seedAddrs.filter((seed) => {
+      const known = this.members.get(seed.toString());
+      return known === undefined;
+    });
+    if (unmet.length === 0) return;
+    const gossip: GossipMessage = {
+      kind: 'gossip',
+      from: this.selfAddress.toJSON(),
+      sequence: this.nextGossipSequence(),
+      members: Array.from(this.members.values()).map((member) => this.memberDataForGossip(member)),
+      islandProbe: true,
+    };
+    for (const seed of unmet) this.transport.send(seed, gossip);
+  }
+
+  /**
+   * Whether a gossip frame comes from a node of a second cluster with this
+   * name (#1176): it is an island probe (`GossipMessage.islandProbe`), this
+   * node is up, holds no record of the sender, the sender
+   * announces itself `up` or `leaving` — past joining, so a member of some
+   * cluster — and the frame does not list this node at all.
+   *
+   * The last condition is what tells a foreign island from a member of this
+   * cluster that this node has simply not heard of yet: a node promoted by
+   * this cluster's leader a moment ago gossips a membership that contains this
+   * node, and a node of another island has never heard of it.
+   */
+  private isFromForeignCluster(from: NodeAddress, message: GossipMessage): boolean {
+    if (message.islandProbe !== true) return false;
+    if (this.members.get(this.selfAddress.toString())?.status !== 'up') return false;
+    const selfKey = this.selfAddress.toString();
+    const fromKey = from.toString();
+    let senderIsAMember = false;
+    for (const data of message.members) {
+      const key = NodeAddress.fromJSON(data.address).toString();
+      if (key === selfKey) return false;
+      if (key === fromKey) senderIsAMember = data.status === 'up' || data.status === 'leaving';
     }
+    return senderIsAMember;
+  }
+
+  /**
+   * A node of a second cluster with this name was heard from: refuse its frame,
+   * say so, and — with `down-smaller-island` on — down this island if it is the
+   * smaller one (#1176).
+   *
+   * Refused, not merged.  Merging would happen by accident the moment one
+   * record crossed — the first-sighting path admits an `up` record and every
+   * third-party record after it — and leave two singletons and two shard maps
+   * believing they are the only ones.  Neither side can repair that.
+   *
+   * The resolution is the same on both sides, computed from what each sees of
+   * the other: the island with fewer live members downs itself, and on a tie
+   * the one whose lowest address sorts higher.  It goes through the ordinary
+   * downing route, so `SelfRemoved` and the shutdown pipeline follow.
+   */
+  private onForeignCluster(from: NodeAddress, message: GossipMessage): void {
+    this.refusalCounts['foreign-cluster'] += 1;
+    const live = (statuses: Iterable<{ status: MemberStatus; key: string }>): string[] => {
+      const out: string[] = [];
+      for (const { status, key } of statuses) {
+        if (status !== 'down' && status !== 'removed') out.push(key);
+      }
+      return out.sort();
+    };
+    const theirs = live(message.members.map((data) => ({
+      status: data.status, key: NodeAddress.fromJSON(data.address).toString(),
+    })));
+    const ours = live(Array.from(this.members.values(), (member) => ({
+      status: member.status, key: member.address.toString(),
+    })));
+    const theirLowest = theirs[0] ?? from.toString();
+    const ourLowest = ours[0] ?? this.selfAddress.toString();
+    const weLose = ours.length < theirs.length || (ours.length === theirs.length && ourLowest > theirLowest);
+    if (!this.reportedIslands.has(theirLowest)) {
+      this.reportedIslands.add(theirLowest);
+      // Answer once with this island's membership: only the side whose seeds
+      // name the other re-dials, and the meeting has to be mutual for the
+      // other side to learn of it — and, with the resolution on, to learn
+      // whether it is the one that goes.
+      this.transport.send(from, {
+        kind: 'gossip',
+        from: this.selfAddress.toJSON(),
+        sequence: this.nextGossipSequence(),
+        members: Array.from(this.members.values()).map((member) => this.memberDataForGossip(member)),
+        islandProbe: true,
+      });
+      this.log.error(
+        `a second cluster named "${this.system.name}" is reachable at ${from}: ${theirs.length} member(s) led from `
+        + `${theirLowest}, against ${ours.length} here.  The two formed apart — a startup partition — and are not `
+        + 'merged; their frames are refused.  '
+        + (this.downSmallerIsland
+          ? (weLose ? 'This is the smaller island, so it downs itself (down-smaller-island = on).'
+            : 'This is the larger island; the other one downs itself (down-smaller-island = on).')
+          : 'Restart the nodes of one side to join the other, or set actor-ts.cluster.down-smaller-island = on.'),
+      );
+    }
+    if (!this.downSmallerIsland || !weLose) return;
+    const decision = new Set(ours);
+    this.applyDowningDecision(decision, `island:${theirLowest}`);
+  }
+
+  /**
+   * A gossip frame from a peer that refused this node, and that still lists
+   * this run as a member, withdraws the refusal (#940).
+   *
+   * A peer that really removed this node never gossips to it — `gossipTick`
+   * targets the members it holds reachable, and a tombstone is not one — so
+   * this frame says the refusal was not that peer's view after all: forged on a
+   * connection that claimed the peer's identity, or overtaken by an operator
+   * who re-admitted nothing, since a removed run cannot be re-admitted.  The
+   * peer then returns to `up` on its next heartbeat, as a parked peer does.  What keeps a forged refusal from
+   * sticking is therefore the real peer's own traffic, which a forger cannot
+   * withhold.
+   */
+  private withdrawRefusalOnGossip(from: NodeAddress, message: GossipMessage): void {
+    const key = from.toString();
+    if (!this.refusedBy.has(key)) return;
+    const ownRun = this.selfAddress.incarnation;
+    const selfKey = this.selfAddress.toString();
+    const listsThisRun = message.members.some((data) =>
+      data.address.incarnation === ownRun
+      && NodeAddress.fromJSON(data.address).toString() === selfKey
+      && data.status !== 'down' && data.status !== 'removed');
+    if (!listsThisRun) return;
+    this.refusedBy.delete(key);
+    this.log.info(`${from} gossips this node as a member again; withdrawing its earlier refusal`);
+  }
+
+  /**
+   * Whether every other member this node holds has refused it — each one is
+   * `unreachable` here because it answered a heartbeat with
+   * `membership-refused` (#940).
+   *
+   * {@link evaluateDowning} consults the provider at once on such a view
+   * instead of waiting out `stable-after`.  The window exists so a verdict is
+   * about a settled fact rather than a view read mid-churn, and this view is
+   * as settled as one gets: no peer is merely silent, each has said, for this
+   * very run, that it removed it.  Waiting would be time spent as a cluster of
+   * one — leading, hosting the singleton, starting every shard the survivors
+   * already run.  The provider still decides; under `KeepMajority` a node
+   * every peer refuses is a minority of one.
+   */
+  private everyPeerRefuses(allMembers: readonly Member[]): boolean {
+    const peers = allMembers.filter((member) =>
+      !member.address.equals(this.selfAddress)
+      && member.status !== 'down' && member.status !== 'removed');
+    return peers.length > 0 && peers.every((member) =>
+      member.status === 'unreachable' && this.refusedBy.has(member.address.toString()));
   }
 
   /**
@@ -1338,8 +3215,8 @@ export class Cluster {
    * Against a converged receiver that is harmless — every record loses the
    * `incoming.version <= existing.version` comparison in {@link mergeMember}.
    * What makes it an exploit is an entry the receiver has **deleted**: the
-   * failure-detector down path deletes outright so a healed partition can
-   * re-discover the peer, and {@link tombstonePruneTick} deletes an expired
+   * failure-detector down path (under `auto-down = on`) deletes outright, and
+   * {@link tombstonePruneTick} deletes an expired
    * tombstone.  Either leaves `existing === undefined`, and that branch of
    * `mergeMember` has no lower version bound at all — so replaying a downed
    * member's own pre-down record brings it back at its old version, `up`, and
@@ -1435,8 +3312,12 @@ export class Cluster {
    * where C's own counter has reached.
    *
    * **Only for an address the member map holds**, which is what bounds this map
-   * by the same caps as that one — the sender fallback above has already run, so
-   * an honest peer is on file by the time this is asked.
+   * by the same caps as that one.  Every frame carries the sender's own record
+   * and the merge loop has just run over it, so an honest peer whose record was
+   * admitted is on file by the time this is asked.  One whose record was refused
+   * — a clock past `maxVersionSkewMs`, a full member map — gets no mark, which
+   * costs nothing: its next frame is judged against no mark, as a first frame
+   * is, and it is not a member to be replayed into anyway.
    *
    * Plausibility is not re-checked here: {@link admitsGossipSequence} refuses an
    * implausible frame outright, so nothing that reaches this point carries a
@@ -1485,6 +3366,12 @@ export class Cluster {
       .with('self-claim', () =>
         'a status for this node itself that is neither the one it already holds nor the leader '
         + 'promoting it to up — this node is the author of its own status (#562)')
+      .with('foreign-cluster', () =>
+        'a node of a second cluster with this name — one that formed apart from this one, during a '
+        + 'startup partition — which neither side ever admitted; the two are not merged (#1176)')
+      .with('removed-run', () =>
+        'a run this node removed — the same address and incarnation as a tombstone it holds; only a '
+        + 'restart, with a new incarnation, can join again (#940, #823)')
       .exhaustive();
   }
 
@@ -1570,11 +3457,32 @@ export class Cluster {
     //    arbitrary user-spawned actor (no extension routing).  This also
     //    happens to be functionally identical to sharding's own
     //    dispatchEnvelope for region paths (both end in `ref.tell(body)`).
+    //
+    //    This step is the one place a remote party names its own target, so it
+    //    is the one place a trust boundary can sit (#877, #964).  `_resolvePath`
+    //    walks from the *root* cell and has no guardian scope, which is what
+    //    made `/system/…` as reachable as `/user/…`; the policy is consulted
+    //    before the walk, so a refusal never depends on whether the actor
+    //    happens to exist and cannot double as an existence oracle.  A refused
+    //    path returns rather than falling through to the catch-all below —
+    //    otherwise step 3 is the bypass.
     const segs = parsePathSegments(decoded.to);
     if (segs.length > 0) {
+      const refusal = this._envelopeTrust.refusalFor(segs);
+      if (refusal !== null) {
+        this._envelopeTrust.report(from, 'envelope', refusal);
+        return;
+      }
       const refOpt = this.system._resolvePath(segs);
       if (refOpt.isSome()) {
-        refOpt.value.tell(decoded.body as never);
+        // The sender rides along as a ref to wherever the frame came from, so
+        // `context.sender` names the remote actor the way it names a local
+        // one (#1561).  The path is the peer's own claim about itself and is
+        // used for nothing but addressing a reply *back to that peer* — a
+        // forged `/system/…` here is refused by the peer's own trust policy
+        // when the reply arrives, so it needs no gate on this side.
+        const sender = decoded.from === null ? null : new RemoteActorRef(from, decoded.from, this);
+        refOpt.value.tell(decoded.body as never, sender);
         return;
       }
     }
@@ -1621,13 +3529,18 @@ export class Cluster {
     // `tombstonePruneTick` uses to drop the entry once `tombstoneTtlMs`
     // has elapsed (#75).
     this.setMember(removed);
-    this.failureDetector.forget(peer);
     this.emit(new MemberLeft(leaving));
     this.emit(new MemberRemoved(removed));
     this.maybeEmitLeaderChange();
   }
 
   private gossipTick(): void {
+    // Leader actions run on the gossip cadence, before the push: this is the
+    // only timer armed unconditionally for the whole life of the node, so it
+    // is what re-opens a membership gate whose count rose by a route that does
+    // not end in `onGossip` — and, on a founder with no seeds, the only thing
+    // that ever looks again (#837).
+    this.leaderActionsTick();
     const targets = this.reachableMembers().filter(member => !member.address.equals(this.selfAddress));
     if (targets.length === 0) return;
     // Push to one random reachable peer each tick — epidemic style.
@@ -1668,24 +3581,50 @@ export class Cluster {
       // they are two coarser readings of: one of them only fires for a member
       // that was `up`, the other only once the peer is being evicted.
       this.trackReachability(member, decision);
+      // Heard from again, so no longer parked: forget the warning, and a
+      // second silence is reported in its turn.
+      if (decision !== 'down') this.parkedWithoutResolver.delete(member.address.toString());
       if (decision === 'unreachable' && member.status === 'up') {
         this.log.debug(`FD: ${member.address} → unreachable (heartbeat timeout)`);
+        // Announces `MemberUnreachable` itself — see `emitStatusTransition` (#1428).
         this.updateMember(member.withStatus('unreachable'));
-        this.emit(new MemberUnreachable(this.members.get(member.address.toString())!));
       } else if (decision === 'down' && member.status !== 'down' && member.status !== 'removed') {
-        this.log.debug(`FD: ${member.address} → down (was ${member.status}); deleting from membership`);
+        // A provider decides instead of the detector (#929), and with no
+        // provider the detector removes on its own word unless the deployment
+        // opted out with `auto-down = off`, which parks the peer (#1426).
+        if (this.downing !== null || !this.failureDetectorAutoDown) {
+          this.holdForResolver(member);
+          continue;
+        }
+        // The default route: no provider and `auto-down = on`.  At info, because
+        // it is a membership change no strategy and no operator ordered, and
+        // the line someone reads afterwards to learn why a member went (#994).
+        this.log.info(`FD: ${member.address} → down (was ${member.status}); auto-down removes it from membership`);
         const downed = member.withStatus('down');
+        // Announces `MemberDown` itself — see `emitStatusTransition` (#1428).
         this.updateMember(downed);
-        this.emit(new MemberDown(downed));
-        // Note: FD-driven downing is the *advisory* fallback when no
-        // `DowningProvider` is configured.  We delete here (rather
-        // than tombstone) so a partition followed by a heal can
-        // recover the peer — `partition+heal` semantics rely on
-        // this.  Definitive downing paths (`onLeave`,
-        // `evaluateDowning` force-down) tombstone instead, which
-        // prevents stale gossip from resurrecting the address.
+        // Deleted, where every other removal tombstones (`onLeave`,
+        // `evaluateDowning`'s force-down, `down()`): the one route with no
+        // refusal.  Nothing is left to refuse a later record for the address,
+        // so a peer whose view still carries it re-introduces it on the next
+        // merge — with two survivors that have not deleted it at the same
+        // instant, a crashed member comes back as `unreachable` and is removed
+        // again on every `down-after`, `MemberRemoved` and all — and the same
+        // run can come back after its remote watchers were told
+        // `addressTerminated`.  It used to be justified as letting a
+        // restart on the same `host:port` rejoin cleanly; a restart is a new
+        // incarnation whose base version out-versions a tombstone anyway (see
+        // `mergeMember`), so that reason never held.  Kept as it was — #1426
+        // made the route switchable, not different; whether it should
+        // tombstone is #940's.
+        //
+        // Deleting does *not* buy a partition+heal recovery, and the note
+        // that used to stand here claimed it did.  `gossipTick` and
+        // `heartbeatTick` both target `reachableMembers()`, which excludes
+        // `unreachable` — and after this delete the peer is not in the map
+        // at all — so a symmetric partition leaves neither side with a way
+        // to hear the other again.  Closing that is #930.
         this.deleteMember(member.address.toString());
-        this.failureDetector.forget(member.address);
         // Transient `removed` Member only used for the event emit —
         // not stored, so the missing `removedAt` here is intentional.
         const removed = downed.withStatus('removed');
@@ -1695,6 +3634,90 @@ export class Cluster {
     // Optional split-brain resolver — runs after the failure-detector
     // pass so it sees the latest unreachable set.
     if (this.downing) this.evaluateDowning();
+  }
+
+  /**
+   * The detector said `down` and its word alone may not remove the peer: park
+   * it at `unreachable` and evict nothing.  Two cases arrive here.
+   *
+   * - **A {@link DowningProvider} is configured** — eviction is the resolver's
+   *   call (#929).
+   * - **No provider, and auto-down is off** — the opt-out (#1426).  Nobody is
+   *   going to decide, so the peer stays parked until an operator does
+   *   (`down()`, `POST /cluster/down`) or the deployment configures a strategy.
+   *   It is what a deployment chooses when a forked cluster costs more than a
+   *   crashed node held as a member: the detector cannot tell a crash from a
+   *   partition, and under a partition every node on each side reaches `down`
+   *   for every node on the other at about the same moment, so the default
+   *   removal forks the cluster.  Logged once per parked peer at warn
+   *   ({@link reportParkedWithoutResolver}), or a crashed node would sit at
+   *   `unreachable` for good with nothing in the log.
+   *
+   * **Why the detector must not evict when a provider is configured.**
+   * `evaluateDowning` runs at the end of the same tick, and it builds
+   * `view.unreachable` from members whose status *is* `unreachable`.  Evicting
+   * first therefore handed the resolver a view this loop had already emptied:
+   * every bundled strategy filters its candidates on that set, so a deleted
+   * member reads as a healed cluster and the strategy decides nothing.  The
+   * window the detector left was `down-after` minus `unreachable-after` — 3 s
+   * on the reference defaults — and two strategies need more than that:
+   * `LeaseMajority`'s acquire is asynchronous with a 5 s default budget, and a
+   * stability window (#839) is measured in tens of seconds.
+   *
+   * **Why the re-mark is not redundant** with the `unreachable` arm above:
+   * that arm only fires for a member that was `up`.  A peer that fell silent
+   * while `joining`, `weakly-up` or `leaving` arrives here unmarked, and all
+   * five bundled strategies filter their candidates to
+   * `up | leaving | unreachable`, so leaving it unmarked would park it outside
+   * every resolver's reach on every node but the leader.
+   *
+   * **Only `MemberUnreachable` is announced, never `MemberDown`.**  `MemberDown`
+   * is a membership fact, and the detector's verdict is not one: what reacts to
+   * it — `ClusterSingletonManager`'s reconciliation, remote death watch's
+   * node-loss `Terminated` — would act on a peer that may still be running.
+   * `updateMember` emits the transition itself, so this does not emit again.
+   *
+   * **What parking does and does not do.**  The peer stays a member — counting
+   * against `maxMembers`, with no shard reallocated, no node-loss `Terminated`,
+   * nothing that prunes on `MemberRemoved` pruning it, and no tombstone or
+   * delete.  It does *not* keep a partitioned cluster at one singleton:
+   * {@link leader} counts only `up` members, so parking the leader elects
+   * another, and a singleton or shard coordinator that follows the leader
+   * moves with it on `LeaderChanged`.  A parked peer returns to `up` on the
+   * next heartbeat it sends this node ({@link onHeartbeat}); after a symmetric
+   * partition that heartbeat never comes, since neither side heartbeats a peer
+   * it holds unreachable — closing that is #930.
+   */
+  private holdForResolver(member: Member): void {
+    if (this.downing === null) this.reportParkedWithoutResolver(member);
+    if (member.status === 'unreachable') return;
+    const holder = this.downing === null ? 'until it is removed (auto-down off)' : 'for the downing provider';
+    this.log.debug(`FD: ${member.address} → down (was ${member.status}); holding at unreachable ${holder}`);
+    this.updateMember(member.withStatus('unreachable'));
+  }
+
+  /**
+   * Say, once per parking, that nothing is going to remove `member` (#1426).
+   *
+   * At warn because it is the opt-out's one visible cost: with no strategy
+   * and auto-down off, a crashed node stays a member indefinitely, and the
+   * operator who has to act is told which node, which two keys put the
+   * cluster in this state, and the three ways out.  Not repeated per tick —
+   * see {@link parkedWithoutResolver}.
+   */
+  private reportParkedWithoutResolver(member: Member): void {
+    const key = member.address.toString();
+    if (this.parkedWithoutResolver.has(key)) return;
+    this.parkedWithoutResolver.add(key);
+    const { cluster: clusterKeys, management: managementKeys } = ConfigKeys;
+    this.log.warn(
+      `FD: ${member.address} was declared down by the failure detector and is parked at unreachable; `
+      + 'nothing will remove it — no split-brain strategy is configured '
+      + `(${clusterKeys.splitBrainResolver.activeStrategy} = off) and `
+      + `${clusterKeys.failureDetector.autoDown} is off.  If the node is gone, remove it with `
+      + `Cluster.down(address) or POST /cluster/down (${managementKeys.enableDownEndpoint} = on), `
+      + 'or configure a strategy.',
+    );
   }
 
   /**
@@ -1728,6 +3751,29 @@ export class Cluster {
    * (if any) need to be force-downed.  Debounces by the JSON shape of
    * the unreachable set + member view so a steady-state cluster
    * doesn't re-invoke the provider on every tick.
+   *
+   * In front of that sits the **stability window** (#839): the provider is not
+   * asked at all until the view has held still for `stableAfterMs`.  Every
+   * bundled strategy is a pure function of one view, so a view read mid-churn
+   * — half the peers already `unreachable`, the rest about to be — produces a
+   * verdict about a cluster that existed at no instant.  The window is what
+   * makes a decision be about a settled fact.
+   *
+   * …with a ceiling on it, because a window with none is not a careful version
+   * of arbitration but the absence of it: the fingerprint covers every
+   * member's status, so any join, leave or transition anywhere restarts the
+   * window, and a deployment whose membership moves more often than
+   * `stable-after` would never arbitrate a partition at all.  Once one peer
+   * has been continuously unreachable for `unreachableArbitrationDeadlineMs`,
+   * that peer's silence is a settled fact whatever else is moving, and the
+   * provider is consulted on it.
+   *
+   * No new timer: this method is already called from `failureDetectionTick`,
+   * so the clock is `failureDetector.interval` and the window's resolution is
+   * one heartbeat cadence (500 ms shipped).  That is invisible at the shipped
+   * 20 s window and worth knowing at a 200 ms one.  `Date.now()` is read once
+   * per tick and handed to all three window calls, so one tick cannot be
+   * measured against two different instants.
    */
   private evaluateDowning(): void {
     if (!this.downing) return;
@@ -1744,14 +3790,30 @@ export class Cluster {
       .map((member) => `${member.address.toString()}:${member.status}`)
       .sort()
       .join('|');
-    // Debounce only when the LAST evaluation produced an applied
-    // decision.  Strategies that need multiple ticks to converge
-    // (e.g. `LeaseMajority` with an in-flight `acquire()`) will
-    // return an empty set on the first call and a real decision on
-    // a later call WITH THE SAME FINGERPRINT — we must keep
-    // re-asking them.  `lastDownedView === null` means "nothing
-    // committed yet", so we evaluate.
-    if (this.lastDownedView !== null && fingerprint === this.lastDownedView) return;
+    this.appliedDecision.observe(fingerprint);
+    const now = Date.now();
+    const settled = this.stabilityWindow.observe(fingerprint, unreachable, now);
+    if (!settled && !this.everyPeerRefuses(allMembers)) {
+      // Escalation is asked first: stopping a cluster that cannot converge at
+      // all outranks arbitrating one peer inside it, and the ceiling below
+      // would otherwise put the provider in front of a switch an operator
+      // turned on precisely to bypass every strategy.
+      const unstableForMs = this.stabilityWindow.takeEscalation(unreachable, now);
+      if (unstableForMs !== null) {
+        this.downAllBecauseUnstable(unstableForMs, allMembers, unreachable, fingerprint);
+        return;
+      }
+      if (!this.stabilityWindow.hasOutlastedChurn(now)) return;
+    }
+    // Debounce only when an evaluation on this very view produced an applied
+    // decision.  Strategies that need multiple ticks to converge (e.g.
+    // `LeaseMajority` with an in-flight `acquire()`) return an empty set on
+    // the first call and a real decision on a later call WITH THE SAME
+    // FINGERPRINT — an empty answer records nothing, so they are asked again.
+    if (this.appliedDecision.covers(fingerprint)) {
+      this.log.debug(`downing: a decision was already applied on this view; not asking again [${fingerprint}]`);
+      return;
+    }
     const view: ClusterPartitionView = {
       allMembers,
       unreachable,
@@ -1765,7 +3827,59 @@ export class Cluster {
       return;
     }
     if (toDown.size === 0) return;
-    this.lastDownedView = fingerprint;
+    this.applyDowningDecision(toDown, fingerprint);
+  }
+
+  /**
+   * `down-all-when-unstable` has fired: stop the whole cluster, self included,
+   * because the view never once held still for `stableAfterMs` across a run of
+   * changes longer than `unstableEscalationDeadlineMs` (#839).
+   *
+   * Whether it fires is {@link StabilityWindow.takeEscalation}'s decision,
+   * which also consumes the run so this announces itself exactly once; what
+   * remains here is the announcement and the decision, because both need the
+   * cluster's own log and member map.
+   *
+   * Announced at `warn` with the span and the member count.  An operator who
+   * finds a cluster gone has to be able to find the line that says a timer did
+   * it, not a strategy.
+   */
+  private downAllBecauseUnstable(
+    unstableForMs: number,
+    allMembers: readonly Member[],
+    unreachable: ReadonlySet<string>,
+    fingerprint: string,
+  ): void {
+    this.log.warn(
+      `${ConfigKeys.cluster.splitBrainResolver.downAllWhenUnstable} is on and the membership `
+      + `view has not held still for ${this.stableAfterMs} ms at any point in the last `
+      + `${unstableForMs} ms, with ${unreachable.size} member(s) still unreachable — downing `
+      + `all ${allMembers.length} member(s), this node included. No strategy was consulted: `
+      + 'a view this unsettled is not evidence any of them could decide on.',
+    );
+    this.applyDowningDecision(
+      new Set(allMembers.map((member) => member.address.toString())),
+      fingerprint,
+    );
+  }
+
+  /**
+   * Force-down every address in a decision — the one place a downing verdict
+   * is turned into membership changes, whether it came from the provider or
+   * from the unstable-escalation path.
+   *
+   * A decision that includes this node makes it leave, and with
+   * {@link runCoordinatedShutdownWhenDown} on also run the coordinated-shutdown
+   * pipeline with `ClusterDowningReason` (#1456) — see
+   * {@link leaveAfterDowningSelf}, which ends in `SelfRemoved`.  This node's
+   * own verdict is the whole of that trigger: a downing a *peer* decides about
+   * this node is refused at the merge, so it never arrives here.  A node the
+   * peers removed learns of it as a `membership-refused` answer to its
+   * heartbeats, parks those peers, and comes here through its own provider
+   * (#940).
+   */
+  private applyDowningDecision(toDown: ReadonlySet<string>, fingerprint: string): void {
+    this.appliedDecision.record(fingerprint);
     const selfKey = this.selfAddress.toString();
     const downsSelf = toDown.has(selfKey);
     for (const key of toDown) {
@@ -1778,21 +3892,74 @@ export class Cluster {
       if (!member) continue;
       if (member.status === 'down' || member.status === 'removed') continue;
       const downed = member.withStatus('down');
+      // Announces `MemberDown` itself — see `emitStatusTransition` (#1428).
       this.updateMember(downed);
-      this.emit(new MemberDown(downed));
       // Tombstone (don't delete) so later gossip from peers that
       // haven't seen the force-down can't resurrect this address.
       // `removedAt` lets `tombstonePruneTick` reclaim the entry
       // after `tombstoneTtlMs` (#75).
       const removed = downed.withRemoved(Date.now());
       this.setMember(removed);
-      this.failureDetector.forget(member.address);
       this.emit(new MemberRemoved(removed));
     }
-    if (downsSelf) {
-      void this.leave().catch((e) =>
-        this.log.warn(`self-leave after downing decision failed`, e));
-    }
+    if (downsSelf) this.leaveAfterDowningSelf();
+  }
+
+  /**
+   * The self-down half of {@link applyDowningDecision}: leave, then — with
+   * {@link runCoordinatedShutdownWhenDown} on — run the pipeline (#1456).
+   *
+   * {@link leaveAtOnce} goes first because its synchronous departure is what
+   * stops this node acting as a member: self moves to `leaving`, the reachable
+   * peers are told, gossip and heartbeats stop, and the pipeline's
+   * `cluster-leave` task is dropped, so the run cannot leave a second time.  The
+   * run then starts beside the rest of the leave — the transport closing, the
+   * sharding stopping — rather than behind it, and not behind a hand-off
+   * either: the peers that downed this node do not wait for one.  A leave that
+   * rejects, or never settles, must not be what keeps this
+   * node's actors running: they are the second writer the decision exists to
+   * stop.  `run()` is idempotent, so a run already under way, from a signal
+   * or an operator, is joined rather than doubled, and
+   * `coordinated-shutdown.terminate-actor-system` and `exit-process` still
+   * decide what the run ends in.
+   */
+  private leaveAfterDowningSelf(): void {
+    const firstLeave = this.started;
+    void this.leaveAtOnce().catch((e) =>
+      this.log.warn(`self-leave after downing decision failed`, e));
+    // The departure ran synchronously, so self is `leaving` and nothing here
+    // speaks for this node any more.  The peers that decided the same thing
+    // have tombstoned it; this node's own record follows, which is what
+    // announces `MemberRemoved` and `SelfRemoved` for it (#940).
+    if (firstLeave) this.markSelfRemoved();
+    if (!this.runCoordinatedShutdownWhenDown) return;
+    // At warn, like the escalation's own announcement: an operator who finds
+    // this node gone has to be able to find the line that says its own
+    // verdict, and not a signal, stopped it.
+    this.log.warn(
+      `${ConfigKeys.cluster.runCoordinatedShutdownWhenDown} is on and this node's own downing decision `
+      + 'removed it — running the coordinated-shutdown pipeline with ClusterDowningReason',
+    );
+    void this.system.extension(CoordinatedShutdownId).run(ClusterDowningReason.instance).catch((e: unknown) =>
+      this.log.error('the coordinated-shutdown pipeline this node started after downing itself halted', e));
+  }
+
+  /**
+   * Move this node's own record to `removed` once its own downing decision has
+   * taken it out, announcing `MemberRemoved` and `SelfRemoved` (#940).
+   *
+   * The one place the real `Cluster` emits `SelfRemoved`.  It was declared,
+   * exported, mapped by the DevTools tap and emitted by `MockCluster`, and
+   * unreachable here: the self record went no further than `leaving`, so the
+   * documented "stop when the cluster evicts me" handler never ran.  Only the
+   * downing route ends here; a graceful {@link leave} still stops at `leaving`.
+   */
+  private markSelfRemoved(): void {
+    const me = this.members.get(this.selfAddress.toString());
+    if (me === undefined || me.status === 'removed') return;
+    // Announces `MemberRemoved` and `SelfRemoved` itself — see
+    // `emitStatusTransition` and `statusEventsOf` (#1428).
+    this.updateMember(me.withRemoved(this.system.clock.now()));
   }
 
   /**
@@ -1922,11 +4089,12 @@ export class Cluster {
    *   `members.get(…)` per record, so the first creates the entry under the
    *   tight cap and the second — same frame, same peer — is an update and got
    *   the wide one.
-   * - A frame with **no member records at all**.  `onGossip`'s sender fallback
-   *   files the connection's self-declared address by itself, so the next
-   *   frame is an update too.  That fallback is what makes a refusal cost one
-   *   gossip round rather than being permanent; the same property was the way
-   *   around the cap.
+   * - A frame with **no member records at all**.  `onGossip` used to end with
+   *   a door that filed the frame's self-declared `from` by itself, so the
+   *   next frame was an update too.  That door made a refusal cost one gossip
+   *   round rather than being permanent, and the same property was the way
+   *   around the cap.  It is gone (#939): a sender is introduced only by its
+   *   own record, under this same cap.
    *
    * Any rule that lets a record *earn* the wide cap fails the same way, one
    * step later: without per-node credentials every step of the earning is
@@ -1943,13 +4111,14 @@ export class Cluster {
    * either side of it are far apart: an NTP-disciplined host sits milliseconds
    * from true, a host that never synced at all is hours out.
    *
-   * **What a refusal costs.**  It is not exclusion: a node announcing itself
-   * is still recorded by the sender fallback, at version 1 with no roles.  It
-   * *is* durable, which the two-cap version was not — a node whose clock runs
-   * more than `maxVersionSkewMs` ahead of this one stays in the member list
-   * without roles until its clock comes back inside the budget.  That was
-   * always this cap's verdict on such a node; what changed is that the verdict
-   * now sticks instead of being reversed by the node's second frame.
+   * **What a refusal costs.**  It is exclusion, and it is durable: a node
+   * whose clock runs more than `maxVersionSkewMs` ahead of this one is not
+   * filed at all — its own record is the only thing that could introduce it,
+   * and that is the record refused — so it stays out, with the per-frame
+   * `version-skew` WARN naming the cap on the receiving side, until its clock
+   * comes back inside the budget.  Before #939 the sender door still filed it,
+   * role-less, and before the single cap its second frame reversed the
+   * verdict; neither softening is left.
    * Deployments whose clocks are known to run loose raise the knob.
    */
   private admitsVersion(incoming: Member): boolean {
@@ -1971,14 +4140,22 @@ export class Cluster {
    * connection per address, or one active peer asserting third-party records,
    * allocated an entry per name for free.
    *
-   * **Why the tombstone cap is the load-bearing one.**  The obvious reading of
-   * the attack is "flood phantom members", and it is the weaker half: a phantom
-   * in `up` / `joining` / `unreachable` is a member the failure detector is
-   * watching, so it is downed and deleted `downAfterMs` after the attacker
-   * stops feeding it — seconds, at the default.  A record gossiped as `removed`
-   * is the one that sticks: nothing heartbeats a tombstone, so only
-   * {@link ClusterOptionsType.tombstoneTtlMs} reclaims it, a day later.  That
-   * asymmetry is why the two caps are separate numbers rather than one.
+   * **Why there are two caps.**  The obvious reading of the attack is "flood
+   * phantom members", and that half sticks as well.  A phantom in `up` /
+   * `joining` / `unreachable` is a member the failure detector watches from the
+   * moment it is merged, and nothing ever heartbeats for it, so the detector
+   * declares it `down` — both implementations do, φ measuring the silence from
+   * registration.  Under the default `failure-detector.auto-down = on` that
+   * verdict reclaims it, `downAfterMs` after the attacker stops feeding it —
+   * and only for good once no other node still carries it, because that route
+   * deletes without a tombstone and any node that has not deleted it yet
+   * gossips it back.  With a strategy configured or auto-down off it is parked
+   * at `unreachable` like any silent peer instead, and holds a live slot until
+   * a strategy or an operator removes it (#1426).  A
+   * record gossiped as `removed` is watched by nothing at all, so only
+   * {@link ClusterOptionsType.tombstoneTtlMs} reclaims it, a day later.  Two
+   * residues with two lifetimes, so two separate numbers rather than one —
+   * and `maxMembers` is the whole bound on the live one.
    *
    * **Why the question is about the transition, not the record.**  Capping only
    * *creation* left the two caps trading headroom with each other, and the
@@ -1993,8 +4170,9 @@ export class Cluster {
    *
    * **What "full" costs.**  A refused *tombstone* costs nothing when it would
    * have created an entry: it suppresses an address this node has no record of.
-   * A refused *conversion* leaves the member live, where the failure detector
-   * reclaims it within `downAfterMs` — the slower but self-healing outcome.  A
+   * A refused *conversion* leaves the member live, where it is removed the way
+   * any silent member is — by auto-down at `downAfterMs` under the default, by
+   * a strategy, or by an operator, parked at `unreachable` until then.  A
    * refused *live* record costs one gossip round if it was legitimate, and the
    * operator has a WARN naming the cap.  Refusing the new entry rather than
    * evicting an old one is deliberate: eviction would let an attacker push real
@@ -2065,16 +4243,7 @@ export class Cluster {
       // Last gate before the map grows — after every believability check, so a
       // record that was going to be dropped anyway never consumes cap headroom.
       if (!this.admitsMember(incoming, existing)) return;
-      this.setMember(incoming);
-      this.checkStorageIdentityAgreement(incoming);
-      this.failureDetector.register(incoming.address);
-      this.emit(new MemberJoined(incoming));
-      // If we first learn about the member already in a terminal or
-      // active state (common via gossip merging), also fire the matching
-      // status event so subscribers (ShardRegion, etc.) re-allocate.
-      if (incoming.status !== 'joining') {
-        this.emitStatusTransition(new Member(incoming.address, 'joining', 0), incoming);
-      }
+      this.admitFirstSighting(incoming);
       return;
     }
 
@@ -2092,6 +4261,16 @@ export class Cluster {
     // version monotonicity below would pin the address to
     // `removed` forever even though the higher version is the
     // newer truth.
+    // The same run cannot come back (#940, #823).  Its version is its own to
+    // choose — a stalled process that resumes, or anyone replaying its records,
+    // can restamp it past the tombstone — but its incarnation is the identity
+    // of the process the cluster removed, and only a restart mints a new one.
+    // Cluster wire v2 carries the incarnation on every address, so this is the
+    // refusal the tombstone could not make while a version was all it had.
+    if (existing.status === 'removed' && this.isSameRun(existing, incoming)) {
+      this.refusalCounts['removed-run'] += 1;
+      return;
+    }
     if (existing.status === 'removed' && incoming.version > existing.version) {
       // A revival vacates the tombstone bucket and occupies a live slot, so it
       // is the live cap's call — without this the two caps traded headroom for
@@ -2100,28 +4279,33 @@ export class Cluster {
       this.log.debug(
         `merge: ${incoming.address} re-incarnation (was removed v${existing.version}, now ${incoming.status} v${incoming.version})`,
       );
-      this.setMember(incoming);
-      this.checkStorageIdentityAgreement(incoming);
-      this.failureDetector.register(incoming.address);
-      this.emit(new MemberJoined(incoming));
-      if (incoming.status !== 'joining') {
-        this.emitStatusTransition(new Member(incoming.address, 'joining', 0), incoming);
-      }
+      this.admitFirstSighting(incoming);
       return;
     }
 
-    if (incoming.version <= existing.version) {
-      // Ignored for membership — but the identity overlay still lands, or a
-      // claim published after a member's last status change would never
-      // spread (#1358).
+    if (incoming.version <= existing.version && !this.promotedAtEqualVersion(existing, incoming)) {
+      // Ignored for membership — but the overlays still land, or a claim
+      // published after a member's last status change would never spread
+      // (#1358, #844), and a label a previous-release relay stripped would
+      // never come back (#843).  `from` goes to the two lanes that decide who
+      // may *restate* a value, which is a question the identity lane does not
+      // have, being fill-only.
       this.adoptStorageIdentities(existing, incoming);
+      this.adoptConfigurationFacts(from, existing, incoming);
+      this.adoptAppVersion(from, existing, incoming);
       return;
     }
     // The mirror of the revival check: a live member gossiped as `removed`
     // moves into the tombstone bucket, which frees a live slot for the next
-    // flood while keeping the map entry.  Refused when the bucket is full, and
-    // then the failure detector reclaims the member the slower way (#138).
+    // flood while keeping the map entry.  Refused when the bucket is full; the
+    // member then stays live and goes the way any silent member does — removed
+    // by auto-down at down-after, or parked at `unreachable` until a strategy or
+    // an operator removes it (#138, #1426).
     if (!this.admitsMember(incoming, existing)) return;
+    if (this.isRestartOf(existing, incoming)) {
+      this.replaceIncarnation(existing, incoming);
+      return;
+    }
     if (existing.status !== incoming.status) {
       this.log.debug(
         `merge: ${incoming.address} ${existing.status}→${incoming.status} (v${existing.version}→v${incoming.version})`,
@@ -2129,7 +4313,142 @@ export class Cluster {
     }
     this.setMember(incoming);
     this.checkStorageIdentityAgreement(incoming);
+    this.checkConfigurationAgreement(incoming);
     this.emitStatusTransition(existing, incoming);
+  }
+
+  /**
+   * The one equal-version pair {@link mergeMember} resolves instead of
+   * ignoring (#935): `up` over `weakly-up`.
+   *
+   * Both are successors of the same `joining@E` record.  The member's own
+   * `weaklyUpAfterMs` timer writes `weakly-up@E+1`; the leader, promoting from
+   * the `joining@E` it holds, writes `up@E+1`.  Dropping every record that is
+   * not strictly newer lost the promotion wherever the timer's record had
+   * landed first — on the member itself above all, which then never emitted
+   * `SelfUp` and never became ready while every peer counted it `up`, and
+   * nothing would ever send either side a newer record.  A seed that starts
+   * just after the timer has fired produces exactly this order (#1493).
+   *
+   * Resolving toward `up` loses nothing either record says: `up` is where the
+   * leader's decision leaves the member, and `weakly-up` only the member's own
+   * stand-in for that decision until it arrives.  And it is the same answer on
+   * every node, whichever of the two reached it first, which is what lets
+   * them converge — so it applies to every observer, not only to the member.
+   * Only this pair: every other equal-version disagreement is still ignored,
+   * which is the rest of #935.
+   */
+  private promotedAtEqualVersion(existing: Member, incoming: Member): boolean {
+    return incoming.version === existing.version
+      && existing.status === 'weakly-up'
+      && incoming.status === 'up';
+  }
+
+  /**
+   * Store a record for an address this node holds no live entry for — a
+   * first sighting, a revival over a tombstone, or the new incarnation
+   * {@link replaceIncarnation} makes room for — and announce it joined.
+   *
+   * If the record arrives already past `joining` (common via gossip merging),
+   * the matching status event follows the `MemberJoined`, so subscribers
+   * (ShardRegion, etc.) re-allocate.
+   *
+   * This is the one route by which an address becomes a live member, so it is
+   * where the failure detector's entry for it starts — and its silence clock
+   * with it, at the receipt of the frame that carried the record (#1103).  The
+   * address holds no entry from an earlier run by now: {@link setMember} and
+   * {@link deleteMember} forget one as the member leaves the live set.  The
+   * only entry `register` can find in place is a configured seed's, fed by
+   * that seed's own frames since this node first dialled it, which is the
+   * history worth keeping.  A record that arrives as a tombstone gets none.
+   */
+  private admitFirstSighting(incoming: Member): void {
+    this.setMember(incoming);
+    this.checkStorageIdentityAgreement(incoming);
+    this.checkConfigurationAgreement(incoming);
+    if (incoming.status !== 'removed') this.failureDetector.register(incoming.address);
+    this.emit(new MemberJoined(incoming));
+    if (incoming.status !== 'joining') {
+      this.emitStatusTransition(new Member(incoming.address, 'joining', 0), incoming);
+    }
+  }
+
+  /**
+   * Whether `incoming` is a *different process* at `existing`'s address — a
+   * restart on the same `host:port` — rather than the same run's next record
+   * (#940, #1426).
+   *
+   * Both incarnations have to be known.  A record without one comes from a
+   * peer that predates the field, or through a relay of that version that
+   * stripped it, and then a restart and a reconnect look alike: the frame does
+   * not say which process wrote it.  Such a record keeps the silent
+   * replacement every record had before, because ending a run on a guess
+   * would terminate watches that are still alive.
+   *
+   * A terminal incoming record is not a restart either.  `down` or `removed`
+   * about the address already announces the end through the ordinary
+   * transition, whichever run it names — one `MemberDown` or `MemberRemoved`,
+   * which also reaches the stored run's watchers, since death watch is keyed
+   * on the slot.  Taken as a restart, the same record would be announced as
+   * the stored run's removal, then a `MemberJoined` for a member that arrives
+   * already gone, then the end a second time, and the slot's replay mark
+   * would go at once instead of with its entry (#112).
+   */
+  /** Whether two records name the same run of an address — both incarnations known and equal. */
+  private isSameRun(existing: Member, incoming: Member): boolean {
+    const before = existing.address.incarnation;
+    return before !== undefined && before === incoming.address.incarnation;
+  }
+
+  private isRestartOf(existing: Member, incoming: Member): boolean {
+    if (incoming.status === 'down' || incoming.status === 'removed') return false;
+    const before = existing.address.incarnation;
+    const after = incoming.address.incarnation;
+    return before !== undefined && after !== undefined && before !== after;
+  }
+
+  /**
+   * A new incarnation replaces the record of the old one: end the old run on
+   * this node first, then let the new one join (#1426).
+   *
+   * The merge used to swap the two records by version and say nothing about
+   * the old run, so everything that reacts to a member *leaving* never heard
+   * that it had.  Remote death watch is the sharp case — it terminates the
+   * watchers of a node's actors on `MemberDown` / `MemberRemoved` only, so a
+   * watcher of an actor on the crashed run waited for a `Terminated` that
+   * never came, while the actor it watched was long gone with its process.
+   * Under the shipped `auto-down = on` that was every restart faster than
+   * `down-after`; under `auto-down = off` it was every restart of a parked
+   * peer, whose record nothing else removes.
+   *
+   * So the old run leaves the way the detector's own removal makes a member
+   * leave — `MemberDown` unless it was down already, the entry deleted with its
+   * per-address state, the detector's history forgotten, `MemberRemoved` —
+   * and the new run is then admitted like a first sighting: `MemberJoined`,
+   * and its status event if it arrives past `joining`.  Deleting rather than
+   * tombstoning is safe here, because the new run's record takes the key at a
+   * higher version at once, so a stale copy of the old run gossiped back later
+   * is out-versioned rather than revived.
+   *
+   * Nothing about *whether* the record is accepted changes: it passed
+   * `maySpeakFor` and the version comparison exactly as before.  The
+   * incarnation only decides what is announced, which is why an optional field
+   * is enough to act on here when it would not be enough to refuse on
+   * ({@link NodeAddress.incarnation}).
+   */
+  private replaceIncarnation(existing: Member, incoming: Member): void {
+    this.log.info(
+      `merge: ${incoming.address} restarted (incarnation ${existing.address.incarnation} → `
+      + `${incoming.address.incarnation}); the previous one is removed before the new one joins`,
+    );
+    const downed = existing.withStatus('down');
+    // Announces `MemberDown` itself, and nothing when the old run was already
+    // down — see `emitStatusTransition` (#1428).
+    this.updateMember(downed);
+    this.deleteMember(existing.address.toString());
+    // Transient, like the detector route's: only the event carries it.
+    this.emit(new MemberRemoved(downed.withStatus('removed')));
+    this.admitFirstSighting(incoming);
   }
 
   /**
@@ -2145,6 +4464,25 @@ export class Cluster {
    * a hostile one can send whatever it likes, so the self record's identifier
    * would be whatever the last peer to promote us happened to say.
    *
+   * **The roles are the sharpest case (#1104).**  The promotion exception asks
+   * nothing of the sender — it cannot, see {@link isOwnPromotion} — so while
+   * this node is `joining` any stranger's single frame could promote it *with
+   * roles of the stranger's choosing*.  Roles are what shard placement,
+   * singleton hosting, routing and downing quorums are computed from, and the
+   * node would then gossip the substituted set onward as its own.  They are
+   * this node's configuration ({@link selfRoles}), fixed for the life of the
+   * incarnation, so the local set is taken outright.  A genuine leader
+   * promotes from the record this node gossiped and carries the same set, so
+   * the substitution changes nothing for it.  `removedAt` is kept from the
+   * local record for the same reason: the only status a claim about this node
+   * may set is `up`, and a tombstone timestamp belongs to no `up` record.
+   *
+   * What a promotion still carries is the status and the record's
+   * **version**, which is taken as sent — bounded by the #114 skew cap
+   * ({@link admitsVersion}, `maxVersionSkewMs`) and by nothing else, so a
+   * stranger can still push this node's version up to that bound.  Clamping it
+   * is tracked in #1797; this method deliberately leaves it alone.
+   *
    * Substituting the local address is the one incarnation comparison that needs
    * no distributed agreement, because it only ever discards a peer's claim in
    * favour of a fact this node owns.  It is not a refusal: the promotion still
@@ -2157,15 +4495,52 @@ export class Cluster {
     // the same reason (#1358): they are a fact this node owns.  A leader
     // promoting us from a view that predates our publication would otherwise
     // merge a self record without them — wholesale, per the rule above — and
-    // wipe what only this node can know.
-    const ownIdentities = this.selfStorageIdentitiesSnapshot() ?? member.storageIdentities;
+    // wipe what only this node can know.  Taken outright rather than with
+    // `??`, and that half matters as much (#1104): a node that has resolved
+    // nothing yet — no persistence, or a store still starting — would
+    // otherwise store the promotion's claims as its own, and since
+    // `memberDataForGossip` stamps only a defined snapshot, gossip them onward
+    // too.  A peer with a real journal would then report a mismatch for a
+    // database this node never named and spend its once-per-kind latch on it,
+    // so the genuine divergence that came later would go unreported.  Nothing
+    // is lost by refusing the fallback: an identity resolved after the
+    // promotion goes through `publishStorageIdentity` and rides every outgoing
+    // self record from then on.
+    const ownIdentities = this.selfStorageIdentitiesSnapshot();
+    // The configuration facts are the same kind of thing one field over
+    // (#844): what this node resolved for itself, which no peer is in a
+    // position to restate.  A promotion merged wholesale from a view that
+    // predates our publication would otherwise wipe them from the stored self
+    // record, so `selfMember`, `getMembers` and every membership event would
+    // report this node as publishing nothing.  What it would NOT stop is the
+    // publishing itself: `memberDataForGossip` stamps outgoing frames from
+    // `selfConfigurationFacts`, never from the record, so the frames stay
+    // correct either way.  Worth stating precisely rather than overclaiming —
+    // the field is read by operators and by the DevTools tap, and a self
+    // record that contradicts the frames the same node is sending is its own
+    // kind of wrong.  Taken outright, like the identities above: the
+    // constructor publishes the framework's own facts before the first frame,
+    // so a fallback could only ever fill an empty set — `checked-paths` set to
+    // nothing, or only to names the application has not published yet — with
+    // a peer's, and those are claims this node never made.
+    const ownFacts = this.selfConfigurationFactsSnapshot();
+    // The app version is the plainest of the three (#843): fixed for the life
+    // of this incarnation and known before the first frame, so a peer's record
+    // about it is an echo of ours or wrong.  Taken outright rather than with
+    // `??`, so a promotion cannot hand a node that states none a label either.
+    const ownAppVersion = this.selfAppVersion;
+    const ownRemovedAt = this.members.get(this.selfAddress.toString())?.removedAt;
     if (member.address.incarnation === this.selfAddress.incarnation
-      && ownIdentities === member.storageIdentities) {
+      && ownIdentities === member.storageIdentities
+      && ownFacts === member.configurationFacts
+      && ownAppVersion === member.appVersion
+      && ownRemovedAt === member.removedAt
+      && sameRoles(this.selfRoles, member.roles)) {
       return member;
     }
     return new Member(
-      this.selfAddress, member.status, member.version, member.roles, member.removedAt,
-      ownIdentities,
+      this.selfAddress, member.status, member.version, this.selfRoles, ownRemovedAt,
+      ownIdentities, ownFacts, ownAppVersion,
     );
   }
 
@@ -2177,6 +4552,13 @@ export class Cluster {
    *
    * Keyed by `address.toString()` like every other entry; the map has no other
    * key shape.
+   *
+   * It is also where a member's failure-detector entry ends when the member
+   * becomes a tombstone, whichever route stored it — a local removal or a
+   * gossiped `removed` record (#1103).  Nothing decides about a tombstone, and
+   * an entry left behind would be what its revival inherits: `register` is a
+   * no-op on an existing entry, so the new run would be judged on the old
+   * run's silence and read `unreachable` on the first detection tick.
    */
   private setMember(member: Member): void {
     const key = member.address.toString();
@@ -2184,6 +4566,12 @@ export class Cluster {
     if (previous?.status === 'removed') this.tombstoneCount--;
     if (member.status === 'removed') this.tombstoneCount++;
     this.members.set(key, member);
+    if (member.status === 'removed') {
+      this.failureDetector.forget(member.address);
+      // A refusal is about a peer this node can no longer count on; once the
+      // peer is a tombstone itself there is nothing left to count on (#940).
+      this.refusedBy.delete(key);
+    }
   }
 
   /** The matching delete — see {@link setMember}. */
@@ -2195,10 +4583,19 @@ export class Cluster {
     // Same key space, same lifetime.  A verdict left behind here would make the
     // address's next incarnation look like a peer that had recovered.
     this.reachability.delete(key);
+    // Likewise, or the next incarnation's parking would go unreported (#1426).
+    this.parkedWithoutResolver.delete(key);
+    // Likewise: a refusal belongs to the run that sent it, and the address's
+    // next incarnation has refused nothing (#940).
+    this.refusedBy.delete(key);
     // Likewise: a high-water mark outliving its member would refuse the first
     // frames of the address's next incarnation, whose counter starts from its
     // own clock rather than from where the previous one left off (#112).
     this.acceptedGossipSequences.delete(key);
+    // Likewise, or the next incarnation would inherit this one's silence clock
+    // and interval window (#1103).  A tombstone's entry already went in
+    // `setMember`; this is the one for the routes that delete a live member.
+    this.failureDetector.forget(previous.address);
   }
 
   private updateMember(next: Member): void {
@@ -2217,6 +4614,34 @@ export class Cluster {
     ).set(this.upMembers().length);
   }
 
+  /**
+   * Announce `prev → next` if the status moved — and for every change made
+   * through {@link updateMember} or the gossip merge, this is the only
+   * announcement (#1428).  A caller of {@link updateMember} does not emit the
+   * status event again.
+   *
+   * Four of them did: the detector's `unreachable` and no-provider `down` arms,
+   * an applied downing decision, and the operator's {@link down} each followed
+   * {@link updateMember} with an explicit `MemberUnreachable` or `MemberDown`.
+   * A transition this node observed therefore reached every subscriber twice,
+   * while the same transition learned through gossip arrived once.  This is
+   * the copy worth keeping, for three reasons:
+   *
+   * - the `'events'` replay is built from the same {@link statusEventsOf}, so
+   *   an early subscriber and a late one are told the same thing;
+   * - it runs before any listener can change the member map — the explicit
+   *   `MemberUnreachable` re-read the map after the listeners had run, and a
+   *   listener that downed the peer meanwhile was then told it was unreachable
+   *   with status `removed`, after `MemberRemoved`;
+   * - it precedes {@link maybeEmitLeaderChange}, so when the peer that went
+   *   down was leading, `MemberDown` comes before the `LeaderChanged` it caused
+   *   rather than on both sides of it.
+   *
+   * Two explicit emits beside {@link updateMember} are not duplicates and stay:
+   * `MemberRemoved` on the eviction paths, because {@link setMember} and
+   * {@link deleteMember} announce nothing, and `MemberReachable` on recovery,
+   * a reachability event that no status maps to.
+   */
   private emitStatusTransition(prev: Member, next: Member): void {
     if (prev.status === next.status) return;
     for (const event of this.statusEventsOf(next)) this.emit(event);
@@ -2263,10 +4688,47 @@ export class Cluster {
     }
   }
 
+  /**
+   * Publish one sample of this node's membership view (#842).
+   *
+   * Through {@link emit}, so it reaches `system.eventStream` *and* every
+   * `Cluster.subscribe` listener the way every other cluster event does — and
+   * node-locally, never on `cluster.eventStream`: that bus fans out to every
+   * peer, and a per-node periodic sample there costs N frames per node per
+   * interval to say what each node can already read locally.
+   *
+   * Recomputed from the public accessors rather than kept as counters, because
+   * a counter maintained beside the member map is a second copy of the same
+   * fact and this is the surface that would report it when the two disagree.
+   */
+  private publishStatsTick(): void {
+    const members = this.getMembers();
+    this.emit(new ClusterStatsPublished(
+      members.length,
+      this.upMembers().length,
+      members.filter((member) => member.status === 'unreachable').length,
+      this.leader(),
+      this.selfAddress,
+    ));
+  }
+
+  /**
+   * Publish to `system.eventStream`, then call every subscribed listener in
+   * subscription order.
+   *
+   * Walks a copy of the registrations, because a listener may subscribe or
+   * unsubscribe from inside its own callback (#1294).  Walking the live array
+   * skipped the listener after one that left — the splice moved it into the
+   * slot the loop had just passed — and handed a listener that joined
+   * mid-dispatch the event in flight on top of its replay.  A copy alone
+   * trades that for the opposite mistake, calling a listener once more after
+   * its unsubscribe has returned, which is what the `subscribed` check is for.
+   */
   private emit(event: ClusterEvent): void {
     this.system.eventStream.publish(event as object);
-    for (const listener of this._listeners) {
-      try { listener(event); } catch (e) { this.log.warn('listener threw', e); }
+    for (const registration of [...this._listeners]) {
+      if (!registration.subscribed) continue;
+      try { registration.listener(event); } catch (e) { this.log.warn('listener threw', e); }
     }
   }
 
@@ -2320,7 +4782,11 @@ export class Cluster {
  * receives one field and cannot tell which it is.
  */
 function reportDerivedAdvertisedHost(system: ActorSystem, options: ClusterOptionsType): void {
-  const advertised = `${options.advertisedHost}:${options.port}`;
+  // The advertised port, not the bound one — they are the same number unless
+  // the deployment published a different one, and naming the wrong one in the
+  // line that exists to say what peers should dial is worse than saying
+  // nothing (#845).
+  const advertised = `${options.advertisedHost}:${resolveAdvertisedPort(options)}`;
   const looked = ADVERTISED_HOST_ENV_VARS.join(', ');
   if (options.advertisedHost === DEFAULT_ADVERTISED_HOST) {
     system.log.warn(
@@ -2335,6 +4801,44 @@ function reportDerivedAdvertisedHost(system: ActorSystem, options: ClusterOption
     `cluster: binding ${options.host}:${options.port} and advertising ${advertised}, `
     + `taken from the environment (${looked}) because the bind host is a wildcard.`,
   );
+}
+
+/**
+ * Whether two configuration-fact records state exactly the same thing (#844).
+ *
+ * The steady state of gossip is a peer restating what it already said, once
+ * per round, so `Cluster.adoptConfigurationFacts` asks this before writing:
+ * the answer decides between no work at all and a member-map replacement plus
+ * an agreement check.
+ *
+ * Own keys and an `Object.hasOwn` read, for the reason the sanitiser in
+ * `Member.ts` gives at length: fact names come off the wire and `constructor`
+ * is spellable under {@link CONFIGURATION_FACT_NAME_PATTERN}, so an unguarded
+ * `incoming[name]` is answered by `Object.prototype` rather than by the
+ * record.  Stated precisely rather than overclaimed: with the key counts
+ * compared first and values constrained to strings, the answer would be right
+ * even without the guard — a prototype member is a function and never equals a
+ * string.  It is here so the comparison never reads through a prototype at
+ * all, which is what keeps the property from depending on the value type
+ * staying `string`, exactly as `Member.ts`'s `defineProperty` write does on
+ * the other side.
+ */
+function sameConfigurationFacts(
+  held: ConfigurationFactsData, incoming: ConfigurationFactsData,
+): boolean {
+  const names = Object.keys(held);
+  if (names.length !== Object.keys(incoming).length) return false;
+  for (const name of names) {
+    if (!Object.hasOwn(incoming, name) || incoming[name] !== held[name]) return false;
+  }
+  return true;
+}
+
+/** Whether two role sets hold the same names — order-blind, as roles are. */
+function sameRoles(held: ReadonlySet<string>, incoming: ReadonlySet<string>): boolean {
+  if (held.size !== incoming.size) return false;
+  for (const role of held) if (!incoming.has(role)) return false;
+  return true;
 }
 
 /** Helper — creates an InMemoryTransport for tests. */

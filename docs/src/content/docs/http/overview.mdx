@@ -41,6 +41,13 @@ Three things going on:
   server with the default Fastify backend.  For a different
   backend, pass `backend:` (see below).
 
+  It binds **loopback** — `127.0.0.1` — when you name no host, so the
+  shortest form is reachable from the machine and nowhere else.  A server
+  that should answer from outside says so: `system.http(port, { host })`.
+  This changed in #1408; it used to bind every interface, which meant the
+  form most people copied was the one that published the server without
+  saying so.
+
 ## The three pieces
 
 | Piece | Lives in | Page |
@@ -83,6 +90,130 @@ listen/dispatch loop.
 
 See the [backend pages](/http/backends/fastify/) for the
 configuration options each accepts.
+
+## Bounds on the connection
+
+Whatever backend is mounted, the listening socket carries bounds of its own —
+the header and receive deadlines a peer is held to, how long a quiet keep-alive
+connection is kept, how many connections are accepted at once, and how large a
+request's body and header block may be:
+
+```ts
+import { HttpExtensionId, HttpServerOptions } from 'actor-ts/http';
+
+const serverOptions = HttpServerOptions.create()
+  .withIdleTimeoutMs(5_000)
+  .withRequestTimeoutMs(30_000)
+  .withMaxConnections(10_000)
+  .withMaxContentLength(8 * 1024 * 1024);
+
+await system.extension(HttpExtensionId)
+  .newServerAt('0.0.0.0', 8080)
+  .withServerOptions(serverOptions)
+  .bind(routes);
+```
+
+They exist mostly to be moved *without* a code change, so the same six fields
+are readable from `actor-ts.http.server` — `withServerOptions(...)` wins per
+field, then the config file, then the built-in default.  Only
+`header-timeout` (60 s) and `request-timeout` (300 s) ship a value; leaving
+`idleTimeoutMs`, `maxConnections`, `maxContentLength` and `maxHeaderBytes`
+unset keeps the backend's own choice — "unlimited", for the connection count —
+which is what every release before them did.
+
+The three timeouts and the connection cap reach a connection through a
+`node:http` server, so **Hono on Deno cannot honour them** — the runtime exposes
+neither the server nor an equivalent knob — and **Hono on Bun honours only
+`idle-timeout`**, which `Bun.serve` takes as its own `idleTimeout`.  That one is
+a wider bound there: whole-connection inactivity, so a handler that writes
+nothing for that long is cut too, at most `255s`, and unset it follows the
+server's request deadline — 36 s for the built-in 30 s — rather than Bun's own
+10 s, so a `requestTimeout()` 503 is written first.  Two of them,
+`header-timeout` and `max-connections`, are held by actor-ts on top of the
+property, because the runtimes disagree about whether writing it does
+anything.  Holding them takes the connection events a server emits, and
+Deno's `node:http` emits none, so on Fastify or Express under Deno neither
+holds, and `bind()` says so for either one that is set.  The two size caps are fixed when
+the server is built.  `max-content-length` holds on every backend and runtime,
+since each backend reads its own bodies; `max-header-bytes` holds wherever
+actor-ts builds the server and the runtime keeps the option — Fastify and
+Express on Bun and Node, and Hono on Node; not Hono on Bun, and not on Deno,
+whose `node:http` ignores it and says so.  A backend you construct yourself has
+to be built with them —
+`new FastifyBackend(fastifyFactoryOptions(serverOptions))` for Fastify — or
+`bind()` refuses it.  The [configuration reference](/reference/configuration/)
+carries the per-backend table, that difference and the sweep caveat on
+`request-timeout`.
+
+### TLS and HTTP/2
+
+The same object carries the two settings that make the process itself the
+TLS endpoint.  Off by default — behind a reverse proxy or an ingress that
+terminates for you, plain HTTP is still the right answer, and the
+[security page](/http/security/#tls) says how to run that way.  For the
+single-process and development cases, where standing up a terminator just to
+exercise a `Secure` cookie is the friction:
+
+```ts
+import { readFileSync } from 'node:fs';
+import { HttpExtensionId, HttpServerOptions } from 'actor-ts/http';
+
+const serverOptions = HttpServerOptions.create()
+  .withTls({
+    cert: readFileSync('./tls/cert.pem'),
+    key:  readFileSync('./tls/key.pem'),
+    // client certificates, if you terminate mTLS here:
+    // ca: readFileSync('./tls/ca.pem'), requestClientCert: true, rejectUnauthorized: true,
+  })
+  .withHttp2();   // h2 through ALPN, HTTP/1.1 staying available on the same port
+
+await system.extension(HttpExtensionId)
+  .newServerAt('0.0.0.0', 8443)
+  .withServerOptions(serverOptions)
+  .bind(routes);
+```
+
+The material is PEM contents or DER bytes, the raw TCP transport's
+vocabulary; from the config file the same fields are **paths**, read once
+when the block is:
+
+```hocon
+actor-ts.http.server {
+  tls {
+    cert-file = "/etc/actor-ts/tls/cert.pem"
+    key-file  = "/etc/actor-ts/tls/key.pem"
+  }
+  http2 = true
+}
+```
+
+One shape, three runtimes: `Bun.serve({ tls, http2 })`, `https.createServer`
+or `http2.createSecureServer` under `@hono/node-server`, and
+`Deno.serve({ cert, key })`.  HTTP/2 is refused without TLS — h2c is not
+offered — and with it a client that speaks h2 negotiates it while one that
+does not still gets HTTP/1.1 on the same port.  Deno negotiates h2 whenever
+TLS is on and has no knob for it, so there `http2` records intent rather
+than deciding.  `Bun.serve` learned `http2` in Bun 1.4.1, and the runtime
+floor is 1.4.0: on an older Bun the setting is refused at bind rather than
+ignored, since the alternative is HTTP/1.1 served under a setting that
+says otherwise.  Client-certificate verification (`requestClientCert`) is
+enforced on Bun and Node by every backend; on Deno every backend refuses it
+rather than ignore it silently — `Deno.serve` has no such option, and Deno's
+`node:https`, which Fastify and Express run on there, accepts it and enforces
+nothing.  Everywhere it needs a `ca` to verify against, and `bind()` refuses it
+without one: the TLS stack would otherwise check client certificates against
+the runtime's default trust store and admit any certificate a public CA issued.
+A `ca` that holds no certificate — an empty `ca-file`, a blank secret — is
+refused too, demand or not; the rule is stated once, under
+[Client certificates](/operations/security/tls-everywhere/#client-certificates).
+
+Which backend does what: **Hono** hands the pair to its runtime's runner;
+**Fastify** takes both as *factory* options, so the framework-built instance
+gets them and one you construct yourself needs
+`fastifyFactoryOptions(serverOptions)` — see [its page](/http/backends/fastify/#tls);
+**Express** terminates TLS on the `node:https` server it builds for itself and
+refuses `http2`, because Express does not survive the compatibility API of
+`node:http2` — see [its page](/http/backends/express/#tls).
 
 ## The HTTP client
 
@@ -155,8 +286,8 @@ code, under `actor-ts.http.client`:
 
 ```hocon
 actor-ts.http.client {
-  maxResponseBytes = 32M
-  defaultTimeoutMs = 60s
+  max-response-bytes = 32M
+  default-timeout    = 60s
 }
 ```
 

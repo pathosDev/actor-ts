@@ -7,7 +7,10 @@
  * Terminal 2:  bun run examples/cluster/counter-node.ts --port 9002 --seeds 127.0.0.1:9001
  * Terminal 3:  bun run examples/cluster/counter-node.ts --port 9003 --seeds 127.0.0.1:9001
  *
- * Kill terminal 2 and watch terminals 1 and 3 pick up the stranded shards.
+ * Kill terminal 2 and watch terminals 1 and 3 pick up the stranded shards —
+ * at once after a Ctrl+C, which leaves the cluster gracefully, and about
+ * 4.5 s after a hard kill, once the keep-majority strategy configured below
+ * removes the dead node.
  */
 import { match } from 'ts-pattern';
 import {
@@ -19,6 +22,7 @@ import {
 import {
   Cluster,
   ClusterBootstrapOptions,
+  KeepMajority,
   MemberDown,
   MemberRemoved,
   MemberUnreachable,
@@ -78,15 +82,27 @@ async function main(): Promise<void> {
   // SIGTERM/SIGINT-driven shutdown into one call.  The signal wiring stays
   // on: this node's own cleanup joins the shutdown pipeline below rather
   // than competing with it from a hand-rolled handler.
-  const { system, cluster } = await Cluster.bootstrap(
-    ClusterBootstrapOptions.create('counter-cluster')
-      .withLogLevel(LogLevel.Info)
-      .withHost(host)
-      .withPort(port)
-      .withSeeds(seeds)
-      .withReceptionist(false)
-      .withFailureDetector({ heartbeatIntervalMs: 300, unreachableAfterMs: 1_500, downAfterMs: 3_500 })
-      .withGossipIntervalMs(500));
+  //
+  // Who removes a node that dies without leaving: with no strategy the
+  // failure detector removes a silent node itself at `downAfterMs` and the
+  // survivors take over its shards — but under a real partition both sides
+  // remove each other and run on as two clusters, each with its own copy of
+  // every shard.  keep-majority lets the two survivors of three remove it
+  // once the view has held still for `stableAfterMs` — about 1.5 s + 3 s
+  // after the kill at these settings — and the minority side of a real
+  // partition removes itself instead of forking the cluster.  Ctrl+C is a
+  // graceful leave and needs none of it.
+  const bootstrapOptions = ClusterBootstrapOptions.create('counter-cluster')
+    .withLogLevel(LogLevel.Info)
+    .withHost(host)
+    .withPort(port)
+    .withSeeds(seeds)
+    .withReceptionist(false)
+    .withFailureDetector({ heartbeatIntervalMs: 300, unreachableAfterMs: 1_500, downAfterMs: 3_500 })
+    .withDowning(new KeepMajority())
+    .withSplitBrainResolver({ stableAfterMs: 3_000 })
+    .withGossipIntervalMs(500);
+  const { system, cluster } = await Cluster.bootstrap(bootstrapOptions);
   // `Cluster.bootstrap` has already joined, so the cluster panel gets a
   // live one — a system cannot hand out its own.  Without it the panel
   // reports itself unavailable, and topology and shard distribution are

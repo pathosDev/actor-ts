@@ -219,12 +219,15 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
     const { sys, cluster } = await bootCluster('lease-loss', 70_003);
     let a: LeasedCounter | null = null;
     try {
-      // Short TTL so the renewal loop runs every ~70 ms — quick
-      // enough for the test to observe loss without a long sleep.
+      // A renewal every 50 ms, so the wipe below is found within a tick, and
+      // a TTL no stall on a loaded runner can cross: a renewal that comes round
+      // after the deadline gives the lease up (#937), and the only loss this
+      // case is about is the wipe.
       const leaseOptions = LeaseOptions.create()
         .withName('losable')
         .withOwner('a')
-        .withTtlMs(200);
+        .withTtlMs(2_000)
+        .withRenewalIntervalMs(50);
       const lease = new InMemoryLease(leaseOptions);
       sys.spawn(
         () => {
@@ -243,9 +246,9 @@ describe('ReplicatedEventSourcedActor — optional Lease (#89)', () => {
       // `onLost` exactly like a real backend would on a fence/TTL
       // expiry.
       inMemoryLeaseStore._clear();
-      // The renewal tick is ~70 ms on an idle machine; the old 200 ms budget
-      // was under three of them.  What the test is about is the *reaction* to
-      // loss, not the cadence, so wait for the callback.
+      // The renewal tick is 50 ms on an idle machine and longer on a loaded
+      // one.  What the test is about is the *reaction* to loss, not the
+      // cadence, so wait for the callback.
       await awaitCondition(() => a!.leaseLossEvents.length > 0, {
         ...WAIT, intervalMs: 20, label: 'the renewal loop reported the lost lease',
       });

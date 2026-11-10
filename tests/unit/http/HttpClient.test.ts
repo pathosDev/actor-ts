@@ -21,6 +21,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Socket } from 'node:net';
 import { HttpClient, HttpRedirectError, HttpResponseTooLargeError } from '../../../src/http/HttpClient.js';
 import { HttpClientOptions } from '../../../src/http/HttpClientOptions.js';
+import { MAX_TIMER_DELAY_MS } from '../../../src/util/Constants.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 
 type TestServer = {
@@ -62,6 +63,39 @@ async function serve(handler: (request: IncomingMessage, response: ServerRespons
     },
   });
   return `http://127.0.0.1:${port}`;
+}
+
+/**
+ * A loopback port nothing listens on: bound by a throwaway server, then
+ * released.  A connection to it is refused at once rather than timing out.
+ */
+async function closedPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  const port = typeof address === 'object' && address !== null ? address.port : 0;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return port;
+}
+
+/**
+ * Every string a caller can read off `error` and the errors it carries —
+ * message, stack, own string properties, `cause`, nested errors — joined, so
+ * one `not.toContain` covers all of them.
+ */
+function everyStringOf(error: Error, seen: Set<unknown> = new Set()): string {
+  if (seen.has(error)) return '';
+  seen.add(error);
+  const strings = [String(error.message), String(error.stack)];
+  for (const key of Object.getOwnPropertyNames(error)) {
+    const value: unknown = (error as unknown as Record<string, unknown>)[key];
+    if (typeof value === 'string') strings.push(value);
+    else if (value instanceof Error) strings.push(everyStringOf(value, seen));
+    else if (Array.isArray(value)) {
+      for (const element of value) if (element instanceof Error) strings.push(everyStringOf(element, seen));
+    }
+  }
+  return strings.join('\n');
 }
 
 /** A body of `size` bytes, sent in one shot with a content-length. */
@@ -545,5 +579,371 @@ describe('HttpClient — limits are cumulative across a chain', () => {
     });
     const response = await new HttpClient({ maxResponseBytes: 1024 }).get(`${server}/start`);
     expect(response.text()).toBe('small');
+  });
+});
+
+/**
+ * Found while #1458.  The redirect and size errors ran their URLs through the
+ * scan that renders a configured value, which reads everything up to the last
+ * `@` before the next `://` as userinfo — so a URL with no credential and an
+ * `@` in its path or its query came back as if its host were whatever
+ * followed the `@`.  Every URL these errors name was parsed by the client, so
+ * the credential it carries is known exactly; only a `Location` that does not
+ * parse is still left to the scan.
+ */
+describe('HttpClient — the URLs its errors name (found while #1458)', () => {
+  // No credential, and an `@` past the host: an npm scoped package, a profile
+  // path, an OAuth login hint.
+  const atPastTheHost = [
+    'https://registry.npmjs.org/@types%2fnode',
+    'https://example.com/@user',
+    'https://idp.example/authorize?login_hint=a@b',
+  ];
+
+  test.each(atPastTheHost)('a refused redirect to %p names it byte for byte', async (location) => {
+    const server = await redirectServer((path) => (path === '/start' ? { status: 302, location } : null));
+    const error = await failureOf(() => new HttpClient({ redirect: 'error' }).get(`${server.url}/start`));
+    expect(error).toBeInstanceOf(HttpRedirectError);
+    const refusal = error as HttpRedirectError;
+    expect(refusal.location).toBe(location);
+    expect(refusal.url).toBe(`${server.url}/start`);
+    expect(refusal.message).toBe(`${server.url}/start answered 302 redirecting to ${location}, and redirect is 'error'.`);
+  });
+
+  const pathsWithAnAt = ['/@scope/start', '/start?login_hint=a@b'];
+
+  test.each(pathsWithAnAt)('the URL that redirected, ending %p, is named byte for byte', async (path) => {
+    const server = await redirectServer((requested) => (requested === path ? { status: 302, location: '/end' } : null));
+    const error = await failureOf(() => new HttpClient({ maxRedirects: 0 }).get(`${server.url}${path}`));
+    expect(error).toBeInstanceOf(HttpRedirectError);
+    const refusal = error as HttpRedirectError;
+    expect(refusal.url).toBe(`${server.url}${path}`);
+    expect(refusal.message.startsWith(`${server.url}${path} answered 302 redirecting to ${server.url}/end,`)).toBe(true);
+  });
+
+  test('a relative Location is named resolved against the URL that redirected', async () => {
+    const server = await redirectServer((path) => (path === '/start' ? { status: 302, location: '/@user' } : null));
+    const error = await failureOf(() => new HttpClient({ redirect: 'error' }).get(`${server.url}/start`));
+    expect((error as HttpRedirectError).location).toBe(`${server.url}/@user`);
+  });
+
+  test('a credential is still masked on both ends, and nothing past it is', async () => {
+    const location = 'https://tenant:s3cr3t@moved.example/@scope/pkg?login_hint=a@b';
+    const server = await redirectServer((path) => (path === '/@scope/start' ? { status: 302, location } : null));
+    const { host } = new URL(server.url);
+    const error = await failureOf(
+      () => new HttpClient({ redirect: 'error' }).get(`http://user:hunter2@${host}/@scope/start`),
+    );
+    const refusal = error as HttpRedirectError;
+    expect(refusal.url).toBe(`http://***@${host}/@scope/start`);
+    expect(refusal.location).toBe('https://***@moved.example/@scope/pkg?login_hint=a@b');
+    for (const secret of ['hunter2', 's3cr3t', 'user:', 'tenant:']) expect(refusal.message).not.toContain(secret);
+  });
+
+  test('a relative Location inherits the credential of the URL that redirected, masked', async () => {
+    // WHATWG resolves `/next` against `http://user:hunter2@host/start` to a URL
+    // that carries the same credential — rendering the resolved target
+    // without masking it would print a password the Location never named.
+    const server = await redirectServer((path) => (path === '/start' ? { status: 302, location: '/next' } : null));
+    const { host } = new URL(server.url);
+    const error = await failureOf(
+      () => new HttpClient({ redirect: 'error' }).get(`http://user:hunter2@${host}/start`),
+    );
+    const refusal = error as HttpRedirectError;
+    expect(refusal.location).toBe(`http://***@${host}/next`);
+    expect(refusal.message).not.toContain('hunter2');
+  });
+
+  /**
+   * A `Location` whose userinfo the scan cannot see, because no `scheme://`
+   * stands in front of it: scheme-relative, a special scheme with no slashes,
+   * and backslashes, which WHATWG reads as slashes for a special scheme.  All
+   * three resolve to a URL with a credential.  v0.17.0 named the raw
+   * `Location` through the scan and printed all three in clear; naming the
+   * resolved target is what masks them, and a change that sent any of them
+   * back to the scan would print the password again.
+   */
+  const userinfoTheScanCannotSee: Array<[string, string]> = [
+    ['//tenant:s3cr3t@moved.example/x', 'http://***@moved.example/x'],
+    ['https:tenant:s3cr3t@moved.example/x', 'https://***@moved.example/x'],
+    ['http:\\\\tenant:s3cr3t@moved.example\\x', 'http://***@moved.example/x'],
+  ];
+
+  test.each(userinfoTheScanCannotSee)('a refused redirect to %p masks its credential', async (location, named) => {
+    const server = await redirectServer((path) => (path === '/start' ? { status: 302, location } : null));
+    for (const client of [new HttpClient({ redirect: 'error' }), new HttpClient({ maxRedirects: 0 })]) {
+      const refusal = await failureOf(() => client.get(`${server.url}/start`)) as HttpRedirectError;
+      expect(refusal).toBeInstanceOf(HttpRedirectError);
+      expect(refusal.location).toBe(named);
+      for (const secret of ['s3cr3t', 'tenant']) {
+        expect(refusal.message).not.toContain(secret);
+        expect(String(refusal.stack)).not.toContain(secret);
+      }
+    }
+  });
+
+  test('a URL nested in the Location keeps its credential masked', async () => {
+    const location = 'https://proxy.example/fetch?target=http://user:pass@inner/x';
+    const server = await redirectServer((path) => (path === '/start' ? { status: 302, location } : null));
+    const error = await failureOf(() => new HttpClient({ redirect: 'error' }).get(`${server.url}/start`));
+    const refusal = error as HttpRedirectError;
+    expect(refusal.location).toBe('https://proxy.example/fetch?target=http://***@inner/x');
+    expect(refusal.message).not.toContain('user:pass');
+  });
+
+  test('a Location that does not parse is still masked by the scan', async () => {
+    // `user:pa` reads as a host and a port that is not a number, so nothing
+    // parses this — and the password with a `/` in it is exactly what the
+    // scan's reading exists for.
+    const location = 'https://user:pa/ss@moved.example/x';
+    const server = await redirectServer((path) => (path === '/start' ? { status: 302, location } : null));
+    const error = await failureOf(() => new HttpClient().get(`${server.url}/start`));
+    const refusal = error as HttpRedirectError;
+    expect(refusal.message).toContain('unparseable Location');
+    expect(refusal.location).toBe('https://***@moved.example/x');
+    expect(refusal.message).not.toContain('pa/ss');
+  });
+
+  /**
+   * The error the runtime's own `fetch` raises names the URL it was handed,
+   * credential included, and nothing of this client's masking ran on it.  On
+   * Node, fetch refuses a credentialed URL outright with a `TypeError` whose
+   * message is that URL; on Bun, a connection that fails carries it as its
+   * own `path` property.  So a request to a port nobody listens on is a
+   * failure every runtime raises, and none of what it raises may carry the
+   * password.  Node's half is `tests/smoke/cases/48-http-client-credentialed-request.mjs`.
+   */
+  test('a fetch that fails on a credentialed URL propagates no part of the credential', async () => {
+    const closed = await closedPort();
+    const error = await failureOf(() => new HttpClient({ defaultTimeoutMs: 4_000 }).get(`http://user:hunter2@127.0.0.1:${closed}/start`));
+    expect(error).toBeInstanceOf(Error);
+    expect(everyStringOf(error as Error)).not.toContain('hunter2');
+    // Still the runtime's own error, answering what a caller branches on.
+    expect(error).toBeInstanceOf(TypeError);
+  });
+
+  test('a body that breaks off mid-stream propagates no part of the credential', async () => {
+    // What Bun raises when the connection drops while the body is read: the
+    // request URL rides along as the error's own `path`.  Stubbed, because a
+    // real broken connection may as well fail the fetch itself, and this is
+    // about the read.
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(new ReadableStream<Uint8Array>({
+      pull(controller): void {
+        controller.error(Object.assign(new TypeError('The socket connection was closed unexpectedly.'), {
+          code: 'ECONNRESET',
+          path: 'http://user:hunter2@feed.example/body',
+        }));
+      },
+    }), { status: 200 })) as unknown as typeof fetch;
+    try {
+      const error = await failureOf(() => new HttpClient().get('http://user:hunter2@feed.example/body'));
+      expect(error).toBeInstanceOf(TypeError);
+      expect(everyStringOf(error as Error)).not.toContain('hunter2');
+      expect((error as unknown as { path: string }).path).toBe('http://***@feed.example/body');
+      expect((error as unknown as { code: string }).code).toBe('ECONNRESET');
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  test('a fetch that fails on a credential-free URL propagates the runtime\'s error itself', async () => {
+    const closed = await closedPort();
+    let thrown: unknown;
+    const original = globalThis.fetch;
+    // Recorded at the source, so the identity check is against what fetch threw.
+    globalThis.fetch = (async (...parameters: Parameters<typeof fetch>) => {
+      try {
+        return await original(...parameters);
+      } catch (error) {
+        thrown = error;
+        throw error;
+      }
+    }) as typeof fetch;
+    try {
+      const error = await failureOf(() => new HttpClient({ defaultTimeoutMs: 4_000 }).get(`http://127.0.0.1:${closed}/start`));
+      expect(thrown).toBeDefined();
+      expect(error).toBe(thrown);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  test('a body over the cap names the URL that sent it byte for byte', async () => {
+    const url = `${await serve(fixedBody(4096))}/@scope/pkg?login_hint=a@b`;
+    const error = await failureOf(() => new HttpClient({ maxResponseBytes: 1024 }).get(url));
+    expect(error).toBeInstanceOf(HttpResponseTooLargeError);
+    expect((error as HttpResponseTooLargeError).url).toBe(url);
+    expect((error as HttpResponseTooLargeError).message).toContain(`from ${url} exceeded`);
+  });
+
+  test('a body over the cap masks the credential of the URL that sent it, and nothing past it', async () => {
+    const { host } = new URL(await serve(fixedBody(4096)));
+    const error = await failureOf(
+      () => new HttpClient({ maxResponseBytes: 1024 }).get(`http://user:hunter2@${host}/@scope/pkg`),
+    );
+    expect(error).toBeInstanceOf(HttpResponseTooLargeError);
+    expect((error as HttpResponseTooLargeError).url).toBe(`http://***@${host}/@scope/pkg`);
+    expect((error as HttpResponseTooLargeError).message).not.toContain('hunter2');
+  });
+});
+
+/** 2^31 ms — one past the largest delay a host timer holds. */
+const CEILING_PLUS_ONE_MS = MAX_TIMER_DELAY_MS + 1;
+
+/** One call the runtime's `setTimeout` received while it was recorded. */
+type RecordedTimeout = {
+  readonly callback: unknown;
+  readonly delayMs: unknown;
+  readonly handle: ReturnType<typeof setTimeout>;
+};
+
+/** What the runtime's `setTimeout` and `clearTimeout` received while recorded. */
+type RecordedTimers = {
+  readonly timeouts: RecordedTimeout[];
+  readonly cleared: unknown[];
+};
+
+/** Put recording primitives in place of the runtime's; the returned function puts the runtime's back. */
+function recordTimersInto(recorded: RecordedTimers): () => void {
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+    const handle = realSetTimeout(...args);
+    recorded.timeouts.push({ callback: args[0], delayMs: args[1], handle });
+    return handle;
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = ((handle: Parameters<typeof clearTimeout>[0]) => {
+    recorded.cleared.push(handle);
+    realClearTimeout(handle);
+  }) as typeof clearTimeout;
+  return () => {
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
+  };
+}
+
+/**
+ * Run `act` with the runtime's timer primitives recorded.  A request arms its
+ * deadline before its first `await`, so recording the call itself is enough
+ * to see the deadline; every call still reaches the real primitive.
+ */
+function recordingTimers<T>(act: () => T): RecordedTimers & { readonly result: T } {
+  const recorded: RecordedTimers = { timeouts: [], cleared: [] };
+  const restore = recordTimersInto(recorded);
+  try {
+    const result = act();
+    return { ...recorded, result };
+  } finally {
+    restore();
+  }
+}
+
+/**
+ * Run `act` — awaited — with the runtime's timer primitives recorded, which
+ * is what it takes to see the `finally` of a request clear its deadline.
+ * Everything else the process arms in the window is recorded too, the test
+ * server included, so a case picks the deadline out by its delay.
+ */
+async function recordingTimersWhile(act: () => Promise<void>): Promise<RecordedTimers> {
+  const recorded: RecordedTimers = { timeouts: [], cleared: [] };
+  const restore = recordTimersInto(recorded);
+  try {
+    await act();
+    return recorded;
+  } finally {
+    restore();
+  }
+}
+
+/**
+ * Stand in for `timeout` elapsing: clear the real timer so it can never also
+ * fire, then run its callback now, recording what that call arms.
+ */
+function elapse(timeout: RecordedTimeout | undefined): readonly RecordedTimeout[] {
+  if (timeout === undefined) throw new Error('no timer was armed to elapse');
+  clearTimeout(timeout.handle);
+  return recordingTimers(() => { (timeout.callback as () => void)(); }).timeouts;
+}
+
+const delaysOf = (timeouts: readonly RecordedTimeout[]): unknown[] => timeouts.map((timeout) => timeout.delayMs);
+
+/** The recorded delays no host timer can hold — the overflow itself, wherever it was armed. */
+const aboveCeiling = (timeouts: readonly RecordedTimeout[]): unknown[] =>
+  delaysOf(timeouts).filter((delayMs) => typeof delayMs === 'number' && delayMs > MAX_TIMER_DELAY_MS);
+
+/** Whether a host timer would keep the process alive on its own (Bun and Node handles). */
+const isReferenced = (timeout: RecordedTimeout): boolean => (timeout.handle as unknown as { hasRef(): boolean }).hasRef();
+
+describe('HttpClient — a deadline past the host timer ceiling (found while #870)', () => {
+  // A host timer cannot hold a delay above MAX_TIMER_DELAY_MS (~24.9 days):
+  // Bun and Node arm it as 1 ms, so a `timeoutMs` the validator admits aborted
+  // the request almost as soon as it was sent.
+
+  /** Answers after a pause, long enough that a deadline armed as 1 ms has fired first. */
+  const slow = (): Promise<string> => serve((_request, response) => {
+    setTimeout(() => { response.writeHead(200); response.end('late'); }, 150);
+  });
+
+  test('a 2^31 ms timeoutMs lets a slow answer arrive instead of aborting at once', async () => {
+    const url = await slow();
+    const response = await new HttpClient().get(url, { timeoutMs: CEILING_PLUS_ONE_MS });
+    expect(response.text()).toBe('late');
+  });
+
+  test('so does a 2^31 ms defaultTimeoutMs', async () => {
+    const url = await slow();
+    const response = await new HttpClient({ defaultTimeoutMs: CEILING_PLUS_ONE_MS }).get(url);
+    expect(response.text()).toBe('late');
+  });
+
+  test('is a chain of unreferenced host timers, and the answer clears the link that is armed', async () => {
+    const url = await serve(fixedBody(64));
+    let armedAtSend: readonly RecordedTimeout[] = [];
+    let referencedAtSend: boolean[] = [];
+    let receivedBytes = 0;
+    const recorded = await recordingTimersWhile(async () => {
+      const sending = recordingTimers(() => new HttpClient().get(url, { timeoutMs: CEILING_PLUS_ONE_MS }));
+      armedAtSend = sending.timeouts;
+      // Read while the link is armed: a cleared timer reports itself
+      // unreferenced whatever it was.
+      referencedAtSend = armedAtSend.map(isReferenced);
+      receivedBytes = (await sending.result).body.byteLength;
+    });
+    expect(receivedBytes).toBe(64);
+    // One link at the ceiling, nothing handed to the runtime above it, and
+    // unreferenced like the one timer a shorter deadline gets.
+    expect(delaysOf(armedAtSend)).toEqual([MAX_TIMER_DELAY_MS]);
+    expect(aboveCeiling(recorded.timeouts)).toEqual([]);
+    expect(referencedAtSend).toEqual([false]);
+    // The `finally` of the request reached the chain.
+    expect(recorded.cleared).toContain(armedAtSend[0]!.handle);
+  });
+
+  test('the request is aborted once the last link elapses, and not before', async () => {
+    const url = await serve(() => { /* never answers */ });
+    const sending = recordingTimers(() => new HttpClient().get(url, { timeoutMs: CEILING_PLUS_ONE_MS }));
+    // Observed from the start, so an early failure below leaves no unhandled
+    // rejection behind; the silent server's teardown ends the request anyway.
+    const failure = failureOf(() => sending.result);
+    expect(delaysOf(sending.timeouts)).toEqual([MAX_TIMER_DELAY_MS]);
+
+    // 24.9 days on: a link elapsing is not the deadline passing.
+    const afterFirst = elapse(sending.timeouts[0]);
+    expect(delaysOf(afterFirst)).toEqual([1]);
+    expect(afterFirst.map(isReferenced)).toEqual([false]);
+
+    // The last millisecond is.
+    expect(elapse(afterFirst[0])).toEqual([]);
+    expect(((await failure) as Error | undefined)?.name).toBe('AbortError');
+  });
+
+  test('a deadline at the ceiling is still the one unreferenced host timer it always was', async () => {
+    const url = await serve(fixedBody(64));
+    const sending = recordingTimers(() => new HttpClient().get(url, { timeoutMs: MAX_TIMER_DELAY_MS }));
+    const receivedBytes = sending.result.then((response) => response.body.byteLength, (error: unknown) => error);
+    expect(delaysOf(sending.timeouts)).toEqual([MAX_TIMER_DELAY_MS]);
+    expect(sending.timeouts.map(isReferenced)).toEqual([false]);
+    expect(await receivedBytes).toBe(64);
   });
 });

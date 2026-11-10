@@ -1,3 +1,4 @@
+import type { Scheduler } from '../../Scheduler.js';
 import { match, P } from 'ts-pattern';
 import { ActorPath } from '../../ActorPath.js';
 import { ActorRef } from '../../ActorRef.js';
@@ -13,6 +14,19 @@ import {
 } from './ClusterSingletonManager.js';
 import { DEFAULT_BUFFER_SIZE } from './StartSingletonOptions.js';
 import type { SingletonKey } from './SingletonKey.js';
+
+/**
+ * Where a role the proxy is addressed with came from: code — `withRole(…)`, or
+ * the `SingletonKey` the actor class declares — or
+ * `actor-ts.cluster.singleton.role`.
+ *
+ * The proxy has to carry it because it is memoised per `typeName` and both
+ * `start()` and `ref()` reach the same instance.  Without a provenance the only
+ * tiebreak left when the two doors disagree is arrival order, and that inverts
+ * the project-wide **explicit > HOCON** precedence for whichever ordering puts
+ * `ref()` first (#855).
+ */
+export type SingletonRoleOrigin = 'explicit' | 'configured';
 
 /**
  * Location-transparent handle to a cluster-wide singleton.  Every call to
@@ -53,6 +67,13 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
      * Defaults to the key's, which is why the key carries it.
      */
     private role: string | undefined = key.role,
+    /**
+     * Which layer {@link role} came from.  Only consulted by
+     * {@link _adoptRole}, and meaningless while `role` is `undefined` — the
+     * default matches the default above, where the role is the key's and the
+     * key is code.
+     */
+    private roleOrigin: SingletonRoleOrigin = 'explicit',
     /** Cap on the no-host buffer.  See {@link DEFAULT_BUFFER_SIZE}. */
     private readonly bufferSize: number = DEFAULT_BUFFER_SIZE,
   ) {
@@ -81,6 +102,20 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
     }
     this.deliver(message, hostOpt.value.address, sender);
   }
+
+  /**
+   * @internal This node's `actor-ts.actor.ask-timeout` (#863).
+   *
+   * Worth having even though the proxy buffers: an ask that arrives while
+   * nothing hosts the singleton spends its whole deadline in the buffer, so
+   * the configured value is exactly what decides whether it survives a
+   * hand-over.
+   */
+  override _defaultAskTimeoutMs(): number {
+    return this.cluster.system._defaultAskTimeoutMs;
+  }
+
+  override _virtualScheduler(): Scheduler | null { return this.cluster.system._virtualScheduler; }
 
   /**
    * Hold a message until a host appears — but only up to `bufferSize`.
@@ -136,22 +171,53 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
    * @internal Learn the role from a later, better-informed caller.
    *
    * A proxy is memoised per `typeName`, so the first caller wins the
-   * construction — and that may be a bare `ref('name')`, which knows no role,
-   * ahead of the `start()` that does.  Learning it late is the difference
-   * between routing at the right node and silently routing at the leader.
+   * construction — and that may be a bare `ref('name')`, which knows no role of
+   * its own, ahead of the `start()` that does.  Learning it late is the
+   * difference between routing at the right node and silently routing at the
+   * leader.
    *
    * `undefined` never *erases* a known role, for the mirror-image reason: a
-   * later bare `ref()` is uninformed, not authoritative.  Two different roles
-   * is a genuine misconfiguration — one singleton cannot be restricted two
-   * ways — so it warns and keeps the first.
+   * later bare `ref()` is uninformed, not authoritative.
+   *
+   * Arbitration is by {@link SingletonRoleOrigin}, not by arrival order, and
+   * that distinction is the whole point: a configured role and an explicit one
+   * are not peers, so "keep the first" resolves the pair one way when `ref()`
+   * ran first and the other way when `start()` did.  An explicit role therefore
+   * *replaces* a configured one and a configured one arriving second is
+   * discarded in silence — both are the documented **explicit > HOCON**
+   * precedence resolving, and neither is worth a line in the operator's log.
+   * Two roles from the *same* layer is the genuine misconfiguration — one
+   * singleton cannot be restricted two ways — so that still warns and keeps the
+   * first (#855).
    */
-  _adoptRole(role: string | undefined): void {
-    if (role === undefined || role === this.role) return;
-    if (this.role === undefined) { this.role = role; return; }
-    this.cluster.system.log.warn(
-      `singleton '${this.key.typeName}': already addressed with role '${this.role}', `
-      + `ignoring conflicting role '${role}' — one singleton cannot be restricted to two roles`,
-    );
+  _adoptRole(role: string | undefined, origin: SingletonRoleOrigin): void {
+    if (role === undefined) return;
+    if (role === this.role) {
+      // Same role, firmer provenance.  Recording the upgrade is what lets a
+      // *third*, differing explicit role still be judged a conflict rather than
+      // silently replacing a role code has already confirmed.
+      if (origin === 'explicit') this.roleOrigin = 'explicit';
+      return;
+    }
+    if (this.role === undefined) {
+      this.role = role;
+      this.roleOrigin = origin;
+      return;
+    }
+    if (origin === this.roleOrigin) {
+      this.cluster.system.log.warn(
+        `singleton '${this.key.typeName}': already addressed with role '${this.role}', `
+        + `ignoring conflicting role '${role}' — one singleton cannot be restricted to two roles`,
+      );
+      return;
+    }
+    if (origin === 'explicit') {
+      this.role = role;
+      this.roleOrigin = 'explicit';
+      return;
+    }
+    // A configured role behind an explicit one.  Nothing to do and nothing to
+    // say: the file lost to code, which is the precedence working.
   }
 
   /** @internal Stop forwarding and unsubscribe from cluster events. */
@@ -180,7 +246,6 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
         to: singletonManagerPath(hostAddress.systemName, this.key.typeName),
         from: null,
         body: message,
-        tag: 'Singleton',
       });
       return;
     }

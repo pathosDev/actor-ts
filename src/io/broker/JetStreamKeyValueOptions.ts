@@ -13,6 +13,7 @@
  */
 import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
 import type { BrokerCommonOptionsType } from './BrokerOptions.js';
+import { findNatsServerCredentialsProblem } from './NatsOptions.js';
 
 export interface JetStreamKeyValueOptionsType extends BrokerCommonOptionsType {
   /** NATS server URLs. */
@@ -127,6 +128,8 @@ export class JetStreamKeyValueOptionsValidator extends BrokerOptionsValidator<Je
   protected rules(s: Partial<JetStreamKeyValueOptionsType>): void {
     this.commonRules(s);
     this.nonEmptyStringOrArray('servers', s.servers);
+    const serversProblem = findNatsServerCredentialsProblem(s.servers);
+    if (serversProblem !== null) this.fail(serversProblem.field, serversProblem.reason, serversProblem.value);
     this.nonEmptyString('bucket');
     this.positiveInt('history');
     this.positiveNumber('timeToLive');

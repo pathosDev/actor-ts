@@ -247,12 +247,17 @@ import { Aside } from '@astrojs/starlight/components';
 Implement the three abstract methods and wire up settings:
 
 ```ts
+import type { Config } from 'actor-ts';
 import { BrokerActor, type BrokerCommonOptionsType } from 'actor-ts/io';
 
 class MyProtocolActor extends BrokerActor<MyOutbound> {
   protected configKey() { return 'actor-ts.io.my-protocol'; }
   protected builtInDefaultOptions(): BrokerCommonOptionsType { return { /* defaults */ }; }
-  protected readOptionsFromConfig(c) { /* parse HOCON */ }
+  // The system config, read at full paths under configKey().
+  protected readOptionsFromConfig(config: Config) {
+    const url = `${this.configKey()}.url`;
+    return config.hasPath(url) ? { url: config.getString(url) } : {};
+  }
   protected requiredOptions() { return ['url']; }
 
   protected async connectImplementation(): Promise<void> {
@@ -270,6 +275,10 @@ class MyProtocolActor extends BrokerActor<MyOutbound> {
   }
 }
 ```
+
+`readOptionsFromConfig` is handed the system config and reads full dotted
+paths under `configKey()`; a path outside it is refused at start — see
+[BrokerActor base](/io/broker-actor-base/#subclass-contract).
 
 The base class handles state transitions, buffering, reconnect,
 event publishing.  Subclasses only own the protocol-specific

@@ -27,6 +27,12 @@ den alten Eintrag entfernen.
 BearerTokenAuth({ tokens: [process.env.TOKEN_CURRENT!, process.env.TOKEN_PREVIOUS!] });
 ```
 
+Eine feste Token-Liste passt für Operator-Endpoints und nicht für
+API-Authentifizierung.  Stellt ein Identity Provider die Tokens aus —
+signiert, mit Ablauf, mit der Angabe, wer der Aufrufer ist —, nimm
+stattdessen [JWT-Auth](/de/http/middleware/jwt/): Es prüft Signatur und
+Claims und reicht die Claims an deine Handler weiter.
+
 ## Konfiguration
 
 `BearerTokenAuth` nimmt ein einfaches Options-Objekt:
@@ -62,6 +68,8 @@ import { Aside } from '@astrojs/starlight/components';
   CIDR-Schutz, den du darunterlegst.
 - **[Basic-Auth](/de/http/middleware/basic-auth/)** — das
   `Authorization: Basic`-Gegenstück.
+- **[JWT-Auth](/de/http/middleware/jwt/)** — Tokens, die ein Identity
+  Provider signiert, mitsamt ihren Claims geprüft.
 - **[Sicherheit](/de/http/security/)** — wo Auth im Stack sitzt.
 - **[Management-Endpoints](/de/observability/management/http-endpoints/)** —
   die Routen, die du damit am häufigsten schützt.

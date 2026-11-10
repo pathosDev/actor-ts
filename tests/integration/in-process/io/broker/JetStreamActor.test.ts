@@ -3,25 +3,34 @@
  * handshake.  Same test-seam pattern as KafkaActor (#2): subclass
  * JetStreamActor and override `createNatsConnection` to inject a
  * pure-JS mock.  Lets us drive the manual-ack pump without involving
- * the real `nats` peer-dep.
+ * the real nats.js peer-deps.
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
 import { ActorRef } from '../../../../../src/ActorRef.js';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
+import type { LogContextData } from '../../../../../src/LogContext.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
+import type { Logger } from '../../../../../src/Logger.js';
 import {
   JetStreamActor,
   type JetStreamClientLike,
   type JetStreamCommand,
+  type JetStreamConsumerConfig,
   type JetStreamManagerLike,
   type JetStreamMessage,
   type JetStreamMessageHandleLike,
-  type JetStreamSubscriptionLike,
+  type JetStreamMessageStreamLike,
+  type JetStreamModuleLike,
   type NatsConnectionLike,
+  type PushConsumerLike,
 } from '../../../../../src/io/broker/JetStreamActor.js';
-import { JetStreamOptions, JetStreamOptionsBuilder } from '../../../../../src/io/broker/JetStreamOptions.js';
+import { BrokerConnected, BrokerReconnectFailed } from '../../../../../src/io/broker/BrokerEvents.js';
+import { JetStreamOptions, JetStreamOptionsBuilder, JetStreamOptionsValidator, type JetStreamOptionsType } from '../../../../../src/io/broker/JetStreamOptions.js';
+import { OptionsError } from '../../../../../src/util/OptionsValidator.js';
+import { ConfigError } from '../../../../../src/config/Config.js';
+import type { ConfigObject } from '../../../../../src/config/HoconParser.js';
 
 import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
@@ -43,6 +52,15 @@ class MockHandle implements JetStreamMessageHandleLike {
   termed = false;
   working_called = false;
   nakDelay?: number;
+  /**
+   * How many times `nak()` was called — not just whether it was.
+   *
+   * The boolean cannot see a *second* nak on a handle whose delivery was
+   * already settled, and that second call is the visible end of an
+   * ack-timeout that outlived its own entry: the orphan-timer leak #710's
+   * reconnect path left behind fires the shared catch a second time.
+   */
+  nakCount = 0;
 
   constructor(
     public readonly subject: string,
@@ -53,7 +71,7 @@ class MockHandle implements JetStreamMessageHandleLike {
   ) {}
 
   ack(): void { this.acked = true; }
-  nak(delayMs?: number): void { this.naked = true; this.nakDelay = delayMs; }
+  nak(delayMs?: number): void { this.naked = true; this.nakCount++; this.nakDelay = delayMs; }
   term(): void { this.termed = true; }
   working(): void { this.working_called = true; }
 }
@@ -63,7 +81,7 @@ class MockHandle implements JetStreamMessageHandleLike {
  * `for await`.  We push handles into it and observe acks via the
  * handle's flags.
  */
-class MockSubscription implements JetStreamSubscriptionLike {
+class MockSubscription implements JetStreamMessageStreamLike {
   private resolveNext: ((m: IteratorResult<JetStreamMessageHandleLike>) => void) | null = null;
   private buffer: JetStreamMessageHandleLike[] = [];
   destroyed = false;
@@ -78,7 +96,7 @@ class MockSubscription implements JetStreamSubscriptionLike {
     }
   }
 
-  async destroy(): Promise<void> {
+  stop(): void {
     this.destroyed = true;
     if (this.resolveNext) {
       const resolveNext = this.resolveNext;
@@ -122,10 +140,16 @@ class MockPullConsumer {
 class MockJetStream implements JetStreamClientLike {
   readonly published: Array<{
     subject: string; payload: Uint8Array;
-    msgID?: string; expectLastSeq?: number; headers?: Record<string, string>;
+    msgID?: string; expectedLastSequence?: number; headers?: Record<string, string>;
   }> = [];
   readonly subscription = new MockSubscription();
-  readonly subscribeCalls: Array<{ subject: string; stream: string; consumer: string }> = [];
+  /**
+   * Which push consumer the actor asked for.  v3 reaches a push consumer
+   * through `consumers.getPushConsumer(stream, durable)` rather than
+   * `subscribe(subject, { stream, consumer })`, so there is no subject here:
+   * the filter now lives on the consumer, which is where the server keeps it.
+   */
+  readonly pushConsumerCalls: Array<{ stream: string; durable: string }> = [];
   readonly pullConsumers = new Map<string, MockPullConsumer>();
 
   async publish(subject: string, payload: Uint8Array, options?: {
@@ -135,15 +159,10 @@ class MockJetStream implements JetStreamClientLike {
     this.published.push({
       subject, payload,
       msgID: options?.msgID,
-      expectLastSeq: options?.expect?.lastSequence,
+      expectedLastSequence: options?.expect?.lastSequence,
       headers: options?.headers ? { ...options.headers } : undefined,
     });
     return { seq: this.published.length };
-  }
-
-  async subscribe(subject: string, options: { stream: string; consumer: string }): Promise<JetStreamSubscriptionLike> {
-    this.subscribeCalls.push({ subject, stream: options.stream, consumer: options.consumer });
-    return this.subscription;
   }
 
   readonly consumers = {
@@ -153,16 +172,39 @@ class MockJetStream implements JetStreamClientLike {
       if (!pc) { pc = new MockPullConsumer(); this.pullConsumers.set(key, pc); }
       return pc;
     },
+    getPushConsumer: async (stream: string, durable: string): Promise<PushConsumerLike> => {
+      this.pushConsumerCalls.push({ stream, durable });
+      return { consume: async () => this.subscription };
+    },
   };
 }
 
 class MockJsm implements JetStreamManagerLike {
-  readonly streamsAdd: Array<{ name: string; subjects: string[] }> = [];
+  /**
+   * The three retention caps are captured, not just the identity fields: they
+   * are the only place a test can see that a value survived the validator
+   * *and* the mapping into nats.js's snake_case wire names unchanged, which is
+   * what a "no limit" sentinel needs proving about it (#871).
+   */
+  readonly streamsAdd: Array<{
+    name: string; subjects: string[];
+    max_msgs?: number; max_bytes?: number; max_age?: number;
+  }> = [];
   readonly streamsUpdate: Array<{ name: string }> = [];
-  readonly consumersAdd: Array<{ stream: string; durable: string; deliver_policy?: string; ack_wait?: number }> = [];
+  readonly consumersAdd: Array<{
+    stream: string; durable: string; deliver_policy?: string; ack_wait?: number;
+    max_ack_pending?: number; opt_start_seq?: number; opt_start_time?: string;
+    filter_subject?: string; deliver_subject?: string;
+  }> = [];
   readonly streams = {
     add: async (config: { name: string; subjects: string[]; retention?: string; storage?: string; max_msgs?: number; max_bytes?: number; max_age?: number }) => {
-      this.streamsAdd.push({ name: config.name, subjects: [...config.subjects] });
+      this.streamsAdd.push({
+        name: config.name,
+        subjects: [...config.subjects],
+        max_msgs: config.max_msgs,
+        max_bytes: config.max_bytes,
+        max_age: config.max_age,
+      });
     },
     update: async (name: string) => {
       this.streamsUpdate.push({ name });
@@ -173,28 +215,53 @@ class MockJsm implements JetStreamManagerLike {
       durable_name: string; ack_policy?: string; ack_wait?: number;
       filter_subject?: string; max_ack_pending?: number;
       deliver_policy?: string; opt_start_seq?: number; opt_start_time?: string;
+      deliver_subject?: string;
     }) => {
       this.consumersAdd.push({
         stream,
         durable: config.durable_name,
         deliver_policy: config.deliver_policy,
         ack_wait: config.ack_wait,
+        max_ack_pending: config.max_ack_pending,
+        opt_start_seq: config.opt_start_seq,
+        opt_start_time: config.opt_start_time,
+        filter_subject: config.filter_subject,
+        deliver_subject: config.deliver_subject,
       });
     },
     update: async (_stream: string, _durable: string) => { /* no-op */ },
   };
 }
 
+/**
+ * A connection is just a connection in v3 — the JetStream entry points moved
+ * to `@nats-io/jetstream` as free functions.  The client and manager the
+ * tests assert against therefore hang off this double for convenience, and
+ * reach the actor through {@link MockJetStreamActor.jetStreamModule}.
+ */
 class MockNatsConnection implements NatsConnectionLike {
   readonly js = new MockJetStream();
   readonly jsm = new MockJsm();
   private closedResolve!: (e: Error | undefined) => void;
   private closedPromise = new Promise<Error | undefined>((resolveNext) => { this.closedResolve = resolveNext; });
 
-  jetstream(): JetStreamClientLike { return this.js; }
-  async jetstreamManager(): Promise<JetStreamManagerLike> { return this.jsm; }
   async drain(): Promise<void> { this.closedResolve(undefined); }
   closed(): Promise<Error | undefined> { return this.closedPromise; }
+}
+
+/**
+ * The `@nats-io/jetstream` module, faked.
+ *
+ * It resolves the client and manager **out of the connection it is handed**
+ * rather than out of a captured field, which is what the real free functions
+ * do and what a reconnecting actor needs: each connect mints a fresh
+ * connection, and its client has to be that connection's.
+ */
+function mockJetStreamModule(): JetStreamModuleLike {
+  return {
+    jetstream: (connection): JetStreamClientLike => (connection as MockNatsConnection).js,
+    jetstreamManager: async (connection): Promise<JetStreamManagerLike> => (connection as MockNatsConnection).jsm,
+  };
 }
 
 class MockJetStreamActor extends JetStreamActor {
@@ -203,7 +270,39 @@ class MockJetStreamActor extends JetStreamActor {
     return this.mockConnection;
   }
 
+  protected override async jetStreamModule(): Promise<JetStreamModuleLike> {
+    return mockJetStreamModule();
+  }
+
   publicConnectionState(): string { return this.connectionState; }
+
+  /**
+   * The options as `preStart` resolved them.  `acknowledgmentTimeout` has no
+   * observable effect on the driver — it bounds an internal ack wait — so
+   * this is the only place a HOCON read of it can be seen.
+   */
+  publicResolvedOptions(): JetStreamOptionsType { return this.options; }
+}
+
+/**
+ * A mock whose start refusal is kept for the test to read instead of failing
+ * the actor.  `startSettled` is what a case polls, so one that expects a
+ * refusal and gets a clean start fails on the assertion naming the
+ * difference, not on a timeout.
+ */
+class StartCapturingJetStreamActor extends MockJetStreamActor {
+  startFailure: unknown = null;
+  startSettled = false;
+
+  override async preStart(): Promise<void> {
+    try {
+      await super.preStart();
+    } catch (e) {
+      this.startFailure = e;
+    } finally {
+      this.startSettled = true;
+    }
+  }
 }
 
 /* --------------------------- Helpers ---------------------------- */
@@ -213,15 +312,110 @@ class CapturingTarget extends Actor<JetStreamMessage> {
   override onReceive(m: JetStreamMessage): void { this.received.push(m); }
 }
 
-async function bootActor(
-  sys: ActorSystem, options: JetStreamOptionsBuilder,
-): Promise<{ actor: ActorRef<JetStreamCommand>; mock: MockJetStreamActor; target: CapturingTarget }> {
+/**
+ * Captures the actor's WARN records.
+ *
+ * Two of the pump's decisions have no observable but the log line they write
+ * — a settle command naming a delivery that is no longer in flight, and a
+ * `term` that drops a message permanently — and every case in this file used
+ * to run with `NoopLogger` at `LogLevel.Off`, so both were invisible.  An
+ * explicit logger is taken verbatim by `ActorSystem` (`resolveLogger`), so
+ * `level` here is what gates the calls.
+ */
+class CapturingLogger implements Logger {
+  readonly warnings: string[] = [];
+  // Annotated rather than inferred, and `debug` takes its parameter even
+  // though it drops it: both are what a subclass has to be able to override
+  // (see {@link DebugCapturingLogger}), and inferring `LogLevel.Warn` or a
+  // zero-parameter `debug` makes that override a `typecheck:dev` error.
+  readonly level: LogLevel = LogLevel.Warn;
+  debug(_message: string): void {}
+  info(): void {}
+  warn(message: string): void { this.warnings.push(message); }
+  error(): void {}
+  withSource(_source: string): Logger { return this; }
+  withFields(_fields: LogContextData): Logger { return this; }
+
+  /** WARN records naming a settle command that found no pending entry. */
+  get unknownTokenWarnings(): string[] {
+    return this.warnings.filter((w) => w.includes('unknown ackToken'));
+  }
+
+  /** WARN records naming a permanently dropped message. */
+  get terminateWarnings(): string[] {
+    return this.warnings.filter((w) => w.includes('message dropped permanently'));
+  }
+
+  /**
+   * The one aggregate record a disconnect writes, naming how many deliveries
+   * were in flight.  Matched on that phrase rather than on "connection lost",
+   * which the per-delivery detail line carries too.
+   */
+  get connectionLostWarnings(): string[] {
+    return this.warnings.filter((w) => w.includes('connection lost with'));
+  }
+
+  /**
+   * Records prefixed twice — `JetStreamActor: pump JetStreamActor: …`.
+   *
+   * Every catch-path line read that way until #1510: the `Error` messages the
+   * ack-timeout and the disconnect built carried the actor prefix already,
+   * and the shared catch re-added it.
+   */
+  get doublyPrefixedWarnings(): string[] {
+    return this.warnings.filter((w) => w.includes('JetStreamActor: pump JetStreamActor:'));
+  }
+}
+
+/**
+ * The same capture, opened down to `debug`.
+ *
+ * Needed wherever a claim is about a line the actor deliberately writes
+ * *below* WARN: "the per-delivery detail went to `debug`" is two claims — it
+ * is gone from WARN **and** it is still written — and a WARN-only capture can
+ * only see the first.  The prefix is the case in point: re-adding
+ * `JetStreamActor: ` to the connection-lost message left a WARN-only capture
+ * green, because the line it doubles is not a warning any more (#1510).
+ *
+ * Kept separate rather than merged into {@link CapturingLogger} so the cases
+ * that assert an *absence* of warnings keep the narrow gate they were written
+ * against.
+ */
+class DebugCapturingLogger extends CapturingLogger {
+  readonly debugs: string[] = [];
+  override readonly level = LogLevel.Debug;
+  override debug(message: string): void { this.debugs.push(message); }
+
+  /** DEBUG records from the shared catch in `deliverAndAwaitAcknowledgment`. */
+  get pumpDebugs(): string[] {
+    return this.debugs.filter((d) => d.includes('JetStreamActor: pump '));
+  }
+
+  /** DEBUG records prefixed twice — the `debug` half of the same defect. */
+  get doublyPrefixedDebugs(): string[] {
+    return this.debugs.filter((d) => d.includes('JetStreamActor: pump JetStreamActor:'));
+  }
+}
+
+/** An `ActorSystem` whose logger is the caller's, at `LogLevel.Warn`. */
+function observedSystem(name: string, logger: Logger): ActorSystem {
+  return ActorSystem.create(name, ActorSystemOptions.create()
+    .withLogger(logger)
+    .withLogLevel(LogLevel.Warn));
+}
+
+/** What {@link bootActorOfKind} needs of a mock subclass to wait for it. */
+type BootableJetStreamActor = JetStreamActor & { publicConnectionState(): string };
+
+async function bootActorOfKind<A extends BootableJetStreamActor>(
+  sys: ActorSystem, options: JetStreamOptionsBuilder, create: (built: JetStreamOptionsBuilder) => A,
+): Promise<{ actor: ActorRef<JetStreamCommand>; mock: A; target: CapturingTarget }> {
   const target = new CapturingTarget();
   const targetRef = sys.spawn(() => target, 'target');
-  const ref = { current: null as MockJetStreamActor | null };
+  const ref = { current: null as A | null };
   const actor = sys.spawn(
     () => {
-      const mockActor = new MockJetStreamActor(options.withTarget(targetRef));
+      const mockActor = create(options.withTarget(targetRef));
       ref.current = mockActor;
       return mockActor;
     },
@@ -236,6 +430,12 @@ async function bootActor(
     { timeoutMs: 4_000, label: 'the JetStream actor connected and provisioned its consumer' },
   );
   return { actor: actor as ActorRef<JetStreamCommand>, mock: ref.current!, target };
+}
+
+function bootActor(
+  sys: ActorSystem, options: JetStreamOptionsBuilder,
+): Promise<{ actor: ActorRef<JetStreamCommand>; mock: MockJetStreamActor; target: CapturingTarget }> {
+  return bootActorOfKind(sys, options, (built) => new MockJetStreamActor(built));
 }
 
 /**
@@ -265,9 +465,59 @@ function makeHandle(seq: number, subject = 'orders.new', payload = 'hi'): MockHa
   );
 }
 
+/**
+ * A **redelivery** of the message `makeHandle(seq)`: the same
+ * `streamSequence`, a bumped `deliverySequence` and `deliveryCount`.  That is
+ * exactly what JetStream itself does, and it is the whole premise of #710 —
+ * the two handles are two deliveries of one message, indistinguishable by
+ * `streamSequence`.
+ */
+function makeRedelivery(seq: number, deliveryNumber: number, subject = 'orders.new', payload = 'hi'): MockHandle {
+  return new MockHandle(
+    subject,
+    new TextEncoder().encode(payload),
+    {
+      streamSequence: seq,
+      deliverySequence: seq + deliveryNumber,
+      deliveryCount: deliveryNumber,
+      timestampNanos: seq * 1_000_000,
+    },
+    undefined,
+    undefined,
+  );
+}
+
 /* ============================================================== */
 /* Tests                                                          */
 /* ============================================================== */
+
+describe('JetStreamActor — endpoint label', () => {
+  test('the servers are labelled as configured, with no second nats:// in front', async () => {
+    // The servers are URLs already; a scheme put in front of the joined list
+    // read `nats://nats://a:4222,…` in every lifecycle event.
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('js-label', sysOptions);
+    try {
+      const endpoints: string[] = [];
+      sys.eventStream.subscribe(
+        sys.spawnAnonymous(() => new (class extends Actor<BrokerConnected> {
+          override onReceive(event: BrokerConnected): void { endpoints.push(event.endpoint); }
+        })()),
+        BrokerConnected,
+      );
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://a:4222', 'nats://b:4222']);
+      await bootActor(sys, jetstreamOptions);
+      await awaitCondition(() => endpoints.length > 0, { label: 'BrokerConnected reached its subscriber' });
+
+      expect(endpoints).toEqual(['nats://a:4222,nats://b:4222']);
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
 
 describe('JetStreamActor — stream + consumer lifecycle', () => {
   test('upserts the stream and consumer at connect time when create=true (default)', async () => {
@@ -288,8 +538,8 @@ describe('JetStreamActor — stream + consumer lifecycle', () => {
       // ackWaitMs translates to nanoseconds in the underlying API.
       expect(mock.mockConnection.jsm.consumersAdd[0]?.ack_wait).toBe(5_000_000_000);
       // Subscription wired with stream + durable name.
-      expect(mock.mockConnection.js.subscribeCalls[0]?.stream).toBe('ORDERS');
-      expect(mock.mockConnection.js.subscribeCalls[0]?.consumer).toBe('order-proc');
+      expect(mock.mockConnection.js.pushConsumerCalls[0]?.stream).toBe('ORDERS');
+      expect(mock.mockConnection.js.pushConsumerCalls[0]?.durable).toBe('order-proc');
     } finally {
       await sys.terminate();
     }
@@ -309,13 +559,15 @@ describe('JetStreamActor — stream + consumer lifecycle', () => {
       expect(mock.mockConnection.jsm.streamsAdd).toEqual([]);
       expect(mock.mockConnection.jsm.consumersAdd).toEqual([]);
       // Subscribe should still have happened.
-      expect(mock.mockConnection.js.subscribeCalls).toHaveLength(1);
+      expect(mock.mockConnection.js.pushConsumerCalls).toHaveLength(1);
     } finally {
       await sys.terminate();
     }
   });
 
-  test('byStartSeq deliverPolicy translates correctly', async () => {
+  // The kind spells the word out, as nats.js's own `by_start_sequence` does;
+  // only the `startSeq` field keeps the short form, after `opt_start_seq`.
+  test('by-start-sequence deliverPolicy reaches nats.js as by_start_sequence with its sequence', async () => {
     const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
@@ -324,9 +576,166 @@ describe('JetStreamActor — stream + consumer lifecycle', () => {
       const jetstreamOptions = JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
         .withStream({ name: 'S', subjects: ['s.>'] })
-        .withConsumer({ durable: 'd', deliverPolicy: { kind: 'byStartSeq', startSeq: 100 } });
+        .withConsumer({ durable: 'd', deliverPolicy: { kind: 'by-start-sequence', startSeq: 100 } });
       const { mock } = await bootActor(sys, jetstreamOptions);
       expect(mock.mockConnection.jsm.consumersAdd[0]?.deliver_policy).toBe('by_start_sequence');
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.opt_start_seq).toBe(100);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('by-start-time deliverPolicy translates correctly', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('js-policy-time', sysOptions);
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'S', subjects: ['s.>'] })
+        .withConsumer({ durable: 'd', deliverPolicy: { kind: 'by-start-time', startTimeMs: 1_767_225_600_000 } });
+      const { mock } = await bootActor(sys, jetstreamOptions);
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.deliver_policy).toBe('by_start_time');
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.opt_start_time).toBe('2026-01-01T00:00:00.000Z');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('the last start time the validator takes reaches nats.js with a four-digit year', async () => {
+    // The bound is where toISOString() stops writing a year RFC 3339 can
+    // hold; one millisecond later it writes +010000, which the validator
+    // refuses at start rather than letting the server refuse at connect.
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('js-policy-time-edge', sysOptions);
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'S', subjects: ['s.>'] })
+        .withConsumer({ durable: 'd', deliverPolicy: { kind: 'by-start-time', startTimeMs: 253_402_300_799_999 } });
+      const { mock } = await bootActor(sys, jetstreamOptions);
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.opt_start_time).toBe('9999-12-31T23:59:59.999Z');
+      expect(new Date(253_402_300_800_000).toISOString()).toBe('+010000-01-01T00:00:00.000Z');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test.each([
+    { label: 'unset', deliverPolicy: undefined, expected: 'all' },
+    { label: 'all', deliverPolicy: 'all', expected: 'all' },
+    { label: 'last', deliverPolicy: 'last', expected: 'last' },
+    { label: 'new', deliverPolicy: 'new', expected: 'new' },
+  ] as const)('the simple policy $label reaches nats.js as $expected', async ({ label, deliverPolicy, expected }) => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create(`js-policy-simple-${label}`, sysOptions);
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'S', subjects: ['s.>'] })
+        .withConsumer({ durable: 'd', deliverPolicy });
+      const { mock } = await bootActor(sys, jetstreamOptions);
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.deliver_policy).toBe(expected);
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.opt_start_seq).toBeUndefined();
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.opt_start_time).toBeUndefined();
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+/* ========== A deliverPolicy outside the union (found while #1443) ========= */
+
+/**
+ * A validator that checks nothing — standing in for every way a value could
+ * reach `upsertConsumer` without passing `JetStreamOptionsValidator`, so the
+ * translation's own answer to a kind it does not know can be observed.
+ */
+class PermissiveJetStreamOptionsValidator extends JetStreamOptionsValidator {
+  protected override rules(): void {}
+}
+
+class UnvalidatedJetStreamActor extends MockJetStreamActor {
+  protected override optionsValidator(): JetStreamOptionsValidator {
+    return new PermissiveJetStreamOptionsValidator();
+  }
+}
+
+/**
+ * The compiler vouches for the object arms only at a typed call site.  A cast
+ * or a plain-JavaScript caller hands over any `kind`, and one outside the
+ * union used to reach nats.js as `deliver_policy: 'all'` — a consumer that
+ * replays the stream from its first message.
+ */
+describe('JetStreamActor — a deliverPolicy outside the union never reaches nats.js', () => {
+  type DeliverPolicy = JetStreamConsumerConfig['deliverPolicy'];
+
+  function quietSystem(name: string): ActorSystem {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    return ActorSystem.create(name, sysOptions);
+  }
+
+  test('a cast retired kind is refused at startup, naming its replacement, before any consumer exists', async () => {
+    const sys = quietSystem('js-policy-cast-retired');
+    try {
+      const castPolicy = { kind: 'byStartSeq', startSeq: 100 } as unknown as DeliverPolicy;
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'S', subjects: ['s.>'] })
+        .withConsumer({ durable: 'd', deliverPolicy: castPolicy });
+      const actor = new StartCapturingJetStreamActor(jetstreamOptions);
+      sys.spawn(() => actor, 'js');
+      await awaitCondition(() => actor.startSettled, {
+        timeoutMs: 4_000, label: "the actor's preStart settled",
+      });
+
+      expect(actor.startFailure).toBeInstanceOf(OptionsError);
+      const message = (actor.startFailure as OptionsError).message;
+      expect(message).toContain('consumer.deliverPolicy.kind');
+      expect(message).toContain("'by-start-sequence'");
+      expect(actor.mockConnection.jsm.consumersAdd).toEqual([]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a kind that got past the validator is refused by the translation, not provisioned as all', async () => {
+    const sys = quietSystem('js-policy-unvalidated');
+    const failures: BrokerReconnectFailed[] = [];
+    sys.eventStream.subscribe(
+      sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+        override onReceive(event: unknown): void { failures.push(event as BrokerReconnectFailed); }
+      })()),
+      BrokerReconnectFailed,
+    );
+    try {
+      const castPolicy = { kind: 'from-the-top' } as unknown as DeliverPolicy;
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withReconnect({ initialDelayMs: 10, maxDelayMs: 10, maxAttempts: 1 })
+        .withStream({ name: 'S', subjects: ['s.>'] })
+        .withConsumer({ durable: 'd', deliverPolicy: castPolicy });
+      const actor = new UnvalidatedJetStreamActor(jetstreamOptions);
+      sys.spawn(() => actor, 'js');
+      // Either ending settles the question: a connect that *succeeded* is the
+      // defect, and the assertions below then say what it provisioned.
+      await awaitCondition(
+        () => failures.length > 0 || actor.publicConnectionState() === 'connected',
+        { timeoutMs: 4_000, label: 'the connect attempts failed or one succeeded' },
+      );
+
+      expect(actor.mockConnection.jsm.consumersAdd).toEqual([]);
+      // The stream upsert runs immediately before the consumer's, so the
+      // attempts did reach the translation rather than failing earlier.
+      expect(actor.mockConnection.jsm.streamsAdd.length).toBeGreaterThan(0);
+      expect(failures[0]?.cause.message).toContain('from-the-top');
     } finally {
       await sys.terminate();
     }
@@ -350,9 +759,9 @@ describe('JetStreamActor — ack/nak/term', () => {
       await awaitForwarded(target, 1);
       await sleep(SETTLE_MS);  // the upper half of "exactly one"; see SETTLE_MS
       expect(target.received).toHaveLength(1);
-      expect(target.received[0]!.streamSeq).toBe(42);
+      expect(target.received[0]!.streamSequence).toBe(42);
 
-      actor.tell({ kind: 'acknowledgment', streamSeq: 42 });
+      actor.tell({ kind: 'acknowledgment', ackToken: target.received[0]!.ackToken });
       await awaitCondition(() => handle.acked, {
         timeoutMs: 4_000, label: 'the acknowledgment reached the handle',
       });
@@ -376,7 +785,11 @@ describe('JetStreamActor — ack/nak/term', () => {
       const handle = makeHandle(7);
       mock.mockConnection.js.subscription.push(handle);
       await awaitForwarded(target, 1);
-      actor.tell({ kind: 'negativeAcknowledgment', streamSeq: 7, delayMs: 1500 });
+      actor.tell({
+        kind: 'negativeAcknowledgment',
+        ackToken: target.received[0]!.ackToken,
+        delayMs: 1500,
+      });
       // `acked` staying false is an absence, but it shares the one code path
       // with `naked` — so waiting for the nak is what makes it meaningful.
       await awaitCondition(() => handle.naked, {
@@ -390,11 +803,9 @@ describe('JetStreamActor — ack/nak/term', () => {
     }
   });
 
-  test('term marks the handle terminated (drop-forever)', async () => {
-    const sysOptions = ActorSystemOptions.create()
-      .withLogger(new NoopLogger())
-      .withLogLevel(LogLevel.Off);
-    const sys = ActorSystem.create('js-term', sysOptions);
+  test('term marks the handle terminated (drop-forever) and says which message it dropped', async () => {
+    const logger = new CapturingLogger();
+    const sys = observedSystem('js-term', logger);
     try {
       const jetstreamOptions = JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
@@ -404,11 +815,24 @@ describe('JetStreamActor — ack/nak/term', () => {
       const handle = makeHandle(99);
       mock.mockConnection.js.subscription.push(handle);
       await awaitForwarded(target, 1);
-      actor.tell({ kind: 'terminate', streamSeq: 99, reason: 'unparseable' });
+      actor.tell({
+        kind: 'terminate',
+        ackToken: target.received[0]!.ackToken,
+        reason: 'unparseable',
+      });
       await awaitCondition(() => handle.termed, {
         timeoutMs: 4_000, label: 'the terminate reached the handle',
       });
       expect(handle.termed).toBe(true);
+
+      // `term` is the one settle that loses a message for good, so the line it
+      // writes is the only record of it — and it names the message by its
+      // `streamSequence`, deliberately, not by the `ackToken` the command carried.
+      // The token identifies a *delivery* and is minted per actor instance; the
+      // stream sequence is what an operator can go and look up in the stream.
+      expect(logger.terminateWarnings).toHaveLength(1);
+      expect(logger.terminateWarnings[0]).toContain('term for streamSequence=99');
+      expect(logger.terminateWarnings[0]).toContain('(unparseable)');
     } finally {
       await sys.terminate();
     }
@@ -428,7 +852,7 @@ describe('JetStreamActor — ack/nak/term', () => {
       const handle = makeHandle(5);
       mock.mockConnection.js.subscription.push(handle);
       await awaitForwarded(target, 1);
-      actor.tell({ kind: 'inProgress', streamSeq: 5 });
+      actor.tell({ kind: 'inProgress', ackToken: target.received[0]!.ackToken });
       await awaitCondition(() => handle.working_called, {
         timeoutMs: 4_000, label: 'the in-progress signal reached the handle',
       });
@@ -439,7 +863,7 @@ describe('JetStreamActor — ack/nak/term', () => {
       expect(handle.naked).toBe(false);
       // Clean up: the pump is parked on this handle's ack, so let it resolve
       // before the system tears the actor down under it.
-      actor.tell({ kind: 'acknowledgment', streamSeq: 5 });
+      actor.tell({ kind: 'acknowledgment', ackToken: target.received[0]!.ackToken });
       await awaitCondition(() => handle.acked, {
         timeoutMs: 4_000, label: 'the cleanup acknowledgment released the pump',
       });
@@ -475,23 +899,27 @@ describe('JetStreamActor — ack/nak/term', () => {
       await awaitForwarded(target, 2);
       await sleep(SETTLE_MS);  // the upper half of "exactly two"; see SETTLE_MS
       expect(target.received).toHaveLength(2);
-      expect(target.received[1]!.streamSeq).toBe(2);
+      expect(target.received[1]!.streamSequence).toBe(2);
     } finally {
       await sys.terminate();
     }
   });
 
-  test('ackPolicy=none skips the handshake — every message is forwarded immediately', async () => {
-    const sysOptions = ActorSystemOptions.create()
-      .withLogger(new NoopLogger())
-      .withLogLevel(LogLevel.Off);
-    const sys = ActorSystem.create('js-none', sysOptions);
+  test('ackPolicy=none skips the handshake — every message is forwarded immediately, and a defensive settle is not a WARN', async () => {
+    // The logger is the second half of this case (#1510).  Under `'none'` the
+    // actor still mints an `ackToken` and ships it, but registers nothing
+    // against it — so once all four settle handlers report a miss at WARN, a
+    // fire-and-hose consumer that acks defensively takes that WARN once per
+    // message, at full delivery rate, carrying an explanation ("already timed
+    // out, was settled, or predates a reconnect") that is false in this mode.
+    const logger = new CapturingLogger();
+    const sys = observedSystem('js-none', logger);
     try {
       const jetstreamOptions = JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
         .withStream({ name: 'S', subjects: ['s.>'] })
         .withConsumer({ durable: 'd', ackPolicy: 'none' });
-      const { mock, target } = await bootActor(sys, jetstreamOptions);
+      const { actor, mock, target } = await bootActor(sys, jetstreamOptions);
       const h1 = makeHandle(1);
       const h2 = makeHandle(2);
       mock.mockConnection.js.subscription.push(h1);
@@ -499,32 +927,119 @@ describe('JetStreamActor — ack/nak/term', () => {
       await awaitForwarded(target, 2);
       // Both "not acked" claims are absences; see SETTLE_MS.
       await sleep(SETTLE_MS);
-      expect(target.received.map((resolveNext) => resolveNext.streamSeq)).toEqual([1, 2]);
+      expect(target.received.map((resolveNext) => resolveNext.streamSequence)).toEqual([1, 2]);
       expect(h1.acked).toBe(false);   // pump didn't call ack
       expect(h2.acked).toBe(false);
+
+      // A defensive consumer settling every mode the same way.
+      for (const message of target.received) {
+        actor.tell({ kind: 'acknowledgment', ackToken: message.ackToken });
+        actor.tell({ kind: 'negativeAcknowledgment', ackToken: message.ackToken });
+        actor.tell({ kind: 'terminate', ackToken: message.ackToken, reason: 'defensive' });
+        actor.tell({ kind: 'inProgress', ackToken: message.ackToken });
+      }
+      // "No WARN" is an absence, and the anchor for it is a *later* command
+      // whose WARN is unconditional: the mailbox is FIFO, so seeing the
+      // push-mode `fetch` refusal means all eight settles above were handled.
+      actor.tell({ kind: 'fetch', batch: 1 });
+      await awaitCondition(
+        () => logger.warnings.some((w) => w.includes('fetch on push-mode')),
+        { timeoutMs: 4_000, label: 'the anchor command behind the eight settles was refused' },
+      );
+      expect(logger.unknownTokenWarnings).toEqual([]);
+      // …and `terminate` in particular does not claim a message was dropped:
+      // in this mode nothing was tracked, so nothing was dropped.
+      expect(logger.terminateWarnings).toEqual([]);
     } finally {
       await sys.terminate();
     }
   });
 
-  test('ack for unknown streamSeq is a silent no-op', async () => {
-    const sysOptions = ActorSystemOptions.create()
-      .withLogger(new NoopLogger())
-      .withLogLevel(LogLevel.Off);
-    const sys = ActorSystem.create('js-unknown', sysOptions);
+  test('ack for an unknown ackToken is a no-op, and is reported at WARN', async () => {
+    // The half of this the test name has always claimed and could not see:
+    // it ran with `NoopLogger` at `LogLevel.Off` and asserted `true`, so
+    // reverting the line to `log.debug` — which is what let #710 run silently
+    // in every default deployment, `debug` being below the `Info` default —
+    // left it green.  The level is the point of the line, so the level is what
+    // this asserts.
+    const logger = new CapturingLogger();
+    const sys = observedSystem('js-unknown', logger);
     try {
       const jetstreamOptions = JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
         .withStream({ name: 'S', subjects: ['s.>'] })
         .withConsumer({ durable: 'd' });
       const { actor } = await bootActor(sys, jetstreamOptions);
-      // No handle pushed, so no pending entry.  Sending ack should not throw.
-      actor.tell({ kind: 'acknowledgment', streamSeq: 999 });
-      // The claim is an absence whose observable side is a crash that did not
-      // happen — there is nothing to poll for, only a turn to give away.
+      // No handle pushed, so no pending entry.  Sending ack must not throw.
+      actor.tell({ kind: 'acknowledgment', ackToken: 999 });
+      await awaitCondition(() => logger.unknownTokenWarnings.length === 1, {
+        timeoutMs: 4_000,
+        label: 'the unknown-token drop was reported at WARN',
+      });
+      // The no-throw claim is still an absence, so still needs the settle.
       await sleep(SETTLE_MS);
-      // Test passes if we get here without unhandled rejection.
-      expect(true).toBe(true);
+
+      expect(logger.unknownTokenWarnings).toHaveLength(1);
+      // The token is in the line because it is what an operator correlates
+      // against the delivery that carried it.
+      expect(logger.unknownTokenWarnings[0]).toContain('ackToken=999');
+      // And the consequence is named, not just the event: the message will be
+      // redelivered and reprocessed.
+      expect(logger.unknownTokenWarnings[0]).toContain('already timed out, was settled, or predates a reconnect');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('the other three settle commands report an unknown ackToken at WARN too, naming themselves', async () => {
+    // `onAcknowledgment` was the only handler the #710 fix gave the WARN to;
+    // `onNegativeAcknowledgment`, `onTerminate` and `onInProgress` stayed a
+    // bare `if (!pendingAck) return;` and dropped the command in total
+    // silence — not even at `debug` (#1510).  That matters most on the very
+    // migration the fix forced: a caller converting four settle call sites to
+    // the delivery-scoped token and missing one gets no signal from three of
+    // them, and a dropped `terminate` is the worst of the four — the caller
+    // asked for a permanent drop and instead gets the ack-timeout's `nak()`
+    // and endless redelivery, which is the silent-reprocessing outcome #710
+    // was filed about.
+    const logger = new CapturingLogger();
+    const sys = observedSystem('js-unknown-settles', logger);
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'S', subjects: ['s.>'] })
+        .withConsumer({ durable: 'd' });
+      const { actor } = await bootActor(sys, jetstreamOptions);
+      // No handle pushed, so no pending entry for any of the three.
+      actor.tell({ kind: 'negativeAcknowledgment', ackToken: 4242 });
+      actor.tell({ kind: 'terminate', ackToken: 4243, reason: 'poison' });
+      actor.tell({ kind: 'inProgress', ackToken: 4244 });
+      await awaitCondition(() => logger.unknownTokenWarnings.length >= 3, {
+        timeoutMs: 4_000,
+        label: 'all three unknown-token drops were reported at WARN',
+      });
+      // The upper half of "exactly three": a later command whose WARN is
+      // unconditional, reached through the same FIFO mailbox.
+      actor.tell({ kind: 'fetch', batch: 1 });
+      await awaitCondition(
+        () => logger.warnings.some((w) => w.includes('fetch on push-mode')),
+        { timeoutMs: 4_000, label: 'the anchor command behind the three settles was refused' },
+      );
+
+      expect(logger.unknownTokenWarnings).toHaveLength(3);
+      // Each line names the command that missed, not just "a settle": the
+      // three fail in different ways and the caller has to know which of its
+      // call sites is the unconverted one.
+      expect(logger.unknownTokenWarnings[0])
+        .toContain('negativeAcknowledgment for unknown ackToken=4242');
+      expect(logger.unknownTokenWarnings[1]).toContain('terminate for unknown ackToken=4243');
+      expect(logger.unknownTokenWarnings[2]).toContain('inProgress for unknown ackToken=4244');
+      for (const warning of logger.unknownTokenWarnings) {
+        expect(warning).toContain('already timed out, was settled, or predates a reconnect');
+      }
+      // The dropped `terminate` reported a miss, not a drop — no message was
+      // permanently discarded, because none was in flight.
+      expect(logger.terminateWarnings).toEqual([]);
     } finally {
       await sys.terminate();
     }
@@ -548,7 +1063,7 @@ describe('JetStreamActor — publish', () => {
           subject: 'orders.new',
           payload: 'hello',
           messageId: 'abc-123',
-          expectedLastSeq: 42,
+          expectedLastSequence: 42,
           headers: { 'X-Tenant': 't1' },
         },
       });
@@ -559,7 +1074,7 @@ describe('JetStreamActor — publish', () => {
       expect(published?.subject).toBe('orders.new');
       expect(new TextDecoder().decode(published!.payload)).toBe('hello');
       expect(published?.msgID).toBe('abc-123');
-      expect(published?.expectLastSeq).toBe(42);
+      expect(published?.expectedLastSequence).toBe(42);
       expect(published?.headers).toEqual({ 'X-Tenant': 't1' });
     } finally {
       await sys.terminate();
@@ -579,11 +1094,437 @@ describe('JetStreamActor — options parsing', () => {
         .withStream({ name: 'BILLING', subjects: ['billing.>'] })
         .withConsumer({ durable: 'billing-proc', filterSubject: 'billing.charges' });
       const { mock } = await bootActor(sys, jetstreamOptions);
-      const sub = mock.mockConnection.js.subscribeCalls[0];
-      expect(sub?.stream).toBe('BILLING');
-      expect(sub?.consumer).toBe('billing-proc');
-      // Filter subject is forwarded as the subscribe subject.
-      expect(sub?.subject).toBe('billing.charges');
+      const push = mock.mockConnection.js.pushConsumerCalls[0];
+      expect(push?.stream).toBe('BILLING');
+      expect(push?.durable).toBe('billing-proc');
+      // The filter is a property of the consumer, not of the subscription.
+      // v2 forwarded it as the subscribe subject; v3 has no subject to
+      // forward it to, so the place it has to appear is the consumer config
+      // — which is where the server kept it either way.
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.filter_subject).toBe('billing.charges');
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+/* ================== HOCON stream / consumer blocks (#871) ================ */
+
+/**
+ * The three fields that had no reader before #871.  Every config here is a
+ * **nested** object literal — a dotted top-level key like
+ * `{'actor-ts.io.broker.jetstream.stream': …}` stays a literal key in the
+ * parsed tree, so `hasPath` would answer from reference.conf and the
+ * assertions would pass while proving nothing.
+ */
+describe('JetStreamActor — HOCON stream / consumer / acknowledgment-timeout (#871)', () => {
+  function systemWith(name: string, jetstream: ConfigObject): ActorSystem {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({ 'actor-ts': { io: { broker: { jetstream } } } });
+    return ActorSystem.create(name, sysOptions);
+  }
+
+  test('the stream and consumer blocks feed the options and reach the manager', async () => {
+    const sys = systemWith('js-hocon-blocks', {
+      servers: ['nats://fake:4222'],
+      'acknowledgment-timeout': '45s',
+      stream: {
+        name: 'BILLING',
+        subjects: ['billing.>'],
+        retention: 'workqueue',
+        storage: 'memory',
+        'max-messages': 1000,
+        'max-bytes': '8M',
+        'max-age': 3_600_000_000_000,
+        create: true,
+      },
+      consumer: {
+        durable: 'billing-proc',
+        mode: 'push',
+        'deliver-policy': 'last',
+        'ack-policy': 'explicit',
+        'ack-wait': '10s',
+        'filter-subject': 'billing.charges',
+        'max-acknowledgment-pending': 64,
+        create: true,
+      },
+    });
+    try {
+      const { mock } = await bootActor(sys, JetStreamOptions.create());
+      const resolved = mock.publicResolvedOptions();
+      expect(resolved.stream).toEqual({
+        name: 'BILLING',
+        subjects: ['billing.>'],
+        retention: 'workqueue',
+        storage: 'memory',
+        maxMessages: 1000,
+        maxBytes: 8 * 1024 * 1024,
+        maxAge: 3_600_000_000_000,
+        create: true,
+      });
+      expect(resolved.consumer).toEqual({
+        durable: 'billing-proc',
+        mode: 'push',
+        deliverPolicy: 'last',
+        ackPolicy: 'explicit',
+        ackWaitMs: 10_000,
+        filterSubject: 'billing.charges',
+        maxAcknowledgmentPending: 64,
+        create: true,
+      });
+      // `45s` is a duration string, so getDuration is the reader that has to
+      // be behind it — a getNumber would have thrown on this value.
+      expect(resolved.acknowledgmentTimeout).toBe(45_000);
+      // …and it is not only an options object: the manager was asked for it.
+      expect(mock.mockConnection.jsm.streamsAdd[0]).toEqual({
+        name: 'BILLING',
+        subjects: ['billing.>'],
+        max_msgs: 1000,
+        max_bytes: 8 * 1024 * 1024,
+        max_age: 3_600_000_000_000,
+      });
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.deliver_policy).toBe('last');
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.ack_wait).toBe(10_000 * 1_000_000);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('the deliver-policy object arm survives the round trip', async () => {
+    const sys = systemWith('js-hocon-deliver-policy', {
+      servers: ['nats://fake:4222'],
+      stream: { name: 'BILLING', subjects: ['billing.>'] },
+      consumer: {
+        durable: 'billing-proc',
+        // The `kind` keeps its TypeScript spelling as a *value*, so it lands
+        // in the union unchanged — and that spelling is kebab-case (#1443),
+        // like every value a HOCON key takes.
+        'deliver-policy': { kind: 'by-start-sequence', 'start-seq': 4242 },
+      },
+    });
+    try {
+      const { mock } = await bootActor(sys, JetStreamOptions.create());
+      expect(mock.publicResolvedOptions().consumer?.deliverPolicy)
+        .toEqual({ kind: 'by-start-sequence', startSeq: 4242 });
+      const added = mock.mockConnection.jsm.consumersAdd[0];
+      expect(added?.deliver_policy).toBe('by_start_sequence');
+      expect(added?.opt_start_seq).toBe(4242);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('the by-start-time arm survives the round trip too', async () => {
+    const sys = systemWith('js-hocon-deliver-policy-time', {
+      servers: ['nats://fake:4222'],
+      stream: { name: 'BILLING', subjects: ['billing.>'] },
+      consumer: {
+        durable: 'billing-proc',
+        'deliver-policy': { kind: 'by-start-time', 'start-time': 1_767_225_600_000 },
+      },
+    });
+    try {
+      const { mock } = await bootActor(sys, JetStreamOptions.create());
+      expect(mock.publicResolvedOptions().consumer?.deliverPolicy)
+        .toEqual({ kind: 'by-start-time', startTimeMs: 1_767_225_600_000 });
+      const added = mock.mockConnection.jsm.consumersAdd[0];
+      expect(added?.deliver_policy).toBe('by_start_time');
+      expect(added?.opt_start_time).toBe('2026-01-01T00:00:00.000Z');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  // A retired spelling is refused by name rather than read: translating it
+  // would be a second spelling accepted for good, and the generic unknown-kind
+  // error lists both object forms without saying which one replaced it.
+  test.each([
+    { retired: 'byStartSeq', replacement: 'by-start-sequence', leaf: 'start-seq', value: 4242 },
+    { retired: 'byStartTime', replacement: 'by-start-time', leaf: 'start-time', value: 1_767_225_600_000 },
+  ])('the retired kind $retired is refused at startup, naming $replacement', async (row) => {
+    const sys = systemWith(`js-hocon-retired-${row.retired}`, {
+      servers: ['nats://fake:4222'],
+      stream: { name: 'BILLING', subjects: ['billing.>'] },
+      consumer: {
+        durable: 'billing-proc',
+        'deliver-policy': { kind: row.retired, [row.leaf]: row.value },
+      },
+    });
+    try {
+      const actor = new StartCapturingJetStreamActor(JetStreamOptions.create());
+      sys.spawn(() => actor, 'js');
+      await awaitCondition(() => actor.startSettled, {
+        timeoutMs: 4_000, label: "the actor's preStart settled",
+      });
+
+      expect(actor.startFailure).toBeInstanceOf(ConfigError);
+      const message = (actor.startFailure as ConfigError).message;
+      expect(message).toContain(row.retired);
+      expect(message).toContain(row.replacement);
+      expect(message).toMatch(/renamed/);
+      // Refused before a consumer was ever provisioned.
+      expect(actor.mockConnection.jsm.consumersAdd).toEqual([]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  // Falling back to `all` instead would replay the whole stream on a typo.
+  test('an unknown kind is refused at startup, listing the kinds that exist', async () => {
+    const sys = systemWith('js-hocon-unknown-kind', {
+      servers: ['nats://fake:4222'],
+      stream: { name: 'BILLING', subjects: ['billing.>'] },
+      consumer: { durable: 'billing-proc', 'deliver-policy': { kind: 'from-the-top' } },
+    });
+    try {
+      const actor = new StartCapturingJetStreamActor(JetStreamOptions.create());
+      sys.spawn(() => actor, 'js');
+      await awaitCondition(() => actor.startSettled, {
+        timeoutMs: 4_000, label: "the actor's preStart settled",
+      });
+
+      expect(actor.startFailure).toBeInstanceOf(ConfigError);
+      const message = (actor.startFailure as ConfigError).message;
+      expect(message).toContain('from-the-top');
+      expect(message).toContain('kind = "by-start-sequence"');
+      expect(message).toContain('kind = "by-start-time"');
+      expect(message).not.toMatch(/byStart/);
+      expect(actor.mockConnection.jsm.consumersAdd).toEqual([]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  // A kind is matched whole, so no shortening of one is read as it.  That
+  // covers the abbreviated sequence kind the spelled-out one replaced before
+  // any release: having never shipped, it has no entry among the retired
+  // kinds either, and is refused as the unknown kind it is.  Both start leaves
+  // are supplied, so a reader that did accept a shortening could build the
+  // object and would start cleanly rather than fail on a missing leaf.
+  const shortenedKinds = ['by-start-sequence', 'by-start-time'].flatMap((kind) => {
+    const sharedStem = 'by-start-'.length;
+    return Array.from(
+      { length: kind.length - sharedStem - 1 },
+      (_, index) => kind.slice(0, sharedStem + 1 + index),
+    );
+  });
+
+  test.each(shortenedKinds)('the shortened kind %s is refused as unknown, not read as a kind', async (shortened) => {
+    const sys = systemWith(`js-hocon-shortened-${shortened}`, {
+      servers: ['nats://fake:4222'],
+      stream: { name: 'BILLING', subjects: ['billing.>'] },
+      consumer: {
+        durable: 'billing-proc',
+        'deliver-policy': { kind: shortened, 'start-seq': 4242, 'start-time': 1_767_225_600_000 },
+      },
+    });
+    try {
+      const actor = new StartCapturingJetStreamActor(JetStreamOptions.create());
+      sys.spawn(() => actor, 'js');
+      await awaitCondition(() => actor.startSettled, {
+        timeoutMs: 4_000, label: "the actor's preStart settled",
+      });
+
+      expect(actor.startFailure).toBeInstanceOf(ConfigError);
+      expect((actor.startFailure as ConfigError).message)
+        .toContain(`'${shortened}' is not a delivery policy`);
+      expect(actor.mockConnection.jsm.consumersAdd).toEqual([]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('the shortened kinds include every truncation of both kinds', () => {
+    // Pins the generator above, which would otherwise pass vacuously on an
+    // empty list.
+    expect(shortenedKinds).toHaveLength(10);
+    expect(shortenedKinds).toContain('by-start-s');
+    expect(shortenedKinds).toContain('by-start-sequenc');
+    expect(shortenedKinds).toContain('by-start-tim');
+  });
+
+  test('a builder stream block still wins over the HOCON one', async () => {
+    const sys = systemWith('js-hocon-precedence', {
+      servers: ['nats://fake:4222'],
+      stream: { name: 'FROM-HOCON', subjects: ['hocon.>'] },
+      consumer: { durable: 'from-hocon' },
+    });
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withStream({ name: 'FROM-BUILDER', subjects: ['builder.>'] });
+      const { mock } = await bootActor(sys, jetstreamOptions);
+      expect(mock.publicResolvedOptions().stream?.name).toBe('FROM-BUILDER');
+      // The consumer the builder left unset still falls through to HOCON.
+      expect(mock.publicResolvedOptions().consumer?.durable).toBe('from-hocon');
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+describe('JetStreamOptionsValidator — the stream / consumer group rules (#871)', () => {
+  const validate = (s: Partial<JetStreamOptionsType>): void =>
+    new JetStreamOptionsValidator().validate(s);
+
+  test('rejects a stream with no name — the shape an incomplete HOCON block reads as', () => {
+    expect(() => validate({ stream: { name: '', subjects: ['a.>'] } })).toThrow(/stream\.name/);
+  });
+
+  test('rejects a stream with no subjects', () => {
+    expect(() => validate({ stream: { name: 'S', subjects: [] } })).toThrow(/stream\.subjects/);
+  });
+
+  test('rejects an unknown retention and an unknown storage', () => {
+    expect(() => validate({ stream: { name: 'S', subjects: ['a'], retention: 'forever' as 'limits' } }))
+      .toThrow(/stream\.retention/);
+    expect(() => validate({ stream: { name: 'S', subjects: ['a'], storage: 'tape' as 'file' } }))
+      .toThrow(/stream\.storage/);
+  });
+
+  test('rejects a consumer with no durable name', () => {
+    expect(() => validate({ consumer: { durable: '' } })).toThrow(/consumer\.durable/);
+  });
+
+  test('rejects an unknown deliverPolicy string, and accepts the object arm', () => {
+    expect(() => validate({ consumer: { durable: 'd', deliverPolicy: 'yesterday' as 'all' } }))
+      .toThrow(/consumer\.deliverPolicy/);
+    expect(() => validate({ consumer: { durable: 'd', deliverPolicy: { kind: 'by-start-sequence', startSeq: 1 } } }))
+      .not.toThrow();
+  });
+
+  // A start sequence goes to the server as JSON, into a uint64.  Past
+  // Number.MAX_SAFE_INTEGER a number no longer holds every integer — the
+  // sequence sent is not always the one written — and from 1e21 on JSON writes
+  // it in exponent form, which no uint64 parses: the consumer would be refused
+  // at connect and retried for ever under the default reconnect policy.
+  test.each([
+    { label: '2^53, the first integer past the exact range', startSeq: 2 ** 53 },
+    { label: '2^64, past the server\'s uint64', startSeq: 2 ** 64 },
+    { label: '1e21, which JSON writes as 1e+21', startSeq: 1e21 },
+  ])('refuses a startSeq of $label, naming the field', ({ startSeq }) => {
+    let refusal: unknown = null;
+    try {
+      validate({ consumer: { durable: 'd', deliverPolicy: { kind: 'by-start-sequence', startSeq } } });
+    } catch (e) {
+      refusal = e;
+    }
+    expect(refusal).toBeInstanceOf(OptionsError);
+    expect((refusal as OptionsError).field).toBe('consumer.deliverPolicy.startSeq');
+    expect((refusal as OptionsError).message).toContain(String(Number.MAX_SAFE_INTEGER));
+  });
+
+  test('accepts the largest start sequence a number holds exactly, and JSON writes it out whole', () => {
+    expect(() => validate({
+      consumer: { durable: 'd', deliverPolicy: { kind: 'by-start-sequence', startSeq: Number.MAX_SAFE_INTEGER } },
+    })).not.toThrow();
+    expect(JSON.stringify(Number.MAX_SAFE_INTEGER)).toBe('9007199254740991');
+    expect(JSON.stringify(1e21)).toBe('1e+21');
+  });
+
+  test('rejects a non-positive ackWaitMs', () => {
+    expect(() => validate({ consumer: { durable: 'd', ackWaitMs: 0 } })).toThrow(OptionsError);
+  });
+
+  test('an unset group passes', () => {
+    expect(() => validate({ servers: ['nats://h:4222'] })).not.toThrow();
+  });
+});
+
+/*
+ * NATS spells "no limit" out of band on four of the five bounded leaves, and
+ * those spellings are non-positive numbers — so a plain positive bound refuses
+ * a configuration the server documents.  The values are per field, not
+ * symmetric: `max_msgs`, `max_bytes` and `max_ack_pending` take `-1`, while
+ * `max_age` takes `0` (it is a nanosecond span, and a negative one has no
+ * meaning).  `ack_wait` has no unlimited spelling at all — a zero there means
+ * "use the server default", which `undefined` already says here — so it keeps
+ * the plain positive bound and is asserted below as the deliberate asymmetry.
+ */
+describe('JetStreamOptionsValidator — the NATS "unlimited" sentinels', () => {
+  const validate = (s: Partial<JetStreamOptionsType>): void =>
+    new JetStreamOptionsValidator().validate(s);
+  const stream = (
+    limits: Partial<Pick<NonNullable<JetStreamOptionsType['stream']>, 'maxMessages' | 'maxBytes' | 'maxAge'>>,
+  ): Partial<JetStreamOptionsType> => ({ stream: { name: 'S', subjects: ['a.>'], ...limits } });
+
+  test('accepts -1 on the two count/byte caps and 0 on the age cap', () => {
+    expect(() => validate(stream({ maxMessages: -1 }))).not.toThrow();
+    expect(() => validate(stream({ maxBytes: -1 }))).not.toThrow();
+    expect(() => validate(stream({ maxAge: 0 }))).not.toThrow();
+    expect(() => validate({ consumer: { durable: 'd', maxAcknowledgmentPending: -1 } })).not.toThrow();
+  });
+
+  test('refuses a non-positive value that is not that field\'s sentinel', () => {
+    // -2 is not a spelling of anything on any of them.
+    expect(() => validate(stream({ maxMessages: -2 }))).toThrow(/stream\.maxMessages/);
+    expect(() => validate(stream({ maxBytes: -2 }))).toThrow(/stream\.maxBytes/);
+    expect(() => validate(stream({ maxAge: -2 }))).toThrow(/stream\.maxAge/);
+    expect(() => validate({ consumer: { durable: 'd', maxAcknowledgmentPending: -2 } }))
+      .toThrow(/consumer\.maxAcknowledgmentPending/);
+    // The sentinel is per field: 0 is unlimited only on the age cap, and -1
+    // only on the other three.
+    expect(() => validate(stream({ maxMessages: 0 }))).toThrow(/stream\.maxMessages/);
+    expect(() => validate(stream({ maxBytes: 0 }))).toThrow(/stream\.maxBytes/);
+    expect(() => validate(stream({ maxAge: -1 }))).toThrow(/stream\.maxAge/);
+    expect(() => validate({ consumer: { durable: 'd', maxAcknowledgmentPending: 0 } }))
+      .toThrow(/consumer\.maxAcknowledgmentPending/);
+  });
+
+  test('consumer.ackWaitMs has no sentinel — 0 and -1 both stay refused', () => {
+    expect(() => validate({ consumer: { durable: 'd', ackWaitMs: 0 } })).toThrow(/consumer\.ackWaitMs/);
+    expect(() => validate({ consumer: { durable: 'd', ackWaitMs: -1 } })).toThrow(/consumer\.ackWaitMs/);
+  });
+
+  test('a sentinel reaches the manager verbatim rather than being normalised', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('js-unlimited', sysOptions);
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'UNBOUNDED', subjects: ['u.>'], maxMessages: -1, maxBytes: -1, maxAge: 0 })
+        .withConsumer({ durable: 'u-proc', maxAcknowledgmentPending: -1 });
+      const { mock } = await bootActor(sys, jetstreamOptions);
+      expect(mock.mockConnection.jsm.streamsAdd[0]).toEqual({
+        name: 'UNBOUNDED', subjects: ['u.>'], max_msgs: -1, max_bytes: -1, max_age: 0,
+      });
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.max_ack_pending).toBe(-1);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('the sentinels survive the HOCON round trip too', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({
+        'actor-ts': {
+          io: {
+            broker: {
+              jetstream: {
+                servers: ['nats://fake:4222'],
+                stream: {
+                  name: 'UNBOUNDED', subjects: ['u.>'],
+                  'max-messages': -1, 'max-bytes': -1, 'max-age': 0,
+                },
+                consumer: { durable: 'u-proc', 'max-acknowledgment-pending': -1 },
+              },
+            },
+          },
+        },
+      });
+    const sys = ActorSystem.create('js-unlimited-hocon', sysOptions);
+    try {
+      const { mock } = await bootActor(sys, JetStreamOptions.create());
+      const resolved = mock.publicResolvedOptions();
+      expect(resolved.stream?.maxMessages).toBe(-1);
+      expect(resolved.stream?.maxBytes).toBe(-1);
+      expect(resolved.stream?.maxAge).toBe(0);
+      expect(resolved.consumer?.maxAcknowledgmentPending).toBe(-1);
     } finally {
       await sys.terminate();
     }
@@ -604,8 +1545,11 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
         .withStream({ name: 'ORDERS', subjects: ['orders.>'] })
         .withConsumer({ durable: 'puller', mode: 'pull' });
       const { mock } = await bootActor(sys, jetstreamOptions);
-      // No subscribe — pull mode is on-demand.
-      expect(mock.mockConnection.js.subscribeCalls).toHaveLength(0);
+      // No push consumer — pull mode is on-demand.
+      expect(mock.mockConnection.js.pushConsumerCalls).toHaveLength(0);
+      // And the consumer it created carries no deliver subject, which is what
+      // makes it a pull consumer server-side.
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.deliver_subject).toBeUndefined();
       // Pull-consumer handle materialised for ORDERS::puller.
       expect(mock.mockConnection.js.pullConsumers.size).toBe(1);
       expect(mock.mockConnection.js.pullConsumers.has('ORDERS::puller')).toBe(true);
@@ -635,16 +1579,16 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
       await sleep(SETTLE_MS);
 
       // All three messages delivered to target before any ack.
-      expect(target.received.map((m) => m.streamSeq).sort()).toEqual([1, 2, 3]);
+      expect(target.received.map((m) => m.streamSequence).sort()).toEqual([1, 2, 3]);
       // Fetch was called with the requested parameters.
       expect(pc.fetchCalls).toEqual([{ max_messages: 3, expires: 1_000 }]);
 
       // Acknowledgment them all so the pending-map drains.  The batch handles
       // are constructed inline, so there is nothing to poll here — this is a
       // drain before teardown, not a wait before an assertion.
-      actor.tell({ kind: 'acknowledgment', streamSeq: 1 });
-      actor.tell({ kind: 'acknowledgment', streamSeq: 2 });
-      actor.tell({ kind: 'acknowledgment', streamSeq: 3 });
+      for (const message of target.received) {
+        actor.tell({ kind: 'acknowledgment', ackToken: message.ackToken });
+      }
       await sleep(30);  // drain before teardown, per the comment above
     } finally {
       await sys.terminate();
@@ -675,7 +1619,10 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
       await sleep(SETTLE_MS);  // "no messages" is the absence; see SETTLE_MS
 
       expect(target.received).toHaveLength(0);
-      expect(pc.fetchCalls).toEqual([{ max_messages: 10, expires: 100 }]);
+      // The 100 ms the command asked for is clamped to the floor nats.js
+      // enforces: below a second the client rejects the fetch outright, so a
+      // short request would be an exception rather than a short wait.
+      expect(pc.fetchCalls).toEqual([{ max_messages: 10, expires: 1_000 }]);
     } finally {
       await sys.terminate();
     }
@@ -698,8 +1645,9 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
 
       actor.tell({ kind: 'fetch', batch: 2, expiresMs: 100 });
       await awaitForwarded(target, 2);
-      actor.tell({ kind: 'acknowledgment', streamSeq: 10 });
-      actor.tell({ kind: 'acknowledgment', streamSeq: 11 });
+      for (const message of target.received) {
+        actor.tell({ kind: 'acknowledgment', ackToken: message.ackToken });
+      }
       // The two acks have to be processed before the second fetch, or the
       // pending map is still full and the fetch under test never runs.  The
       // batch handles are inline, so the ack landing is not observable from
@@ -710,13 +1658,13 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
       await awaitForwarded(target, 5);
       // The sequence list is exact, and so is the fetch count; see SETTLE_MS.
       await sleep(SETTLE_MS);
-      expect(target.received.map((m) => m.streamSeq)).toEqual([10, 11, 12, 13, 14]);
+      expect(target.received.map((m) => m.streamSequence)).toEqual([10, 11, 12, 13, 14]);
       expect(pc.fetchCalls).toHaveLength(2);
 
       // Drain the pending map before teardown; see the first ack pair above.
-      actor.tell({ kind: 'acknowledgment', streamSeq: 12 });
-      actor.tell({ kind: 'acknowledgment', streamSeq: 13 });
-      actor.tell({ kind: 'acknowledgment', streamSeq: 14 });
+      for (const message of target.received.slice(2)) {
+        actor.tell({ kind: 'acknowledgment', ackToken: message.ackToken });
+      }
       await sleep(SETTLE_MS);  // drain before teardown, per the comment above
     } finally {
       await sys.terminate();
@@ -766,6 +1714,424 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
       await sleep(SETTLE_MS);
       // Still no pull consumer.
       expect(mock.mockConnection.js.pullConsumers.size).toBe(0);
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+/* ============ Delivery-scoped acknowledgment tokens (#710) ============== */
+
+/**
+ * A mock actor that mints a **fresh** connection on every connect, so a
+ * reconnect is a real second connection with its own subscription rather
+ * than the first one handed out twice.
+ *
+ * The single-connection {@link MockJetStreamActor} cannot model this: its
+ * `closed()` promise resolves the first time `disconnectImplementation`
+ * drains it and stays resolved, so the reconnect would report a lost
+ * connection the instant it opened one.
+ */
+class ReconnectingMockJetStreamActor extends JetStreamActor {
+  readonly connections: MockNatsConnection[] = [];
+
+  protected override async createNatsConnection(): Promise<NatsConnectionLike> {
+    const connection = new MockNatsConnection();
+    this.connections.push(connection);
+    return connection;
+  }
+
+  protected override async jetStreamModule(): Promise<JetStreamModuleLike> {
+    return mockJetStreamModule();
+  }
+
+  /** Test seam — report a lost connection the way a driver callback does. */
+  dropConnection(): void {
+    this.handleConnectionLost(new Error('nats connection closed'));
+  }
+
+  publicConnectionState(): string { return this.connectionState; }
+}
+
+/**
+ * A mock whose ack window can be re-timed **between** two deliveries.
+ *
+ * `deliverAndAwaitAcknowledgment` reads `acknowledgmentTimeout` off the
+ * resolved options once per delivery, so changing it between two fetches is
+ * what lets a case arm a *short* timer on the stale delivery and a long one
+ * on the live redelivery.  Without it both timers are armed milliseconds
+ * apart and fire milliseconds apart, and the case would be racing the second
+ * one to get its acknowledgment in — a flake, not a test.
+ */
+class RetimableMockJetStreamActor extends MockJetStreamActor {
+  /** Re-time the window the *next* delivery gets; armed timers keep theirs. */
+  retimeAcknowledgmentWindow(ms: number): void {
+    // The resolved options are a plain snapshot object, not a frozen one —
+    // the cast only sheds `readonly`.
+    (this.publicResolvedOptions() as { acknowledgmentTimeout?: number }).acknowledgmentTimeout = ms;
+  }
+}
+
+describe('JetStreamActor — delivery-scoped acknowledgment tokens (#710)', () => {
+  test('two overlapping pull deliveries of one streamSequence are settled independently', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('js-pull-overlap', sysOptions);
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'ORDERS', subjects: ['orders.>'] })
+        .withConsumer({ durable: 'puller', mode: 'pull', ackWaitMs: 4_000 });
+      const { actor, mock, target } = await bootActor(sys, jetstreamOptions);
+      const pullConsumer = mock.mockConnection.js.pullConsumers.get('ORDERS::puller')!;
+      const firstDelivery = makeHandle(4242);
+      const redelivery = makeRedelivery(4242, 2);
+      pullConsumer.enqueueBatch([firstDelivery]);
+      pullConsumer.enqueueBatch([redelivery]);
+
+      // Batch 1.  Its handler is slow and settles nothing yet.
+      actor.tell({ kind: 'fetch', batch: 1, expiresMs: 100 });
+      await awaitForwarded(target, 1);
+      // Batch 2 *while batch 1 is still outstanding* — the ordinary pull
+      // pattern, not a contrived one: `onCommand` dispatches `fetch` with
+      // `void`, so the mailbox turn ends before the first batch's acks
+      // arrive.  Meanwhile the server's ack_wait lapsed and it redelivered
+      // 4242, so this batch carries a second delivery of the same message.
+      actor.tell({ kind: 'fetch', batch: 1, expiresMs: 100 });
+      await awaitForwarded(target, 2);
+
+      // The premise: same message, two live deliveries, distinguishable only
+      // by the token.  Keyed on `streamSequence` these two were one map entry.
+      expect(target.received.map((m) => m.streamSequence)).toEqual([4242, 4242]);
+      // The consumer sequence is what the redelivery bumped — the driver's
+      // `deliverySequence`, not a second copy of the stream sequence.
+      expect(target.received.map((m) => m.consumerSequence)).toEqual([4242, 4244]);
+      expect(target.received[0]!.ackToken).not.toBe(target.received[1]!.ackToken);
+
+      // Settle the *stale* delivery, then the live one.  Under a per-message
+      // key both commands named the same entry: the nak consumed the live
+      // delivery's entry and the acknowledgment that followed found nothing.
+      actor.tell({ kind: 'negativeAcknowledgment', ackToken: target.received[0]!.ackToken });
+      await awaitCondition(() => firstDelivery.naked, {
+        timeoutMs: 4_000, label: 'the negative acknowledgment reached the stale delivery',
+      });
+      actor.tell({ kind: 'acknowledgment', ackToken: target.received[1]!.ackToken });
+      await awaitCondition(() => redelivery.acked, {
+        timeoutMs: 4_000, label: 'the acknowledgment reached the live redelivery',
+      });
+
+      // Each command reached its own delivery and no other.
+      expect(firstDelivery.acked).toBe(false);
+      expect(redelivery.naked).toBe(false);
+      expect(redelivery.nakCount).toBe(0);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test("a stale delivery's ack-timeout fires while the live redelivery is pending, and leaves it alone", async () => {
+    // Step 4 of #710, which no shipped case drove: the *stale* entry's own
+    // `setTimeout` firing — and running its `pending.delete` — while a live
+    // delivery of the same `streamSequence` is still outstanding.  The overlap
+    // case above settles the stale delivery with an explicit
+    // `negativeAcknowledgment` instead, and the ack-timeout case has a single
+    // delivery, so the identity-checked delete in the timer rested on reading
+    // rather than on a test (#1508).
+    const logger = new CapturingLogger();
+    const sys = observedSystem('js-stale-timer', logger);
+    /** Short enough that the stale entry's timer fires inside this case. */
+    const staleWindowMs = 300;
+    /** Wide enough that the live redelivery's own timer cannot. */
+    const liveWindowMs = 4_000;
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'ORDERS', subjects: ['orders.>'] })
+        .withConsumer({ durable: 'puller', mode: 'pull', ackWaitMs: staleWindowMs })
+        .withAcknowledgmentTimeout(staleWindowMs);
+      const { actor, mock, target } = await bootActorOfKind(
+        sys, jetstreamOptions, (built) => new RetimableMockJetStreamActor(built),
+      );
+      const pullConsumer = mock.mockConnection.js.pullConsumers.get('ORDERS::puller')!;
+      const firstDelivery = makeHandle(4242);
+      const redelivery = makeRedelivery(4242, 2);
+      pullConsumer.enqueueBatch([firstDelivery]);
+      pullConsumer.enqueueBatch([redelivery]);
+
+      actor.tell({ kind: 'fetch', batch: 1, expiresMs: 100 });
+      await awaitForwarded(target, 1);
+      // The redelivery gets a window of its own, so the two timers are 300 ms
+      // and 4 s wide rather than both 300 ms and armed a millisecond apart.
+      mock.retimeAcknowledgmentWindow(liveWindowMs);
+      actor.tell({ kind: 'fetch', batch: 1, expiresMs: 100 });
+      await awaitForwarded(target, 2);
+
+      // The premise, checked rather than assumed: two live deliveries of one
+      // message, and the stale one's timer has *not* fired yet.  A runner slow
+      // enough to have burned the whole 300 ms getting here fails this line
+      // instead of passing the case without ever reaching the overlap.
+      expect(target.received.map((m) => m.streamSequence)).toEqual([4242, 4242]);
+      expect(firstDelivery.naked).toBe(false);
+      const liveToken = target.received[1]!.ackToken;
+
+      // Now let the stale entry's timer run: it rejects its own wait, naks
+      // its own handle, and deletes its own key.
+      await awaitCondition(() => firstDelivery.naked, {
+        timeoutMs: 4_000,
+        label: "the stale delivery's ack-timeout fired while the redelivery was pending",
+      });
+
+      // The live entry is still registered *after* that delete ran — an
+      // `inProgress` naming its token finds it and reports nothing.  Under
+      // the per-message key with an unconditional delete, this is exactly
+      // where the live entry had gone.
+      actor.tell({ kind: 'inProgress', ackToken: liveToken });
+      await awaitCondition(() => redelivery.working_called, {
+        timeoutMs: 4_000, label: 'the in-progress signal reached the live redelivery',
+      });
+      expect(logger.unknownTokenWarnings).toEqual([]);
+
+      // …and it can still be settled by its own token.
+      actor.tell({ kind: 'acknowledgment', ackToken: liveToken });
+      await awaitCondition(() => redelivery.acked, {
+        timeoutMs: 4_000, label: 'the live redelivery was acknowledged by its own token',
+      });
+      expect(firstDelivery.acked).toBe(false);
+      expect(redelivery.naked).toBe(false);
+      expect(redelivery.nakCount).toBe(0);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a delivery in flight at disconnect is settled, so no timer survives the reconnect', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('js-reconnect-orphan', sysOptions);
+    /** Short on purpose: the test has to outlive one whole ack window. */
+    const ackTimeoutMs = 120;
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'ORDERS', subjects: ['orders.>'] })
+        .withConsumer({ durable: 'pusher', ackWaitMs: ackTimeoutMs })
+        .withAcknowledgmentTimeout(ackTimeoutMs)
+        .withReconnect({ initialDelayMs: 5, maxDelayMs: 5, factor: 1, randomFactor: 0 });
+      const { actor, mock, target } = await bootActorOfKind(
+        sys, jetstreamOptions, (built) => new ReconnectingMockJetStreamActor(built),
+      );
+      const beforeDrop = makeHandle(77);
+      mock.connections[0]!.js.subscription.push(beforeDrop);
+      await awaitForwarded(target, 1);
+
+      // The connection drops with 77 still unacknowledged.  Its ack-timeout
+      // is armed and, before #710, `disconnectImplementation` cleared the map
+      // without settling the entry — leaving that timer to fire into a tree
+      // that had already reconnected.
+      mock.dropConnection();
+      await awaitCondition(
+        () => mock.connections.length >= 2 && mock.publicConnectionState() === 'connected',
+        { timeoutMs: 4_000, label: 'the actor reconnected on a fresh connection' },
+      );
+
+      // The server redelivers 77 on the new connection, and the application
+      // settles it promptly — so from here on the only thing that can touch a
+      // handle is an ack-timeout that should no longer exist.
+      const afterReconnect = makeRedelivery(77, 2);
+      mock.connections[1]!.js.subscription.push(afterReconnect);
+      await awaitForwarded(target, 2);
+      actor.tell({ kind: 'acknowledgment', ackToken: target.received[1]!.ackToken });
+      await awaitCondition(() => afterReconnect.acked, {
+        timeoutMs: 4_000, label: 'the redelivery after the reconnect was acknowledged',
+      });
+
+      // The elapsed time *is* what is under test: an orphaned ack-timeout
+      // fires `ackTimeoutMs` after its delivery and there is nothing to poll
+      // for its absence.  Four windows is the margin over a loaded runner.
+      await sleep(ackTimeoutMs * 4);
+
+      // Exactly one nak — the disconnect's.  A second one is the orphaned
+      // timer firing after the reconnect, which is also what evicted the live
+      // entry back when both shared the `streamSequence` key.
+      expect(beforeDrop.nakCount).toBe(1);
+      expect(beforeDrop.acked).toBe(false);
+      // The redelivery was never disturbed by it.
+      expect(afterReconnect.nakCount).toBe(0);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a token minted before a reconnect is never minted again after it', async () => {
+    // `nextAcknowledgmentToken` is monotonic per actor instance and is never
+    // reset — the JSDoc on the field says so and nothing observed it.  The
+    // reconnect case above reads `target.received[1]!.ackToken` rather than
+    // comparing the two, so resetting the counter in
+    // `disconnectImplementation` left the whole suite green.
+    //
+    // What the reset costs is not abstract.  A settle command that raced the
+    // disconnect carries a token minted before it; if the counter restarts,
+    // that token names a *different*, live delivery on the new connection, and
+    // the stale command settles it.  That is the same class of defect as #710
+    // itself — one delivery's settle landing on another's entry — arrived at
+    // through the reconnect rather than through the key.
+    const logger = new CapturingLogger();
+    const sys = observedSystem('js-token-monotonic', logger);
+    /** Long enough that no ack-timeout fires inside this case. */
+    const ackTimeoutMs = 4_000;
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'ORDERS', subjects: ['orders.>'] })
+        .withConsumer({ durable: 'pusher', ackWaitMs: ackTimeoutMs })
+        .withAcknowledgmentTimeout(ackTimeoutMs)
+        .withReconnect({ initialDelayMs: 5, maxDelayMs: 5, factor: 1, randomFactor: 0 });
+      const { actor, mock, target } = await bootActorOfKind(
+        sys, jetstreamOptions, (built) => new ReconnectingMockJetStreamActor(built),
+      );
+      const beforeDrop = makeHandle(11);
+      mock.connections[0]!.js.subscription.push(beforeDrop);
+      await awaitForwarded(target, 1);
+      const staleToken = target.received[0]!.ackToken;
+
+      mock.dropConnection();
+      await awaitCondition(
+        () => mock.connections.length >= 2 && mock.publicConnectionState() === 'connected',
+        { timeoutMs: 4_000, label: 'the actor reconnected on a fresh connection' },
+      );
+
+      // An unrelated message on the new connection — a different stream
+      // sequence, so nothing but the token could confuse the two.
+      const afterReconnect = makeHandle(12);
+      mock.connections[1]!.js.subscription.push(afterReconnect);
+      await awaitForwarded(target, 2);
+      const liveToken = target.received[1]!.ackToken;
+
+      // The claim, stated directly.
+      expect(liveToken).toBeGreaterThan(staleToken);
+
+      // And the consequence, so the assertion above is not the only thing
+      // standing between a reset counter and a mis-settled delivery: the
+      // settle command that raced the disconnect arrives late and must find
+      // nothing, leaving the live delivery untouched.
+      actor.tell({ kind: 'acknowledgment', ackToken: staleToken });
+      await awaitCondition(() => logger.unknownTokenWarnings.length === 1, {
+        timeoutMs: 4_000,
+        label: 'the raced settle command found no pending entry',
+      });
+      // "Untouched" is an absence; settle past where an ack would have landed.
+      await sleep(SETTLE_MS);
+      expect(afterReconnect.acked).toBe(false);
+      expect(afterReconnect.naked).toBe(false);
+      expect(logger.unknownTokenWarnings[0]).toContain(`ackToken=${staleToken}`);
+
+      // Release the pump so teardown is not racing an outstanding ack wait.
+      actor.tell({ kind: 'acknowledgment', ackToken: liveToken });
+      await awaitCondition(() => afterReconnect.acked, {
+        timeoutMs: 4_000, label: 'the live delivery was acknowledged by its own token',
+      });
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a disconnect with five deliveries in flight writes one aggregate WARN, not one per delivery', async () => {
+    // Routing every in-flight delivery through the shared catch made each
+    // reconnect emit one WARN per outstanding delivery, where the pre-#710
+    // path had been silent.  On a consumer with `maxAcknowledgmentPending` in
+    // the hundreds a flapping connection then produces hundreds of warn lines
+    // per flap — so the count is the WARN and the per-delivery detail is
+    // `debug` (#1510).  Pull mode, because the push pump awaits each delivery
+    // in turn and can only ever have one in flight.
+    const logger = new DebugCapturingLogger();
+    const sys = observedSystem('js-disconnect-aggregate', logger);
+    /** Long enough that no ack-timeout fires inside this case. */
+    const ackTimeoutMs = 4_000;
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'ORDERS', subjects: ['orders.>'] })
+        .withConsumer({ durable: 'puller', mode: 'pull', ackWaitMs: ackTimeoutMs })
+        .withAcknowledgmentTimeout(ackTimeoutMs)
+        .withReconnect({ initialDelayMs: 5, maxDelayMs: 5, factor: 1, randomFactor: 0 });
+      const { actor, mock, target } = await bootActorOfKind(
+        sys, jetstreamOptions, (built) => new ReconnectingMockJetStreamActor(built),
+      );
+      const inFlight = [10, 11, 12, 13, 14].map((seq) => makeHandle(seq));
+      mock.connections[0]!.js.pullConsumers.get('ORDERS::puller')!.enqueueBatch(inFlight);
+      actor.tell({ kind: 'fetch', batch: 5, expiresMs: 100 });
+      await awaitForwarded(target, 5);
+
+      mock.dropConnection();
+      // The best-effort `nak()` is the last thing the shared catch does, so
+      // five naks means all five catch paths have run and every line they
+      // write is already in the log.  That is what makes "exactly one" here
+      // an exact claim rather than a poll that returned early.
+      await awaitCondition(() => inFlight.every((handle) => handle.nakCount === 1), {
+        timeoutMs: 4_000,
+        label: 'all five in-flight deliveries were failed and nak\'d by the disconnect',
+      });
+
+      expect(logger.connectionLostWarnings).toHaveLength(1);
+      expect(logger.connectionLostWarnings[0]).toBe(
+        'JetStreamActor: connection lost with 5 deliveries in flight — letting the consumer redeliver',
+      );
+      // The per-delivery lines went to `debug`, so the WARN log carries the
+      // aggregate and nothing else from this disconnect…
+      expect(logger.warnings.filter((w) => w.includes('before ack/nak/term'))).toEqual([]);
+      // …and they are still *written*, which is the other half of "demoted to
+      // `debug`" and the half a WARN-only capture cannot see.
+      expect(logger.pumpDebugs).toEqual([10, 11, 12, 13, 14].map((streamSequence, index) =>
+        `JetStreamActor: pump connection lost before ack/nak/term for `
+        + `streamSequence=${streamSequence} (ackToken=${index + 1}) — letting consumer redeliver`));
+      // No line is prefixed twice — at either level.  The `debug` half is
+      // load-bearing here: the connection-lost message is the one that used
+      // to carry the prefix a second time, and it is no longer a warning.
+      expect(logger.doublyPrefixedWarnings).toEqual([]);
+      expect(logger.doublyPrefixedDebugs).toEqual([]);
+
+      // Let the reconnect finish before teardown, so the system is not torn
+      // down through a connect that is still in flight.
+      await awaitCondition(
+        () => mock.connections.length >= 2 && mock.publicConnectionState() === 'connected',
+        { timeoutMs: 4_000, label: 'the actor reconnected on a fresh connection' },
+      );
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('an ack-timeout stays at WARN, and its line carries the prefix once', async () => {
+    // The other half of the level split: a timeout names one handler that did
+    // not answer in time, which is still the operator's business.  It shares
+    // the catch with the connection-lost case, so a fix that moved the whole
+    // catch to `debug` would silence this too (#1510).
+    const logger = new CapturingLogger();
+    const sys = observedSystem('js-timeout-warn', logger);
+    /** Short on purpose: the case has to outlive one whole ack window. */
+    const ackTimeoutMs = 60;
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'S', subjects: ['s.>'] })
+        .withConsumer({ durable: 'd', ackWaitMs: ackTimeoutMs })
+        .withAcknowledgmentTimeout(ackTimeoutMs);
+      const { mock } = await bootActor(sys, jetstreamOptions);
+      const handle = makeHandle(8);
+      mock.mockConnection.js.subscription.push(handle);
+      await awaitCondition(() => handle.naked, {
+        timeoutMs: 4_000, label: 'the ack timeout naked the un-acknowledged handle',
+      });
+
+      const timeoutWarnings = logger.warnings.filter((w) => w.includes('no ack/nak/term'));
+      expect(timeoutWarnings).toHaveLength(1);
+      expect(timeoutWarnings[0]).toBe(
+        `JetStreamActor: pump no ack/nak/term for streamSequence=8 (ackToken=1) `
+        + `within ${ackTimeoutMs}ms — letting consumer redeliver`,
+      );
+      expect(logger.doublyPrefixedWarnings).toEqual([]);
     } finally {
       await sys.terminate();
     }

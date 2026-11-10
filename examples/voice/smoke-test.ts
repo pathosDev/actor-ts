@@ -132,6 +132,19 @@ async function main(): Promise<void> {
     // tick so a Find against alice's voice-user key may need a beat.
     await delay(1500);
 
+    // Presence, which this test used to collect and never check: each
+    // side is told the online set with the other in it (VoicePresenceActor's
+    // PresenceChanged, sent to the browser as online-users).
+    await waitFor(
+      () => findText(alice, (m) => m.kind === 'online-users' && m.users.includes('bob')),
+      10_000, 'online-users at alice including bob',
+    );
+    await waitFor(
+      () => findText(bob, (m) => m.kind === 'online-users' && m.users.includes('alice')),
+      10_000, 'online-users at bob including alice',
+    );
+    console.log('presence ok: each side is told the other is online');
+
     /* ---------------- Mode 1: 1:1 PTT ---------------- */
     clearEvents(alice); clearEvents(bob);
     alice.ws.send(JSON.stringify({ kind: 'voice-target', mode: 'peer', target: 'bob' }));
@@ -182,6 +195,11 @@ async function main(): Promise<void> {
     alice.ws.send(JSON.stringify({ kind: 'room-enter', room: 'standup' }));
     bob.ws.send(JSON.stringify({ kind: 'room-enter', room: 'standup' }));
     await delay(500); // let DD ORSet converge
+    await waitFor(
+      () => findText(alice, (m) => m.kind === 'room-participants' && m.room === 'standup'
+        && m.users.includes('alice') && m.users.includes('bob')),
+      10_000, 'room-participants(standup) at alice with alice and bob',
+    );
     alice.ws.send(JSON.stringify({ kind: 'voice-target', mode: 'room', room: 'standup' }));
     await waitFor(
       () => findText(alice, (m) => m.kind === 'voice-target-ok' && m.key === 'standup'),

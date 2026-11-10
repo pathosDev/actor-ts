@@ -1,4 +1,7 @@
+import type { ActorSystem } from '../ActorSystem.js';
+import type { Scheduler } from '../Scheduler.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import type { Cluster } from '../cluster/Cluster.js';
 import type { ClusterOptionsType } from '../cluster/ClusterOptions.js';
 import type { DowningProvider } from '../cluster/downing/index.js';
 import type { LogLevel } from '../Logger.js';
@@ -19,10 +22,69 @@ export type MultiNodeSpecOptionsType = {
   readonly gossipIntervalMs?: number;
   /** How long synchronous `await*` helpers wait before throwing.  Default 10 s. */
   readonly awaitTimeoutMs?: number;
+  /**
+   * One scheduler shared by every node in the spec.  Default: each node system
+   * builds its own wall-clock one.
+   *
+   * Pass a `ManualScheduler` and the whole cluster runs on one virtual clock —
+   * gossip, heartbeats, failure detection and downing all advance together
+   * through {@link MultiNodeSpec.advance}, which is the only way to make a
+   * convergence question deterministic rather than a race against a budget.
+   *
+   * Sharing one across four systems is what made the ownership rule in
+   * `ActorSystem` matter: a borrowed scheduler is not shut down by the first
+   * node that terminates (#1424).
+   */
+  readonly scheduler?: Scheduler;
   /** Log level — defaults to a quiet NoopLogger. */
   readonly logLevel?: LogLevel;
   /** Per-role split-brain resolver factory. */
   readonly downing?: (role: string) => DowningProvider | undefined;
+  /**
+   * Whether every node's failure detector removes a peer it declares `down`
+   * — `ClusterOptionsType.failureDetectorAutoDown` on every role.  Default:
+   * unset, which leaves the shipped `true`: a crashed role is removed at
+   * `down-after`, so a spec that exercises crash failover — a shard
+   * reallocated, a singleton moved, a death-watch `Terminated` — gets it with
+   * no {@link downing} strategy configured (#1426).
+   *
+   * `false` is the opt-out a spec sets to watch a crashed role parked at
+   * `unreachable`, where it stays a member.  A role's {@link downing}
+   * provider decides that role's removals whatever this says.
+   */
+  readonly failureDetectorAutoDown?: boolean;
+  /**
+   * How long the membership view must hold still before {@link downing} is
+   * consulted, in ms.  Default 100 (vs production 20 s) — #839.
+   *
+   * Scaled down for the same reason {@link gossipIntervalMs} and the harness's
+   * seed-retry interval are: a spec's whole point is to partition a cluster
+   * and assert on what happens next, and the shipped window is twice the
+   * default {@link awaitTimeoutMs}, so a spec that inherited it would time out
+   * before its resolver was asked anything.  Raise it in a spec that is
+   * *about* the window.
+   */
+  readonly stableAfterMs?: number;
+  /**
+   * Seed for every transport fault this spec injects — see
+   * `MultiNodeSpec.degrade`.  Default `DEFAULT_TRANSPORT_FAULT_SEED`.
+   *
+   * Fixed rather than random on purpose: an unreproducible chaos test is a
+   * flake generator, and this repository has a flake catalogue it is trying to
+   * shrink.  A failing spec names this number in its timeout message, so the
+   * red run reproduces from the log alone (#1023).
+   */
+  readonly faultSeed?: number;
+  /**
+   * What every node runs once it has joined — on `start` and again on every
+   * `MultiNodeSpec.restart`, so a restarted role comes back with the same
+   * sharded types, singletons and subscriptions its previous run had.
+   *
+   * A restart builds a new system and cluster, and nothing a test started on
+   * the old one exists there; without a hook each test would repeat its setup
+   * by hand after every restart, and forget a piece of it.
+   */
+  readonly nodeSetup?: (role: string, system: ActorSystem, cluster: Cluster) => void | Promise<void>;
 };
 
 /** Fluent builder for {@link MultiNodeSpecOptionsType}. */
@@ -53,6 +115,11 @@ export class MultiNodeSpecOptionsBuilder extends OptionsBuilder<MultiNodeSpecOpt
   }
 
   /** Gossip interval in ms.  Default 100. */
+  /** One scheduler shared by every node — pass a `ManualScheduler` for virtual time. */
+  withScheduler(scheduler: Scheduler): this {
+    return this.set('scheduler', scheduler);
+  }
+
   withGossipIntervalMs(gossipIntervalMs: number): this {
     return this.set('gossipIntervalMs', gossipIntervalMs);
   }
@@ -70,6 +137,30 @@ export class MultiNodeSpecOptionsBuilder extends OptionsBuilder<MultiNodeSpecOpt
   /** Per-role split-brain resolver factory. */
   withDowning(downing: (role: string) => DowningProvider | undefined): this {
     return this.set('downing', downing);
+  }
+
+  /**
+   * Whether every node's failure detector removes a peer it declares `down`.
+   * Default unset — the shipped `true`, which removes a crashed role; `false`
+   * parks it at `unreachable` instead (#1426).
+   */
+  withFailureDetectorAutoDown(failureDetectorAutoDown: boolean): this {
+    return this.set('failureDetectorAutoDown', failureDetectorAutoDown);
+  }
+
+  /** Stability window before the resolver is consulted, in ms.  Default 100. */
+  withStableAfterMs(stableAfterMs: number): this {
+    return this.set('stableAfterMs', stableAfterMs);
+  }
+
+  /** Seed for every injected transport fault.  Default `DEFAULT_TRANSPORT_FAULT_SEED`. */
+  withFaultSeed(faultSeed: number): this {
+    return this.set('faultSeed', faultSeed);
+  }
+
+  /** What every node runs once it has joined, on start and on every restart. */
+  withNodeSetup(nodeSetup: (role: string, system: ActorSystem, cluster: Cluster) => void | Promise<void>): this {
+    return this.set('nodeSetup', nodeSetup);
   }
 }
 

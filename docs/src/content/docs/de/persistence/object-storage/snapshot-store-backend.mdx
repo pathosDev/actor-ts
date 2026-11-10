@@ -3,6 +3,8 @@ title: Snapshot-Store-Backend
 description: ObjectStorageSnapshotStore speichert Snapshots in Object Storage — die richtige Form für cluster-weit geteilte Snapshots, verschlüsselt at rest, mit Kompression. Paare ihn mit Sharded Entities, die zwischen Nodes wandern.
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
 `ObjectStorageSnapshotStore` ist die Snapshot-Store-
 Implementierung, die
 [Object Storage](/de/persistence/object-storage/overview/) als
@@ -10,11 +12,14 @@ Backing-Schicht verwendet.
 
 ```ts
 import {
+  ActorSystem,
+  ActorSystemOptions,
+} from 'actor-ts';
+import {
   ObjectStorageSnapshotStore,
   ObjectStorageSnapshotStoreOptions,
   S3ObjectStorageBackend,
   S3ObjectStorageOptions,
-  PersistenceExtensionId,
 } from 'actor-ts/persistence';
 
 const s3ObjectStorageOptions = S3ObjectStorageOptions.create()
@@ -26,8 +31,11 @@ const objectStorageSnapshotStoreOptions = ObjectStorageSnapshotStoreOptions.crea
   .withEncryption(encryption);
 const snapshotStore = new ObjectStorageSnapshotStore(objectStorageSnapshotStoreOptions);
 
-system.extension(PersistenceExtensionId).setJournal(someJournal);
-system.extension(PersistenceExtensionId).setSnapshotStore(snapshotStore);
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  journal: someJournal,
+  snapshotStore,
+});
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
 Snapshots, die von jedem `PersistentActor` geschrieben werden,
@@ -80,31 +88,222 @@ type ObjectStorageSnapshotStoreOptionsType = {
 | `requireContextBinding` | Snapshots ablehnen, die nicht an den Key gebunden sind, von dem sie gelesen wurden — schließt das Einspielen auf eine andere persistenceId oder Sequenznummer.  Erst einschalten, wenn der Bucket neu geschrieben ist.  Siehe [Einen Body an seinen Key binden](/de/persistence/object-storage/encryption/#einen-body-an-seinen-key-binden).  Default false. |
 | `maxDecompressedBytes` | Schutz vor Dekompressions-Bomben — Obergrenze für die Größe eines dekodierten Snapshots.  Default 512 MiB. |
 
+## Aus der Konfiguration
+
+Den Store wie oben von Hand zu bauen ist einer von zwei Wegen.  Der andere ist
+`registerObjectStoragePlugins`: Es baut diesen Store *und* den
+Durable-State-Store über ein gemeinsames Backend und kann jedes Feld aus HOCON
+nehmen:
+
+```hocon
+actor-ts.persistence.snapshot-store {
+  plugin = "actor-ts.persistence.snapshot-store.object-storage"
+
+  object-storage {
+    backend = "s3"
+    prefix  = "snapshots/"
+    keep-n  = 5
+
+    s3 {
+      bucket = "my-app-state"
+      region = "eu-central-1"
+    }
+  }
+}
+```
+
+```ts
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerObjectStoragePlugins, type ObjectStoragePluginHandles } from 'actor-ts/persistence';
+
+let objectStorage: ObjectStoragePluginHandles | undefined;
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [async (persistence) => {
+    objectStorage = await registerObjectStoragePlugins(persistence);
+  }],
+});
+const system = ActorSystem.create('my-app', systemOptions);
+await system.whenReady();
+// The system's snapshot store is now the configured ObjectStorageSnapshotStore;
+// objectStorage.close() releases its backend once the system has terminated.
+```
+
+Das Plug-in läuft innerhalb von `ActorSystem.create`, und der Start wartet auf
+das Promise, das es zurückgibt, also lässt eine scheiternde Codec-Prüfung den
+Start scheitern statt erst den ersten Snapshot — siehe [Stores beim Start
+öffnen](/de/persistence/overview/#stores-beim-start-öffnen).
+
+`prefix`, `keepN`, `compression`, `encryption` und `maxDecompressedBytes` bilden
+eins zu eins auf die Blätter dieses Blocks ab; explizite
+`ObjectStoragePluginOptions` gewinnen weiterhin Feld für Feld.  Zwei Felder aus
+der Tabelle oben fehlen in HOCON **mit Absicht**: `allowUntaggedBodies` und
+`requireContextBinding` tun ohne eine `integrity`- oder clientseitige
+`encryption`-Konfiguration nichts, und beide können nicht aus einer Config-Datei
+kommen, weil sie einen 32-Byte-Schlüssel brauchen.  Ein Schalter, der aus HOCON
+nie etwas bewirken könnte, ist schlechter als gar keiner — deshalb wird er dort
+nicht veröffentlicht; setze ihn im Code, zusammen mit dem Schlüssel, der ihn
+sinnvoll macht.  Siehe
+[Konfigurationsreferenz](/de/reference/configuration/#actor-tspersistence).
+
 ## Key-Layout
 
 ```
-<prefix>/<persistenceId>/seq-<seqNr>
+<prefix>snapshots/<persistenceId>/<seqNr auf 20 Stellen gepolstert>.json
 ```
 
-Beispiele:
+Beispiele, mit `prefix: 'acme/'`:
 
 ```
-snapshots/account-42/seq-100
-snapshots/account-42/seq-200
-snapshots/account-42/seq-300
+acme/snapshots/account-42/00000000000000000100.json
+acme/snapshots/account-42/00000000000000000200.json
+acme/snapshots/account-42/00000000000000000300.json
 ```
 
-Das Framework listet Keys unter `<prefix>/<persistenceId>/`, um
-den neuesten Snapshot zu finden.  Die Auflistung ist aufsteigend
-nach Key und trägt kein Limit: die nullgepolsterte Sequenznummer
-macht den *letzten* Eintrag zum neuesten, ein `limit: 1` lieferte
-also den ältesten.
+Drei Segmente, jedes mit genau einer Aufgabe.
+
+- **`<prefix>`** gehört dir — ein Deployment, eine Umgebung, ein
+  Mandant.  Er ist Teil dessen, woran ein Body gebunden wird, also
+  lässt sich Staging-State nicht in die Produktion einspielen.
+- **`snapshots/`** ist der Namespace, der diesem Store gehört.
+  `ObjectStorageDurableStateStore` besitzt `state/` und schreibt
+  `<prefix>state/<persistenceId>/state.json`.  Beide Stores
+  bekommen von `registerObjectStoragePlugins` denselben Prefix, und
+  der Namespace ist das, was ihre Korpora davon abhält, sich ein
+  Verzeichnis zu teilen — siehe
+  [Zwei Stores, ein Prefix](#zwei-stores-ein-prefix).
+- **`<persistenceId>/`** ist das Verzeichnis pro Entity, das jedes
+  LIST begrenzt.
+
+Das Framework listet Keys unter
+`<prefix>snapshots/<persistenceId>/`, um den neuesten Snapshot zu
+finden.  Die Auflistung ist aufsteigend nach Key und trägt kein
+Limit: die nullgepolsterte Sequenznummer macht den *letzten*
+Eintrag zum neuesten, ein `limit: 1` lieferte also den ältesten.
+
+Was der Store aus dieser Auflistung nimmt, ist der letzte Eintrag,
+der **wie einer seiner eigenen Snapshots geformt** ist — das
+Verzeichnis dieser Entity, dann exakt zwanzig Ziffern und `.json`.
+Prefix-Zugehörigkeit ist kein Beleg für Eigentum: ein Bucket kann
+einen zweiten Schreiber haben, und eine Marker-Datei oder eine
+halb fertige Migration unter demselben Prefix wurde früher als
+Snapshot gelesen, von `delete` gelöscht und auf `keepN`
+angerechnet — auf Kosten eines echten Snapshots.  Ein Body, der
+eine *andere* `persistenceId` nennt, wird ebenfalls nicht
+zurückgegeben; der Store meldet dann keinen Snapshot, und die
+Recovery spielt das Journal ab.
 
 Für sehr große `persistenceId`-Räume ist das Listen pro pid in S3
 typischerweise schnell (Per-Prefix-Durchsatz).  Vermeide es, alle
 Entity-Typen unter denselben Prefix ohne Per-pid-Unterordner zu
 packen — dieses Verzeichnis-Segment ist das Einzige, was
 begrenzt, was ein Load aufzählen muss.
+
+### Zwei Stores, ein Prefix
+
+`registerObjectStoragePlugins` verdrahtet den Snapshot-Store und
+den Durable-State-Store absichtlich auf ein Backend mit einem
+Prefix.  Ihre Key-Namespaces sind trotzdem disjunkt:
+
+```
+acme/snapshots/account-42/00000000000000000300.json   Snapshot
+acme/state/account-42/state.json                      Durable State
+```
+
+Ohne die Namespaces landeten beide in `acme/account-42/`, und
+`state.json` sortiert hinter jede nullgepolsterte Sequenznummer —
+eine Entity, die auf beide Arten persistiert wurde, bekam also
+ihren Durable-State-Record als ihren neuesten Snapshot zurück.
+Dieser Body trägt keine `sequenceNr`, die Recovery lehnte ihn ab,
+und der Actor konnte nicht starten.  Dafür war keine ungültige
+`persistenceId` nötig: ein Aufruf, der das Plugin verdrahtet, und
+eine Entity, die beide Wege nutzt.
+
+Diese Kollision ist doppelt geschlossen, und die Namespaces sind
+davon die zweite Hälfte.  Der oben beschriebene Leaf-Form-Filter
+lehnt `state.json` bereits für sich allein ab — ein Leaf, das
+dieser Store liest, besteht aus exakt zwanzig Ziffern und
+`.json`, und `state.json` hat zehn Zeichen — ein gemeinsames
+Verzeichnis lieferte also ohnehin nicht mehr die falsche
+Antwort.  Was die Namespaces hinzufügen, ist ein Korpus, der pro
+*Prefix* disjunkt ist: erst das erlaubt es, Lifecycle-Regeln,
+Backup-Auswahlen und einen Re-Encryption-Sweep auf die Objekte
+eines Stores zu begrenzen, und zwar in Begriffen, die dein
+Bucket auswerten kann — statt in Begriffen eines Dateinamens,
+der innerhalb des Frameworks eine Längenprüfung nicht besteht.
+
+Was weder die Aufteilung noch der Filter liefert, ist eine
+Prüfung, *welcher* Entity ein Body gehört, sobald er an einem
+wohlgeformten Key dieses Stores liegt — und da unterscheiden
+sich die beiden.  `ObjectStorageSnapshotStore` vergleicht die
+`persistenceId`, die sein Body trägt, mit der, nach der gefragt
+wurde; das ist der Satz weiter oben über einen Body, der eine
+*andere* `persistenceId` nennt.  `ObjectStorageDurableStateStore`
+hat kein solches Feld zum Vergleichen: Sein Body ist
+`{ revision, state, timestamp }`, ein Datensatz am Key einer
+anderen Entity lädt also als deren State.  Die
+Verschiebungserkennung kommt auf dieser Seite daher, dass der
+Body an seinen Storage-Key gebunden wird — und das erkauft man
+sich, indem man `client-aes256-gcm` oder `hmac-sha256`
+konfiguriert.  Ein Store ohne einen der beiden Authentifikatoren
+hat keine.  Siehe
+[Was Verschlüsselung nicht abdeckt](/de/persistence/object-storage/encryption/#was-verschlüsselung-nicht-abdeckt).
+
+<Aside type="caution" title="Einen bestehenden Bucket migrieren">
+  Die Namespaces sind eine **breaking** Änderung des Key-Layouts.
+  Ein von einer früheren Version geschriebener Bucket enthält
+  `<prefix><persistenceId>/…`, was diese Version nicht liest.
+
+  **Snapshots brauchen keine Migration.**  Sie sind ein
+  Recovery-Beschleuniger, keine Quelle der Wahrheit: findet
+  `loadLatest` nichts, wird das Journal vollständig abgespielt, und
+  der nächste Save schreibt unter dem neuen Key.  Lösche die alten
+  Objekte, wenn du so weit bist.
+
+  **Durable State schon** — er *ist* die Quelle der Wahrheit —
+  und `migrateObjectStorageDurableStateLayout` ist die Prozedur.
+  Führe sie einmal bei gestoppter Anwendung aus, gegen dasselbe
+  Backend und denselben `prefix`, mit dem der Store konfiguriert
+  ist: ein laufender Writer an den alten Keys schreibt Records,
+  die der Lauf bereits verschoben hat, und der Lauf kann das nicht
+  bemerken.
+
+  ```ts
+  import { migrateObjectStorageDurableStateLayout } from 'actor-ts/persistence';
+
+  const result = await migrateObjectStorageDurableStateLayout(backend, {
+    prefix: 'acme/',                 // der von beiden Stores geteilte Prefix
+    encryption,                      // nur für ein versiegeltes Korpus — die Config des Stores
+    integrity,                       // ebenso
+  });
+  console.log(`migrated ${result.migrated} of ${result.scanned}`);
+  ```
+
+  Sie verschiebt jeweils den **Body**, statt den Record durch
+  einen Store neu abzuspielen, und genau das hält `revision` und
+  `timestamp` bei den Bytes, die schon da waren.  Ein erneutes
+  `upsert` kann das nicht: bei der eigenen Revision des Records
+  findet das Compare-and-Swap am leeren Ziel keinen Eintrag und
+  wirft `DurableStateConcurrencyError`, und `upsert(id, 0, state)`
+  — die einzige Form, die durchgeht — schreibt Revision 1 über
+  einen Record, der bei 7 stand.
+
+  Ein Body, der weder mit clientseitiger Verschlüsselung noch mit
+  einem Integritäts-HMAC geschrieben wurde, trägt keine
+  Key-Bindung und wird byte-genau kopiert; dieses Korpus braucht
+  hier also gar keine Keys.  Ein an seinen Key gebundener Body
+  (#612) ist gegen den alten Key versiegelt, wird dort dekodiert
+  und gegen den neuen neu versiegelt — dafür will der Lauf die
+  `encryption` und `integrity` des Stores, und dabei wird der Body
+  zugleich unter dem aktiven Master-Key des Keyrings neu
+  verschlüsselt.
+
+  Ein Ziel, an dem bereits ein Objekt liegt, wird nie
+  überschrieben, und die Quellen bleiben liegen — der Lauf ist
+  also nach einem Abbruch wiederholbar, und das alte Korpus steht
+  weiterhin für ein Rollback bereit.  Führe ihn mit
+  `deleteSource: true` erneut aus, um die Quellen abzuräumen,
+  sobald das Upgrade verifiziert ist.
+</Aside>
 
 ## Performance
 
@@ -116,7 +315,8 @@ durch GET.  Zahlen für S3 Same-Region:
 
 Dieses LIST ist das, was das Verzeichnis pro `persistenceId` im
 Key einbringt.  Beide mitgelieferten Backends schränken es auf
-`<prefix>/<persistenceId>/` ein — S3 über `Prefix` / `MaxKeys`,
+`<prefix>snapshots/<persistenceId>/` ein — S3 über `Prefix` /
+`MaxKeys`,
 das Filesystem-Backend, indem es nur dieses Verzeichnis liest —,
 sodass ein Load die Snapshots genau einer Entity kostet und flach
 bleibt, während die Zahl der Entities wächst.  Das `keepN`-Pruning
@@ -139,17 +339,42 @@ const cached = new CachedSnapshotStore(
 
 Reduziert redundante S3-GETs auf Sub-Mikrosekunden-Cache-Hits.
 
+Sind die Snapshots **verschlüsselt**, lies
+[Sicherheit — der Cache hält Klartext](/de/persistence/snapshot-stores/cached-snapshot-store/#sicherheit--der-cache-hält-klartext),
+bevor du das verdrahtest.  Der Cache hält den dekodierten State —
+die Komposition legt also eine Klartext-Kopie jeder kürzlich aktiven
+Entity in den Cache, während der Bucket verschlüsselt bleibt.
+Dieser Store meldet seine eigene `encryption`-Konfiguration über
+`encryptsAtRest(persistenceId)`, deshalb verweigert der Decorator
+das Cachen solcher Loads — ob die Verschlüsselung hier mit
+`withEncryption(...)` konfiguriert ist oder pro Call über den
+`encryption()`-Hook eines Actors — bis
+`withAllowPlaintextCache(true)` sagt, dass der Cache so geschützt
+ist wie der Bucket.
+
 ## Per-Actor-Overrides
 
 ```ts
 class Account extends PersistentActor<...> {
-  protected compression() { return { algorithm: 'zstd' as const }; }
-  protected encryption()  { return { keyRing: accountKeyRing }; }
+  override compression() { return { algorithm: 'zstd' as const }; }
+  override encryption() {
+    return {
+      mode: 'client-aes256-gcm' as const,
+      masterKeys: accountKeyRing,
+      info: 'acme/prod/snapshot/v1',
+    };
+  }
 }
 ```
 
 Per-Actor-Konfiguration gilt für Snapshots auf dieselbe Weise wie
-für Durable State.  Siehe
+für Durable State — und für nichts sonst.  `encryption()` und
+`integrity()` an einem `PersistentActor` schützen nur seine
+Snapshots: Jedes Journal speichert Events als Klartext-JSON, nichts
+erkennt ein an Ort und Stelle manipuliertes Event, und
+datenbankseitige Kontrollen — Transparent Data Encryption, ein
+verschlüsseltes Volume, Zugriffskontrolle — sind heute der einzige
+Schutz für Events.  Siehe
 [Per-Actor-Policies](/de/persistence/object-storage/per-actor-policies/).
 
 ## Snapshot-Lifecycle
@@ -158,11 +383,11 @@ für Durable State.  Siehe
 PersistentActor.persist(event) gelingt
   ↓ snapshotPolicy() prüfen
   ↓ wenn true → Snapshot machen
-backend.put('snapshots/<pid>/seq-N', serialisierter State)
+backend.put('<prefix>snapshots/<pid>/<seq>.json', serialisierter State)
 
 PersistentActor.preStart
-  ↓ 'snapshots/<pid>/' auflisten — nur dieses Verzeichnis, aufsteigend
-  ↓ letzter Key = neueste seq
+  ↓ '<prefix>snapshots/<pid>/' auflisten — nur dieses Verzeichnis, aufsteigend
+  ↓ letzter wohlgeformter Key = neueste seq
   ↓ backend.get(latest) → dekodieren → onEvent ab seq+1
 ```
 
@@ -207,8 +432,6 @@ Muster:
   den Cluster geteilt.
 - **ObjectStorage alles** — wenn S3 dein einziger Storage ist.
   Langsamer pro Op, aber billig.
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="LIST-Kosten bei großen pids">
   ```ts

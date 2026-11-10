@@ -17,6 +17,7 @@ import {
   RegisterMongoPluginsOptions,
   isMongoDuplicateKeyError,
   registerMongoPlugins,
+  type PersistenceExtension,
 } from '../../../../src/persistence/index.js';
 import { offsetStart } from '../../../../src/persistence/query/PersistenceQuery.js';
 import { FakeMongoClient } from './FakeMongoClient.js';
@@ -245,10 +246,16 @@ describe('Mongo* client ownership', () => {
 describe('registerMongoPlugins', () => {
   /**
    * Boots a system whose config names the Mongo plug-ins, which is how the
-   * extension selects them — `registerMongoPlugins` only populates the factories
-   * (the two-step registration #386 is meant to collapse).
+   * extension selects them, and whose `plugins` slot registers them through
+   * `register` (#1473) — inside `create`, so the selected stores resolve as soon
+   * as it returns, and so does what `register` handed back.
+   * `registerMongoPlugins` only populates the factories (the two-step
+   * registration #386 is meant to collapse).
    */
-  function bootSystem(): ActorSystem {
+  function bootSystem<Registered>(
+    register: (persistence: PersistenceExtension) => Registered,
+  ): { readonly system: ActorSystem; readonly registered: Registered } {
+    const registrations: Registered[] = [];
     const systemOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off)
@@ -259,19 +266,20 @@ describe('registerMongoPlugins', () => {
             'snapshot-store': { plugin: MONGO_SNAPSHOT_PLUGIN_ID },
           },
         },
-      });
-    return ActorSystem.create('mongo-plugins', systemOptions);
+      })
+      .withPersistence({ plugins: [(persistence) => { registrations.push(register(persistence)); }] });
+    const system = ActorSystem.create('mongo-plugins', systemOptions);
+    return { system, registered: registrations[0]! };
   }
 
   test('a shared client reaches all three stores', async () => {
-    const system = bootSystem();
+    const client = new FakeMongoClient();
+    const pluginOptions = RegisterMongoPluginsOptions.create()
+      .withClient(client)
+      .withDatabaseName('app');
+    const { system, registered: handles } = bootSystem((persistence) => registerMongoPlugins(persistence, pluginOptions));
     try {
-      const client = new FakeMongoClient();
       const persistence = system.extension(PersistenceExtensionId);
-      const pluginOptions = RegisterMongoPluginsOptions.create()
-        .withClient(client)
-        .withDatabaseName('app');
-      const handles = registerMongoPlugins(persistence, pluginOptions);
 
       expect(persistence.journal).toBeInstanceOf(MongoJournal);
       expect(persistence.snapshotStore).toBeInstanceOf(MongoSnapshotStore);
@@ -291,16 +299,15 @@ describe('registerMongoPlugins', () => {
   });
 
   test('a leaf keeps its own collection name while inheriting the shared client', async () => {
-    const system = bootSystem();
+    const client = new FakeMongoClient();
+    const journalOptions = MongoJournalOptions.create()
+      .withEventsCollection('ledger_events');
+    const pluginOptions = RegisterMongoPluginsOptions.create()
+      .withClient(client)
+      .withJournal(journalOptions);
+    const { system } = bootSystem((persistence) => registerMongoPlugins(persistence, pluginOptions));
     try {
-      const client = new FakeMongoClient();
       const persistence = system.extension(PersistenceExtensionId);
-      const journalOptions = MongoJournalOptions.create()
-        .withEventsCollection('ledger_events');
-      const pluginOptions = RegisterMongoPluginsOptions.create()
-        .withClient(client)
-        .withJournal(journalOptions);
-      registerMongoPlugins(persistence, pluginOptions);
 
       await persistence.journal.append('account-1', [{ event: 'a' }], 0);
       expect(client.log.some((entry) => entry.includes('ledger_events'))).toBe(true);

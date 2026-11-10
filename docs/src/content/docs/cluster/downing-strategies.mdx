@@ -1,6 +1,6 @@
 ---
 title: Downing strategies
-description: Resolving split-brain after the failure detector flags unreachable peers — `KeepMajority`, `KeepOldest`, `KeepReferee`, `StaticQuorum`, `LeaseMajority`. Pick one for production. The default (no strategy) requires manual intervention.
+description: Resolving split-brain after the failure detector flags unreachable peers — `KeepMajority`, `KeepOldest`, `KeepReferee`, `StaticQuorum`, `LeaseMajority`. Pick one for production. With no strategy the failure detector removes an unreachable peer itself at down-after, which is right for a crashed node and splits the cluster in two under a partition, where every side does it at once; `failure-detector.auto-down = off` parks the peer instead.
 ---
 
 When the cluster partitions, both halves stay running — and both
@@ -11,8 +11,21 @@ think the other half has failed.  Without intervention:
 - DistributedData replicas would diverge until reconciliation.
 
 A **downing strategy** picks a winning side and forcibly downs the
-losing side.  The losing nodes' actors stop; the winning side
-continues as the cluster.
+losing side.  Each losing node leaves the cluster; the winning side
+continues as the cluster.  Whether a losing node's actors stop as
+well is `actor-ts.cluster.run-coordinated-shutdown-when-down`.  With
+it on, the shipped default, the node runs its
+[coordinated-shutdown pipeline](/fundamentals/coordinated-shutdown/#when-the-cluster-downs-this-node),
+which ends its actor system unless
+`coordinated-shutdown.terminate-actor-system` is off.  With it `off`
+it only leaves, and its actors keep
+running beside the winners — a second writer for every entity and
+singleton it hosted.  Either way a node acts only on its own
+strategy's verdict.  The winning side cannot down it, but it refuses
+its heartbeats, and a node every peer refuses has its own strategy
+asked at once — so a node that was paused or cut off while the others
+removed it stands down once it can hear them again
+([issue #940](https://github.com/pathosDev/actor-ts/issues/940)).
 
 ```mermaid
 flowchart LR
@@ -34,9 +47,15 @@ flowchart LR
   class MIN bad
 ```
 
-Without a strategy: both halves keep running.  When the partition
-heals, you have two separate clusters with the same name and no
-automatic merge.  **Always configure a strategy for production.**
+Without a strategy, the failure detector removes an unreachable peer
+itself at `down-after` — right for a crashed node, whose shards and
+singletons the survivors take over, down to the last available node.
+Under a partition, though, both halves remove each other and keep
+running.  When the partition heals, you have two separate clusters
+with the same name and no automatic merge
+([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
+**Always configure a strategy for production** — `lease-majority`,
+or another of the five below.
 
 ## The five built-in strategies
 
@@ -72,6 +91,230 @@ Pass the provider as `downing`.  Every cluster event
 with the current view; it returns the set of addresses to forcibly
 down.  Returning an empty set means "no decision yet — wait."
 
+### The stability window
+
+A strategy is asked nothing until the member view has been **unchanged** for
+`stable-after`, which defaults to **20 s**:
+
+```ts
+const clusterOptions = ClusterOptions.create()
+  .withDowning(new KeepMajority())
+  .withSplitBrainResolver({ stableAfterMs: 20_000 });
+```
+
+```hocon
+actor-ts.cluster.split-brain-resolver.stable-after = 20s
+```
+
+This is not a flap filter, or not only one. **A partition is not one event the
+cluster observes; it is a sequence of them.** The failure detector marks peers
+unreachable one at a time, as each crosses `unreachable-after`, and downing used
+to be evaluated at the end of that same tick — so a 2/2 partition whose two
+remote peers were detected on different ticks was resolved as two successive
+*majority* decisions rather than one equal-split decision:
+
+```text
+tick 1:  a=up b=up c=unreachable d=up          3 reachable of 4  ->  down c
+tick 2:  a=up b=up c=removed  d=unreachable    2 reachable of 3  ->  down d
+```
+
+The tombstone closes the trap: a force-down marks the member `removed`, and
+every strategy filters its candidates to `up | leaving | unreachable`, so the
+denominator shrinks along with the numerator and what is left of the side reads
+as a majority of it. Both halves run the identical computation over their mirror
+image and **both survive** — and with `LeaseMajority` the lease is never
+contended for at all, because the equal-split branch that reaches it is never
+taken.
+
+Measured, that was not a corner case: the framework's own four-node partition
+test failed **8 of 15 runs** with the window disabled and **0 of 30** with a
+1 s window, on the same machine within the same minute.
+
+Two consequences worth knowing:
+
+- **The window must outlast the spread between the first and last detection of
+  one partition**, plus the gossip that follows — not merely the duration of a
+  flap. A window shorter than the spread lets the sequence through again.
+- **It costs failover latency.** Nothing is downed until the view has been still
+  for the window, so a genuine node loss takes that much longer to resolve. The
+  20 s default is the established value for this knob and is a deliberate trade
+  of availability for integrity; a cluster that needs faster failover should
+  lower it knowingly rather than by omission.
+
+`stable-after = 0` restores the pre-window behaviour, and the defect above with
+it. It exists so a deployment can ask for that explicitly.
+
+### From the config file
+
+All five strategies can be selected without touching the code,
+which is what lets one image run unarbitrated in development and
+`keep-majority` in production:
+
+```hocon
+actor-ts.cluster.split-brain-resolver {
+  active-strategy = keep-majority   # off | keep-majority | keep-oldest | keep-referee | static-quorum | lease-majority
+
+  # Per-strategy options, each read only by the strategy it belongs to.
+  keep-majority.role                    = backend
+  static-quorum.quorum-size             = 3
+  keep-referee.referee-address          = "my-app@10.0.0.1:2552"
+  keep-referee.down-all-if-below-quorum = 2
+}
+```
+
+`active-strategy` builds the same object `withDowning(…)` takes, so the
+ordinary precedence applies: **an explicit `withDowning(…)` wins**, and a
+`Cluster.join` that names none falls through to the file.  `off` is the
+shipped default and means no strategy at all — see the caution at the
+bottom of this page for what that leaves you with.
+
+`static-quorum.quorum-size` and the two `keep-referee` keys are absent from
+`reference.conf` rather than shipped with a default: each is required or
+bounded, and `quorum-size = 0` / `referee-address = ""` are refused by the
+strategies' own validators, so any value that could ship would be one that
+stops the node.  Naming `static-quorum` or `keep-referee` without its key
+is refused at startup, with the missing key in the message.
+
+:::caution[`static-quorum` from a config file is a cluster-wide switch]
+Quorum is checked whenever a member is unreachable, and a side below it downs
+itself.  A cluster that is merely smaller than `quorum-size` — still
+bootstrapping, or scaled down — has no partition and is left alone (#933),
+but a crash during a rolling restart is one: with `quorum-size = 3` and one
+replica already restarting, the crash of a second leaves one reachable member,
+and it downs itself.  Set it to a value at or below your minimum runtime size,
+and roll it out before the deployment that relies on it.
+:::
+
+`lease-majority` needs a lease backend as well.  Its lease is built from
+[`actor-ts.coordination.lease`](/reference/configuration/#leases-the-framework-builds),
+named `<system>-split-brain-resolver` and owned by this node, so a deployment
+selects it with both blocks:
+
+```hocon
+actor-ts.coordination.lease {
+  backend = kubernetes
+  ttl     = 15s
+}
+actor-ts.cluster.split-brain-resolver.active-strategy = lease-majority
+```
+
+With the shipped `backend = none` the strategy is refused at startup rather
+than run with nothing to arbitrate through.  Its role and acquire timeout stay
+in code; build it as shown below when either matters.
+
+## The stability window
+
+A strategy is not asked the moment a peer goes silent.  The membership
+**and** reachability view has to hold still for `stable-after` first — 20 s
+by default — and only then is the configured provider consulted:
+
+```hocon
+actor-ts.cluster.split-brain-resolver {
+  active-strategy = keep-majority
+
+  # The view must be unchanged this long before the strategy is asked.
+  stable-after = 20s
+
+  # Down everyone, self included, when it never once is.
+  down-all-when-unstable = off
+}
+```
+
+Or in code, where the same two settings are one nested block:
+
+```ts
+import { ClusterOptions, SplitBrainResolverOptions } from 'actor-ts/cluster';
+
+const resolverPolicy = SplitBrainResolverOptions.create()
+  .withStableAfterMs(30_000)
+  .withDownAllWhenUnstable(true);
+const clusterOptions = ClusterOptions.create()
+  .withHost(host)
+  .withPort(port)
+  .withDowning(new KeepMajority())
+  .withSplitBrainResolver(resolverPolicy);
+```
+
+**Why a mid-churn decision is the wrong decision.**  Every bundled strategy
+is a pure function of one view — `KeepMajority` counts it, `KeepOldest`
+orders it, `StaticQuorum` measures it.  A partition does not arrive as one
+event: peers cross `unreachable-after` a few hundred milliseconds apart, and
+a view sampled in the middle of that shows a cluster that existed at no
+instant.  Counting a majority against it is how a node concludes it is in the
+minority a second before the rest of its own side is marked unreachable too.
+The window is what makes the input a settled fact rather than a snapshot of a
+transition.
+
+The clock is the failure-detection tick, so the window's resolution is
+`actor-ts.cluster.failure-detector.heartbeat-interval` — 500 ms by default.
+That is irrelevant at twenty seconds and worth knowing if you tune the window
+down to a few hundred milliseconds.
+
+**There is no upper bound against `failure-detector.down-after`.**  Once a
+strategy is configured the detector stops evicting entirely: it parks an
+unreachable peer and leaves the `down`/`removed` transition to the resolver,
+so the window has no deadline to out-run and may be as long as the
+deployment wants.  With **no** strategy configured, the two settings do
+nothing at all — there is no decision for them to delay.  The detector
+removes the peer at `down-after` itself under the default
+`failure-detector.auto-down = on`, or parks it there under
+`auto-down = off`.
+
+### The window has a ceiling
+
+`stable-after` is a preference, not a precondition, and the reason is the same
+sentence read the other way round.  The view the window watches is *every*
+member's address and status, so any join, leave or status transition anywhere
+in the cluster restarts it.  A deployment whose membership moves more often
+than `stable-after` would therefore never arbitrate a partition at all — and
+at the shipped twenty seconds that is an ordinary autoscaling group, a rolling
+deploy, or one flapping node.  It would not be a safe failure either: with a
+strategy configured the failure detector stops evicting, so a partition nobody
+arbitrates simply stays.
+
+So a peer that has been **continuously** unreachable for `2 × stable-after` is
+put to the strategy whatever else is moving.  That one peer's silence is a
+settled fact on its own; the churn around it is about other members, and a
+verdict is owed about the partition rather than about the churn.
+
+The multiple sits deliberately between the two thresholds either side of it:
+above one window, so a view that *does* settle is always arbitrated through
+the ordinary path first and the ceiling never becomes the normal case; and
+below the `3 × stable-after` escalation deadline below, so a strategy is asked
+before `down-all-when-unstable` can stop the cluster.
+
+A peer that recovers loses its place: the clock measures one uninterrupted run
+of silence, so a peer that flaps never accumulates its way to the ceiling out
+of intervals none of which meant anything on its own.
+
+### When the view never settles
+
+`down-all-when-unstable` is the escalation for a cluster that will not
+converge: if the view has not once held still for a whole `stable-after`
+across `3 × stable-after` of continuous change — **and** something is still
+unreachable — every member is downed, this node included, and the reason is
+logged at `warn`.  No strategy is consulted; a view that unsettled is not
+evidence any of them could decide on.
+
+The margin is derived from the window rather than configured beside it.  It
+only ever means "several times however long this deployment thinks a view
+needs to settle", so a second key would be one more number to keep consistent
+— and a margin *below* the window could never observe one quiet window before
+firing.
+
+:::caution[It ships off, and turning it on is a posture]
+This is the only setting on this page that stops the **whole** cluster, and
+it is reached by a timer rather than by a strategy's verdict.  A rolling
+restart whose replacements arrive less than `stable-after` apart looks
+exactly like a cluster that will not settle.  Turning it on says you would
+rather the cluster stop than keep running on a membership view nobody can
+trust — a real position, but state it deliberately.
+
+What it will *not* do is fire on ordinary churn: an empty unreachable set is
+a hard precondition, so members joining and leaving cleanly never escalate,
+however fast they do it.
+:::
+
 ## KeepMajority
 
 ```ts
@@ -103,11 +346,12 @@ special-purpose deployments.
 ```ts
 import { KeepOldest, KeepOldestOptions } from 'actor-ts/cluster';
 
-const keepOldestOptions = KeepOldestOptions.create().withDownIfAlone(true);
+const keepOldestOptions = KeepOldestOptions.create().withRole('backend');
 new KeepOldest(keepOldestOptions);
 ```
 
-The side containing the **"oldest" member** wins.
+The side containing the **"oldest" member** wins — unless the oldest is
+alone (see `downIfAlone` below).
 
 :::caution["Oldest" here means lowest address, not longest-running]
 Despite the name, this strategy does not track join order — no
@@ -130,9 +374,21 @@ Useful when:
 - You can pin the address of the node that should survive — then the
   strategy is deterministic and needs no quorum arithmetic.
 
-`downIfAlone: true` means "if I'm the oldest but everyone else is
-unreachable, I down myself" — prevents a one-node "winner"
-declaring itself the cluster after a total split.
+`downIfAlone` — on by default, `keep-oldest.down-if-alone` in the config
+file — decides what happens when the oldest is the only member on its side
+of the split, against two or more on the other:
+
+- **On:** the oldest loses and the group carries on.  That is the same
+  answer from both sides: survivors that find a crashed oldest unreachable
+  down it, and an oldest cut off on its own downs itself.
+- **Off:** the side holding the oldest survives and nothing else does.  A
+  crashed oldest is on nobody's side, so every survivor downs itself and the
+  crash of one node — the lowest-addressed, which is also the leader — stops
+  the cluster (#932).  Choose it only if you would rather stop than run
+  without the node you pinned.
+
+Two sides of one member each are not "alone against a group": a two-node
+cluster keeps the oldest either way.
 
 ## KeepReferee
 
@@ -140,7 +396,7 @@ declaring itself the cluster after a total split.
 import { KeepReferee, KeepRefereeOptions } from 'actor-ts/cluster';
 
 const keepRefereeOptions = KeepRefereeOptions.create()
-  .withRefereeAddress('actor-ts://my-app@10.0.0.1:2552')
+  .withRefereeAddress('my-app@10.0.0.1:2552')
   .withDownAllIfBelowQuorum(3);
 new KeepReferee(
   keepRefereeOptions,
@@ -175,8 +431,9 @@ const staticQuorumOptions = StaticQuorumOptions.create().withQuorumSize(3);
 new StaticQuorum(staticQuorumOptions);
 ```
 
-A side wins only if it has at least `quorumSize` reachable members.
-Below the quorum, the side downs itself.
+When some member is unreachable, a side wins only if it has at least
+`quorumSize` reachable members; below the quorum, the side downs itself.
+With nothing unreachable it decides nothing, however small the cluster is.
 
 **Picks:**
 
@@ -220,6 +477,12 @@ Lease resource) before considering itself authoritative.
 Right for paranoid production scenarios where you'd rather
 **double the cost** of split-brain protection.
 
+From a config file the strategy gets its lease from the coordination
+block instead of from `withLease(…)` — see
+[from the config file](#from-the-config-file).  That lease is built at
+the strategy's first decision, from the address the decision carries,
+because the strategy is constructed before the node's address exists.
+
 ### When an acquire is abandoned
 
 The interesting case is not "the lease said no" but "the lease
@@ -254,6 +517,52 @@ rules cover both:
 The visible symptom of a lease provider having a bad day is
 therefore a cluster that waits, not one that splits.
 
+### When a win outlives its lease
+
+A win is only as good as the lease behind it.  Once the view has
+been stable for `stable-after`, the cluster asks the strategy again
+on every failure-detector tick, so a cached win can be returned
+long after the acquire that produced it.  A node that stalled past
+the lease's TTL in between — a long GC pause, a starved container
+— has lost the lease to the other side, which is by then downing
+*this* one.  Replaying the old win is how both halves end up acting
+as the survivor.
+
+So before a won decision is returned again, the strategy asks
+`lease.checkAlive()`.  If the lease has run out, the win is dropped
+and the side arbitrates afresh: the new acquire loses if the other
+side holds the lease now — and this side then downs itself — and
+wins it back if nobody took it.  A lost arbitration is not re-asked;
+it does not rest on the lease.  This relies on the backend answering
+`checkAlive()` against its TTL rather than from a held flag, which
+both built-in backends do (#937).
+
+An acquire that takes longer than the lease's TTL can never produce
+a usable win: the strategy keeps arbitrating and decides nothing,
+the same posture as while an acquire is pending.
+
+### When this node leaves
+
+A won arbitration keeps the lease, and the backend renews it for as
+long as the strategy holds it: `decide()` never gives a win back,
+since a cached win is only as good as the lease under it.  Leaving
+does.  `cluster.leave()`, and the leave at once of a node its own
+decision downed or that gave its join up, call the strategy's
+`shutdown()` once the failure-detector tick that asks it has
+stopped.  A won lease is released there and then, so the members
+left behind can take it at their next even split instead of finding
+it held by a node that is gone, and nothing renews it once the node
+has left.  The leave also makes an `acquire()` still on the wire
+unwanted — a third case beside the two above, and their first two
+rules cover it: a win the attempt reports afterwards is dropped and
+released where it lands.  A release that fails is logged and the
+leave goes on; the record then runs out at its TTL.
+
+The strategy decides nothing after it, so a node that joins again
+needs a fresh one.  A strategy selected in configuration is built anew
+by every `Cluster.join`; one built in code has to be built again
+rather than handed to a second join.
+
 ## Picking a strategy
 
 Three questions in order:
@@ -281,6 +590,7 @@ The provider interface is tiny:
 ```ts
 interface DowningProvider {
   decide(view: ClusterPartitionView): DowningDecision;
+  shutdown?(): Promise<void>;         // optional: give back what it holds
 }
 
 type ClusterPartitionView = {
@@ -291,7 +601,11 @@ type ClusterPartitionView = {
 ```
 
 Implement `decide(view) => Set<string>` and return the address
-strings to down.  Empty set means "no decision."
+strings to down.  Empty set means "no decision."  `shutdown()` is
+for a strategy that holds something it has to give back: the cluster
+calls it once when this node leaves, after the last `decide()`, and
+`LeaseMajority` releases its lease there.  A `shutdown()` that throws
+or rejects is logged, and the leave goes on.
 
 Useful for app-specific rules — e.g. "always keep the node
 hosting role=primary," or "if the partition includes the
@@ -299,12 +613,37 @@ DB-master node, that side wins."
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="No strategy = manual operations">
-  Without a `downing` provider, the cluster sees unreachable
-  members forever (or until they recover).  Operators have to
-  call `cluster.down(addr)` manually.  Acceptable for managed
-  clusters with on-call humans; not acceptable for auto-scaled
-  / unattended deployments.
+<Aside type="caution" title="No strategy = the failure detector decides">
+  Without a `downing` provider, the failure detector removes an
+  unreachable peer itself: it reaches `down` at `down-after`, and the
+  peer is announced `down`, then `removed` — no arbitration, no
+  operator.  For a single crashed node that is the behaviour you
+  want: the last available node takes over the dead peer's shards and
+  singletons, so an n-node cluster keeps running down to one node.
+  Under a partition it is split-brain by construction: every side
+  reaches `down-after` at the same time and removes the others, and
+  each half continues as "the cluster" — and stays that way after the
+  network heals
+  ([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
+  For production, configure `lease-majority` or another strategy on
+  this page.
+
+  `actor-ts.cluster.failure-detector.auto-down = off` is the opt-out.
+  The detector then parks the peer at `unreachable` — a member still,
+  holding its slot, its shards not reallocated, its remote watchers
+  told nothing until it is removed or restarts — and logs one warning
+  naming the ways out: `cluster.down(addr)`, `POST /cluster/down`
+  (behind `actor-ts.management.enable-down-endpoint`), or a strategy.
+  A crashed node then stays until you remove it.  Parking does not
+  keep a partition at one singleton, though — the leader is the first
+  `up` member of each side's view, so a singleton that follows the
+  leader moves on either side.
+
+  With a strategy configured, the detector stops at `unreachable` and
+  the strategy owns removal, whatever `auto-down` says; a member the
+  strategy never decides about then stays `unreachable` indefinitely.
+  See
+  [a parked member stays parked](/cluster/failure-detector/#a-parked-member-stays-parked).
 </Aside>
 
 <Aside type="caution" title="Stable stretched clusters need leases">
@@ -327,6 +666,113 @@ import { Aside } from '@astrojs/starlight/components';
   initial join.  Either start with the quorum already met, or use
   a quorum equal to or below your minimum runtime size.
 </Aside>
+
+## What a downed address may do next
+
+There is no separate quarantine. What keeps a removed member out is
+its tombstone: the `removed` record the cluster keeps for the address,
+which refuses any record for it at the same or an older version.
+Whether a removal leaves one — and so whether the process that was
+removed can carry on talking and be let back in — depends on the
+route that removed it. *The same run* below means that process: the
+same incarnation, still announcing the version it had when it was
+removed.
+
+| Removed by | Leaves behind | The same run speaks again |
+| --- | --- | --- |
+| `Cluster.down()` or `POST /cluster/down` | A tombstone. | Refused until the tombstone is pruned. |
+| A strategy's decision, or `down-all-when-unstable` | A tombstone. | Refused until the tombstone is pruned. |
+| The peer's own `leave` | A tombstone. | Refused until the tombstone is pruned. |
+| The failure detector with no strategy — `failure-detector.auto-down = on`, the default | Nothing — the entry is deleted. | Readmitted on its next gossip frame; a heartbeat alone finds no entry to bring back. |
+| Nobody: no strategy and `auto-down = off`, the opt-out | Nothing is removed — the peer is parked at `unreachable`. | Back to `up` on its next heartbeat to this node. |
+
+The last row's way back needs the peer to send this node a heartbeat,
+which ends a pause, not a partition: after a symmetric partition
+heals, neither side heartbeats or gossips a peer it holds
+unreachable, so the parked members stay parked and the cluster stays
+split until an operator acts
+([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
+
+A tombstone refuses for the larger of `tombstone.time-to-live` and
+`tombstone.min-retention` — **24 h at the defaults** — and goes on the
+first prune pass after that. `time-to-live` is the operator's knob;
+there is no quarantine setting beside it. `min-retention` is a floor
+under it, six times `failure-detector.down-after` when left at `0s`, so
+that a short `time-to-live` cannot drop a tombstone before peers that
+have not converged yet have seen it:
+
+```hocon
+actor-ts.cluster.tombstone {
+  time-to-live   = 24h  # how long a removed address is refused
+  prune-interval = 5m   # how often expired tombstones are dropped
+  min-retention  = 0s   # floor under time-to-live; 0s = 6 x down-after
+}
+```
+
+The refusal is a membership one. Nothing refuses the connection — no
+handshake asks membership — so the downed node's frames still arrive
+and the messages it sends are still delivered. What is refused is its
+record: it is not a member, and nothing that places work by
+membership — sharding, singletons, cluster-aware routing, downing
+quorums — counts it or its roles. After the prune the same run is back
+on its next gossip frame, at its old version and with the roles it
+had: the window is a delay, not a verdict. A node downed while still running
+is not told about a downing decided elsewhere (see the top of this
+page), so unless something stops it, it is a member again once the
+window has passed.
+
+**The detector's own route — the default — is the one with no
+refusal.** It deletes the entry instead of tombstoning it, so the same
+run is readmitted on its next gossip frame — after `MemberRemoved` was
+announced for it and its remote watchers were sent a node-loss
+`Terminated`, with nothing to tell them it is back. Nothing is left to
+refuse a survivor's stale record of it either, which is why a crashed
+member keeps coming back under `auto-down`
+([what the detector decides](/cluster/failure-detector/#what-the-detector-decides--and-doesnt)
+has the measurement). Nor does deleting help a healed partition:
+neither side heartbeats or gossips a peer it holds unreachable, and
+after the delete there is no entry to address at all
+([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
+
+**A restart is readmitted by version.** A process seeds its version
+from its own wall clock when it joins, which out-versions the
+tombstone its previous run left behind, so a node that restarts
+rejoins at once whichever route removed it — nobody waits out the
+window, and nothing has to be cleared. If its previous run was never
+removed — parked under `auto-down = off`, held for a strategy, or
+restarted inside `down-after` — the new run's record replaces a live
+one, and the node ends the old run first: `MemberDown` and
+`MemberRemoved` for the old incarnation, so that its remote watchers
+get their node-loss `Terminated` and its shards and singletons move,
+then `MemberJoined` for the new one. That takes both records carrying
+an incarnation; a record without one replaces the old run silently, as
+every record did before
+([a restart ends the previous run](/cluster/failure-detector/#a-restart-ends-the-previous-run)).
+
+The tombstone refuses **the run** it was written for, not only its
+version: since cluster wire v2 every address on a frame names its
+incarnation — which process answers there, minted once per
+`Cluster.join` — and a record for the incarnation a tombstone holds is
+refused whatever version it carries
+([issue #823](https://github.com/pathosDev/actor-ts/issues/823),
+[issue #940](https://github.com/pathosDev/actor-ts/issues/940)). A process
+that was downed while still running cannot come back by restamping its
+version; it stands down instead, and only a restart joins again.
+
+One limit remains, because the floor a *restart* has to clear is still a
+version:
+
+- **A keep-out lever for a peer with standing.** A member this node
+  holds active may gossip records about other addresses, and a
+  `removed` record dated inside the version-skew budget
+  (`maxVersionSkewMs`, five minutes by default) out-versions the fresh
+  version a legitimate restart starts from. The restarted node stays
+  out until it restarts again past that version, or the tombstone
+  expires, counted from a `removedAt` the same peer chose.
+
+A restart carries a new incarnation, so it could be admitted over any
+tombstone of a *previous* run regardless of version; it is not yet,
+which is what keeps this lever open.
 
 ## Where to next
 

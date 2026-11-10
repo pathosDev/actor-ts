@@ -3,7 +3,14 @@ import { ConfigKeys } from '../config/ConfigKeys.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import { mergeOptions } from '../util/OptionsMerge.js';
 import { InMemoryCache } from './InMemoryCache.js';
+import { inMemoryCacheKeysUnder, readInMemoryCacheOptionsFromConfig } from './InMemoryCacheOptions.js';
 import type { InMemoryCacheOptionsType } from './InMemoryCacheOptions.js';
+import { MemcachedCache } from './MemcachedCache.js';
+import { memcachedCacheKeysUnder, readMemcachedCacheOptionsFromConfig } from './MemcachedCacheOptions.js';
+import type { MemcachedCacheOptionsType } from './MemcachedCacheOptions.js';
+import { RedisCache } from './RedisCache.js';
+import { readRedisCacheOptionsFromConfig, redisCacheKeysUnder } from './RedisCacheOptions.js';
+import type { RedisCacheOptionsType } from './RedisCacheOptions.js';
 import type { Cache } from './Cache.js';
 
 /**
@@ -31,8 +38,23 @@ export class CacheExtension implements Extension {
   private readonly factories = new Map<string, CacheFactory>();
   private readonly instances = new Map<string, Cache>();
 
+  /**
+   * The three built-in backends, all registered up front.
+   *
+   * Eagerly, and that costs nothing: `RedisCache` and `MemcachedCache` both
+   * wrap client construction in a `Lazy`, so `ioredis` / `memjs` are imported
+   * on the first cache *operation* and a process that never resolves a cache
+   * onto one of them never loads it.  What registration buys is the half
+   * `reference.conf` cannot: without it,
+   * `actor-ts.cache.<name>.plugin = "actor-ts.cache.redis"` resolves to a
+   * plugin id no factory answers and {@link cache} hands back an
+   * `InMemoryCache` instead — a perfectly-configured Redis block feeding a
+   * process-local map.
+   */
   constructor(private readonly system: ActorSystem) {
     this.factories.set(ConfigKeys.cache.inMemory, (_system, name) => new InMemoryCache(this.inMemoryCacheOptions(name)));
+    this.factories.set(ConfigKeys.cache.redis, (_system, name) => new RedisCache(this.redisCacheOptions(name)));
+    this.factories.set(ConfigKeys.cache.memcached, (_system, name) => new MemcachedCache(this.memcachedCacheOptions(name)));
   }
 
   /**
@@ -45,55 +67,62 @@ export class CacheExtension implements Extension {
    * duplicating them would give the same number two homes).
    *
    * The per-name path is nested rather than a flat
-   * `actor-ts.cache.<name>.maxEntries` so the plugin *selector*
+   * `actor-ts.cache.<name>.max-entries` so the plugin *selector*
    * (`<name>.plugin`) and the selected plugin's *settings* stay in separate
    * blocks — the shape a Redis or Memcached instance needs too.  It carries no
    * `reference.conf` leaf for the same reason `<name>.plugin` carries none:
-   * the name is the application's, so the path cannot be enumerated.
+   * the name is the application's, so the path cannot be enumerated.  Which is
+   * why the global block reads its paths straight out of `ConfigKeys` while
+   * the per-name one has `inMemoryCacheKeysUnder` compose the same five
+   * suffixes: only the first can be declared.  The dead-key gate needs
+   * neither form — it proves the global block's leaves read by changing each
+   * and watching `readInMemoryCacheOptionsFromConfig`'s answer (#1425).
    *
    * Present values are validated in the constructor (`OptionsError` on a bad
    * one), so a typo'd override fails at the first `cache(name)` rather than
    * silently sizing the map at the default.
    */
   private inMemoryCacheOptions(name: string): InMemoryCacheOptionsType {
+    const config = this.system.config;
     return mergeOptions<InMemoryCacheOptionsType>(
       {},
-      this.inMemoryCacheLeaves(ConfigKeys.cache.inMemory),
-      this.inMemoryCacheLeaves(`${ConfigKeys.cache.root}.${name}.in-memory`),
+      readInMemoryCacheOptionsFromConfig(config, ConfigKeys.cache.inMemoryOptions),
+      readInMemoryCacheOptionsFromConfig(config, inMemoryCacheKeysUnder(`${ConfigKeys.cache.root}.${name}.in-memory`)),
     );
   }
 
   /**
-   * The `InMemoryCacheOptionsType` leaves under `root`, omitting absent ones.
+   * Redis cache options for the instance resolved as `name`, layered exactly
+   * as {@link inMemoryCacheOptions} is: the per-name block
+   * `actor-ts.cache.<name>.redis` over the global `actor-ts.cache.redis`, and
+   * an unset leaf in either falling through to `RedisCache`'s own defaults.
    *
-   * `prefixQuotas` is read as a whole object and layered whole — a per-name
-   * table **replaces** the global one rather than merging into it, which is
-   * the same shallow rule {@link mergeOptions} applies to every other field.
-   * Merging would be worse than inconsistent here: the quotas have to sum to
-   * at most `maxEntries`, and a table half-inherited from a global block is a
-   * sum nobody wrote down.  Its keys are read from the object rather than
-   * addressed as config paths, because a prefix may contain a `.` and a path
-   * would split it.
+   * The per-name layer is what makes one Redis server usable by more than one
+   * consumer.  `cache('rate-limit')` and `cache('idempotency')` are separate
+   * instances with separate settings by construction, and without this they
+   * would have to share one `db` and one `key-prefix` — which is the whole of
+   * the one-cache-per-consumer advice, applied to a backend where the key
+   * space really is shared across processes.  It carries no `reference.conf`
+   * leaf for the same reason `<name>.plugin` carries none: the name is the
+   * application's, so the path cannot be enumerated.
    */
-  private inMemoryCacheLeaves(root: string): Partial<InMemoryCacheOptionsType> {
+  private redisCacheOptions(name: string): RedisCacheOptionsType {
     const config = this.system.config;
-    const leaves: {
-      maxEntries?: number;
-      cleanupMs?: number;
-      prefixQuotas?: Record<string, number>;
-    } = {};
-    if (config.hasPath(`${root}.maxEntries`)) leaves.maxEntries = config.getInt(`${root}.maxEntries`);
-    if (config.hasPath(`${root}.cleanupMs`)) leaves.cleanupMs = config.getDuration(`${root}.cleanupMs`);
-    if (config.hasPath(`${root}.prefixQuotas`)) {
-      const quotas: Record<string, number> = {};
-      for (const [prefix, quota] of Object.entries(config.getObject(`${root}.prefixQuotas`))) {
-        // A quoted HOCON number arrives as a string; anything else is passed
-        // through unconverted so the validator names the value it rejected.
-        quotas[prefix] = typeof quota === 'string' ? Number(quota) : (quota as number);
-      }
-      leaves.prefixQuotas = quotas;
-    }
-    return leaves;
+    return mergeOptions<RedisCacheOptionsType>(
+      {},
+      readRedisCacheOptionsFromConfig(config, ConfigKeys.cache.redisOptions),
+      readRedisCacheOptionsFromConfig(config, redisCacheKeysUnder(`${ConfigKeys.cache.root}.${name}.redis`)),
+    );
+  }
+
+  /** Memcached cache options for `name` — see {@link redisCacheOptions}. */
+  private memcachedCacheOptions(name: string): MemcachedCacheOptionsType {
+    const config = this.system.config;
+    return mergeOptions<MemcachedCacheOptionsType>(
+      {},
+      readMemcachedCacheOptionsFromConfig(config, ConfigKeys.cache.memcachedOptions),
+      readMemcachedCacheOptionsFromConfig(config, memcachedCacheKeysUnder(`${ConfigKeys.cache.root}.${name}.memcached`)),
+    );
   }
 
   /**

@@ -547,7 +547,6 @@ describe('ClusterSingleton — who may ask for a hand-over (#949)', () => {
       to: singletonManagerPath(systemName, 'guarded'),
       from: null,
       body: { kind: 'singleton.HandOverRequest', typeName: 'guarded' },
-      tag: 'Singleton',
     });
     await awaitCondition(
       () => nodeA.log.saw('refusing a hand-over request'),
@@ -584,7 +583,6 @@ describe('ClusterSingleton — who may ask for a hand-over (#949)', () => {
       to: singletonManagerPath(systemName, 'closed'),
       from: null,
       body: { kind: 'singleton.HandOverRequest', typeName: 'closed' },
-      tag: 'Singleton',
     });
 
     await awaitCondition(

@@ -18,6 +18,7 @@
  * resolution (route options > HOCON `actor-ts.http.websocket` > defaults) —
  * unset fields fall through to HOCON.
  */
+import type { BoundedMailboxOverflow } from '../../mailbox/BoundedMailboxOptions.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { WebsocketCodec } from './WebsocketCodec.js';
@@ -27,6 +28,20 @@ import type {
   OversizeFramePolicy,
   WebsocketPolicyOptions,
 } from './WebsocketPolicy.js';
+
+/**
+ * Every `websocket()` route requires a same-origin upgrade unless it says
+ * otherwise (#756).  It is here rather than as a literal beside the guard it
+ * feeds because it is a security posture, not a routing detail: the option
+ * shipped defaulting to `false`, so the control was on for whoever already
+ * knew to ask for it and off for everyone else, and flipping it back is a
+ * one-character edit in a file whose reviewers are reading a routing
+ * directive.  Declared where the field is declared and documented, the flip
+ * has to be a named, deliberate edit — and
+ * `OriginAllowlist.test.ts` derives a bare route's expected answer from this
+ * value, so the declaration and the guard cannot drift apart in silence.
+ */
+export const DEFAULT_WEBSOCKET_REQUIRE_SAME_ORIGIN = true;
 
 /** The options a `websocket()` route may carry — codec + per-connection policy. */
 export interface WebsocketRouteOptionsType<TOut, TIn> extends WebsocketPolicyOptions {
@@ -39,11 +54,20 @@ export interface WebsocketRouteOptionsType<TOut, TIn> extends WebsocketPolicyOpt
    * 403.  A **missing** `Origin` (non-browser client: native WebSocket,
    * server-to-server) is allowed — CSWSH rides a victim browser's ambient
    * cookie/session credentials, so a request without an Origin can't be
-   * that attack.  Comparison is case-insensitive.  Unset → no origin check.
+   * that attack.  Comparison is case-insensitive.
    *
-   * Bearer-token auth is already resistant (browsers can't set the
-   * `Authorization` header on a WS handshake); set this when the route's
-   * auth is ambient (cookie / `IpAllowlist`).
+   * **Unset → only {@link requireSameOrigin} applies**, and that is on by
+   * default (#756), so a bare route still answers 403 to a foreign `Origin`.
+   * What switches the check off entirely is `withRequireSameOrigin(false)`
+   * with no list.
+   *
+   * Name the page's own origin here when the page is served from somewhere
+   * else — a frontend on its own dev server, or a CDN.  A page this server
+   * serves is covered by the default already, so the list is for the origins
+   * the `Host` comparison cannot reach.  Bearer-token auth is resistant
+   * without either rule (browsers can't set the `Authorization` header on a
+   * WS handshake); the origin rules earn their keep where the route's auth
+   * is ambient (cookie / `IpAllowlist`).
    */
   readonly allowedOrigins?: ReadonlyArray<string>;
   /**
@@ -60,9 +84,41 @@ export interface WebsocketRouteOptionsType<TOut, TIn> extends WebsocketPolicyOpt
    *
    * The comparison is host-only, because `Host` carries no scheme to
    * compare against.  A reverse proxy that rewrites `Host` but not `Origin`
-   * will therefore fail the check; list the real origins instead.
+   * will therefore fail the check; list the real origins instead.  Host-only
+   * also means **scheme-blind**: an `http://` page on the same `host:port`
+   * passes, so this rule is not a substitute for refusing plaintext.
    *
-   * Default: `false` (unset → no origin check, as before).
+   * **`Origin` and `Host` both come from the client**, which bounds what the
+   * rule can promise.  A page that reaches this server under a name of its
+   * own — DNS rebinding — sends the two headers in agreement and passes this
+   * arm; that is the standard weakness of any same-origin check built on
+   * `Host`, and it is why {@link allowedOrigins} exists.  What it buys is
+   * *reachability* rather than a session, since the browser attaches no
+   * cookies for the real host — so the shape that matters is a route whose
+   * auth **is** the network (`IpAllowlist`, trusting loopback).  Pin
+   * {@link allowedOrigins} on such a route instead of leaning on this arm.
+   *
+   * **Default: {@link DEFAULT_WEBSOCKET_REQUIRE_SAME_ORIGIN} (`true`)** —
+   * every `websocket()` route rejects a cross-origin
+   * browser upgrade unless it says otherwise (#756).  It shipped defaulting
+   * to `false`, which left the control on for whoever already knew to ask for
+   * it and off for everyone else; a route whose auth is ambient (a session
+   * cookie, `IpAllowlist`) was then CSWSH-exposed by omission.  Pre-1.0
+   * permits the hard cut, and DevTools had already concluded the same thing
+   * for its own socket by installing the guard unconditionally.
+   *
+   * **A non-browser client is unaffected**, and that is the point of the
+   * missing-`Origin` rule above rather than an accident of it: a Node, Bun or
+   * Deno `WebSocket`, and any server-to-server dialer, sends no `Origin`
+   * header at all, so it takes the "missing → allowed" branch exactly as
+   * before.  What the flipped default changes is browser traffic from a page
+   * this server did not serve.
+   *
+   * **Opt out explicitly with `withRequireSameOrigin(false)`** when the page
+   * driving the socket really is served from elsewhere — a frontend on its own
+   * dev server or CDN.  Prefer naming that origin in {@link allowedOrigins};
+   * `false` with no allowlist restores the pre-#756 behaviour of no origin
+   * check at all.
    */
   readonly requireSameOrigin?: boolean;
 }
@@ -81,9 +137,12 @@ export class WebsocketRouteOptionsBuilder<TOut = unknown, TIn = unknown>
   }
 
   /**
-   * Restrict the upgrade to these browser origins (CSWSH defence).  A
-   * present-but-unlisted `Origin` gets 403; a missing `Origin` (non-browser
-   * client) is allowed.  Case-insensitive.
+   * Widen the upgrade to these browser origins, on top of the same-origin
+   * rule (CSWSH defence).  An `Origin` that is neither listed nor this
+   * server's own `Host` gets 403; a missing `Origin` (non-browser client) is
+   * allowed.  Case-insensitive.  Since #756 the two rules combine, so this is
+   * not the only check the route has — see
+   * {@link withRequireSameOrigin} for the one it adds to.
    */
   withAllowedOrigins(origins: ReadonlyArray<string>): this {
     return this.set('allowedOrigins', origins);
@@ -92,7 +151,12 @@ export class WebsocketRouteOptionsBuilder<TOut = unknown, TIn = unknown>
   /**
    * Accept an upgrade whose `Origin` names this same server, so a page the
    * server itself serves works without knowing the host in advance.
-   * Combines with `withAllowedOrigins`; a missing `Origin` stays allowed.
+   * Combines with `withAllowedOrigins`; a missing `Origin` (a non-browser
+   * client, which sends none) stays allowed.
+   *
+   * **On by default since #756** — call this with `false` only to opt a route
+   * out, when the page driving the socket is served from a different origin
+   * and naming it in `withAllowedOrigins` is not workable.
    */
   withRequireSameOrigin(enabled: boolean): this {
     return this.set('requireSameOrigin', enabled);
@@ -157,6 +221,31 @@ export class WebsocketRouteOptionsBuilder<TOut = unknown, TIn = unknown>
    */
   withAcceptTimeoutMs(milliseconds: number): this {
     return this.set('acceptTimeoutMs', milliseconds);
+  }
+
+  /**
+   * Bound each connection actor's outbound mailbox — the queue
+   * `connection.tell`, `sendRaw` and `close` go into — at this many queued
+   * messages (#1432).  Unset falls through to
+   * `actor-ts.http.websocket.connection-mailbox-capacity`, then to
+   * `actor-ts.mailbox.default.capacity`, which is unbounded unless an operator
+   * bounded every application actor at once.  Past it the overflow policy
+   * sheds frames; `close()` / `closeAll()` are never shed (#985).
+   */
+  withConnectionMailboxCapacity(capacity: number): this {
+    return this.set('connectionMailboxCapacity', capacity);
+  }
+
+  /**
+   * What a full connection mailbox sheds: `drop-head`, `drop-new` or
+   * `reject`.  Needs a capacity from this route or its HOCON leaf — a global
+   * mailbox bound does not count — and is refused at `bind()` without one.
+   * Unset falls through to `actor-ts.mailbox.default.overflow`, then
+   * `drop-head`.  `reject` throws on the sender's stack, which for
+   * `broadcast` is the hub.
+   */
+  withConnectionMailboxOverflow(overflow: BoundedMailboxOverflow): this {
+    return this.set('connectionMailboxOverflow', overflow);
   }
 }
 

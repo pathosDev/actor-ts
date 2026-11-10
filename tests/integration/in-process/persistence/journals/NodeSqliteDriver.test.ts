@@ -51,6 +51,7 @@ describe('getSqliteDriver — runtime dispatch', () => {
 describeIfAvailable('NodeSqliteDriver — journal and snapshot store', () => {
   test('journal append / read / highestSeq round-trip', async () => {
     const journalOptions = SqliteJournalOptions.create()
+      .withPath(':memory:')
       .withDriver(new NodeSqliteDriver());
     const journal = new SqliteJournal(journalOptions);
     const written = await journal.append('account-1', [
@@ -69,6 +70,7 @@ describeIfAvailable('NodeSqliteDriver — journal and snapshot store', () => {
 
   test('a rejected append rolls back the synthesized transaction', async () => {
     const journalOptions = SqliteJournalOptions.create()
+      .withPath(':memory:')
       .withDriver(new NodeSqliteDriver());
     const journal = new SqliteJournal(journalOptions);
     await journal.append('account-2', [{ event: 'a' }], 0);
@@ -84,6 +86,7 @@ describeIfAvailable('NodeSqliteDriver — journal and snapshot store', () => {
 
   test('snapshot store save / loadLatest / keepN prune', async () => {
     const storeOptions = SqliteSnapshotStoreOptions.create()
+      .withPath(':memory:')
       .withDriver(new NodeSqliteDriver())
       .withKeepN(2);
     const store = new SqliteSnapshotStore(storeOptions);

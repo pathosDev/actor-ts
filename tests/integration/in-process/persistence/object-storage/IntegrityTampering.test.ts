@@ -27,7 +27,11 @@ import { ObjectStorageDurableStateStore } from '../../../../../src/persistence/d
 import { ObjectStorageDurableStateStoreOptions } from '../../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
 import { ObjectStorageSnapshotStore } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStore.js';
 import { ObjectStorageSnapshotStoreOptions } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
-import { SEQ_PADDING } from '../../../../../src/persistence/Constants.js';
+import {
+  OBJECT_STORAGE_DURABLE_STATE_NAMESPACE,
+  OBJECT_STORAGE_SNAPSHOT_NAMESPACE,
+  SEQ_PADDING,
+} from '../../../../../src/persistence/Constants.js';
 import { JournalError } from '../../../../../src/persistence/JournalTypes.js';
 import {
   ATS1_MAGIC,
@@ -45,22 +49,48 @@ const info = 'acme/test/snapshot/v1';
 const INTEGRITY_KEY = new Uint8Array(32).fill(7);
 const OTHER_KEY     = new Uint8Array(32).fill(8);
 
+/**
+ * Budget for the per-test temp tree, stated rather than inherited.
+ *
+ * These hooks build and delete a real object-storage tree per test.  Idle they
+ * cost single-digit milliseconds; under whole-suite disk contention a hook here
+ * has been seen at 11.4 s and, in a sibling file, at 69 s — against bun's
+ * undeclared 5 000 ms cap, which reports as `(unnamed)` and "a
+ * beforeEach/afterEach hook timed out" without naming the file, the hook kind or
+ * a cause.
+ *
+ * Neither observation reproduced, and the budget is sized for that: it is a
+ * bound on a hook whose work is unbounded in principle (a recursive delete of a
+ * tree whose size the test decides, on a disk the rest of the suite is also
+ * using), not a number tuned until a red run went away.  What it buys is that
+ * transient contention costs a slow run instead of an unattributable failure —
+ * and that the cap is a decision somebody made. *
+ * Verified rather than assumed: a 6 s `beforeEach` and a 6 s `afterEach` both
+ * pass under a 20 s budget on bun 1.4.0, and the same hook without one dies at
+ * 5 000 ms.  The second argument works on every hook kind, not only `beforeAll`.
+ */
+const TEMP_TREE_BUDGET_MS = 30_000;
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'actor-ts-integrity-'));
   const backendOptions = FilesystemObjectStorageOptions.create()
     .withDir(dir);
   backend = new FilesystemObjectStorageBackend(backendOptions);
-});
-afterEach(() => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } });
+}, TEMP_TREE_BUDGET_MS);
+afterEach(
+  () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } },
+  TEMP_TREE_BUDGET_MS,
+);
 
 /**
  * The FS backend stores each key at `dir/<key>` 1:1, so for DurableState
- * with `persistenceId='a'` the body lives at `dir/a/state.json`.  Lock files
+ * with `persistenceId='a'` the body lives at `dir/state/a/state.json` — the
+ * `state/` segment is the namespace that store owns (#716).  Lock files
  * (`<key>.lock`), etag files (`<key>.etag`), and stale tmpfiles
  * (`<key>.tmp.*`) sit alongside.
  */
 function bodyFileFor(persistenceId: string): string {
-  return join(dir, persistenceId, 'state.json');
+  return join(dir, OBJECT_STORAGE_DURABLE_STATE_NAMESPACE, persistenceId, 'state.json');
 }
 
 describe('#116 — DurableState revision-tampering exploit (pre-fix demonstration)', () => {
@@ -326,7 +356,12 @@ describe('#116 — encrypted body is already protected by AES-GCM', () => {
  * SEQ_PADDING>.json`.
  */
 function snapshotFileFor(persistenceId: string, seq: number): string {
-  return join(dir, persistenceId, `${String(seq).padStart(SEQ_PADDING, '0')}.json`);
+  return join(
+    dir,
+    OBJECT_STORAGE_SNAPSHOT_NAMESPACE,
+    persistenceId,
+    `${String(seq).padStart(SEQ_PADDING, '0')}.json`,
+  );
 }
 
 describe('#613 — snapshot bodies carry an integrity tag', () => {

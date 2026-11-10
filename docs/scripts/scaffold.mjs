@@ -91,9 +91,18 @@ const PAGES = [
   ['fundamentals/dispatchers.md',
    'Dispatchers',
    'How messages get scheduled — synchronous, microtask, immediate.'],
+  ['fundamentals/parallelism.md',
+   'Parallelism',
+   'Actors on worker threads from configuration alone — one HOCON number, unchanged application code.'],
+  ['fundamentals/blocking-and-cpu-bound-work.md',
+   'Blocking and CPU-bound work',
+   'await is not parallelism; three tiers for CPU work; OffloadPool for pure functions on worker threads.'],
   ['fundamentals/mailboxes.md',
    'Mailboxes',
    'FIFO, bounded, and priority mailbox variants — when to pick which.'],
+  ['fundamentals/throttling.md',
+   'Throttling',
+   'Per-actor token-bucket rate limiting — context.throttle, burst, pause vs drop, and cancelling.'],
   ['fundamentals/timers-and-scheduling.md',
    'Timers and scheduling',
    'scheduleOnce, scheduleAtFixedRate, Timers — actor-bound vs system-scheduled.'],
@@ -189,6 +198,9 @@ const PAGES = [
   ['cluster/pubsub.md',
    'Distributed PubSub',
    'Cluster-wide publish/subscribe with the DistributedPubSubMediator.'],
+  ['cluster/event-stream.md',
+   'Cluster event stream',
+   'The cluster-wide counterpart to system.eventStream — class and kind channels across nodes.'],
   ['cluster/singleton/overview.md',
    'Cluster Singleton overview',
    'One-actor-per-cluster pattern — election, hand-off on failover.'],
@@ -544,6 +556,9 @@ const PAGES = [
   ['http/middleware/bearer-token.md',
    'Bearer token auth',
    'BearerTokenAuth() — pre-shared Authorization: Bearer secret, constant-time compare + rotation.'],
+  ['http/middleware/jwt.md',
+   'JWT auth',
+   'JwtAuth() — RS256/ES256/HS256 bearer tokens verified with WebCrypto, keys configured or from a JWK set.'],
   ['http/middleware/ip-allowlist.md',
    'IP allowlist',
    'IpAllowlist() — CIDR-based network restriction, defence-in-depth under bearer auth.'],
@@ -841,7 +856,9 @@ for (const [relPath, title, description] of PAGES) {
   // etc.) it gets renamed `.md` -> `.mdx`.  We shouldn't recreate
   // a plain-Markdown stub alongside it on the next scaffold run.
   const mdxVariant = full.replace(/\.md$/, '.mdx');
-  if (fs.existsSync(full) || fs.existsSync(mdxVariant)) {
+  // Skip when a hand-authored .mdx variant exists.  This is a different path
+  // than the write target, so it is a plain logic skip, not a race.
+  if (fs.existsSync(mdxVariant)) {
     skipped++;
     continue;
   }
@@ -853,8 +870,18 @@ description: ${JSON.stringify(description)}
 ---
 
 ${stubBody(title, description)}`;
-  fs.writeFileSync(full, content, 'utf-8');
-  created++;
+  // 'wx' fails atomically with EEXIST if `full` already exists, so there is no
+  // check-then-write TOCTOU window (CodeQL js/file-system-race).
+  try {
+    fs.writeFileSync(full, content, { encoding: 'utf-8', flag: 'wx' });
+    created++;
+  } catch (err) {
+    if (err.code === 'EEXIST') {
+      skipped++;
+      continue;
+    }
+    throw err;
+  }
 }
 
 console.log(`scaffold: ${created} stubs created, ${skipped} existing pages skipped (${PAGES.length} total in IA)`);

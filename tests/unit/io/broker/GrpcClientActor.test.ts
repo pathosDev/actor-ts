@@ -1,5 +1,5 @@
 /**
- * Unit tests for `GrpcClientActor` (#577, #1040).
+ * Unit tests for `GrpcClientActor` (#577, #1040, #788).
  *
  * `@grpc/grpc-js` and `@grpc/proto-loader` are optional peer deps that
  * the unit suite does not install — they exist only inside the
@@ -10,7 +10,7 @@
  *
  * `createServiceClient` (#1040) is the seam that removes that: the same
  * shape as `JetStreamActor.createNatsConnection`, overridden below by a
- * subclass that hands back a pure-JS fake.  Two properties become
+ * subclass that hands back a pure-JS fake.  Three properties become
  * assertable through it:
  *
  *   - #577 — a unary call actually carries the configured `deadlineMs`
@@ -20,7 +20,18 @@
  *     token, so the map lookup *is* the ownership check.  The
  *     counter-check recorded on the issue (re-key the map by
  *     `String(streamId)` and watch the suite stay green) fails against
- *     the last two tests here.
+ *     the last two tests of that block.
+ *   - #788 — the bidi class now shares both primitives: the handshake
+ *     is a `'stream-started'` frame rather than a `'stream-data'` chunk
+ *     carrying `{ __streamId }`, and the send/close registry is keyed
+ *     by token.  Before this, *no* bidi path was exercised by
+ *     `bun test` at all.
+ *   - the repair of #788's own regression — keying the registry on the
+ *     token turned `command.handle.token` into a *read* the four
+ *     send/close paths perform before anything else, and nothing had
+ *     ever checked that a handle is there to read.  The last block
+ *     below is that: a malformed command must not be answered as a
+ *     lost connection.
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../src/Actor.js';
@@ -28,17 +39,21 @@ import type { ActorRef } from '../../../../src/ActorRef.js';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
+import { DeadLetter } from '../../../../src/SystemMessages.js';
 import type { ConfigObject } from '../../../../src/config/HoconParser.js';
 import { GrpcClientActor } from '../../../../src/io/broker/GrpcClientActor.js';
 import type {
   GrpcCallOptions,
   GrpcClientCommand,
+  GrpcCredentialsLike,
   GrpcInbound,
   GrpcServiceClient,
+  GrpcServiceConstructor,
   GrpcStreamHandle,
 } from '../../../../src/io/broker/GrpcClientActor.js';
 import {
   GrpcClientOptions,
+  type GrpcChannelOptions,
   type GrpcClientOptionsBuilder,
 } from '../../../../src/io/broker/GrpcClientOptions.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
@@ -66,6 +81,36 @@ type RecordedClientStreamCall = {
 };
 
 /**
+ * Recording stand-in for grpc-js's `ClientDuplexStream`.
+ *
+ * `pushData` / `pushEnd` / `pushError` are the *server's* half — they let
+ * a test drive an inbound chunk, which is the only way to show that a
+ * server message cannot be mistaken for the handshake now that the
+ * handshake has its own frame, and the only way to drive a stream to
+ * completion at all.
+ */
+class FakeDuplexCall {
+  readonly writes: unknown[] = [];
+  ended = false;
+  private readonly dataListeners: Array<(chunk: unknown) => void> = [];
+  private readonly endListeners: Array<() => void> = [];
+  private readonly errorListeners: Array<(error: Error) => void> = [];
+
+  on(event: 'data' | 'end' | 'error', listener: (chunk: never) => void): void {
+    if (event === 'data') this.dataListeners.push(listener as (chunk: unknown) => void);
+    else if (event === 'end') this.endListeners.push(listener as () => void);
+    else this.errorListeners.push(listener as (error: Error) => void);
+  }
+
+  write(chunk: unknown): void { this.writes.push(chunk); }
+  end(): void { this.ended = true; }
+
+  pushData(chunk: unknown): void { for (const listener of this.dataListeners) listener(chunk); }
+  pushEnd(): void { for (const listener of this.endListeners) listener(); }
+  pushError(error: Error): void { for (const listener of this.errorListeners) listener(error); }
+}
+
+/**
  * Fake service client.
  *
  * The method properties are what a proto-loaded client exposes; the
@@ -79,6 +124,7 @@ class FakeServiceClient {
 
   readonly unaryCalls: RecordedUnaryCall[] = [];
   readonly clientStreamCalls: RecordedClientStreamCall[] = [];
+  readonly bidiCalls: FakeDuplexCall[] = [];
   closeCount = 0;
 
   close = (): void => { this.closeCount++; };
@@ -98,18 +144,73 @@ class FakeServiceClient {
     this.clientStreamCalls.push({ call, callback });
     return call;
   };
+
+  Chat = (): FakeDuplexCall => {
+    const call = new FakeDuplexCall();
+    this.bidiCalls.push(call);
+    return call;
+  };
 }
+
+/** One `new ServiceConstructor(...)` the actor performed. */
+type RecordedConstruction = {
+  readonly endpoint: string;
+  readonly channelOptions: GrpcChannelOptions | undefined;
+};
 
 /** The seam under test: a client with no `@grpc/*` module behind it. */
 class FakeGrpcClientActor extends GrpcClientActor {
   readonly fakeClient = new FakeServiceClient();
   /** Bumped by the hook — the strongest "the transport is up" signal a fake has. */
   clientCreations = 0;
+  /**
+   * What the production `instantiateServiceClient` handed grpc-js's
+   * constructor.  The channel options (#790) live in its third slot and
+   * nowhere else — they are not per-call options, so no other assertion
+   * in this file could see them.
+   */
+  readonly constructions: RecordedConstruction[] = [];
 
   protected override async createServiceClient(): Promise<GrpcServiceClient> {
     this.clientCreations++;
+    // Drive the *production* hook with a recording constructor rather than
+    // reimplementing it.  That one line is what hands grpc-js the
+    // endpoint, the credentials and the channel options, and it is the
+    // only part of `createServiceClient` that needs neither `@grpc/*`
+    // module — which is why it is a hook at all.
+    const recorded = this.constructions;
+    class RecordingServiceConstructor {
+      constructor(
+        endpoint: string,
+        _credentials: GrpcCredentialsLike,
+        channelOptions?: GrpcChannelOptions,
+      ) {
+        recorded.push({ endpoint, channelOptions });
+      }
+    }
+    this.instantiateServiceClient(
+      RecordingServiceConstructor as unknown as GrpcServiceConstructor,
+      {},
+    );
     return this.fakeClient;
   }
+
+  /**
+   * `BrokerActor.connectionState` is protected, and it is the *earliest*
+   * observable consequence of a throw escaping `dispatchOutgoing`:
+   * `_dispatchOne` catches, and `handleConnectionLost` flips the state
+   * before it schedules anything.  Waiting on a reconnect instead would
+   * race the message that provoked it.
+   */
+  publicConnectionState(): string { return this.connectionState; }
+
+  /**
+   * Ditto `outboundBufferSize`.  A throw out of `dispatchOutgoing` also
+   * *unshifts* the offending envelope back at the head of this buffer, so
+   * a non-zero size after the pipeline has settled is the re-dispatch loop
+   * itself, not a symptom of it.
+   */
+  publicOutboundBufferSize(): number { return this.outboundBufferSize; }
 }
 
 class CollectingTarget extends Actor<GrpcInbound> {
@@ -155,7 +256,36 @@ async function boot(system: ActorSystem, options: GrpcClientOptionsBuilder): Pro
   return { clientRef, actor: held.current!, target, targetRef };
 }
 
-/** The handle the actor published for the client stream it just opened. */
+/**
+ * Collect every `DeadLetter` the system publishes, and resolve only once
+ * the collector is genuinely on the stream.
+ *
+ * Subscribing without waiting is a race the assertions below cannot
+ * survive: the publication under test happens a millisecond after the
+ * `tell` that triggers it, and a subscriber that arrives second sees
+ * nothing at all.
+ */
+async function captureDeadLetters(system: ActorSystem): Promise<DeadLetter[]> {
+  const captured: DeadLetter[] = [];
+  const subscribed = { value: false };
+  class DeadLetterCollector extends Actor<DeadLetter> {
+    override preStart(): void {
+      this.system.eventStream.subscribe(this.self, DeadLetter);
+      subscribed.value = true;
+    }
+    override onReceive(letter: DeadLetter): void { captured.push(letter); }
+  }
+  system.spawn(DeadLetterCollector, 'dead-letter-collector');
+  await awaitCondition(() => subscribed.value, {
+    label: 'the dead-letter collector subscribed to the event stream',
+  });
+  return captured;
+}
+
+/**
+ * The handle the actor published for the caller-driven stream it just
+ * opened.  Client-stream and bidi share the frame, so this reads both.
+ */
 function publishedHandle(target: CollectingTarget): GrpcStreamHandle {
   const frames = target.received.filter((frame) => frame.kind === 'stream-started');
   const last = frames[frames.length - 1];
@@ -210,9 +340,9 @@ describe('GrpcClientActor — per-call deadline', () => {
     }
   });
 
-  test('a HOCON deadlineMs reaches the call', async () => {
+  test('a HOCON deadline reaches the call', async () => {
     const system = newSystem('grpc-deadline-hocon', {
-      'actor-ts': { io: { broker: { grpc: { client: { deadlineMs: '2s' } } } } },
+      'actor-ts': { io: { broker: { grpc: { client: { deadline: '2s' } } } } },
     });
     try {
       const { clientRef, actor, targetRef } = await boot(system, baseOptions());
@@ -249,6 +379,46 @@ describe('GrpcClientActor — per-call deadline', () => {
       });
       const reply = target.received.find((frame) => frame.kind === 'reply');
       expect(reply?.kind === 'reply' ? reply.response : null).toEqual({ text: 'pong' });
+    } finally {
+      await system.terminate();
+    }
+  });
+});
+
+/* ============================== #790 ================================== */
+
+describe('GrpcClientActor — channel options', () => {
+  test('withChannelOptions reaches grpc-js in the third constructor slot', async () => {
+    const system = newSystem('grpc-channel-options');
+    try {
+      const channelOptions = {
+        'grpc.keepalive_time_ms': 20_000,
+        'grpc.keepalive_permit_without_calls': 1,
+        'grpc.max_receive_message_length': 1_048_576,
+      };
+      const options = baseOptions().withChannelOptions(channelOptions);
+      const { actor } = await boot(system, options);
+
+      expect(actor.constructions.length).toBe(1);
+      // The third slot, not the second: credentials sit between the
+      // endpoint and the channel arguments, and grpc-js reads them
+      // positionally.
+      expect(actor.constructions[0]!.endpoint).toBe('fake-host:50051');
+      expect(actor.constructions[0]!.channelOptions).toEqual(channelOptions);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('the argument stays undefined when nothing is configured', async () => {
+    const system = newSystem('grpc-channel-options-unset');
+    try {
+      const { actor } = await boot(system, baseOptions());
+
+      // Not `{}`: an empty object is a real argument, and which grpc-js
+      // defaults survive one is a per-release question this framework has
+      // no business answering.
+      expect(actor.constructions[0]!.channelOptions).toBeUndefined();
     } finally {
       await system.terminate();
     }
@@ -350,6 +520,546 @@ describe('GrpcClientActor — client-stream handle ownership', () => {
       expect(secondCall.writes).toEqual([]);
     } finally {
       await system.terminate();
+    }
+  });
+});
+
+/* =============================== #788 ================================= */
+
+/** Boot a system, open one bidi stream, and hand back everything it needs. */
+async function openBidiStream(name: string): Promise<{
+  system: ActorSystem;
+  clientRef: ActorRef<GrpcClientCommand>;
+  actor: FakeGrpcClientActor;
+  target: CollectingTarget;
+  targetRef: ActorRef<unknown>;
+  handle: GrpcStreamHandle;
+  call: FakeDuplexCall;
+}> {
+  const system = newSystem(name);
+  const { clientRef, actor, target, targetRef } = await boot(system, baseOptions());
+  clientRef.tell({ kind: 'bidiStart', method: 'Chat', target: targetRef });
+  await awaitCondition(() => actor.fakeClient.bidiCalls.length > 0, {
+    label: 'the bidi stream was opened',
+  });
+  await awaitCondition(() => target.received.some((frame) => frame.kind === 'stream-started'), {
+    label: 'the bidi handshake reached the target actor',
+  });
+  return {
+    system, clientRef, actor, target, targetRef,
+    handle: publishedHandle(target),
+    call: actor.fakeClient.bidiCalls[0]!,
+  };
+}
+
+describe('GrpcClientActor — bidi handshake', () => {
+  test('the handle arrives out of band, not as a stream chunk', async () => {
+    const opened = await openBidiStream('grpc-bidi-handshake');
+    try {
+      const { target, handle, call } = opened;
+
+      // The handshake is its own frame, and it is the *only* frame the
+      // stream has produced: the in-band `{ __streamId }` chunk is gone.
+      expect(target.received.filter((frame) => frame.kind === 'stream-started').length).toBe(1);
+      expect(target.received.filter((frame) => frame.kind === 'stream-data')).toEqual([]);
+      expect(typeof handle.streamId).toBe('number');
+      expect(handle.token).toMatch(/^[0-9a-f]{16}$/);
+
+      // A server message shaped exactly like the old handshake is just
+      // payload now — it arrives as data, and the framework's own
+      // `streamId` on the envelope is the one that is authoritative.
+      call.pushData({ __streamId: 9_999 });
+      await awaitCondition(() => target.received.some((frame) => frame.kind === 'stream-data'), {
+        label: 'the server chunk reached the target actor',
+      });
+      const chunks = target.received.filter((frame) => frame.kind === 'stream-data');
+      expect(chunks.length).toBe(1);
+      const first = chunks[0]!;
+      expect(first.kind === 'stream-data' ? first.streamId : null).toBe(handle.streamId);
+    } finally {
+      await opened.system.terminate();
+    }
+  });
+});
+
+describe('GrpcClientActor — bidi handle ownership', () => {
+  test('a forged token does not reach the stream', async () => {
+    const opened = await openBidiStream('grpc-bidi-forged-token');
+    try {
+      const { clientRef, handle, call } = opened;
+
+      // Right stream id, wrong token — the id alone must buy nothing.
+      clientRef.tell({
+        kind: 'bidiSend',
+        handle: { streamId: handle.streamId, token: 'deadbeefdeadbeef' },
+        chunk: { text: 'forged' },
+      });
+      // A legitimate write behind it: same mailbox, so once this one has
+      // landed the forged one has already been through the dispatcher.
+      clientRef.tell({ kind: 'bidiSend', handle, chunk: { text: 'owned' } });
+      await awaitCondition(() => call.writes.length > 0, {
+        label: 'the legitimate chunk was written to the bidi stream',
+      });
+
+      expect(call.writes).toEqual([{ text: 'owned' }]);
+    } finally {
+      await opened.system.terminate();
+    }
+  });
+
+  test('a forged token does not close the stream', async () => {
+    const opened = await openBidiStream('grpc-bidi-forged-close');
+    try {
+      const { clientRef, handle, call } = opened;
+
+      clientRef.tell({
+        kind: 'bidiClose',
+        handle: { streamId: handle.streamId, token: 'deadbeefdeadbeef' },
+      });
+      clientRef.tell({ kind: 'bidiSend', handle, chunk: { text: 'still open' } });
+      await awaitCondition(() => call.writes.length > 0, {
+        label: 'the chunk after the forged close was written',
+      });
+      expect(call.ended).toBe(false);
+
+      clientRef.tell({ kind: 'bidiClose', handle });
+      await awaitCondition(() => call.ended, { label: 'the owner closed the bidi stream' });
+    } finally {
+      await opened.system.terminate();
+    }
+  });
+
+  test('the token, not the stream id, selects the stream', async () => {
+    const opened = await openBidiStream('grpc-bidi-token-selects');
+    try {
+      const { clientRef, actor, target, targetRef, handle: first } = opened;
+
+      clientRef.tell({ kind: 'bidiStart', method: 'Chat', target: targetRef });
+      await awaitCondition(() => actor.fakeClient.bidiCalls.length > 1, {
+        label: 'the second bidi stream was opened',
+      });
+      const second = publishedHandle(target);
+      expect(second.streamId).not.toBe(first.streamId);
+      expect(second.token).not.toBe(first.token);
+
+      // The first stream's token paired with the second stream's id: a
+      // registry keyed by the id would route this into the second stream.
+      clientRef.tell({
+        kind: 'bidiSend',
+        handle: { streamId: second.streamId, token: first.token },
+        chunk: { text: 'follows the token' },
+      });
+      const firstCall = actor.fakeClient.bidiCalls[0]!;
+      const secondCall = actor.fakeClient.bidiCalls[1]!;
+      await awaitCondition(() => firstCall.writes.length > 0, {
+        label: 'the chunk was written to the bidi stream that owns the token',
+      });
+
+      expect(firstCall.writes).toEqual([{ text: 'follows the token' }]);
+      expect(secondCall.writes).toEqual([]);
+    } finally {
+      await opened.system.terminate();
+    }
+  });
+});
+
+/**
+ * A finished stream leaves the registry.
+ *
+ * Both eviction calls — the one in the `'end'` listener and the one in
+ * `'error'` — could be deleted with all 13 tests here green, because no test
+ * drove a bidi stream to completion at all: `FakeDuplexCall.pushEnd` existed
+ * and nothing called it, and there was no `pushError` to call.
+ *
+ * Two things go wrong without them, and the second is the one that matters.
+ * A long-lived client leaks one map entry per finished stream, which is a
+ * slow unbounded growth on the actor that opens the most of them.  And the
+ * token stays *live*: a `bidiSend` after the stream has ended still finds its
+ * entry and writes into a call grpc-js has already finished with, so a handle
+ * whose stream is over goes on being honoured instead of missing the map the
+ * way a forged one does.  The registry is the ownership check, and an entry
+ * that outlives its stream is an ownership check answering for something that
+ * no longer exists.
+ *
+ * Read through the same fence the ownership tests use: a second stream is
+ * opened, and a write to *it* landing proves the earlier write to the ended
+ * handle has already been through the dispatcher.  Asserting an absence needs
+ * that ordering, or it is a race that usually passes.
+ */
+describe('GrpcClientActor — a finished bidi stream leaves the registry (#788)', () => {
+  /** Drives `first` to completion via `finish`, then writes to its handle. */
+  async function writeAfterCompletion(
+    name: string,
+    finish: (call: FakeDuplexCall) => void,
+    endedFrame: 'stream-end' | 'stream-error',
+  ): Promise<{ endedCall: FakeDuplexCall; liveCall: FakeDuplexCall; system: ActorSystem }> {
+    const opened = await openBidiStream(name);
+    const { clientRef, actor, target, targetRef, handle, call } = opened;
+
+    finish(call);
+    await awaitCondition(() => target.received.some((frame) => frame.kind === endedFrame), {
+      label: `the ${endedFrame} frame reached the target actor`,
+    });
+
+    // A second stream, whose write is the fence.
+    clientRef.tell({ kind: 'bidiStart', method: 'Chat', target: targetRef });
+    await awaitCondition(() => actor.fakeClient.bidiCalls.length > 1, {
+      label: 'the second bidi stream was opened',
+    });
+    const live = publishedHandle(target);
+
+    clientRef.tell({ kind: 'bidiSend', handle, chunk: { text: 'after the stream finished' } });
+    clientRef.tell({ kind: 'bidiSend', handle: live, chunk: { text: 'fence' } });
+    const liveCall = actor.fakeClient.bidiCalls[1]!;
+    await awaitCondition(() => liveCall.writes.length > 0, {
+      label: 'the fence chunk was written to the still-open stream',
+    });
+    return { endedCall: call, liveCall, system: opened.system };
+  }
+
+  test('a send on a stream that ended is a miss, not a write', async () => {
+    const { endedCall, liveCall, system } = await writeAfterCompletion(
+      'grpc-bidi-end-evicts',
+      (call) => call.pushEnd(),
+      'stream-end',
+    );
+    try {
+      expect(endedCall.writes).toEqual([]);
+      expect(liveCall.writes).toEqual([{ text: 'fence' }]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a send on a stream that errored is a miss too', async () => {
+    const { endedCall, liveCall, system } = await writeAfterCompletion(
+      'grpc-bidi-error-evicts',
+      (call) => call.pushError(new Error('stream reset by peer')),
+      'stream-error',
+    );
+    try {
+      expect(endedCall.writes).toEqual([]);
+      expect(liveCall.writes).toEqual([{ text: 'fence' }]);
+    } finally {
+      await system.terminate();
+    }
+  });
+});
+
+/* =============================== #1510 ================================ */
+
+/**
+ * The own-property names of every live entry in one of the two registries.
+ *
+ * Read through a cast because both maps are `private`, and that is exactly
+ * why this assertion has to exist: the only possible readers of a private
+ * field are inside the class, so a field no method there touches is
+ * unreachable from every behavioural test in this file.  Both maps carried a
+ * copy of the opening command's `target` for seven weeks with all 19 tests
+ * green, because nothing read it — `stream.call` is the only read either map
+ * has (#1510).
+ *
+ * The pin is "exactly the fields the code reads", not "no more than N
+ * fields": a field added for a reader that genuinely needs it has to update
+ * this line in the same commit, which is the point.  It sees own enumerable
+ * string keys only, so state parked on a symbol, a `WeakMap` or a closure is
+ * outside what it can promise.
+ */
+function registryEntryFields(
+  actor: FakeGrpcClientActor,
+  registry: 'bidiStreams' | 'clientStreams',
+): string[][] {
+  const registries = actor as unknown as Record<string, Map<string, object> | undefined>;
+  const map = registries[registry];
+  if (!map) throw new Error(`GrpcClientActor has no '${registry}' registry to read`);
+  return [...map.values()].map((entry) => Object.keys(entry).sort());
+}
+
+describe('GrpcClientActor — the stream registry stores only what it reads (#1510)', () => {
+  test('a live bidi entry carries the call and nothing else', async () => {
+    const opened = await openBidiStream('grpc-bidi-entry-shape');
+    try {
+      expect(registryEntryFields(opened.actor, 'bidiStreams')).toEqual([['call']]);
+    } finally {
+      await opened.system.terminate();
+    }
+  });
+
+  test('a live client-stream entry carries the call and nothing else', async () => {
+    const system = newSystem('grpc-client-stream-entry-shape');
+    try {
+      const { clientRef, actor, targetRef } = await boot(system, baseOptions());
+      clientRef.tell({ kind: 'clientStreamStart', method: 'ReportReadings', target: targetRef });
+      await awaitCondition(() => actor.fakeClient.clientStreamCalls.length > 0, {
+        label: 'the client stream was opened',
+      });
+
+      expect(registryEntryFields(actor, 'clientStreams')).toEqual([['call']]);
+    } finally {
+      await system.terminate();
+    }
+  });
+});
+
+/**
+ * An owner-driven close evicts the entry, on both stream kinds.
+ *
+ * The eviction on `'end'` / `'error'` is pinned above; the eviction on an
+ * explicit `bidiClose` / `clientStreamClose` was not, and for the
+ * client-stream half that left `onClientStreamClose`'s own stated reason
+ * unobserved — it deletes at the close rather than when the response
+ * arrives precisely so a `clientStreamSend` racing the close cannot become a
+ * write-after-end, which grpc-js throws on.  Deleting either `delete` call
+ * kept all 19 tests green.
+ *
+ * Same fence as the completion block: a write to a *second*, still-open
+ * stream landing is what proves the write to the closed handle has already
+ * been through the dispatcher.  Asserting an absence without that ordering
+ * is a race that usually passes.
+ */
+describe('GrpcClientActor — an owner close evicts the entry (#1510)', () => {
+  test('a bidi send after the owner closed is a miss, not a write', async () => {
+    const opened = await openBidiStream('grpc-bidi-owner-close-evicts');
+    try {
+      const { clientRef, actor, target, targetRef, handle, call } = opened;
+      clientRef.tell({ kind: 'bidiClose', handle });
+      await awaitCondition(() => call.ended, { label: 'the owner closed the bidi stream' });
+
+      clientRef.tell({ kind: 'bidiStart', method: 'Chat', target: targetRef });
+      await awaitCondition(() => actor.fakeClient.bidiCalls.length > 1, {
+        label: 'the second bidi stream was opened',
+      });
+      const live = publishedHandle(target);
+
+      clientRef.tell({ kind: 'bidiSend', handle, chunk: { text: 'after the owner closed' } });
+      clientRef.tell({ kind: 'bidiSend', handle: live, chunk: { text: 'fence' } });
+      const liveCall = actor.fakeClient.bidiCalls[1]!;
+      await awaitCondition(() => liveCall.writes.length > 0, {
+        label: 'the fence chunk was written to the still-open bidi stream',
+      });
+
+      expect(call.writes).toEqual([]);
+      expect(liveCall.writes).toEqual([{ text: 'fence' }]);
+    } finally {
+      await opened.system.terminate();
+    }
+  });
+
+  test('a client-stream send after the owner closed is a miss, not a write-after-end', async () => {
+    const system = newSystem('grpc-client-stream-owner-close-evicts');
+    try {
+      const { clientRef, actor, target, targetRef } = await boot(system, baseOptions());
+      clientRef.tell({ kind: 'clientStreamStart', method: 'ReportReadings', target: targetRef });
+      await awaitCondition(() => actor.fakeClient.clientStreamCalls.length > 0, {
+        label: 'the client stream was opened',
+      });
+      const handle = publishedHandle(target);
+      const call = actor.fakeClient.clientStreamCalls[0]!.call;
+
+      clientRef.tell({ kind: 'clientStreamClose', handle });
+      await awaitCondition(() => call.ended, { label: 'the owner closed the client stream' });
+
+      clientRef.tell({ kind: 'clientStreamStart', method: 'ReportReadings', target: targetRef });
+      await awaitCondition(() => actor.fakeClient.clientStreamCalls.length > 1, {
+        label: 'the second client stream was opened',
+      });
+      const live = publishedHandle(target);
+
+      clientRef.tell({ kind: 'clientStreamSend', handle, chunk: { value: 'after the owner closed' } });
+      clientRef.tell({ kind: 'clientStreamSend', handle: live, chunk: { value: 'fence' } });
+      const liveCall = actor.fakeClient.clientStreamCalls[1]!.call;
+      await awaitCondition(() => liveCall.writes.length > 0, {
+        label: 'the fence chunk was written to the still-open client stream',
+      });
+
+      expect(call.writes).toEqual([]);
+      expect(liveCall.writes).toEqual([{ value: 'fence' }]);
+    } finally {
+      await system.terminate();
+    }
+  });
+});
+
+/* ==================== #788 / #1040 — malformed handle ================== */
+
+/**
+ * A malformed send/close must not be answered as a lost connection.
+ *
+ * This is a regression the token registry introduced.  Keying the maps by
+ * `GrpcStreamHandle.token` made `command.handle.token` the *first* thing
+ * all four send/close paths do, and nothing checked that a handle is there
+ * to read.  The pre-token code looked the stream up by a bare id, so a
+ * command with no handle simply missed the map and was the documented
+ * no-op.
+ *
+ * The read throws a `TypeError` inside `dispatchOutgoing`, and
+ * `BrokerActor._dispatchOne` reads *any* throw from there as a dropped
+ * connection: it unshifts the offending envelope back at the **head** of
+ * the outbound buffer and calls `handleConnectionLost`, after which
+ * `_drainBuffer` re-dispatches the very same envelope on every reconnect.
+ * One malformed `tell` is therefore an unbounded reconnect loop, and the
+ * legitimate writes queued behind the poisoned head never leave the
+ * buffer.
+ *
+ * `as never` in these tests is not a test-only trick: it is how *every*
+ * caller reaches this actor.  `GrpcClientCommand` is a compile-time claim
+ * and `tell` erases it, so a JavaScript caller, a deserialised message and
+ * a stale handle arriving as `null` all reach the same read.
+ *
+ * **Waiting on the reconnect is the trap**, and the first draft of these
+ * tests fell into it: the owner's write is dispatched before the rejected
+ * promise's catch even runs, and the retry is a scheduled 200 ms away, so
+ * "the owner chunk landed and `clientCreations` is still 1" is true of the
+ * *broken* tree too.  Every wait below is therefore a disjunction of the
+ * two outcomes that are prompt in their own world — the dead letter the
+ * fix produces, and the connection state the defect flips — so exactly one
+ * disjunct becomes true within microseconds either way and the assertion
+ * after it names which.
+ */
+describe('GrpcClientActor — a malformed stream command', () => {
+  /** Both worlds' prompt answer to a malformed command; exactly one arrives. */
+  const answered = (actor: FakeGrpcClientActor, deadLetters: DeadLetter[], expected = 1) =>
+    (): boolean => deadLetters.length >= expected || actor.publicConnectionState() !== 'connected';
+
+  test('a bidiSend with no handle is not a lost connection', async () => {
+    const opened = await openBidiStream('grpc-bidi-malformed-send');
+    try {
+      const { system, clientRef, actor, handle, call } = opened;
+      const deadLetters = await captureDeadLetters(system);
+      expect(actor.publicConnectionState()).toBe('connected');
+
+      clientRef.tell({ kind: 'bidiSend', chunk: { text: 'no handle' } } as never);
+      await awaitCondition(answered(actor, deadLetters), {
+        label: 'the malformed command was answered — as a dead letter, or as a lost connection',
+      });
+
+      expect(actor.publicConnectionState()).toBe('connected');
+      // Zero is the re-dispatch claim: the defect pushes the offending
+      // envelope back at the head, where `_drainBuffer` picks it up again
+      // after every reconnect.
+      expect(actor.publicOutboundBufferSize()).toBe(0);
+      expect(actor.clientCreations).toBe(1);
+
+      // Not silence: nothing `createGrpcStreamHandle` mints can look like
+      // this, so a malformed command is a caller defect and gets the
+      // framework's standard channel for a message that went nowhere.
+      expect(deadLetters.length).toBe(1);
+      const letter = deadLetters[0]!.message as { readonly kind?: string; readonly chunk?: unknown };
+      expect(letter.kind).toBe('bidiSend');
+      expect(letter.chunk).toEqual({ text: 'no handle' });
+      expect(deadLetters[0]!.recipient.path.toString()).toContain('grpc-client');
+
+      // And the stream owner's own later write still lands — the pipeline
+      // behind the malformed command was never poisoned.
+      clientRef.tell({ kind: 'bidiSend', handle, chunk: { text: 'owned' } });
+      await awaitCondition(() => call.writes.length > 0, {
+        label: 'the owner chunk was written to the bidi stream',
+      });
+      expect(call.writes).toEqual([{ text: 'owned' }]);
+    } finally {
+      await opened.system.terminate();
+    }
+  });
+
+  test('a bidiClose whose handle is null leaves the stream open', async () => {
+    const opened = await openBidiStream('grpc-bidi-malformed-close');
+    try {
+      const { system, clientRef, actor, handle, call } = opened;
+      const deadLetters = await captureDeadLetters(system);
+
+      // The shape a handle takes when it is read back out of a field that
+      // was cleared, or out of a serialised message that lost it.
+      clientRef.tell({ kind: 'bidiClose', handle: null } as never);
+      await awaitCondition(answered(actor, deadLetters), {
+        label: 'the malformed close was answered — as a dead letter, or as a lost connection',
+      });
+
+      expect(actor.publicConnectionState()).toBe('connected');
+      expect(actor.publicOutboundBufferSize()).toBe(0);
+      expect(call.ended).toBe(false);
+
+      clientRef.tell({ kind: 'bidiSend', handle, chunk: { text: 'still open' } });
+      await awaitCondition(() => call.writes.length > 0, {
+        label: 'the owner chunk was written after the malformed close',
+      });
+      expect(call.writes).toEqual([{ text: 'still open' }]);
+      expect(call.ended).toBe(false);
+    } finally {
+      await opened.system.terminate();
+    }
+  });
+
+  test('the client-stream twins carry the same guard', async () => {
+    const system = newSystem('grpc-client-stream-malformed');
+    try {
+      const { clientRef, actor, target, targetRef } = await boot(system, baseOptions());
+      const deadLetters = await captureDeadLetters(system);
+      clientRef.tell({ kind: 'clientStreamStart', method: 'ReportReadings', target: targetRef });
+      await awaitCondition(() => actor.fakeClient.clientStreamCalls.length > 0, {
+        label: 'the client stream was opened',
+      });
+      const handle = publishedHandle(target);
+      const call = actor.fakeClient.clientStreamCalls[0]!.call;
+
+      // Identical shape, from #1040 rather than #788, and identically
+      // exposed.  Both malformed shapes, on both paths: an absent handle
+      // is the one that *throws* on an unguarded read, and a handle that
+      // is not an object is the one that does not — `'x'.token` is a legal
+      // `undefined`, so unguarded it is an invisible no-op indistinguishable
+      // from a stale token.  That second shape is why silence would have
+      // been the wrong answer even where it is not a reconnect loop.
+      clientRef.tell({ kind: 'clientStreamSend', chunk: { value: 'no handle' } } as never);
+      clientRef.tell({ kind: 'clientStreamClose', handle: null } as never);
+      clientRef.tell({ kind: 'clientStreamSend', handle: 'not-an-object', chunk: {} } as never);
+      await awaitCondition(answered(actor, deadLetters, 3), {
+        label: 'every malformed command was answered — as dead letters, or as a lost connection',
+      });
+
+      expect(actor.publicConnectionState()).toBe('connected');
+      expect(actor.publicOutboundBufferSize()).toBe(0);
+      expect(actor.clientCreations).toBe(1);
+      expect(deadLetters.length).toBe(3);
+      expect(call.ended).toBe(false);
+
+      clientRef.tell({ kind: 'clientStreamSend', handle, chunk: { value: 'owned' } });
+      await awaitCondition(() => call.writes.length > 0, {
+        label: 'the owner chunk was written to the client stream',
+      });
+      expect(call.writes).toEqual([{ value: 'owned' }]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('an unknown token stays a silent no-op — only a malformed command is a letter', async () => {
+    const opened = await openBidiStream('grpc-bidi-unknown-token-quiet');
+    try {
+      const { system, clientRef, actor, handle } = opened;
+      const deadLetters = await captureDeadLetters(system);
+
+      // A well-formed handle whose token names no live stream is the
+      // documented race — the server closed the stream, or the connection
+      // dropped and cleared the map, and the caller has not learned yet.
+      // It happens in correct use, so it must stay quiet.
+      clientRef.tell({
+        kind: 'bidiSend',
+        handle: { streamId: handle.streamId, token: 'deadbeefdeadbeef' },
+        chunk: { text: 'stale' },
+      });
+      // Behind it, a genuinely malformed one.  Mailbox order is what makes
+      // the negative assertion sound: a letter for the stale command would
+      // have been published first, so it would have arrived first.
+      clientRef.tell({ kind: 'bidiSend', chunk: { text: 'malformed' } } as never);
+      await awaitCondition(answered(actor, deadLetters), {
+        label: 'the malformed command was answered — as a dead letter, or as a lost connection',
+      });
+
+      expect(actor.publicConnectionState()).toBe('connected');
+      expect(deadLetters.length).toBe(1);
+      const letter = deadLetters[0]!.message as { readonly chunk?: unknown };
+      expect(letter.chunk).toEqual({ text: 'malformed' });
+    } finally {
+      await opened.system.terminate();
     }
   });
 });

@@ -8,7 +8,7 @@ name: multi-runtime
 # Job matrix keeps the runs parallel so the wall clock is bounded
 # by the slowest runtime (Deno, ~30s including the build step).
 # Bun runs twice: once on `latest` and once pinned to the `engines`
-# floor (1.3.0), so the floor we claim is actually exercised.
+# floor (1.4.0), so the floor we claim is actually exercised.
 #
 # Bun additionally runs the full `bun test` suite — the unit /
 # multi-node suite uses bun:test's APIs and isn't portable to
@@ -58,6 +58,7 @@ permissions:
 jobs:
   smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       # fail-fast: false so a Deno-only regression doesn't mask a
       # Node-only one.  Each runtime gets its own red mark.
@@ -80,7 +81,7 @@ jobs:
         if: matrix.runtime == 'bun-floor'
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: '1.3.0'
+          bun-version: '1.4.0'
       - name: Setup Bun
         if: matrix.runtime != 'bun-floor'
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -102,7 +103,7 @@ jobs:
       # 24 deliberately — it is the `engines` floor we claim to support.
       - name: Setup Node.js
         if: matrix.runtime == 'node'
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
 
@@ -139,6 +140,7 @@ jobs:
   # effect — that stays in test.yml as the canonical updater.
   unit-bun:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     name: bun unit suite
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -152,12 +154,102 @@ jobs:
       # The root typecheck reaches the DevTools UI through
       # scripts/ui-toolchain.mjs, which skips locally and fails hard under CI
       # (#483) — so CI is where the nested Angular install has to exist.
-      - run: bun run ui:install
+      # Frozen for the reason above, and written out rather than
+      # `bun run ui:install`: that script is the developer's unfrozen
+      # regenerate command, and through it this was the one CI install the
+      # frozen-install guard could not see (#1622).
+      - run: bun install --frozen-lockfile --cwd devtools-ui
       - run: bun run typecheck
-      # Worker-thread multi-node suites + LeaseMajority e2e are quarantined
-      # on hosted runners (Bun can't respawn functional workers there) —
-      # they run locally + in Docker; `integration` is the CI gate.
-      # `nightly-flakes.yml` runs them with the flag OFF — #538.
-      - run: bun test
-        env:
-          ACTOR_TS_SKIP_FLAKY_MNS: '1'
+      # Every suite, including the three that were quarantined behind
+      # `ACTOR_TS_SKIP_FLAKY_MNS` until #538's criterion was met and #839
+      # removed the reason the third one was in there at all.
+      #
+      # In shuffled order (#1422), with the seed drawn here and printed rather
+      # than left to bun: bun reports its own seed in the trailing summary
+      # block, which it stops printing under GitHub Actions.  A seed nobody can
+      # read is not a reproduction.
+      #
+      # **`--parallel` here and deliberately not in `test.yml`** (#1332).  It is
+      # measured, not assumed: on a 32-core machine the suite goes from 293 s to
+      # 28 s — 10.5x — with 11 962 tests green, and 5 of 5 green when repeated
+      # under different shuffles.  Nothing depends on cross-file state that the
+      # implied `--isolate` breaks.
+      #
+      # The coverage run in `test.yml` stays single-process because the same
+      # measurement showed why it must: identical execution, but a 19 % larger
+      # instrumented-line denominator.  See the comment on that step.
+      #
+      # Running the two gates under *different* schedulings is a small bonus
+      # rather than a redundancy — one shuffle across one process, one across
+      # thirty-two, is more of the ordering space than either alone.
+      - name: Tests, in randomized order
+        run: |
+          SEED=$(( (RANDOM << 15) + RANDOM ))
+          echo "test order seed: --seed=$SEED"
+          printf 'Test order seed: `--seed=%s`\n' "$SEED" >> "$GITHUB_STEP_SUMMARY"
+          bun test --parallel --seed="$SEED"
+
+  # **The only non-Linux job in the repository** (#816).  Every other job across
+  # all ten workflows runs `ubuntu-latest`, while development happens on
+  # Windows — and that gap has already shipped a bug: #521, the DevTools UI
+  # freshness gate that could never pass from a Windows checkout, existed
+  # precisely because nothing here ran Windows.
+  #
+  # The specific thing it buys is not "the same tests again".  `bun test`
+  # enumerates files in a different order on Windows, so a green Linux run
+  # proves nothing about ordering effects and vice versa — and bun's *runtime*
+  # semantics differ too, not just its file order: `server.maxConnections` is
+  # enforced on Windows and not on the Linux runner, which is a whole class of
+  # defect a Linux-only matrix cannot see.
+  #
+  # Deliberately narrower than `unit-bun` above.  No `typecheck` and no
+  # DevTools UI install: the compiler's output does not depend on the OS, and
+  # the Angular toolchain is a slow install whose staleness gate lives in the
+  # `build` workflow.  What is left is what is actually platform-sensitive —
+  # the suite, and the cross-runtime smoke cases that open real sockets and
+  # spawn real processes.
+  #
+  # The proposal in #816 also asked for `ACTOR_TS_SKIP_FLAKY_MNS=1` here, to
+  # match the Linux job.  That is not carried over and cannot be: the
+  # quarantine is gone, all three suites run everywhere, and
+  # `tests/unit/ci/NoEnvironmentGatedSkips.test.ts` refuses a test an
+  # environment variable can remove.  A Windows-only failure is a finding to
+  # triage, which is the whole reason for adding the leg.
+  unit-windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    name: bun unit suite (windows)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+
+      # Same shape as the Linux leg: shuffled, with the seed drawn here and
+      # printed, because bun stops printing its own under GitHub Actions.
+      # `--parallel` was measured at 10.5x on 32 cores; a hosted runner has
+      # far fewer, and the floor is 1x.
+      - name: Tests, in randomized order
+        shell: bash
+        run: |
+          SEED=$(( (RANDOM << 15) + RANDOM ))
+          echo "test order seed: --seed=$SEED"
+          printf 'Windows test order seed: `--seed=%s`\n' "$SEED" >> "$GITHUB_STEP_SUMMARY"
+          bun test --parallel --seed="$SEED"
+
+      # The smoke cases are where a platform difference shows up as a hang
+      # rather than a failure — a socket left open keeps the loop alive — so
+      # they are worth running on the OS the runtime abstractions were written
+      # against second.
+      - name: Smoke (Bun)
+        run: bun run smoke:bun
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: Build (tsc -> dist/)
+        run: bun run build:lib
+      - name: Smoke (Node)
+        run: bun run smoke:node

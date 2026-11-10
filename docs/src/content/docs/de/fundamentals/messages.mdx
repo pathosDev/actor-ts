@@ -234,6 +234,67 @@ konzeptionelle Linie klar.
 Siehe [PersistentActor](/de/persistence/persistent-actor/) für die
 vollständige Event-Sourcing-Geschichte.
 
+## Drei Grenzen, und der Check, der für sie einsteht
+
+Eine Nachricht überquert bis zu drei Grenzen, und jede macht etwas
+anderes mit ihr:
+
+| Grenze | Mechanismus | Was ankommt |
+| --- | --- | --- |
+| In-Process | Referenz | dasselbe Objekt — Prototyp intakt, Methoden funktionieren |
+| Worker-Hop ([Parallelität](/de/fundamentals/parallelism/)) | Structured Clone | ein plain Object: **Prototyp weg, Methoden weg**; ein Feld mit einer Funktion wirft `DataCloneError` |
+| Cluster-Wire | der Serializer | was der registrierte Serializer daraus macht — eine Klasse ohne Binding ist wieder ein plain Object |
+
+Eine Testsuite übt fast ausschließlich die erste Grenze, sodass ein
+Nachrichtentyp lokal grün sein kann, beim ersten Umschalten von
+`actor-ts.parallelism.workers` still degradiert und auf der Wire
+fehlschlägt.  Der mittlere Fall ist der gefährliche: Eine an einen Worker
+gesendete Klasseninstanz wirft nicht.  Sie kommt als plain Object an und
+scheitert später — als `match`-Arm, der nie feuert, als
+`.exhaustive()`, das woanders wirft, als Methode, die `undefined` ist.
+Die Discriminated-Union-Konvention oben ist genau die Form, die alle drei
+Grenzen überlebt.
+
+Der **Message-Boundary-Check** lässt den lokalen Pfad für die anderen
+beiden geradestehen.  Mit eingeschaltetem Modus wird jedes lokale `tell`
+beim Senden so geprüft, wie die Grenze es prüfen würde, und was verloren
+ginge, wird mit Nachrichtentyp und Empfänger gemeldet — solange der
+Sender noch auf dem Stack ist:
+
+```hocon
+actor-ts.diagnostics.message-boundary {
+  structured-clone = off        # off | warn | fail — the worker hop
+  serializer-round-trip = off   # off | warn | fail — the cluster wire
+}
+```
+
+```ts
+const messageBoundary = MessageBoundaryOptions.create().withStructuredClone('fail');
+const systemOptions = ActorSystemOptions.create().withMessageBoundary(messageBoundary);
+```
+
+`warn` loggt einmal pro Nachrichtentyp; `fail` wirft einen
+`MessageBoundaryError` aus dem `tell` heraus.  Beide sind in Produktion
+aus — der Check läuft über jede Nachricht, und ein laufendes System hat
+niemanden auf dem Stack, dem es etwas sagen könnte —, und **`TestKit`
+schaltet `structured-clone` auf `fail`**, weil ein Test der Ort ist, an
+dem das gefunden werden soll.  Eine Suite, deren Nachrichten eine
+Cluster-Wire überqueren sollen, schaltet zusätzlich
+`serializer-round-trip` ein; es ist selbst im Kit aus, weil der Round-Trip
+für jede Klasse, die eine Anwendung sendet, ein Serializer-Binding braucht
+und die meisten Anwendungen für Nachrichten, die den Prozess nie
+verlassen, keines haben.
+
+Was der Clone-Check meldet: jeden erreichbaren Wert, dessen Prototyp der
+Clone-Algorithmus nicht erhält — eine Klasseninstanz, eine Unterklasse von
+`Error` — und jeden Wert, der sich gar nicht klonen lässt — eine
+Funktion, ein Symbol.  `Date`, `RegExp`, `Map`, `Set`, Typed Arrays und
+die eingebauten Fehler sind in Ordnung, und ebenso eine `ActorRef`
+irgendwo in der Nachricht: Die Wire schreibt Refs um, bevor der Port sie
+sieht.  Die Klassen des Frameworks selbst — `PoisonPill`, `Terminated`,
+ein Cluster-Event, ein `Listing` — sind ausgenommen; jede überquert die
+Grenzen, die sie überqueren muss, auf eigenem Weg.
+
 ## Häufige Fallstricke
 
 <Aside type="caution" title="`readonly` vergessen">

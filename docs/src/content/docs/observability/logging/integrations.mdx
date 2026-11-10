@@ -50,7 +50,8 @@ protobuf library, no OpenTelemetry SDK:
 
 `service.name` defaults to the actor system's name — the thing a backend
 groups by should say what the *service* is called, not what the library
-is called. Set `serviceName` to override it.
+is called. Set `serviceName`, or `service-name` in HOCON, to override it;
+the empty `service-name` that `reference.conf` ships counts as unset.
 
 Levels map onto the OTel severity bands: `debug` → 5, `info` → 9,
 `warn` → 13, `error` → 17, with the matching `severityText`.  Fields
@@ -67,8 +68,16 @@ SDK is still an experimental 0.x** whose releases may break.  A fixed
 wire format is the safer thing to build on.
 
 If you already run the OTel SDK and want records to flow through *its*
-pipeline instead, use `otelLogger()` — that path takes your import and
-emits through the SDK's `LoggerProvider`.
+pipeline instead, hand the system your import with
+`ActorSystemOptions.withOtelLogs(...)` — the
+[framework-owned route](/fundamentals/logging/#otlp-logs-pipeline--withotellogs),
+which builds the logger at `ActorSystem.create`, names it from
+`actor-ts.tracing.logger-name`, and emits through the SDK's
+`LoggerProvider`.  `otelLogger()` is the same bridge as a pure function,
+for `withLogger`.  Either one replaces this sink rather than running
+beside it.  This sink's own `scope-name` leaf — the `actor-ts` in the
+request's `scope` above — names this sink's records only, never the
+OTel logger's.
 
 ### Retries
 
@@ -141,7 +150,12 @@ because retrying cannot make it smaller; send it over TCP instead.
 `max-chunk-bytes` defaults to 1420, which keeps the whole packet inside a
 1500-byte Ethernet MTU with room for a tunnel header.  Raising it works on
 a LAN and starts silently fragmenting the moment traffic crosses anything
-encapsulated.
+encapsulated.  It is a byte size like every other size leaf — `8K` and
+`8192` mean the same — and has to come to a whole number of bytes between
+512 and 65467.  A size that is not whole is refused rather than rounded,
+whether it is written with a unit or bare: `1420.5B` fails as
+`Invalid size: 1420.5B is not a whole number of bytes`, and `1420.5` with
+an error that names the key.
 
 ### Field-name safety
 
@@ -164,6 +178,20 @@ const gelfSinkOptions = GelfSinkOptions.create()
   .withHost('graylog.internal')
   .withTls({ ca: process.env['GRAYLOG_CA']! });
 ```
+
+### When Graylog does not answer
+
+Over `tcp` a batch is written once the connection is open — over TLS, once
+the handshake is done — so the first batch on a fresh connection arrives like
+any other.  A Graylog that refuses the connection fails the batch at once,
+retryably: it is retried on the sink's
+[`delivery`](/observability/logging/multi-sink/#batched-delivery) schedule,
+and dropped and reported only once that runs out.  One that does not answer at
+all — a dropped SYN, a firewall that discards — is given up after **10 s** for
+the TCP connect and the TLS handshake together, and fails the batch the same
+way.  Without that bound one attempt waited for the operating system's own
+connect timeout, 21 s on Windows and about two minutes on Linux, with every
+record behind it held.  The 10 s are fixed; no option sets them yet.
 
 ## Parseable
 
@@ -454,6 +482,15 @@ character cannot make the receiver cut the frame short.
 
 TLS material is code-only, with no HOCON leaf: those fields carry the
 certificate and key themselves.
+
+### When the collector does not answer
+
+`tcp` and `tls` behave as GELF over TCP does
+([above](#when-graylog-does-not-answer)): a batch is written once the
+connection is open — over `tls`, once the handshake is done — a refused
+connection fails the batch at once and retryably, and a collector that does
+not answer at all is given up after a fixed **10 s** for the connect and the
+handshake together.
 
 ## Related
 

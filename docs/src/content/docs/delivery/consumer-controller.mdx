@@ -10,7 +10,9 @@ It:
   `ProducerController`s.
 - Dedups duplicates (same `producerId` + producer incarnation + `seq`),
   keeping that bookkeeping on a bounded budget — at most `maxProducers`
-  producers, and entries idle for `producerIdleTtlMs` are swept.
+  producers, entries idle for `producerIdleTtlMs` swept, and at most
+  `maxOutOfOrder` sequences retained above an open gap in one producer's
+  stream.
 - Refuses a malformed envelope — one with no `replyTo`, a `seq` that is not a
   positive safe integer, or an empty / over-long identifier — as a dead letter,
   without running the handler and without acking.
@@ -52,6 +54,7 @@ type ConsumerControllerOptionsType<T> = {
   handler: (body: T) => void | Promise<void>;
   maxProducers?: number;         // default 1024,   Infinity = no cap
   producerIdleTtlMs?: number;    // default 300000, Infinity = no sweep
+  maxOutOfOrder?: number;        // default 1024,   Infinity = no cap
 };
 ```
 
@@ -60,10 +63,11 @@ type ConsumerControllerOptionsType<T> = {
 | `handler` | Invoked for every new (un-duplicated) message body.  Required. |
 | `maxProducers` | Most producers the dedup map holds at once.  Past it, the least-recently-used producer's entry is evicted. |
 | `producerIdleTtlMs` | How long a producer's entry survives with no delivery from it.  A background sweep drops the ones past it. |
+| `maxOutOfOrder` | Most sequences one producer may have retained above an open gap.  Past it the consumer refuses the delivery — no handler call and no Ack — so that producer's window stalls. |
 
 You still don't configure a buffer size or a consumer ID, and the bounds on
 what an incoming *envelope* may contain stay non-configurable: those exist to
-bound wire input, and a limit the sender could raise is not a limit.  The two
+bound wire input, and a limit the sender could raise is not a limit.  The three
 options above are a different kind of bound — a budget this consumer applies
 to its own heap, which is exactly the sort of thing an operator should be able
 to set.
@@ -72,7 +76,8 @@ to set.
 const consumerOptions = ConsumerControllerOptions.create<OrderEvent>()
   .withHandler(async (order) => { await processOrder(order); })
   .withMaxProducers(64)
-  .withProducerIdleTtlMs(60_000);
+  .withProducerIdleTtlMs(60_000)
+  .withMaxOutOfOrder(256);
 
 const consumer = system.spawn(
   () => new ConsumerController<OrderEvent>(consumerOptions),
@@ -82,6 +87,40 @@ const consumer = system.spawn(
 
 A plain object works everywhere the builder does — `{ handler, maxProducers }`
 — and is the shorthand the rest of this page uses.
+
+### From HOCON
+
+All three bounds also read from
+[`actor-ts.reliable-delivery.consumer`](/reference/configuration/#actor-tsreliable-delivery),
+in the project's usual order: **explicit options beat HOCON, and HOCON beats
+the built-in defaults**.
+
+```hocon
+actor-ts.reliable-delivery.consumer {
+  max-producers              = 64
+  producer-idle-time-to-live = 1m
+  max-out-of-order           = 256
+}
+```
+
+`0` is how all three keys spell the `Infinity` the option fields document,
+because `Infinity` cannot be written in HOCON at all — the number reader takes
+a numeric literal and the duration parser refuses a non-finite value.  It is
+the same spelling `cluster.max-members` and `sharding.max-entities` already
+use, and it costs exactly what the section below describes: the map is keyed
+by a `producerId` the *sender* chooses, so `0` on `max-producers` hands a peer
+the decision about how much this consumer retains, and `0` on
+`max-out-of-order` lets a sender that withholds one sequence grow that
+producer's set for as long as it keeps sending.
+
+`handler` has no key — it is a function, and the one required field rather than
+a tunable.
+
+**The layering happens in `ReliableDelivery.consumer(...)`, so that is the only
+path that sees it.**  A `ConsumerController` you construct yourself and hand to
+`system.spawn` keeps its built-in defaults: neither controller can read
+configuration in its constructor, because `system` is a getter over a context
+the cell injects after construction.
 
 ### Why the dedup state has a budget
 
@@ -110,9 +149,31 @@ still retransmitting the same seq costs one duplicate invocation.  The sweep
 runs on the TTL's own interval, so an idle entry goes between one and two of
 them.
 
+That covers how many entries there are.  `maxOutOfOrder` covers how big one
+gets.  A dedup entry keeps a `contiguous` high-watermark plus a set of the
+sequences already delivered *above* it, and `contiguous` only advances when
+the missing predecessor arrives — so a sender that withholds one sequence and
+keeps sending the ones after it grows that set for as long as it keeps going.
+`maxProducers` does not cover this transitively: it caps how many such sets
+exist, not the size of one, and the idle sweep never reaches a producer that
+is actively sending, because every admitted delivery refreshes its timestamp.
+
+At the cap the consumer **refuses** the delivery — it does not run your
+handler and it does not Ack — rather than evicting the oldest retained
+sequence.  Both would bound the heap; they differ in what they spend.  A drop
+would re-run your handler for a message this consumer had already handled
+*and* acknowledged, which is a duplicate the sender has no way to anticipate.
+A stall is visible, and it is what retransmission already recovers from: the
+send stays in the producer's own window and keeps being retried.  It cannot
+deadlock, because the sequence that closes the gap is admitted however full
+the set is — it drains the set rather than growing it.
+
 Read `consumer.trackedProducers` for the current entry count.  It should sit
 near the number of producers actually talking to this consumer; climbing with
 the message count is the symptom the budget exists to prevent.
+`consumer.outOfOrderFor(producerId)` is the other half: 0 for a stream
+arriving in order, rising only while a gap is open, and parked at
+`maxOutOfOrder` for a producer that is stalled.
 
 ## Handler contract
 
@@ -120,6 +181,24 @@ The controller calls `handler(body)` once per *new* `(producerId,
 incarnation, seq)` triple.  After the handler resolves, the controller sends an
 Ack back to the producer (via `Delivery.replyTo`) and the producer
 releases its in-flight slot.
+
+Deliveries are handled **one at a time**.  The controller hands the actor cell
+the handler's promise, so the next envelope is not dequeued until the current
+one has been acked — a slow handler back-pressures through the mailbox instead
+of fanning out into overlapping invocations, and a retransmit that arrives
+while its own sequence is still being handled is absorbed as the duplicate it
+is rather than running the handler a second time.
+
+That holds however long the handler takes, including past
+`producerIdleTtlMs`.  The idle sweep runs from a scheduler callback rather than
+through the mailbox, so it is the one thing that can reach a dedup entry while
+its own handler is still running — and the timestamp it compares against is
+stamped when the delivery *arrives*, not when the handler returns.  The
+controller therefore re-stamps the entry once the handler resolves, before it
+records the sequence, so a delivery is never swept out from under itself.  A
+long handler still costs you nothing at the bound: the re-insert happens in
+place of a producer that is demonstrably not idle, so it cannot push the map
+past `maxProducers`.
 
 The incarnation is what keeps a *restarted* producer out of the dedup window:
 it re-uses its sequence numbers but not its incarnation, so its messages are
@@ -149,7 +228,7 @@ new ConsumerController<OrderEvent>({
 ```
 
 Throwing (or returning a rejected promise) **prevents the Ack**.
-The producer's `resendTimeoutMs` timer fires and re-sends the
+The producer's `resendTimeout` timer fires and re-sends the
 same seq.  This is the only "nack" mechanism — there is no
 explicit nack message.
 
@@ -184,17 +263,29 @@ handler and re-Ack; new seqs run the handler then update state.
 
 There is no fixed buffer size for messages and no silent drop of one — the
 producer keeps retransmitting unacked messages until the consumer's
-handler resolves and the Ack lands.  What *is* bounded is the dedup
-bookkeeping behind it: see [Why the dedup state has a
-budget](#why-the-dedup-state-has-a-budget).  Losing an entry never drops a
-message; it costs a duplicate.
+handler resolves and the Ack lands.
+
+What *is* bounded is the bookkeeping behind it, in both of its dimensions: how
+many producers the dedup map holds, and how many sequences one producer may
+have retained above an open gap.  The second is `maxOutOfOrder` (default
+1 024).  Past it the consumer refuses the delivery — no handler call and no
+Ack — so the producer holds the send in its own window and keeps
+retransmitting, and the stall propagates back to the sender, which is where
+the missing sequence is.  Nothing is dropped and nothing is lost: the sequence
+that closes the gap is always admitted, however full the set is, and once it
+lands the whole retained run drains in one pass and every refused sequence is
+accepted on its next retransmit.
+
+See [Why the dedup state has a budget](#why-the-dedup-state-has-a-budget) for
+both halves.  Losing an entry never drops a message; it costs a duplicate.
+Reaching the out-of-order cap never drops one either; it costs a stall.
 
 ## Failure semantics
 
 ```
 Consumer crashes during the handler:
   - Handler never resolved → no Ack was sent
-  - Producer retransmits after `resendTimeoutMs`
+  - Producer retransmits after `resendTimeout`
   - New consumer (or restarted same consumer) sees the seq again
   - Controller's in-memory dedup state is gone, so the handler runs again
 ```
@@ -243,8 +334,13 @@ processing pipeline.
 ## Cluster-aware
 
 The producer's `consumer` ref can point at a **remote consumer**
-(different cluster node).  The cluster transport serialises the
-envelopes; the Ack path uses the same transport in reverse.
+(different cluster node) when both controllers are ones you spawn yourself
+under `/user`.  The cluster transport serialises the envelopes; the Ack path
+uses the same transport in reverse.  A consumer from the `ReliableDelivery`
+facade lives under `/system/delivery/`, and a node refuses every `/system`
+path that arrives from another node, so keep a facade pair on one node —
+[ProducerController](/delivery/producer-controller/#cluster-aware) has the
+details.
 
 In practice: place the consumer near its handler's data — if
 the handler hits a local database, run the consumer on the same

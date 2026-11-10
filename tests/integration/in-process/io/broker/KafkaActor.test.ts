@@ -145,9 +145,13 @@ class MockKafka implements KafkaInstanceLike {
   readonly producers: MockProducer[] = [];
   readonly consumers: MockConsumer[] = [];
 
-  producer(): KafkaProducerLike {
+  /** Every `producer()` config, in order — how the HOCON tests see the block. */
+  readonly producerConfigs: Array<{ idempotent?: boolean; allowAutoTopicCreation?: boolean } | undefined> = [];
+
+  producer(config?: { idempotent?: boolean; allowAutoTopicCreation?: boolean }): KafkaProducerLike {
     const producer = new MockProducer();
     this.producers.push(producer);
+    this.producerConfigs.push(config);
     return producer;
   }
 
@@ -498,6 +502,54 @@ describe('KafkaActor — options parsing', () => {
       const { mock } = await bootActor(sys, kafkaOptions);
       // run() must have been called with autoCommit: false.
       expect(mock.consumer_.manualCommitConfigured).toBe(true);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('HOCON producer { … } reaches the kafkajs producer (#871)', async () => {
+    const sys = createTestActorSystem({
+      name: 'kafka-producer-hocon',
+      // A nested literal, never a dotted top-level key: `{'actor-ts.io.…': x}`
+      // stays a literal key in the tree, so `hasPath` would resolve the
+      // *reference.conf* value instead and the assertion would prove nothing.
+      config: {
+        'actor-ts': {
+          io: { broker: { kafka: { producer: { idempotent: true } } } },
+        },
+      },
+    });
+    try {
+      const kafkaOptions = KafkaOptions.create().withBrokers(['fake:9092']);
+      const { mock } = await bootActor(sys, kafkaOptions);
+      // `idempotent` comes from HOCON; `allowAutoTopicCreation` was not named
+      // there and keeps its built-in default rather than being blanked out by
+      // the shallow merge — the whole reason the reader rebuilds the block.
+      expect(mock.producerConfigs[0]).toEqual({ idempotent: true, allowAutoTopicCreation: false });
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a constructor producer block still wins over HOCON (#871)', async () => {
+    const sys = createTestActorSystem({
+      name: 'kafka-producer-precedence',
+      config: {
+        'actor-ts': {
+          io: { broker: { kafka: { producer: { idempotent: true, 'allow-auto-topic-creation': true } } } },
+        },
+      },
+    });
+    try {
+      const kafkaOptions = KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withProducer({ idempotent: false });
+      const { mock } = await bootActor(sys, kafkaOptions);
+      // Only the field the constructor named is asserted.  Whether the
+      // sibling leaf HOCON set survives underneath it is #975's question —
+      // `mergeOptions` is a shallow spread, so today it does not — and this
+      // test deliberately does not pin that behaviour as intended.
+      expect(mock.producerConfigs[0]?.idempotent).toBe(false);
     } finally {
       await sys.terminate();
     }

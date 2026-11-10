@@ -47,6 +47,16 @@ außerhalb ihres Teilbaums entsteht (der backend-eigene 404, die generische
 und `reportTo` werden unterstützt. Ein Source-Token mit `;`, `,` oder
 Whitespace wirft bei der Konstruktion — keine stille Header-Injection.
 
+Die Policy ist **nur im Code** erreichbar: Es gibt keinen Block
+`actor-ts.http.csp`, und das ist eine Entscheidung, kein Versäumnis. Eine
+Policy ist Anwendungscode — sie listet die Origins, von denen die eigenen
+Seiten der App laden —, und eine Konfigurationsdatei, die `'unsafe-inline'`
+oder `*` zu `script-src` hinzufügen könnte, würde die Policy jeder Route im
+Prozess mit einer Zeile aufweiten. Genau diesen Fehler soll ein Opt-in, der
+nur im Code geht, verhindern; deshalb hat auch [CORS](/de/http/middleware/cors/)
+keinen Key für `withAnyOrigin()`. Kein Source-Token, ob sicher oder nicht,
+kommt also aus einer Datei.
+
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="note" title="Nonces sind (noch) nicht eingebaut">

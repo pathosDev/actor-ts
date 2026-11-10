@@ -2,7 +2,8 @@
  * JetStream durable streaming demo (#3).
  *
  *   bun run examples/io/jetstream-orders.ts
- *   # (requires nats peer-dep: `bun add nats`)
+ *   # (requires the nats.js peers:
+ *   #   `bun add @nats-io/transport-node @nats-io/jetstream`)
  *   # (requires a NATS server with JetStream enabled — `nats-server -js`)
  *
  * Pattern:
@@ -17,7 +18,11 @@
  *   3. Consumer (OrderProcessor) handles each delivery and acks /
  *      naks / terms.  Acknowledgment on success, nak with delay on transient
  *      failures (DB hiccup), term on permanent failures (malformed
- *      JSON).
+ *      JSON).  Every settle names the delivery by its `ackToken`, never
+ *      by `streamSequence` — the stream sequence identifies the *message* and
+ *      is reused on every redelivery, so it cannot address one delivery
+ *      of it (#710).  `streamSequence` stays what the logs quote, because it
+ *      is what an operator correlates against the stream.
  *
  *   4. Long-running handlers can call `inProgress` to extend the
  *      ack window without losing the lease.
@@ -46,18 +51,18 @@ class OrderProcessor extends Actor<JetStreamMessage> {
     try {
       order = JSON.parse(text);
     } catch {
-      console.error(`bad payload at streamSeq=${m.streamSeq}, terming`);
-      this.js.tell({ kind: 'terminate', streamSeq: m.streamSeq, reason: 'malformed JSON' });
+      console.error(`bad payload at streamSequence=${m.streamSequence}, terming`);
+      this.js.tell({ kind: 'terminate', ackToken: m.ackToken, reason: 'malformed JSON' });
       return;
     }
 
     try {
       await db_insertOrder(order);
-      console.log(`processed ${order.orderId} (streamSeq=${m.streamSeq}, deliveries=${m.deliveries})`);
-      this.js.tell({ kind: 'acknowledgment', streamSeq: m.streamSeq });
+      console.log(`processed ${order.orderId} (streamSequence=${m.streamSequence}, deliveries=${m.deliveries})`);
+      this.js.tell({ kind: 'acknowledgment', ackToken: m.ackToken });
     } catch (e) {
-      console.error(`db error at streamSeq=${m.streamSeq}, naking with backoff`);
-      this.js.tell({ kind: 'negativeAcknowledgment', streamSeq: m.streamSeq, delayMs: 5_000 });
+      console.error(`db error at streamSequence=${m.streamSequence}, naking with backoff`);
+      this.js.tell({ kind: 'negativeAcknowledgment', ackToken: m.ackToken, delayMs: 5_000 });
     }
   }
 }

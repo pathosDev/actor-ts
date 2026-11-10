@@ -3,15 +3,81 @@ import { ConfigKeys } from '../config/ConfigKeys.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 import { mergeOptions, stripUndefined } from '../util/OptionsMerge.js';
+import { NodeAddress } from './NodeAddress.js';
+import type { FailureDetectorImplementation } from './FailureDetector.js';
 import type { FailureDetectorOptionsType } from './FailureDetectorOptions.js';
+import type { PhiAccrualOptionsType } from './PhiAccrualOptions.js';
+import {
+  CONFIGURATION_FACT_NAME_PATTERN,
+  isAppVersion,
+  MAX_APP_VERSION_LENGTH,
+  MAX_CONFIGURATION_FACT_NAME_LENGTH,
+} from './Protocol.js';
+import { findConnectDeadlineOrderingViolation, findStallDeadlineOrderingViolation } from './TcpTransportOptions.js';
 import type { Transport } from './Transport.js';
+import { readDowningFromConfig } from './downing/DowningFromConfig.js';
 import type { DowningProvider } from './downing/DowningProvider.js';
+import { readSplitBrainResolverOptionsFromConfig } from './downing/SplitBrainResolverOptions.js';
+import type { SplitBrainResolverOptionsType } from './downing/SplitBrainResolverOptions.js';
+
+/**
+ * Built-in default for {@link ClusterOptionsType.failureDetectorImplementation}
+ * — the elapsed-time detector every cluster ran before #840 made the choice
+ * expressible at all.
+ *
+ * The default is "no change": φ-accrual is opt-in, so wiring the selector
+ * moves nothing for a deployment that does not ask for it.
+ */
+export const DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION: FailureDetectorImplementation = 'simple';
+
+/**
+ * Built-in default for {@link ClusterOptionsType.failureDetectorAutoDown} —
+ * whether the failure detector removes an unreachable peer on its own word
+ * when no split-brain strategy is configured (#1426).
+ *
+ * On, because an n-node cluster has to stay operational with only one node
+ * left: with nothing configured, a peer silent past `down-after` is downed and
+ * removed, and the last available node takes over everything it hosted, its
+ * shards and singletons included.  The price of on: the detector cannot tell a
+ * crash from a partition, so under a real partition both sides remove each
+ * other and carry on, unless lease-majority or another split-brain strategy
+ * is configured.  The price of off, the opt-out that parks the peer at
+ * `unreachable` instead: a crashed node stays a member until a strategy,
+ * `Cluster.down` or `POST /cluster/down` removes it.
+ */
+export const DEFAULT_FAILURE_DETECTOR_AUTO_DOWN = true;
+
+/**
+ * Built-in default for {@link ClusterOptionsType.runCoordinatedShutdownWhenDown}
+ * — whether a node whose own downing decision removes it also runs the
+ * coordinated-shutdown pipeline, or only leaves (#1456).
+ *
+ * On (#1456).  Off, the downed node leaves the membership and keeps everything
+ * else running — its actors, its HTTP binding, the entities and singletons it
+ * hosted — beside the side that won: a second writer, which is the defect a
+ * downing decision exists to prevent.  On stops that, at the price that a
+ * wrong self-down terminates the ActorSystem.  It shipped off while two wrong
+ * self-downs were known — StaticQuorum downing a cluster still below
+ * `quorum-size` as it bootstrapped (#933), and KeepOldest downing every
+ * survivor once the oldest crashed (#932) — and moved once both were fixed.
+ * A deployment that would rather keep a downed node's actors running sets it
+ * off.
+ */
+export const DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN = true;
+
+/**
+ * Built-in default for {@link ClusterOptionsType.downSmallerIsland} — off
+ * (#1176).  Detecting a second cluster of the same name is always on; downing
+ * a side of it is the deployment's decision, because it ends one side's
+ * processes on the strength of a frame from a node this one has never admitted.
+ */
+export const DEFAULT_DOWN_SMALLER_ISLAND = false;
 
 /**
  * Built-in default for {@link ClusterOptionsType.seedRetryIntervalMs} — how
- * long a node waits before re-attempting a failed `Cluster.join`.  3 s
- * balances "give the seed node time to start" with "fail fast on a missing
- * peer".
+ * long a node waits between two rounds of its join gossip to every seed,
+ * which it re-sends until it is up.  3 s balances "give the seed node time
+ * to start" with "fail fast on a missing peer".
  */
 export const DEFAULT_SEED_RETRY_INTERVAL_MS = 3_000;
 
@@ -48,12 +114,27 @@ export const DEFAULT_MAX_MEMBERS = 1_000;
  *
  * Ten times {@link DEFAULT_MAX_MEMBERS} because tombstones are the entries
  * that legitimately outnumber live members — every node that ever left leaves
- * one for {@link ClusterOptionsType.tombstoneTtlMs}.  That same property is
- * why this is the cap that matters: a phantom in an active status is reclaimed
- * by the failure detector within `downAfterMs`, a gossiped tombstone is not
- * reclaimed by anything for a day.
+ * one for {@link ClusterOptionsType.tombstoneTtlMs}.  A gossiped tombstone is
+ * reclaimed by nothing else for a day; a phantom in an active status is
+ * removed at `down-after` and can be gossiped straight back, or — with a
+ * strategy configured or auto-down off — parked at `unreachable` until a
+ * strategy or an operator removes it (#1426), so the two residues are bounded
+ * by two caps rather than one.
  */
 export const DEFAULT_MAX_TOMBSTONES = 10_000;
+
+/**
+ * Built-in default for {@link ClusterOptionsType.minimumMembersBeforeUp} — how
+ * many members must be present before anything is promoted to `up` (#837).
+ *
+ * `1`, because that is what every release before the option did: the first
+ * node forms a cluster of one the moment it starts.  Any higher value is a
+ * deployment saying "a cluster of fewer than N is not a cluster I want work
+ * placed on", and the cost of the default being wrong runs one way — a node
+ * that goes `up` too early hosts singletons and shards alone, while one held
+ * back merely waits.
+ */
+export const DEFAULT_MINIMUM_MEMBERS_BEFORE_UP = 1;
 
 /**
  * Built-in default for {@link ClusterOptionsType.tombstoneTtlMs} — how long a
@@ -71,6 +152,30 @@ export const DEFAULT_TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1_000;
  * 24 h TTL without busy-looping.
  */
 export const DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS = 5 * 60 * 1_000;
+
+/**
+ * Built-in default for {@link ClusterOptionsType.port} — the remoting port a
+ * node binds when nothing names one: no option, no `actor-ts.remote.tcp.port`
+ * (which `reference.conf` ships comment-only, so it names one only where a
+ * deployment wrote it), and on the `bootstrapCluster` path no `CLUSTER_PORT`
+ * either (#1435).  2552 is Akka's historical cluster port, kept so a mixed
+ * toolchain's firewall rules and runbooks carry over unchanged.
+ */
+export const DEFAULT_PORT = 2552;
+
+/**
+ * Built-in default for {@link ClusterOptionsType.host} — the interface a node
+ * binds when nothing names one: no option, no `actor-ts.remote.tcp.host`, and
+ * on the `bootstrapCluster` path none of `CLUSTER_HOST`, `POD_IP` and
+ * `HOSTNAME` (#1435).
+ *
+ * A wildcard is the right answer for *binding*, and only for binding: a
+ * container accepts traffic on an address it does not know at start-up, so
+ * "every interface" is what it has to say.  What this value must never become
+ * is the node's identity — see {@link ClusterOptionsType.advertisedHost} and
+ * #944.
+ */
+export const DEFAULT_BIND_HOST = '0.0.0.0';
 
 /**
  * Last resort for {@link ClusterOptionsType.advertisedHost} — the address a
@@ -91,6 +196,75 @@ export const DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS = 5 * 60 * 1_000;
  * consults `CLUSTER_HOST`, `POD_IP` and `HOSTNAME` before reaching it.
  */
 export const DEFAULT_ADVERTISED_HOST = '127.0.0.1';
+
+/**
+ * Built-in default for {@link ClusterOptionsType.untrustedMode} — off (#877).
+ *
+ * Off is "no change" for the `/user` half: a peer keeps being able to address a
+ * user actor by name, which is what `RemoteActorRef` and every ref that crosses
+ * the wire rely on, and narrowing that to an allow-list is an operator's
+ * decision about their own topology.
+ *
+ * It is deliberately **not** the switch that decides whether `/system` is
+ * reachable.  That one is unconditional (`EnvelopeTrust.refusalFor`), because a
+ * default-off switch would have left #964's reachability open on every
+ * deployment that did not opt in, and no deployment wants a framework actor
+ * reached past the handler its owner registered.
+ */
+export const DEFAULT_UNTRUSTED_MODE = false;
+
+/**
+ * Built-in default for
+ * {@link ClusterOptionsType.configurationCompatibilityEnforce} — off, i.e.
+ * report a divergence and change nothing else (#844).
+ *
+ * Off rather than on, and this is the load-bearing choice in the whole
+ * feature.  An enforcing default turns any rolling deploy that changes a
+ * checked value into a self-inflicted outage: for the length of the roll the
+ * two halves of the cluster disagree by design, and a misconfigured *majority*
+ * would bar a correctly-configured minority rather than the other way round.
+ * The analogous #1358 check chose warn-only for the same reason.  A deployment
+ * that would rather refuse the work than run it split turns this on
+ * deliberately, having read what "enforce" does — see
+ * {@link ClusterOptionsType.configurationCompatibilityEnforce}.
+ */
+export const DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE = false;
+
+/**
+ * Built-in default for
+ * {@link ClusterOptionsType.configurationCompatibilityCheckedPaths} — the
+ * cluster wire cap alone (#844).
+ *
+ * Named through `ConfigKeys` rather than as a string literal so the seeded
+ * path cannot drift from the key it names.
+ *
+ * Why this one and not `actor-ts.sharding.number-of-shards`, which is the
+ * divergence the issue was filed about: that one is already refused on the
+ * effective value, by the coordinator, with an error naming the key and a
+ * `ShardRegionRegistrationRefused` event (#633).  Checking it here as well
+ * would be a second and strictly weaker mechanism for a hazard that has one.
+ *
+ * `max-frame-bytes` has none.  `Transport`'s own doc records why: there is no
+ * protocol negotiation yet (#823), so a peer configured lower than this node
+ * refuses a frame this node considered safe — and a frame over the peer's cap
+ * kills the whole association, with the sender never learning what happened.
+ * That is a real divergence with no detection at all today, which is the bar
+ * for being in this list.
+ *
+ * Two more facts are published and comparable but deliberately **not** seeded,
+ * because in each the divergence is either legitimate or self-healing:
+ * `actor-ts.cluster.failure-detector.heartbeat-interval` (a peer that beats
+ * more slowly than this node's `down-after` tolerates is downed for being
+ * configured differently rather than for being dead — but staging a new
+ * cadence one node at a time is an ordinary operation), and
+ * `actor-ts.cluster.tombstone.time-to-live` (one side prunes a tombstone the
+ * other still enforces, so a removed address is re-admitted on one side only —
+ * bounded, and it heals at the longer of the two TTLs).  A deployment that
+ * cares adds them.
+ */
+export const DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS: readonly string[] = [
+  ConfigKeys.remote.maxFrameBytes,
+];
 
 /**
  * Whether — and when — this node may declare itself the first member of a
@@ -126,9 +300,10 @@ export type SelfElectionPolicy = 'immediate' | 'never' | number;
 export type ClusterOptionsType = {
   /**
    * The interface this node **binds**.  A wildcard is correct here and is the
-   * shipped default (`actor-ts.remote.tcp.host = "0.0.0.0"`): binding every
-   * interface is how a container accepts traffic on an address it does not
-   * know at start-up.
+   * built-in default ({@link DEFAULT_BIND_HOST}): binding every interface is
+   * how a container accepts traffic on an address it does not know at
+   * start-up.  Unset, `Cluster.join` takes `actor-ts.remote.tcp.host` and
+   * then that default.
    *
    * It is *also* what this node advertises, unless {@link advertisedHost} says
    * otherwise — which is the whole reason the two are separate fields.  Naming
@@ -153,13 +328,124 @@ export type ClusterOptionsType = {
    * the deployment the split exists for: bind `0.0.0.0`, advertise the pod IP.
    */
   readonly advertisedHost?: string;
+  /**
+   * The port this node **binds** — and, unless {@link advertisedPort} says
+   * otherwise, the port peers dial.  Unset, `Cluster.join` takes
+   * `actor-ts.remote.tcp.port` and then {@link DEFAULT_PORT}.
+   */
   readonly port: number;
-  /** Other nodes this node should try to contact on startup. */
+  /**
+   * The port peers **dial**, when it differs from the bound one (#845).
+   *
+   * The port half of the {@link advertisedHost} split, and it exists for the
+   * one deployment that remaps a port: a published container port, where the
+   * process listens on 2552 inside the container and the outside world reaches
+   * it on whatever `docker run -p 3000:2552` published.  Kubernetes does not
+   * need it — pod-to-pod gossip dials the container port directly — which is
+   * why the host half shipped first and this one derives rather than resolves.
+   *
+   * Unset is the normal case and means "the same as {@link port}", which is
+   * what {@link resolveAdvertisedPort} answers.  There is no environment chain
+   * behind it and no wildcard to refuse: a port is either named or derived from
+   * the bound one, and both are dialable by construction.
+   */
+  readonly advertisedPort?: number;
+  /**
+   * Other nodes this node should try to contact on startup, as
+   * `system@host:port` (or `host:port`, which takes this system's name).
+   *
+   * Empty is the documented "I am the first node": under the default
+   * `'immediate'` {@link selfElection} a node with no seed forms a cluster of
+   * one.  This node's own address is removed from the list before it dials,
+   * which is what makes one shared list correct on every node of a deployment
+   * — and what makes `actor-ts.cluster.seed-nodes` a usable HOCON key (#836).
+   */
   readonly seeds?: string[];
-  /** Role tags exposed to other members — used to constrain sharding placement. */
+  /**
+   * Role tags exposed to other members — what shard regions, cluster
+   * singletons, the per-role Up thresholds and the role-filtered downing
+   * strategies place on.
+   *
+   * Configurable as `actor-ts.cluster.roles` (#836): a role is what the rest
+   * of the framework filters *by*, and `actor-ts.sharding.role` already lets a
+   * config file name one, so the same file has to be able to assign one.
+   */
   readonly roles?: string[];
-  /** Failure detector thresholds. */
+  /**
+   * The application version this node states to its peers (#843) — a label
+   * for operators, so the window of a rolling update in which old and new code
+   * share one cluster can be read off the cluster itself.
+   *
+   * Gossiped on this node's member record and shown wherever a member is:
+   * `Member.toString`, every log line that prints one, `/cluster/members`.
+   * **Nothing places, routes or downs on it.**  A version preference would have
+   * no order to tie-break on — the leader is the lowest address, not the oldest
+   * member — and a check that set a peer apart for running other code would
+   * fire on every rolling update by definition, which is also why the label is
+   * not a {@link configurationCompatibilityCheckedPaths} fact.
+   *
+   * Unset — the default — states none and puts nothing on the wire.  Set, it is
+   * 1 to {@link MAX_APP_VERSION_LENGTH} visible ASCII characters, the rule
+   * ({@link isAppVersion}) every peer applies to the label it receives.
+   *
+   * Configurable as `actor-ts.cluster.app-version`, which ships comment-only;
+   * the usual form is `app-version = ${?APP_VERSION}`.  A value from the
+   * environment is read as JSON first, so a version that reads as a number
+   * comes back in that number's own spelling — `APP_VERSION=1.10` as `1.1`,
+   * `2.0` as `2` — and releases `1.1` and `1.10` print the same label.  Quote
+   * such a value inside the variable (`APP_VERSION='"1.10"'`), or set it in
+   * code with `withAppVersion(...)`.
+   */
+  readonly appVersion?: string;
+  /**
+   * Which detection algorithm this node runs — `'simple'` (default) or
+   * `'phi'` (#840).
+   *
+   * A sibling field rather than a `kind` on {@link failureDetector}, because
+   * the two detectors do not share a settings shape and the thresholds below
+   * are the *simple* one's.  It is additive: an existing
+   * `withFailureDetector(…)` call keeps meaning exactly what it meant.
+   */
+  readonly failureDetectorImplementation?: FailureDetectorImplementation;
+  /**
+   * Whether the failure detector removes an unreachable peer itself when no
+   * {@link downing} provider is configured — `true` by default (#1426).
+   *
+   * `true` is the shipped behaviour: once the detector says `down` the peer is
+   * deleted and announced `MemberDown` then `MemberRemoved`, so the last
+   * available node takes over what the peer hosted.  Its price: under a real
+   * partition both sides remove each other and carry on, unless lease-majority
+   * or another split-brain strategy is configured.  `false` is the opt-out
+   * that parks the peer at `unreachable` instead.  Its price: a crashed node
+   * stays a member until a strategy, `Cluster.down` or `POST /cluster/down`
+   * removes it.
+   *
+   * It governs the no-provider case and nothing else.  A configured
+   * {@link downing} provider decides every removal (#929) and the detector only
+   * parks a peer for it, whatever this field says — so the two may stand side
+   * by side, and the shipped `true` beside a strategy leaves the strategy in
+   * charge.
+   *
+   * A sibling field rather than a member of {@link failureDetector}, for the
+   * reason {@link failureDetectorImplementation} is one: it governs *both*
+   * detectors — φ-accrual reaches `down` too — while that block holds the
+   * simple detector's thresholds, and `FailureDetector` would carry a field it
+   * never reads.
+   */
+  readonly failureDetectorAutoDown?: boolean;
+  /** Failure detector thresholds — the `'simple'` implementation's. */
   readonly failureDetector?: Partial<FailureDetectorOptionsType>;
+  /**
+   * φ-accrual tuning, read only when
+   * {@link failureDetectorImplementation} is `'phi'`.
+   *
+   * `heartbeatIntervalMs` is absent from what config can set here and is
+   * overwritten by {@link failureDetector}'s: the cadence is the cluster's,
+   * not the algorithm's (#1142).  `expectedResponseAfterMs: 'auto'` follows
+   * that imposed cadence, so a heartbeat interval tuned in HOCON or in code
+   * moves the first-contact estimate with it (#1451).
+   */
+  readonly phiAccrual?: Partial<PhiAccrualOptionsType>;
   /** Override the transport (e.g. InMemoryTransport for tests). */
   readonly transport?: Transport;
   /** How often gossip is pushed to a random reachable peer. */
@@ -208,14 +494,15 @@ export type ClusterOptionsType = {
    *
    * It applies to *every* merge because the narrower reading — "only where an
    * address is introduced" — could be stepped around by introducing the
-   * address first: two records for it in one frame, or an empty frame that
-   * makes the sender fallback file it.  See `Cluster.admitsVersion`.
+   * address first: two records for it in one frame, for instance.  See
+   * `Cluster.admitsVersion`.
    *
    * Default: 5 min — comfortably above any NTP-disciplined clock.  A refusal
-   * is not exclusion (the sender fallback still records the address, at
-   * version 1 without roles), but it is durable: a node whose clock runs
-   * further ahead than this stays role-less until its clock comes back.  Raise
-   * it for a deployment whose clocks are known to run loose.
+   * is exclusion, and durable: a node's own record is the only thing that
+   * introduces it (#939), so a node whose clock runs further ahead than this
+   * is not filed at all — it stays out, with a WARN naming this cap, until its
+   * clock comes back inside the budget.  Raise it for a deployment whose
+   * clocks are known to run loose.
    */
   readonly maxVersionSkewMs?: number;
   /**
@@ -225,30 +512,173 @@ export type ClusterOptionsType = {
    */
   readonly weaklyUpAfterMs?: number;
   /**
+   * How often this node publishes a {@link ClusterStatsPublished} sample of
+   * its own membership view on `system.eventStream`.  `0` arms no timer.
+   * Default: 0 (#842).
+   *
+   * `0` and an unset field mean the same thing — no timer — rather than `0`
+   * meaning "as fast as possible", which is the reading a cadence could
+   * otherwise be given and which nothing here would survive.
+   */
+  readonly publishStatsIntervalMs?: number;
+  /**
+   * How long this node may stay `joining` or `weakly-up` before it gives up
+   * the join, in ms (#1500).  `0` — the default, and what an unset field
+   * means — sets no deadline: the node goes on dialling its seeds, which is
+   * what every release before the option did.
+   *
+   * The deadline is when the node decides, not what decides.  When it passes
+   * the node asks the question the cold-start stall warning answers — can
+   * anything still promote it?  Something can while a member is `up` (a
+   * leader exists), while a deferred {@link selfElection} of its own is
+   * pending, and while peers are present and only
+   * {@link minimumMembersBeforeUp} holds them back.  Only if nothing can does
+   * it log one warning, leave, and run the coordinated-shutdown pipeline with
+   * `ClusterJoinUnsuccessfulReason` — leaving first, so the seed loop stops
+   * even where `coordinated-shutdown.auto-register-tasks` is off.  Otherwise
+   * it asks again every {@link seedRetryIntervalMs} until it is `up`.
+   *
+   * So `'immediate'` with a non-empty seed list and `'never'` give up, and a
+   * node `weaklyUpAfterMs` moved on counts as not joined; a deferred policy
+   * does not give up, because its pending timer holds the verdict and then
+   * forms a cluster of one.  Counted from `Cluster.join`, so discovery and a
+   * `Cluster.bootstrap` stable observation run before the clock starts — and
+   * on that path it is composed with `actor-ts.cluster.bootstrap.await-ready`.
+   * A positive value shorter than the effective {@link seedRetryIntervalMs}
+   * is refused: the node would give up before it had dialled twice.
+   */
+  readonly shutdownAfterUnsuccessfulJoinMs?: number;
+  /**
+   * Members that must be present before **anything** moves to `up` — the
+   * leader's promotions and this node's own self-election alike (#837).
+   * Default: `1`, which is the historical behaviour (the first node forms a
+   * cluster of one immediately).
+   *
+   * Counted over members in `joining`, `weakly-up` and `up`: the question the
+   * threshold asks is "are enough live members here", and `leaving`,
+   * `unreachable`, `down` and `removed` are all answers of "no".  That choice
+   * is visible during a rolling restart — a `leaving` member does *not* hold
+   * the threshold open for its replacement, so the gate closes for exactly as
+   * long as the replacement takes to appear.  (Akka counts every non-removed
+   * member instead, which keeps the gate open across that window.)
+   *
+   * Evaluated per promotion decision, never in reverse: there is no
+   * `up → joining` transition, so a cluster that later shrinks below the
+   * threshold keeps the members it already promoted and holds only new ones.
+   *
+   * **Not a quorum, and not a security control.** Any node may announce
+   * itself `up` — `maySpeakFor` admits a claim a member makes about itself —
+   * so this bounds accidents (a partitioned half forming its own cluster of
+   * one), not adversaries.  Split-brain arbitration is
+   * {@link ClusterOptionsType.downing}.
+   *
+   * Distinct from `actor-ts.cluster.bootstrap.minimum-members`, which is a
+   * *wait* predicate for `awaitReady` / `isReady` and never changes a
+   * member's status.  Setting this one largely subsumes it: with
+   * `minimumMembersBeforeUp: 3`, a node that is `up` at all implies three
+   * members were present.
+   */
+  readonly minimumMembersBeforeUp?: number;
+  /**
+   * Per-role thresholds, composed with {@link minimumMembersBeforeUp} as an
+   * AND: the global count and *every* configured role's count must be met
+   * before anything is promoted (#837).  Default: none.
+   *
+   * The unit a role threshold buys is "do not place work on a cluster that
+   * has no backend yet" — shard regions and singletons are hosted by role,
+   * and a cluster whose members are all frontends satisfies a global count
+   * while being useless to place on.  Counted over the same statuses as the
+   * global threshold, filtered by {@link Member.hasRole}.
+   *
+   * A role that is absent from the map is unconstrained, not zero-bounded.
+   */
+  readonly minimumMembersBeforeUpPerRole?: Readonly<Record<string, number>>;
+  /**
    * When this node may declare itself the first member of a new cluster —
    * see {@link SelfElectionPolicy}.  Default: `'immediate'`.
    *
-   * Deliberately absent from {@link ClusterConfigDefaults}: it is per-node
-   * identity, not tuning, exactly like `seeds` and `roles`.  A HOCON leaf
-   * would be applied to every node of a deployment identically, and both
-   * uniform answers are wrong — all-`'never'` never starts a cluster, and
-   * all-`<delay>` has every node self-elect at the same moment, which is the
-   * split brain this option exists to close.
+   * Deliberately absent from {@link ClusterConfigDefaults}, and now the only
+   * one of its old group that is (#836).  It used to be justified by analogy
+   * to `seeds` and `roles`; that analogy is gone, because a shared seed list
+   * turns out to be correct on every node — this one is not merely useless
+   * when shared, it is unsafe.  Both uniform answers are wrong:
+   * all-`'never'` never starts a cluster, and all-`<delay>` has every node
+   * self-elect at the same moment, which is the split brain this option
+   * exists to close.  Cluster bootstrap is what hands out a per-node value.
    */
   readonly selfElection?: SelfElectionPolicy;
   /**
    * Optional split-brain resolver.  When provided, the cluster invokes
-   * `provider.decide(view)` whenever a member transitions to / from
-   * `unreachable`, and force-downs every address in the returned set
-   * (regardless of failure-detector state).  Without a provider, the
-   * cluster relies solely on the failure detector's elapsed-time
-   * `unreachable → down → removed` cascade — fine for unilateral
-   * crashes, weak under network partitions.
+   * `provider.decide(view)` and force-downs every address in the returned set,
+   * regardless of failure-detector state, and the detector itself only parks
+   * an unreachable peer (#929).  Without a provider the detector decides, per
+   * {@link failureDetectorAutoDown}: by default it removes a peer it declares
+   * `down` on its own — which handles a crash and forks a partitioned cluster,
+   * since every side removes the other at once — and with the switch off it
+   * parks the peer at `unreachable` until an operator removes it (#1426).
+   *
+   * **Not on every transition.**  Since #839 the call is gated by
+   * {@link splitBrainResolver}: the provider is consulted once the membership
+   * and reachability view has held still for `stableAfterMs` — twenty seconds
+   * by default — or, if the view keeps moving, once some peer has been
+   * continuously unreachable for `unreachableArbitrationDeadlineMs`.  A
+   * deployment that wants the pre-#839 cadence sets a short `stableAfterMs`;
+   * `0` is refused, because "do not arbitrate" already has a spelling in
+   * `active-strategy = off`.
    *
    * See `src/cluster/downing/` for the bundled strategies (KeepMajority,
    * KeepOldest, KeepReferee, StaticQuorum, LeaseMajority).
    */
   readonly downing?: DowningProvider;
+  /**
+   * *When* {@link downing} is consulted, as against which provider it is —
+   * the stability window and the unstable-escalation switch (#839).
+   *
+   * A nested block rather than two flat fields, for the reason
+   * {@link failureDetector} is one: the two are read together as one policy,
+   * and grouping them is what lets `withClusterConfigDefaults` merge them
+   * per field so an explicit `{ stableAfterMs }` does not silently drop the
+   * config file's `downAllWhenUnstable`.
+   *
+   * Inert without a provider: `Cluster.evaluateDowning` is the only reader
+   * and it returns immediately when {@link downing} is unset.
+   */
+  readonly splitBrainResolver?: Partial<SplitBrainResolverOptionsType>;
+  /**
+   * Whether this node runs the coordinated-shutdown pipeline, with
+   * `ClusterDowningReason`, when its own downing decision removes it —
+   * `true` by default (#1456).
+   *
+   * "Its own" is the whole scope: {@link downing}, or `down-all-when-unstable`,
+   * deciding on this node that this node goes.  The node leaves first, so it
+   * stops gossiping and heartbeating at once, and the pipeline then runs
+   * whether or not that leave succeeds: services unbind, and the built-in
+   * terminator ends the ActorSystem — and with it every entity and singleton
+   * this node hosted — unless `coordinated-shutdown.terminate-actor-system`
+   * is off.  Off, only the leave happens and the node keeps running its
+   * actors — a second writer beside the side that won.  On, a strategy that
+   * downs a node by mistake terminates it (#932, #933); the default's own doc
+   * weighs the two.
+   *
+   * Not suppressed by `coordinated-shutdown.auto-register-tasks = off`, which
+   * withholds the framework's own tasks and decides nothing about when the
+   * pipeline runs.  Inert without a {@link downing} provider, since nothing
+   * else decides a self-down.  A downing a *peer* decides reaches it only
+   * through this node's own provider: a peer's claim about this node's own
+   * record is refused, but a peer that removed this node answers its
+   * heartbeats with a refusal, and a node every peer refuses is asked about
+   * at once (#940).
+   */
+  readonly runCoordinatedShutdownWhenDown?: boolean;
+  /**
+   * When this node meets a second cluster of the same name — two islands that
+   * formed while a startup partition kept them apart (#1176) — the smaller one
+   * downs itself; on a tie, the one whose lowest address sorts higher.  Both
+   * sides compute the same answer from what each sees of the other.  Default
+   * {@link DEFAULT_DOWN_SMALLER_ISLAND} (off): the meeting is logged and its
+   * frames refused, and an operator restarts one side.
+   */
+  readonly downSmallerIsland?: boolean;
   /**
    * Per-frame cap on the cluster wire, in bytes.  Frames whose
    * length-prefix exceeds it are rejected before any payload is
@@ -268,9 +698,14 @@ export type ClusterOptionsType = {
    * well-formed frames can accumulate.  Membership is filled from
    * unauthenticated gossip, so a peer with standing can name addresses this
    * node has never seen and get an entry allocated for each, with no join
-   * involved (#138).  Phantom entries in an active status are reclaimed by
-   * the failure detector after `downAfterMs`, which makes this the narrower
-   * of the two caps: it bounds the burst, not the residue.
+   * involved (#138).  Such a phantom is never heard from, so the failure
+   * detector declares it `down`.  Under the default `failureDetectorAutoDown`
+   * the detector then deletes it at `downAfterMs` — without a tombstone, so a
+   * node that still carries the phantom gossips it straight back — and with
+   * a strategy configured, or the switch off, it parks it at `unreachable`,
+   * where it holds its slot until a strategy or an operator removes it
+   * (#1426).  This cap is therefore the whole bound on the live residue, not
+   * only on the burst.
    *
    * Default: 1000 — far above any cluster this framework is built for, and
    * far below the ~110 000 entries at which this node's *own* gossip frame
@@ -282,11 +717,13 @@ export type ClusterOptionsType = {
   /**
    * Cap on `removed` tombstones in the local member map.  `0` disables it.
    *
-   * The load-bearing half of the pair.  A tombstone carries no liveness, so
-   * the failure detector never reclaims it — only {@link tombstoneTtlMs}
-   * does, a day later.  A peer that gossips `removed` records for addresses
-   * this node has never seen therefore parks entries here for 24 h, which is
-   * the only variant of #138 that actually accumulates.
+   * A tombstone carries no liveness, so the failure detector never reclaims
+   * it — only {@link tombstoneTtlMs} does, a day later.  A peer that gossips
+   * `removed` records for addresses this node has never seen therefore parks
+   * entries here for 24 h.  That is one of the two variants of #138 that
+   * accumulate; the other is a live phantom — parked at `unreachable` when a
+   * strategy is configured or auto-down is off, deleted and gossiped straight
+   * back under the default — which {@link maxMembers} bounds (#1426).
    *
    * Refusing one costs nothing: a tombstone for an address with no local
    * record suppresses nothing that exists.  Locally-minted tombstones
@@ -296,12 +733,170 @@ export type ClusterOptionsType = {
    * Default: 10 000.
    */
   readonly maxTombstones?: number;
+  /**
+   * Refuse an inbound envelope whose target path this node did not register a
+   * handler for, unless {@link trustedSelectionPaths} names it.  Default:
+   * `false` (#877).
+   *
+   * The mechanism it narrows is the one thing a remote party genuinely
+   * *chooses*: an `envelope` frame carries a `to` string, and both wire seams
+   * resolve it against the local actor tree.  With the mode off that reaches
+   * any `/user` actor by name, which is what makes an `ActorRef` usable across
+   * nodes; with it on, only the paths listed below.
+   *
+   * **It does not decide whether `/system` is reachable** — that is refused
+   * either way (#964).  Framework actors are addressable only through the
+   * per-path handlers their owners register, which is the door that attaches a
+   * sender to the frame; the generic fallback never did.
+   *
+   * The registered handlers themselves stay open under the mode.  Gating them
+   * would take sharding, singletons, pub-sub, DistributedData and both DevTools
+   * lanes down with it, which is not a mode anyone could run — and each of
+   * those endpoints validates its own bodies, which is where a per-protocol
+   * defect belongs.
+   */
+  readonly untrustedMode?: boolean;
+  /**
+   * Paths a peer may address by name while {@link untrustedMode} is on.
+   * Default: empty — nothing beyond the registered framework endpoints.
+   *
+   * Written guardian-rooted, the way the actor tree renders them:
+   * `/user/orders/7`.  An entry is an **exact** path unless it ends in `/*`, in
+   * which case it is that path and every actor beneath it — and the suffix is
+   * segment-anchored, so `/user/admin/*` never admits `/user/administrator`.
+   * The leading `/` is optional; nothing else is a pattern.
+   *
+   * Ignored while the mode is off, where it would only be able to *narrow*
+   * something already open.
+   */
+  readonly trustedSelectionPaths?: readonly string[];
+  /**
+   * What to do when a peer's effective value for a checked setting disagrees
+   * with this node's.  Default: `false` — report it and nothing else (#844).
+   *
+   * `true` additionally bars the diverging peer from
+   * {@link Cluster.placementCandidates}, so this node stops putting work on a
+   * node it cannot safely place work on.  That is the whole of it, and the
+   * ceiling is deliberate: downing or quarantining over a configuration
+   * disagreement is a split-brain lever, since a misconfigured majority would
+   * evict a correctly-configured minority and turn a warning into an outage.
+   *
+   * It is a **local send decision**, never an election input.  Each node knows
+   * only the facts its peers have gossiped and compares them against its own,
+   * so candidacy is asymmetric by construction — and any *elected* role
+   * computed from an asymmetric set has two winners.  Concretely: with A and B
+   * agreeing and C diverging, C excludes both of them while they exclude only
+   * C, so filtering singleton or shard-home selection this way would elect one
+   * host on A and B and a second on C.  Routee selection has no such property,
+   * which is why it is the one consumer wired to it.
+   *
+   * The field name folds the block prefix in, the way
+   * {@link failureDetectorImplementation} does — `enforce` alone says nothing
+   * on a flat options type, and `configurationCompatibilityCheckEnforce` would
+   * carry a `Check` that the sibling field cannot repeat without reading
+   * `CheckCheckedPaths`.
+   */
+  readonly configurationCompatibilityEnforce?: boolean;
+  /**
+   * Names of the settings whose effective values this node publishes to its
+   * peers and compares theirs against.  Default:
+   * `['actor-ts.remote.max-frame-bytes']` (#844).
+   *
+   * An allow-list of what **leaves this node**, not merely of what is
+   * compared: a name absent here is never stamped onto gossip, so there is no
+   * separate "sensitive paths" list to redact — a path not on this list is
+   * already not shipped.
+   *
+   * A name is by convention the HOCON path whose effective value it carries,
+   * because that is where an operator goes to change it.  What travels is the
+   * *effective* value — resolved after `explicit options > HOCON > built-in
+   * defaults` — so two nodes that differ only because one used a builder still
+   * compare unequal.  Comparing the config values themselves would miss that
+   * case entirely, and builder-first is this project's documented style.
+   *
+   * Only names something actually publishes can ever be compared; the
+   * framework publishes three (see
+   * {@link DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS}), and an
+   * application adds its own through {@link Cluster.publishConfigurationFact}.
+   * A listed name nothing publishes is inert rather than an error, for the
+   * reason a mixed-version cluster has to stay silent: absence on either side
+   * cannot be told apart from a peer that predates the fact.
+   */
+  readonly configurationCompatibilityCheckedPaths?: readonly string[];
+  /**
+   * How long a connection may sit without its half of the handshake before it
+   * is torn down, in milliseconds.  Default: 5 s
+   * (`HANDSHAKE_TIMEOUT_MS` in `cluster/Constants.ts`) (#846).
+   *
+   * **One value for both directions on purpose.**  The dialling side's clock
+   * starts before the TCP connect and the TLS handshake; the accepting side's
+   * starts after the accept.  Equal numbers therefore mean the peer that is
+   * still trying has always given up first, and the acceptor can never punish
+   * a slow-but-legitimate dial.  A split pair would put that invariant in an
+   * operator's hands, and an accept deadline below the dial deadline makes a
+   * healthy peer permanently unreachable with nothing saying why.
+   */
+  readonly handshakeTimeoutMs?: number;
+  /**
+   * How long a dial may take to open — the TCP connect and, over TLS, the TLS
+   * handshake — before it is aborted and reported as one that could not
+   * connect, in milliseconds (#1475).  Unset, it is {@link handshakeTimeoutMs},
+   * the one deadline a dial had before this field, and there is no constant
+   * for it: a number of its own would refuse every handshake deadline set
+   * below it.
+   *
+   * A peer that accepted is the handshake deadline's to end, so this one
+   * separates "not there" from "there and silent", in the log and in time.
+   * It may not exceed {@link handshakeTimeoutMs}, which bounds the same dial
+   * from the same moment — the validator refuses that pair, resolving an
+   * unset half first, as `TcpTransportOptionsValidator` does.
+   */
+  readonly connectTimeoutMs?: number;
+  /**
+   * How many frames the transport holds for a peer that cannot take them right
+   * now, before the oldest are dropped.  Default: 1000
+   * (`MAX_PENDING_FRAMES` in `cluster/Constants.ts`) (#846).
+   *
+   * Today that is the pre-handshake buffer — a `send` racing the handshake is
+   * held rather than lost — and the name is the category rather than that one
+   * buffer: #931 adds the post-handshake backpressure queue, the same quantity
+   * with the same drop-oldest policy and the same one-shot WARN, and it lands
+   * under this field rather than a second one.
+   */
+  readonly outboundQueueSize?: number;
+  /**
+   * How many inbound connections the transport accepts before refusing sockets
+   * outright.  Default: 1024 (`MAX_INBOUND_CONNECTIONS`) (#846).
+   *
+   * The useful half of the pair that bounds inbound decode memory — that bound
+   * is this count times what one connection may buffer, and the count is the
+   * one worth moving.  Set it from the real peer count where that is known,
+   * with headroom: a fully-meshed cluster needs one inbound connection per
+   * peer plus whatever `ClusterClient`s dial in, and refusing a legitimate
+   * peer is a partition.
+   */
+  readonly maxInboundConnections?: number;
+  /**
+   * How long a connection may hold a half-received frame without another byte
+   * arriving, in milliseconds.  Default: 30 s
+   * (`INCOMPLETE_FRAME_IDLE_MS` in `cluster/Constants.ts`) (#846).
+   *
+   * A **stall** bound, not a budget for the frame: it is re-armed on every
+   * chunk, so a peer pushing a large frame over a congested link keeps its
+   * connection for as long as it keeps making progress.  It has to stay above
+   * {@link handshakeTimeoutMs} — a socket that sends nothing at all never
+   * reaches this deadline, and the handshake timer is what covers that one —
+   * and the validator refuses the pair otherwise, with either half's default
+   * standing in for a value this node did not configure.
+   */
+  readonly incompleteFrameIdleMs?: number;
 };
 
 /**
  * Fluent builder for {@link ClusterOptionsType} — the sole input to
- * {@link Cluster.join}.  `host` + `port` are required; every other knob
- * is optional.  Polymorphic / whole-value fields (`transport`,
+ * {@link Cluster.join}.  Every knob is optional: `host` and `port` fall
+ * through to `actor-ts.remote.tcp.*` and then to {@link DEFAULT_BIND_HOST} /
+ * {@link DEFAULT_PORT}.  Polymorphic / whole-value fields (`transport`,
  * `downing`, `failureDetector`, `roles`, `seeds`) are passed as-is via a
  * single `withX(value)` — no nested builders.
  *
@@ -335,9 +930,20 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
     return this.set('advertisedHost', advertisedHost);
   }
 
-  /** Bind port. */
+  /**
+   * The port to bind — and, unless {@link withAdvertisedPort} overrides it,
+   * the port peers dial.
+   */
   withPort(port: number): this {
     return this.set('port', port);
+  }
+
+  /**
+   * The port peers dial, when it differs from the bound one — the published
+   * container port of a `docker run -p 3000:2552` (#845).
+   */
+  withAdvertisedPort(advertisedPort: number): this {
+    return this.set('advertisedPort', advertisedPort);
   }
 
   /** Other nodes this node should try to contact on startup. */
@@ -350,9 +956,41 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
     return this.set('roles', roles);
   }
 
+  /**
+   * The application version this node states to its peers — an advisory
+   * label for operators; nothing places, routes or downs on it.
+   */
+  withAppVersion(appVersion: string): this {
+    return this.set('appVersion', appVersion);
+  }
+
+  /** Which detection algorithm to run — `'simple'` (default) or `'phi'`. */
+  withFailureDetectorImplementation(implementation: FailureDetectorImplementation): this {
+    return this.set('failureDetectorImplementation', implementation);
+  }
+
+  /**
+   * Whether the failure detector removes an unreachable peer itself when no
+   * downing provider is configured (#1426).  Default `true`, whose price is
+   * that under a real partition both sides remove each other and carry on,
+   * unless lease-majority or another split-brain strategy is configured.
+   * `false` opts out and parks the peer at `unreachable`, whose price is that a
+   * crashed node stays a member until a strategy, `Cluster.down` or
+   * `POST /cluster/down` removes it.  A configured provider decides every
+   * removal either way.
+   */
+  withFailureDetectorAutoDown(autoDown: boolean): this {
+    return this.set('failureDetectorAutoDown', autoDown);
+  }
+
   /** Failure-detector thresholds (merged over the built-in defaults). */
   withFailureDetector(failureDetector: Partial<FailureDetectorOptionsType>): this {
     return this.set('failureDetector', failureDetector);
+  }
+
+  /** φ-accrual tuning, used only when the implementation is `'phi'`. */
+  withPhiAccrual(phiAccrual: Partial<PhiAccrualOptionsType>): this {
+    return this.set('phiAccrual', phiAccrual);
   }
 
   /** Override the transport (e.g. `InMemoryTransport` for tests). */
@@ -396,6 +1034,41 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
   }
 
   /**
+   * Publish a `ClusterStatsPublished` sample of this node's membership view
+   * on `system.eventStream` this often.  0 arms no timer (default) (#842).
+   */
+  withPublishStatsIntervalMs(ms: number): this {
+    return this.set('publishStatsIntervalMs', ms);
+  }
+
+  /**
+   * Give the join up after this many ms, if nothing can promote this node by
+   * then — warn, leave, and run the coordinated-shutdown pipeline with
+   * `ClusterJoinUnsuccessfulReason`.  0 sets no deadline (default) (#1500).
+   */
+  withShutdownAfterUnsuccessfulJoinMs(ms: number): this {
+    return this.set('shutdownAfterUnsuccessfulJoinMs', ms);
+  }
+
+  /**
+   * Hold every `up` promotion — the leader's and this node's own
+   * self-election — until this many members are present.  Default: 1, the
+   * historical behaviour (#837).
+   */
+  withMinimumMembersBeforeUp(minimumMembersBeforeUp: number): this {
+    return this.set('minimumMembersBeforeUp', minimumMembersBeforeUp);
+  }
+
+  /**
+   * Per-role thresholds, composed with {@link withMinimumMembersBeforeUp} as
+   * an AND — `{ backend: 2 }` holds every promotion until two members carry
+   * the `backend` role.  Default: none.
+   */
+  withMinimumMembersBeforeUpPerRole(perRole: Readonly<Record<string, number>>): this {
+    return this.set('minimumMembersBeforeUpPerRole', perRole);
+  }
+
+  /**
    * When this node may declare itself the first member of a new cluster.
    * `'immediate'` (default), `'never'`, or a millisecond delay — see
    * {@link SelfElectionPolicy}.
@@ -407,6 +1080,28 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
   /** Optional split-brain resolver (KeepMajority, KeepOldest, …). */
   withDowning(downing: DowningProvider): this {
     return this.set('downing', downing);
+  }
+
+  /**
+   * When the resolver is consulted — the stability window and the
+   * unstable-escalation switch (#839).  Merged per field over the config
+   * file's values, like {@link withFailureDetector}.
+   */
+  withSplitBrainResolver(splitBrainResolver: Partial<SplitBrainResolverOptionsType>): this {
+    return this.set('splitBrainResolver', splitBrainResolver);
+  }
+
+  /**
+   * Run the coordinated-shutdown pipeline when this node's own downing
+   * decision removes it, rather than only leaving.  Default `true` (#1456).
+   */
+  withRunCoordinatedShutdownWhenDown(runCoordinatedShutdownWhenDown: boolean): this {
+    return this.set('runCoordinatedShutdownWhenDown', runCoordinatedShutdownWhenDown);
+  }
+
+  /** Have the smaller of two same-name clusters down itself when they meet (#1176).  Default `false`. */
+  withDownSmallerIsland(downSmallerIsland = true): this {
+    return this.set('downSmallerIsland', downSmallerIsland);
   }
 
   /** Per-frame wire cap for the cluster's own transport.  Default: 16 MiB. */
@@ -423,7 +1118,86 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
   withMaxTombstones(maxTombstones: number): this {
     return this.set('maxTombstones', maxTombstones);
   }
+
+  /**
+   * Admit an inbound envelope by name only when {@link withTrustedSelectionPaths}
+   * lists its target.  Default: off.  `/system` is refused either way (#877).
+   */
+  withUntrustedMode(untrustedMode: boolean): this {
+    return this.set('untrustedMode', untrustedMode);
+  }
+
+  /**
+   * Paths a peer may address by name while untrusted mode is on —
+   * `/user/orders/7`, or `/user/orders/*` for that actor and everything below
+   * it.  Default: none.
+   */
+  withTrustedSelectionPaths(trustedSelectionPaths: readonly string[]): this {
+    return this.set('trustedSelectionPaths', trustedSelectionPaths);
+  }
+
+  /**
+   * Bar a peer whose checked configuration disagrees from this node's
+   * placement candidates, instead of only reporting it.  Default: off —
+   * see the field for why, and for what it deliberately does not do (#844).
+   */
+  withConfigurationCompatibilityEnforce(configurationCompatibilityEnforce: boolean): this {
+    return this.set('configurationCompatibilityEnforce', configurationCompatibilityEnforce);
+  }
+
+  /**
+   * Settings whose effective values this node publishes and compares.
+   * Default: the cluster wire cap alone (#844).
+   */
+  withConfigurationCompatibilityCheckedPaths(
+    configurationCompatibilityCheckedPaths: readonly string[],
+  ): this {
+    return this.set('configurationCompatibilityCheckedPaths', configurationCompatibilityCheckedPaths);
+  }
+
+  /**
+   * Handshake deadline, both directions, in ms.  Default: 5000.  One value on
+   * purpose — see the field (#846).
+   */
+  withHandshakeTimeoutMs(handshakeTimeoutMs: number): this {
+    return this.set('handshakeTimeoutMs', handshakeTimeoutMs);
+  }
+
+  /**
+   * How long a dial may take to open, in ms.  Default: the handshake
+   * deadline, which it may not exceed (#1475).
+   */
+  withConnectTimeoutMs(connectTimeoutMs: number): this {
+    return this.set('connectTimeoutMs', connectTimeoutMs);
+  }
+
+  /** Frames held for a peer that cannot take them.  Default: 1000. */
+  withOutboundQueueSize(outboundQueueSize: number): this {
+    return this.set('outboundQueueSize', outboundQueueSize);
+  }
+
+  /** Inbound connections accepted before sockets are refused.  Default: 1024. */
+  withMaxInboundConnections(maxInboundConnections: number): this {
+    return this.set('maxInboundConnections', maxInboundConnections);
+  }
+
+  /** Stall deadline on a half-received frame, in ms.  Default: 30000. */
+  withIncompleteFrameIdleMs(incompleteFrameIdleMs: number): this {
+    return this.set('incompleteFrameIdleMs', incompleteFrameIdleMs);
+  }
 }
+
+/**
+ * Stand-in system name used only while checking a seed entry written in the
+ * bare `host:port` form (#836).
+ *
+ * `NodeAddress.parse` requires the `system@` prefix, and `Cluster._start`
+ * supplies this system's own name for an entry that omits it.  The validator
+ * runs before there is a `Cluster` to ask, and the name is not what it is
+ * checking, so any syntactically valid one does — it is discarded with the
+ * parsed address.  Not exported: it has no meaning outside the one rule.
+ */
+const SEED_SYSTEM_NAME_PLACEHOLDER = 'system';
 
 /** Validates resolved {@link ClusterOptionsType} settings. */
 export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType> {
@@ -458,6 +1232,21 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
     // and validation here is transport-agnostic — the TCP range is TcpTransport's
     // concern, not the cluster's.
     this.positiveInt('port');
+    // Same helper for the same reason: the advertised port is an identity
+    // discriminator, not necessarily a TCP port number (#845).
+    this.positiveInt('advertisedPort');
+    // Checked here rather than left to `createFailureDetector`, because the
+    // value routinely arrives from HOCON: an operator who writes
+    // `implementation = phi-accrual` gets the key and the two legal spellings
+    // named at startup, instead of a cluster that quietly runs the detector
+    // they did not ask for (#840).
+    this.oneOf('failureDetectorImplementation', ['simple', 'phi']);
+    // No cross-field rule between `failureDetectorAutoDown` and `downing`
+    // (#1426).  A provider decides every removal and auto-down only governs
+    // the no-provider case, so the pair is not a contradiction — and with
+    // `true` the shipped default, the merged settings could not tell the
+    // default from a deliberate `on`, so refusing the pair would refuse every
+    // strategy configuration.
     this.positiveNumber('gossipIntervalMs');
     this.positiveNumber('seedRetryIntervalMs');
     this.positiveNumber('tombstoneTtlMs');
@@ -471,12 +1260,50 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
     // at all tolerated".
     this.positiveInt('maxVersionSkewMs');
     this.nonNegativeNumber('weaklyUpAfterMs'); // 0 disables auto weakly-up
+    // Non-negative for the same reason: `0` is the shipped value and reads as
+    // "arm no timer", not as "as fast as possible" (#842).
+    this.nonNegativeNumber('publishStatsIntervalMs');
+    // And again (#1500): `0` is the shipped value and arms no deadline.
+    this.nonNegativeNumber('shutdownAfterUnsuccessfulJoinMs');
+    this.checkJoinGiveUp(s);
     this.positiveInt('maxFrameBytes');
     // `0 = off` rather than `Infinity`: a count needs an integer opt-out, and
     // `positiveInt` would reject `Infinity` anyway.  Same shape as the
     // sharding entity cap.
     this.nonNegativeInt('maxMembers');
     this.nonNegativeInt('maxTombstones');
+    // Positive, with no `0 = off` reading: the off state of a member threshold
+    // is `1` — "one member is enough", which is what every release before #837
+    // did — and `0` would be a threshold nothing can fail, spelled as a value
+    // that looks like a disable switch.  One spelling for one meaning.
+    this.positiveInt('minimumMembersBeforeUp');
+    this.validateMinimumMembersBeforeUpPerRole(s.minimumMembersBeforeUpPerRole);
+    // The four association-lifecycle bounds (#846).  All four are positive
+    // with no "0 disables" reading, and each `0` would be a distinct way of
+    // breaking the node rather than a way of turning a cap off: a zero
+    // handshake deadline drops every connection before it can speak, a zero
+    // queue drops every frame written before the handshake lands, a zero
+    // inbound cap refuses every peer, and a zero stall deadline tears down any
+    // connection that has not ended on a frame boundary.
+    this.positiveNumber('handshakeTimeoutMs');
+    // The dial's connect deadline (#1475): a zero one gives every dial up
+    // before it can open.
+    this.positiveNumber('connectTimeoutMs');
+    this.positiveInt('outboundQueueSize');
+    this.positiveInt('maxInboundConnections');
+    this.positiveNumber('incompleteFrameIdleMs');
+    // Cross-field, and checked here as well as in `TcpTransportOptionsValidator`
+    // because this is the layer that sees the HOCON values.  Both rules —
+    // including why each resolves its pair against the transport's defaults
+    // before comparing it — live with the transport's options, so the two
+    // validators cannot drift into refusing different pairs while the docs go
+    // on saying "both validators refuse".
+    const violation = findStallDeadlineOrderingViolation(s);
+    if (violation !== undefined) this.fail(violation.field, violation.reason, violation.value);
+    const connectViolation = findConnectDeadlineOrderingViolation(s);
+    if (connectViolation !== undefined) {
+      this.fail(connectViolation.field, connectViolation.reason, connectViolation.value);
+    }
     // A keyword-or-duration union, so the field helpers (which are keyed on a
     // single value type) cannot express it — checked by hand, the same shape
     // `ClusterBootstrapOptionsValidator` uses for `awaitReady`.  `0` is
@@ -492,6 +1319,208 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
         "must be 'immediate', 'never', or a positive number of ms",
         selfElection,
       );
+    }
+    this.checkSeeds(s.seeds);
+    this.checkTrustedSelectionPaths(s.trustedSelectionPaths);
+    this.checkConfigurationCheckedPaths(s.configurationCompatibilityCheckedPaths);
+    this.checkAppVersion(s.appVersion);
+  }
+
+  /**
+   * Refuse a join give-up shorter than one seed round (#1500).
+   *
+   * Resolved against the interval the node will actually dial at — the
+   * built-in one when the field is unset — for the reason the stall-deadline
+   * ordering rule resolves its pair (#846): an operator writes one of the two
+   * keys, and the half left unwritten is not absent at run time.  A deadline
+   * inside the first interval gives up before the node has dialled its seeds
+   * a second time, and a verdict that holds off is asked again only once per
+   * interval anyway, so the shorter value would buy nothing but that.
+   */
+  private checkJoinGiveUp(s: Partial<ClusterOptionsType>): void {
+    const giveUpMs = s.shutdownAfterUnsuccessfulJoinMs;
+    if (giveUpMs === undefined || giveUpMs === 0) return;
+    const seedRetryIntervalMs = s.seedRetryIntervalMs ?? DEFAULT_SEED_RETRY_INTERVAL_MS;
+    if (giveUpMs >= seedRetryIntervalMs) return;
+    this.fail(
+      'shutdownAfterUnsuccessfulJoinMs',
+      `must be 0 (no deadline) or at least seedRetryIntervalMs (${seedRetryIntervalMs} ms) — a shorter `
+      + `${ConfigKeys.cluster.shutdownAfterUnsuccessfulJoin} gives up before the node has dialled its seeds a `
+      + 'second time',
+      giveUpMs,
+    );
+  }
+
+  /**
+   * Reject an application version no peer would admit (#843).
+   *
+   * The label is stamped onto every gossip frame this node sends and printed
+   * on every peer, so the receive side's rule is enforced here too, at the one
+   * moment somebody is watching — a label every peer drops is shown nowhere
+   * and says so nowhere.  It is literally the same rule: {@link isAppVersion}
+   * is what `Member.fromData` applies to a peer's claim, so the two sides
+   * cannot drift into refusing different labels.
+   *
+   * The empty string is refused rather than read as unset.  It is what
+   * `${?APP_VERSION}` lands over a variable set to nothing, and "states no
+   * version" already has a spelling — an absent key — so an empty one is a
+   * deployment that meant to set it and did not.
+   */
+  private checkAppVersion(appVersion: string | undefined): void {
+    if (appVersion === undefined || isAppVersion(appVersion)) return;
+    this.fail(
+      'appVersion',
+      `must be 1 to ${MAX_APP_VERSION_LENGTH} visible ASCII characters, with no whitespace and no `
+      + "control character, because every peer prints it (e.g. '2.4.0', 'v2.4.0-rc.1+build.5'); "
+      + 'leave it unset to state no version',
+      appVersion,
+    );
+  }
+
+  /**
+   * Reject a seed address that `NodeAddress.parse` could not read (#836).
+   *
+   * Deliberately **not** `nonEmptyArray`: an empty seed list is the documented
+   * "I am the first node", so the list itself is never the mistake — the
+   * entries are.  What this buys is *where* the refusal happens.
+   * `NodeAddress.parse` throws a bare `Error`, and `Cluster` calls it inside
+   * `_start`, **after** `transport.start()` — so a typo takes the node down
+   * with a bound socket behind it and a message that names neither the field
+   * nor the config key.  This runs in `Cluster.join`, before the constructor
+   * and before any socket, and names the offending entry.
+   *
+   * A config-sourced list makes that far likelier than a code-sourced one,
+   * which is why the rule lands with the key rather than being decoration on
+   * it.
+   *
+   * The bare `host:port` form is accepted because `Cluster._start` accepts it
+   * and prefixes this system's own name; the placeholder below stands in for
+   * the name the cluster will supply, so the check is over the half an
+   * operator actually wrote.
+   */
+  private checkSeeds(seeds: readonly string[] | undefined): void {
+    if (seeds === undefined) return;
+    if (!Array.isArray(seeds)) {
+      this.fail('seeds', 'must be a list of "system@host:port" addresses', seeds);
+    }
+    for (const seed of seeds) {
+      if (typeof seed !== 'string' || seed.trim() === '') {
+        this.fail('seeds', 'entries must be non-empty "system@host:port" addresses', seed);
+      }
+      try {
+        NodeAddress.parse(seed.includes('@') ? seed : `${SEED_SYSTEM_NAME_PLACEHOLDER}@${seed}`);
+      } catch {
+        this.fail(
+          'seeds',
+          'entries are "system@host:port", or "host:port" to mean this system — a missing port '
+          + 'is the usual cause',
+          seed,
+        );
+      }
+    }
+  }
+
+  /**
+   * Each per-role threshold is the same positive integer the global one is
+   * (#837), but the field is a map rather than a scalar, so the field helpers
+   * — keyed on one value type — cannot express it.
+   *
+   * The role name is checked too. An empty one is the mistake that costs the
+   * most to diagnose: `member.hasRole('')` is false for every member, so an
+   * empty key is a threshold no cluster can ever meet, and the symptom is a
+   * cluster that simply never comes up.
+   */
+  private validateMinimumMembersBeforeUpPerRole(
+    perRole: Readonly<Record<string, number>> | undefined,
+  ): void {
+    if (perRole === undefined) return;
+    if (typeof perRole !== 'object' || perRole === null || Array.isArray(perRole)) {
+      this.fail(
+        'minimumMembersBeforeUpPerRole', 'must be an object mapping role name to member count',
+        perRole,
+      );
+    }
+    for (const [role, minimum] of Object.entries(perRole)) {
+      if (role.length === 0) {
+        this.fail(
+          'minimumMembersBeforeUpPerRole',
+          'must not carry an empty role name: no member ever has one, so the threshold could '
+          + 'never be met and the cluster would never reach "up"',
+          perRole,
+        );
+      }
+      if (typeof minimum !== 'number' || !Number.isInteger(minimum) || minimum < 1) {
+        this.fail(`minimumMembersBeforeUpPerRole.${role}`, 'must be an integer >= 1', minimum);
+      }
+    }
+  }
+
+  /**
+   * Reject a checked-path entry that could not name a publishable fact (#844).
+   *
+   * The name is not merely a key: it is stamped onto every gossip frame this
+   * node sends and printed verbatim in the mismatch diagnostic on every peer.
+   * So the same character set the receive side enforces
+   * ({@link CONFIGURATION_FACT_NAME_PATTERN}) is enforced here, at the one
+   * moment somebody is watching — a name this node would publish and every
+   * peer would then silently drop is a check that reports nothing and says so
+   * nowhere.
+   *
+   * Written by hand rather than through the field helpers for the reason
+   * {@link checkTrustedSelectionPaths} is: those are keyed on a single scalar,
+   * and this is a rule about each element of a list.
+   */
+  private checkConfigurationCheckedPaths(paths: readonly string[] | undefined): void {
+    if (paths === undefined) return;
+    if (!Array.isArray(paths)) {
+      this.fail('configurationCompatibilityCheckedPaths', 'must be a list of setting names', paths);
+    }
+    for (const entry of paths) {
+      if (typeof entry !== 'string' || entry.length > MAX_CONFIGURATION_FACT_NAME_LENGTH
+        || !CONFIGURATION_FACT_NAME_PATTERN.test(entry)) {
+        this.fail(
+          'configurationCompatibilityCheckedPaths',
+          'entries name a setting the way reference.conf spells it — lower-case, dots and '
+          + `hyphens, at most ${MAX_CONFIGURATION_FACT_NAME_LENGTH} characters `
+          + "(e.g. 'actor-ts.remote.max-frame-bytes'); anything else is dropped by every peer "
+          + 'that receives it',
+          entry,
+        );
+      }
+    }
+  }
+
+  /**
+   * Reject an allow-list entry that could not mean what it looks like (#877).
+   *
+   * Checked rather than tolerated because every failure here is silent in the
+   * direction that matters: an entry with a `*` in the middle looks like a
+   * glob, is matched literally, and therefore admits nothing — a node that
+   * refuses all its own traffic while the config file reads as if it does not.
+   * The empty entry is the same shape one step further: it normalises to `/`,
+   * which is not a path any envelope resolves to.
+   *
+   * Written by hand rather than through the field helpers: those are keyed on a
+   * single scalar value, and this is a rule about each element of a list.
+   */
+  private checkTrustedSelectionPaths(paths: readonly string[] | undefined): void {
+    if (paths === undefined) return;
+    if (!Array.isArray(paths)) {
+      this.fail('trustedSelectionPaths', 'must be a list of actor paths', paths);
+    }
+    for (const entry of paths) {
+      if (typeof entry !== 'string' || entry.trim() === '') {
+        this.fail('trustedSelectionPaths', 'entries must be non-empty actor paths', entry);
+      }
+      const withoutSubtreeSuffix = entry.endsWith('/*') ? entry.slice(0, -2) : entry;
+      if (withoutSubtreeSuffix.includes('*')) {
+        this.fail(
+          'trustedSelectionPaths',
+          "'*' is only a pattern as the whole final segment — write '/user/orders/*' for a "
+          + "subtree, '/user/orders' for one actor; nothing else here is a wildcard",
+          entry,
+        );
+      }
     }
   }
 }
@@ -591,29 +1620,84 @@ export function advertisedHostWasDerived(
 }
 
 /**
+ * The port peers dial — `advertisedPort` when one was named, otherwise the
+ * bound {@link ClusterOptionsType.port} (#845).
+ *
+ * One line, and a named exported function all the same, for the reason
+ * {@link resolveAdvertisedHost} is one: `Cluster.join` and `bootstrapCluster`
+ * both need this answer *before* the join — the bootstrap election orders on
+ * the self address and the seed filter compares against it — and two copies of
+ * `?? port` are two places for the policy to drift.
+ *
+ * There is no environment stage and no refusal to make. A port cannot be a
+ * wildcard, so every value that reaches here is dialable; the only question is
+ * whether the deployment remapped it.
+ */
+export function resolveAdvertisedPort(
+  options: { readonly port: number; readonly advertisedPort?: number },
+): number {
+  return options.advertisedPort ?? options.port;
+}
+
+/**
  * The slice of cluster settings HOCON can supply — `actor-ts.cluster.*`
  * plus the bind address, the advertised address and the wire cap under
  * `actor-ts.remote.*`.
  *
- * `advertisedHost` is in and `seeds` is out for the same reason, read two
- * ways.  Both are per-node identity, but only one of them is *derivable* from
- * the platform: a Deployment gives every pod the same manifest and a different
- * `POD_IP`, so `advertised-host = ${?POD_IP}` is one line that is correct on
- * every node, where a seed list written once is correct on none of them.
+ * `seeds` and `roles` used to be excluded here beside `selfElection`, on the
+ * argument that a seed list written once is "correct on none of them".  That
+ * was false about this framework, and #836 corrects it: {@link Cluster}
+ * removes this node's own address from the list before dialling, so the shape
+ * the docs actually prescribe — name the designated first node, ship one file
+ * everywhere — is correct on *every* node.  That node reads an empty
+ * `seedAddrs` and self-elects; the rest dial it.  The shape it is wrong for is
+ * the symmetric list naming every node, which deadlocks whether it came from
+ * config or from code, and which the framework already detects and diagnoses.
+ * `roles` never had an argument against it at all: it was only ever named
+ * alongside `seeds`, and `sharding.role` already lets a config file filter on
+ * a role, which is unusable if the same file cannot assign one.
  *
- * `seeds`, `roles`, `selfElection`, `transport` and `downing` are absent on
- * purpose: the last two are objects HOCON cannot express, and the first three
- * are per-deployment identity rather than tuning — they belong at the join
- * site where the node knows who it is.  `selfElection` is the sharpest of the
- * three, because a shared value is not merely useless but actively unsafe —
- * see the field's own doc.
+ * `selfElection` and `transport` stay out, and for two different reasons.  The
+ * transport is an object HOCON cannot express.  `selfElection` is the one
+ * whose shared value is not merely useless but actively unsafe — see the
+ * field's own doc — which is what makes it the sharpest of the group and the
+ * only one left in it.
+ *
+ * `advertisedHost` is the other half of the identity question and was always
+ * in, because the platform derives it: a Deployment gives every pod the same
+ * manifest and a different `POD_IP`, so `advertised-host = ${?POD_IP}` is one
+ * line that is correct on every node.
+ *
+ * `appVersion` is in on the same footing (#843): the deployment knows the
+ * release it is rolling out, so `app-version = ${?APP_VERSION}` is one line
+ * that is correct on every node, old and new alike — once a version that
+ * reads as a number is quoted inside the variable (`APP_VERSION='"1.10"'`),
+ * since a value from the environment is read as JSON first and an unquoted
+ * `1.10` reaches the peers as `1.1`.
+ *
+ * `downing` used to be in that sentence beside `transport`, and is not any
+ * more (#838).  It is an object too, but the difference is that HOCON does not
+ * have to express the object — only to *name* it:
+ * `split-brain-resolver.active-strategy` selects one of four bundled
+ * strategies and `readDowningFromConfig` constructs it, which is a choice a
+ * config file can make and a transport is not.  `lease-majority` is the case
+ * that still cannot be named, and it is refused rather than half-supported.
  */
 export type ClusterConfigDefaults = Partial<Pick<
   ClusterOptionsType,
-  'host' | 'advertisedHost' | 'port' | 'gossipIntervalMs' | 'seedRetryIntervalMs'
-  | 'failureDetector' | 'maxFrameBytes'
-  | 'weaklyUpAfterMs' | 'tombstoneTtlMs' | 'tombstonePruneIntervalMs' | 'tombstoneMinRetentionMs'
-  | 'maxMembers' | 'maxTombstones'
+  'host' | 'advertisedHost' | 'port' | 'advertisedPort' | 'seeds' | 'roles' | 'appVersion'
+  | 'gossipIntervalMs' | 'seedRetryIntervalMs'
+  | 'failureDetectorImplementation' | 'failureDetectorAutoDown' | 'failureDetector' | 'phiAccrual'
+  | 'maxFrameBytes'
+  | 'weaklyUpAfterMs' | 'publishStatsIntervalMs' | 'shutdownAfterUnsuccessfulJoinMs'
+  | 'tombstoneTtlMs' | 'tombstonePruneIntervalMs' | 'tombstoneMinRetentionMs'
+  | 'maxMembers' | 'maxTombstones' | 'downing' | 'splitBrainResolver'
+  | 'runCoordinatedShutdownWhenDown' | 'downSmallerIsland'
+  | 'minimumMembersBeforeUp' | 'minimumMembersBeforeUpPerRole'
+  | 'untrustedMode' | 'trustedSelectionPaths'
+  | 'configurationCompatibilityEnforce' | 'configurationCompatibilityCheckedPaths'
+  | 'handshakeTimeoutMs' | 'connectTimeoutMs' | 'outboundQueueSize' | 'maxInboundConnections'
+  | 'incompleteFrameIdleMs'
 >>;
 
 /**
@@ -625,7 +1709,14 @@ export type ClusterConfigDefaults = Partial<Pick<
  * `failureDetector` is assembled from its three leaves and omitted
  * entirely when none of them is set — an empty object here would still
  * count as "set" and shadow nothing, but it would make the merge in
- * `Cluster.join` harder to reason about than it needs to be.
+ * `Cluster.join` harder to reason about than it needs to be.  `phiAccrual`
+ * is assembled from the `failure-detector.phi` sub-block the same way.
+ *
+ * `downing` is the one field whose config form is a *name* rather than
+ * values: `readDowningFromConfig` turns
+ * `split-brain-resolver.active-strategy` into one of the four bundled
+ * providers, and returns nothing for the shipped `off` so the key stays
+ * absent (#838).
  *
  * The HOCON tree and this shape are deliberately not isomorphic: the
  * housekeeping durations sit under a `tombstone { … }` group because that is
@@ -638,6 +1729,12 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
   const remote = ConfigKeys.remote;
   // Mutable while being filled; consumers see the readonly shape.
   const out: { -readonly [K in keyof ClusterConfigDefaults]: ClusterConfigDefaults[K] } = {};
+  // Comment-only in `reference.conf`, like the advertised pair below but for
+  // a precedence reason: on the `bootstrapCluster` path `CLUSTER_HOST` /
+  // `POD_IP` / `HOSTNAME` sit under `host` and `CLUSTER_PORT` under `port`,
+  // and a published leaf would occupy this layer on every node and leave the
+  // variables unreachable (#1435).  The built-in pair is in code instead —
+  // see `withClusterConfigDefaults`.
   if (config.hasPath(remote.tcp.host)) out.host = config.getString(remote.tcp.host);
   // Absent from `reference.conf` on purpose, so `hasPath` stays false until an
   // operator sets it and "unset means: derive it from `host`" remains
@@ -646,14 +1743,89 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
     out.advertisedHost = config.getString(remote.tcp.advertisedHost);
   }
   if (config.hasPath(remote.tcp.port)) out.port = config.getInt(remote.tcp.port);
+  // Absent from `reference.conf` for the same reason `advertised-host` is: an
+  // always-present leaf could not mean "the same as `port`", which is what
+  // every deployment that does not remap the port relies on (#845).
+  if (config.hasPath(remote.tcp.advertisedPort)) {
+    out.advertisedPort = config.getInt(remote.tcp.advertisedPort);
+  }
   if (config.hasPath(remote.maxFrameBytes)) out.maxFrameBytes = config.getBytes(remote.maxFrameBytes);
+  // Both leaves ship a value, so `hasPath` is true once the reference layer is
+  // loaded and these always land — which is what the round-trip test pins.  The
+  // presence check stays anyway: it is what keeps a config built without the
+  // reference layer (`Config.empty()`, a bare `parseString`) from throwing out
+  // of `getBoolean` / `getStringList`, both of which reject a missing path
+  // rather than returning a default (#877).
+  if (config.hasPath(remote.untrustedMode)) {
+    out.untrustedMode = config.getBoolean(remote.untrustedMode);
+  }
+  if (config.hasPath(remote.trustedSelectionPaths)) {
+    out.trustedSelectionPaths = config.getStringList(remote.trustedSelectionPaths);
+  }
+  // The four association-lifecycle bounds (#846).  They land on
+  // `ClusterOptionsType` and travel to the transport through `Cluster`'s
+  // constructor, rather than being read a second time inside `TcpTransport`:
+  // the transport is constructible with no `Config` at all, and a second read
+  // site would be a second precedence order for the same values.
+  if (config.hasPath(remote.handshakeTimeout)) {
+    out.handshakeTimeoutMs = config.getDuration(remote.handshakeTimeout);
+  }
+  // Comment-only in `reference.conf`, the `advertised-host` shape: `hasPath`
+  // stays false until an operator sets it, which is what lets an unconfigured
+  // dial run the handshake deadline as its connect deadline (#1475).
+  if (config.hasPath(remote.connectTimeout)) {
+    out.connectTimeoutMs = config.getDuration(remote.connectTimeout);
+  }
+  if (config.hasPath(remote.outboundQueueSize)) {
+    out.outboundQueueSize = config.getInt(remote.outboundQueueSize);
+  }
+  if (config.hasPath(remote.maxInboundConnections)) {
+    out.maxInboundConnections = config.getInt(remote.maxInboundConnections);
+  }
+  if (config.hasPath(remote.incompleteFrameIdle)) {
+    out.incompleteFrameIdleMs = config.getDuration(remote.incompleteFrameIdle);
+  }
+  // Both ship `[]`, so both always land once the reference layer is loaded —
+  // which is behaviourally identical to their being absent, since every read
+  // site is already `?? []`.  The presence checks stay for the reason the
+  // wire-trust pair's do: `getStringList` rejects a missing path rather than
+  // returning a default, so a config built without the reference layer would
+  // throw out of the reader (#836).
+  if (config.hasPath(keys.seedNodes)) out.seeds = config.getStringList(keys.seedNodes);
+  if (config.hasPath(keys.roles)) out.roles = config.getStringList(keys.roles);
+  // Comment-only in `reference.conf`, the `remote.tcp.advertised-host` shape:
+  // `hasPath` stays false until an operator sets it, which is what lets a node
+  // state no version at all and put nothing on the wire (#843).
+  if (config.hasPath(keys.appVersion)) out.appVersion = config.getString(keys.appVersion);
   if (config.hasPath(keys.gossipInterval)) out.gossipIntervalMs = config.getDuration(keys.gossipInterval);
   if (config.hasPath(keys.seedRetryInterval)) {
     out.seedRetryIntervalMs = config.getDuration(keys.seedRetryInterval);
   }
   if (config.hasPath(keys.weaklyUpAfter)) out.weaklyUpAfterMs = config.getDuration(keys.weaklyUpAfter);
+  if (config.hasPath(keys.publishStatsInterval)) {
+    out.publishStatsIntervalMs = config.getDuration(keys.publishStatsInterval);
+  }
+  // The leaf ships `0s`, so it always lands once the reference layer is loaded
+  // — the round-trip pin asserts it — and `0` is the no-deadline the field's
+  // own default means, so landing changes nothing (#1500).
+  if (config.hasPath(keys.shutdownAfterUnsuccessfulJoin)) {
+    out.shutdownAfterUnsuccessfulJoinMs = config.getDuration(keys.shutdownAfterUnsuccessfulJoin);
+  }
   if (config.hasPath(keys.maxMembers)) out.maxMembers = config.getInt(keys.maxMembers);
   if (config.hasPath(keys.maxTombstones)) out.maxTombstones = config.getInt(keys.maxTombstones);
+  if (config.hasPath(keys.minimumMembersBeforeUp)) {
+    out.minimumMembersBeforeUp = config.getInt(keys.minimumMembersBeforeUp);
+  }
+  const perRole = readMinimumMembersBeforeUpPerRoleFromConfig(config);
+  if (perRole !== undefined) out.minimumMembersBeforeUpPerRole = perRole;
+  // The leaf ships, so it always lands once the reference layer is loaded —
+  // which is what the round-trip pin asserts.  The presence check is for a
+  // config built without that layer, where `getBoolean` throws on a missing
+  // path rather than returning a default (#1456).
+  if (config.hasPath(keys.runCoordinatedShutdownWhenDown)) {
+    out.runCoordinatedShutdownWhenDown = config.getBoolean(keys.runCoordinatedShutdownWhenDown);
+  }
+  if (config.hasPath(keys.downSmallerIsland)) out.downSmallerIsland = config.getBoolean(keys.downSmallerIsland);
   const tombstone = keys.tombstone;
   if (config.hasPath(tombstone.timeToLive)) out.tombstoneTtlMs = config.getDuration(tombstone.timeToLive);
   if (config.hasPath(tombstone.pruneInterval)) {
@@ -662,8 +1834,51 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
   if (config.hasPath(tombstone.minRetention)) {
     out.tombstoneMinRetentionMs = config.getDuration(tombstone.minRetention);
   }
+  // Both leaves ship a value, so both always land once the reference layer is
+  // loaded — which is what the round-trip pin asserts.  The presence checks
+  // stay for the reason the two wire-trust ones do: `getBoolean` and
+  // `getStringList` reject a missing path rather than returning a default, so
+  // a config built without the reference layer would throw out of the reader
+  // (#877).
+  const compatibility = keys.configurationCompatibilityCheck;
+  if (config.hasPath(compatibility.enforce)) {
+    out.configurationCompatibilityEnforce = config.getBoolean(compatibility.enforce);
+  }
+  if (config.hasPath(compatibility.checkedPaths)) {
+    out.configurationCompatibilityCheckedPaths = config.getStringList(compatibility.checkedPaths);
+  }
+  const failureDetectorKeys = keys.failureDetector;
+  if (config.hasPath(failureDetectorKeys.implementation)) {
+    // Cast rather than validated here: `ClusterOptionsValidator` checks the
+    // merged settings once, at consume time, and it is the one place that sees
+    // an explicit option and a HOCON value in the same shape.  Narrowing here
+    // as well would report the same typo from two places with two messages.
+    out.failureDetectorImplementation =
+      config.getString(failureDetectorKeys.implementation) as FailureDetectorImplementation;
+  }
+  // Flat beside the selector rather than inside `readFailureDetectorFromConfig`:
+  // the switch governs both detectors, and that reader builds the simple one's
+  // thresholds (#1426).  The leaf ships, so it always lands once the reference
+  // layer is loaded; the presence check is for a config built without it,
+  // where `getBoolean` would throw rather than return a default.
+  if (config.hasPath(failureDetectorKeys.autoDown)) {
+    out.failureDetectorAutoDown = config.getBoolean(failureDetectorKeys.autoDown);
+  }
   const failureDetector = readFailureDetectorFromConfig(config);
   if (Object.keys(failureDetector).length > 0) out.failureDetector = failureDetector;
+  const phiAccrual = readPhiAccrualFromConfig(config);
+  if (Object.keys(phiAccrual).length > 0) out.phiAccrual = phiAccrual;
+  // Only when a strategy was actually named: `active-strategy = off` is the
+  // shipped default and must leave no `downing` key at all, or every caller
+  // that never mentioned downing would carry an explicit one.
+  const downing = readDowningFromConfig(config);
+  if (downing !== undefined) out.downing = downing;
+  // The policy half of the same block, and a *separate* field from `downing`
+  // because it survives `active-strategy = off`: an operator who stages a
+  // window and flips the strategy on later must find the window still there
+  // (#839).  Omitted when neither leaf is set, the `failureDetector` rule.
+  const splitBrainResolver = readSplitBrainResolverOptionsFromConfig(config);
+  if (Object.keys(splitBrainResolver).length > 0) out.splitBrainResolver = splitBrainResolver;
   return out;
 }
 
@@ -708,18 +1923,98 @@ export function isRemoteTlsRequested(config: Config): boolean {
  * drop the other two straight back to the built-in defaults, silently
  * discarding the config file's values for settings the caller never
  * mentioned.  Per-field precedence has to reach inside it.
+ *
+ * `phiAccrual` needs the same pass for the same reason, one block over — an
+ * explicit `{ downThreshold: 16 }` must not blank the file's other five
+ * φ settings (#840).
+ *
+ * So does `splitBrainResolver`, and there the two fields are a duration and a
+ * switch rather than three of a kind: an explicit
+ * `withSplitBrainResolver({ stableAfterMs })` dropping the file's
+ * `downAllWhenUnstable` would silently turn an escalation the deployment asked
+ * for back off (#839).
+ *
+ * The bottom layer holds the bind pair and nothing else.  `host` and `port`
+ * are the two fields the join cannot do without, and `reference.conf` stopped
+ * supplying them when their leaves went comment-only (#1435), so their
+ * built-in values are applied here — every other field's default is the
+ * consumer's `?? DEFAULT_…`, which an absent field already reaches.
  */
 export function withClusterConfigDefaults(
   config: Config,
   options: ClusterOptionsType,
 ): ClusterOptionsType {
   const fromConfig = readClusterOptionsFromConfig(config);
-  const merged = mergeOptions<ClusterOptionsType>({}, fromConfig, options);
+  const merged = mergeOptions<ClusterOptionsType>(
+    { host: DEFAULT_BIND_HOST, port: DEFAULT_PORT },
+    fromConfig,
+    options,
+  );
   const failureDetector = {
     ...fromConfig.failureDetector,
     ...stripUndefined(options.failureDetector ?? {}),
   };
-  return Object.keys(failureDetector).length > 0 ? { ...merged, failureDetector } : merged;
+  const phiAccrual = {
+    ...fromConfig.phiAccrual,
+    ...stripUndefined(options.phiAccrual ?? {}),
+  };
+  const splitBrainResolver = {
+    ...fromConfig.splitBrainResolver,
+    ...stripUndefined(options.splitBrainResolver ?? {}),
+  };
+  const withNested: ClusterOptionsType = Object.keys(failureDetector).length > 0
+    ? { ...merged, failureDetector }
+    : merged;
+  const withPhi = Object.keys(phiAccrual).length > 0
+    ? { ...withNested, phiAccrual }
+    : withNested;
+  return Object.keys(splitBrainResolver).length > 0
+    ? { ...withPhi, splitBrainResolver }
+    : withPhi;
+}
+
+/**
+ * The leaf a per-role threshold is written under —
+ * `actor-ts.cluster.role.<role>.minimum-members-before-up` (#837).
+ *
+ * Composed rather than declared in `ConfigKeys`, for the reason
+ * `redisCacheKeysUnder` composes its block's leaves: the role name belongs to
+ * the deployment, so the full path cannot be written down anywhere in this
+ * repository.  `ConfigKeys.cluster.role` declares the root the composition
+ * starts from, which is what an `application.conf` writer needs and what the
+ * dead-key guard resolves against.
+ */
+function minimumMembersBeforeUpKeyFor(role: string): string {
+  return `${ConfigKeys.cluster.role}.${role}.minimum-members-before-up`;
+}
+
+/**
+ * Read `actor-ts.cluster.role.<role>.minimum-members-before-up` for every role
+ * the block names, or `undefined` when it names none (#837).
+ *
+ * `undefined` rather than `{}` for the reason every other absent leaf is
+ * omitted: an empty object is still a *set* field, and it would shadow an
+ * explicit `withMinimumMembersBeforeUpPerRole(…)` in `mergeOptions` — which
+ * strips `undefined` but not an empty object.
+ *
+ * The block ships **comment-only** in `reference.conf`: role names are
+ * per-deployment, so there is no leaf that could be published, and `hasPath`
+ * on the root therefore stays false until an operator writes one.  A role
+ * sub-block that carries something other than this leaf is skipped rather
+ * than refused — the enumeration is over what an operator wrote, and
+ * `hasPath` is the only thing that decides whether a path is there.
+ */
+function readMinimumMembersBeforeUpPerRoleFromConfig(
+  config: Config,
+): Record<string, number> | undefined {
+  const root = ConfigKeys.cluster.role;
+  if (!config.hasPath(root)) return undefined;
+  const out: Record<string, number> = {};
+  for (const role of Object.keys(config.getObject(root))) {
+    const path = minimumMembersBeforeUpKeyFor(role);
+    if (config.hasPath(path)) out[role] = config.getInt(path);
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function readFailureDetectorFromConfig(config: Config): Partial<FailureDetectorOptionsType> {
@@ -732,6 +2027,55 @@ function readFailureDetectorFromConfig(config: Config): Partial<FailureDetectorO
     out.unreachableAfterMs = config.getDuration(keys.unreachableAfter);
   }
   if (config.hasPath(keys.downAfter)) out.downAfterMs = config.getDuration(keys.downAfter);
+  return stripUndefined(out);
+}
+
+/**
+ * The `failure-detector.phi` sub-block — a sibling of
+ * {@link readFailureDetectorFromConfig}, not an extension of it, because the
+ * two detectors are configured by two different shapes and a single reader
+ * would have to return both (#840).
+ *
+ * There is no `heartbeat-interval` leaf here on purpose: the cadence is read
+ * once from `failure-detector.heartbeat-interval` and imposed on whichever
+ * detector is installed (#1142), so the returned shape never carries
+ * `heartbeatIntervalMs`.
+ *
+ * The two thresholds are read with `getNumber`, not `getInt`: φ is a
+ * continuous suspicion value and `unreachable-threshold = 8.5` is an ordinary
+ * tuning move, which `getInt` would reject outright.
+ *
+ * `expected-response-after` is the word `auto` or a duration, and `auto`
+ * passes through as the word: the detector resolves it to the cadence
+ * `createFailureDetector` imposes, so it follows `heartbeat-interval` however
+ * that was set.  Resolving it here would freeze the file's cadence into it and
+ * miss one set in code (#1451).
+ */
+function readPhiAccrualFromConfig(config: Config): Partial<PhiAccrualOptionsType> {
+  const keys = ConfigKeys.cluster.failureDetector.phi;
+  const out: { -readonly [K in keyof PhiAccrualOptionsType]?: PhiAccrualOptionsType[K] } = {};
+  if (config.hasPath(keys.unreachableThreshold)) {
+    out.unreachableThreshold = config.getNumber(keys.unreachableThreshold);
+  }
+  if (config.hasPath(keys.downThreshold)) {
+    out.downThreshold = config.getNumber(keys.downThreshold);
+  }
+  if (config.hasPath(keys.maxSampleSize)) {
+    out.maxSampleSize = config.getInt(keys.maxSampleSize);
+  }
+  if (config.hasPath(keys.minStdDeviation)) {
+    out.minStdDeviationMs = config.getDuration(keys.minStdDeviation);
+  }
+  if (config.hasPath(keys.acceptableHeartbeatPause)) {
+    out.acceptableHeartbeatPauseMs = config.getDuration(keys.acceptableHeartbeatPause);
+  }
+  if (config.hasPath(keys.expectedResponseAfter)) {
+    // One leaf, dual-read: the raw value decides which reader applies, the
+    // shape `worker-cluster.workers` uses for `"auto"` against a count.
+    // `getString` first, because it also hands back a bare number as text.
+    const raw = config.getString(keys.expectedResponseAfter);
+    out.expectedResponseAfterMs = raw === 'auto' ? 'auto' : config.getDuration(keys.expectedResponseAfter);
+  }
   return stripUndefined(out);
 }
 

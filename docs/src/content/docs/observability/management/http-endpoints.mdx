@@ -8,7 +8,8 @@ endpoints.  Most are read-only; the admin ones (`/cluster/down`,
 `/cluster/leave`) are opt-in and off by default.
 
 **Security (security audit #8):** the read-only endpoints still reveal
-internal topology — member addresses (`host:port`), roles, the leader, and the
+internal topology — member addresses (`host:port`), roles, the application
+version each member states, the leader, and the
 shard map.  Treat the management server as sensitive: bind it to an internal
 interface and gate it with the `ipAllowlist` (and/or `auth`) options of
 `managementRoutes(...)` rather than exposing it publicly.
@@ -52,12 +53,34 @@ GET /ready
 ```
 
 The `checks` array holds every readiness check on the system's
-registry — the framework's `cluster-membership` and
-`cluster-transport` plus whatever you registered.  `clusterReady` is
+registry — the framework's
+[built-in checks](/observability/management/health-checks/#the-built-in-checks)
+(`cluster-membership` and `cluster-transport`, plus `startup` and one
+`shard-region:<type>` per named type where configured) and whatever you
+registered.  `clusterReady` is
 `cluster-membership`'s own result, read back out of that array
 rather than computed separately, so it is `false` until the local
 node reaches `Up` and `true` when there is no cluster at all.  503
 if any check fails.
+
+### Moving the two probe paths
+
+`/health` and `/ready` are defaults, not fixed routes.  Each is a
+single path segment, settable in code or from a config file:
+
+```hocon
+actor-ts.management {
+  liveness-path  = "alive"
+  readiness-path = "serving"
+}
+```
+
+A value containing `/` is refused with an `OptionsError` when the
+routes are built, because `path()` strips only *surrounding*
+slashes — `"k8s/ready"` would become one segment holding a slash,
+match no URL, and take the endpoint out of existence silently.
+Whatever the segments are, keep the K8s probe paths in step with
+them; nothing cross-checks a manifest.
 
 ## Cluster info
 
@@ -71,29 +94,47 @@ GET /cluster/members
 {
   "members": [
     {
-      "address": "actor-ts://my-app@10.0.0.5:2552",
-      "status":  "up",
-      "version": 3,
-      "roles":   ["compute"]
+      "address":    "my-app@10.0.0.5:2552",
+      "status":     "up",
+      "version":    1710000000001,
+      "roles":      ["compute"],
+      "appVersion": "2.4.0"
     },
     ...
   ],
-  "self": "actor-ts://my-app@10.0.0.5:2552"
+  "self": "my-app@10.0.0.5:2552"
 }
 ```
 
-Full membership snapshot.  Useful for:
+Full membership snapshot.  Addresses are `system@host:port`, the
+form `POST /cluster/down` takes.  `version` is the member's logical
+clock: it starts at the wall-clock time the member joined, in
+milliseconds — so a node restarted at the same address out-versions
+the tombstone its previous run left behind — and goes up by one with
+every status change.  Useful for:
 
 - **Manual cluster-state checks** during incidents.
 - **External dashboards** that visualize the cluster.
 - **Tests** verifying cluster joining.
+
+`appVersion` is the application version the member states —
+[`actor-ts.cluster.app-version`](/reference/configuration/#actor-tscluster),
+or `withAppVersion(...)` in code — and it is what a rolling update is read
+from: which node runs which release.  It is present only for a member that
+states one, omitted rather than `null` otherwise — a member restarted
+without one is listed without one, not with its previous run's — and it is
+a label and nothing more: nothing places, routes or downs on it.  Like the
+rest of this endpoint it is served to anyone who can reach the port unless
+`managementRoutes(...)` is given `auth`
+([#971](https://github.com/pathosDev/actor-ts/issues/971)), so it adds the
+release every node runs to what an unauthenticated caller learns.
 
 ### `GET /cluster/leader`
 
 ```
 GET /cluster/leader
 → 200 OK
-{ "leader": "actor-ts://my-app@10.0.0.5:2552", "isSelf": true }
+{ "leader": "my-app@10.0.0.5:2552", "isSelf": true }
 ```
 
 The leader's address plus `isSelf` (is the local node the leader).
@@ -223,9 +264,10 @@ leaving
 The `202` body is the plain-text word `leaving` (not JSON) — the leave
 is fire-and-forget.
 
-Triggers graceful cluster-leave.  The node transitions through
-`leaving` → `exiting` → `removed`; shards rebalance away; the
-actor system terminates (configurable).
+Triggers graceful cluster-leave.  The node moves to `leaving` and
+tells the peers it can reach, which record it as `removed`; its
+shards rebalance away.  The actor system itself keeps running: the
+endpoint calls `cluster.leave()` and nothing else.
 
 Use for:
 
@@ -237,28 +279,59 @@ your node.
 
 ### `POST /cluster/down`
 
-Opt-in via `enableDownEndpoint: true`.
+Opt-in via `enableDownEndpoint: true`, or
+`actor-ts.management.enable-down-endpoint = on` in HOCON.
 
 ```
 POST /cluster/down
-{ "address": "actor-ts://my-app@10.0.0.5:2552" }
+{ "address": "my-app@10.0.0.5:2552" }
 
 → 202 Accepted
-{ "downed": "actor-ts://my-app@10.0.0.5:2552" }
+{ "downed": "my-app@10.0.0.5:2552" }
 ```
 
 Returns `202` with `{ downed }` when the member was downed, or `404`
 if the address is unknown or already terminal.
 
-Force-downs a remote member by address.  Destructive — the
-target's actors stop, its shards reallocate elsewhere.
+Force-downs a member by address, in the view of the node you call:
+it is announced `down` and `removed` there and kept as a tombstone,
+and gossip carries the removal to the members that node still
+reaches.  That is what reallocates the member's shards and gives its
+remote watchers their `Terminated`.  The target itself is not told
+(#940): it keeps running, actors and all, so stop it first, or make
+sure it is gone, before you down it.
+
+**This is the way out of the opt-out.**  Under the default — no
+downing strategy, `actor-ts.cluster.failure-detector.auto-down = on`
+— the failure detector deletes a silent member itself once it
+declares it `down`, and the endpoint usually answers `404` for it
+afterwards.  With two or more survivors, though, another survivor's
+gossip can bring the deleted member back as `unreachable` until the
+detector removes it again, and a call in that window finds it and
+answers `202`.  Under `auto-down = off` the failure detector parks a
+silent member at `unreachable`, and the node logs one warning that
+names the member and this endpoint; only an operator, a strategy or
+the node's own restart on the same address removes it.
 
 Use for:
 
-- **Split-brain recovery** when no downing strategy is
-  configured.
-- **Removing stuck `unreachable` members** that refuse to
-  recover.
+- **Removing a crashed member** the failure detector has parked under
+  `auto-down = off`, with no downing strategy configured.  If the node
+  has been restarted on the same address since, the cluster has ended
+  the parked run already, and the record at that address is the new
+  process: `GET /cluster/members` shows it back at `up` with a newer
+  `version`.  Downing it then removes the healthy run, which is not
+  told and keeps running outside the cluster.
+- **Settling a partition by hand** under `auto-down = off` without a
+  strategy: down the other side's members from the side you keep,
+  and stop the processes on the side you drop, since they are not
+  told.  Under the default there is nothing left to settle by then —
+  each side has removed the other at `down-after` and runs on as a
+  cluster of its own; configure `lease-majority` or another
+  [downing strategy](/cluster/downing-strategies/) so that one side
+  wins instead.
+- **Removing a member a configured strategy has left parked**
+  because it has not reached a verdict.
 
 **High-risk endpoint** — gate behind auth + audit logs.
 
@@ -314,8 +387,11 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   POST /cluster/down → target is removed from cluster
   ```
-  The downed node sees `MemberRemoved` for itself; it can't
-  participate further.  Restart it to rejoin.
+  The rest of the cluster keeps the address as a tombstone, so the
+  downed process cannot come back as it was.  It is not told,
+  though (#940): it sees no `MemberRemoved` for itself and keeps
+  running until you stop it.  Restart it to rejoin — a new process
+  starts at a higher version than the tombstone.
 </Aside>
 
 <Aside type="caution" title="No request validation by default">

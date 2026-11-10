@@ -24,7 +24,9 @@ Vertrag und das Verhalten sind aber identisch.
 bun add mariadb
 ```
 
-Beim ersten Zugriff lazy-importiert, wie jeder andere Adapter.
+Importiert, wenn ein MariaDB-Store öffnet — beim Start, oder bei der ersten
+Verwendung, wenn das Öffnen beim Start abgeschaltet ist —, wie jeder andere
+Adapter.
 
 ## Einrichtung
 
@@ -34,7 +36,6 @@ import {
   ActorSystemOptions,
 } from 'actor-ts';
 import {
-  PersistenceExtensionId,
   MariaDbJournalOptions,
   MariaDbSnapshotStoreOptions,
   MariaDbDurableStateStoreOptions,
@@ -42,17 +43,6 @@ import {
   registerMariaDbPlugins,
 } from 'actor-ts/persistence';
 
-const actorSystemOptions = ActorSystemOptions.create().withConfig({
-    'actor-ts': {
-      persistence: {
-        journal: { plugin: 'actor-ts.persistence.journal.mariadb' },
-        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.mariadb' },
-      },
-    },
-  });
-const system = ActorSystem.create('my-app', actorSystemOptions);
-
-const ext = system.extension(PersistenceExtensionId);
 const mariaDbJournalOptions = MariaDbJournalOptions.create().withPoolConfig(connection);
 const mariaDbSnapshotStoreOptions = MariaDbSnapshotStoreOptions.create()
   .withPoolConfig(connection)
@@ -62,25 +52,125 @@ const registerMariaDbPluginsOptions = RegisterMariaDbPluginsOptions.create()
   .withJournal(mariaDbJournalOptions)
   .withSnapshotStore(mariaDbSnapshotStoreOptions)
   .withDurableStateStore(mariaDbDurableStateStoreOptions);
-const { durableStateStore } = registerMariaDbPlugins(ext, registerMariaDbPluginsOptions);
+const actorSystemOptions = ActorSystemOptions.create()
+  .withConfig({
+    'actor-ts': {
+      persistence: {
+        journal: { plugin: 'actor-ts.persistence.journal.mariadb' },
+        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.mariadb' },
+        'durable-state': { plugin: 'actor-ts.persistence.durable-state.mariadb' },
+      },
+    },
+  })
+  .withPersistence({ plugins: [(persistence) => registerMariaDbPlugins(persistence, registerMariaDbPluginsOptions)] });
+const system = ActorSystem.create('my-app', actorSystemOptions);
 
-// connection = { host, port: 3306, user, password, database } — oder gib oben
-// einen geteilten `pool` (aus mariadb.createPool) via `.withPool(pool)`
-// mit, um einen Pool über alle drei zu nutzen, oder eine Connection-URL
-// via `.withUrl(...)`.
+// connection = { host, port: 3306, user, password, database } — or pass a
+// shared `pool` (from mariadb.createPool) at the top level via
+// `.withPool(pool)` to reuse one pool across all three, or a connection
+// URL via `.withUrl(...)`.
 ```
 
-Wie bei Postgres werden Journal + Snapshot-Store über die Plugin-IDs
-ausgewählt, und der **Durable-State-Store wird zurückgegeben**, damit du
-ihn in die Settings deines `DurableStateActor` reichst.
+Wie bei Postgres läuft das Plug-in innerhalb von `ActorSystem.create`, und
+die Konfiguration wählt alle drei Stores aus, die als Teil des Starts
+öffnen: Eine Datenbank, die der Knoten nicht erreicht, lässt den Start
+scheitern statt erst die erste persistierte Nachricht, ob
+`autoCreateTables` an ist oder aus — siehe [Stores beim Start
+öffnen](/de/persistence/overview/#stores-beim-start-öffnen).
+Der **Durable-State-Store wird außerdem zurückgegeben**, falls du ihn lieber
+von Hand in die Settings deines `DurableStateActor` reichst; ein so
+verdrahteter Store ist kein ausgewählter, er öffnet also bei der ersten
+Verwendung statt mit dem Start.
+
+## Aus HOCON konfigurieren
+
+Die Plugin-Id **ist** der Config-Abschnitt: Der Block, der nach der Id benannt
+ist, ist der Block, den dieses Plugin liest (#872).  Alles außer den lebenden
+Objekten kann aus der `application.conf` kommen, `registerMariaDbPlugins(persistence)` braucht damit
+gar keine Optionen mehr:
+
+```ts
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerMariaDbPlugins } from 'actor-ts/persistence';
+
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerMariaDbPlugins(persistence)],
+});
+const system = ActorSystem.create('my-app', systemOptions);
+```
+
+```hocon
+actor-ts.persistence {
+  journal        { plugin = "actor-ts.persistence.journal.mariadb" }
+  snapshot-store { plugin = "actor-ts.persistence.snapshot-store.mariadb" }
+  durable-state  { plugin = "actor-ts.persistence.durable-state.mariadb" }
+
+  journal.mariadb        { url = ${?DATABASE_URL}, events-table = "events" }
+  snapshot-store.mariadb { url = ${?DATABASE_URL}, keep-n = 5 }
+  durable-state.mariadb  { url = ${?DATABASE_URL}, table = "durable_state" }
+}
+```
+
+An `registerMariaDbPlugins` übergebene Optionen gewinnen weiterhin, Feld für Feld, und ein
+nicht gesetztes Feld fällt auf den Block durch, statt ihn zu leeren — ein
+geteilter `Pool` im Code und die Tabellennamen in HOCON sind also eine
+normale Mischung.  Ein vorab gebauter `Pool` und ein `serializer` haben
+**gar kein Blatt**: Das sind lebende Objekte, die eine Config-Datei nicht
+ausdrücken kann.  `poolConfig` ebenso wenig — die gesamte Optionsfläche des
+Connectors, die code-only bleibt.  `tags-table` wird gelesen, wird aber als
+*Kommentar* statt als Schlüssel ausgeliefert, weil sein Default aus
+`events-table` abgeleitet wird und genau die Abwesenheit beide im Gleichlauf
+hält.
+
+Was du am Pool tatsächlich einstellst, hat **typisierte Blätter** (#1490), jedes
+in der Referenzkonfiguration nur als Kommentar, damit Weglassen den eigenen
+Default des Connectors behält:
+
+```hocon
+actor-ts.persistence.journal.mariadb {
+  url             = ${?DATABASE_URL}
+  max-pool-size   = 20                      # connectionLimit (default 10)
+  acquire-timeout = 5s                      # acquireTimeout (default 10s)
+  idle-timeout    = 10m                     # idleTimeout, whole seconds only (default 1800s)
+  connect-timeout = 2s                      # connectTimeout (default 1s)
+  ca-file         = "/etc/ssl/maria-ca.pem" # read when the pool opens, handed over as ssl.ca
+}
+```
+
+Jedes erreicht den Connector nur, wenn es gesetzt ist — über die URL gelegt, die
+so geparst wird, wie der Connector sie parst, damit ihr Host, ihre Datenbank und
+ihre Optionen erhalten bleiben.  Der Store prüft sie beim Bau: eine Größe oder
+ein Timeout, das keine positive ganze Zahl ist, ein `idle-timeout`, das keine
+ganze Zahl von Sekunden ist (der Connector zählt es in Sekunden), oder ein
+Timeout, länger als ein Timer halten kann, wird mit einem `OptionsError`
+abgelehnt — ebenso ein Blatt neben derselben Option in `poolConfig` oder in der
+Query der URL (`max-pool-size` neben `connectionLimit=` etwa), das dann beide
+nennt, statt eine Seite still gewinnen zu lassen.  `ca-file` ist ein Pfad, den
+das Framework liest, nie das Zertifikat selbst, und der einzige Weg zu einer
+privaten CA aus der Konfiguration: Das `ssl` der URL ist ein bloßer Schalter.
+Abgelehnt wird es neben einem `ssl` in der URL, das der Connector als false
+liest — alles außer genau `true`, also auch `ssl=TRUE` —, weil das TLS
+abschaltet.
+
+**`durable-state.plugin` wählt jetzt den Durable-State-Store dieses Backends
+aus.**  Früher wurde er eifrig gebaut und von `registerMariaDbPlugins` zurückgegeben, ließ
+sich also nur verdrahten, indem man diese Instanz durch den Anwendungscode
+reichte.  Das zurückgegebene Handle funktioniert weiterhin und liefert dieselbe
+Instanz — sie wird nur gebaut, wenn sie zum ersten Mal angefragt wird, statt
+bei der Registrierung, und bei einem ausgewählten Store ist das der Start.
 
 ## Konfiguration
 
 ```ts
 type MariaDbConnection = {
-  url?:        string;                    // mariadb://user:pass@host:3306/db
-  poolConfig?: Record<string, unknown>;   // { host, port, user, password, database, … }
-  pool?:       MariaDbPoolLike;           // vorgebauter / geteilter Pool
+  url?:              string;                   // mariadb://user:pass@host:3306/db
+  poolConfig?:       Record<string, unknown>;  // { host, port, user, password, database, … }
+  pool?:             MariaDbPoolLike;          // pre-built / shared pool
+  maxPoolSize?:      number;                   // connectionLimit, default 10           (max-pool-size)
+  acquireTimeoutMs?: number;                   // acquireTimeout, default 10 000        (acquire-timeout)
+  idleTimeoutMs?:    number;                   // idleTimeout in whole s, default 1800 s (idle-timeout)
+  connectTimeoutMs?: number;                   // connectTimeout, default 1 000         (connect-timeout)
+  caFile?:           string;                   // PEM file read into ssl.ca             (ca-file)
 };
 interface MariaDbJournalOptions extends MariaDbConnection {
   eventsTable?: string; tagsTable?: string; autoCreateTables?: boolean;
@@ -95,7 +185,9 @@ interface MariaDbDurableStateStoreOptions extends MariaDbConnection {
 
 Diskretes `poolConfig` (host/user/password/database) ist der portabelste
 Verbindungsweg; `url` und ein vorgebauter `pool` werden ebenfalls
-akzeptiert.
+akzeptiert.  Die Optionen werden beim Bau des Stores validiert — die
+MariaDB-Stores hatten keinen Validator, bevor die typisierten
+Verbindungsfelder kamen.
 
 ## Schema
 
@@ -107,7 +199,7 @@ anders als `CREATE INDEX IF NOT EXISTS`):
 
 ```sql
 CREATE TABLE events (
-  persistence_id VARCHAR(255) NOT NULL,
+  persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL,
   sequence_nr    BIGINT NOT NULL,
   payload        LONGTEXT NOT NULL,
   tags           TEXT,
@@ -117,6 +209,112 @@ CREATE TABLE events (
 );
 -- events_tags, snapshots, durable_state: wie bei Postgres, mit den Typen oben
 ```
+
+### Warum `persistence_id` und `tag` kollationiert sind
+
+Jede `persistence_id`- und `tag`-Spalte trägt ein explizites `COLLATE
+utf8mb4_bin`.  Ohne das erbt die Spalte den Server-Standard —
+`utf8mb4_general_ci` auf einer Standard-MariaDB, `utf8mb4_0900_ai_ci` auf
+MySQL 8 — und beide **falten Groß-/Kleinschreibung und Akzente**.
+
+Eine `persistence_id` ist nicht bloß ein Wert: sie ist der *Name eines
+Event-Streams* und die Hälfte des `events`-Primary-Keys.  Unter einer
+faltenden Kollation sind `Alice` und `alice` deshalb **ein** Stream hier
+und **zwei** auf Postgres, SQLite, MongoDB und DynamoDB.  Ein als `Alice`
+gestarteter Actor liest `alice`s Events, faltet sie in seinen eigenen
+State und schreibt in `alice`s Stream — ein Cross-Entity-Read, dessen
+einziges Symptom eine Serie von `JournalConcurrencyError`s ist, die wie
+ein Speicherfehler aussieht.  Dieselbe Spalte ist der Schlüssel für
+Durable-State-Load, Revisions-CAS und Delete; dort überschreibt und löscht
+eine Kollision den State einer anderen Entität.
+
+Eine Id-Validierung kann das nicht beheben: `Alice` und `alice` sind beide
+völlig legale Ids.  Was sich unterscheidet, ist der *Vergleich*, und der
+ist eine Eigenschaft der Spalte.
+
+`utf8mb4_bin` vergleicht Codepoint für Codepoint, so wie es jedes andere
+Backend ohnehin tut.  Es ist auch die portable Schreibweise —
+`utf8mb4_0900_bin` gibt es nur auf MySQL 8, und MariaDB hatte es nie.  Eine
+Kollation ohne `CHARACTER SET` zu nennen legt zugleich den Zeichensatz auf
+`utf8mb4` fest, statt ihn auf dem Datenbank-Standard zu belassen.
+
+Eine Abweichung bleibt bewusst bestehen: `utf8mb4_bin` ist **PAD SPACE**,
+also ist `'alice '` hier gleich `'alice'`, wo Postgres die beiden trennt.
+Die NO-PAD-Binärkollationen sind herstellerspezifisch geteilt
+(`utf8mb4_nopad_bin` auf MariaDB, `utf8mb4_0900_bin` auf MySQL), es gibt
+also nichts Portables zum Festlegen — vermeide abschließende Leerzeichen in
+Ids, die du selbst erzeugst.
+
+### Bestehendes Schema migrieren
+
+Das DDL ist `CREATE TABLE IF NOT EXISTS`, und `autoCreateTables` ist
+standardmäßig `true` — eine **bestehende Datenbank übernimmt das also
+nicht**: das Framework fasst eine vorgefundene Tabelle nie wieder an.  Neue
+Deployments bekommen die Kollation stillschweigend; eine ältere Datenbank
+behält den Server-Standard, bis du die Migration unten ausführst — aber
+nicht mehr unbemerkt.  Jeder Store liest seine eigenen Tabellen aus
+`information_schema`, wenn er öffnet, und **warnt**, wenn eine
+`persistence_id`- oder `tag`-Spalte mit einer nicht-binären Kollation
+zurückkommt; er nennt Tabelle, Spalte und die gefundene Kollation.  Ein
+ausgewählter Store öffnet als Teil des Starts, die Warnung steht also im
+Startlog; ist das Öffnen beim Start abgeschaltet, verbindet sich der Store
+erst bei Bedarf und warnt beim ersten Zugriff, also bei der ersten
+Persistenz-Operation.  Dieser Lesezugriff braucht keine
+DDL-Rechte und läuft unabhängig davon, ob `autoCreateTables` gesetzt ist —
+denn ein vom Betrieb selbst verwaltetes
+Schema ist genau das, das am ehesten älter ist als der Pin.  Führe das
+einmal pro Datenbank aus, während kein Knoten schreibt:
+
+```sql
+ALTER TABLE events        MODIFY persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL;
+ALTER TABLE events_tags   MODIFY persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL,
+                          MODIFY tag            VARCHAR(255) COLLATE utf8mb4_bin NOT NULL;
+ALTER TABLE events_meta   MODIFY persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL;
+ALTER TABLE snapshots     MODIFY persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL;
+ALTER TABLE durable_state MODIFY persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL;
+```
+
+`MODIFY` ersetzt die **gesamte** Spaltendefinition, `NOT NULL` muss also
+wiederholt werden — lässt du es weg, wird die Spalte stillschweigend
+nullable.  Die Kollation einer indizierten Spalte zu ändern ist keine
+In-Place-Änderung, InnoDB baut jede Tabelle also neu auf: plane einen Lock
+für die Dauer und Plattenplatz für eine zweite Kopie ein.
+
+Zwischen den ersten beiden Statements vergleicht der Join der Tag-Queries
+eine `events`-Spalte mit einer `events_tags`-Spalte anderer Kollation.
+MariaDB verweigert das nicht so wie SQL Server: wo eine Seite `_bin` und die
+andere `_ci` desselben Zeichensatzes ist, gewinnt die `_bin`-Kollation, der
+Join läuft also unter `utf8mb4_bin` und liefert die richtigen Zeilen — aber
+die noch nicht umgestellte Seite kann ihren Index für den Vergleich nicht
+nutzen, Tag-Queries sind in diesem Fenster also langsam statt falsch.  Eine
+`tagsTable`, die auf eine *neue* Tabelle neben einem alten `events` zeigt,
+ist dieses Fenster auf Dauer, bis auch `events` umkollationiert ist.
+
+Die Startwarnung meldet **pro Spalte**, und genau das unterscheidet diesen
+Zustand von einem unangetasteten Schema: startet ein Knoten mitten in der
+Migration neu, nennt die Warnung nur die noch offenen Spalten und sagt, dass
+das Schema halb migriert ist.  Eine `tagsTable` neben einem alten `events`
+liest sich genauso — bei jedem Öffnen des Stores, bis die Migration fertig
+ist.
+
+Prüfe **vor** der Migration auf Schaden, solange `GROUP BY` noch die
+faltende Kollation benutzt:
+
+```sql
+SELECT persistence_id,
+       COUNT(DISTINCT persistence_id COLLATE utf8mb4_bin) AS spellings
+  FROM events
+ GROUP BY persistence_id
+HAVING spellings > 1;
+```
+
+Jede Zeile bedeutet, dass sich zwei Ids bereits einen Stream teilen.  Das
+`ALTER` trennt sie wieder, und jeder Hälfte fehlen dann die Events der
+anderen — diese Actors scheitern beim Recovery also laut mit
+`JournalIntegrityError` (eine Lücke in der Sequenz), statt stillschweigend
+eine verschmolzene Historie auszuliefern.  Das ist das bessere Scheitern,
+aber es bleibt ein Scheitern: entscheide *vor* der Migration, was diese
+Streams sein sollen, nicht danach.
 
 ## Tag-Queries
 
@@ -146,6 +344,7 @@ Das Verhalten ist identisch; das SQL unterscheidet sich:
 | Durable-Create-Konflikt | `ON CONFLICT DO NOTHING` → rowCount | reines `INSERT`, `ER_DUP_ENTRY` (1062) fangen |
 | Concurrency-Backstop | SQLSTATE `23505` | `ER_DUP_ENTRY` / 1062 |
 | Contention-Backstop | SQLSTATE `40001` / `40P01` | `ER_CHECKREAD` (1020), 1213, 1205² |
+| Id-/Tag-Vergleich | `TEXT` — ohnehin byte-exakt | `VARCHAR(255) COLLATE utf8mb4_bin`³ |
 
 ¹ MySQL/MariaDB lehnen `LIMIT` in einer nackten `IN (SELECT …)` gegen die
 zu löschende Tabelle ab, daher wrappt der Prune die Subquery in eine
@@ -163,6 +362,11 @@ denn ein Lock-Wait-Timeout gegen eine unbeteiligte lange Transaktion ist
 ein echter Fehler, und ein Retry würde sich nur drehen.  Für Durable-State-
 CAS gilt dasselbe.
 
+³ Postgres vergleicht `TEXT` byte-exakt und braucht daher nichts; MariaDB
+würde sonst einen groß-/kleinschreibungsfaltenden Server-Standard erben und
+zwei Entitäten in einen Stream verschmelzen.  Siehe
+[Warum `persistence_id` und `tag` kollationiert sind](#warum-persistence_id-und-tag-kollationiert-sind).
+
 `BIGINT` kann der Connector als JS-`bigint` liefern; das Backend coerct
 Sequence/Revision/Timestamp an der Mapping-Grenze zu `number`.
 
@@ -175,27 +379,74 @@ import { Aside } from '@astrojs/starlight/components';
   `PersistenceQuery`-Live-Subscriber pollen.  Wie Postgres und Cassandra.
 </Aside>
 
-<Aside type="caution" title="Compression- / Encryption-Optionen werden ignoriert">
-  Die SQL-Backends speichern JSON als `LONGTEXT`; per-Call-`PersistenceOptions`
-  (Compression/Encryption) gelten nur für die Object-Storage-Stores.
+<Aside type="caution" title="Per-Actor-Verschlüsselung und -Integrität schützen keine Events">
+  Per-Call-`PersistenceOptions` (Compression, Encryption, Integrity)
+  werden vom MariaDB-Snapshot-Store und vom MariaDB-Durable-State-Store
+  honoriert, wie von jedem SQL- und Object-Storage-Store: Eine Zeile,
+  die unter einem Hook geschrieben wird, ist der Object-Storage-Frame in
+  Base64 hinter einem `ats1:`-Präfix, in derselben `LONGTEXT`-Spalte,
+  gebunden an ihre Persistence-ID und ihre Sequenznummer bzw. Revision
+  ([#1802](https://github.com/pathosDev/actor-ts/issues/1802)).  Eine Zeile ohne den Schutz, den der Actor verlangt, wird
+  verweigert, sofern der Store nicht für eine Migration mit
+  `withAllowPlaintextRows(true)` gebaut wurde.
+
+  Das Journal wird nie gefragt.  `encryption()` und `integrity()` an
+  einem `PersistentActor` schützen nur seine Snapshots: Jedes Journal
+  speichert Events als Klartext-JSON, nichts erkennt ein an Ort und
+  Stelle manipuliertes Event, und datenbankseitige Kontrollen —
+  Transparent Data Encryption, ein verschlüsseltes Volume,
+  Zugriffskontrolle — sind heute der einzige Schutz für Events.  Ein
+  Actor, der dieses Journal mit dem Object-Storage-Snapshot-Store
+  kombiniert, startet sauber und schreibt seine Events hier im Klartext.
 </Aside>
 
 <Aside type="caution" title="utf8mb4 + Key-Länge">
-  Der `events_tags`-Primary-Key umfasst zwei `VARCHAR(255)`-Spalten.  Bei
-  `utf8mb4` im Hinterkopf behalten, wenn du das Schema anpasst — sehr lange
-  eigene Identifier können an InnoDBs Index-Größen-Limit stoßen.
+  `utf8mb4_bin` festzulegen legt auch den Zeichensatz fest, beide
+  `VARCHAR(255)`-Spalten des `events_tags`-Primary-Keys zählen also 1020
+  Index-Bytes — 2056 für den vierspaltigen Key.  Das liegt bequem unter
+  InnoDBs 3072-Byte-Limit beim Row-Format `DYNAMIC` (Standard seit MariaDB
+  10.2 und MySQL 5.7) und über dem 767-Byte-Limit des alten `COMPACT`.  Die
+  Spalten in einem eigenen Schema zu verbreitern frisst diesen Spielraum
+  schnell auf.
 </Aside>
 
-<Aside type="caution" title="Tags vergleichen im Index case-insensitiv">
-  `tag` ist ohne explizites `COLLATE` deklariert und erbt damit den
-  Server-Standard — auf einer Standardinstallation case-insensitiv.  Der
-  Index liefert deshalb auch Zeilen für Tags, die sich nur in der
-  Groß-/Kleinschreibung unterscheiden.  Die Ergebnisse bleiben korrekt:
-  `MariaDbQuery` prüft jede Zeile erneut gegen die Tag-Liste des Events
-  selbst, und die vergleicht exakt.  Der Preis ist ein weniger selektiver
-  Vorfilter als bei derselben Query auf Postgres.  Deklariere die Spalte
-  als `COLLATE utf8mb4_bin`, wenn du das Schema vorab anlegst und den
-  Index die ganze Arbeit machen lassen willst.
+<Aside type="caution" title="Eine bestehende Datenbank behält die alte Kollation">
+  `CREATE TABLE IF NOT EXISTS` fasst eine bereits vorhandene Tabelle nie
+  wieder an — eine vor dem `COLLATE utf8mb4_bin` angelegte Datenbank behält
+  also den case-insensitiven Server-Standard.  Zwei Ids, die sich nur in der
+  Groß-/Kleinschreibung unterscheiden, teilen sich dann auf diesem Backend
+  einen Event-Stream und bleiben auf jedem anderen getrennt.  Findet der
+  Store das beim Öffnen vor, **warnt** er und nennt Tabelle, Spalte und
+  gelesene Kollation — einmal pro Store, beim Start, sofern das Öffnen beim
+  Start nicht abgeschaltet ist, und nie als Fehler: ein
+  Hinweis, der eine laufende Datenbank lahmlegen kann, wäre ein schlechterer
+  Tausch als das, was er meldet.  Führe die
+  [`ALTER TABLE`-Migration](#bestehendes-schema-migrieren) aus; prüfe vorher
+  auf bereits verschmolzene Streams.  Eine binäre Kollation, die du selbst
+  gewählt hast — `utf8mb4_nopad_bin` oder MySQL 8s `utf8mb4_0900_bin` —
+  bleibt stumm: geprüft wird auf einen faltenden Vergleich, nicht auf die
+  Schreibweise dieser Seite.
+</Aside>
+
+<Aside type="caution" title="TLS zu einer Managed-Instanz">
+  ```ts
+  poolConfig: {
+    host: 'db.example.com', port: 3306, database: 'app',
+    user: 'actor_ts', password: process.env.MARIADB_PASSWORD,
+    ssl: { rejectUnauthorized: true, ca: fs.readFileSync('rds-ca.pem') },
+  }
+  ```
+  Reiche `ssl` über `poolConfig` durch, wenn der Server TLS verlangt.  Der
+  Connector nimmt dort Nodes eigene TLS-Optionen, das ist also wörtlich die
+  Postgres-Form: gib die signierende CA mit — eine Managed-Instanz
+  veröffentlicht eine — statt die Zertifikatsprüfung abzuschalten, damit ein
+  selbstsigniertes Gegenüber aufhört, sich zu beschweren.  Verschlüsselung
+  ohne Prüfung authentifiziert niemanden, und alles auf dem Weg zur Datenbank
+  kann das Journal dann lesen oder umschreiben.  Das Objekt erreicht
+  `mariadb.createPool(...)` unverändert; die vollständige Begründung steht
+  unter [TLS everywhere](/de/operations/security/tls-everywhere/#mariadb).
+  Aus der Konfiguration ist dieselbe CA ein Pfad:
+  `actor-ts.persistence.journal.mariadb.ca-file = "/etc/ssl/rds-ca.pem"`.
 </Aside>
 
 ## Wie geht's weiter

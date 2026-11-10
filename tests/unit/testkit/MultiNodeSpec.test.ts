@@ -11,10 +11,18 @@
  *   - the await* helpers reach steady state
  *   - the await* helpers throw on timeout instead of hanging forever
  *   - accessor helpers (systemFor / clusterFor / addressFor) and unknown-role errors
+ *   - the harness's test-scaled split-brain stability window (#839)
  */
 import { describe, expect, test } from 'bun:test';
+import { MemberRemoved } from '../../../src/cluster/ClusterEvents.js';
+import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
 import { MultiNodeSpec } from '../../../src/testkit/MultiNodeSpec.js';
+import { MultiNodeSpecOptions } from '../../../src/testkit/MultiNodeSpecOptions.js';
 import { MultiNodeTransport } from '../../../src/testkit/internal/MultiNodeTransport.js';
+import { DEFAULT_STABLE_AFTER_MS } from '../../../src/cluster/downing/index.js';
+import type { DowningProvider } from '../../../src/cluster/downing/index.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 
 const TIGHT_FD = {
   heartbeatIntervalMs: 50,
@@ -182,6 +190,45 @@ describe('MultiNodeSpec — failure simulation', () => {
   }, 15_000);
 });
 
+describe('MultiNodeSpec — a refused join', () => {
+  // A role's system is built before its `Cluster.join`, and the spec records
+  // the node only after the join succeeded — so a refused join that did not
+  // end the system would leave it running behind a node `stop()` cannot see.
+  // Observed through the scheduler the spec hands every role: a system that
+  // borrows one installs its error sink there while it runs and takes it back
+  // when it terminates.
+  test('ends the refused role\'s system before rethrowing', async () => {
+    const scheduler = new ManualScheduler();
+    const spec = new MultiNodeSpec({ roles: ['a'], gossipIntervalMs: 0, scheduler });
+    try {
+      let caught: unknown;
+      try { await spec.start(); } catch (error) { caught = error; }
+
+      expect(caught).toBeInstanceOf(OptionsError);
+      expect((caught as OptionsError).field).toBe('gossipIntervalMs');
+      expect(scheduler.onError).toBeUndefined();
+    } finally {
+      await spec.stop();
+      MultiNodeTransport._resetRegistryForTest();
+    }
+  }, 10_000);
+
+  test('the control: a role that joined holds the borrowed scheduler\'s sink until it stops', async () => {
+    // Without it the case above would pass for a scheduler no system ever
+    // installed a sink on.
+    const scheduler = new ManualScheduler();
+    const spec = new MultiNodeSpec({ roles: ['a'], scheduler });
+    try {
+      await spec.start();
+      expect(scheduler.onError).toBeDefined();
+    } finally {
+      await spec.stop();
+      MultiNodeTransport._resetRegistryForTest();
+    }
+    expect(scheduler.onError).toBeUndefined();
+  }, 10_000);
+});
+
 describe('MultiNodeSpec — await timeouts', () => {
   test('awaitMembers throws when the count never converges', async () => {
     const spec = new MultiNodeSpec({ roles: ['solo'], failureDetector: TIGHT_FD });
@@ -210,4 +257,157 @@ describe('MultiNodeSpec — await timeouts', () => {
       MultiNodeTransport._resetRegistryForTest();
     }
   }, 5_000);
+});
+
+describe('MultiNodeSpec — failureDetectorAutoDown reaches every node (#1426)', () => {
+  // On one virtual clock so that "past down-after" is an amount of time rather
+  // than a sleep.  A survivor's view is read through the events it announced:
+  // under auto-down a deleted entry can be re-introduced by a peer that has not
+  // deleted it yet — the route leaves no tombstone — so "removed at least once"
+  // is the stable observation, not "absent right now".
+  const provider: DowningProvider = { decide: () => new Set() };
+
+  const crashedRoleSpec = (scheduler: ManualScheduler, failureDetectorAutoDown?: boolean): MultiNodeSpec => {
+    const specOptions = MultiNodeSpecOptions.create()
+      .withRoles(['a', 'b', 'c'])
+      .withFailureDetector(TIGHT_FD)
+      .withGossipIntervalMs(50)
+      .withScheduler(scheduler);
+    if (failureDetectorAutoDown !== undefined) specOptions.withFailureDetectorAutoDown(failureDetectorAutoDown);
+    return new MultiNodeSpec(specOptions);
+  };
+
+  /** Every `MemberRemoved` a survivor announces, by the role it names. */
+  const removalsSeenBy = (spec: MultiNodeSpec, role: string): string[] => {
+    const removed: string[] = [];
+    spec.clusterFor(role).subscribe((event) => {
+      if (event instanceof MemberRemoved) removed.push(event.member.address.systemName);
+    });
+    return removed;
+  };
+
+  const statusSeenBy = (spec: MultiNodeSpec, role: string, target: string): string | undefined =>
+    spec.clusterFor(role).getMembers()
+      .find((member) => member.address.equals(spec.addressFor(target)))?.status;
+
+  const convergeThenCrash = async (spec: MultiNodeSpec, victim: string): Promise<void> => {
+    await spec.start();
+    await spec.advanceUntil(
+      () => ['a', 'b', 'c'].every((role) => spec.clusterFor(role).upMembers().length === 3),
+      { budgetMs: 10_000, description: 'three members up in every view' },
+    );
+    await spec.crash(victim);
+  };
+
+  // Witnessed through what each role does with a crashed peer: the switch set
+  // to `false` against the shipped `on` turns a removal into a parking, so a
+  // role the value never reached removes the peer.  Each role in turn, because
+  // a pass-through that only reached the seed would satisfy a version of this
+  // that checked one role.
+  for (const witness of ['a', 'b', 'c']) {
+    test(`false reaches role ${witness}'s Cluster.join: it parks a crashed peer at unreachable`, async () => {
+      const victim = witness === 'c' ? 'a' : 'c';
+      const spec = crashedRoleSpec(new ManualScheduler(), false);
+      try {
+        await convergeThenCrash(spec, victim);
+        const removedByWitness = removalsSeenBy(spec, witness);
+
+        // In gossip-sized steps, each settled, so the survivors keep hearing each
+        // other the whole way — one long advance would starve their heartbeats.
+        for (let elapsed = 0; elapsed < TIGHT_FD.downAfterMs * 5; elapsed += 50) await spec.advance(50);
+
+        expect(statusSeenBy(spec, witness, victim)).toBe('unreachable');
+        expect(removedByWitness).toEqual([]);
+      } finally {
+        await spec.stop();
+        MultiNodeTransport._resetRegistryForTest();
+      }
+    }, 30_000);
+  }
+
+  test('unset, every survivor removes the crashed role — the shipped default', async () => {
+    const spec = crashedRoleSpec(new ManualScheduler());
+    try {
+      await convergeThenCrash(spec, 'c');
+      const removedByA = removalsSeenBy(spec, 'a');
+      const removedByB = removalsSeenBy(spec, 'b');
+
+      await spec.advanceUntil(
+        () => removedByA.includes('c') && removedByB.includes('c'),
+        { budgetMs: 10_000, description: 'both survivors removed the crashed role' },
+      );
+    } finally {
+      await spec.stop();
+      MultiNodeTransport._resetRegistryForTest();
+    }
+  }, 30_000);
+
+  test('true beside a role\'s provider: every role starts — a provider is never refused because of auto-down', async () => {
+    // The pair `Cluster.join` used to refuse.  A provider decides every
+    // removal and the switch governs only the no-provider case, so the two
+    // stand side by side on one role and every role joins.
+    const spec = new MultiNodeSpec({
+      roles: ['a', 'b', 'c'],
+      failureDetector: TIGHT_FD,
+      failureDetectorAutoDown: true,
+      downing: (role) => (role === 'c' ? provider : undefined),
+    });
+    try {
+      await spec.start();
+      await spec.awaitMembers('c', 3);
+    } finally {
+      await spec.stop();
+      MultiNodeTransport._resetRegistryForTest();
+    }
+  }, 10_000);
+});
+
+describe('MultiNodeSpec — the stability window is test-scaled (#839)', () => {
+  test('a spec resolver is consulted about a partition well inside the shipped window', async () => {
+    // `MultiNodeSpec` overrides `stable-after` down to 100 ms for the same
+    // reason it overrides the gossip interval, and nothing detected the
+    // override's absence: removing it leaves this file at 120 pass / 0 fail
+    // and `tests/multi-node/LeaseMajority.test.ts` green.  It is not inert
+    // though — LeaseMajority goes from 879 ms to 20.97 s without it, because
+    // every partition in every spec then waits out the shipped 20 s window
+    // before a strategy is asked anything.
+    //
+    // A guard rather than a comment naming that cost, because a twenty-fold
+    // slowdown that no test fails on is exactly the shape that comes back.
+    //
+    // What binds it is the *unreachable* view reaching the provider.  A
+    // provider that decides nothing is re-asked on every settled tick, so
+    // "was it called at all" would go true before the crash and assert
+    // nothing.  With the override gone the window is 20 s and its ceiling
+    // 40 s, so neither path reaches the provider inside this budget.
+    let sawUnreachable = false;
+    const provider: DowningProvider = {
+      decide(view) {
+        if (view.unreachable.size > 0) sawUnreachable = true;
+        return new Set();
+      },
+    };
+    const spec = new MultiNodeSpec({
+      roles: ['seed', 'peer'],
+      failureDetector: TIGHT_FD,
+      downing: (role) => (role === 'seed' ? provider : undefined),
+    });
+    try {
+      await spec.start();
+      await spec.awaitMembers('seed', 2);
+      sawUnreachable = false;
+
+      const crashedAt = Date.now();
+      await spec.crash('peer');
+      await awaitCondition(() => sawUnreachable, {
+        timeoutMs: 4_000,
+        intervalMs: 25,
+        label: 'the spec resolver was consulted about the partitioned peer',
+      });
+      expect(Date.now() - crashedAt).toBeLessThan(DEFAULT_STABLE_AFTER_MS);
+    } finally {
+      await spec.stop();
+      MultiNodeTransport._resetRegistryForTest();
+    }
+  }, 15_000);
 });

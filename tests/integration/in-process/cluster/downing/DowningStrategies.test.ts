@@ -12,9 +12,15 @@ import {
   type ClusterPartitionView,
 } from '../../../../../src/cluster/downing/index.js';
 import { OptionsError } from '../../../../../src/util/OptionsValidator.js';
+import { readDowningFromConfig } from '../../../../../src/cluster/downing/DowningFromConfig.js';
+import { Config } from '../../../../../src/config/Config.js';
 import type { Lease } from '../../../../../src/coordination/Lease.js';
+import { _substituteLeaseBackendForTest } from '../../../../../src/coordination/LeaseFromConfig.js';
+import { InMemoryLease, inMemoryLeaseStore } from '../../../../../src/coordination/leases/InMemoryLease.js';
+import { LeaseOptions } from '../../../../../src/coordination/LeaseOptions.js';
 import { Member } from '../../../../../src/cluster/Member.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
+import { ManualScheduler } from '../../../../../src/testkit/ManualScheduler.js';
 import { sleep } from '../../../../util/AwaitCondition.js';
 
 const addr = (port: number, host = 'h'): NodeAddress => new NodeAddress('sys', host, port);
@@ -99,23 +105,54 @@ describe('KeepMajority', () => {
 });
 
 describe('KeepOldest', () => {
-  test('oldest-reachable side downs the other', () => {
-    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }], [2, 3]);
-    const decision = new KeepOldest().decide(clusterView);
-    expect(decision.has(addr(2).toString())).toBe(true);
-    expect(decision.has(addr(3).toString())).toBe(true);
+  const keys = (...ports: number[]): Set<string> => new Set(ports.map((port) => addr(port).toString()));
+  const five = [{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }, { port: 5 }];
+  const three = [{ port: 1 }, { port: 2 }, { port: 3 }];
+
+  test('the side holding the oldest downs the other, seen from either side', () => {
+    // {1,2} | {3,4,5}: the oldest has company, so it is not alone, and its
+    // side wins although it is the smaller one.
+    expect(new KeepOldest().decide(view(five, [3, 4, 5], 1))).toEqual(keys(3, 4, 5));
+    expect(new KeepOldest().decide(view(five, [1, 2], 3))).toEqual(keys(3, 4, 5));
   });
 
-  test('oldest-unreachable → this side downs itself', () => {
-    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }], [1]);
-    const decision = new KeepOldest().decide(clusterView);
-    // Ports 2 & 3 are reachable but oldest (1) is on other side → they down themselves.
-    expect(decision.has(addr(2).toString())).toBe(true);
-    expect(decision.has(addr(3).toString())).toBe(true);
+  test('a crashed oldest is downed by the survivors, which carry on (#932)', () => {
+    // The oldest is on nobody's side once it has crashed; the strict rule made
+    // every survivor down itself, and one dead node took the cluster with it.
+    expect(new KeepOldest().decide(view(three, [1], 2))).toEqual(keys(1));
+  });
+
+  test('an oldest cut off on its own downs itself, agreeing with the group (#932)', () => {
+    expect(new KeepOldest().decide(view(three, [2, 3], 1))).toEqual(keys(1));
+  });
+
+  test('two sides of one member each keep the oldest — a two-node cluster does not stop', () => {
+    const two = [{ port: 1 }, { port: 2 }];
+    expect(new KeepOldest().decide(view(two, [2], 1))).toEqual(keys(2));
+    expect(new KeepOldest().decide(view(two, [1], 2))).toEqual(keys(2));
+  });
+
+  test('with down-if-alone off, the side holding the oldest survives and nothing else does', () => {
+    const strict = new KeepOldest({ downIfAlone: false });
+    expect(strict.decide(view(three, [1], 2))).toEqual(keys(2, 3));
+    expect(strict.decide(view(three, [2, 3], 1))).toEqual(keys(2, 3));
+  });
+
+  test('nothing unreachable is no partition: no decision, whatever the size', () => {
+    expect(new KeepOldest().decide(view(three, [], 1)).size).toBe(0);
+    expect(new KeepOldest({ downIfAlone: false }).decide(view([{ port: 1 }], [], 1)).size).toBe(0);
   });
 });
 
 describe('StaticQuorum', () => {
+  test('nothing unreachable is no partition, however far below the quorum (#933)', () => {
+    // A single node that has just started, with two more still to come.
+    const quorumOptions = StaticQuorumOptions.create().withQuorumSize(3);
+    expect(new StaticQuorum(quorumOptions).decide(view([{ port: 1 }], [])).size).toBe(0);
+    // And a healthy cluster scaled down below it.
+    expect(new StaticQuorum(quorumOptions).decide(view([{ port: 1 }, { port: 2 }], [])).size).toBe(0);
+  });
+
   test('reachable meets quorum → down unreachable', () => {
     const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
     const quorumOptions = StaticQuorumOptions.create().withQuorumSize(2);
@@ -140,6 +177,16 @@ describe('StaticQuorum', () => {
 });
 
 describe('KeepReferee', () => {
+  test('nothing unreachable is no partition, even below down-all-if-below-quorum (#933)', () => {
+    // The referee and one more node, with a quorum of three still to come:
+    // the rule that downs everyone below it is for a partition, not for a
+    // cluster that has not finished joining.
+    const refereeOptions = KeepRefereeOptions.create()
+      .withRefereeAddress(addr(1).toString())
+      .withDownAllIfBelowQuorum(3);
+    expect(new KeepReferee(refereeOptions).decide(view([{ port: 1 }, { port: 2 }], [])).size).toBe(0);
+  });
+
   test('referee reachable on this side → down the other', () => {
     const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }], [3]);
     const refereeOptions = KeepRefereeOptions.create().withRefereeAddress(addr(1).toString());
@@ -184,6 +231,12 @@ class FakeLease implements Lease {
   private nextAcquire: { resolve: (b: boolean) => void; reject: (e: Error) => void } | null = null;
   acquireCalls = 0;
   released = false;
+  /**
+   * Held from a won acquire until a release or {@link expire} — what the
+   * backends' `checkAlive()` reports.  A constant `false` was harmless while
+   * nothing read it; `LeaseMajority` now re-validates a win against it (#937).
+   */
+  private held = false;
 
   acquire(): Promise<boolean> {
     this.acquireCalls++;
@@ -195,6 +248,7 @@ class FakeLease implements Lease {
     const pending = this.nextAcquire;
     if (!pending) throw new Error('FakeLease.resolveAcquire: no acquire in flight');
     this.nextAcquire = null;
+    if (got) this.held = true;
     pending.resolve(got);
   }
   rejectAcquire(reason: string): void {
@@ -203,8 +257,13 @@ class FakeLease implements Lease {
     this.nextAcquire = null;
     pending.reject(new Error(reason));
   }
-  async release(): Promise<void> { this.released = true; }
-  checkAlive(): boolean { return false; }
+  /** What a stall past the TTL does to a backend's answer: the lease ran out. */
+  expire(): void { this.held = false; }
+  async release(): Promise<void> {
+    this.released = true;
+    this.held = false;
+  }
+  checkAlive(): boolean { return this.held; }
   onLost(): () => void { return () => {}; }
 }
 
@@ -281,6 +340,106 @@ describe('LeaseMajority', () => {
     // We are 1; reachable side is 1+2 — both should be downed.
     expect(after.has(addr(1).toString())).toBe(true);
     expect(after.has(addr(2).toString())).toBe(true);
+
+    // A lost arbitration does not rest on the lease, so it is not re-asked: this
+    // side does not hold the lease, and that is exactly why it goes (#937).
+    expect(strat.decide(clusterView)).toEqual(after);
+    expect(lease.acquireCalls).toBe(1);
+  });
+
+  test('a won arbitration is re-validated against the lease before it is returned again (#937)', async () => {
+    const lease = new FakeLease();
+    const leaseOptions = LeaseMajorityOptions.create().withLease(lease);
+    const strategy = new LeaseMajority(leaseOptions);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
+    expect(strategy.decide(clusterView).size).toBe(0);
+    lease.resolveAcquire(true);
+    await flushMicrotasks();
+    expect(strategy.decide(clusterView)).toEqual(new Set([addr(3).toString(), addr(4).toString()]));
+
+    // This node stalls past the TTL and the other side takes the lease.  The
+    // cached "down them" is no longer this side's to give: replaying it is how
+    // both halves came to act as the survivor.
+    lease.expire();
+    expect(strategy.decide(clusterView).size).toBe(0);
+    expect(lease.acquireCalls).toBe(2);
+    // And on every tick while that acquire is on the wire.  The cluster asks
+    // each failure-detector tick and applies whatever comes back, so a dropped
+    // win that resurfaced here would be acted on before the lease answered.
+    expect(strategy.decide(clusterView).size).toBe(0);
+    expect(lease.acquireCalls).toBe(2);
+
+    // The other side holds the lease now, so the fresh attempt loses — and this
+    // side downs itself.
+    lease.resolveAcquire(false);
+    await flushMicrotasks();
+    expect(strategy.decide(clusterView)).toEqual(new Set([addr(1).toString(), addr(2).toString()]));
+  });
+
+  test('a lapsed win that nobody took is won back, not given up (#937)', async () => {
+    const lease = new FakeLease();
+    const leaseOptions = LeaseMajorityOptions.create().withLease(lease);
+    const strategy = new LeaseMajority(leaseOptions);
+    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
+    expect(strategy.decide(clusterView).size).toBe(0);
+    lease.resolveAcquire(true);
+    await flushMicrotasks();
+    expect(strategy.decide(clusterView).size).toBe(2);
+
+    // Re-validation re-arbitrates rather than conceding: a lease that ran out
+    // while nobody else wanted it is still this side's to take.  Until it is
+    // taken again, the old win stays dropped.
+    lease.expire();
+    expect(strategy.decide(clusterView).size).toBe(0);
+    expect(strategy.decide(clusterView).size).toBe(0);
+    lease.resolveAcquire(true);
+    await flushMicrotasks();
+    expect(strategy.decide(clusterView)).toEqual(new Set([addr(3).toString(), addr(4).toString()]));
+  });
+
+  test('two halves of a split cannot both keep a win when the winner stalls (#937)', async () => {
+    // Two real leases on one store and on virtual time: no timing in the test.
+    // A renewal cadence past the TTL is how the stall looks from the record's
+    // side — the winner's loop is armed and does not come round.
+    inMemoryLeaseStore._clear();
+    try {
+      const scheduler = new ManualScheduler();
+      const strategyFor = (owner: string): LeaseMajority => {
+        const leaseOptions = LeaseOptions.create()
+          .withName('split-937')
+          .withOwner(owner)
+          .withTtlMs(30_000)
+          .withRenewalIntervalMs(3_600_000)
+          .withScheduler(scheduler);
+        const leaseMajorityOptions = LeaseMajorityOptions.create().withLease(new InMemoryLease(leaseOptions));
+        return new LeaseMajority(leaseMajorityOptions);
+      };
+      const members = [{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }];
+      const leftView = view(members, [3, 4], 1);
+      const rightView = view(members, [1, 2], 3);
+      const left = strategyFor('left');
+      const right = strategyFor('right');
+
+      // The left side arbitrates first and wins.
+      expect(left.decide(leftView).size).toBe(0);
+      await flushMicrotasks();
+      expect(left.decide(leftView)).toEqual(new Set([addr(3).toString(), addr(4).toString()]));
+
+      // Its holder stalls past the TTL, and the right side takes the lapsed lease
+      // legitimately.
+      scheduler.advance(30_000);
+      expect(right.decide(rightView).size).toBe(0);
+      await flushMicrotasks();
+      expect(right.decide(rightView)).toEqual(new Set([addr(1).toString(), addr(2).toString()]));
+
+      // Before #937 the left side replayed its cached win here, and each half
+      // downed the other.  It asks the lease again instead, loses, and goes.
+      expect(left.decide(leftView).size).toBe(0);
+      await flushMicrotasks();
+      expect(left.decide(leftView)).toEqual(new Set([addr(1).toString(), addr(2).toString()]));
+    } finally {
+      inMemoryLeaseStore._clear();
+    }
   });
 
   test('lease unreachable (acquire rejects): pending stays pending; next tick retries', async () => {
@@ -701,5 +860,56 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
     expect(lease.released).toBe(true);
     expect(strat.decide(splitB).size).toBe(0);
     expect(lease.acquireCalls).toBe(2);
+  });
+});
+
+/* ============= LeaseMajority from configuration alone (#1454) ============= */
+
+describe('LeaseMajority selected and leased from configuration', () => {
+  /**
+   * Both halves of an even split read one file — the selector, the backend,
+   * the TTL — and nothing in code names a lease.  The backend seam builds an
+   * `InMemoryLease` on one store from what the Kubernetes backend would be
+   * handed, on virtual time, so the two halves contend on the derived record
+   * exactly as two pods would on one Lease object.
+   */
+  const configured = Config.parseString(`
+    actor-ts.coordination.lease { backend = kubernetes, ttl = 30s, renewal-interval = 1h }
+    actor-ts.cluster.split-brain-resolver.active-strategy = lease-majority
+  `);
+
+  test('the half that takes the configured lease survives, and the other downs itself', async () => {
+    inMemoryLeaseStore._clear();
+    const scheduler = new ManualScheduler();
+    const built: Array<{ readonly name: string; readonly owner: string }> = [];
+    const restore = _substituteLeaseBackendForTest((options, config) => {
+      built.push({ name: options.name, owner: options.owner });
+      return new InMemoryLease({ ...options, scheduler }, config);
+    });
+    try {
+      const members = [{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }];
+      // Each half sees itself with its own incarnation, as `Cluster` hands it.
+      const leftView = { ...view(members, [3, 4], 1), self: new NodeAddress('sys', 'h', 1, 'left-run') };
+      const rightView = { ...view(members, [1, 2], 3), self: new NodeAddress('sys', 'h', 3, 'right-run') };
+      const left = readDowningFromConfig(configured)!;
+      const right = readDowningFromConfig(configured)!;
+
+      expect(left.decide(leftView).size).toBe(0);
+      await flushMicrotasks();
+      expect(right.decide(rightView).size).toBe(0);
+      await flushMicrotasks();
+
+      // One record, two holders by identity: the name is the cluster's, the
+      // owner each node's own.
+      expect(built).toEqual([
+        { name: 'sys-split-brain-resolver', owner: 'sys@h:1#left-run' },
+        { name: 'sys-split-brain-resolver', owner: 'sys@h:3#right-run' },
+      ]);
+      expect(left.decide(leftView)).toEqual(new Set([addr(3).toString(), addr(4).toString()]));
+      expect(right.decide(rightView)).toEqual(new Set([addr(3).toString(), addr(4).toString()]));
+    } finally {
+      restore();
+      inMemoryLeaseStore._clear();
+    }
   });
 });

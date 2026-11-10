@@ -2,8 +2,12 @@
  * Chat backend entry point.
  *
  * Run a 3-node TCP cluster locally — every node runs the same
- * binary; the cluster picks one to host the HTTP front door:
+ * binary; the cluster picks one to host the HTTP front door.  Each
+ * node refuses to start without a session-token secret (#791), so
+ * export one first — `CHAT_TOKEN_SECRET`, the same strong random
+ * value on every node, for anything past a laptop:
  *
+ *   export CHAT_ALLOW_DEMO_SECRET=1
  *   bun examples/chat/backend/main.ts --port 2551
  *   bun examples/chat/backend/main.ts --port 2552 --seeds localhost:2551
  *   bun examples/chat/backend/main.ts --port 2553 --seeds localhost:2551
@@ -11,7 +15,13 @@
  * Open `http://localhost:8080/`, pick a frontend, log in.  See
  * `README.md` for the complete walkthrough — including how
  * failover works when you kill the node currently holding the
- * HTTP singleton.
+ * HTTP singleton.  A killed node is removed by the keep-majority
+ * strategy `application.conf` configures, about 4.5 s after it
+ * dies.  Without a strategy the failure detector would remove it
+ * itself at `down-after`, but a real network partition would then
+ * leave two chat clusters, each with its own HTTP singleton and its
+ * own copy of every room; keep-majority has the minority side remove
+ * itself instead.
  *
  * `main.ts` is purely wiring — every actor lives in its own file
  * under `actors/`, and the directive DSL routes (landing page, static
@@ -38,9 +48,9 @@ import {
 } from '../../../src/cluster/index.js';
 import {
   PersistenceExtensionId,
-  SqliteJournal,
+  RegisterSqlitePluginsOptions,
+  registerSqlitePlugins,
   SqliteJournalOptions,
-  SqliteSnapshotStore,
   SqliteSnapshotStoreOptions,
 } from '../../../src/persistence/index.js';
 import { DistributedDataId, DistributedDataOptions } from '../../../src/crdt/index.js';
@@ -54,7 +64,7 @@ import {
   SameHostScanSeedProvider,
   pickFirstFreePort,
 } from './discovery/sameHostScan.js';
-import { SessionStore } from './auth/sessionStore.js';
+import { SessionStore, resolveSessionSecret } from './auth/sessionStore.js';
 import {
   ChatRoomActor,
   type ChatRoomCommand,
@@ -71,6 +81,21 @@ import { attachDevTools } from '../../devtools.js';
 
 async function main(): Promise<void> {
   const config = parseArguments(process.argv.slice(2));
+
+  // -------- 0. Session-token secret --------
+  // Before the port scan, before `mkdirSync`, before the cluster binds
+  // anything: a missing signing key is a configuration error, and the cheapest
+  // moment to report one is the moment nothing has happened yet.  Resolving it
+  // where it is *used* (step 5 below, which needs a DistributedData handle and
+  // therefore a cluster) means the node first creates its data directory,
+  // registers its persistence plug-ins and announces itself on the network,
+  // and only then discovers it cannot sign a token — and the `catch` at the
+  // foot of this file exits without a `cluster.leave()` or a store close,
+  // because the shutdown task that does both is registered at step 10.
+  // `parseArguments` runs first only so `--help` still answers, which is where
+  // an operator reads which variable to set.
+  const sessionSecret = resolveSessionSecret();
+
   const SYSTEM_NAME = 'chat-cluster';
 
   // -------- 1. Cluster discovery --------
@@ -99,7 +124,33 @@ async function main(): Promise<void> {
         .filter((a) => a.port !== port)
         .map((a) => a.toString());
 
-  // -------- 2. ActorSystem --------
+  // -------- 2. Persistence: SQLite journal + snapshot store -----------
+  // Snapshot store keeps `ChatRoomActor` recovery bounded: without it,
+  // a long-running room replays the entire journal slice on every cold
+  // start (the room's snapshot policy fires every 100 events — see the
+  // actor for the rationale).  Both stores share a `data-dir` and the
+  // same DB-file family.
+  //
+  // Registered as plug-ins rather than set directly, so the plugin ids in
+  // `application.conf` are what actually selects them.  Only the two paths
+  // stay in code, because they are derived from `--data-dir`: a path in the
+  // config file would tie every reader to one working directory.  Built
+  // here, before the system exists, because the system registers them
+  // itself — step 3 hands them over as a plug-in.
+  fs.mkdirSync(config.dataDir, { recursive: true });
+  const journalPath = path.join(config.dataDir, 'chat.db');
+  const snapshotPath = path.join(config.dataDir, 'chat-snapshots.db');
+  const journalOptions = SqliteJournalOptions.create()
+    .withPath(journalPath)
+    .withWal(true);
+  const snapshotOptions = SqliteSnapshotStoreOptions.create()
+    .withPath(snapshotPath)
+    .withKeepN(3);
+  const sqliteOptions = RegisterSqlitePluginsOptions.create()
+    .withJournal(journalOptions)
+    .withSnapshotStore(snapshotOptions);
+
+  // -------- 3. ActorSystem --------
   // Hand the framework's HOCON loader a path to this sample's
   // `application.conf` so config knobs (log level, gossip cadence,
   // failure-detector thresholds, journal plugin) actually drive the
@@ -107,10 +158,17 @@ async function main(): Promise<void> {
   // which is the repo root when this is invoked as
   // `bun examples/chat/backend/main.ts`, where there is no
   // `application.conf`.
+  //
+  // The SQLite plug-ins go in through the `plugins` slot, so `create`
+  // registers both stores before it returns, and the system opens them as
+  // part of its startup: a database it cannot open makes
+  // `runUntilTerminated()` below reject, and the process exit non-zero.
   const configFile = path.resolve(
     import.meta.dirname ?? __dirname, '..', 'application.conf',
   );
-  const systemOptions = ActorSystemOptions.create().withConfigFile(configFile);
+  const systemOptions = ActorSystemOptions.create()
+    .withConfigFile(configFile)
+    .withPersistence({ plugins: [(persistence) => registerSqlitePlugins(persistence, sqliteOptions)] });
   const system = ActorSystem.create(SYSTEM_NAME, systemOptions);
   const seedSummary = seeds.length > 0
     ? ` · seeds=[${seeds.join(',')}]`
@@ -118,41 +176,43 @@ async function main(): Promise<void> {
   system.log.info(
     `chat node starting · cluster=${config.host}:${port} · http=${config.host}:${config.httpPort} (singleton)${seedSummary}`,
   );
-
-  // -------- 3. Persistence: SQLite journal + snapshot store -----------
-  // Snapshot store keeps `ChatRoomActor` recovery bounded: without it,
-  // a long-running room replays the entire journal slice on every cold
-  // start (the room's snapshot policy fires every 100 events — see the
-  // actor for the rationale).  Both stores share a `data-dir` and the
-  // same DB-file family.
-  fs.mkdirSync(config.dataDir, { recursive: true });
-  const journalPath = path.join(config.dataDir, 'chat.db');
-  const snapshotPath = path.join(config.dataDir, 'chat-snapshots.db');
-  const journalOptions = SqliteJournalOptions.create()
-    .withPath(journalPath)
-    .withWal(true);
-  const journal = new SqliteJournal(journalOptions);
-  const snapshotOptions = SqliteSnapshotStoreOptions.create()
-    .withPath(snapshotPath)
-    .withKeepN(3);
-  const snapshotStore = new SqliteSnapshotStore(snapshotOptions);
-  const persistence = system.extension(PersistenceExtensionId);
-  persistence.setJournal(journal);
-  persistence.setSnapshotStore(snapshotStore);
+  // Take both stores from the extension for the shutdown task below, which
+  // has to close exactly these instances.  Failing at start-up on a plugin id
+  // nothing registers is not this line's job: the system resolved both stores
+  // inside `create` and opens them as it starts, so a bad id — or a database
+  // file it cannot open — already fails the startup, with the store named.
+  const persistenceExtension = system.extension(PersistenceExtensionId);
+  const journal = persistenceExtension.journal;
+  const snapshotStore = persistenceExtension.snapshotStore;
   system.log.info(`SQLite journal · ${journalPath}`);
   system.log.info(`SQLite snapshot store · ${snapshotPath} (keepN=3)`);
 
+  // Close the stores on the way down, registered here rather than after the
+  // rest of the wiring: a startup that fails — one store that cannot open, say
+  // — runs coordinated shutdown while this function is still awaiting
+  // `Cluster.join`, and only a task registered by then closes the store that
+  // did open.  The WebSocket binding and `cluster.leave()` — which triggers
+  // the singleton manager's hand-off — are phase tasks already, and
+  // `before-actor-system-terminate` closes the stores after the node has left
+  // the cluster and before the system is terminated.
+  system.extension(CoordinatedShutdownId).addTask(
+    Phases.BeforeActorSystemTerminate,
+    'close-persistence',
+    async () => {
+      await journal.close?.();
+      await snapshotStore.close?.();
+    },
+  );
+
   // -------- 4. Cluster.join --------
+  // Only what differs per node is set here.  Gossip cadence, the failure
+  // detector's thresholds and the keep-majority strategy that removes a
+  // dead node come from `application.conf` — an explicit option would win
+  // over the file and leave it describing a cluster that is not running.
   const clusterOptions = ClusterOptions.create()
     .withHost(config.host)
     .withPort(port)
-    .withSeeds(seeds)
-    .withFailureDetector({
-      heartbeatIntervalMs: 300,
-      unreachableAfterMs: 1500,
-      downAfterMs: 4000,
-    })
-    .withGossipIntervalMs(500);
+    .withSeeds(seeds);
   const cluster = await Cluster.join(system, clusterOptions);
   // After the join, so the cluster panel has something to show — a
   // system cannot hand out its own `Cluster`.
@@ -173,10 +233,15 @@ async function main(): Promise<void> {
   const ddHandle = system.extension(DistributedDataId).start(cluster, ddOptions);
   const pubSubOptions = DistributedPubSubOptions.create().withGossipIntervalMs(500);
   const mediator = system.extension(DistributedPubSubId).start(cluster, pubSubOptions);
-  const sessions = new SessionStore(ddHandle);
+  // The secret was decided at step 0, back when a refusal was free; this is
+  // only where it meets the handle it signs against.  The warning below is
+  // what the `CHAT_ALLOW_DEMO_SECRET` opt-in path gets — it is no longer the
+  // only thing standing between a forgotten variable and a forgeable token
+  // (#791).
+  const sessions = new SessionStore(ddHandle, sessionSecret);
   if (sessions.usingDemoSecret) {
     system.log.warn(
-      'session tokens signed with the demo fallback secret — set CHAT_TOKEN_SECRET to a strong random string for production',
+      'CHAT_ALLOW_DEMO_SECRET is set — session tokens are signed with the demo secret published in sessionStore.ts, so anyone can mint a token for any user. Set CHAT_TOKEN_SECRET to a strong random string instead.',
     );
   }
 
@@ -242,8 +307,9 @@ async function main(): Promise<void> {
   // elects ONE node to actually run the actor.  When that node
   // dies a surviving node spawns a fresh one which re-binds the
   // same port.  The downside is a brief outage during failover
-  // (~5–10 s with these failure-detector settings) — fine for a
-  // demo; production would still front this with a real LB.
+  // (~5–10 s with the failure-detector and downing settings in
+  // `application.conf`) — fine for a demo; production would still
+  // front this with a real LB.
   const staticDir = path.join(import.meta.dirname ?? __dirname, '..', 'static');
   const singletonOptions = StartSingletonOptions.create()
     .withTypeName('http-ingress')
@@ -263,21 +329,9 @@ async function main(): Promise<void> {
     }));
   cluster.singleton.start(singletonOptions);
 
-  // -------- 10. Graceful shutdown --------
-  // Only the persistence handles need registering: the WebSocket binding and
-  // `cluster.leave()` — which triggers the singleton manager's hand-off — are
-  // already phase tasks.  `before-actor-system-terminate` is the phase that
-  // reproduces what this example did by hand, namely close the stores after
-  // the node has left the cluster and before the system is terminated.
-  system.extension(CoordinatedShutdownId).addTask(
-    Phases.BeforeActorSystemTerminate,
-    'close-persistence',
-    async () => {
-      await journal.close();
-      await snapshotStore.close();
-    },
-  );
-
+  // -------- 10. Run until shut down --------
+  // The stores' close task went in right after the stores were resolved
+  // (step 3), so a startup that fails before this point closes them too.
   await system.runUntilTerminated();
 }
 

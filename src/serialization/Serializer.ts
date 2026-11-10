@@ -48,9 +48,14 @@ export type SerializedValue = {
   readonly bytes: Uint8Array;
 };
 
+/**
+ * `options.cause` is how a decode that wraps an engine error — `JSON.parse`'s
+ * `SyntaxError` (#1449) — keeps it: the message names the failure, the cause
+ * keeps its type and stack for whoever prints the chain.
+ */
 export class SerializationError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = 'SerializationError';
   }
 }

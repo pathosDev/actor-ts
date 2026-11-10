@@ -31,6 +31,8 @@
  * The ordering test is the counterweight.  It fails if anyone closes this by
  * moving the notification onto the system queue, where it would overtake queued
  * user messages and — under `watchWith` — make a *domain* message jump the queue.
+ * Its sibling pins the same order for a death another node reports, which
+ * reaches the exempt door after one hop on the system queue (#1431).
  */
 import { describe, expect, test } from 'bun:test';
 import { match, P } from 'ts-pattern';
@@ -41,6 +43,7 @@ import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { DeadLetter, Terminated } from '../../src/SystemMessages.js';
+import type { WatchNotifyCommand } from '../../src/internal/SystemCommand.js';
 import {
   BoundedMailbox,
   Mailbox,
@@ -89,6 +92,18 @@ type WatcherProbe = {
   readonly gate: Gate;
   readonly blocked: { value: boolean };
   readonly watched: { value: boolean };
+  /** Set by {@link StashingWatcher} once it has parked the notification. */
+  readonly stashed: { value: boolean };
+  /**
+   * Set once {@link StashingWatcher} has replayed its stash, and held there by
+   * {@link WatcherProbe.replayGate}.
+   *
+   * A second park is what makes the replay observable at all: the cell drains
+   * the moment the handler returns, so a queue that grew by the replayed
+   * notification is back to empty before any poll can read it.
+   */
+  readonly replayed: { value: boolean };
+  readonly replayGate: Gate;
 };
 
 const newProbe = (): WatcherProbe => ({
@@ -96,6 +111,9 @@ const newProbe = (): WatcherProbe => ({
   gate: newGate(),
   blocked: { value: false },
   watched: { value: false },
+  stashed: { value: false },
+  replayed: { value: false },
+  replayGate: newGate(),
 });
 
 let probe: WatcherProbe = newProbe();
@@ -178,6 +196,60 @@ class BlockingWatcher extends Actor<WatcherMessage> {
 }
 
 /**
+ * Parks like {@link BlockingWatcher}, but stashes the death notification and
+ * replays it from inside the parked handler.
+ *
+ * That round trip is the third door onto a bound — after the arriving lane and
+ * the eviction — and the one #729 left open on `PriorityMailbox`, which reached
+ * its replay path by re-entering its own `enqueue` and therefore its capacity
+ * check.  `ActorCell.unstashAll` copies each envelope with a spread, so the
+ * `undroppable` marker really does arrive at the mailbox; the mailbox was what
+ * destroyed it.
+ */
+class StashingWatcher extends Actor<WatcherMessage> {
+  override async onReceive(m: WatcherMessage): Promise<void> {
+    await match(m)
+      .with(P.instanceOf(Terminated), (signal) => this.onTerminated(signal))
+      .with({ kind: 'watch' }, (message) => this.onWatch(message))
+      .with({ kind: 'block' }, () => this.onBlock())
+      .with({ kind: 'filler' }, (message) => this.onFiller(message))
+      .exhaustive();
+  }
+
+  private onTerminated(signal: Terminated): void {
+    // Reached once, and the replay is why that is now a fact rather than a
+    // precaution: since #1098 a stashed plain-`watch` notification is
+    // dead-lettered when it comes back round instead of being consumed in
+    // silence, so it never re-enters this handler.  Recorded anyway — if it
+    // ever does, the assertions below should be able to say so.
+    probe.seen.push(`terminated:${signal.actor.path.name}`);
+    this.context.stash();
+    probe.stashed.value = true;
+  }
+
+  private onWatch(message: WatchMessage): void {
+    this.context.watch(message.target);
+    probe.watched.value = true;
+  }
+
+  private async onBlock(): Promise<void> {
+    probe.blocked.value = true;
+    await probe.gate.opened;
+    // The replay happens while the queue is full, which is the only moment the
+    // bound has an opinion about it.  Then park again, so the queue can be read
+    // before the drain empties it — and so a `reject` that threw here leaves
+    // `replayed` false rather than a passing test.
+    this.context.unstashAll();
+    probe.replayed.value = true;
+    await probe.replayGate.opened;
+  }
+
+  private onFiller(message: FillerMessage): void {
+    probe.seen.push(`filler:${message.index}`);
+  }
+}
+
+/**
  * Registers its watch in `preStart`, so nothing is ever told to it.
  *
  * Needed for the mailbox that refuses every user message: telling such an actor
@@ -221,6 +293,19 @@ const mailboxOf = <TMessage>(ref: ActorRef<TMessage>): Mailbox<unknown> => {
 /** The same queue, read for its drop bookkeeping. */
 const boundedMailboxOf = <TMessage>(ref: ActorRef<TMessage>): BoundedMailbox<unknown> =>
   mailboxOf(ref) as BoundedMailbox<unknown>;
+
+/**
+ * Hand the watcher the `watchNotify` command `RemoteWatcher` enqueues when
+ * another node reports a watched actor stopped (#918).  No ref exposes the
+ * system queue, so this reaches the cell the way `BackoffSupervisor.test.ts`
+ * does.
+ */
+const reportRemoteDeath = (watcher: ActorRef<WatcherMessage>, target: ActorRef<TargetMessage>): void => {
+  const cell = (watcher as unknown as {
+    getCell(): { enqueueSystem(command: WatchNotifyCommand): void };
+  }).getCell();
+  cell.enqueueSystem({ kind: 'watchNotify', target: target as ActorRef });
+};
 
 /**
  * Spawn a watcher, register the watch, and park it with an empty queue.
@@ -560,6 +645,162 @@ describe('the notification keeps its place in the user queue — #729', () => {
     // moved the notification onto the system queue would deliver it first —
     // and under `watchWith` that is a *domain* message overtaking user traffic.
     expect(probe.seen).toEqual(['filler:0', 'filler:1', 'filler:2', 'terminated:target']);
+    await sys.terminate();
+  });
+
+  /**
+   * The fourth caller of the exempt door (#918, #1431): a death another node
+   * reports.  `RemoteWatcher` cannot post the `Terminated` itself — it has no
+   * envelope of the watcher's to build — so it enqueues a `watchNotify` system
+   * command, and the cell turns that into the same user-lane signal a local
+   * death produces.  One hop on the system queue, then the same place in line.
+   *
+   * The position is decided when the command *runs*, not when it was queued,
+   * which is what the late tell pins: told after the report arrived and before
+   * the watcher got round to it, it is handled first.  A cell that delivered
+   * the notification straight from the command — the way a `receiveTimeout`
+   * is delivered — would hand it over ahead of every filler.
+   */
+  test('a death reported by another node takes one system-queue hop, then the same place in line — #1431', async () => {
+    probe = newProbe();
+    const sys = newSystem('1431-remote-ordering');
+    const target = sys.spawn(DyingTarget, 'target');
+    const watcher = await parkedWatcher(sys, target);
+    const mailbox = mailboxOf(watcher);
+
+    for (let index = 0; index < 3; index++) watcher.tell({ kind: 'filler', index });
+    reportRemoteDeath(watcher, target);
+    watcher.tell({ kind: 'filler', index: 3 });
+    expect(mailbox.size).toBe(4);
+    expect(mailbox.hasSystemMessages()).toBe(true);
+
+    probe.gate.open();
+    await awaitCondition(() => probe.seen.length === 5, {
+      timeoutMs: 4_000,
+      label: 'the watcher drained its queue',
+    });
+    expect(probe.seen).toEqual(['filler:0', 'filler:1', 'filler:2', 'filler:3', 'terminated:target']);
+    await sys.terminate();
+  });
+});
+
+/* --------------------------- the replay round trip ------------------------ */
+
+/**
+ * The third door onto a bound, and the last one #729 left open.
+ *
+ * `enqueueSignal` keeps a notification out of the arriving lane's policy and
+ * `removeOldest` steps over it on the way out — but an actor that stashes it
+ * hands it back through `prependUser`, and `PriorityMailbox` reached that path
+ * by re-entering its own `enqueue`, whose capacity check does not read
+ * {@link Envelope.undroppable} at all.  So `drop-new` discarded the replayed
+ * notification and counted it as ordinary shed traffic, and `reject` — this
+ * class's default once a capacity is named — threw `MailboxFullError` inside
+ * the actor's own `unstashAll()`.  `BoundedMailbox.prependUser` had consulted
+ * the marker since #772; the priority bound was the reader that was missing.
+ *
+ * These assert on the **queue**, not on redelivery, and deliberately so: the
+ * cell retires a watch registration before it invokes the handler, so a
+ * `Terminated` an actor stashed under a plain `watch` is dead-lettered rather
+ * than delivered when it comes back round (#1098).  That is a separate
+ * question from whether the bound was allowed to destroy it, which is the one
+ * this issue is about — and the other two envelopes that carry the marker, the
+ * WebSocket accept and close commands (#717, #985), have no such bookkeeping
+ * and are redelivered normally.
+ *
+ * Which is also why the queue is still the right seam after #1098 rather than
+ * a workaround for a gap it closed: a replay that the bound shed never reaches
+ * the dispatch at all, so it produces no dead letter either, and "the
+ * notification survived the round trip" would be indistinguishable from "it
+ * was refused at the far end of it" if these read the outcome instead.
+ */
+describe('a stashed notification survives the replay — #729', () => {
+  /** Ranks a death LAST, so nothing about the outcome is owed to the ranking. */
+  const priorityMailbox = (
+    overflow: 'drop-new' | 'reject',
+  ): (() => PriorityMailbox<WatcherMessage>) => () => new PriorityMailbox<WatcherMessage>({
+    priorityFor: (message) => (message instanceof Terminated ? 9 : 0),
+    capacity: 2,
+    overflow,
+  });
+
+  /**
+   * Watch, stash the death, park, fill the queue to capacity — the state every
+   * test here replays into.  Returns the watcher's own queue.
+   */
+  const parkedWithStashedDeath = async (
+    sys: ActorSystem,
+    overflow: 'drop-new' | 'reject',
+  ): Promise<PriorityMailbox<unknown>> => {
+    const target = sys.spawn(DyingTarget, 'target');
+    const watcherOptions = ActorOptions.create<WatcherMessage>()
+      .withMailbox(priorityMailbox(overflow));
+    const watcher = sys.spawn(StashingWatcher, 'watcher', watcherOptions);
+    watcher.tell({ kind: 'watch', target });
+    await awaitCondition(() => probe.watched.value, {
+      timeoutMs: 4_000,
+      label: 'the watcher registered its death watch',
+    });
+
+    target.tell({ kind: 'die' });
+    await awaitCondition(() => probe.stashed.value, {
+      timeoutMs: 4_000,
+      label: 'the watcher stashed the Terminated',
+    });
+
+    watcher.tell({ kind: 'block' });
+    await awaitCondition(() => probe.blocked.value, {
+      timeoutMs: 4_000,
+      label: 'the watcher parked inside its handler',
+    });
+
+    const mailbox = mailboxOf(watcher) as PriorityMailbox<unknown>;
+    for (let index = 0; index < 2; index++) watcher.tell({ kind: 'filler', index });
+    // The bound is genuinely reached, so the replay below is not admitted for
+    // want of pressure.
+    expect(mailbox.size).toBe(2);
+    return mailbox;
+  };
+
+  /** Let the replay run, then read the queue while the handler is still parked. */
+  const replayAndHold = async (): Promise<void> => {
+    probe.gate.open();
+    await awaitCondition(() => probe.replayed.value, {
+      timeoutMs: 4_000,
+      label: 'unstashAll() returned without throwing',
+    });
+  };
+
+  test('drop-new admits the replay instead of shedding it', async () => {
+    probe = newProbe();
+    const sys = newSystem('729-stash-replay-drop-new');
+    const mailbox = await parkedWithStashedDeath(sys, 'drop-new');
+
+    await replayAndHold();
+
+    // Exempt from the bound, and therefore not a drop: a queue that overshoots
+    // by one notification is the trade #729 made, and a `droppedCount` of 1
+    // here is the defect itself.
+    expect(mailbox.size).toBe(3);
+    expect(mailbox.droppedCount).toBe(0);
+    probe.replayGate.open();
+    await sys.terminate();
+  });
+
+  test('reject does not throw inside the replaying actor', async () => {
+    probe = newProbe();
+    const sys = newSystem('729-stash-replay-reject');
+    const mailbox = await parkedWithStashedDeath(sys, 'reject');
+
+    // `reject` is this mailbox's default once a capacity is named, so the throw
+    // reached callers who never chose a policy.  It travelled out of
+    // `unstashAll()` into supervision and restarted the watcher — which drops
+    // the stash entirely, so the notification was lost twice over.
+    await replayAndHold();
+
+    expect(mailbox.size).toBe(3);
+    expect(mailbox.droppedCount).toBe(0);
+    probe.replayGate.open();
     await sys.terminate();
   });
 });

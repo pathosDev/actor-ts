@@ -79,6 +79,7 @@ jobs:
     # build itself stayed green.  One run, one source of truth; the `badge`
     # job below consumes this job's numbers and never re-runs anything.
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     # Read-only, and the checkout below drops its credential too (#622).
     # This job installs and executes the entire devDependency tree — the
     # last place a token that can write to the repository belongs.  The
@@ -146,8 +147,17 @@ jobs:
       # guard skips a missing toolchain locally and fails hard under CI (#483),
       # so the UI is type-checked on every run rather than only by whoever
       # happens to have installed it.
+      #
+      # Frozen, like the root install above, and written out rather than
+      # `bun run ui:install`: that script is the developer's command — the
+      # nested counterpart of a bare `bun install`, which is how
+      # devtools-ui/bun.lock gets regenerated after a manifest edit — and
+      # through it this was the one CI install that resolved its ranges afresh
+      # (#1622).  A `bun run` here is also read through to the script it runs
+      # by tests/unit/ci/WorkflowHygiene.test.ts now, so the flag is required
+      # either way.
       - name: Install the DevTools UI toolchain
-        run: bun run ui:install
+        run: bun install --frozen-lockfile --cwd devtools-ui
 
       - name: Typecheck
         run: bun run typecheck
@@ -160,16 +170,12 @@ jobs:
 
       - name: Tests with coverage
         id: stats
-        # The worker-thread multi-node suites (ParallelMultiNodeSpec +
-        # parallel-pubsub) and the in-process LeaseMajority e2e are
-        # quarantined on GitHub's hosted runners — Bun there can't respawn
-        # functional worker threads after the first test, which also
-        # starves the lease arbitration into a false split-brain.  They
-        # run locally + in Docker; the real-network `integration` workflow
-        # is the multi-node CI gate.  `nightly-flakes.yml` runs these three
-        # with the flag OFF and carries the exit criterion — #538.
-        env:
-          ACTOR_TS_SKIP_FLAKY_MNS: '1'
+        # Every suite runs here.  Three used to be removed by
+        # `ACTOR_TS_SKIP_FLAKY_MNS=1` (#538) and are back: the two
+        # worker-thread ones on 21 consecutive green nights of
+        # `nightly-flakes.yml` against a written criterion of fourteen, and
+        # `LeaseMajority` because its cause was found and fixed (#839) rather
+        # than waited out.
         run: |
           # bun's output goes to a FILE, never through a pipe.  Under GitHub
           # Actions bun emits one annotation line per test — ~8700 lines for
@@ -189,8 +195,40 @@ jobs:
           # to reach `steps.stats.outputs` so the README can still flip to a
           # red badge when the suite breaks.  bun's exit status is replayed
           # at the end so the job's own result is unchanged.
+          # Randomized test order (#1422).  Four suites rested on declaration
+          # order and passed every run in it: a fixture block that wrote a value
+          # in one test and read it in the next, two files a process-wide module
+          # mock moved onto the wrong code path, and one that counted microtask
+          # turns behind a dangling operation.  A shuffle is what found them.
+          #
+          # The seed is drawn HERE rather than left to bun, because a seed
+          # nobody can read is not a reproduction: bun reports it in the
+          # trailing summary block, and under GitHub Actions it stops printing
+          # that block and reports the totals out of band.  That is the same
+          # trap the JUnit parse below exists to avoid.
+          SEED=$(( (RANDOM << 15) + RANDOM ))
+          echo "test order seed: --seed=$SEED"
+          printf 'Test order seed: `--seed=%s`\n' "$SEED" >> "$GITHUB_STEP_SUMMARY"
+
+          # `--parallel` is on here, and it took a Bun release to get there
+          # (#1521; #1332 is why it was off).  On bun 1.4.0 the flag changed
+          # what was *measured* rather than what was tested: 407 files reported
+          # a larger instrumented-line denominator and none a smaller one, so
+          # the aggregate read 79.16 % against 93.82 % on identical execution —
+          # straight through the 90 % floor.
+          #
+          # Bun 1.4.1 fixed the under-reporting across workers, and the 1.4.2
+          # pin measures clean: over 728 lcov records, zero report a larger
+          # denominator, 20 report one smaller by a line or three, and the
+          # numerator is identical at 56 041 lines.  The aggregate agrees to
+          # 0.05 points (94.66 % against 94.61 %) and the run goes 352 s to 41 s.
+          #
+          # Flag order is load-bearing: `tests/unit/ci/CoverageGate.test.ts`
+          # finds this invocation with `startsWith("bun test --coverage")`, so
+          # `--parallel` goes after it.  `WorkflowHygiene.test.ts` now asserts
+          # the flag is present, and goes red if it is dropped silently.
           set +e
-          bun test --coverage \
+          bun test --coverage --parallel --seed="$SEED" \
             --coverage-reporter=text --coverage-reporter=lcov \
             --coverage-dir="$COVERAGE_DIR" \
             --reporter=junit --reporter-outfile="$JUNIT_FILE" > "$LOG_FILE" 2>&1
@@ -307,6 +345,82 @@ jobs:
   #
   # The workflow-level `concurrency` group covers this job too, so two
   # develop pushes still queue instead of racing on `git push`.
+  # A flaky test is cheapest to fix in the change that introduces it, and that is
+  # the one moment nothing here looked for one.  The suite above runs every test
+  # once, so a test that fails one run in five passes it four times out of five
+  # and enters the tree; `nightly-flakes.yml` then finds it days later,
+  # attributed to nobody.  Repetition is what separates the two cases, and it
+  # only has to be paid on what changed.
+  #
+  # The two questions are different, and this is the second one.  A shuffled run
+  # asks whether a test depends on running *after* another one — the suite above
+  # now asks that.  Repetition asks whether it depends on the run it was written
+  # in, and nothing asked that per branch.
+  #
+  # **Scoped to changed test files rather than to what `--changed` selects, and
+  # the numbers are why.**  `--changed` follows imports transitively: measured on
+  # this tree, one edit to `src/persistence/object-storage/Compression.ts`
+  # selected 346 files and 5 505 tests in 209 s, and a base whose diff reached a
+  # `tests/util/` helper selected 468 files and 8 777 tests in 252 s.  Five
+  # reruns of either is a half-hour job, and what it would add over the suite
+  # above is repetition — which pays off where the code is new.  So the probe
+  # follows the new code, and a `src/` or helper change stays covered once by
+  # the suite above, exactly as before.
+  #
+  # A branch that adds no test therefore gets no probe.  That is the honest
+  # scope: what is being looked for is a flaky test a branch adds.
+  changed-probe:
+    name: changed tests, five times over
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The merge base has to exist locally for `git diff` to reach it; a
+          # depth-1 checkout has neither it nor the base commit.
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - name: Re-run the changed tests five times, shuffled
+        env:
+          # Through the environment rather than interpolated into the script: on
+          # a fork pull request this is attacker-controlled text.
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          SUITES=$(git diff --name-only "$BASE_SHA"...HEAD -- 'tests/**/*.test.ts')
+          if [ -z "$SUITES" ]; then
+            echo "no test file changed on this branch - nothing to probe."
+            exit 0
+          fi
+          echo "changed suites:"
+          printf '%s\n' "$SUITES"
+
+          # A deleted or renamed-away suite is still named by the diff, and bun
+          # fails on a path that is not there.
+          PRESENT=''
+          for suite in $SUITES; do
+            if [ -f "$suite" ]; then PRESENT="$PRESENT $suite"; fi
+          done
+          if [ -z "$PRESENT" ]; then
+            echo "every changed suite was deleted - nothing to probe."
+            exit 0
+          fi
+
+          SEED=$(( (RANDOM << 15) + RANDOM ))
+          echo "test order seed: --seed=$SEED"
+          printf 'Probe seed: `--seed=%s`\n' "$SEED" >> "$GITHUB_STEP_SUMMARY"
+
+          # Unquoted on purpose: the list is one path per argument and has to
+          # split. Paths in this tree carry no spaces, and one that did would be
+          # a finding of its own.
+          # shellcheck disable=SC2086
+          bun test --rerun-each=5 --seed="$SEED" $PRESENT
+
   badge:
     name: README badges
     needs: test
@@ -318,6 +432,7 @@ jobs:
       github.event_name == 'push' &&
       github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:

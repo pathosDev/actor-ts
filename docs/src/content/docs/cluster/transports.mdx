@@ -27,6 +27,7 @@ interface Transport {
   send(to: NodeAddress, message: WireMessage): void;
   disconnect(peer: NodeAddress): void;
   peers(): NodeAddress[];
+  holdsConnectionTo?(peer: NodeAddress): boolean;
 }
 ```
 
@@ -34,10 +35,20 @@ Small surface — bootstrap, send, receive, disconnect.  The cluster
 plugs in a handler and gets a stream of inbound wire messages with
 their sender address.
 
+`holdsConnectionTo` is optional.  It answers whether `send(peer, …)`
+would go out over a connection the transport already holds — acked
+or still in its handshake — rather than dial a new one, and the
+cluster asks it before an application frame leaves for a node that
+is not a member (see
+[Cluster security](/operations/security/cluster-security/)).
+A custom transport without it still works: the cluster falls back to
+`peers()`, which lists acked connections only, so a frame to a
+non-member in that handshake window is refused instead of queued.
+
 ## TcpTransport (default)
 
 ```ts
-import { Cluster, ClusterOptions, TcpTransport } from 'actor-ts/cluster';
+import { Cluster, ClusterOptions, TcpTransport, TcpTransportOptions } from 'actor-ts/cluster';
 
 const clusterOptions = ClusterOptions.create()
   .withHost('0.0.0.0')
@@ -52,18 +63,35 @@ const cluster = await Cluster.join(
 
 What it does:
 
-- **Listens** on `host:port` for incoming connections — `host` is the
-  interface to bind, so a wildcard belongs here.
-- **Announces** `advertisedHost:port` in its handshake, and keys peers on
-  it.  That is the node's identity, so it is resolved separately and is
-  never a wildcard; unset, it follows `host` when `host` is routable.
-  See [Cluster overview](/cluster/overview/).
+- **Listens** on `host:port` for incoming connections — that is the pair
+  to bind, so a wildcard host belongs here.
+- **Announces** `advertisedHost:advertisedPort` in its handshake, and keys
+  peers on it.  That is the node's identity, so it is resolved separately
+  and is never a wildcard; unset, the host follows `host` when `host` is
+  routable and the port is `port`.  See
+  [Cluster overview](/cluster/overview/).
 - **Connects** to peers as needed (on first send, or to seeds at
   join time).
 - **Per-frame size cap** (default 16 MiB) — frames larger than this
   are rejected to prevent a DoS via fake length-prefix.
 - **Auto-reconnect** — if a connection drops mid-cluster-life,
   reconnects on the next send.
+
+### What a hop costs
+
+Measured on this transport over loopback, with the far node on a worker
+thread (Bun 1.4.2, Windows 11, 2026-09-18): a cross-node `tell` costs about
+**22 µs** per message and a cross-node `ask` about **245 µs** per round
+trip, against ~260 ns and ~6 µs for the same actor in-process.  That is the
+whole wire — envelope, tagged-JSON frame, socket, `FrameDecoder` and its
+guards, dispatch — and it is within noise of the `MessageChannelTransport`
+hop the [worker mesh](/cluster/worker-mesh/) pays, so the socket itself is
+not the expensive part.  `benchmarks/cluster/tcp-message-cost.ts` is the
+source, and the only benchmark that exercises this transport: the framing
+round-trip needs `TcpTransport` over loopback, as the in-memory transport's
+limits below say, and the far node lives on its own thread because two nodes
+on one event loop lose the tail of a burst to the loopback buffers (#931) —
+the benchmark verifies every batch, so that is a throw, not a number.
 
 ### Runtime backends
 
@@ -72,32 +100,47 @@ What it does:
 
 | Runtime | Backend | Underlying API |
 | --- | --- | --- |
-| Bun | `bunTcpBackend` | `Bun.listen` / `Bun.connect` |
-| Node | `nodeTcpBackend` | `node:net` |
+| Bun | `bunTcpBackend` | `Bun.listen` / `Bun.connect`, and Bun's `node:net` / `node:tls` for a dial that can be aborted |
+| Node | `nodeTcpBackend` | `node:net` / `node:tls` |
 | Deno | `denoTcpBackend` | `Deno.listen` / `Deno.connect` |
 
 Auto-detected via `getTcpBackend()`.  You usually don't think about
-this — same `TcpTransport` works on every runtime.
+this — same `TcpTransport` works on every runtime.  On Bun, though, the
+transport's dials do not use `Bun.connect`: every dial carries its connect
+deadline as an abort signal (see [Association lifecycle](#association-lifecycle)),
+and native `Bun.connect` cannot be cancelled, so they go through Bun's own
+`node:net` / `node:tls`, which can.  The listener stays on `Bun.listen`.
+
+So on Bun the two ends of one connection do not buffer alike — the dialling
+side's half of #931.  The side that dialled writes through `node:net`, which
+keeps in memory whatever the peer cannot take yet, without bound; a socket that
+`Bun.listen` accepted writes natively, and native Bun drops what the kernel
+will not take, so the receiver's decoder reads the rest of the stream from the
+middle of a frame.  On Node and Deno both ends buffer.  Neither runtime pushes
+back on the sender — `TcpSocketLike.write` reports nothing — so a peer that
+stops reading grows the heap at one end and breaks the stream at the other,
+and the bound that would stop both is #931's to add.
 
 ### Optional TLS
 
 ```ts
-import { Cluster, ClusterOptions, TcpTransport } from 'actor-ts/cluster';
+import { Cluster, ClusterOptions, NodeAddress, TcpTransport, TcpTransportOptions } from 'actor-ts/cluster';
 
+const transportOptions = TcpTransportOptions.create().withTls({
+  cert:           '...',     // PEM
+  key:            '...',     // PEM
+  ca:             '...',     // optional CA bundle
+  rejectUnauthorized: true,
+});
 const transport = new TcpTransport(
-  NodeAddress.parse('actor-ts://my-app@10.0.0.5:2552'),
+  NodeAddress.parse('my-app@10.0.0.5:2552'),
   system.log,
-  {
-    cert:           '...',     // PEM
-    key:            '...',     // PEM
-    ca:             '...',     // optional CA bundle
-    rejectUnauthorized: true,
-  },
+  transportOptions,
 );
 
 const clusterOptions = ClusterOptions.create()
-  .withHost(host)
-  .withPort(port)
+  .withHost('10.0.0.5')
+  .withPort(2552)
   .withSeeds(seeds)
   .withTransport(transport);
 await Cluster.join(
@@ -106,20 +149,108 @@ await Cluster.join(
 );
 ```
 
-TLS-wrapped TCP, all-or-nothing per cluster.  See
-[Cluster security](/operations/security/cluster-security/)
+TLS-wrapped TCP, all-or-nothing per cluster.  The transport's address
+is the node's own: `my-app` is the name the actor system was created
+with, and `withHost` / `withPort` name the same host and port.
+
+A peer addressed by an IP literal, as here, is verified against an
+**IP SAN** in its certificate, so give each node's certificate its
+address as a subject alternative name (`IP:10.0.0.5`) and leave
+`serverName` unset — SNI carries host names only, so a dial to an IP
+announces none.  A dial to a host name announces it through SNI and
+verifies the peer against a DNS SAN; set `serverName` only when the
+name to verify differs from the host dialled.  On Deno it also becomes
+the host dialled, because `Deno.connectTls` has one field for both.
+See [Cluster security](/operations/security/cluster-security/)
 for the production recipe.
 
 ### Frame size
 
 ```ts
-new TcpTransport(self, log, null, 64 * 1024 * 1024);   // 64 MiB max frame
+const transportOptions = TcpTransportOptions.create().withMaxFrameBytes(64 * 1024 * 1024);
+const transport = new TcpTransport(self, log, transportOptions);
 ```
 
 Override the per-frame size cap.  Default 16 MiB is enough for
 typical cluster traffic (gossip, heartbeats, small envelopes).
 Larger values *don't* improve general throughput — they only
 matter for individual large messages.
+
+### Association lifecycle
+
+Four bounds decide what a party that can open a TCP connection to this port is
+able to make the node hold.  They apply to every `TcpTransport`, and they are
+the same four an operator sets under
+[`actor-ts.remote`](/reference/configuration/#actor-tsremote) for the transport
+the cluster builds for itself — beside a fifth, `connectTimeoutMs`, which
+bounds this node's own dials rather than what a stranger can make it hold:
+
+```ts
+const transportOptions = TcpTransportOptions.create()
+  .withHandshakeTimeoutMs(5_000)
+  .withOutboundQueueSize(1_000)
+  .withMaxInboundConnections(1_024)
+  .withIncompleteFrameIdleMs(30_000);
+const transport = new TcpTransport(self, log, transportOptions);
+```
+
+| Bound | Covers | Trips with |
+| --- | --- | --- |
+| `handshakeTimeoutMs` | A connection that never speaks its half of the handshake — a dial that opened and never gets its `hello-ack`, an accepted socket with no `hello`. | A `WARN` naming the deadline and the frames dropped with it. |
+| `connectTimeoutMs` | A dial that never opens — no TCP connect, or a TLS handshake that never completes.  Unset, it is `handshakeTimeoutMs`. | A `WARN` saying the dial could not connect, and the dial aborted. |
+| `outboundQueueSize` | Frames held for a peer that cannot take them right now. | Oldest dropped, and one `WARN` per connection. |
+| `maxInboundConnections` | The per-connection cost being multiplied by opening sockets in a loop. | The newest socket refused, one `WARN` per saturation episode. |
+| `incompleteFrameIdleMs` | A connection that spoke and then went silent mid-frame. | A `WARN` naming the buffered byte count, then the connection dropped. |
+
+`handshakeTimeoutMs` is one value for **both** directions on purpose.  The
+dialling side starts its clock before the TCP connect and the TLS handshake and
+the accepting side after the accept, so with one number the peer that is still
+trying has always given up first.  `incompleteFrameIdleMs` has to stay above it
+— a socket that sends nothing at all never reaches the stall deadline, so the
+handshake timer is the only thing that reclaims it — and construction throws if
+it does not.  The pair it checks is the pair the transport will *run* with, so
+one of the two set alone is checked against the other's built-in default:
+`.withIncompleteFrameIdleMs(1_000)` on its own is refused, because the handshake
+deadline it would run against is the 5 s default.  None of the five has an "off"
+spelling: `0` is refused for each.
+
+A dial runs two deadlines, armed together the moment it starts.
+`connectTimeoutMs` gives up a dial that has not opened — the TCP connect and, on
+a TLS dial, the TLS handshake — and its `WARN` reads
+`could not connect to … within N ms`.  Once the dial has opened,
+`handshakeTimeoutMs` gives it up if no `hello-ack` comes, with
+`connected to …, but no hello-ack came within N ms`.  Unset, the connect
+deadline is the handshake deadline, the one deadline a dial had before it; set
+it lower to learn sooner that a peer is not there while a slow one still gets
+the whole handshake deadline to answer.  It may not exceed `handshakeTimeoutMs`,
+which bounds the same dial from the same moment — construction throws, and a
+lone `.withConnectTimeoutMs(10_000)` is refused against the 5 s default.
+
+Missing either deadline gives the dial up rather than forgetting it: the
+transport aborts the connect, and the socket under it is destroyed instead of
+connecting on for as long as the OS keeps trying.  A dial that fails before its
+connect deadline — refused, unresolvable, a certificate the CA does not sign —
+logs the `could not connect` line too, with the runtime's error attached rather
+than quoted, because a runtime's error code can misname the cause: Bun on
+Windows reports an unanswered connect as `ECONNREFUSED`.  That holds on every
+runtime because every backend reports a TLS dial open only once its handshake
+is done, Deno included: `Deno.connectTls` resolves at the TCP connect, so the
+Deno backend runs the handshake itself before it hands the connection over.
+A certificate the CA does not sign is therefore a dial that could not connect
+there too, and a peer that accepts the connect and stalls the handshake is
+the connect deadline's to give up.
+
+One part of one combination cannot be aborted.  Deno has no way to cancel the
+TCP connect of a TLS dial (`Deno.connectTls` takes no signal), so a dial given
+up while connecting is dropped and its connection closed the moment it
+appears, while the connect itself runs on until it completes or the OS gives
+up.  A dial given up during its handshake is dropped at once, but Deno does not
+end the TCP connection under it: on Deno 2.6.8 the far side keeps that socket
+until it closes it itself.
+
+A transport you build yourself carries its own values.  The cluster only passes
+the config block's to a transport *it* constructed, never to one handed in via
+`withTransport(…)`.
 
 ## InMemoryTransport (tests)
 

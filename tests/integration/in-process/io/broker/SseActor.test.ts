@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
@@ -8,6 +10,7 @@ import { SseOptions } from '../../../../../src/io/broker/SseOptions.js';
 import {
   BrokerDisconnected,
   BrokerReconnectAttempt,
+  BrokerReconnectFailed,
 } from '../../../../../src/io/broker/BrokerEvents.js';
 import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
@@ -63,6 +66,60 @@ describe('SseActor — round-trip via Bun.serve', () => {
     expect(collector.received[3]!.data).toBe('line-1\nline-2');
     await sys.terminate();
     server.stop(true);
+  });
+
+  test('a feed framed with CRLF parses the same way, over a live connection (#1510)', async () => {
+    // The framing the reader used to be blind to.  `\r\n\r\n` is a conformant
+    // delimiter and the search was for `'\n\n'`, so a feed like this one
+    // completed no block at all: it grew the pending buffer read by read until
+    // the 1 MiB cap declared it hostile and dropped the connection.  Nothing
+    // else here would have noticed, because every other test in this file
+    // frames with LF.
+    //
+    // The writes split the first delimiter down the middle — `\r` ends one,
+    // `\n` opens the next — so the live path exercises the seam as well as the
+    // framing.  A runtime that coalesces the two into one read still asserts
+    // the framing; it just stops asserting the seam, which the unit suite
+    // pins deterministically.
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller): void {
+            const enc = new TextEncoder();
+            controller.enqueue(enc.encode('event: tick\r\ndata: one\r\nid: 100\r'));
+            controller.enqueue(enc.encode('\n\r\ndata: two\r\ndata: three\r\n\r\n'));
+            controller.close();
+          },
+        });
+        return new Response(stream, { headers: { 'content-type': 'text/event-stream' } });
+      },
+    });
+
+    const sys = quietSystem('sse-crlf');
+    try {
+      const collector = new CollectActor();
+      const target = sys.spawnAnonymous(() => collector);
+      const sseOptions = SseOptions.create()
+        .withUrl(`http://localhost:${server.port}/`)
+        .withTarget(target)
+        .withReconnect(false);
+      sys.spawnAnonymous(() => new SseActor(sseOptions));
+
+      await awaitCondition(() => collector.received.length === 2, {
+        timeoutMs: 4_000, label: 'both CRLF-framed SSE events were parsed and forwarded',
+      });
+
+      // Values arrive clean: `split('\n')` over an un-normalised block leaves
+      // the `\r` on the end of every one of them.
+      expect(collector.received[0]).toEqual({ event: 'tick', data: 'one', id: '100' });
+      expect(collector.received[1]).toEqual({
+        event: 'message', data: 'two\nthree', id: undefined,
+      });
+    } finally {
+      await sys.terminate();
+      server.stop(true);
+    }
   });
 });
 
@@ -176,6 +233,520 @@ describe('SseActor — read-idle timeout (#753)', () => {
   }, 10_000);
 });
 
+/* --------------- what the actor refuses to connect to (#787) ------------- */
+
+/**
+ * Records the cause of every `BrokerReconnectFailed` the system publishes.
+ *
+ * A *connect* that fails never reaches `handleConnectionLost`, so it publishes
+ * no `BrokerDisconnected` — the cause travels on the event that ends the
+ * reconnect cycle instead.  Which is also the second half of what these tests
+ * assert: a refused endpoint degrades through the ordinary backoff, exactly
+ * like an unreachable one, rather than failing silently.
+ */
+function reconnectFailureCauses(sys: ActorSystem): string[] {
+  const causes: string[] = [];
+  sys.eventStream.subscribe(
+    sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+      override onReceive(m: unknown): void {
+        causes.push((m as BrokerReconnectFailed).cause.message);
+      }
+    })()),
+    BrokerReconnectFailed,
+  );
+  return causes;
+}
+
+/** One connect attempt, one retry, then give up — with no jitter to wait out. */
+const failFast = { initialDelayMs: 20, maxDelayMs: 20, maxAttempts: 1, randomFactor: 0 } as const;
+
+/**
+ * The rejection `connectImplementation` produced, as it produced it.
+ *
+ * Every surface an operator sees is redacted a second time on the way out —
+ * `_handleReconnect` copies the cause through `redactErrorCredentials` before
+ * publishing it — so a subscriber cannot tell whether the string was already
+ * safe when it was built.  That distinction is the point: the refusal message
+ * is assembled here from a value the *endpoint* chose, and the layer that
+ * assembles it is the layer that has to hand out something safe, not the layer
+ * that happens to publish it today.
+ */
+class RefusalRecordingSseActor extends SseActor {
+  readonly refusals: string[] = [];
+
+  /**
+   * Whether the actor's own `AbortController` was already aborted when each
+   * refusal left `connectImplementation`.
+   *
+   * Sampled *here*, one frame above the abort, because that is the only place
+   * the answer is still the actor's: `disconnectImplementation` drops the
+   * controller on teardown, and the next attempt's `_closeTransport` aborts
+   * the stale one anyway, so a later reading cannot say who did it.  The
+   * private field is reached through a cast rather than exposed — the
+   * mechanism under test is the abort, not a new surface on the actor.
+   */
+  readonly abortedOnRefusal: boolean[] = [];
+
+  protected override async connectImplementation(): Promise<void> {
+    try {
+      await super.connectImplementation();
+    } catch (rejection) {
+      this.refusals.push((rejection as Error).message);
+      const internals = this as unknown as { aborter: AbortController | null };
+      this.abortedOnRefusal.push(internals.aborter?.signal.aborted ?? false);
+      throw rejection;
+    }
+  }
+}
+
+describe('SseActor — refuses a redirect (#787)', () => {
+  test('a 302 fails the connect, and the redirect target is never contacted', async () => {
+    // The feed answers the SSE GET with a redirect to a host it chose.  With
+    // `fetch`'s default `redirect: 'follow'` the runtime would have re-issued
+    // the request there, replaying every custom header — the Fetch standard
+    // strips only `Authorization`, `Cookie` and `Proxy-Authorization`, so the
+    // `x-api-key` below would have gone with it — and then parsed whatever
+    // came back as events.  Both halves are asserted: the connect fails, and
+    // the collector never sees a request at all.
+    const replayedTo: Array<Record<string, string>> = [];
+    const collector = Bun.serve({
+      port: 0,
+      fetch(request: Request): Response {
+        replayedTo.push(Object.fromEntries(request.headers.entries()));
+        return new Response('data: injected\n\n', {
+          headers: { 'content-type': 'text/event-stream' },
+        });
+      },
+    });
+    const feed = Bun.serve({
+      port: 0,
+      fetch(): Response {
+        return new Response(null, {
+          status: 302,
+          headers: { location: `http://localhost:${collector.port}/` },
+        });
+      },
+    });
+    const sys = quietSystem('sse-redirect');
+    try {
+      const received = new CollectActor();
+      const target = sys.spawnAnonymous(() => received);
+      const causes = reconnectFailureCauses(sys);
+      const sseOptions = SseOptions.create()
+        .withUrl(`http://localhost:${feed.port}/`)
+        .withTarget(target)
+        .withHeaders({ 'x-api-key': 'vendor-secret' })
+        .withReconnect(failFast);
+      sys.spawnAnonymous(() => new SseActor(sseOptions));
+
+      // Wait for *either* outcome rather than only the one that should
+      // happen: an implementation that follows the redirect settles the other
+      // branch immediately, so this fails in milliseconds with the replayed
+      // headers in the diff instead of timing out with nothing to read.
+      await awaitCondition(() => causes.length > 0 || replayedTo.length > 0, {
+        timeoutMs: 4_000, label: 'the connect either refused the redirect or followed it',
+      });
+      // The credential travels to the configured host and no further.
+      expect(replayedTo).toEqual([]);
+      expect(causes[0]).toContain('refused a redirect');
+      expect(causes[0]).toContain('HTTP 302');
+      // And nothing the redirect target would have served reached the target.
+      expect(received.received).toEqual([]);
+    } finally {
+      await sys.terminate();
+      feed.stop(true);
+      collector.stop(true);
+    }
+  });
+
+  test('a Location carrying userinfo is redacted out of the refusal', async () => {
+    // The `Location` is the redirector's string and it lands verbatim in the
+    // `Error` that fails the connect — which travels to every
+    // `BrokerReconnectFailed` subscriber and into whatever log they feed.  A
+    // redirect to `https://user:secret@…` would put a credential there, chosen
+    // by the endpoint rather than by the operator, so it goes through the same
+    // masking `HttpClient` applies to a `Location`.
+    const feed = Bun.serve({
+      port: 0,
+      fetch(): Response {
+        return new Response(null, {
+          status: 307,
+          headers: { location: 'https://tenant:s3cr3t-token@moved.invalid/feed' },
+        });
+      },
+    });
+    const sys = quietSystem('sse-redirect-userinfo');
+    try {
+      const target = sys.spawnAnonymous(() => new CollectActor());
+      const causes = reconnectFailureCauses(sys);
+      const sseOptions = SseOptions.create()
+        .withUrl(`http://localhost:${feed.port}/`)
+        .withTarget(target)
+        .withReconnect(failFast);
+      const actor = new RefusalRecordingSseActor(sseOptions);
+      sys.spawnAnonymous(() => actor);
+
+      await awaitCondition(() => causes.length > 0, {
+        timeoutMs: 4_000, label: 'the connect refused the redirect',
+      });
+      // The refusal is safe where it is built, not merely where it is
+      // published — asserting only on `causes` would pass on a message that
+      // carried the credential and was scrubbed one layer up.
+      expect(actor.refusals[0]).toContain('***@moved.invalid');
+      expect(actor.refusals[0]).not.toContain('s3cr3t-token');
+      expect(actor.refusals[0]).not.toContain('tenant:');
+      // The host stays, so the message still says where it was being sent.
+      expect(causes[0]).toContain('moved.invalid/feed');
+      expect(causes[0]).toContain('***@moved.invalid');
+      expect(causes[0]).not.toContain('s3cr3t-token');
+    } finally {
+      await sys.terminate();
+      feed.stop(true);
+    }
+  });
+
+  test('a 3xx carrying no Location is reported as its status, not as a refused redirect', async () => {
+    // The pair the refusal keys on is "3xx *and* a `Location`" — that is
+    // exactly what the runtime would have followed.  A bodyless 300 (or a 304)
+    // names no target, so there is no redirect to refuse and nothing whose
+    // headers could be replayed; it belongs to the ordinary `response.ok`
+    // check, which says what actually happened.  Refusing it as a redirect
+    // would send an operator looking for a policy that never applied.
+    const feed = Bun.serve({
+      port: 0,
+      fetch(): Response { return new Response(null, { status: 300 }); },
+    });
+    const sys = quietSystem('sse-redirect-no-location');
+    try {
+      const target = sys.spawnAnonymous(() => new CollectActor());
+      const causes = reconnectFailureCauses(sys);
+      const sseOptions = SseOptions.create()
+        .withUrl(`http://localhost:${feed.port}/`)
+        .withTarget(target)
+        .withReconnect(failFast);
+      sys.spawnAnonymous(() => new SseActor(sseOptions));
+
+      await awaitCondition(() => causes.length > 0, {
+        timeoutMs: 4_000, label: 'the connect failed on the 300',
+      });
+      expect(causes[0]).toBe('SSE connect failed: HTTP 300');
+      expect(causes[0]).not.toContain('refused a redirect');
+    } finally {
+      await sys.terminate();
+      feed.stop(true);
+    }
+  });
+});
+
+/**
+ * The refusal `connectImplementation` built for a feed that answers the
+ * connect with a 302 to `location`, reached through the URL `connectUrl`
+ * builds from the feed's `host:port` (plain `http://` by default).
+ */
+async function refusalOfRedirectTo(
+  location: string,
+  connectUrl: (host: string) => string = (host) => `http://${host}/`,
+): Promise<{ readonly refusal: string; readonly published: string; readonly host: string }> {
+  const feed = Bun.serve({
+    port: 0,
+    fetch(): Response {
+      return new Response(null, { status: 302, headers: { location } });
+    },
+  });
+  const host = `localhost:${feed.port}`;
+  const sys = quietSystem('sse-redirect-named');
+  try {
+    const target = sys.spawnAnonymous(() => new CollectActor());
+    const causes = reconnectFailureCauses(sys);
+    const sseOptions = SseOptions.create()
+      .withUrl(connectUrl(host))
+      .withTarget(target)
+      .withReconnect(failFast);
+    const actor = new RefusalRecordingSseActor(sseOptions);
+    sys.spawnAnonymous(() => actor);
+    await awaitCondition(() => causes.length > 0, {
+      timeoutMs: 4_000, label: 'the connect refused the redirect',
+    });
+    return { refusal: actor.refusals[0] ?? '', published: causes[0] ?? '', host };
+  } finally {
+    await sys.terminate();
+    feed.stop(true);
+  }
+}
+
+/**
+ * Found while #1458.  The refusal named the `Location` through the scan for a
+ * string nothing parsed, which reads up to the last `@` as userinfo — so a
+ * redirect to a URL with no credential and an `@` in its path or query was
+ * named as if its host were whatever followed the `@`.  The `Location`
+ * resolved against the connect URL is the URL `fetch` would have requested
+ * next, so its credential is known exactly; only one that does not parse is
+ * left to the scan.  Asserted where the refusal is built: the published
+ * `BrokerReconnectFailed` copy is scanned once more on the way out.
+ */
+describe('SseActor — names a refused redirect exactly (found while #1458)', () => {
+  // No credential, and an `@` past the host: an npm scoped package, a profile
+  // path, an OAuth login hint.
+  const atPastTheHost = [
+    'https://registry.npmjs.org/@types%2fnode',
+    'https://example.com/@user',
+    'https://idp.example/authorize?login_hint=a@b',
+  ];
+
+  test.each(atPastTheHost)('a redirect to %p is refused naming it byte for byte', async (location) => {
+    const { refusal } = await refusalOfRedirectTo(location);
+    expect(refusal).toContain(`HTTP 302 to ${location}.  `);
+  });
+
+  test('a relative Location is named resolved against the connect URL', async () => {
+    const { refusal, host } = await refusalOfRedirectTo('/@user');
+    expect(refusal).toContain(`HTTP 302 to http://${host}/@user.  `);
+  });
+
+  /**
+   * A `Location` whose userinfo the scan cannot see, because no `scheme://`
+   * stands in front of it: scheme-relative, a special scheme with no slashes,
+   * and backslashes, which WHATWG reads as slashes for a special scheme.  All
+   * three resolve to a URL with a credential.  Named through the scan, as
+   * before #1458, all three reached the refusal and the published
+   * `BrokerReconnectFailed` in clear; naming the resolved target masks them,
+   * and a change that sent any of them back to the scan would print the
+   * password again.  Asserted on the refusal as built and as published.
+   */
+  const userinfoTheScanCannotSee: Array<[string, string]> = [
+    ['//tenant:s3cr3t@moved.invalid/feed', 'http://***@moved.invalid/feed'],
+    ['https:tenant:s3cr3t@moved.invalid/feed', 'https://***@moved.invalid/feed'],
+    ['http:\\\\tenant:s3cr3t@moved.invalid\\feed', 'http://***@moved.invalid/feed'],
+  ];
+
+  test.each(userinfoTheScanCannotSee)('a redirect to %p is refused with its credential masked', async (location, named) => {
+    const { refusal, published } = await refusalOfRedirectTo(location);
+    expect(refusal).toContain(`HTTP 302 to ${named}.  `);
+    for (const text of [refusal, published]) {
+      expect(text).not.toContain('s3cr3t');
+      expect(text).not.toContain('tenant');
+    }
+    expect(published).toContain(`HTTP 302 to ${named}.  `);
+  });
+
+  test('a credential in the Location is masked, and an @ past its host is kept', async () => {
+    const { refusal } = await refusalOfRedirectTo('https://tenant:s3cr3t@moved.invalid/@scope/feed');
+    expect(refusal).toContain('HTTP 302 to https://***@moved.invalid/@scope/feed.  ');
+    expect(refusal).not.toContain('s3cr3t');
+  });
+
+  test('a relative Location inherits the credential of the connect URL, masked', async () => {
+    // WHATWG copies the connect URL's userinfo into a path-only reference, so
+    // the resolved target carries a password the `Location` never named.
+    const { refusal, host } = await refusalOfRedirectTo('/moved', (feedHost) => `http://user:hunter2@${feedHost}/`);
+    expect(refusal).toContain(`HTTP 302 to http://***@${host}/moved.  `);
+    expect(refusal).not.toContain('hunter2');
+  });
+
+  test('a Location that does not parse is still masked by the scan', async () => {
+    // `user:pa` reads as a host and a port that is not a number.
+    const { refusal } = await refusalOfRedirectTo('https://user:pa/ss@moved.invalid/feed');
+    expect(refusal).toContain('HTTP 302 to https://***@moved.invalid/feed.  ');
+    expect(refusal).not.toContain('pa/ss');
+  });
+});
+
+describe('SseActor — a refused connect releases the body (#787)', () => {
+  test('the server sees the request aborted before the next attempt is due', async () => {
+    // The four refusals reject *after* `fetch` has resolved, so the response
+    // they refuse still owns a live body that nothing will ever read — and the
+    // failure path runs no `disconnectImplementation`, so nothing on it closes
+    // the socket to the endpoint that just failed the check.
+    //
+    // What makes this its own mechanism rather than a duplicate of the ordinary
+    // teardown is *when*: the next attempt opens with `_closeTransport`, which
+    // does abort the stale controller, so a fast retry hides the leak entirely.
+    // Between the two sits the backoff — the broker's default is
+    // `maxAttempts: Infinity` with a growing delay — and that is the window the
+    // socket is held for against an endpoint that is misbehaving by
+    // definition.  So the reconnect delay here is deliberately far longer than
+    // the assertion's own budget: the release has to be the refusal's doing.
+    //
+    // The body never closes, which is what makes the abandonment observable at
+    // all: a bodyless refusal has no socket left to leak, and the server-side
+    // `request.signal` is the only end of it a test can watch.
+    const aborted: string[] = [];
+    const server = Bun.serve({
+      port: 0,
+      fetch(request: Request): Response {
+        request.signal.addEventListener('abort', () => { aborted.push('abort'); });
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller): void {
+            controller.enqueue(new TextEncoder().encode('data: injected\n\n'));
+            /* …and never closes */
+          },
+        });
+        // Refused on its content type; the body is a valid feed either way, so
+        // what is under test is the release and not the refusal.
+        return new Response(stream, { headers: { 'content-type': 'text/html' } });
+      },
+    });
+    const sys = quietSystem('sse-refusal-release');
+    try {
+      const received = new CollectActor();
+      const target = sys.spawnAnonymous(() => received);
+      const attempts: number[] = [];
+      sys.eventStream.subscribe(
+        sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+          override onReceive(m: unknown): void {
+            attempts.push((m as BrokerReconnectAttempt).attempt);
+          }
+        })()),
+        BrokerReconnectAttempt,
+      );
+      const sseOptions = SseOptions.create()
+        .withUrl(`http://localhost:${server.port}/`)
+        .withTarget(target)
+        .withReconnect({ initialDelayMs: 30_000, maxDelayMs: 30_000, randomFactor: 0 });
+      const actor = new RefusalRecordingSseActor(sseOptions);
+      sys.spawnAnonymous(() => actor);
+
+      // A reconnect is only ever announced after a connect failed, so its
+      // arrival means the refusal has happened and the 30 s wait has started.
+      await awaitCondition(() => attempts.length > 0, {
+        timeoutMs: 4_000, label: 'the connect refused the foreign content type',
+      });
+      expect(actor.refusals[0]).toContain('non-event-stream body');
+      // The claim, at the layer that makes it: the refusal aborted the
+      // actor's own controller before it rethrew.  This is what discriminates
+      // the mechanism, and the server-side observation below no longer can —
+      // bun >= 1.4.2 releases a dropped, unread response body on its own after
+      // ~1 s, so with the abort deleted the `request.signal` still fires and
+      // the test still passes in ~1 050 ms, inside its own 2 000 ms budget.
+      // Measured both ways (#1510); widening the budget cannot separate them,
+      // because what is being timed is the runtime's cleanup and not the
+      // actor's.
+      expect(actor.abortedOnRefusal).toEqual([true]);
+      // And end to end: the socket really is released, not merely signalled.
+      await awaitCondition(() => aborted.length > 0, {
+        timeoutMs: 2_000, label: 'the refused response was aborted, not abandoned',
+      });
+      expect(attempts).toEqual([1]);
+      expect(received.received).toEqual([]);
+    } finally {
+      await sys.terminate();
+      server.stop(true);
+    }
+  });
+});
+
+/**
+ * The two shapes a body that is not a feed arrives in, and what the refusal
+ * has to say about each.
+ *
+ * The absent case is not padding: it is the one an implementation is most
+ * likely to "relax" later, and relaxing it hands the check back to the only
+ * party it constrains — an endpoint that wants its document parsed as events
+ * just omits the header.
+ */
+const foreignContentTypes = [
+  {
+    label: 'a type that is not text/event-stream',
+    systemName: 'sse-content-type-wrong',
+    respond: (): Response => new Response('data: injected\n\n', {
+      headers: { 'content-type': 'text/html; charset=utf-8' },
+    }),
+    expected: 'text/html',
+  },
+  {
+    label: 'no content type at all',
+    systemName: 'sse-content-type-absent',
+    // A `ReadableStream` body is what makes the header genuinely absent: Bun
+    // defaults a string body to `text/plain;charset=utf-8`, which would test
+    // the case above again under a different name.  It is also the realistic
+    // shape — an endpoint impersonating a feed streams.
+    respond: (): Response => new Response(new ReadableStream<Uint8Array>({
+      start(controller): void {
+        controller.enqueue(new TextEncoder().encode('data: injected\n\n'));
+        controller.close();
+      },
+    })),
+    expected: '<absent>',
+  },
+] as const;
+
+describe('SseActor — refuses a foreign content type (#787)', () => {
+  for (const { label, systemName, respond, expected } of foreignContentTypes) {
+    test(`${label} fails the connect`, async () => {
+      // The body is *valid* SSE wire format, so nothing downstream would have
+      // rejected it — `consume` splits on `\n\n` and forwards whatever parses.
+      // Only the announced type separates a feed from any other document an
+      // endpoint chooses to answer with, which is why the check is here and
+      // not in the parser.
+      const server = Bun.serve({ port: 0, fetch: (): Response => respond() });
+      const sys = quietSystem(systemName);
+      try {
+        const received = new CollectActor();
+        const target = sys.spawnAnonymous(() => received);
+        const causes = reconnectFailureCauses(sys);
+        const sseOptions = SseOptions.create()
+          .withUrl(`http://localhost:${server.port}/`)
+          .withTarget(target)
+          .withReconnect(failFast);
+        sys.spawnAnonymous(() => new SseActor(sseOptions));
+
+        // Either outcome, for the same reason as above: without the assertion
+        // the body parses cleanly and the injected event arrives, so this
+        // reads as "the event got through" rather than as a stalled wait.
+        await awaitCondition(() => causes.length > 0 || received.received.length > 0, {
+          timeoutMs: 4_000, label: 'the connect either refused the body or parsed it',
+        });
+        expect(received.received).toEqual([]);
+        expect(causes[0]).toContain('non-event-stream body');
+        expect(causes[0]).toContain(expected);
+      } finally {
+        await sys.terminate();
+        server.stop(true);
+      }
+    });
+  }
+
+  /**
+   * The other side of the check, and the direction it fails in when it is
+   * wrong: a media type is case-insensitive (RFC 9110 §8.3) and its parameters
+   * are separated by whitespace the sender chooses, so an assertion written
+   * against the exact bytes `text/event-stream` refuses a *conformant* feed.
+   * That is an availability defect rather than a security one, which is
+   * precisely why nothing else here would catch it — every refusal test above
+   * stays green while the actor refuses everything.
+   */
+  test('a conformant type in another case, with padding, is accepted', async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch(): Response {
+        return new Response('data: hello\n\n', {
+          headers: { 'content-type': '  Text/Event-Stream; charset=UTF-8' },
+        });
+      },
+    });
+    const sys = quietSystem('sse-content-type-normalised');
+    try {
+      const received = new CollectActor();
+      const target = sys.spawnAnonymous(() => received);
+      const causes = reconnectFailureCauses(sys);
+      const sseOptions = SseOptions.create()
+        .withUrl(`http://localhost:${server.port}/`)
+        .withTarget(target)
+        .withReconnect(failFast);
+      sys.spawnAnonymous(() => new SseActor(sseOptions));
+
+      await awaitCondition(() => causes.length > 0 || received.received.length > 0, {
+        timeoutMs: 4_000, label: 'the connect either accepted the feed or refused it',
+      });
+      expect(causes).toEqual([]);
+      expect(received.received[0]).toEqual({ event: 'message', data: 'hello', id: undefined });
+    } finally {
+      await sys.terminate();
+      server.stop(true);
+    }
+  });
+});
+
 describe('SseActor — connect deadline (#753)', () => {
   test('a server that never answers the request fails the attempt', async () => {
     // The handler never returns, so `fetch` never resolves: without a deadline
@@ -217,4 +788,147 @@ describe('SseActor — connect deadline (#753)', () => {
       server.stop(true);
     }
   });
+});
+
+/* ------ the events a refused connect publishes, and what we say it does ---- */
+
+/**
+ * The three surfaces #749 and #787 shipped told operators that both refusals
+ * "travel the ordinary reconnect path — backoff, circuit breaker,
+ * `BrokerDisconnected`".  The first two hold; the third names an event no
+ * refused connect can produce, because `BrokerDisconnected` has exactly one
+ * publish site — `handleConnectionLost` — and a connect that fails goes from
+ * `_tryConnect`'s catch straight into the reconnect handler.  An operator who
+ * alerted on the documented name would have had an alert that never fires.
+ *
+ * So the prose is pinned to the measured set rather than to a phrasing: the
+ * first test below observes what a refused connect actually publishes, and the
+ * ones after it require each surface to name those events and no others.  A
+ * change that really does route a refusal through `handleConnectionLost` fails
+ * the first test, which is the only thing that may move the constants — and
+ * moving them then forces all three surfaces in the same commit.
+ */
+const PUBLISHED_ON_A_REFUSED_CONNECT = ['BrokerReconnectAttempt', 'BrokerReconnectFailed'] as const;
+const ABSENT_ON_A_REFUSED_CONNECT = ['BrokerDisconnected'] as const;
+
+type BrokerLifecycleEventName =
+  | typeof PUBLISHED_ON_A_REFUSED_CONNECT[number]
+  | typeof ABSENT_ON_A_REFUSED_CONNECT[number]
+  | 'other';
+
+function brokerLifecycleEventName(event: unknown): BrokerLifecycleEventName {
+  if (event instanceof BrokerDisconnected) return 'BrokerDisconnected';
+  if (event instanceof BrokerReconnectAttempt) return 'BrokerReconnectAttempt';
+  if (event instanceof BrokerReconnectFailed) return 'BrokerReconnectFailed';
+  return 'other';
+}
+
+/**
+ * Names of the three lifecycle events the system publishes, in arrival order.
+ *
+ * One observer subscribed to all three, deliberately: the claim under test is
+ * about which of them arrive, so watching only the expected ones would prove
+ * nothing about the one that must not.
+ */
+function brokerLifecycleEventNames(sys: ActorSystem): BrokerLifecycleEventName[] {
+  const names: BrokerLifecycleEventName[] = [];
+  const observer = sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+    override onReceive(m: unknown): void { names.push(brokerLifecycleEventName(m)); }
+  })());
+  for (const eventClass of [BrokerDisconnected, BrokerReconnectAttempt, BrokerReconnectFailed]) {
+    sys.eventStream.subscribe(observer, eventClass);
+  }
+  return names;
+}
+
+describe('SseActor — what a refused connect publishes (#749, #787)', () => {
+  test('a redirect-refusing feed produces reconnect events and no BrokerDisconnected', async () => {
+    const feed = Bun.serve({
+      port: 0,
+      fetch(): Response {
+        return new Response(null, { status: 302, headers: { location: 'http://127.0.0.1:1/' } });
+      },
+    });
+    const sys = quietSystem('sse-refusal-event-names');
+    try {
+      const target = sys.spawnAnonymous(() => new CollectActor());
+      const names = brokerLifecycleEventNames(sys);
+      const sseOptions = SseOptions.create()
+        .withUrl(`http://localhost:${feed.port}/`)
+        .withTarget(target)
+        .withReconnect(failFast);
+      sys.spawnAnonymous(() => new SseActor(sseOptions));
+
+      // `failFast` allows one retry, so the cycle ends: the terminal event is
+      // what makes "and nothing else arrived" a statement about a finished
+      // sequence rather than about one that had not got there yet.
+      await awaitCondition(() => names.includes('BrokerReconnectFailed'), {
+        timeoutMs: 4_000, label: 'the refused connect ran its reconnect cycle out',
+      });
+      expect(new Set(names)).toEqual(new Set(PUBLISHED_ON_A_REFUSED_CONNECT));
+      for (const absent of ABSENT_ON_A_REFUSED_CONNECT) expect(names).not.toContain(absent);
+    } finally {
+      await sys.terminate();
+      feed.stop(true);
+    }
+  });
+});
+
+const REPOSITORY_ROOT = join(import.meta.dir, '..', '..', '..', '..', '..');
+
+/**
+ * Where each surface states the claim, and how to cut the statement out of it.
+ *
+ * `anchor` is the sentence opening — translated, since the pages are mirrored
+ * 1:1 — and the enumeration that follows it sits between the next two em
+ * dashes.  That enumeration is the unit under test because it is the
+ * operator-facing list of event names: it is what a reader copies into an
+ * alert, and it is exactly where the wrong name sat.
+ */
+const claimSurfaces = [
+  {
+    label: 'the English SSE page',
+    file: join('docs', 'src', 'content', 'docs', 'io', 'sse.mdx'),
+    anchor: 'Both refusals travel the ordinary reconnect path',
+  },
+  {
+    label: 'the German SSE page',
+    file: join('docs', 'src', 'content', 'docs', 'de', 'io', 'sse.mdx'),
+    anchor: 'Ablehnungen laufen über den gewöhnlichen Reconnect-Pfad',
+  },
+  {
+    label: 'the CHANGELOG entry',
+    file: 'CHANGELOG.md',
+    anchor: 'Both refusals travel the ordinary reconnect path',
+  },
+] as const;
+
+/** The em-dash enumeration that follows `anchor`. */
+function enumeratedEvents(file: string, anchor: string): string {
+  // Flattened before the search, not after: every surface hard-wraps, so both
+  // the anchor and the enumeration straddle line breaks in at least one of
+  // them, and matching against the raw text would make the guard depend on
+  // where a paragraph happens to wrap.
+  const text = readFileSync(join(REPOSITORY_ROOT, file), 'utf8').replace(/\s+/g, ' ');
+  const anchorAt = text.indexOf(anchor);
+  expect(anchorAt, `${file} no longer contains "${anchor}"`).toBeGreaterThanOrEqual(0);
+  const opening = text.indexOf('—', anchorAt);
+  expect(opening, `${file}: no enumeration after "${anchor}"`).toBeGreaterThanOrEqual(0);
+  const closing = text.indexOf('—', opening + 1);
+  expect(closing, `${file}: unterminated enumeration after "${anchor}"`).toBeGreaterThanOrEqual(0);
+  return text.slice(opening + 1, closing).trim();
+}
+
+describe('SseActor — the shipped prose names the events that exist (#749, #787)', () => {
+  for (const { label, file, anchor } of claimSurfaces) {
+    test(`${label} lists the reconnect events and not BrokerDisconnected`, () => {
+      const listed = enumeratedEvents(file, anchor);
+      for (const published of PUBLISHED_ON_A_REFUSED_CONNECT) {
+        expect(listed).toContain(published);
+      }
+      for (const absent of ABSENT_ON_A_REFUSED_CONNECT) {
+        expect(listed).not.toContain(absent);
+      }
+    });
+  }
 });

@@ -86,7 +86,7 @@ body:
         - label: Memcached cache (`memjs`)
         - label: S3 / MinIO object storage (`@aws-sdk/client-s3`)
         - label: Kafka (`kafkajs`)
-        - label: NATS / JetStream (`nats`)
+        - label: NATS / JetStream (`@nats-io/transport-node`, `@nats-io/jetstream`)
         - label: MQTT (`mqtt`)
         - label: AMQP / RabbitMQ (`amqplib`)
         - label: gRPC (`@grpc/grpc-js`)

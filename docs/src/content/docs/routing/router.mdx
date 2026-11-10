@@ -127,9 +127,12 @@ Three things worth knowing before you switch the default:
   is the mailbox's own overflow policy (`drop-head` / `drop-new` /
   `reject`), not the router's call to make.
 
-Local only.  Mailbox depth is in-process state, so `ClusterRouter` has
-no smallest-mailbox mode — see
-[Cluster router](/cluster/cluster-router/).
+Both routers have it.  The local one reads its children's mailboxes
+directly — they are in the same process.  `ClusterRouter`'s
+`smallest-mailbox` cannot, so it routes on a **cached** depth that each
+routee node reports on a background tick; see
+[Cluster router](/cluster/cluster-router/) for what that lag can and
+cannot cost.
 
 ## `Router.custom` — bring your own strategy
 
@@ -185,24 +188,27 @@ const oneRoutee = (await system.actorSelection(
 oneRoutee.stop();
 ```
 
-When a routee stops, the router watches it and… does nothing by
-default in the framework's current router.  Its ref stays in the
-pool — the router never prunes it — so round-robin keeps handing it
-roughly 1-in-N messages, which land in dead letters until the whole
-router restarts.  For self-healing pools, wrap the routee in a
-supervisor strategy that restarts on Stop (or wrap the whole pool in
-a BackoffSupervisor).
+When a routee stops, the router — which watches every routee — prunes
+its ref from the pool on the `Terminated`: the pool is one routee
+smaller, and nothing is routed into the gap.  A routee that *crashes*
+is the other case: the default supervisor strategy restarts it in place
+and the pool never changes.  For a pool that should heal after a stop
+rather than shrink, make the routee a `BackoffSupervisor` around the
+worker — `Router.roundRobin(4, BackoffSupervisor.factory({ child: Worker }))`
+— so the slot is refilled after a backoff; see
+[BackoffSupervisor](/patterns/backoff-supervisor/).
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="`size = 0` is a bug">
+<Aside type="note" title="`size` is validated at the factory call">
   ```ts
-  Router.roundRobin(0, Worker);   // ← compiles, but every message goes nowhere
+  Router.roundRobin(0, Worker);   // ← throws OptionsError: Router: size must be an integer >= 1 (got 0)
   ```
-  A zero-routee pool returns an empty iterable from the strategy,
-  so every `tell` is dropped (silently — no dead-letter routing).
-  The framework doesn't validate `size > 0`; we should.  Until
-  then, the responsibility is yours.
+  A zero-routee pool would return an empty iterable from every strategy
+  and drop each `tell` silently, so the size guard runs inside the
+  `Router.roundRobin(...)` call itself — not in `preStart` — and the
+  stack still points at the call that got it wrong.  The same guard
+  covers every factory, `scatterGatherFirstCompleted` included.
 </Aside>
 
 <Aside type="caution" title="Routees can't tell who sent a message">

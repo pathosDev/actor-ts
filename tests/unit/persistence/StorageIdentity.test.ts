@@ -68,7 +68,7 @@ describe('SQLite stores', () => {
   });
 
   test('an in-memory database mints once per open store', async () => {
-    const journal = new SqliteJournal();
+    const journal = new SqliteJournal({ path: ':memory:' });
     const identity = await journal.storageIdentity();
     expect(identity).toMatch(UUID_PATTERN);
     expect(await journal.storageIdentity()).toBe(identity);

@@ -253,8 +253,9 @@ dauerhaft kalt.
 
 ## Routee-Discovery
 
-Bei jeder Gossip-Runde leitet der Router seine Routee-Menge aus
-den Up-Mitgliedern des Clusters neu ab. Auslöser eines
+Der Router leitet seine Routee-Menge aus
+`Cluster.placementCandidates()` ab — den Up-Mitgliedern, auf die
+dieser Node Arbeit zu legen bereit ist. Auslöser eines
 Neuaufbaus:
 
 - `MemberUp` — ein neues Up-Mitglied mit passender Rolle.
@@ -263,6 +264,37 @@ Neuaufbaus:
 
 Die Menge ist **deterministisch geordnet** (per Adresse), sodass
 Round-Robin-Counter über Neuaufbauten hinweg vernünftig bleiben.
+
+### Kandidaten, nicht einfach Up-Mitglieder
+
+`placementCandidates()` **ist** `upMembers()`, solange
+`actor-ts.cluster.configuration-compatibility-check.enforce` auf
+`off` steht — der Default —, die meisten Deployments können die
+beiden also als eine Menge lesen.
+
+Mit eingeschalteter Durchsetzung fällt ein Peer, dessen
+[geprüfte Konfiguration](/de/cluster/joining-and-seeds/#einstellungen-die-übereinstimmen-müssen)
+von der dieses Nodes abweicht, aus der Menge, und der Router hört
+auf, ihm etwas zu schicken. Der Peer wird nicht gedowned und bleibt
+für jeden anderen Zweck `up`; nur die Platzierung ändert sich.
+
+Die Routee-Auswahl ist der **einzige** Konsument dieser Menge, und
+das mit Absicht. Die Sicht ist pro Node — jeder Node vergleicht nur
+das, was seine Peers gossipen, mit seinen eigenen aufgelösten
+Werten —, sie ist also von Natur aus asymmetrisch: sind sich A und B
+einig und weicht C ab, schließt C beide aus, während sie nur C
+ausschließen. Hier kostet das ein Routee; überall, wo eine Rolle
+*gewählt* wird, gäbe es zwei Gewinner — deshalb lesen
+[Cluster-Singletons](/de/cluster/singleton/overview/) und der
+Shard-Koordinator weiterhin die Up-Mitglieder.
+
+Eine Abweichung ist kein Mitgliedschaftsereignis, ein bereits
+laufender Router wendet sie also beim nächsten Neuaufbau an — beim
+nächsten `MemberUp` oder `MemberRemoved`. Im Normalfall ist das
+keine Wartezeit: die Einstellungen, die das Framework selbst
+veröffentlicht, sind aufgelöst, bevor der erste Frame eines Nodes
+läuft, ein abweichender Peer ist also schon außerhalb der
+Kandidatenmenge, wenn sein Beitritt `MemberUp` auslöst.
 
 ## Wenn die Routee-Menge leer ist
 
@@ -291,7 +323,7 @@ ClusterRouter.factory(
 );
 ```
 
-Nur Up-Mitglieder mit der Rolle `compute` sind Kandidaten.
+Nur Kandidaten mit der Rolle `compute` sind Routees.
 Nützlich für asymmetrische Cluster:
 
 - Nodes mit `compute`-Rolle erledigen schwere Arbeit.
@@ -299,8 +331,8 @@ Nützlich für asymmetrische Cluster:
 - Nodes mit `coordinator`-Rolle hosten Singletons.
 
 Die Rolle wird zur `Cluster.join`-Zeit pro Node deklariert. Das
-`role`-Feld des Routers filtert; ohne es ist **jedes Up-Mitglied
-ein Kandidat**.
+`role`-Feld des Routers verengt die Kandidatenmenge; ohne es ist
+**jeder Kandidat ein Routee**.
 
 ## Self-Routing
 

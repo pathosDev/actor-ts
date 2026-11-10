@@ -51,7 +51,12 @@ export class DistributedPubSubOptionsBuilder extends OptionsBuilder<DistributedP
     return this.set('cluster', cluster);
   }
 
-  /** Gossip interval in ms between anti-entropy pushes.  Default gossip interval. */
+  /**
+   * Milliseconds between the mediator's periodic pushes of its topic set,
+   * each to one random `up` peer.  The mediator runs its own timer: unset,
+   * the extension takes `actor-ts.cluster.pub-sub.gossip-interval` (1 s),
+   * and it never follows the cluster's gossip interval.
+   */
   withGossipIntervalMs(ms: number): this {
     return this.set('gossipIntervalMs', ms);
   }

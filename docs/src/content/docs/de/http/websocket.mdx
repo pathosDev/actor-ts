@@ -94,11 +94,14 @@ type WebsocketRouteOptions<TOut, TIn> = {
   onInvalidMessage?: 'close' | 'drop' | 'hook';       // default 'close' (1003)
   maxBufferedBytes?: number;                          // default 4 MiB
   onBackpressure?:   'drop' | 'close';                // default 'drop'
-  allowedOrigins?:   string[];                        // CSWSH-Schutz — siehe unten
-  maxConnections?:   number;                          // Limit gleichzeitiger Verbindungen; Default unbegrenzt
-  maxPreAttachFrames?: number;                        // Frame-Limit im Aufbaufenster; Default 256
-  maxPreAttachBytes?:  number;                        // Byte-Limit im Aufbaufenster; Default 4 MiB
-  acceptTimeoutMs?:    number;                        // Aufbau-Frist; Default 10 000, Infinity schaltet ab
+  allowedOrigins?:   string[];                        // CSWSH defence — see below
+  requireSameOrigin?: boolean;                        // CSWSH defence; default true — see below
+  maxConnections?:   number;                          // concurrent-connection cap; default unlimited
+  maxPreAttachFrames?: number;                        // setup-window frame cap; default 256
+  maxPreAttachBytes?:  number;                        // setup-window byte cap; default 4 MiB
+  acceptTimeoutMs?:    number;                        // setup deadline; default 10 000, Infinity to disable
+  connectionMailboxCapacity?: number;                 // per-connection queue bound; default unset (global bound)
+  connectionMailboxOverflow?: 'drop-head' | 'drop-new' | 'reject'; // needs a capacity
 };
 ```
 
@@ -138,7 +141,7 @@ Optimierung darüber, die dem Prozess die Pufferung erspart.
 Die Zahl ist in beide Richtungen deine: `maxFrameBytes` zu senken
 verkleinert auch das Puffer-Fenster, und es über den 1-MiB-Default
 anzuheben, lässt Frames dieser Größe tatsächlich durch.  Aufgelöst wird
-wie üblich — Route-Options, dann `actor-ts.http.websocket.maxFrameBytes`,
+wie üblich — Route-Options, dann `actor-ts.http.websocket.max-frame-bytes`,
 dann der eingebaute Default —, und zwar beim Binden des Servers; ein
 ungültiger Wert ist damit ein Fehler in `bind()` und nicht erst beim
 ersten Upgrade.
@@ -230,7 +233,18 @@ Störung: ein aufgewerteter Socket ohne Actor dahinter, der vorher für die
 Lebensdauer des Prozesses offen blieb, Frames sammelte, die niemand je
 abholt, und einen Platz belegte, den niemand je zurückgibt.
 
-### Origin-Allowlist (CSWSH-Schutz)
+Ein beschäftigter Hub ist diese Störung nicht.  Das Kommando, das den Actor
+spawnt, ist eine der Control-Nachrichten des Hubs und wird vor den Frames
+behandelt, die andere Verbindungen bereits eingereiht haben (siehe
+[Die Mailbox des Hubs begrenzen](#die-mailbox-des-hubs-begrenzen)).  Ein
+Rückstau auf einem Hub mit seiner Default-Mailbox kann ein abgeschlossenes
+Upgrade also nicht über `acceptTimeoutMs` hinaus festhalten und zu einem
+1013 machen.  Ein Hub, der mit `withMailbox(...)` gespawnt wurde, reiht das
+Kommando ein wie jede andere Nachricht in dieser Mailbox, und hinter einem
+FIFO-Rückstau, dessen Abarbeitung länger als `acceptTimeoutMs` dauert, wird
+die neue Verbindung weiterhin mit 1013 geschlossen.
+
+### Origin-Prüfungen (CSWSH-Schutz)
 
 Browser hängen die Cookies des Nutzers automatisch an einen WebSocket-Upgrade
 an — eine WS-Route mit **ambienter** Authentifizierung (Session-Cookie oder
@@ -238,8 +252,42 @@ an — eine WS-Route mit **ambienter** Authentifizierung (Session-Cookie oder
 fremde Seite öffnet `new WebSocket('wss://dein-host/ws')` und nutzt die
 Credentials des Opfers.
 
-Mit `allowedOrigins` wird der Handshake über den `Origin`-Header des Browsers
-abgesichert:
+Zwei Regeln sichern den Handshake über den `Origin`-Header des Browsers ab, und
+sie ergänzen sich — ein Upgrade kommt durch, sobald **eine** von beiden es
+zulässt.
+
+#### `requireSameOrigin` — standardmäßig an
+
+`requireSameOrigin` lässt einen `Origin` zu, der diesen Server selbst benennt,
+indem es ihn mit dem `Host` des Requests vergleicht.  Es braucht keinerlei
+Konfiguration — genau deshalb ist es der Default: eine Route bekommt die
+Prüfung, ohne dass ihr Autor die Option kennen muss.
+
+```ts
+websocket('/ws', chat);              // same-origin required
+```
+
+Verglichen wird nur der Host, denn `Host` trägt kein Schema.  Ein Reverse-Proxy,
+der `Host`, aber nicht `Origin` umschreibt, fällt deshalb durch die Prüfung —
+trag dort die echten Origins in `allowedOrigins` ein.  Nur den Host zu
+vergleichen heißt zugleich **schemablind**: eine `http://`-Seite auf demselben
+`host:port` kommt durch, die Regel ersetzt also nicht, Klartext abzulehnen.
+
+Beide Header kommen vom Client, und das begrenzt, was die Regel zusagen kann.
+Eine Seite, die diesen Server unter einem eigenen Namen erreicht
+(**DNS-Rebinding**), sendet `Origin` und `Host` übereinstimmend und kommt damit
+durch den Same-Origin-Arm.  Das ist die übliche Schwäche jeder
+Same-Origin-Prüfung auf Basis von `Host`, und genau dafür gibt es
+`allowedOrigins`.  Gewonnen ist damit *Erreichbarkeit*, keine Session: der
+Browser hängt keine Cookies des echten Hosts an — relevant ist also eine Route,
+deren Authentifizierung **das Netz selbst** ist (`IpAllowlist` oder Vertrauen
+auf Loopback).  Trag bei so einer
+Route die erwarteten Origins in `allowedOrigins` ein, statt dich auf diesen Arm
+zu verlassen.
+
+#### `allowedOrigins` — andere Origins benennen
+
+Dafür, dass die Seite, die den Socket öffnet, woanders ausgeliefert wird:
 
 ```ts
 const wsOptions = WebsocketRouteOptions.create()
@@ -247,15 +295,35 @@ const wsOptions = WebsocketRouteOptions.create()
 websocket('/ws', chat, wsOptions);
 ```
 
-Ein Upgrade, dessen `Origin` vorhanden, aber nicht gelistet ist, wird auf allen
-drei Backends **vor** dem Handshake mit **403** abgelehnt.  Ein **fehlender**
-`Origin` (Nicht-Browser-Client — natives WebSocket, Server-zu-Server) wird
-zugelassen, da CSWSH ein reiner Browser-Angriff ist.  Der Vergleich ist
-case-insensitiv.
+Ein Upgrade, dessen `Origin` vorhanden ist, aber zu keiner der beiden Regeln
+passt, wird auf allen drei Backends **vor** dem Handshake mit **403** abgelehnt.
+Der Vergleich ist case-insensitiv.
 
-`BearerTokenAuth` ist bereits geschützt (Browser können beim WS-Handshake
-keinen `Authorization`-Header setzen); `allowedOrigins` ist v. a. bei Cookie-
-oder IP-basierter Auth relevant.
+#### Fehlender `Origin` — Nicht-Browser-Clients bleiben unberührt
+
+Ein **fehlender** `Origin` wird von beiden Regeln zugelassen.  Ein `WebSocket`
+aus Node, Bun oder Deno und jeder Server-zu-Server-Dialer sendet überhaupt
+keinen `Origin`-Header, sodass nichts davon sie betrifft: CSWSH nutzt die
+ambienten Credentials eines Opfer-Browsers, und ein Browser sendet den Header
+immer.  Das macht den Default gefahrlos einschaltbar — abgewiesen wird
+neuerdings Browser-Verkehr von einer Seite, die du nicht ausgeliefert hast.
+
+#### Abschalten
+
+```ts
+const wsOptions = WebsocketRouteOptions.create()
+  .withRequireSameOrigin(false);
+websocket('/ws', chat, wsOptions);   // no origin check at all
+```
+
+`withRequireSameOrigin(false)` zusammen mit `withAllowedOrigins([...])` behält
+die Allowlist und entfernt nur den Same-Origin-Arm.  Ohne Allowlist bleibt die
+Route ganz ohne Origin-Prüfung — das Verhalten vor #756, und einen Kommentar
+wert, der festhält, welche Credential-Form das unbedenklich macht.
+
+`BearerTokenAuth` ist so eine Form: bereits geschützt, weil Browser beim
+WS-Handshake keinen `Authorization`-Header setzen können.  Die Origin-Regeln
+sind v. a. bei Cookie- oder IP-basierter Auth relevant.
 
 ### Middleware läuft zur Upgrade-Zeit
 
@@ -299,6 +367,19 @@ fahren sie dagegen mit: Ein 401 einer inneren `BearerTokenAuth` kommt mit
 den Security-Headern zurück — und genau das ist der Fall, auf den es
 ankommt, denn diese Antwort rendert ein Browser tatsächlich.
 
+#### Request-Attribute bleiben auf der HTTP-Seite
+
+Middleware reicht den Handlern darin Werte als Request-Attribute weiter
+— `next(withAttribute(request, key, value))` —, und so liefert
+[`JwtAuth`](/de/http/middleware/jwt/) die Claims, die es geprüft hat.  Um
+eine `websocket()`-Route herum erreichen diese Werte die Verbindung nicht:
+Die Middleware läuft innerhalb der Upgrade-Prüfung, und das Backend
+übergibt der Verbindung den Upgrade-Request, den es selbst adaptiert hat —
+die Upgrade-Info, die ein Hub sieht, trägt Pfad, Query und Header, nicht
+die Attribute.  Den Handshake sichert die Middleware trotzdem: Ein Token,
+das `JwtAuth` ablehnt, wird mit `401` beantwortet, und kein Socket öffnet
+sich.
+
 ### Backend-eigene Middleware läuft ebenfalls
 
 `withMiddleware()` ist der portable Weg — auf jedem Backend
@@ -337,9 +418,27 @@ abstract class WebsocketServerActor<TOut, TIn, TSelf = never> {
   protected onClientConnected(client: WebsocketConnection<TOut>): void;
   protected onClientDisconnected(client: WebsocketConnection<TOut>, info: WebsocketCloseInfo): void;
   protected onInvalidMessage(client: WebsocketConnection<TOut>, error: WebsocketDecodeError): void;
+  // Default: warn with the message's class, then this.unhandled(message).
   protected onSelfMessage(message: TSelf): void;
 }
 ```
+
+`onSelfMessage` bekommt, was andere Actors dem Hub tellen (dein `TSelf`),
+und alles andere, das keinen der eigenen Kinds des Hubs trifft, auch einen
+Body, den ein entfernter Knoten an den Pfad des Hubs adressiert hat.  Wenn
+du ihn nicht überschreibst, lehnt er ab: ein `warn` mit der Klasse der
+Nachricht, nie ihrem Payload, dann
+[`this.unhandled(message)`](/de/fundamentals/actor/#eine-nachricht-ablehnen--unhandled),
+sodass die Nachricht zu einem [Dead Letter](/de/operations/dead-letters/)
+wird, der den Hub nennt, und in `actor_unhandled_total{class}` gezählt wird.
+
+Ein Body, der einen der eigenen Kinds des Hubs bloß buchstabiert, landet
+ebenfalls hier.  Der Hub erkennt seine Signale an Feldern, die nur das
+Framework liefern kann — eine lebende Verbindung, die Factory, die eine
+spawnt —, und ein dekodierter Peer-Body trägt keins von beiden.
+Ein `{ kind: 'websocket-connected', … }` von der Leitung kann also keinen
+Client einschleusen, kein `onMessage` auslösen und keine Verbindung
+verdrängen.
 
 ### Helfer
 
@@ -376,6 +475,13 @@ onClientConnected → onMessage* (in frame order) → onClientDisconnected
 bekommst du die übliche Garantie des Actor-Modells — keine
 nebenläufige Handler-Ausführung, keine Locks.
 
+Auch über Verbindungen hinweg hält der Hub die Ankunftsreihenfolge ein,
+mit einer Ausnahme: der Aufbau einer neuen Verbindung — das Kommando, das
+ihren Actor spawnt, und ihr `onClientConnected` — wird vor den Frames
+behandelt, die andere Verbindungen bereits eingereiht haben, und wartet
+also nie auf deren Rückstau.  Siehe
+[Die Mailbox des Hubs begrenzen](#die-mailbox-des-hubs-begrenzen).
+
 <Aside type="caution" title="`onReceive` ist versiegelt">
   Überschreibe `onReceive` an einem `WebsocketServerActor` nicht —
   es ist versiegelt.  Für jede Verbindung spawnt das Framework einen
@@ -394,16 +500,38 @@ ist damit der Musterfall für eine
 [begrenzte Mailbox](/de/fundamentals/mailboxes/#wann-eine-mailbox-begrenzen):
 ein Actor, der einem Produzenten ausgesetzt ist, den du nicht
 kontrollierst.  Auf ihm läuft aber auch der verbindungsinterne Verkehr
-des Frameworks.  Daraus folgen zwei Dinge.
+des Frameworks, und der wird nicht wie die Frames behandelt.
 
-**Das Kommando, das den Actor einer Verbindung spawnt, kann nicht
-verworfen werden.**  Es nimmt dieselbe Spur wie ein `Terminated` der
-Death-Watch — es wird wie alles andere am Ende der Schlange eingereiht,
-ist aber von jeder Overflow-Policy ausgenommen, sodass `drop-head`,
-`drop-new`, `reject` und auch eine eigene `PriorityMailbox` es
-unangetastet lassen.  Das ist wichtig, weil dieses Kommando genau
-einmal gesendet wird — aus dem Upgrade-Callback des Backends — und die
-einzige Referenz auf einen Socket trägt, dessen Handshake bereits
+**Ein Hub hat standardmäßig eine Control-Spur.**  Solange du ihn nicht
+mit einer eigenen Mailbox spawnst, ist seine Queue eine
+[`ControlAwareMailbox`](/de/fundamentals/mailboxes/#controlawaremailbox),
+und zwei Nachrichten des Frameworks sind ihre Control-Nachrichten: das
+Kommando, das nach abgeschlossenem Upgrade den Actor einer Verbindung
+spawnt, und das Signal `onClientConnected`, das dieser Actor meldet.
+Beide werden vor allem behandelt, was bereits eingereiht ist — Frames
+anderer Verbindungen ebenso wie deine eigenen `TSelf`-Nachrichten —, eine
+neue Verbindung wartet also nie darauf, dass der Rückstau einer anderen
+abgearbeitet ist.  Alles andere behält die Ankunftsreihenfolge, deshalb
+gilt die Reihenfolge pro Verbindung weiter: das `onClientDisconnected`
+einer Verbindung läuft nach ihren eigenen eingereihten Frames.
+
+**Eine Begrenzung verwirft den Rest, nie diese beiden.**  Begrenzt du den
+Hub mit `withMailboxCapacity()`, mit einem
+[`actor-ts.deployment`](/de/reference/configuration/#actor-tsdeployment)-Eintrag
+für seinen Pfad (`"/user/chat"`), wo seine Spawn-Stelle nicht deine ist,
+oder lässt du `actor-ts.mailbox.default.capacity` ihn erreichen — in dieser
+Rangfolge —, gilt die Grenze für Frames, `onClientDisconnected` und deine
+`TSelf`-Nachrichten; das Spawn-Kommando und `onClientConnected` werden
+weder gezählt noch verworfen.  Ein begrenzter Hub unter Last nimmt also weiterhin jedes
+Upgrade an und führt jeden neuen Client in `this.clients`, während eine
+Flut auf die Kapazität gekürzt wird.  Verlieren kann er weiterhin ein
+Disconnect, und dann bleibt ein Client in `this.clients`, der längst weg
+ist — dieser Teil ist dein Protokoll, und nur du weißt, ob ein Verlust
+akzeptabel ist.
+
+Das Spawn-Kommando ist dasjenige, das nicht verloren gehen darf.  Es wird
+genau einmal gesendet — aus dem Upgrade-Callback des Backends — und trägt
+die einzige Referenz auf einen Socket, dessen Handshake bereits
 abgeschlossen ist.  Es zu verlieren würde diesen Socket aufgewertet
 zurücklassen, ohne dass etwas daran hängt: keine Listener, eingehende
 Frames stapeln sich ungelesen, und sein `maxConnections`-Platz bleibt
@@ -412,12 +540,84 @@ nicht antworten kann — er ist gestoppt, oder er kommt nie zu dem Kommando —,
 fängt stattdessen [das Aufbaufenster](#das-aufbaufenster-einer-verbindung)
 ab: es schließt den Socket und gibt den Platz zurück.
 
-**Was eine Begrenzung dagegen weiterhin verwirft, ist der Rest.**
-Eingehende Frames und die Signale `onClientConnected` /
-`onClientDisconnected`, die die Connection-Actors melden — ein
-begrenzter Hub unter Last kann dir also einen Client liefern, der nie in
-`this.clients` erscheint, oder einen, der sie nie verlässt.  Beides ist
-dein Protokoll, und nur du weißt, ob ein Verlust akzeptabel ist.
+**`withMailbox(...)` ersetzt die Queue und die Spur gleich mit.**  Ein
+Hub, der mit einer eigenen Mailbox gespawnt wurde, behält genau diese
+Mailbox und die Reihenfolge, die sie allem gibt: auf einer schlichten
+FIFO-Queue wartet das Spawn-Kommando hinter jedem Frame, der vor ihm
+eingereiht wurde.  Verworfen werden kann es trotzdem nicht — es nimmt die
+Spur eines `Terminated` der Death-Watch, die `drop-head`, `drop-new`,
+`reject` und eine `PriorityMailbox` alle unangetastet lassen —, aber
+`onClientConnected` ist dort eine gewöhnliche Nachricht, und eine Grenze,
+die in diese Mailbox eingebaut ist, kann es verwerfen.
+
+Für strikte Ankunftsreihenfolge bei allem gibst du dem Hub eine eigene
+FIFO-Mailbox — und begrenzt sie, denn der Hub ist der Actor, den seine
+Peers füttern:
+
+```ts
+const chatMailboxOptions = BoundedMailboxOptions.create()
+  .withCapacity(1_024)
+  .withOverflow('drop-head');
+const chatOptions = ActorOptions.create().withMailbox(() => new BoundedMailbox(chatMailboxOptions));
+const chat = system.spawn(ChatRoom, 'chat', chatOptions);
+```
+
+Eine Mailbox, die du mitgibst, bringt ihre eigene Grenze mit, und keine
+andere Grenze erreicht sie: `ActorOptions` lehnt `withMailboxCapacity()`
+neben `withMailbox()` ab, und weder `actor-ts.mailbox.default.capacity`
+noch ein Eintrag unter `actor-ts.deployment` gilt für sie.
+`withMailbox(() => new Mailbox())` hält die Reihenfolge ebenfalls, aber
+unbegrenzt — ein Hub, der über den globalen Standard begrenzt war, verliert
+diese Grenze, ohne dass es irgendwo steht.
+
+Der Hub ist nicht die einzige Queue im Spiel.  Jede Verbindung hat eine
+eigene Mailbox — die des internen Connection-Actors —, und
+`connection.tell`, `sendRaw` und `close` laufen alle in diese.
+Standardmäßig ist sie unbegrenzt, und eine Route begrenzt sie mit
+`withConnectionMailboxCapacity`, dazu `withConnectionMailboxOverflow` für
+die Policy — oder, für jede Route, die nichts anderes sagt, mit den
+Blättern `connection-mailbox-capacity` und `connection-mailbox-overflow`
+unter `actor-ts.http.websocket`:
+
+```ts
+const chatRouteOptions = WebsocketRouteOptions.create()
+  .withConnectionMailboxCapacity(256)
+  .withConnectionMailboxOverflow('drop-head');
+websocket('/chat', chat, chatRouteOptions);
+```
+
+Eine Route, die keins von beiden setzt, überlässt ihre Verbindungen der
+Konfiguration.  Ein `"/user/<hub>/ws-*"`-Eintrag unter `actor-ts.deployment`
+begrenzt die Verbindungen eines Hubs — der Hub nennt sie `ws-1`, `ws-2`, …
+unterhalb seines eigenen Pfads —, und unter diesem Eintrag ist
+`actor-ts.mailbox.default` die Grenze, die
+[jeden Anwendungs-Actor auf einmal](/de/operations/tuning/mailbox-sizing/)
+erreicht.  Ist diese globale Grenze eingeschaltet, bekommen die
+Verbindungen einer Route über den Routenwert eine eigene Größe, größer
+oder kleiner; ganz von einer Grenze ausnehmen kann er sie nicht, das
+`mailbox-capacity = 0` eines Eintrags dagegen schon.  Die Routenwerte
+stehen über beiden.  Die Policy braucht eine Kapazität neben sich, aus der
+Route oder ihrem Blatt; eine konfigurierte Kapazität — global oder pro
+Pfad — zählt nicht, und die Route wird schon in `bind()` abgelehnt statt
+erst beim ersten Upgrade.
+
+Eine Begrenzung verwirft ausgehende *Frames*, genau wie eine auf dem Hub
+eingehende verwirft.  `drop-head` verwirft den ältesten eingereihten
+Frame, `drop-new` den ankommenden, und `reject` weist den ankommenden ab,
+indem es `MailboxFullError` auf dem Stack des Senders wirft.  Bei `reply`
+und `broadcast` ist das der Stack des Hubs, deshalb fangen beide die
+Abweisung pro Verbindung ab: Der Frame geht nur für diese eine Verbindung
+verloren und wird so gezählt, wie `drop-new` ihn zählen würde, und
+`broadcast` macht mit dem nächsten Client weiter.  Eine Verbindung, die
+zurückgefallen ist, kann den Hub nicht zu Fall bringen und mit ihm jede
+andere Verbindung.  Ein `connection.tell`, das du selbst aufrufst, bekommt
+den `MailboxFullError` weiterhin — genau dafür ist `reject` da, für einen
+Sender, der es wissen will.  Was eine Begrenzung nie verwirft, ist
+`close()`: es nimmt dieselbe ausgenommene Spur wie das Accept-Kommando.  `closeAll()` kann also nicht zu einer Reihe von Sockets
+werden, die still offen bleiben, und `reject` kann nicht mitten aus dieser
+Schleife werfen und jeden Client nach dem ersten verbunden lassen.  Ein
+verworfener Frame wird in `actor_mailbox_dropped_total` gezählt; zum Dead
+Letter wird er nicht.
 
 <Aside type="tip" title="Bevorzuge die Caps pro Route">
   Greife bei einem Hub zu `maxConnections` und `maxFrameBytes`, bevor du
@@ -443,9 +643,58 @@ interface WebsocketConnection<TOut> extends ActorRef<TOut> {
   readonly isOpen: boolean;
   tell(message: TOut): void;         // encode via codec + send
   sendRaw(frame: WebsocketFrame): void; // bypass the codec
-  close(code?: number, reason?: string): void;
+  close(code?: number, reason?: string): void; // after what is already queued
+  abort(code?: number, reason?: string): void; // now, dropping what is queued
 }
 ```
+
+`close()` ist eine Anforderung, keine Handlung: es reiht ein Kommando
+ein, das der Actor der Verbindung in einer späteren Runde ausführt —
+was davor schon in der Queue steht, etwa ein gerade ge-`reply`-tes
+Auf-Wiedersehen, geht also weiterhin zuerst raus.  Diese Reihenfolge ist
+gewollt.  Reply-then-close ist die Form, für die `close()` da ist, und
+ein Close, das sich vordrängelte, verlöre die Antwort, denn eine
+Verbindung schreibt nichts mehr, sobald sie geschlossen ist.
+
+`abort()` ist das Close, das nicht wartet, für einen Peer, den du nicht
+mehr bedienst: `close(1008)` würde einem flutenden Client erst alles
+übergeben, was für ihn schon in der Queue steht.  `abort()` handelt, bevor
+es zurückkehrt.  Die Frames, die noch für die Verbindung in der Queue
+stehen, werden verworfen — sie werden zu
+[Dead Letters](/de/operations/dead-letters/), nie geschrieben — und der
+Socket wird auf der Stelle geschlossen.  Wo das Backend einen Socket hart
+schließen kann, wie es die `ws`-basierten Backends Fastify und Express
+können und Hono unter Bun und Node, sieht der Peer die Verbindung ohne
+Close-Frame abreißen; auf Hono unter Deno, dessen Socket kein hartes
+Schließen kennt, erhält er einen Close-Frame mit deinem `code` und
+`reason`.  Der Hub bekommt trotzdem genau ein `onClientDisconnected`, mit
+diesem `code` und `reason` und `initiatedBy: 'server'`, und es kommt
+weiterhin als Letztes: Frames, die der Peer vor dem Abort geschickt hat
+und die schon für den Hub in der Queue stehen, erreichen `onMessage`
+zuerst.  Auf einer
+Verbindung, die nicht mehr offen ist — nach `close()`, nach einem früheren
+`abort()` oder wenn der Client schon weg ist — tut `abort()` nichts; die
+erste Entscheidung über einen Socket bleibt stehen.  Sein Code ist
+standardmäßig 1008 (Policy Violation), der von `close()` 1000.
+
+Ein Close-Frame trägt einen Code aus einer festen Menge und höchstens 123
+Byte Begründung, und beide Methoden senden nur das.  Ein Code außerhalb
+von 1000–1014 und 3000–4999 oder einer der Codes, die dem Melden eines
+Close vorbehalten sind (1004, 1005, 1006), geht als Standardcode der
+jeweiligen Methode hinaus — 1000 bei `close()`, 1008 bei `abort()` —, und
+eine längere Begründung wird auf 123 UTF-8-Byte gekürzt, zwischen zwei
+Zeichen.  `onClientDisconnected` meldet weiterhin den Code und die
+Begründung, die du übergeben hast.  Direkt an den Transport gereicht, ließ
+beides den Socket auf manchen Backends offen, während der Hub hörte, er
+sei geschlossen: Das `ws`-Paket verweigert das Close, nachdem es schon
+damit begonnen hat, und Denos Socket verweigert es von vornherein.  Schlägt
+das Close eines Backends dennoch fehl, wird der Socket hart geschlossen, wo
+das Backend es kann; wo nicht, nennt eine Warnung die Verbindung.
+
+`isOpen` liest `false`, sobald `close()` oder `abort()` zurückkehrt — nach
+`close()` noch bevor der Socket tatsächlich zu ist.  `broadcast` und deine
+eigenen `if (client.isOpen)`-Prüfungen wählen damit keinen Peer mehr aus,
+den du bereits trennen wolltest.
 
 `upgrade` trägt den Handshake-Kontext:
 
@@ -537,18 +786,34 @@ Route-Defaults liegen unter `actor-ts.http.websocket`:
 
 ```hocon
 actor-ts.http.websocket {
-  maxFrameBytes    = 1048576
-  onOversizeFrame  = close
-  onInvalidMessage = close
-  maxBufferedBytes = 4194304
-  onBackpressure   = drop
-  maxPreAttachFrames = 256
-  maxPreAttachBytes  = 4M
-  acceptTimeoutMs    = 10s
+  max-frame-bytes    = 1M
+  on-oversize-frame  = "close"
+  on-invalid-message = "close"
+  max-buffered-bytes = 4M
+  on-backpressure    = "drop"
+  max-pre-attach-frames = 256
+  max-pre-attach-bytes  = 4M
+  accept-timeout        = 10s
+  # Unset by default; a route's own value wins over both.
+  # connection-mailbox-capacity = 256
+  # connection-mailbox-overflow = "drop-head"
 }
 ```
 
-Präzedenz: **Route-Optionen > HOCON > eingebaute Defaults**.
+Präzedenz: **Route-Optionen > HOCON > eingebaute Defaults**.  Die beiden
+Blätter `connection-mailbox-*` haben keinen eingebauten Default: ungesetzt
+fällt der Connection-Actor auf den `actor-ts.deployment`-Eintrag durch, der
+zu seinem Pfad passt (`"/user/<hub>/ws-*"`), dann auf
+`actor-ts.mailbox.default`.
+
+Jedes Blatt ist das Feld aus `WebsocketRouteOptions` in kebab-case, ohne
+Einheiten-Suffix — das Feld bleibt `acceptTimeoutMs`, das Blatt heißt
+`accept-timeout`, und die Einheit steht im Wert.  Die camelCase-Schreibweisen,
+die dieser Block früher hatte, werden in `bind()` mit einem `ConfigError`
+abgelehnt, der beide Namen nennt, statt ignoriert zu werden: Die meisten
+dieser Blätter sind Obergrenzen, die ein Deployment in einem halbwegs
+vertrauten Netz bewusst senkt, und eine Grenze, die still auf den Default
+zurückfiel, ist schlimmer als eine, die den Start verweigert.
 
 ## Wann einsetzen
 
@@ -585,6 +850,12 @@ import { Aside } from '@astrojs/starlight/components';
   (`onBackpressure: 'drop'`, Default) oder wird geschlossen
   (`'close'`).  Broadcasts an viele langsame Clients sind der Ort,
   wo das zubeißt — wähle die Policy, die zu deinem Protokoll passt.
+
+  Das ist ausschließlich die **ausgehende** Richtung — der Puffer der
+  Frames, die auf den Versand warten.  Ein Client, der schneller empfängt,
+  als er verarbeiten kann, ist die andere Richtung und ein eigener Regler:
+  die [eingehende Hochwassermarke](/de/io/websocket/#eingehende-flusskontrolle)
+  am `WebsocketClientActor`.
 </Aside>
 
 ## Wohin als Nächstes

@@ -53,16 +53,59 @@ there.
 
 ## What gets persisted
 
-There is **no key whitelist**.  The replica's **entire local view**
-(every key it holds) is serialized and written as **one durable
-record per replica**, under the id `ddata|<replicaId>`.  Each value
-is serialized via the CRDT's own `toJSON()`.
+By default, the replica's **entire local view** (every key it
+holds) is serialized and written as **one durable record per
+replica**, under the id `ddata|<replicaId>`.  Each value is
+serialized via the CRDT's own `toJSON()`.
 
 Because the whole view is one record, **every mutation rewrites the
 whole record** — the same full-state-rewrite trade-off durable-state
 actors have.  For small, hot state (counters, flags, small sets)
 this is cheap; for a large view under a high mutation rate it costs
 bandwidth and write amplification (see the cautions below).
+
+### Narrowing it: `durableKeys`
+
+`withDurableKeys` (HOCON: `actor-ts.distributed-data.durable-keys`)
+restricts the record to the keys you name, which is how a replica
+holding a large ephemeral view persists only the part that has to
+survive a cold start:
+
+```ts
+const distributedDataOptions = DistributedDataOptions.create()
+  .withDurableKeys(['cart-42', 'session-*'])
+  .withDurableStore(store);
+```
+
+An entry is either an **exact key name** or a **prefix with one
+trailing `*`**.  That is the whole syntax, deliberately: a richer
+glob would mean compiling a matcher out of a config file, and
+`new RegExp(fromConfig)` over operator-supplied text is a
+catastrophic-backtracking surface on the path that decides what
+survives a restart.  Anything else is rejected with an
+`OptionsError` at startup rather than quietly matching nothing.
+
+Three things worth knowing before you set it:
+
+- **An empty list means *every* key** — the default, and the
+  behaviour of every release before this option existed.  It never
+  means "persist nothing"; persisting nothing is what configuring
+  no store does.
+- **The filter is a durability decision, not a visibility one.** An
+  excluded key still lives in the view, still gossips, still merges
+  and still answers `get`.  It simply is not on disk, so a cold
+  start does not bring it back — gossip from a surviving replica
+  might.
+- **Narrowing the list drops what it no longer names.** The record
+  is replaced wholesale on every save, so a key that stops matching
+  is gone from disk as soon as anything else is written — not
+  merely frozen.  Widening is safe: the next save writes whatever
+  the live view holds.
+
+Without a `durableStore` the list is inert; a non-empty one with no
+store configured is warned about at startup rather than ignored,
+because the two halves are configured in different places and only
+the running replica can see that they disagree.
 
 ## Store choices
 

@@ -106,6 +106,91 @@ Grobe Zahlen pro Serialize-/Deserialize-Paar:
 `JSON.parse` / `JSON.stringify` sind nativer Code in V8/JSC —
 schnell genug, dass JSON-Serialisierung selten zum Bottleneck wird.
 
+## Was der Decoder ablehnt
+
+`fromBinary` lehnt ein Dokument, das gar kein JSON ist, mit einem
+`SerializationError` ab, der den Parse-Fehler benennt, und einen fehlerhaften
+Type-Tag in wohlgeformtem JSON mit einem, der den Tag benennt, sodass sich die
+beiden Fehler im Log auseinanderhalten lassen; der Persistenz-Payload-Codec
+meldet eine gespeicherte Zeile, die sich nicht parsen lässt, auf dieselbe Weise.
+Ein `__error__`, dessen `name` oder `message` kein String ist, ist ein solcher
+fehlerhafter Tag.  Ein `name` ohne eingebaute Fehlerklasse dahinter ist es
+nicht: Dieser Fehler kommt als einfacher `Error` an, der den Namen behält — so
+kommt jede eigene Fehlerklasse über das Wire —, und ein Member von
+`Object.prototype` wie `toString` oder `constructor` ist keine Ausnahme.
+
+Beim Dekodieren gehören die Bytes jemand anderem, deshalb wendet der
+JSON-Decoder die Obergrenzen aus
+[`actor-ts.serialization.read-constraints`](/de/reference/configuration/#actor-tsserialization)
+an:
+
+| Obergrenze | Default | Was sie ablehnt |
+| --- | --- | --- |
+| `max-nesting-depth` | `256` | Einen tiefer verschachtelten Baum — Arrays, Objekte und getaggte Container zählen je eine Ebene. |
+| `max-document-bytes` | `0` (aus) | Ein größeres Dokument — geprüft bevor `JSON.parse` läuft, und auf dem Cluster-Wire, bevor die Bytes des Frames überhaupt gepuffert werden. |
+
+`max-nesting-depth` ist keine Dekoration.  `JSON.parse` bietet hier nichts, worauf
+man sich stützen könnte: auf Bun, Node und Deno gleichermaßen gemessen,
+akzeptiert er klaglos hunderttausend `[`-Ebenen.  Was überläuft,
+ist der eigene Tagged-Tree-Walker von actor-ts, der pro Ebene einmal rekursiert
+— und auf dem Cluster-Wire wird dieser Walker direkt erreicht, mit Bytes, die
+jeder Peer senden kann, der den Handshake abgeschlossen hat.  Ein Payload
+jenseits der Grenze ist ein `SerializationError`, der die Tiefe benennt und
+geworfen wird, bevor der Walk weiter absteigt.
+
+Die Grenze darf gesenkt, aber nicht über `256` angehoben werden — das ist die
+harte Obergrenze des Encoders: ein Knoten, der tiefer liest als er schreibt,
+würde ein Payload akzeptieren, das er selbst nicht erzeugen kann.  Beide sind
+Obergrenzen pro Dekodierung — über das, was `toBinary` ausgibt, sagen sie nichts.
+
+`max-document-bytes` begrenzt die **Kosten** statt der Form und ist die einzige
+Obergrenze, die greifen kann, bevor das Parsen überhaupt etwas alloziert.  Auf
+dem Cluster-Wire wird sie gegen das 4-Byte-Längenpräfix des Frames geprüft — und
+damit früher, als es beiden Serializern möglich ist: die bekommen Bytes, die es
+bereits gibt.  Ausgeliefert wird `0`, es ändert sich also nichts, solange eine
+Installation sie nicht setzt.
+
+Bleibt ein Rest, der klar benannt gehört: **in der Auslieferungskonfiguration
+wird ein zu tiefer Frame erst abgelehnt, nachdem `JSON.parse` ihn bereits
+aufgebaut hat.**  Auf Bun 1.4 gemessen kostet ein einzelner 16-MiB-Frame aus
+ausbalancierten `[` rund 1,0 s CPU und 260 MiB Heap, bevor die Tiefengrenze ihn
+meldet — etwa das Vierfache eines legitimen Frames derselben Größe, und
+wiederholbar für jeden Peer, der den Handshake abgeschlossen hat.  Zwei
+Stellschrauben begrenzen das, keine davon ist per Default aktiv:
+`actor-ts.remote.max-frame-bytes` deckelt die Bytes bei 16 MiB, und
+`max-document-bytes` deckelt das Dokument auf demselben Präfix.  Ein Vorab-Scan
+des Rohpuffers würde es ohne beide schließen; er wurde gemessen und nicht
+ausgeliefert, weil er 18–28 % jeder Frame-Dekodierung kostet, um eine
+vierfache Verstärkung zu beseitigen.
+
+Journal- und Snapshot-Zeilen sind bewusst ausgenommen.  Diese Bytes hat actor-ts
+selbst geschrieben; eine verschärfte Grenze würde dort wiederherstellbare
+Historie in unlesbare verwandeln.
+
+Eine Grenze ist nicht konfigurierbar, und sie gilt für jede Kodierung und jede
+Dekodierung, Journal- und Snapshot-Zeilen eingeschlossen: Ein `bigint` reist
+nur in dem Bereich, den die 1-KiB-Bignum-Grenze des CBOR-Serializers zulässt,
+`-2^8192` bis `2^8192 - 1`, sodass beide Serializer dieselben Integer
+transportieren.  Ein Integer außerhalb davon wird dort abgelehnt, wo er
+geschrieben wird — `toBinary` wirft, `persist()` scheitert, ohne etwas zu
+speichern, ein entferntes `tell` verwirft genau diese Nachricht und
+protokolliert es —, statt zu einer Zeile zu werden, an der die nächste Recovery
+scheitert.  Ein Dokument, das trotzdem einen enthält, wird beim Lesen
+abgelehnt.  Die Ziffernfolge wird gemessen, bevor sie geparst wird — höchstens
+2467 Ziffern, die Länge von `2^8192 - 1`, nach einem optionalen Minuszeichen —,
+weil das Parsen von Dezimalziffern mehr als linear mit ihrer Anzahl kostet: Auf
+Bun 1.4 gemessen brauchte eine Million Ziffern eine Drittelsekunde und vier
+Millionen fast zwei.  Geparst wird überhaupt nur die Schreibweise, die der
+Encoder in ein `__bigint__` schreibt — ein Minuszeichen nur unter null, dann
+Dezimalziffern ohne führende Null —, sodass `+5`, `007`, `-0`, Leerraum und
+Hex auf jeder Runtime gleichermaßen abgelehnt werden.  Danach wird der geparste
+Wert am Bereich selbst gemessen, denn 2467 Ziffern reichen etwa neunmal
+darüber hinaus.  Jede Ablehnung ist ein `SerializationError`, und die
+verbleibenden Kosten wachsen nur im Gleichschritt mit dem Dokument, das
+`max-document-bytes` begrenzt.  Ein Integer, der breiter als 8192 Bit ist,
+reist als String-Feld; prüfe seine Länge, bevor dein eigener Code ihn an
+`BigInt()` übergibt.
+
 ## Wann auf etwas anderes wechseln
 
 ```

@@ -40,9 +40,9 @@ import { NoopLogger } from '../../../src/Logger.js';
  * turns the check red.
  */
 
-const self = new NodeAddress('silent', '127.0.0.1', 2_551);
-const peerA = new NodeAddress('silent', '10.0.0.1', 2_551);
-const peerB = new NodeAddress('silent', '10.0.0.2', 2_551);
+const self = new NodeAddress('silent', '127.0.0.1', 2_551, 'test-run');
+const peerA = new NodeAddress('silent', '10.0.0.1', 2_551, 'test-run');
+const peerB = new NodeAddress('silent', '10.0.0.2', 2_551, 'test-run');
 
 function member(address: NodeAddress, status: MemberStatus): Member {
   return new Member(address, status, 1, new Set<string>());
@@ -79,7 +79,7 @@ function internals(transport: TcpTransport): TransportInternals {
 function handshake(transport: TcpTransport, peer: NodeAddress): MockSocket {
   const socket = mockSocket();
   internals(transport).attachInbound(socket);
-  internals(transport).onData(socket, encodeFrame({ kind: 'hello', self: peer.toJSON() }));
+  internals(transport).onData(socket, encodeFrame({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: peer.toJSON() }));
   return socket;
 }
 
@@ -179,5 +179,29 @@ describe('the transport check says which failure it is', () => {
       [member(self, 'up'), member(peerA, 'up')], self, [peerA],
     );
     expect(result).toEqual({ name: CLUSTER_TRANSPORT_CHECK_NAME, status: true });
+  });
+});
+
+describe('a peer parked under auto-down = off is not expected (#1426)', () => {
+  // The cluster hands the check the peers it parked past `down-after` with no
+  // provider and auto-down off.  Nothing will remove such a peer, so a check
+  // that kept expecting it would keep a lone survivor out of rotation for good.
+  test('a parked peer, unreachable and unconnected, leaves a lone survivor ready', () => {
+    const members = [member(self, 'up'), member(peerA, 'unreachable')];
+    expect(transportReachesCluster(members, self, [], new Set([peerA.toString()]))).toBe(true);
+  });
+
+  test('the same peer not yet parked — short of down-after — is still expected', () => {
+    // A blip reads as it always did: unreachable, so not reachable, so the node
+    // that can reach none of its expected peers is out of rotation.
+    const members = [member(self, 'up'), member(peerA, 'unreachable')];
+    expect(transportReachesCluster(members, self, [], new Set())).toBe(false);
+  });
+
+  test('the detail counts the peers still expected, not the parked one', () => {
+    const members = [member(self, 'up'), member(peerA, 'unreachable'), member(peerB, 'unreachable')];
+    const result = clusterTransportResult(members, self, [], new Set([peerA.toString()]));
+    expect(result.status).toBe(false);
+    expect(result.detail).toContain('any of the 1 peer(s)');
   });
 });

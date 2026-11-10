@@ -1,5 +1,6 @@
 import type { ActorRef } from './ActorRef.js';
 import { EventKey, type EventChannel, type EventClass } from './EventKey.js';
+import { MAX_EVENT_STREAM_CALLBACK_DEPTH } from './Constants.js';
 
 /**
  * A channel reduced to the three things the bus actually needs from it,
@@ -40,17 +41,57 @@ type Subscription = ResolvedChannel & {
 };
 
 /**
+ * One {@link EventStream.subscribeFunction} call.
+ *
+ * A record per call rather than the bare function, the shape `Cluster.subscribe`
+ * keeps for the same two reasons (#1294): each returned handle removes its own
+ * subscription, not merely the first one holding the same function, and the
+ * flag is what lets `publish` walk a copy of the list without calling a
+ * callback whose handle has already run.
+ *
+ * Kept apart from the actor subscriptions rather than stored among them behind
+ * some stand-in subscriber: nothing that compares, dedups or unsubscribes refs
+ * ever has to ask which kind of entry it is holding, and the `unsubscribe`
+ * every actor stop makes cannot reach a callback at all.
+ */
+type CallbackSubscription = ResolvedChannel & {
+  /** Typed for the bus, which reads a returned promise; the caller's is `(event: TEvent) => void`. */
+  readonly callback: (event: unknown) => unknown;
+  /** How the callback reads in a trace or a warning — resolved once, like the channel's label. */
+  readonly callbackLabel: string;
+  /** Cleared by the handle, or by the end of the system the bus belongs to. */
+  subscribed: boolean;
+};
+
+/**
  * Optional minimal-logger hook for the bus.  ActorSystem assigns its
  * own logger here after construction; if unset (e.g. ad-hoc test
  * use), predicate failures are silently swallowed.
+ *
+ * `debug` joined `warn` with the subscription trace (#867), and joined it
+ * **optionally**.  `ActorSystem` always assigns a full `Logger`, so a running
+ * system always has it; requiring it would only reach the hand-built
+ * fixtures, forcing a no-op `debug` into every `{ warn }` object written for
+ * a test about predicates.  "Minimal" is what this interface is for, and a
+ * hook that does not do debug simply does not trace.
  */
 export interface EventStreamLogger {
+  debug?(message: string, ...args: unknown[]): void;
   warn(message: string, ...args: unknown[]): void;
 }
 
 /**
  * A simple system-wide pub/sub bus.  Subscribers register against a channel;
- * publications are matched against it and `tell`'d to everyone interested.
+ * publications are matched against it and `tell`'d to every actor interested,
+ * or handed to every callback interested.
+ *
+ * **Two kinds of subscriber.**  An actor, by its ref ({@link subscribe}),
+ * receives an event through its mailbox.  A plain callback
+ * ({@link subscribeFunction}) is called inside `publish`, with no actor to
+ * spawn, name or stop (#1433).  The actor is the default — its mailbox orders,
+ * buffers and isolates what it receives — and the callback is for code with
+ * nothing to spawn: a counter, a test, a bridge to code outside the actor
+ * tree.
  *
  * **Two ways to name a channel.**  A **class**, matched with `instanceof`, so
  * subclass instances reach base-class subscribers — which is what makes an
@@ -70,15 +111,47 @@ export interface EventStreamLogger {
  * that delivery; the subscription stays active.
  */
 export class EventStream {
-  private subs: Subscription[] = [];
+  private subscriptions: Subscription[] = [];
+
+  /** {@link subscribeFunction}'s subscriptions, in subscription order. */
+  private callbacks: CallbackSubscription[] = [];
+
+  /**
+   * How many callback deliveries are on the stack right now — the number
+   * {@link MAX_EVENT_STREAM_CALLBACK_DEPTH} bounds.  Per bus, not per channel:
+   * a loop can run through any number of channels before it comes back.
+   */
+  private callbackDepth = 0;
+
+  /**
+   * Whether the cascade running now has reached the depth bound.
+   *
+   * A cascade is one call the outermost `publish` makes to a callback, and
+   * everything that call publishes, directly or through other callbacks.  Once
+   * the bound is reached in it, no publish the cascade makes reaches a callback
+   * again — see {@link callCallbacks} for why depth alone bounded nothing.  Set
+   * at the bound, and cleared as the outermost delivery moves to its next
+   * callback, which starts a cascade of its own.
+   */
+  private cascadeCut = false;
+
+  /**
+   * Whether the system this bus belongs to has ended every callback
+   * subscription — set once, by {@link _endCallbackSubscriptions}, and what
+   * makes {@link subscribeFunction} refuse from then on.
+   */
+  private callbacksEnded = false;
 
   /**
    * A single observer that sees every published event (#553).
    *
    * DevTools' bus viewer needs the events themselves, not a subscription to
    * one channel — and it has to see them even when nothing else is
-   * listening, which is why this is checked BEFORE the empty-stream return
-   * below.  A system nobody observes pays one null check per publish.
+   * listening, which is why `publish` calls it BEFORE it looks at either
+   * subscription list, and why {@link hasSubscribers} counts it: the events
+   * a quiet system is spared from building are the actor starts and stops a
+   * debugger is opened to watch.  A system nobody observes pays one null
+   * check per publish.
    *
    * One slot rather than a list: this is a debugger seam, and a second
    * observer would be a second DevTools.
@@ -92,6 +165,24 @@ export class EventStream {
    * — the bus stays functional, errors just stay silent.
    */
   log?: EventStreamLogger;
+
+  /**
+   * Trace subscribe and unsubscribe at `debug` —
+   * `actor-ts.diagnostics.debug.event-stream` (#867).  Assigned by
+   * `ActorSystem` from the resolved settings; a bus a test builds by hand
+   * keeps the shipped answer, which is silence.
+   *
+   * A field on the bus rather than a `Config` read, exactly like {@link log}
+   * beside it: the stream is constructed before the settings are resolved and
+   * has no way to reach them, and the two switches this file needs are worth
+   * two assignments rather than a reference back to the system.
+   *
+   * **Subscription lifecycle only, never `publish`.**  That path runs on
+   * every actor start, every stop and every dead letter, and a config key
+   * that can put a log call there is not a diagnostic — it is an outage
+   * switch.
+   */
+  traceSubscriptions = false;
 
   /**
    * Subscribe an actor ref to a channel.  Returns true if a new subscription
@@ -118,35 +209,60 @@ export class EventStream {
    * across them would be unreliable; users wanting "replace this
    * filter" should `unsubscribe` first.
    *
-   * @throws TypeError when `channel` is neither a usable `instanceof`
-   * right-hand side nor a non-empty kind.  Failing on the line that wrote the
-   * subscription is the whole point: the alternative is a subscription that
-   * poisons an unrelated `publish` in another actor much later (#1010).  It
-   * throws rather than returning `false`, because `false` already means
-   * "duplicate rejected" and conflating the two destroys the signal the return
-   * value carries.
+   * @throws TypeError when `subscriber` is not an ActorRef, or when `channel`
+   * is neither a usable `instanceof` right-hand side nor a non-empty kind.
+   * Failing on the line that wrote the subscription is the whole point: the
+   * alternative is a subscription that poisons an unrelated `publish` in
+   * another actor much later (#1010) — or, for a subscriber, every actor stop
+   * after it (see {@link assertSubscriber}).  It throws rather than returning
+   * `false`, because `false` already means "duplicate rejected" and conflating
+   * the two destroys the signal the return value carries.
    */
   subscribe<TEvent>(
     subscriber: ActorRef,
     channel: EventChannel<TEvent>,
     predicate?: (event: TEvent) => boolean,
   ): boolean {
-    // Resolved before the dedup check, so an invalid channel is rejected even
-    // when a duplicate would have short-circuited the push.
+    // Both checked before the dedup check, so an invalid argument is rejected
+    // even when a duplicate would have short-circuited the push.
+    assertSubscriber(subscriber, 'subscribe');
     const resolved = resolveChannel(channel, 'subscribe');
     if (!predicate) {
-      const already = this.subs.some(
-        (s) => s.subscriber.equals(subscriber)
-          && s.channelId === resolved.channelId
-          && !s.predicate,
+      // The channel first: a duplicate is one channel's question, and asking
+      // every stored subscriber instead costs two path renders per entry.
+      const already = this.subscriptions.some(
+        (s) => s.channelId === resolved.channelId
+          && !s.predicate
+          && this.sameSubscriber(s, subscriber, 'subscribe'),
       );
-      if (already) return false;
+      if (already) {
+        // The rejected duplicate is traced too, and it is the more useful of
+        // the two records: "I subscribed and receive nothing" has dedup as
+        // one of its two causes, and the other — a channel that is not the
+        // one the publisher uses — is what the label makes visible.
+        if (this.traceSubscriptions) {
+          this.log?.debug?.(
+            `EventStream: subscribe rejected as a duplicate —`
+            + ` ${subscriber.path.toString()} on ${resolved.label}`,
+          );
+        }
+        return false;
+      }
     }
-    this.subs.push({
+    this.subscriptions.push({
       ...resolved,
       subscriber,
       predicate: predicate as ((event: unknown) => boolean) | undefined,
     });
+    // Guarded at the call site, not only inside a helper: the message is a
+    // concatenation and a path render, and a switch that is off must not cost
+    // either.  `subscribe` runs on a path a busy system takes often.
+    if (this.traceSubscriptions) {
+      this.log?.debug?.(
+        `EventStream: subscribed ${subscriber.path.toString()} to ${resolved.label}`
+        + (predicate ? ' with a predicate' : ''),
+      );
+    }
     return true;
   }
 
@@ -166,28 +282,244 @@ export class EventStream {
    * by identity rather than by object: `EventKey.of('x')` mints a fresh key on
    * every call and would match nothing under `===`.  An invalid channel throws
    * here too — quietly removing nothing is how a subscription survives a
-   * cleanup that believed it had done its job (#645, #763).
+   * cleanup that believed it had done its job (#645, #763).  So does a
+   * subscriber that is not an ActorRef, which on an empty stream used to
+   * return `false` like a cleanup that simply had nothing to remove.
    */
   unsubscribe<TEvent>(subscriber: ActorRef, channel?: EventChannel<TEvent>): boolean {
-    // Resolved *before* the emptiness check below, not after: an invalid
-    // channel has to throw whether or not anything is subscribed.  Otherwise a
-    // cleanup with a typo in it reports success against an empty stream and
+    // Both checked *before* the emptiness check below, not after: an invalid
+    // argument has to throw whether or not anything is subscribed.  Otherwise
+    // a cleanup with a typo in it reports success against an empty stream and
     // only starts failing once somebody subscribes — which is the shape of
     // #645 and #763, one layer up.
+    assertSubscriber(subscriber, 'unsubscribe');
     const scoped = channel !== undefined ? resolveChannel(channel, 'unsubscribe') : null;
-    const before = this.subs.length;
+    const before = this.subscriptions.length;
     // Nothing subscribed: `filter` would allocate a second empty array to say
     // so, and a `false` return needs no array at all.  Every actor stop calls
     // this to drop the subscriptions it may never have made.
-    if (before === 0) return false;
-    this.subs = scoped !== null
-      ? this.subs.filter((s) => !(s.subscriber.equals(subscriber) && s.channelId === scoped.channelId))
-      : this.subs.filter((s) => !s.subscriber.equals(subscriber));
-    return this.subs.length !== before;
+    if (before === 0) {
+      this.traceUnsubscribe(subscriber, scoped, 0);
+      return false;
+    }
+    this.subscriptions = scoped !== null
+      ? this.subscriptions.filter((s) => !(s.channelId === scoped.channelId
+        && this.sameSubscriber(s, subscriber, 'unsubscribe')))
+      : this.subscriptions.filter((s) => !this.sameSubscriber(s, subscriber, 'unsubscribe'));
+    this.traceUnsubscribe(subscriber, scoped, before - this.subscriptions.length);
+    return this.subscriptions.length !== before;
   }
 
   /**
-   * Publish an event to all matching subscribers.
+   * Is the subscriber stored in `subscription` the one `candidate` names?
+   *
+   * The comparison runs under a guard because it runs a subscriber's own code:
+   * `equals`, and through `ActorRef.equals` the `path` rendering of *both*
+   * sides.  The structural check in {@link assertSubscriber} can only ask
+   * whether those members exist, so a ref whose `equals` throws passes it and
+   * is stored — and unguarded, every later `unsubscribe` threw out of the
+   * comparison with it.  `ActorCell` makes that call on every actor stop, so a
+   * single such entry stalled every stop after it and `terminate()` with them,
+   * and on a bus holding anything else the dedup check made every later
+   * predicate-free `subscribe` throw, failing an unrelated actor's `preStart`.
+   * That is #1010's "a faulty subscription cannot reach spawn or shutdown", by
+   * the one route a structural check cannot close.
+   *
+   * A comparison that throws answers "a different subscriber", with a warning.
+   * The throw may come from either side — the stored entry's `equals`, or the
+   * candidate's `path` that a well-behaved `equals` reads — so neither is
+   * evicted for it; the entry stays on the bus, and keeps receiving what it
+   * subscribed to.  Identity is checked first and decides on its own, which is
+   * what keeps the faulty entry removable at all: its `equals` throws even
+   * against itself, and a subscription its owner cannot remove is a leak.
+   */
+  private sameSubscriber(subscription: Subscription, candidate: ActorRef, operation: string): boolean {
+    if (subscription.subscriber === candidate) return true;
+    try {
+      return subscription.subscriber.equals(candidate);
+    } catch (error) {
+      this.warnContained(
+        `EventStream.${operation}: comparing against a subscriber of ${subscription.label} threw`
+        + ' — treating the two as different subscribers',
+        error,
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Trace one `unsubscribe`, when it is worth tracing.
+   *
+   * A whole-actor call that removed nothing is not: `ActorCell` makes one on
+   * every stop, for every actor, whether or not it ever subscribed, so
+   * tracing those would bury the subscription records under a copy of the
+   * lifecycle trace — which is a separate switch precisely so it can be
+   * turned on separately.  A *scoped* call that removed nothing is the
+   * opposite: it is somebody's cleanup naming a channel it never held, the
+   * failure #645 and #763 were both filed for.
+   */
+  private traceUnsubscribe(
+    subscriber: ActorRef,
+    scoped: ResolvedChannel | null,
+    removed: number,
+  ): void {
+    if (!this.traceSubscriptions) return;
+    if (removed === 0 && scoped === null) return;
+    const target = scoped === null ? 'every channel it held' : scoped.label;
+    this.log?.debug?.(
+      `EventStream: unsubscribed ${subscriber.path.toString()} from ${target}`
+      + ` — ${removed} subscription(s) removed`,
+    );
+  }
+
+  /**
+   * Subscribe a plain callback to a channel — no actor to spawn, name or stop
+   * (#1433).  Returns the handle that ends this subscription.
+   *
+   * The channel is named exactly as for {@link subscribe} — a class, an
+   * {@link EventKey} or the bare `kind` string — and a class or a key types
+   * the callback's parameter.
+   *
+   * **Delivery is synchronous.**  The callback runs inside `publish`, on the
+   * publisher's stack, after every actor subscriber has been told, so an event
+   * a callback causes still reaches the actors after the event that caused it.
+   * That is the price of having no mailbox: a slow callback slows every publish
+   * of its channel, which for the framework's own events means every actor
+   * start, stop or dead letter.  Work that takes time belongs in an actor.
+   *
+   * **The handle.**  Every call is a subscription of its own — no dedup, so the
+   * same function subscribed twice is called twice — and its handle ends
+   * exactly that one; calling it again does nothing.  Once it has returned the
+   * callback is not called again, not even with an event already being
+   * delivered: a ref's one late event lands in dead letters, but a callback has
+   * no mailbox, and a late call would run code its owner has already torn down.
+   * A callback subscribed while an event is being delivered starts with the
+   * next one.  No actor stop reaches it — the `unsubscribe` every stop makes
+   * concerns refs only — so the handle is how its owner ends it.
+   *
+   * **The system's end ends it too.**  A ref subscription ends with its actor;
+   * a callback has none, so it ends with the system: it still sees every event
+   * of the shutdown, the stops included, and is not called again from the
+   * moment the system reports itself terminated — not by a late `publish`, not
+   * by a dead letter, not during the flush `terminate()` still waits for before
+   * it resolves.  Subscribing while the system terminates is allowed and sees
+   * the rest of the shutdown.  Subscribing after it has terminated is refused,
+   * because nothing would be left to end that subscription.
+   *
+   * **A failing callback stays its own problem.**  A throw is reported at warn
+   * and skips that callback for that event; it stays subscribed, and everyone
+   * else still receives the event.  A returned promise is not awaited, only kept
+   * from rejecting unhandled — which Node answers with a process exit — and its
+   * rejection is reported the same way.
+   *
+   * **A callback must not publish on its own channel**, directly or through
+   * another callback: the nested `publish` calls it again before its first call
+   * has returned, and so on down the stack.  Publishing on another channel is
+   * fine.  Past {@link MAX_EVENT_STREAM_CALLBACK_DEPTH} nested levels the bus
+   * calls no callback for the nested event, nor for anything else published in
+   * the same cascade — everything one call of the outermost `publish` set off —
+   * and warns once for it.  The deliveries already under way finish, and the
+   * cascades of the outermost event's other callbacks are their own, so what a
+   * loop costs is the bound plus, at each of its levels, one call for every
+   * other callback its events reach — not one more path for each of them.
+   *
+   * @throws TypeError when `channel` is unusable, as {@link subscribe} does,
+   * or when `callback` is not a function — or is a class, an {@link EventKey}
+   * or a string, which is what that slot holds when the two arguments were
+   * swapped, and which the message answers with the order.  Refused on the
+   * line that wrote it, rather than stored to fail at every delivery after it.
+   * @throws Error once the system this bus belongs to has terminated.
+   */
+  subscribeFunction<TEvent>(
+    channel: EventChannel<TEvent>,
+    callback: (event: TEvent) => void,
+  ): () => void {
+    const resolved = resolveChannel(channel, 'subscribeFunction');
+    assertCallback(callback);
+    if (this.callbacksEnded) {
+      throw new Error(
+        'EventStream.subscribeFunction: the actor system this bus belongs to has terminated,'
+        + ' which ended every callback subscription — nothing would end this one',
+      );
+    }
+    const subscription: CallbackSubscription = {
+      ...resolved,
+      callback: callback as (event: unknown) => unknown,
+      callbackLabel: callbackLabel(callback),
+      subscribed: true,
+    };
+    this.callbacks.push(subscription);
+    if (this.traceSubscriptions) {
+      this.log?.debug?.(
+        `EventStream: subscribed ${subscription.callbackLabel} to ${resolved.label}`,
+      );
+    }
+    return () => { this.removeCallback(subscription); };
+  }
+
+  /** What a {@link subscribeFunction} handle does: end that one subscription, once. */
+  private removeCallback(subscription: CallbackSubscription): void {
+    if (!subscription.subscribed) return;
+    // The flag first: it is what a delivery already walking its copy of the
+    // list reads, and it has to read "gone" from this line on.
+    subscription.subscribed = false;
+    const index = this.callbacks.indexOf(subscription);
+    if (index >= 0) this.callbacks.splice(index, 1);
+    if (this.traceSubscriptions) {
+      this.log?.debug?.(
+        `EventStream: unsubscribed ${subscription.callbackLabel} from ${subscription.label}`,
+      );
+    }
+  }
+
+  /**
+   * End every callback subscription — as if each handle had been called — and
+   * refuse new ones from here on.
+   *
+   * A ref subscription ends with its actor, whose stop unsubscribes it.  A
+   * callback has no actor, so without this it outlived the system it was
+   * subscribed on, and went on being called by whatever still published there:
+   * a late `publish`, or a `tell` to a stopped actor that became a dead letter.
+   * Going through the handle's own path keeps the one rule the handle has —
+   * once ended, never called — for a delivery already walking its copy of the
+   * list.
+   *
+   * @internal  Called by `ActorSystem` when its root has terminated.
+   */
+  _endCallbackSubscriptions(): void {
+    this.callbacksEnded = true;
+    for (const subscription of [...this.callbacks]) this.removeCallback(subscription);
+  }
+
+  /**
+   * Whether anything is listening at all — a subscription of either kind, or
+   * the observer.
+   *
+   * Coarse on purpose — any channel, any subscriber.  Callers use it to skip
+   * *constructing* an event, which is only sound when the answer covers every
+   * channel; a per-channel query would let a caller skip building an event a
+   * different channel's subscriber was entitled to.  The observer is entitled
+   * to every event, so it counts for the same reason: left out, an observer on
+   * an otherwise quiet system never saw an actor start or stop.  So does a
+   * callback, for which it would have been the same silence.  With DevTools
+   * attached the cost comes back, which is the intended trade.
+   */
+  get hasSubscribers(): boolean {
+    return this.subscriptions.length > 0 || this.callbacks.length > 0 || this.observer !== null;
+  }
+
+  /**
+   * Install the observer, replacing any previous one.  `null` removes it.
+   *
+   * @internal  DevTools only — not part of the public bus contract.
+   */
+  _observe(observer: ((event: object) => void) | null): void {
+    this.observer = observer;
+  }
+
+  /**
+   * Publish an event to all matching subscribers: the observer first, then
+   * every actor subscriber, then every callback.
    *
    * **The recipient set is fixed when the publish starts.**  `subscriber.tell`
    * can run synchronously — a `PromiseActorRef`, a test probe, an actor on an
@@ -196,7 +528,7 @@ export class EventStream {
    *
    * The two operations used to disagree about what that meant, because of how
    * they happened to be written rather than by decision: `unsubscribe`
-   * *reassigns* `subs`, so the loop kept walking the array it started with and
+   * *reassigns* `subscriptions`, so the loop kept walking the array it started with and
    * a removed subscriber still got the event, while `subscribe` *pushes* into
    * that same array, so a subscriber added mid-delivery received an event
    * published before it existed (#645).
@@ -217,28 +549,14 @@ export class EventStream {
    * registered *after* it silently stopped receiving anything, in an order no
    * caller controls.  That reached far: `publish` runs on every actor start,
    * every actor stop and every dead-lettered `tell`, so it turned `ref.tell`,
-   * an API that does not throw by contract, into one that did.
-   */
-  /**
-   * Whether anything is listening at all.
+   * an API that does not throw by contract, into one that did.  The warning
+   * each guard ends in is guarded as well ({@link warnContained}): it renders
+   * the thrown value, which can throw too.
    *
-   * Coarse on purpose — any channel, any subscriber.  Callers use it to skip
-   * *constructing* an event, which is only sound when the answer covers every
-   * channel; a per-channel query would let a caller skip building an event a
-   * different channel's subscriber was entitled to.  With DevTools attached the
-   * cost comes back, which is the intended trade.
+   * **Callbacks come last (#1433)**, under a guard of their own — see
+   * {@link callCallbacks} for their order, their recipient rule and the depth
+   * bound a callback that publishes runs into.
    */
-  get hasSubscribers(): boolean { return this.subs.length > 0; }
-
-  /**
-   * Install the observer, replacing any previous one.  `null` removes it.
-   *
-   * @internal  DevTools only — not part of the public bus contract.
-   */
-  _observe(observer: ((event: object) => void) | null): void {
-    this.observer = observer;
-  }
-
   publish(event: object): void {
     if (this.observer !== null) {
       // Guarded like any subscription: a bug in a diagnostic must not reach
@@ -254,18 +572,132 @@ export class EventStream {
     // state of a system nobody is observing — yet `publish` runs on every
     // actor start, every actor stop, every restart and every dead letter, so
     // the copy was an allocation per lifecycle event to iterate nothing.
-    if (this.subs.length === 0) return;
-    for (const subscription of [...this.subs]) {
-      try {
-        if (!this.accepts(subscription, event)) continue;
-        subscription.subscriber.tell(event as never);
-      } catch (err) {
-        this.log?.warn(
-          `EventStream: delivering to ${subscription.label} failed`
-          + ' — skipping this subscriber',
-          err,
-        );
+    if (this.subscriptions.length > 0) {
+      for (const subscription of [...this.subscriptions]) {
+        try {
+          if (!this.accepts(subscription, event)) continue;
+          subscription.subscriber.tell(event as never);
+        } catch (err) {
+          this.warnContained(
+            `EventStream: delivering to ${subscription.label} failed`
+            + ' — skipping this subscriber',
+            err,
+          );
+        }
       }
+    }
+    if (this.callbacks.length > 0) this.callCallbacks(event);
+  }
+
+  /**
+   * Call every callback whose channel matches the event.
+   *
+   * **After the actor subscribers**, because a callback runs on this stack and
+   * may publish.  Its nested event is told to the actors from inside this
+   * call, so had the callbacks gone first, every actor's mailbox would hold the
+   * nested event ahead of the one that caused it.  Callbacks themselves cannot
+   * be spared that: a callback later in the list sees a nested event before the
+   * one in flight, which is one more reason for the rule against publishing on
+   * one's own channel.
+   *
+   * **Over a copy, skipping whatever left since** — `Cluster.subscribe`'s rule
+   * (#1294).  The copy keeps a callback subscribed mid-delivery from receiving
+   * an event published before it existed (#645); the `subscribed` flag keeps a
+   * callback whose handle has run from being called with the event in flight,
+   * which for a ref is a harmless dead letter and for a callback is a call into
+   * code its owner has already torn down.
+   *
+   * **The depth bound** counts callback deliveries on the stack, and is checked
+   * against the first callback that actually wants the event: a nested publish
+   * no callback wants costs nothing and says nothing.  Nothing in the loop is
+   * meant to throw — every call into a subscriber's code is guarded, and so is
+   * every warning, logger included — and the `finally` unwinds the depth all
+   * the same: a depth left raised would have every later publish find the
+   * bound already reached, which is too costly a way to learn a guard missed.
+   *
+   * **Reaching it cuts the cascade, not only the event** (#1433).  Depth alone
+   * bounds one path through a loop, and a loop has as many paths as callbacks
+   * and publishes per call allow: every level the stack unwinds through calls
+   * the callbacks after the looping one, and each of them descends to the bound
+   * again.  Two callbacks publishing on their own channel made 131 070 calls and
+   * 65 536 warnings of a single publish, three made 64 570 080 calls — seconds
+   * on the publisher's stack, which for the framework's own events is an actor
+   * start or stop.  So once the bound is reached, nothing the cascade publishes
+   * from then on reaches a callback, while every delivery already under way
+   * finishes: an event published below the bound still reaches every callback
+   * that wants it, which is the recipient rule above, and the work of a loop is
+   * at most the bound once more for every other callback on each level of the
+   * one path, one warning for the cascade.  The outermost publish starts a
+   * cascade per callback, so a loop in one callback's cascade costs the
+   * others nothing — not even the event the publisher published.
+   */
+  private callCallbacks(event: object): void {
+    const outermost = this.callbackDepth === 0;
+    if (!outermost && this.cascadeCut) return;
+    const tooDeep = this.callbackDepth >= MAX_EVENT_STREAM_CALLBACK_DEPTH;
+    const recipients = [...this.callbacks];
+    this.callbackDepth++;
+    try {
+      for (const subscription of recipients) {
+        // Each call the outermost publish makes starts a cascade of its own —
+        // cleared before the channel is even matched, because a match can run
+        // code that publishes too.
+        if (outermost) this.cascadeCut = false;
+        if (!subscription.subscribed || !this.wants(subscription, event)) continue;
+        if (tooDeep) {
+          this.cascadeCut = true;
+          this.warnContained(
+            `EventStream: callback deliveries are nested ${MAX_EVENT_STREAM_CALLBACK_DEPTH} deep`
+            + ` — calling no callback for this event on ${subscription.label},`
+            + ' nor for anything else this cascade publishes;'
+            + ' a callback that publishes on its own channel calls itself',
+          );
+          return;
+        }
+        this.callCallback(subscription, event);
+      }
+    } finally {
+      this.callbackDepth--;
+    }
+  }
+
+  /**
+   * Does the callback's channel match the event?  Guarded like the same test in
+   * the actor loop, because `instanceof` runs the channel's own code and a
+   * channel can pass every check at subscribe time and still throw here (#1010).
+   */
+  private wants(subscription: CallbackSubscription, event: object): boolean {
+    try {
+      return subscription.matches(event);
+    } catch (error) {
+      this.warnContained(
+        `EventStream: matching an event against ${subscription.label} threw`
+        + ` — skipping ${subscription.callbackLabel} for it`,
+        error,
+      );
+      return false;
+    }
+  }
+
+  /** One call, with its throw — or its returned promise's rejection — reported, never propagated. */
+  private callCallback(subscription: CallbackSubscription, event: object): void {
+    try {
+      const returned = subscription.callback(event);
+      if (isThenable(returned)) {
+        returned.then(undefined, (error: unknown) => {
+          this.warnContained(
+            `EventStream: ${subscription.callbackLabel} on ${subscription.label}`
+            + ' returned a promise that rejected',
+            error,
+          );
+        });
+      }
+    } catch (error) {
+      this.warnContained(
+        `EventStream: ${subscription.callbackLabel} on ${subscription.label} threw`
+        + ' — skipping it for this event',
+        error,
+      );
     }
   }
 
@@ -286,12 +718,51 @@ export class EventStream {
     } catch (err) {
       // A throwing predicate must NOT break the bus for other
       // subscribers — treat as "no match" and keep going.
-      this.log?.warn(
+      this.warnContained(
         `EventStream: predicate threw on ${subscription.label} delivery`
         + ' — treating as no-match',
         err,
       );
       return false;
+    }
+  }
+
+  /**
+   * Report a failure this bus contained, at warn, with what was thrown as the
+   * line's argument — and never throw doing it.
+   *
+   * Every guard here ends in such a line, and rendering the thrown value runs
+   * code the subscriber chose: `JsonLogger` reads `message` and `stack` off an
+   * `Error` and asks `instanceof` of anything, `ConsoleLogger` runs a custom
+   * inspect, and an error whose `message` getter throws, or a revoked proxy,
+   * defeats either.  Unguarded, the report was the way out of the guard it
+   * reports.  From the delivery, channel-match and callback guards the throw
+   * left `publish`, so every subscription after the faulty one missed the
+   * event, and on a running system the warning for a callback that threw on an
+   * actor start failed the system's own guardians; from the comparison guard
+   * it left `subscribe` and `unsubscribe`, which every actor stop calls; from
+   * the predicate guard it reached the delivery guard, which logged a failed
+   * delivery carrying the logger's own error.  The producer's confirm report
+   * had the same hole (#1230).
+   *
+   * A value the logger cannot render is left out, and the line is written
+   * without it.  A logger that cannot write even that has nothing left to
+   * report with, and `publish` — whose `ref.tell` callers rely on it not
+   * throwing — is not the place to find out.
+   */
+  private warnContained(message: string, ...thrown: unknown[]): void {
+    const log = this.log;
+    if (log === undefined) return;
+    try {
+      log.warn(message, ...thrown);
+      return;
+    } catch {
+      if (thrown.length === 0) return;
+    }
+    try {
+      log.warn(`${message} — what was thrown could not be rendered by the logger, so it is left out`);
+    } catch {
+      /* a logger that cannot write a plain line leaves nothing to report with */
     }
   }
 }
@@ -385,4 +856,161 @@ function isInstanceofTarget(channel: unknown): channel is EventClass<unknown> {
 function classLabel(channel: EventClass<unknown>): string {
   const name = (channel as { name?: unknown }).name;
   return typeof name === 'string' && name.length > 0 ? name : 'an unnamed channel';
+}
+
+/* ------------------------------------------------------------------ */
+/* Subscriber validation                                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Refuse a subscriber that is not an ActorRef, on the line that passed it.
+ *
+ * The bus touches three members of a subscriber and asks for exactly those:
+ * `tell` to deliver, `equals` for dedup and `unsubscribe`, and `path`, which
+ * every ref's `equals` reads off the other side and the subscription trace
+ * renders.  `equals` is the one that made this necessary.  `unsubscribe` calls
+ * it on every stored subscriber, and `ActorCell` calls `unsubscribe` on every
+ * actor stop, so a single stored entry without it threw out of every
+ * `finalizeTermination` that followed: the stopped actor's watchers were never
+ * told, its name stayed taken, and `terminate()` never settled — the shutdown
+ * #1010 promised a faulty subscription could not reach.  The likeliest such
+ * entry is a plain function, which is what a JavaScript caller writes when it
+ * guesses that the bus takes a callback.
+ *
+ * Structural rather than `instanceof ActorRef`, like the channel check: a ref
+ * minted by another copy of this module — a second install of the package, or
+ * one file loaded under two specifiers — fails `instanceof` and works
+ * everywhere else.  Nor is it a proof of good behaviour: a `tell` that throws
+ * is still the delivery guard's business in `publish`, and an `equals` that
+ * throws the comparison guard's in `sameSubscriber`.
+ *
+ * The parameter is `unknown` for the reason {@link resolveChannel}'s is: the
+ * value is checked precisely because it may not be what its type claims.
+ */
+function assertSubscriber(subscriber: unknown, operation: string): asserts subscriber is ActorRef {
+  const disqualification = subscriberDisqualification(subscriber);
+  if (disqualification === null) return;
+  throw new TypeError(
+    `EventStream.${operation}: subscriber must be an ActorRef — got ${disqualification}`,
+  );
+}
+
+/** What keeps `subscriber` off the bus, phrased for the error; `null` when nothing does. */
+function subscriberDisqualification(subscriber: unknown): string | null {
+  if (subscriber === null || subscriber === undefined) return String(subscriber);
+  const candidate = subscriber as { tell?: unknown; equals?: unknown; path?: unknown };
+  if (typeof candidate.tell !== 'function') {
+    // The function case gets the hint, because it is the one with a reason
+    // behind it: the caller wanted the callback form, which is a different
+    // method with the channel first.
+    if (typeof subscriber === 'function') {
+      return 'a function (subscribe takes the ref of an actor; subscribeFunction(channel,'
+        + ' callback) is the form that takes a callback)';
+    }
+    return typeof subscriber === 'object'
+      ? 'an object without a callable tell'
+      : `a ${typeof subscriber}`;
+  }
+  if (typeof candidate.equals !== 'function') return 'an object without a callable equals';
+  if (candidate.path === null || candidate.path === undefined) return 'an object without a path';
+  return null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Callbacks                                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Refuse a callback that is not a function, or is a class, on the line that
+ * passed it.
+ *
+ * Stored, it would fail at every delivery instead — contained by the guard in
+ * `publish` and reported at warn, but once per event and far from the call
+ * that was wrong.  The parameter is `unknown` for the reason
+ * {@link resolveChannel}'s is.
+ *
+ * **A class is refused too, because it is the swapped call** (#1433).
+ * `subscribe` takes the subscriber first and this method the channel first,
+ * so the likeliest slip is `subscribeFunction(callback, Channel)` — and with a
+ * class for the channel, that call passed every check there was: a class is a
+ * function, and the callback in the channel slot is a function, which is a
+ * usable `instanceof` target.  It was stored and never called.  An arrow
+ * callback in the channel slot made every publish of every event warn, for the
+ * life of the system; a function expression matched nothing and said nothing,
+ * while keeping {@link EventStream.hasSubscribers} true.
+ *
+ * The channel slot cannot be the one that is checked: a plain function there
+ * is not detectably wrong — `Error` and other built-in constructors are
+ * functions without `class` syntax, and a bound or proxied class is one too —
+ * so it would refuse channels that work.  The callback slot can: a class is
+ * never a callback, because calling it without `new` throws every time.
+ */
+function assertCallback(callback: unknown): void {
+  if (typeof callback === 'function' && !isClass(callback)) return;
+  throw new TypeError(
+    `EventStream.subscribeFunction: callback must be a function — got ${callbackDisqualification(callback)}`,
+  );
+}
+
+/** What the value in the callback slot is, phrased for the error. */
+function callbackDisqualification(callback: unknown): string {
+  if (callback === null || callback === undefined) return String(callback);
+  // Each form of channel in this slot is the call written in the other order,
+  // so each one is answered with the order.
+  if (typeof callback === 'function') return `${classDescription(callback)}, ${swappedOrder('which is a channel')}`;
+  if (callback instanceof EventKey) return `an EventKey, ${swappedOrder('which is a channel')}`;
+  if (typeof callback === 'string') return `a string, ${swappedOrder('which names a channel when it is a kind')}`;
+  if (typeof callback !== 'object') return `a ${typeof callback}`;
+  // The likeliest object here is a ref, from a call written in the other form.
+  return typeof (callback as { tell?: unknown }).tell === 'function'
+    ? 'an ActorRef (subscribe(ref, channel) is the form that takes one)'
+    : 'an object';
+}
+
+/** The second half of a refusal for a channel found in the callback slot. */
+function swappedOrder(whatItIs: string): string {
+  return `${whatItIs} — the order is subscribeFunction(channel, callback)`;
+}
+
+/** A class, by name when it has one — the name is how its author finds the call. */
+function classDescription(value: object): string {
+  const name = (value as { name?: unknown }).name;
+  return typeof name === 'string' && name.length > 0 ? `the class ${name}` : 'an anonymous class';
+}
+
+/**
+ * Was `value` written with `class` syntax?
+ *
+ * Read off the source text, the one place the difference shows before a call:
+ * a class and a function are both `typeof 'function'` and both carry a
+ * `prototype`, and the class says what it is only by throwing when it is
+ * called without `new`.  The character after the keyword is part of the test,
+ * so a method that happens to be named `class` — whose source begins
+ * `class(` — is still a method.  A class that does not show its source — bound,
+ * proxied, or built in — reads as a function, and is left to the delivery guard.
+ */
+function isClass(value: object): boolean {
+  try {
+    return /^class[\s{]/.test(Function.prototype.toString.call(value));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * How a callback reads in a trace or a warning.  Its name when it has one — a
+ * function declaration, or an arrow assigned to a variable before it was passed
+ * — because a callback has no path, and "a callback on EventA threw" does not
+ * say which.
+ */
+function callbackLabel(callback: (event: never) => unknown): string {
+  const { name } = callback;
+  return typeof name === 'string' && name.length > 0 ? `callback ${name}` : 'an anonymous callback';
+}
+
+/** A returned promise, or anything else `await` would treat as one. */
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (typeof value === 'object' || typeof value === 'function')
+    && value !== null
+    && typeof (value as { then?: unknown }).then === 'function';
 }

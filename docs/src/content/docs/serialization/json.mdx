@@ -102,6 +102,83 @@ Rough numbers per serialize/deserialize pair:
 `JSON.parse` / `JSON.stringify` are native code in V8/JSC —
 fast enough that JSON serialization is rarely the bottleneck.
 
+## What the decoder refuses
+
+`fromBinary` refuses a document that is not JSON at all with a
+`SerializationError` naming the parse failure, and a malformed type tag inside
+well-formed JSON with one naming the tag, so the two faults stay apart in a log;
+the persistence payload codec reports a stored row that does not parse the same
+way.  An `__error__` whose `name` or `message` is not a string is such a
+malformed tag.  A `name` with no built-in error class behind it is not: that
+error decodes to a plain `Error` that keeps the name, which is how every custom
+error class crosses the wire, and a member of `Object.prototype` such as
+`toString` or `constructor` is no exception.
+
+Decoding is where the bytes are somebody else's, so the JSON decoder applies
+the ceilings in
+[`actor-ts.serialization.read-constraints`](/reference/configuration/#actor-tsserialization):
+
+| Ceiling | Default | What it refuses |
+| --- | --- | --- |
+| `max-nesting-depth` | `256` | A tree nested deeper than this — arrays, objects and tagged containers all count one level each. |
+| `max-document-bytes` | `0` (off) | A document larger than this — checked before `JSON.parse` runs, and on the cluster wire before the frame's bytes are even buffered. |
+
+`max-nesting-depth` is not decoration.  `JSON.parse` gives you nothing to lean
+on here: measured on Bun, Node and Deno alike, it accepts a hundred thousand
+levels of `[` without complaint.  What overflows is actor-ts's own
+tagged-tree walker, which recurses once per level — and on the cluster wire
+that walker is reached directly, on bytes any peer that completed the handshake
+can send.  A payload past the ceiling is a `SerializationError` naming the
+depth, thrown before the walk goes any deeper.
+
+The ceiling can be lowered but not raised past `256`, which is the encoder's own
+hard cap: a node that read deeper than it writes would accept a payload it
+cannot produce.  Both are per-decode ceilings — they say nothing about what
+`toBinary` will emit.
+
+`max-document-bytes` bounds the **cost** rather than the shape, and it is the
+only ceiling that can act before the parse allocates anything.  On the cluster
+wire it is checked against the frame's 4-byte length prefix, which is earlier
+than either serializer can manage — those are handed bytes that already exist.
+It ships as `0`, so nothing changes until a deployment sets it.
+
+Which leaves a residual worth stating plainly: **at the shipped defaults an
+over-deep frame is refused only after `JSON.parse` has already built it.**
+Measured on Bun 1.4, one 16 MiB frame of balanced `[` costs about 1.0 s of CPU
+and 260 MiB of heap before the depth ceiling reports it — roughly four times
+what a legitimate frame of the same size costs, and repeatable by any peer that
+completed the handshake.  Two knobs bound it and neither is on by default:
+`actor-ts.remote.max-frame-bytes` caps the bytes at 16 MiB, and
+`max-document-bytes` caps the document on the same prefix.  A pre-parse scan of
+the raw buffer would close it without either; it was measured and not shipped,
+because it costs 18–28 % of every frame decode to remove a fourfold
+amplification.
+
+Journal and snapshot rows are deliberately exempt.  Those bytes were written by
+actor-ts itself, so a tightened ceiling there would turn recoverable history
+into unreadable history.
+
+One bound is not configurable, and it holds for every encode and every decode,
+journal and snapshot rows included: a `bigint` travels only within the range
+the CBOR serializer's 1 KiB bignum cap admits, `-2^8192` to `2^8192 - 1`, so
+the two serializers carry the same integers.  An integer outside it is refused
+where it is written — `toBinary` throws, `persist()` rejects without storing
+anything, a remote `tell` drops that one message and logs it — rather than
+becoming a row the next recovery fails on.  A document that carries one anyway
+is refused when it is read.  The digit string is measured before it is parsed
+— at most 2467 digits, the length of `2^8192 - 1`, after an optional minus sign
+— because parsing decimal digits costs more than linear time in their count:
+measured on Bun 1.4, a million digits took a third of a second and four
+million almost two.  Only the spelling the encoder writes into a `__bigint__`
+is parsed at all, a minus sign only below zero and then decimal digits without
+a leading zero, so `+5`, `007`, `-0`, whitespace and hex are refused on every
+runtime alike.  The parsed value is then held to the range itself, since 2467
+digits reach about nine times past it.  Every refusal is a
+`SerializationError`, and the cost that remains grows only in step with the
+document, which `max-document-bytes` bounds.  An integer wider than 8192 bits
+travels as a string field; check its length before your own code hands it to
+`BigInt()`.
+
 ## When to switch to something else
 
 ```

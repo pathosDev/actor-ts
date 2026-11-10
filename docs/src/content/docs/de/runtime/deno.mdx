@@ -114,8 +114,28 @@ Für die meisten actor-ts-Apps:
 Für Produktion auf spezifische Berechtigungen einschränken:
 
 ```bash
-deno run --allow-net=:2552,:8080 --allow-env=ACTOR_TS_* main.ts
+deno run --allow-net=:2552,:8080 \
+  --allow-read=./reference.conf,./application.conf,./secrets.conf,./.env \
+  --allow-env=ACTOR_TS_*,DB_PASSWORD main.ts
 ```
+
+Eine eng gefasste Berechtigung muss nennen, was der Config-Loader anfasst,
+denn eine fehlende Berechtigung ist für Deno keine fehlende Datei, sondern
+eine Ablehnung:
+
+- **`--allow-read`** — die vier Dateien, nach denen `Config.load` sucht:
+  die `reference.conf` des Projekts, die `application.conf`, die
+  Secrets-Datei und die `.env`-Datei, im Arbeitsverzeichnis oder wo eine
+  `ACTOR_TS_*`-Variable oder der Code sie nennt.  Eine Datei, die du nie
+  auslieferst, darf nur dann aus der Liste bleiben, wenn der Code für sie
+  `false` sagt (`withReferenceConfigFile(false)` und seine Geschwister);
+  sonst scheitert der Start mit einem `ConfigError`, der die abgelehnte
+  Datei nennt.
+- **`--allow-env`** — die `ACTOR_TS_*`-Namen, die der Loader liest, und
+  jede Variable, die ein `${VAR}` in diesen Dateien nennt.  Deno erteilt
+  die Umgebung Variable für Variable, also wird eine ausgelassene abgelehnt,
+  sobald die Substitution sie liest, auch wenn nur die `.env`-Datei sie
+  enthält.  Gemessen mit Deno 2.6.8.
 
 ## Deno Deploy
 

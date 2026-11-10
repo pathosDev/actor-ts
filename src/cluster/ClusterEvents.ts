@@ -1,6 +1,7 @@
 import { Member } from './Member.js';
 import type { NodeAddress } from './NodeAddress.js';
 import type { Option } from '../util/Option.js';
+import { markFrameworkMessage } from '../util/FrameworkMessage.js';
 
 /* -------------------------------- Self events ------------------------------ */
 
@@ -126,9 +127,11 @@ export class MemberLeft { constructor(public readonly member: Member) {} }
  *     by `tombstonePruneTick` once `tombstoneTtlMs` (default 24 h)
  *     has elapsed — see #75 for the full lifecycle.
  *   - **FD-driven** — the failure detector's elapsed-time
- *     `unreachable → down → removed` cascade.  Here the entry is
- *     deleted outright (no tombstone) so a healed partition can
- *     re-discover the peer.
+ *     `unreachable → down → removed` cascade, which runs when no
+ *     downing provider is configured and
+ *     `failure-detector.auto-down = on`, the default (#1426).  Here the
+ *     entry is deleted outright, without a tombstone; that buys no
+ *     recovery after a healed partition (#930).
  *
  * Public APIs (`getMembers`, `upMembers`, `reachableMembers`) skip
  * `removed` entries, so most user code stays unaffected.  Code that
@@ -172,11 +175,184 @@ export class ShardMapChanged {
   ) {}
 }
 
+/**
+ * A `ShardRegion` on this node finished registering with the coordinator for
+ * its type, so it can now be allocated shards (#1317).
+ *
+ * **Membership convergence is not a proxy for this and never was.**  A region
+ * registers with the coordinator that runs on the *leader*, over a retry timer
+ * of its own; a cluster can be fully converged while a region is still
+ * unregistered, which is why eleven test sites used to sit on a fixed sleep
+ * with no condition to poll.  Beyond tests it is the question a readiness
+ * probe asks: whether a region this node just started can route.
+ *
+ * Published node-locally, like {@link ShardMapChanged} and for the same
+ * reason: it describes something that happened on *this* node.  Bridge it with
+ * `cluster.eventStream.bridge(ShardRegionRegistered)` to watch every node's
+ * registrations from one place — it originates on a single node, so it is a
+ * sound thing to bridge.
+ *
+ * Fires on the *transition*.  The coordinator re-acknowledges on every
+ * re-registration (a leader change re-registers every region), and an event
+ * per acknowledgment would report a state change that did not happen.
+ */
+export class ShardRegionRegistered {
+  constructor(
+    /** The sharded type name this region serves. */
+    public readonly type: string,
+    /** Whether the registered region is a proxy — a proxy is never allocated shards. */
+    public readonly proxy: boolean,
+  ) {}
+  toString(): string {
+    return `ShardRegionRegistered(${this.type}${this.proxy ? ', proxy' : ''})`;
+  }
+}
+
+/**
+ * Why a coordinator refused a region's registration.
+ *
+ * Closed, and deliberately coarse: it is a metric label, so every value here
+ * is a time series an operator carries forever — the same reasoning as
+ * `GOSSIP_REFUSAL_REASONS`.  One value today, because a `numShards` mismatch
+ * is the only thing a coordinator refuses over (#633).
+ */
+export const SHARD_REGISTRATION_REFUSAL_REASONS = ['num-shards-mismatch'] as const;
+
+/** One of {@link SHARD_REGISTRATION_REFUSAL_REASONS}. */
+export type ShardRegistrationRefusalReason =
+  typeof SHARD_REGISTRATION_REFUSAL_REASONS[number];
+
+/**
+ * The coordinator refused this node's region for a sharded type (#1300).
+ *
+ * The refusal used to be one `log.error` and nothing else: no event, no
+ * counter, no queryable state.  That matters more than a missing diagnostic
+ * usually does, because a refused region keeps running and keeps accepting
+ * traffic for the type, and everything it accepts buffers — so an unnoticed
+ * refusal ends in a node out of memory, and the only thing standing between a
+ * misconfigured rolling deploy and that outcome was whether somebody grepped
+ * for one error string.
+ *
+ * Published node-locally on the refused node, which is the node that has the
+ * problem.  `cluster.eventStream.bridge(ShardRegionRegistrationRefused)`
+ * collects them cluster-wide — a refusal originates on a single node, so it
+ * is a sound thing to bridge.
+ */
+export class ShardRegionRegistrationRefused {
+  constructor(
+    /** The sharded type name whose registration was refused. */
+    public readonly type: string,
+    public readonly reason: ShardRegistrationRefusalReason,
+    /** The shard count this node is configured with. */
+    public readonly regionNumShards: number,
+    /** The shard count the coordinator governs the type with. */
+    public readonly coordinatorNumShards: number,
+  ) {}
+  toString(): string {
+    return `ShardRegionRegistrationRefused(${this.type}, ${this.reason},`
+      + ` region=${this.regionNumShards}, coordinator=${this.coordinatorNumShards})`;
+  }
+}
+
+/**
+ * A peer's effective value for a setting the deployment asked to be checked
+ * disagrees with this node's (#844).
+ *
+ * Carries **both** values, deliberately: a bare "diverged" sends the operator
+ * back to the log line the event is supposed to replace, and the pair is what
+ * says which of the two nodes is the misconfigured one.  `fact` is the name
+ * the value was published under — by convention the HOCON path whose effective
+ * value it is, which is where an operator goes to change it.
+ *
+ * Published node-locally on **both** nodes, since each compares what the other
+ * gossips against what it resolved for itself — so unlike
+ * {@link ShardRegionRegistrationRefused}, whose refusal originates on one node,
+ * a bridged stream carries two of these per disagreeing pair.
+ *
+ * Reported at most once per fact per peer per node lifetime.  By the time it
+ * fires the divergence has already been in effect for as long as both nodes
+ * have been up; what the operator needs is the pointer, not one event per
+ * gossip round.
+ */
+export class MemberConfigurationMismatch {
+  constructor(
+    /** The peer whose claim disagrees. */
+    public readonly member: Member,
+    /** The published name of the setting — by convention its HOCON path. */
+    public readonly fact: string,
+    /** The effective value on THIS node. */
+    public readonly localValue: string,
+    /** The effective value the peer claims. */
+    public readonly remoteValue: string,
+    /**
+     * Whether `actor-ts.cluster.configuration-compatibility-check.enforce` was
+     * on, i.e. whether the peer is also barred from this node's placement
+     * candidates rather than only reported.
+     */
+    public readonly enforced: boolean,
+  ) {}
+  toString(): string {
+    return `MemberConfigurationMismatch(${this.member.address}, ${this.fact},`
+      + ` local=${this.localValue}, remote=${this.remoteValue},`
+      + ` ${this.enforced ? 'enforced' : 'warned'})`;
+  }
+}
+
+/**
+ * A periodic sample of this node's membership view — the only event here that
+ * is not a transition (#842).
+ *
+ * It exists because "how big is the cluster right now" had three answers and
+ * none of them was the framework's own: the DevTools `stats` stream (needs the
+ * DevTools server and a websocket client), the `cluster_members_up` gauge
+ * (needs a metrics adapter, and is a pull surface with no callback), and a
+ * polling loop the application writes itself.  `system.eventStream` is the one
+ * surface every actor already has, and `publish-stats-interval` is the cadence
+ * it is sampled at.  Off by default: a timer in every clustered process for a
+ * feature most deployments will not subscribe to is not a default.
+ *
+ * The field set mirrors DevTools' `ClusterStatsSummary` deliberately, so the
+ * two never grow into different vocabularies for one question — but the
+ * *populations* differ, and that is not an oversight: this one counts the live
+ * member map, while the dashboard additionally retains recently departed nodes
+ * so a cluster of three that lost one still reads "2 / 3 up".  The numbers may
+ * therefore disagree during the minutes after a node leaves, and the honest
+ * reading is that the dashboard is answering "what was here", this event
+ * "what is here".
+ *
+ * **Never replayed on subscribe.**  Every other member of this union states a
+ * change, so replaying it reconstructs a subscriber's starting point; this one
+ * states a measurement, and a replayed measurement is simply stale.
+ */
+export class ClusterStatsPublished {
+  constructor(
+    /** Members in the live map — `removed` tombstones excluded. */
+    public readonly members: number,
+    /** Of those, the ones whose status is `up`. */
+    public readonly up: number,
+    /** Of those, the ones whose status is `unreachable`. */
+    public readonly unreachable: number,
+    /** The lowest-addressed `up` member, or none while there is no leader. */
+    public readonly leader: Option<Member>,
+    /**
+     * The node this sample is about.  Redundant to a local subscriber and
+     * load-bearing to a remote one: the event is node-local, so an
+     * application that bridges it cluster-wide has nothing else to key on.
+     */
+    public readonly selfAddress: NodeAddress,
+  ) {}
+  toString(): string {
+    return `ClusterStatsPublished(${this.selfAddress}, members=${this.members},`
+      + ` up=${this.up}, unreachable=${this.unreachable})`;
+  }
+}
+
 export type ClusterEvent =
   | SelfUp
   | SelfRemoved
   | LeaderChanged
   | CurrentClusterState
+  | ClusterStatsPublished
   | MemberJoined
   | MemberUp
   | MemberWeaklyUp
@@ -186,4 +362,11 @@ export type ClusterEvent =
   | MemberDown
   | MemberLeft
   | MemberRemoved
-  | ShardMapChanged;
+  | ShardMapChanged
+  | ShardRegionRegistered
+  | ShardRegionRegistrationRefused
+  | MemberConfigurationMismatch;
+
+// The framework's own messages, exempt from the message-boundary check
+// (#1386): each crosses the boundaries it needs to by its own mechanism.
+markFrameworkMessage(SelfUp, SelfRemoved, LeaderChanged, CurrentClusterState, MemberJoined, MemberUp, MemberWeaklyUp, MemberUnreachable, MemberReachable, ReachabilityChanged, MemberDown, MemberLeft, MemberRemoved, ShardMapChanged, ShardRegionRegistered, ShardRegionRegistrationRefused, MemberConfigurationMismatch, ClusterStatsPublished);

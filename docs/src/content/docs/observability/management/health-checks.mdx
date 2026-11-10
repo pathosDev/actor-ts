@@ -54,6 +54,13 @@ there forks them.
 | `actor-system` | liveness | the registry itself | `system.terminate()` has completed |
 | `cluster-membership` | readiness | `Cluster.join` | this node is not `up` in its own member view |
 | `cluster-transport` | readiness | `Cluster.join` | the node can reach **none** of the peers it still expects |
+| `startup` | readiness | the registry itself, when the system has [startup tasks](/fundamentals/actor-system/#starting-up) | the startup graph is still running, or one of its tasks failed |
+| `shard-region:<type>` | readiness | `Cluster.join`, one per type in [`actor-ts.sharding.healthcheck.names`](/reference/configuration/#actor-tssharding) | this node's region for the type is not registered with its coordinator — see [gating on a shard region](#gating-on-a-shard-region) |
+
+`startup` exists only on a system with startup tasks, and it stays once
+startup is over: `true` from then on, or `false` with the failed task
+and its error in `detail`.  While the graph runs, `detail` names the
+phase it is in.
 
 `cluster-transport` is deliberately a *total isolation* test, not
 "every peer is reachable".  A partial partition leaves the node able
@@ -64,6 +71,24 @@ split-brain hazard — and the case a node cannot see from its
 membership view alone, because no peer is allowed to downgrade this
 node's own record.  A single-node cluster expects nobody and always
 passes.
+
+**The peers it still expects** are the members other than this node
+that are neither `down` nor `removed` — `unreachable` ones included —
+except a peer this node has parked past `down-after` because no
+downing strategy is configured and `failure-detector.auto-down` is
+off.  Nothing will remove a parked peer, so waiting for it would keep
+the node out of rotation for good.  A survivor whose only peer crashed
+is therefore out of rotation while that peer is merely `unreachable`,
+and ready again at `down-after` whichever way the deployment chose:
+under the default `auto-down = on` the dead peer is removed then, and
+under the opt-out `auto-down = off` it is parked then.  The peer
+counts in the check's `detail` leave a parked peer out the same way.
+A parked peer that heartbeats again is expected again.  A peer that
+is `unreachable` but not yet past `down-after` still counts, so a
+short blip takes a lone survivor out of rotation as before, and so
+does a peer a configured
+[downing strategy](/cluster/downing-strategies/) is still deciding
+about, until the strategy decides.
 
 "Reachable" means **an open connection to a peer the failure detector
 has not written off**, and it needs both halves.  An open socket on
@@ -93,7 +118,67 @@ aggregate reads as *healthy* (see below), so un-registering would make
 "everything passes" and "nothing is reporting any more" the same
 answer.  A later `Cluster.join` on the same system retires the old
 pair and installs its own, so a process that leaves and re-joins
-recovers normally.
+recovers normally — sharding included: leaving stops the regions and
+coordinators the node started, so the new cluster can start the same
+types again.
+
+### Gating on a shard region
+
+A node that hosts a sharded type cannot serve it until its region is
+registered with the coordinator, and membership convergence does not
+say whether it is: the region registers with the coordinator on the
+leader, over a retry timer of its own.  Name the types the node is not
+ready without:
+
+```hocon
+actor-ts.sharding.healthcheck.names = ["orders", "billing"]
+```
+
+`Cluster.join` then installs one `shard-region:<type>` readiness check
+per name beside the cluster's two — from the join on, not from the
+first `cluster.sharding.start(...)`, so a node that never starts a
+named type stays out of rotation instead of reporting ready.  Each
+check passes once `cluster.sharding.isRegistered(type)` does, and its
+`detail` says which of three things keeps it red:
+
+- **no region is running** for the type on this node — it was never
+  started here, or it has stopped, which leaving the cluster does;
+- **the coordinator refused it** over `number-of-shards`, with both
+  counts;
+- **the region is running and not acknowledged yet** — after it
+  starts, after the coordinator evicts it, and after a leader change
+  lifts a refusal.
+
+A leader change on its own turns no check red.  What the check reads
+is this node's account of what its region was last told, and a new
+leader tells it nothing until its coordinator answers: a registered
+region registers with the new coordinator in the background and stays
+green throughout.
+
+**A refused node stays out of rotation until `number-of-shards`
+agrees.**  That is a decision, not a side effect: a refused region
+keeps accepting traffic for the type and buffers all of it, because no
+shard will ever be allocated to it, so taking the node out of the load
+balancer is the one thing that helps.  There is deliberately no window
+after which the check gives up, and no timeout: the check is a set
+read with nothing to wait for, and passing after a deadline would put
+exactly that node back in rotation.
+
+A refusal is the verdict of one leader's term.  A leader change lifts
+it: the `detail` reads *running and not acknowledged yet* until the
+next coordinator answers, and that coordinator decides again — it
+accepts the region when the counts agree with its own, and refuses it
+when they do not.
+
+Like the cluster's two, the checks stay registered through `leave()`,
+and a later `Cluster.join` retires them with the pair.  For a type only
+the code knows about, register the same check yourself:
+
+```ts
+import { healthChecksOf, shardRegionRegistered } from 'actor-ts/management';
+
+healthChecksOf(system).addReadiness(shardRegionRegistered(cluster, 'orders'));
+```
 
 ## The check signature
 
@@ -259,9 +344,36 @@ endpoints use.
 
 ## Timeouts
 
-There is **no built-in per-check timeout** — a hung check blocks
-the whole `/health` (or `/ready`) response.  For a check that can
-stall, race it against your own deadline:
+**Every check runs against a deadline** — one second by default.
+Past it the registry answers *for* that check and its siblings
+still report normally, so a hung dependency costs one failing
+entry rather than the whole response:
+
+```json
+{
+  "status": "DOWN",
+  "checks": [
+    { "name": "unknown", "status": false, "detail": "health check did not answer within 1000ms" },
+    { "name": "cache",   "status": true }
+  ]
+}
+```
+
+The name is `unknown` because the name lives *inside* the
+`HealthCheckResult` the check never returned — the same fallback
+a check that throws already produced.  The deadline goes in the
+`detail`, which is the only field left to carry it.
+
+Set it per node:
+
+```hocon
+actor-ts.management.health-checks.check-timeout = 500ms
+```
+
+The deadline belongs to the registry, not to one check, so it
+applies to liveness and readiness alike and is one number an
+operator can turn.  A check that needs a *different* budget still
+races its own:
 
 ```ts
 health.addReadiness(async () => {
@@ -273,8 +385,15 @@ health.addReadiness(async () => {
 });
 ```
 
-Without a guard, a stuck check eventually trips K8s's own probe
-timeout (10 s default) and triggers a restart.  Keep checks fast.
+That version reports a name, which the registry's own answer
+cannot, so it is worth writing for a check you expect to stall.
+
+Keep checks fast regardless.  The deadline keeps the *response*
+moving; it does not stop the work behind a check, and it is
+deliberately below K8s's own probe timeout (`timeoutSeconds`,
+1 s by default) so that the framework — not the orchestrator —
+is the one that gets to say which check hung.  Raise it in a
+deployment whose probe timeout is genuinely higher.
 
 import { Aside } from '@astrojs/starlight/components';
 

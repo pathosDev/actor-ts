@@ -5,22 +5,28 @@ import { createTestActorSystem } from '../../../../util/TestActorSystem.js';
 import type { ConfigObject } from '../../../../../src/config/HoconParser.js';
 import { BrokerActor, type OutboundEnvelope } from '../../../../../src/io/broker/BrokerActor.js';
 import {
+  BrokerCircuitBreakerStateChanged,
   BrokerConnected,
   BrokerDisconnected,
   BrokerBufferOverflow,
   BrokerNotConnected,
   BrokerReconnectAttempt,
+  BrokerReconnectFailed,
 } from '../../../../../src/io/broker/BrokerEvents.js';
+import { CircuitBreakerTimeoutError } from '../../../../../src/pattern/CircuitBreaker.js';
+import { CircuitBreakerExtensionId } from '../../../../../src/pattern/CircuitBreakerExtension.js';
 import {
   BrokerOptionsError,
   type BrokerCommonOptionsType,
 } from '../../../../../src/io/broker/BrokerOptions.js';
-import type { Config } from '../../../../../src/config/Config.js';
+import { ConfigError, type Config } from '../../../../../src/config/Config.js';
+import type { RetiredLeaves } from '../../../../../src/config/RetiredKeys.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import { Actor } from '../../../../../src/Actor.js';
 import { Terminated } from '../../../../../src/SystemMessages.js';
 import { LogLevel, type Logger } from '../../../../../src/Logger.js';
 import { Scheduler, type Cancellable } from '../../../../../src/Scheduler.js';
+import { ManualScheduler } from '../../../../../src/testkit/ManualScheduler.js';
 import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 /**
@@ -57,6 +63,20 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string, string> {
   dispatched: string[] = [];
   failNextConnects = 0;
   failNextDispatches = 0;
+  /** When set, a simulated connect failure names the endpoint verbatim (#1388). */
+  connectFailureEmbedsEndpoint = false;
+  /** The `Error.name` a simulated connect failure carries — what `ignored-error-names` matches (#1478). */
+  connectFailureName = 'Error';
+  /**
+   * When set, the next connect hangs until {@link abortConnectAttempt} or
+   * {@link failHungConnect} rejects it — a peer that took the handshake and went
+   * quiet.  Consumed by the connect that hangs.
+   */
+  hangNextConnect = false;
+  /** Rejects the connect that is hanging now; `null` when none is. */
+  private rejectHungConnect: ((cause: Error) => void) | null = null;
+  /** Every cause `abortConnectAttempt` was called with. */
+  readonly abortCauses: Error[] = [];
 
   /* Desired-subscription test surface (#504).  The `Subscription`
    * payload is just a label, so an assertion can tell a re-applied
@@ -98,10 +118,12 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string, string> {
 
   protected configKey(): string { return 'actor-ts.io.broker.fake'; }
   protected builtInDefaultOptions(): Partial<FakeOptions> { return { tag: 'default' }; }
+  /** The system config, read at full paths under `configKey()` — the hook's contract. */
   protected readOptionsFromConfig(c: Config): Partial<FakeOptions> {
+    const root = this.configKey();
     return {
-      endpoint: c.hasPath('endpoint') ? c.getString('endpoint') : undefined,
-      tag: c.hasPath('tag') ? c.getString('tag') : undefined,
+      endpoint: c.hasPath(`${root}.endpoint`) ? c.getString(`${root}.endpoint`) : undefined,
+      tag: c.hasPath(`${root}.tag`) ? c.getString(`${root}.tag`) : undefined,
     };
   }
   protected requiredOptions(): ReadonlyArray<keyof FakeOptions> { return ['endpoint']; }
@@ -109,9 +131,21 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string, string> {
 
   protected async connectImplementation(): Promise<void> {
     this.connectAttempts++;
+    if (this.hangNextConnect) {
+      this.hangNextConnect = false;
+      await new Promise<never>((_resolve, reject) => { this.rejectHungConnect = reject; });
+    }
     if (this.failNextConnects > 0) {
       this.failNextConnects--;
-      throw new Error(`simulated connect failure (${this.connectAttempts})`);
+      // `connectFailureEmbedsEndpoint` models the shape #1388 is about:
+      // amqplib and mqtt.js both name the target they were dialling in the
+      // error they throw, so the raw options string — credential included —
+      // ends up in a message the base class never built.
+      const failure = new Error(this.connectFailureEmbedsEndpoint
+        ? `connect ECONNREFUSED ${this.options.endpoint ?? ''}`
+        : `simulated connect failure (${this.connectAttempts})`);
+      failure.name = this.connectFailureName;
+      throw failure;
     }
     await this.applyDesiredSubscriptions();
     if (this.connectGate) {
@@ -135,6 +169,22 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string, string> {
       await gate;
     }
   }
+
+  /** Make the hanging connect reject the way a driver's would — through the deadline hook. */
+  protected override abortConnectAttempt(cause: Error): void {
+    this.abortCauses.push(cause);
+    this.failHungConnect(cause);
+  }
+
+  /** Reject the connect that is hanging now, as a driver whose socket died would.  No-op when none is. */
+  failHungConnect(cause: Error): void {
+    const reject = this.rejectHungConnect;
+    this.rejectHungConnect = null;
+    reject?.(cause);
+  }
+
+  /** Whether a connect is hanging right now. */
+  get connectIsHanging(): boolean { return this.rejectHungConnect !== null; }
 
   protected override initialSubscriptions(): Iterable<readonly [string, string]> {
     return this.configuredSubscriptions;
@@ -161,6 +211,7 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string, string> {
   publicUnsubscribe(topic: string, ref: ActorRef<unknown>): void { this.unsubscribeRef(topic, ref); }
   publicFanOut(topic: string, message: unknown): void { this.fanOutToTopic(topic, message); }
   publicSimulateLoss(): void { this.handleConnectionLost(new Error('simulated loss')); }
+  publicSimulateLossWith(cause: Error): void { this.handleConnectionLost(cause); }
   publicConnectionState(): string { return this.connectionState; }
   publicBufferSize(): number { return this.outboundBufferSize; }
   publicSubscriberCount(topic: string): number { return this.subscriberCountForTopic(topic); }
@@ -354,6 +405,72 @@ describe('BrokerActor — options resolution', () => {
   });
 });
 
+/**
+ * A broker written outside this package, under a root of its own — the shape a
+ * user's subclass has.  Nothing about it is special but the root, which is
+ * the point: the refusal of a retired spelling keys on `configKey()` alone, so
+ * it has to reach a root outside `actor-ts.io.broker` as it reaches the
+ * fifteen inside it.
+ */
+class OutOfTreeBroker extends FakeBroker {
+  static readonly ROOT = 'acme.messaging.orders';
+  protected override configKey(): string { return OutOfTreeBroker.ROOT; }
+  protected override retiredLeaves(): RetiredLeaves { return { legacyEndpoint: 'endpoint' }; }
+}
+
+/** Start an {@link OutOfTreeBroker} over `block` and report how its `preStart` ended. */
+async function startOutOfTree(name: string, block: ConfigObject): Promise<{ failure: unknown; broker: FakeBroker }> {
+  const sys = makeSystem(name, { acme: { messaging: { orders: block } } });
+  let failure: unknown = null;
+  let settled = false;
+  let started: FakeBroker | null = null;
+  sys.spawnAnonymous(() => {
+    const broker = new OutOfTreeBroker();
+    started = broker;
+    const preStart = broker.preStart.bind(broker);
+    broker.preStart = async (): Promise<void> => {
+      try { await preStart(); }
+      catch (e) { failure = e; }
+      finally { settled = true; }
+    };
+    return broker as unknown as Actor<FakeCommand>;
+  });
+  await awaitCondition(() => settled, { timeoutMs: 4_000, label: 'the out-of-tree broker\'s preStart settled' });
+  await sys.terminate();
+  return { failure, broker: started! };
+}
+
+describe('BrokerActor — a retired spelling is refused under a root outside the package', () => {
+  const root = OutOfTreeBroker.ROOT;
+
+  test.each<{ label: string; block: ConfigObject; retired: string; current: string }>([
+    { label: 'a shared reconnect leaf', block: { reconnect: { initialDelayMs: 100 } },
+      retired: 'reconnect.initialDelayMs', current: 'reconnect.initial-delay' },
+    { label: 'the outbound buffer', block: { outboundBuffer: 5 }, retired: 'outboundBuffer', current: 'outbound-buffer' },
+    { label: 'the old breaker group', block: { circuitBreaker: { failureThreshold: 3 } },
+      retired: 'circuitBreaker', current: 'circuit-breaker' },
+    { label: 'a leaf the subclass itself retired', block: { legacyEndpoint: 'h:2' },
+      retired: 'legacyEndpoint', current: 'endpoint' },
+  ])('$label fails preStart, naming both paths under that root', async ({ block, retired, current }) => {
+    const { failure, broker } = await startOutOfTree(`oot-${retired.replace(/\W/g, '-')}`, { endpoint: 'h:1', ...block });
+    expect(failure).toBeInstanceOf(ConfigError);
+    expect((failure as ConfigError).message).toContain(`${root}.${retired} has been renamed to ${root}.${current}`);
+    expect(broker.connectAttempts).toBe(0);
+  });
+
+  test('the kebab spellings under that root are read, and the actor starts', async () => {
+    const { failure, broker } = await startOutOfTree('oot-kebab', {
+      endpoint: 'h:1',
+      'outbound-buffer': 5,
+      reconnect: { 'initial-delay': 100 },
+    });
+    expect(failure).toBeNull();
+    const options = (broker as unknown as { options: FakeOptions }).options;
+    expect(options.outboundBuffer).toBe(5);
+    expect(options.reconnect).toEqual({ initialDelayMs: 100 });
+  });
+});
+
 /* ---------------------------- Lifecycle tests --------------------------- */
 
 describe('BrokerActor — lifecycle', () => {
@@ -424,6 +541,45 @@ describe('BrokerActor — reconnect', () => {
     await sys.terminate();
   });
 
+  test.each([
+    { maxAttempts: 1, connects: 2 },
+    { maxAttempts: 2, connects: 3 },
+  ])('reconnect.max-attempts = $maxAttempts counts reconnects: $connects connects in all, then BrokerReconnectFailed', async ({
+    maxAttempts, connects,
+  }) => {
+    // The count is of *re*connects — the first connect is not one — so the
+    // smallest value HOCON accepts still retries once.  Only the constructor's
+    // `reconnect: false` makes no second attempt (the case below).
+    const sys = makeSystem(`rc-max-${maxAttempts}`, { 'actor-ts': { io: { broker: { fake: {
+      endpoint: 'host:1',
+      reconnect: { 'initial-delay': 5, 'max-delay': 5, 'random-factor': 0, 'max-attempts': maxAttempts },
+    } } } } });
+    const attempts: number[] = [];
+    const failures: BrokerReconnectFailed[] = [];
+    sys.eventStream.subscribe(
+      sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+        override onReceive(event: unknown): void { attempts.push((event as BrokerReconnectAttempt).attempt); }
+      })()),
+      BrokerReconnectAttempt,
+    );
+    sys.eventStream.subscribe(
+      sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+        override onReceive(event: unknown): void { failures.push(event as BrokerReconnectFailed); }
+      })()),
+      BrokerReconnectFailed,
+    );
+    const { brokerReady } = spawnFake(sys, {}, (broker) => { broker.failNextConnects = 1_000; });
+    const broker = await brokerReady;
+    await awaitCondition(() => failures.length >= 1, { timeoutMs: 4_000, label: 'BrokerReconnectFailed' });
+    // Exact without a settle window: giving up schedules nothing, so no
+    // further connect is reachable once the failure is published.
+    expect(broker.connectAttempts).toBe(connects);
+    expect(attempts).toEqual(Array.from({ length: maxAttempts }, (_, index) => index + 1));
+    expect(failures[0]!.attempts).toBe(maxAttempts);
+    expect(broker.publicConnectionState()).toBe('disconnected');
+    await sys.terminate();
+  });
+
   test('reconnect: false disables reconnect after a connect failure', async () => {
     const sys = makeSystem('rc-2');
     const { brokerReady } = spawnFake(sys, {
@@ -485,6 +641,15 @@ describe('BrokerActor — reconnect', () => {
  * path, whose wake-up publishes no event to key off.
  */
 class RecordingScheduler extends Scheduler {
+  readonly delays: number[] = [];
+  override scheduleOnceFunction(delayMs: number, task: () => void): Cancellable {
+    this.delays.push(delayMs);
+    return super.scheduleOnceFunction(delayMs, task);
+  }
+}
+
+/** {@link RecordingScheduler} on virtual time: every requested delay, and a clock that moves on `advance`. */
+class RecordingManualScheduler extends ManualScheduler {
   readonly delays: number[] = [];
   override scheduleOnceFunction(delayMs: number, task: () => void): Cancellable {
     this.delays.push(delayMs);
@@ -575,14 +740,14 @@ describe('BrokerActor — reconnect jitter (#652)', () => {
     await sys.terminate();
   });
 
-  test('reconnect.randomFactor resolves from HOCON', async () => {
+  test('reconnect.random-factor resolves from HOCON', async () => {
     const sys = makeSystem('jit-4', {
       'actor-ts': {
         io: {
           broker: {
             fake: {
               endpoint: 'cfg.local',
-              reconnect: { initialDelayMs: 100, maxDelayMs: 100, factor: 1, randomFactor: 0 },
+              reconnect: { 'initial-delay': 100, 'max-delay': 100, factor: 1, 'random-factor': 0 },
             },
           },
         },
@@ -600,15 +765,15 @@ describe('BrokerActor — reconnect jitter (#652)', () => {
 
   test('an open circuit breaker wakes on a spread deadline, never before it', async () => {
     const scheduler = new RecordingScheduler();
-    const sys = createTestActorSystem({ name: 'jit-5', scheduler });
-    // failureThreshold 1 → the breaker opens on the first failure, so the
-    // second `_tryConnect` takes the early-return path that never reaches
-    // the backoff calculation.  A 5 ms backoff gets it there promptly.
+    const sys = systemWithBreakers('jit-5', scheduler, { 'jit-5': { 'max-failures': 1, 'reset-timeout': 400 } });
+    // max-failures 1 → the breaker opens on the first failure, so the second
+    // `_tryConnect` is refused by it and never reaches the backoff
+    // calculation.  A 5 ms backoff gets it there promptly.
     spawnFake(
       sys,
       {
         endpoint: 'host:1',
-        circuitBreaker: { failureThreshold: 1, resetMs: 400 },
+        circuitBreaker: 'jit-5',
         reconnect: { initialDelayMs: 5, maxDelayMs: 5, factor: 1, randomFactor: 1, random: () => 1 },
       },
       (broker) => { broker.failNextConnects = 5; },
@@ -618,7 +783,7 @@ describe('BrokerActor — reconnect jitter (#652)', () => {
       label: 'the breaker wake-up was scheduled',
     });
     const breakerWait = scheduler.delays.find((d) => d > 400)!;
-    // Un-jittered this is exactly the time left on the deadline (< 400 ms).
+    // Un-jittered this is exactly the time left on the window (< 400 ms).
     // One-sided jitter with random() === 1 doubles it, and never shortens it.
     expect(breakerWait).toBeGreaterThan(600);
     expect(breakerWait).toBeLessThanOrEqual(800);
@@ -627,15 +792,15 @@ describe('BrokerActor — reconnect jitter (#652)', () => {
 
   test('randomFactor: 0 leaves the breaker wake-up on the bare deadline', async () => {
     const scheduler = new RecordingScheduler();
-    const sys = createTestActorSystem({ name: 'jit-6', scheduler });
+    const sys = systemWithBreakers('jit-6', scheduler, { 'jit-6': { 'max-failures': 1, 'reset-timeout': 400 } });
     // The control for the test above: same shape, jitter off.  It pins the
-    // recorded delay to `resetMs`, which is what makes the >600 ms reading
+    // recorded delay to the window, which is what makes the >600 ms reading
     // there attributable to the spread rather than to scheduler noise.
     spawnFake(
       sys,
       {
         endpoint: 'host:1',
-        circuitBreaker: { failureThreshold: 1, resetMs: 400 },
+        circuitBreaker: 'jit-6',
         reconnect: { initialDelayMs: 5, maxDelayMs: 5, factor: 1, randomFactor: 0 },
       },
       (broker) => { broker.failNextConnects = 5; },
@@ -649,6 +814,504 @@ describe('BrokerActor — reconnect jitter (#652)', () => {
     await sys.terminate();
   });
 });
+
+/* ---------------------------- Circuit breaker --------------------------- */
+
+/**
+ * A system whose config holds `breakers` under `actor-ts.circuit-breaker`,
+ * and `fake` as the fake broker's own block.
+ */
+function systemWithBreakers(
+  name: string,
+  scheduler: Scheduler,
+  breakers: ConfigObject,
+  fake: ConfigObject = {},
+): ActorSystem {
+  return createTestActorSystem({
+    name,
+    scheduler,
+    config: { 'actor-ts': { 'circuit-breaker': breakers, io: { broker: { fake } } } },
+  });
+}
+
+/** One full turn of the event loop, so every microtask already queued has run. */
+const nextTurn = (): Promise<void> => new Promise<void>((resolve) => { setImmediate(resolve); });
+
+/**
+ * The broker breaker end to end: when it opens, what it lets through once its
+ * window has passed, how HOCON names it and tunes it, and what sharing one
+ * means (#1478).  The breaker is the pattern one, resolved by id through
+ * `CircuitBreakerExtension`, so its numbers live under
+ * `actor-ts.circuit-breaker.<id>`.
+ *
+ * Every connect here fails unless a case says otherwise, and the reconnect
+ * backoff is a flat 5 ms with no jitter, so the only long wait the scheduler is
+ * ever asked for is a breaker window.  Each assertion is taken at the moment
+ * such a window is scheduled — the requested delay, not the achieved one — so
+ * a slow machine stretches the test without moving its numbers.
+ */
+describe('BrokerActor — circuit breaker', () => {
+  /** A delay no 5 ms backoff can reach: a breaker window, and nothing else. */
+  const WINDOW_SCHEDULED = 100;
+  const FLAT_BACKOFF = { initialDelayMs: 5, maxDelayMs: 5, factor: 1, randomFactor: 0 } as const;
+  const FLAT_BACKOFF_LEAVES = { 'initial-delay': 5, 'max-delay': 5, factor: 1, 'random-factor': 0 } as const;
+
+  /** Wait until the scheduler has been asked for `count` breaker windows. */
+  async function awaitWindows(scheduler: RecordingScheduler, count: number): Promise<void> {
+    await awaitCondition(() => scheduler.delays.filter((d) => d > WINDOW_SCHEDULED).length >= count, {
+      timeoutMs: 4_000, label: `breaker window ${count} was scheduled`,
+    });
+  }
+
+  /** Published after the event under test, so its arrival proves the stream has delivered everything before it. */
+  class Sentinel { constructor(readonly label: string) {} }
+
+  /** Record every `BrokerCircuitBreakerStateChanged` the stream delivers, and every `Sentinel`. */
+  function recordBreakerEvents(sys: ActorSystem): Array<BrokerCircuitBreakerStateChanged | Sentinel> {
+    const seen: Array<BrokerCircuitBreakerStateChanged | Sentinel> = [];
+    const recorder = sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+      override onReceive(m: unknown): void { seen.push(m as BrokerCircuitBreakerStateChanged | Sentinel); }
+    })());
+    sys.eventStream.subscribe(recorder, BrokerCircuitBreakerStateChanged);
+    sys.eventStream.subscribe(recorder, Sentinel);
+    return seen;
+  }
+
+  test('opens after max-failures consecutive connect failures', async () => {
+    const scheduler = new RecordingScheduler();
+    const sys = systemWithBreakers('cb-1', scheduler, { 'cb-1': { 'max-failures': 3, 'reset-timeout': 300 } });
+    const { brokerReady } = spawnFake(
+      sys,
+      { endpoint: 'host:1', circuitBreaker: 'cb-1', reconnect: FLAT_BACKOFF },
+      (broker) => { broker.failNextConnects = 1_000; },
+    );
+    const broker = await brokerReady;
+    await awaitWindows(scheduler, 1);
+    // Three attempts failed, the third opened the breaker, and the next
+    // wake-up was refused and waited out the window instead of connecting.
+    expect(broker.connectAttempts).toBe(3);
+    await sys.terminate();
+  });
+
+  test('after the window, one probe goes through, and its failure opens the breaker again', async () => {
+    const scheduler = new RecordingScheduler();
+    const sys = systemWithBreakers('cb-2', scheduler, { 'cb-2': { 'max-failures': 3, 'reset-timeout': 200 } });
+    const { brokerReady } = spawnFake(
+      sys,
+      { endpoint: 'host:1', circuitBreaker: 'cb-2', reconnect: FLAT_BACKOFF },
+      (broker) => { broker.failNextConnects = 1_000; },
+    );
+    const broker = await brokerReady;
+    await awaitWindows(scheduler, 1);
+    expect(broker.connectAttempts).toBe(3);
+    await awaitWindows(scheduler, 2);
+    // A single probe, not a burst of max-failures: the breaker is half-open
+    // once its window has passed, and one failure there opens it again.
+    expect(broker.connectAttempts).toBe(4);
+    await sys.terminate();
+  });
+
+  test('circuit-breaker = "<id>" in HOCON names it, and its numbers come from actor-ts.circuit-breaker.<id>', async () => {
+    const scheduler = new RecordingScheduler();
+    const sys = systemWithBreakers(
+      'cb-3',
+      scheduler,
+      { 'fake-broker': { 'max-failures': 2, 'reset-timeout': '300ms' } },
+      { endpoint: 'cfg.local', 'circuit-breaker': 'fake-broker', reconnect: FLAT_BACKOFF_LEAVES },
+    );
+    const { brokerReady } = spawnFake(sys, {}, (broker) => { broker.failNextConnects = 1_000; });
+    const broker = await brokerReady;
+    await awaitWindows(scheduler, 1);
+    expect(broker.connectAttempts).toBe(2);
+    await sys.terminate();
+  });
+
+  test('actor-ts.circuit-breaker.default tunes a named breaker that has no block of its own', async () => {
+    const scheduler = new RecordingScheduler();
+    const sys = systemWithBreakers('cb-4', scheduler, { default: { 'max-failures': 2, 'reset-timeout': '300ms' } });
+    const { brokerReady } = spawnFake(
+      sys,
+      { endpoint: 'host:1', circuitBreaker: 'named-without-a-block', reconnect: FLAT_BACKOFF },
+      (broker) => { broker.failNextConnects = 1_000; },
+    );
+    const broker = await brokerReady;
+    await awaitWindows(scheduler, 1);
+    expect(broker.connectAttempts).toBe(2);
+    await sys.terminate();
+  });
+
+  test('without an id there is no breaker, whatever the default block says', async () => {
+    const scheduler = new RecordingScheduler();
+    const sys = systemWithBreakers('cb-5', scheduler, { default: { 'max-failures': 1, 'reset-timeout': '60s' } });
+    const unset = spawnFake(sys, { endpoint: 'unset', reconnect: FLAT_BACKOFF }, (b) => { b.failNextConnects = 8; });
+    const empty = spawnFake(
+      sys,
+      { endpoint: 'empty', circuitBreaker: '', reconnect: FLAT_BACKOFF },
+      (b) => { b.failNextConnects = 8; },
+    );
+    const brokers = await Promise.all([unset.brokerReady, empty.brokerReady]);
+    await awaitCondition(() => brokers.every((b) => b.publicConnectionState() === 'connected'), {
+      timeoutMs: 4_000, label: 'both brokers retried through eight failures and connected',
+    });
+    // Eight failures in a row and not one window: the breaker is opt-in.
+    for (const broker of brokers) expect(broker.connectAttempts).toBe(9);
+    expect(scheduler.delays.filter((d) => d > WINDOW_SCHEDULED)).toEqual([]);
+    expect(sys.extension(CircuitBreakerExtensionId).names()).toEqual([]);
+    await sys.terminate();
+  });
+
+  test('actors naming the same id share one verdict: an open breaker refuses an actor that never tried', async () => {
+    const scheduler = new RecordingScheduler();
+    const sys = systemWithBreakers('cb-6', scheduler, { shared: { 'max-failures': 1, 'reset-timeout': '300ms' } });
+    const first = spawnFake(
+      sys,
+      { endpoint: 'first', circuitBreaker: 'shared', reconnect: FLAT_BACKOFF },
+      (b) => { b.failNextConnects = 1_000; },
+    );
+    const opener = await first.brokerReady;
+    await awaitWindows(scheduler, 1);
+    expect(opener.connectAttempts).toBe(1);
+
+    // The breaker the first actor opened is the one the second resolves, so
+    // its first connect is refused before it is made.
+    const second = spawnFake(sys, { endpoint: 'second', circuitBreaker: 'shared', reconnect: FLAT_BACKOFF });
+    const latecomer = await second.brokerReady;
+    await awaitFirstConnect(latecomer);
+    expect(latecomer.connectAttempts).toBe(0);
+    expect(latecomer.publicConnectionState()).toBe('disconnected');
+
+    // With the opener gone, the latecomer is the one that probes once the
+    // window has passed — and the probe is its first connect.
+    sys.stop(first.ref);
+    await awaitStopped(opener);
+    await awaitCondition(() => latecomer.publicConnectionState() === 'connected', {
+      timeoutMs: 4_000, label: 'the latecomer probed after the window and connected',
+    });
+    expect(latecomer.connectAttempts).toBe(1);
+    expect(sys.extension(CircuitBreakerExtensionId).breaker('shared').state).toBe('closed');
+    await sys.terminate();
+  });
+
+  test('an actor refused mid-window comes back when the window ends, by the breaker\'s clock', async () => {
+    // Virtual time, so the window is exact: the breaker resolved by id reads
+    // the system scheduler, and the wake-up it asks for is the time left on
+    // the window it refused in — not a fresh window from the refusal.
+    const scheduler = new ManualScheduler();
+    const sys = systemWithBreakers('cb-12', scheduler, { 'cb-12': { 'max-failures': 1, 'reset-timeout': 1_000 } });
+    const first = spawnFake(
+      sys,
+      { endpoint: 'first', circuitBreaker: 'cb-12', reconnect: FLAT_BACKOFF },
+      (b) => { b.failNextConnects = 1_000; },
+    );
+    const opener = await first.brokerReady;
+    await awaitFirstConnect(opener);
+    // Failed at t = 0, so the breaker refuses until t = 1000.
+    expect(sys.extension(CircuitBreakerExtensionId).breaker('cb-12').nextProbeAt).toBe(1_000);
+    scheduler.advance(500);
+    await nextTurn();
+
+    const second = spawnFake(sys, { endpoint: 'second', circuitBreaker: 'cb-12', reconnect: FLAT_BACKOFF });
+    const latecomer = await second.brokerReady;
+    await awaitFirstConnect(latecomer);
+    expect(latecomer.connectAttempts).toBe(0);
+    sys.stop(first.ref);
+    await awaitStopped(opener);
+
+    scheduler.advance(499);
+    await nextTurn();
+    expect(latecomer.connectAttempts).toBe(0);
+    scheduler.advance(1);
+    await awaitCondition(() => latecomer.publicConnectionState() === 'connected', {
+      timeoutMs: 4_000, label: 'the latecomer probed at t = 1000 and connected',
+    });
+    expect(latecomer.connectAttempts).toBe(1);
+    await sys.terminate();
+  });
+
+  /**
+   * A fleet of three actors sharing a breaker that opened at t = 0 on
+   * another actor's failure (stopped since), each refused once and woken at
+   * the window's end spread forwards by a draw of its own: 1000, 1200 and
+   * 1400 ms.  Virtual time, so every wake-up is exact.
+   */
+  async function fleetAfterAnOpen(name: string, hang: boolean): Promise<{
+    readonly scheduler: RecordingManualScheduler;
+    readonly sys: ActorSystem;
+    readonly sharers: readonly FakeBroker[];
+  }> {
+    const scheduler = new RecordingManualScheduler();
+    const sys = systemWithBreakers(name, scheduler, { fleet: { 'max-failures': 1, 'reset-timeout': 1_000 } });
+    const opener = spawnFake(
+      sys,
+      { endpoint: 'opener', circuitBreaker: 'fleet', reconnect: FLAT_BACKOFF },
+      (b) => { b.failNextConnects = 1_000; },
+    );
+    const openerBroker = await opener.brokerReady;
+    const breaker = sys.extension(CircuitBreakerExtensionId).breaker('fleet');
+    await awaitCondition(() => breaker.state === 'open', { timeoutMs: 4_000, label: 'the opener opened the breaker' });
+    sys.stop(opener.ref);
+    await awaitStopped(openerBroker);
+    const sharers: FakeBroker[] = [];
+    for (const [index, draw] of [0, 0.4, 0.8].entries()) {
+      const { brokerReady } = spawnFake(sys, {
+        endpoint: `sharer-${index}`,
+        circuitBreaker: 'fleet',
+        reconnect: { initialDelayMs: 5, maxDelayMs: 5, factor: 1, randomFactor: 0.5, random: () => draw },
+      }, (b) => {
+        b.failNextConnects = 1_000;
+        b.hangNextConnect = hang;
+      });
+      const sharer = await brokerReady;
+      await awaitFirstConnect(sharer);
+      sharers.push(sharer);
+    }
+    expect(sharers.map((sharer) => sharer.connectAttempts)).toEqual([0, 0, 0]);
+    expect(scheduler.delays.slice(-3)).toEqual([1_000, 1_200, 1_400]);
+    return { scheduler, sys, sharers };
+  }
+
+  test('sharers whose failing connect settles before the next wakes: one probe, and the rest meet its verdict', async () => {
+    const { scheduler, sys, sharers } = await fleetAfterAnOpen('cb-14', false);
+    const breaker = sys.extension(CircuitBreakerExtensionId).breaker('fleet');
+    scheduler.advance(1_000);
+    await awaitCondition(() => sharers[0]!.connectAttempts === 1 && breaker.state === 'open', {
+      timeoutMs: 4_000, label: 'the first sharer probed, failed, and reopened the breaker',
+    });
+    // The other two wake into the reopened window and are refused — each
+    // waits out what is left of it, spread forwards again (800 × 1.2, 600 × 1.4).
+    scheduler.advance(200);
+    await awaitCondition(() => scheduler.delays.includes(960), { timeoutMs: 4_000, label: 'the second sharer was refused' });
+    scheduler.advance(200);
+    await awaitCondition(() => scheduler.delays.includes(840), { timeoutMs: 4_000, label: 'the third sharer was refused' });
+    expect(sharers.map((sharer) => sharer.connectAttempts)).toEqual([1, 0, 0]);
+    await sys.terminate();
+  });
+
+  test('sharers whose connect hangs past the spread: each probes once in the window, never more', async () => {
+    // Half-open admits every call that arrives before the probe settles
+    // (#457), so a connect that hangs — a broker that black-holes its
+    // traffic — is still in flight when the next sharer wakes, and that one
+    // probes as well.  What the shared breaker bounds is one attempt per
+    // actor per window, not one for the fleet.
+    const { scheduler, sys, sharers } = await fleetAfterAnOpen('cb-15', true);
+    const breaker = sys.extension(CircuitBreakerExtensionId).breaker('fleet');
+    for (const [index, step] of [1_000, 200, 200].entries()) {
+      scheduler.advance(step);
+      await awaitCondition(() => sharers[index]!.connectIsHanging, {
+        timeoutMs: 4_000, label: `sharer ${index} is probing`,
+      });
+    }
+    expect(sharers.map((sharer) => sharer.connectAttempts)).toEqual([1, 1, 1]);
+    expect(breaker.state).toBe('half-open');
+    // The probes fail and the breaker opens.  Each failed probe schedules a
+    // retry on its backoff (2.5, 4.5 and 6.5 ms) …
+    const base = scheduler.delays.length;
+    for (const sharer of sharers) sharer.failHungConnect(new Error('no route to host'));
+    await awaitCondition(() => scheduler.delays.length >= base + 3, {
+      timeoutMs: 4_000, label: 'every failed probe scheduled its retry',
+    });
+    expect(breaker.state).toBe('open');
+    // … which lands inside the reopened window and is refused rather than made.
+    scheduler.advance(10);
+    await awaitCondition(() => scheduler.delays.length >= base + 6, {
+      timeoutMs: 4_000, label: 'every retry was refused and waits for the window',
+    });
+    expect(sharers.map((sharer) => sharer.connectAttempts)).toEqual([1, 1, 1]);
+    await sys.terminate();
+  });
+
+  test('ignored-error-names keeps a listed failure from counting, and only a listed one', async () => {
+    const scheduler = new RecordingScheduler();
+    const sys = systemWithBreakers('cb-7', scheduler, {
+      'cb-7': { 'max-failures': 1, 'reset-timeout': '300ms', 'ignored-error-names': ['TransientResolverError'] },
+    });
+    const listed = spawnFake(sys, { endpoint: 'listed', circuitBreaker: 'cb-7', reconnect: FLAT_BACKOFF }, (b) => {
+      b.failNextConnects = 6;
+      b.connectFailureName = 'TransientResolverError';
+    });
+    const broker = await listed.brokerReady;
+    await awaitCondition(() => broker.publicConnectionState() === 'connected', {
+      timeoutMs: 4_000, label: 'six excused failures, then a connect',
+    });
+    expect(broker.connectAttempts).toBe(7);
+    expect(scheduler.delays.filter((d) => d > WINDOW_SCHEDULED)).toEqual([]);
+    expect(sys.extension(CircuitBreakerExtensionId).breaker('cb-7').state).toBe('closed');
+
+    // The same breaker, an unlisted name: one failure opens it.
+    const unlisted = spawnFake(sys, { endpoint: 'unlisted', circuitBreaker: 'cb-7', reconnect: FLAT_BACKOFF }, (b) => {
+      b.failNextConnects = 6;
+    });
+    const control = await unlisted.brokerReady;
+    await awaitWindows(scheduler, 1);
+    expect(control.connectAttempts).toBe(1);
+    await sys.terminate();
+  });
+
+  test('every transition is published as BrokerCircuitBreakerStateChanged, under the actor that names it', async () => {
+    const scheduler = new RecordingScheduler();
+    const sys = systemWithBreakers('cb-8', scheduler, { 'cb-8': { 'max-failures': 1, 'reset-timeout': '150ms' } });
+    const seen = recordBreakerEvents(sys);
+    // Fails, probes and fails, probes and connects.
+    const { ref, brokerReady } = spawnFake(
+      sys,
+      { endpoint: 'host:1', circuitBreaker: 'cb-8', reconnect: FLAT_BACKOFF },
+      (b) => { b.failNextConnects = 2; },
+    );
+    const broker = await brokerReady;
+    await awaitCondition(() => broker.publicConnectionState() === 'connected' && seen.length >= 5, {
+      timeoutMs: 4_000, label: 'the breaker opened, reopened and closed, and the stream delivered all five',
+    });
+    const events = seen as BrokerCircuitBreakerStateChanged[];
+    expect(events.map((e) => e.state)).toEqual(['open', 'half-open', 'open', 'half-open', 'closed']);
+    for (const event of events) {
+      expect(event).toBeInstanceOf(BrokerCircuitBreakerStateChanged);
+      expect(event.actorPath).toBe(ref.path.toString());
+      expect(event.endpoint).toBe('host:1');
+      expect(event.circuitBreaker).toBe('cb-8');
+    }
+    await sys.terminate();
+  });
+
+  test('a transition names the endpoint without its credentials', async () => {
+    // The event goes to every subscriber of the stream — DevTools, a logging
+    // tap, a metrics bridge — so it carries the redacted label, as
+    // BrokerConnected does, never the userinfo of a URL-shaped endpoint.
+    const scheduler = new RecordingScheduler();
+    const sys = systemWithBreakers('cb-10', scheduler, { 'cb-10': { 'max-failures': 1, 'reset-timeout': '60s' } });
+    const seen = recordBreakerEvents(sys);
+    spawnFake(
+      sys,
+      { endpoint: 'amqp://operator:S3CRET@broker.internal:5672/orders', circuitBreaker: 'cb-10', reconnect: FLAT_BACKOFF },
+      (b) => { b.failNextConnects = 1_000; },
+    );
+    await awaitCondition(() => seen.length >= 1, { timeoutMs: 4_000, label: 'the breaker opened and the stream delivered it' });
+    const opened = seen[0] as BrokerCircuitBreakerStateChanged;
+    expect(opened.state).toBe('open');
+    expect(opened.endpoint).toBe('amqp://broker.internal:5672/orders');
+    expect(opened.endpoint).not.toContain('S3CRET');
+    await sys.terminate();
+  });
+
+  test('a stopped actor stops publishing the transitions of a breaker it shared', async () => {
+    const scheduler = new RecordingScheduler();
+    const sys = systemWithBreakers('cb-9', scheduler, { 'cb-9': { 'max-failures': 1, 'reset-timeout': '60s' } });
+    const seen = recordBreakerEvents(sys);
+    const stays = spawnFake(sys, { endpoint: 'stays', circuitBreaker: 'cb-9' });
+    const leaves = spawnFake(sys, { endpoint: 'leaves', circuitBreaker: 'cb-9' });
+    const brokers = await Promise.all([stays.brokerReady, leaves.brokerReady]);
+    await Promise.all(brokers.map((b) => awaitFirstConnect(b)));
+    sys.stop(leaves.ref);
+    await awaitStopped(brokers[1]!);
+
+    sys.extension(CircuitBreakerExtensionId).breaker('cb-9').setState('open');
+    sys.eventStream.publish(new Sentinel('after the transition'));
+    await awaitCondition(() => seen.some((e) => e instanceof Sentinel), {
+      timeoutMs: 4_000, label: 'the sentinel published after the transition arrived',
+    });
+    const transitions = seen.filter((e): e is BrokerCircuitBreakerStateChanged => e instanceof BrokerCircuitBreakerStateChanged);
+    expect(transitions.map((e) => e.endpoint)).toEqual(['stays']);
+    await sys.terminate();
+  });
+
+  test('a connect cut short by a stop is not a failure: the shared breaker stays closed', async () => {
+    const scheduler = new RecordingScheduler();
+    const sys = systemWithBreakers('cb-10', scheduler, { 'cb-10': { 'max-failures': 1, 'reset-timeout': '60s' } });
+    const { ref, brokerReady } = spawnFake(sys, { endpoint: 'host:1', circuitBreaker: 'cb-10', reconnect: FLAT_BACKOFF });
+    const broker = await brokerReady;
+    await awaitFirstConnect(broker);
+    // The reconnect after a loss runs on the scheduler, detached from the
+    // mailbox — so the stop below is processed while that attempt hangs,
+    // which a hang inside preStart's own connect would not allow.
+    broker.hangNextConnect = true;
+    broker.publicSimulateLoss();
+    await awaitCondition(() => broker.connectIsHanging, { timeoutMs: 4_000, label: 'the reconnect attempt is hanging' });
+    sys.stop(ref);
+    await awaitStopped(broker);
+    // The driver fails the attempt because its socket went with the stop —
+    // the shape every real transport has.  That says nothing about the broker,
+    // and on a breaker other actors share it must not count.
+    broker.failHungConnect(new Error('socket closed by the stop'));
+    await nextTurn();
+    await nextTurn();
+    expect(sys.extension(CircuitBreakerExtensionId).breaker('cb-10').state).toBe('closed');
+    await sys.terminate();
+  });
+
+  test('a call-timeout aborts the attempt and waits it out rather than racing it', async () => {
+    const scheduler = new RecordingScheduler();
+    const sys = systemWithBreakers('cb-11', scheduler, {
+      'cb-11': { 'max-failures': 1, 'reset-timeout': '60s', 'call-timeout': '50ms' },
+    });
+    const { brokerReady } = spawnFake(
+      sys,
+      { endpoint: 'host:1', circuitBreaker: 'cb-11', reconnect: FLAT_BACKOFF },
+      (b) => { b.hangNextConnect = true; },
+    );
+    const broker = await brokerReady;
+    await awaitWindows(scheduler, 1);
+    // The breaker gave up on the hanging connect, poked it through the same
+    // hook a connect deadline uses, and counted the timeout: open, one window.
+    expect(broker.abortCauses).toHaveLength(1);
+    expect(broker.abortCauses[0]).toBeInstanceOf(CircuitBreakerTimeoutError);
+    expect(broker.connectIsHanging).toBe(false);
+    expect(broker.connectAttempts).toBe(1);
+    expect(broker.publicConnectionState()).toBe('disconnected');
+    expect(sys.extension(CircuitBreakerExtensionId).breaker('cb-11').state).toBe('open');
+    await sys.terminate();
+  });
+
+  test('on a broker that cannot abort, a call-timeout counts and opens while the connect runs on, and the warning names the breaker', async () => {
+    // Every built-in broker but three keeps the base class's abortConnectAttempt,
+    // which can only warn.  So the timeout opens the breaker, the connect is
+    // not cut short, and the cycle waits for it — and the warning says the
+    // breaker's call-timeout elapsed, not a connect deadline that broker has not got.
+    const scheduler = new RecordingScheduler();
+    const logger = new CapturingLogger();
+    const sys = createTestActorSystem({
+      name: 'cb-13',
+      scheduler,
+      logger,
+      logLevel: LogLevel.Warn,
+      config: { 'actor-ts': { 'circuit-breaker': {
+        'cb-13': { 'max-failures': 1, 'reset-timeout': '60s', 'call-timeout': '50ms' },
+      } } },
+    });
+    let broker: UnabortableFakeBroker | null = null;
+    sys.spawnAnonymous(() => {
+      const created = new UnabortableFakeBroker({ endpoint: 'host:1', circuitBreaker: 'cb-13', reconnect: FLAT_BACKOFF });
+      created.hangNextConnect = true;
+      broker = created;
+      return created as unknown as Actor<FakeCommand>;
+    });
+    const breaker = sys.extension(CircuitBreakerExtensionId).breaker('cb-13');
+    await awaitCondition(() => breaker.state === 'open', { timeoutMs: 4_000, label: 'the call-timeout opened the breaker' });
+    await awaitCondition(
+      () => logger.warnings.some((warning) => warning.includes('cannot abort an in-flight connect')),
+      { timeoutMs: 4_000, label: 'the unabortable call-timeout was reported' },
+    );
+    const hanging = broker as unknown as UnabortableFakeBroker;
+    expect(hanging.connectIsHanging).toBe(true);
+    const warning = logger.warnings.find((line) => line.includes('cannot abort an in-flight connect'))!;
+    expect(warning).toContain('call-timeout');
+    expect(warning).not.toContain('connect deadline');
+    // Release it before terminating, as a driver's own timeout eventually would.
+    hanging.failHungConnect(new Error('the driver gave up on its own'));
+    await sys.terminate();
+  });
+});
+
+/**
+ * The fake broker on the base class's `abortConnectAttempt` — the hook every
+ * built-in broker keeps but the WebSocket client, `SseActor` and
+ * `TcpSocketActor`, so a hanging connect is not cut short by it.
+ */
+class UnabortableFakeBroker extends FakeBroker {
+  protected override abortConnectAttempt(cause: Error): void {
+    const baseHook = (BrokerActor.prototype as unknown as { abortConnectAttempt: (cause: Error) => void })
+      .abortConnectAttempt;
+    baseHook.call(this, cause);
+  }
+}
 
 /* ------------------------ Teardown before reconnect --------------------- */
 
@@ -1478,9 +2141,10 @@ describe('BrokerActor — a lifecycle event carries no credential (#741)', () =>
   test('a composite label keeps its shape and loses every credential', async () => {
     const sys = makeSystem('redact-composite');
     const seen = connectedEndpoints(sys);
-    // The NATS / Kafka / email-bridge shape: a joined list is not a parseable
-    // URL, so this exercises the helper's scan fallback rather than its URL
-    // path — the case a naive `new URL(...)` redaction would have mangled.
+    // The NATS / Kafka / email-bridge shape: a joined list never reaches the
+    // URL parser, so this exercises the helper's per-entry scan rather than
+    // its URL path — the case a naive `new URL(...)` redaction would have
+    // mangled (#1458).
     const { brokerReady } = spawnFake(sys, { endpoint: 'nats://u:pw@a:4222,nats://u:pw@b:4222' });
     await brokerReady;
     await awaitCondition(() => seen.length >= 1, {
@@ -1504,6 +2168,84 @@ describe('BrokerActor — a lifecycle event carries no credential (#741)', () =>
     // labels with nothing to hide would trade the field's diagnostic value
     // for no disclosure benefit at all.
     expect(seen[0]).toBe('tcp://10.0.0.4:9000');
+    await sys.terminate();
+  });
+});
+
+/* ---------- security: the driver's error on the event (#1388) ------------ */
+
+/**
+ * #741 took the credential out of the `endpoint` field of these events.  The
+ * `cause` beside it is the driver's own `Error`, and several drivers put the
+ * connection target — userinfo included — into the message they throw, so it
+ * reaches the same system-wide `EventStream`, the same audience and the same
+ * log aggregator by a different route.
+ *
+ * `endpoint` is asserted alongside `cause` on purpose: it is what makes the
+ * event look already-handled, and the pair is the whole point of the issue.
+ */
+describe('BrokerActor — the published cause carries no credential (#1388)', () => {
+  const dsn = 'amqp://guest:hunter2@rabbit:5672/vhost';
+
+  test('BrokerDisconnected.cause is redacted, and the driver keeps its own error', async () => {
+    const sys = makeSystem('cred-1');
+    const seen: BrokerDisconnected[] = [];
+    sys.eventStream.subscribe(
+      sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+        override onReceive(event: unknown): void { seen.push(event as BrokerDisconnected); }
+      })()),
+      BrokerDisconnected,
+    );
+    const { brokerReady } = spawnFake(sys, { endpoint: dsn, reconnect: false });
+    const broker = await brokerReady;
+    await awaitFirstConnect(broker);
+
+    const driverError = Object.assign(
+      new Error(`connect ECONNREFUSED ${dsn}`),
+      { code: 'ECONNREFUSED' },
+    );
+    broker.publicSimulateLossWith(driverError);
+
+    await awaitCondition(() => seen.length >= 1, { timeoutMs: 4_000, label: 'BrokerDisconnected' });
+    expect(seen[0]!.cause?.message).toBe('connect ECONNREFUSED amqp://***@rabbit:5672/vhost');
+    expect(seen[0]!.cause?.stack ?? '').not.toContain('hunter2');
+    expect(seen[0]!.endpoint).not.toContain('hunter2');
+    // The identity a subscriber branches on survives the copy…
+    expect((seen[0]!.cause as unknown as { code: string }).code).toBe('ECONNREFUSED');
+    // …and the driver's own object is not scrubbed under it.
+    expect(driverError.message).toBe(`connect ECONNREFUSED ${dsn}`);
+    await sys.terminate();
+  });
+
+  test('BrokerReconnectFailed.cause is redacted too', async () => {
+    const sys = makeSystem('cred-2');
+    const seen: BrokerReconnectFailed[] = [];
+    sys.eventStream.subscribe(
+      sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+        override onReceive(event: unknown): void { seen.push(event as BrokerReconnectFailed); }
+      })()),
+      BrokerReconnectFailed,
+    );
+    // The cause on *this* event is not the one handed to `handleConnectionLost`
+    // — it is whatever the last failed reconnect threw, which is why the
+    // failure has to embed the endpoint rather than the initial loss.  Written
+    // the other way round the assertion held against the unfixed tree, because
+    // the credential-bearing error was never the one published.
+    const { brokerReady } = spawnFake(sys, {
+      endpoint: dsn,
+      reconnect: { initialDelayMs: 10, maxDelayMs: 10, maxAttempts: 1 },
+    }, (broker) => {
+      broker.failNextConnects = 5;
+      broker.connectFailureEmbedsEndpoint = true;
+    });
+    const broker = await brokerReady;
+
+    broker.publicSimulateLossWith(new Error('connection reset'));
+
+    await awaitCondition(() => seen.length >= 1, { timeoutMs: 4_000, label: 'BrokerReconnectFailed' });
+    expect(seen[0]!.cause.message).toContain('amqp://***@rabbit:5672');
+    expect(seen[0]!.cause.message).not.toContain('hunter2');
+    expect(seen[0]!.endpoint).not.toContain('hunter2');
     await sys.terminate();
   });
 });

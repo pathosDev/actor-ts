@@ -1,7 +1,7 @@
 /**
  * PostgreSQL live-integration runner (#323).
  *
- * Boots against the postgres:latest container, waits for the port, then
+ * Boots against the pinned `postgres` container, waits for the port, then
  * runs the shared SQL persistence contract (journal + snapshot +
  * durable-state) against the real `PostgresJournal` /
  * `PostgresSnapshotStore` / `PostgresDurableStateStore` via the `pg`

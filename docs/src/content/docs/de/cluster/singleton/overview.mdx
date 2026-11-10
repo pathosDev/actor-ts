@@ -144,7 +144,10 @@ wenn ihre Namen übereinstimmen — sie fährt nur mit, damit *jede* Node
 dieselbe liest.  Das zählt für eine Node, die nur `ref` aufruft: sie
 hat kein Options-Objekt, eine allein über `withRole` gesetzte Rolle ist
 für sie also unsichtbar, und ihr Proxy würde einen anderen Host
-auflösen als die Manager.
+auflösen als die Manager.  (Die Config-Datei erreicht sie ebenfalls —
+siehe `actor-ts.cluster.singleton.role` weiter unten — aber nur dort,
+wo jede Node dieselbe Datei ausgeliefert bekommt, und genau diese
+Annahme braucht der Key nicht.)
 
 Für `lease`, oder um die Rolle pro Deployment zu überschreiben, werden
 Options danebengelegt — oder die volle Builder-Form genutzt, wenn es
@@ -162,6 +165,23 @@ Host hat — normalerweise eine Gossip-Runde, in einem Ausfall aber
 unbegrenzt.  Jenseits des Limits (Default 1000) gehen Nachrichten mit
 einer Warnung in die Dead Letters, statt den Puffer ewig wachsen zu
 lassen.
+
+Auf einer Node, die nur `ref` aufruft, gibt es kein `withBufferSize`,
+das man erreichen könnte — dafür gibt es
+`actor-ts.cluster.singleton.buffer-size`:
+
+```hocon
+actor-ts.cluster.singleton {
+  role        = "control-plane"
+  buffer-size = 5000
+}
+```
+
+Beide Keys liest `ref` genauso wie `start`, und beide liegen **unter**
+allem, was im Code übergeben wurde.  Der Rest des Blocks —
+`hand-over-timeout`, `acquire-retry-interval`,
+`max-hand-over-state-bytes`, `restart-on-termination` — steht in der
+[Konfigurationsreferenz](/de/reference/configuration/#actor-tsclustersingleton).
 
 Der Puffer wird beim ersten Cluster-Event geleert, das einen Host
 hervorgebracht haben kann — bei einem Leader-Wechsel, genauso aber,

@@ -7,26 +7,28 @@ name: publish
 #
 # Auth model: **npm Trusted Publishing** via GitHub's OIDC.
 # Registered on npmjs.com → Settings → Trusted Publishers for
-# the `actor-ts` package, pinned to this repo + this workflow.
+# the `actor-ts` package, pinned to this repo + this workflow + the
+# `npm` environment the `publish` job runs in (#704).
 # No long-lived NPM_TOKEN secret is involved — the workflow
 # exchanges its short-lived OIDC token for a one-shot npm
 # publish token at runtime.  Requires npm >= 11.5.1.
 #
 # That auth model is also why every `uses:` below is pinned to a commit
-# SHA rather than a tag (#585): the actions run in the same job that
-# holds `id-token: write`, so an action author — or anyone who
+# SHA rather than a tag (#585): an action author — or anyone who
 # compromises their account — who repoints a mutable tag executes code
-# next to a credential that can publish `actor-ts` to npm with
-# provenance.  A SHA cannot be repointed.  The trailing `# vX.Y.Z`
-# comment is what keeps Dependabot updating the pin; see
-# `.github/dependabot.yml`.
+# on a runner in this workflow, and two of the actions below run in the
+# job that holds `id-token: write`, next to a credential that can
+# publish `actor-ts` to npm with provenance.  A SHA cannot be
+# repointed.  The trailing `# vX.Y.Z` comment is what keeps Dependabot
+# updating the pin; see `.github/dependabot.yml`.
 on:
   release:
     types: [published]
   # Manual fallback: a release-event run uses the workflow file at the tag's
   # commit, so a workflow bug can't be fixed-and-re-run through the release
-  # event alone.  Dispatching from a fixed branch re-attempts the publish;
-  # the version guard below makes re-runs safe.
+  # event alone.  Dispatching from `main` re-attempts the publish; the version
+  # guard below makes re-runs safe.  The `publish` job's `npm` environment is
+  # what limits *which* ref may be dispatched — see the comment there (#704).
   workflow_dispatch:
 
 # The version guard below (`npm view` → skip if already published) is a
@@ -42,21 +44,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
+  # ---------------------------------------------------------------------------
+  # Build and pack — no publishing credential anywhere near it (#703).
+  #
+  # This job runs the whole devDependency tree: `bun install` twice, the build,
+  # the type checker and the suite.  It is therefore the job most likely to be
+  # executing somebody else's code at any given moment, which is precisely why
+  # it holds nothing but `contents: read`.  Its only output is the tarball.
+  #
+  # The `sbom` / `attach-sbom` pair below is the template, and the argument is
+  # the one its comment already makes: a job that installs must not also hold a
+  # credential.  Before this split that rule was enforced for `contents: write`
+  # and waived for `id-token: write` — the stronger of the two, since it buys a
+  # one-shot npm publish token, so a single compromised dev dependency could
+  # ship `actor-ts` under a provenance attestation.
+  # ---------------------------------------------------------------------------
+  pack:
+    name: Build and pack the tarball
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     permissions:
       contents: read
-      id-token: write     # Required for both npm provenance AND OIDC trusted publishing.
-
-    # Quarantine the worker-thread multi-node suites (ParallelMultiNodeSpec +
-    # LeaseMajority e2e) on GitHub's hosted runners, exactly as test.yml does —
-    # Bun there can't respawn worker threads after the first test.  Set at JOB
-    # level so the `bun test` inside `npm publish`'s `prepublishOnly` inherits
-    # it.  Those suites run locally + in Docker; the `integration` workflow is
-    # the real multi-node gate, and `nightly-flakes.yml` is what decides when
-    # the quarantine may be lifted — #538.
-    env:
-      ACTOR_TS_SKIP_FLAKY_MNS: '1'
 
     steps:
       - name: Checkout
@@ -67,31 +75,120 @@ jobs:
         with:
           bun-version-file: .bun-version
 
-      # Install deps in a Bun-only environment (no Node on PATH).  This matches
-      # the green `test.yml`: better-sqlite3's postinstall resolves a prebuilt
-      # binary for Bun's Node ABI instead of falling back to a `node-gyp`
-      # source build.  Node + npm are set up afterwards, only for the
-      # publish step.
+      # Bun installs first, and from `bun.lock` — the lockfile this repository
+      # actually maintains, so this is the dependency set every other green
+      # check was measured against.  Node comes afterwards because `npm pack`
+      # needs npm, not because the install does.
       #
-      # Typecheck / test / build are deliberately NOT separate steps: `npm
-      # publish` runs `prepublishOnly` (`clean && build && typecheck && test`)
-      # on this same Bun toolchain immediately before it publishes, so adding
-      # explicit steps here would run the whole suite twice.
+      # It used to say the order existed so better-sqlite3's postinstall would
+      # resolve a prebuilt binary rather than fall back to a `node-gyp` source
+      # build.  That reason expired with ad145463 (2026-07-22): the lockfile has
+      # pinned better-sqlite3 >= 13.0.1 since, and 13.x ships `prebuilds/` with
+      # no install script at all.  The root closure carries no install-time
+      # script of any kind today, which `trustedDependencies: []` in
+      # package.json now pins rather than merely describes.
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # `prepublishOnly` runs `build` (which is `build:ui && tsc`) and
-      # `typecheck`, and both reach the DevTools UI. Its toolchain is a
-      # separate, deliberately un-hoisted install (#483), so without this the
-      # publish would fail at the last possible moment — after the tag and the
-      # GitHub Release already exist.
+      # `build` is `build:ui && tsc`, and `build:ui` reaches the DevTools UI,
+      # whose toolchain is a separate, deliberately un-hoisted install (#483).
+      #
+      # Frozen matters more here than anywhere: `build:ui` regenerates the
+      # embedded bundle from this tree and that regenerated module is what
+      # gets packed, so an unfrozen resolve shipped a DevTools bundle built
+      # from whatever devtools-ui/package.json's ranges resolved to that day —
+      # under a provenance attestation, and invisible to `check:ui`, whose hash
+      # covers the ranges and not the bytes.  Written out rather than
+      # `bun run ui:install` because that script is the developer's unfrozen
+      # regenerate command (#1622).
       - name: Install the DevTools UI toolchain
-        run: bun run ui:install
+        run: bun install --frozen-lockfile --cwd devtools-ui
 
-      # Node 24 (the `engines` floor) bundles npm >= 11.5.1, which is the
-      # minimum for trusted publishing — no separate npm upgrade step needed.
+      # Spelled out rather than left to `prepublishOnly`.  `npm publish` runs
+      # that script only for a directory spec, and the publish step below hands
+      # it a tarball — so nothing would run these at all if this job did not.
+      # `prepublishOnly` stays in package.json regardless: it is the net under a
+      # `npm publish` run by hand from a clone, which has no job A in front of
+      # it.  A failure here costs a re-run; the same failure discovered during
+      # publish costs it after the tag and the GitHub Release already exist.
+      - name: Verify the tree before packing
+        run: |
+          bun run clean
+          bun run build
+          bun run typecheck
+          bun test
+          bun run test:ui
+
+      # Node 24 (the `engines` floor) bundles npm >= 11.5.1, the minimum for
+      # trusted publishing.  No `registry-url` here — this job never talks to
+      # the registry, and `npm pack` writes the tarball from `files` in
+      # package.json without touching the network.
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+
+      # `npm pack` runs `prepack`/`postpack` and nothing else — in particular
+      # never `prepublishOnly` — and this repository declares neither, so the
+      # step is exactly "write the tarball" and the steps above are what
+      # actually vouched for it.
+      - name: Pack the tarball
+        run: npm pack
+
+      - name: Hand the tarball to the publish job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package-tarball
+          path: actor-ts-*.tgz
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Publish — holds the credential, and does nothing else (#703).
+  #
+  # No checkout and no install, on the `attach-sbom` pattern: the only code
+  # running beside `id-token: write` is npm itself and the two pinned actions
+  # above it.  The version guard reads the version out of the downloaded
+  # tarball rather than out of a working tree, which keeps this job
+  # checkout-free and ties the guard to the bytes actually being published
+  # instead of to a second copy of the repository that merely ought to match.
+  # ---------------------------------------------------------------------------
+  #
+  # The `npm` environment is the authorization gate, and the version guard is
+  # not one (#704): it only refuses a version that is already on npm, so on its
+  # own any account with write access could push a branch, dispatch this
+  # workflow on it — or add an `on: push` to its copy of this file — and ship a
+  # provenance-attested tarball under a version nobody released.  npm's Trusted
+  # Publisher checks the repository and the workflow file name, never the ref.
+  #
+  # The environment closes both routes, from two sides:
+  #   - GitHub refuses to start this job on a ref the environment's deployment
+  #     policy does not list (tags `v*` and the branch `main`) and holds it
+  #     until a required reviewer approves the run;
+  #   - the Trusted Publisher on npmjs.com is registered *with* the environment
+  #     name, so npm rejects an OIDC token whose `environment` claim is absent
+  #     or different — a copy of this file without the key gets no token.
+  # Both halves are settings outside this repository; the key below is the
+  # one half that lives here, and `tests/unit/ci/WorkflowHygiene.test.ts`
+  # holds it in place.
+  publish:
+    name: Publish to npm
+    needs: pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write     # Required for both npm provenance AND OIDC trusted publishing.
+
+    steps:
+      - name: Fetch the tarball
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: package-tarball
+          path: tarball
+
       - name: Setup Node + npm registry
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
@@ -99,7 +196,14 @@ jobs:
       - name: Skip if this version already exists on npm
         id: version-check
         run: |
-          VERSION=$(node -p "require('./package.json').version")
+          TARBALL=$(ls ./tarball/actor-ts-*.tgz)
+          VERSION=$(tar -xOf "$TARBALL" package/package.json \
+            | node -pe "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
+          if [ -z "$VERSION" ]; then
+            echo "No version could be read out of $TARBALL — refusing to publish." >&2
+            exit 1
+          fi
+          echo "Packed $TARBALL at version $VERSION."
           if npm view "actor-ts@$VERSION" version > /dev/null 2>&1; then
             echo "actor-ts@$VERSION already published — skipping publish step."
             echo "already_published=true" >> "$GITHUB_OUTPUT"
@@ -112,10 +216,17 @@ jobs:
         if: steps.version-check.outputs.already_published == 'false'
         # Tokenless — npm Trusted Publishing via GitHub OIDC.  With
         # `id-token: write` + a Trusted Publisher configured on npmjs.com
-        # (repo pathosDev/actor-ts, workflow publish.yml, no environment),
+        # (repo pathosDev/actor-ts, workflow publish.yml, environment npm),
         # npm ≥ 11.5.1 auto-detects the OIDC path — no NODE_AUTH_TOKEN.
-        # `--provenance` signs via the same id-token.
-        run: npm publish --provenance --access public
+        # `--provenance` signs via the same id-token; libnpmpublish computes
+        # the attestation's subject digest over the tarball bytes, so a tarball
+        # spec is attested exactly like a directory one.
+        #
+        # `--ignore-scripts` is belt and braces: `npm publish <tarball>` runs no
+        # lifecycle script in the first place, because every lifecycle call in
+        # publish.js is gated on the spec being a directory.  It costs nothing
+        # and it stops a future npm from quietly changing that.
+        run: npm publish --provenance --access public --ignore-scripts ./tarball/actor-ts-*.tgz
 
   # ---------------------------------------------------------------------------
   # CycloneDX SBOM, attached to the GitHub Release (#539).
@@ -143,6 +254,7 @@ jobs:
   sbom:
     name: Generate CycloneDX SBOM
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
 
@@ -183,7 +295,7 @@ jobs:
         run: rm -rf examples docs tests
 
       - name: Build the SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           path: .
           format: cyclonedx-json
@@ -199,7 +311,7 @@ jobs:
           dependency-snapshot: false
 
       - name: Hand the SBOM to the upload job
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sbom
           path: actor-ts-sbom.cyclonedx.json
@@ -212,6 +324,7 @@ jobs:
     # still built above and kept as a workflow artifact.
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
 
@@ -219,7 +332,7 @@ jobs:
     # only thing this job does with its write scope is upload one file.
     steps:
       - name: Fetch the SBOM
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: sbom
           path: sbom

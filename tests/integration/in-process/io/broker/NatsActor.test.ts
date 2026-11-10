@@ -6,7 +6,7 @@
  * drains and close-promise the test drives synchronously.  That covers
  * the reconnect paths (which need a *second* connection object to prove
  * the subscriptions were re-established rather than merely remembered)
- * without involving the `nats` peer-dep at all.
+ * without involving the transport peer-dep at all.
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';

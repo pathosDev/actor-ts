@@ -20,6 +20,7 @@ import {
 } from '../../../src/deadletters/DeadLetterQueueOptions.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 const check = (s: Partial<DeadLetterQueueOptionsType>): void =>
   new DeadLetterQueueOptionsValidator().validate(s);
@@ -85,7 +86,9 @@ describe('DeadLetterQueueOptionsBuilder', () => {
 
 describe('readDeadLetterQueueOptionsFromConfig', () => {
   test('an absent key is left out entirely, so the built-in default survives', () => {
-    expect(readDeadLetterQueueOptionsFromConfig(Config.empty())).toEqual({});
+    // Left out, not present as `undefined`: `toEqual` alone cannot tell the two
+    // apart, and only the first lets the default survive a spread (#1447).
+    expectExactOptions(readDeadLetterQueueOptionsFromConfig(Config.empty()), {});
   });
 
   test('reads every leaf, with retention as a duration', () => {
@@ -100,7 +103,7 @@ describe('readDeadLetterQueueOptionsFromConfig', () => {
         },
       },
     });
-    expect(readDeadLetterQueueOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readDeadLetterQueueOptionsFromConfig(config), {
       store: 'memory',
       maxEntries: 7,
       retentionMs: 2_000,
@@ -116,7 +119,7 @@ describe('readDeadLetterQueueOptionsFromConfig', () => {
     const config = Config.fromObject({
       'actor-ts': { 'dead-letters': { 'persistence-id': '' } },
     });
-    expect(readDeadLetterQueueOptionsFromConfig(config)).toEqual({});
+    expectExactOptions(readDeadLetterQueueOptionsFromConfig(config), {});
   });
 });
 

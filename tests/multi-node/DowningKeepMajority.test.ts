@@ -38,6 +38,13 @@ describe('KeepMajority — wired into cluster', () => {
       roles: ['a', 'b', 'c', 'd', 'e'],
       failureDetector: TIGHT_FD,
       gossipIntervalMs: 80,
+      // A window short enough for a test and long enough for its own
+      // detections.  The production default is 20 s (#839) — the view has to
+      // stop moving before a strategy is asked anything, or a partition
+      // detected one peer at a time is resolved as a run of majorities.  Here
+      // the two detections land within a heartbeat of each other, so 1 s is
+      // several orders of margin and still inside the budgets below.
+      stableAfterMs: 1_000,
       // Each role gets its own KeepMajority instance.  The strategy
       // is stateless so a single shared one would work too, but
       // factoring this way keeps consistency with stateful strategies

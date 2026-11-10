@@ -9,11 +9,14 @@ import {
   Behaviors,
   typedActor,
   type Behavior,
+  type WithStashBehavior,
 } from '../../../src/typed/index.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
+import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
 import { Directive, OneForOneStrategy } from '../../../src/Supervision.js';
-import { DeadLetter, Terminated } from '../../../src/SystemMessages.js';
+import { ActorStopped, DeadLetter, Terminated } from '../../../src/SystemMessages.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
 import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
@@ -311,6 +314,327 @@ describe('Behaviors.withStash', () => {
     // One slot free, so `p2` cost the newest queued message rather than being
     // smuggled in past the bound.
     expect(seen).toEqual(['p1', 'p2', 'x1', 'x2']);
+    await sys.terminate();
+  });
+});
+
+/**
+ * `withStash` took its capacity on trust, so a value that no comparison can
+ * ever satisfy silently removed the bound the JSDoc promises (#795).  `NaN`
+ * and `Infinity` are the ones that matter: `buffer.length >= capacity` is
+ * false forever for both, so the buffer grows without limit *and* `isFull`
+ * keeps answering `false` — no throw, no diagnostic, no ceiling.  Zero and
+ * negatives fail the other way, leaving `stash()` throwing on its first call.
+ *
+ * These need no spawn, unlike every other stash test in this file: the guard
+ * runs while the behavior is still a value, which is the point of putting it
+ * in the combinator rather than only in the buffer.
+ */
+/**
+ * Records the path of every actor the system reports as stopped.
+ *
+ * A cell that fails its own initialization publishes no `ActorRestarted` — that
+ * event is on the success path — so `ActorStopped` is the only positive signal
+ * that a poisoned actor has finished failing rather than still being retried.
+ */
+class StoppedListener extends Actor<ActorStopped> {
+  constructor(private readonly paths: string[], private readonly ready: { value: boolean }) { super(); }
+  override preStart(): void {
+    this.system.eventStream.subscribe(this.self, ActorStopped);
+    this.ready.value = true;
+  }
+  override onReceive(event: ActorStopped): void { this.paths.push(event.actor.path.toString()); }
+}
+
+describe('Behaviors.withStash — capacity validation', () => {
+  const innerBehavior = (): Behavior<string> =>
+    Behaviors.receiveMessage(() => Behaviors.same);
+
+  /** The two clauses the guard closes with, one per half of its domain. */
+  const NEVER_COMPARES_TRUE =
+    ' — a stash whose bound never compares true is not bounded at all';
+  const PAST_THE_ARRAY_CEILING =
+    ' — a bound the backing array can never reach is not a bound at all';
+
+  /**
+   * `[label, capacity, rendered, tail]`.
+   *
+   * The third column is how the diagnostic has to spell the value back.  It is
+   * a column rather than `String(capacity)` because two of the rows are
+   * exactly the ones `String` renders wrongly, and a test that builds its
+   * expectation the same way the code does cannot see that: `'10'` came back
+   * as `got 10`, telling a JavaScript caller their `10` was rejected for not
+   * being an integer, and `[]` came back as `got ` — an empty diagnostic
+   * naming nothing at all.  Both are the untyped-JavaScript arrival the
+   * guard's own comment says the `Number.isInteger` check is there to catch,
+   * so the message that reports it has to survive the same input.
+   *
+   * The fourth column is which half of the domain refused the value, and it is
+   * asserted rather than shared because the two halves fail for opposite
+   * reasons.  `NaN` defeats the bound by comparing false; `Number.MAX_VALUE`
+   * satisfies `Number.isInteger` and defeats it by naming a ceiling no array
+   * can hold.  A message that told the second caller their value "never
+   * compares true" would be the same class of defect as the `got 10` above.
+   */
+  const rejected: readonly (readonly [string, number, string, string])[] = [
+    ['NaN', Number.NaN, 'NaN', NEVER_COMPARES_TRUE],
+    ['Infinity', Number.POSITIVE_INFINITY, 'Infinity', NEVER_COMPARES_TRUE],
+    ['zero', 0, '0', NEVER_COMPARES_TRUE],
+    ['a negative', -1, '-1', NEVER_COMPARES_TRUE],
+    ['a fractional', 2.5, '2.5', NEVER_COMPARES_TRUE],
+    ['a string', '10' as unknown as number, '"10"', NEVER_COMPARES_TRUE],
+    ['an empty array', [] as unknown as number, '[]', NEVER_COMPARES_TRUE],
+    // #1509: an integer larger than the backing array can index. The issue's
+    // headline symptom was measured on the first of these — `withStash`
+    // admitted `Number.MAX_VALUE`, and 50 000 `stash()` calls later the buffer
+    // reported `size=50000 isFull=false`, which is the unbounded stash the
+    // guard above exists to refuse, reached through the half it did not cover.
+    ['Number.MAX_VALUE', Number.MAX_VALUE, '1.7976931348623157e+308', PAST_THE_ARRAY_CEILING],
+    ['Number.MAX_SAFE_INTEGER', Number.MAX_SAFE_INTEGER, '9007199254740991', PAST_THE_ARRAY_CEILING],
+    ['one past the array ceiling', 2 ** 32, '4294967296', PAST_THE_ARRAY_CEILING],
+  ];
+
+  for (const [label, capacity, rendered, tail] of rejected) {
+    test(`rejects ${label} capacity with an OptionsError`, () => {
+      expect(() => Behaviors.withStash<string>(capacity, innerBehavior)).toThrow(OptionsError);
+      // The field and the offending value travel on the error, so a caller
+      // catching it can name the argument without parsing the message.
+      try {
+        Behaviors.withStash<string>(capacity, innerBehavior);
+        throw new Error('unreachable — withStash should have thrown');
+      } catch (e) {
+        const error = e as OptionsError;
+        expect(error.name).toBe('OptionsError');
+        expect(error.field).toBe('capacity');
+        expect(Object.is(error.value, capacity)).toBe(true);
+        // Attribution.  `assertStashCapacity` takes its `origin` from the call
+        // site precisely so the two routes into it cannot claim each other's
+        // — this is the combinator's, and the buffer's constructor answers
+        // `WithStashBehavior` for the same value (see the bypass test below).
+        // Untested, the argument is free to be swapped for the other string
+        // and every assertion above still holds.
+        expect(error.options).toBe('Behaviors.withStash');
+        // The message repeats all three facts, because it is the only one of
+        // the two channels that reaches a log — the structured fields do not
+        // survive `ActorInitializationError`, which carries a string.
+        expect(error.message.startsWith('Behaviors.withStash: ')).toBe(true);
+        expect(error.message).toContain(`(got ${rendered})`);
+        expect(error.message.endsWith(tail)).toBe(true);
+      }
+    });
+  }
+
+  test('accepts an integer capacity >= 1 and carries it onto the node', () => {
+    const behavior = Behaviors.withStash<string>(1, innerBehavior);
+    expect(behavior.kind).toBe('with-stash');
+    expect((behavior as WithStashBehavior<string>).capacity).toBe(1);
+  });
+
+  test('accepts the array ceiling itself, so the bound cannot creep downwards', () => {
+    // The upper bound is `2 ** 32 - 1` because that is the last index a
+    // JavaScript array has, not because anyone would configure it — and a
+    // closed interval has to be closed at both ends or the next change is free
+    // to pick a rounder number that refuses a capacity this one accepted.
+    // Building the node allocates nothing, so this costs what the row above
+    // costs.
+    const behavior = Behaviors.withStash<string>(2 ** 32 - 1, innerBehavior);
+    expect((behavior as WithStashBehavior<string>).capacity).toBe(4_294_967_295);
+  });
+
+  /**
+   * Defence in depth.  `WithStashBehavior` is exported from the package, so a
+   * caller can write the node as a literal and hand it to `spawnTyped`
+   * without the combinator's guard ever running — which is exactly the route
+   * that would reinstate the unbounded buffer.  `StashBufferImplementation`
+   * re-checks for that reason.
+   *
+   * Asserted on the log rather than on an absence: the rejection happens
+   * inside `preStart`, so `ActorCell.onCreate` turns it into an
+   * `ActorInitializationError` and records one `Actor initialization failed`
+   * line.  Waiting for that line is a positive signal; waiting for "the
+   * handler never ran" would pass on a tree with no guard at all.
+   */
+  test('re-checks a hand-built with-stash node that never went through the combinator', async () => {
+    const lines: string[] = [];
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new JsonLogger(LogLevel.Error, '', {}, { write: (line) => { lines.push(line); } }));
+    const sys = ActorSystem.create('typed-stash-bypass', sysOptions);
+
+    const factoryCalls: string[] = [];
+    const handled: string[] = [];
+    const handWritten: WithStashBehavior<string> = {
+      kind: 'with-stash',
+      capacity: Number.NaN,
+      factory: (): Behavior<string> => {
+        factoryCalls.push('factory');
+        return Behaviors.receiveMessage((message) => {
+          handled.push(message);
+          return Behaviors.same;
+        });
+      },
+    };
+
+    const ref = sys.spawnTypedAnonymous(handWritten);
+    ref.tell('would-have-been-stashed');
+
+    const initFailures = (): string[] =>
+      lines.filter((line) => line.includes('capacity must be an integer >= 1'));
+    await awaitCondition(
+      () => initFailures().length >= 1,
+      { timeoutMs: 3_000, label: 'the hand-built with-stash node failed actor initialization' },
+    );
+    // This route's own attribution, and the offending value with it.  An
+    // `ActorInitializationError` carries a string, so the `OptionsError`'s
+    // structured `options` / `value` fields never reach the operator — this
+    // line is the whole diagnostic, and `WithStashBehavior` is what tells them
+    // to look at a hand-written node rather than at a `withStash(…)` call they
+    // will not find.
+    expect(initFailures()[0]).toContain(
+      'WithStashBehavior: capacity must be an integer >= 1 (got NaN)',
+    );
+    expect(initFailures()[0]).not.toContain('Behaviors.withStash');
+    // The buffer is built before the inner behavior is, so a rejected capacity
+    // means the user's factory never ran and no message was ever accepted.
+    expect(factoryCalls.length).toBe(0);
+    expect(handled).toEqual([]);
+
+    await sys.terminate();
+  });
+
+  /**
+   * The positive half of the same route (#1508).
+   *
+   * The block above establishes that a hand-written node is re-checked, and
+   * that is all it establishes: every valid-capacity stash test in this file
+   * reaches the buffer through `Behaviors.withStash`, so the literal route was
+   * exercised on its rejecting path only.  Read together they announce
+   * coverage of a route they cover half of — a guard that rejected a perfectly
+   * good literal would be invisible here, and `WithStashBehavior` is exported
+   * from the package precisely so that a caller may write one.
+   *
+   * So: the capacity the literal names is the capacity the buffer enforces,
+   * the inner factory runs with a real buffer, and `unstashAll` replays what
+   * it parked.  All four messages are told in one tick, so they are queued
+   * before the first turn runs and the order below is fixed rather than raced.
+   */
+  test('a hand-built with-stash node with a valid capacity is honoured end to end', async () => {
+    const sys = newSys('typed-stash-bypass-valid');
+
+    const factoryCalls: string[] = [];
+    const sizesAfterStash: number[] = [];
+    const overflows: unknown[] = [];
+    const replayed: string[] = [];
+    const handWritten: WithStashBehavior<string> = {
+      kind: 'with-stash',
+      capacity: 2,
+      factory: (stash): Behavior<string> => {
+        factoryCalls.push('factory');
+        const ready: Behavior<string> = Behaviors.receiveMessage((message) => {
+          replayed.push(message);
+          return Behaviors.same;
+        });
+        return Behaviors.receiveMessage<string>((message) => {
+          if (message === 'replay') {
+            stash.unstashAll();
+            return ready;
+          }
+          try {
+            stash.stash(message);
+            sizesAfterStash.push(stash.size);
+          } catch (e) {
+            overflows.push(e);
+          }
+          return Behaviors.same;
+        });
+      },
+    };
+
+    const ref = sys.spawnTypedAnonymous(handWritten);
+    ref.tell('a');
+    ref.tell('b');
+    ref.tell('c');
+    ref.tell('replay');
+
+    await awaitCondition(
+      () => replayed.length === 2,
+      { timeoutMs: 3_000, label: 'the literal-node buffer replayed both parked messages' },
+    );
+    expect(factoryCalls).toEqual(['factory']);
+    // Two admitted, then the bound — the capacity on the literal and nothing
+    // else is what decides where the third message goes.
+    expect(sizesAfterStash).toEqual([1, 2]);
+    expect(overflows.length).toBe(1);
+    expect((overflows[0] as Error).name).toBe('StashOverflowError');
+    expect(replayed).toEqual(['a', 'b']);
+
+    await sys.terminate();
+  });
+
+  /**
+   * The other half of "loud and terminal": the rejection has to *end*
+   * somewhere.
+   *
+   * A throw from `preStart` reaches the parent as an `ActorInitializationError`
+   * and the supervisor's decider answers it like any other failure — so under
+   * `Directive.Restart` the cell is recreated, and `Actor.postRestart`'s
+   * default is `preStart()`, which walks straight back into this constructor.
+   * What stops it is the parent's **restart budget**, and nothing else: the
+   * retries are bounded by `maxRetries`, then the child is stopped for good.
+   *
+   * So the assertion is an upper bound plus a terminal state, deliberately not
+   * an exact count — a change that stopped retrying an initialization failure
+   * at all would be an improvement, and must not have to edit this test to
+   * land.  What must never come back is the unbounded case.
+   *
+   * Only one `Actor initialization failed` line is logged across all of it,
+   * because the recreate path's own catch (`ActorCell.completeRecreate`) fails
+   * to the parent without logging.  Asserted here so that the count is
+   * something a reader can trust rather than infer — it is exactly the signal
+   * that made this loop look, on a first measurement, like no loop at all.
+   */
+  test('the rejection is terminal — retries are bounded by the restart budget', async () => {
+    const lines: string[] = [];
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new JsonLogger(LogLevel.Error, '', {}, { write: (line) => { lines.push(line); } }));
+    const sys = ActorSystem.create('typed-stash-bypass-budget', sysOptions);
+
+    const stoppedPaths: string[] = [];
+    const ready = { value: false };
+    sys.spawn(() => new StoppedListener(stoppedPaths, ready), 'stopped-listener');
+    await awaitCondition(() => ready.value, { label: 'the ActorStopped listener subscribed' });
+
+    const innerFactoryCalls: string[] = [];
+    const handWritten: WithStashBehavior<string> = {
+      kind: 'with-stash',
+      capacity: Number.NaN,
+      factory: (): Behavior<string> => {
+        innerFactoryCalls.push('factory');
+        return Behaviors.receiveMessage(() => Behaviors.same);
+      },
+    };
+
+    // Counted at the blueprint, which is the only place a restart is visible
+    // from outside: `ActorRestarted` is published on the success path, so a
+    // restart that fails again publishes nothing at all.
+    let constructions = 0;
+    const build = typedActor<string>(handWritten);
+    const counted = (): Actor<string> => { constructions++; return build(); };
+
+    const maxRetries = 2;
+    const spawnOptions = ActorOptions.create<string>()
+      .withSupervisorStrategy(new OneForOneStrategy(() => Directive.Restart, { maxRetries }));
+    const ref = sys.spawnAnonymous(counted, spawnOptions);
+    ref.tell('would-have-been-stashed');
+
+    await awaitCondition(
+      () => stoppedPaths.includes(ref.path.toString()),
+      { timeoutMs: 3_000, label: 'the actor with the poisoned capacity was stopped for good' },
+    );
+    // One initial construction plus at most the budget's worth of restarts.
+    expect(constructions).toBeLessThanOrEqual(maxRetries + 2);
+    expect(lines.filter((line) => line.includes('Actor initialization failed'))).toHaveLength(1);
+    expect(innerFactoryCalls).toEqual([]);
+
     await sys.terminate();
   });
 });
@@ -970,6 +1294,38 @@ describe('Behaviors.unhandled', () => {
     ref.tell('no');
     const dl = await probe.receiveOne(500) as { message: unknown };
     expect(dl.message).toBe('no');
+    await kit.system.terminate();
+  });
+
+  test('and are counted, which routing to dead letters alone never did (#1178)', async () => {
+    // `deadLetters.tell(...)` moves `actor_dead_letters_total` only from
+    // inside `DeadLetterQueue._capture`, which returns immediately while the
+    // store is `off` — and `off` is the shipped default.  So until the typed
+    // path shared `recordUnhandled` with `Actor.unhandled`, a behavior
+    // answering `unhandled` was invisible to metrics on every system nobody
+    // had configured, which is most of them.
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create('typed-unhandled-count', kitOptions);
+    const registry = kit.system.extension(MetricsExtensionId).enable();
+    const unhandledCount = (): number => registry.collect()
+      .filter((s) => s.name === 'actor_unhandled_total' && s.labels['class'] === 'TypedActor')
+      .reduce((total, s) => total + s.value, 0);
+
+    const behavior = Behaviors.receiveMessage<string>((m) => m === 'yes' ? Behaviors.same : Behaviors.unhandled);
+    const ref = kit.system.spawnTypedAnonymous(behavior);
+    ref.tell('yes');
+    ref.tell('no');
+
+    await awaitCondition(() => unhandledCount() === 1, {
+      timeoutMs: 4_000,
+      label: 'the declined message was counted once',
+    });
+    // The handled one is not counted — the sentinel is the statement, not the
+    // delivery.
+    expect(unhandledCount()).toBe(1);
+    expect(registry.collect().some((s) => s.name === 'actor_dead_letters_total')).toBe(false);
     await kit.system.terminate();
   });
 });

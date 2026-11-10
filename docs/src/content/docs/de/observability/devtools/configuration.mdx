@@ -1,6 +1,6 @@
 ---
 title: Konfiguration
-description: Jeder aufgelöste HOCON-Key, sein effektiver Wert und die Schicht, die ihn gesetzt hat — der eingebaute Default, application.conf oder ein Code-Override.
+description: Jeder aufgelöste HOCON-Key, sein effektiver Wert und die Schicht, die ihn gesetzt hat — der eingebaute Default, die reference.conf des Projekts, application.conf, ihr aktives Profil, die Secrets-Datei oder ein Code-Override — und die Umgebungsvariablen dahinter.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -14,11 +14,11 @@ es die Schicht zusätzlich zum Wert.
 | --- | --- |
 | **key** | Vollständiger Punktpfad, z. B. `actor-ts.cluster.seed-nodes` |
 | **value** | Der effektive Wert nach dem Merge |
-| **from** | Welche Schicht gewonnen hat: `reference.conf`, `application.conf` oder `code` |
+| **from** | Welche Schicht gewonnen hat: `reference.conf (actor-ts)`, `reference.conf`, `application.conf`, `profile`, `secrets.conf` oder `code` |
 
 Ein Hover auf die Zeile zeigt die ganze Geschichte: die Schicht, ob sie
-eine tiefere verdrängt hat, und ob der Wert für die Leitung gekürzt
-wurde.
+eine tiefere verdrängt hat, aus welchen Umgebungsvariablen der Wert stammt
+und ob er für die Leitung gekürzt wurde.
 
 **Changed from defaults only** blendet alles aus, was noch auf seinem
 eingebauten Wert steht — üblicherweise alles bis auf eine Handvoll Keys.
@@ -26,19 +26,40 @@ Bleibt die Tabelle dann leer, sagt das Panel es: dass nichts die Defaults
 überschreibt, ist eine Antwort für sich — und eine andere als „kein Key
 passt zu diesem Filter".
 
-## Die drei Schichten
+## Die sechs Schichten
 
 Präzedenz, höchste zuerst:
 
 1. **`code`** — was du als `ActorSystemOptions.config` übergeben hast.
-2. **`application.conf`** — aufgelöst über `configFile`, dann
+2. **`secrets.conf`** — die [Secrets-Datei](/de/reference/configuration/#secrets-datei),
+   über `withSecretsFile`, dann `ACTOR_TS_SECRETS_CONF`, dann
+   `./secrets.conf`, samt ihrem aktiven Profil.  Jeder Wert, den sie gesetzt
+   hat, kommt zurückgehalten an.
+3. **`profile`** — der Block `profiles.<name>` der `application.conf` für
+   das aktive [Profil](/de/reference/configuration/#profile), gewählt über
+   `withProfile`, dann `ACTOR_TS_PROFILE`.
+4. **`application.conf`** — aufgelöst über `configFile`, dann
    `ACTOR_TS_CONFIG`, dann `./application.conf`.
-3. **`reference.conf`** — mit dem Paket ausgeliefert.
+5. **`reference.conf`** — die
+   [eigene des Projekts](/de/reference/configuration/#die-referenceconf-des-projekts),
+   über `withReferenceConfigFile`, dann `ACTOR_TS_REFERENCE_CONFIG`, dann
+   `./reference.conf`, samt ihrem aktiven Profil.
+6. **`reference.conf (actor-ts)`** — mit dem Paket ausgeliefert.
+
+Der Loader führt acht Schichten zusammen, das Panel nennt sechs: ein Key,
+den das aktive Profil der Secrets-Datei gesetzt hat, erscheint als
+`secrets.conf`, denn das Wichtige an ihm ist, dass er geheim ist, und einer
+aus dem Profil der `reference.conf` des Projekts als `reference.conf`.
+**Changed from defaults only** behandelt alle fünf Schichten über
+`reference.conf (actor-ts)` als Änderungen.
 
 Das Panel nennt, woher `application.conf` gelesen wurde — oder dass keine
 gefunden wurde. Diese Unterscheidung zählt mehr, als sie aussieht: *meine
 Datei wird ignoriert* und *meine Datei sagt etwas anderes* sind
-verschiedene Probleme, und der Pfad ist es, was sie trennt.
+verschiedene Probleme, und der Pfad ist es, was sie trennt.  Ist ein
+Profil aktiv, nennt es auch das, und ebenso die Secrets-Datei, die
+`reference.conf` des Projekts und die `.env`-Datei, deren Variablen
+Substitutionen beantwortet haben, wenn eine gelesen wurde.
 
 <Aside type="note" title="Code-Optionen sind kein HOCON">
 Optionen pro Konsument — `MqttOptions.create().withQos(1)` und jeder
@@ -51,11 +72,56 @@ HOCON-Auflösung — und die exakt.
 
 ## Geheimnisse
 
-Ein Wert, dessen **Key** ein Geheimnis benennt — alles, was auf `pass`,
-`secret`, `token`, `key`, `credential` oder `auth` passt — wird durch
-`<redacted>` ersetzt, bevor er den Prozess verlässt. Nach Key statt nach
-Wert, denn ein Passwort, das zufällig gewöhnlich aussieht, ist immer noch
-ein Passwort, und der Key ist es, der es benennt.
+Ein Wert, dessen **Key** ein Geheimnis benennt — wenn irgendein ganzes Wort
+davon oder eines Keys darüber `password`, `passphrase`, `passwd`, `pass`,
+`secret`, `token`, `key`, `credential`, `auth` oder `authorization` lautet,
+egal an welcher Stelle im Namen das Wort steht — wird durch `<redacted>`
+ersetzt, bevor er den Prozess verlässt. Nach Key statt nach Wert, denn ein
+Passwort, das zufällig gewöhnlich aussieht, ist immer noch ein Passwort, und
+der Key ist es, der es benennt. Ein Name wird an jedem Zeichen, das weder
+Buchstabe noch Ziffer ist, an jedem camelCase-Höcker und vor einer Ziffer
+nach einem Buchstaben in Wörter zerlegt, und diese Wörter zählen auch an ein
+anderes geklebt (`pgpassword`, `clientsecret`) — bis auf `key`, `pass` und
+`auth`, von denen `apikey`, `accesskey`, `secretkey` und `privatekey`
+namentlich gelesen werden, ebenso `pwd` neben einem anderen Wort des
+Key-Pfads, `mysql-pwd` oder `db.pwd`.
+`api-key`, `password2`, `auth-header` und eine eigene `token-bucket-size`
+werden also zurückgehalten,
+`passivation-idle` und `keyspace` dagegen gezeigt; die Keys, die
+`reference.conf` mitbringt und die nur wie Zugangsdaten klingen, etwa
+`cache.redis.key-prefix`, sind namentlich ausgenommen, und ein Boolean wird
+nie zurückgehalten, wie er auch heißt.  Die Felder eines
+Objekts in einer Liste werden genauso gelesen, denn eine Liste ist ein
+einziger Key: in `upstreams = [ { host = "db-1", password = "…" } ]`
+kommt nur `password` zurückgehalten an.
+
+Ein Wert, den eine Umgebungsvariable geliefert hat, wird zurückgehalten, wenn
+ihr Name nach derselben Regel Zugangsdaten benennt, egal wie sein Key heißt:
+`my-app.dsn = ${DB_PASSWORD}`, ein Key, der darauf verweist, und eine
+Zeichenkette, die daraus gebaut ist, kommen alle zurückgehalten an.  Jeder
+Eintrag trägt die Namen der Variablen hinter seinem Wert, ob zurückgehalten
+oder nicht, und der Tooltip der Zeile zeigt sie.
+
+Ein Wert, den die Secrets-Datei gesetzt hat, wird zurückgehalten, egal wie
+sein Key heißt — auch wenn eine höhere Schicht den Key überschreibt.  Beides
+gilt in einem Worker eines `WorkerMesh`, dessen ganze Konfiguration als
+Code-Overrides ankommt.
+
+Eine URL ist das Einzige, was nach dem Wert maskiert wird, unter jedem Key:
+Die Userinfo jedes `scheme://user:password@host` in einem Wert — und in
+jedem Element einer Liste — wird durch `***` ersetzt, bevor der Wert für
+die Leitung gekürzt wird, damit eine Kürzung nie ein halbes Passwort
+zurücklässt. `redis://default:s3cret@redis.example:6379/0` kommt als
+`redis://***@redis.example:6379/0` an, mit Host, Port, Pfad und Query wie
+geschrieben. Die Userinfo reicht bis zum letzten `@` vor dem nächsten `://`,
+also wird ein Passwort mit einem rohen `/`, `?` oder `#` darin ganz maskiert,
+und ebenso alles vor einem `@` weiter hinten, in einem Pfad oder einer Query
+einer URL ohne Zugangsdaten. Was keine der vier sieht — die Key-Regel, die
+Variablen-Regel, die Secrets-Datei, die URL-Maske —, wird unverändert
+gezeigt: ein ausgeschriebenes nacktes Passwort unter einem Key, der keines
+benennt, außerhalb der Secrets-Datei; Zugangsdaten im Query-String
+(`?authToken=…`); die Form `Server=…;Password=…` von SQL Server; und die
+schemalose Server-Liste `user:password@host` von Memcached.
 
 Das ist bewusst ein grobes Werkzeug. Ein Konfigurationsbaum verrät auch
 geschwärzt eine Menge über ein Deployment — Hosts, Ports, Seed-Nodes,

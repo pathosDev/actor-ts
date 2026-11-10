@@ -57,8 +57,10 @@ type ParallelMultiNodeSpecOptionsType = {
   scenarioInitDataFor?: (role: string) => unknown;   // Per-Rolle-Daten für setup()
   addresses?:           Record<string, { host: string; port: number }>;
   failureDetector?:     Partial<FailureDetectorOptionsType>;
+  failureDetectorAutoDown?: boolean;              // Default ungesetzt = das ausgelieferte true
   gossipIntervalMs?:    number;
   awaitTimeoutMs?:      number;                   // Default 30_000 (Worker-Bootstrap ist langsamer)
+  controlRpcTimeoutMs?: number;                   // Default 5_000 (ein Control-RPC)
   logLevel?:            LogLevel;
   bootstrapModule?:     URL;                      // überschreibt den gebündelten Worker-Bootstrap
 };
@@ -71,8 +73,10 @@ type ParallelMultiNodeSpecOptionsType = {
 | `scenarioModule` | URL des Moduls, das jeder Worker importiert — es besitzt das actor-förmige Setup und die `commands`-Map, an die `runIn` dispatcht. |
 | `scenarioInitDataFor` | Per-Rolle-Daten, die an das `setup(context)` des Szenarios weitergereicht werden. |
 | `failureDetector` | Failure-Detector-Overrides. |
+| `failureDetectorAutoDown` | Ob der Failure Detector jeder Rolle einen Peer entfernt, den er für `down` erklärt. Ungesetzt bleibt es beim ausgelieferten `true`: Eine abgestürzte Rolle wird bei `down-after` entfernt, und genau das braucht ein Spec, der Crash-Failover prüft — dieser Spec hat keine Option für eine Downing-Strategie. `false` ist das Opt-out, unter dem eine abgestürzte Rolle als Mitglied auf `unreachable` bleibt und nichts sie je entfernt. |
 | `awaitTimeoutMs` | Default-`await*`-Timeout. Default 30 s — Worker-Bootstrap ist langsamer als in-process. |
-| `bootstrapModule` | Überschreibt den gebündelten Worker-Einstiegspunkt (fortgeschritten). |
+| `controlRpcTimeoutMs` | Wie lange ein einzelner Control-RPC (`getMembers`, `getLeader`, `leave`, `runIn`) unbeantwortet bleiben darf, bevor er unter Nennung der verstummten Rolle fehlschlägt. Default 5 s — bewusst viel kürzer als `awaitTimeoutMs`: Ein RPC, der nicht zurückkommt, heißt, dass der Worker feststeckt, und eine kurze Frist zeigt das, statt den Test hängen zu lassen. Beide werden mit dem Zeitfaktor skaliert. |
+| `bootstrapModule` | Überschreibt den gebündelten Worker-Einstiegspunkt (fortgeschritten) — übernimmt damit den Control-Channel, siehe den Vertrag weiter unten. Es gilt dieselbe Schreibweisen-Regel wie für jeden anderen Worker-Einstiegspunkt im Framework: eine absolute `file:`-URL ohne Host, die eine Datei benennt — genau das erzeugt `new URL('./my-bootstrap.ts', import.meta.url)`. Ein `data:`-, `blob:`- oder entfernter Specifier, eine `file:`-URL mit Host oder mit einem Pfad, der mit `//` beginnt, oder ein Verzeichnis wird beim Konstruieren der Spec mit einem `OptionsError` abgelehnt. Ein schema-relatives `file:worker.js` dagegen nicht — und kann es auch nicht: Das Feld ist als `URL` typisiert, und `new URL('file:worker.js')` ist bereits `file:///worker.js`, bevor die Spec es sieht; diese Schreibweise wird nur dort abgelehnt, wo die Option auch eine Zeichenkette annimmt. |
 
 ## Das Szenario-Modul
 
@@ -110,6 +114,47 @@ Sharding-Regionen, …). Die Harness tauscht mit ihm nur
 JSON-serialisierbare Kommando/Antwort-Paare aus — Closures können
 die Worker-Grenze nicht überqueren, weshalb Szenario-Code in einer
 eigenen, per URL geladenen Datei lebt statt inline im Test.
+
+## Der Vertrag für einen eigenen Bootstrap
+
+Ein Szenario-Modul setzt auf dem gebündelten Bootstrap auf.
+`bootstrapModule` ersetzt diesen Bootstrap vollständig — und übernimmt damit
+auch den **Control-Channel**: das `postMessage`-Protokoll, über das die
+Harness jeden Worker ansteuert, auf demselben Socket wie der
+Cluster-Handshake. Es gibt vier Requests, und jede Antwort trägt den Namen
+des Requests, den sie beantwortet, mit angehängtem `-response`:
+
+```ts
+type ControlRequestKind =
+  | 'mns-test.query-members'   // → 'mns-test.query-members-response'  { reqId, members }
+  | 'mns-test.query-leader'    // → 'mns-test.query-leader-response'   { reqId, leader }
+  | 'mns-test.leave'           // → 'mns-test.leave-response'          { reqId, error? }
+  | 'mns-test.run-command';    // → 'mns-test.run-command-response'    { reqId, result, error? }
+```
+
+Drei Regeln entscheiden, ob eine Antwort angenommen wird, und alle drei
+werden geprüft:
+
+- **Die `reqId` zurückspiegeln.** Jeder Request trägt eine; die Antwort gibt
+  dieselbe Zahl zurück. Daran schlüsselt die Harness ihre offenen Aufrufe.
+- **Den passenden Kind verwenden.** Die Harness bildet den Namen, den sie
+  akzeptiert, indem sie `-response` an den gesendeten Kind anhängt — eine
+  wohlgeformte Payload unter einem anderen Namen ist keine Antwort.
+- **Aus dem Worker antworten, der gefragt wurde.** Eine Antwort auf die
+  Frage an Rolle `a`, gepostet vom Worker der Rolle `b`, wird abgelehnt,
+  selbst wenn Kind und `reqId` beide passen.
+
+Eine Antwort, die eine davon verletzt, wird **fallen gelassen**, nicht
+zurückgewiesen: Die Harness schreibt eine `console.warn`, die den verworfenen
+Frame und den Aufruf benennt, zu dem diese `reqId` wirklich gehört, lässt den
+Aufruf offen — falls die echte Antwort noch kommt — und lässt ihn 5 s später
+mit einer Meldung scheitern, die Rolle und unbeantworteten Request nennt.
+
+Nur die erste Regel galt schon immer. Vor dem Korrelations-Fix wurde eine
+Antwort allein über die `reqId` zugeordnet, sodass ein Bootstrap, der unter
+einem anderen Namen oder aus dem falschen Worker antwortete, zufällig
+funktionierte — der Grund, warum dieser Vertrag hier steht statt nur
+implizit zu gelten.
 
 ## Die Worker ansteuern
 
@@ -209,17 +254,18 @@ Schweigen statt einer Diagnose.
   laufende Specs hinweg eindeutig.
 </Aside>
 
-<Aside type="caution" title="Diese Suites laufen nicht in CI">
-  Bun kann auf GitHubs Hosted Runnern nach dem ersten Worker-Test
-  keine funktionsfähigen Worker-Threads mehr starten — sie spawnen,
-  machen den Handshake und laufen dann nie.  `ACTOR_TS_SKIP_FLAKY_MNS=1`
-  überspringt dort deshalb jede `ParallelMultiNodeSpec`-Suite, und ein
-  grüner CI-Check sagt über sie nichts aus.  Bei einem lokalen
-  `bun test` und in Docker laufen sie, und ein Nightly-Job führt sie
-  mit abgeschaltetem Flag erneut aus.
+<Aside type="note" title="Diese Suites laufen wieder in CI">
+  Von Bun hieß es, es könne auf GitHubs Hosted Runnern nach dem ersten
+  Worker-Test keine funktionsfähigen Worker-Threads mehr starten — sie
+  spawnen, machen den Handshake und laufen dann nie —, weshalb dort
+  jede `ParallelMultiNodeSpec`-Suite von `ACTOR_TS_SKIP_FLAKY_MNS=1`
+  übersprungen wurde.
 
-  Das heißt: **Lass deinen Worker-Thread-Test lokal laufen, bevor du
-  ihm traust.**  Das Ausstiegskriterium für die Quarantäne steht in
+  An dieser Behauptung gemessen hielt sie nicht: ein Nightly-Job führte
+  genau diese Suites ohne das Flag aus, dreimal pro Nacht, 21 Nächte in
+  Folge, ohne einen einzigen Hänger.  Sie laufen jetzt in `test.yml` wie
+  jede andere Suite, und das Nightly bleibt als Regressions-Guard.  Die
+  Geschichte dazu steht in
   [Test-Flakes diagnostizieren](/de/testing/diagnosing-flakes/).
 </Aside>
 

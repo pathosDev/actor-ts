@@ -22,7 +22,17 @@
  * and takes `Mailbox.enqueueSignal`.  Each test below pins one policy that
  * destroyed it before, plus the guard for the one case that can still refuse.
  *
- * Refs #717, #729, #1148.
+ * **Two kinds of hub queue meet that door since #1431.**  A hub spawned with
+ * no mailbox of its own — the default path, which `withMailboxCapacity` takes
+ * below — gets a `ControlAwareMailbox` with the same bound, and the accept is
+ * one of its control messages: the class no bound counts or sheds, handed over
+ * ahead of the queued app traffic.  A hub spawned with `withMailbox` keeps the
+ * queue it was given, and there the accept depends on that queue's own
+ * `enqueueSignal`: `BoundedMailbox`'s exempt admission in the `drop-new` case,
+ * `PriorityMailbox`'s in the priority case, which is why those two build their
+ * mailbox themselves.
+ *
+ * Refs #717, #729, #1148, #1431.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
@@ -30,6 +40,7 @@ import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { ActorOptions } from '../../../../src/ActorOptions.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import { Mailbox, type Envelope } from '../../../../src/internal/Mailbox.js';
+import { BoundedMailbox } from '../../../../src/mailbox/BoundedMailbox.js';
 import { PriorityMailbox } from '../../../../src/mailbox/PriorityMailbox.js';
 import type { HttpRequest } from '../../../../src/http/Types.js';
 import { WebsocketServerActor } from '../../../../src/http/websocket/WebsocketServerActor.js';
@@ -59,9 +70,11 @@ type HubMessage = WebsocketServerMessage<Out, In, FillerCommand>;
  * run the unwind chains that hang off `setListeners`.)
  *
  * Deliberately *not* `rec.connections`-style bookkeeping through
- * `onClientConnected`: that arrives as a second, ordinary `tell` from the
- * child's `preStart` and a bounded hub may shed *that* one for unrelated
- * reasons (#986).  Asserting on it would conflate two defects.
+ * `onClientConnected`: that arrives as a second `tell` from the child's
+ * `preStart`, which a caller's own bounded mailbox may shed for unrelated
+ * reasons (#986).  A default hub classes it as control and cannot shed it
+ * (#1431), but asserting on it would make the tests on a caller's queue
+ * conflate two defects.
  */
 class ProbeSocket implements WebsocketSocketAdapter {
   readyState: 0 | 1 | 2 | 3 = 1;
@@ -216,9 +229,12 @@ async function expectConnectionActorSpawned(socket: ProbeSocket, label: string):
 
 describe('websocket-accept survives a bounded hub (#717)', () => {
   test("drop-new does not discard the accept arriving at a full hub", async () => {
-    const options = ActorOptions.create<HubMessage>()
-      .withMailboxCapacity(1)
-      .withMailboxOverflow('drop-new');
+    // A queue the caller built, so the accept depends on
+    // `BoundedMailbox.enqueueSignal` rather than on the control lane a default
+    // hub has (#1431) — this is the case that keeps that override bound.
+    const options = ActorOptions.create<HubMessage>().withMailbox(
+      () => new BoundedMailbox<HubMessage>({ capacity: 1, overflow: 'drop-new' }),
+    );
     const h = await harness('ws-accept-drop-new', options);
 
     // Queue depth 1 == capacity, so the hub is full and shedding.

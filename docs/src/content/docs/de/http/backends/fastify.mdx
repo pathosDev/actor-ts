@@ -33,10 +33,6 @@ await http.newServerAt('0.0.0.0', 8080)
 new FastifyBackend({
   logger:    false,           // Fastifys eingebauter Logger — aus lassen; nimm actor-ts-Log
   bodyLimit: 1_048_576,       // 1 MiB Request-Body-Cap
-  tls: {
-    cert: fs.readFileSync('./tls/cert.pem'),
-    key:  fs.readFileSync('./tls/key.pem'),
-  },
 });
 ```
 
@@ -44,6 +40,83 @@ new FastifyBackend({
 Angabe steht es auf **1 MiB** — demselben Cap, den auch das Express- und
 das Hono-Backend anwenden; welche Requests angenommen werden, hängt damit
 nicht mehr vom Backend ab. Ein eigener Wert gewinnt weiterhin.
+
+Das serverweite `actor-ts.http.server.max-content-length` setzt diesen Cap
+für alle Backends auf einmal, und Fastify nimmt ihn als `bodyLimit` — bei der
+Konstruktion, wie alles in dieser Bag.  Das vom Framework gebaute Backend wird
+damit gebaut.  Ein Backend, das du selbst baust, übernimmt ihn nur über
+`fastifyFactoryOptions(serverOptions)`, und eines, dessen `bodyLimit` von einem
+gesetzten Key abweicht — das eingebaute 1 MiB eines blanken
+`new FastifyBackend()` eingeschlossen —, wird bei `bind()` abgelehnt, mit dem
+Key in der Meldung.  `max-header-bytes` nimmt denselben Weg als
+`maxHeaderSize`.  Fastify gibt seiner Server-Factory die `https`-Bag, sobald TLS
+an ist, sonst die `http`-Bag; `fastifyFactoryOptions` legt die Grenze deshalb
+in die, die Fastify liest, und ein selbst gebautes Backend, dessen Server eine
+andere Grenze hält — oder keine, und genau darauf läuft eine Grenze in `http`
+bei einer TLS-Instanz hinaus —, wird ebenso abgelehnt:
+
+```ts
+import { FastifyBackend, fastifyFactoryOptions, HttpExtensionId, HttpServerOptions } from 'actor-ts/http';
+
+const serverOptions = HttpServerOptions.create()
+  .withMaxContentLength(8 * 1024 * 1024)
+  .withMaxHeaderBytes(32 * 1024);
+
+const backend = new FastifyBackend({
+  logger: false,
+  ...fastifyFactoryOptions(serverOptions),   // { bodyLimit, http: { maxHeaderSize } }
+});
+
+await system.extension(HttpExtensionId)
+  .newServerAt('0.0.0.0', 8080)
+  .useBackend(backend)
+  .withServerOptions(serverOptions)
+  .bind(routes);
+```
+
+Überlässt du das Backend dem Framework, braucht es nichts davon: es wird aus
+den aufgelösten Optionen gebaut, HOCON eingeschlossen.
+
+Die Timeouts und `max-connections` unter
+[`actor-ts.http.server`](/de/reference/configuration/) werden nach `listen()`
+auf `fastify.server` installiert und gelten hier deshalb unabhängig davon, ob
+das Framework dieses Backend gebaut hat oder du. Zwei von Fastifys eigenen
+Defaults weichen von denen aus `node:http` ab und sind es wert, gekannt zu
+werden: `keepAliveTimeout` steht auf **72 s** statt auf 5 s — absichtlich,
+damit der Server das Idle-Fenster eines Load Balancers überlebt — und
+`requestTimeout` auf **0**, also gar keine Schranke. Das Framework
+veröffentlicht jetzt `request-timeout = 300s`; auf diesem Backend ist das eine
+Empfangs-Deadline, wo vorher keine war. Setz sie in deiner Config zurück auf
+`0`, um das alte Verhalten herzustellen; `idle-timeout` liefert keinen Wert,
+Fastifys 72 s bleiben also unangetastet.
+
+Unter Deno, das dieses Backend nicht unterstützt, greifen die Header-Deadline
+und `max-connections` nie: sein `node:http`-Shim sendet kein Verbindungs-Event,
+das sie zählen könnten. `idle-timeout` und `request-timeout` greifen ab
+deno 2.7.13 wie unter Node; davor nimmt der Shim `keepAliveTimeout` und
+`requestTimeout` an, ohne eines davon anzuwenden. Gemessen auf deno 2.6.8 unter
+`idle-timeout = 600ms`: eine Keep-Alive-Verbindung war 3 s nach ihrer Antwort
+noch offen, wo deno 2.7.13, Node und Bun sie nach 1,6 s schlossen. Jede, die
+nicht greift, wird als nicht wirksam gemeldet, und `bind()` nennt die
+gesetzten in einer Warnung.
+
+Auf dem HTTP/2-Listener (`withHttp2()`) erreichen Fastifys 72 s eine untätige
+Session als Fastifys eigener Session-Timer, der die stille Zeit auf der
+Verbindung zählt: er schließt eine untätige Session **auf Node nach 72 s, auf
+Bun aber nach 144 s**, weil Bun ihn beim doppelten Wert feuern lässt, und auf
+Bun setzt ein PING-Frame ihn zurück — ein Client, der einmal pro Sekunde pingt,
+hält eine Session ohne jeden Request beliebig lange offen (nach 170 s noch
+offen, bun 1.4.2). Ein gesetzter `idle-timeout` ersetzt diesen Timer durch den
+von actor-ts, der eine Session schließt, die so lange keinen offenen Stream
+hatte — derselbe Wert auf beiden Runtimes, mit oder ohne PINGs —, und
+`request-timeout` gibt jedem HTTP/2-Stream eine eigene Empfangs-Deadline. Zwei
+Schranken gelten auf diesem Listener nur für ein Protokoll, und `bind()` warnt
+vor jeder, die du setzt: auf **Bun** begrenzen `idle-timeout` und
+`request-timeout` HTTP/2, aber keine Verbindung, die auf demselben Port HTTP/1.1
+aushandelt; auf **Node** begrenzt `max-header-bytes` die HTTP/1.1-Requests,
+aber nicht die Header-Liste eines HTTP/2-Streams, die nur Nodes eigene
+64-KiB-Grenze begrenzt. Die [Sicherheitsseite](/de/http/security/) hat die
+Zahlen.
 
 Die meisten Settings werden an Fastifys `FastifyServerOptions`
 durchgereicht.  Das Framework konfiguriert die Routen-
@@ -107,22 +180,64 @@ Siehe [Sicherheit](/de/http/security/).
 
 ## TLS
 
+Setze es dort, wo jedes Backend es nimmt, an den Server-Optionen
+(siehe [TLS und HTTP/2](/de/http/overview/#tls-und-http2)):
+
 ```ts
-new FastifyBackend({
-  tls: {
-    cert: fs.readFileSync('./tls/cert.pem'),
-    key:  fs.readFileSync('./tls/key.pem'),
-    // Für mTLS:
-    ca:                fs.readFileSync('./tls/ca.pem'),
-    requestCert:       true,
-    rejectUnauthorized: true,
-  },
+const serverOptions = HttpServerOptions.create()
+  .withTls({ cert: fs.readFileSync('./tls/cert.pem'), key: fs.readFileSync('./tls/key.pem') })
+  .withHttp2();
+
+await system.extension(HttpExtensionId)
+  .newServerAt('0.0.0.0', 8443)
+  .withServerOptions(serverOptions)
+  .bind(routes);
+```
+
+Fastify ist das eine Backend, das TLS und HTTP/2 als **Factory**-Optionen
+nimmt — `Fastify({ https, http2 })` — und nicht bei `listen()`.  Das vom
+Framework gebaute Backend wird damit konstruiert, weil `bind()` die
+Server-Optionen auflöst, bevor es das Backend konstruiert.  Ein selbst
+konstruiertes Backend, das du `useBackend(...)` übergibst, muss sie selbst
+tragen, und `fastifyFactoryOptions` macht aus denselben Server-Optionen
+die Factory-Form:
+
+```ts
+import { FastifyBackend, fastifyFactoryOptions } from 'actor-ts/http';
+
+const backend = new FastifyBackend({
+  logger: false,
+  ...fastifyFactoryOptions(serverOptions),   // { https: { cert, key, … }, http2 }
 });
 ```
 
-Standard-Fastify-TLS-Optionen.  Für die meisten Produktions-Setups
-**terminiert TLS am Load-Balancer** — die App spricht intern
-einfaches HTTP — aber In-App-TLS wird unterstützt, wenn nötig.
+Ein von Hand gebautes Backend ohne TLS, das dann `withTls(...)` bekommt,
+wird bei `bind()` **abgelehnt**, statt als reines HTTP unter einer
+Einstellung gebunden zu werden, die etwas anderes behauptet — ebenso eines
+mit TLS, aber ohne `http2: true`, das `withHttp2()` bekommt: Es würde
+HTTP/1.1 über TLS beantworten, wo die Einstellung HTTP/2 sagt.  Ebenso eines,
+dessen `https` Client-Zertifikate anders prüft als die Server-Optionen —
+ohne die Forderung `requestClientCert` gebaut, oder mit ihr, aber ohne
+dieselbe `ca`: Es würde so prüfen, wie es gebaut wurde, nicht so, wie die
+Einstellung es sagt.  (Frühere
+Fassungen dieser Seite zeigten `new FastifyBackend({ tls: … })`; `tls` ist
+keine Fastify-Option, wurde hineingespreadet und ignoriert — der
+beschriebene Server hat nie TLS terminiert.)
+
+Eine Forderung nach Client-Zertifikaten (`requestClientCert`) wird auf Node
+und Bun durchgesetzt, wo das Zertifikat gegen die konfigurierte `ca` geprüft
+wird.  Auf **Deno** wird sie bei `bind()` abgelehnt: Fastify bedient über das
+`node:https` von Deno, das `requestCert` annimmt und nichts davon durchsetzt —
+gemessen mit deno 2.6.8 beantwortete das vom Framework gebaute Backend einen
+Client, der gar kein Zertifikat vorzeigte.  Fastify ist das Standard-Backend,
+hier landet eine Forderung also, wenn nichts anderes konfiguriert ist;
+terminiere TLS vor dem Prozess, oder laufe auf Node oder Bun.  Die Regel, der
+jedes Backend folgt, steht unter
+[Client-Zertifikate](/de/operations/security/tls-everywhere/#client-zertifikate).
+
+Für die meisten Produktions-Setups **terminiert TLS weiterhin am
+Load-Balancer**, und die App spricht intern reines HTTP; In-App-TLS ist
+für den Einzelprozess- und den Entwicklungsfall.
 
 ## Zugriff auf die rohe Fastify-Instanz
 
@@ -141,10 +256,14 @@ backend.fastify.addHook('onRequest', authHook);
 Nutze das für **Plugins, die nicht über die DSL des Frameworks
 exponiert sind**:
 
-- JWT-/OAuth-Authentifizierung.
+- OAuth-/OpenID-Connect-Login-Flows.
 - Request-Validierung (`@fastify/swagger`).
-- CORS (`@fastify/cors`).
 - Komprimierung.
+
+JWT-Prüfung und CORS brauchen kein Plugin: Die Middleware
+[`JwtAuth`](/de/http/middleware/jwt/) und die Direktive
+[`cors()`](/de/http/middleware/cors/) gehören zum Framework und verhalten
+sich auf jedem Backend gleich.
 
 Die actor-ts-DSL behandelt Routing; Fastify-Plugins behandeln
 Querschnittsthemen.  Sie komponieren sauber.

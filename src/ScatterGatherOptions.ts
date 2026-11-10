@@ -15,17 +15,38 @@ import { OptionsValidator } from './util/OptionsValidator.js';
  * plus a bare `pool.ask(msg)` — the caller therefore saw its own
  * `AskTimeoutError` and never the router's diagnosis (#1088).
  *
- * The 500 ms is a margin, not a budget cut: the aggregation and reply
- * hop measured at ~18 ms, and a Windows timer quantum is 15.6 ms, which
- * Bun can fire a whole one early (#477).  Anything under ~4 980 ms wins
- * the race on an idle machine; 4 500 ms keeps 90 % of the budget and
- * still wins it on a loaded one.
+ * The 500 ms is a margin, not a budget cut: the aggregation and reply hop
+ * measured at ~18 ms.  It was originally sized with a Windows timer quantum
+ * (15.6 ms) added on top, because Bun 1.3 could fire a timer a whole quantum
+ * *early* (#477) — a defect Bun 1.4 has fixed, re-measured at 0 early fires in
+ * 240 samples (#1338).  **The value stays where it is**, because the quantum
+ * was the smaller half of it: what the margin mostly buys is the aggregation
+ * hop plus room for a loaded machine, and neither of those went away.
+ * Anything under ~4 980 ms wins the race on an idle machine; 4 500 ms keeps
+ * 90 % of the budget and still wins it on a loaded one.
  *
  * The ordering against `DEFAULT_ASK_TIMEOUT_MS` is the invariant, not the
  * literal — `Router.test.ts` asserts both that this is smaller and that the
  * gap is at least 100 ms.
  */
 export const DEFAULT_SCATTER_GATHER_TIMEOUT_MS = 4_500;
+
+/**
+ * The smallest ask deadline under which a router left on
+ * {@link DEFAULT_SCATTER_GATHER_TIMEOUT_MS} can still report (#863).
+ *
+ * The same margin the comment above spends its last paragraph on, given a name
+ * because it stopped being an argument about one literal the moment
+ * `actor-ts.actor.ask-timeout` made the other side of the comparison settable.
+ * `ActorSystem` warns when the configured ask timeout falls below this, and
+ * `Router.test.ts` asserts the shipped default clears it — two readers of one
+ * number instead of two copies of `4_500 + 100`.
+ *
+ * Derived rather than written out for the same reason: raising the scatter
+ * default without raising this would leave the warning quietly checking a
+ * threshold the router had already passed.
+ */
+export const MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATHER_MS = DEFAULT_SCATTER_GATHER_TIMEOUT_MS + 100;
 
 /**
  * Plain options-object shape accepted by

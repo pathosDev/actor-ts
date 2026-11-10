@@ -1,3 +1,9 @@
+import {
+  DEFAULT_OBJECT_STORAGE_COMPRESSION_ALGORITHM,
+  DEFAULT_OBJECT_STORAGE_ENCRYPTION_MODE,
+  OBJECT_STORAGE_DURABLE_STATE_LEAF,
+  OBJECT_STORAGE_DURABLE_STATE_NAMESPACE,
+} from '../Constants.js';
 import { JournalError } from '../JournalTypes.js';
 import { DEFAULT_MAX_DECOMPRESSED_BYTES, encodeBody, decodeBody } from '../object-storage/BodyCodec.js';
 import {
@@ -25,6 +31,7 @@ import {
   type DurableStateRecord,
   type DurableStateStore,
 } from '../DurableStateStore.js';
+import type { PersistenceOptionSupport } from '../PersistenceCapabilities.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { StorageLocality } from '../StorageLocality.js';
 import type { Serializer } from '../../serialization/Serializer.js';
@@ -36,8 +43,19 @@ import type { ObjectStorageDurableStateStoreOptions, ObjectStorageDurableStateSt
 /**
  * DurableState backed by any `ObjectStorageBackend`.  Each
  * `persistenceId` lives at the single key
- * `<prefix><persistenceId>/state.json` and is rewritten in place — there is no
- * sequence-padded history, and `revision` lives entirely in the body.
+ * `<prefix>state/<persistenceId>/state.json` and is rewritten in place —
+ * there is no sequence-padded history, and `revision` lives entirely in the
+ * body.
+ *
+ * The `state/` segment is a namespace this store owns, and it is what keeps
+ * the corpus disjoint from `ObjectStorageSnapshotStore`'s (#716).  The two
+ * are handed the same backend and the same `prefix` by
+ * `registerObjectStoragePlugins`, and before the split an entity persisted
+ * both ways put this record inside the snapshot store's own directory, where
+ * `'state.json'` collates after every zero-padded sequence key and was
+ * returned by `loadLatest` as the newest snapshot — a body with no
+ * `sequenceNr`, which recovery then refused.  See
+ * {@link OBJECT_STORAGE_DURABLE_STATE_NAMESPACE}.
  *
  * Strict CAS via ETag.  Every successful `load` and `upsert` caches the
  * server's ETag; the next `upsert(expectedRevision = N)` translates to:
@@ -65,6 +83,18 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
   /** Locality is the backend's property — a store wrapper adds none of its own (#1356). */
   get storageLocality(): StorageLocality | undefined { return this.backend.storageLocality; }
 
+  /**
+   * The one durable-state store that acts on all three fields, on both
+   * paths: `upsert` resolves them at :191-199 and `load` at :123-127.  Same
+   * reasoning as its snapshot twin — the body codec runs here, so the claim
+   * belongs to this class and not to the backend underneath (#960).
+   */
+  readonly persistenceOptionSupport: PersistenceOptionSupport = {
+    encryption: true,
+    compression: true,
+    integrity: true,
+  };
+
   /** Identity is the backend's too — bucket/directory = database (#1358). */
   async storageIdentity(): Promise<string> {
     if (this.backend.storageIdentity === undefined) {
@@ -78,6 +108,7 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
   private readonly encryption: EncryptionConfig | EncryptionResolver | undefined;
   private readonly integrity: IntegrityConfig | IntegrityResolver | undefined;
   private readonly allowUntaggedBodies: boolean;
+  private readonly allowUnencryptedBodies: boolean;
   private readonly requireContextBinding: boolean;
   private readonly rejectRevisionRollback: boolean;
   private readonly maxDecompressedBytes: number;
@@ -109,6 +140,7 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
     this.encryption = resolvedOptions.encryption;
     this.integrity = resolvedOptions.integrity;
     this.allowUntaggedBodies = resolvedOptions.allowUntaggedBodies ?? false;
+    this.allowUnencryptedBodies = resolvedOptions.allowUnencryptedBodies ?? false;
     this.requireContextBinding = resolvedOptions.requireContextBinding ?? false;
     this.rejectRevisionRollback = resolvedOptions.rejectRevisionRollback ?? true;
     this.maxDecompressedBytes = resolvedOptions.maxDecompressedBytes ?? DEFAULT_MAX_DECOMPRESSED_BYTES;
@@ -121,7 +153,7 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
     if (fetched.isNone()) return none;
     // Per-call encryption (from the actor) wins over the plugin default.
     const encryption = options?.encryption
-      ?? resolveEncryption(this.encryption, persistenceId, { mode: 'none' });
+      ?? resolveEncryption(this.encryption, persistenceId, { mode: DEFAULT_OBJECT_STORAGE_ENCRYPTION_MODE });
     const integrity = options?.integrity
       ?? resolveIntegrity(this.integrity, persistenceId, { mode: 'none' });
     const subKeyFor = resolveDecryptSubkey(encryption, persistenceId);
@@ -130,7 +162,7 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
     // (#579).  Note this covers the per-call `options.integrity` path
     // too: the demand travels with the key, not with the store field.
     const decodeOptions: import('../object-storage/BodyCodec.js').DecodeOptions = {
-      ...(subKeyFor ? { encryption: { subKeyFor } } : {}),
+      ...(subKeyFor ? { encryption: { subKeyFor, allowUnencryptedBodies: this.allowUnencryptedBodies } } : {}),
       ...(integrity.mode === 'hmac-sha256'
         ? {
             integrity: {
@@ -189,9 +221,9 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
     // Per-call options take precedence over plugin defaults / resolver —
     // matches the SnapshotStore precedence order.
     const compression = options?.compression
-      ?? resolveCompression(this.compression, persistenceId, { algorithm: 'gzip' });
+      ?? resolveCompression(this.compression, persistenceId, { algorithm: DEFAULT_OBJECT_STORAGE_COMPRESSION_ALGORITHM });
     const encryption = options?.encryption
-      ?? resolveEncryption(this.encryption, persistenceId, { mode: 'none' });
+      ?? resolveEncryption(this.encryption, persistenceId, { mode: DEFAULT_OBJECT_STORAGE_ENCRYPTION_MODE });
     const integrity = options?.integrity
       ?? resolveIntegrity(this.integrity, persistenceId, { mode: 'none' });
 
@@ -353,7 +385,8 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
   }
 
   private keyFor(persistenceId: string): string {
-    return `${this.prefix}${persistenceId}/state.json`;
+    return `${this.prefix}${OBJECT_STORAGE_DURABLE_STATE_NAMESPACE}`
+      + `${persistenceId}/${OBJECT_STORAGE_DURABLE_STATE_LEAF}`;
   }
 }
 

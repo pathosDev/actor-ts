@@ -1,5 +1,6 @@
 import type { ActorRef } from '../../ActorRef.js';
 import type { NodeAddress, NodeAddressData } from '../NodeAddress.js';
+import { markFrameworkMessage } from '../../util/FrameworkMessage.js';
 
 /* ============================ User-facing API ============================= */
 
@@ -223,3 +224,7 @@ export type PubSubWireMessage =
   | PubSubGossipMessage
   | PubSubPublishMessage
   | PubSubPublishOneMessage;
+
+// The framework's own messages, exempt from the message-boundary check
+// (#1386): each crosses the boundaries it needs to by its own mechanism.
+markFrameworkMessage(Subscribe, Unsubscribe, UnsubscribeAll, Publish, PubSubEnvelope, AuthenticatedPubSubMessage, SubscribeAcknowledgment, UnsubscribeAcknowledgment, SubscribeRejected, GetTopics, CurrentTopics);

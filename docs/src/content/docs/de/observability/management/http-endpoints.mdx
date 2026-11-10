@@ -8,7 +8,8 @@ Endpunkte bereit. Die meisten sind read-only; die Admin-Endpunkte
 (`/cluster/down`, `/cluster/leave`) sind Opt-in und standardmäßig aus.
 
 **Sicherheit (security audit #8):** die read-only-Endpunkte legen dennoch
-interne Topologie offen — Member-Adressen (`host:port`), Rollen, den Leader
+interne Topologie offen — Member-Adressen (`host:port`), Rollen, die
+Anwendungsversion, die jedes Mitglied nennt, den Leader
 und die Shard-Map. Behandle den Management-Server als sensibel: binde ihn an
 ein internes Interface und schütze ihn mit den Optionen `ipAllowlist` (und/oder
 `auth`) von `managementRoutes(...)`, statt ihn öffentlich zu exponieren.
@@ -53,12 +54,36 @@ GET /ready
 ```
 
 Das `checks`-Array enthält jeden Readiness-Check auf der Registry
-des Systems — die Framework-Checks `cluster-membership` und
-`cluster-transport` plus alles, was du registriert hast.
+des Systems — die
+[eingebauten Checks](/de/observability/management/health-checks/#die-eingebauten-checks)
+des Frameworks (`cluster-membership` und `cluster-transport`, dazu
+`startup` und je benanntem Typ ein `shard-region:<type>`, wo konfiguriert)
+und alles, was du registriert hast.
 `clusterReady` ist das Ergebnis von `cluster-membership` selbst, aus
 diesem Array zurückgelesen statt separat berechnet: es ist also
 `false`, bis der lokale Node `Up` erreicht, und `true`, wenn es gar
 keinen Cluster gibt.  503, wenn ein Check fehlschlägt.
+
+### Die beiden Probe-Pfade verschieben
+
+`/health` und `/ready` sind Defaults, keine festen Routen.  Beide
+sind ein einzelnes Pfadsegment und im Code wie aus einer
+Config-Datei setzbar:
+
+```hocon
+actor-ts.management {
+  liveness-path  = "alive"
+  readiness-path = "serving"
+}
+```
+
+Ein Wert mit `/` wird beim Bauen der Routen mit einem
+`OptionsError` abgelehnt, denn `path()` entfernt nur
+*umschließende* Slashes — aus `"k8s/ready"` würde ein Segment mit
+einem Slash darin, das auf keine URL passt und den Endpunkt
+lautlos verschwinden lässt.  Wie die Segmente auch heißen: halte
+die Probe-Pfade in K8s im Gleichschritt damit, ein Manifest wird
+von nichts gegengeprüft.
 
 ## Cluster-Info
 
@@ -73,29 +98,50 @@ GET /cluster/members
 {
   "members": [
     {
-      "address": "actor-ts://my-app@10.0.0.5:2552",
-      "status":  "up",
-      "version": 3,
-      "roles":   ["compute"]
+      "address":    "my-app@10.0.0.5:2552",
+      "status":     "up",
+      "version":    1710000000001,
+      "roles":      ["compute"],
+      "appVersion": "2.4.0"
     },
     ...
   ],
-  "self": "actor-ts://my-app@10.0.0.5:2552"
+  "self": "my-app@10.0.0.5:2552"
 }
 ```
 
-Voller Membership-Snapshot. Nützlich für:
+Voller Membership-Snapshot. Adressen haben die Form
+`system@host:port`, die auch `POST /cluster/down` erwartet.
+`version` ist die logische Uhr des Mitglieds: Sie beginnt bei der
+Wanduhrzeit seines Joins in Millisekunden — so überholt ein unter
+derselben Adresse neu gestarteter Node den Tombstone, den sein
+vorheriger Lauf hinterlassen hat — und steigt mit jedem Statuswechsel
+um eins. Nützlich für:
 
 - **Manuelle Cluster-Zustand-Checks** während Incidents.
 - **Externe Dashboards**, die den Cluster visualisieren.
 - **Tests**, die das Cluster-Joining verifizieren.
+
+`appVersion` ist die Anwendungsversion, die das Mitglied nennt —
+[`actor-ts.cluster.app-version`](/de/reference/configuration/#actor-tscluster)
+oder `withAppVersion(...)` im Code —, und daran lässt sich ein Rolling Update
+ablesen: welcher Node welches Release fährt.  Das Feld steht nur bei einem
+Mitglied, das eine Version nennt, und fehlt sonst, statt `null` zu sein — ein
+Mitglied, das ohne Version neu startet, steht ohne da, nicht mit der seines
+vorigen Laufs —; es ist ein Label und nicht mehr — nichts platziert, routet
+oder downt danach.
+Wie der Rest dieses Endpunkts wird es jedem ausgeliefert, der den Port
+erreicht, solange `managementRoutes(...)` kein `auth` bekommt
+([#971](https://github.com/pathosDev/actor-ts/issues/971)) — es fügt also
+dem, was ein nicht authentifizierter Aufrufer erfährt, das Release jedes
+Nodes hinzu.
 
 ### `GET /cluster/leader`
 
 ```
 GET /cluster/leader
 → 200 OK
-{ "leader": "actor-ts://my-app@10.0.0.5:2552", "isSelf": true }
+{ "leader": "my-app@10.0.0.5:2552", "isSelf": true }
 ```
 
 Die Adresse des Leaders plus `isSelf` (ist der lokale Node der
@@ -231,9 +277,11 @@ leaving
 Der `202`-Body ist das Klartext-Wort `leaving` (kein JSON) — der
 Leave ist Fire-and-forget.
 
-Löst einen Graceful Cluster-Leave aus. Der Node läuft durch
-`leaving` → `exiting` → `removed`; Shards rebalancen weg; das
-Actor-System terminiert (konfigurierbar).
+Löst einen Graceful Cluster-Leave aus. Der Node wechselt auf
+`leaving` und meldet das den Peers, die er erreicht; sie führen ihn
+als `removed`, und seine Shards werden umverteilt. Das Actor-System
+selbst läuft weiter: Der Endpunkt ruft `cluster.leave()` auf und
+sonst nichts.
 
 Nutze für:
 
@@ -245,28 +293,63 @@ deinen Node drainen.
 
 ### `POST /cluster/down`
 
-Opt-in via `enableDownEndpoint: true`.
+Opt-in via `enableDownEndpoint: true` oder
+`actor-ts.management.enable-down-endpoint = on` in HOCON.
 
 ```
 POST /cluster/down
-{ "address": "actor-ts://my-app@10.0.0.5:2552" }
+{ "address": "my-app@10.0.0.5:2552" }
 
 → 202 Accepted
-{ "downed": "actor-ts://my-app@10.0.0.5:2552" }
+{ "downed": "my-app@10.0.0.5:2552" }
 ```
 
 Gibt `202` mit `{ downed }` zurück, wenn das Mitglied gedownt wurde,
 oder `404`, wenn die Adresse unbekannt oder bereits terminal ist.
 
-Force-downt ein Remote-Mitglied per Adresse. Destruktiv — die
-Actor des Targets stoppen, seine Shards reallokieren woanders.
+Force-downt ein Mitglied per Adresse, in der Sicht des Nodes, den du
+aufrufst: Es wird dort als `down` und `removed` angekündigt und als
+Tombstone behalten, und Gossip trägt das Entfernen zu den
+Mitgliedern, die dieser Node noch erreicht. Das verteilt die Shards
+des Mitglieds neu und gibt seinen entfernten Watchern ihr
+`Terminated`. Das Target selbst wird nicht benachrichtigt (#940): Es
+läuft weiter, samt seinen Actors — stoppe es also zuerst oder stell
+sicher, dass es weg ist, bevor du es downst.
+
+**Das ist der Weg aus dem Opt-out.** Unter dem Default — keine
+Downing-Strategie, `actor-ts.cluster.failure-detector.auto-down = on`
+— löscht der Failure Detector ein stilles Mitglied selbst, sobald er
+es für `down` erklärt, und der Endpunkt antwortet danach meist mit
+`404` dafür. Mit zwei oder mehr Überlebenden kann der Gossip eines
+anderen Überlebenden das gelöschte Mitglied allerdings als
+`unreachable` zurückbringen, bis der Detector es erneut entfernt,
+und ein Aufruf in diesem Fenster findet es und antwortet mit `202`.
+Unter `auto-down = off` parkt der Failure Detector ein stilles
+Mitglied auf `unreachable`, und der Node loggt eine Warnung, die das
+Mitglied und diesen Endpunkt nennt; nur ein Operator, eine Strategie
+oder der eigene Neustart des Nodes auf derselben Adresse entfernt es.
 
 Nutze für:
 
-- **Split-Brain-Recovery**, wenn keine Downing-Strategie
-  konfiguriert ist.
-- **Entfernen von hängenden `unreachable`-Mitgliedern**, die
-  sich weigern, sich zu erholen.
+- **Entfernen eines abgestürzten Mitglieds**, das der Failure
+  Detector unter `auto-down = off` geparkt hat, ohne konfigurierte
+  Downing-Strategie. Wurde der Node seitdem auf derselben Adresse
+  neu gestartet, hat der Cluster den geparkten Lauf schon beendet,
+  und der Eintrag unter dieser Adresse ist der neue Prozess:
+  `GET /cluster/members` zeigt ihn wieder auf `up` mit neuerer
+  `version`. Ihn dann zu downen entfernt den gesunden Lauf, der nicht
+  benachrichtigt wird und außerhalb des Clusters weiterläuft.
+- **Eine Partition von Hand auflösen** unter `auto-down = off` ohne
+  Strategie: Downe die Mitglieder der anderen Seite von der Seite
+  aus, die du behältst, und stoppe die Prozesse auf der Seite, die du
+  aufgibst, denn sie werden nicht benachrichtigt.  Unter dem Default
+  gibt es bis dahin nichts mehr aufzulösen — jede Seite hat die
+  andere bei `down-after` entfernt und läuft als eigener Cluster
+  weiter; konfiguriere `lease-majority` oder eine andere
+  [Downing-Strategie](/de/cluster/downing-strategies/), damit
+  stattdessen eine Seite gewinnt.
+- **Entfernen eines Mitglieds, das eine konfigurierte Strategie
+  geparkt gelassen hat**, weil sie zu keinem Urteil gekommen ist.
 
 **Hochrisiko-Endpunkt** — hinter Auth + Audit-Logs gaten.
 
@@ -324,8 +407,12 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   POST /cluster/down → Target ist aus dem Cluster entfernt
   ```
-  Der downte Node sieht `MemberRemoved` für sich selbst; er kann
-  nicht weiter partizipieren. Starte ihn neu zum Rejoinen.
+  Der Rest des Clusters behält die Adresse als Tombstone, also kann
+  der gedownte Prozess nicht so zurückkommen, wie er war. Er wird
+  aber nicht benachrichtigt (#940): Er sieht kein `MemberRemoved` für
+  sich selbst und läuft weiter, bis du ihn stoppst. Starte ihn neu
+  zum Rejoinen — ein neuer Prozess beginnt mit einer höheren Version
+  als der Tombstone.
 </Aside>
 
 <Aside type="caution" title="Keine Request-Validierung standardmäßig">

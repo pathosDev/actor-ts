@@ -26,13 +26,16 @@ import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LocalActorRef } from '../../../src/internal/LocalActorRef.js';
 import { LogLevel, NoopLogger, type Logger } from '../../../src/Logger.js';
-import type { LogContextData } from '../../../src/LogContext.js';
+import { LogContext, type LogContextData } from '../../../src/LogContext.js';
 import { DeadLetter, Terminated } from '../../../src/SystemMessages.js';
+import { stoppingStrategy } from '../../../src/Supervision.js';
 import type { ActorClassOrFactory } from '../../../src/Actor.js';
+import { BackoffSupervisor } from '../../../src/pattern/BackoffSupervisor.js';
 import {
-  BackoffSupervisor,
-  type BackoffOptions,
-} from '../../../src/pattern/BackoffSupervisor.js';
+  BackoffSupervisorOptionsValidator,
+  type BackoffSupervisorOptionsType,
+} from '../../../src/pattern/BackoffSupervisorOptions.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import type { BackoffPolicy } from '../../../src/pattern/BackoffPolicy.js';
 import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
@@ -93,7 +96,9 @@ function newSystem(name: string): ActorSystem {
   return ActorSystem.create(name, sysOptions);
 }
 
-function withDefaults<T>(over: Partial<BackoffOptions<T>>): BackoffOptions<T> {
+function withDefaults<T>(
+  over: Partial<BackoffSupervisorOptionsType<T>>,
+): BackoffSupervisorOptionsType<T> {
   return {
     child: (() => new Flaky()) as unknown as ActorClassOrFactory<T>,
     minBackoff: 50,
@@ -326,24 +331,55 @@ describe('BackoffSupervisor — lifecycle', () => {
     await sys.terminate();
   }, 5_000);
 
-  test('rejects illegal options at construction', () => {
-    expect(() => new BackoffSupervisor({
-      child: Flaky,
-      minBackoff: 0,
-      maxBackoff: 100,
-    })).toThrow(/minBackoff/);
-    expect(() => new BackoffSupervisor({
-      child: Flaky,
-      minBackoff: 100,
-      maxBackoff: 50,
-    })).toThrow(/maxBackoff/);
-    expect(() => new BackoffSupervisor({
-      child: Flaky,
+  /**
+   * These three were `expect(() => new BackoffSupervisor(…)).toThrow(…)` until
+   * #865.  The rules did not change; where they run did.  A supervisor's
+   * settings are now merged from `actor-ts.backoff-supervisor.*` as well as
+   * from the constructor, and a constructor cannot see a config file — the
+   * cell builds the actor and only then attaches the context that carries
+   * `system.config` — so the one check that covers all three sources has to be
+   * the one that runs on the merged settings, in `preStart`.
+   *
+   * Split accordingly: the rule itself is asserted directly against the
+   * validator here, and the test below proves the supervisor actually runs it.
+   * Asserting only the validator would leave "nothing calls it" green.
+   */
+  test('the three range rules reject what they always rejected', () => {
+    const validator = new BackoffSupervisorOptionsValidator();
+    expect(() => validator.validate({ minBackoff: 0, maxBackoff: 100 })).toThrow(/minBackoff/);
+    expect(() => validator.validate({ minBackoff: 100, maxBackoff: 50 })).toThrow(/maxBackoff/);
+    expect(() => validator.validate({
       minBackoff: 100,
       maxBackoff: 1000,
       resetCounter: { kind: 'after-time', ms: -1 },
     })).toThrow(/resetCounter/);
+    // `OptionsError`, not a bare `Error`: the type is what names the field a
+    // caller has to go and fix, and it is the same type every other options
+    // family in the framework throws.
+    expect(() => validator.validate({ minBackoff: -1 })).toThrow(OptionsError);
+    // And the merged-settings shape a real supervisor produces still passes.
+    expect(() => validator.validate({ minBackoff: 50, maxBackoff: 5_000, randomFactor: 0 })).not.toThrow();
   });
+
+  test('an illegal option fails the supervisor at start, and no child is spawned', async () => {
+    flakyStarts = 0;
+    const sys = newSystem('backoff-illegal-options');
+    // `stoppingStrategy` so the failure is observable as a terminated
+    // supervisor rather than as the default strategy's restart loop.
+    const supervisor = sys.spawn(
+      BackoffSupervisor.factory(withDefaults({ child: Flaky, minBackoff: 0 })),
+      'illegal-options',
+      { supervisorStrategy: stoppingStrategy },
+    );
+    await awaitCondition(
+      () => (supervisor as unknown as LocalActorRef).getCell().isTerminated(),
+      { timeoutMs: 4_000, label: 'the supervisor failed to start' },
+    );
+    // preStart resolves before it spawns, so a refused setting costs the child
+    // its existence rather than leaving it running under a broken policy.
+    expect(flakyStarts).toBe(0);
+    await sys.terminate();
+  }, 5_000);
 });
 
 /* ============================================================== */
@@ -803,4 +839,308 @@ describe('BackoffSupervisor — stash overflow (#773)', () => {
       await sys.terminate();
     }
   }, 8_000);
+
+  test('the letter carries the MDC the evicted message arrived with', async () => {
+    // The half of #773 the dead letter alone does not close.  `StashedMessage`
+    // held a message and a sender, so the letter named *what* was lost and
+    // nothing about which request it belonged to — the same gap the mailbox
+    // path had, one layer up.
+    //
+    // The capture has to happen at stash time, and this test is built to fail
+    // if it does not: each message arrives under its own MDC, and the eviction
+    // runs while the supervisor is handling a *later* one.  A `LogContext.get()`
+    // read inside `evictOldestStashed` would therefore stamp every letter with
+    // the context of whichever message triggered the overflow.
+    crashesObserved = 0; flakyStarts = 0;
+    const letters: DeadLetter[] = [];
+    const subscribed = { value: false };
+    class Listener extends Actor<DeadLetter> {
+      override preStart(): void {
+        this.system.eventStream.subscribe(this.self, DeadLetter);
+        subscribed.value = true;
+      }
+      override onReceive(letter: DeadLetter): void { letters.push(letter); }
+    }
+
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('backoff-stash-attribution', sysOptions);
+    const policy = new RecordingPolicy([30_000]);
+    const supervisor = sys.spawn(
+      BackoffSupervisor.factory(withDefaults({
+        child: Flaky,
+        policy,
+        forward: 'stash',
+        maxStashSize: 2,
+        resetCounter: 'never',
+      })),
+      'sup-stash-attribution',
+    );
+    try {
+      sys.spawn(Listener, 'listener');
+      await awaitCondition(() => subscribed.value && flakyStarts === 1, {
+        timeoutMs: 4_000,
+        label: 'the listener subscribed and the first child started',
+      });
+
+      supervisor.tell({ kind: 'crash' });
+      await awaitCondition(() => policy.calls.length === 1, {
+        timeoutMs: 4_000,
+        label: 'the supervisor entered its backoff window',
+      });
+
+      // 1 and 2 fill the stash; 3 evicts 1 and 4 evicts 2.
+      for (const value of [1, 2, 3, 4]) {
+        LogContext.run(
+          { requestId: `request-${value}` },
+          () => supervisor.tell({ kind: 'echo', value }),
+        );
+      }
+      await awaitCondition(() => letters.length >= 2, {
+        timeoutMs: 4_000,
+        label: 'the two evicted messages were dead-lettered',
+      });
+
+      expect(letters.map((l) => l.message)).toEqual([
+        { kind: 'echo', value: 1 },
+        { kind: 'echo', value: 2 },
+      ]);
+      // Each letter names the request that sent the message it lost — not the
+      // one whose arrival made room.
+      expect(letters.map((l) => l.attribution.context)).toEqual([
+        { requestId: 'request-1' },
+        { requestId: 'request-2' },
+      ]);
+      // No span: nothing exposes the arriving envelope's `trace` to actor
+      // code, so the supervisor has none to copy.  Asserting it keeps the
+      // limitation visible rather than letting a later change fill the field
+      // with a span belonging to a different operation.
+      expect(letters.every((l) => l.attribution.trace === undefined)).toBe(true);
+    } finally {
+      supervisor.stop();
+      await sys.terminate();
+    }
+  }, 8_000);
+
+  test('a sender with no MDC leaves the letter with none, not with an empty one', async () => {
+    // The other half of the same capture, and the one nothing exercised: the
+    // stash entry OMITS `context` when `LogContext.isEmpty` says the sender
+    // carried none.  Collapsing that branch to always set the field — writing
+    // `EMPTY` onto the entry — left the whole suite green, because the test
+    // above only ever tells from inside a `LogContext.run`.
+    //
+    // Why the distinction is worth a branch: an absent field says "there was
+    // no MDC to lose", and `{}` says "the sender had one and it was empty".
+    // A dead-letter stream is read to find out which request lost a message,
+    // and the second answer sends whoever is reading it looking for a request
+    // that never existed.  It is the same rule `LocalActorRef.tell` applies to
+    // the envelope, so a letter and an envelope agree about what "no context"
+    // looks like.
+    crashesObserved = 0; flakyStarts = 0;
+    const letters: DeadLetter[] = [];
+    const subscribed = { value: false };
+    class Listener extends Actor<DeadLetter> {
+      override preStart(): void {
+        this.system.eventStream.subscribe(this.self, DeadLetter);
+        subscribed.value = true;
+      }
+      override onReceive(letter: DeadLetter): void { letters.push(letter); }
+    }
+
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('backoff-stash-no-context', sysOptions);
+    const policy = new RecordingPolicy([30_000]);
+    const supervisor = sys.spawn(
+      BackoffSupervisor.factory(withDefaults({
+        child: Flaky,
+        policy,
+        forward: 'stash',
+        maxStashSize: 2,
+        resetCounter: 'never',
+      })),
+      'sup-stash-no-context',
+    );
+    try {
+      sys.spawn(Listener, 'listener');
+      await awaitCondition(() => subscribed.value && flakyStarts === 1, {
+        timeoutMs: 4_000,
+        label: 'the listener subscribed and the first child started',
+      });
+
+      supervisor.tell({ kind: 'crash' });
+      await awaitCondition(() => policy.calls.length === 1, {
+        timeoutMs: 4_000,
+        label: 'the supervisor entered its backoff window',
+      });
+
+      // No `LogContext.run` anywhere: these tells are the ordinary case.
+      for (const value of [1, 2, 3, 4]) supervisor.tell({ kind: 'echo', value });
+      await awaitCondition(() => letters.length >= 2, {
+        timeoutMs: 4_000,
+        label: 'the two evicted messages were dead-lettered',
+      });
+
+      expect(letters.map((l) => l.message)).toEqual([
+        { kind: 'echo', value: 1 },
+        { kind: 'echo', value: 2 },
+      ]);
+      expect(letters.map((l) => l.attribution.context)).toEqual([undefined, undefined]);
+    } finally {
+      supervisor.stop();
+      await sys.terminate();
+    }
+  }, 8_000);
+});
+
+/* ============================================================== */
+/* #770 — the control ticks are not reconstructible                */
+/* ============================================================== */
+
+/**
+ * The sentinels were `Symbol.for(...)`, so anything holding the registry
+ * string — a compile-time constant in the published package — got back the
+ * identical symbol and could tell it on the supervisor's public channel.
+ * They are `Symbol(...)` now, unnameable outside their own module.
+ *
+ * Both tests assert the same two things, one per sentinel: the timing
+ * guarantee held, and the forged value was treated as *ordinary user
+ * traffic* rather than being specially rejected.  The second half matters —
+ * the fix is "this value is no longer special", not "this value is now
+ * refused", and a test that only checked for a refusal would pass against a
+ * blocklist on the registry symbol, which would be the wrong fix.
+ *
+ * The timing assertions use a wide band on purpose.  Under the old code a
+ * forged tick acted within a millisecond or two; under the new one the full
+ * configured delay is served.  The thresholds sit far below the configured
+ * value so that neither Bun firing a timer a 15.6 ms quantum early (#477)
+ * nor `awaitCondition`'s poll interval can move the verdict.
+ */
+const forgedInbox: unknown[] = [];
+let forgedStarts = 0;
+
+/** Records what reaches the child, and crashes on demand to open a window. */
+class ForgeTarget extends Actor<unknown> {
+  override preStart(): void { forgedStarts += 1; }
+  override onReceive(message: unknown): void {
+    if (message === 'crash') throw new Error('forge-target boom');
+    forgedInbox.push(message);
+  }
+}
+
+describe('BackoffSupervisor — forged control ticks (#770)', () => {
+  test('a reconstructed global respawn sentinel cannot collapse the backoff window', async () => {
+    forgedStarts = 0; forgedInbox.length = 0;
+    const sys = newSystem('backoff-forged-respawn');
+    // A long window, so "held" and "collapsed" are hundreds of milliseconds
+    // apart rather than a judgement call about scheduler jitter.
+    const policy = new RecordingPolicy([600]);
+    const supervisor = sys.spawn(
+      BackoffSupervisor.factory<unknown>({
+        child: ForgeTarget,
+        minBackoff: 600,
+        maxBackoff: 5_000,
+        randomFactor: 0,
+        policy,
+        forward: 'stash',
+        resetCounter: 'never',
+      }),
+      'sup-forged-respawn',
+    );
+    try {
+      await awaitCondition(() => forgedStarts === 1, {
+        timeoutMs: 4_000,
+        label: 'the first incarnation started',
+      });
+
+      // Crash it, and wait for `delayFor` — the supervisor calls it as it
+      // schedules the respawn, so it is a direct signal that the backoff
+      // window is open rather than a sleep and a hope.
+      supervisor.tell('crash');
+      await awaitCondition(() => policy.calls.length === 1, {
+        timeoutMs: 4_000,
+        label: 'the supervisor entered its backoff window',
+      });
+      const windowOpenedAt = Date.now();
+      expect(forgedStarts).toBe(1);
+
+      // The exploit exactly as filed: rebuild the sentinel through the
+      // cross-realm global registry and tell it on the public channel.
+      const forgedRespawn = Symbol.for('actor-ts.pattern.BackoffSupervisor.respawn');
+      supervisor.tell(forgedRespawn);
+
+      await awaitCondition(() => forgedStarts === 2, {
+        timeoutMs: 8_000,
+        label: 'the legitimate timer respawned the child',
+      });
+
+      // The window was actually served.  A forged tick reaching `respawn()`
+      // spawns on the spot, which lands this in single-digit milliseconds.
+      expect(Date.now() - windowOpenedAt).toBeGreaterThan(300);
+      // And exactly one respawn was scheduled — the forged tick did not
+      // produce an extra incarnation for the real tick to then refuse.
+      expect(policy.calls.length).toBe(1);
+
+      // Ordinary user traffic: stashed during the window like anything else,
+      // then forwarded to the new child when the stash drained.
+      await awaitCondition(() => forgedInbox.includes(forgedRespawn), {
+        timeoutMs: 4_000,
+        label: 'the forged respawn symbol reached the child as a user message',
+      });
+    } finally {
+      supervisor.stop();
+      await sys.terminate();
+    }
+  }, 20_000);
+
+  test('a reconstructed global drain sentinel cannot cut the post-respawn grace short', async () => {
+    forgedStarts = 0; forgedInbox.length = 0;
+    const sys = newSystem('backoff-forged-drain');
+    const supervisor = sys.spawn(
+      BackoffSupervisor.factory<unknown>({
+        child: ForgeTarget,
+        minBackoff: 50,
+        maxBackoff: 5_000,
+        randomFactor: 0,
+        drainGraceMs: 600,
+        // Strict mode — the #67 gate, and the configuration in which a forged
+        // drain has its full effect: new arrivals are stashed until the child
+        // has proven it survives `preStart`.
+        forwardDuringGrace: false,
+        forward: 'stash',
+      }),
+      'sup-forged-drain',
+    );
+    try {
+      // The supervisor spawns in `preStart`, so the grace window is already
+      // open by the time the first incarnation reports in.
+      await awaitCondition(() => forgedStarts === 1, {
+        timeoutMs: 4_000,
+        label: 'the first incarnation started',
+      });
+      const graceOpenedAt = Date.now();
+
+      supervisor.tell('payload');
+      const forgedDrain = Symbol.for('actor-ts.pattern.BackoffSupervisor.drain');
+      supervisor.tell(forgedDrain);
+
+      await awaitCondition(() => forgedInbox.includes('payload'), {
+        timeoutMs: 8_000,
+        label: 'the stashed payload reached the child',
+      });
+      // The grace was served: a forged drain flips `childConfirmedAlive` and
+      // flushes the stash immediately, which lands this near zero.
+      expect(Date.now() - graceOpenedAt).toBeGreaterThan(300);
+      // The forged symbol went the same way as the payload — stashed, then
+      // forwarded — rather than being consumed as a control message.
+      expect(forgedInbox).toContain(forgedDrain);
+      // And it did not restart anything on its way through.
+      expect(forgedStarts).toBe(1);
+    } finally {
+      supervisor.stop();
+      await sys.terminate();
+    }
+  }, 20_000);
 });

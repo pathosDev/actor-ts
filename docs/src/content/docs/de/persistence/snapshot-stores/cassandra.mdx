@@ -54,15 +54,15 @@ Snapshot-Store zum Journal passen.
 
 ```ts
 type CassandraSnapshotStoreOptions = {
-  contactPoints?:      string[];   // Cluster-Contact-Points
-  keyspace?:           string;     // Keyspace, das nach Connect ge-USEt wird
-  snapshotsTable?:     string;     // Tabellenname, Default 'snapshots'
-  keepN?:              number;     // Snapshots pro pid; <= 0 = alle behalten (Default 3)
-  autoCreateTables?:   boolean;    // Tabelle beim ersten Connect anlegen (Default true)
-  autoCreateKeyspace?: boolean;    // Keyspace beim Start anlegen (Default false)
-  consistency?:        number;     // CQL-Consistency, Default LOCAL_QUORUM (6)
-  client?:             CassandraClientLike; // vorgefertigten Driver-Client wiederverwenden
-  /* ...plus die geteilten Connection-Felder: localDataCenter, credentials, port, replication */
+  contactPoints?:      string[];   // cluster contact points
+  keyspace?:           string;     // qualifies every statement (keyspace.table); no USE
+  snapshotsTable?:     string;     // table name, default 'snapshots'
+  keepN?:              number;     // snapshots kept per pid; <= 0 = keep all (default 3)
+  autoCreateTables?:   boolean;    // create the table on first connect (default true)
+  autoCreateKeyspace?: boolean;    // create the keyspace on startup (default false)
+  consistency?:        number;     // CQL consistency; unset = the driver's own
+  client?:             CassandraClientLike; // reuse a pre-built driver client
+  /* ...plus the shared connection fields: localDataCenter, credentials, port, replication */
 };
 ```
 
@@ -84,7 +84,9 @@ Cassandra-Verbindung des Journals mitnutzt, statt eine eigene zu
 
 ## Schema
 
-Das Framework legt beim ersten Gebrauch eine Tabelle automatisch an:
+Das Framework legt eine Tabelle automatisch an, wenn der Store öffnet — beim
+Start, oder bei der ersten Verwendung, wenn das Öffnen beim Start abgeschaltet
+ist:
 
 ```cql
 CREATE TABLE snapshots (
@@ -117,13 +119,25 @@ nie per String-Concat.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Compression- und Encryption-Optionen werden ignoriert">
+<Aside type="caution" title="Keine Kompression, Verschlüsselung oder Integrität at rest">
   Anders als die Object-Storage-Stores hat der Cassandra-Snapshot-Store
   keine Kompression und keine clientseitige Verschlüsselung — der
-  Payload wird als serialisierter Text abgelegt.  Entsprechende
-  `PersistenceOptions` werden stillschweigend ignoriert.  Nutze den
-  [Object-Storage-Snapshot-Store](/de/persistence/object-storage/snapshot-store-backend/),
-  wenn du Kompression oder At-Rest-Verschlüsselung brauchst.
+  Payload wird als serialisierter Text abgelegt, und der Store deklariert
+  das über sein `persistenceOptionSupport`-Tripel.  Ein `encryption()`-
+  oder `integrity()`-Override **verweigert den Actor deshalb beim Start**,
+  statt kommentarlos fallen gelassen zu werden, und `compression()` warnt
+  einmal ([#960](https://github.com/pathosDev/actor-ts/issues/960)).  Nutze
+  den [Object-Storage-Snapshot-Store](/de/persistence/object-storage/snapshot-store-backend/),
+  wenn deine Snapshots Kompression oder At-Rest-Verschlüsselung brauchen.
+
+  Das verlegt die Snapshots und nichts sonst.  `encryption()` und
+  `integrity()` an einem `PersistentActor` schützen nur seine Snapshots:
+  Jedes Journal speichert Events als Klartext-JSON, nichts erkennt ein an
+  Ort und Stelle manipuliertes Event, und datenbankseitige Kontrollen —
+  Transparent Data Encryption, ein verschlüsseltes Volume,
+  Zugriffskontrolle — sind heute der einzige Schutz für Events.  Das
+  `CassandraJournal`, mit dem dieser Store meist gepaart wird, hält seine
+  Events in Cassandra so oder so im Klartext.
 </Aside>
 
 <Aside type="caution" title="`keepN` pruned beim Speichern, nicht per Timer">

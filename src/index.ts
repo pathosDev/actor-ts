@@ -82,7 +82,12 @@ export { safeStringify } from './util/SafeStringify.js';
 // URL redaction for log and error paths.  The framework runs every connection
 // URL it reports through these; exported so an application's own log line — or
 // a MultiSinkLogger `transform` — can hold the same line.
-export { redactUrlCredentials, redactedUrlLabel } from './util/RedactUrlCredentials.js';
+export {
+  redactErrorCredentials,
+  redactParsedUrlCredentials,
+  redactUrlCredentials,
+  redactedUrlLabel,
+} from './util/RedactUrlCredentials.js';
 
 // lazyImportModule — import an optional peer dependency, or fail with a message
 // that names the package and how to install it.
@@ -95,10 +100,13 @@ export { ActorRef, Nobody, NobodyRef } from './ActorRef.js';
 export { ActorPath } from './ActorPath.js';
 export { ActorSelection, parseSelectionPath } from './ActorSelection.js';
 export { ActorSystem } from './ActorSystem.js';
+export type { TerminateOptions } from './ActorSystem.js';
 export { ActorSystemOptions, ActorSystemOptionsBuilder } from './ActorSystemOptions.js';
 export type { ActorSystemOptionsType } from './ActorSystemOptions.js';
 export type { ActorContext, Receive, TimerScheduler } from './ActorContext.js';
 export { StashOverflowError, StashOutsideHandlerError } from './ActorContext.js';
+export { ThrottleOptions, ThrottleOptionsBuilder, ThrottleOptionsValidator } from './ThrottleOptions.js';
+export type { ThrottleOptionsType, ThrottleOnExcess } from './ThrottleOptions.js';
 export { ActorOptions, ActorOptionsBuilder, ActorOptionsValidator } from './ActorOptions.js';
 export type { ActorOptionsType, MailboxFactory } from './ActorOptions.js';
 export type { ActorClassOrFactory, ActorFactory } from './Actor.js';
@@ -120,6 +128,8 @@ export {
 export type { Decider, SupervisorStrategy, StrategyOptions } from './Supervision.js';
 
 // Runtime services
+export { SystemClock, systemClock } from './Clock.js';
+export type { Clock } from './Clock.js';
 export { Scheduler } from './Scheduler.js';
 export type { Cancellable, SchedulerErrorSink } from './Scheduler.js';
 export {
@@ -156,6 +166,7 @@ export {
   ActorKilledError,
   AskTimeoutError,
 } from './SystemMessages.js';
+export type { DeadLetterAttribution } from './SystemMessages.js';
 
 // Patterns — Success / Failure live in util/Try.js (already exported above).
 export {
@@ -168,22 +179,33 @@ export {
   CircuitBreakerTimeoutError,
   CircuitBreakerOptions,
   CircuitBreakerOptionsBuilder,
+  CircuitBreakerOptionsValidator,
+  CircuitBreakerExtension,
+  CircuitBreakerExtensionId,
+  DEFAULT_CIRCUIT_BREAKER_ID,
+  readCircuitBreakerOptionsFromConfig,
+  circuitBreakerKeysUnder,
   exponentialBackoff,
   linearBackoff,
   BackoffSupervisor,
+  BackoffSupervisorOptions,
+  BackoffSupervisorOptionsBuilder,
+  BackoffSupervisorOptionsValidator,
 } from './pattern/index.js';
 export type {
   PipeToOptions,
   CancellablePromise,
   RetryOptions,
+  CircuitBreakerKeys,
   CircuitBreakerOptionsType,
   CircuitState,
   BackoffPolicy,
   ExponentialBackoffOptions,
   LinearBackoffOptions,
-  BackoffOptions,
+  BackoffSupervisorOptionsType,
   ResetCounter,
   ForwardStrategy,
+  TerminationTrigger,
 } from './pattern/index.js';
 export {
   Router,
@@ -202,15 +224,20 @@ export {
 export type { ScatterGatherOptionsType } from './ScatterGatherOptions.js';
 
 
-// Configuration (HOCON with code overrides).
+// Configuration (HOCON with code overrides).  `ConfigKeys` is the typed list
+// of paths the framework reads — the single source of truth `reference.conf`
+// is checked against — so an application layering its own HOCON on top needs
+// to name it rather than retype the strings (#1403).
 export {
   Config,
   ConfigError,
+  ConfigKeys,
   parseDuration,
   parseSize,
   parseHocon,
   resolveSubstitutions,
   deepMerge,
+  isPlainObject,
   REFERENCE_CONF,
 } from './config/index.js';
 export type { LoadOptions, ConfigObject, ConfigValue } from './config/index.js';
@@ -230,9 +257,78 @@ export {
   ActorSystemTerminateReason,
   ClusterLeavingReason,
   ClusterDowningReason,
+  ClusterJoinUnsuccessfulReason,
   ProcessTerminateReason,
 } from './CoordinatedShutdown.js';
 export type { ShutdownTask, PhaseDefinition } from './CoordinatedShutdown.js';
+
+// Coordinated Startup (the phase graph the system runs as the last step of
+// `create`, awaited through `system.whenReady()` — #1473).
+export {
+  CoordinatedStartup,
+  CoordinatedStartupId,
+  StartupPhases,
+  StartupFailedReason,
+} from './CoordinatedStartup.js';
+export type { StartupTask } from './CoordinatedStartup.js';
+export {
+  CoordinatedStartupOptions,
+  CoordinatedStartupOptionsBuilder,
+  CoordinatedStartupOptionsValidator,
+  DEFAULT_STARTUP_PHASE_TIMEOUT_MS,
+} from './CoordinatedStartupOptions.js';
+export type {
+  CoordinatedStartupOptionsType,
+  StartupTaskRegistration,
+} from './CoordinatedStartupOptions.js';
+
+// Parallelism — actors on worker threads from configuration alone (#1563).
+// Folded into the root rather than published as a subpath, like
+// `diagnostics`: one options family a consumer meets while configuring the
+// system, the extension id for `system.extension(...)`, and the pending ref
+// because `instanceof` on what `spawn` returned is a legitimate question for
+// a test to ask.  Everything the folded barrel emits is here, which
+// `tests/unit/ExportSurface.test.ts` holds it to.
+export {
+  ParallelismExtension,
+  ParallelismExtensionId,
+  ParallelismOptions,
+  ParallelismOptionsBuilder,
+  ParallelismOptionsValidator,
+  PendingRemoteActorRef,
+  DEFAULT_PARALLELISM_WORKERS,
+  DEFAULT_PARALLELISM_OFFLOAD,
+  DEFAULT_PARALLELISM_PLACEMENT,
+  DEFAULT_PARALLELISM_LEADER,
+  DEFAULT_PARALLELISM_SPAWN_TIMEOUT_MS,
+  DEFAULT_PARALLELISM_BUFFER_SIZE,
+} from './parallelism/index.js';
+// Function-level offload (#1558): what `context.offload(task, args)` needs
+// in scope — the task naming, the extension id and the errors a run rejects
+// with.  The pool class and its options family stay on `actor-ts/worker`.
+export {
+  defineOffloadTask,
+  OffloadExtensionId,
+  OffloadTaskError,
+  OffloadArgumentsError,
+  OffloadQueueFullError,
+  OffloadTimeoutError,
+  OffloadAbortedError,
+  OffloadWorkerLostError,
+  OffloadPoolUnavailableError,
+} from './worker/index.js';
+export type { OffloadTask, OffloadRunOptions } from './worker/index.js';
+export type {
+  ParallelismOptionsType,
+  PlacementStrategy,
+  MeshLeader,
+  ParallelismSpawnMessage,
+  ParallelismSpawnedMessage,
+  ParallelismSpawnFailedMessage,
+  ParallelismTerminateMessage,
+  ParallelismTerminatedMessage,
+  ParallelismWireMessage,
+} from './parallelism/index.js';
 
 // Dead-letter queue — capture, inspection and replay of undeliverable
 // messages.  Reached at runtime through `system.deadLetterQueue`; what the
@@ -249,6 +345,7 @@ export {
   DeadLetterQueueOptionsBuilder,
   DeadLetterQueueOptionsValidator,
   defaultDeadLetterPersistenceId,
+  readDeadLetterQueueOptionsFromConfig,
 } from './deadletters/index.js';
 export type {
   CapturedPayload,
@@ -265,6 +362,45 @@ export type {
   UnknownEntryResult,
   UnresolvedRecipientResult,
 } from './deadletters/index.js';
+
+// Diagnostics — `actor-ts.diagnostics.*`, what the runtime says about
+// itself: the dead-letter log record and its throttle, the boot config dump,
+// and the three debug traces.  The family is reachable so
+// `ActorSystemOptions.withDiagnostics(...)` has something to name, and so the
+// published defaults can be read back rather than restated;
+// `configDumpLines` renders the same text the boot dump writes, for an
+// application that wants it at a moment of its own choosing.
+export {
+  configDumpLines,
+  DEFAULT_DEBUG_EVENT_STREAM,
+  DEFAULT_DEBUG_LIFECYCLE,
+  DEFAULT_DEBUG_UNHANDLED,
+  DEFAULT_LOG_CONFIG_ON_START,
+  DEFAULT_LOG_DEAD_LETTERS,
+  DEFAULT_LOG_DEAD_LETTERS_DURING_SHUTDOWN,
+  DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS,
+  DiagnosticsOptions,
+  DiagnosticsOptionsBuilder,
+  DiagnosticsOptionsValidator,
+  readDiagnosticsOptionsFromConfig,
+  DEFAULT_MESSAGE_BOUNDARY_SERIALIZER_ROUND_TRIP,
+  DEFAULT_MESSAGE_BOUNDARY_STRUCTURED_CLONE,
+  MessageBoundaryOptions,
+  MessageBoundaryOptionsBuilder,
+  MessageBoundaryOptionsValidator,
+  readMessageBoundaryOptionsFromConfig,
+  MessageBoundaryCheck,
+  MessageBoundaryError,
+  describeMessageType,
+  structuredCloneProblem,
+} from './diagnostics/index.js';
+export type {
+  DiagnosticsOptionsType,
+  ResolvedDiagnostics,
+  MessageBoundaryMode,
+  MessageBoundaryOptionsType,
+  MessageBoundaryHost,
+} from './diagnostics/index.js';
 
 // ProcessSignal — the POSIX signal names `installProcessHooks` and the
 // cluster bootstrap's `shutdownOnSignals` accept.  A verbatim mirror of
@@ -291,6 +427,10 @@ export {
   PriorityMailboxOptions,
   PriorityMailboxOptionsBuilder,
   PriorityMailboxOptionsValidator,
+  ControlAwareMailbox,
+  ControlAwareMailboxOptions,
+  ControlAwareMailboxOptionsBuilder,
+  ControlAwareMailboxOptionsValidator,
 } from './mailbox/index.js';
 export type {
   DropReportingMailbox,
@@ -302,6 +442,7 @@ export type {
   PriorityMailboxOptionsType,
   PriorityMailboxOverflow,
   PriorityFunction,
+  ControlAwareMailboxOptionsType,
 } from './mailbox/index.js';
 
 

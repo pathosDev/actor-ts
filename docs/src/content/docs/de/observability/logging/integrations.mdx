@@ -50,7 +50,9 @@ Protobuf-Bibliothek, ohne OpenTelemetry-SDK:
 
 `service.name` fällt auf den Namen des Actor-Systems zurück — worauf ein
 Backend gruppiert, sollte sagen, wie der *Dienst* heißt, nicht wie die
-Bibliothek heißt.  Mit `serviceName` überschreibbar.
+Bibliothek heißt.  Mit `serviceName` überschreibbar, in HOCON mit
+`service-name`; das leere `service-name`, das `reference.conf` mitliefert,
+gilt als nicht gesetzt.
 
 Die Level bilden auf die OTel-Severity-Bänder ab: `debug` → 5, `info` → 9,
 `warn` → 13, `error` → 17, jeweils mit passendem `severityText`.  Felder
@@ -68,8 +70,15 @@ Releases brechen dürfen.  Ein festes Wire-Format ist die sicherere
 Grundlage.
 
 Wenn du das OTel-SDK ohnehin betreibst und Records durch *dessen* Pipeline
-schicken willst, nimm `otelLogger()` — dieser Weg nimmt dein Import und
-emittiert über den `LoggerProvider` des SDKs.
+schicken willst, gib dem System dein Import mit
+`ActorSystemOptions.withOtelLogs(...)` — der
+[Weg, den das Framework selbst übernimmt](/de/fundamentals/logging/#otlp-logs-pipeline--withotellogs):
+Es baut den Logger bei `ActorSystem.create`, benennt ihn nach
+`actor-ts.tracing.logger-name` und emittiert über den `LoggerProvider` des
+SDKs.  `otelLogger()` ist dieselbe Brücke als reine Funktion, für
+`withLogger`.  Beide ersetzen diesen Sink, statt neben ihm zu laufen.  Das
+eigene Leaf `scope-name` dieses Sinks — das `actor-ts` im `scope` der Anfrage
+oben — benennt nur die Records dieses Sinks, nie die des OTel-Loggers.
 
 ### Retries
 
@@ -144,7 +153,13 @@ kleiner; schick ihn stattdessen über TCP.
 `max-chunk-bytes` ist standardmäßig 1420 und hält damit das ganze Paket
 innerhalb einer 1500-Byte-Ethernet-MTU, mit Platz für einen Tunnel-Header.
 Ein höherer Wert funktioniert im LAN und fragmentiert still, sobald der
-Verkehr durch irgendetwas Gekapseltes läuft.
+Verkehr durch irgendetwas Gekapseltes läuft.  Der Wert ist eine Bytegröße
+wie jeder andere Größen-Key — `8K` und `8192` meinen dasselbe — und muss
+eine ganze Zahl von Bytes zwischen 512 und 65467 ergeben.  Eine Größe, die
+nicht ganz ist, wird abgelehnt statt gerundet, ob mit Einheit oder ohne:
+`1420.5B` scheitert als
+`Invalid size: 1420.5B is not a whole number of bytes`, und `1420.5` mit
+einem Fehler, der den Key nennt.
 
 ### Sicherheit der Feldnamen
 
@@ -168,6 +183,22 @@ const gelfSinkOptions = GelfSinkOptions.create()
   .withHost('graylog.internal')
   .withTls({ ca: process.env['GRAYLOG_CA']! });
 ```
+
+### Wenn Graylog nicht antwortet
+
+Über `tcp` wird ein Batch geschrieben, sobald die Verbindung offen ist — über
+TLS, sobald der Handshake abgeschlossen ist —, der erste Batch auf einer
+frischen Verbindung kommt also an wie jeder andere. Ein Graylog, das die
+Verbindung ablehnt, lässt den Batch sofort scheitern, und zwar wiederholbar:
+Er wird nach dem
+[`delivery`](/de/observability/logging/multi-sink/#gebündelte-zustellung)-Plan
+des Sinks erneut versucht und erst verworfen und gemeldet, wenn der
+ausgeschöpft ist. Eines, das gar nicht antwortet — ein verworfenes SYN, eine
+Firewall, die verwirft —, wird nach **10 s** für TCP-Connect und TLS-Handshake
+zusammen aufgegeben und lässt den Batch genauso scheitern. Ohne diese Grenze
+wartete ein Versuch auf das Connect-Timeout des Betriebssystems, 21 s unter
+Windows und etwa zwei Minuten unter Linux, und jeder Record dahinter wartete
+mit. Die 10 s sind fest; noch setzt keine Option sie.
 
 ## Parseable
 
@@ -469,6 +500,15 @@ Empfänger also nicht dazu bringen, den Rahmen zu früh abzuschneiden.
 
 TLS-Material gibt es nur im Code, ohne HOCON-Leaf: Diese Felder tragen
 Zertifikat und Schlüssel selbst.
+
+### Wenn der Collector nicht antwortet
+
+`tcp` und `tls` verhalten sich wie GELF über TCP
+([oben](#wenn-graylog-nicht-antwortet)): Ein Batch wird geschrieben, sobald die
+Verbindung offen ist — über `tls`, sobald der Handshake abgeschlossen ist —,
+eine abgelehnte Verbindung lässt den Batch sofort und wiederholbar scheitern,
+und ein Collector, der gar nicht antwortet, wird nach festen **10 s** für
+Connect und Handshake zusammen aufgegeben.
 
 ## Verwandt
 

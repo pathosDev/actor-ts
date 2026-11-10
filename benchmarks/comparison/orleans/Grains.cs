@@ -56,6 +56,11 @@ public interface IPingGrain : IGrainWithStringKey
     Task<int> Volley(int exchanges);
 }
 
+public interface IParallelWorkerGrain : IGrainWithStringKey
+{
+    Task<int> Work(int seed, int rounds);
+}
+
 internal sealed class NoopGrain : Grain, INoopGrain
 {
     public Task<int> Touch() => Task.FromResult(1);
@@ -93,6 +98,46 @@ internal sealed class EchoGrain : Grain, IEchoGrain
 internal sealed class PongGrain : Grain, IPongGrain
 {
     public Task Pong() => Task.CompletedTask;
+}
+
+/// <summary>
+/// One independent worker of the <c>parallel-workload</c> rows: burns the rounds
+/// it is handed and returns the result.  A grain per index, activated by the
+/// first call — the virtual-actor analogue of a spawned worker.
+/// </summary>
+internal sealed class ParallelWorkerGrain : Grain, IParallelWorkerGrain
+{
+    public Task<int> Work(int seed, int rounds) => Task.FromResult(Workload.WorkRounds(seed, rounds));
+}
+
+/// <summary>The CPU work of <c>parallel-workload</c>, mirrored from js/workload.ts bit for bit.</summary>
+internal static class Workload
+{
+    /// <summary>Mirrors <c>actorCount</c> of the <c>parallel-workload</c> rows in js/workload.ts.</summary>
+    internal const int ParallelActors = 64;
+
+    /// <summary>
+    /// xorshift32 on 32-bit lanes with a logical right shift, so <c>uint</c>
+    /// here and JavaScript's <c>&gt;&gt;&gt; 0</c> produce the same state.
+    /// </summary>
+    internal static int WorkRounds(int seed, int rounds)
+    {
+        var x = unchecked((uint)seed);
+        for (var i = 0; i < rounds; i++)
+        {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+        }
+        return unchecked((int)x);
+    }
+
+    /// <summary>Mirrors <c>workSeed</c> in js/workload.ts: never zero, because xorshift is stuck there.</summary>
+    internal static int WorkSeed(int actorIndex, int messageIndex)
+    {
+        var seed = unchecked((uint)(actorIndex + 1) * 0x9E3779B1u ^ (uint)(messageIndex + 1) * 0x85EBCA77u);
+        return seed == 0 ? 1 : unchecked((int)seed);
+    }
 }
 
 internal sealed class PingGrain : Grain, IPingGrain

@@ -3,8 +3,8 @@ title: Request timeout
 description: requestTimeout() races a handler against a deadline and returns 503 when it wins. Bounds client-observed latency; the handler is not cancelled.
 ---
 
-`requestTimeout(ms)` races the handler against a deadline and returns `503`
-if the deadline wins.
+`requestTimeout(deadlineMs)` races the handler against a deadline and returns
+`503` if the deadline wins.
 
 ```ts
 import { requestTimeout, withMiddleware } from 'actor-ts/http';
@@ -15,21 +15,69 @@ const routes = withMiddleware(requestTimeout(5000), appRoutes);
 Pass options for a custom response:
 
 ```ts
-import { TimeoutOptions } from 'actor-ts/http';
+import { completeJson, requestTimeout, Status, TimeoutOptions, withMiddleware } from 'actor-ts/http';
 
-requestTimeout(
-  TimeoutOptions.create()
-    .withMs(5000)
-    .withOnTimeout((req) => completeJson(Status.ServiceUnavailable, { error: 'slow', path: req.path })),
-);
+const timeoutOptions = TimeoutOptions.create()
+  .withDeadlineMs(5000)
+  .withOnTimeout((request) => completeJson(Status.ServiceUnavailable, { error: 'slow', path: request.path }));
+
+const routes = withMiddleware(requestTimeout(timeoutOptions), appRoutes);
 ```
 
 ## Configuration
 
-| Builder method | Field | Default |
-| --- | --- | --- |
-| `withMs(ms)` | `ms` | `30000` |
-| `withOnTimeout(onTimeout)` | `onTimeout` | `503 { error: 'request timed out' }` |
+| Builder method | Field | Default | Config |
+| --- | --- | --- | --- |
+| `withDeadlineMs(deadlineMs)` | `deadlineMs` | `30000` | `deadline` |
+| `withOnTimeout(onTimeout)` | `onTimeout` | `503 { error: 'request timed out' }` | **code-only** — a function |
+
+The deadline is also settable from `actor-ts.http.request-timeout`. What
+`requestTimeout(...)` names in code wins, then the block, then the built-in
+30 s — so `requestTimeout()` with no argument takes its deadline from the
+configuration file:
+
+```hocon
+actor-ts.http.request-timeout {
+  deadline = 10s
+}
+```
+
+The merged deadline is validated once, when `bind()` compiles the route tree:
+one that is not positive, or longer than a timer can hold (2147483647 ms,
+about 24.9 days), fails `bind()` with an `OptionsError` instead of answering
+every request `503` at once.
+
+It is a different key from `actor-ts.http.server.request-timeout`, which
+bounds how long a peer takes to *send* a request and never a response. This
+one starts once the request has arrived and bounds the handler. See
+[Configuration → `actor-ts.http`](/reference/configuration/).
+
+On the [Hono backend](/http/backends/hono/) under Bun the deadline also sets
+the server's idle default. `Bun.serve` closes a connection whose handler has
+written nothing for its idle timeout, which would cut a slow handler before its
+`503` is sent, so while `actor-ts.http.server.idle-timeout` is unset the idle
+timeout follows the longest deadline on the server — this block's, raised to the
+longest `requestTimeout(...)` in the route tree — with room for the `503` to
+go first: 36 s for the built-in 30 s. Above about 250 s it cannot: `Bun.serve`
+holds at most 255 s, so the idle timeout stays there, a handler silent that
+long is still cut without a response, and `bind()` logs a warning naming the
+key and the deadline. A route that needs longer has to write something before
+then, or run on another backend: setting `idle-timeout` yourself chooses the
+bound, at most `255s`, but cannot carry it past that.
+
+Keep `idle-timeout` positive on that backend under Bun. `0` turns it off, and
+it is the only bound there on a request whose body stops arriving and on a
+connection left idle between requests — `header-timeout`, `request-timeout`
+and `max-connections` cannot be installed on that pair — so with `0` such a
+connection stays open until the client closes it. Measured on bun 1.4.2: a
+body announced at 10 bytes that stopped after 1 was still open after 40 s
+under `0`, and closed at 36 s with the key unset.
+
+The block reaches `requestTimeout()` through a hook that `compile()` resolves,
+so hand the middleware to `withMiddleware(...)` as it is. Wrapped in a function
+of your own it runs on its code options and the built-in default, and when the
+block is configured and nothing in the tree read it, `bind()` logs a warning
+naming it.
 
 import { Aside } from '@astrojs/starlight/components';
 

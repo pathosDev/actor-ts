@@ -1,6 +1,6 @@
 ---
 title: Supply chain
-description: What the release pipeline guarantees about a published actor-ts version — npm provenance, a CycloneDX SBOM from the next release onward, CodeQL analysis and an advisory gate over the real lockfile — and how to verify each of them yourself.
+description: What the release pipeline guarantees about a published actor-ts version — npm provenance, a CycloneDX SBOM from v0.17.0 onward, CodeQL analysis and an advisory gate over the real lockfile — and how to verify each of them yourself.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -14,21 +14,32 @@ about code you write. It answers one question: **how much of
 | Artifact | Where | What it proves |
 | --- | --- | --- |
 | **npm provenance attestation** | The npm registry, on the published tarball | Which commit and which workflow run produced these bytes. |
-| **CycloneDX SBOM** | Attached to the GitHub Release as `actor-ts-sbom.cyclonedx.json`, from the next release onward | The exact dependency closure that was installed when the release was built. |
+| **CycloneDX SBOM** | Attached to the GitHub Release as `actor-ts-sbom.cyclonedx.json`, from v0.17.0 onward | The exact dependency closure that was installed when the release was built. |
 | **CHANGELOG entry** | `CHANGELOG.md` | Security-relevant changes get their own `Security` section. |
 
-<Aside type="note" title="The SBOM starts with the next release">
+<Aside type="note" title="The SBOM starts with v0.17.0">
 The two jobs that build and attach it landed in `publish.yml` *after*
-v0.16.0 was published, so no release you can download today carries the
-asset — `gh release view v0.16.0 --json assets` answers with an empty
-list. The first release cut by the current pipeline is the first one to
-carry it. The other two rows hold for every release already published.
+v0.16.0 was published, so **v0.17.0 is the first release that carries the
+asset** — it was the first one cut by the current pipeline. Every earlier
+release has none: `gh release view v0.16.0 --json assets` still answers
+with an empty list. The other two rows hold for every release already
+published.
 </Aside>
 
 Publishing runs through **npm Trusted Publishing (OIDC)** — the
 workflow exchanges a short-lived GitHub identity token for a
 one-shot publish token. There is no long-lived npm token stored
 anywhere, so there is none to leak.
+
+The publishing job runs in the GitHub environment `npm`, and that
+environment is what decides who may publish (#704). GitHub starts the
+job only on a ref the environment allows — a `v*` tag or the `main`
+branch — and holds it until a maintainer approves the run. The Trusted
+Publisher on npmjs.com is registered with the same environment name, so
+npm refuses a publish token to any run that does not carry it. A
+branch pushed by an account with write access therefore cannot publish
+a version of its own, whether through a manual dispatch or through an
+edited copy of the workflow.
 
 ### Verifying provenance
 
@@ -62,7 +73,7 @@ you would first have to check out.
 <Aside type="caution" title="The dependency graph is not the SBOM">
 GitHub's dependency graph for this repository does **not** resolve
 the root Bun lockfile — it records the unresolved ranges out of
-`package.json` (`fastify ^5.10.0`), and misses transitive packages
+`package.json` (`fastify ^5.12.8`), and misses transitive packages
 entirely. Anything derived from that graph, including Dependabot
 alerts and `actions/dependency-review-action`, is describing
 something other than what shipped. The SBOM is generated from the
@@ -73,9 +84,9 @@ installed tree instead.
 
 Four checks stand between a change and a release. They run on pull
 requests — the advisory gate only when the pull request touches
-`src/**` or a manifest, which is its path filter, so a docs-only
-one does not wait for it; the two that can go stale without anybody
-committing also run on a schedule.
+`src/**` or a manifest or lockfile it audits, which is its path
+filter, so a prose-only one does not wait for it; the two that can go
+stale without anybody committing also run on a schedule.
 
 ### CodeQL
 
@@ -98,24 +109,40 @@ flagged months later with nobody having touched it.
 
 `bun audit` runs in `.github/workflows/package-health.yml` at
 `--audit-level=high` and fails the job on any new high or critical
-advisory. You can run exactly what CI runs:
+advisory. You can run exactly what CI runs — at the repository root
+for the shipped closure, and under `docs/` for the documentation
+site's:
 
 ```sh
 bun run lint:audit
 ```
 
-It reads `bun.lock`, so it sees the versions that actually ship —
-which is the whole reason it is `bun audit` rather than
-`actions/dependency-review-action`. It also runs on a weekly cron,
-because an advisory is published upstream against a lockfile that
-did not change; a push-triggered gate would not notice one until
-the next unrelated commit.
+It reads a lockfile rather than a manifest, so it sees the versions
+that actually ship — which is the whole reason it is `bun audit`
+rather than `actions/dependency-review-action`. And it reads every
+Bun lockfile CI installs, not only the shipped one: `bun.lock`,
+`docs/bun.lock` and `devtools-ui/bun.lock`, the last of them
+resolved inside the job that publishes to npm. The two nested
+closures went unaudited until the gate was widened and carried nine
+high advisories between them, every one with a fix inside its
+declared range, while the root gate stayed green; a test now fails
+when a workflow installs a Bun closure the job does not audit. The
+DevTools UI step writes the same flags out instead of going through
+a script, because that manifest is hashed into the embedded UI
+bundle and a script line there would force a rebuild of it. The gate
+also runs on a weekly cron, because an advisory is published upstream
+against a lockfile that did not change; a push-triggered gate would
+not notice one until the next unrelated commit.
 
-Advisories that were already present when the gate was introduced
-are suppressed by ID and listed in
+Nothing is suppressed. The gate landed with a baseline — eleven
+advisory IDs ignored so it could land green rather than land red
+and be ignored — and that baseline is gone: every one of them was
+fixed by a release inside the range `package.json` already
+declared, so refreshing `bun.lock` cleared them without widening
+anything. Any suppression added back has to be written up in
 [`SECURITY.md`](https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md),
-with the issue that removes them. A test fails if the suppression
-list and that table drift apart, so the set cannot grow quietly.
+and a test fails if the ignore list and that page drift apart, so
+the set cannot grow quietly.
 
 ### Pinned actions
 
@@ -139,6 +166,26 @@ tokens are read-only by default; a write scope sits on the single
 job that needs it, and no job that can write to the repository
 also runs third-party install scripts. The same test file asserts
 all three.
+
+That last rule covers the publishing credential, not just the
+ones that write to the repository. `id-token: write` mints the
+OIDC token npm exchanges for a one-shot publish token, so a job
+holding it can ship a release — which makes it the worst scope of
+all to run a dependency tree beside. The release workflow
+therefore builds, tests and packs the tarball in a job that holds
+no credential, and publishes that artifact from a job that
+neither checks out the repository nor installs anything. The two
+communicate only through the packed tarball, and the version
+guard reads its version out of those same bytes rather than out
+of a second copy of the tree.
+
+`trustedDependencies: []` in the root `package.json` closes the
+other half. Bun runs a dependency's install scripts only for
+packages named there, and an empty list is the honest description
+of this closure today — nothing in it has an install script. The
+point is what happens next: a dependency that acquires one shows
+up as a `bun pm untrusted` line to be looked at, instead of
+simply running.
 
 ## Reporting something
 

@@ -18,8 +18,14 @@ name: actor-ts-integration-yugabytedb
 
 services:
   yugabytedb:
-    # `latest` deliberately — surface upstream regressions as soon as they ship.
-    image: yugabytedb/yugabyte:latest
+    # Pinned to the release `latest` resolved to when the pin was written, and
+    # Dependabot moves it (#1597): a new YugabyteDB arrives as a PR that runs this
+    # suite, so an upstream regression still surfaces within a day — attributable
+    # to the bump, instead of turning the nightly red underneath a run.
+    # Production users pin their own version.
+    # The `-bN` build suffix changes with every release, and Dependabot only
+    # proposes tags whose suffix matches, so this pin moves by hand.
+    image: yugabytedb/yugabyte:2026.1.1.2-b9
     # `yugabyted` brings up a single-node cluster with YSQL enabled.  Staying in
     # the foreground is what lets compose manage the lifecycle.
     command: bin/yugabyted start --daemon=false --background=false

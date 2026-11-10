@@ -121,8 +121,9 @@ try {
 ```
 
 Das Timeout ist im Geiste verpflichtend — der Default von 5 Sekunden
-fängt den Fall, in dem du vergessen hast, darüber nachzudenken.  Tune
-pro Aufrufstelle:
+fängt den Fall, in dem du vergessen hast, darüber nachzudenken.  Dieser
+Default ist systemweit über `actor-ts.actor.ask-timeout` einstellbar;
+ein Argument pro Aufruf gewinnt immer dagegen.  Tune pro Aufrufstelle:
 
 - Günstige In-Process-Antworten: 100-500 ms.
 - Cross-Cluster-Lookups: 1-5 s, je nach Netzwerkerwartungen.
@@ -171,12 +172,54 @@ Tippfehler, um dort anzukommen: ein berechnetes Budget wird negativ,
 sobald seine Deadline verstrichen ist, und ein untypisierter
 Konfigurationswert kommt so an, wie er geparst wurde.
 
-Für den 5-Sekunden-Default **lässt du das Argument weg** (oder
-übergibst `undefined`) — der Parameter-Default greift weiterhin:
+Für die Default-Frist **lässt du das Argument weg** (oder übergibst
+`undefined`):
 
 ```ts
 const value = await counter.ask<number>({ kind: 'get' });
 ```
+
+### Den Default für das ganze System ändern
+
+`actor-ts.actor.ask-timeout` ist das, worauf ein weggelassenes Argument
+hinausläuft.  Ausgeliefert wird `5s`:
+
+```hocon
+actor-ts {
+  actor {
+    ask-timeout = 2s
+  }
+}
+```
+
+Drei Dinge sind vor dem Setzen wissenswert.
+
+**Der Wert erreicht die meisten Refs, aber nicht alle.**  Eine Ref
+wendet den konfigurierten Wert nur an, wenn sie das `ActorSystem`
+erreichen kann, das ihn gelesen hat — was der gewöhnlichen lokalen Ref,
+`TestProbe`, `RemoteActorRef`, `ClusterSingletonProxy`, den beiden
+Shard-Refs und `EntityRef` gelingt.  Die Dead-Letter-Ref, `Nobody`, eine
+Ref auf einen nicht aufgelösten Pfad und die einmalige Antwort-Ref
+können es nicht und behalten die eingebauten 5 s — ebenso zwei
+Framework-interne Handles, auf die nichts antworten kann.  Jede Ref
+dieser Gruppe hält man genau dort, wo kein lebender Actor
+dahintersteht — ein Ask darauf wartet ohnehin auf eine Antwort, die nie
+kommt.
+
+**Ein Wert, der keine Frist setzt, wird abgelehnt statt geklemmt.**
+`ask-timeout = 0` (oder ein negativer Wert) wirft in
+`ActorSystem.create` und nennt den Key — dieselbe Regel wie beim
+positionalen Argument, nur angewandt beim Lesen der Konfiguration statt
+später an jeder Ask-Stelle.
+
+**Achte auf das Zusammenspiel mit dem Scatter-Gather-Routing.**  Ein
+Router aus `Router.scatterGatherFirstCompleted(…)` hat 4,5 s als
+Default, damit er die fehlgeschlagenen Routees benennen kann, bevor das
+Ask des Aufrufers aufgibt.  Ein Ask-Default unter 4,6 s dreht das um,
+und du bekommst `AskTimeoutError` statt der Diagnose; das System
+schreibt in diesem Fall beim Start eine `warn`-Zeile.  Gib dem Router
+mit `ScatterGatherOptions.withTimeoutMs()` seine eigene Frist, wenn die
+kürzere Ask-Frist gewollt ist.
 
 ## Mit einem Error antworten
 

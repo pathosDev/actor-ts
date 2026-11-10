@@ -1,0 +1,499 @@
+import { readFileSync } from 'node:fs';
+import { afterEach, describe, expect, test } from 'bun:test';
+import { ActorSystem } from '../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
+import { Config } from '../../../src/config/Config.js';
+import {
+  applyServerOptions,
+  enforceMaxConnections,
+  type HttpServerBackend,
+  type NodeHttpServerLike,
+  type RouteRegistration,
+  type ServerBinding,
+} from '../../../src/http/backend/HttpServerBackend.js';
+import { HttpExtensionId, type ServerBuilder } from '../../../src/http/HttpExtension.js';
+import { HttpServerOptions } from '../../../src/http/HttpServerOptions.js';
+import { requestTimeout } from '../../../src/http/middleware/Timeout.js';
+import { completeText, get, path, withMiddleware, type Route } from '../../../src/http/Route.js';
+import { LogLevel } from '../../../src/Logger.js';
+import { RecordingLogger, type RecordedLog } from '../../util/RecordingLogger.js';
+
+/**
+ * #870 — an `actor-ts.http.server` bound the backend could not put into effect
+ * is said out loud at `bind()`, once, by name.
+ *
+ * All three backends used to discard what `applyServerOptions` reported, so an
+ * operator who set `max-connections` on the Hono backend under Bun — where
+ * `Bun.serve` exposes no server for any of these bounds — got a server that
+ * accepted every connection and a log that said nothing about it.  Measured on
+ * the tree before this report: two records at bind, neither a warning.
+ *
+ * Under `bun test` the Hono backend runs on `Bun.serve`, so it is the backend
+ * that installs none of the four; Fastify and Express hand over a `node:http`
+ * server and install all of them.
+ *
+ * "Set" means what the deployment chose: a field named in `withServerOptions`,
+ * or a leaf of the HOCON block that differs from what `reference.conf` ships —
+ * the rule the unread-middleware warning uses too.  The shipped `header-timeout`
+ * and `request-timeout` are in every resolved policy, and a warning for them on
+ * every Hono-on-Bun bind would be noise about a choice nobody made.
+ */
+
+const running: Array<{ system: ActorSystem; binding: ServerBinding }> = [];
+afterEach(async () => {
+  while (running.length) {
+    const { system, binding } = running.pop()!;
+    await binding.unbind();
+    await system.terminate();
+  }
+});
+
+const routes = path('', get(() => completeText(200, 'ok')));
+
+const INERT_BLOCK = `
+  max-connections = 5
+  request-timeout = 20s
+`;
+
+type Bound = { readonly binding: ServerBinding; readonly records: readonly RecordedLog[]; readonly warnings: readonly string[] };
+
+/** Bind `boundRoutes` under `hocon` with `configure` applied, and hand back the binding and what the system logged. */
+async function bindUnder(
+  hocon: string,
+  configure: (builder: ServerBuilder) => ServerBuilder = (builder) => builder,
+  boundRoutes: Route = routes,
+): Promise<Bound> {
+  const logger = new RecordingLogger(LogLevel.Info);
+  const options = ActorSystemOptions.create()
+    .withLogger(logger)
+    .withLogLevel(LogLevel.Info)
+    .withConfig(Config.parseString(hocon));
+  const system = ActorSystem.create('http-server-options-report', options);
+  const binding = await configure(system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0)).bind(boundRoutes);
+  running.push({ system, binding });
+  const warnings = logger.records.filter((record) => record.level === 'warn').map((record) => record.message);
+  return { binding, records: logger.records, warnings };
+}
+
+/** HOCON selecting `backend`, with an `actor-ts.http.server` block only when one is given. */
+const onBackend = (backend: string, serverBlock?: string): string =>
+  serverBlock === undefined
+    ? `actor-ts.http.backend = ${backend}`
+    : `actor-ts.http { backend = ${backend}, server { ${serverBlock} } }`;
+
+describe('a configured server bound the backend did not install is reported at bind()', () => {
+  test('on the Hono backend, once, naming every key it left inert and the backend', async () => {
+    const { binding, records, warnings } = await bindUnder(onBackend('hono', INERT_BLOCK));
+
+    expect(warnings, 'an inert actor-ts.http.server block was bound in silence').toHaveLength(1);
+    const [warning] = warnings as [string];
+    expect(warning.startsWith(`[http] ${binding.host}:${binding.port}: `), warning).toBe(true);
+    expect(warning).toContain('actor-ts.http.server.max-connections');
+    expect(warning).toContain('actor-ts.http.server.request-timeout');
+    expect(warning).toContain('"hono"');
+    // Nobody set these two, so the warning has no business naming them.
+    expect(warning).not.toContain('header-timeout');
+    expect(warning).not.toContain('idle-timeout');
+    // After the bound line, so it names the port actually taken.
+    const boundAt = records.findIndex((record) => record.level === 'info' && record.message.startsWith('HTTP server bound on'));
+    const warnedAt = records.findIndex((record) => record.level === 'warn');
+    expect(boundAt).toBeGreaterThanOrEqual(0);
+    expect(warnedAt).toBeGreaterThan(boundAt);
+  });
+
+  test('the binding bind() returns carries the backend\'s report', async () => {
+    const { binding } = await bindUnder(onBackend('hono', INERT_BLOCK));
+
+    // The two caps fixed when the server is built are absent rather than
+    // false: INERT_BLOCK sets neither, so there was nothing to build in.
+    expect(binding.serverOptionsReport).toEqual({
+      idleTimeoutMs: false,
+      headerTimeoutMs: false,
+      requestTimeoutMs: false,
+      maxConnections: false,
+    });
+    expect(binding.serverOptionsReport).not.toHaveProperty('maxContentLength');
+    expect(binding.serverOptionsReport).not.toHaveProperty('maxHeaderBytes');
+  });
+
+  test('max-header-bytes on the Hono backend under Bun is named in the warning — Bun.serve has no per-server header cap', async () => {
+    // The "reported unavailable" half of the header cap (#1488): Bun.serve and
+    // Deno.serve take no per-server maxHeaderSize, so the runner applies
+    // nothing and bind() says so rather than binding a cap that holds nothing.
+    const { binding, warnings } = await bindUnder(onBackend('hono', 'max-header-bytes = 1KiB'));
+
+    expect(binding.serverOptionsReport?.maxHeaderBytes).toBe(false);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('actor-ts.http.server.max-header-bytes');
+    expect(warnings[0]).toContain('"hono"');
+  });
+
+  test.each(['fastify', 'express'])('max-header-bytes is in effect on %s, which builds its server with it, and nothing is said', async (backend) => {
+    const { binding, warnings } = await bindUnder(onBackend(backend, 'max-header-bytes = 1KiB'));
+
+    expect(binding.serverOptionsReport?.maxHeaderBytes).toBe(true);
+    expect(warnings).toEqual([]);
+  });
+
+  test('an unset max-header-bytes is absent from the report on every backend — there was nothing to build in', async () => {
+    for (const backend of ['fastify', 'express', 'hono']) {
+      const { binding } = await bindUnder(onBackend(backend));
+      expect(binding.serverOptionsReport).not.toHaveProperty('maxHeaderBytes');
+    }
+  });
+
+  test.each(['fastify', 'express', 'hono'])('max-content-length is in effect on %s — each backend caps bodies itself — and never warned', async (backend) => {
+    // The one bound every shipped backend holds wherever it runs: the body cap
+    // is the backend's own code, not a property of a node:http server, so
+    // Hono under Bun holds it as Fastify and Express do (#1488).
+    const { binding, warnings } = await bindUnder(onBackend(backend, 'max-content-length = 4KiB'));
+
+    expect(binding.serverOptionsReport?.maxContentLength).toBe(true);
+    expect(warnings).toEqual([]);
+  });
+
+  test.each(['fastify', 'express'])('the same block on %s is in effect, and nothing is said', async (backend) => {
+    const { binding, warnings } = await bindUnder(onBackend(backend, INERT_BLOCK));
+
+    expect(warnings).toEqual([]);
+    expect(binding.serverOptionsReport?.maxConnections).toBe(true);
+    expect(binding.serverOptionsReport?.requestTimeoutMs).toBe(true);
+  });
+
+  test('withServerOptions values are reported like HOCON ones', async () => {
+    const serverOptions = HttpServerOptions.create()
+      .withHeaderTimeoutMs(10_000)
+      .withMaxConnections(5);
+    const { warnings } = await bindUnder(onBackend('hono'), (builder) => builder.withServerOptions(serverOptions));
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('actor-ts.http.server.header-timeout');
+    expect(warnings[0]).toContain('actor-ts.http.server.max-connections');
+    expect(warnings[0]).not.toContain('request-timeout');
+  });
+
+  test('an unset block is never warned — the shipped header-timeout and request-timeout are nobody\'s choice', async () => {
+    const { warnings } = await bindUnder(onBackend('hono'));
+
+    expect(warnings).toEqual([]);
+  });
+
+  test('a block set to exactly its shipped values is not warned either', async () => {
+    // The same rule the unread-middleware warning applies: a value equal to
+    // what reference.conf ships configures exactly what not setting it does.
+    const { warnings } = await bindUnder(onBackend('hono', 'header-timeout = 60s\nrequest-timeout = 300s'));
+
+    expect(warnings).toEqual([]);
+  });
+
+  test('Infinity is the code spelling of an unset cap, and is not warned', async () => {
+    const serverOptions = HttpServerOptions.create().withMaxConnections(Infinity);
+    const { warnings } = await bindUnder(onBackend('hono'), (builder) => builder.withServerOptions(serverOptions));
+
+    expect(warnings).toEqual([]);
+  });
+
+  test('the layer that wins a field decides whether it was set — a HOCON cap lifted in code is not warned', async () => {
+    // The configured 5 governs nothing once code says Infinity, so a warning
+    // naming it would send the operator after a key that is not in play.
+    const serverOptions = HttpServerOptions.create().withMaxConnections(Infinity);
+    const { warnings } = await bindUnder(
+      onBackend('hono', 'max-connections = 5'),
+      (builder) => builder.withServerOptions(serverOptions),
+    );
+
+    expect(warnings).toEqual([]);
+  });
+
+  test('a server whose connection event never fires is still reported as guarded — the one gap the report cannot see', () => {
+    // Pinned rather than fixed, for the case that is left.  Deno's node:http
+    // shim offers `on` but never emits 'connection' — a complete request fires
+    // 'request' and nothing else (deno 2.6.8).  On Deno itself the runtime
+    // gives that away, so both guards install nothing there and report
+    // themselves not in effect, and bind() warns (HeaderDeadlineOnDeno.test.ts,
+    // ConnectionCapOnDeno.test.ts).  What the report still cannot see is an
+    // event-less server on a runtime not known to lack the event, which is what
+    // this shim is under `bun test`: nothing at install time tells it from
+    // Node's, and seeing it would mean noticing the first 'request' that
+    // arrives with no 'connection' before it — after the bind-time warning has
+    // run.  The day the report learns that, this case goes red.
+    const listeners = new Map<string, Array<(...args: ReadonlyArray<unknown>) => void>>();
+    const record = (event: string, listener: (...args: ReadonlyArray<unknown>) => void): unknown => {
+      listeners.set(event, [...(listeners.get(event) ?? []), listener]);
+      return undefined;
+    };
+    const shim: NodeHttpServerLike = { on: record as NodeHttpServerLike['on'] };
+
+    const report = applyServerOptions(shim, { headerTimeoutMs: 1_000, maxConnections: 1 });
+    const cap = enforceMaxConnections(shim, 1);
+    // What the shim does emit: one 'request' per complete request, never a
+    // 'connection' — so the cap counts nothing and no deadline is ever armed.
+    for (let i = 0; i < 3; i++) {
+      for (const listener of listeners.get('request') ?? []) listener({}, {});
+    }
+
+    expect(report.headerTimeoutMs).toBe(true);
+    expect(report.maxConnections).toBe(true);
+    expect(cap()).toEqual({ installed: true, seen: 0, refused: 0, held: 0 });
+  });
+
+  test('idle-timeout set on the Hono backend under Bun is in effect and no longer named — Bun.serve holds it (#1487)', async () => {
+    // Beside a key Bun still cannot hold, so the warning that remains shows
+    // the idle timeout is left out of it rather than the warning gone.  36 s
+    // and not less: under the built-in 30 s deadline a shorter value can cut a
+    // silent handler before its 503, which has a warning of its own (below).
+    const { binding, warnings } = await bindUnder(onBackend('hono', 'idle-timeout = 36s\nmax-connections = 5'));
+
+    expect(binding.serverOptionsReport?.idleTimeoutMs).toBe(true);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('actor-ts.http.server.max-connections');
+    expect(warnings[0]).not.toContain('idle-timeout');
+
+    const alone = await bindUnder(onBackend('hono', 'idle-timeout = 36s'));
+    expect(alone.warnings).toEqual([]);
+  });
+
+  describe('a derived idle timeout held at Bun\'s 255 s ceiling is said once at bind() (#1487)', () => {
+    // Bun closes a connection whose handler has written nothing for the idle
+    // timeout, so unset it is derived from the request deadline — and 255 s,
+    // all Bun.serve holds, covers a deadline up to 250 s and no further.
+    const heldAtCeiling = (warnings: readonly string[]): string[] =>
+      warnings.filter((warning) => warning.includes('the most this runtime can hold'));
+    // A tree whose requestTimeout() reads the configured deadline, so the
+    // block is not also reported as configured-but-unread.
+    const timedRoutes = path('', withMiddleware(requestTimeout(), get(() => completeText(200, 'ok'))));
+    const bindTimed = (hocon: string): Promise<Bound> => bindUnder(hocon, undefined, timedRoutes);
+
+    test('a configured deadline past 250 s, naming the key and the deadline it cannot cover', async () => {
+      const { binding, warnings } = await bindTimed('actor-ts.http { backend = hono, request-timeout { deadline = 300s } }');
+
+      expect(binding.serverOptionsReport?.idleTimeoutHeldAtCeilingMs).toBe(255_000);
+      expect(warnings).toHaveLength(1);
+      const [warning] = warnings as [string];
+      expect(warning.startsWith(`[http] ${binding.host}:${binding.port}: `), warning).toBe(true);
+      expect(warning).toContain('actor-ts.http.server.idle-timeout');
+      expect(warning).toContain('300000 ms');
+      expect(warning).toContain('255000 ms');
+      expect(warning).toContain('withIdleTimeoutMs');
+    });
+
+    test('a compiled requestTimeout() past 250 s under the built-in deadline', async () => {
+      const longRoute = path('', withMiddleware(requestTimeout(400_000), get(() => completeText(200, 'ok'))));
+      const { warnings } = await bindUnder(onBackend('hono'), undefined, longRoute);
+
+      expect(heldAtCeiling(warnings)).toHaveLength(1);
+      expect(heldAtCeiling(warnings)[0]).toContain('400000 ms');
+    });
+
+    test('the configured deadline counts with no requestTimeout() in the tree at all', async () => {
+      // The deployment's word on how long a handler may take holds for every
+      // handler, wrapped or not: a plain one silent past the derived timeout
+      // is cut just the same.  The block is also reported as unread — no
+      // middleware applies it — which is the other warning here.
+      const { binding, warnings } = await bindUnder('actor-ts.http { backend = hono, request-timeout { deadline = 300s } }');
+
+      expect(binding.serverOptionsReport?.idleTimeoutHeldAtCeilingMs).toBe(255_000);
+      expect(heldAtCeiling(warnings)).toHaveLength(1);
+      expect(heldAtCeiling(warnings)[0]).toContain('300000 ms');
+    });
+
+    test('nothing is said where 255 s still covers the deadline, where the key is 0, or on a backend that derives nothing', async () => {
+      // A set key is not derived, so it is never held at the ceiling — a set
+      // value too short for the deadline has a warning of its own, below.
+      expect((await bindTimed('actor-ts.http { backend = hono, request-timeout { deadline = 250s } }')).warnings).toEqual([]);
+      expect((await bindTimed('actor-ts.http { backend = hono, request-timeout { deadline = 300s }, server { idle-timeout = 0 } }')).warnings).toEqual([]);
+      for (const backend of ['fastify', 'express']) {
+        const { binding, warnings } = await bindTimed(`actor-ts.http { backend = ${backend}, request-timeout { deadline = 300s } }`);
+        expect(warnings, backend).toEqual([]);
+        expect(binding.serverOptionsReport, backend).not.toHaveProperty('idleTimeoutHeldAtCeilingMs');
+      }
+    });
+  });
+
+  describe('a set idle-timeout that can cut a silent handler before the deadline\'s 503 is said once at bind() (#1487)', () => {
+    // Under Bun the idle timeout is whole-connection inactivity, checked on a
+    // 4 s sweep: X seconds are held as ceil(X / 4) sweeps, so a handler that
+    // has written nothing can be cut from one sweep before X on.  Where that
+    // earliest cut lands less than 2 s past the request deadline the handler
+    // loses its 503, the margin the derived value keeps — so 32 s under the
+    // built-in 30 s does, and 33 s, held as the same nine sweeps as 36 s,
+    // does not.
+    const cutsBeforeDeadline = (warnings: readonly string[]): string[] =>
+      warnings.filter((warning) => warning.includes('can be cut from'));
+    const timedRoutes = path('', withMiddleware(requestTimeout(), get(() => completeText(200, 'ok'))));
+    const bindTimed = (hocon: string): Promise<Bound> => bindUnder(hocon, undefined, timedRoutes);
+
+    test('idle-timeout = 255s under a 300 s deadline: one warning naming the key, the value, the earliest cut and the deadline', async () => {
+      const { binding, warnings } = await bindTimed('actor-ts.http { backend = hono, request-timeout { deadline = 300s }, server { idle-timeout = 255s } }');
+
+      expect(binding.serverOptionsReport?.idleTimeoutEarliestCutMs).toBe(252_000);
+      expect(binding.serverOptionsReport).not.toHaveProperty('idleTimeoutHeldAtCeilingMs');
+      expect(warnings).toEqual([
+        `[http] ${binding.host}:${binding.port}: actor-ts.http.server.idle-timeout is 255000 ms, and the "hono" backend `
+          + 'holds it as whole-connection inactivity on this runtime: a handler that writes nothing can be cut from '
+          + '252000 ms on, before this server\'s request deadline, 300000 ms, has its 503 written — the client gets no '
+          + 'response at all. Raise actor-ts.http.server.idle-timeout (withIdleTimeoutMs in code), leave it unset to '
+          + 'have it derived from the deadline, or shorten the deadline.',
+      ]);
+    });
+
+    test('32s under the built-in 30 s deadline is cut from 28 s on', async () => {
+      const { binding, warnings } = await bindTimed('actor-ts.http { backend = hono, server { idle-timeout = 32s } }');
+
+      expect(binding.serverOptionsReport?.idleTimeoutEarliestCutMs).toBe(28_000);
+      expect(cutsBeforeDeadline(warnings)).toHaveLength(1);
+      expect(cutsBeforeDeadline(warnings)[0]).toContain('is 32000 ms');
+      expect(cutsBeforeDeadline(warnings)[0]).toContain('cut from 28000 ms on');
+      expect(cutsBeforeDeadline(warnings)[0]).toContain('request deadline, 30000 ms');
+    });
+
+    test('5s, the example the configuration reference shows, is cut from 4 s on — with no requestTimeout() in the tree', async () => {
+      // The configured deadline counts for every handler, wrapped or not.
+      const { binding, warnings } = await bindUnder(onBackend('hono', 'idle-timeout = 5s'));
+
+      expect(binding.serverOptionsReport?.idleTimeoutEarliestCutMs).toBe(4_000);
+      expect(cutsBeforeDeadline(warnings)).toHaveLength(1);
+      expect(cutsBeforeDeadline(warnings)[0]).toContain('is 5000 ms');
+      expect(cutsBeforeDeadline(warnings)[0]).toContain('cut from 4000 ms on');
+    });
+
+    test('nothing is said once the earliest cut is 2 s past the deadline, for 0, or where the idle timeout is a keep-alive window', async () => {
+      for (const idleTimeout of ['33s', '36s', '0']) {
+        const { binding, warnings } = await bindTimed(`actor-ts.http { backend = hono, server { idle-timeout = ${idleTimeout} } }`);
+        expect(warnings, idleTimeout).toEqual([]);
+        expect(binding.serverOptionsReport, idleTimeout).not.toHaveProperty('idleTimeoutEarliestCutMs');
+      }
+      for (const backend of ['fastify', 'express']) {
+        const { binding, warnings } = await bindTimed(`actor-ts.http { backend = ${backend}, server { idle-timeout = 5s } }`);
+        expect(cutsBeforeDeadline(warnings), backend).toEqual([]);
+        expect(binding.serverOptionsReport, backend).not.toHaveProperty('idleTimeoutEarliestCutMs');
+      }
+    });
+  });
+
+  test('a backend that does not report is taken at its silence', async () => {
+    // A backend written outside this repository need not say anything, and
+    // "did not say" is not "did not install": nothing is warned.
+    const silent: HttpServerBackend = {
+      name: 'silent',
+      registerRoute(_route: RouteRegistration): void { /* answers nothing */ },
+      async listen(host: string, port: number): Promise<ServerBinding> {
+        return { host, port, unbind: async () => { /* nothing to close */ } };
+      },
+    };
+    const { binding, warnings } = await bindUnder(onBackend('fastify', INERT_BLOCK), (builder) => builder.useBackend(silent));
+
+    expect(warnings).toEqual([]);
+    expect(binding.serverOptionsReport).toBeUndefined();
+  });
+});
+
+/**
+ * #870 / #1488 — on an HTTP/2 listener a bound can hold for one of the two
+ * protocols it speaks and not the other, and a client picks the protocol.
+ *
+ * Under Bun, Fastify's HTTP/2 listener hands a connection that negotiated
+ * HTTP/1.1 to handling that reads neither `keepAliveTimeout` nor
+ * `requestTimeout`: measured on bun 1.4.2, a keep-alive HTTP/1.1 connection
+ * was still open 8 s after its response under an 800 ms idle-timeout, and a
+ * stalled HTTP/1.1 body 40 s in under a 2 s request-timeout — while the
+ * report said both were in effect and bind() was silent.  Both bounds hold
+ * for HTTP/2 there, through the framework's own timers, so the report says
+ * not in effect, names the protocol each holds for, and bind() warns in
+ * those words.  Under Node the same listener reads both properties for
+ * HTTP/1.1, and the header cap is the one that holds for HTTP/1.1 only —
+ * `tests/smoke/cases/49-http2-connection-bounds.mjs` holds that half.
+ */
+describe('on an HTTP/2 listener a bound held for one protocol is reported as not in effect, by protocol', () => {
+  const FIXTURES = new URL('../../fixtures/tls/', import.meta.url);
+  const tls = {
+    cert: readFileSync(new URL('localhost-cert.pem', FIXTURES), 'utf8'),
+    key: readFileSync(new URL('localhost-key.pem', FIXTURES), 'utf8'),
+  };
+  const overHttp2 = (builder: ServerBuilder): ServerBuilder => {
+    const serverOptions = HttpServerOptions.create().withTls(tls).withHttp2();
+    return builder.withServerOptions(serverOptions);
+  };
+  const overTlsAlone = (builder: ServerBuilder): ServerBuilder => {
+    const serverOptions = HttpServerOptions.create().withTls(tls);
+    return builder.withServerOptions(serverOptions);
+  };
+
+  test('idle-timeout and request-timeout on Fastify\'s HTTP/2 listener under Bun hold for HTTP/2 only, and bind() says so', async () => {
+    const { binding, warnings } = await bindUnder(onBackend('fastify', 'idle-timeout = 800ms\nrequest-timeout = 20s'), overHttp2);
+
+    expect(binding.serverOptionsReport?.idleTimeoutMs, 'idle-timeout reported in effect over HTTP/1.1 connections it never bounds').toBe(false);
+    expect(binding.serverOptionsReport?.requestTimeoutMs, 'request-timeout reported in effect over HTTP/1.1 connections it never bounds').toBe(false);
+    expect(binding.serverOptionsReport?.heldForOneProtocol).toEqual({ idleTimeoutMs: 'HTTP/2', requestTimeoutMs: 'HTTP/2' });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('actor-ts.http.server.idle-timeout and actor-ts.http.server.request-timeout');
+    expect(warnings[0]).toContain('"fastify"');
+    expect(warnings[0]).toContain('for HTTP/2 only');
+    expect(warnings[0]).toContain('a connection that negotiates HTTP/1.1 on the same port is not bounded by them');
+    expect(warnings[0], 'a bound that holds for HTTP/2 was called inert').not.toContain('nothing here');
+  });
+
+  test('the same block on Fastify\'s TLS listener without HTTP/2 is in effect, and nothing is said', async () => {
+    const { binding, warnings } = await bindUnder(onBackend('fastify', 'idle-timeout = 800ms\nrequest-timeout = 20s'), overTlsAlone);
+
+    expect(binding.serverOptionsReport?.idleTimeoutMs).toBe(true);
+    expect(binding.serverOptionsReport?.requestTimeoutMs).toBe(true);
+    expect(binding.serverOptionsReport).not.toHaveProperty('heldForOneProtocol');
+    expect(warnings).toEqual([]);
+  });
+
+  test('a set 0 asks for no bound, which every protocol honours — in effect, and nothing is said', async () => {
+    const { binding, warnings } = await bindUnder(onBackend('fastify', 'idle-timeout = 0\nrequest-timeout = 0'), overHttp2);
+
+    expect(binding.serverOptionsReport?.idleTimeoutMs).toBe(true);
+    expect(binding.serverOptionsReport?.requestTimeoutMs).toBe(true);
+    expect(binding.serverOptionsReport).not.toHaveProperty('heldForOneProtocol');
+    expect(warnings).toEqual([]);
+  });
+
+  test('max-header-bytes on Fastify\'s HTTP/2 listener under Bun reaches HTTP/2 streams too, so it is in effect and nothing is said', async () => {
+    // Measured on bun 1.4.2: under a 1 KiB cap a 4 KiB header list is reset
+    // over HTTP/2 and answered 431 over HTTP/1.1 — HeaderSizeParity holds it.
+    const { binding, warnings } = await bindUnder(onBackend('fastify', 'max-header-bytes = 1KiB'), overHttp2);
+
+    expect(binding.serverOptionsReport?.maxHeaderBytes).toBe(true);
+    expect(binding.serverOptionsReport?.heldForOneProtocol).not.toHaveProperty('maxHeaderBytes');
+    // The shipped request-timeout is in every resolved policy, so the report
+    // carries it held for HTTP/2 here too — and says nothing, since nobody set it.
+    expect(binding.serverOptionsReport?.heldForOneProtocol).toEqual({ requestTimeoutMs: 'HTTP/2' });
+    expect(warnings).toEqual([]);
+  });
+
+  test('a bound held for HTTP/1.1 only is warned about in those words, beside one that holds nothing', async () => {
+    // The shape Fastify reports for its header cap on Node's HTTP/2 listener,
+    // which this runner cannot build: a backend that reports it directly.
+    const reporting: HttpServerBackend = {
+      name: 'reporting',
+      registerRoute(_route: RouteRegistration): void { /* answers nothing */ },
+      async listen(host: string, port: number): Promise<ServerBinding> {
+        return {
+          host,
+          port,
+          unbind: async () => { /* nothing to close */ },
+          serverOptionsReport: {
+            idleTimeoutMs: false,
+            headerTimeoutMs: true,
+            requestTimeoutMs: true,
+            maxConnections: false,
+            maxHeaderBytes: false,
+            heldForOneProtocol: { maxHeaderBytes: 'HTTP/1.1' },
+          },
+        };
+      },
+    };
+    const { warnings } = await bindUnder(
+      onBackend('fastify', 'max-header-bytes = 1KiB\nmax-connections = 5'),
+      (builder) => builder.useBackend(reporting),
+    );
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('actor-ts.http.server.max-connections is set, but the "reporting" backend reports it not in effect on this server, so it bounds nothing here.');
+    expect(warnings[0]).toContain('actor-ts.http.server.max-header-bytes is set, but the "reporting" backend holds it for HTTP/1.1 only on this server');
+    expect(warnings[0]).toContain('a request that arrives over HTTP/2 on the same port is not bounded by it');
+  });
+});

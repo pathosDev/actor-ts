@@ -6,12 +6,17 @@ import type { ActorSystem } from '../../ActorSystem.js';
 import type { Cancellable } from '../../Scheduler.js';
 import type { Cluster } from '../Cluster.js';
 import { PersistenceExtensionId } from '../../persistence/PersistenceExtension.js';
+import { mergeOptions } from '../../util/OptionsMerge.js';
 import { LeaderChanged, MemberRemoved } from '../ClusterEvents.js';
 import { LeastShardAllocationStrategy } from './AllocationStrategy.js';
 import { ClusterSharding } from './ClusterSharding.js';
 import { JournalRememberEntitiesStore } from './RememberEntitiesStore.js';
 import { StartShardingOptions } from './StartShardingOptions.js';
-import { ShardedDaemonProcessOptionsValidator } from './ShardedDaemonProcessOptions.js';
+import {
+  DEFAULT_DAEMON_LIVENESS_INTERVAL_MS,
+  ShardedDaemonProcessOptionsValidator,
+  readShardedDaemonProcessOptionsFromConfig,
+} from './ShardedDaemonProcessOptions.js';
 import type { ShardedDaemonProcessOptions, ShardedDaemonProcessOptionsType } from './ShardedDaemonProcessOptions.js';
 
 /** Envelope the sharded region routes to daemon #index. */
@@ -56,7 +61,17 @@ export class ShardedDaemonProcess {
     cluster: Cluster,
     options: ShardedDaemonProcessOptions<T>,
   ): ShardedDaemonProcessHandle<T> {
-    const resolvedOptions = options as ShardedDaemonProcessOptionsType<T>;
+    // The config seam this module had none of: `options` used to be cast
+    // straight to the settings type, so a daemon set was tunable from code and
+    // from nowhere else (#854).  The merge runs BEFORE the validator so the
+    // validator sees the values the node will actually run with — a HOCON
+    // `liveness-interval = -1s` is then named as `livenessIntervalMs`, not
+    // silently armed.
+    const resolvedOptions = mergeOptions<ShardedDaemonProcessOptionsType<T>>(
+      {},
+      readShardedDaemonProcessOptionsFromConfig(system.config) as Partial<ShardedDaemonProcessOptionsType<T>>,
+      options as Partial<ShardedDaemonProcessOptionsType<T>>,
+    );
     new ShardedDaemonProcessOptionsValidator<T>().validate(resolvedOptions);
     const sharding = ClusterSharding.get(system, cluster);
 
@@ -117,7 +132,10 @@ export class ShardedDaemonProcess {
     // Periodic liveness backstop — fires even when no cluster events do,
     // so any wake-up that got lost in transit (rare, but possible during
     // brief partition + heal cycles) gets retried.
-    const livenessIntervalMs = resolvedOptions.livenessIntervalMs ?? 30_000;
+    // The `??` still earns its place even though `reference.conf` ships the
+    // leaf: a system built on `Config.empty()` reaches here with the field
+    // genuinely absent.
+    const livenessIntervalMs = resolvedOptions.livenessIntervalMs ?? DEFAULT_DAEMON_LIVENESS_INTERVAL_MS;
     let livenessTimer: Cancellable | null = null;
     if (livenessIntervalMs > 0) {
       livenessTimer = system.scheduler.scheduleAtFixedRateFunction(

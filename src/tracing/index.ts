@@ -26,8 +26,13 @@ export {
   tracerOf,
 } from './TracingExtension.js';
 export { otelTracer } from './OtelAdapter.js';
-export { OtelAdapterOptions, OtelAdapterOptionsBuilder } from './OtelAdapterOptions.js';
-export type { OtelAdapterOptionsType } from './OtelAdapterOptions.js';
+export {
+  DEFAULT_OTEL_TRACER_NAME,
+  OtelAdapterOptions,
+  OtelAdapterOptionsBuilder,
+  readOtelAdapterOptionsFromConfig,
+} from './OtelAdapterOptions.js';
+export type { OtelAdapterConfigDefaults, OtelAdapterOptionsType } from './OtelAdapterOptions.js';
 export type {
   OtelApiLike,
   OtelContextApi,
@@ -39,8 +44,14 @@ export type {
   OtelTracerLike,
 } from './OtelAdapter.js';
 export { otelLogger } from './OtelLogsAdapter.js';
+export {
+  DEFAULT_OTEL_LOGGER_NAME,
+  OtelLogsAdapterOptions,
+  OtelLogsAdapterOptionsBuilder,
+  readOtelLogsAdapterOptionsFromConfig,
+} from './OtelLogsAdapterOptions.js';
+export type { OtelLogsAdapterConfigDefaults, OtelLogsAdapterOptionsType } from './OtelLogsAdapterOptions.js';
 export type {
-  OtelLoggerAdapterOptions,
   OtelLogsApiLike,
   OtelLoggerProviderLike,
   OtelLoggerLike,

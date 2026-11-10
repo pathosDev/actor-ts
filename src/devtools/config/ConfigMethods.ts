@@ -3,26 +3,42 @@
  *
  * A merged HOCON tree answers "what is this setting now".  The question
  * that actually brings someone here is "why is it not what I wrote", and
- * that needs the layer as well as the value — the bundled default won,
- * `application.conf` won, or a code override won.
+ * that needs the layer as well as the value — the bundled default won, the
+ * project's own `reference.conf` won, `application.conf` won, its active
+ * profile won, the secrets file won, or a code override won — and, as often,
+ * the environment variable that supplied it.
  *
  * A pull, not a stream: configuration is fixed when the system is built,
  * so there is nothing to push.  It is read once per panel open.
  */
 import type { ActorSystem } from '../../ActorSystem.js';
-import type { ConfigLayers } from '../../config/Config.js';
-import type { ConfigObject, ConfigValue } from '../../config/HoconParser.js';
+import {
+  attributedConfigLeaves,
+  resolveConfigLeaves,
+  type ResolvedConfigLeaf,
+  withCredentialFieldsWithheld,
+  withUrlCredentialsMasked,
+} from '../../diagnostics/ConfigDump.js';
 import { toWireValue } from '../internal/WireSerializer.js';
 import {
   CONFIG_REDACTED,
-  CONFIG_SECRET_PATTERN,
-  type ConfigSource,
   type ResolvedConfigEntry,
   type ResolvedConfigResult,
 } from '../protocol/index.js';
 import type { DevToolsServer } from '../DevToolsServer.js';
 
-/** Wires `config.resolved` onto the server. */
+/**
+ * Wires `config.resolved` onto the server.
+ *
+ * The walk, the layer attribution, the secret-path test, the withholding of a
+ * credential field inside a list and the URL mask are not here: they are
+ * `src/diagnostics/ConfigDump.ts`, shared with the boot
+ * dump #867 added.  Two renderers of one merged tree that each walked it their
+ * own way would be two chances to disagree about which layer won — and, worse,
+ * two redaction rules, so a value hidden from the panel could still reach a
+ * log file.  What stays here is the half that is genuinely the wire's: the
+ * size caps `toWireValue` applies, and the `truncated` flag that reports them.
+ */
 export class ConfigMethods {
   constructor(private readonly system: ActorSystem) {}
 
@@ -34,82 +50,37 @@ export class ConfigMethods {
   private async onResolved(): Promise<ResolvedConfigResult> {
     const config = this.system.config;
     const layers = config._sources();
-    const entries: ResolvedConfigEntry[] = [];
-
-    for (const [path, value] of leaves(config.toJSON())) {
-      const source = layers === null ? 'reference' : sourceOf(layers, path);
-      entries.push(entryFor(path, value, source, layers === null
-        ? false
-        : displaced(layers, path, source)));
-    }
-
-    // Sorted, because a config file's own order is not the merged tree's and
-    // the reader is looking for a key by name, not by where it happened to
-    // land.
-    entries.sort((left, right) => left.path.localeCompare(right.path));
-
     return {
-      entries,
-      applicationPath: layers?.applicationPath ?? null,
-      attributed: layers !== null,
+      entries: resolveConfigLeaves(config).map(entryFor),
+      // The loader names the path it looked at whether or not a file was
+      // there; the wire field means "read from", and the panel says so.
+      applicationPath: layers?.applicationFound === true ? layers.applicationPath : null,
+      profile: layers?.profile ?? null,
+      secretsPath: layers?.secretsFound === true ? layers.secretsPath : null,
+      referencePath: layers?.projectReferenceFound === true ? layers.projectReferencePath : null,
+      environmentFilePath: layers?.environmentFileFound === true ? layers.environmentFilePath : null,
+      attributed: attributedConfigLeaves(config),
     };
   }
 }
 
-/** Which layer's value survived the merge for `path`. */
-function sourceOf(layers: ConfigLayers, path: string): ConfigSource {
-  // Highest first: the merge resolves the same way, so this cannot
-  // disagree with the tree it is describing.
-  if (layers.overrides.hasPath(path)) return 'override';
-  if (layers.application.hasPath(path)) return 'application';
-  return 'reference';
-}
-
-/** True when a layer below the winning one also set `path`. */
-function displaced(layers: ConfigLayers, path: string, source: ConfigSource): boolean {
-  if (source === 'override') {
-    return layers.application.hasPath(path) || layers.reference.hasPath(path);
+function entryFor(leaf: ResolvedConfigLeaf): ResolvedConfigEntry {
+  const { path, layer: source, displaced: overridden } = leaf;
+  // Names only, and only when there are any: a field added to an entry is
+  // optional, and a few hundred empty lists would be all most answers carry.
+  const variables = leaf.variables.length > 0 ? { variables: leaf.variables } : {};
+  if (leaf.secret) {
+    // Withheld by PATH rather than by value: a password that happens to
+    // look ordinary is still a password, and the key's name — the secrets
+    // file holding the key, or the variable that supplied it — is what says
+    // so.
+    return { path, value: CONFIG_REDACTED, source, overridden, truncated: false, ...variables };
   }
-  if (source === 'application') return layers.reference.hasPath(path);
-  return false;
-}
-
-function entryFor(
-  path: string,
-  value: ConfigValue,
-  source: ConfigSource,
-  overridden: boolean,
-): ResolvedConfigEntry {
-  if (CONFIG_SECRET_PATTERN.test(path)) {
-    // Redacted by PATH rather than by value: a password that happens to
-    // look ordinary is still a password, and the key is what names it.
-    return { path, value: CONFIG_REDACTED, source, overridden, truncated: false };
-  }
-  const wire = toWireValue(value);
-  return { path, value: wire.value, source, overridden, truncated: wire.truncated };
-}
-
-/**
- * Every leaf in the tree, as dotted paths.
- *
- * An array is a leaf: `seed-nodes` is one setting whose value is a list,
- * and splitting it into `seed-nodes.0` and `seed-nodes.1` would turn one
- * answer into several that no one configured.
- */
-function* leaves(tree: ConfigObject, prefix = ''): Generator<[string, ConfigValue]> {
-  for (const [key, value] of Object.entries(tree)) {
-    const path = prefix === '' ? key : `${prefix}.${key}`;
-    if (isBranch(value)) {
-      yield* leaves(value, path);
-      continue;
-    }
-    yield [path, value];
-  }
-}
-
-function isBranch(value: ConfigValue): value is ConfigObject {
-  return typeof value === 'object'
-    && value !== null
-    && !Array.isArray(value)
-    && !('__substitution' in value);
+  // Withheld and masked before the size caps, never after: a cut through the
+  // middle of a userinfo leaves no `@` for the mask to anchor on, and the
+  // first eight thousand characters of the password would go out as they are
+  // (#1458).  A credential-named field inside a list goes first, so the mask
+  // only ever sees what is going to be shown.
+  const wire = toWireValue(withUrlCredentialsMasked(withCredentialFieldsWithheld(leaf.value)));
+  return { path, value: wire.value, source, overridden, truncated: wire.truncated, ...variables };
 }

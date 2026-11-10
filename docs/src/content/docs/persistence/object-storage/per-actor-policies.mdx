@@ -158,13 +158,14 @@ class CreditCardActor extends DurableStateActor<...> {
 }
 ```
 
-Old (unencrypted) reads work — no metadata → plaintext path.
-New writes encrypt.  Eventually:
-
-- A **re-encryption sweep** filtered to this actor's
-  persistenceIds migrates the rest.
-
-See [key rotation](/persistence/object-storage/key-rotation/).
+New writes encrypt.  An old, unencrypted body of this actor is now
+**refused** on read: whether a body is encrypted is a byte in the body,
+so a plaintext one is indistinguishable from a forgery (#965).  Open the
+migration window on the store with `withAllowUnencryptedBodies(true)`,
+let each `persistenceId` be loaded and written once — the write
+re-encrypts it — and remove the option again.  The re-encryption sweep
+does not encrypt plaintext bodies; it rotates encrypted ones.  See
+[Reading old payloads](/persistence/object-storage/encryption/#reading-old-payloads).
 
 ## Working with the snapshot store
 
@@ -187,8 +188,10 @@ class Account extends PersistentActor<Command, Event, State> {
 ```
 
 Same methods apply when the snapshot store is backed by
-object-storage.  Persistent actors and durable-state actors
-both honor them.
+object-storage — to the snapshots, and to nothing else.  A
+durable-state actor's hooks cover its whole state; a persistent
+actor's cover its snapshots and never its events, which the
+journal keeps in plaintext (see the danger aside below).
 
 ## Per-actor integrity
 
@@ -219,21 +222,55 @@ the read-then-write sweep is done.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="danger" title="Only the object-storage stores read this hook">
-  Ten of the eleven snapshot stores and nine of the ten
+<Aside type="danger" title="Only the object-storage and SQL stores read this hook">
+  Four of the eleven snapshot stores and three of the ten
   durable-state stores accept `PersistenceOptions` and never look
-  at it ([#960](https://github.com/mknorr/actor-ts/issues/960)).
-  On SQLite, Postgres, Cassandra, Mongo, DynamoDB and the
-  in-memory reference store, an `integrity()` override **buys no
-  tamper detection and raises no error** — the directive is
-  dropped on the floor.  The same is true of `encryption()` and
-  `compression()`.
+  at it ([#960](https://github.com/pathosDev/actor-ts/issues/960)).
+  On Cassandra, Mongo, DynamoDB and the in-memory reference store, an
+  `integrity()` or `encryption()` override now **refuses the actor
+  at start** rather than buying nothing quietly: every shipped
+  store declares a `persistenceOptionSupport` triple, and one that
+  cannot honour a security control raises
+  `UnsupportedPersistenceOptionError` naming the store and the
+  field.
 
-  Do not read this page as a promise that the framework enforces
-  the control everywhere.  Verify it against the store you
-  actually run: today that means the object-storage snapshot and
-  durable-state stores, which honour all three hooks on both the
-  write and the read path.
+  `compression()` is the exception, on purpose.  It is a
+  performance hint, not a control, so an unhonourable request
+  warns once and the body is written uncompressed — failing an
+  actor over it would make a system-wide compression default
+  unusable the moment one store in the deployment cannot
+  compress.
+
+  So the control is enforced where it can be, and reported where
+  it cannot.  The stores that honour all three hooks on both the
+  write and the read path are the object-storage and the SQL
+  (SQLite, Postgres, MariaDB, MSSQL, libSQL, D1) snapshot and
+  durable-state stores — the SQL ones as a sealed row in the same
+  column ([#1802](https://github.com/pathosDev/actor-ts/issues/1802)) — and every other snapshot or durable-state
+  store refuses or warns.  Two cases stay quiet: `{ mode: 'none' }`,
+  which is how you say "deliberately unprotected", and a
+  third-party store that declares no triple at all, which counts
+  as unknown rather than as unsupported.
+
+  The journal is outside all of this.  `encryption()` and
+  `integrity()` on a `PersistentActor` protect its snapshots only:
+  every journal stores events as plaintext JSON, nothing detects
+  an event edited in place, and database-side controls —
+  transparent data encryption, an encrypted volume, access
+  control — are the only protection for events today.  No journal
+  is asked, so nothing refuses and nothing warns: an actor with
+  both hooks over the object-storage snapshot store starts, writes
+  encrypted, signed snapshots and appends its events in plaintext,
+  and an event row edited from `"amount":10` to `"amount":1000000`
+  is folded on recovery without an error.
+
+  That is a documented non-goal rather than a defect awaiting a
+  fix: the confidentiality and integrity of the event journal at
+  rest are delegated to the database, and
+  [`SECURITY.md`](https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md#out-of-scope--the-event-journal-at-rest)
+  records the decision — including the half the delegation leaves
+  uncovered, because transparent data encryption is not tamper
+  detection.
 </Aside>
 
 <Aside type="caution" title="Different keyRings across cluster nodes">

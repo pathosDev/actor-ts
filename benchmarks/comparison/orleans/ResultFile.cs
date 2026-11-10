@@ -98,6 +98,12 @@ internal static class ResultFile
             json.WriteNumber("completedOperations", result.CompletedOperations);
             // ΔRSS is deliberately absent: a CLR heap against a JavaScript heap
             // measures the collector's appetite, not the framework's footprint.
+            if (result.ActorCount is { } actors)
+            {
+                json.WriteNumber("actorCount", actors);
+                json.WriteNumber("workIterationsPerMessage", result.WorkIterationsPerMessage ?? 0);
+                json.WriteNumber("checksum", result.Checksum ?? 0);
+            }
             if (result.Notes is not null) json.WriteString("notes", result.Notes);
             json.WriteEndObject();
         }

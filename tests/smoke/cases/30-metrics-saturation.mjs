@@ -7,13 +7,16 @@
  * Measured on this project's three supported runtimes:
  *
  *   bun  1.3.1   typeof performance.eventLoopUtilization === 'undefined'
+ *   bun  1.4.2   'undefined' until something imports node:perf_hooks, then a
+ *                function that returns { idle: 0, active: 0, utilization: 0 }
  *   node 26.7.0  a real reading
  *   deno 2.6.8   a function that returns { idle: 0, active: 0, utilization: 0 }
  *
- * So a presence check passes on two runtimes and one of those two lies.  A
- * ratio built on it would have been silently, permanently 0 on a third of the
- * matrix — and an alert on a metric that never fires is worse than no metric,
- * because nobody finds out.  `actor_dispatcher_queue_delay_seconds` answers
+ * So a presence check passes on Node and Deno, and on Bun once anything has
+ * imported node:perf_hooks — and only Node's reading is real.  A ratio built
+ * on it would have been silently, permanently 0 everywhere but Node — and an
+ * alert on a metric that never fires is worse than no metric, because nobody
+ * finds out.  `actor_dispatcher_queue_delay_seconds` answers
  * the same operational question from two reads of a clock every runtime has,
  * and this case is the proof that "every runtime" is true rather than assumed:
  * a unit test on Bun would have said nothing about the two runtimes where the

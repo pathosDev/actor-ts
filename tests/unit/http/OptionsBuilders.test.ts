@@ -12,6 +12,7 @@ import {
   CsrfOptions,
   HstsOptions,
   HttpClientOptions,
+  HttpServerOptions,
   RequestIdOptions,
   SameOriginOptions,
   SecurityHeadersOptions,
@@ -120,10 +121,19 @@ describe('option builders — every withX sets its field', () => {
 
   test('TimeoutOptions', () => {
     const onTimeout = (): HttpResponse => ({ status: Status.ServiceUnavailable, body: 'x' });
-    const builder = TimeoutOptions.create().withMs(1234).withOnTimeout(onTimeout);
+    const builder = TimeoutOptions.create()
+      .withDeadlineMs(1234)
+      .withOnTimeout(onTimeout);
     const fields = bag(builder);
-    expect(fields.ms).toBe(1234);
-    expect(fields.onTimeout).toBe(onTimeout);
+    expect(fields).toEqual({ deadlineMs: 1234, onTimeout });
+  });
+
+  test('TimeoutOptions keeps no alias for the field it renamed (#1463)', () => {
+    // `ms` was nothing but a unit suffix, so it left the HOCON leaf without a
+    // name.  The rename is a hard cut: a second spelling would be a second
+    // field that silently loses to the first.
+    const builder = TimeoutOptions.create() as unknown as Record<string, unknown>;
+    expect(builder.withMs).toBeUndefined();
   });
 
   test('HttpClientOptions', () => {
@@ -137,6 +147,40 @@ describe('option builders — every withX sets its field', () => {
     expect(fields.defaultTimeoutMs).toBe(7_500);
     expect(fields.redirect).toBe('manual');
     expect(fields.maxRedirects).toBe(2);
+  });
+
+  test('HttpServerOptions', () => {
+    const builder = HttpServerOptions.create()
+      .withIdleTimeoutMs(5_000)
+      .withHeaderTimeoutMs(20_000)
+      .withRequestTimeoutMs(90_000)
+      .withMaxConnections(1_000)
+      .withMaxContentLength(16)
+      .withMaxHeaderBytes(1_024);
+    const fields = bag(builder);
+    expect(fields.idleTimeoutMs).toBe(5_000);
+    expect(fields.headerTimeoutMs).toBe(20_000);
+    expect(fields.requestTimeoutMs).toBe(90_000);
+    expect(fields.maxConnections).toBe(1_000);
+    expect(fields.maxContentLength).toBe(16);
+    expect(fields.maxHeaderBytes).toBe(1_024);
+  });
+
+  test('HttpServerOptions records only what was set — unset must stay unset', () => {
+    // Not decoration: `idleTimeoutMs` and `maxConnections` ship no built-in
+    // default, so a builder that materialised them as `undefined` own
+    // properties would still be stripped by mergeOptions — but one that
+    // materialised them as a *number* would overwrite the backend's own
+    // choice with a value nobody asked for.
+    expect(Object.keys(bag(HttpServerOptions.create().withHeaderTimeoutMs(1_000))))
+      .toEqual(['headerTimeoutMs']);
+    // The two size caps ship no default either, and a set one refuses a
+    // backend built with a cap of its own — so a builder that materialised
+    // either of them unasked would refuse backends nobody configured.
+    expect(Object.keys(bag(HttpServerOptions.create().withMaxContentLength(16))))
+      .toEqual(['maxContentLength']);
+    expect(Object.keys(bag(HttpServerOptions.create().withMaxHeaderBytes(1_024))))
+      .toEqual(['maxHeaderBytes']);
   });
 
   test('StaticFilesOptions', () => {

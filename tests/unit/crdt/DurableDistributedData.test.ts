@@ -30,7 +30,8 @@ import {
 } from '../../../src/crdt/index.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
-import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { LogLevel, NoopLogger, type Logger } from '../../../src/Logger.js';
+import type { LogContextData } from '../../../src/LogContext.js';
 import { InMemoryDurableStateStore } from '../../../src/persistence/durable-state-stores/InMemoryDurableStateStore.js';
 import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
@@ -48,6 +49,30 @@ type NodeSetup = {
   sys: ActorSystem;
   cluster: Cluster;
 };
+
+/**
+ * Keeps every warn line the system logger was handed, including through
+ * `withSource` — which is how the actor gets its own logger, so a recorder
+ * that returned a fresh sink from there would collect nothing.
+ */
+class WarningRecorder implements Logger {
+  readonly warnings: string[] = [];
+
+  constructor(
+    readonly level: LogLevel = LogLevel.Debug,
+    private readonly root: WarningRecorder | null = null,
+  ) {}
+
+  debug(_message: string): void {}
+  info(_message: string): void {}
+  warn(message: string): void { (this.root ?? this).warnings.push(message); }
+  error(_message: string): void {}
+
+  withSource(_source: string): Logger { return new WarningRecorder(this.level, this.root ?? this); }
+  withFields(_fields: LogContextData): Logger {
+    return new WarningRecorder(this.level, this.root ?? this);
+  }
+}
 
 async function startNode(
   systemName: string, port: number, options: {
@@ -241,6 +266,237 @@ describe('DurableDistributedData — actor integration', () => {
     expect(dd2.get<GCounter>('to-delete')).toBeUndefined();
 
     await stopNode(a2);
+  }, 10_000);
+});
+
+/**
+ * #856 — `durable-keys` narrows what the durable record holds.
+ *
+ * The behaviour under test is really the *reading of an empty list*, and it is
+ * asserted first and on its own because getting it wrong is not a bug that
+ * degrades anything: `[]` is what `reference.conf` ships and what every
+ * existing deployment resolves to, so "empty means persist nothing" would turn
+ * a routine version bump into total durable data loss with nothing logged.
+ * The whitelist cases follow.
+ *
+ * Each case restarts the replica against the same store rather than reading
+ * the record directly, because what the option is *for* is what survives a
+ * cold start — and a filter applied at load time instead of save time would
+ * pass a direct read of the record while still writing every key to disk.
+ */
+
+/**
+ * The replica's persisted view, decoded through the same wrapper the
+ * replicator writes with.
+ *
+ * Polled instead of slept on, and polled on the *record* rather than the live
+ * view (#418, #1145).  The save is fire-and-forget with no completion the
+ * handle exposes, so a fixed delay here would encode one idle machine's write
+ * latency; and the whole subject of `durableKeys` is which keys reach the
+ * record, so a wait on the view would be satisfied by a state the record never
+ * received.
+ *
+ * A throwaway wrapper per call: `load` caches a revision for its own later
+ * `save`, and this one never saves.
+ */
+function persistedView(store: InMemoryDurableStateStore, replicaId: string) {
+  return new DurableDistributedDataStore(store, replicaId).load();
+}
+
+describe('DurableDistributedData — durableKeys (#856)', () => {
+  test('an empty list persists every key, which is the pre-option behaviour', async () => {
+    const durable = new InMemoryDurableStateStore();
+    const a1 = await startNode('ddata-keys-1', 75_031);
+    const ddOptions = DistributedDataOptions.create()
+      .withGossipInterval(80)
+      .withDurableKeys([])
+      .withDurableStore(durable);
+    const dd1 = a1.sys.extension(DistributedDataId).start(a1.cluster, ddOptions);
+    dd1.update<GCounter>('cart-42', GCounter.empty, (c) => c.increment(dd1.selfReplicaId(), 1));
+    dd1.update<GCounter>('session-9', GCounter.empty, (c) => c.increment(dd1.selfReplicaId(), 2));
+    dd1.update<GCounter>('unrelated', GCounter.empty, (c) => c.increment(dd1.selfReplicaId(), 3));
+    await awaitCondition(async () => {
+      const record = await persistedView(durable, dd1.selfReplicaId());
+      return record.has('cart-42') && record.has('session-9') && record.has('unrelated');
+    }, { timeoutMs: 4_000, intervalMs: 20, label: 'all three keys reached the durable record' });
+    await stopNode(a1);
+
+    const a2 = await startNode('ddata-keys-1', 75_031);
+    const ddOptions2 = DistributedDataOptions.create()
+      .withGossipInterval(80)
+      .withDurableStore(durable);
+    const dd2 = a2.sys.extension(DistributedDataId).start(a2.cluster, ddOptions2);
+    await waitFor(
+      () => dd2.get<GCounter>('unrelated') !== undefined,
+      'the restarted replica loaded its durable view',
+    );
+
+    expect(dd2.get<GCounter>('cart-42')!.value()).toBe(1);
+    expect(dd2.get<GCounter>('session-9')!.value()).toBe(2);
+    expect(dd2.get<GCounter>('unrelated')!.value()).toBe(3);
+
+    await stopNode(a2);
+  }, 10_000);
+
+  test('a whitelist persists exactly its exact names and trailing-* prefixes', async () => {
+    const durable = new InMemoryDurableStateStore();
+    const a1 = await startNode('ddata-keys-2', 75_041);
+    const ddOptions = DistributedDataOptions.create()
+      .withGossipInterval(80)
+      .withDurableKeys(['cart-42', 'session-*'])
+      .withDurableStore(durable);
+    const dd1 = a1.sys.extension(DistributedDataId).start(a1.cluster, ddOptions);
+    dd1.update<GCounter>('session-9', GCounter.empty, (c) => c.increment(dd1.selfReplicaId(), 2));
+    // Neither an exact match nor under the prefix — and named so it would be
+    // caught by a matcher that treated `*` as "match anywhere".
+    dd1.update<GCounter>('my-session-x', GCounter.empty, (c) => c.increment(dd1.selfReplicaId(), 4));
+    dd1.update<GCounter>('unrelated', GCounter.empty, (c) => c.increment(dd1.selfReplicaId(), 3));
+    // Updated LAST, and waited on below, so the wait cannot be satisfied by an
+    // earlier save: a record holding `cart-42` was snapshotted after every
+    // update above had been applied, which is when a broken filter would have
+    // written the other two.
+    dd1.update<GCounter>('cart-42', GCounter.empty, (c) => c.increment(dd1.selfReplicaId(), 1));
+    await awaitCondition(async () => (await persistedView(durable, dd1.selfReplicaId())).has('cart-42'), {
+      timeoutMs: 4_000,
+      intervalMs: 20,
+      label: 'the last-written whitelisted key reached the durable record',
+    });
+    await stopNode(a1);
+
+    // Restarted with NO whitelist, so what comes back is what the record
+    // holds rather than what a second filter would let through.
+    const a2 = await startNode('ddata-keys-2', 75_041);
+    const ddOptions2 = DistributedDataOptions.create()
+      .withGossipInterval(80)
+      .withDurableStore(durable);
+    const dd2 = a2.sys.extension(DistributedDataId).start(a2.cluster, ddOptions2);
+    await waitFor(
+      () => dd2.get<GCounter>('cart-42') !== undefined,
+      'the restarted replica loaded the whitelisted keys',
+    );
+
+    expect(dd2.get<GCounter>('cart-42')!.value()).toBe(1);
+    expect(dd2.get<GCounter>('session-9')!.value()).toBe(2);
+    expect(dd2.get<GCounter>('my-session-x')).toBeUndefined();
+    expect(dd2.get<GCounter>('unrelated')).toBeUndefined();
+
+    await stopNode(a2);
+  }, 10_000);
+
+  test('a whitelisted replica keeps every key in its LIVE view', async () => {
+    // The filter is a durability decision, not a visibility one: an excluded
+    // key still gossips, still merges and still answers `get`.  A filter
+    // pushed one layer too far down — into the view instead of into the
+    // snapshot — would pass the persistence assertions above and break
+    // everything else about the replicator.
+    const durable = new InMemoryDurableStateStore();
+    const node = await startNode('ddata-keys-3', 75_051);
+    const ddOptions = DistributedDataOptions.create()
+      .withGossipInterval(80)
+      .withDurableKeys(['cart-*'])
+      .withDurableStore(durable);
+    const dd = node.sys.extension(DistributedDataId).start(node.cluster, ddOptions);
+    dd.update<GCounter>('cart-42', GCounter.empty, (c) => c.increment(dd.selfReplicaId(), 1));
+    dd.update<GCounter>('unrelated', GCounter.empty, (c) => c.increment(dd.selfReplicaId(), 3));
+    await waitFor(
+      () => dd.get<GCounter>('unrelated') !== undefined,
+      'both updates were applied to the live view',
+    );
+
+    expect(dd.get<GCounter>('cart-42')!.value()).toBe(1);
+    expect(dd.get<GCounter>('unrelated')!.value()).toBe(3);
+
+    await stopNode(node);
+  }, 10_000);
+
+  test('narrowing the list drops what it no longer names, on the next save', async () => {
+    // The trap the option's JSDoc, `reference.conf` and the durable-storage
+    // page all state, pinned here so it stays true: `save` replaces the
+    // replica's whole record, so a key that stops matching is not merely
+    // frozen — it is gone from disk as soon as anything else is written.
+    const durable = new InMemoryDurableStateStore();
+    const a1 = await startNode('ddata-keys-4', 75_061);
+    const wideOptions = DistributedDataOptions.create()
+      .withGossipInterval(80)
+      .withDurableStore(durable);
+    const dd1 = a1.sys.extension(DistributedDataId).start(a1.cluster, wideOptions);
+    dd1.update<GCounter>('cart-42', GCounter.empty, (c) => c.increment(dd1.selfReplicaId(), 1));
+    dd1.update<GCounter>('unrelated', GCounter.empty, (c) => c.increment(dd1.selfReplicaId(), 3));
+    await awaitCondition(async () => {
+      const record = await persistedView(durable, dd1.selfReplicaId());
+      return record.has('cart-42') && record.has('unrelated');
+    }, { timeoutMs: 4_000, intervalMs: 20, label: 'both keys reached the wide durable record' });
+    await stopNode(a1);
+
+    const a2 = await startNode('ddata-keys-4', 75_061);
+    const narrowOptions = DistributedDataOptions.create()
+      .withGossipInterval(80)
+      .withDurableKeys(['cart-*'])
+      .withDurableStore(durable);
+    const dd2 = a2.sys.extension(DistributedDataId).start(a2.cluster, narrowOptions);
+    await waitFor(
+      () => dd2.get<GCounter>('unrelated') !== undefined,
+      'the restarted replica loaded both keys before the list narrowed the record',
+    );
+    // Any mutation at all rewrites the record under the narrower list.
+    dd2.update<GCounter>('cart-42', GCounter.empty, (c) => c.increment(dd2.selfReplicaId(), 1));
+    // Both halves in one predicate on purpose.  `unrelated` is dropped by the
+    // very first save the narrowed replica makes — `preStart`'s load re-saves
+    // what it loaded — so waiting on its absence alone would return before the
+    // increment was persisted and make the value assertion below a race.
+    await awaitCondition(async () => {
+      const record = await persistedView(durable, dd2.selfReplicaId());
+      return !record.has('unrelated') && (record.get('cart-42') as GCounter | undefined)?.value() === 2;
+    }, {
+      timeoutMs: 4_000,
+      intervalMs: 20,
+      label: 'the narrowed record holds the incremented key and no longer holds the other',
+    });
+    await stopNode(a2);
+
+    const a3 = await startNode('ddata-keys-4', 75_061);
+    const dd3 = a3.sys.extension(DistributedDataId).start(a3.cluster, wideOptions);
+    await waitFor(
+      () => dd3.get<GCounter>('cart-42') !== undefined,
+      'the third start loaded whatever the narrowed record still held',
+    );
+
+    expect(dd3.get<GCounter>('cart-42')!.value()).toBe(2);
+    expect(dd3.get<GCounter>('unrelated')).toBeUndefined();
+
+    await stopNode(a3);
+  }, 15_000);
+
+  test('a whitelist with no store configured is warned about, not ignored', async () => {
+    // The one way this option is silently wrong, and it is wrong in the
+    // direction that costs data: `durableStore` is an instance and has no
+    // HOCON spelling, so the two halves are configured in different places
+    // and an operator who set only the list believes those keys survive a
+    // restart.  Nothing else in the system would ever mention it.
+    const log = new WarningRecorder();
+    const sysOptions = ActorSystemOptions.create().withLogger(log);
+    const sys = ActorSystem.create('ddata-keys-5', sysOptions);
+    const clusterOptions = ClusterOptions.create()
+      .withHost('h')
+      .withPort(75_071)
+      .withTransport(new InMemoryTransport(new NodeAddress('ddata-keys-5', 'h', 75_071)))
+      .withGossipIntervalMs(80);
+    const cluster = await Cluster.join(sys, clusterOptions);
+    const ddOptions = DistributedDataOptions.create()
+      .withGossipInterval(80)
+      .withDurableKeys(['cart-*']);
+    sys.extension(DistributedDataId).start(cluster, ddOptions);
+
+    await waitFor(
+      () => log.warnings.some((line) => line.includes('durable-keys')),
+      'the replicator warned that the whitelist has no store behind it',
+    );
+    const warning = log.warnings.find((line) => line.includes('durable-keys'))!;
+    expect(warning).toContain('no durableStore is configured');
+    expect(warning).toContain('withDurableStore');
+
+    await cluster.leave();
+    await sys.terminate();
   }, 10_000);
 });
 

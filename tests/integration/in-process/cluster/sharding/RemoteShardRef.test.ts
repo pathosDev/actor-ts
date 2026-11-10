@@ -12,7 +12,7 @@ import { StartShardingOptions } from '../../../../../src/cluster/sharding/StartS
 import { regionSegments } from '../../../../util/SystemPaths.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
-import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
+import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 /**
  * A shard ref for a shard on *another* node used to be a plain path ref
@@ -126,11 +126,16 @@ describe('ClusterSharding — remote shard refs across passivation (#901)', () =
     const other = await startNode(systemName, base + 1, [`${systemName}@h:${base}`]);
     const nodes = [seed, other];
     await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
-    // Membership has converged above, but the region's registration with the
-    // coordinator has no observable of its own, and an ask issued before it
-    // lands races the coordinator instead of being buffered.  Nothing is
-    // asserted on the wait itself — every ask below carries its own budget.
-    await sleep(200);
+    // Membership convergence is not registration: a region registers with the
+    // coordinator on the leader, over a retry timer of its own, so a converged
+    // cluster can still hold an unregistered region.  This waits on the
+    // registration itself, which the fixed sleep here only approximated (#1317).
+    //
+    // The sleep was never protecting the message: one sent before registration
+    // is buffered by the region and delivered once a shard home arrives.  What
+    // it was protecting is the ask below, whose own deadline runs while the
+    // message waits in that buffer.
+    await waitFor(() => nodes.every((node) => node.cluster.sharding.isRegistered(TYPE_NAME)));
 
     // Place the shard somewhere, then work out who is *not* hosting it — the
     // allocation strategy picks, so the test must not assume.
@@ -162,11 +167,16 @@ describe('ClusterSharding — remote shard refs across passivation (#901)', () =
     const other = await startNode(systemName, base + 1, [`${systemName}@h:${base}`]);
     const nodes = [seed, other];
     await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
-    // Membership has converged above, but the region's registration with the
-    // coordinator has no observable of its own, and an ask issued before it
-    // lands races the coordinator instead of being buffered.  Nothing is
-    // asserted on the wait itself — every ask below carries its own budget.
-    await sleep(200);
+    // Membership convergence is not registration: a region registers with the
+    // coordinator on the leader, over a retry timer of its own, so a converged
+    // cluster can still hold an unregistered region.  This waits on the
+    // registration itself, which the fixed sleep here only approximated (#1317).
+    //
+    // The sleep was never protecting the message: one sent before registration
+    // is buffered by the region and delivered once a shard home arrives.  What
+    // it was protecting is the ask below, whose own deadline runs while the
+    // message waits in that buffer.
+    await waitFor(() => nodes.every((node) => node.cluster.sharding.isRegistered(TYPE_NAME)));
 
     seed.region.tell({ id: ENTITY_ID, kind: 'work' });
     await waitFor(() => nodesHostingEntity(nodes, ENTITY_ID).length === 1);
@@ -187,11 +197,16 @@ describe('ClusterSharding — remote shard refs across passivation (#901)', () =
     const other = await startNode(systemName, base + 1, [`${systemName}@h:${base}`]);
     const nodes = [seed, other];
     await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
-    // Membership has converged above, but the region's registration with the
-    // coordinator has no observable of its own, and an ask issued before it
-    // lands races the coordinator instead of being buffered.  Nothing is
-    // asserted on the wait itself — every ask below carries its own budget.
-    await sleep(200);
+    // Membership convergence is not registration: a region registers with the
+    // coordinator on the leader, over a retry timer of its own, so a converged
+    // cluster can still hold an unregistered region.  This waits on the
+    // registration itself, which the fixed sleep here only approximated (#1317).
+    //
+    // The sleep was never protecting the message: one sent before registration
+    // is buffered by the region and delivered once a shard home arrives.  What
+    // it was protecting is the ask below, whose own deadline runs while the
+    // message waits in that buffer.
+    await waitFor(() => nodes.every((node) => node.cluster.sharding.isRegistered(TYPE_NAME)));
 
     seed.region.tell({ id: ENTITY_ID, kind: 'work' });
     await waitFor(() => created === 1);

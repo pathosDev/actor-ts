@@ -2,6 +2,25 @@ import { addressPinRejection, isCidrEntry } from '../util/CidrMatch.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 
+/**
+ * Built-in default for {@link DnsSeedProviderOptionsType.cacheTtlMs} — how
+ * long one resolved answer is reused before the resolver is asked again.
+ *
+ * Named out of the `?? 60_000` literal it used to be so
+ * `actor-ts.discovery.dns.cache-ttl` has something to be pinned against
+ * (#860): `DocumentedDefaults` asserts the published value equals the shipped
+ * constant, which it cannot do against a literal at the read site.
+ */
+export const DEFAULT_DNS_CACHE_TTL_MS = 60_000;
+
+/**
+ * Built-in default for {@link DnsSeedProviderOptionsType.useSrv} — A records,
+ * not SRV.  A records are what a headless Service and an ordinary hostname
+ * both answer with; SRV additionally requires the port to be published per
+ * target, which is a deployment decision rather than a fallback.
+ */
+export const DEFAULT_DNS_USE_SRV = false;
+
 /** Plain options-object shape accepted by a {@link DnsSeedProvider}. */
 export type DnsSeedProviderOptionsType = {
   /** Hostname to resolve (e.g. `my-cluster.default.svc.cluster.local`). */

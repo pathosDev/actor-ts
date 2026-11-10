@@ -24,6 +24,7 @@ import {
 } from './DynamoDbClient.js';
 import { DynamoDbStore, type DynamoDbTableSchema } from './DynamoDbStore.js';
 import {
+  DEFAULT_DYNAMODB_EVENTS_TABLE,
   DynamoDbJournalOptionsValidator,
   type DynamoDbJournalOptions,
   type DynamoDbJournalOptionsType,
@@ -103,7 +104,7 @@ export class DynamoDbJournal extends DynamoDbStore implements Journal {
       ownsClient: resolvedOptions.operations === undefined,
       openClient: () => buildDynamoDbOperations(resolvedOptions),
     });
-    this.tableName = resolvedOptions.eventsTable ?? 'actor_ts_events';
+    this.tableName = resolvedOptions.eventsTable ?? DEFAULT_DYNAMODB_EVENTS_TABLE;
     this.serializer = resolvedOptions.serializer;
   }
 

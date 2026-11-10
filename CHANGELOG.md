@@ -9,6 +9,11879 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-11-10
+
+### Added
+
+- **`actor-ts.sharding.persist-coordinator-state = on` keeps each coordinator's
+  allocation map in the persistence journal, through a new
+  `JournalCoordinatorStateStore`** (#1188). The DistributedData store reads
+  only the local replica, so a coordinator that came up on a node that had
+  just restarted — the node a leader change most often lands on — found
+  nothing to load; a journal the cluster shares does not have that gap. Only
+  the latest map is kept (each save compacts the one before it), a save from a
+  coordinator whose view of the stream is stale fails instead of
+  overwriting, and a node-local journal on a node expecting remote peers is
+  refused at start. `coordinator-state-load-timeout` (10 s) bounds how long a
+  new leader waits for the load. Off by default; the sharding overview and
+  the configuration tables say so (EN + DE).
+
+- **`MultiNodeSpec.restart(role)` brings a role back at the same address as a
+  new process, and `withNodeSetup` re-runs a spec's per-node setup on it**
+  (#1382). A restart at the same `host:port` is the ordinary shape of a pod
+  replacement and had no test: the old system is crashed and terminated (on a
+  virtual clock too), a fresh system and cluster join with a new incarnation,
+  and its seeds default to the other running roles so a restarted seed rejoins
+  instead of founding a second cluster. New multi-node suites cover a restart
+  at the same address, a restarted seed and a node heard from again after it
+  was unreachable, and the #1272 case under traffic: the leader restarts and
+  no entity id is ever live on two nodes — the suite is red without the
+  coordinator's registration barrier. The testing page says how (EN + DE).
+
+- **`encryption()`, `integrity()` and `compression()` work on the SQL
+  snapshot and durable-state stores** — SQLite, Postgres, MariaDB, SQL
+  Server, libSQL and D1 (#1802). Until now these stores refused an actor
+  that set `encryption()` or `integrity()` at start (#960), which left the
+  object-storage pair as the only way to get at-rest encryption for
+  snapshots or durable state. A row written under a hook is the
+  object-storage `BodyCodec` frame — the same AES-256-GCM, the same
+  per-persistence-id HKDF subkey, the same master-key ring and rotation —
+  stored as base64 behind an `ats1:` prefix in the existing `payload`
+  column, so no schema changes and rows written without a hook stay exactly
+  as they were. Each frame is bound to its persistence id and its sequence
+  number (snapshots) or revision (durable state), so a row moved to another
+  address fails to decrypt; a whole durable-state row put back to an older
+  copy is still undetectable without state kept outside the table. All
+  twelve store builders gain `withAllowPlaintextRows(boolean)` for the
+  migration of an actor that turns a hook on over existing rows; the next
+  write seals the row. `sse-s3` / `sse-kms` are object-storage modes and a
+  SQL store refuses them rather than writing plaintext. Events in the
+  journal are unchanged and stay plaintext (#1430). New exports:
+  `SEALED_PAYLOAD_PREFIX`, `SealedPayloadError`,
+  `SealedPayloadOptionsBuilder`, `SealedPayloadOptionsBase`.
+
+- **`Cluster.bootstrap` forwards six more settings, under the names
+  `ClusterOptions` and `ActorSystemOptions` give them: `withAppVersion`,
+  `withFailureDetectorAutoDown`, `withSplitBrainResolver` and
+  `withShutdownAfterUnsuccessfulJoinMs` reach `Cluster.join`, and
+  `withLogSinks` and `withOtelLogs` reach `ActorSystem.create`** (#860).
+  Each travels only when it is set, so an unset field leaves
+  `actor-ts.cluster.*`, `actor-ts.logger.sinks.*` or
+  `actor-ts.tracing.logger-name` deciding exactly as on a direct join, and a
+  set one outranks the file — `false`, `0` and an empty sink list included.
+  The `otelLogs` slot is built by the system, with the tracing logger name
+  and version under it, rather than handed over as a finished logger. Behind
+  stable observation the join give-up is now held to the election budget at
+  the value the join arms, the bootstrap's over the file's, and a negative
+  or non-finite give-up is refused before any system is built.
+  `ClusterBootstrapOptionsType` and the cluster bootstrap page state which
+  fields a bootstrap forwards and that every other one is set in HOCON, and
+  the counter-node sample sets its keep-majority timing through the builder
+  instead of a HOCON block.
+
+  A forwarded value refused once the system exists (an empty or spaced app
+  version, a split-brain-resolver `stableAfterMs` of 0, a give-up shorter
+  than one seed round or inside the election budget, an `otelLogs` logger
+  that throws on the first line) is logged at error first, on the console
+  where the logger itself is what threw, and the system ends as a node that
+  could not join.
+
+- **Request attributes: `HttpRequest.attributes`, read and written through
+  `RequestAttributeKey.of<T>(name)`, `attribute(request, key)` and
+  `withAttribute(request, key, value)` from `actor-ts/http`** (#810). A
+  middleware hands the handlers inside it what it established about a
+  request through them, as `JwtAuth` does with its verified claims; unlike a
+  forwarded header, nothing a client sends can become one. `withAttribute`
+  returns a copy with a frozen record and never mutates the request it was
+  given. The slot is the one the planned session middleware (#1553) is to
+  share. HTTP routes only: an attribute attached around a `websocket()`
+  route does not reach the connection.
+
+- **`JwtAuth`, a JWT bearer-token middleware that verifies RS256, ES256 and
+  HS256 tokens with WebCrypto and no new dependency, against configured keys
+  or the issuer's JWK set** (#810). The verified claims reach the handlers
+  it wraps through `jwtClaimsOf(request)`; `exp` is required, `exp` and
+  `nbf` are checked with a configurable clock skew, and `iss` and `aud` are
+  compared exactly. The JWK set is fetched by its own bounded `HttpClient`
+  (5 s, 64 KiB, redirects refused), trusted for ten minutes, and refreshed
+  on an unknown key id at most once per 30 s, single-flight; only an RS256
+  or ES256 token that names no configured key ever needs it, and an HS256
+  token is answered from the configured secrets alone. A presented token
+  that fails is answered 401 with
+  `WWW-Authenticate: Bearer realm="…", error="invalid_token"`, a request
+  without credentials 401 with the bare challenge, and a token that needs an
+  unreachable key set 503. Configured through `JwtAuthOptions` (builder,
+  plain object and validator); there is no HOCON block yet. Documented on
+  the new HTTP middleware page for JWT, English and German, with a pitfalls
+  section.
+
+  An RSA key is refused when its public exponent is below 3 or even (RFC
+  8017 §3.1): a configured JWK by its field when the middleware is built,
+  and any RSA key, a PEM key or a JWK-set entry, when it is imported, on
+  Bun, Node and Deno alike. A JWK set that cannot be fetched is logged at
+  warn once per outage, with the set's URL and the cause and any credentials
+  in either masked, a deadline that ran out named as one; further failed
+  retries go to debug and the fetch that succeeds again to info. Every set
+  entry that yields no key is logged at debug with its position, its kid and
+  the reason. `JwtAuthOptions` gains `logger` / `withLogger(logger)`, by
+  default the console at warn.
+
+- **`actor-ts.remote.connect-timeout` (`connectTimeoutMs` /
+  `withConnectTimeoutMs` on `ClusterOptions` and `TcpTransportOptions`)
+  gives a cluster dial a connect deadline of its own** (#1475). A dial that
+  has not opened by then — the TCP connect and, over TLS, the TLS handshake
+  — is aborted and logged as `could not connect to X within N ms`, while one
+  that opened stays `actor-ts.remote.handshake-timeout`'s to end and logs
+  `connected to X, but no hello-ack came within N ms`, so a peer that is not
+  there is known before a slow one is given up on. Unset, it follows
+  `handshake-timeout`, which is why the key ships comment-only in
+  `reference.conf`; both validators refuse a connect deadline above the
+  handshake deadline, checking the pair the transport will run with, so a
+  lone lower `handshake-timeout` is never refused.
+
+- **Per-path deployment entries under `actor-ts.deployment` set
+  `throughput`, `mailbox-capacity` and `mailbox-overflow` for the actors
+  whose path a quoted key matches, without touching their spawn sites**
+  (#868). Keys are address-less path patterns in the
+  `actor-ts.parallelism.offload` grammar (`*` inside one segment, a `**`
+  segment for one or more), one entry applies per actor — the most specific
+  match, as a whole — and each leaf sits between the spawn site and
+  `actor-ts.actor.throughput` / `actor-ts.mailbox.default`, with
+  `mailbox-capacity = 0` exempting the matched actors from a global bound.
+  Entries reach the actors the application wrote, sharded entities and
+  singleton instances under `/system` included, never the framework's own; a
+  malformed key, entry or value stops the system at startup with a
+  `ConfigError` naming the key, and a system without the block pays one null
+  check per spawn.
+
+- **`actor-ts.cluster.shutdown-after-unsuccessful-join`
+  (`ClusterOptions.withShutdownAfterUnsuccessfulJoinMs`) gives
+  `Cluster.join` a deadline of its own, off by default** (#1500). When it
+  passes and nothing can promote the node any more — no member is `up`, no
+  self-election of its own is pending, and no peer is present that only
+  `minimum-members-before-up` holds back, where a peer parked past
+  `down-after` under `failure-detector.auto-down = off` does not count as
+  present — the node logs one warning naming the key and the stall remedy,
+  leaves, and runs the coordinated-shutdown pipeline with the new
+  `ClusterJoinUnsuccessfulReason`, exported from the root; otherwise it asks
+  again every `seed-retry-interval`. `'immediate'` with seeds and `'never'`
+  give up, a deferred `selfElection` forms its cluster of one instead, a
+  node its own timer moved to `weakly-up` counts as not joined, and an
+  `awaitReady()` still pending — `Cluster.bootstrap`'s own included —
+  rejects at once with a `ClusterReadyTimeoutError` that names the key. A
+  value shorter than `seed-retry-interval` is refused, and behind
+  `Cluster.bootstrap`'s stable observation with `new-cluster-enabled` on so
+  is one that does not exceed `self-election-grace` + 5 s, before the join.
+  With `actor-ts.cluster.bootstrap.new-cluster-enabled = off` every node
+  joins `never`, nobody is elected and no grace is waited out, so a give-up
+  of at most `self-election-grace` + 5 s is accepted there, and
+  `Cluster.bootstrap` waits the plain 5 s for readiness instead of the grace
+  plus 5 s.
+
+  Under `exit-process` the give-up's run never exits 0, and a
+  `Cluster.bootstrap` readiness wait that fails, on its own deadline or on
+  the give-up's, logs the error at error before its run. A give-up run that
+  a `recover = false` phase halts still ends in the teardown unless
+  `terminate-actor-system` is off.
+
+  A node with no seed to contact gives up naming that fault: a 'never' node
+  with an empty seed list, or one naming only itself, is told that only a
+  peer listing it as a seed can bring it in, and a founder that
+  minimum-members-before-up holds is told the threshold and the shortfall,
+  instead of being told that no seed answered and to check addresses that do
+  not exist.
+
+- **A downed peer gets no quarantine of its own: what refuses it is its
+  tombstone, and the downing-strategies page now says, per downing route,
+  what a downed address may do next** (#1477). `Cluster.down()`, a
+  strategy's decision and the peer's own `leave` refuse the same run for the
+  larger of `actor-ts.cluster.tombstone.time-to-live` and
+  `tombstone.min-retention`, 24 h at the defaults, and readmit it with its
+  old roles on its next gossip frame after the prune; the failure detector's
+  own removal — the default with no strategy configured,
+  `failure-detector.auto-down = on` — deletes the entry and readmits the
+  same run on its next gossip frame (a heartbeat alone finds no entry), and
+  under the opt-out `auto-down = off` nothing is removed. A restart is
+  readmitted at once by its fresh version, and one whose previous run was
+  never removed ends that run first, with `MemberDown` and `MemberRemoved`
+  for the old incarnation; the same run restamping its version gets back in,
+  and a peer with standing can gossip a tombstone ahead of time to keep a
+  restart out; both close only once the incarnation is required on the wire
+  (#823, #940). The refusal covers membership only: a downed node's frames
+  still arrive and its messages are still delivered. The cluster-security
+  page says which phantom members the detector reclaims — those a gossip
+  merge registered, at `down-after` under the default — and that one filed
+  from a frame's sender field is never watched by it (#939), and states for
+  both routes when an evicted sender's replay mark goes.
+
+- **A node whose own downing decision removes it can now stand itself down
+  instead of only leaving the cluster** (#1456). With
+  `actor-ts.cluster.run-coordinated-shutdown-when-down = on` (in code,
+  `ClusterOptions.withRunCoordinatedShutdownWhenDown(true)`), a strategy's
+  verdict that includes this node, or `down-all-when-unstable`, makes it
+  leave and then run `CoordinatedShutdown` with `ClusterDowningReason`, even
+  when the leave fails; the run ends in the built-in terminator unless
+  `coordinated-shutdown.terminate-actor-system` is off, and
+  `coordinated-shutdown.auto-register-tasks = off` does not suppress it. It
+  ships off, and both values carry a risk: off leaves the downed node
+  running its actors beside the side that won, and on turns the known wrong
+  self-downs (`StaticQuorum` below `quorum-size` at bootstrap, #933;
+  `KeepOldest` after the lowest-addressed node crashes, #932) into
+  terminations. A downing a peer decides about this node is still not seen
+  (#940). The coordinated-shutdown guide drops a `MemberDown`-for-self
+  recipe that could never fire, and the downing-strategies page no longer
+  claims that the losing nodes' actors stop.
+
+  A run the switch started that a `recover = false` phase halts still ends
+  in the teardown, as a signal-started run does, unless
+  `terminate-actor-system` is off; the halt is logged at error. A decision
+  that downs only peers leaves the node running.
+
+  A node the switch stands down exits as a clean stop does: with
+  `coordinated-shutdown.exit-process` on, the run exits with `exit-code`,
+  which ships as `0`, so a supervisor that restarts only after a failure,
+  systemd's `Restart=on-failure` among them, leaves it down. The
+  coordinated-shutdown guide names the two ways out, `Restart=always` or a
+  non-zero `exit-code`, and says that a non-zero `exit-code` is the status
+  of every run `exit-process` ends, a signal's and an opted-in
+  `terminate()`'s included, and the failures' instead of `1`; the
+  process-manager guide's systemd unit, which restarts on failure only, says
+  the same on its `Restart=on-failure` row.
+
+- **The startup graph's budgets and the boot-time open of the persistence
+  stores can be set from configuration** (#1473).
+  `actor-ts.coordinated-startup` carries `default-phase-timeout` (30s, the
+  same default `withDefaultPhaseTimeoutMs` had) and a phases block of the
+  coordinated-shutdown block's shape — timeout, recover and `depends-on` per
+  child — that retimes `persistence-start` and `before-system-ready` or
+  declares a phase a task passed in code may then run in; a declared phase
+  must name `depends-on` and does not recover unless it says so. It sits
+  under `ActorSystemOptions.withCoordinatedStartup`, which wins for the
+  default budget and, as a whole, for every phase it names. An unknown
+  setting under a phase, a declared phase without `depends-on`, a dependency
+  nothing defines, a cycle or a zero budget is a `ConfigError` at
+  `ActorSystem.create`. `actor-ts.persistence.auto-start` (on) is the
+  configuration form of the behaviour's `autoStart`: off keeps the selected
+  stores closed until their first operation, a setting made in code wins
+  over it, and `WorkerMesh` workers keep running with it off whatever the
+  configuration they inherit says.
+
+- **`actor-ts.sharding.healthcheck.names` gates readiness on named shard
+  regions** (#1465). List the sharded types a node is not ready without, and
+  `Cluster.join` installs one `shard-region:<type>` readiness check per name
+  beside the cluster's own two, failing until this node's region for the
+  type is registered with its coordinator. Its detail tells apart a region
+  that is not running (never started here, or stopped), one the coordinator
+  refused over `number-of-shards` (with both counts), and one that is
+  running and not acknowledged yet; a refused node stays out of rotation
+  until the counts agree, and a leader change lifts the refusal on record. A
+  refusal on record lapses with the leader term that issued it: from a
+  leader change until the new coordinator answers, `registrationRefusal` is
+  null and the type reads as not registered, instead of naming a coordinator
+  that no longer governs it. `isRegistered` is this node's account of what
+  its region was told: a leader change does not turn it false, also when the
+  new leader runs no coordinator for the type, a lost eviction notice leaves
+  it true until the region's next beat is answered with a registration
+  request, and a stop or an eviction leaves a refusal on record. The default
+  `[]` installs nothing, and a list that cannot be read fails `Cluster.join`
+  before the transport starts. `shardRegionRegistered(cluster, typeName)` in
+  `actor-ts/management` (#1541) builds the same readiness check for a type
+  only the code knows about: `shardRegionRegistered(cluster, 'orders')`,
+  handed to `healthChecksOf(system).addReadiness(...)`, reports
+  `ClusterSharding.isRegistered('orders')` under
+  `shardRegionCheckName('orders')`, synchronously, and stays registered
+  while it fails.
+
+  The shard-region readiness check stays green through a leader change: a
+  registered region registers with the new coordinator in the background,
+  and only a refusal, an eviction or a stop takes the registration back. A
+  refusal lasts until `number-of-shards` agrees or the leader's term ends;
+  after a leader change lifts it, the detail reads running and not
+  acknowledged yet until the next coordinator decides again.
+
+- **A broker that names a circuit breaker publishes its transitions as
+  `BrokerCircuitBreakerStateChanged` — actor path, endpoint without
+  credentials, breaker id and state — so an actor held off by an open
+  breaker, whose refused attempts publish nothing else, no longer goes
+  quiet** (#1478). `CircuitBreakerOpenError` carries `remainingMs`, the wait
+  until the refusing breaker lets one call through, on that breaker's own
+  clock.
+
+- **An `actor-ts.tracing` block names the OpenTelemetry tracer from HOCON**
+  (#1466). `tracer-name` (default `"actor-ts"`) and `tracer-version`
+  (shipped comment-only; unset passes no version) are what `getTracer` is
+  asked for, the instrumentation scope every span the framework records is
+  filed under. The new `TracingExtension.enableOtel(options)` builds the
+  OpenTelemetry tracer with both leaves layered under its explicit options,
+  per field, and installs it through `enable()`; a pre-built `tracer` in the
+  options is used as it is. `otelTracer(options)` stays the pure code path
+  and reads no config, and its built-in name is now the exported
+  `DEFAULT_OTEL_TRACER_NAME`. Until now a hand-written `actor-ts.tracing.*`
+  key was accepted and read by nothing. Quote the version: an unquoted `1.0`
+  is a number to HOCON and arrives as `"1"`.
+
+  The same block now names the OpenTelemetry logger too, and the system can
+  build that logger itself.
+  `ActorSystemOptions.withOtelLogs(otelLogsOptions)` (field `otelLogs`)
+  takes the `@opentelemetry/api-logs` namespace through the new
+  `OtelLogsAdapterOptions`, and the constructor builds `system.log` from it
+  with `otelLogger`, layering `actor-ts.tracing.logger-name` (default
+  `"actor-ts"`, the exported `DEFAULT_OTEL_LOGGER_NAME`) and
+  `logger-version` (shipped comment-only; unset passes no version) under the
+  options per field. Its level is the options' own, else `logLevel`, else
+  `actor-ts.logger.level`, and the logger fields resolve `logger` >
+  `otelLogs` > `logSinks` > the HOCON sinks > console, the first one set
+  winning whole. `otelLogger(options)` stays the pure code path and reads no
+  config. `logger-name` is not `actor-ts.logger.sinks.otlp.scope-name`,
+  which names what the OTLP HTTP sink sends on its own. A worker of a worker
+  mesh never receives the slot, so its logger follows
+  `actor-ts.logger.sinks` as before, and `terminate()` leaves flushing to
+  the application's `LoggerProvider`. Quote the version, as with
+  `tracer-version`.
+
+- **Cluster members can state an application version, so the mixed window of
+  a rolling update can be read off the cluster itself** (#843). Set
+  `actor-ts.cluster.app-version` (shipped comment-only; the usual form is
+  `${?APP_VERSION}`) or `ClusterOptions.withAppVersion(...)`. Through the
+  `${?APP_VERSION}` form a version that reads as a number comes back in that
+  number's own spelling, because an environment value is read as JSON first:
+  `1.10` as `1.1`, `2.0` as `2`, so releases `1.1` and `1.10` print the same
+  label. Quote such a value inside the variable (`APP_VERSION='"1.10"'`), or
+  set it with `withAppVersion(...)`. The label is gossiped on the member
+  record, printed by `Member.toString` as `app-version=...` and returned as
+  `appVersion` per member by `GET /cluster/members`; it is advisory only,
+  and nothing places, routes or downs on it. It rides the gossip overlay
+  lane, so a member first learned through, or promoted by, a node running an
+  older actor-ts regains its label from its own next gossip, and a node's
+  own label survives a promotion from such a leader. A label belongs to the
+  run that states it: a member restarted without one, on a release that sets
+  none or a deployment without `APP_VERSION`, is shown without one
+  cluster-wide, never with its previous run's label, and a label a peer
+  relayed into the slot of a member that states none is taken back by that
+  member's own next gossip. A label is 1 to 64 visible ASCII characters:
+  `Cluster.join` refuses one that is not, and a peer's label that is not is
+  dropped while the member is kept. `/cluster/members` answers anonymous
+  callers unless `auth` is configured (#971), so the label adds each node's
+  release to what that endpoint discloses.
+
+  Quote a literal version: HOCON reads an unquoted `1.0` as a number, and
+  the peers are told `"1"`.
+
+- **An `actor-ts.metrics` block configures the metrics registries from
+  HOCON** (#1466). `max-series-per-family` (default `10000`) sets the
+  per-family cardinality cap, and `name-prefix` (default `""`) the prefix
+  the prom-client bridge puts in front of every metric name.
+  `MetricsExtension.enable(options)` layers the cap under its explicit
+  options, so it now also reaches the registries the framework switches on
+  with no options at all: DevTools while it is attached, and every
+  worker-mesh worker, whose system is built from the main thread's effective
+  config. The new `MetricsExtension.enablePromClient(options)` builds the
+  prom-client bridge with both leaves layered under its options and installs
+  it through `useRegistry`; `promClientRegistry(options)` stays the pure
+  code path and reads no config. Until now a hand-written
+  `actor-ts.metrics.*` key was accepted and read by nothing.
+  `management.enable-metrics-endpoint` and
+  `worker-mesh.metrics-relay-interval` stay in their blocks.
+
+  A value in `actor-ts.metrics` that the registry refuses is refused with
+  its key in front of the validator's message, still as an `OptionsError`,
+  and logged once per system at error level, so a refused
+  `max-series-per-family` no longer switches a worker-mesh worker's metrics
+  off without a word. Through `enablePromClient`, a `name-prefix` no
+  Prometheus metric name can start with is refused the same way before the
+  bridge is installed.
+
+- **Leases can be built from configuration for the three cluster consumers
+  that need one** (#1454). `actor-ts.coordination.lease.backend` (`none` or
+  `kubernetes`, default `none`) names the backend, and
+  `actor-ts.sharding.use-lease` and `actor-ts.cluster.singleton.use-lease`
+  (default `off`) switch it on, as does
+  `split-brain-resolver.active-strategy = lease-majority`, which is now
+  selectable. The framework names each lease after its consumer
+  (`<system>-singleton-<type>`, `<system>-sharding-<type>`,
+  `<system>-split-brain-resolver`, made a valid Kubernetes object name) and
+  owns it by the node's cluster address and incarnation, so the file chooses
+  the backend and never the identity. A switch with backend `none`, an
+  unknown or in-memory backend and a missing `ttl` are refused at startup
+  naming the key; a backend that is named but unreachable fails closed. An
+  explicit `withLease(…)` still wins, `withUseLease(false)` opts one type
+  out, and `InMemoryLease` and `KubernetesLease` take an optional `Config`
+  as a second constructor argument, so a lease built in code can read
+  `system.config` instead of loading the config chain again.
+
+  A lease-majority resolver renews its lease on a scheduler of its own and
+  gives the lease back when the node leaves. `DowningProvider` has an
+  optional `shutdown()` hook, which the cluster calls once as the node
+  leaves — on `cluster.leave()` and on the at-once leave of a node its own
+  decision downed or that gave its join up — after the failure-detector tick
+  that asks the provider has stopped. `LeaseMajority.shutdown()` stops the
+  strategy, releases a lease it holds and undoes a win that an acquire still
+  in flight reports later, and the configured resolver's shutdown also stops
+  its scheduler, so the members left behind can take the lease at their next
+  even split, nothing renews it afterwards and nothing it armed keeps the
+  process alive: a node that had won an arbitration used to go on renewing
+  the record after a leave and a terminate. A hook that throws or rejects is
+  logged at warn and the leave completes. A provider stopped this way serves
+  one cluster: a strategy selected in configuration is built anew by every
+  `Cluster.join`, and one built in code has to be built again for a node
+  that joins anew.
+
+- **`DistributedDataHandle.subscribe` accepts an `ActorRef` as well as a
+  callback, so a subscriber does its work on its own turn instead of the
+  replicator's** (#1468). The actor is told a `DistributedDataChanged`, a
+  class exported from `actor-ts/crdt` carrying
+  `kind: 'distributed-data-changed'`, `key` and `value`, so `P.instanceOf`
+  and a `kind` matcher both reach it. What it is told is coalesced per
+  subscriber and key into a latest-value slot: at most one notification
+  waits in its mailbox, later changes overwrite its value, and the next one
+  is posted only once the actor has been handed the last, so its own mailbox
+  paces it, with no timer and no `notify-subscribers-interval`. That bound
+  holds across an unsubscribe as well: subscribing again before the actor is
+  handed a notification its ended subscription left queued takes that
+  notification over, and the replay overwrites its value instead of queueing
+  a second one, so the actor never has more than one notification per key
+  waiting however often it unsubscribes and subscribes. The replicator keeps
+  watching the actor until such a notification is handed over, so an actor
+  that stops first is still cleaned up. The actor's work runs outside the
+  merge but on the replicator's thread, and the coalescing is what bounds
+  it: twenty changes with 10 ms of work each held a read queued behind them
+  back 21 ms with a subscribed actor, which was handed two of the twenty
+  values, against 203 ms with a callback doing the work. A key that already
+  holds a value is replayed through the mailbox, subscribing the same actor
+  again adds no second subscription, and the notification is exempt from
+  mailbox bounds like a death-watch `Terminated`. The subscriber has to live
+  on the replica's node (a `RemoteActorRef` is refused with a `TypeError`)
+  and is watched, so a stopped actor's subscriptions end with it, while a
+  replicator restart keeps them; any other in-process ref, such as a
+  `TestProbe`, is told every change directly.
+
+  The chat and voice samples now use it: `ChatRoomDirectoryActor`,
+  `OnlineUsersActor`, `ReadReceiptsActor` and `VoicePresenceActor` subscribe
+  their own ref and fan each change out to their sessions on their own turn
+  instead of from a callback on the replicator's, and each starts a
+  subscription from the key's current value, since the replay now arrives as
+  a message. The voice sample page shows the actor form.
+
+- **The φ-accrual detector's first-contact estimate is configurable, as
+  `actor-ts.cluster.failure-detector.phi.expected-response-after`** (#1451).
+  The key, `expectedResponseAfterMs` or `withExpectedResponseAfterMs(…)` in
+  code, is the inter-arrival time φ assumes before a peer has a history,
+  with a deviation of a quarter of it, never below `min-std-deviation`. It
+  ships as `auto`, which follows `heartbeat-interval` however that is set,
+  so the cadence stays single-sourced; a duration decouples the two. It
+  stands in only until the peer's first heartbeat interval is measured,
+  which replaces it, so a duration changes first contact and nothing after
+  it. At the shipped settings a peer heard from once reads unreachable after
+  about 4.2 s of silence at a 500 ms cadence and after about 7.8 s at 2 s.
+
+- **`actor-ts.distributed-data.quorum-timeout` (default `5s`) sets the
+  deadline of an `updateAsync` / `getAsync` that names no `timeoutMs`, from
+  HOCON or with `DistributedDataOptions.withQuorumTimeout(ms)`** (#856). It
+  used to be the fixed `DEFAULT_ASK_TIMEOUT_MS`, resolved in the handle
+  where no configuration reaches, so it stayed at 5000 ms whatever
+  `actor.ask-timeout` or `gossip-interval` said. The replicator resolves it
+  now, so `max-quorum-timeout` clamps a configured default exactly as it
+  clamps a caller's `timeoutMs`, and a per-call `timeoutMs` still wins. It
+  is a key of its own rather than an inherited `actor.ask-timeout`, because
+  that key moves `ActorRef.ask`, a different wait. It has to be positive,
+  and the validator refuses `0`: the replicator arms it like any other
+  deadline, so it would not switch the deadline off but expire it at the
+  next timer tick, failing a write and leaving a read with what the local
+  replica alone holds. The `updateAsync` JSDoc no longer claims the default
+  is `gossipIntervalMs × 5`.
+
+- **The MongoDB and DynamoDB journal, snapshot-store and durable-state
+  blocks take typed client leaves, each comment-only in `reference.conf` so
+  that leaving it out keeps the driver's own default or the SDK's own
+  resolution: `max-pool-size`, `min-pool-size`, `server-selection-timeout`,
+  `connect-timeout` and `ca-file` for MongoDB, `max-attempts`, `retry-mode`,
+  `request-timeout` and `connection-timeout` for DynamoDB, with matching
+  fields and `withX` setters on the six store builders and on
+  `RegisterMongoPluginsOptions` and `RegisterDynamoDbPluginsOptions`**
+  (#1490). Each reaches the driver under the driver's own name only when
+  set; `request-timeout` becomes the request handler's `requestTimeout`
+  together with `throwOnRequestTimeout`, without which the handler only logs
+  that a request ran long. The stores validate them when built: pool sizes,
+  attempt counts and timeouts must be positive integers (a minimum pool size
+  may be 0 and may not exceed the maximum), timer-armed timeouts at most
+  `MAX_TIMER_DELAY_MS`, and `retry-mode` takes `standard` or `adaptive`
+  only, since the SDK would read any other word as `standard`. A typed
+  setting beside the same option in `clientOptions` (in any letter case) or
+  in the MongoDB url's query, or beside the `clientConfig` key it replaces
+  (`maxAttempts`, `retryMode`, a `retryStrategy`, a `requestHandler`), is
+  refused with an `OptionsError` naming both sides instead of one of them
+  silently winning. `clientOptions` and `clientConfig` themselves stay
+  code-only.
+
+- **`actor-ts.cluster.bootstrap.new-cluster-enabled`, with the
+  `newClusterEnabled` option and `withNewClusterEnabled()`, says whether a
+  bootstrapped node that finds nobody to join may found a cluster** (#860).
+  It ships on, which a deployment's first start needs. Set it off once the
+  cluster exists: no bootstrapped node then self-elects, on either bootstrap
+  path, an explicit `seeds: []` is refused, and a node cut off from its
+  peers fails its readiness wait instead of starting a second cluster beside
+  the running one. While it is on, every start logs one warning naming the
+  key.
+
+- **The Cloudflare D1, DynamoDB and Cassandra blocks configure their
+  transport bounds, table provisioning and keyspace replication from HOCON**
+  (#1490). All three D1 blocks publish the transport's `timeout = 30s` and
+  `max-response-bytes = 64M`, which bound a whole replay. All three DynamoDB
+  blocks publish `billing-mode = "pay-per-request"`,
+  `table-ready-timeout = 30s` and `auto-create-tables = on`; the billing
+  mode takes the kebab-case values `pay-per-request` and `provisioned` and
+  refuses AWS's own spelling with the key, and the capacity pair
+  `provisioned-throughput { read-capacity-units, write-capacity-units }`
+  ships as a comment, because published it would be refused under the
+  default mode — a `provisioned` table with no pair is still created at 5
+  read and 5 write units, and half a pair is refused naming the missing
+  half. Both Cassandra blocks publish
+  `replication { class = "simple-strategy", replication-factor = 1 }`, read
+  leaf by leaf rather than handed over as an object, with a comment-only
+  `data-centers` list of `{ name, replication-factor }` entries for
+  `network-topology-strategy`, each entry checked by its path and refused
+  under `simple-strategy`. The store config seam gains `readStoreBytes` and
+  `readStoreEnum`, and `actor-ts/persistence` now exports every store config
+  reader (`readStoreStringList` included), the defaults behind these leaves,
+  and the Postgres and MariaDB option validators with the three SQL
+  validator bases.
+
+- **`NoDeadConfigKeys`, the dead-key gate, reaches the keys `reference.conf`
+  documents only in a comment, and the block-valued ones** (#1425).
+  Comment-only keys, among them the split-brain referee and quorum, the HTTP
+  server's TLS files, the CORS lists, the WebSocket connection caps, the
+  circuit breaker's call timeout, the relational pool tunables, the
+  cluster's bind pair and the DynamoDB capacity pair, are introduced at one
+  value and changed to a second, and some registered reader has to answer
+  the two differently, so a reader that answers only whether a key is there,
+  or builds its block whenever the block exists, does not pass. Block-valued
+  keys get an object kind, so the in-memory cache's `prefix-quotas`, the SSE
+  bridge's `headers` and the per-role root `actor-ts.cluster.role` are
+  gated, along with the broker circuit-breaker id and the JetStream
+  deliver-policy `kind`. Each reader's suite must also assert it with an
+  exact-object case, which ten suites gained.
+  `actor-ts.coordinated-shutdown.phases` and the Cassandra
+  `replication.data-centers` list stay outside, each with its reason written
+  beside the registry.
+
+  The gate holds a sub-reader to the reader that calls it, and compares a
+  leaf that ships empty at two values. A leaf read by a sink's delivery
+  block, the cluster's downing provider or its split-brain window counts
+  only where the sink's or the cluster's own reader answers to it as well,
+  so a caller that stops handing on what its sub-reader returned fails the
+  leaf; each such registry entry names its callers, and the gate checks that
+  list against the calls in `src/`. A leaf that ships as an empty string,
+  list or object is set to two non-empty values of the same length, which a
+  reader has to tell apart, so one that keeps only whether a value is set no
+  longer passes. A duration or size shipped as a bare count, such as the
+  in-memory cache's `time-to-live`, is set with its unit, so a reader that
+  switched to `getInt` or `getNumber` fails it, and a fraction is also set
+  to a size, so a reader that takes one with `getBytes` fails it too.
+
+  The `reference.conf` page's *No dead keys* section, in both languages, now
+  describes the gate as it is — a leaf reachable from `ConfigKeys`, and
+  read, proven by a registered reader answering differently once the leaf
+  changes — and what it does not prove, where it had promised a test that
+  every key is referenced from the source. The `ConfigKeys` notes and seven
+  reader comments that justified a layout by the old text search now say
+  what the gate checks, and a docs test fails when a page cites a repository
+  path that does not exist as spelled.
+
+  `AGENTS.md` states the same gate in its `ConfigKeys` rule — a key
+  reachable from `ConfigKeys` and read by a registered reader, where a
+  refusal is not a read — names what a new block's reader needs (a registry
+  entry, `contexts`, `PERTURBATION_OVERRIDES`, `UNPUBLISHED_LEAVES`), and
+  replaces the constants rule that kept a `ConfigKeys` read beside its
+  constant; `tests/unit/ci/DeadKeyGateGuidance.test.ts` holds both passages
+  to the gate. It also says what keeps the Cassandra blocks'
+  `replication.data-centers` outside the gate — a registry entry with a
+  second list as its override, and contexts selecting
+  `network-topology-strategy` on the two Cassandra readers, which nobody has
+  written yet — which readers of another kind fail a leaf, and that
+  `calledBy` is the one place inside the registry where the gate checks
+  wiring. `DeadKeyGateGuidance` asks the gate's own functions about each of
+  these claims, so a claim goes stale only by failing; it holds the
+  registry's comment and the Cassandra options' JSDoc to the same
+  data-centers reason, and refuses the old constants rule by its title as
+  well as by its wording.
+
+- **The documented-defaults check holds each row's kind label to the reader
+  that takes the key** (#1438). Every row is set through each registered
+  config reader: a value of the labelled kind has to be taken without a
+  getter refusing it as the wrong kind, and for the four numeric kinds the
+  values that getter refuses have to be refused, so `int`, `number`,
+  `duration` and `bytes` no longer pass for one another on a whole literal.
+  `int` and `number` rows are also set to a size, which their getters refuse
+  and `getBytes` takes; before, a bytes row labelled `number` passed both
+  halves of the kind check and was caught only by the value read, or not at
+  all where the literal is a bare count, as the read constraints'
+  `max-document-bytes = 0` is. A duration or size row may no longer publish
+  a bare non-zero number. The GELF sink's `max-chunk-bytes` was the last,
+  labelled as a count while its reader takes a size, and `reference.conf`
+  now publishes it as `1420B`.
+
+- **`ActorSystemOptions.withPersistence` takes `plugins`, functions that
+  register persistence backends inside `ActorSystem.create`** (#1473). Each
+  is handed the system's `PersistenceExtension`, as in
+  `(persistence) => registerPostgresPlugins(persistence)`, and the type is
+  exported as `PersistencePlugin` from `actor-ts/persistence`. They run
+  synchronously and in the order given, so the store the configuration
+  selects resolves as soon as `create` returns. A plugin that throws makes
+  `create` throw; a promise one returns is awaited in the
+  `persistence-start` phase of the startup graph, where a rejection fails
+  the startup: `whenReady()` rejects and the system goes down. A selected
+  backend has to be registered before a plug-in's first `await`: the
+  selected stores are resolved inside `create` right after the plug-ins are
+  called, so a factory registered after an `await` comes too late for them
+  and the startup fails with an `Unknown … plugin` error. Work the stores
+  need once they open, such as a key fetched from a vault, may follow it,
+  because they open only once the promise has settled. `reference.conf`'s
+  comments on the SQLite, PostgreSQL, MongoDB, Cassandra and object-storage
+  blocks, and the reference-conf page in both languages, show this
+  registration, where they used to suggest a bare `register*Plugins(ext)`
+  call. `ClusterBootstrapOptions.withPersistence` takes them too, and the
+  slot gains `durableStateStore` beside `journal` and `snapshotStore`; each
+  instance wins over the plugin its axis selects.
+
+  `withPersistence` also takes `behavior`, the persistence behaviour set in
+  code: the explicit layer over the behaviour keys of
+  `actor-ts.persistence`, field by field.
+
+  The persistence pages, the configuration reference and the
+  rolling-migration runbook wire every backend this way, in English and
+  German, and say when a store connects, creates its tables or runs its
+  collation check: when it opens, at startup unless the boot-time open is
+  turned off.
+
+- **An actor system runs its startup work itself, as a phase graph**
+  (#1473). Tasks passed to `ActorSystemOptions.withCoordinatedStartup` run
+  in `persistence-start`, then `before-system-ready`, plus any phases the
+  options declare, as the last step of `ActorSystem.create`, so no call in
+  `main` starts them. Tasks of one phase run together under the phase's
+  budget (30 s by default, `withDefaultPhaseTimeoutMs`) and receive an
+  `AbortSignal`. `system.whenReady()` resolves once the last phase has run,
+  and `healthChecksOf(system)` gains a `startup` readiness check that keeps
+  `/ready` false until then. A task that fails or outlives its budget
+  rejects `whenReady()` with an error naming the phase and the task, runs
+  the coordinated-shutdown pipeline with the new `StartupFailedReason` and
+  makes `runUntilTerminated()` reject with that error, so a process whose
+  startup failed exits by itself, non-zero, on Bun, Node and Deno; a
+  shutdown during startup — `terminate()`, a SIGTERM, an explicit `run()` of
+  the coordinated-shutdown pipeline — abandons it instead, before the
+  pipeline's first phase: the running tasks' signals abort, `whenReady()`
+  rejects with an abandonment error and nothing is logged above debug, so an
+  ordinary SIGTERM during startup ends the process as a shutdown rather than
+  a failed start. On Node the phase budget holds the process while its task
+  runs, so a task the documented `main` awaits through `whenReady()` fails
+  at its budget with the ERROR line naming it, where Node used to end the
+  program with "unsettled top-level await". The graph is sealed once
+  `create` returns, so `CoordinatedStartup.addTask` refuses and names the
+  option. `CoordinatedStartup`, `CoordinatedStartupId`, `StartupPhases`,
+  `StartupFailedReason`, the `StartupTask` type and the
+  `CoordinatedStartupOptions` family are exported from the package root.
+
+  With `actor-ts.coordinated-shutdown.exit-process` on, the run a failed
+  startup starts exits with `exit-code` when that is not `0` and with `1`
+  when it is, so a supervisor never reads a startup that never finished as a
+  clean stop (#1455).
+
+- **`ControlAwareMailbox` is a new opt-in mailbox that hands an actor its
+  control messages before its backlog** (#1431). It keeps two FIFO classes:
+  every message its `isControl` predicate answers `true` for is dequeued
+  before any ordinary one, and each class keeps arrival order. Attach it
+  with `withMailbox(() => new ControlAwareMailbox(options))`;
+  `ControlAwareMailboxOptions.create()` builds the options with
+  `withIsControl`, `withCapacity`, `withOverflow` (`'drop-head'`,
+  `'drop-new'` or `'reject'`, the default once a capacity is named),
+  `withOnDrop`, `withDeadLetterDrops` and `withOnControlError`. A capacity
+  bounds the ordinary class only, so a control message is never shed,
+  refused or counted as a drop, and a stash replay or throttle re-park puts
+  each message back at the head of its own class. The predicate runs on the
+  sender's stack and is contained: a throw, or any answer but `true`,
+  classes the message ordinary. A predicate that throws is reported:
+  `onControlError` (builder `withOnControlError`) hears each throw with what
+  was thrown and the message, and a mailbox given none logs its first throw
+  at warn, once per mailbox, naming the classes involved and never the
+  message. The envelopes the framework posts past a bound — a death-watch
+  `Terminated`, whether the death was local or reported by another node, and
+  the WebSocket accept and close commands — keep their place in line on
+  every mailbox, this one included unless its predicate classes them as
+  control; `Mailbox.enqueueSignal` and the mailboxes page now state that
+  rule.
+
+- **BREAKING — `WebsocketConnection.abort(code?, reason?)` drops a
+  connection at once, for a peer the hub has stopped serving** (#1431).
+  Where `close()` queues behind everything already sent to the connection,
+  so a reply followed by `close()` still reaches the peer first, `abort()`
+  acts before it returns: the frames still queued for the connection become
+  dead letters instead of writes, and the socket is hard-closed without a
+  close frame on the `ws`-backed Fastify and Express backends and on Hono
+  under Bun and Node, or, on Hono under Deno, whose socket has no hard
+  close, closed with the given code and reason made to fit a close frame: a
+  code it cannot carry, such as 1006, goes out as 1008, and a reason over
+  123 bytes is cut between two characters. The hub still receives exactly
+  one `onClientDisconnected`, carrying the abort's code (1008 by default)
+  and reason with `initiatedBy: 'server'`, after any frames from that peer
+  it had already queued. On a connection that is no longer open, `abort()`
+  does nothing.
+
+  **Migration.** `WebsocketConnection` has a new required member,
+  `abort(code?, reason?)`; a class that implements the interface, typically
+  a test double, adds it.
+
+- **`EventStream.subscribeFunction(channel, callback)` subscribes a plain
+  callback to the bus, with no actor to spawn, name or stop, and returns a
+  `() => void` handle that ends exactly that subscription** (#1433). The
+  channel takes the same three forms as `subscribe`, and a class or an
+  `EventKey` types the callback's parameter. The callback runs synchronously
+  inside `publish`, after every actor subscriber, for the subscriptions that
+  existed when the event was published; a throw or a rejected promise is
+  logged at warn and skips that callback for that event, and callback
+  deliveries nest at most 16 levels deep, and reaching that depth cuts the
+  cascade it is reached in: from then on nothing that one call of the
+  outermost publish set off reaches a callback, with one warning per cut
+  cascade, while the deliveries already under way finish and actor
+  subscribers still receive every event. A loop through several callbacks
+  therefore costs a bounded number of calls - two callbacks publishing on
+  their own channel make 62 calls and two warnings, where the depth bound
+  alone made 131 070 calls and 65 536 warnings - and a loop in one
+  callback's cascade never cuts another's. A class, an `EventKey` or a
+  string in the callback slot, which is the call written in the other order,
+  is refused with a `TypeError` naming
+  `subscribeFunction(channel, callback)`. A failing callback stays contained
+  whatever it throws: a value the logger cannot render is left out of the
+  warning instead of escaping through it. `hasSubscribers` counts callbacks,
+  so a callback alone receives `ActorStarted` and `ActorStopped`. Callback
+  subscriptions end when the system terminates, after the shutdown's own
+  events and before `terminate()` resolves, and a terminated system refuses
+  new ones. `subscribe(ref, channel)` is unchanged.
+
+  A callback that tells an actor from inside that actor's termination no
+  longer loses the message. The dead letters of its last queued messages are
+  published on that stack, and what such a callback told the dying actor
+  used to be queued after the drain that would have dead-lettered it, so it
+  was neither handled nor dead-lettered; the cell now drains once more after
+  it reads as terminated.
+
+- **`actor-ts.http.server` gains `max-content-length` and
+  `max-header-bytes`, server-wide caps on a request's body and header block
+  (`withMaxContentLength` and `withMaxHeaderBytes` in code), and a block
+  that sets them no longer binds without effect** (#1488). Both ship no
+  value: unset keeps each backend's own cap, the shared 1 MiB body cap and
+  the runtime's 16 KiB header cap. `max-content-length` holds on every
+  backend and runtime and refuses an over-cap body with the shared `413`
+  before the handler runs, a chunked one included. `max-header-bytes` is
+  built into the server wherever actor-ts builds one — Fastify through its
+  factory options, Express through the `node:http` server the backend now
+  builds itself, Hono on Node through `@hono/node-server`'s `serverOptions`
+  — and is reported not in effect, with a bind-time warning, on Hono under
+  Bun or Deno; on an HTTP/2 listener under Node `max-header-bytes` caps the
+  HTTP/1.1 requests but not an HTTP/2 stream's header list, which only
+  Node's own 64 KiB limit bounds, so there it is reported held for HTTP/1.1
+  only and `bind()` warns; Bun caps the stream as well. A backend built with
+  a cap of its own that differs from a set key is refused at `bind()` rather
+  than left to pick one: `withMaxBodyBytes` on Express and Hono, and a
+  hand-built `FastifyBackend`, which adopts both keys through
+  `fastifyFactoryOptions(serverOptions)`.
+
+- **The Postgres, MariaDB and SQL Server journal, snapshot-store and
+  durable-state blocks take typed connection leaves, each comment-only in
+  `reference.conf` so that leaving it out keeps the driver's own default:
+  `max-pool-size`, `idle-timeout`, `connect-timeout` and `ca-file` on all
+  three, plus `acquire-timeout` for MariaDB and `request-timeout` for SQL
+  Server, with matching fields and `withX` setters on the nine store
+  builders and on `RegisterMsSqlPluginsOptions`** (#1490). Each reaches the
+  driver under the driver's own name only when set; a MariaDB url is parsed
+  the way the connector parses it and a SQL Server url through node-mssql's
+  own parser, so host, database and credentials survive. The stores validate
+  them when built (the Postgres and MariaDB stores gain validators for
+  this): sizes and timeouts must be positive integers, timer-armed timeouts
+  at most `MAX_TIMER_DELAY_MS`, MariaDB's `idle-timeout` whole seconds, and
+  a leaf beside the same setting in `poolConfig` or in the url is refused
+  naming both. `ca-file` is a path the framework reads when the pool opens,
+  never PEM in the configuration, and is the first config-only route to a
+  private CA for MariaDB and SQL Server. `poolConfig` stays the code-only
+  long tail.
+
+- **`bind()` now warns when a connection bound set in `actor-ts.http.server`
+  or `withServerOptions(...)` holds nothing on the server it bound** (#870).
+  Every shipped backend reports which of `idle-timeout`, `header-timeout`,
+  `request-timeout` and `max-connections` it put into effect — for the two
+  bounds actor-ts holds itself, only where their guard was installed — and
+  the binding carries that report as `serverOptionsReport`, typed
+  `ServerOptionsReport` and exported from `actor-ts/http`. A field the
+  deployment set that the report says is not in effect, such as
+  `max-connections` on the Hono backend under Bun, is named in one warning
+  per bind, after the bound line. The shipped `header-timeout` and
+  `request-timeout` values are never named, and a backend that reports
+  nothing is not warned about.
+
+  The report also covers `max-content-length` and `max-header-bytes`, each
+  present when the deployment set it (#1488): the body cap is in effect on
+  every backend and runtime, the header cap wherever the server was built
+  with it and reads it back.
+
+  On Deno the header deadline and the connection cap report themselves not
+  in effect for the Fastify and Express backends, and a set `header-timeout`
+  or `max-connections` is warned about at `bind()`: Deno's `node:http` and
+  `node:https` emit neither `'connection'` nor `'secureConnection'`, so
+  neither guard ever fired — measured on deno 2.6.8, a slow-loris was still
+  open 3 s after an 800 ms header deadline and a second connection under a
+  cap of one was answered, while the report said both were in effect.
+  `idle-timeout` and `request-timeout` report themselves not in effect there
+  as well, and a set one is named at `bind()`: the shim accepts
+  `keepAliveTimeout` and `requestTimeout` without applying either, so a
+  keep-alive connection stayed open and a stalled body was never answered
+  `408` while the report said both held (measured on deno 2.6.8). A set `0`
+  is still reported in effect.
+
+  A bound that holds for only one of the two protocols an HTTP/2 listener
+  speaks is reported not in effect, with the protocol it does hold for in
+  `heldForOneProtocol`, and the warning names it that way rather than as
+  holding nothing: on Bun's HTTP/2 listener `idle-timeout` and
+  `request-timeout` bound HTTP/2 but not a connection that negotiates
+  HTTP/1.1 on the same port, and on Node's `max-header-bytes` caps the
+  HTTP/1.1 requests but not an HTTP/2 stream's header list.
+
+- **BREAKING — `requestTimeout()` takes its deadline from the new
+  `actor-ts.http.request-timeout` block** (#1463). Its one leaf,
+  `deadline = 30s`, is read as a duration; what `requestTimeout(...)` names
+  in code wins, then the block, then the built-in 30 s, and
+  `requestTimeout()` with no argument now takes its deadline from the file.
+  The merged deadline is validated once, when `bind()` compiles the route
+  tree, so a deadline past 2147483647 ms from either source fails `bind()`
+  with an `OptionsError` instead of answering every request 503. The block
+  is the handler's deadline and deliberately not
+  `actor-ts.http.server.request-timeout`, which bounds receiving a request;
+  `onTimeout` is a function and stays code-only. `bind()` warns about a
+  configured block that no `requestTimeout()` in the route tree read.
+
+  **Migration.** An invalid deadline (not positive, or past 2147483647 ms)
+  no longer throws when `requestTimeout(...)` is called but when `bind()`
+  (or `compile()`) resolves it.
+
+- **BREAKING — `hsts()` takes its policy from the new `actor-ts.http.hsts`
+  block** (#1462). Its three leaves, `max-age` (seconds, a bare integer),
+  `include-sub-domains` and `preload`, ship the built-in defaults 15552000,
+  on and off; what `hsts(options)` names in code wins per field, then the
+  block, then the default, and the merged policy is validated once, when
+  `bind()` compiles the route tree, which is also where the `preload` rule
+  now runs, so the year it needs may come from the file. A `max-age` below
+  one day (86400) is refused from the file with a `ConfigError` naming the
+  key and the floor: `0` has every browser forget the pin, and a shorter pin
+  than a day has lapsed before a visitor comes back the next day. Code may
+  still set any value, `0` included, and a negative one stays the
+  validator's `OptionsError`. The block governs `hsts()` only: the `hsts`
+  field of `securityHeaders()` and `withSecurityHeaders()` stays code-only,
+  and where both send the header the route-level `hsts()` wins. A middleware
+  reaches its block through a hook `compile()` resolves, so `hsts()` wrapped
+  in a function of your own sends its code options over the built-in
+  defaults; `bind()` logs a warning naming a configured block that no
+  middleware in the route tree read.
+
+  **Migration.** An invalid HSTS policy, `hsts({ preload: true })` without a
+  year of max-age for one, no longer throws when `hsts()` is called but when
+  `bind()` (or `compile()`) resolves it; handle the error where `bind()` is
+  called.
+
+- **A `websocket()` route can bound the mailbox of each connection actor it
+  spawns, the queue `connection.tell`, `sendRaw` and `close` go into, with
+  `withConnectionMailboxCapacity` and `withConnectionMailboxOverflow` or the
+  `actor-ts.http.websocket.connection-mailbox-capacity` and
+  `connection-mailbox-overflow` leaves (route over HOCON)** (#1432). Unset,
+  a connection keeps falling through to `actor-ts.mailbox.default.*`, so a
+  route value is how its connections get a size apart from that global
+  bound. A bound sheds frames and never `close()` or `closeAll()`, and a
+  policy without a capacity is refused at `bind()` instead of failing the
+  first upgrade on the hub's stack.
+
+  A connection whose mailbox refuses a frame under
+  `connectionMailboxOverflow: 'reject'` no longer fails its hub: `reply()`
+  and `broadcast()` contain the refusal per connection, so the frame is lost
+  for that connection alone, counted in `actor_mailbox_dropped_total` under
+  the connection actor's class with reason `drop-new`, and `broadcast()`
+  carries on with the next client. Before, the `MailboxFullError` of one
+  backlogged client escaped the hub's handler and the restart took every
+  connection with it. A `connection.tell()` the application makes itself
+  still throws, which is what `reject` promises a sender.
+
+- **`MAX_TIMER_DELAY_MS`, 2 147 483 647 ms and the largest delay a timer can
+  hold, is exported from `actor-ts/util`** (#870). It is the ceiling
+  `HttpServerOptions` and the `requestTimeout()` middleware hold a deadline
+  to and the clamp `retry` applies to every backoff delay, so a caller
+  computing a deadline can check it against the same bound instead of
+  restating the number.
+
+- **`PersistentActor`'s store calls are measured where they cross the
+  persistence breakers** (#1496). With metrics enabled,
+  `persistence_journal_latency_seconds{operation}` and
+  `persistence_snapshot_latency_seconds{operation}` time every journal call
+  (append, replay, delete) and snapshot-store call (save, load, delete), and
+  `persistence_journal_failures_total{operation,reason}` and
+  `persistence_snapshot_failures_total{operation,reason}` count failures as
+  outage, timeout, breaker-open, ownership or integrity, so an outage, a
+  lost conditional append and a failed trust check land on separate series.
+  A call the open breaker refused is counted but never timed, and an error
+  `ignored-error-names` excuses is still counted.
+  `persistence_breaker_state{breaker}` reports the journal and snapshot
+  breakers as 0 closed, 1 half-open or 2 open. The latency histogram is the
+  only early signal of a slow store, since a slow success never moves a
+  breaker that has no `call-timeout`. A system without metrics enabled does
+  none of this work. `PersistenceExtension.callThroughJournalBreaker` and
+  `callThroughSnapshotBreaker` take the operation as their first argument.
+
+  The operation types those two methods take, `JournalOperation` and
+  `SnapshotOperation`, are exported from `actor-ts/persistence`, so a
+  wrapper around either breaker seam can name its argument's type.
+
+  The metrics never decide a store call: a registry that refuses a write,
+  such as one where an application family already holds a stock name, is
+  reported once per registry, and the call still returns, or fails with,
+  what the store said. `persistence_breaker_state` is brought up to date
+  again in a registry installed a second time after it missed a transition,
+  at the next call through either seam.
+
+- **BREAKING — Projections can take their events in groups with
+  `withHandleGroup`, on all three projection option builders: the handler
+  receives up to `groupAfterEnvelopes` events per call
+  (`withGroupAfterEnvelopes`, default
+  `DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES` = 20), so a read model whose
+  cost is the round trip writes one batch instead of one row per event**
+  (#1448). Groups are cut from what each poll returned and all of them are
+  delivered in that tick, so the poll interval is the window, and the cursor
+  is committed once per group, to its last event — which makes the group the
+  unit of at-least-once replay. A failed group is retried as a group within
+  the usual budget and stopped before its first event under `fail` and
+  `retry-and-fail`; where the strategy would skip, the group is split
+  instead and its events are delivered again one per call, so exactly the
+  failing event is skipped, with one dead letter and one
+  `persistence_projection_events_skipped_total` increment, and the good
+  events around it are kept. `ProjectionFailure` gains an optional `group`,
+  set on a group attempt together with the group's first event as `event`;
+  the attempt that hands a group over to the split reports `retry`. A
+  projection now sets exactly one of `handle` and `handleGroup`: both
+  factories refuse, with `OptionsError`, a projection with neither, with
+  both, with a `groupAfterEnvelopes` that is not a positive integer, or with
+  one on a `handle` projection — a projection without a handler used to
+  spawn and fail its first event with a TypeError.
+
+  `actor-ts.projection.group-after-envelopes` (default 20) sets the group
+  size of every grouped projection that does not call
+  `withGroupAfterEnvelopes` itself, with the usual precedence: explicit
+  option, then HOCON, then `DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES`. The
+  leaf applies to `handleGroup` projections only: a `handle` projection is
+  still delivered one event per call and is not refused because of it, while
+  a `groupAfterEnvelopes` set in its own code still is. No
+  `group-after-duration` ships, because the groups are cut from what each
+  poll returned, so the poll interval already is the window.
+
+  `handle` and `handleGroup` are both called with the projection's merged
+  options as `this`, the receiver `handle` had in v0.17.0, so a
+  method-shorthand or `function` handler reads `this.name`,
+  `this.persistenceId` or `this.tag` with either. A failed group is retried
+  as a group formed again from its first event, so events journaled during
+  the backoff join it and the attempt count carries over; under
+  `retry-and-skip` a split costs two retry budgets, the group's and then the
+  failing event's own. `ProjectionOptionsValidator` used without a cursor
+  field still accepts options that set no handler, as in v0.17.0: only a
+  projection the factories spawn must have one.
+  `actor-ts.projection.group-after-envelopes` is read only for a
+  `handleGroup` projection, so a value the integer reader refuses (`2.5`, a
+  word) leaves a `handle` projection running and refuses a grouped one with
+  a `ConfigError` naming the key; `readProjectionOptionsFromConfig` takes an
+  optional `handler` (`'handle'` or `'handleGroup'`) for that and reads the
+  whole block without it.
+
+  **Migration.** `ProjectionOptionsType.handle` is optional now (a reader of
+  the field sees `| undefined`), and a projection without a handler is
+  refused at `ProjectionActor.byPersistenceId` / `byTag` with an
+  `OptionsError` instead of failing at its first event — set exactly one of
+  `withHandle` / `withHandleGroup`.
+
+- **`system.terminate({ runCoordinatedShutdown: true })` runs the
+  coordinated-shutdown pipeline before the teardown** (#1455). Every phase
+  runs first with `ActorSystemTerminateReason` — the HTTP unbind, the broker
+  close, the cluster leave and every task the application registered — and
+  the promise resolves once the pipeline has finished and the system is
+  down, also when `terminate-actor-system = false` leaves the last phase
+  without its terminator or a `recover = false` phase halts the run (an
+  ERROR names the halt, and the call still resolves — unless `exit-process`
+  is on, which ends the process at the halt). A plain `terminate()`
+  is unchanged: the bare teardown, which runs no phase. The built-in
+  terminator now tears the system down through an internal seam instead of
+  calling `terminate()`, so a pipeline that `terminate()` started never
+  waits on itself.
+
+  `TerminateOptions`, the argument `terminate()` takes, is exported from the
+  package root as a type.
+
+  `actor-ts.coordinated-shutdown.run-by-actor-system-terminate` (default
+  `false`) makes the pipeline the default for every `terminate()` that does
+  not choose; a call's own `runCoordinatedShutdown`, `false` included, still
+  wins over the config. The system reads the switch when it is built,
+  through the coordinated-shutdown block's reader, so a block that reader
+  refuses — an `exit-code` outside 0 to 255, a leaf of the wrong type — now
+  fails `ActorSystem.create` instead of the first use of the pipeline. A
+  worker thread's system inherits the config and still terminates without
+  the pipeline: the main thread runs it.
+
+  With `run-by-actor-system-terminate` on, a `Cluster.bootstrap` refused
+  after it built its system logs the refusal at error and ends the system
+  through the pipeline with `ClusterJoinUnsuccessfulReason` rather than
+  `ActorSystemTerminateReason`, so under `exit-process` it no longer exits 0
+  before the refusal can reach main.
+
+- **Journal, SnapshotStore and DurableStateStore declare an optional
+  `start()`, and every external store implements it: it opens the store now
+  instead of on its first operation, so a boot-time warm-up can make a wrong
+  connection string fail at startup rather than at the first persisted
+  message** (#1473). It is idempotent, shares one open with the first
+  operation, is safe to retry after a failure and rejects after `close()`;
+  the in-memory and object-storage stores leave it undefined because they
+  have nothing to open. The persistence contract test checks the rule for
+  every store that defines it.
+
+  `CachedSnapshotStore` forwards `start()` to the store it wraps, so a store
+  behind the cache opens with the others, and a `close()` that arrives while
+  a Cassandra journal or snapshot store creates its keyspace stops the start
+  before any table is created.
+
+- **Config profiles and a secrets file** (#1546). A root `profiles.<name>`
+  block of `application.conf` is laid over the root of the same file when
+  `<name>` is the active profile, chosen by
+  `ActorSystemOptions.withProfile(name)` or `LoadOptions.profile`, then the
+  `ACTOR_TS_PROFILE` environment variable, then none; a name no file defines
+  is refused at startup, naming the profiles that are defined. An optional
+  secrets file (`LoadOptions.secretsConfPath`, then `ACTOR_TS_SECRETS_CONF`,
+  then `./secrets.conf`) is merged above the application file and split into
+  a root and profiles the same way, and a missing one is an empty layer.
+  Each file lays its active profile over its root before its substitutions
+  resolve, so an alias in the root follows the profile and an inactive
+  profile is never resolved. The boot config dump and the DevTools
+  configuration panel attribute every key to one of five layers (reference,
+  application, profile, secrets, override) and name the active profile and
+  the files read. `withProfile` reaches `system.config` only:
+  `ClusterClient`, `InMemoryLease`, `KubernetesLease`, `WorkerCluster.spawn`
+  and the read…OptionsFromConfig helpers called without a Config load their
+  own configuration and see `ACTOR_TS_PROFILE` alone. A `WorkerMesh` runs
+  its workers on the profile its main system selected. The worker pool reads
+  `actor-ts.worker-cluster` from the main system's configuration instead of
+  loading its own, and each worker selects no profile of its own and reads
+  the application file its main thread read, so a profile defined only in a
+  file named with `withConfigFile` no longer stops `WorkerMesh.start`, and a
+  main system that opted out with `withProfile('')` has workers that run
+  without the profile too. A secrets file that is there but cannot be read
+  or parsed, `./secrets.conf` in the working directory included, is refused
+  with a `ConfigError` that names the file and what made `Config.load` read
+  it.
+
+  The configuration reference and the DevTools configuration page count the
+  secrets file among the three rules that withhold a value — beside a key's
+  name and a URL's own userinfo — and call the key-name rule the weakest of
+  the three.
+
+- **Coverage for the gRPC client's close-path stream eviction and for the
+  TCP socket actor's refusal to arm a socket inactivity timeout** (#1510).
+  Closing a caller-driven gRPC stream through the actor now has to evict its
+  registry entry on both stream kinds -- removing either `delete` left all
+  19 previous tests in that suite green, including the one whose stated
+  reason is that an entry outliving its close turns a racing send into a
+  write-after-end. The TCP suite's keepalive seam now records `setTimeout`
+  alongside `setKeepAlive`, so implementing the read-idle deadline on the
+  socket's clock instead of the actor's fails a test rather than merely
+  contradicting a comment.
+
+- **DevTools can now attach with the tracing panel live and its Payload
+  column empty (#1420)** (#1420). The only control over the bodies until now
+  was `panels.tracing: false`, which takes the spans, the timings and the
+  flame graph with it — with the panel off the span tap is never constructed
+  at all — so an operator who wanted traces without message contents had no
+  setting between everything and nothing.
+  `DevToolsOptions.withCapturePayloads(false)`, the field `capturePayloads`
+  and the HOCON leaf `actor-ts.devtools.capture-payloads` are that setting,
+  and they leave every other part of the panel running. The default is
+  `true`: with the export closed by the tee, the only consumer of the
+  capture is the panel the operator deliberately attached, so recording
+  still runs from attach with no button to press and the switch is an
+  opt-out for the shared staging or demo box whose DevTools port is
+  reachable by more people than the message bodies should be. Two decisions
+  inside it are worth knowing. Root-span recording stays outside the switch,
+  because suppressing it would empty the panel — exactly what
+  `panels.tracing: false` already does and what this option exists not to
+  do. And with the switch off the tee withholds nothing: the tap flips no
+  switch, so it has no capture of its own to hold back, and an application
+  that enables its own payload capture during the attach keeps the attribute
+  in its own export, where a withheld set still derived from the capture
+  state at install would have stripped it out. The line logged at attach
+  moves with that and names only the span volume when no body is being
+  attached.
+
+- **BREAKING — The MariaDB and SQL Server stores read their own tables out
+  of the server's catalogue when they open, and warn when a `persistence_id`
+  or `tag` column is on a collation that folds case or accents** (#1412).
+  That is the state a database created before the #707 pin is left in,
+  because `CREATE TABLE IF NOT EXISTS` and its guarded T-SQL equivalent
+  never revisit a table they find: two ids differing only in case are one
+  event stream there and two on Postgres, SQLite, MongoDB and DynamoDB, and
+  until now nothing said so. The warning names the table, the column and the
+  collation it found and points at the journal page's migration recipe; it
+  is a `console.warn`, once per store, and never a failure. The catalogue
+  read is an optional `SqlDialect.columnCollationsSql?()` —
+  `information_schema.COLUMNS` scoped to `DATABASE()` on MariaDB,
+  `sys.columns` through `OBJECT_ID` on SQL Server, absent on Postgres and
+  SQLite where `TEXT` has no collation to get wrong — with the table name
+  bound as the statement's only parameter. It runs whether or not
+  `autoCreateTables` is set, because a read-only catalogue query needs no
+  DDL rights and an operator-managed schema is the population most likely to
+  predate the pin; a read that fails or comes back empty stays silent, since
+  unknown is not evidence and an advisory must not turn a working store into
+  an outage. Collations are classified by binary-ness rather than against
+  the collation the DDL pins, so a deliberate `utf8mb4_nopad_bin`, MySQL 8's
+  `utf8mb4_0900_bin` and the `*_BIN2` family stay silent. The report is per
+  column, which is what makes a half-migrated schema legible: `events`
+  converted and `events_tags` not, or a `tagsTable` pointed at a new table
+  beside a legacy `events`, names only the columns still to convert and says
+  a tag query across the two fails outright on SQL Server with error 468 and
+  loses the index on MariaDB (#1507). The MariaDB and SQL Server journal
+  pages describe the warning in both languages instead of stating that
+  nothing reports the mismatch, and two live scenarios per backend in the
+  Docker broker suites check that a real server accepts the statement,
+  labels the rows as asked, and honours the `COLLATE` clause in the
+  dialect's own DDL.
+
+  **Migration.** `RelationalStore` gained a `protected abstract ownedTables()`,
+  and the class is exported, so an out-of-tree subclass stops compiling with
+  TS2515 until it implements it. Return the table names that store owns — the
+  three in-tree stores return their journal, tag, metadata, snapshot or
+  durable-state tables — and the collation probe covers them. The member is
+  abstract rather than defaulted on purpose: a `return []` default would
+  compile every out-of-tree store while silently opting it out of the probe,
+  which is the silence #1412 exists to end.
+
+- **`controlRpcTimeoutMs` on `ParallelMultiNodeSpecOptions`, so the
+  harness's per-RPC budget is no longer a literal** (#1508). It was the one
+  deadline in this spec a caller could not move, and the literal is 5 000 ms
+  — bun's own per-test cap — so a suite that wants to observe the timeout
+  rather than be pre-empted by the runner had to reach past the option
+  surface to do it. The default keeps the value the literal had and is
+  scaled once at resolution, like `awaitTimeoutMs`, so the number the
+  rejection reports is the number that was waited. A non-positive budget is
+  refused: it arms a timer that fires on the next turn, and every RPC then
+  fails naming a worker that never went silent.
+
+- **`ParallelMultiNodeSpecOptionsValidator`, which holds the harness's
+  `bootstrapModule` to the rule every other worker entry is held to**
+  (#1508). One wave fixed two sibling defects in the worker handshake and
+  touched both copies for one of them and only one copy for the other: the
+  testkit got the first-hello latch and not the constraint on what a worker
+  may be told to execute, so a `data:`, `http:` or `file://a-server/…`
+  specifier reached a real worker thread here while
+  `WorkerClusterOptionsValidator` refused each of them. It is one call into
+  the shared worker-entry check, run once in the constructor on the merged
+  settings, and a no-op on an unset `bootstrapModule`, which is the ordinary
+  case and keeps the bundled bootstrap.
+
+- **The export-surface test now pins the internal seams that no barrel
+  re-exports: the zstd decompression-candidate override, the
+  compression-cache reset and the decompressor-rung reporter in object
+  storage, and the runtime-detection override (#1507)** (#1507). Each pinned
+  module's complete export set is asserted unreachable from every door the
+  package has, by name, by reference identity, and through any depth of
+  namespace re-export, so an aliased re-export and an `export * as` are both
+  caught. The namespace half is the one that had been missing: a single
+  `export * as compression from
+  './persistence/object-storage/Compression.js'` on the root barrel
+  published all five compression seams, the process-wide node:zlib kill
+  switch among them, while the file measured 30 pass / 0 fail. The question
+  is now asked of the tree rather than of a list as well. Every seam-shaped
+  export under `src/` is found by a scan, confirmed against the module that
+  actually emits it, and checked against the same doors, which brings in the
+  fifteen such exports that sat outside the hand-written table and covers a
+  partially published module one name at a time rather than all-or-nothing.
+  The table stays for the half the census does not pin: a new export on
+  either pinned module fails a test until the table is edited, which is
+  where the choice between publishing it and keeping it internal gets made.
+  A companion test asserts those doors actually loaded, because a
+  reachability check that searches an empty set is green for the same reason
+  a correct one is. Two shapes are still not caught and the file now says so
+  in place of a broader claim: a function that wraps a seam, and a plain
+  object that copies its bindings, both of which need a call graph rather
+  than a namespace walk.
+
+- **The ParallelMultiNodeSpec documentation now states the control-channel
+  contract a custom bootstrapModule has to satisfy, in both languages: the
+  four request kinds, the reply named after the request with -response
+  appended, the reqId echo, the requirement that the reply come from the
+  worker that was asked, and what a broken reply does** (#1508). Only the
+  reqId echo was ever enforced before the correlation fix, so a replacement
+  bootstrap that answered under a different name, or from the wrong worker,
+  used to work and now times out.
+
+- **A repository guard refuses a literal C0 control byte in any hand-written
+  .ts, .mjs or .mdx source** (#1508). A raw NUL inside a template literal in
+  the shared tag-join test fake made git report that entire file as binary,
+  so a commit advertising a comment change in it shipped with no diff a
+  reviewer could read. The byte is now written as an escape, which leaves
+  the runtime string identical and the file reviewable, and the fake's
+  deduplication key separator is pinned by a test of its own — dropping it
+  merges two distinct events while every pre-existing test stays green. The
+  guard allows TAB, CR and LF, so Windows checkouts are unaffected, and it
+  is a ratchet with one grandfathered entry rather than a hard zero.
+
+- **The object-storage plugin probes WebCrypto at registration when the
+  configured backend is the filesystem one** (#1507). Since the
+  compare-and-swap ETag became a SHA-256 digest that backend requires
+  WebCrypto with compression, encryption and integrity all set to none — the
+  default, and exactly the configuration that skips the three existing codec
+  probes — so on a runtime without it the failure landed on the first put,
+  inside a persistence write, instead of at plugin registration.
+  validateObjectStoragePeerDeps now calls probeFilesystemEtagAvailability
+  for a filesystem backend, which is the same shape and the same argument as
+  the integrity probe added under #613: a capability nothing probes fails at
+  first use. The S3 backend forwards IfMatch to the service and derives
+  nothing locally, so it is not subject to the probe, and a custom backend
+  answers for its own requirements.
+
+- **The WebSocket origin guard is exercised through every HTTP backend**
+  (#1508). Every origin test in the tree drove `compile()` and the compiled
+  `authorize()` directly, and every client in the backend suite dialled
+  without an `Origin` header, so only the guard's allow-on-missing branch
+  had ever run at that level — a backend that stopped running a route's
+  innermost authorization on upgrade would have unguarded every
+  `websocket()` route in every consumer's application while the test suite,
+  the cross-runtime smoke matrix and the coverage badge all stayed green.
+  Five cases on the shared suite now cover a refused foreign origin, a
+  refused opaque `null`, an admitted missing origin, an admitted same-host
+  origin and the explicit opt-out, and the three backend files run them.
+
+- **An external MQTT subscribe whose QoS the actor keeps now says so, once,
+  at info** (#1510). The QoS guard was correct but silent:
+  registerSubscription skipped the write and still issued the broker
+  SUBSCRIBE unconditionally, so a sender observed a successful re-SUBSCRIBE
+  at a QoS it had not asked for and got no signal anywhere that its request
+  had been refused — no log record, no dead letter, nothing in the
+  round-trip. Measured on the pre-record tree, an external subscribe of
+  'own/#' at QoS 0 over a constructor QoS-2 entry produced two SUBSCRIBEs at
+  QoS 2, zero log records at every level and zero dead letters, so a
+  controller legitimately retuning a filter failed exactly as quietly as a
+  hostile one. One record per refused command now names both the QoS asked
+  for and the QoS kept, with the filter escaped and length-capped like the
+  introduced-filter record beside it, because a sender can drive this
+  success path at will. A join that asks for nothing, or asks for the QoS
+  the SUBSCRIBE already carries, stays silent, as does the subclass's own
+  subscribe. Both numbers are the effective QoS the broker is given, so a
+  command that asks for the actor's default on an entry that named none is a
+  request granted rather than one refused.
+
+- **Worker-thread metrics reach the main thread's `/metrics`**
+  (#1570).  Every worker of a mesh — started by hand with `WorkerMesh.start`
+  or by `actor-ts.parallelism.workers` — boots its own `ActorSystem` with
+  its own registry and no management endpoint, so an actor placed on a
+  worker was invisible to Prometheus. The main thread now pulls: every
+  `actor-ts.worker-mesh.metrics-relay-interval` (default `10s`; `0` switches
+  the relay off; `withMetricsRelayIntervalMs` in code) it sends each live
+  worker whose member the failure detector has not taken `down` a
+  `worker-mesh-metrics-request` (under `restartPolicy 'never'` a dead slot
+  keeps its handle, and is no longer asked every interval), the worker
+  answers with its registry's `collect()` verbatim, and
+  `MetricsExtension.collectAll()` — what `GET /metrics` renders now —
+  exports the main thread's samples stamped `thread="main"` followed by each
+  worker's stamped `thread="worker-<slot>"`, so `sum without (thread)` is
+  the process total and `sum by (thread)` the breakdown. The request is also
+  the enable signal: nothing had ever switched a worker's registry on, and
+  the first request does, ahead of the first spawn frame on the same
+  channel, so an offloaded actor's first message is counted. A worker's
+  figures are at most one interval old; a live worker that stops answering
+  keeps its last snapshot exported and
+  `worker_mesh_snapshot_age_seconds{worker="worker-<slot>"}` on the main
+  registry says for how long (a series minted by that worker's first
+  accepted snapshot), a slot that leaves the mesh takes its series with it,
+  and a respawned slot returns under the same label with counters starting
+  over. A relayed snapshot is untrusted input from the exporter's side:
+  `from` is checked against the mesh's live workers (channel-derived
+  identity), every name and label key is re-checked against
+  `PROMETHEUS_METRIC_NAME_PATTERN` and `PROMETHEUS_LABEL_NAME_PATTERN`
+  because relayed samples never passed the registry's own grammar checks,
+  the reserved `thread` key is refused — and `DefaultMetricsRegistry`
+  refuses it as an application label at the mint, on every thread, so the
+  collision cannot arise (BREAKING, see *Changed*) —, the sample count is
+  bounded by `MAX_RELAYED_SAMPLES_PER_SNAPSHOT`, and any problem drops the
+  snapshot whole with one `warn` per reason per worker. With no mesh, or the
+  interval at `0`, `collectAll()` is `collect()` and the exposition is byte
+  for byte what it was; `exportPrometheus(registry)` and `prometheusHandler`
+  keep rendering the main registry alone, and the new
+  `renderPrometheusSamples(samples)` renders any list. Frames, kinds, the
+  worker half and the snapshot validator are exported from
+  `actor-ts/worker`.
+
+- **The worker mesh reports every worker exit, every granted respawn and
+  every frame its broker drops** (#1276).  `WorkerCluster` holds one logger
+  — `withLogger`, or a `ConsoleLogger` at `Info` when none is given — and
+  every line carries the `[worker]` prefix: a close event is reported with
+  its raw exit code (`WARN` for a non-zero or missing code, `INFO` for a
+  clean exit), a worker the restart policy leaves down is reported at
+  `INFO`, a granted restart is reported at `WARN` with its delay and the
+  budget it drew on ("restart budget unlimited" under `maxRestarts -1`), and
+  the existing error, failed-respawn and permanently-down lines go through
+  the same logger instead of a console fallback. `WorkerBroker` takes an
+  optional `Logger` (`new WorkerBroker(system.log)`), counts what it refuses
+  per reason — `malformed`, `unknown-destination`, `unroutable` — behind
+  `broker.dropped()`, and folds the report into one line per reason per 30
+  seconds carrying the count, `WARN` for a `malformed` envelope or a
+  refusing port and `DEBUG` for an unknown destination, saying *most
+  recently from* the registered address the last frame arrived on — the
+  count covers every port since that reason last reached the log — and never
+  the frame itself; for a refusing port the detail carries the error's name
+  (`DataCloneError`, `InvalidStateError`) and never its message, because a
+  `DataCloneError`'s message echoes the value it could not clone. A
+  caller-supplied `Logger` that throws is contained on every report path —
+  the port callback, the `close` and `error` listeners, the respawn timer —
+  and the line falls back to `console.error` with the reason appended, so a
+  broken sink costs neither the pool its respawn nor the host its process.
+  Under `restartWindowMs: 0` the granted-restart and permanently-down lines
+  quote the count alone, without an "inside 0 ms" no restart could fit in.
+  `WorkerMesh` hands `system.log` to both, so in a mesh all of it reaches
+  the configured sinks. The type `WorkerBrokerDropReason` is exported from
+  `actor-ts/worker`.
+
+  `MessageChannelTransport` counts and reports what it drops, which is the
+  half `TcpTransport` always had and this class never did. A malformed
+  envelope, a payload the wire checks refuse and a handler that throws each
+  bump a per-reason tally readable through the new `dropped()` and reach the
+  logger as one folded `WARN` per reason per 30 seconds, carrying the count
+  and the sender; the payload one quotes the reason the check gave, which is
+  what separates a version skew from a hostile peer. The constructor takes
+  an optional `Logger` third, defaulting to a `ConsoleLogger` at `Info` so a
+  transport built without one is never silent — silence was the defect, and
+  the path that most needs the default is two transports wired port to port
+  with no broker in front to report instead. A worker mesh hands its
+  main-thread transport `system.log`, so both halves of the channel reach
+  the sinks that system configures. The line never carries the frame, and
+  the sender on it is escaped: a broker rewrites `from` to the arriving port
+  and so mints it, but on the broker-less path it is the peer's own claim
+  and a node address need only carry non-empty strings, so a host containing
+  a newline would otherwise forge whole log lines (#1515).
+
+- **`benchmarks/cluster/tcp-message-cost.ts` measures what an actor message
+  pays to cross a real socket** (#1177).  The same `Counter` actor local and
+  on a second `Cluster` node hosted by a worker thread, joined over a real
+  `TcpTransport` on loopback with no `withTransport`, so the row is the
+  whole wire: envelope, tagged-JSON frame, socket, `FrameDecoder` and its
+  guards, dispatch. It is the first benchmark in the tree that serialises
+  anything; every other cluster suite runs on `InMemoryTransport`. Measured
+  2026-09-18 (Bun 1.4.2, Windows 11, 32 hardware threads): a cross-node
+  `tell` costs about 22 µs per message against ~260 ns local, a cross-node
+  `ask` about 245 µs per round trip against ~6.1 µs — the same per-tell cost
+  as the `MessageChannelTransport` thread hop, so the protocol is the bill,
+  not the wire. Every tell batch is completion-verified by an ask for the
+  count and throws on a shortfall (#1027). There is deliberately no
+  both-nodes-on-one-thread tier: measured, it loses the tail of every burst
+  past ~195 KB of frames silently (1 640 of 10 000 arrive), which is #931;
+  the tier belongs there once #931 lands. The FAQ now quotes the figures
+  where it said "not yet measured" since 2026-08-18 (labelled as harness
+  means, under a header that says a bullet naming its own machine is
+  measured there), `cluster/transports.mdx` gets a "What a hop costs"
+  section (EN + DE), `benchmarks/README.md` lists the suite, and the
+  comparison report's footer no longer claims the cluster suites never leave
+  the process and cites #1574 for the persistence row it still lacks.
+  `AGENTS.md`'s release recipe names the benchmark and both docs surfaces,
+  so a cut re-measures them instead of shipping figures attributed to a
+  version that never ran them. Slice (a) of #1177; slice (b) is #1574, slice
+  (c) is #1575.
+
+- **A smoke case drives a real `WorkerCluster` respawn from a real `error`**
+  (#1186).  `tests/smoke/cases/40-worker-respawn-from-error.mjs` spawns a
+  worker from the new `worker-dies-on-command.mjs` fixture, tells it to
+  throw uncaught after its handshake, and asserts that a fresh handle
+  re-fills slot 0 — same `id`, same address, a new ready token — on Bun,
+  Node and Deno. Deno is the arm that binds: it emits no parent-side
+  `close`, so an `error` path that stopped freeing the slot leaves it dead
+  there while Bun and Node still respawn through `close`/`exit` (verified by
+  mutation). The case waits on a referenced poll rather than an event
+  because the respawn timer is unref'd: with nothing else referenced, Node
+  exits 13 during the backoff and Bun and Deno hang, so the poll is what
+  lets the run report a verdict (#1283). No `src/` change; the case was
+  green on day one and its value is binding.
+
+- **Comparison scenario `parallel-workload` in all nine arms** (#1565).
+  The four existing scenarios drive one actor or two alternating ones —
+  the actor-model invariant no framework parallelises, so the JVM and .NET
+  arms ran effectively single-threaded on them too, and the suite said
+  nothing about the one property multithreading exists for. The fifth
+  scenario is sixty-four independent actors, one message each per
+  iteration, every message a fixed number of xorshift32 rounds (`load=light`
+  5 000, `load=heavy` 100 000), each arm on its natural parallelism: the
+  JVM and .NET arms over their default schedulers, actor-ts on worker
+  threads through `actor-ts.parallelism.workers = auto` — the same
+  `system.spawn` calls an application makes, the four single-actor rows
+  measured first on a `workers = 0` system so they stay the zero-overhead
+  figures — and nact and XState on one thread, labelled so by note. The
+  work is mirrored bit for bit in TypeScript, Java, Scala and C#, every
+  reply carries the loop's result, and each row publishes the checksum over
+  every reply, which `report.ts` recomputes from `js/workload.ts` and
+  refuses when it differs — completion verification now proves the work
+  was done, not only that the messages were processed; all nine arms agree
+  on the checksums to the bit. The report renders a scenario only once a
+  result file carries it and lists it under "Known gaps" until then, so the
+  figures land whole with the next full measurement (#1331) rather than
+  half-measured. `benchmarks/comparison/README.md` and
+  `reference/benchmarks.mdx` (EN + DE) describe the scenario. Stage 7 of
+  #1566.
+
+- **`OffloadPool` — pure functions on worker threads** (#1558). An
+  `await` in a handler yields the event loop and parallelises nothing, so
+  pure-JS CPU work — a password hash, a compression, an FFT over a sensor
+  window — stalled every actor in the process, and the framework offered
+  nothing obviously better than the shortcut. A task is a **named export
+  of a module** (`defineOffloadTask(new URL('./hash.js', import.meta.url),
+  'hashPassword')`), because a function cannot cross a thread; its
+  arguments and result are structured-cloned, a transferable in the
+  arguments can be moved (`transfer`, the #1191 zero-copy path).
+  `context.offload(task, args, { timeoutMs, signal })` runs it on the
+  system's default pool (built from `actor-ts.offload-pool.*` on first
+  use, `OffloadExtensionId`); `OffloadPool.start(system, options)` builds
+  another. Workers spawn as tasks arrive up to `size` (`"auto"` = available
+  parallelism minus the main thread) and retire beyond `min-size` after
+  `idle-timeout`; `max-queue` with `overflow = reject | wait` bounds the
+  queue in the mailbox's vocabulary (`OffloadQueueFullError`); a run past
+  its deadline rejects with `OffloadTimeoutError` and **terminates the
+  worker** — the only way to stop synchronous JavaScript — with a
+  replacement inside a restart budget (`max-restarts`, `restart-window`)
+  and `OffloadPoolUnavailableError` for every run once it is spent; a
+  task that throws rejects with `OffloadTaskError` carrying the worker's
+  name, message and stack; an `AbortSignal` cancels a queued run without
+  touching a worker and a running one by terminating its worker, free of
+  the budget; `system.terminate()` and coordinated shutdown's
+  `service-stop` stop every worker. The worker is a module cache and a
+  message loop — no `ActorSystem`, no cluster — reached through the runtime
+  seam of #1569, so the shipped `offload-worker` runs on Bun, Node and
+  Deno. Metrics `offload_tasks_total{task,outcome}`, `offload_queue_depth`,
+  `offload_task_seconds{task}`. Proven in-process against fake workers
+  running the production worker service, on real threads under `bun test`
+  (parallel CPU work, a transfer that detaches the caller's buffer, a
+  deadline stopping a busy thread), and as a smoke case on all three
+  runtimes from `dist/`. The block is `actor-ts.offload-pool` rather than
+  the proposed `actor-ts.worker.offload`, in lockstep with the options
+  family's name. Stage 5 of #1566.
+
+- **Docs: "Blocking and CPU-bound work"** (#1545) — the page
+  `fundamentals/blocking-and-cpu-bound-work` (EN + DE): why `await` is not
+  parallelism, the three tiers (native async APIs on the runtime's own
+  thread pool, worker threads through `OffloadPool` or
+  `actor-ts.parallelism`, native addons), the ordering rule that an
+  offloaded result is a later message, the `OffloadPool` reference with the
+  measured break-even (`benchmarks/worker/task-offload-breakeven.ts`: the
+  pool overtakes inline at about ten microseconds of work per call, wins
+  clearly at a hundred), and the smells list; cross-linked from
+  `dispatchers`, `dispatcher-tuning` and `futures-patterns`.
+
+- **Message-boundary check — the local `tell` answers for the worker hop
+  and the cluster wire** (#1386). A message crosses up to three boundaries
+  with different semantics: in-process by reference, a worker hop by
+  structured clone (prototype gone, methods gone, silently; a function-valued
+  field throws), a cluster wire by serializer. A suite exercises the first
+  almost exclusively, so a message class could be green locally and degrade
+  the first time `actor-ts.parallelism.workers` was switched on.
+  `actor-ts.diagnostics.message-boundary.structured-clone` and
+  `.serializer-round-trip` (`off | warn | fail`, code:
+  `ActorSystemOptions.withMessageBoundary(MessageBoundaryOptions…)`) examine
+  every local `tell` at send time the way the boundary would: the clone check
+  walks the message for any reachable value whose prototype the algorithm
+  does not preserve — a class instance, an `Error` subclass — and clones it
+  for what cannot cross at all; the serializer check encodes and decodes it
+  through the serialization extension. `warn` logs once per message type,
+  `fail` throws a `MessageBoundaryError` out of the `tell`, naming the type,
+  the recipient and what would be lost. Both are off in production and cost
+  one comparison; **`TestKit` turns `structured-clone` to `fail`**, so the
+  place a lossy message class is found is a test. `ActorRef`s anywhere in a
+  message are fine (the wire rewrites them), `/system` recipients are exempt,
+  and the framework's own message classes — `PoisonPill`, `Terminated`,
+  cluster events, pub-sub and receptionist messages, `Success`/`Failure` —
+  carry a marker (`markFrameworkMessage`, `actor-ts/util`) that exempts them:
+  each crosses its boundaries by its own mechanism. Running this repository's
+  suite with the kit default on affected **no** message type, which is the
+  list #1386 asked for. `serializer-round-trip` stays off even in the kit,
+  because the round trip needs a binding for every class an application
+  sends. Docs: the three boundaries on `fundamentals/messages`, the kit's
+  default on `testing/testkit` (EN + DE).
+
+- **Actors on worker threads from configuration alone** (#1563).
+  `actor-ts.parallelism.workers = auto` (or a number) makes
+  `ActorSystem.create` start a `WorkerMesh` in the background and turns
+  `system.spawn` into a placement decision: a top-level actor whose path
+  matches `actor-ts.parallelism.offload` (default `["/user/*"]`) is created
+  on a worker, every other one where it always was — and the application
+  code does not change. `spawn` stays synchronous and hands back a
+  `PendingRemoteActorRef` whose `path`, `equals` and `toString` are settled
+  at once; a `tell` or `ask` before the worker has acknowledged the spawn is
+  queued in order (bounded system-wide by `buffer-size`, overflow to dead
+  letters) and replayed through the remote ref the moment it does. A spawn
+  the worker refuses, or one that outlives `spawn-timeout`, fails the ref
+  and dead-letters what it held. `spawnAnonymous` is placed too, under a
+  name the main thread mints. `placement` picks the worker by a hash of the
+  actor's name (stable across restarts) or round-robin; `leader = "worker"`
+  moves the cluster leader and the shard coordinator onto a worker by
+  giving the workers a hostname that sorts before `main`, and refuses
+  hostnames an operator set that contradict it. `system.terminate()`
+  terminates every worker's system first — so an offloaded actor gets its
+  `postStop` — waits for them within the shared `shutdown-drain-timeout`
+  plus a second, then stops the threads: the one call the application makes
+  still takes everything down. The actor module is resolved by convention,
+  `actors.js` (or `.ts`) next to the entry module, or named in code with
+  `ActorSystemOptions.withParallelism(ParallelismOptions.withModule(...))`;
+  it is deliberately no HOCON key, and a system with `workers` above zero
+  and no module fails `create()` naming the candidates it looked for. Both
+  sides identify a class by its **export name**. Three limits are errors
+  rather than silence: the factory form of `spawn` cannot cross a thread;
+  a class the module does not export is refused naming the class, the
+  module and the key; an `offload` pattern that could reach `/system` —
+  `/system/*`, `/*`, `/**` — is refused naming the role-based route
+  (`worker-mesh.worker-roles`, `leader`). `ActorOptions` cross as data and
+  are refused when they carry code. Children stay with their parent, so the
+  unit of offload is the subtree. `workers = 0`, the default, is the
+  untouched code path — no mesh, no import, one null check in `spawn` —
+  and a test pins it against a reference system with a spy backend. A new
+  runtime seam, `src/runtime/entry/`, answers where the program started
+  (`Deno.mainModule`, `process.argv[1]`). Proven in-process against fake
+  workers hosting real nodes, on real threads under `bun test`, and as a
+  smoke case on Bun, Node and Deno from `dist/`;
+  `benchmarks/parallelism/config-scaling.ts` runs the same application
+  under `workers = 0, 1, 2, 4, 8, auto` and measured 4.6× at a millisecond
+  of work per message, break-even near a hundred microseconds, and a
+  twenty-fold loss for a chatty actor — the figures behind the `offload`
+  allow-list. New page `fundamentals/parallelism` (EN + DE). Stage 4 of
+  #1566.
+
+- **`WorkerMesh` — the main thread as a member of its own worker mesh**
+  (#1562). `WorkerCluster` spawned N threads that each hosted an
+  `ActorSystem` + `Cluster` and left the main thread a relay and nothing
+  more: it never joined, so it could not address a worker actor, an `ask`
+  from it had nowhere to land its reply, and the shard coordinator ran on
+  the lowest-addressed *worker* while the docs said "on main".
+  `WorkerMesh.start(system, options)` registers the main thread's own
+  `MessageChannel` port with the broker under `system.name@main:1`, joins
+  the system to a cluster on it, spawns the workers with a bootstrap the
+  framework ships, and resolves once every member is `up` — so
+  `mesh.refFor(address, '/user/x')` is an ordinary `ActorRef` whose `tell`,
+  `ask` and `watch` cross the thread. Every worker builds its system from
+  the main system's **effective** config (`system.config`, not the file —
+  a builder-set value on main is what the workers run with), imports the
+  actor module(s) named by `withModule`, registers every exported actor
+  class by its **export name**, runs the module's optional `setup`, and
+  reports the registry back on `mesh.workers`. `'auto'` is the available
+  parallelism *minus one*, because the main thread works too; the default
+  hostnames sort main first, so main leads and hosts the coordinator, and a
+  worker hostname that sorts earlier moves both. `actor-ts.worker-mesh.*`
+  carries the seven mesh-specific leaves; the actor module has no key, for
+  the reason `worker-cluster.bootstrap` has none — a config file must not
+  decide which code a worker runs. Proven by the same bootstrap running
+  in-process against `FakeWorker`s that host real cluster nodes, on real
+  threads under `bun test`, and as a smoke case on Bun, Node and Deno from
+  `dist/`. `WorkerCluster` accepts an injected `broker` and `logger`
+  (`withBroker`, `withLogger`), `WorkerHandle` carries the payload a worker
+  attached to `ready(data)`, and the runtime seam's vocabulary —
+  `WorkerLike`, `WorkerEventMap`, `WorkerErrorEvent` and friends — is
+  exported from `actor-ts/worker` (the export half of #1288). Stage 3 of
+  #1566.
+
+- **Death watch across nodes** (#918). `context.watch(remoteRef)` used to
+  record the subject and do nothing else — the JSDoc promised a `Terminated`
+  unconditionally, and across a node boundary none ever came, so every
+  failover, worker-replacement and resource-release pattern built on death
+  watch waited forever the moment its subject was on another node, and
+  worked perfectly in a single-node test. It now works through the ordinary
+  `watch` / `watchWith` / `unwatch` calls with nothing to configure. Three
+  core wire kinds carry it — `watch`, `unwatch`, `watch-terminated` — and the
+  watching cell receives the answer through the `watchNotify` system command
+  that had existed, unreachable, for exactly this: it is what produces the
+  *branded* `Terminated` the dispatch gate accepts (#769).
+
+  The two `Terminated` fields the docs had called "reserved" now mean
+  something. A path the far node cannot resolve is answered at once with
+  `existenceConfirmed = false`; a node that is downed or removed from the
+  membership surfaces to every watcher of an actor on it as
+  `addressTerminated = true`, synthesised from membership rather than sent
+  by the actor — the half of death watch that node loss is *for*. A node that
+  is merely unreachable does not, because it may come back and the downing
+  provider decides. A watching actor that stops withdraws its remote watches;
+  a node that leaves withdraws every stand-in it planted elsewhere.
+
+  **The watched path is peer-chosen**, exactly as an envelope's target is, so
+  it passes the same `EnvelopeTrust` policy before anything resolves it
+  (#877, #964): `/system/…` is never watchable by name, `untrusted-mode`
+  narrows `/user`, and a refusal is answered like nonexistence — the peer
+  cannot tell a refused path from an absent one, a watcher never hangs on a
+  refusal it cannot see, and the refusal is counted under `frame="watch"`.
+  On a system that never joined a cluster, or for a ref shape the framework
+  cannot watch, `watch()` now **warns** that no `Terminated` can come instead
+  of failing silently. Stage 2 of #1566.
+
+- **Two benchmarks that measure the thread boundary before anything is built
+  on it** (#1566, stage 0 of the transparent-parallelism programme).
+  `benchmarks/worker/mesh-message-cost.ts` runs the same actor local, on a
+  second cluster node in the *same* thread (a real `MessageChannelTransport`
+  through a real `WorkerBroker` — the protocol cost with no scheduling in
+  it) and on a real worker thread, for tell throughput and ask latency, every
+  batch confirmed by asking the counter what it saw. It is the first
+  benchmark in the tree over a real transport (#1177), and its in-thread tier
+  needs no thread at all. `benchmarks/worker/task-offload-breakeven.ts` runs
+  one CPU loop inline, on a single worker and on a pool sized to the machine
+  across 1 µs … 10 ms of work per call, calibrates the sizes to the machine
+  at startup, and prints the crossover.
+
+  Measured on this machine (Bun 1.4.2, 32 hardware threads): a cross-thread
+  tell costs about 21 µs against 320 ns local and a cross-thread ask about
+  180 µs against 6 µs — which is why the placement work (#1563) ships an
+  `offload` allow-list rather than moving every actor — and a pool overtakes
+  inline at roughly 10 µs of work per call, wins clearly at 100 µs, and the
+  hop itself costs about 3 µs a task when pipelined (#1558). The shared loop
+  moved into `_crunch.ts` so the inline baseline and the worker run identical
+  bytes; `_available-parallelism.ts` prefers `os.availableParallelism()` over
+  `navigator.hardwareConcurrency` because the latter reports the host's cores
+  inside a container, and #1562 lifts it into `src/util/`.
+
+- **TLS termination and HTTP/2 on the HTTP backends, through one option
+  shape** (#1522, and the code half of #1173). `HttpServerOptions.withTls({
+  cert, key, ca?, requestClientCert?, rejectUnauthorized? })` makes the
+  process itself the TLS endpoint, and `withHttp2()` offers `h2` through
+  ALPN with HTTP/1.1 kept on the same port. The vocabulary is the raw TCP
+  transport's — PEM contents or DER bytes, never a path; from HOCON the
+  same fields are paths, `actor-ts.http.server.tls.{cert-file,key-file,
+  ca-file,request-client-cert,reject-unauthorized}`, read once when the
+  block is, plus `actor-ts.http.server.http2 = false`. Off unless set:
+  behind a terminator plain HTTP stays the production answer, and the
+  security page now says so, alongside what `Csrf` and `__Host-` cookies
+  need — which was #1173's complaint.
+
+  **Measured on all three runtimes, and asserted through what a client
+  negotiated rather than what an option was set to.** Hono hands the pair
+  to its runtime's runner: `Bun.serve({ tls, http2 })`,
+  `https.createServer` / `http2.createSecureServer` + `allowHTTP1` under
+  `@hono/node-server`, `Deno.serve({ cert, key })`. A `node:http2` client
+  gets `alpn=h2` and an `https` client still gets `1.1`, against one
+  listener, on Bun and Node; Deno negotiates h2 whenever TLS is on and has
+  no knob, so there the flag records intent. `Bun.serve` learned `http2` in
+  1.4.1 while the `engines` floor is 1.3.0, so on an older Bun the runner
+  refuses the flag rather than serving HTTP/1.1 under it. Every client in
+  the tests verifies against the test CA in `tests/fixtures/tls/` — never
+  `rejectUnauthorized: false` — because "the process is the TLS endpoint" is
+  the claim, and the cross-runtime smoke case proves it on real Node and
+  real Deno.
+
+  **The validator refuses the incoherent shapes at `bind()`.** `http2`
+  without `tls` — h2c is not offered, though Bun would accept it; a
+  certificate without its key or the reverse; and `requestClientCert`
+  without a `ca`, which the TCP transport already refused: the
+  runtime's default trust store would decide who gets in, and a
+  certificate from a CA added to it was admitted on Node and Bun. And two
+  backends refuse rather than degrade: **Fastify** takes TLS as a
+  *factory* option, so `bind()` now resolves the server options *before*
+  constructing the framework-built backend and hands them in, while a
+  backend you construct yourself needs
+  `fastifyFactoryOptions(serverOptions)` and is refused at `bind()` if
+  handed `withTls` or `withHttp2` without it; **Express** terminates TLS
+  on the `https.createServer` it builds — `wss://` upgrades,
+  `max-header-bytes` and the connection bounds included — and refuses
+  only `withHttp2`: it reassigns every request onto `node:http`'s
+  prototypes, which `node:http2`'s compatibility objects do not survive
+  (an h2 request was negotiated and never answered on Node and Bun, and
+  Deno has no `http2.createSecureServer`). Serving plain HTTP under a
+  setting that says TLS is the one outcome ruled out everywhere. Client
+  certificates are honoured on Bun, Node, Fastify and Express; on Deno
+  `requestClientCert` is refused rather than silently ignored —
+  `Deno.serve` has no such option, and Deno's `node:https` accepts
+  `requestCert` and enforces nothing.
+
+  Two things the work turned up and fixed on the way. The Fastify page had
+  been documenting `new FastifyBackend({ tls: { cert, key } })` in both
+  languages — `tls` is not a Fastify option, it was spread in and ignored, so
+  the server that page described never terminated TLS. And `DenoHonoRunner`
+  reported the *requested* port back rather than the bound one, so a
+  `port: 0` bind on Deno told every caller port 0 — which `node:https`
+  reads as 443 — and the other smoke cases had been reserving a port by hand
+  to avoid it. It now reports `Deno.serve`'s `addr.port`.
+
+  Each seam was broken in turn and only its own case went red: the Bun
+  `http2` passthrough, the Node factory choice, the h2c refusal, the Fastify
+  guard and the Express `http2` refusal.
+
+  `fastifyFactoryOptions(serverOptions)` carries `bodyLimit` and
+  `maxHeaderSize` for the two size caps of `actor-ts.http.server` as well
+  (#1488), and takes the `HttpServerOptions` builder as it is, so the
+  documented spread compiles without a cast. The Express page no longer
+  shows an `https` server wrapped around the app, which was never listened
+  on and left the port serving plain HTTP.
+
+  A `ca` that holds no certificate is refused at validation, naming
+  `tls.ca`, whatever `requestClientCert` says — an empty or blank string, an
+  empty or whitespace-only byte array, an empty array, `null`, or a
+  `ca-file` naming an empty file. `node:tls` reads such a `ca` as none and
+  would have checked client certificates against the runtime's default trust
+  store; measured on node v26.10.0, `ca: ''` and `ca: null` behind a demand
+  admitted a client certificate signed by a CA in that store on all three
+  backends. On Deno the Fastify backend — the default — now refuses
+  `requestClientCert` at bind as Express and Hono already did, since Deno's
+  `node:https` accepts it and enforces nothing, and a Fastify backend built
+  by hand is refused when its `https` verifies client certificates
+  differently from the server options. Client certificates minted for the
+  run pin the `ca` mapping on every backend, on Bun and Node, in the unit
+  suite and the cross-runtime smoke case.
+
+- **Receiver-side flow control on `WebsocketClientActor`** (#1523).
+  `withInboundHighWaterMark(frames)` pauses the socket once that many decoded
+  inbound frames are waiting in the mailbox, and `withInboundLowWaterMark`
+  says where it resumes — default a quarter of the high mark, because
+  resuming at the first free slot would flap the socket once per frame.
+  HOCON: `inbound-high-water-mark` / `inbound-low-water-mark` under
+  `actor-ts.io.broker.websocket`. Off unless set, which is how every
+  version before behaved.
+
+  The backpressure story was send-side only, and the naming hid it:
+  `BackpressurePolicy` and `maxBufferedBytes` govern the outbound buffer,
+  and on the receive side every frame was decoded and `tell`'d onward the
+  instant it arrived. A peer publishing faster than `onMessage` drained had
+  nowhere to push back to; the frames piled into the mailbox, and a bounded
+  mailbox then dropped *decoded application messages* rather than pausing
+  the socket. Pausing lets TCP do the job it already has. Both docs pages
+  now say which direction each knob governs.
+
+  **Bun only, in practice, and probed rather than assumed.** Measured:
+  `pause()`/`resume()`/`isPaused` exist on Bun 1.4.2's client `WebSocket`
+  and on neither Node 26.7's nor Deno 2.6.8's WHATWG one. The actor asks the
+  socket, the way it asks for `ping()`; where the pair is absent it keeps
+  today's behaviour and warns once at connect time, because a limit that
+  looks applied and is not is worse than none.
+
+  `websocket_client_inbound_paused_seconds_total` accumulates the time spent
+  paused — booked on resume, and on a connection that drops while paused, so
+  a socket that went away mid-pause is not counted as paused forever.
+
+  Bound by a test that gates the consumer by hand and drives a fake socket
+  through pause at the eighth frame, resume at the low-water mark, delivery
+  of every accepted frame, the once-only warning on an unpausable socket, the
+  metric, and the validator's cross-field rules. Pause, resume, the warning
+  and the metric were each disabled in turn and only their own cases went
+  red.
+
+- **The docs site is built on every docs change, and the rendered output is
+  asserted on** (#1528). `docs-checks.yml` gains a `build` job that mirrors the
+  release build in `docs.yml` — root and docs frozen installs, Chromium for the
+  mermaid SSR, `astro build` — and then runs `bun run check:rendered` over
+  `dist/`. The same assertion now gates `docs.yml`'s deploy step.
+
+  Two incidents sat in the gap this closes. #1525: four pages whose frontmatter
+  could not be parsed, on `develop` for over a week, because nothing ran
+  `astro build` before a release. #1527: a dependency bump that emitted
+  `<style set:html="…"></style>` for every mermaid diagram — CSS in an
+  attribute, element body empty, 423 pages silently unstyled — **through a
+  build that exited 0 with no warnings**, and past a count-based comparison
+  that reported a perfect match because the CSS text was still present, just
+  relocated. A green build is therefore not what the new job asserts.
+
+  `docs/scripts/check-rendered-output.mjs` asserts the properties that broke,
+  each absolute so there is no baseline to maintain: no Astro directive
+  (`set:html`, `set:text`, `is:raw`, `client:*`, `server:*`, `transition:*`)
+  survives as an attribute in emitted HTML; no mermaid fence is left as a code
+  block; and every rendered mermaid SVG carries its stylesheet as a `<style>`
+  *body*. Two guards keep those from passing vacuously — the walk must find
+  pages, and a content tree with mermaid fences must produce at least one
+  rendered diagram. The directive rule is anchored on the tag, so a page that
+  merely mentions `set:html` in prose or an escaped code sample does not trip
+  it.
+
+  Bound by `tests/unit/docs/RenderedOutputCheck.test.ts`, which holds the
+  classifier to a byte-faithful reconstruction of the #1527 shape and to a
+  synthetic `dist/` where the verdict has to move. Each rule was disabled in
+  turn and only its own cases went red.
+
+- **One factor scales every testkit deadline** (#1376).
+  `ACTOR_TS_TEST_TIME_FACTOR` multiplies `TestProbe`'s timeouts,
+  `MultiNodeSpec` and `ParallelMultiNodeSpec`'s await timeouts, the worker
+  handshake and control RPC, and every `awaitCondition` budget. Default 1, so it
+  is inert until asked for; a malformed value throws rather than falling back,
+  because ignoring a typo hands the setter the failure they were trying to fix.
+  Every message the factor lengthened names it.
+
+  **The design question the issue poses is answered by making the guard scale
+  too.** Bun's per-test cap is not reachable from this repository — it is the
+  5 000 ms default or a literal third argument — so a factor that quietly
+  tripled a budget under an untouched cap would recreate the exact failure
+  `AwaitConditionBudgets` exists to prevent. That guard now measures the
+  *scaled* budget against the literal cap and recognises `scaledMs(N)` as a cap
+  that rises with it. Run at factor 3 over the whole tree it reports ~1 200
+  tests whose caps no longer contain their budgets, which is true — so a raised
+  factor is a per-suite tool, not a global switch, and the docs say so.
+
+  `nightly-flakes.yml` gains the demonstration the issue asks for: the three
+  suites that #538 removed from CI for being too slow now run nightly at factor
+  3 as a recorded measurement rather than a gate. Both factors are green
+  locally, which is itself the answer to the quarantine's original question —
+  those suites were not merely slow.
+
+- **A network that works *badly*, not just perfectly or not at all** (#1023).
+  Every multi-node test ran on a transport that was either flawless or severed:
+  `MultiNodeTransport` offered a bidirectional block and `InMemoryTransport`
+  offered nothing, while delivery was a bare `queueMicrotask` — strictly FIFO,
+  exactly-once, zero-latency. So probabilistic loss, reordering, duplication
+  and a slow-but-alive peer were structurally untestable, and every
+  order-independence and idempotence claim in `Cluster` was exercised by
+  nothing.
+
+  `FaultyTransport` is a **decorator**, so `InMemoryTransport`,
+  `MultiNodeTransport` and `MessageChannelTransport` gain drop, duplicate,
+  reorder and latency controls without any of them growing a line of fault
+  logic — per link, and configured through the usual `FaultyTransportOptions`
+  triad. `MultiNodeSpec` exposes it as `degrade(a, b, profile)` / `restore(a,
+  b)` beside `partition` / `heal` / `crash`.
+
+  **Deterministic by construction.** One seeded generator per node drawn in
+  send order, and under a shared `ManualScheduler` that order is deterministic
+  too — so a red run reproduces exactly, and the spec's timeout messages name
+  the seed that does it. Latency is measured on the scheduler and *refused*
+  without one, rather than quietly taken from the wall clock. `reorderWindow`
+  is a depth rather than a shuffle: a frame is displaced by strictly fewer than
+  `n` positions, so a reordered link cannot leave a test waiting forever.
+
+  Two claims are now tested rather than asserted in prose: membership converges
+  under 20 % loss given enough rounds, and shard-home updates survive a link
+  that turns lossy *during* a rebalance — measured to hold at 90 % loss and to
+  fail only when the link is severed outright, which is a partition rather than
+  a degradation. EN + DE testkit docs describe the controls.
+
+- **The four JetStream caps that pass through to nats.js verbatim accept
+  NATS's own spelling of "no limit" (#871): `-1` on `stream.maxMessages`,
+  `stream.maxBytes` and `consumer.maxAcknowledgmentPending`, and `0` on
+  `stream.maxAge` — which is a nanosecond span, where a negative value would
+  mean nothing** (#871).  The set is per field and asymmetric because the
+  server's is, and everything else non-positive is still refused at startup,
+  so `-2` remains the typo it is and the rejection now names the sentinel it
+  would have taken. `consumer.ackWaitMs` deliberately has no sentinel: NATS
+  reads a zero ack-wait as "use the server default", which is exactly what
+  leaving the field unset already says, so both `0` and `-1` stay refused
+  there. Both jetstream pages state the domain per field.
+
+  *Note:* None required against any released version. 6c43f21d is NOT an
+  ancestor of v0.17.0 (`git merge-base --is-ancestor 6c43f21d v0.17.0` exits
+  1), so the narrowing existed only on develop and no published release ever
+  refused these values. Anyone running the develop tip with
+  `stream.maxMessages = -1`, `stream.maxBytes = -1`, `stream.maxAge = 0` or
+  `consumer.max-acknowledgment-pending = -1` saw the actor throw
+  OptionsError in preStart and never connect; with this change those
+  configurations start again with no edit.
+
+- **BREAKING — A split-brain resolver is no longer consulted on whichever
+  membership view the failure detector happened to leave behind at the end
+  of a tick (#839).**
+
+  Two new keys under `actor-ts.cluster.split-brain-resolver` gate it:
+  `stable-after` (20s) is how long the membership and reachability view must
+  hold still before the configured strategy is asked anything, and
+  `down-all-when-unstable` (off) escalates to downing every member — this
+  node included — when the view never once holds still for a whole window
+  across three windows of continuous change, and something is still
+  unreachable. Every bundled strategy is a pure function of one view, and a
+  partition does not arrive as one event: peers cross `unreachable-after` a
+  few hundred milliseconds apart, so a view read mid-transition describes a
+  cluster that existed at no instant, and counting a majority against it is
+  how a node concludes it is in the minority a second before the rest of its
+  own side is marked unreachable too. The window has a ceiling, and it needs
+  one: its fingerprint covers every member's address and status, so any
+  join, leave or transition anywhere restarts it, and a deployment whose
+  membership moves more often than `stable-after` would otherwise never
+  arbitrate a partition at all — an autoscaling group, a rolling deploy, or
+  one flapping node at the shipped twenty seconds. A peer that has been
+  continuously unreachable for `2 x stable-after` is therefore put to the
+  strategy whatever else is moving; that multiple sits above one window, so
+  a view that does settle is always arbitrated the ordinary way first, and
+  below the three-window escalation deadline, so a strategy is asked before
+  `down-all-when-unstable` can stop the cluster. The whole change lives in
+  `Cluster.evaluateDowning` and `src/cluster/downing/StabilityWindow.ts`; no
+  strategy sees any of these values, and the failure-detection tick is the
+  clock, so no new timer exists. It is only expressible since #929 stopped
+  the detector evicting an unreachable peer behind the resolver's back,
+  which is why there is deliberately no upper bound tying `stable-after` to
+  `failure-detector.down-after`. Configurable in code as one nested block,
+  `ClusterOptions.withSplitBrainResolver(...)`, merged per field over the
+  file so pinning the window does not silently drop the file's escalation
+  switch. The escalation ships off on purpose: it is the only action in the
+  subsystem that stops the whole cluster and it is reached by a timer rather
+  than by a strategy's verdict, so a rolling restart whose replacements
+  arrive less than `stable-after` apart looks exactly like a cluster that
+  will not settle. `MultiNodeSpec` gained a matching `stableAfterMs`,
+  defaulting to 100 ms the way its gossip and seed-retry intervals already
+  default to test scale.
+
+  *Migration:* Every deployment that already had
+  `actor-ts.cluster.split-brain-resolver.active-strategy` set, or
+  `ClusterOptions.withDowning(...)` configured, now waits before its
+  strategy is asked anything — up to `stable-after` (20s) for a settled
+  view, and up to `2 x stable-after` (40s) if the membership keeps moving.
+  Before this change the strategy was consulted on the first tick that saw a
+  partition. Nothing else evicts in the meantime: since #929 a configured
+  provider owns the eviction, so the peer sits at `unreachable` for the
+  whole wait. If your recovery objective is shorter than that, set
+  `actor-ts.cluster.split-brain-resolver.stable-after` (or
+  `withSplitBrainResolver({ stableAfterMs })`) to a value your SLO
+  tolerates; `0` is refused, because "do not arbitrate" is spelled
+  `active-strategy = off`. No API changes and no config keys were removed.
+
+- **`actor-ts.cluster.publish-stats-interval` arms a periodic membership
+  sample on the node — every interval it emits one `ClusterStatsPublished`
+  (member count, `up` count, `unreachable` count, the leader as an
+  `Option<Member>`, and this node's address) on `system.eventStream` and to
+  every `Cluster.subscribe` listener** (#842). `0`, the shipped value, arms
+  no timer at all. Every figure was already reachable through the `Cluster`
+  API; what the key buys is the cadence, so "tell me where the membership
+  stands every N seconds" stops being a polling loop each application writes
+  for itself. The event is node-local and deliberately not on the
+  cluster-wide `cluster.eventStream`, where a per-node periodic sample would
+  cost N frames per node per interval, and it is never replayed on
+  subscribe: every other cluster event states a change, this one states a
+  measurement, and a replayed measurement is a stale number. Its field set
+  mirrors the DevTools dashboard's `ClusterStatsSummary` so the two do not
+  grow separate vocabularies, but the populations differ on purpose — this
+  counts the live member map, the dashboard additionally retains recently
+  departed nodes. The other five keys the issue proposed do not ship, and
+  each has its own reason. `leader-actions-interval`: leader actions already
+  run on a timer, the gossip tick, before each tick's push and again after
+  every accepted gossip frame, so `gossip-interval` is their cadence; a
+  timer of their own would let a promotion go out up to one gossip interval
+  after it was made. `gossip-time-to-live`: a received frame is merged in
+  the socket callback that decoded it, so there is no inbound queue for a
+  time-to-live to act on, and an outbound frame waits only in the handshake
+  buffer, which `remote.outbound-queue-size` bounds in count (oldest dropped
+  first) and `remote.handshake-timeout` bounds in time.
+  `unreachable-nodes-reaper-interval`: the reaper is the failure detector's
+  tick, already configurable as `failure-detector.heartbeat-interval`, and a
+  second key would reverse the decision to run one heartbeat cadence.
+  `periodic-tasks-initial-delay`: every periodic cluster timer already waits
+  one full interval before its first tick, and as a stagger a value every
+  node of a deployment reads from the same file shifts every first tick
+  alike and de-aligns nothing. `gossip-different-view-probability` is handed
+  to #1187: gossip carries no whole-view version or seen-set to compare, and
+  that survey decides whether it will.
+- **`MultiNodeSpec` can run every node on one shared virtual clock, with
+  `advance` and `advanceUntil`** (#1424).
+
+  ```ts
+  const scheduler = new ManualScheduler();
+  const spec = new MultiNodeSpec(
+    MultiNodeSpecOptions.create().withRoles(['a', 'b', 'c']).withScheduler(scheduler),
+  );
+  await spec.start();
+  await spec.advanceUntil(() => spec.clusterFor('a').members().length === 3, {
+    description: 'the cluster converged',
+  });
+  ```
+
+  A cluster's interesting questions are all about convergence, and convergence
+  takes gossip rounds — so a multi-node assertion is a race between "has it
+  converged yet" and a real-time budget. That is most of the flake catalogue.
+  One scheduler shared by every node makes an advance mean *one round happened
+  everywhere* rather than *one node's timer fired*, and `advanceUntil` replaces
+  a real-time poll, which on a virtual clock cannot work at all: nothing
+  advances while the poller sleeps, so the condition can never become true.
+
+  Both throw rather than no-op on a spec without a virtual clock, since silently
+  succeeding would make every assertion after them a race.
+
+- **BREAKING — `terminate()` no longer shuts down a scheduler it was given**
+  (#1424).
+
+  A scheduler passed through `ActorSystemOptions.withScheduler` belongs to
+  whoever passed it, exactly as the dispatcher always has. It was shut down
+  anyway, which is invisible while one system holds it and wrong the moment two
+  do: the first `terminate()` disarmed every handle the second still owned. The
+  code already reasoned this way one line further down, where it declines to
+  clear the error sink of a scheduler that "outlives the system and is advanced
+  by the test afterwards".
+
+  A system that built its own scheduler still shuts it down, so an armed
+  interval cannot hold the event loop open after `terminate()` (#641). Only a
+  caller who *relied* on their own scheduler being stopped for them is affected;
+  call `scheduler.shutdown()` where you used to expect it.
+
+- **`LeaseOptions.withScheduler` puts the whole lease lifecycle on virtual
+  time** (#1424).
+
+  ```ts
+  const lease = new InMemoryLease(
+    LeaseOptions.create()
+      .withName('singleton')
+      .withOwner(nodeId)
+      .withTtlMs(30_000)
+      .withScheduler(system.scheduler),
+  );
+  ```
+
+  Everything interesting a lease does is a duration — the TTL, the renewal
+  cadence, the gap between acquire retries — and all three were measured on the
+  wall clock, so a test could only cross one by waiting for it. Which is why
+  lease tests used TTLs of tens of milliseconds and then asserted on behaviour a
+  production TTL of thirty seconds shows quite differently. Ten TTLs of renewal
+  now cost nothing instead of five real minutes.
+
+  `InMemoryLeaseStore.tryAcquire` takes the caller's `now` rather than reading a
+  clock: it is a process-wide singleton every lease competes against, so it has
+  none of its own, and two leases in one test may legitimately hold different
+  ones. `peek` takes an optional `now` and still defaults to the wall clock.
+
+  This is also the machinery `LeaseMajority` was blamed for over thirteen red
+  nights before the cause turned out to be a product defect in split-brain
+  resolution (#839). The hypothesis was wrong — but it was never *checkable*,
+  and that is the part this changes.
+
+  A `KubernetesLease` accepts the option too, and it moves only the renewal
+  cadence: its HTTP calls are real requests to a real API server and stay that
+  way.
+
+- **`CircuitBreaker`, `after`, `retry` and `gracefulStop` can take their time
+  from a scheduler** (#1424).
+
+  ```ts
+  const breaker = new CircuitBreaker(
+    CircuitBreakerOptions.create()
+      .withMaxFailures(1)
+      .withResetTimeoutMs(10_000)
+      .withScheduler(system.scheduler),
+  );
+  ```
+
+  Each held a duration a test has to cross, and each armed a raw timer — so the
+  only way to cross one was to wait for it. The circuit breaker's reset window
+  is the worst case: a realistic one is seconds, so a test of "it reopens after
+  the window" either waits those seconds or shrinks the window until it is
+  asserting a shape production never takes.
+
+  - `CircuitBreakerOptions` gains `withScheduler` / `scheduler`, used for the
+    reset window and — only where that scheduler's time is virtual — for the
+    per-call timeout.
+  - `after(delayMs, factory, scheduler?)` takes an optional third argument.
+  - `RetryOptions` gains `scheduler`, which supplies the delay between attempts
+    without the caller writing the `sleep` adapter by hand. An explicit `sleep`
+    still wins; it is the lower-level door.
+  - `gracefulStop` needs no new argument at all — it reaches the scheduler
+    through the local ref it was given, and does so unconditionally, since a
+    graceful stop happens once per actor at shutdown and has no hot path to
+    protect.
+
+  All four defaults are unchanged: without a scheduler every one of them arms
+  the host timer it always did.
+
+- **An `ask` deadline and a receive timeout are virtual under a
+  `ManualScheduler`** (#1424).
+
+  ```ts
+  const { kit, scheduler } = TestKit.withManualScheduler();
+  const pending = silent.ask({ kind: 'ping' }, 5_000);
+  scheduler.advance(5_000);
+  await expect(pending).rejects.toThrow(AskTimeoutError);   // in no real time
+  ```
+
+  This is the commonest shape in the flake catalogue. A test for "the reply
+  never came" has to let the deadline elapse; on the wall clock the only way is
+  to wait, so it gets written with an unrealistically short deadline and then
+  fails on a loaded machine, because 40 ms of wall clock is not 40 ms of
+  scheduling. Both halves of that trade go away.
+
+  **Only where time is actually virtual, and that is measured rather than
+  cautious.** `Scheduler` gained `isVirtual` (`false`; `ManualScheduler`
+  overrides it to `true`), and a real scheduler keeps the raw `setTimeout` the
+  ask path always used. Arming *every* ask through the scheduler costs ~13 % of
+  `ask-throughput` — 195k → 170k ask/s, p50 2.8 → 3.1 µs — in cancellable
+  allocation and set bookkeeping, and buys nothing in production, since nobody
+  can advance past a real deadline. Keeping the dispatch and bypassing the
+  scheduler restored the baseline exactly, which is what isolates the cost to
+  that path rather than to the lookup reaching it. Re-measured after narrowing:
+  181–196k ask/s against a 177–202k baseline, p50 unchanged.
+
+  The receive timeout moves unconditionally, because it is not on a hot path —
+  it re-arms once per handled message and the framework's own comment notes
+  that almost no actor sets one.
+
+- **`TestKit.settle()` and `TestKit.advance(ms)` — the half of deterministic
+  testing that virtual time does not cover** (#1025, #1424).
+
+  ```ts
+  const { kit } = TestKit.withManualScheduler();
+  const recorder = kit.system.spawn(Recorder, 'recorder');
+  kit.system.scheduler.scheduleOnce(250, recorder, 'later');
+
+  await kit.advance(250);                 // fires the timer AND lands its tell
+  expect(Recorder.seen).toEqual(['later']);
+  ```
+
+  `ManualScheduler.advance` fires a timer **synchronously**, but the `tell` it
+  performs is delivered by the dispatcher on a later turn of the event loop. So
+  virtual time makes *when* a timer fires deterministic and says nothing about
+  when its effects have landed, and
+
+  ```ts
+  scheduler.advance(100);
+  expect(probe.messageCount).toBe(1);     // ✗ reads an empty probe, always
+  ```
+
+  never worked. **Including in this repository's own documentation**: both
+  flagship `ManualScheduler` samples called `advance` before the actor had
+  handled the `tell` that arms the timer, so the clock swept past a timer nobody
+  had set. Where they appeared to pass, `probe.expectMessage` was doing the
+  settling by polling on real time — which means the sample was green for a
+  reason unrelated to the code it demonstrates. Both are corrected.
+
+  `settle()` lets every armed actor turn run, and every turn those arm, until
+  the `/user` tree is quiet. It **never sleeps** — nothing is being waited for,
+  the work is already armed and only needs the event loop to reach it, so this
+  adds no fixed delay to a suite that is busy removing them. It throws rather
+  than hanging when the tree never becomes quiet, which is what an exchange with
+  no end looks like; the turn budget exists for that case and for no other, since
+  one yield settles every ordinary exchange measured here.
+
+  `advance(ms)` is both halves in the right order, and refuses a kit built
+  without a `ManualScheduler` rather than silently doing nothing.
+
+- **`Clock` — the time a component reads, as a contract rather than a global,
+  reachable as `system.clock`** (#1424).
+
+  ```ts
+  import type { Clock } from 'actor-ts';
+
+  const at = system.clock.now();          // wall clock in production
+  ```
+
+  `system.clock` **is** the system scheduler, narrowed to one method, so under
+  a `ManualScheduler` it is virtual time. A component that only reads the time
+  should take `Clock` rather than the whole scheduler: its dependency then says
+  what it needs, and a test can supply a clock without also granting it the
+  power to arm timers.
+
+  **This closes a mixed clock that made a whole class of test unwritable.**
+  `ManualScheduler` has had virtual time since the TestKit existed, and almost
+  nothing could see it — `Scheduler` exposed no `now()`, so every component
+  that needed the time read `Date.now()` for itself, 184 times across 78 files.
+  Gossip, heartbeat and failure-detection ticks all run through the scheduler,
+  so virtual time drives them; the code they drove read the wall clock. Measured
+  as an assertion: a hundred ticks advanced through virtual time land on **100
+  distinct instants** through `system.clock` and on **2** through `Date.now()`.
+  A failure detector handed a hundred samples with no elapsed time between them
+  concludes nothing, which is why "this peer went quiet for a minute" could not
+  be written as a test.
+
+  The reads move onto the contract subsystem by subsystem, held in place by a
+  ratchet (`tests/unit/ci/WallClockRatchet.test.ts`) that lets a file's count
+  fall and never rise. `performance.now()` is deliberately out of scope — it
+  measures a duration, not what time it is, and `Clock` says so.
+
+  **BREAKING — the four ad-hoc time seams are now one.** Three constructor
+  parameters typed `() => number` and one builder method, each added for a
+  single call site, each with its own name for the same idea:
+
+  | Before | Now |
+  | --- | --- |
+  | `ThrottleOptions.create().withNow(() => t)` | `.withClock({ now: () => t })` |
+  | `new TokenBucket({ qps, now: () => t })` | `new TokenBucket({ qps, clock: { now: () => t } })` |
+  | `new RestartBudget(strategy, () => t)` | `new RestartBudget(strategy, { now: () => t })` |
+  | `new SinkReporter(name, () => t)` | `new SinkReporter(name, { now: () => t })` |
+
+  Migration is mechanical: wrap the function in `{ now }`, or pass
+  `system.clock` and get virtual time under a `ManualScheduler` for free. Any
+  object with a `now()` is a `Clock`, so a test's existing hand-rolled clock
+  usually needs no change at all beyond the property name.
+
+  **Both failure detectors now take a `Clock`, and the cluster hands them its
+  own.** `FailureDetector` and `PhiAccrualFailureDetector` gained an optional
+  second constructor argument, and `createFailureDetector` an optional fourth;
+  every `now` parameter now defaults to that clock rather than to `Date.now()`.
+  Nothing at a call site changes — `Cluster`'s six parameterless calls are
+  simply correct under virtual time now — but the consequence is that a
+  four-node partition, a heartbeat timeout and a φ value can all be asserted in
+  milliseconds of real time. `tests/unit/cluster/FailureDetectorClock.test.ts`
+  does exactly that; putting the detectors back on `Date.now()` fails 7 of its
+  9 cases, and the 2 that survive are the two that never consult the clock.
+
+- **BREAKING — the split-brain resolver now decides on a view that has stopped
+  moving: `actor-ts.cluster.split-brain-resolver.stable-after`, default 20 s**
+  (#839).
+
+  A strategy is asked nothing until the member view has been *unchanged* for
+  the window. Migration: nothing to change unless the added failover latency
+  matters, in which case lower it —
+  `withSplitBrainResolver({ stableAfterMs: 5_000 })` or
+  `actor-ts.cluster.split-brain-resolver.stable-after = 5s`. `0` restores the
+  previous behaviour exactly, along with the defect below.
+
+  **The window is a correctness fix rather than a hardening measure, and the
+  distinction is the whole entry.** The issue was filed for flapping links; what
+  the measurement found is that a partition which does not flap at all was
+  already being resolved wrongly, because the decision was taken before the
+  partition had finished being *detected*.
+
+  `Cluster.failureDetectionTick` marks peers unreachable one at a time, as each
+  crosses `unreachable-after`, and evaluated downing at the end of that same
+  tick. So a 2/2 partition whose two remote peers were detected on different
+  ticks was resolved as two successive *majority* decisions instead of one
+  equal-split decision:
+
+  ```text
+  tick 1:  a=up b=up c=unreachable d=up          3 reachable of 4  ->  down c
+  tick 2:  a=up b=up c=removed  d=unreachable    2 reachable of 3  ->  down d
+  ```
+
+  The tombstone closes the trap: a force-down writes `withRemoved(...)`, and
+  every bundled strategy filters candidates to `up | leaving | unreachable`, so
+  the denominator shrinks with the numerator. Both halves ran the identical
+  computation over their mirror image and both survived — and with
+  `LeaseMajority` the lease was never contended for by anybody, because the
+  equal-split branch that reaches it was never taken. `KeepMajority` has the
+  same defect by the same two lines, and a 3/2 split can be walked down the
+  same way.
+
+  Measured on one machine within one minute: the four-node partition test
+  failed **8 of 15** runs with the window disabled and **0 of 30** with a
+  1 s window.
+
+  This is also the diagnosis for #1343 and #1309 — the `LeaseMajority` suite
+  that has been red on roughly 13 of 21 nights. It was never a timing budget:
+  the arbitration chain those issues asked to be instrumented is not slow, it
+  is not entered.
+
+  Bound from both sides. `tests/unit/cluster/downing/StaggeredDetection.test.ts`
+  replays the tick sequence over hand-built views with no timing at all, so the
+  premise cannot rot; `tests/multi-node/DowningStabilityWindow.test.ts` drives a
+  real staggered partition and goes red when the window is removed. A case
+  asserting that the *defect* occurs was written, measured at one failure in
+  six, and deliberately not shipped — it would have been a test asserting that a
+  race went one way.
+
+  `down-all-when-unstable` and `down-removal-margin` are deliberately not part
+  of this: a key nothing reads is refused by
+  `tests/unit/config/NoDeadConfigKeys.test.ts`, and they are separate work on
+  the same machinery.
+
+- **A deployment can now name its seed peers and its role tags in HOCON —
+  `actor-ts.cluster.seed-nodes` and `actor-ts.cluster.roles`, both shipping
+  `[]` and both layered under an explicit `withSeeds(…)` / `withRoles(…)`
+  per field, as every other cluster key is** (#836).
+
+  The tree used to publish, in four places, that these two had no HOCON form
+  because they are per-node identity. Half of that argument was false about
+  this framework: a node removes its own address from the seed list before
+  dialling, so the shape the docs prescribe — name the designated first
+  node, ship one file everywhere — is correct on every node. The named node
+  reads its own address, filters it out and self-elects; everybody else
+  dials it. The shape the old argument is right about is the symmetric list
+  naming every node, and that deadlocks whether it came from config or from
+  code — the framework already detects and diagnoses that case. `roles`
+  never had an argument against it at all: it was only ever named alongside
+  `seeds`, and `actor-ts.sharding.role` already lets a config file filter on
+  a role, which is unusable if the same file cannot assign one.
+  `selfElection` stays code-only and is now the only member of that group,
+  because a shared value there is not merely useless but unsafe.
+
+  Both leaves are read with `getStringList` and nothing else, so a single
+  `seed-nodes = ${?SEED_NODES}` is refused at start-up rather than split on
+  commas — six other list leaves behave the same way, and the
+  comma-separated single variable already has a first-class home in
+  `seedsFromEnv(…)`. The per-entry form `seed-nodes = [ ${?SEED_1},
+  ${?SEED_2} ]` works, since an unset optional substitution drops out of the
+  array, and `reference.conf` spells that recipe out beside the key.
+
+  Two things had to change for the seed key to reach anything:
+
+  - `Cluster.bootstrap` forwarded its seed list unconditionally as
+    `.withSeeds([...seeds])`, and the options merge strips `undefined` but
+    never `[]` — so an empty plan arrived as an explicit empty list,
+    outranked HOCON per the documented precedence, and shadowed the file's
+    seeds on every bootstrap call. No gate would have caught it: the
+    dead-key guard asks whether a key is read, and it was. The list is now
+    forwarded when the plan produced seeds, or when the caller named one at
+    all — a written `seeds: []` is an explicit "there is nobody else" and
+    still wins over the file, while a plan that came up empty because nobody
+    asked and discovery found none is a silence the file may fill. Behaviour
+    is unchanged for every existing deployment, since both routes end at
+    `[]`.
+  - `ClusterOptionsValidator` now checks seed syntax, and deliberately not
+    emptiness — an empty list is the documented "I am the first node".
+    `NodeAddress.parse` throws a bare `Error` from inside `_start`, after
+    the transport has bound, so a typo took the node down with a live socket
+    behind it and a message naming neither the field nor the key. The
+    refusal now happens in `Cluster.join`, before the constructor and before
+    any socket, and names the offending string.
+
+  Two of the five keys the issue proposed are deliberately absent, and a
+  third arrived on its own.
+  `seed-node-timeout` has no mechanism behind it — seed contact is
+  fire-and-forget with no reply awaited, no per-seed deadline and no round
+  timer — so it would have failed the dead-key guard on its first run.
+  `retry-unsuccessful-join-after` already ships as
+  `actor-ts.cluster.seed-retry-interval`, and two spellings for one
+  mechanism is worse than none.
+  `shutdown-after-unsuccessful-join-seed-nodes` became
+  `actor-ts.cluster.shutdown-after-unsuccessful-join` (#1500): a deadline
+  of every `Cluster.join`'s own, which on the bootstrap path composes with
+  the `awaitReady` timeout — whichever fires first ends the start.
+
+- **A `ClusterClient` can now be configured from a file, which is the first
+  time the one component that sits outside a cluster has had a HOCON layer
+  at all** (#858).  The new `actor-ts.cluster.client` block ships five keys
+  — `contact-points`, `system-name`, `ask-timeout`, `connect-timeout` and
+  `receptionist.ask-timeout` — with matching `withConnectTimeoutMs(...)` on
+  the builder alongside the existing setters.  Set `contact-points` and a
+  client built with no options at all connects:
+
+  ```hocon
+  actor-ts.cluster.client {
+    contact-points  = ["orders@10.0.0.1:2552", "orders@10.0.0.2:2552"]
+    connect-timeout = 2s
+  }
+  ```
+
+  ```ts
+  const client = new ClusterClient({});
+  ```
+
+  The constructor loads that configuration itself — the same chain
+  `ActorSystem.create` uses, honouring `ACTOR_TS_CONFIG` and
+  `./application.conf` — because a client holds no `ActorSystem` and so has
+  no `system.config` above it, the one place in the framework where that is
+  true.  `WorkerCluster.spawn` already worked this way for the identical
+  reason.  A `Config` passed as the constructor's new optional second
+  argument pins what it reads, so a client can be made independent of
+  whatever `application.conf` sits in the working directory.  The
+  `ClusterClientReceptionist` half is asymmetric on purpose: it runs inside
+  a system, so it reads that system's config and loads nothing.  Precedence
+  is unchanged — explicit options beat the file, the file beats the built-in
+  defaults.
+
+  `connect-timeout` is new behaviour rather than an exposed constant only in
+  the sense that it was previously unreachable: the per-contact-point wait
+  for the `hello-ack` was the hardcoded `HELLO_TIMEOUT_MS`, and is now
+  `DEFAULT_CLUSTER_CLIENT_CONNECT_TIMEOUT_MS` on `ClusterClientOptions` with
+  the same 5 s default.
+
+  Three things deliberately have no key, and one of them is a security
+  decision:
+
+  - `client-identity` stays code-only.  A client's synthetic wire port is
+    drawn from the CSPRNG so that no peer can predict, address or pre-claim
+    its slot; a fleet sharing one configured value would have every client
+    announce the same address, which is exactly what that draw exists to
+    prevent.  `withClientIdentity(host, port)` still sets a stable one per
+    process.
+  - `tls` carries certificate material and `logger` is a `Logger` instance —
+    neither has a HOCON spelling.
+  - `contact-points` ships **commented out** rather than as `[]`.  A contact
+    list is per-deployment identity that no default could state, and an
+    empty list is refused by the validator rather than meaning "unset", so a
+    shipped value could only be one that stops every client that copied the
+    file.
+
+  Six keys the issue proposed are absent because the mechanisms are: there
+  is no contact-refresh loop, no heartbeat, no response tunnel and no
+  `GetContacts` exchange anywhere in `ClusterClient` or its
+  receptionist.  `buffer-size` and `reconnect-timeout` belong to #689, which
+  claims both mechanisms in its own body; the reader is shaped so that issue
+  adds two leaves to this block rather than restructuring it.
+
+- **`ActorRef.ask`'s five-second default deadline is now configurable
+  system-wide through a new `actor-ts.actor.ask-timeout` key** (#863).  It
+  was a compile-time literal, so an operator who wanted a different figure
+  across the board had to pass `timeoutMs` at every call site. A per-call
+  argument still wins, and the shipped default is unchanged, so a deployment
+  that sets nothing behaves exactly as before.
+
+  It lands beside `actor-ts.actor.throughput` rather than as the root
+  `actor-ts.ask-timeout` the issue proposed: every one of the fourteen
+  top-level entries in `reference.conf` is a block, the configuration
+  reference is organised one table per block, and `throughput` is the exact
+  structural precedent — read once in the `ActorSystem` constructor and
+  layered under an explicit argument.
+
+  Three things are worth knowing before setting it.
+
+  - Coverage is deliberate and partial. The refs that can reach their
+    `ActorSystem` honour the key: the ordinary local ref, `TestProbe`,
+    `RemoteActorRef`, `ClusterSingletonProxy`, both shard refs, and
+    `EntityRef` through its region. The dead-letter ref, `Nobody`, an
+    unresolved-path ref, the one-shot reply ref an ask synthesises and two
+    framework-internal handles carry a system *name* and no system, and keep
+    the built-in five seconds. Every ref in that second group is one you
+    hold where no live actor is behind it, so an ask on it is waiting for a
+    reply that is not coming either way. The alternative — a process-global
+    registry keyed by system name — would put a lookup on the ask hot path
+    and share mutable state between two systems in one process.
+  - A value that arms no deadline is rejected rather than clamped, unlike
+    the neighbouring `actor-ts.actor.throughput`. `ask-timeout = 0` (or a
+    negative one) throws an `OptionsError` naming the key at
+    `ActorSystem.create`, because an ask with no deadline can never settle
+    (#765) — there is no nearest-sensible value to fall back to, and failing
+    once at startup beats failing at every ask site.
+  - Setting it below 4.6 s leaves a scatter-gather router on its 4.5 s
+    default unable to name its failing routees before the caller gives up,
+    which is the defect #1088 fixed. The system logs one `warn` at startup
+    naming both knobs rather than adjusting either, since the combination is
+    legitimate for an application whose routers set their own
+    `ScatterGatherOptions.withTimeoutMs()`.
+
+  The distributed-data quorum read and write default stays out of
+  `actor.ask-timeout` on purpose: it has a key of its own,
+  `actor-ts.distributed-data.quorum-timeout` (#856). The `ClusterClient` and
+  `ClusterClientReceptionist` defaults were left alone here for the same
+  reason — they belong to `actor-ts.cluster.client`, and a client holds no
+  `ActorSystem` to read a config from — and #858, further up this section,
+  went on to give them that block and a config layer of their own.
+
+- **Cluster sharding can now choose *which* entity a full node gives up, not
+  just how many it keeps** (#848).  A new `actor-ts.sharding.passivation`
+  block adds five keys — `replacement` (`least-recently-used`,
+  `segmented-least-recently-used` or `least-frequently-used`),
+  `segmented-protected-proportion`, `admission-window-proportion`,
+  `admission-filter` (`off` or `frequency-sketch`) and `stop-timeout` — with
+  matching `withPassivationX` builder methods. The defaults are the plain
+  LRU every earlier release had, the replacement machinery is inert while
+  `max-entities = 0`, and `stop-timeout` ships as `0`, so a deployment that
+  configures none of these behaves exactly as before.
+
+  The policy this exists for is `segmented-least-recently-used` with
+  `admission-filter = frequency-sketch`. Recency alone cannot tell "touched
+  once, ever" from "touched constantly until a moment ago", so a pass over a
+  large cold key space — a nightly export, a crawler, a backfill — evicts a
+  hot working set one entity at a time. In the shipped integration test a
+  six-entity hot set against a cap of twelve survives a forty-entity scan
+  intact under the segmented policy and is lost entirely under plain LRU.
+
+  `stop-timeout` bounds the *other* half of passivation, and it is opt-in.
+  The stop-message a `Passivate` hands an entity is a request: the entity
+  decides when to act on it, and an entity mid-drain — a long flush, a slow
+  final write — is entitled to take as long as the drain takes. Left unset,
+  an entity that never acts on the message never terminates, `EntityStopped`
+  never reaches the region, and its slot is charged to `max-entities` for
+  the lifetime of the node; set, the shard stops it outright after the
+  window. It is independent of `max-entities` — a positive value arms it
+  with or without a cap — and it is off by default because only the operator
+  who knows the drain can pick the bound.
+  `ShardConfig.passivationStopTimeoutMs` is optional and absence means the
+  same as `0`, so an application that builds a `ShardConfig` itself is
+  unaffected.
+
+  One related behaviour change on an existing feature: a remembered entity
+  that a shard pre-creates during recovery now counts against
+  `max-entities`. It previously wrote the region's entity index directly, so
+  a node handed a registry larger than the cap exceeded it by the size of
+  the registry and stayed over it.
+
+  The eviction path is also no longer a linear scan of every resident entity
+  on the first message for each new one — every replacement operation is now
+  O(1) amortised, and an entity that is evicted, stops on its own, or leaves
+  with its shard releases its slot of the cap on all three paths.
+
+- **`actor-ts.persistence` gained five wired behaviour keys, so a deployment
+  can bound a journal call, cap a restart storm and trade replay time for
+  availability without a redeploy** (#874).  `max-concurrent-recoveries`
+  (50) limits how many journal replays run at once — a shard hand-off used
+  to open one concurrent read per remembered entity against a pool sized for
+  tens. `recovery-timeout` (30s) fails a replay that never finishes with a
+  `RecoveryTimeoutError` through `onRecoveryFailure`, instead of leaving the
+  actor in `preStart` forever. `snapshot-is-optional` (false) lets an actor
+  recover by full journal replay when the snapshot store is unreachable —
+  deliberately never for an actor that set `integrity()` or `encryption()`,
+  because such a store rejects a tampered body the same way it reports being
+  down, and tolerating one would tolerate the other. `journal-breaker` and
+  `snapshot-breaker` name the circuit breaker each store is called through;
+  `""` disables it, and the breaker's own numbers stay under
+  `actor-ts.circuit-breaker.<id>` where #864 put them, so there is no second
+  copy of `max-failures` to drift.
+
+  The journal breaker makes the hazard #913 reported *closable*, and does
+  not close it by default: `await this._journal.append(...)` had no ceiling
+  of any kind, so a backend that accepted the connection and then stalled
+  left the actor's turn open forever and every later command queued in an
+  unbounded mailbox with nothing thrown. Setting
+  `actor-ts.circuit-breaker.persistence-journal.call-timeout = 10s` cuts the
+  stalled append at the stall — one config line, no deploy. It ships unset
+  on purpose, because omitting it is what expresses "no deadline" and a
+  shipped ceiling would fail a slow-but-healthy store that every earlier
+  release served fine; `max-failures` cannot stand in for it, since a call
+  that never returns is never counted as a failure. Pick the value from the
+  backend's own P99 write latency with headroom.
+
+  A `JournalConcurrencyError` never counts against a breaker — it is the
+  ownership verdict of a conditional append, not an outage — and neither
+  does a `JournalIntegrityError` or `SnapshotIntegrityError`, which are
+  durable facts about the stored bytes. That carve-out travels with the call
+  rather than with the breaker instance, so it holds however the shared id
+  was reached: `CircuitBreaker.call(factory, isFailure?)` now takes the
+  classifier per call and it wins over the instance's own, while
+  `ignored-error-names` — the operator's half — is still consulted first and
+  still wins over both. An excused error stays neither a failure nor a
+  success, so the consecutive-failure count survives it and one lost race
+  between two real outages cannot keep a dead journal from opening the
+  breaker. `PersistenceExtension.journal` and `.snapshotStore` still hand
+  out the raw store rather than a wrapper. #874
+
+  Each breaker counts only its own store. Recovery loads its snapshot
+  through the snapshot breaker, ahead of the journal call, so entities
+  restarting into an unreachable snapshot store do not open the journal
+  breaker and refuse every later persist on the node; `snapshot-is-optional`
+  and its refusal for actors that set `integrity()` or `encryption()` are
+  unchanged. The fold runs after the journal call, so an `onEvent` or an
+  upcaster that cannot fold one entity's history fails that recovery without
+  counting as a journal outage. `deleteHistory`'s snapshot and journal
+  deletes go through their breakers too, so `call-timeout` bounds a stalled
+  delete the way it bounds an append. A refused delete or snapshot save
+  never counts against a breaker, though: the journal breaker counts failed
+  appends and replays and the snapshot breaker failed snapshot loads, so a
+  store that refuses deletes or snapshot writes and serves everything else
+  fails that compaction or that snapshot and nothing more. An open breaker
+  still refuses those calls, and the failure counters still count them.
+  #1496
+
+- **`actor-ts.cluster.minimum-members-before-up` (int, default `1`) holds
+  every `joining` / `weakly-up` → `up` transition until at least that many
+  members are present — the leader's promotions and a founder's own
+  self-election alike** (#837).  Per-role thresholds compose with it as an
+  AND and are written
+  `actor-ts.cluster.role.<role>.minimum-members-before-up`; they ship
+  comment-only in `reference.conf`, since role names belong to the
+  deployment. In code: `withMinimumMembersBeforeUp(n)` and
+  `withMinimumMembersBeforeUpPerRole({ backend: 2 })`.
+
+  The default of `1` is the behaviour every release so far had — the first
+  node forms a cluster of one the moment it starts — so nothing changes
+  until a threshold is set. Setting one stops singletons starting and shards
+  being placed on a founder that is alone.
+
+  The gate counts members in `joining`, `weakly-up` and `up`; `leaving`,
+  `unreachable`, `down` and `removed` do not count, so a departing member
+  does not hold the threshold open for its replacement during a rolling
+  restart. It is evaluated per promotion and never in reverse: a cluster
+  that later shrinks below its threshold keeps the members it promoted and
+  holds only new ones.
+
+  It is not `actor-ts.cluster.bootstrap.minimum-members`, which is a wait
+  predicate for `awaitReady` / `isReady` and never changes a member's status
+  — setting the new key largely removes the reason to set that one. It is
+  also not a quorum or a security control: any node may announce itself
+  `up`, so it bounds accidents rather than adversaries, and a threshold
+  above `1` widens the window in which a cluster is smaller than a
+  `static-quorum` downing strategy expects (#933).
+
+  While the threshold is unmet and peers are present the node says so once,
+  naming the key and the current count, instead of reporting the #1351
+  cold-start stall diagnosis — which would be a false verdict, since the
+  cluster is short of members rather than misconfigured. With nobody
+  answering at all the threshold is not what is wrong, and the node gets the
+  stall diagnosis naming its unanswered seeds instead (#1500). #837.
+
+- **The cluster singleton has a HOCON block for the first time —
+  `actor-ts.cluster.singleton`, nested beside `pub-sub` and `receptionist`,
+  with six leaves: `role`, `buffer-size`, `hand-over-timeout`,
+  `acquire-retry-interval`, `max-hand-over-state-bytes` and
+  `restart-on-termination`** (#855).  `cluster.singleton.start(...)` layers
+  them under the caller's `StartSingletonOptions`, so an explicit
+  `withBufferSize(…)` still wins per field, and the merge runs before
+  validation so a configured value is refused by field name rather than
+  silently used.
+
+  `cluster.singleton.ref(...)` reads `role` and `buffer-size` from the same
+  block. That is the half worth knowing about: `ref()` takes no options
+  object, so a proxy-only node previously had no way whatsoever to set its
+  no-host buffer cap — and a role that reached only `start()` left such a
+  node routing at the plain leader while the managers hosted on the role
+  member. A role declared on the actor class's `SingletonKey` still beats
+  the config file, because the key is code.
+
+  Five keys the issue proposed deliberately do not ship, each because
+  nothing backs it: `use-lease` and `lease-name` (nothing in the framework
+  turns config into a `Lease` — pass one with `withLease(…)`),
+  `singleton-identification-interval` (the proxy subscribes to cluster
+  events rather than polling), `min-number-of-hand-over-retries` (the wait
+  is bounded by `hand-over-timeout`; nothing counts attempts), and
+  `hand-over-retry-interval` (a correctness property of the hand-over
+  exchange, not a tuning knob). There is no
+  `actor-ts.cluster.singleton-proxy` block either — its only live key is a
+  field of the same options type as the manager keys. #855
+
+- **Seed discovery is configurable from HOCON.
+  `actor-ts.cluster.bootstrap.discovery.{method, service-name}` picks which
+  provider `Cluster.bootstrap` builds and what it asks about, and a new
+  top-level `actor-ts.discovery` block carries the providers' own settings —
+  `dns.{cache-ttl, use-srv, pinned-addresses}`, `kubernetes.{namespace,
+  pinned-addresses}` and `config.seeds`** (#860).  Until now
+  `Cluster.bootstrap` could be steered by code and by environment variables
+  and by nothing else: it had the config in hand and handed it only to the
+  stable-observation timings, so an `application.conf` could not name the
+  service to discover, could not pick the provider, and could not reach a
+  single provider-level setting. #860.
+
+  The `CLUSTER_SEEDS` / `CLUSTER_SERVICE_NAME` / `CLUSTER_NAMESPACE`
+  variables keep their meaning and sit **below** the new block rather than
+  above it — explicit options > `actor-ts.discovery.*` > `CLUSTER_*` >
+  built-in defaults. That is the project's ordinary precedence with the
+  environment appended at the bottom, not a fourth layer on top of it, and
+  it is the only arrangement under which an env-only deployment behaves
+  exactly as it did before these keys existed. A deployment that wants a
+  variable to outrank its own `application.conf` writes the substitution
+  itself (`service-name = ${?CLUSTER_SERVICE_NAME}`), which the parser
+  resolves while reading the file.
+
+  The two `pinned-addresses` lists ship in the same change as `method` and
+  `service-name`, deliberately. Making the *destination* of discovery
+  settable from a config file — a wider input surface than a code call —
+  while the documented DNS-hijack mitigation stayed reachable only by
+  hand-building a provider would have widened the attack surface and left
+  the guard where it was: every `discovery:` shorthand built its providers
+  with no pin at all. That seam is now threaded, `log` included, so a pin
+  list that discards every answer is reported instead of looking like an
+  empty DNS response. #145, #1107.
+
+  A `method` outside `auto | kubernetes | dns | config` is refused with a
+  `ConfigError` naming the key rather than silently falling back to the
+  ladder — a node that quietly discovers differently from its peers is the
+  cold-start split brain the bootstrap exists to close. `auto` is in the
+  published enum because it is the shipped default; a key that could not
+  express current behaviour would be a trap. `selfElection` stays out of
+  config.
+
+  The key sketch on the issue is answered there key by key: which keys ship
+  under the project's own spellings, `new-cluster-enabled` the last of them,
+  which have no mechanism behind them, and which were declined in
+  `6c735131`: the backoff cap, and the `contact-point` probe keys, because
+  HTTP probing presupposes every node runs `managementRoutes`.
+
+- **BREAKING — `actor-ts.http.server` gives the listening socket a HOCON
+  block of its own, beside the per-route `cors`, `client` and `websocket`
+  siblings: `idle-timeout`, `header-timeout`, `request-timeout` and
+  `max-connections`, merged `newServerAt(...).withServerOptions(...)` >
+  HOCON > built-in default per field (#870).**
+
+  `header-timeout = 60s` and `request-timeout = 300s` ship values;
+  `idle-timeout` and `max-connections` are read but comment-only, because
+  "unset" is a state neither has a number for — unset keep-alive is whatever
+  the backend chose, and unset `max-connections` is unlimited.
+
+  The policy is resolved once at `bind()` and installed on the server at
+  `listen()`, through a new optional third parameter on
+  `HttpServerBackend.listen`, so it reaches a backend an application
+  constructed and passed to `useBackend(...)` exactly as it reaches the one
+  the framework builds. The parameter stays optional: a backend written
+  outside the repository still satisfies the interface.
+
+  What can honour it was measured rather than assumed, and two of the four
+  turned out not to be safe to delegate. `idle-timeout` and
+  `request-timeout` are the runtime's: on bun 1.4.0 and node v26.7.0 both
+  are honoured on an HTTP/1.1 connection, and `request-timeout` is enforced
+  by a sweep at `http.createServer`'s `connectionsCheckingInterval` — 30 s
+  by default, and not set by actor-ts — so a connection is closed no earlier
+  than the value set and no later than one sweep after it. An idle HTTP/2
+  session is bounded by its own timer, as below. `header-timeout` and
+  `max-connections` are held by actor-ts itself. The property is still
+  written, but the bound no longer depends on it: measured against a socket
+  that sends a header block and never the terminating blank line, node
+  v26.7.0 answers `408` and closes, bun 1.4.0 stores `headersTimeout`,
+  reports it back unchanged and enforces nothing — `2s`, `40s`, `120s` and
+  `0` alike closed at ~12 s with no `408`, which is Bun's own idle timeout —
+  and deno 2.6.8 never closes at all. So the deadline is armed from the
+  accepted connection and cleared the moment a request or a WebSocket
+  upgrade completes its headers, which makes the documented `408` true on
+  the primary toolchain and makes the number exact rather than rounded up to
+  a sweep. `max-connections` is counted here for the same reason, one
+  operating system apart.
+
+  Both of those rest on the server reporting its accepted connections, which
+  is where they run out. Fastify, Express and Hono-on-Node expose the
+  `node:http` server all four are written to; `Bun.serve` and `Deno.serve`
+  expose neither it nor an equivalent knob, so on the Hono backend under Bun
+  or Deno none of the four is installed at all, and the docs and the parity
+  suite say so rather than approximating. Deno's `node:http` shim
+  additionally emits no `connection` event, so on Deno the header deadline
+  and the connection cap are unavailable whatever backend is mounted.
+
+  The two published values are the numbers `http.createServer` already uses,
+  which is the same decision #357 made for `bodyLimit`: the bound is the
+  framework's rather than whichever backend happens to be mounted. Fastify
+  was the one that disagreed.
+
+  The deadline follows the connection rather than the socket object
+  `'connection'` hands out. Node's TLS server reports a request on a
+  separate TLS socket, and every HTTP/2 server on a session with per-stream
+  sockets, so neither ever hands the armed object back. The deadline is
+  therefore carried by the connection's address and port pair: to the TLS
+  socket, where the `408` goes out inside TLS rather than beneath it, and to
+  the HTTP/2 session, whose first stream clears it. The TLS handshake counts
+  against the deadline, and a connection that expires mid-handshake is
+  closed without a status line; an HTTP/2 session that never opens a stream
+  is closed with a GOAWAY. Bun's HTTPS listener reports a connection only
+  after its handshake, so there a stalled handshake stays bounded by Bun's
+  own ~12 s idle close.
+
+  A `request-timeout` shorter than `header-timeout` bounds the header phase
+  as well. The headers are part of the request, so the shorter deadline is
+  what is written to `server.headersTimeout` and what the framework's own
+  header guard arms — which holds it on Bun too, and answers `408` at the
+  deadline rather than up to one 30 s sweep later. Written as configured the
+  pair is one `http.createServer` refuses and Node's sweep swaps: a 2 s
+  `request-timeout` under the 60 s header default would close a stalled body
+  at 60 s. `0` on either side still means no bound.
+
+  All three timeouts are refused at `bind()` above what the runtime can
+  represent, with an `OptionsError` naming the field, instead of coming out
+  short. `setTimeout` arms a delay above 2 147 483 647 ms as 1 ms, so an
+  over-long `header-timeout` would destroy every fresh connection a
+  millisecond after accept, and HOCON reaches that range in one line
+  (`30d`). `idle-timeout` has one second less room, because both runtimes
+  add a second to `keepAliveTimeout` before arming the socket's timer: on
+  Bun even 2 147 483 647 closed every keep-alive connection right after its
+  response. `request-timeout` is read by Node's connection sweep as a 32-bit
+  unsigned number, so 2^32 + 2 s closed a stalled body after 2 s and `60d`
+  came out at about ten days. The ceilings are 2 147 483 647 ms for
+  `header-timeout`, 2 147 482 647 ms for `idle-timeout` and 4 294 967 295 ms
+  for `request-timeout`.
+
+  `idle-timeout` bounds an idle HTTP/2 session too, not only an idle
+  HTTP/1.1 keep-alive connection. It reaches an HTTP/1.1 server as
+  `keepAliveTimeout`, a property no HTTP/2 session reads, so the server runs
+  a timer of its own per session: armed while the session has no stream
+  open, it closes the session with a GOAWAY when it fires. A stream in
+  flight holds the session, as a request holds an HTTP/1.1 keep-alive
+  connection, so a slow handler, a long poll or an SSE stream is never
+  interrupted by it; the value is the same on Bun and Node, and no frame but
+  a request resets it. The runtime's own session timer is cleared, Fastify's
+  included, so the configured value governs, and `0` disables the bound.
+  Unset, an idle HTTP/2 session is left to Fastify's own timer: 72 s on
+  Node, and 144 s on Bun, which fires it at twice the value and lets a PING
+  reset it.
+
+  *Migration:* A server on the Fastify backend now applies a 300 s
+  `requestTimeout` where Fastify sets that property to 0 — no bound at all.
+  At the shipped 1 MiB body cap 300 s is a client sending under 3.5 KB/s, so
+  nothing legitimate is affected; a deployment that genuinely accepts slower
+  uploads raises `actor-ts.http.server.request-timeout`, and `= 0` restores
+  Fastify's previous unbounded behaviour exactly. Express and Hono are
+  unchanged — both already carried `node:http`'s 300 s.
+
+- **MongoDB, DynamoDB and Cassandra now read their own HOCON blocks, which
+  was the last of #872: every persistence plug-in has a config section its
+  factory actually reads** (#872).  Forty-four leaves across nine blocks —
+  `journal.mongodb` / `snapshot-store.mongodb` / `durable-state.mongodb`,
+  the same three for `dynamodb`, `journal.cassandra` and
+  `snapshot-store.cassandra`, plus `snapshot-store.in-memory.keep-n`, the
+  one leaf outside the per-backend fan-out. `registerMongoPlugins(ext)`,
+  `registerDynamoDbPlugins(ext)` and `registerCassandraPlugins(ext)` are
+  therefore complete wirings when `application.conf` fills the blocks in;
+  precedence is the project-wide one, explicit options over HOCON over the
+  built-in defaults, per field, with an unset field falling through rather
+  than shadowing.
+
+  The three backends share no implementation with each other or with the SQL
+  family, so unlike the relational slice the blocks are not one field table
+  repeated. Mongo names its containers collections and creates indexes
+  (`events-collection`, `snapshots-collection`, `collection`,
+  `auto-create-indexes`); DynamoDB is reached by a `region` plus an optional
+  `endpoint` and prefixes its table names, because a DynamoDB table name is
+  account- and region-global; Cassandra is reached by a `contact-points`
+  seed list and names four tables, because a wide-column store has no join
+  to derive one with. Each block speaks its backend's vocabulary — a leaf
+  named after another backend's is a leaf an operator has to translate.
+
+  `durable-state.plugin` now selects a store for every backend that ships
+  one. `registerMongoPlugins`, `registerDynamoDbPlugins` and
+  `registerObjectStoragePlugins` each built their durable-state store
+  eagerly and handed it back, which is what left
+  `MONGO_DURABLE_STATE_PLUGIN_ID` and its siblings exported and
+  unselectable. Construction moved into a lazy that both the registered
+  factory and the returned handle resolve, so the id selects the store and
+  the handle still yields the one instance — built on first use rather than
+  at registration, which also means its options validator runs against the
+  merged settings rather than against whatever was known at the call.
+  Cassandra registers none, and that is honest rather than an omission: the
+  tree ships no Cassandra durable-state store, so that backend has two axes
+  where the rest have three.
+
+  What has no leaf, and why. `clientOptions`, `clientConfig` and Cassandra's
+  `replication` are free-form driver config with no enumerable key set, so
+  they stay code-only; a pre-built client, an operations façade and a
+  serializer are live objects; Cassandra's `credentials` and DynamoDB's are
+  key material, and omitting the latter falls through to the AWS SDK's own
+  default chain. `consistency` and `serial-consistency` ship as comments
+  rather than keys, because neither has a framework default at all — both
+  read sites branch on the field being absent and hand the choice to the
+  driver, so a published number would pin a level nothing chose. They are
+  read all the same, so an `application.conf` can still set them. DynamoDB
+  table provisioning — billing mode, capacity, the create-on-first-use
+  switch — stays code-only for now: the block is about reaching the right
+  table rather than creating it.
+
+  `snapshot-store.in-memory.keep-n` publishes `0`, and the inverted polarity
+  is the point: every persistent store keeps three snapshots per id and this
+  one keeps all of them, because it is the store an unconfigured application
+  gets and a bound here would silently start discarding snapshots. The leaf
+  is what lets a long-running fixture bound it without reaching for code.
+
+  The persistence contract suite gained a `SqliteJournal (from HOCON)` arm —
+  a journal selected and configured purely from an application.conf-shaped
+  block, with no options in code, running the whole journal contract.
+
+- **Five broker options that could only be set from code are now readable
+  from HOCON (#871): the MQTT last will (`will { topic, payload, qos, retain
+  }`), the Kafka producer block (`producer { idempotent,
+  allow-auto-topic-creation }`), the JetStream `stream` and `consumer`
+  groups together with `acknowledgment-timeout`, and the WebSocket client's
+  `on-invalid-message` policy** (#871).
+
+  Each of the four blocks is a nested object, and `mergeOptions` is a
+  shallow spread, so every reader *reconstructs* its block instead of
+  returning a partial one — a HOCON `producer { idempotent = true }` cannot
+  blank `allowAutoTopicCreation` back to the framework default. The three
+  groups with required leaves (`will.topic`, `stream.name` +
+  `stream.subjects`, `consumer.durable`) fill an absent one with the empty
+  value precisely so the options validator reports it by name at startup,
+  rather than an unnamed stream reaching `jsm.streams.add` and failing as a
+  server-side error about a request nobody wrote. What a code-side
+  `withStream(…)` does to a configured block is unchanged and is #975's
+  question: it replaces it whole, which is the ordinary precedence applied
+  at the field the object *is*.
+
+  `consumer.deliver-policy` carries its full union — the three string arms
+  plus both `kind`-tagged object forms, whose `kind` keeps its TypeScript
+  spelling as a HOCON *value* so it lands in the union unchanged. An
+  unrecognised `kind` is a `ConfigError` at startup rather than a silent
+  fallback to `all`, which on a typo would replay a whole stream.
+  `mqtt.will.payload` is string-only from config; a binary will stays
+  code-only, since nothing in this project has a spelling for bytes in
+  HOCON.
+
+  The new leaves are kebab-case, as every `actor-ts.io.broker.*` leaf is
+  since #1443.
+
+  Every remaining broker option that has no config spelling now says so in
+  its own JSDoc: the `ActorRef` targets on Kafka, JetStream, RedisStreams,
+  Sse, TcpServer, TcpSocket and UdpSocket, Amqp's `bindings` and Nats'
+  `subscriptions`, the MQTT and WebSocket codecs, and gRPC's `credentials`,
+  `handlers` and both `channelOptions`.
+  `tests/unit/io/broker/BrokerConfigCompleteness.test.ts` is what keeps the
+  two halves in step — an inventory of 120 rows across seventeen broker
+  options types, each field classified `hocon` with the leaf its reader
+  looks for or `code-only` with a reason, failing when a field is added
+  without a classification, when a row outlives the field it names, when a
+  `hocon` row claims a leaf no reader looks up, or when a `code-only`
+  field's reason is missing from the JSDoc someone actually reads while
+  writing an `application.conf`. `configuration.mdx` also gains the
+  `io.broker.tcp-server` row it was missing, though `ConfigKeys` has
+  declared that root and `TcpServerActor` has read it all along.
+
+- **Four new keys under `actor-ts.diagnostics` say what the runtime was
+  configured with, and trace three of the paths it takes** (#867).  Every
+  one defaults `off`; a system nobody configured writes exactly what it
+  wrote before.
+
+  ```hocon
+  actor-ts.diagnostics {
+    log-config-on-start = off
+    debug {
+      unhandled    = off
+      lifecycle    = off
+      event-stream = off
+    }
+  }
+  ```
+
+  `log-config-on-start` is the answer to "why is this setting not what I
+  wrote". It writes one `info` record holding the whole merged tree — every
+  key, sorted, each with the layer that won (`reference`, `application`,
+  `profile`, `secrets` or `override`; the profile and secrets layers since
+  #1546) and whether it displaced a lower one — and a header naming the
+  active profile and the `application.conf` and `secrets.conf` that were
+  looked for, each marked `(not found)` when nothing was there (since
+  #1546), which settles "my file is ignored" against "my file says
+  something else" without reading a single key.
+  `configDumpLines(system.config)` renders the same text on demand.
+
+  The three `debug.*` switches need two switches, not one: the key decides
+  whether a record is produced, `actor-ts.logger.level = debug` decides
+  whether it is written. That is why they are nested under a block named
+  after the level rather than sitting beside the `log-*` family, which is
+  `info`/`warn` and needs no second switch. `unhandled` names the recipient,
+  the message's class and the sender for a message an actor was handed and
+  declined — the count and the dead letter happen either way, but neither
+  names the sender. `lifecycle` records actor start, stop and restart.
+  `event-stream` records subscribe and unsubscribe, never publish, and skips
+  the whole-actor unsubscribe that removed nothing, which every actor stop
+  makes. Each read site is a plain boolean on settings resolved once at
+  construction, guarded at the call site, so an off switch costs no string
+  and no path render.
+
+  All four are settable in code too, through
+  `ActorSystemOptions.withDiagnostics(…)`: `withLogConfigOnStart()`,
+  `withDebugUnhandled()`, `withDebugLifecycle()`, `withDebugEventStream()`,
+  under the usual precedence of explicit options over HOCON over the
+  built-in default, per field.
+
+  The dump withholds a value when the key's **name** matches `pass`,
+  `secret`, `token`, `key`, `credential` or `auth`, the same list and the
+  same rule the DevTools config panel has used since #553 — the walk, the
+  layer attribution and the redaction now live in one place
+  (`src/diagnostics/ConfigDump.ts`) rather than two, so a key withheld from
+  the panel cannot reach a log file instead. Redaction by key name is a
+  heuristic and it is the weaker half of the guarantee: by the time the tree
+  is merged, a `${?DATABASE_PASSWORD}` is an ordinary string, so a secret in
+  a key called `dsn` or `connection-string` is printed in full unless it is
+  the userinfo of a URL, which both renderers mask by value under any key
+  name (#1458). Both `configuration.mdx` pages and `troubleshooting.mdx` say
+  so in as many words, a test pins the gap open so that sentence cannot rot,
+  and the key ships `off` because the defence that does not depend on a
+  guess is not printing the tree. Values are JSON-encoded, so a newline
+  inside one cannot forge a line of the dump it is part of.
+
+  `CONFIG_SECRET_PATTERN` and `CONFIG_REDACTED` moved to
+  `src/util/Constants.ts` and are now also on the `actor-ts/util` subpath;
+  `actor-ts/devtools`'s protocol re-exports both, so nothing that imported
+  them has to change.
+
+- **Cluster nodes now compare the settings that have to match cluster-wide
+  and report a disagreement instead of running on silently**
+  (#844).  `actor-ts.cluster.configuration-compatibility-check.checked-paths`
+  names them; each node publishes its *effective* value for every listed
+  setting as a stamped overlay on the ordinary gossip lane and compares what
+  its peers publish back. Effective, not configured: precedence is explicit
+  options > HOCON > built-in defaults, so two nodes whose config files agree
+  and whose builders do not are still caught — the case that matters, since
+  the builder is the documented way to set most of these. A divergence logs
+  one line naming the setting and both values, once per setting per peer,
+  and publishes a `MemberConfigurationMismatch` carrying the same; absence
+  on either side stays silent, so a mixed-version cluster reports nothing
+  rather than everything.
+
+  - The framework publishes three settings.
+    `actor-ts.remote.max-frame-bytes` is seeded into `checked-paths`,
+    because a frame over a peer's lower cap kills the whole association with
+    no negotiation to catch it and nothing else detects it (#823).
+    `actor-ts.cluster.failure-detector.heartbeat-interval` and
+    `actor-ts.cluster.tombstone.time-to-live` are published but not seeded —
+    both divergences are legitimate mid-roll and both heal.
+    `actor-ts.sharding.number-of-shards` is deliberately absent: the
+    coordinator already refuses a region whose count disagrees, on the
+    effective value (#633).
+  - `actor-ts.cluster.configuration-compatibility-check.enforce` (default
+    `off`) bars a diverging peer from `Cluster.placementCandidates()`, which
+    `ClusterRouter` selects routees from. It never downs or quarantines
+    anyone, and nothing that *elects* a role reads that set: the candidate
+    view is per-node and therefore asymmetric, so a singleton host or shard
+    home computed from it would have two winners.
+  - `Cluster.publishConfigurationFact(name, value)` publishes an
+    application's own resolved value; it travels only if `checked-paths`
+    names it, which is why there is no separate list of paths to redact.
+  - The claims are untrusted input, and unlike the storage-identity overlay
+    the keys are the peer's to invent: `Member.fromData` caps the name, the
+    value and the count, requires the name to match `^[a-z0-9][a-z0-9.-]*$`
+    (which is what keeps `__proto__` out), writes with
+    `Object.defineProperty` and reads with `Object.hasOwn`, and drops a bad
+    entry rather than the member record. The report latch is capped too,
+    since both halves of its key come off the wire.
+
+  Only the member itself may change a claim about itself.  A member restates
+  its facts by publishing them — `Cluster.publishConfigurationFact` from
+  anywhere that has the resolved value, at any point in the node's life —
+  and peers adopt the new values, compare them and enforce on the result.  A
+  copy relayed by a third node still fills an empty slot and never
+  overwrites one, so an arbitrarily old copy arriving over the epidemic lane
+  cannot flap the comparison against whichever frame landed last.
+
+  Closes #844.
+
+- **BREAKING — The cluster transport's four association-lifecycle bounds are
+  settable from `actor-ts.remote` (#846).**
+
+  They have been enforced since #588 and #697 — a handshake deadline in both
+  directions, a bounded frame buffer in front of it, an inbound connection
+  cap, and a stall deadline on a half-received frame — and until now were
+  four hard-coded numbers with no key at all.
+
+  ```hocon
+  actor-ts.remote {
+    handshake-timeout       = 5s
+    outbound-queue-size     = 1000
+    max-inbound-connections = 1024
+    incomplete-frame-idle   = 30s
+  }
+  ```
+
+  Every default is exactly where it was — wiring a bound must not move it,
+  and `ClusterConfigDefaults.test.ts` pins the published four to the
+  constants the transport still falls back to. Each is also a
+  `ClusterOptions` field (`withHandshakeTimeoutMs`, `withOutboundQueueSize`,
+  `withMaxInboundConnections`, `withIncompleteFrameIdleMs`) under the usual
+  precedence: explicit options over HOCON over the built-in default, per
+  field.
+
+  `max-inbound-connections` is the one worth setting first. It is the useful
+  half of the bound on inbound decode memory, which is this count times what
+  one connection may buffer — the other half, `incomplete-frame-idle`, is
+  deliberately generous. Set it from the real peer count with headroom for
+  the `ClusterClient`s that dial in; refusing a legitimate peer is a
+  partition, and the newest connection is refused rather than the oldest
+  evicted so an attacker cannot push established peers off the node.
+
+  None of the four has an "off" spelling. `0` is refused for each, because
+  it is a distinct way of breaking the node rather than a way of removing a
+  cap: no handshake window, no room to buffer a `tell` racing the handshake,
+  no inbound connection admitted, no connection allowed to end off a frame
+  boundary. `incomplete-frame-idle` must also stay above `handshake-timeout`
+  and is refused otherwise — a socket that sends nothing at all never
+  reaches the stall deadline, so the handshake timer is the only thing that
+  reclaims it, and inverting the two swaps their roles for a peer that sends
+  three bytes and stops.
+
+  Two naming decisions are settled here because a HOCON key cannot be
+  renamed without a breaking config change. `handshake-timeout` is one key
+  for **both** directions: the dialling side's clock starts before the TCP
+  connect and the TLS handshake and the accepting side's after the accept,
+  so one number means the peer that is still trying has always given up
+  first, where a split dial/accept pair would let an accept deadline set
+  below the dial deadline make a healthy peer permanently unjoinable.
+  `outbound-queue-size` is named for the category — frames held for a peer
+  that cannot take them — and not for the pre-handshake buffer it bounds
+  today, because the post-handshake backpressure queue (#931) is the same
+  quantity with the same drop-oldest policy and the same one-shot warning
+  and will land under this key rather than a second one.
+
+  Six of the ten keys #846 proposed do not ship, because nothing behind them
+  exists: the three `system-message.*` keys (there is no system-message
+  frame on the wire and remote death watch is a no-op — #918),
+  `quarantine.duration` (no quarantine state anywhere in `src/cluster/`),
+  `stop-idle-outbound-after` (no idle tracking, and reaping an idle
+  association would break the transport readiness check), and the
+  `large-message-destinations` / `max-large-frame-bytes` pair, which needs a
+  second connection per peer, a lane discriminator on the `hello` frame
+  (#823) and the measurement #1385 is for. `connection-timeout` shipped
+  later, spelled `actor-ts.remote.connect-timeout` (#1475): a connect
+  deadline of its own, at or below the handshake deadline, which it follows
+  when unset.
+
+  *Migration:* `TcpTransport`'s constructor is now `(self, log, options?)`
+  over a `TcpTransportOptions` bag instead of seven positional parameters.
+  `new TcpTransport(self, log, tls, maxFrameBytes, bindHost, bindPort,
+  readConstraints)` becomes `new TcpTransport(self, log, { tls,
+  maxFrameBytes, bindHost, bindPort, readConstraints })`, or
+  `TcpTransportOptions.create().withTls(...)...` for the builder form. A
+  two-argument call is unchanged, which covers most construction sites.
+  Every in-repo caller — one in `src/`, three in `tests/`, fourteen
+  documentation snippets across eight pages in both languages — is updated
+  in the same change. The transport's `maxFrameBytes` stays a public
+  readonly field and `Transport` is unchanged, so a custom transport
+  implementation needs nothing.
+
+- **BREAKING — A circuit breaker can now be resolved by id from
+  configuration, and its reopen window can grow and jitter (#864).**
+
+  `system.extension(CircuitBreakerExtensionId).breaker('payment-api')`
+  returns a system-owned breaker whose settings come from the new
+  `actor-ts.circuit-breaker` block — `<id>.*` over `default.*` over the
+  built-in floor, with explicit options above all three — so the numbers
+  change in `application.conf` without a deploy and the instance outlives
+  the actor that uses it. `new CircuitBreaker({ … })` is unchanged and
+  remains the door for a breaker configured in code.
+
+  Three new options shape what happens after it opens:
+
+  - `backoffFactor` grows the reopen window once per consecutive open,
+  - `maxResetTimeoutMs` is the ceiling it grows to,
+  - `randomFactor` spreads it, so a fleet stops probing a recovering
+    dependency in lockstep.
+
+  All three ship neutral (`1.0`, `60s`, `0.0`), so an unconfigured breaker
+  keeps the flat window every earlier release had; the exponent resets as
+  soon as a probe succeeds and the breaker closes. `breaker.nextProbeAt` and
+  `breaker.consecutiveOpens` expose the schedule to a metric.
+
+  A fourth option, `ignoredErrorNames`, is `isFailure` expressed as data — a
+  list of `Error.name` values that never count — so it can come from a
+  config file. It is checked before the predicate and short-circuits: the
+  list belongs to whoever runs the deployment while the predicate is
+  compiled in, and a predicate that could overrule the list would make the
+  key inert for exactly the deployments that set it.
+
+  Six leaves ship under `actor-ts.circuit-breaker.default`, kebab-case per
+  #1405. `call-timeout` is deliberately a comment rather than a leaf:
+  omitting `callTimeoutMs` is what disables the per-call timeout and the
+  validator refuses `0`, so "no deadline" is a state only a missing key can
+  express, and a published default would hand every config-resolved breaker
+  a deadline a hand-built one does not have. It is still read when a
+  deployment writes it. #864
+
+  *Migration:* A breaker whose `resetTimeoutMs` is longer than 60 s must now
+  pass `maxResetTimeoutMs` at least that large — the ceiling defaults to
+  `60_000` and an unset one is checked, so the pair is refused with an
+  `OptionsError` naming `maxResetTimeoutMs` instead of the window being
+  silently clamped. Nothing in the repository, the examples or the docs
+  configures a window above 60 s.
+
+  The grown reopen window is now finite for every legal combination of
+  settings, at every consecutive-open count. Growth is clamped before it is
+  multiplied into the base rather than only afterwards: `Math.pow` overflows
+  to `Infinity` on its own, `0 * Infinity` is `NaN`, and `Math.min`
+  propagates a `NaN` instead of clamping it. A `resetTimeoutMs` of `0` —
+  legal, and the way to say "probe immediately" — paired with any
+  `backoffFactor` above `1` therefore scheduled `nextProbeAt = NaN` once the
+  consecutive opens ran up (the 1025th open with a factor of `2`, the 310th
+  with a factor of `10`), and `Date.now() >= NaN` is false forever, so the
+  breaker stopped probing and refused every further call including ones
+  whose factory would have succeeded. With a zero window every rejection is
+  instantly a fresh open cycle, so a hard-down upstream reached that state
+  in a fraction of a second. The same pair arrives from HOCON as
+  `reset-timeout = 0` with `backoff-factor = 2.0`. Every finite window
+  computes exactly what it did before.
+
+- **BREAKING — `BackoffSupervisor` now takes its defaults from
+  `actor-ts.backoff-supervisor.*`, and gained the options triad every other
+  configurable thing in the framework has (#865).**
+
+  Seven leaves ship: `min-backoff`, `max-backoff`, `random-factor`,
+  `max-stash-size`, `reset-counter`, `forward` and `trigger-on`, under the
+  usual precedence — explicit options over HOCON over the built-in defaults,
+  per field. A deployment can retune every supervisor's respawn pacing
+  without touching a call site, and a supervisor written as
+  `BackoffSupervisor.factory({ child: Flaky })` takes the whole block.
+
+  - **`minBackoff` and `maxBackoff` are optional now**, defaulting to 200 ms
+    and 10 s. They were required with no built-in default, so there was no
+    shipped number to preserve; 200 ms / 10 s is what the rest of the tree
+    already converged on for the same mechanism — `WorkerClusterOptions`
+    paces a crashed worker slot with exactly this curve, the pattern's own
+    documentation narrates it ("200 ms, 400, 800, …") and its runnable
+    example passes it. The reasoning sits beside the constant.
+  - **Resolution moved from the constructor to `preStart`**, which is the
+    first point where `system.config` is reachable: the cell calls the
+    blueprint factory and only afterwards attaches the context. All nine
+    derived fields now live behind one resolved box with an accessor that
+    throws before it is filled, the shape `BrokerActor` already uses.
+    `preStart` resolves before it spawns, because the spawn reads
+    `childName`, `clock` and `drainGraceMs`.
+  - **Where an illegal value surfaces moved with it.** `minBackoff: 0` was a
+    synchronous constructor throw and is now a failed supervisor start
+    reaching whoever supervises it. A value from `application.conf` cannot
+    be checked at a call site that never saw it, so the one rule covering
+    all three sources runs on the merged settings — as `OptionsError` from
+    the new `BackoffSupervisorOptionsValidator`, which also tightened three
+    previously unchecked fields: `randomFactor` must be in `[0, 1]`,
+    `maxStashSize` must be an integer ≥ 1, and `childName` must be
+    non-empty.
+  - **`src/pattern/BackoffSupervisorOptions.ts`** carries the family:
+    `BackoffSupervisorOptionsType<T>`, `BackoffSupervisorOptionsBuilder<T>`,
+    `BackoffSupervisorOptions` (union type plus builder value alias),
+    `BackoffSupervisorOptionsValidator`, the eleven `DEFAULT_BACKOFF_*`
+    constants and the two config readers. The reader takes its `Config` as a
+    required argument rather than defaulting to `Config.load()`: a
+    supervisor runs inside an `ActorSystem` and reaches config through
+    `this.system.config`, so a second load would ignore
+    `ActorSystem.create({ config })` and re-read `application.conf` off disk
+    on every supervisor construction *and* every supervisor restart.
+
+  `drain-grace` and `forward-during-grace` are leaves too (#1479).
+  `drain-grace` ships as `"auto"`, one wait of `min(50ms, min-backoff)`
+  resolved per supervisor against its merged `min-backoff`, because a
+  published `50ms` would outlast the backoff window of a supervisor with a
+  shorter one; a duration fixes it, `0` drains at once, and
+  `drainGraceMs: 'auto'` in code restores the derivation over a configured
+  duration. `forward-during-grace` ships as `true`; `false` holds messages
+  that arrive inside the grace until the respawned child has survived it.
+  Five fields ship no leaf: `child-name` / `child` / `child-options` are
+  per-call-site identity, and `policy` / `clock` are functions no config
+  file can express. The reference block says so where an operator will look.
+
+  Top-level and a sibling of `actor-ts.circuit-breaker` rather than under an
+  `actor-ts.pattern.*` umbrella, matching `actor-ts.worker-cluster`: an
+  umbrella would put the directory layout of `src/` into the key an operator
+  types.
+
+  *Migration:* Rename the exported type `BackoffOptions<T>` to
+  `BackoffSupervisorOptionsType<T>` and import it from `actor-ts` as before.
+  Object literals passed to `BackoffSupervisor.factory({ child: … })` need
+  no change at all — `minBackoff` and `maxBackoff` merely became optional.
+  `ResetCounter`, `ForwardStrategy` and the newly exported
+  `TerminationTrigger` keep their names and move to
+  `src/pattern/BackoffSupervisorOptions.ts`, which the barrels re-export.
+
+- **`ShardedDaemonProcess.init` now reads a new top-level
+  `actor-ts.sharded-daemon-process` block, with `liveness-interval` (default
+  `30s`, `0` disables the heartbeat) and `role` (default `""`)**
+  (#854).  The module previously cast its argument straight to the settings
+  type, so a daemon set was tunable from code and from nowhere else —
+  `system.config` was never consulted and the liveness period fell back to
+  an inline literal. Both keys are read once per `init` and layered under
+  whatever the call passes explicitly, so `withRole` /
+  `withLivenessIntervalMs` still win; the merge runs before validation, so a
+  configured negative interval is rejected by name rather than silently
+  arming a timer.
+
+  Two details worth knowing:
+
+  - The liveness leaf is spelled `liveness-interval`, not the
+    `keep-alive-interval` the issue proposed. The field is
+    `livenessIntervalMs` and the builder `withLivenessIntervalMs`, and the
+    project's lockstep rule is builder `withX` ⇔ field `x` ⇔ leaf `x`; the
+    sharding block already drops an `Ms` suffix without renaming a concept
+    (`passivation-idle`).
+  - `role` ships as `""` and the reader drops the empty string rather than
+    passing it on. A daemon set with no role of its own therefore inherits
+    `actor-ts.sharding.role` like every other sharded type, and naming a
+    role here narrows the daemons alone. Returning `''` instead would have
+    reached sharding as an explicit role on every daemon set, shadowing the
+    global key for the daemon region and nothing else.
+
+  `name`, `numDaemons` and the per-index actor keep no leaf — they describe
+  one daemon set rather than a deployment, and `numDaemons` in particular
+  becomes the type's `numShards`, which every node must agree on. #854
+
+- **The five relational persistence backends now read their own HOCON
+  blocks, and their durable-state stores became selectable plug-ins (#872,
+  slice 2 of 3)** (#872).
+
+  Slice 1 built the seam and proved it on SQLite; the eight remaining
+  backends still took every table name, retention bound and connection
+  string constructor-only. Postgres, MariaDB, SQL Server, libSQL and
+  Cloudflare D1 now each read three blocks — `journal.<backend>`,
+  `snapshot-store.<backend>` and `durable-state.<backend>` — so
+  `registerPostgresPlugins(ext)`, and each of its four siblings, is a
+  complete wiring when `application.conf` fills the blocks in. Precedence is
+  the project-wide one: explicit options over HOCON over the built-in
+  defaults, per field, with an unset field falling through rather than
+  shadowing.
+
+  - **Sixty-two leaves across fifteen blocks.** The five backends share
+    `RelationalJournal` / `RelationalSnapshotStore` /
+    `RelationalDurableStateStore`, so the table half of every block is the
+    same leaves — `events-table`, `snapshots-table`, `keep-n`, `table`,
+    `auto-create-tables` — and only the connection half differs (`url` for
+    Postgres/MariaDB/SQL Server, `url` + `auth-token` for libSQL,
+    `account-id` + `database-id` + `api-token` + `base-url` for D1). The
+    connection is repeated under each of the three plugin roots rather than
+    hoisted to a per-backend one, because a plugin id *is* its config
+    section and the three axes are selected independently; a deployment that
+    shares one connection deduplicates it with a HOCON substitution.
+  - **`durable-state.plugin` now selects a relational store.** Each register
+    helper used to build its durable-state store eagerly and hand it back,
+    because there was no registry to put it in — which is what left the nine
+    `*_DURABLE_STATE_PLUGIN_ID` constants with nothing to select.
+    Construction moves into a lazy that both the registered factory and the
+    returned handle resolve, so the id selects the store and the handle
+    still yields the one instance. Two consequences worth knowing: the store
+    is built on first use rather than at registration, and its options
+    validator therefore runs against the merged settings — the block
+    included — instead of against whatever was known when the helper was
+    called. The return types are unchanged; `registerMariaDbPlugins`'
+    options parameter became optional to match its four siblings.
+  - **What has no leaf, and why.** A pre-built `pool` or `client` and a
+    `serializer` are live objects, so a config file cannot express one.
+    `poolConfig` is free-form driver config with no enumerable key set and
+    no default, so it stays code-only — for SQL Server that means a
+    config-driven store is reached through `url`. And `tags-table` ships as
+    a *comment* rather than a key, because its default is derived from
+    `events-table`: absence is what keeps the two in step. It is read all
+    the same, so an `application.conf` can still pin it.
+  - libSQL's `auth-token` and D1's `api-token` do get leaves, unlike object
+    storage's key material. A token is a string an operator supplies, the
+    leaves ship empty, empty reads as unset, and the documented route is a
+    substitution — the same treatment `cache.redis.password` and
+    `logger.sinks.splunk.token` already get.
+
+  The remaining three backends (MongoDB, DynamoDB, Cassandra) keep their
+  constructor-only wiring for now and follow the same pattern in the last
+  slice.
+
+- **BREAKING — Persistence plug-ins can now read their own HOCON block, and
+  durable state gained the plug-in axis it never had (#872, slice 1 of 3)
+  (#872).**
+
+  Until now `PersistenceExtension` read two plugin *ids* and nothing else:
+  every table name, retention bound and database path was constructor-only,
+  so a value that differs per environment could only be changed by editing
+  code — while the configuration reference already promised that
+  `actor-ts.persistence.journal.sqlite` held the SQLite journal's settings,
+  and the chat example set exactly that plugin id, which nothing registered.
+
+  - **A reader seam**, `src/persistence/StoreConfig.ts`. A plug-in's block
+    is named by the id it was registered under, so each reader takes a block
+    root and `storeLeaf` rebases a canonical `ConfigKeys` path onto it —
+    which keeps `ConfigKeys` the single place a leaf is spelled instead of a
+    second copy at the call site. Only scalars are readable: a pool, a
+    driver, a serializer and a pre-opened handle have no leaf at all, so a
+    config file cannot reach one. The merge runs inside the registered
+    factory, where the `ActorSystem` is in hand — except for a SQLite
+    store the configuration selects, whose merge runs at registration so
+    that a store without a path is refused there (#1492).
+  - **`actor-ts.persistence.durable-state.plugin`**, the third axis.
+    `PersistenceExtension` now carries `registerDurableStateStore`, a lazy
+    `durableStateStore` getter and `setDurableStateStore` beside the two it
+    had, with `InMemoryDurableStateStore` as the built-in default;
+    `DurableStateOptions.store` is optional, so an actor that names no store
+    uses the configured one exactly as a `PersistentActor` resolves its
+    journal. An unregistered id throws naming the id rather than falling
+    back silently. This is what the nine exported
+    `*_DURABLE_STATE_PLUGIN_ID` constants were always for — they had nothing
+    to select until now.
+  - **A SQLite plug-in**, `registerSqlitePlugins(ext)` with
+    `SQLITE_JOURNAL_PLUGIN_ID` / `SQLITE_SNAPSHOT_PLUGIN_ID` /
+    `SQLITE_DURABLE_STATE_PLUGIN_ID`. SQLite was the one shipped backend
+    with no registration story whatsoever. Twelve leaves ship with it —
+    `journal.sqlite.{path,events-table,wal,busy-timeout}`,
+    `snapshot-store.sqlite.{path,snapshots-table,keep-n,busy-timeout}` and
+    `durable-state.sqlite.{path,table,auto-create-tables,busy-timeout}` —
+    under the usual precedence, explicit options over HOCON over the
+    built-in defaults, per field. `path` is published as `""` rather than
+    `":memory:"`: three blocks each shipping a real default would let a
+    deployment point the journal at a file, leave the snapshot store alone,
+    and lose every snapshot on restart with the config file reading as if
+    that had been chosen.
+  - The table names, retention bound and auto-create switch the relational
+    and SQLite stores fall back to are now named constants in
+    `src/persistence/Constants.ts` rather than literals at between two and
+    six read sites, and are exported.
+
+  `examples/chat` registers the plug-ins instead of calling `setJournal()`,
+  so the ids in its `application.conf` are what actually selects the stores
+  — and its snapshot-store id, which said `in-memory` while the code
+  installed a SQLite store, now says what it does.
+
+  The remaining eight backend families (Postgres, MariaDB, MSSQL, libSQL,
+  Cloudflare D1, MongoDB, DynamoDB, Cassandra) keep their existing
+  constructor-only wiring for now and follow the same pattern in later
+  slices.
+
+  Since #1492 a SQLite store the configuration selects must name its
+  database — its `path` leaf or a path in code, `":memory:"` for an
+  in-memory one — or `registerSqlitePlugins` refuses it, inside
+  `ActorSystem.create` when it runs through `withPersistence({ plugins })`,
+  naming the key and the code route; the block of a SQLite store the
+  configuration does not select is not read. A `database` passed to the
+  plug-in reaches the durable-state store only: the journal and the snapshot
+  store open their own handle (#491).
+
+  *Migration:* `DurableStateOptionsType.store` is now optional. Code that
+  *reads* it — `myActor.options.store` from outside, or `this.options.store`
+  in a `DurableStateActor` subclass — must handle `undefined`: inside a
+  subclass read the new protected `this.store`, which is always resolved;
+  outside, use `options.store ??
+  system.extension(PersistenceExtensionId).durableStateStore`. Every call
+  site that *sets* `store` compiles unchanged.
+
+- **A shard coordinator can now notice a region that stopped existing on a
+  node that is still up** (#853).  Opt in with
+  `actor-ts.sharding.stale-region-detection.enabled = on` (or
+  `withStaleRegionDetection()`): every region sends a claim-free
+  `sharding.RegionHeartbeat` every `heartbeat-interval` (5s), and the
+  coordinator re-homes the shards of a region it has not heard from for
+  `stale-after` (20s), on the rebalance tick it already runs.
+
+  The gap is narrower than it sounds, and worth reading before turning it
+  on. A node that stops gossiping is marked `unreachable` and stays a member
+  until a split-brain strategy, `failure-detector.auto-down = on` or an
+  operator removes it; its regions' shards are re-homed from the
+  `MemberRemoved` that follows, and until then the sweep leaves them to that
+  decision. A region stopped cleanly already tells the coordinator on its
+  way down (#648). What neither covers is a region gone or wedged on a node
+  that keeps heartbeating, where that notification never arrived: it is
+  single-shot, unacknowledged, and its send error is swallowed on the
+  shutdown path, and nothing self-heals a lost one because the candidate set
+  checks only that a region's node is up, never that the region itself is
+  alive (#1467).
+
+  Off by default, because eviction is destructive — every entity under every
+  shard the region held is stopped and re-created elsewhere. The switch
+  gates both halves, so with it off no region beats and no coordinator
+  sweeps and the mechanism costs nothing at all. Two further properties make
+  it safe to switch on mid-rollout: a registered region that has never
+  beaten is never swept, so a half-deployed cluster degrades to "not yet
+  armed" rather than to a loop of evictions; and `stale-after` must exceed
+  `heartbeat-interval`, checked against the resolved pair, so overriding one
+  cannot silently cross the other's default.
+
+  The beat is per sharded type rather than per node, so N types cost N
+  frames per interval per node on top of the cluster's own heartbeats. Two
+  keys the issue asked for are deliberately absent: `check-interval`,
+  because the sweep rides `rebalance-interval` and a second timer would be
+  two dials for one question, and `startup-grace-period`, because a region
+  seeded from a persisted snapshot gets one `stale-after` from its seeding
+  to register, which is derived rather than configured. #853
+
+  An evicted region is told, on a new coordinator-to-region
+  `sharding.RegionEvicted` frame, and answers by releasing every shard and
+  cached home and re-registering.  Without it the sweep re-homed the shards
+  and the old region kept serving them: the `ShardMapUpdate` broadcast runs
+  over the surviving registry, so the one node that needed telling was the
+  one node never told, and nothing on the region side re-registers while its
+  node is up and the leader has not moved.  The notice is sent after the
+  registry delete rather than before it, because the region answers by
+  registering and a `Register` that overtook the delete would be undone by
+  it.
+
+  The stale-region sweep leaves a region on a node that is not `up` to the
+  membership decision. A node that stops answering is marked `unreachable`
+  and stays a member until a split-brain strategy,
+  `actor-ts.cluster.failure-detector.auto-down = on` or an operator removes
+  it, and it may still be running its shards in the meantime, so re-homing
+  them would give each a second live home; the sweep skips such a region,
+  restarts its silence clock on every tick, and judges it afresh once the
+  node is `up` again. A region on an address that is no member at all stays
+  a candidate. A region seeded from a coordinator-state snapshot that never
+  registers in the new leader term is swept once it has been silent for
+  `stale-after` from its seeding, instead of keeping its shards homed to
+  nobody for the rest of the term; one that registers is judged like any
+  other registered region, so a registered region that has never beaten is
+  still never swept.
+
+  A coordinator that lacks a registration it should have now asks for it
+  with a `sharding.RegistrationRequest`: a coordinator rebuilt by its
+  supervisor asks every region the instance before it knew, a
+  coordinator-state snapshot load asks every entry it seeds, and a beat from
+  a region the coordinator does not hold is answered the same way. A
+  coordinator restart therefore no longer evicts a live region that does not
+  beat once its seeded grace runs out, and a region whose eviction notice
+  was lost registers again on its next beat instead of staying out while
+  `isRegistered` reads true on its node. The request goes only to regions
+  the coordinator has a reason to believe in, never to every member, and a
+  region answers it with its ordinary `Register`.
+
+- **`actor-ts.distributed-data` gains two keys, `log-data-size-exceeding`
+  and `durable-keys`, both wired to mechanisms that already existed**
+  (#856).
+
+  `log-data-size-exceeding` (default `100K`, `0` to disable) names a key
+  whose own encoded size passes the threshold and keeps gossiping it — a
+  report, never a skip. Until now the only size signal was total
+  non-convergence: a key past the whole 1 MiB `max-gossip-bytes` budget is
+  skipped and warned about, while a key at a large fraction of it travels
+  perfectly and quietly consumes that fraction of every tick it appears in,
+  slowing the sweep for everything else with nothing to say why. The default
+  is derived from the shipped budget rather than copied from Akka: roughly a
+  tenth of it, the point at which ten such keys fill one frame and every
+  other key waits an extra sweep per offender. Akka's `10KiB` would be 1 %
+  of a tick here and would fire on the first legitimate `ORSet` a deployment
+  stores. The warning has its own quiet period rather than sharing the
+  oversize warning's — raising `max-gossip-bytes` is the fix for that one
+  and makes this one more relevant, so neither may silence the other — and
+  the check runs before the budget decision, so an oversized key trips both
+  lines.
+
+  `durable-keys` (default `[]`) narrows what a configured `durableStore`
+  persists, filtering the saved snapshot rather than the live view: an
+  excluded key still gossips, merges and answers `get`, it simply is not on
+  disk. An empty list means every key — the behaviour of every earlier
+  release — and never "persist nothing"; persisting nothing is what
+  configuring no store does. An entry is an exact key name or a prefix with
+  one trailing `*`; anything richer would mean compiling a matcher out of an
+  operator-edited config file, and a regex built from config is a ReDoS
+  surface on the path that decides what survives a restart, so the validator
+  refuses it. Two consequences are documented because neither follows from
+  the name: a replica's record is replaced wholesale on every save, so
+  removing an entry drops the keys it named on the next mutation, and a
+  non-empty list with no `durableStore` is inert and now warns at startup
+  instead of being ignored.
+
+  Seven further keys the issue proposed are deliberately not shipped,
+  because nothing behind them exists to configure: the three `delta-crdt`
+  keys describe a replication mode `src/crdt/Crdt.ts` documents as unbuilt
+  (#444), the three pruning keys schedule a pass that is a literal no-op
+  (#955, with the marker TTL belonging to #690), and
+  `notify-subscribers-interval` tunes a cadence subscribers do not have, and
+  is declined outright under #1468: an actor subscriber's latest-value slot
+  paces its notifications by its own mailbox instead.
+  `expire-keys-after-inactivity` is left out for the same reason — a locally
+  expired key is resurrected by the next inbound gossip, which makes it
+  #690's.
+
+- **Reliable delivery is configurable from HOCON for the first time, under a
+  new `actor-ts.reliable-delivery` block** (#861).  `src/delivery/` read no
+  configuration at all before this — no block in `reference.conf`, no group
+  in `ConfigKeys`, and nothing under `src/delivery/` so much as mentioning
+  `Config` — so the four tunables that exist were settable only in code.
+
+  Five keys ship:
+
+  - `actor-ts.reliable-delivery.producer.resend-timeout` (`500ms`) — how
+    long the producer waits for an acknowledgment before retransmitting the
+    same seq.
+  - `actor-ts.reliable-delivery.producer.window-size` (`16`) — flow-control
+    window: at most this many un-acked messages in flight.
+  - `actor-ts.reliable-delivery.consumer.max-producers` (`1024`) — most
+    producers the consumer keeps deduplication state for at once; `0` =
+    unbounded.
+  - `actor-ts.reliable-delivery.consumer.producer-idle-time-to-live` (`5m`)
+    — how long a producer's deduplication entry survives with no delivery
+    from it; `0` turns the sweep off.
+
+  They layer in `ReliableDelivery.producer(...)` / `.consumer(...)` in the
+  usual order — explicit options beat HOCON, HOCON beats the built-in
+  defaults — and only there: neither controller can read configuration in
+  its constructor, because `system` is a getter over a context the cell
+  injects afterwards, so a controller constructed directly and handed to
+  `system.spawn` keeps its built-in defaults. Both delivery documentation
+  pages say so, and a test pins it.
+
+  `0` is how all three consumer bounds spell the `Infinity` their option
+  fields document, matching `cluster.max-members` and
+  `sharding.max-entities`: `Infinity` cannot be written in HOCON at all,
+  since the number reader takes a numeric literal and the duration parser
+  refuses a non-finite value.
+
+  The issue's remaining key sketch is deliberately absent, because each of
+  those keys would have been dead on arrival: the flow-control window is a
+  producer field here rather than a consumer one, there is no resend backoff
+  to tune (one fixed interval is re-armed unchanged on every miss), there is
+  no flow-control-only mode, `Delivery<T>` carries no chunk index, and no
+  durable producer queue exists — that half is #460. `producer-id` gets no
+  key on purpose: one value shared across every producer in a process
+  corrupts the consumer's deduplication window rather than tuning anything.
+  #861.
+
+  A fifth key, `actor-ts.reliable-delivery.consumer.max-out-of-order`
+  (`1024`), bounds how many sequences the consumer retains for one producer
+  above an open gap; at the cap a delivery is refused, with no handler call
+  and no acknowledgment, and `0` means unbounded (#1471). It is a floor as
+  well as a bound: keep it above the largest `window-size` of any producer
+  talking to the consumer, or that producer stalls on its first gap.
+
+- **BREAKING — `actor-ts.http.cors` makes the per-route CORS policy settable
+  from a config file (#878).**
+
+  Six leaves, kebab-cased to match the `CorsOptionsType` fields, merged
+  route options > HOCON > built-in default, per field:
+
+  - `origins` — the exact-match allowlist. Ships no value: unset is what
+    keeps a `cors()` with no allowlist anywhere a loud error instead of a
+    silent deny-all. A `"*"` entry is refused with a `ConfigError` naming
+    the key — allowing every origin stays code-only (`withAnyOrigin()`), so
+    one line in an `application.conf` cannot widen every route in the
+    process to any origin (#128). The predicate form has no HOCON spelling
+    either.
+  - `methods` — ships no value; unset follows the methods actually
+    registered at each pattern, which is narrower than any list a config
+    file could name.
+  - `allowed-headers` — ships no value; unset echoes the sanitised request
+    headers.
+  - `exposed-headers` — `[]`, which sends none.
+  - `credentials` — `off`.
+  - `max-age` — the preflight cache lifetime in **seconds**, as a bare
+    integer rather than a duration string, since the header carries seconds
+    while a duration would be read as milliseconds. Ships no value; unset
+    sends no `Access-Control-Max-Age` at all. A duration string is refused.
+
+  All six are read when a deployment sets them; the four without a shipped
+  value are documented as comments in `reference.conf`. Values are validated
+  on the merged result, so a bad one throws `OptionsError` naming the field
+  instead of reaching a browser as a header it rejects.
+
+  What made it possible is a new seam, and that is the part other middleware
+  blocks will reuse: `compile(route, prefix, config?)` takes an optional
+  `Config`, and `HttpExtension.bind` passes `system.config` — the one place
+  a route tree and an `ActorSystem` are both in scope. A route *directive*
+  has no configuration while the tree is being built, and unlike
+  `websocket()` it cannot defer behind a resolver the backend calls later,
+  because its whole job finishes at compile time. The parameter is optional,
+  so a tree compiled outside an `ActorSystem` behaves exactly as before.
+
+  As a consequence, the required-`origins` check moved from `cors()` to that
+  compile step; everything else `cors()` validated eagerly it still
+  validates eagerly, including `withAnyOrigin().withCredentials()`.
+
+  *Migration:* A `cors()` route whose `origins` is set neither in code nor
+  in `actor-ts.http.cors` now fails from `bind()` rather than from the
+  `cors(...)` call itself. The error is the same one and no code changes; it
+  simply surfaces one call later, because a route tree is built before any
+  ActorSystem exists and `cors()` cannot see the configuration that may
+  supply the allowlist.
+
+- **BREAKING — The management HTTP surface is configurable from a file: a
+  new `actor-ts.management` block carries the three endpoint toggles,
+  `auth-protect-health`, the two probe path segments and a per-check health
+  deadline, layered under the explicit `ManagementRoutesOptions` in the
+  usual order — explicit option, then HOCON, then the built-in default
+  (#882, folding in #467) (#882).**
+
+  `managementRoutes` already received the `ActorSystem`, so nothing new is
+  threaded to reach `system.config`.
+
+  `auth` and `ipAllowlist` deliberately have no leaf and cannot get one:
+  both are `Middleware` functions, which HOCON has no way to express. The
+  block therefore decides which endpoints exist and where the probes answer,
+  never who may reach them — which is what makes config-switchable admin
+  endpoints safe.
+
+  The two probe paths are single segments, and a value containing `/` is
+  refused with an `OptionsError` when the routes are built. `path()` strips
+  only surrounding slashes, so `readiness-path = "k8s/ready"` would
+  otherwise be stored as one segment holding a slash, match no URL, and take
+  the endpoint out of existence with nothing logged.
+
+  `HealthCheckRegistry` now races each liveness and readiness check against
+  `health-checks.check-timeout`. Past the deadline that check reports
+  `status: false` with a `detail` naming it and its siblings still report
+  normally, so a hung dependency costs one failing entry rather than a probe
+  that never answers. The name is `unknown`, because the name lives inside
+  the `HealthCheckResult` the check never returned.
+
+  The keys: - `actor-ts.management.enable-leave-endpoint` (`false`) -
+  `actor-ts.management.enable-down-endpoint` (`false`) -
+  `actor-ts.management.enable-metrics-endpoint` (`false`) -
+  `actor-ts.management.auth-protect-health` (`false`) -
+  `actor-ts.management.liveness-path` (`"health"`) -
+  `actor-ts.management.readiness-path` (`"ready"`) -
+  `actor-ts.management.health-checks.check-timeout` (`1s`)
+
+  *Migration:* `HealthCheckRegistry` now bounds every check at
+  `actor-ts.management.health-checks.check-timeout`, one second by default.
+  A liveness or readiness check that legitimately takes longer than that now
+  reports `status: false` with a `detail` naming the deadline, where it
+  previously reported its real result once it finished — raise the key (or
+  pass `checkTimeoutMs` to a hand-built registry) in deployments with a
+  genuinely slow check.
+
+- **`actor-ts.cluster.split-brain-resolver` makes split-brain arbitration a
+  deployment decision: `active-strategy` names one of four bundled downing
+  strategies and the framework constructs it, so the same image can run
+  unarbitrated in development and with `keep-majority` in production instead
+  of needing two builds** (#838).  The provider it builds lands in the slot
+  `withDowning(…)` fills, so the documented precedence applies unchanged —
+  an explicit `withDowning(…)` wins, an absent one falls through to the file
+  — and `off` stays the shipped default, so nothing moves for a deployment
+  that does not opt in. The block also reverses three places that stated a
+  downing provider had no HOCON form: the `ClusterConfigDefaults` JSDoc and
+  the `actor-ts.cluster` prose in both `configuration.mdx` pages.
+
+  - `cluster.split-brain-resolver.active-strategy` — `off` (default) |
+    `keep-majority` | `keep-oldest` | `keep-referee` | `static-quorum`.
+  - `cluster.split-brain-resolver.keep-majority.role`, `.keep-oldest.role`,
+    `.static-quorum.role` — narrow the members a strategy counts; `""`
+    counts every member.
+  - `cluster.split-brain-resolver.static-quorum.quorum-size`,
+    `.keep-referee.referee-address`,
+    `.keep-referee.down-all-if-below-quorum` — comment-only in
+    `reference.conf`, because each is required or bounded and no legal
+    default exists (`quorum-size = 0` and `referee-address = ""` are refused
+    by the strategies' own validators). Naming a strategy without its key is
+    refused at startup with the missing key in the message.
+
+  `lease-majority` is deliberately not selectable and is refused by name
+  rather than silently ignored: it arbitrates through a live `Lease` whose
+  owner is the node's own address, which no config key can supply — build it
+  with `withDowning(new LeaseMajority(…))`. Selecting `static-quorum` from a
+  config file shared by every replica can self-down each node until the
+  quorum is met (#933); both `downing-strategies` pages carry a caution
+  stating that in the config's own terms.
+
+  The `application.conf` sample at the top of both configuration pages shows
+  the block too (#1459), at its shipped defaults: `active-strategy = off`
+  with the strategies it accepts, `stable-after = 20s` and
+  `down-all-when-unstable = off`.
+
+- **`actor-ts.mailbox.default.capacity` and
+  `actor-ts.mailbox.default.overflow` let an operator bound every actor the
+  application *wrote*, without touching a spawn site** (#862).  The block
+  ships as `capacity = 0`, meaning off: since #1148 a mailbox is unbounded
+  unless somebody asks for a ceiling, so this key does not retune an
+  existing bound — it introduces one, for every application actor at once.
+  What decides whether the bound reaches an actor is who wrote its class,
+  not where it sits in the tree, and the difference is the point:
+  `ClusterSharding` spawns its region under `/system`, the region spawns
+  each shard, and the shard spawns the application's entity actor, so a
+  sharded entity is three levels down a `/system` path while being as much
+  the application's actor as anything it spawns itself. The same chain runs
+  for a cluster singleton, spawned by its manager. Both are inside the
+  bound, which is what makes the key usable in the deployment shape its
+  documentation offers it for — a memory-constrained sharded node, where the
+  entities are the largest population of actors and the least editable.
+  Exempt are the actors the framework wrote as well as spawned: shard
+  regions, coordinators and shards, singleton managers, the cluster event
+  stream, the pub-sub mediator, the reliable-delivery producer, projections
+  and the DevTools hub. A bounded mailbox on any of those sheds messages
+  that hold a cluster invariant together. A framework class run *as* an
+  entity counts as an entity, though: the host `ShardedDaemonProcess` runs
+  each daemon in is bounded like any other. The undroppable signal lane
+  keeps a death-watch `Terminated`, the WebSocket accept command and a
+  connection's own `close` out of reach of any policy regardless. A spawn
+  site still wins in both directions — `withMailboxCapacity()` overrides the
+  capacity, `withMailbox()` replaces the queue outright — and
+  `withMailbox()` keeps validating, because the global capacity is layered
+  in the cell rather than merged into the blueprint that
+  `ActorOptionsValidator` sees. The `overflow` leaf is the system-wide
+  policy for any bounded mailbox, not only the global one, so "this
+  deployment rejects instead of dropping" is a single line. One exposure is
+  documented rather than fixed: the framework also ships actors that
+  application code spawns — the WebSocket hub and the connections it
+  accepts, the broker adapters, the TCP and UDP socket actors, the gRPC
+  client and server — and a global bound reaches all of them, so both
+  mailbox-sizing pages tell the reader to size a WebSocket hub explicitly.
+  `ActorOptions.withApplicationOwned()` is the seam, public for the same
+  reason `withEntity` is: a test bench spawning an entity with no cluster
+  behind it.
+
+  *Note:* Nothing to migrate. `actor-ts.mailbox.default.*` was never in a
+  release before this one — it and the repaired scope both ship in 0.18.0,
+  added by f234dac6 after v0.17.0 — so no deployment can have relied on the
+  narrower reach. A deployment that had already picked up the pre-release key and set
+  a capacity gets it applied to its sharded entities and singleton instances
+  as well from here on, which is what the key's own documentation always
+  said it did.
+
+  A value of `actor-ts.mailbox.default.overflow` outside `drop-head`,
+  `drop-new` and `reject` is refused at startup with a `ConfigError` naming
+  the key and the three policies; it used to start the system and fail only
+  at the first bounded spawn, or never when no capacity was set. No value
+  that worked is refused: none other was ever valid for a bounded mailbox.
+
+- **BREAKING — `actor-ts.coordination` is a new HOCON block, and the two
+  `Lease` backends read it (#859).**
+
+  Six leaves ship — `coordination.lease.kubernetes.namespace-path`,
+  `.token-path`, `.ca-path`, `.token-reload-interval` (`1m`),
+  `.operation-timeout` (`10s`) and `.lease-name-max-length` (`253`) —
+  alongside three keys published as comments only, `coordination.lease.ttl`,
+  `.renewal-interval` and `.kubernetes.namespace`, because each is a field
+  the code requires or derives and a shipped value would make `hasPath` true
+  forever. Nothing in the framework constructs a `Lease`, so both
+  constructors load the config chain themselves and layer it under the
+  caller's options in the usual order: explicit options, then this block,
+  then the built-in defaults. The block also brings three mechanisms it
+  needs — the ServiceAccount mount paths become parameters instead of a
+  module constant, one API-server request is bounded by a configured
+  `operationTimeoutMs` rather than a literal, and a Lease object name longer
+  than `leaseNameMaxLength` is truncated to a stable head plus an FNV-1a
+  hash of the whole original instead of being sent and coming back as an
+  opaque error from the first GET. Security: there is deliberately no key
+  for `authToken`, `caCert` or `apiServerUrl` — the credential keys are
+  paths, never values — and #599's all-or-nothing rule now covers them, so a
+  mount path pointed anywhere other than its default while an explicit
+  `apiServerUrl` is supplied is rejected at construction. `acquire-retries`
+  and `acquire-retry-delay` get no key at all, because the two backends ship
+  different built-in defaults and one leaf could not express both. #859
+
+  *Migration:* `KubernetesLeaseOptionsType.namespace` is now optional and no
+  longer a constructor-required field. A lease built without one reads the
+  namespace from the Pod's ServiceAccount mount, and fails at the first API
+  call — not in the constructor — when neither source supplies it. Code that
+  read `options.namespace` off the type now sees `string | undefined`; code
+  that relied on `new KubernetesLease({...})` throwing `namespace is
+  required` must assert on the runtime error `KubernetesLease: no namespace
+  available` instead. Nothing else moves: `name`, `owner` and `ttlMs` are
+  still rejected at construction.
+
+- **BREAKING — Redis and Memcached caches are now configurable from HOCON
+  and are registered by the framework, so `actor-ts.cache.<name>.plugin =
+  "actor-ts.cache.redis"` is all a cache needs to come up on Redis — no
+  `registerCache` call and no `new RedisCache(...)` (#876).**
+
+  `actor-ts.cache` gains a `redis` block (`url`, `db`, `key-prefix`,
+  `password`, plus `host` / `port` as comments) and a `memcached` block
+  (`servers`, `username`, `password`, `key-prefix`), each read by a
+  `readRedisCacheOptionsFromConfig` / `readMemcachedCacheOptionsFromConfig`
+  in the matching `XOptions.ts` and layered per instance under
+  `actor-ts.cache.<name>.redis` / `.memcached`. Both drivers stay lazy
+  optional peers, imported on the first cache operation rather than at
+  startup. An empty string means unset throughout, which is what keeps the
+  shipped block usable: the validator runs `new URL('')`, so a published
+  `url = ""` handed through verbatim would refuse every config-built cache.
+  `host` and `port` ship as comments on purpose — `url` is mutually
+  exclusive with them, and a published `host = "localhost"` would be set for
+  every deployment and would refuse every `url` ever written.
+
+  The in-memory cache gains two expiry policies,
+  `actor-ts.cache.in-memory.time-to-live` and `.time-to-idle` (builders
+  `withTimeToLiveMs` / `withTimeToIdleMs`), both `0` (off) by default.
+  `time-to-live` stamps a lifetime on an entry whose writer named no
+  `ttlMs`; `time-to-idle` slides that lifetime forward on each read, clamped
+  to it, so a hot key still expires. Both cover `set` and `mset` only, and
+  the slide additionally stops at any entry a guarantee has moved into the
+  eviction-protected half: for `incr` and `setIfAbsent` this cache is the
+  source of truth rather than a copy of one, so a lifetime they did not ask
+  for would release a lock nobody released, and an idle window they did not
+  ask for would keep a rate-limit window from ever closing. A `ttlMs` the
+  caller passes is never overridden in either direction. Three keys from the
+  original proposal are deliberately not shipped — `initial-capacity` (a JS
+  `Map` cannot be preallocated), and `password-path` on both blocks (no
+  file-backed-secret mechanism exists; the supported path is a `${?ENV}`
+  substitution). #876
+
+  `actor-ts/cache` also exports `readInMemoryCacheOptionsFromConfig`,
+  `inMemoryCacheKeysUnder` and the `InMemoryCacheKeys` type beside the Redis
+  and Memcached readers, so an in-memory block — the global one or a named
+  cache's — can be read outside `CacheExtension` the way the other two
+  backends' blocks can (#1425).
+
+  *Migration:* A deployment that already sets `actor-ts.cache.<name>.plugin
+  = "actor-ts.cache.redis"` (or `"actor-ts.cache.memcached"`) without
+  calling `registerCache` used to receive an `InMemoryCache` silently; it
+  now receives the real backend. Verify the settings in
+  `actor-ts.cache.redis` / `actor-ts.cache.memcached` before upgrading, or
+  point the plugin id back at `actor-ts.cache.in-memory`. Nothing else
+  changes: the two expiry policies are off by default, and no existing key
+  is renamed.
+
+- **The cluster's failure detector is now selectable, and the φ-accrual one
+  is finally reachable from `Cluster.join`**
+  (#840).  `PhiAccrualFailureDetector` shipped as a public, exported,
+  documented class that nothing could install: `Cluster` declared its
+  detector field as the concrete `FailureDetector` and constructed one
+  unconditionally, with no branch and no injection point. The field now
+  holds a `FailureDetectorLike` contract that both shipped detectors already
+  satisfied, and `createFailureDetector` builds whichever one
+  `actor-ts.cluster.failure-detector.implementation` — or
+  `ClusterOptions.withFailureDetectorImplementation(…)` — names. `simple`
+  stays the default, so nothing moves for a deployment that does not opt in.
+
+  Seven new keys under the existing `actor-ts.cluster.failure-detector`
+  block:
+
+  - `implementation` — `simple` (default) or `phi`
+  - `phi.unreachable-threshold` — `8`
+  - `phi.down-threshold` — `12`
+  - `phi.max-sample-size` — `200`
+  - `phi.min-std-deviation` — `100ms`
+  - `phi.acceptable-heartbeat-pause` — `3s`
+  - `phi.expected-response-after` — `auto`
+
+  The last two are the values this release chose: the pause was retuned on
+  its own, by measurement (#1452), and the estimate φ judges a peer by
+  before it has a history is new (#1451). Every other value is the default
+  that already shipped: exposing a knob and retuning it are separate
+  decisions. The two thresholds are read with `getNumber`, not `getInt`,
+  because φ is a continuous suspicion score and a fractional threshold is
+  an ordinary tuning move. Explicit options merge into the `phi` block per
+  field, so setting one threshold in code keeps the other five from
+  `application.conf`, and the same holds for `withPhiAccrual(…)` against
+  the file.
+
+  `heartbeat-interval` deliberately stays outside `phi` and has no copy
+  inside it. The cadence belongs to the cluster's own heartbeat loop rather
+  than to either algorithm, so switching implementations cannot change how
+  often a node talks to its peers — the property #1142 collapsed onto one
+  constant, now enforced by `createFailureDetector` imposing the resolved
+  interval on whichever detector it builds. `phi.expected-response-after`
+  keeps it that way: under `auto` it follows `heartbeat-interval`, and only
+  a duration decouples the two. Two keys the issue proposed are absent by
+  design: `phi.heartbeat-interval`, and a singular `phi.threshold` (the
+  detector has two, strictly ordered, so it ships as two).
+
+  The cluster feeds the detector two kinds of input, because there are two
+  questions. `FailureDetectorLike.heartbeat(peer, now?)` is a heartbeat
+  frame — for φ one inter-arrival sample, measured heartbeat to
+  heartbeat — and `heardFrom(peer, now?)` is a frame of any kind: liveness
+  only, the instant silence is measured from, never a sample. An
+  acknowledgment, a gossip frame or a burst of ordinary messages therefore
+  moves when a peer was last heard from without reshaping what φ expects
+  of it. #840, #1201, #1451, #1452
+
+- **The coordinated-shutdown phase graph can now be built from HOCON.
+  `actor-ts.coordinated-shutdown.phases` takes one child per phase name,
+  each carrying `timeout`, `recover` and `depends-on`** (#866).  A child
+  naming one of the twelve canonical phases merges into it — a field the
+  config omits keeps what the phase was seeded with — and any other name
+  declares a new phase, where `depends-on` is required because a phase with
+  no edges would sort into the first ready batch and run before
+  `before-service-unbind`. `depends-on` on a canonical phase is *added* to
+  the edge it already has rather than replacing it, so a config file cannot
+  re-parent `cluster-leave` ahead of `service-unbind`; the topological sort
+  catches cycles, not a pipeline quietly running in the wrong order.
+  Declaration order in the file is irrelevant — two phases may name each
+  other and are registered dependency-first — and an unresolvable name, a
+  cycle, an unknown setting under a phase, or a declared phase with no
+  `depends-on` is a `ConfigError` while the extension is built, not one
+  thrown from inside a shutdown.
+
+  The block ships comment-only in `reference.conf`, the
+  `remote.tcp.advertised-host` pattern: its children are named after the
+  operator's own phases, so there is no fixed leaf set to publish, and an
+  example leaf would have to be pinned as a documented default and would
+  freeze that example's budget into every deployment's effective config.
+
+  Two real leaves came with it:
+
+  - `actor-ts.coordinated-shutdown.exit-code` (default `0`) is the status
+    `exit-process` hands to `process.exit`, replacing the hard-coded `0`. A
+    value outside 0–255 is refused at startup, because only eight bits of a
+    wait status carry the code and a configured `256` would reach the
+    supervisor as a clean `0`.
+  - `actor-ts.coordinated-shutdown.run-by-process-signals` (default `true`)
+    decides whether `runUntilTerminated()` and the cluster bootstrap arm
+    SIGTERM/SIGINT for a caller who named none. It is read at those two
+    defaulting call sites rather than inside `installProcessHooks`, so
+    naming signals explicitly still wins over the config file;
+    `bootstrapCluster` correspondingly stops collapsing an unset
+    `shutdownOnSignals` to `true` before the key is consulted.
+
+  `CoordinatedShutdown.phaseDefinition(name)` is new, and reads back what
+  the merge produced — the graph is no longer something only code builds, so
+  the operator who wrote the config block needs a way to see the result.
+  #866
+
+  The `coordinated-shutdown` table on the configuration page also gains the
+  `auto-register-tasks` row it never had, in both languages. #1302
+
+- **Remembered-entity recovery can now be paced, so a node restart or a
+  rebalance no longer spawns every remembered entity of every shard it is
+  handed in one synchronous burst** (#851).  Three new `actor-ts.sharding`
+  keys govern it:
+
+  - `entity-recovery.strategy` (`all` | `constant-rate`, default `all` —
+    today's behaviour, unchanged)
+  - `entity-recovery.constant-rate.frequency` (default `100ms`)
+  - `entity-recovery.constant-rate.number-of-entities` (default `5`)
+
+  Equivalently in code: `withEntityRecoveryStrategy`,
+  `withEntityRecoveryConstantRateFrequencyMs` and
+  `withEntityRecoveryConstantRateNumberOfEntities` on
+  `StartShardingOptions`, plus the exported `EntityRecoveryStrategy` union
+  and `ENTITY_RECOVERY_STRATEGIES` list.
+
+  The budget is region-wide, not per shard: the queue is fed by every shard
+  the region owns and drained from one front, so `number-of-entities = 5`
+  means five entity starts per window for that sharded type on that node,
+  whatever its shard count. A node runs one region per sharded type, so a
+  node recovering two paced types starts up to ten per window, five of each;
+  that is the scope `maxEntities` has, and deliberately unlike a per-shard
+  rate, which multiplies by however many shards a node happens to hold. It
+  paces entity *starts*, not replays: a replay is asynchronous, so one that
+  outlasts the window still overlaps the next batch, and
+  `actor-ts.persistence.max-concurrent-recoveries` (#874) is what bounds the
+  replays in flight; the two compose. Nothing is shed: the backlog drains
+  until every remembered entity is back, a message routed to an entity still
+  in the queue creates it immediately, and an entity that starts by any
+  other path leaves the queue at that moment, so a stale entry never brings
+  back an entity that has since passivated. A batch never starts an entity
+  into a shard that is on its way out: an entry whose shard is passivating
+  waits until the shard is back, one whose shard is handing off is dropped
+  without costing the batch a slot (its registry travels with the shard),
+  and the empty-shard sweep leaves a shard alone while a recovery still owes
+  it a start. The batch that spends a shard's last owed start no longer
+  races the empty-shard sweep: the shard confirms it is empty before it
+  stops, so a remembered entity the batch has just started keeps running
+  even when the shard's empty clock ran out while it waited its turn.
+
+  The paced drain never starts an entry into a shard that is passivating or
+  handing off; the same two rules now hold for an unpaced registry too, a
+  fix listed under Fixed.
+
+- **The object-storage persistence plugin can now be configured from HOCON.
+  A new `actor-ts.persistence.snapshot-store.object-storage` block carries
+  `backend`, `prefix`, `keep-n`, `max-decompressed-bytes`,
+  `compression.algorithm`, `encryption.mode`/`encryption.kms-key-id`,
+  `s3.{bucket,region,endpoint,force-path-style}` and
+  `filesystem.{dir,lock-timeout,stale-lock}`, and
+  `registerObjectStoragePlugins(ext)` now takes its options argument
+  optionally — bucket, region, prefix and retention no longer need a code
+  change and a redeploy** (#873).  One block configures both stores that
+  call returns, because the two share a single backend. Precedence is the
+  usual explicit options > HOCON > built-in defaults, per field, validated
+  once on the merged settings. This is the first HOCON reader anywhere in
+  `src/persistence/`; the new read-only `PersistenceExtension.config`
+  accessor is the seam it reads through, and the other `register*Plugins`
+  helpers can reuse it. Key material is structurally absent from the block
+  rather than filtered out of it: there is no leaf for S3 credentials, for a
+  client-side master key or for an integrity key, so a config file cannot
+  express one, and `encryption.mode = client-aes256-gcm` is refused with an
+  `OptionsError` naming `withEncryption()` rather than silently writing
+  plaintext. `allow-untagged-bodies` and `require-context-binding` are
+  deliberately not published either — both are inert without a key-bearing
+  config, so from HOCON they could never do anything. #873
+
+- **A projection now takes its process-wide defaults from a new top-level
+  `actor-ts.projection` HOCON block, so failure handling and poll cadence
+  are retunable per environment without touching code: `recovery-strategy`,
+  `max-retries`, `retry-backoff`, `max-retry-backoff` and `poll-interval`**
+  (#875).  The mechanism behind all five shipped with #650; what was missing
+  was the configuration surface — the merge inside
+  `ProjectionActor.byPersistenceId` / `byTag` was two layers where the
+  project requires three. Precedence is applied per field: an explicit
+  `ProjectionOptions` value wins, then the block, then the built-in default
+  — so a projection that passes `liveOptions` without a `pollIntervalMs`
+  still gets the configured cadence rather than silently falling back.
+  `readProjectionOptionsFromConfig` and the type `ProjectionConfigDefaults`
+  are exported from `actor-ts/persistence`, and the poll cadence's built-in
+  value is now the named `DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS` in
+  `src/persistence/Constants.ts` instead of four separate literals. The
+  block is deliberately top-level and not under `actor-ts.persistence`,
+  which holds plugin ids and nothing else. Ten further keys the issue
+  proposed are deliberately not shipped because nothing reads them: the two
+  `restart-backoff` bounds are a second spelling of the two backoff fields,
+  `restart-backoff.random-factor` has no jitter term, the
+  `at-least-once.save-offset-after-*` pair needs the batching #199 will add,
+  the `grouped.group-after-*` pair needs a batch-handler API that does not
+  exist, `offset-store.table` names nothing in the offset store, and
+  `read-journal.max-buffer-size` has no field;
+  `read-journal.refresh-interval` survives as the un-nested `poll-interval`.
+  #875.
+
+- **`actor-ts.devtools` — the DevTools attachment is configurable from
+  HOCON** (#881).  Twenty-three leaves: `host`, `port`, `allow-remote`,
+  `serve-ui`, `allowed-origins`, the ten `panels.*` switches,
+  `mailbox-sample-interval`, `mailbox-sample-limit`, `stats-interval`,
+  `span-buffer-capacity`, `span-flush-interval`, `event-buffer-capacity`,
+  `event-flush-interval` and `replay-auto-capture`. They fill in what
+  `DevTools.attach(system, …)` leaves unset; explicit options still win, per
+  field, and a `panels` object passed in code overrides the configured
+  switches one switch at a time rather than replacing them wholesale —
+  otherwise naming one panel in code would switch every panel an operator
+  disabled back on. The block does not *start* DevTools: `attach` is always
+  a code call, and there is deliberately no `enabled` key, because reading
+  one would drag the DevTools subsystem and its embedded UI bundle into
+  every system. A configured host meets the same rule a code-set one does —
+  `devtools.host = "0.0.0.0"` in an `application.conf` is refused with an
+  `OptionsError` unless `allow-remote` is set, since `auth` and
+  `ipAllowlist` are middleware with no HOCON form. `allow-ungated-mount` and
+  `allow-message-sending` stay code-only on purpose: one states a fact about
+  the code that binds `mount()`'s routes rather than about a deployment, the
+  other is the only DevTools capability that writes into a running system
+  from a browser. Along the way `eventBufferCapacity` and
+  `eventFlushIntervalMs` gained `DEVTOOLS_DEFAULTS` entries, and three
+  read-site fallbacks in `DevToolsServer` that disagreed with the published
+  defaults were collapsed onto that object — the worst being
+  `spanBufferCapacity ?? 2000` against a documented and defaulted 10000,
+  live since 2026-07-28. New reader `readDevToolsOptionsFromConfig` and
+  merge helper `mergeDevToolsOptions` are exported from `actor-ts/devtools`.
+
+- **Two `actor-ts.sharding` keys that decide *where* shards run rather than
+  how they behave** (#847).  Both are layered under the caller's options, so
+  an explicit builder call still wins per field:
+
+  - `role` (default `""`) — only members carrying this role host shards of a
+    type started without its own `withRole`.  `""` means
+    unrestricted; the reader skips the empty string, so the shipped
+    placeholder cannot shadow an explicit `withRole` on the layer above. The
+    key names *which* role hosts a type; it does not give a node that role,
+    which is `actor-ts.cluster.roles` (#836) or
+    `ClusterOptions.withRoles(...)`.
+  - `acquire-retry-interval` (default `5s`) — how long the shard coordinator
+    waits before re-acquiring a lease it failed to take. Observable only
+    where a `Lease` was passed in code; there is deliberately no `use-lease`
+    switch, because nothing turns a boolean into a `Lease` and a switch that
+    silently produced none would advertise split-brain protection that is
+    not there.
+
+  A configured role that no up member carries is no longer silent: the
+  coordinator warns once per episode, naming the role, how many registered
+  regions it excluded and both places a node declares its roles, instead of
+  returning quietly from `tryAllocate` while every message for the type
+  buffers. `sharding.proxy` deliberately has no key — it is per-node
+  topology, and a deployment-wide `proxy = on` would leave nothing hosting
+  anything.
+
+- **The advertised cluster port can differ from the bound one**
+  (#845).  `port` was one value in two roles: `TcpTransport` bound it and
+  `selfAddress` gossiped it.  #944 split the host axis — `host` binds,
+  `advertised-host` identifies — and left the port unsplit, so
+  `withAdvertisedHost` fixed half of a published-container-port deployment
+  and nothing fixed the other half.  A node published by `docker run -p
+  3000:2552` listens on 2552 and has to tell its peers 3000; it could not.
+
+  The port now mirrors the host.  `ClusterOptions.withAdvertisedPort(…)` and
+  `ClusterBootstrapOptions.withAdvertisedPort(…)` name it,
+  `resolveAdvertisedPort` answers `advertisedPort ?? port` for both
+  `Cluster.join` and `bootstrapCluster` (the election orders on the identity
+  and the seed filter compares against it, both before the join), and
+  `TcpTransport` gained a `bindPort` constructor argument that reaches the
+  `listen` call alone — `self.port` stays the identity in the handshake and
+  the peer keys.  Nothing configured today moves: unset, the advertised port
+  is the bound one.
+
+  Two things the host half does NOT get a counterpart for,
+  deliberately.  There is no environment-derivation chain, because no
+  platform publishes a port mapping anywhere a process can read it; and
+  there is no wildcard to refuse, so validation is `positiveInt` and nothing
+  else.
+
+  `actor-ts.remote.tcp.advertised-port` ships as a comment in
+  `reference.conf` rather than a leaf — the shape `advertised-host` and
+  `sharding.shard-passivation-idle` already use.  A shipped leaf makes
+  `hasPath` true forever and "unset means the same as `port`" then becomes
+  inexpressible.  Three keys the issue asked for do not ship at all:
+  `bind-host` was delivered under the mirror-image spelling by #944,
+  `bind-port` is the right mechanism under the wrong name for the direction
+  that landed, and `bind-timeout` has no mechanism behind it —
+  `TcpBackend.listen` takes no timeout and a bind on Bun/Node/Deno succeeds
+  or fails fast.
+
+  The transport's two-address startup line now compares the whole address
+  instead of the hosts, and `reportDerivedAdvertisedHost` names the
+  advertised port: a node that binds 2552 and advertises 3000 differs on
+  exactly the half a host comparison cannot see, and would otherwise have
+  logged one address that reads as though nothing were split.
+
+  The `actor-ts.remote` key table also gains the `advertised-host` row #944
+  forgot — it appeared in neither language, while the other comment-only key
+  in that page does get a row defaulted *(unset)* — plus the new
+  `advertised-port` row, a container recipe, and a `remote.tcp.port`
+  description that no longer calls itself "Bind port" as though the split
+  already existed.  EN and DE.
+
+- **The remaining nine `actor-ts.worker-cluster` keys** (#883).  The block
+  published 2 of the 11 fields `WorkerCluster.spawn`
+  accepts.  `system-name`, `hostname`, `base-port`, `ready-timeout` and the
+  five restart-budget knobs `restart-min-backoff`, `restart-max-backoff`,
+  `restart-random-factor`, `max-restarts` and `restart-window` each had a
+  live consumer, a `DEFAULT_*` constant and a row in the published options
+  table, and were reachable only from code — both language versions of the
+  worker-mesh page printed all nine defaults with nothing pinning them to
+  anything.
+
+  Precedence is unchanged and per field: explicit options beat the file, the
+  file beats the built-in default, and a field set in neither stays
+  unset.  The merge, precedence and validation plumbing already existed, so
+  the change is a widened `Pick` plus nine `hasPath` branches in
+  `readWorkerClusterOptionsFromConfig`; `WorkerCluster` itself is untouched.
+
+  The four duration leaves drop the `Ms` suffix their fields carry and take
+  a duration literal (`ready-timeout = 10s`), the spelling
+  `logger.close-timeout` and `delivery.flush-interval` already
+  use.  `systemName` and `hostname` gain `nonEmptyString` rules: only code
+  could set them before, and a config file can now supply `""`, which would
+  reach `NodeAddress` and give every worker an address with no
+  host.  `bootstrap`, `initData`, `backend` and `onWorkerPermanentlyDown`
+  deliberately have no keys.
+
+  One consequence worth knowing: `Config.load` merges `reference.conf`
+  first, so these leaves are now always present and `reference.conf` *is*
+  the effective default — the `??` fallbacks in `WorkerCluster`'s
+  constructor are no longer reachable through `spawn`.  That is why the
+  block's published values equal the constants, and
+  `tests/unit/docs/DocumentedDefaults.test.ts` now pins all nine (gaining a
+  `number` kind for `restart-random-factor`, the first fractional leaf in
+  `reference.conf`, because `getInt` throws on `0.2` while a `duration`
+  label would pass while asserting nothing).
+
+- **A declined message leaves a trace** (#1178).  `Actor.unhandled(message)`
+  gives a declined message one observable sink. Called from an `.otherwise`
+  arm it wraps the message in a `DeadLetter` naming the actor itself as the
+  recipient — not the dead-letter office, because "something, somewhere,
+  declined this" is not a diagnosis — publishes it on the event stream, and
+  increments a new `actor_unhandled_total{class}` counter. The typed side's
+  `Behaviors.unhandled` now shares that one implementation, so a behavior
+  answering the sentinel is finally counted too; routing to dead letters
+  never supplied a count, because `actor_dead_letters_total` only moves
+  while `actor-ts.dead-letters.store` is on and `off` is the default. Four
+  framework handlers were converted: `Receptionist`,
+  `ClusterSingletonManager` and `DistributedPubSubMediator` keep their
+  warning and add the letter, while `Cluster`'s unclaimed-wire-frame tail —
+  a plain class with no actor and no recipient to name — counts every frame
+  and names each unknown kind once, escaped and length-clipped because the
+  kind arrives off the wire, capped at eight distinct kinds. Nothing is
+  detected on your behalf: an actor that simply returns still produces
+  nothing at all, which stays the right answer for one that means to ignore
+  a class of message. No configuration key ships with this; the diagnostics
+  toggle that will gate a debug log at the same seam belongs to #867, and
+  `recordUnhandled` names it in its JSDoc. #1178.
+
+- **Dead letters are logged by default, throttled** (#1000).  A default
+  `ActorSystem` produced no output at all when a message could not be
+  delivered: `DeadLetterRef` held no logger, published a `DeadLetter` on the
+  event stream and returned.  An application that subscribed to nothing —
+  which is every application until it knows to — lost both the message and
+  the fact that it had.  The queue #433 landed does not fill that gap; it is
+  capture-side, opt-in, and defaults to `off`, so a default system installs
+  no sink at all.
+
+  Each undeliverable message now produces one `info` line naming the
+  recipient path, the sender when there is one, and the message's **class**
+  — never the payload, for the same data-protection reason
+  `dead-letters.store` defaults to `off`.  It is throttled, because a
+  delivery outage produces dead letters at message rate: after
+  `actor-ts.diagnostics.log-dead-letters` records (10) a single `warn` line
+  says logging is suspending, the window is silent for
+  `log-dead-letters-suspend-duration` (5m), and the first record after it
+  resumes is preceded by one more `warn` naming how many letters went
+  unreported.  `0` on either number means "never log" and "never suspend"
+  respectively.
+
+  The gate sits strictly downstream of the capture sink **and** of
+  `eventStream.publish`, so neither the queue's completeness claim nor what
+  any existing subscriber sees changes when logging goes quiet.  A single
+  global counter, not per-recipient: the per-recipient token bucket with a
+  `DeadLetterSummary` event is #1179, and building it here would have left
+  two suppression knobs on one path.
+
+  The burst `terminate()` produces while draining mailboxes is silent by
+  default — an orderly shutdown drains every queued and stashed message to
+  dead letters, and reporting that makes a clean stop read as an
+  incident.  Two honest limits, both stated in the code: an individual
+  `ref.stop()` still logs, because the system is not terminating, and
+  letters produced during `CoordinatedShutdown`'s earlier phases are logged
+  too.
+
+  A new `actor-ts.diagnostics` block carries the three keys, with the
+  options family in `src/diagnostics/DiagnosticsOptions.ts` and an explicit
+  layer through `ActorSystemOptions.withDiagnostics(…)`.  Two deliberate
+  divergences from the original sketch: the keys are not root-level leaves
+  (`reference.conf` has fourteen root blocks and zero root-level leaves, and
+  `ConfigKeys.ts` already pointed #1179 at `diagnostics`), and the count is
+  a plain integer with "0 disables" rather than a `count | on | off` union,
+  which has no clean `Config` getter.  `classNameOf` moved to
+  `src/util/ClassName.ts` and is published on the `actor-ts/util`
+  subpath.  Documented on `operations/dead-letters`, `operations/overview`,
+  `operations/troubleshooting` (a new "my message vanished" entry),
+  `fundamentals/actor-system`, `fundamentals/event-stream` and
+  `reference/configuration`, EN + DE — where the polarity of every "nothing
+  logs them" sentence flips.
+
+- **`actor-ts/util` — the whole util toolbox, not the two-thirds the root
+  barrel named one at a time** (#1404).  `src/util/` holds 21 modules and had
+  no barrel at all; what a consumer could reach was whatever `src/index.ts`
+  happened to list, grown one name per issue (#1034, #1035, #1037, #1141,
+  #1199).  Eight modules' worth of names were reachable from nothing:
+  `TokenBucket`, the CIDR and address-pin matchers, the HTML escapers,
+  `mergeOptions` / `stripUndefined`, `stripTrailing` / `stripSurrounding`,
+  `wrapError` and the cross-subsystem constants.  `mergeOptions` was the
+  sharpest of them — AGENTS.md documents the options precedence *explicit >
+  HOCON > defaults* **by that function's name**, and the function itself was
+  not in the package.
+
+  The root barrel keeps every name it exports today, so nothing moved and
+  nothing breaks; the subpath is a superset, and the root stays the curated set
+  a reader scans to learn what the framework offers.  Publishing the directory
+  whole is safe for the reason `src/util/Constants.ts` documents at length: it
+  is the one directory under `src/` with no outward import, so one entry point
+  over it drags no subsystem in behind it.  One name is deliberately withheld —
+  `_resetEntropyPool`, whose own doc comment says it exists for a test that
+  substitutes `crypto.getRandomValues`.  Documented on
+  `reference/utility-helpers` (EN + DE).
+
+- **The flake catalog names the third shape of the fixed-cap failure — real
+  work in a *test body*** (#1393).  `docs/…/testing/diagnosing-flakes.mdx`
+  covered bun's 5 000 ms cap twice, one level apart: a budget that cannot reach
+  it (remedy, a third argument) and real work in a hook (remedy, layered
+  budgets).  #1392 was neither, and a reader who pattern-matches to the nearest
+  entry picks a remedy that does not fit — a third argument sizes a *failure
+  budget*, a wait meant to expire and print a label, and bounded work has none;
+  layered budgets need a spawn boundary the inner operation can carry a timeout
+  across, and there is none.  The remedy that is right — module scope carries no
+  per-test timeout at all — was written nowhere, although three guards already
+  depend on it.  Both mirrors gain a catalog row and a section, with the
+  measured figures and the module-scope fixture that settles the mechanism in
+  one run.  It also records a negative result: the hook section's sizing advice
+  (run several copies of the file at once) does **not** transfer, because the
+  pre-fix file under 12 concurrent CPU hogs still completed in 31.45 ms and
+  passed — external load competes with *spawned* work, while in-process work is
+  slowed by the host process's own heap, garbage collection and coverage
+  counters.
+
+- **A refused sharding registration is observable without scraping the log**
+  (#1300).  When a coordinator refuses a region over a `numShards` mismatch
+  (#633), the whole operator-visible signal was one `log.error` — no metric,
+  no event, no queryable state, and a grep for metric series under
+  `src/cluster/sharding/` returned none at all.  That matters more than a
+  missing diagnostic usually does: a refused region keeps running and keeps
+  accepting traffic for the type, everything it accepts buffers into the
+  still-uncapped region buffer (#461, #849), and the end state of an
+  unnoticed refusal is a node out of memory.  The only thing between a
+  misconfigured rolling deploy and that outcome was whether somebody grepped
+  for one error string.
+
+  Now: a counter `cluster_sharding_registrations_refused_total { type,
+  reason }`, following the label shape of its exact analogue one layer up,
+  `cluster_gossip_records_refused_total`; a `ShardRegionRegistrationRefused`
+  cluster event carrying both shard counts, for code that reacts rather than
+  polls; and `cluster.sharding.registrationRefusal(typeName)`, which returns
+  that event or `null` and is cleared once a later registration is accepted,
+  so a deploy that fixes the mismatch stops reporting one.  Documented under
+  `cluster/sharding/introspection` (EN + DE) as the signal to alert on.
+
+- **A `ShardRegion`'s registration with the coordinator is observable**
+  (#1317).  Nothing announced it, so eleven sites across three sharding
+  suites waited on a fixed `sleep(200)` under an identical comment saying the
+  condition to poll did not exist.  `cluster.sharding.isRegistered(typeName)`
+  is that condition — synchronous, fed by a new node-local
+  `ShardRegionRegistered` cluster event the way `shardMap` is fed by
+  `ShardMapChanged` — and the eleven sleeps now wait on it.  It answers what
+  membership convergence cannot: a converged cluster can still hold a region
+  that has not registered, because a region registers with the coordinator on
+  the leader over a retry timer of its own.
+
+  The event fires on the transition, not on every acknowledgment — a leader
+  change re-registers every region — and a refusal or a staleness eviction
+  clears the flag, so the acknowledgment after either is a transition again.
+
+  **The claim in those eleven comments was wrong, and is corrected rather
+  than transplanted.**  They said an early `ask` "races the coordinator
+  instead of being buffered"; the region in fact buffers any message whose
+  shard home is unknown and re-asks for everything buffered once it
+  registers, so the message is delivered late rather than dropped.  What the
+  sleep was really protecting is the `ask` wrapped around it, whose own
+  deadline runs while the message waits in that buffer.  Documented that way
+  under `cluster/sharding/introspection` (EN + DE).
+
+  `cluster.sharding.isRegistered(typeName)` also reads `false` once the
+  region has been told the coordinator evicted it for going silent, until
+  the region's new registration is acknowledged, and once the region has
+  stopped, so a readiness check built on it no longer keeps a node that
+  hosts nothing for the type in rotation. The region reports both to
+  `ClusterSharding` directly; `ShardRegionRegistered` still marks every
+  registration.
+
+- **`cluster.eventStream` — the event stream, cluster-wide** (#1397).
+  `system.eventStream` is scoped to one `ActorSystem`, which is one node: a
+  publish walks an in-process list and never touches the network.  Nothing
+  said so at the call site, and the built-in event table listing `MemberUp` /
+  `MemberRemoved` suggested otherwise — those appear on every node because
+  each node publishes its own copy, derived from the gossip it merged, so the
+  state propagates and the event does not.  `cluster.eventStream` is the
+  missing half, and the owner now carries the scope: `system` is a node,
+  `cluster` is the cluster.  It takes the same class, `EventKey` and `kind`
+  channels, including predicates, and it is built on the DistributedPubSub
+  mediator — one channel per topic — so it inherits that machinery's bounded
+  gossip, one-hop delivery and caps, and adds **no new wire kind**.
+
+  A `kind`-discriminated event crosses nodes with no setup.  A **class**
+  channel needs `register(name, class, decode?)`, because only the value's
+  tag travels and an instance would otherwise arrive as a plain object
+  matching no `instanceof`; `decode` falls back to a static `fromJSON`, and
+  one of the two must exist — a generic prototype rebuild would mean writing
+  peer-supplied keys onto a fresh prototype.  `bridge(channel)` mirrors a
+  channel of the node-local bus onto the cluster one, opt-in per channel and
+  without disturbing what already subscribes locally; bridge only events that
+  originate on a single node, since one that every node derives for itself
+  becomes N copies cluster-wide.
+
+  `system.eventStream` is unchanged and no existing publish site moves — the
+  framework's own events all have a reason to stay node-local, from the
+  lifecycle events being the hottest path in the system to broker events
+  carrying a `cause` whose redaction had to be solved on the event itself
+  (#1388).  A multi-node test now pins that node-local scope as an assertion
+  rather than prose.
+
+- **`actor-ts.cluster.failure-detector.auto-down` lets a cluster with no
+  downing strategy opt out of the failure detector's own removal of a
+  crashed peer** (#1426). In code it is `withFailureDetectorAutoDown(…)`. On
+  is the default and the removal every earlier release made: a peer silent
+  past `down-after` is downed and removed, so an n-node cluster keeps
+  running down to its last available node, which takes over the peer's
+  shards and singletons; under a real partition both sides remove each other
+  and carry on, unless lease-majority or another split-brain strategy is
+  configured. `auto-down = off` parks the peer at `unreachable` instead,
+  announced `MemberUnreachable` and never `MemberDown` or `MemberRemoved`,
+  until a strategy, `Cluster.down` or `POST /cluster/down` removes it; the
+  node logs one warning per parked peer naming the two keys and those three
+  ways out, and the survivor of a crash is ready again at `down-after` all
+  the same, because the `cluster-transport` readiness check no longer
+  expects a parked peer while a peer only unreachable short of `down-after`
+  still counts. The switch governs both the simple and the φ-accrual
+  detector, a configured strategy decides every removal whatever it says,
+  and the detector's removal line is logged at info (#994). `MultiNodeSpec`,
+  `ParallelMultiNodeSpec` and `ClusterBootstrap` take
+  `failureDetectorAutoDown`.
+
+- **`WorkerCluster.spawn` takes the configuration it reads
+  `actor-ts.worker-cluster` from as an optional second argument, as
+  `ClusterClient` and the leases already do** (#1546). Without one it still
+  loads the chain itself, which sees only `ACTOR_TS_CONFIG`,
+  ./`application.conf` and the profile `ACTOR_TS_PROFILE` names, so hand it
+  `system.config` whenever a system is in scope.
+
+- **String value concatenation in HOCON** (#537). Quoted strings,
+  substitutions and unquoted text next to each other on one line make one
+  string: `url = "redis://:"${REDIS_PASSWORD}"@cache:6379"`,
+  `address = ${HOST}":"${PORT}`, `name = app-${STAGE}`. A secret can go into
+  a connection URL without the whole URL living in one variable. The spaces
+  between pieces are kept, a field after a space still starts a new field,
+  and a single piece keeps its type, so `port = ${PORT}` is still a number.
+
+  Inside a string a variable joins in as the text it holds — a password of
+  digits stays digits — while a lone `${X}` keeps its JSON-first reading. A
+  key of the file joins in as HOCON writes it, and one that holds an object
+  or a list is refused. An unset `${?X}` inside a string adds nothing, and a
+  string made only of unset optional substitutions is no value, so the
+  earlier value or the layer below shows through. `${` inside quotes stays
+  text. Joining objects or lists, `+=` and triple-quoted strings are still
+  not supported, and each is now refused with an error naming it rather than
+  mis-parsed or reported as `Expected a key`.
+
+- **A project `reference.conf` and a `.env` file in `Config.load`** (#1785).
+  A project keeps its own defaults — for its own keys and for framework keys
+  — in a `reference.conf` of its own, between the bundled defaults and
+  `application.conf`, and `application.conf` overrides single keys of it per
+  deployment. It is found through `LoadOptions.referenceConfPath`, then
+  `ACTOR_TS_REFERENCE_CONFIG`, then `./reference.conf`, carries profiles
+  like the other files, and a missing one is an empty layer.
+
+  A `.env` file supplies variables to the substitutions of every file the
+  loader reads, behind the real environment: `${DB_PASSWORD}` in
+  `application.conf` finds a `DB_PASSWORD=…` line when the process was
+  started without one. It is found through
+  `LoadOptions.environmentFilePath`, then the real `ACTOR_TS_ENV_FILE`, then
+  `./.env`; it may name the other files and the profile itself; an empty
+  value in it counts as unset; and it never writes `process.env`, so child
+  processes do not inherit it. The grammar is Node's `--env-file` one, on
+  all three runtimes — a parser of its own, because Deno has no
+  `util.parseEnv` — so `$VAR` is kept as written, and a directory called
+  `.env` (a Python virtual environment) counts as no file.
+
+  Every file option of `LoadOptions` now also takes `false`, which reads no
+  such file at all. The layers record where the project `reference.conf` and
+  the `.env` file were looked for and whether they were found, and which
+  environment variables supplied each leaf of each file's layer. A
+  byte-order mark at the start of a config file is dropped instead of
+  failing the parse with `Expected a key`.
+
+- **`ActorSystemOptions` names every file the loader reads:
+  `withSecretsFile`, `withReferenceConfigFile` and `withEnvironmentFile`**
+  (#1769, #1785). Beside `withConfigFile`, a system names its secrets file,
+  its project `reference.conf` and its `.env` file in code, each ahead of
+  its `ACTOR_TS_*` variable; with an option unset the chain applies as
+  before. A file named with `withSecretsFile` is the secrets layer — its
+  keys are attributed to `secrets` and withheld by the boot dump and the
+  DevTools panel — and a `secrets.conf` in the working directory is not read
+  beside it, which `withConfig(Config.load({ secretsConfPath }))` could not
+  do: that put every key in the overrides layer and still read
+  `./secrets.conf`. All four take `false`, `withConfigFile` included, which
+  reads no such file. `Cluster.bootstrap` forwards `configFile` as before,
+  `false` now too, and leaves the other three to their variables.
+
+  A `WorkerMesh` worker reads exactly the files its main thread read. The
+  main thread hands every worker the path it looked at for each of the four,
+  or `false`, so a `${VAR}` that only a `.env` named in code answers
+  resolves in a worker as well, and a file an `ACTOR_TS_*` variable names
+  can neither add keys to a worker nor stop one when the main thread was
+  given another (#1546).
+
+### Changed
+
+- **BREAKING — the cluster wire has a version, negotiated in the handshake,
+  and version 2 requires every node address on a frame to name its
+  incarnation; a v0.18.0 node and an older one refuse each other** (#823,
+  #940). Every `hello` and `hello-ack` announces the versions the node speaks;
+  two nodes that share none refuse at the handshake with a new `hello-refused`
+  frame carrying the reason and a WARN on both sides, instead of half-working
+  as the v0.16 and v0.17 breaks did. A version-2 `hello` without an
+  incarnation is refused the same way. Past the handshake every address on a
+  heartbeat, gossip record, `leave` and `membership-refused` must carry its
+  run, which lets a tombstone refuse the *run* it was written for at any
+  version: a process the cluster downed can no longer come back by
+  restamping its version, while a restart — a new incarnation — still joins at
+  once (refusals counted as `cluster_gossip_records_refused_total{reason="removed-run"}`).
+  A transport built before `Cluster.join` — every injected one — is handed the
+  run's identity through a new optional `Transport.adoptIdentity`, and a
+  `ClusterClient` mints an incarnation of its own. **Migration:** no rolling
+  upgrade across this release — stop every node, then start every node on
+  v0.18.0. A custom `Transport` implementation should implement
+  `adoptIdentity` (or announce an address with an incarnation itself); the
+  upgrade page has the table (EN + DE).
+
+- **BREAKING — `actor-ts.cluster.run-coordinated-shutdown-when-down` ships
+  `on`: a node its own downing decision removes now runs the
+  coordinated-shutdown pipeline, which ends its ActorSystem; it used to leave
+  the membership and keep its entities, singletons and HTTP binding running
+  beside the side that won** (#1456). The default was held off while two wrong
+  self-downs were known — `StaticQuorum` downing a cluster below its quorum
+  (#933) and `KeepOldest` downing every survivor of a crashed oldest (#932) —
+  and moves now that both are fixed. With #940, a node the others removed while
+  it was paused or cut off reaches the same decision once it hears them again,
+  so the switch covers that case too. `coordinated-shutdown.terminate-actor-system`
+  and `exit-process` still decide what the run ends in. **Migration:** a
+  deployment that wants a downed node to keep its actors running sets
+  `run-coordinated-shutdown-when-down = off` or
+  `withRunCoordinatedShutdownWhenDown(false)`; either way the self-down now
+  announces `SelfRemoved`.
+
+- **BREAKING — `KeepOldest` lets the rest of the cluster carry on when the
+  oldest member crashes; every survivor used to down itself, so one dead node
+  — the lowest-addressed, which is also the leader — stopped the whole
+  cluster** (#932). `downIfAlone` was a dead branch: both arms returned the
+  same set. It now decides the case it names, an oldest that is the only
+  member on its side against two or more on the other, and is **on by
+  default** — the survivors down a crashed oldest, and an oldest cut off on
+  its own downs itself. Two sides of one member each keep the oldest, so a
+  two-node cluster does not stop. It is readable from the config file as
+  `actor-ts.cluster.split-brain-resolver.keep-oldest.down-if-alone`. With
+  nothing unreachable the strategy decides nothing. **Migration:** a
+  deployment that wants the strict rule — the side holding the oldest
+  survives, nothing else does — sets `keep-oldest.down-if-alone = off` or
+  `withDownIfAlone(false)`.
+
+- **BREAKING — the minimum supported Bun is 1.4.0; `engines.bun` was
+  `>=1.3.0`** (#1793,
+  [GHSA-fcgw-9hgj-r3w3](https://github.com/pathosDev/actor-ts/security/advisories/GHSA-fcgw-9hgj-r3w3)). Bun 1.3.x does not deliver runtime behaviour the
+  framework relies on — the details are in a security advisory — and the
+  `smoke (bun-floor)` leg, which runs every smoke case on the floor, now pins
+  1.4.0, where all of them pass. **Migration:** upgrade Bun to 1.4.0 or newer
+  (`bun upgrade`); a Docker image on `oven/bun:1.3` moves to `oven/bun:1.4`.
+  Nothing changes in code. The MongoDB page no longer advises `mongodb@^6` for
+  Bun 1.3; the peer range stays `^6 || ^7`.
+
+- **BREAKING — With `actor-ts.coordinated-shutdown.exit-process` on, a run
+  that a phase with `recover = false` halts now exits the process too, with
+  a status that never reads as a clean stop** (#1455). It exits with
+  `exit-code` where that is not `0` and with `1` where it is, the rule a run
+  for a failed startup already follows, at the point the run ends and
+  whichever trigger started it: a signal,
+  `terminate({ runCoordinatedShutdown: true })`, a `run()` of your own, the
+  cluster's join give-up or its self-down. A halted run used to skip the
+  exit, leaving the process to end however it could. Nothing after the exit
+  runs, so it takes the place of the teardown the halt would otherwise get,
+  the signal path's stand-in and an opted-in `terminate()`'s; the halt is
+  logged at `error` first, naming the phase, the run's reason and the error.
+  What that teardown would have flushed is flushed before the exit instead,
+  the dead-letter queue's writes and then the log sinks, each within
+  `actor-ts.logger.close-timeout`, so that line reaches a buffering sink too
+  and a sink that never answers cannot hold the exit open. A completed run
+  with `terminate-actor-system = false` is flushed the same way before its
+  exit, where it used to exit with the last records still buffered; a run
+  whose terminator tore the system down was already flushed by that
+  teardown. A failure never exits 0: a run for a node that could not join
+  exits by the same rule, whether its join gave up, a `Cluster.bootstrap`
+  readiness wait failed or a bootstrap refused after building its system
+  ended through the pipeline, because the reason of all three,
+  `ClusterJoinUnsuccessfulReason`, makes the run one for a failure. The run
+  is in flight until its exit, so a `terminate()` that arrives while the
+  dead-letter queue and the log sinks are flushed for that exit starts
+  nothing, and the exit takes the place of the teardown as described. With
+  `exit-process` off nothing changes.
+
+  **Migration.** With `exit-process` on, a halted run now ends the process
+  at the halt instead of rejecting to its caller; cleanup that ran in a
+  catch after your own `run()` belongs in a shutdown task ahead of the
+  halting phase, or turn `exit-process` off.
+
+- **BREAKING — Every SQLite store now has to name its database** (#1492).
+  The journal and the snapshot store opened an anonymous in-memory database
+  when no path was set, and took an empty path or a `libsql:` URL as a file
+  name, while the durable-state store refused all three. One rule,
+  `assertLocalSqlitePath` beside `SqliteConnection`, now refuses a missing,
+  empty or remote path — `libsql:`, `http(s):` or `ws(s):`, in any letter
+  case — for all three stores and for `buildSqliteDatabase`, with an
+  `OptionsError` on field `path`. An in-memory database is the explicit path
+  `":memory:"`.
+
+  A store that `ActorSystemOptions.withPersistence` sets in code wins over a
+  pathless SQLite selection on its axis: `registerSqlitePlugins` does not
+  refuse a selection code replaces, since that store is never built, while a
+  pathless selection on any other axis is still refused. An untyped
+  `database: null` counts as no handle for `buildSqliteDatabase`, the path
+  rule and `SqliteDurableStateStore`: beside a path the path is opened, and
+  without one the connection is refused as one given neither, instead of
+  `null` standing in for a database and failing the first statement with a
+  `TypeError`.
+
+  **Migration.** Give every SQLite journal and snapshot store a path —
+  `withPath(':memory:')` for an in-memory database, or `path = ":memory:"`
+  in its `actor-ts.persistence.<axis>.sqlite` block — and use a libSQL store
+  for a remote database.
+
+- **BREAKING — A `Cluster.bootstrap` whose readiness wait fails now runs the
+  coordinated-shutdown pipeline with `ClusterJoinUnsuccessfulReason` instead
+  of `ClusterLeavingReason`, the reason the new join give-up passes too, so
+  a shutdown task tells a failed start by one reason whichever deadline
+  fired** (#1500). The returned `shutdown()` of a node that did start still
+  passes `ClusterLeavingReason`.
+
+  **Migration.** A shutdown task that recognised a failed
+  `Cluster.bootstrap` by `ClusterLeavingReason` now receives
+  `ClusterJoinUnsuccessfulReason`.
+
+- **BREAKING — An entity that stops without being passivated — a failure
+  past its shard's restart budget, a start or recovery that keeps failing, a
+  recovery failure it swallowed, a lost lease, a plain `stopSelf` — now
+  waits out a restart backoff before its shard re-creates it, instead of
+  being re-created by the next message for it: thirty messages at 5 ms to an
+  entity failing on each made thirty instances under the default
+  supervision, and now make twelve — the first, its ten restarts inside the
+  budget and one when the wait ends** (#1437). The wait is
+  `actor-ts.sharding.entity-restart-backoff`: it starts at `min` (`200ms`),
+  doubles with every such stop in a row up to `max` (`10s`), is spread by
+  `random-factor` (`0.2`), and starts over at `min` once the entity has gone
+  `reset-after` (`60s`) without stopping unasked since it came back, a
+  passivation in between not counting. The restarts inside the budget stay
+  immediate, and a passivation is still re-created by the next message at
+  once. Meanwhile the shard holds the entity's messages and hands them over
+  in order with their senders, capped per shard at `buffer-size` with the
+  newest dead-lettered past it; a `StartEntity` waits for the end of the
+  wait, a `PassivateEntity` for an entity backing off is answered with
+  `EntityStopped` only when a message has reached the entity since its stop
+  was reported, so one stop is reported once and the coordinator records one
+  `stopped` under `rememberEntities`; and a shard that stops dead-letters
+  what it holds. The empty-shard sweep leaves a shard alone while an entity
+  of it backs off: holding messages for the entity, waiting on a return a
+  `StartEntity` armed, or still inside the wait with nothing held keeps the
+  shard, so a `shard-passivation-idle` shorter than an entity's wait neither
+  dead-letters what is held nor starts the backoff over at `min`. The leaves
+  are also `ShardingOptions` fields (`entityRestartBackoffMinMs`,
+  `entityRestartBackoffMaxMs`, `entityRestartBackoffRandomFactor`,
+  `entityRestartBackoffResetAfterMs`) with matching builder methods,
+  validated like the shard failure backoff's, and `ShardConfig` gains the
+  four and `bufferSize` as optional fields that fall back to the shipped
+  values. With the shard failure backoff this completes #849: failure
+  backoffs are honoured on all three respawn paths.
+
+  **Migration.** An entity that stops without `Passivate` — a crash past its
+  shard's restart budget, a swallowed recovery failure, a lost lease or a
+  plain `stopSelf` — is re-created no sooner than
+  `actor-ts.sharding.entity-restart-backoff.min`, with its messages held
+  meanwhile; stop an entity on purpose with `Passivate`.
+
+- **A shard that stops without its region asking for it — anything but a
+  hand-off, a passivation or a release — now waits out a failure backoff
+  before it is re-created, instead of coming back on the next message or,
+  under `rememberEntities`, on the coordinator's answer to the registry
+  request the region used to send on every death, which looped with no
+  traffic at all (16 228 respawns in one idle second in the new test case)**
+  (#1437). The wait starts at `actor-ts.sharding.shard-failure-backoff.min`
+  (`200ms`), doubles with every death in a row up to `max` (`10s`), is
+  spread by `random-factor` (`0.2`), and starts over at `min` once the shard
+  has gone `reset-after` (`60s`) without failing since it came back, a
+  passivation in between not counting as a failure. Meanwhile the region
+  keeps the shard's ownership and holds its messages in the region buffer
+  against `buffer-size`, delivering them with their senders when the shard
+  is back; nothing re-creates it early — not a message, a `ToShard` frame,
+  `shardRefFor()` (which answers with a ref that relays through the region),
+  a repeated placement or a re-shipped registry — and under
+  `rememberEntities` the registry is asked for on the respawn. The leaves
+  are also `ShardingOptions` fields (`shardFailureBackoffMinMs`,
+  `shardFailureBackoffMaxMs`, `shardFailureBackoffRandomFactor`,
+  `shardFailureBackoffResetAfterMs`) with matching builder methods, and
+  `ShardingOptionsValidator` refuses a first wait or reset window that is
+  not positive, a random factor outside `[0, 1]` and a ceiling below the
+  first wait, checked on the resolved pair.
+
+- **BREAKING — `ReplicatedEventSourcedActor` follows the five
+  `actor-ts.persistence` settings for its local persist, its recovery and
+  its snapshot saves, as `PersistentActor` does** (#1497). `persist` runs
+  the head probe and the append as one call through the journal breaker and
+  can reject with `CircuitBreakerOpenError` or `CircuitBreakerTimeoutError`
+  before anything is folded or broadcast; recovery holds one of
+  `max-concurrent-recoveries` permits, reads the snapshot through the
+  snapshot breaker (honouring `snapshot-is-optional`) and the journal
+  through the journal breaker, and fails `preStart` with a
+  `RecoveryTimeoutError` past `recovery-timeout`, while a read that answers
+  after the deadline is dropped rather than applied; a snapshot save goes
+  through the snapshot breaker and a refusal stays a warning. The breaker
+  ids are `PersistentActor`'s own. Against a journal that accepted an append
+  and then stalled, the replicated actor used to wedge on its first command,
+  even with `call-timeout` set. The append of an event received from a peer
+  stays outside the breaker until #958 gives it a serialized append chain.
+
+  **Migration.** A replicated `persist` can reject with
+  `CircuitBreakerOpenError` or `CircuitBreakerTimeoutError` — handle them
+  where journal errors are handled — and replicated recovery queues behind
+  `max-concurrent-recoveries` and fails after `recovery-timeout` (30 s);
+  raise `recovery-timeout` for an entity whose recovery legitimately takes
+  longer.
+
+- **BREAKING — A NATS or JetStream actor refuses a `servers` entry that
+  carries credentials when it starts** (#1443). nats.js reads an entry for
+  its host and port only and sends credentials from `user`, `password` or
+  `token` alone, so `nats://user:password@host:4222` used to connect
+  unauthenticated and fail as an authorization error naming neither the
+  entry nor the fix — or, with a dotless host, throw `Invalid URL`. The
+  refusal names the entry (`servers` or `servers[i]`) with the credential
+  masked.
+
+  **Migration.** Move the credentials out of the URL into `user` and
+  `password`, or `token`.
+
+- **BREAKING — Four counts are read as whole numbers:
+  `reconnect.max-attempts` under every broker root, and JetStream's
+  `stream.max-age` and the deliver policy's `start-seq` and `start-time`**
+  (#1425). A fraction such as `7.5` fails the actor's start with a
+  `ConfigError` naming the key, where it used to reach the retry loop, which
+  read it as `7`, or the consumer provisioning at connect.
+
+  **Migration.** Write a whole number.
+
+- **A circuit breaker resolved by id through `CircuitBreakerExtension` takes
+  the time from its system's scheduler, so under a `ManualScheduler` its
+  window moves with the advance rather than with the wall clock; a scheduler
+  passed by the first caller still wins, and with a wall-clock scheduler
+  nothing changes** (#1478). That covers the persistence journal and
+  snapshot breakers too.
+
+- **BREAKING — A broker's circuit breaker is the pattern breaker now, named
+  by id: `circuitBreaker` is a `CircuitBreakerExtension` id —
+  `withCircuitBreaker(id)` on every broker builder,
+  `circuit-breaker = "<id>"` at a broker's HOCON root — and its numbers live
+  under `actor-ts.circuit-breaker.<id>`, over
+  `actor-ts.circuit-breaker.default`** (#1478). Once its window has passed,
+  a broker breaker lets one probe through where the hand-rolled one let a
+  burst of `failureThreshold` attempts through, and it gains reopen growth,
+  the window's jitter and `ignored-error-names`. Actors that name the same
+  id share one breaker and make at most one attempt each per window, and one
+  probe decides for all of them only while a failing connect settles before
+  the next actor wakes; a refused attempt waits out the remaining window,
+  spread forwards by the reconnect policy's `random-factor`; a connect cut
+  short by a stop does not count; and a breaker `call-timeout` aborts the
+  connect rather than racing it on the brokers that can abort one in flight,
+  the WebSocket client, `SseActor` and `TcpSocketActor`, while on every
+  other broker it is counted and can open the breaker as the connect runs
+  until it settles, and the warning names the call-timeout. Every earlier
+  spelling of the breaker block — `circuitBreaker { … }` and
+  `circuit-breaker { failure-threshold, reset }` — is refused when the actor
+  starts, naming the id shape. As before, no broker has a breaker until one
+  is named.
+
+  **Migration.** Replace `withCircuitBreaker(failureThreshold, resetMs)` /
+  `circuitBreaker: { failureThreshold, resetMs }` with
+  `withCircuitBreaker('<id>')` / `circuitBreaker: '<id>'`, and a broker
+  block's breaker with `circuit-breaker = "<id>"` plus
+  `actor-ts.circuit-breaker.<id> { max-failures = N, reset-timeout = T }`.
+
+- **BREAKING — The persistence stores a system selects now open as part of
+  its startup instead of at the first persisted message** (#1473). A system
+  that wires persistence through `ActorSystemOptions.withPersistence`, or
+  whose configuration selects a plug-in other than the in-memory one,
+  resolves its journal, snapshot store and durable-state store inside
+  `ActorSystem.create` and calls their `start()` in the `persistence-start`
+  phase, once the promises the plug-ins returned have settled. A plug-in id
+  nothing registered, a connection string that names the wrong host or a
+  database the node cannot reach now fails the startup with an error naming
+  the store — except on the object-storage snapshot and durable-state
+  stores, which have nothing to open ahead of time, so a bucket they cannot
+  reach fails their first operation, as does an application's own store
+  without `start()`: `whenReady()` rejects, the system shuts down and
+  `runUntilTerminated()` rejects, so a `main` that awaits it ends non-zero
+  instead of serving traffic it cannot persist. A store that did open before
+  another failed stays open until a shutdown task of the application closes
+  it: the framework does not close the stores it resolved yet (#388). For
+  such a system an invalid `actor-ts.persistence` behaviour block fails
+  `create` itself, unless `autoStart` is set false in code, which leaves the
+  block unread until persistence first reads it, so it no longer fails every
+  `WorkerMesh` worker's bootstrap. An actor spawned on the line after
+  `create` shares the store's one open. The switch is `autoStart`, a new
+  field of `PersistenceBehaviorOptions` that is on by default
+  (`DEFAULT_PERSISTENCE_AUTO_START`), set in code through
+  `withPersistence({ behavior })` or by `actor-ts.persistence.auto-start`,
+  the code winning; `WorkerMesh` workers run with it off, because they
+  inherit the main thread's selection but not the code that registered its
+  plug-ins.
+
+  Every in-repo store that talks to a backend reaches it when it opens,
+  whatever `autoCreateTables` (for MongoDB `autoCreateIndexes`) says, so a
+  database the node cannot reach fails the startup in every configuration,
+  an operator-managed schema included. A relational store that runs no DDL
+  sends a ping: `SELECT 1`, unless its `SqlDialect` declares another
+  statement through the new optional `pingSql()` (such as
+  `SELECT 1 FROM DUAL` for an engine that cannot select a constant without a
+  table). A MongoDB store sends `{ ping: 1 }` before it creates any index,
+  through the new optional `MongoDatabaseLike.command`, and a DynamoDB store
+  with `autoCreateTables` off describes its own table. Each is one round
+  trip per open, never one per operation, and a refusal fails the open as
+  `<Store>.open failed: …`, naming the store. The persistence overview and
+  the Postgres, libSQL, SQL Server, MariaDB, MongoDB and DynamoDB pages say
+  so.
+
+  **Migration.** Register persistence plug-ins through
+  `ActorSystemOptions.withPersistence({ plugins })` — a plug-in selected in
+  HOCON but registered after `ActorSystem.create` now fails the startup, and
+  a store that cannot open at boot now terminates the system; set
+  `autoStart: false` in the persistence `behavior` to keep opening on first
+  use. With `autoCreateTables` off, a DynamoDB store's role now needs
+  `dynamodb:DescribeTable` on its table, because the open describes it.
+
+- **BREAKING — Lease settings that no reader ever read are refused at
+  startup instead of being silently ignored** (#1454). They are `owner`,
+  `name`, `plugin`, `acquire-retries` and `acquire-retry-delay` under
+  `actor-ts.coordination.lease` (by code-built leases as well), `lease-name`
+  under `actor-ts.sharding` and `actor-ts.cluster.singleton`, any key under
+  `actor-ts.cluster.split-brain-resolver.lease-majority`, and an unknown
+  `coordination.lease.backend`, which every `Cluster.join` now checks
+  whatever strategy it selects.
+
+  **Migration.** Delete those keys from your configuration (they never had
+  an effect); set a code-built lease's name, owner and acquire retries with
+  its builder, or switch the consumer's `use-lease` on and let the framework
+  derive them.
+
+- **BREAKING — `PhiAccrualFailureDetector`'s `acceptableHeartbeatPauseMs`
+  defaults to 3 s instead of 0 (`phi.acceptable-heartbeat-pause = 3s`)**
+  (#1452). The cluster now feeds φ heartbeat frames only, and a clean
+  heartbeat series is the strictest steady state φ can see, so the pause
+  moved with the feed. The value was chosen by measurement on Bun 1.4.2 and
+  Node 26: a node blocked for 3 s draws no verdict, while garbage collection
+  at a 300 MB heap stalls the loop by tens of milliseconds. At a 500 ms
+  cadence φ now says unreachable after about 4.06 s and down after about
+  4.20 s of silence. `min-std-deviation` stays `100ms`: the pause absorbs a
+  stall as a pure offset, and the floor keeps its meaning.
+
+  **Migration.** Pass `acceptableHeartbeatPauseMs: 0`, or set
+  `phi.acceptable-heartbeat-pause = 0s`, to restore the old pause.
+
+- **BREAKING — `Cluster.bootstrap` binds the address the config names**
+  (#1435). It resolved the bind pair from its options, `CLUSTER_HOST` /
+  `POD_IP` / `HOSTNAME` and `CLUSTER_PORT`, then `0.0.0.0` and `2552`, and
+  handed the result to `Cluster.join` as an explicit option, which shadowed
+  `actor-ts.remote.tcp.host` and `port` on every call: a node with
+  `port = 3551` in its file bound `2552`. The order is now explicit options,
+  then `actor-ts.remote.tcp.*`, then the variables, then the built-in pair,
+  the order `actor-ts.discovery.*` already uses against its `CLUSTER_*`
+  variables. Both leaves ship as comments in `reference.conf`, so the
+  variables still answer on a node whose file names nothing, and
+  `Cluster.join` applies the built-in `0.0.0.0` and `2552` itself.
+
+  **Migration.** Read `cluster.selfAddress` instead of
+  `actor-ts.remote.tcp.host` and `port` from config, which `reference.conf`
+  no longer ships; where `CLUSTER_PORT` must keep outranking a port in the
+  file, write `port = ${?CLUSTER_PORT}` after it.
+
+- **`registerObjectStoragePlugins` registers the snapshot store and the
+  durable-state store before it awaits its peer-dependency probes, so as a
+  plugin the selected stores are in place when `ActorSystem.create`
+  returns** (#1473). A failed probe still rejects the returned promise; the
+  two factories stay registered, and a store resolved from them fails on the
+  same missing capability at its first use. The unknown journal,
+  snapshot-store and durable-state plugin errors name
+  `ActorSystemOptions.withPersistence({ plugins })` as the way to register a
+  backend.
+
+- **BREAKING — A `WebsocketServerActor` handles a new connection's accept
+  and its `onClientConnected` ahead of everything already queued, and no
+  mailbox bound sheds them** (#1431). Unless the hub is spawned with a
+  mailbox of its own, its queue is replaced at its first start by a
+  `ControlAwareMailbox` that keeps the bound from `withMailboxCapacity` or
+  `actor-ts.mailbox.default.capacity` and every message told before. Frames,
+  `onClientDisconnected` and `TSelf` messages keep arrival order, so the
+  per-connection order `onClientConnected`, `onMessage`,
+  `onClientDisconnected` is unchanged. Measured: a second client used to
+  wait behind all 101 frames another client had queued and now waits only
+  for the one in flight, so a hub backlog no longer turns a finished upgrade
+  into a 1013 through `acceptTimeoutMs`, and a bounded hub no longer serves
+  a client it never lists in `clients`. The DevTools hub gets the same lane.
+  A body that only spells one of the two kinds is ordinary traffic, which a
+  bound sheds like any frame.
+
+  **Migration.** To keep strict arrival order, spawn the hub with a FIFO
+  mailbox of its own that carries its bound,
+  `withMailbox(() => new BoundedMailbox(options))`: a supplied mailbox is
+  the only bound the hub then has — `withMailboxCapacity()` cannot be
+  combined with `withMailbox()`, and neither
+  `actor-ts.mailbox.default.capacity` nor an `actor-ts.deployment` entry
+  reaches it — so `withMailbox(() => new Mailbox())` keeps the order but
+  leaves the hub unbounded. A hub spawned with `withMailbox` keeps exactly
+  that mailbox and its order.
+
+- **BREAKING — `JetStreamMessage.streamSeq` and `consumerSeq` are
+  `streamSequence` and `consumerSequence` now, and
+  `JetStreamPublish.expectedLastSeq` is `expectedLastSequence` — the names
+  nats.js itself gives the values they carry** (#1443). `startSeq` and the
+  HOCON leaf `start-seq` keep their spelling, since they mirror nats.js's
+  `opt_start_seq`.
+
+  **Migration.** Read `message.streamSequence` / `message.consumerSequence`,
+  and set `expectedLastSequence` on a publish, where the `…Seq` names were
+  used.
+
+- **BREAKING — The camelCase HOCON leaves under `actor-ts.io.broker.*` are
+  kebab-case now, with the unit suffix dropped, and a retired spelling stops
+  the actor at start instead of being ignored** (#1443). The renames:
+  `amqp.autoAcknowledge` → `amqp.auto-acknowledge`; under `email-bridge`,
+  `imap.onProcessed` → `imap.on-processed`, `imap.moveToMailbox` →
+  `imap.move-to-mailbox`, `imap.disableIdle` → `imap.disable-idle`,
+  `imap.maxIdleTimeMs` → `imap.max-idle-time`, `imap.pollIntervalMs` →
+  `imap.poll-interval`, `imap.maxMessageBytes` → `imap.max-message-bytes`,
+  `imap.acknowledgmentTimeoutMs` → `imap.acknowledgment-timeout`,
+  `smtp.maxConnections` → `smtp.max-connections` and `smtp.maxMessages` →
+  `smtp.max-messages`; under `grpc.client` and `grpc.server`, `protoPath` →
+  `proto-path`, `packageName` → `package-name` and `serviceName` →
+  `service-name`, and the client's `deadlineMs` → `deadline`;
+  `jetstream-key-value.timeToLive` → `time-to-live` and `maxValueBytes` →
+  `max-value-bytes`; `jetstream-object-store.maxObjectBytes` →
+  `max-object-bytes`; under `kafka`, `clientId` → `client-id`,
+  `consumer.groupId` → `consumer.group-id`, `consumer.fromBeginning` →
+  `consumer.from-beginning`, `consumer.commitMode` → `consumer.commit-mode`
+  and `consumer.commitTimeoutMs` → `consumer.commit-timeout`; under `mqtt`,
+  `brokerUrl` → `broker-url`, `clientId` → `client-id`, `cleanSession` →
+  `clean-session`, `keepAlive` → `keep-alive` and `protocolVersion` →
+  `protocol-version`; under `redis-streams`, `blockMs` → `block`,
+  `consumerGroup` → `consumer-group` and `consumer-group.createIfMissing` →
+  `consumer-group.create-if-missing`; under `sse` and `tcp`, `idleTimeoutMs`
+  → `idle-timeout` and `connectTimeoutMs` → `connect-timeout`, and
+  `tcp.keepAliveMs` → `tcp.keep-alive`; under `tcp-server`, `bindHost` →
+  `bind-host`, `bindPort` → `bind-port` and `maxConnections` →
+  `max-connections`; `udp.bindHost` → `udp.bind-host` and `udp.bindPort` →
+  `udp.bind-port`; under `websocket`, `pingIntervalMs` → `ping-interval`,
+  `maxFrameBytes` → `max-frame-bytes`, `idleTimeoutMs` → `idle-timeout` and
+  `connectTimeoutMs` → `connect-timeout`. The TCP framing caps follow, under
+  both `actor-ts.io.broker.tcp` and `tcp-server`: `framing.maxLineLen` →
+  `framing.max-line-bytes` and `framing.maxFrameLen` →
+  `framing.max-frame-bytes`, read as sizes, so `64K` is 65536 bytes where
+  the old reader refused a unit; their refusal says the TypeScript fields
+  moved as well (`maxLineBytes` / `maxFrameBytes`, below). Every other
+  TypeScript field and builder method is unchanged. Three values change
+  grammar with their key: `imap.max-message-bytes` is a size (`25M`, which
+  used to fail), `kafka.consumer.commit-timeout` a duration (`5s`), and
+  `mqtt.keep-alive` a duration in whole seconds — `30s` is 30, while
+  `1500ms` and a bare `30`, which HOCON reads as milliseconds, are refused.
+  A retired spelling fails `preStart` — for the gRPC server, its option
+  resolution — with a `ConfigError` naming the old and the new path.
+  `ConfigKeys.io.broker.<name>` is a group of full dotted paths instead of a
+  root string; the old value is its `root`, which every broker actor's
+  `configKey()` returns. A `BrokerActor` subclass's `readOptionsFromConfig`
+  is handed the system config and reads full paths under `configKey()`: a
+  name read relative to the block, the way the hook used to take it, fails
+  `preStart` with a `ConfigError` naming `configKey()` rather than reading
+  nothing, and the new protected `retiredLeaves()` hook lets a subclass
+  refuse its own old spellings the same way; its return type,
+  `RetiredLeaves`, is exported type-only from `actor-ts/io` beside
+  `BrokerActor`. A subclass of a concrete broker actor that overrides
+  `configKey()` no longer moves that actor's block: the protocol readers
+  read their `ConfigKeys` group at its fixed paths, which the guarded view
+  refuses outside the overridden root, so such a subclass fails `preStart`
+  with that `ConfigError` instead of reading the relocated block.
+
+  **Migration.** Rename the camelCase leaves in each `actor-ts.io.broker.*`
+  block as listed (`keep-alive = 30s`, not `30`), write
+  `framing.max-line-bytes` / `framing.max-frame-bytes` (a size such as
+  `64K`) for the framing caps, use `ConfigKeys.io.broker.<name>.root` — and
+  `ConfigKeys.io.broker.tcp.framing.root` / `tcpServer.framing.root` — where
+  the bare string was used, and make a custom `readOptionsFromConfig` read
+  `${configKey()}.<leaf>` from the config it is handed.
+
+- **BREAKING — `ExpressBackend.getApp()` no longer offers `listen()`: its
+  `ExpressAppLike` return type dropped the method, because the backend now
+  builds the `node:http` server it listens on itself** (#1488). A
+  `getApp().listen(...)` call started a second server that `bind()` never
+  managed.
+
+  **Migration.** Bind through `newServerAt(...).bind(...)`, which listens on
+  the backend's own server; mount middleware on `getApp()` as before.
+
+- **BREAKING — The eight HOCON leaves every broker block shares are
+  kebab-case now, with the unit suffix dropped** (#1443). The rename applies
+  under every `actor-ts.io.broker.<name>` root and under the `configKey()`
+  of any `BrokerActor` subclass: `reconnect.initialDelayMs` →
+  `reconnect.initial-delay`, `reconnect.maxDelayMs` → `reconnect.max-delay`,
+  `reconnect.maxAttempts` → `reconnect.max-attempts`,
+  `reconnect.randomFactor` → `reconnect.random-factor`, `circuitBreaker` →
+  `circuit-breaker`, `circuitBreaker.failureThreshold` →
+  `circuit-breaker.failure-threshold`, `circuitBreaker.resetMs` →
+  `circuit-breaker.reset`, and `outboundBuffer` → `outbound-buffer`;
+  `reconnect.factor` is unchanged. A retired spelling fails the actor's
+  `preStart` with a `ConfigError` naming both paths instead of being
+  ignored, so a lowered buffer or a configured breaker can no longer fall
+  back to the built-in default unnoticed. The TypeScript fields and the
+  `withReconnect` and `withOutboundBuffer` builders are unchanged; the
+  breaker pair did not stay, because #1478 replaced the block by a breaker
+  id and refuses `circuit-breaker { failure-threshold, reset }` as well.
+  Each protocol's own leaves followed in the same release, below.
+
+  **Migration.** Rename the shared leaves in every `actor-ts.io.broker.*`
+  block of your application.conf (e.g. `reconnect.initialDelayMs` →
+  `reconnect.initial-delay`, `outboundBuffer` → `outbound-buffer`); no code
+  change is needed. A `circuitBreaker` block moves to a breaker id instead,
+  as the #1478 entry says.
+
+- **The cluster-sharding actors now decline a message none of their arms
+  handles through `Actor.unhandled` instead of dropping it in silence: it
+  becomes a dead letter naming the actor and ticks
+  `actor_unhandled_total{class}` with `class` set to `Shard`, `ShardRegion`
+  or `ShardCoordinator`** (#1441). A region declines a coordinator-only
+  kind, a `sharding.` kind it does not know (a newer member's) and a shard
+  message such as `sharding.StartEntity` or `sharding.GetShardStats` told to
+  it instead of to a shard ref; the leader's coordinator declines a kind
+  meant for a region (a coordinator that is not the leader drops every frame
+  before it dispatches, and a peer's body that is not a sharding message is
+  dropped with a debug line, as before); a shard declines anything its ref
+  is told that is not a shard message. None of the three declines anything
+  under healthy traffic — a multi-node test now drives a cluster through
+  routing, passivation, a rebalance, a graceful leave and a leader failover
+  and holds the counter at zero — so a rate on these classes is protocol
+  drift. Until #1179 bounds dead-letter publication, a peer sending such
+  frames in a storm produces one dead letter per frame.
+
+- **BREAKING — The request-timeout middleware's deadline field is
+  `deadlineMs`, set with `withDeadlineMs(...)`** (#1463). The field was
+  `ms`, which is nothing but a unit suffix and left the new configuration
+  leaf without a name; there is no alias. The bare-number form
+  `requestTimeout(5000)` is unchanged.
+
+  **Migration.** Replace `TimeoutOptions.withMs(ms)` with
+  `withDeadlineMs(ms)`, and a plain `{ ms }` with `{ deadlineMs }`.
+
+- **The default `onSelfMessage` of `WebsocketServerActor`,
+  `WebsocketClientActor` and `MqttActor` now declines through
+  `Actor.unhandled`: the message becomes a dead letter naming the actor and
+  is counted in `actor_unhandled_total{class}`, after a warn that names the
+  message's class and no longer prints the payload** (#1442). The hook also
+  receives whatever none of the actor's own kinds matched, a body a remote
+  node addressed to its path included, so a subclass that declines on
+  purpose in its own override should call `this.unhandled(message)` to keep
+  that record.
+
+- **BREAKING — A persistence plugin selector that holds no id at all
+  (`null`, a block or a list) is now refused by whichever store is resolved
+  first, not only by its own:
+  `actor-ts.persistence.snapshot-store.plugin = null` fails the first
+  journal resolution as well** (#1425). The three selectors are read
+  together by one reader now; a selector that holds an id resolves exactly
+  as before, the id taken as written, with no trimming and no change of
+  case.
+
+  **Migration.** Fix or remove the malformed selector: a sibling store no
+  longer resolves while one selector holds no id.
+
+- **BREAKING — A URL the runtime has already parsed is now redacted exactly,
+  so a credential-free URL with an `@` in its path or query keeps its host
+  in HttpClient's and SseActor's messages** (#1458). The new
+  `redactParsedUrlCredentials(url)` (root entry point and `actor-ts/util`)
+  renders a `URL` with exactly its username and password replaced by `***`;
+  what follows the host still goes through the scan, so a URL nested in a
+  path or a query keeps its own credential masked. `HttpRedirectError`
+  (message, `url`, `location`), `HttpResponseTooLargeError` and SseActor's
+  redirect refusal now name their URLs this way:
+  `https://registry.npmjs.org/@types%2fnode`, a `/@user` path and
+  `?login_hint=a@b` come back as they are instead of as
+  `https://***@types%2fnode`, and only a `Location` that does not parse is
+  still masked by the scan. `HttpRedirectError.location` is now the
+  `Location` resolved against `url`, as the next hop would have requested
+  it, rather than the header as sent.
+
+  **Migration.** `HttpRedirectError.location` now holds the `Location`
+  resolved against `HttpRedirectError.url` (a relative `/next` reads
+  `http://host/next`); where you need the header as sent, make the request
+  with `redirect: 'manual'` and read `response.headers.location`.
+
+- **BREAKING — A `terminate()` that lands while a coordinated-shutdown run
+  is in flight starts nothing and resolves at once, in either form and
+  whoever started the run** (#1455). It used to tear the system down on the
+  spot, stopping the actors in the middle of the pipeline so that every
+  later phase, the cluster leave included, ran on a terminated system;
+  joining the run instead would make a task that awaits `terminate()` wait
+  on its own run until its phase timed out. The run ends in the teardown
+  anyway, a run that does not (no terminator in its last phase, or a halt)
+  is followed by one, and `system.whenTerminated()` is the way to wait for
+  the system to go down.
+
+  The rule holds from the pipeline's first phase on as well: a task in
+  `before-service-unbind` that called `terminate()` found no run in flight
+  and tore the system down mid-pipeline — or, opted in, started a second
+  pipeline inside the first — because `run()` stored its promise only after
+  the first phase's tasks had started.
+
+  From a task of the pipeline, awaiting `whenTerminated()` is the same
+  stall: the teardown it waits for runs in the last phase, which cannot
+  start before the task's own phase ends, so the phase is held for its whole
+  budget and logged as timed out. Only a task of `actor-system-terminate`
+  runs beside the terminator. **Migration.** Where an awaited `terminate()`
+  beside a coordinated-shutdown run, outside the pipeline (code beside a
+  signal-triggered shutdown, say), relies on the system being down
+  afterwards, await `system.whenTerminated()` instead; a phase task should
+  not wait for the system to go down at all, so move work that needs it down
+  after the run, or into a task of `actor-system-terminate`.
+
+- **BREAKING — The root config key `profiles` is reserved** (#1546). In
+  `application.conf` and the secrets file it is read as profile blocks and
+  stripped from the effective tree, a substitution that reads it is refused,
+  and a root profiles key in the config passed in code
+  (`ActorSystemOptions.withConfig`, `LoadOptions.overrides`) is refused at
+  startup instead of being merged. `DEVTOOLS_PROTOCOL_VERSION` is now 2,
+  because the source of a `config.resolved` entry widened from three layer
+  names to six (`profile`, `secrets`, and `project-reference` for the
+  project's own `reference.conf`, #1785), so a DevTools client and server
+  one version apart refuse each other at the handshake.
+  `WorkerMeshInitData`, exported from `actor-ts/worker`, gains the required
+  `secretPaths` field and an optional `configFile`.
+
+  **Migration.** Rename a root profiles key of your own (keys below the root
+  such as `my-app.profiles` are unaffected), move profile blocks out of
+  code-supplied config into application.conf, and rebuild any DevTools
+  client against protocol version 2.
+
+- **BREAKING — Three TypeScript names in the broker layer now use the
+  vocabulary the kebab-case HOCON surface will expose** (#1443). The TCP
+  framing caps are named after the unit they count: `maxLineLen` and
+  `maxFrameLen` on the `lines` and `length-prefixed` framings become
+  `maxLineBytes` and `maxFrameBytes`, and `DEFAULT_MAX_LINE_LENGTH` /
+  `DEFAULT_MAX_FRAME_LENGTH` become `DEFAULT_MAX_LINE_BYTES` /
+  `DEFAULT_MAX_FRAME_BYTES` with unchanged values; the overflow messages and
+  the field a validation error names (`framing.maxLineBytes`,
+  `framing.maxFrameBytes`) follow. The email bridge's `EmailProcessedAction`
+  is `'mark-seen' | 'move'` (was `'markSeen'`), still defaulting to
+  mark-seen, and the JetStream `deliverPolicy` object kinds are
+  `'by-start-sequence'` / `'by-start-time'` (were `'byStartSeq'` /
+  `'byStartTime'`), spelled out like the `by_start_sequence` nats.js
+  receives; the `startSeq` field and the `start-seq` leaf keep the short
+  form, because they mirror nats.js `opt_start_seq`. Both are kebab-case
+  like every value a HOCON key takes, so a HOCON value still lands in the
+  union unchanged. The retired values are refused at startup with a
+  ConfigError naming the replacement instead of being read:
+  `imap.onProcessed = "markSeen"`, and
+  `consumer.deliver-policy.kind = "byStartSeq"` or `"byStartTime"`. HOCON
+  leaf names are unchanged by this entry.
+
+  **Migration.** Rename maxLineLen/maxFrameLen to maxLineBytes/maxFrameBytes
+  and DEFAULT_MAX_LINE_LENGTH/DEFAULT_MAX_FRAME_LENGTH to
+  DEFAULT_MAX_LINE_BYTES/DEFAULT_MAX_FRAME_BYTES; write 'mark-seen' for
+  'markSeen' and 'by-start-sequence'/'by-start-time' for
+  'byStartSeq'/'byStartTime', in code and in HOCON values.
+
+- **The `NetSocket` contract behind the TCP socket actor now states why the
+  socket's own `setTimeout` is refused and not merely unused: it measures
+  inactivity in either direction, so a connection written to steadily never
+  trips it however dead the far end is, while a healthy but quiet one trips
+  it although nothing is wrong** (#1510). Keepalive answers the liveness
+  question because the peer's kernel replies without its application's help,
+  and inbound silence stays the actor's own deadline, reset by arriving
+  bytes. The reasoning had lived only in a commit body since the feature
+  landed. The gRPC registry comment was corrected in the same pass, after
+  checking the documented contract refuted a claim about what a disconnect
+  tells a stream's owner.
+
+- **The guard that keeps the jitter rule to one implementation now checks
+  the rule's shape rather than its name, and the two supervisor refusals
+  recorded for #770 and #773 are pinned in code as well as in prose**
+  (#1509). The previous versions could not see the regressions they were
+  written for: pasting the jitter body back into Retry.ts under the name
+  spreadDelay left the suite at 146 pass / 0 fail with typecheck exit 0, and
+  replacing the whole #770 argument with a single line naming its three
+  identifiers left its guard at 2 pass / 0 fail. Ownership is now asserted
+  by importing and calling the helper, absence by three signatures of the
+  arithmetic over comment-stripped source, and equivalence by comparing the
+  delay retry asks for against the helper's own output across fifteen draw
+  and factor pairs. The supervisor refusals additionally assert that neither
+  refused design is built — enqueueSystem and scheduleOnceFunction appear as
+  comment mentions but never as calls, both tick sentinels are Symbol rather
+  than Symbol.for, and the stash eviction publishes to dead letters with no
+  option gating it.
+
+- **The maps page now carries the nested-CRDT identity boundary in both
+  languages** (#1421). It points at the sets page's identity section rather
+  than restating the argument, so two pages cannot drift into disagreeing
+  about one boundary, and adds the half that is specific to a map:
+  `ORMap.update` reuses the value already under a key, so the inner factory
+  never runs for a key that arrived by gossip and a second `update` does not
+  teach it either. Removing the key and re-adding it does run the factory,
+  but that starts the value over rather than re-keying it, and a peer still
+  holding the pre-remove state files its elements under `JSON.stringify`
+  again on the next merge. A guard derives both cross-reference anchors from
+  the sets pages' own heading text, because nothing else resolves an in-page
+  fragment, and asserts the described sequence by execution.
+
+- **The warning DevTools logs when it attaches to a system that is already
+  tracing now covers both switches it flips, not just one** (#1512). It
+  returned early whenever the application had already set
+  `captureMessagePayloads(true)`, whatever `recordRootSpans` said, so an
+  application exporting sampled traces to a paid ingest — with payload
+  capture on for its own reasons — got no word that the attach had just
+  taken its exported span volume to one root span per actor message. The
+  framework is propagate-only, so before the attach a plain tell opened no
+  span at all: that is not a marginal increase but a new population arriving
+  at the ingest. The predicate is now a foreign tracer plus at least one
+  switch DevTools flipped, and the line names the halves that actually
+  flipped rather than repeating one fixed sentence. Still one line however
+  many flipped, and still silent for an application that had both on
+  already. The test that pinned the old silence filtered its assertion on
+  `actor.message.payload`, which the volume half does not mention, so it
+  went on passing over the very warning it was written to forbid; it now
+  reads every warning the system logged.
+
+- **The zstd read ladder's last arm — the error a runtime with neither
+  native zstd nor the `fzstd` peer gets — is executed by a test for the
+  first time** (#1419). It runs in a child process, because nothing inside
+  `bun test` can make the peer's import fail: bun evaluates a `mock.module`
+  factory at registration, so a factory that throws throws out of the
+  registration call and leaves the specifier resolving, and a resolver
+  plugin that refused it could never be uninstalled and would take the peer
+  away from every suite that ran afterwards. The arm now carries that record
+  at the site. The compression pages also say what their runtime-support
+  section always implied and never stated: a runtime without native zstd can
+  read zstd bodies but cannot be configured for `zstd`, because registration
+  probes the compress path while every read picks its decompressor from the
+  body's own header — so such a reader is configured `gzip` or `none`. The
+  object-storage zstd smoke case records why it still stops at the failed
+  write instead of reading a body back, and what a committed frame or a
+  cross-runtime spawn would each cost.
+
+- **Every option slot that names a module a worker executes is held to one
+  shared rule, and two spellings that used to slip through it are refused**
+  (#1515). The allow-list existed as four hand-written copies with three
+  different wordings across `WorkerClusterOptions.bootstrap`,
+  `WorkerMeshOptions.module` and `.bootstrap`,
+  `OffloadPoolOptions.bootstrap` and `ParallelismOptions.module` and
+  `.bootstrap` — six slots — so `OffloadPoolOptions` had already drifted to
+  saying only that a spelling was wrong. They now share
+  `checkWorkerModuleUrl`, which adds the two rules the copies made
+  expensive: a scheme-relative `file:worker.js`, `file:./worker.js` or the
+  bare `file:`, which the URL parser does not reject but silently anchors at
+  the filesystem root, and a specifier naming a directory. Both reached
+  Node's `ERR_INVALID_FILE_URL_PATH` from inside the `Worker` constructor
+  instead — late, and naming no field, which is the defect the required-ness
+  guard beside them was added to fix. The shared worker-entry rule refused
+  one spelling that had worked, and it is accepted again: the single-slash
+  `file:/srv/app/worker.js`, an absolute file URI with its empty authority
+  left out — RFC 8089's own spelling, and the shape `java.io.File.toURI()`
+  produces. Measured on bun 1.4.2 it parses to an `href` byte-identical to
+  the triple-slash form and spawns a working worker, so the lookahead is one
+  slash rather than two. The claim that nothing which worked stops working
+  now holds for every spelling but the four-slash
+  `file:////a-server/share/worker.js`, which is refused deliberately and for
+  its own reason.
+
+- **The observed-events ceiling on a ReplicatedEventSourcedActor is
+  documented as what it is: a one-way switch for that entity** (#1507). The
+  bound counts the replica's own persists as well as its peers', a snapshot
+  stores the whole event history rather than a checkpoint, and recovery
+  re-seeds the history from that snapshot — so neither snapshotting nor
+  discarding the journal sheds an event, and the refusal comes back with the
+  actor. The refusal WARN told operators to "snapshot and compact" and the
+  DEFAULT_MAX_REPLICATED_OBSERVED_EVENTS JSDoc said an actor approaching the
+  bound "wants snapshots"; both offered relief the code does not provide.
+  Raising maxObservedEvents() is the only relief that exists today, and
+  compaction (#535) is named as what would genuinely unstick it. Two new
+  EnvelopeTrust tests pin the permanence: one restarts the entity on the
+  same journal and snapshot store, one restarts it on an emptied journal so
+  the snapshot alone refills the history, and both expect the next peer
+  envelope refused with a fresh WARN.
+
+  Those two tests bound the refusal and not the sentence, though: both
+  matched the WARN only on maxObservedEvents() and on the word refused, and
+  the retracted wording carried both, so inverting the source change left
+  all seven tests in that file green at 7 pass / 0 fail. The warning's own
+  text is asserted now, wherever an incarnation's refusal line is read - the
+  three claims the correction added, and the snapshot-and-compact advice it
+  withdrew as a within-sentence pattern rather than the retired literal,
+  because a reword to "try snapshotting and then compacting" slips past a
+  literal. Against the inverted source that suite is 4 pass / 3 fail. The
+  three prose sites themselves are still unbound: reverting both overview
+  Asides and the DEFAULT_MAX_REPLICATED_OBSERVED_EVENTS JSDoc paragraph,
+  with the corrected WARN and this guard in place, leaves the reachable
+  suites at 1491 pass / 0 fail.
+
+- **The filesystem object-storage backend derives the current object's ETag
+  only where ifMatch reads its value** (#1507). put digested the bytes
+  already on disk on every overwrite, although ifNoneMatch: '*' needs only
+  to know that bytes exist — which the read has already answered — and a put
+  carrying no precondition needs neither. Unconditional was the right shape
+  while the ETag was a 32-bit loop over bytes already in memory; it is a
+  WebCrypto call now, and the two callers that dominate the path both put
+  without any CAS option, so every snapshot save and every durable-state
+  upsert holding no cached ETag paid for a token nobody compares.
+
+- **The Durations and Sizes reference now lists every unit both parsers
+  accept — 34 duration spellings and 38 size spellings, against the seven
+  and five it published before — and says what is refused** (#1512). The
+  size list was actively misleading: it described B/K/M/G/T as binary by
+  default without mentioning that KB/MB/GB/TB/PB are decimal, so a reader
+  who wrote 16MB expecting the documented binary default got 16 000 000
+  bytes instead of 16 777 216, an error that grows from 2.4 % at K to 10 %
+  at T. Both forms now sit side by side in one table, P is present where it
+  was absent entirely, and each subsection states that an unrecognized unit
+  throws Unknown duration unit / Unknown size unit — own-property-only, so
+  constructor is refused like any other — while anything that does not come
+  out finite throws Invalid duration / Invalid size. Also recorded: a
+  duration takes a sign and a bare fraction where a size takes neither, and
+  the three codepoints that render as a micro sign all fold onto one unit.
+
+- **The test that claims the WebSocket client's keepalive timer does not
+  outlive its socket now asserts on the timer** (#1508). It asserted only
+  that the socket stopped receiving, and that is satisfied by machinery the
+  timer has nothing to do with: `onSocketDown` nulls the socket handle
+  first, so a tick reaches nothing whether its interval was cleared or not.
+  Measured both ways — with the `clearInterval` deleted the old body stayed
+  green while the timer went on firing four more times in the same window,
+  and the plausible wrong fix of guarding the tick instead of clearing the
+  timer leaves exactly the per-period wake-up the comment was about. The
+  suite now counts invocations of the keepalive interval's handler, which is
+  the one instrument that separates a timer that was cleared from a timer
+  that still runs and returns early, and the assertion reads 5 and 6 against
+  those two mutants where it expects 1.
+
+- **The consumer's out-of-order cap is now exercised against a real
+  `ProducerController` rather than only against hand-rolled envelopes**
+  (#1508). A producer sending past a handler that refuses one sequence is
+  exactly the traffic the cap exists for, and nothing covered it, which is
+  how the retired `windowSize - 1` premise stood unchallenged for as long as
+  it did. The new case parks the retained set at exactly the cap while the
+  first sequence is refused across five retransmits, then watches the whole
+  run drain and all forty bodies arrive exactly once when the gap closes. It
+  also pins the half nothing else did: retransmission on that path is
+  unbounded, and that is the only reason a refusal at the cap is a stall
+  rather than a drop. A finite ceiling of three attempts, applied as a
+  probe, fails this case alone and leaves every other case in the file
+  green. The test helper's comment claiming a real producer never leaves a
+  gap open is corrected in the same pass.
+
+- **The producer incarnation token is now documented as scoped to one
+  producer rather than to one delivery** (#1511). #730's criterion asked for
+  a per-delivery unguessable nonce; what shipped is one token per controller
+  construction, stamped on every delivery that incarnation sends, so any
+  party which legitimately receives one delivery can settle every other
+  in-flight sequence of that producer for the actor's lifetime. That is
+  adequate under the issue's own threat model, where the holder of a
+  delivery is the acknowledging party anyway and has no other route to the
+  producer's reply address, and it is what keeps the consumer's
+  `(producerId, incarnation)` dedup key stable, since a per-message token
+  would reset the window on every sequence. What it does not give is a
+  capability that can be handed out per message. The field's JSDoc and both
+  ack-semantics pages now say so, a test pins the scope so a future
+  per-delivery token turns the record red instead of leaving the prose
+  stale, and #1237 is named as the open consumer-side sibling. The unread
+  `attempts` counter on the producer's in-flight record is annotated in the
+  same pass as #646's reserved hook, together with the interaction #646 does
+  not name: a retry ceiling that cannot tell a consumer refusing a sequence
+  from a consumer that is gone turns the documented stall into a silent
+  drop.
+
+- **The two retry delay ceilings moved into a new
+  `src/pattern/Constants.ts`, which the subsystem lacked while sixteen
+  siblings had one, and the jitter helper duplicated between `Retry` and
+  `BackoffPolicy` under a comment asserting the two were identical is now
+  one exported function that both use** (#1509). Neither constant is on the
+  `pattern` barrel: both were module-private before the move.
+
+- **Four decisions around mailboxes and the backoff supervisor now say what
+  they actually decided** (#1509). The `deadLetterDrops` option describes
+  the attribution its dead letters carry — the envelope's MDC context and
+  trace, which no other loss path has — instead of claiming they carry what
+  every other loss path carries. `BackoffSupervisor` records why the respawn
+  tick takes no dedicated internal channel, and where the per-eviction
+  dead-letter cost is bounded for every producer rather than per producer.
+  `PriorityMailbox`'s all-undroppable guard names a route that can still
+  reach it, the stash replay having moved to the exempt lane. And the
+  mailbox-sizing page says, in both languages and on the factor an operator
+  actually multiplies, that `capacity x bytes_per_message` bounds the user
+  queue and not the actor's footprint.
+
+- **BREAKING — `LeaseMajority` relies on `checkAlive()`, and the derived
+  lease renewal interval is capped at half the TTL** (#937).  `LeaseMajority`
+  re-validates a won arbitration with `lease.checkAlive()` before returning it
+  again, so a custom `Lease` has to answer it against its TTL: `true` while
+  held and the TTL has not run out since the last accepted write was sent.
+  One that answers a constant `false` never keeps a win; one that answers a
+  held flag keeps working, without the stall protection.
+
+  *Migration:* a custom `Lease` used with `LeaseMajority` implements
+  `checkAlive()` as `held && now < deadline`, where the deadline is the send
+  time of the last write the backend accepted plus the TTL — the two bundled
+  leases show the shape.  The bundled leases need nothing.
+
+  An unset `renewalIntervalMs` was a third of the TTL with a floor — 100 ms
+  for `InMemoryLease`, 500 ms for `KubernetesLease` — and the floor alone
+  renewed a TTL at or below it only after the record had lapsed.  That now
+  gives the lease up, so the derived interval is capped at half the TTL.  An
+  interval set explicitly is taken as given.
+
+- **Every broker image is pinned to a release, every runner image to a
+  digest, and Dependabot watches both — and the .NET benchmark arms**
+  (#1597). Sixteen of the seventeen `image:` lines in the integration compose
+  files were `:latest` (one `2022-latest`), on the argument written beside
+  them that an upstream regression should surface as soon as it ships rather
+  than when someone remembers a pin. That bought two things it did not say: a
+  broker release turned the nightly red *underneath* a run with nothing in the
+  tree to attribute it to, and no run was reproducible afterwards. One of the
+  sixteen was not even a release — `ghcr.io/tursodatabase/libsql-server:latest`
+  is a main-branch build (built 2026-08-23 from `d6c75af6`, version label
+  `latest`) while the newest release is `v0.24.33` from 2025-12-19, so that
+  suite had been testing an unreleased server for months.
+
+  Each pin is the release the floating tag resolved to when it was written,
+  found by digest rather than guessed, so the switch changed what is tested
+  exactly once — libsql-server, now on `v0.24.33`. The nineteen runner
+  Dockerfiles keep `oven/bun:1.4-debian` and gain its multi-arch index digest
+  (the same image as `1.4.2-debian`, matching `.bun-version`): the policy in
+  `tests/integration/Dockerfile.node` — the minor moves with `.bun-version`,
+  patches flow — is unchanged, and the `docker` entry is written to honour it,
+  ignoring `oven/bun` majors and minors so what Dependabot moves is the digest,
+  as one PR across the nineteen files. A `docker-compose` entry over the same
+  directories opens a broker release as a PR that `integration-brokers.yml`
+  runs, minors and patches grouped, a major on its own; a `nuget` entry covers
+  the two .NET arms, with the `Microsoft.Orleans.*` pair grouped at every
+  update type. Two pins Dependabot cannot follow move by hand like MinIO's:
+  `mssql/server:2022-CU27-ubuntu-22.04` and `yugabyte:2026.1.1.2-b9`, both
+  because the moving part sits in what it treats as the tag's suffix. The
+  guard in `tests/unit/ci/WorkflowHygiene.test.ts` now spans every kind of
+  manifest Dependabot can read here — Dockerfiles, compose files and `.csproj`
+  are each named by exactly one entry of the matching ecosystem, every `FROM`
+  carries a digest, no `image:` is `latest` or `*-latest`. The JVM arms stay
+  by hand: Dependabot has no Mill ecosystem.
+
+- **Dependabot watches every `package.json`, through the updater that can
+  write the lockfile beside it** (#1596). The repository tracks thirteen
+  manifests and `.github/dependabot.yml` watched one — the root, through the
+  `npm` ecosystem, which has no code for `bun.lock` and therefore ran
+  manifest-only: a caret range already admits every minor and patch, so an
+  in-range release changed nothing it could see, and the minor-and-patch group
+  configured since the file was written opened **no PR in five months**. Every
+  root PR it did open — thirteen, all majors — edited `package.json` alone and
+  went red on every frozen install until `bun.lock` was regenerated by hand
+  (#817). The other twelve manifests got security updates only, which
+  Dependabot opens from the dependency graph regardless of the file, and were
+  kept current by hand (#1520). #779 is what the blind spot cost: all nineteen
+  high advisories in the runtime closure were fixed inside the declared
+  ranges, exactly the updates that never surfaced.
+
+  The five Bun-installed manifests — the root, `docs/`, `devtools-ui/`,
+  `benchmarks/comparison/` and `tests/integration/brokers/` — now use
+  `package-ecosystem: "bun"`, whose updater regenerates `bun.lock` and commits
+  it, so a PR arrives green on `--frozen-lockfile` and in-range updates
+  surface as the grouped daily PR. One entry per directory, so the DevTools UI
+  PR — red by construction until `bun run build:ui` re-embeds the bundle,
+  exactly like a source change there — never holds up a root or docs bump.
+  The eight example frontends use `npm` with a `directories:` list, because
+  `examples.yml` builds them with `npm ci` from `package-lock.json`; the
+  second lockfile they carry is #1402's open decision. Neither updater reads
+  `peerDependencies`, so no peer floor moves as a side effect.
+
+  `tests/unit/ci/WorkflowHygiene.test.ts` now asserts that every tracked
+  `package.json` is named by exactly one entry, by the ecosystem its lockfile
+  dictates, and that every `bun.lock` a `bun` entry watches carries a
+  `lockfileVersion` the updater reads: it bundles Bun 1.3.14 and refuses
+  anything above 1 (dependabot/dependabot-core#15896; #16071 raises the
+  ceiling and is still open). `devtools-ui/bun.lock`, born under Bun 1.4.0 as
+  a 2, is restamped to 1 — the content is identical, and Bun 1.4 preserves the
+  lower stamp on every re-save: a frozen and an unfrozen install under 1.4.2
+  both leave the file byte-identical. Commit prefixes read `chore(deps)` /
+  `chore(deps-dev)` rather than the doubled `chore(deps)(deps-dev)` the old
+  prefix produced.
+
+- **BREAKING — `thread` is a reserved metric label key** (#1570).
+  `DefaultMetricsRegistry` refuses a label tuple that carries the key
+  `thread` when the family is minted — counter, gauge and histogram alike,
+  on the main thread and on every worker — with `Reserved label key "thread"
+  on metric "…"` and the rename in the message. The exposition stamps every
+  sample with the thread that produced it while a worker mesh relays its
+  registries, and an application label under the same key was a
+  single-threaded deployment's silent time bomb: legal until the day workers
+  were switched on, then overwritten to `thread="main"` on the main thread
+  (two values, two rows with one identical label set, which a Prometheus
+  scrape rejects wholesale) and, on a worker, the reason the relay refused
+  that thread's whole snapshot every tick. Refused at the mint it is an
+  error at the developer's desk instead. A whole-key match: `thread_pool`
+  and `threads` are ordinary keys. The export-side rules stay as the trust
+  boundary for samples no registry of ours minted.
+
+  *Migration:* Rename any application label named `thread` (`{ thread: … }`
+  → `{ worker_thread: … }`, `{ pool: … }`, whatever it means). The relay's
+  `thread` label — `main` / `worker-<slot>` — is added at export and is not
+  something a registry call sets.
+
+- **The worker-mesh docs name the star through the main-thread broker as the
+  chosen shape and quote the tier they had left out**
+  (#1191).  `cluster/worker-mesh` states that direct worker-to-worker
+  `MessagePort`s are on the roadmap pending a measurement of the relay's own
+  share of the hop, and that until that number exists the mitigation is
+  sizing — `workers` to the actors that compute, not to the ones that chat.
+  The per-hop paragraph adds the in-process tier of
+  `benchmarks/worker/mesh-message-cost.ts`: the same two nodes on one thread
+  pay about 25 µs per `tell` and 80 µs per `ask`, so the protocol —
+  envelope, ref codec, the relay hop, two clones — is the bill, not the
+  thread; and it says that an actor message carries no transfer list, so a
+  large buffer is cloned on every hop and goes through `context.offload`
+  instead, where it moves once. `fundamentals/blocking-and-cpu-bound-work`
+  says the offload transfer is arguments only and the result is
+  structured-cloned back however large, and that a `SharedArrayBuffer` among
+  the arguments is neither copied nor moved but shared, with `Atomics` as
+  the coordination primitive and nothing from the framework involved — on
+  Bun 1.4.2, Node 26 and Deno 2.6.8 alike, and smoke case `39-offload` now
+  holds both sentences on all three: a worker's `Atomics.store` into a SAB
+  argument is visible on the main thread, a SAB in the transfer list is
+  refused with a `DataCloneError`, and a 4 MiB result arrives whole while
+  the worker keeps its copy. `ROADMAP.md` carries the direct-channel line
+  under "Bigger threads", pending a `direct` tier in the mesh-message-cost
+  benchmark that #1576 tracks together with the rule that turns its number
+  into a design issue or an out-of-scope line. No code changed: the survey
+  found the framework needs nothing for a SAB to be shared, `tell` has no
+  transfer slot by design, and a result-direction transfer for offload waits
+  for a consumer that returns more than a number.
+
+- **`context.sender` now names the remote sender across the wire** (#1561).
+  `Cluster.dispatchEnvelope` resolved the target path of an inbound envelope
+  and delivered the body with no sender, although the frame carried the
+  sender's path and the peer's address — so inside a clustered actor
+  `this.sender` was `None` for every message that arrived over any
+  transport, and only the `replyTo` that `ask` injects into the body
+  survived. The receiving node now rebuilds a `RemoteActorRef` to the sender
+  and hands it over as the second argument to `tell`, so replying through
+  `this.sender` works across nodes and a sender-less `tell` still arrives
+  with `context.sender` empty. The sender path is used for nothing but
+  addressing a reply *back to that peer*, so it needs no trust gate on the
+  receiving side — a forged `/system/…` is refused by the peer's own policy
+  when the reply arrives.
+
+  **Behaviour change on the TCP path too, not only on worker threads.** Code
+  that branched on `this.sender.isNone()` to detect a remote caller sees
+  `Some` now. `ShardSenderRef` stays as it was; it is merely no longer the
+  only way a cross-node reply finds its way home. Stage 2 of #1566.
+
+- **Docs toolchain: Astro 7.3 + Starlight 0.42** (#1527). `astro` `^7.1.3` →
+  `^7.3.2`, `@astrojs/starlight` `^0.41.11` → `^0.42.0`,
+  `@astrojs/markdown-remark` `7.2.1` → `^7.3.1`, `starlight-typedoc` `^0.22.0`
+  → `^0.23.1`. Site-only; `docs/package.json` is `private` and never reaches
+  the published closure.
+
+  **The exact `@astrojs/markdown-remark` pin is gone, and it should never have
+  been a pin.** `c85688cf` set it to `7.2.1` to mirror what astro 7.1.3
+  declared as its optional peer — and that exact declaration was an astro bug,
+  fixed in 7.2.10 ("Fixes `@astrojs/markdown-remark` being pinned to an exact
+  version"). Astro 7.3 declares `^7.3.0`, so a caret mirrors it again.
+
+  **What the bump surfaced is worth more than the bump.** Verifying against a
+  baseline `dist/` rather than a green exit caught a live regression:
+  `@astrojs/markdown-remark@7.3.1` corrupts every rendered mermaid diagram
+  under Starlight. 7.3.1 added `rehype-collapse-script-style` — a security fix,
+  so it stays — which moves a `<style>`'s literal CSS into the element's
+  `set:html` property and empties its children. Starlight registers
+  `mdx({ optimize: true })`, whose `rehype-optimize-static` then serialises the
+  surrounding static subtree through `hast-util-to-html` — which has no idea
+  `set:html` is an Astro directive and writes it out as an ordinary attribute.
+  What ships is `<style set:html="…"></style>`: the CSS in an attribute, the
+  element body empty, and the browser applying none of it. Measured here at
+  **423 of 423** mermaid pages, every diagram losing its JetBrains Mono font,
+  its fill colours and its edge animations.
+
+  The fix uses the escape hatch Starlight's own code provides — it only injects
+  `mdx({ optimize: true })` when the site has not registered the integration —
+  so `astro.config.mjs` now registers `mdx({ optimize: false })` itself, after
+  `starlight()` because `astro-expressive-code` refuses to start when `mdx()`
+  precedes it. Pinning back to 7.3.0 would also have worked and was rejected:
+  it dodges the bug by dodging the security fix that came with it, and the
+  version number alone would not have said so.
+
+  Verified by comparing the rendered output against a baseline build of the old
+  versions, because none of this is visible in an exit code: 4951 pages both
+  times, 486 inline mermaid SVGs across `flowchart-v2`/`sequence`/`stateDiagram`,
+  0 unrendered fences, all **423** mermaid pages identical in
+  `viewBox`/`width`/`height`, the `lang-dropdown` override on every page, and
+  Shiki's HOCON (1197) and PromQL (54) block counts unchanged. Every count
+  matched on the *broken* build too — the CSS was still present, just relocated
+  into an attribute — so only the byte comparison of the SVGs found it.
+
+  Build time 3m42s → 4m02s, the cost of `optimize: false`. The audit surface
+  improves: 11 advisories (1 critical, 10 high) → 7 (7 high), with none
+  introduced. The critical is GHSA-26w7-cxv4-gfx2, Astro RCE via AVIF image
+  optimization, fixed in 7.2.8 — the site had been below that fix.
+
+- **Five optional peers admit their new major** (#1520). `mongodb`, `ioredis`,
+  `nodemailer`, `imapflow` and `@libsql/client` each shipped a major since they
+  were pinned, and each range is now **widened rather than moved** — `^6 ||
+  ^7`, `^5 || ^6`, `^9 || ^10`, `^1 || ^2`, `^0.15 || ^0.17 || ^0.18`. Nothing
+  a consumer has installed stops resolving.
+
+  What moves is which version the project actually exercises:
+  `tests/integration/brokers/package.json` takes the new major, so the live
+  suites run against it. All four green against real brokers in Docker —
+  redis-streams 3 of 3, email 4 of 4, mongodb 39 of 39, libsql 39 of 39 — which
+  is the whole reason these were held back from the September sweep rather than
+  waved through.
+
+  **Two of the five needed a fact rather than a green run to be trustworthy.**
+
+  `ioredis@6` defaults to **RESP3**, which was the flagged risk:
+  `RedisStreamsActor` parses `xreadgroup` replies in RESP2 array shape. The
+  suite passes, and the reason it passes is that ioredis pairs
+  `protocol: 3` with `replyMapping: "legacy"` by default — its own
+  documentation calls those shapes *"identical across both protocols"*. So no
+  `protocol: 2` pin is needed and none is added; what would break the adapter
+  is `replyMapping: "resp3"`, which nothing here sets.
+
+  `mongodb@7` cannot be imported on the Bun version `engines` still admits.
+  Its bundled `bson` calls `v8.startupSnapshot.isBuildingSnapshot()` at module
+  scope, and Bun implemented that only in 1.4. Measured on both: v7 throws
+  `ERR_NOT_IMPLEMENTED` on Bun 1.3.0 and imports cleanly on 1.4.2, while v6
+  imports cleanly on both. So the caveat that used to read "version 7 cannot be
+  imported on Bun" becomes conditional — "v7 needs Bun 1.4 or newer" — instead
+  of disappearing, because the floor is still 1.3.0 and a consumer sitting on it
+  has to stay on v6. Docs updated in both languages.
+
+- **BREAKING: the NATS adapters moved off the deprecated `nats` package to
+  nats.js v3** (#1520). npm marks `nats@2.29.3` deprecated — "moved to
+  @nats-io/transport-node" — and v3 split the monolith, so the one optional
+  peer becomes four. Which ones you need depends on which actor you use:
+
+  ```sh
+  bun remove nats
+  bun add @nats-io/transport-node                  # NatsActor
+  bun add @nats-io/jetstream                       # + JetStreamActor
+  bun add @nats-io/kv @nats-io/obj                 # + the KV / object-store actors
+  ```
+
+  No configuration changes and no message shapes move. `mode: 'push' | 'pull'`
+  **stays**, which is worth saying because the plan for this change assumed
+  otherwise: v3 removed `JetStreamClient.subscribe`, but not push consumers —
+  they are reached through `consumers.getPushConsumer(...).consume()` now, and
+  the iteration is the same async iterable the pump already walked.
+
+  Three exported test-seam types changed with the driver.
+  `NatsConnectionLike` loses `jetstream()` and `jetstreamManager()`, because v3
+  made them free functions taking the connection; `JetStreamSubscriptionLike`
+  becomes `JetStreamMessageStreamLike` (stopped rather than destroyed) and
+  `PushConsumerLike` joins it. A test double that implements these needs the
+  new shape, and the four adapters grew module seams — `jetStreamModule()`,
+  `keyValueModule()`, `objectStoreModule()` — so a fake connection alone no
+  longer stands an actor up.
+
+  `fetch`'s `expiresMs` is now clamped to a second. nats.js rejects anything
+  below that client-side before the request leaves, so a shorter request used
+  to be an exception rather than a shorter wait.
+
+  Verified against a live `nats-server -js`: eight scenarios including a
+  driver-shape probe that asserts the hand-written stubs against the real
+  modules — the check that did not exist, and whose absence is what let this
+  driver's surface drift unnoticed in the first place.
+
+- **The coverage run is parallel again, and CI's slowest gate goes from about
+  six minutes to forty seconds** (#1521). `bun test --parallel` was banned from
+  that one step by #1332, for a good reason that has now expired: on bun 1.4.0
+  the flag changed what was *measured* rather than what was tested. Execution
+  was identical — 721 of 723 files reported the same hit count, the numerator
+  byte-for-byte the same 55 293 lines — but 407 files reported a **larger**
+  instrumented-line denominator and none a smaller one, so the aggregate read
+  79.16 % against 93.82 % on the same code and walked straight through the 90 %
+  floor.
+
+  Bun 1.4.1 lists a fix for under-reported coverage across workers, and on the
+  1.4.2 pin (#1519) the defect is measured gone rather than assumed gone. Two
+  runs at one seed, differing only in the flag: over **728 lcov records, zero
+  report a larger denominator**, twenty report one smaller by a line or three
+  (30 lines out of 59 593, 0.05 %), and the numerator is identical at 56 041.
+  Bun's own aggregate agrees to 0.05 points — 94.66 % parallel against 94.61 %
+  serial — and the wall time drops **352 s → 41 s**.
+
+  The flag goes *after* `--coverage`, because `tests/unit/ci/CoverageGate.test.ts`
+  locates the invocation with `startsWith('bun test --coverage')` and would
+  otherwise stop finding it. `tests/unit/ci/WorkflowHygiene.test.ts` keeps its
+  assertion but **inverts** it: the coverage run must now carry the flag, so a
+  silent revert is a red check rather than eight minutes nobody notices. That
+  the inverted guard actually discriminates was verified the only way it can be
+  — by removing the flag and watching it fail.
+
+  What has not changed is the pairing the old note was really about: the floor
+  and the denominator move together. If a future Bun re-inflates the
+  denominator the coverage gate goes red, and the answer then is to drop the
+  flag again, never to lower the floor.
+
+- **The Bun toolchain is pinned to 1.4.2** (#1519), from 1.4.0 (#1328). Two
+  patches shipped since that pin — 1.4.1 with 202 fixes, 1.4.2 with roughly
+  350 upstream WebKit commits — and #1344 had named the next patch as the
+  moment to move. The version lives in `.bun-version`, which all thirteen
+  workflows read through `bun-version-file`, so the CI half is one line;
+  `@types/bun` moves to `^1.4.2` alongside it, which is where 1.4.2 fixes
+  `process.off` against the `@types/node` 24 this repository pins.
+
+  **The supported floor is unchanged** — `engines` still declares Bun
+  >= 1.3.0 and `multi-runtime.yml`'s `bun-floor` leg still tests it. The
+  nineteen integration images keep `oven/bun:1.4-debian`, which tracks 1.4.x
+  by the policy in `tests/integration/Dockerfile.node`'s header and has been
+  serving 1.4.2 since it was published; the `FROM oven/bun:1.4.0` sample in
+  `runtime/overview.mdx` (EN + DE) follows the pin, because a page telling
+  the reader to use an explicit tag should show the one this repository uses.
+
+  What 1.4.1 and 1.4.2 change **here**, checked against the tree rather than
+  read off the release notes: `AsyncLocalStorage` is about twice as fast with
+  no per-await allocation, which is `LogContext.runFresh` once per mailbox
+  turn; the `node:net` and `node:http` fixes (a paused socket that never
+  emitted `'end'`, `net.createServer(cb)` registration, `server.close()`
+  hanging, the `listen()` callback on an EADDRINUSE retry) land on exactly the
+  three HTTP tests failing on Linux today; `bun test --isolate` stopped
+  leaking between files and `--parallel` stopped under-reporting coverage
+  across workers. Three widely-quoted improvements do **not** apply: the 9.2x
+  `Buffer.read*`/`write*` JIT inlining reaches no codec here (they are
+  `DataView` and hand-rolled byte math), the `'online'`-before-first-message
+  fix reaches no worker (`WorkerCluster` runs its own three-message
+  handshake), and the sub-4-second `fetch` timeout regression reached no call
+  site (the shortest deadline in `src/` is ten seconds).
+
+  Validated on 1.4.2 before pinning: `typecheck`, `typecheck:dev`,
+  `typecheck:bench`, `typecheck:compare`; the full suite, 13 943 passing
+  across 643 files with nothing quarantined; the coverage gate at **94.61 %**
+  aggregate with `src/cluster/` 97.79 % and `src/persistence/` 96.20 %, all
+  three floors unchanged; smoke on Bun, Node 26.7 and Deno 2.6.8; 69 runnable
+  examples; `bench:smoke`; `lint:package`, `lint:audit` (clean, unchanged),
+  `check:ui`, `test:ui` and the DevTools UI's own `bun test` half.
+
+  **The workaround catalogue was re-probed row by row (#1329) and only one
+  answer moved.** The quantum-early `setTimeout` of #477 stays fixed — 0 of
+  900 samples early at 20, 30 and 50 ms, identical on both versions, so
+  `TimerTolerance`'s lateness-only slack stands. `Bun.zstdDecompressSync`
+  still takes no options (arity 1), so the `node:zlib`-first ordering in
+  `Compression.ts` remains the security control it was. The `ws` shim still
+  ignores `maxPayload`: `BackendTransportFrameCap.test.ts` is nine of nine
+  green, which is the canary reporting the defect is still there rather than
+  the absence of one. `Bun.serve` still refuses an oversize frame early
+  (45 ms for 8 MiB against a 64 KiB cap) and still closes 1006 rather than a
+  policy 1009. `performance.eventLoopUtilization` is still absent, so the
+  stock-metrics capability row stays truthful with its label extended.
+
+  The one that moved is `node:inspector`. #1339 had asked for more than a
+  constructor that stops throwing, and now there is an answer: a probe that
+  connects, enables `Profiler`, busy-loops for 250 ms and stops **comes back
+  with a populated profile** (non-empty nodes and samples). CPU profiling in
+  DevTools is genuinely reachable on Bun; the docs row and the `ProfilerTap`
+  comment are #1339's to update.
+
+  **Throughput: no measurable difference, and the measurement is worth more
+  than the number.** Eight blocks of a hundred interleaved rounds each, both
+  binaries side by side on one commit, gave deltas of at most 2.6 % against a
+  block-to-block spread of 8 to 13 % — no scenario separates. The first four
+  blocks, run `1.4.0, 1.4.2, 1.4.0, 1.4.2`, had looked like a clean 2–6 %
+  regression with every 1.4.0 block above every 1.4.2 block; running the
+  sequence the other way round dissolved it, so the alternation had been
+  tracking the slot rather than the version. That is a Windows desktop and not
+  the machine of record, so nothing is published from it and #1331's Linux
+  re-measure still decides; what it does establish is that 1.4.2 brought
+  neither a further large regression nor a recovery of the #1344 figures.
+
+- **Every two-sided elapsed-time assertion is gone** (#1338). Twelve tests
+  asserted that something took *less* than N milliseconds — which is an
+  assertion about the machine, not about the code, and the family the flake
+  programme keeps meeting. Each is now the fact it was standing in for:
+
+  - Three push-query cases set `pollIntervalMs` an hour out, so "delivered
+    fast" becomes "delivered by the push path" — a regression now hangs the
+    case instead of passing slowly on a quick machine.
+  - Two distributed-data cases set the gossip interval out of reach, and the
+    `local`-consistency one partitions the peer outright, so "no peer
+    round-trip" is a fact rather than a duration.
+  - `CoordinatedShutdown`'s parallelism check records **one interleaved
+    trace**; the two arrays it used to keep could not tell the schedules apart
+    (both read `['1', '2']` either way), so the wall-clock bound had been
+    carrying the whole assertion.
+  - Four are redundant: the error message, the drained count, and bun's own
+    per-test cap already prove what the stopwatch restated.
+  - Two keep a lower bound only, where elapsed time genuinely is the subject —
+    a fallback that resolves via its own bound rather than a confirmation.
+
+- **The four CRDTs that had no shrinking property coverage now have it, and the
+  unseeded generator that stood in for it is gone** (#1372). `GCounterMap`,
+  `LWWMap`, `MVRegister` and `ORMap` were checked only by a hand-rolled
+  generator over bare `Math.random()`, 25 triples apiece — no shrinking, so a
+  broken merge law reported whichever three large maps the draw produced rather
+  than the two-element pair that breaks it, and no seed, so the failure could
+  not be re-run at all. All nine types are now under `fast-check` with the seed
+  pinned globally by `tests/setup/property-seed.ts`.
+
+  The new `LWWMap` property **failed on its first run**, which is the argument
+  for the change in one line: two maps that both wrote one key at timestamp 3
+  from the same replica, one a value and one a removal. That is `LWWRegister`'s
+  documented tie behaviour (#950) reached one level up rather than a new defect,
+  so the generator now derives both the value and the put/remove choice from
+  `(replica, timestamp)` — modelling "a replica writes one thing at one instant"
+  instead of filtering the case out afterwards with an `fc.pre` that would throw
+  most runs away.
+
+  The counterexample is pinned as an example test regardless, which is the
+  corpus the issue asks for: the generator can no longer produce that case, so
+  without the example nothing would notice if the behaviour changed. The nine
+  now-redundant law loops are removed along with every `Math.random()` call in
+  that file; what stays there is the hand-picked cases that say what each type
+  *means*.
+
+- **BREAKING — `ActorSystem.http(port)` binds loopback when no host is
+  given** (#1408).  It bound the IPv4 wildcard, so the shortest and
+  most-copied form of the shortcut was the one that published the server on
+  every interface.
+
+  *Migration:* a server that should be reachable from outside the host names
+  the interface — `system.http(port, { host })`.  Nothing else moves:
+  `newServerAt(host, port)` always took the host as a required argument, and
+  every example in the tree except the Kubernetes probe endpoint already
+  bound loopback explicitly.
+
+  This is the quiet kind of breaking change, which is why it is called out
+  rather than folded into a list: an affected deployment keeps starting
+  after the upgrade and simply stops being reachable, with nothing in the
+  log connecting that to the change.  The default was found by widening the
+  guard over `examples/` (#756), which had exempted the host-less call on
+  the stated grounds that it was "configuration" — it was not, it was a
+  hard-coded address one function call away.  That guard now pins the
+  default itself instead of the call shape, so the two cannot drift apart
+  again.
+
+- **BREAKING — The dump withholds a value when any whole word of the key's
+  name is `password`, `passphrase`, `passwd`, `pass`, `secret`, `token`,
+  `key`, `credential`, `auth` or `authorization` — singular or plural, in
+  any path segment and wherever in the name it stands, so a branch named
+  `credentials` withholds everything beneath it (#867, #1759).**
+
+  So `auth-header`, `secret-value` and `api-key-id` are withheld as well as
+  `api-key`. A name is cut into words at every character that is not a
+  letter or a digit, at camelCase humps and in front of a digit after a
+  letter, so `password2` holds `password` while `passivation-idle` holds no
+  `pass` and `keyspace` no `key`. A credential word glued onto another
+  counts too — `pgpassword`, `clientsecret`, `ghtoken` — save `key`, `pass`
+  and `auth`, which end ordinary words: of the `…key` compounds `apikey`,
+  `accesskey`, `secretkey` and `privatekey` are read and `sshkey` is not,
+  and `pwd` counts beside another word of the key's path (`mysql-pwd`,
+  `db.pwd`); only a variable called just `PWD`, a shell's working directory,
+  does not (#1759). A value drawn from HOCON's boolean vocabulary is never
+  withheld whatever its key is called. The rule errs toward withholding: an
+  application's `token-bucket-size` or `key-prefix` prints as `<redacted>`,
+  while the keys `reference.conf` ships that read that way —
+  `cluster.receptionist.max-subscribers-per-key`, the redis and memcached
+  `key-prefix`, the Kubernetes lease's `token-path` and
+  `token-reload-interval`, and the object-storage `kms-key-id` — are
+  exempted by full path, so a stock configuration withholds twelve keys,
+  every one a credential slot. It is the same list and the same rule the
+  DevTools config panel has used since #553 — the walk, the layer
+  attribution and the redaction now live in one place
+  (`src/diagnostics/ConfigDump.ts`) rather than two, so a key withheld from
+  the panel cannot reach a log file instead.
+
+  Redaction by key name is a heuristic and it is the weaker half of the
+  guarantee: a secret written out under a key called `dsn` or
+  `connection-string` is printed in full unless it is the userinfo of a URL,
+  which both renderers mask by value under any key name (#1458), or a
+  credential-named variable supplied it (#1788). Both `configuration.mdx`
+  pages and `troubleshooting.mdx` say so in as many words, a test pins the
+  gap open so that sentence cannot rot, and the key ships `off` because the
+  defence that does not depend on a guess is not printing the tree. Values
+  are JSON-encoded, so a newline inside one cannot forge a line of the dump
+  it is part of.
+
+  `CONFIG_SECRET_PATTERN`, `CONFIG_NEVER_REDACTED_PATHS` and
+  `CONFIG_REDACTED` live in `src/util/Constants.ts` and are on the
+  `actor-ts/util` subpath; `actor-ts/devtools`'s protocol re-exports all
+  three. The pattern is anchored and applies to one word of a key; the
+  exemption list holds full paths of keys `reference.conf` declares whose
+  names the rule would otherwise read wrong, and `ConfigDump.test.ts`
+  asserts a stock tree's entire withheld set so an addition to it is a
+  visible line in a diff.
+
+  Every page that lists these words — both configuration references, the
+  DevTools configuration pages and the troubleshooting pages — names all
+  eight, and a docs test holds each list to the pattern, so a word the
+  pattern learns is one the pages have to learn too.
+
+  *Migration:* `CONFIG_SECRET_PATTERN` is now anchored and is matched
+  against a single word of a key, not against a whole dotted path —
+  `CONFIG_SECRET_PATTERN.test('a.b.password')` is `false` where it used to
+  be `true`. Apply it per word, or call `resolveConfigLeaves(config)` and
+  read each leaf's `secret` flag, which is the supported way to ask the
+  question. The DevTools config panel consequently shows values it withheld
+  in 0.17.0 — `sharding.passivation-*`, `cassandra.keyspace`,
+  `cache.*.key-prefix`, `cluster.receptionist.max-subscribers-per-key`,
+  `coordination.lease.kubernetes.token-*` and
+  `management.auth-protect-health` — none of which is a credential; a stock
+  configuration now withholds twelve keys instead of thirty-one.
+
+  `CONFIG_SECRET_PATTERN` reads the ten words; the glued spellings are
+  `CONFIG_SECRET_COMPOUND_PATTERN` and
+  `CONFIG_SECRET_WORDS_IN_LONGER_NAMES`, exported beside it from
+  `actor-ts/util` and the DevTools protocol (#1759). The 0.17.0 DevTools
+  panel matched the words anywhere in the path, which withheld `passivation`
+  and `keyspace` but also `password2` and `apikey`; the whole-word rule
+  alone would have printed those two, and the glued spellings keep them
+  withheld.
+- **Three object-storage suites state the budget their temp-tree hooks run
+  under, instead of inheriting one nobody chose** (#290, #1282).
+
+  Their `beforeEach` builds a real object-storage tree and their `afterEach`
+  deletes it recursively. Idle that costs single-digit milliseconds; under
+  whole-suite disk contention a hook in `IntegrityTampering` was seen at 11.4 s
+  and two in `ReEncryptionSweep` at 24.8 s and 69.0 s — against bun's
+  undeclared 5 000 ms cap, which reports as `(unnamed)` with "a
+  beforeEach/afterEach hook timed out" and names neither the file, the hook kind
+  nor a cause.
+
+  Neither observation reproduced, and the change is sized for that. It is a
+  bound on work that is unbounded in principle — a recursive delete of a tree
+  whose size the test decides, on a disk the rest of the suite is also using —
+  not a number tuned until a red run went away. The other 22 files with the same
+  hook shape are deliberately left alone: two unreproduced observations do not
+  justify a sweep, and a guard that demanded a budget everywhere would be
+  asserting a hazard rather than a finding.
+
+  Verified rather than assumed: bun 1.4.0 honours the second argument on
+  `beforeEach` and `afterEach`, not only on `beforeAll` — a 6 s hook passes
+  under a 20 s budget and dies at 5 000 ms without one.
+
+- **Every suite runs in CI again, and no environment variable can change that**
+  (#538, #1330).
+
+  Three suites ran in no CI job at all for months: `ACTOR_TS_SKIP_FLAKY_MNS=1`
+  in `test.yml`, `multi-runtime.yml` and `publish.yml`, and three copy-pasted
+  `process.env.… ? describe.skip : describe` ternaries. The stated reason was
+  that Bun on GitHub's hosted runners cannot respawn functional worker threads
+  after the first worker test.
+
+  Both halves of that turned out to be wrong, in different ways:
+
+  - **The worker-thread suites had already earned their way back.** The written
+    exit criterion was fourteen consecutive green nights of
+    `nightly-flakes.yml` running exactly those suites with the flag off. They
+    reached twenty-one — 63 executions on `ubuntu-latest`, not one hang. Nobody
+    had read the criterion against the runs, which is precisely what the
+    workflow predicted about itself: "Nothing accumulates the streak. It is
+    counted by a human reading these annotations, which is the same failure
+    that made the quarantine permanent in the first place."
+  - **`LeaseMajority` was never a runner problem.** Its cause was the
+    split-brain resolution defect fixed under #839 in this release. The
+    quarantine had been hiding a product bug rather than measuring a runner.
+
+  What changed, beyond deleting the flag: `bunfig.toml`'s
+  `coveragePathIgnorePatterns` block (it removed the worker harness from the
+  coverage denominator only because that harness could not run on CI) and
+  `--exclude=worker` in `benchmarks.yml` (same cause, and invisible to a grep
+  for the flag, which is how it would have been missed). Coverage was
+  re-measured over the un-quarantined population and went **up**: 94.39 %
+  aggregate, `src/cluster/` 97.55 %, `src/persistence/` 95.56 %.
+
+  Two mechanisms replace the quarantine, and they are the point of the entry:
+
+  - **`tests/unit/ci/NoEnvironmentGatedSkips.test.ts`** refuses a test whose
+    execution an environment variable decides, because that is exactly the
+    thing a workflow can set — and setting it is how a red suite becomes an
+    absent one. A *capability probe* stays fine and is the shape to reach for:
+    `available ? describe : describe.skip` asks the machine a question no
+    workflow can answer for it. An allow-list entry needs a reason it cannot
+    hide a failure; there is one, for an opt-in re-measurement path that is
+    skipped by default and so cannot hide anything.
+  - **Every job in `.github/workflows/` now declares `timeout-minutes`**, so a
+    suite that stops making progress fails inside the hour instead of burning
+    GitHub's six-hour default — the failure mode the quarantine was justified
+    by in the first place.
+
+  `nightly-flakes.yml` keeps running the three suites on their own, three
+  repeats a night: it is the regression guard now rather than the parole board.
+  The harness's `--skip-quarantined` flag and its environment handling are gone
+  with the mechanism they served, along with the test that pinned them.
+
+- **Cluster sharding now bounds how many shards a rebalance may have in
+  flight at once, and ships that bound switched on** (#850).  The default
+  `HashAllocationStrategy` places a shard by `shardId % candidates.length`,
+  so a node joining changes the answer for most shards simultaneously: at
+  the shipped `number-of-shards = 64` a 2 to 3 node join re-homed 42 shards
+  in a single 2 s tick — each one a shard stop, every entity under it
+  stopped, re-allocated, re-created and, if persistent or remembered,
+  replayed. Two new `actor-ts.sharding` keys configure the ceiling,
+  `rebalance-absolute-limit` (default `0`, meaning no absolute ceiling) and
+  `rebalance-relative-limit` (default `0.1`, a fraction of
+  `number-of-shards`), with matching `withRebalanceAbsoluteLimit` /
+  `withRebalanceRelativeLimit` on `StartShardingOptions` and
+  `ShardCoordinatorOptions`. Where both are set the lower wins, a ceiling
+  never floors below one shard, and `0` for both restores the unbounded
+  behaviour exactly. At the shipped defaults that 42-shard join now
+  converges over roughly seven ticks instead of one, which is the behaviour
+  change worth reading about before an upgrade. Three properties of the
+  bound: it counts shards in flight rather than shards per tick, because a
+  tick fires every `rebalance-interval` while a hand-off may stand for a
+  whole `hand-off-timeout`, so a per-tick six would admit about thirty at
+  once; only the voluntary path is capped, since a region that dies leaves
+  its shards with no owner at all and those are re-homed immediately; and
+  nothing is dropped, with the remainder proposed again on the next tick and
+  the shards that go first picked round-robin across their current owners,
+  so a ceiling never drains one node before touching the next. The ceiling
+  sits at the coordinator rather than inside an allocation strategy, so it
+  applies to the default strategy, to `LeastShardAllocationStrategy` (whose
+  own `maxSimultaneousRebalance` bounds what it proposes, not what the
+  coordinator accepts) and to any strategy you write. #850
+
+- **BREAKING** — the camelCase HOCON leaves of the `http.client`,
+  `http.websocket` and `cache.in-memory` blocks are now kebab-case (#1405).
+  Fifteen keys moved, in three blocks — the thirteen `reference.conf` leaves
+  and the two it documents only as comments:
+
+  - `actor-ts.http.client`: `maxResponseBytes` → `max-response-bytes`,
+    `defaultTimeoutMs` → `default-timeout`, `maxRedirects` →
+    `max-redirects`. `redirect` is unchanged.
+  - `actor-ts.http.websocket`: `maxFrameBytes` → `max-frame-bytes`,
+    `onOversizeFrame` → `on-oversize-frame`, `onInvalidMessage` →
+    `on-invalid-message`, `maxBufferedBytes` → `max-buffered-bytes`,
+    `onBackpressure` → `on-backpressure`, `maxConnections` →
+    `max-connections`, `maxPreAttachFrames` → `max-pre-attach-frames`,
+    `maxPreAttachBytes` → `max-pre-attach-bytes`, `acceptTimeoutMs` →
+    `accept-timeout`.
+  - `actor-ts.cache.in-memory`: `maxEntries` → `max-entries`, `cleanupMs` →
+    `cleanup-interval`, `prefixQuotas` → `prefix-quotas`. **The same renames
+    apply under every `actor-ts.cache.<name>.in-memory`**, which shares one
+    reader with the global block.
+
+  `maxConnections` and `prefixQuotas` never appeared as `reference.conf`
+  leaves — they are documented as comments — but both are read, so an
+  operator who set either from the docs has to rename it too.
+
+  The rule the leaf names now follow is the one the rest of the tree already
+  used: the leaf is the kebab-case of the options field with any unit suffix
+  dropped, because HOCON carries the unit in the value. `AGENTS.md`'s
+  lockstep rule is amended to say so.
+
+  `cleanup-interval` is the one rename that also changes the published
+  value: `reference.conf` now ships `60s` instead of `60000`. A bare
+  millisecond number still parses, so `cleanup-interval = 60000` keeps
+  working and `0` still disables the sweep.
+
+  **TypeScript field names and builder methods are unchanged** —
+  `maxResponseBytes`, `cleanupMs`, `withCleanupMs(...)`, `acceptTimeoutMs`
+  all stay exactly as they were. This is a HOCON-only change; `new
+  InMemoryCache({ cleanupMs })` call sites are unaffected.
+
+  **The retired spellings are refused at startup** with a `ConfigError`
+  naming both, rather than ignored. There is no unknown-key detection
+  anywhere in the config loader, so an unrecognised leaf is inert by
+  construction and the built-in default silently applies — and six of the
+  fifteen are security caps a deployment lowers on purpose
+  (`max-frame-bytes`, `max-buffered-bytes`, `max-pre-attach-bytes`,
+  `max-pre-attach-frames`, `max-connections`, `max-response-bytes`).
+  Reverting one of those to the framework default on upgrade, quietly, is
+  the failure mode a rename must not have.
+
+  *Migration:* Every HOCON leaf under `actor-ts.http.client`,
+  `actor-ts.http.websocket` and `actor-ts.cache.*.in-memory` is now
+  kebab-case. Rename them in your `application.conf`; the old spellings are
+  rejected at startup with a `ConfigError` naming both. TypeScript field
+  names and builder methods are unchanged — no code migration is needed.
+
+- **BREAKING — `Behaviors.withStash` validates its capacity (#795).**
+
+  The argument was taken on trust, and because the buffer's overflow guard
+  and its `isFull` are the same comparison, `NaN` or `Infinity` left the
+  stash growing without any limit while `isFull` went on reporting `false` —
+  removing the bound at exactly the place the API documents one, with no
+  throw and no diagnostic. Zero and negative values were the mirror failure,
+  leaving `stash()` throwing `StashOverflowError` on its first call. The
+  capacity must now be an integer of at least 1; the predicate and the error
+  type are the ones `BoundedMailboxOptionsValidator` already applies to the
+  structurally identical `BoundedMailboxOptionsType.capacity`.
+
+  `StashBufferImplementation` re-checks the same rule, so a hand-written
+  `WithStashBehavior` node that never went through the combinator is refused
+  as well.
+
+  The accepted range is an integer between 1 and `2 ** 32 - 1`, not merely
+  an integer of at least 1. `Number.isInteger(Number.MAX_VALUE)` is `true`,
+  so the integer check admitted capacities the buffer's backing array can
+  never index: measured, such a stash took 50 000 messages and still
+  reported `isFull === false` — exactly the unbounded buffer the guard
+  exists to refuse, reached through the half of its domain it did not cover.
+  A capacity above the ceiling is refused with its own message, because that
+  value is an integer and the comparison against it is well defined; it is
+  the array that cannot get there (#1509).
+
+  **Migration.** Pass a stash capacity that is an integer in `[1, 2 ** 32 -
+  1]`. A `0`, a fractional value or one above that ceiling now throws
+  `OptionsError` instead of producing a buffer that rejects every `stash()`
+  call or one an array cannot hold, and `NaN` or `Infinity` throws instead
+  of silently producing an unbounded one. In the same family, `retry` now
+  refuses a `NaN` `randomFactor` and a `NaN` `attempts` with an
+  `OptionsError`, where the first produced a hot loop with no wait at all
+  and the second an `Error` whose whole message was the string `undefined`;
+  `attempts: Infinity` stays legal and still means retry until success.
+
+- **BREAKING — A value written where a persistence block belongs now fails
+  the startup** (#1425).
+  `actor-ts.persistence.durable-state = "actor-ts.persistence.durable-state.sqlite"`
+  or `actor-ts.persistence = "postgres"` used to read as no selection, which
+  kept the journal, snapshot store or durable-state store in memory while
+  the startup reported ready, and the data was lost on the next restart. The
+  startup now fails with a `ConfigError` naming the key and saying that the
+  store's axis must be a block with a `plugin` field. An axis left as
+  `reference.conf` ships it keeps its in-memory default.
+
+  **Migration.** Write the store's block with its `plugin` field, for
+  example `actor-ts.persistence.journal.plugin = "…"`, instead of a value in
+  place of the block.
+
+- **BREAKING — A size has to come to a whole number of bytes** (#1728).
+  `parseSize` and `Config.getBytes` refuse one that does not, where they
+  rounded it to the nearest byte or, for a bare number, handed it back as it
+  was: `1420.5B` read as 1421, `1.1K` as 1126 and `0.4B` as 0, which several
+  caps read as "no cap", and a bare `10.5` as 10.5. A size string now fails
+  with `Invalid size: 1.1K is not a whole number of bytes`, a number passed
+  to `parseSize` from code the same way, and a bare number from HOCON or a
+  code-supplied config with a `ConfigError` that names the key. A fraction
+  that comes to whole bytes stays legal, so `1.5K` is 1536, and whether it
+  does is decided on the decimal as written: `1.001KB` is 1001 bytes
+  although its floating-point product is not whole. The `Infinity` that
+  `max-decompressed-bytes` documents as "no cap" is unchanged.
+
+  **Migration.** Write every size as a whole number of bytes (`1421B` for
+  `1420.5B`, `1126B` for `1.1K`), and round a computed number yourself
+  before passing it to `parseSize`.
+
+- **BREAKING — A key under `actor-ts.persistence` that no reader takes now
+  fails the startup** (#1729). `actor-ts.persistence.journal.plugn = "…"` or
+  a misspelt `actor-ts.persistence.jornal { … }` block was ignored, which
+  left the axis on the in-memory store `reference.conf` selects while the
+  startup reported ready, and a journal kept in memory lost its events on
+  the next restart. The startup now fails with a `ConfigError` that names
+  the full key and says to correct the spelling or to move a plug-in's
+  settings into its block. The check covers the keys directly under
+  `actor-ts.persistence` and the values directly in a `journal`,
+  `snapshot-store` or `durable-state` block beside its `plugin`; a plug-in's
+  own block inside an axis, a third-party plug-in's included, is left to
+  that plug-in. What it accepts is derived from `ConfigKeys`, so every key
+  the framework reads there is accepted. It fails the startup on every
+  route, `ActorSystem.create` and `Cluster.bootstrap` alike, with the
+  boot-time open off in the file or in code and with every store set in
+  code. A `WorkerMesh` worker over such a file fails its own startup as its
+  main thread does, while a valid file under the opt-out still builds
+  nothing of persistence inside `create`.
+
+  **Migration.** Correct the misspelt key, or move a plug-in's settings into
+  its block under the axis it serves,
+  `actor-ts.persistence.<axis>.<plug-in> { … }`.
+
+- **BREAKING — An environment variable that is set but empty counts as not
+  set** (#1787). `PORT=` in a shell, `environment: [PORT]` in a compose file
+  and an empty line of an env file all spell "unset", and `Config.load`
+  already read an empty `ACTOR_TS_PROFILE` that way. A substitution did not:
+  `port = 2552` followed by `port = ${?PORT}` with `PORT` empty set the key
+  to `""`, losing the default, and a required `port = ${PORT}` was satisfied
+  by nothing. Now the optional form resolves to nothing, so the earlier
+  value or the layer below shows through, and the required form fails with
+  `Unresolved substitution: ${PORT}` and the reason that the variable is set
+  but empty. An empty value under the path's own spelling no longer hides
+  the upper-cased one either. A value that is not empty keeps its reading,
+  JSON first.
+
+  **Migration.** A deployment that set a variable to nothing in order to
+  blank a key gets the key's default now. Set the key to `""` in the file
+  instead, which still means empty, or give the variable a value.
+
+- **BREAKING — An unquoted value on the line after its key is read as a
+  value only when that line does not look like a field** (#1786). The line
+  after `key =` is the next field when it reads `name = …`, `name: …`,
+  `name { …`, `name += …` or `include "…"`. So `host =` followed by
+  `localhost:2552` used to set `host` and now reads as a field `localhost`
+  with the value `2552`, because no parser can tell that from an assignment
+  left empty on purpose.
+
+  **Migration.** Write the value on the same line as its key
+  (`host = localhost:2552`), or quote it.
+
+- **BREAKING — Values side by side on one line without a comma are one
+  string, and an unquoted URL is refused** (#537). With string
+  concatenation, `["a" "b"]` and `[ ${A} ${B} ]` are one list element
+  (`"a b"`) where they were two; `[{a = 1} {b = 2}]` and `[[1] [2]]` are
+  refused instead of read as two elements; and `a = "x"b = 1` with no space
+  is the one string `xb = 1`. An unquoted value with `://` in it is refused:
+  `//` starts a comment, so `url = http://host` used to read as the string
+  `http:`.
+
+  **Migration.** Separate list elements with commas, put a space before a
+  field that shares a line, and quote URLs.
+
+- **BREAKING — A config file's substitutions read the layers beneath it**
+  (#1785). Each file used to resolve on its own (#1071, kept by #1546), so a
+  secrets file could not refer to a key the application file sets. Now a
+  file's substitutions read its own keys, then the layers already resolved
+  beneath it, then the real environment, then the `.env` file. So
+  `application.conf` may build on a key the project `reference.conf` sets, a
+  profile may read `actor-ts.*` defaults, and a field that names itself
+  (`path = ${path}":/extra"`) extends the value beneath. It is downward
+  only: a lower file never sees a higher one, so there is no late binding,
+  and an unset optional override still drops out of its layer rather than
+  copying the value beneath. A key of a layer beneath now also wins over the
+  environment variable a substitution's path would otherwise fall back to:
+  `x = ${?actor-ts.system.name}` reads `"default"` where it used to drop
+  out.
+
+  **Migration.** A substitution that relied on falling through to an
+  environment variable named like a key the layers beneath set gets that
+  key's value now; rename the variable or the path.
+
+  An empty `ACTOR_TS_CONFIG=` or `ACTOR_TS_SECRETS_CONF=` counts as unset,
+  as an empty `ACTOR_TS_PROFILE` already did: the file in the working
+  directory is read. It used to be taken as the path `""`, which read no
+  file. To read none, pass `false` for the path.
+
+  On Deno, a narrow `--allow-read` that names `./application.conf` and
+  `./secrets.conf` alone now stops startup: the loader also reads
+  `./reference.conf` and `./.env`, and Deno refuses a read it was not
+  granted instead of reporting no file, so `Config.load` throws a
+  `ConfigError` naming the file (measured on Deno 2.6.8). **Migration.** Add
+  the two files to `--allow-read`, or pass `false` for the ones a deployment
+  never ships (`withReferenceConfigFile(false)`,
+  `withEnvironmentFile(false)`).
+
+- **BREAKING — `WorkerMeshInitData.configFile` may be `false`** (#1785). The
+  init frame a `WorkerMesh` worker receives names each file its main thread
+  read — `configFile`, and now `referenceConfigFile`, `secretsFile` and
+  `environmentFile` — with `false` where the main thread read none, so a
+  worker started from `withConfigFile(false)` does not fall back to
+  `ACTOR_TS_CONFIG` or `./application.conf`.
+
+  **Migration.** A worker bootstrap of your own that reads the frame instead
+  of calling `runWorkerMeshNode` hands the four fields to the matching
+  `ActorSystemOptions` methods as they are; `false` is a value they take.
+
+
+### Fixed
+
+- **A `PersistentFSM` command whose `kind` names an `Object.prototype` member
+  reaches `onInvalidTransition`** (#1449). A command whose `kind` is the name
+  of an `Object.prototype` member, such as `toString`, `constructor` or
+  `__proto__`, now reaches `onInvalidTransition` like any kind the
+  transition table does not declare. The table was read through the
+  prototype chain, so such a kind found an inherited function where a
+  transition belonged: the hook never ran, and the command failed in the
+  persist instead, on a batch of one `undefined` event. A command of kind
+  `_timeout` is no transition either; it used to run the state timeout's
+  event at once, ahead of the timer. The security side is GHSA-m77m-wxrj-2ff4
+  above.
+
+- **A joiner learns of its own promotion in one hop, so `Cluster.bootstrap`
+  no longer rejects a healthy join at random** (#1747). The leader promoted
+  a joiner as soon as its record arrived, but the joiner heard of that only
+  when some informed node happened to pick it as the one random target of a
+  gossip round — a 1/(N−1) chance per node per tick — while
+  `Cluster.bootstrap` waits a flat 5 s for the node to see itself `up`.
+  Eight joiners started together against a twelve-node cluster were
+  rejected with `ClusterReadyTimeoutError` six times in eight, every one of
+  them already `up` everywhere else, and under `exit-process` a rejection
+  ends the process — the exact shape of a "stop every node, start every
+  node" upgrade, which the wire-version cut (#823) makes the only one. The
+  leader now sends its view straight to each member it has just promoted;
+  the same eight joiners are all ready in well under a second. Nothing to
+  configure. One visible change: a node can now report a configuration
+  divergence (`MemberConfigurationMismatch`) before `Cluster.join` resolves,
+  so a listener added with `cluster.subscribe` after the join may miss it —
+  subscribe on `system.eventStream` before joining to see every one.
+
+- **A new leader's coordinator holds new placements for the whole
+  registration window, even once every member it knows of has registered;
+  a leader restarted at the lowest address could still start a shard a
+  survivor ran** (#1272). Measured in `ShardingLeaderRestart` under load, 2 of
+  20 runs. The restarted node had not yet heard of every member when its term
+  began, so the set it waited for was complete in its own view and short of
+  the cluster's, and the barrier lifted before the missing member's claim
+  arrived. The window is now a floor as well as a ceiling, and a term also
+  begins on the first frame served as leader, not only on the queued
+  `LeaderChanged`. 0 of 72 loaded runs fail. The cost: a type started on a
+  cluster that is already up also places its first new shards only after the
+  window — three gossip rounds plus 500 ms, about 3.5 s at the shipped 1 s
+  gossip interval.
+
+- **Two same-name clusters that formed during a startup partition now meet
+  once it heals, and are not merged by accident; they used to stay forked
+  until one side restarted** (#1176). A node stopped dialling its seeds once it
+  was up, and gossip only goes to members, so the two islands never exchanged
+  a frame again. A node that is up now dials the seeds it has not met every ten
+  seed-retry intervals (30 s by default), with an island probe carrying its
+  whole membership, and the other side answers once. A probe from an `up`
+  sender this node holds no record of, whose membership does not list this
+  node, is refused rather than merged — a silent merge would leave two
+  singletons and two shard maps — logged at error, and counted as
+  `cluster_gossip_records_refused_total{reason="foreign-cluster"}`. With the
+  new `actor-ts.cluster.down-smaller-island = on` (default off) the smaller
+  island downs itself, on a tie the one whose lowest address sorts higher, and
+  `SelfRemoved` and the shutdown pipeline follow.
+
+- **A coordinator applies its coordinator-state load in its own turn and only
+  in the leader term it was started for, and places no shard until the load
+  has finished; a demotion during the load used to be undone when it landed**
+  (#952). The load seeded `regions` and `shardHome` from inside its promise,
+  outside the mailbox, so a coordinator that stopped leading while the read
+  was in flight had its just-cleared map repopulated from a stale snapshot.
+  The leader change now goes through the coordinator's mailbox too, the read
+  hands its result back as a message that is dropped if the term has moved
+  on, and the registration barrier waits for the load as well as for the
+  regions — at most `coordinator-state-load-timeout`.
+
+- **A coordinator repeats the `HandOff` that tells a region to give up a shard
+  it claims but does not own, until the region has done so; it used to send it
+  once** (#1272). A region drops such a `HandOff` for ordinary reasons — it has
+  not yet seen the leader change, or the shard is mid-stop — and it re-registers
+  only on a cluster event or before its first acknowledgment, so on a stable
+  cluster a dropped one left the stale copy running beside the owner for good.
+  The release is now repeated every second (never slower than
+  `handOffTimeoutMs`) until the region completes it, registers again without
+  the shard, or leaves, and gives up after five sends with a warning. It never
+  reallocates: the shard keeps its owner throughout.
+
+- **A region stops a shard the coordinator has homed on another region while it
+  still runs here; the shard and its entities used to keep running beside the
+  new home's copy, out of reach of every cleanup** (#953). `onShardHome` only
+  forgot the id, and `sweepEmptyShards` filters on the entry it had just
+  deleted, so the orphan was never reclaimed — the same entity id live on two
+  nodes, reached by a `ShardHome` rather than a hand-off. The shard is now
+  stopped as a release: no `HandOffComplete` nobody asked for, and no backoff
+  for a shard that is not this region's. A shard placed back while the old copy
+  is still stopping waits for it, buffering its traffic, and is created again
+  once it is gone. Under `rememberEntities`, an entity event already queued for
+  a shard that moved away is no longer relayed, so it cannot edit the registry
+  the new home was shipped. What sat in the stopping shard's mailbox is lost,
+  as it is on a hand-off.
+
+- **A partition that recurs at the same addresses is decided again; the
+  downing provider used to be skipped for it without a line in any log**
+  (#934). The guard against applying a decision twice remembered the view it
+  last decided on and never forgot it, and membership is keyed without the
+  incarnation, so a node removed, restarted at the same port and partitioned
+  off again produced the very same view — and stayed parked with nothing
+  deciding about it. The guard now forgets a view as soon as the cluster has
+  moved on from it, on every evaluation and ahead of the stability window, so
+  the views a restart passes through clear it too; a skipped evaluation is
+  logged at debug.
+
+- **A cluster that is merely smaller than `StaticQuorum`'s `quorum-size`, or
+  than `KeepReferee`'s `down-all-if-below-quorum`, is no longer downed; a node
+  starting with `quorum-size = 3` downed itself on its first stable view,
+  before its peers had joined** (#933). Both strategies now decide nothing
+  while nothing is unreachable — a small cluster has no partition to resolve —
+  as `LeaseMajority` and `KeepMajority` already did. A partition that leaves a
+  side below the quorum still downs that side. The `static-quorum` caution on
+  the downing page says so (EN + DE).
+
+- **A node the rest of the cluster removed now learns of it and takes itself
+  out; it used to keep running the shards and the singleton the survivors had
+  already taken over, and `SelfRemoved` never fired on a real `Cluster`**
+  (#940). Reported from a deployment where a node was paused past the downing
+  window — SIGSTOP, a suspended VM, a long GC pause — and resumed: the
+  survivors acknowledged its heartbeats, the acknowledgment counted as
+  liveness, and the node never saw a partition its downing provider could
+  decide on. A survivor now answers a heartbeat from the run it holds as
+  `removed` with a new `membership-refused` frame naming that run (incarnation
+  included) instead of an acknowledgment. The removed node takes it as a fact
+  about the peer only: the peer is parked at `unreachable` and its later
+  heartbeats no longer bring it back, while the node's own status stays its own
+  to author, so the frame is no remote kill switch. Once every peer has refused
+  it the view is settled and the downing provider is asked at once instead of
+  after `stable-after`; under `KeepMajority` the node downs itself — about
+  200 ms after resuming in the reproduction, against never before. A node's
+  own self-down now ends in `removed` and emits `MemberRemoved` and
+  `SelfRemoved` for it, as `MockCluster` always did. A refusal naming another
+  run at the address (a restart) or carrying no incarnation is ignored, and the
+  real peer's gossip listing this run as a member withdraws a forged one. The
+  same path makes `Cluster.down` — and `POST /cluster/down` — on any one node
+  reach the node it downs: the tombstone gossips to the others, every peer
+  refuses the node, and it stands down, where it used to run on. It holds over
+  an injected transport too (a TLS `TcpTransport`, an in-memory one), whose
+  connections carry no incarnation: the run is read from the heartbeat itself.
+  `scripts/repro/cluster-dual-activity.ts` reproduces both #940 and #1272 with
+  three local processes.
+
+- **A coordinator that has just become leader places no shard until the other
+  members' regions have registered what they host; it used to place shards at
+  once, so a node restarted at the lowest address — or one joining with it —
+  could start a shard a survivor was still running** (#1272). A leader change
+  hands the coordinator over with no protocol between the two instances, and
+  the other regions learn of it through gossip. The new coordinator now holds
+  every *new* placement — a shard a registration has already homed is answered
+  at once — until each other `up` member's region has re-registered, which it
+  does with its `hostedShards` on the leader change it observes. The wait ends
+  with the last registration and at the latest after three gossip rounds plus a
+  register retry, never longer than `handOffTimeoutMs`, so a member that does
+  not run the type costs that window and nothing more; when it runs out the
+  coordinator places shards anyway and logs whom it heard nothing from. A
+  coordinator-state snapshot no longer hands a restarted node its previous
+  run's shards either: a region seeded from the snapshot that registers from a
+  different incarnation keeps only what it claims. The rebalance page says so
+  (EN + DE); a lease on the coordinator stays the hard guarantee.
+
+- **`idle-timeout` and `request-timeout` on the Express and Fastify backends
+  are reported in effect on Deno 2.7.13 and later, where they hold; they were
+  reported not in effect on every Deno** (#1793). Deno's `node:http` applies
+  `keepAliveTimeout` and `requestTimeout` from 2.7.13 on — an idle keep-alive
+  connection closed at 1.6 s and a stalled body was answered at 30 s, as on
+  Node — while 2.6.8 through 2.7.12 apply neither, so `bind()` warned about two
+  bounds that held. The report now follows the Deno release, and below 2.7.13
+  says not in effect as before. The Express and Fastify pages say so (EN + DE).
+  Fastify's HTTP/2 listener, which Deno serves from 2.7.13 on, still refuses to
+  bind under `max-header-bytes` there: Deno's server ignores the cap.
+
+- **The DevTools config panel attributes a key that holds a dot — quoted in
+  HOCON, `"stripe.live"` — to the layer that set it; it reported every such
+  key as `reference`, because it looked the key up as nested keys that no
+  layer held** (#1546). Such a key's path now arrives quoted as HOCON writes
+  it, `my-app."stripe.live"`, so it no longer reads as the nested keys
+  `my-app.stripe.live`; bare keys arrive as before.
+
+- **A TLS dial to a peer addressed by an IP literal with no `serverName` set
+  now connects, and the peer is verified against the IP SAN in its
+  certificate** (#1475). `NodeTcpBackend` announced the host as the TLS
+  server name, and node:tls refuses an IP literal there, so every such dial
+  failed with ERR_INVALID_ARG_VALUE before a byte was sent: on Node already
+  in 0.17.0, and on Bun once its cluster dials went through Bun's own
+  node:tls. A dial now announces a configured `serverName` as configured, a
+  host name as before, and nothing for an IP literal, so both documented TLS
+  recipes, which address their nodes by IP, connect. The recipes on the
+  transports and cluster security pages also parse the node address without
+  the actor-ts:// prefix that put the system name out of step with the
+  cluster's, import what they use, and issue the per-node certificate with
+  an IP SAN.
+
+- **A `ProducerController` keeps retransmitting a send whose retransmit the
+  consumer refused** (#1230). When a retransmit's `tell` threw — a bounded
+  consumer mailbox with the `reject` overflow policy throws
+  `MailboxFullError` at the sender — the scheduler reported a bare task
+  error naming neither the producer nor the seq, and the next retransmit was
+  never armed, so that seq was never sent again and held its window slot
+  until the producer stopped; enough such refusals stalled the producer
+  outright. The next retransmit is now armed before each transmission, and a
+  refused retransmit is logged as a warning with the producer id, the seq
+  and the thrown value. A refused first transmission still faults the
+  producer, as before.
+
+- **A `ProducerController` no longer restarts when a caller's `confirm`
+  callback throws, and a throwing callback no longer leaves the sends behind
+  it unsettled when the producer stops** (#1230). The callback runs on the
+  producer's own turn: a throw on an acknowledgment faulted the producer,
+  and the restart minted a new incarnation, numbered from seq 1 again and
+  settled every other send in flight and queued with `'producer stopped'`;
+  on stop, the first throw abandoned the settlement loop and no later
+  callback was called. Each call is now guarded, and a failure is logged at
+  `error` level with the producer id, the seq (or that the send was still
+  queued) and the thrown value. An `async` callback whose promise rejects is
+  logged the same way instead of surfacing as an unhandled rejection, which
+  ended the process on Bun and Node. The report itself can no longer fault
+  the producer: a thrown or rejected value the logger cannot render - an
+  error whose `message` getter throws, or a revoked proxy, either of which
+  made the stock `JsonLogger` or `ConsoleLogger` throw - is left out of the
+  line, which is written without it. Unguarded, that failed render restarted
+  the producer on an acknowledgment, abandoned the settlement loop in
+  `postStop`, and turned an `async` callback's rejection into an unhandled
+  one.
+
+- **A coordinated-shutdown phase budget longer than one host timer holds —
+  about 24.9 days, as with
+  `actor-ts.coordinated-shutdown.default-phase-timeout = 30d` — no longer
+  times every task out at once** (#1455). The budget is armed as a chain of
+  timers and waits in full; Bun and Node used to fire it after 1 ms behind a
+  `TimeoutOverflowWarning`.
+
+- **A SIGTERM or SIGINT that starts the coordinated-shutdown pipeline no
+  longer leaves a halted run as an unhandled rejection** (#1455). When a
+  phase with `recover = false` fails, the halt is logged as an ERROR and the
+  system is torn down in place of the terminator the run never reached, so
+  `runUntilTerminated()` settles with the halt's error and a main that
+  awaits it exits non-zero — where Node used to crash on the rejection or
+  the process waited for good. With `terminate-actor-system = false` the
+  halt is still logged and the system stays up. With `exit-process` on the
+  process exits at the halt instead, after a bounded flush of the dead
+  letters and the log sinks.
+
+- **The dead-letters page's Watcher sample logs the message's class through
+  `classNameOf` from `actor-ts/util` instead of interpolating the message,
+  which printed a string payload verbatim and threw on a decoded body with
+  no usable `toString`; it also imports `Actor` now, so it compiles**
+  (#1442).
+
+- **BREAKING — The shard coordinator no longer places a shard on a member
+  that is not up** (#1467). A region on a node that was unreachable,
+  joining, weakly-up, leaving or down, or on an address that was no member
+  at all, stayed a full placement candidate, so for as long as nothing
+  decided about a parked member it kept being handed newly allocated shards
+  whose first messages waited on a home that could not answer: 8 of 24 under
+  the default strategy with one of three nodes parked, and the role filter
+  did not help. The coordinator now tracks the regions whose member is up
+  and how long that set has held still, for a settle window derived from the
+  downing timings: `failure-detector.down-after` without a split-brain
+  strategy, the larger of that and `split-brain-resolver.stable-after` with
+  one (5 s and 20 s at the shipped defaults). While the set is settling, a
+  shard is asked for over every registered region first and that pick stands
+  when its member is up, otherwise it is asked again over the eligible
+  regions, and the strategy is not asked to rebalance. Once it has settled,
+  shards are placed on the eligible regions only, and rebalancing is shown
+  the shards of every region on an up member, so the shards of a registered
+  region that is no candidate (refused over its shard count, or without the
+  type's role) are moved onto a candidate, while a proposed hand-off from an
+  owner that is not up is dropped. Both built-in strategies propose those
+  shards: `LeastShardAllocationStrategy` puts them ahead of its threshold
+  check and counts them against `maxSimultaneousRebalance`, then balances
+  the candidates with what is left of that budget. A member that goes
+  unreachable and comes back within the window therefore moves no shard
+  placed before it, one that stays parked costs one round of moves between
+  the healthy members, one that flaps faster than the window holds
+  rebalancing off for as long as it flaps, and a parked node's shards wait
+  for the downing decision instead of being handed off into a second live
+  home. A request for a new shard with no eligible region stays pending
+  until the membership decides and logs one warning per episode; while #930
+  is open a member cut off by a symmetric partition does not come back on
+  its own after the network heals, so there the request waits until
+  auto-down, a split-brain strategy or an operator removes the member. A
+  strategy answer outside the candidates it was handed is never placed, and
+  the coordinator logs it at warn once per shard. A region whose
+  registration was refused over its shard count (#633) is no longer a
+  placement candidate either, even when a coordinator-state snapshot seeded
+  it before the refusal, and the shards the snapshot homed on it are
+  rebalanced onto a candidate.
+
+  **Migration.** A custom `AllocationStrategy` may be asked `allocate()`
+  twice for one shard while membership settles (every registered region with
+  every region's shards, then only the up members' regions) and must not
+  count a call as a placement; an answer outside the candidates a call was
+  given is never placed and is logged at warn once per shard; `rebalance()`
+  runs only after the up members' set has held still for the settle window
+  (down-after, or stable-after with a split-brain strategy), with the
+  eligible regions as candidates and the shards of every region on an up
+  member, a non-candidate's included.
+
+  A region refused over its shard count now answers the hand-offs of the
+  shards a coordinator-state snapshot seeded it with, so they move at once
+  instead of after `handOffTimeoutMs`, ten seconds by default; a shard it is
+  still releasing is answered once its stop has finished. A coordinator ends
+  a hand-off only on a `HandOffComplete` from the region it sent the
+  hand-off to, so a late or duplicated completion from any other region ends
+  nothing.
+
+- **The cold-start stall warning no longer counts a peer's `removed`
+  tombstone or `down` record as a peer it can see** (#1500). A node whose
+  only peers had left was given the remedy for peers that are all present
+  and waiting; it is now told that every peer that answered has left since,
+  or was downed.
+
+- **A `ToShard` frame, or a ref from `shardRefFor()`, that reached a region
+  while the shard it named was handing off or passivating no longer goes
+  down with the stopping shard actor** (#1437). The region handed the frame,
+  and the ref, to the actor it had already told to stop, so whatever was
+  told to them was dead-lettered with it. Now an entity envelope for such a
+  shard waits in the region buffer like a routed message, any other shard
+  message is dead-lettered by the region with its sender, and
+  `shardRefFor()` answers with a ref that relays through the region — which
+  also routes a message for a shard that has since moved away to the shard's
+  new home instead of dropping it.
+
+- **A shard whose failure reached its region — an entity whose own
+  supervisor strategy escalates, or a fault in the shard's own handler — was
+  restarted in place, on a budget shared by every shard of the type on the
+  node, which tore down every entity under it while the region's index went
+  on claiming them (`entityCount` unchanged, `resident` true), and under
+  `rememberEntities` nothing brought them back** (#1437). The region now
+  stops such a shard, so it takes the failure backoff: the index forgets its
+  entities, and the registry is asked for when the shard is re-created,
+  which brings remembered siblings back. An entity's own restarts inside its
+  budget are unchanged — the shard still decides those, at once.
+
+  What a region had already routed into a shard that fails by escalation,
+  and that the entity had not reached yet, goes to dead letters with the
+  shard, each message with its sender; only what the region routes after the
+  death waits for the re-created shard. The restart in place this replaced
+  kept those messages but tore down every entity of the shard; the overview
+  now says so beside the region buffer.
+
+- **The replicated event sourcing overview said the journal must be shared
+  across replicas and drew a shared journal, while each replica appends
+  every event it observes to its own node's journal; the page describes one
+  journal per replica now, in both languages** (#1497). The persistent-actor
+  page's reason for leaving `DurableStateActor` outside the store guards,
+  false since #872, is corrected too.
+
+- **A `ReplicatedEventSourcedActor` restarted without a snapshot issued
+  `seqAtReplica` 1 a second time, and one restarted from a snapshot
+  re-issued the number of every own event written after it, because the
+  counter was restored from the snapshot alone** (#1497). Recovery continues
+  it past this replica's own events in the replayed journal as well; a
+  peer's events do not move it.
+
+- **`JetStreamOptionsValidator` refuses a deliver policy whose start the
+  server cannot use: `by-start-sequence` without a positive integer
+  `startSeq` up to `Number.MAX_SAFE_INTEGER`, and `by-start-time` without a
+  `startTimeMs` from `0` to `253402300799999` (9999-12-31T23:59:59.999Z)**
+  (#1443). Such a consumer used to be refused at connect and retried for
+  ever under the default reconnect policy; the start now fails naming the
+  field.
+
+  Past `Number.MAX_SAFE_INTEGER` a number no longer holds every integer, so
+  the sequence sent is not always the one written, and from `1e21` on JSON
+  writes it in an exponent form the server's uint64 cannot parse. The
+  `startTimeMs` bound is the last instant whose ISO form keeps the
+  four-digit year RFC 3339 has, rather than the `8.64e15` a `Date` holds; an
+  epoch in microseconds mistaken for milliseconds lands far past it.
+
+- **The management-endpoints page shows member addresses the way the
+  endpoints print and accept them** (#843). Its sample responses and its
+  `POST /cluster/down` request body used `actor-ts://my-app@10.0.0.5:2552`,
+  but the endpoints render `system@host:port` and `POST /cluster/down` looks
+  the address up by that string, so the documented request was answered 404.
+  The `/cluster/members` sample also shows a realistic `version`, which
+  starts at the member's join time in milliseconds and counts status
+  changes.
+
+- **The membership state diagrams in the cluster overview and on the
+  weakly-up page now show the seven statuses the cluster has** (#1477). They
+  drew an `exiting` state that does not exist and no `down` at all, and the
+  overview labelled every removal as kept for the tombstone TTL, while the
+  failure detector's own removal — the default with no strategy configured —
+  deletes the member outright. The management page's `POST /cluster/leave`
+  section named the same state and said the actor system then terminates;
+  the endpoint only calls `cluster.leave()`, and the page now says the
+  system keeps running.
+
+  The cluster-security page no longer justifies the failure detector's
+  delete with a recovery after a partition heals: the page claimed it in
+  v0.17.0 too, and it never held, because gossip and heartbeats only target
+  reachable members (#930).
+
+- **The FAQ, the cluster overview and the management-endpoints page now say
+  what a cluster without a downing strategy does** (#1427). They said it
+  waits indefinitely, that the default needs manual intervention during a
+  partition, and that downing a member stops its actors. With no strategy
+  the failure detector removes a member it declares down at `down-after` —
+  `actor-ts.cluster.failure-detector.auto-down` ships `on` — and the last
+  available node takes over its shards and singletons; that is right for a
+  crashed node and forks the cluster under a partition, where both sides
+  remove each other and run on as two clusters that do not merge again when
+  the network heals (#930), so the pages recommend `lease-majority` or
+  another strategy for production. With two or more survivors one survivor's
+  gossip can bring a removed member back as `unreachable` until it is
+  removed again, so `POST /cluster/down` can still find it. Under the
+  opt-out `auto-down = off` the member is parked at `unreachable`, its
+  shards still homed on it and its watchers told nothing, until an operator
+  downs it with `Cluster.down` or `POST /cluster/down` (behind
+  `actor-ts.management.enable-down-endpoint`), a strategy is configured, or
+  it restarts on the same address, which ends the old run with `MemberDown`
+  and `MemberRemoved` before the new one joins; a heartbeat brings a parked
+  member back after a pause, never after a symmetric partition. With a
+  strategy the detector only parks and the strategy decides, and none of
+  this keeps the leader, or a singleton without a role, where it was.
+  `POST /cluster/down` is documented as the way out of the opt-out and as a
+  change to the calling node's view: the downed process is not told and
+  keeps running until it is stopped (#940), and after a restart on the same
+  address that process is the new, healthy run.
+
+- **BREAKING — `ProjectionActor.byPersistenceId` and `byTag` refuse an
+  incomplete projection with an `OptionsError` naming the field** (#1448).
+  One without a `query` used to spawn and fail every poll, retried forever;
+  one without a `name` ran as `undefined-<pid>` and saved its cursor under
+  the projection name `undefined`, shared with every other unnamed
+  projection of that entity; one without its `persistenceId` or `tag` threw
+  a `TypeError` naming no field; and a `handle` or `handleGroup` that is not
+  a function failed only at the first event. `ProjectionOptionsValidator`
+  takes the cursor field (`persistenceId` or `tag`) as an optional
+  constructor argument; given, it requires a non-empty `name`, a `query`,
+  that field and a handler, and without it it checks only the values
+  present.
+
+  The refusal also holds for values that are present but name nothing — a
+  `null` `query`, an empty or non-string `persistenceId`, a `null` `tag` —
+  and for two that every poll would fail on: a query without the method this
+  projection's polls call (`currentEventsByPersistenceId` or
+  `currentEventsByTag`), and a tag filter the query layer refuses (longer
+  than 255 characters, an operator that is not a list, a value that is
+  neither a string nor a filter object), refused with the query layer's own
+  reason. What the read side accepts on purpose still spawns: an empty tag,
+  `{}`, `{ any: [] }`.
+
+  **Migration.** Give every projection a `name`: one without was keyed
+  `undefined` in the offset store and is now refused, so
+  `withName('undefined')` resumes that cursor. Pass a `PersistenceQuery` and
+  a tag filter the query layer accepts: one whose query lacks the method its
+  polls call, or whose filter the query layer refuses, now throws at
+  `byPersistenceId` / `byTag` instead of spawning and failing every poll.
+
+- **The lease documentation now matches the code** (#1494).
+  `InMemoryLease`'s store is per isolate (one process or one worker thread,
+  so `WorkerMesh` nodes never contend on it), the derived renewal interval's
+  floor is named per backend (500 ms for Kubernetes, 100 ms in memory), and
+  `KubernetesLease` no longer claims a required namespace, which may come
+  from the Pod's service-account mount.
+
+  The doc comment on `DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS` no longer
+  says the singleton's lease-acquire retry is reachable only through a lease
+  passed in code; it names `actor-ts.cluster.singleton.use-lease` and
+  `actor-ts.coordination.lease`, the configuration route that builds one.
+
+- **A `DistributedData` replicator restarted with a durable store merges the
+  reloaded record into the values it already holds instead of replacing
+  them** (#1468). A mutator that threw while a save was still in flight used
+  to roll a key back to the older persisted value on the restart and tell
+  every subscriber that older value as a change.
+
+- **The stock-metrics page no longer presents an event-loop starvation
+  detector as shipped; it is planned** (#886). It also corrects what Bun
+  does with `performance.eventLoopUtilization`: the function is absent only
+  until something imports `node:perf_hooks` (fastify, the default HTTP
+  backend, does), after which it reads a permanent zero like Deno's, so a
+  feature check passes on all three runtimes and only Node's reading is
+  real.
+
+- **The documentation names `HybridDispatcher` as the default dispatcher
+  everywhere again, in both languages** (#1461). The configuration
+  reference, the dispatcher-tuning guide, the actor-system page, the
+  stock-metrics page and the runtime compatibility matrix had gone on saying
+  `"immediate"` since the default changed. The `actor-ts.dispatcher.default`
+  row now lists all four kinds with the shipped one marked and says that an
+  unset or unrecognised value falls back to `hybrid`, the low-throughput
+  advice raises the hybrid's budget with `Dispatchers.Hybrid(n)` instead of
+  prescribing `MicrotaskDispatcher`, and `ImmediateDispatcher`'s doc comment
+  no longer calls it the default. A doc-claim test now reads these pages and
+  the dispatcher classes' doc comments and compares them with the shipped
+  default, the kinds the reader accepts and the dispatcher an unrecognised
+  kind actually builds, and the code's fallback is the named constant
+  `DEFAULT_DISPATCHER_KIND`, which the documented-defaults table pins to
+  `reference.conf`.
+
+- **The pub-sub page and the gossip JSDoc of the mediator and the
+  receptionist describe their gossip as it is** (#857). Each pushes its full
+  local set, topic names or registered keys, to one random `up` peer per
+  tick, and the receiver replaces that sender's contribution wholesale, so a
+  removal travels as an absence and there are neither deltas nor tombstones;
+  the docs said deltas. Each runs on its own timer,
+  `pub-sub.gossip-interval` and `receptionist.gossip-interval` (1 s each),
+  never at the cluster's `gossip-interval`, which the docs said they
+  followed. The two keys the 0.14.0 entry left open are declined.
+  `routing-logic`: send-to-one exists since #155 as a per-publish choice,
+  `new Publish(topic, message, 'one-subscriber')`, with a rotation chosen on
+  purpose over a random draw, and a node-wide strategy would override a
+  caller's explicit delivery and could differ between the node that
+  publishes and the node that delivers. `removed-time-to-live`: there are no
+  tombstones to expire (#80), because a sender's topic names are replaced
+  wholesale on every frame and a departed node's claims go with
+  `MemberRemoved`.
+
+- **The gossip-cadence tuning page, in English and German, names the timer
+  each cluster cadence actually runs on** (#842). It said that gossip
+  carries last-seen times for the failure detector and that pub-sub, the
+  receptionist and sharding rebalance run at the cluster's gossip rate. The
+  failure detector and its reaper run on
+  `failure-detector.heartbeat-interval`, rebalancing on
+  `sharding.rebalance-interval`, and pub-sub and the receptionist on their
+  own `gossip-interval` keys (1 s each), while a gossip frame is a sign of
+  life only for the peer that sent it. The page now also says what does ride
+  `gossip-interval`: the leader's promotion to `up`, on every gossip tick
+  and after each accepted gossip frame. It also records that every periodic
+  cluster timer first fires one full interval after start.
+
+- **`PhiAccrualFailureDetector` judges a peer it registered and never heard
+  from by its registration instant, with the first-contact estimate**
+  (#1451). Such a peer read healthy indefinitely, where the simple detector
+  downs it after 5 s; in a cluster that is a member learned of through
+  gossip that has not spoken yet.
+
+- **`DistributedData` subscribers no longer receive a value twice or lose a
+  throw without a word** (#1468). A subscriber added from inside another
+  subscriber's notification for the same key now gets the value in flight
+  once, through its own replay, because the fan-out walks the subscribers it
+  found when the merge landed and still skips one unsubscribed earlier in
+  the same fan-out; and a subscriber that throws while `subscribe()` replays
+  the current value to it is now warned about exactly as a throw during a
+  merge is (`DistributedData: subscriber for "<key>" threw`, with the error,
+  under the replicator's own log source), while `subscribe()` still returns
+  its unsubscribe function and the subscriber stays registered. The
+  documentation of `subscribe()` and the distributed-data overview and
+  replication pages now say what a subscriber costs and what helps: a
+  callback runs synchronously on the replicator's turn, once per changed key
+  per merge, so its time delays merges, gossip and quorum replies for every
+  key (twenty calls of a 10 ms subscriber held a queued local read back by
+  203 ms); a debounce inside the callback helps, since the callback then
+  only re-arms its timer per change and the work runs once after the burst
+  (the same read waited under 5 ms), while a callback that only tells an
+  actor each change does not, since the actor does all of that work on the
+  same thread; and an actor subscribed with `subscribe(key, ref)` is told
+  the latest value rather than every one.
+
+  A callback subscription now belongs to its function and key, so a function
+  that unsubscribes and subscribes again from inside a notification for the
+  same key, while another subscriber keeps the key's subscriptions alive, is
+  handed the value in flight once instead of twice. An unsubscribe function
+  kept from a subscription that has already ended no longer ends a later
+  subscription of the same function; subscribing one function twice is still
+  one subscription, called once per merge and replayed on each call.
+
+- **A `ConsumerController` handed a message that is not a delivery now
+  declines it instead of dropping it in silence: the message becomes a dead
+  letter naming the consumer and counts toward `actor_unhandled_total`, a
+  warning paced to one line a minute says how many were declined without
+  repeating anything the sender wrote, and the deduplication state and the
+  handler are untouched** (#1470). A `null` message used to throw on its
+  `kind` and restart the consumer, which discarded every producer's
+  deduplication window, so the next retransmit of a sequence it had already
+  handled ran the handler a second time.
+
+- **A Cassandra keyspace with `NetworkTopologyStrategy` and no data center
+  is refused by name instead of created with invalid CQL** (#1490).
+  `keyspaceDdl` rendered `{ 'class': 'NetworkTopologyStrategy', }`, which
+  Cassandra rejects with a syntax error that names nothing the operator set,
+  so a store with `auto-create-keyspace` failed at startup without saying
+  what to change. The error now names the keyspace and the missing data
+  centers, for code and config alike, and data centers with zero replicas
+  stay legal.
+
+- **`Cluster.bootstrap` takes the advertised address from the config for the
+  decisions it makes before the join** (#1435). It resolved the node's
+  address before it created its `ActorSystem`, so
+  `actor-ts.remote.tcp.advertised-host` and `advertised-port` in an
+  `application.conf` reached the join but not the stable-observation
+  election, the seed filter or the port discovery pairs with every peer
+  host: a node could filter out a genuine seed and form a cluster of its
+  own, lose an election it should have won, or have discovery dial a port
+  nothing was published on. The system is now created first and the address
+  resolved once from it, and a bootstrap the join refuses, such as a
+  wildcard `advertised-host` in the file, terminates the system it created
+  instead of leaving it running.
+
+- **A journal, snapshot store or durable-state store set in code is no
+  longer replaced when the plugin its axis selects is registered
+  afterwards** (#1473). Registering a factory under the selected id dropped
+  whatever store the axis held, whether it came through `withPersistence`,
+  `setJournal` and its twins, or `configure`, so a `register*Plugins` call
+  after `withPersistence({ journal })` silently moved the journal to the
+  configured backend, and a plugin registering after an `await` did so under
+  running actors. Now only a store the replaced factory built is rebuilt.
+
+- **BREAKING — A `Config` built by another copy of actor-ts is refused
+  instead of read as an empty configuration** (#1425). With two copies in
+  one dependency tree, or one module reached through two specifiers,
+  `ActorSystemOptions.withConfig` and `Config.load({ overrides })` handed
+  the other copy's instance to `Config.fromObject`, whose plain-object test
+  accepted it, and its own fields became the configuration: every key the
+  application set landed under `tree.*`, where nothing reads it, and the
+  system started on the reference defaults without a word. All three now
+  refuse it with a `ConfigError` that names the cause. `Config.fromObject`
+  also refuses any other class instance instead of reading its fields as a
+  tree, and hands this copy's own `Config` back as it is. It refuses a
+  spread of a `Config` too — `{ ...config }`, of this copy's or another's,
+  with or without keys beside it — with a `ConfigError` naming the spread,
+  and a class instance anywhere below the top level (a nested `Config`, a
+  `Map`, a `Date`, any class instance, in a block or a list) with one naming
+  its path; `withConfig` and `Config.load({ overrides })` go through it. A
+  spread copies a `Config`'s private fields, not its configuration, so a
+  system built on one used to start on the reference defaults without a
+  word.
+
+  **Migration.** Pass a `Config` itself, never a spread of one —
+  `Config.fromObject`, `withConfig` and `Config.load({ overrides })` refuse
+  a spread — and give every key a plain object or a plain value rather than
+  a class instance (convert a `Map` with `Object.fromEntries`); build every
+  `Config` with the copy of actor-ts that creates the system.
+
+- **A frame the transport delivers after the server has closed a WebSocket
+  connection no longer reaches the hub** (#1431). The `ws` package keeps
+  emitting messages while a socket is closing, and the connection's actor
+  forwarded them, so a hub could run `onMessage` for a connection after its
+  `onClientDisconnected`, against the documented
+  `onClientConnected → onMessage* → onClientDisconnected` order; a frame
+  pipelined behind one that made the server close, such as an undecodable or
+  oversize frame, got through the same way. Inbound frames are now dropped
+  once the connection has decided to close.
+
+- **`proto-path` under `actor-ts.io.broker.grpc.client` and `grpc.server`
+  takes a single path written as a string, the way the gRPC page writes it;
+  a string used to fail startup with a `ConfigError` saying it was not a
+  list** (#1443).
+
+- **The JetStream, JetStream key-value and JetStream object-store actors
+  label their servers as configured in lifecycle events and logs; a list of
+  `nats://` URLs used to be labelled `nats://nats://…`** (#1443).
+
+- **BREAKING — A shard region now forgets the callers of `shards()` and
+  `shardRefFor()` that never get an answer, instead of keeping them for its
+  whole life** (#1436). The asks sweep drains all three of the region's
+  tables of waiting callers on the region's own turn, logs every dropped
+  query at debug, and keeps a caller at least as long as the deadline it is
+  waiting out — the largest of a minute, `actor-ts.actor.ask-timeout` and
+  the type's `shard-region-query-timeout` — so a cross-node reply under a
+  long ask timeout is no longer dropped either. The region cannot see a
+  per-call `timeoutMs`, so a `shards()` or `shardRefFor()` that passes one
+  longer than that lifetime is not waited out in full: an answer that
+  arrives after the lifetime reaches nobody, and for `shards()` that
+  includes the coordinator's partial answer, which comes after 0.6 × the
+  wait when a region is slow. Such a call fails with `AskTimeoutError` once
+  its own wait runs out, where v0.17.0, which never swept these tables,
+  still delivered the answer. A wait longer than a minute belongs in the
+  type's `shard-region-query-timeout`, which raises the lifetime with it.
+  `shardRefFor()` with a shard id outside `0..numShards - 1` now rejects at
+  once with a `RangeError` instead of an `AskTimeoutError` after the full
+  timeout, and a `shards()` or `shardRefFor()` made before the region
+  registered is asked again once the coordinator acknowledges it, instead of
+  timing out while a message sent in the same window is delivered.
+
+  **Migration.** Pass a wait longer than a minute as the type's query
+  timeout (`withShardRegionQueryTimeoutMs` or
+  `actor-ts.sharding.shard-region-query-timeout`), not as the per-call
+  `timeoutMs`.
+
+- **BREAKING — A SQL Server url that is a URL, such as
+  `mssql://user:pass@host:1433/db`, is refused when the store is built, with
+  an `OptionsError` naming the connection-string shape node-mssql parses**
+  (#1490). node-mssql has parsed only `Server=…;Database=…` since its 8.0
+  and reads a URL as one unknown key with no server behind it, yet the url
+  leaf's documentation and `reference.conf` offered the form, so a
+  config-only store that followed them could never connect. The claim is
+  gone from the builder documentation, `reference.conf` and the docs.
+
+  **Migration.** Write the SQL Server url as a connection string,
+  `Server=<host>,<port>;Database=<db>;User Id=…;Password=…`; an `mssql://`
+  url never reached a server.
+
+- **The sharding passivation sweep ran inside the scheduler's callback
+  rather than on the region's turn, so it could judge an entity idle while a
+  message for it was already queued at the region and passivate the entity
+  that message was about to reach, which then had to be started again to
+  take it** (#851). The sweep timer now only sends the region a tick, and
+  both sweeps — idle entities and empty shards — run on the region's own
+  turn.
+
+  The empty-shard sweep now asks a shard to stop instead of stopping it, and
+  the shard stops only when it has nothing to lose. On its own turn the
+  region still judged a shard by its index, which learns of an entity only
+  from the shard's spawn report, so a first message for a new entity routed
+  just ahead of the sweep tick reached a shard the sweep then stopped, and
+  the entity went down before it read the message; the same happened to a
+  remembered entity a recovery batch, paced or not, had just started. A
+  shard that has an entity, or one backing off, declines and keeps running;
+  the region routes to it again, hands it what it buffered meanwhile and
+  starts any registry it held. A shard the coordinator moved elsewhere while
+  it declined keeps the entity it was busy with.
+
+- **A `sharding.GetShardStats` is answered only through a usable `replyTo`**
+  (#1437). The shard answers it when its `replyTo` has a callable `tell`,
+  `equals` and `path`, whatever copy of the module minted it, and declines
+  it through `Actor.unhandled` otherwise.
+
+- **A message that reached a shard while its entity was passivating
+  cooperatively was replayed into the next incarnation without its sender,
+  so an entity answering `this.sender` answered nobody and an `ask` that
+  landed in that window timed out** (#1441). The shard now keeps each
+  buffered message together with the sender it arrived with, on the
+  region-driven path too: a `PassivateEntity` from a `max-entities` eviction
+  or the idle sweep.
+
+- **`EventStream.subscribe` and `unsubscribe` now refuse a subscriber that
+  is not an `ActorRef` with a `TypeError` at the call site, as they already
+  did for an unusable channel (#1010)** (#1433). A plain function, which is
+  what a JavaScript caller passes when it guesses that the bus takes a
+  callback, used to be accepted on an empty stream and stored; every actor
+  stop calls `unsubscribe`, which calls `equals` on each stored subscriber,
+  so the next stop threw out of the actor's termination before its watchers
+  were told, its name stayed taken, and `terminate()` never settled. The
+  check is structural, asking for a callable `tell` and `equals` and a
+  `path`, so a working ref minted by another copy of the module is still
+  accepted, and `unsubscribe` now throws where an empty stream used to
+  answer a wrong value with a quiet `false`.
+
+  A subscriber that passed the structural check but whose `equals` throws no
+  longer stalls every actor stop after it. `unsubscribe` compared against it
+  on each of those stops and threw, so `gracefulStop` answered `false` and
+  `terminate()` never settled; on a bus holding anything else, every later
+  predicate-free `subscribe` threw from the dedup check, failing an
+  unrelated actor's `preStart`. The comparison now runs under a guard in the
+  bus, counts a throw as a different subscriber and logs it at warn, and
+  checks identity first, so the object that subscribed such a ref can still
+  remove it.
+
+  The warning the comparison guard writes can no longer throw: when the
+  logger cannot render what `equals` threw - an error whose `message` getter
+  throws, a revoked proxy - the line is written without it, where it used to
+  throw out of `unsubscribe` and so out of every actor stop.
+
+- **`MockCluster` (the testkit) delivers a cluster event by the same rule as
+  `Cluster.subscribe`: a listener that another listener unsubscribes during
+  dispatch is not called with the event in flight** (#1294). The mock walked
+  a bare copy of its listeners, so a test that passed against it asserted
+  something the real cluster no longer does.
+
+- **A scheduled task, actor timer or `ask` deadline longer than ~24.9 days
+  now waits the whole delay** (#870). A host timer cannot hold more than 2
+  147 483 647 ms, and `Scheduler` and `ask` handed longer delays straight to
+  `setTimeout` / `setInterval`, so Bun and Node fired them after 1 ms and
+  Deno wrapped them modulo 2^32: a 30-day `scheduleOnceFunction` ran almost
+  at once, a fixed-rate schedule with such an interval became a 1 ms loop
+  for its whole life, and `ask(message, 2 ** 31)` rejected with
+  `AskTimeoutError` after ~14 ms. Such delays are now armed as a chain of
+  host timers of at most the ceiling each; `cancel()` and `shutdown()` reach
+  whichever link is armed, a delay of `Infinity` now never fires instead of
+  firing at once, nothing accepted before is refused, and delays at or below
+  the ceiling take exactly the path they took before.
+
+  `after()` without a scheduler, `gracefulStop` on a ref it cannot watch,
+  the `InMemoryCache` expiry sweep, a persistent actor's `recovery-timeout`
+  and an `HttpClient` deadline longer than ~24.9 days now wait the whole
+  delay. Each armed a single `setTimeout` or `setInterval`, which Bun and
+  Node fire after 1 ms and Deno wraps modulo 2^32: `after(2 ** 31, factory)`
+  ran the factory after ~15 ms, `gracefulStop(remoteRef, 2 ** 31)` resolved
+  `false` at once, a `recovery-timeout` of 30d failed every recovery as it
+  started, a `cleanup-interval` of 30d swept the whole map every millisecond
+  for the life of the cache, and a request with `timeoutMs: 2 ** 31` was
+  aborted as it was sent. Such delays are now a chain of host timers of at
+  most the ceiling each, as the scheduler and `ask` already arm them; the
+  cache sweep and the `HttpClient` deadline keep every link unreferenced, as
+  their single timer was, a cancel, `close()` or settled request clears
+  whichever link is armed, `after(Infinity, ...)` now never runs instead of
+  running at once, nothing accepted before is refused, and delays at or
+  below the ceiling take exactly the path they took before.
+
+  A `CircuitBreaker`'s `callTimeoutMs` past that ceiling is waited out in
+  full as well: with no scheduler, or a wall-clock one, its per-call
+  deadline fired after a millisecond and failed every call.
+
+  A `ClusterClient` ask deadline and connect deadline longer than ~24.9 days
+  are waited out in full as well. Both were a single host `setTimeout`, and
+  `ask-timeout` and `connect-timeout` are refused only when they are not
+  positive, so `actor-ts.cluster.client.ask-timeout = 30d` rejected every
+  ask about 2.5 ms after it was sent, and a 30-day `connect-timeout` gave up
+  on a contact point before its hello-ack could arrive. Both are now a chain
+  of host timers, and a reply, `close()`, a dropped connection or the
+  hello-ack clears whichever link is armed.
+
+  `gracefulStop(ref, Infinity)` arms no timer at all. A budget that never
+  runs out leaves a timer nothing to do but hold the process open, and for a
+  ref with no local cell the chain re-armed a 24.9-day link forever with no
+  handle to cancel it, so an un-awaited infinite stop kept the process
+  alive. A local actor's infinite stop still resolves `true` once the actor
+  has terminated and is never escalated; for a ref it cannot watch the
+  promise never settles, where it used to resolve `false` after 1 ms, and
+  the process can exit.
+
+- **A message whose `toString` is not callable no longer restarts a
+  `WebsocketServerActor`, `WebsocketClientActor` or `MqttActor` that leaves
+  `onSelfMessage` at its default** (#1442). The old warn interpolated
+  `String(message)`, which throws on such a body; for the hub the restart
+  tore down every connection it had spawned, for the two broker actors it
+  was a disconnect and reconnect, and a peer's frame was enough to cause it.
+
+- **`MemberUnreachable` and `MemberDown` are announced once per transition**
+  (#1428). The failure detector's unreachable and no-provider down arms, an
+  applied downing decision (down-all-when-unstable included) and the
+  operator's `cluster.down()` each emitted the event again after the status
+  transition had already announced it, so `Cluster.subscribe` listeners and
+  `system.eventStream` subscribers saw every transition this node observed
+  twice, while the same transition learned through gossip arrived once. The
+  second copies were not faithful either: a listener that downed the peer on
+  `MemberUnreachable` was told once more, after `MemberRemoved`, that a
+  removed member was unreachable, and the second `MemberDown` of a leading
+  peer arrived after `LeaderChanged`. A subscriber that counts or acts per
+  event now sees one announcement, the DevTools cluster panel shows one row,
+  and production matches what the testkit's `MockCluster` always delivered.
+
+  The same holds on the recovery path: a peer that comes back from
+  unreachable is announced `MemberReachable` only while it is still `up`
+  once its `MemberUp` listeners have run, so a listener that downs it on
+  `MemberUp` is no longer told afterwards, after its `MemberRemoved`, that a
+  removed member is reachable (found while #1426).
+
+  The cluster overview now documents how `Cluster.subscribe` delivers live
+  membership events: to the listeners subscribed when an event is emitted
+  and still subscribed at their turn (#1294), once per status transition,
+  and synchronously depth-first, so a listener behind one that changes the
+  membership inside its callback receives the nested events before the outer
+  one, while an actor subscribed on `system.eventStream` receives them in
+  emit order.
+
+- **A `Cluster.subscribe` listener that unsubscribes from inside its own
+  callback no longer makes the next listener miss that event** (#1294).
+  `Cluster.emit` walked the live listener array, so the unsubscribe's splice
+  moved the next listener past the loop - which hit whichever subscriber sat
+  behind `ClusterReadiness`, `StorageLocalityAdvisory` or the bootstrap's
+  await-ready listener - and a listener subscribed mid-dispatch was handed
+  the event in flight on top of its replay. An event now reaches the
+  listeners subscribed when it was emitted that are still subscribed when
+  their turn comes: one subscribed mid-dispatch starts with the next event,
+  and one whose unsubscribe has run is not called again.
+
+  Each `Cluster.subscribe` call is its own subscription: subscribing one
+  function twice and calling the second unsubscribe ends only that
+  subscription, and calling it again ends nothing, where it used to remove
+  the first registration holding the function and then the other.
+
+- **A cluster dial that misses its handshake deadline is now aborted instead
+  of being left to connect on, and its WARN says how far it got** (#1475).
+  The deadline used to drop only the transport's own bookkeeping: a
+  blackholed dial went on connecting for about 21 s on Bun and on Node,
+  where the half-close it got does not stop a connect. `TcpBackend.connect`
+  now takes an `AbortSignal`, the transport fires one per dial whenever the
+  connection is retired, and the adapters destroy a socket that is still
+  connecting - natively on Node, through Bun's own `node:net` and `node:tls`
+  on Bun (native `Bun.connect` cannot be cancelled), and through
+  `Deno.connect`'s signal on Deno over plaintext. A TLS dial now counts as
+  open only once its handshake is done on every backend, so on Deno too a
+  certificate the CA does not sign and a peer that stalls the handshake are
+  a dial that could not connect: `Deno.connectTls` resolves at the TCP
+  connect, and Deno logged `outbound error -> X` for the first and left the
+  second to the handshake deadline. Over TLS on Deno only the TCP connect
+  still cannot be cancelled; a dial given up during its handshake is dropped
+  at once, although Deno does not end the TCP connection under it. Every
+  cluster dial on Bun now writes through `node:net`, which keeps what the
+  peer cannot take yet in memory without bound, where native Bun dropped it
+  (#931). The WARN that used to read the same for a blackholed connect and
+  for a peer that accepts and never answers now says
+  `could not connect to X within N ms` or
+  `connected to X, but no hello-ack came within N ms`; a dial refused before
+  its deadline logs the first line, once, on every runtime, with the
+  runtime's error attached rather than quoted (Node logged it as ``outbound
+  error -> X``). A Node TLS dial no longer writes its hello twice, and
+  `disconnect()` and `shutdown()` abort a connection that never completed
+  its handshake instead of half-closing it.
+
+- **The GELF sink's `max-chunk-bytes` is read as a byte size** (#1425). It
+  was read as a plain integer, so `8K` failed at startup where every other
+  byte-size key takes a unit; `8K` and `8192` now mean the same. A chunk
+  size that is not a whole number of bytes is refused, from HOCON and from
+  code alike, because the chunker slices the payload on it: a bare `1420.5`
+  and `1420.5B` alike (#1728).
+
+  `reference.conf` now publishes the default with its unit, as `1420B`
+  (#1438).
+
+- **Enabling the OTLP log sink from HOCON alone no longer fails at startup**
+  (#1425). `actor-ts.logger.sinks.otlp.enabled = true` without a
+  `service-name`, as in the sample on the logging integrations page, threw
+  an `OptionsError` saying `serviceName must be a non-empty string`, because
+  the reader took the empty `service-name = ""` that `reference.conf` ships
+  as a value. An empty `service-name`, `url` or `scope-name` now counts as
+  unset, like every other empty placeholder in the sink blocks, and the sink
+  sends the actor system's name as `service.name`, as documented.
+
+- **A node that `weaklyUpAfterMs` promoted to weakly-up now keeps contacting
+  its seeds until it is up, instead of stopping at the promotion** (#1493).
+  Before, a node promoted before its seed had started was never found by
+  that seed and stayed weakly-up indefinitely, and any `weaklyUpAfterMs`
+  shorter than three seed-retry intervals silenced both cold-start warnings,
+  the stall verdict and the minimum-members-before-up wait. Both warnings
+  now name the status the node is actually in (still "weakly-up" after N
+  seed-contact round(s)). This changes seed traffic: a weakly-up node
+  re-sends its join to every seed once per seed-retry-interval until it is
+  up, as a joining node already did.
+
+- **The delivery pages no longer describe a durable producer queue the
+  framework does not have** (#861). They said a lost message waits in the
+  producer's unacknowledged-buffer journal and is transmitted on recovery,
+  and that a restarted producer resumes from the right sequence number,
+  while `ProducerController` keeps its window and queue in memory only and
+  every incarnation numbers from 1. The pages now say so, describe the
+  `PersistentActor` wrapper a caller builds around `confirm` until #460
+  ships a durable queue, including that re-sent bodies arrive as new
+  messages under a new incarnation, and build their multiple-consumers
+  sample through `ReliableDelivery.producer` so the
+  `actor-ts.reliable-delivery` block applies to it.
+
+- **The delivery pages no longer suggest splitting one reliable-delivery
+  stream across several consumers with a router in front of them** (#1470).
+  Each consumer would see a gapped sequence, handle `maxOutOfOrder` of it
+  and refuse the rest, and the producer would stall on retransmits that are
+  refused in turn, which a new test pins end to end. The pages now show one
+  producer per consumer, each its own stream, and point at #1470 for
+  work-pulling. Their cluster section no longer promises that a consumer on
+  another node is reachable from any producer: the `ReliableDelivery` facade
+  spawns its controllers under `/system/delivery`, which other nodes are
+  refused, so only controllers spawned by hand under `/user` cross nodes,
+  and those do not read `actor-ts.reliable-delivery`.
+
+  The overview and `ProducerController` pages now open with
+  `ReliableDelivery.consumer` / `ReliableDelivery.producer`, the only route
+  that reads `actor-ts.reliable-delivery`, and say when constructing a
+  controller directly is right: for a pair that spans cluster nodes, which
+  then has to be given its tunables explicitly. The `ConsumerController`
+  page says the same about remote consumers. The delivery docs and the
+  `ConsumerController` JSDoc also no longer claim that an `ActorRef` has no
+  wire representation: a `replyTo` crosses the cluster wire as an address
+  marker and is decoded back into a live ref, so a peer that can reach a
+  consumer under `/user` decides where its acknowledgment goes (#1572).
+
+- **A `ProducerController` no longer restarts, and settles every send in
+  flight and every queued send with `'producer stopped'`, because of one
+  message it cannot act on** (#1470). A message that was neither a send nor
+  an acknowledgment threw out of its match, and a send whose `confirm` was
+  not a function, which is all a cluster peer can send a controller under
+  `/user`, faulted it when the acknowledgment arrived; stopping a producer
+  with such a send in flight also left the sends after it unsettled. Both
+  are now declined on arrival: the message becomes a dead letter naming the
+  producer and counts toward `actor_unhandled_total`, a warning paced to one
+  line a minute names how many were declined, and the window and the queue
+  stay as they were.
+
+- **`NodeHonoRunner` now forwards `serveOptions` to `@hono/node-server`,
+  which it had read nowhere** (#1486). The bag goes in beneath the runner's
+  own host, port and fetch; a caller's `serverOptions`, where `node:http`
+  tuning such as `maxHeaderSize` lives, is merged under the TLS material
+  instead of replacing it or being replaced by it; and the listener factory
+  stays the runner's, the TLS one under tls and `node:http`'s otherwise. The
+  Bun and Deno runners take the same precedence, so a `serveOptions` bag can
+  no longer strip TLS, switch HTTP/2 on, or replace the signal a
+  non-graceful stop aborts. Internal: the runners are not exported, and the
+  only producer of the bag today is the runners' own WebSocket bridge.
+
+- **A JetStream consumer whose `deliverPolicy` object carries a kind outside
+  the union is refused at startup with an `OptionsError` instead of reaching
+  nats.js as `deliver_policy: 'all'` and replaying the whole stream from its
+  first message** (#1443). The object arms were trusted to be the union's
+  own members, which a cast or a plain-JavaScript caller breaks. A retired
+  kind (`byStartSeq`, `byStartTime`) now names its replacement, any other
+  kind names the kinds there are, and a value that is neither one of the
+  three strings nor a `{ kind }` object is refused as well (a null policy
+  used to throw a `TypeError` at connect). The translation into nats.js no
+  longer has an `'all'` default to fall back on: an arm added to the union
+  without a translation does not compile, and a value that gets past the
+  validator leaves the consumer unprovisioned.
+
+- **The DevTools cluster tap no longer drops a cluster event it has no arm
+  for without a trace: it logs a debug line naming the event's class**
+  (#1502). A test publishes one instance of every class
+  `src/cluster/ClusterEvents.ts` exports into the tap and fails when any of
+  them reaches that path, which the compiler cannot catch for an event that
+  carries a `member` or a `leader`; deleting the `ClusterStatsPublished`,
+  `MemberConfigurationMismatch` or `CurrentClusterState` arm used to leave
+  the whole suite green.
+
+- **`JsonSerializer.fromBinary` no longer lets a document that is not JSON
+  escape as the engine's bare `SyntaxError`** (#1449). A truncated, empty or
+  trailing-garbage document is now a `SerializationError` reading
+  `JsonSerializer: document is not valid JSON: <engine message>`, with the
+  `SyntaxError` as its `cause`, while a malformed type tag and the nesting
+  ceiling keep their own messages, so the two faults stay apart in a log.
+  The stored-payload decoder every journal, snapshot store and durable-state
+  store reads through now reports a corrupt row as
+  `stored payload is not valid JSON: <engine message>`, with the engine's
+  `SyntaxError` as its cause. Before, the snapshot and durable-state loads
+  let that bare `SyntaxError` through, except on object storage, while a
+  journal or query read already wrapped it in a `JournalError`, which now
+  carries the typed error as its cause instead. A `__bigint__` tag whose
+  string is not an integer, the other way a raw `SyntaxError` escaped, is
+  now a malformed-tag `SerializationError` that does not echo the digits.
+  `SerializationError` accepts an optional `ErrorOptions` argument so a
+  wrapped error travels as its cause.
+
+  An `__error__` named after an `Object.prototype` member — `toString`,
+  `valueOf`, `constructor` and the rest — no longer throws a raw `TypeError`
+  out of the decoder or, for `constructor`, decodes to a `String` wrapper:
+  it decodes to a plain `Error` that keeps the name, like every other name
+  with no built-in error class behind it. The CBOR codec and the
+  stored-payload codec share that lookup and are fixed with it, so an error
+  stored under such a name can be read back.
+
+- **`CassandraRememberEntitiesStore` now sends the consistency level it is
+  configured with** (#1491). `withConsistency()` and a plain `consistency`
+  option were read nowhere: the store's four data-path statements (the
+  started upsert, the stopped point delete, the load read and the clear
+  partition delete) went out without a level, while the same setting reached
+  every statement of `CassandraJournal` and `CassandraSnapshotStore`. A
+  configured level now reaches all four; unset, none is sent and
+  cassandra-driver's own default applies, as in the sibling stores, and the
+  builder's JSDoc no longer promises a `LOCAL_QUORUM` default the code never
+  set. `start()` is single-flight as well: concurrent first calls, the
+  ordinary start-up when one store serves several sharded types, each built
+  and connected their own client and ran the schema again, and `close()`
+  ended only the last of them. The level has no HOCON key, because nothing
+  builds this store from config; it arrives through the store's options
+  only.
+
+  The `keyspace` option of the Cassandra journal, snapshot store and
+  remember-entities store no longer documents a `USE` after connect that no
+  store issues: every statement names the keyspace itself, and the client a
+  store builds is never bound to it.
+
+- **The MongoDB journal, snapshot store and durable-state store accept a
+  replica-set seed list without SRV** (#1490). Their url check handed the
+  whole string to `new URL(...)`, which has room for one host, so
+  `mongodb://h1:27017,h2:27017/app?replicaSet=rs` was refused at
+  construction although the driver accepts it, while a list written without
+  ports parsed as a single host and passed. The check now reads the
+  connection string the way the format lays it out, the scheme and the
+  userinfo and then a comma-separated `host[:port]` list, and refuses at
+  construction what the driver refuses on first use: a `mongodb+srv://` url
+  naming more than one host or a port, no host or an empty entry in the list
+  (the driver dialled an empty entry as localhost), a port outside 1-65535,
+  an unescaped delimiter or a broken escape in the userinfo, and the scheme
+  in capitals. Its two existing messages are unchanged, and a seed list that
+  switches TLS verification off is still refused by the HOCON reader.
+
+- **The configuration page no longer calls its `application.conf` sample
+  complete** (#1459). The section was headed "A complete `application.conf`"
+  and never was one: before the configuration wave it showed 40 of the
+  bundled reference's 174 leaves, and the wave nearly tripled the reference.
+  Both headings now read "A typical `application.conf`" (DE "Eine typische
+  `application.conf`"), and one sentence under each links the full
+  `reference.conf` page for every key.
+
+- **The configuration page's "Reading config in code" sample read back the
+  reference default instead of the value it set** (#996). It passed
+  `withConfig` the override as one dotted key,
+  `{ 'actor-ts.cluster.gossip-interval': '500ms' }`, and promised `500` from
+  `getDuration('actor-ts.cluster.gossip-interval')`, which returned `1000`:
+  an object's keys are taken literally, so a dotted key is a single key that
+  no path lookup reaches. The sample (EN + DE) now nests the object and says
+  why, and a test replays it through `withConfig` and `ActorSystem.create`
+  and refuses a dotted key anywhere in its literal. The loader still accepts
+  such a key without a word; that stays open in #996.
+
+- **A shard hand-off that times out now takes the shard off the region it
+  was moving away from, as a completed hand-off always did** (#1429). Until
+  now the timeout reallocated the shard but left it listed under the old
+  owner as well, so the coordinator counted it on two nodes; under the
+  default HashAllocationStrategy every rebalance tick then handed the shard
+  off from its true owner and allocated it straight back, stopping and
+  restarting it (journal replay included) once per rebalance-interval until
+  the old owner re-registered or left; and when the old owner left, the
+  shard was re-homed away from the region that actually hosted it, which on
+  a live cluster leaves it with two homes.
+
+- **A persistence store whose first open failed now retries on the next call
+  instead of failing every later call for the life of the process** (#1473).
+  This covers every pool- or client-backed store (the relational family,
+  MongoDB, DynamoDB) and both SQLite stores: a failed open is no longer
+  remembered, the pool, client or database handle it had opened is released
+  (an injected one is left alone), and a `close()` that arrives while an
+  open is still in flight no longer leaves a live connection behind it. The
+  SQLite journal no longer looks open when its tag backfill failed. The
+  Cassandra stores refuse `start()` and every operation after `close()`
+  instead of reconnecting, and a start that fails after creating its own
+  client shuts that client down before it rejects, so the next start creates
+  a fresh one; an injected client is still left running. A tag query through
+  `CassandraQuery`'s tag index opens the journal before it reads, so it no
+  longer fails on a journal that owns its client and was not opened yet, and
+  after `close()` it rejects with the journal's own closed error.
+
+  `CassandraRememberEntitiesStore`, the sharding store built on the same
+  Cassandra connection, now does the same: it refuses `start()` and every
+  operation after `close()`, its `close()` lets a start still in flight
+  settle and then shuts down a client the store created, and a start that
+  fails after creating its own client shuts that client down before it
+  rejects, so the next start creates a fresh one; an injected client is
+  still left running.
+
+- **A cluster transport connection that was given up now stays given up**
+  (#1476). On Bun and Deno a dial whose TCP connect took longer than
+  `actor-ts.remote.handshake-timeout` resolved after its own deadline had
+  dropped it: the late socket was installed with no deadline left on it, it
+  sent its hello, and the peer's hello-ack put the dropped connection back
+  into the peer table on both ends. `disconnect()` and `shutdown()` did the
+  same to a dial still connecting, so a node that had just left could go on
+  registering peers and handing their frames to the cluster after shutdown;
+  on Node a dropped dial's late hello-ack was adopted as a new inbound
+  connection, and an inbound socket dropped by its handshake deadline won
+  back a slot and a fresh deadline with every byte it sent. A torn-down
+  connection is now marked dead and stays mapped to its socket, so nothing
+  still delivered on it is decoded, registered or adopted; a late connect is
+  aborted instead of installed; `disconnect()` and `shutdown()` retire every
+  connection they close while still closing it in order, so leave frames are
+  flushed; a stopped transport accepts nothing more; and a connection
+  dropped for a fault is aborted rather than half-closed. An abandoned
+  dial's late hello-ack is no longer logged as a hijack of its replacement,
+  and `disconnect()` now releases a connection under every address it is
+  registered under, not only the one it was called with. A connection that
+  announced more than one identity gives every one of them back when it
+  goes, so each of those addresses is dialled afresh and the real peer's
+  hello under it is taken.
+
+- **The DevTools `config.resolved` answer reported an application.conf path
+  even when no file existed there, so the configuration panel said it had
+  read one from the working directory; `applicationPath` is now `null`
+  unless a file was read** (#1546). The boot dump header still names the
+  path it looked for, now marked (not found) when nothing was there.
+
+- **`requestTimeout()` now refuses a deadline above 2 147 483 647 ms with an
+  `OptionsError` instead of answering every request 503 within
+  milliseconds** (#1463). The middleware arms its deadline with
+  `setTimeout`, which turns any larger delay into 1 ms, so a deadline
+  written as 'effectively never' did the opposite.
+
+- **The gRPC client's two caller-driven stream registries no longer store a
+  copy of the opening command's reply address** (#1510). Every read on
+  either map was `stream.call`; the `target` beside it had been written and
+  never consulted since 2026-08-10, which #788's own commit body admitted at
+  the time. The reply address a stream actually spends is the one its
+  listeners and response callback closed over at open time, so the copy
+  duplicated a reference the entry already held rather than enabling
+  anything. Both registries are now pinned to the fields the code reads, so
+  re-adding one -- under any name, and even with the value `undefined` --
+  turns a test red.
+
+- **The scheme-relative worker-entry rule now reads the specifier the URL
+  parser will read instead of the raw string** (#1515). WHATWG strips
+  leading and trailing C0-or-space and every interior tab, LF and CR before
+  it looks at the scheme, so `' file:worker.js'`, `'\tfile:worker.js'` and
+  `'fi\tle:worker.js'` all arrive as `file:///worker.js` — the exact
+  spelling the rule refuses — and all three were accepted by all six slots.
+  It matters for a specifier that arrives from an environment variable, a
+  config leaf or a trimmed template rather than as a literal. The scheme and
+  host rules were never reachable this way, because they read the parsed
+  URL. The `withBootstrap` docs row now also states the rule's limit: it
+  reads the string you passed, so a `URL` you built yourself arrives already
+  normalised rather than refused.
+
+- **Counting what `MessageChannelTransport` drops reopened the
+  uncaught-throw-out-of-`onmessage` hole #945 closed, on two fresh paths**
+  (#1515). The sender was rendered for the drop line as
+  `addressForLog(env.from)` written in the argument list of each
+  `onDropped(...)` call, and an argument expression is evaluated before the
+  call it belongs to — so both reads sat outside every `try` in `onFrame`. A
+  `from` whose `port` is an accessor that answers the envelope guard and
+  then throws escaped the callback, which on a `MessagePort` has no caller
+  to unwind into: the thread, the main-thread system and every sibling
+  worker go with it. The throw also landed before the tally was touched, so
+  the drop was not recorded either. Measured against a `from` that stops
+  answering after N reads: at the wave tip the malformed-frame path gave
+  `reads=2 ESCAPED=YES` and the handler-threw path `reads=3 ESCAPED=YES`,
+  both with all three counters still at zero; at `22e166a8^` and at the
+  pre-lane tree neither escaped, so the counting commit is where they
+  opened. A third escape, on the envelope guard's own read of `from.port`,
+  turns out to predate the whole lane — it escaped at the pre-lane tree too,
+  and no suite had ever asked. The envelope guard, the field capture and the
+  rendering now happen inside one `try` at the top of `onFrame`, and every
+  refusal below reuses the captured string: a refusal point is the one place
+  in the method that may not read the envelope, because it is the one place
+  with nothing above it to catch. All three escapes are contained and
+  counted exactly once. Three test arms, one per read, each asserting
+  containment, a one-drop tally under `malformed-envelope`, and that the
+  handler never ran — the last of those is what refuses a single `try`
+  wrapped around the whole method, which contains every throw just as well
+  and hands the frame to the handler on the way. Separately, the decision
+  the change rests on — that a transport built without a logger must not be
+  silent — was stated in three places and asserted in none, so replacing the
+  default `ConsoleLogger` with a `NoopLogger` restored the reported defect
+  while leaving every suite green; a test now binds the behaviour rather
+  than the class, and the security page no longer claims all three drop
+  lines name a sender when the envelope one cannot.
+
+- **The typed-behaviors pages in both languages justified the stash-capacity
+  ceiling with a false fact — that 2 ** 32 - 1 is the last index an array
+  has** (#1509). It is the maximum length; the last index is 2 ** 32 - 2.
+  Measured: a[4294967294] leaves length at 4294967295, a[4294967295] leaves
+  it at 0 because that key is an ordinary string property, and new Array(2
+  ** 32) throws RangeError. The bound itself was right and the commit that
+  introduced it said so correctly in its own body, so this was documentation
+  contradicting its own change — and a reader acting on the stated reason
+  would conclude the guard is off by one and correct it to 2 ** 32 - 2,
+  refusing a capacity the closed-interval test accepts. Both pages now name
+  the maximum length, say it is one past the last index, and give the reason
+  the bound is the length: the guard is buffer.length >= capacity.
+
+  The same false fact survived in the source those pages describe: the
+  documentation on MAXIMUM_STASH_CAPACITY in src/typed/Behaviors.ts still
+  called 2 ** 32 - 1 the last index a JavaScript array has. It is the
+  maximum length. Measured again here: a length of 2 ** 32 - 1 is accepted
+  and 2 ** 32 throws a RangeError, writing at index 2 ** 32 - 2 grows the
+  array to 4294967295 while writing at 2 ** 32 - 1 leaves the length at 0
+  because that key is an ordinary property. The constant's value was never
+  wrong - the bound exists precisely because the backing array's length
+  cannot reach it - and a later paragraph of the same comment already said
+  so correctly, so only the opening sentence named the wrong quantity, and
+  it now also says why the two are worth telling apart, since that
+  distinction is the argument for this ceiling rather than a rounder number.
+
+- **retry now refuses a NaN randomFactor and a NaN attempts with an
+  OptionsError before the factory runs, closing the last two routes by which
+  a malformed option degraded the backoff to no wait at all** (#1509).
+  randomFactor was guarded by a range test, and a range test is not a
+  validity test: NaN < 0 and NaN > 1 are both false, so the one value
+  nothing downstream can recover from walked past it. Measured on four
+  attempts with the sleep seam, randomFactor: NaN gave factoryCalls=4
+  sleeps=[] against a control of sleeps=[1000,2000,4000] — the hot loop
+  against an already-failing dependency that the 32-bit timer clamp exists
+  to invert, reached through the options rather than the arithmetic. It
+  needs no typo: an absent configuration field arrives as undefined and any
+  arithmetic over it as NaN. A NaN attempts was the milder-looking but worse
+  case — the entry refusal was skipped, the loop body never ran, and the
+  caller received a bare Error whose whole message was the string
+  "undefined" for a dependency that was never called. attempts:
+  Number.POSITIVE_INFINITY stays legal and still means retry until success,
+  so that guard refuses NaN alone.
+
+- **The collation advisory fired on schemas that were already migrated, went
+  silent on the ones it could only partly read, and could name a failure
+  that cannot happen** (#1412). Three defects in the probe #1412 added, all
+  found by this wave's own verification. First, `BINARY_COLLATION_PATTERN`
+  anchored the binary token at the end of the name, so every SQL Server 2019
+  UTF-8 binary collation — `Latin1_General_100_BIN2_UTF8` and its family —
+  read as folding, and the advisory told an operator to migrate a schema
+  that was already correct. That is precisely the nag the classification
+  rule exists to prevent, and the kind that trains people to ignore an
+  advisory. Second, the probe's `catch` returned from the whole method
+  rather than from the loop iteration, so a store whose `events` table was
+  already known folding and whose `events_tags` catalogue read was denied
+  said nothing at all: the finding it had already made was discarded along
+  with the table it could not read. Unknown is not evidence for the
+  unreadable table, but the readable one was evidence, and a grant covering
+  one table and not another is an ordinary role shape. Third, the clause
+  claiming that a tag query across a half-migrated schema fails outright on
+  SQL Server with error 468 was gated on a set computed across every owned
+  table, including `events_meta`, which participates in no join at all; it
+  now states its precondition rather than asserting the failure. The four
+  journal pages also promised the warning "at startup" one paragraph away
+  from their own body text saying "when it opens" — a relational store is a
+  `LazyStore`, so the probe runs inside `prepare()` at the first persistence
+  operation, and an operator who starts a node and watches the startup log
+  sees nothing. All four now say "on first use", in both languages, and the
+  SQL Server pages name the UTF-8 binary family explicitly rather than
+  leaving a reader to infer it. Two guards were tightened with them: the
+  runner-coupling check that keeps the live Docker scenarios wired to
+  `runScenarios` was a substring search over the whole file, which a mention
+  inside a comment satisfied, and `RelationalSnapshotStore.ownedTables()`
+  was reached by no test at all.
+
+- **The unlabeled label tuple is no longer serialised on the per-message
+  path** (#1414). Making the series key injective (#1513) replaced a `k=v`
+  join with `JSON.stringify` over the sorted pairs and dropped the
+  empty-tuple short-circuit the old encoding had, which put a full
+  serialisation on a path `ActorCell` walks three times for every delivered
+  user message — `actor_messages_delivered_total`,
+  `actor_mailbox_wait_seconds` and `actor_mailbox_depth` all pass `{}`, and
+  the key is computed before the memo lookup, so none of the three was a
+  cache hit. Measured on bun 1.4.2, interleaved in one process, median of
+  five 500k-iteration rounds across three runs: 202.2 / 228.0 / 171.4 ns
+  before against 49.7 / 61.1 / 43.8 ns after, so 128-167 ns a call and
+  383-501 ns a message. Non-empty tuples are unchanged to within the
+  run-to-run noise. The key stays injective because the empty string is not
+  the encoding of any non-empty tuple, every one of those beginning with a
+  bracket.
+
+- **A death-watch notification an actor parked with `stash()` is no longer
+  lost in silence when `unstashAll()` replays it** (#1098). Under
+  `watchWith` the stash now parks the domain message the handler was given,
+  so it replays as the ordinary user message it always was and the
+  registration has no say in it. Under a plain watch the replay meets a
+  registration the first delivery retired, and it becomes a dead letter
+  instead of being consumed without a trace; the typed DSL's
+  `Behaviors.withStash` follows the same rule, which it did not before. Two
+  neighbouring refusals become visible with it: an unwatch that raced a
+  death already queued, and a remote watch notification for a subject this
+  node no longer watches, are now dead letters rather than silent drops.
+  Redelivering a plain-watch notification instead would mean holding the
+  registration open across the stash, which needs the envelope-parking stash
+  buffer planned with #1319.
+
+- **`DurableStateOffsetStore` refuses a projection cursor key longer than
+  the 255 characters the durable-state `persistence_id` column holds, naming
+  both halves and the length of each, and a projection whose cursor load is
+  refused now says so on its own instruments** (#1507). The store composes
+  its key as `projection|seq|persistenceId`, so the framework could
+  manufacture a key no caller ever wrote: a 250-character persistenceId is
+  legal on its own, but under a projection named `orders-projection` the
+  composite is 272 characters, which SQL Server and strict-mode MariaDB
+  reject outright and MariaDB without strict mode truncates to 255 —
+  silently merging two projections' cursors into one row, after which the
+  projection keeps running and skips events. Ten ordinary tags of 21
+  characters in one `TagFilter` already render a 234-character cursor key
+  and compose to 256, so the population is not exotic. The budget for the
+  second half is 255 minus the projection name minus 5, the by-tag half is
+  bounded the same way, and loads are refused as well as writes so a
+  projection that could never commit its cursor fails before it runs its
+  handler. That failure used to reach nothing an operator watches: it
+  escaped `preStart` as an actor-initialization failure, ten of the eleven
+  start attempts logged nothing at all, and `persistence_projection_stalled`
+  was left at the healthy 0 published at start, so a projection that could
+  never run read as a running one. It now moves
+  `persistence_projection_failures_total` with `reason="poll"`, raises
+  `persistence_projection_stalled` to 1, and writes one error line per start
+  attempt naming the projection and carrying the key it refused, before the
+  error is rethrown to supervision unchanged; an offset store that is simply
+  unreachable is reported the same way, which it was not before either. This
+  is a behaviour change for a caller who writes an over-long composite into
+  Postgres or SQLite, where TEXT columns accepted it; `InMemoryOffsetStore`
+  stays unbounded because its keys are Map keys. The projections page
+  documents the bound in both languages, and no longer claims that every
+  relational dialect declares the column narrow — `MariaDbDialect` and
+  `MsSqlDialect` do, `PostgresDialect` and `SqliteDialect` declare it TEXT,
+  and the page now says why the bound applies uniformly anyway: it is a
+  portability floor rather than a column constraint, since the case it
+  exists for is the move off TEXT and a `DurableStateStore` has no dialect
+  to ask.
+
+- **An init frame the structured-clone algorithm refuses now fails the spawn
+  instead of the process** (#1515). `postMessage` clones on the posting
+  thread, so an `initData` it cannot copy — a function, an object carrying
+  one — throws a `DataCloneError` synchronously from inside the host's own
+  message listener, and both worker handshakes posted it unguarded. Measured
+  on Node 26.7.0: the process exited 1 on an uncaught `DOMException
+  [DataCloneError]` raised at `onWorkerHello`; where something did contain
+  the throw, `spawn()` then sat out the whole `readyTimeoutMs` and blamed a
+  worker that had received nothing. `WorkerCluster.handshake` and the
+  testkit's `ParallelMultiNodeSpec` copy now guard the post the way
+  `OffloadPool.dispatch` does: nothing left this thread, so the handshake is
+  unsubscribed and failed at once, naming the field that can carry an
+  unclonable value and keeping the runtime's own error as the `cause`. The
+  first-hello latch moves behind the successful post, since a post that
+  threw sent nothing for a later hello to duplicate.
+
+- **ParallelMultiNodeSpec cancels the fallback bound it arms while
+  terminating a worker, instead of leaving it to expire** (#1508). The bound
+  exists so that a runtime emitting no close event cannot hang teardown; on
+  every runtime that does emit one it was pure residue, and one run of the
+  harness's own suite ended holding ten three-second timers it would never
+  use.
+
+- **ParallelMultiNodeSpec's await* helpers now append the last error their
+  condition threw to the timeout message** (#1508). A condition that queries
+  a worker legitimately throws while a cluster is converging, so the retry
+  stays, but the reason is no longer discarded: a timeout that named only
+  what was being waited for was the amplifier that turned a mis-correlated
+  control reply into an unrelated thirty-second convergence failure.
+
+- **ParallelMultiNodeSpec's control-RPC timeout now names the role that went
+  silent, not only the request kind** (#1508). With three or more roles in
+  flight the message said which question went unanswered and left the reader
+  to work out which worker had stopped answering; the only line that carried
+  the role was the misdirected-frame warning, which is written on a
+  different failure entirely.
+
+- **A brokered envelope whose `from.port` is an accessor answering the
+  envelope guard and `NodeAddress.fromJSON` differently no longer throws out
+  of the `MessagePort` callback** (#1515). The guard and `fromJSON` now
+  agree on every value, but they are still two separate reads of the same
+  field, and `fromJSON` sat outside every `try` the inbound edge had — so
+  one posted object was an uncaught top-level error that takes the thread,
+  the main-thread actor system and every sibling worker with it. Not
+  reachable across a thread boundary, because a real `MessagePort`
+  structured-clones the envelope and that strips accessors; reachable
+  through any in-process port, which is what the testkit's broker, the mesh
+  fixtures and every port-to-port wiring use, and this transport is exported
+  surface that accepts any of them. The refusal is now the same drop the
+  envelope guard would have made, and it keeps its own `catch` rather than
+  joining the handler's, so a refused envelope and a handler nobody
+  understands stay different events.
+
+- **A node address off the wire is held to a safe positive integer port, one
+  rule spent by both the decode guard and `NodeAddress.fromJSON`** (#1515).
+  The rule was written out twice and had drifted from what
+  `NodeAddress.toString()` can carry: `Number.prototype.toString` switches
+  to exponent notation at 1e21, so a schema-valid frame under `from.port =
+  1e21` was delivered, recorded by `MessageChannelTransport` as
+  `sys@host:1e+21`, and listed by `peers()` as `sys@host:1` — the readiness
+  check compares exactly those strings, so the node reported ready against a
+  peer it had never heard from and not ready against the one it had. Above
+  `Number.MAX_SAFE_INTEGER` there is a second reason the bound covers:
+  adjacent integers stop being distinct doubles, so two peers that wrote
+  different ports would compare equal. Every synthetic port the framework
+  itself mints is untouched. The new `NodeAddress.isPort` is where that rule
+  now lives, beside `isIncarnation`, which is what makes the transport's
+  long-standing claim that the guard and `fromJSON` cannot disagree actually
+  true. `MessageChannelTransport` also keeps its known peers as recorded
+  address objects rather than re-parsing their own string form, so `peers()`
+  no longer drops what the string form does not carry — an `incarnation` a
+  peer sent was silently lost.
+
+- **Config.getDuration, getBytes and getNumber refused a non-finite value
+  only when it arrived as a string** (#1513). #785 gave parseDuration and
+  parseSize a finite postcondition, but a value supplied as a number
+  short-circuits before the delegation, so a code overrides object carrying
+  Number(process.env.SOME_MS) with the variable unset reached
+  actor-ts.system.shutdown-drain-timeout as a NaN — where it defeats the
+  documented 0 opt-out (NaN <= 0 is false) and makes deadline = Date.now() +
+  NaN, so the drain budget was silently zero. A byte cap failed open the
+  other way, since every comparison against NaN is false. getNumber was open
+  on its string branch too, and that half needs no code override: the HOCON
+  parser keeps a numeric literal as a string exactly when it is not finite,
+  so an overflowing literal in a hand-written application.conf survived as
+  one and getNumber's own regex turned it back into Infinity, feeding
+  unreachable-threshold and down-threshold, which are compared with > and
+  therefore never trip. All three now report a ConfigError naming the path.
+  The two Infinity opt-outs reference.conf documents are the one exception,
+  and they are exceptions precisely because they do pass through these
+  accessors: WebsocketPolicy reads actor-ts.http.websocket.accept-timeout
+  with getDuration and ObjectStoragePluginOptions reads
+  actor-ts.persistence.snapshot-store.object-storage.max-decompressed-bytes
+  with getBytes, so the first shape of the check refused a documented
+  opt-out supplied through ActorSystemOptions.withConfig or
+  Config.fromObject. +Infinity is accepted at exactly those two reads, keyed
+  on the path and on the accessor it is read with; NaN and -Infinity spell
+  nothing at either key and stay refused everywhere, as does +Infinity on
+  any other path or any other accessor. Three other layers already stated
+  that contract — ConnectionWiring arms the accept watchdog behind
+  Number.isFinite, and both option validators admit Infinity by name — so
+  the accessor was the one layer disagreeing with it.
+
+- **A WebSocket client no longer lets a superseded socket speak for the
+  connection that replaced it** (#1514). `onSocketDown` guarded only on
+  `this.socket !== null`, which answers whether some connection is up rather
+  than whether the event's own connection is still the current one, and none
+  of the three listeners registered on a socket said which socket they spoke
+  for. Two ordinary paths reach the gap. Against a blackholed peer, the
+  deployment the read deadline exists for, the client's own `close()` cannot
+  complete its handshake, so the runtime's close or error arrives whenever
+  TCP gives up, which can be after the reconnect has already succeeded; and
+  without any deadline at all a real `WebSocket` fires error and then close
+  for one drop, so a backoff shorter than the gap between them fits the
+  whole reconnect in between. Measured with fakes, a late event fired a
+  second disconnect for a healthy connection, closed the socket that was
+  working and dialled a third. The `message` listener was the same gap with
+  worse consequences: a frame the runtime had already buffered reached the
+  handler after its own connection had been reported gone, refreshed the
+  read deadline of the connection that replaced it with traffic that was not
+  its own, and, when oversize, closed whichever socket was current —
+  measured at 2 MiB, it closed the healthy connection and dialled a third.
+  All three listeners now name their socket and return early unless it is
+  still the live one.
+
+- **The SSE client now accepts all three line terminators the wire format
+  allows — `\r\n` and a lone `\r` as well as `\n`** (#1510). A conformant
+  feed framed with `\r\n\r\n` previously completed no event at all: the
+  delimiter search was for `'\n\n'`, so the pending buffer simply grew read
+  by read until the 1 MiB safety cap declared the feed hostile and dropped
+  the connection, and the reconnect cycle then replayed that against a
+  server doing nothing wrong. A feed that mixed the framings fared no
+  better, because the field parser split on `'\n'` and left the `\r` on the
+  end of every value it cut out. Line endings are now normalised to LF at
+  the buffer boundary, which is also where the one case a per-chunk rewrite
+  cannot see is handled: a terminator split across two network reads — a
+  `\r` ending one and an `\n` opening the next — counts once rather than
+  twice. The safety cap is unchanged and still measured on the characters as
+  they arrive, so normalising can only make it fire earlier, never later.
+
+- **The ack-semantics pages named `resendTimeoutMs` where they meant the
+  producer option** (#1472). That is the private field the controller
+  resolves the option into; the option itself is `resendTimeout` and its
+  builder setter is `withResendTimeout`, so a reader who copied the name got
+  a key that does nothing. Three occurrences per language are corrected, and
+  no occurrence of the old spelling remains anywhere under `docs/`.
+
+- **A consumer handler that runs longer than `producerIdleTtlMs` no longer
+  has its own dedup entry swept out from under it** (#1512). The idle sweep
+  runs from a scheduler callback rather than through the mailbox, so it was
+  the one thing able to delete an entry while its handler was awaited, and
+  the timestamp it compares against is stamped when the delivery arrives
+  rather than when the handler returns. `markDelivered` then wrote to a
+  detached object, the sequence was not in the live window, and the
+  producer's retransmit ran the handler a second time. The controller now
+  re-stamps the entry once the handler resolves, before recording the
+  sequence, which makes the documented guarantee true without an exception:
+  a retransmit arriving while its own sequence is still being handled is
+  absorbed as the duplicate it is. The re-insert cannot push the map past
+  `maxProducers`, because deliveries are serialised so no new producer can
+  be admitted while one is awaited and the sweep only ever removes. The
+  handler-throw path deliberately does not re-stamp: nothing was marked
+  delivered there, and the retransmit that refusal invites is meant to
+  re-enter the handler. Unreachable at the shipped defaults, a 300 s
+  time-to-live against a 500 ms resend timeout, and it cost only an
+  at-least-once duplicate the protocol already permits.
+
+- **A rejected option value is rendered the same way wherever the framework
+  refuses one** (#1509). `Behaviors.withStash('10', ...)` reported `capacity
+  must be an integer >= 1 (got 10)`, which reads as a complaint about an
+  integer the caller did pass, and `withStash([], ...)` reported `(got )`
+  with nothing in it at all — both of them the untyped-JavaScript arrival
+  the guard's own comment says it exists to catch. One renderer now serves
+  that guard, `ActorRef.ask`'s timeout check and every `OptionsValidator`
+  message: strings are quoted, other non-numbers are rendered structurally,
+  and numbers keep going through `String` so `NaN` and `Infinity` stay
+  legible.
+
+- **BREAKING — An external unsubscribe can no longer silence an MqttActor
+  subclass's declared fan-out** (#1510). The removal path cleared the whole
+  target set with no record of who had attached what, so the guarantee the
+  class advertises — a controller that cannot silence the subclass's
+  constructor-declared subscription must not be able to downgrade it either
+  — was bypassable in two messages whenever the subclass declared its
+  subscription in the target form, this.subscribe('own/#', { qos: 2, target:
+  workerRef }), which is documented usage and the fan-out shape the MQTT
+  page shows first. A pattern declared that way has no own-delivery to fall
+  back on, so an external unsubscribe emptied the entry, deleted it and
+  issued a broker UNSUBSCRIBE, after which a plain subscribe re-created the
+  pattern at its own QoS — the guard covers a rewrite, not a creation.
+  Measured on the pre-fix tree the subclass's worker then received nothing
+  while its declared feed surfaced in the actor's own onMessage at QoS 0, so
+  the loss was a redirect and not only a downgrade. Fan-out targets now
+  carry their origin, and an external command may detach only what an
+  external subscribe attached, whether or not it names the target; the
+  subclass's own unsubscribe is unrestricted, because it owns the registry.
+
+  **Migration.** An external { kind: 'unsubscribe', topic } no longer
+  detaches fan-out targets the subclass declared itself, and { kind:
+  'unsubscribe', topic, target } no longer detaches one it names; both still
+  remove every target an external subscribe attached. To detach a target the
+  subclass declared, call unsubscribe(topic, { target }) from inside the
+  subclass.
+
+- **Distinct label tuples are distinct series again** (#1513). The key
+  identifying a tuple joined `k=v` pairs with a separator that a label value
+  could itself contain, so `{ a: 'x\x1fb=y' }` and `{ a: 'x', b: 'y' }`
+  collapsed onto one series: the second caller was handed the first one's
+  series, carrying the first one's labels, with both counts added under them
+  — no error and no warning. The key is now an injective encoding of the
+  sorted pairs, which a different separator would not have achieved because
+  any character can appear in a value, and the Prometheus exporter shares
+  that one helper instead of carrying a second copy with the same collision
+  in it — so two tuples the registry keeps apart also keep their bucket
+  rows, `_sum` and `_count` apart in the exposition.
+
+- **`InMemoryLease` arms one renewal loop, however often it is acquired**
+  (#937).  A re-`acquire()` on a lease the instance already held overwrote
+  the timer handle and left the first interval armed for good: past
+  `release()` it fired on nothing but kept a real-timer process alive, and
+  after the next acquire it renewed again beside the second loop.
+  `LeaseMajority` re-acquires exactly like that, since it never releases a
+  lease it won.
+
+- **The multi-node integration run went red the moment a node exited
+  cleanly — which, since #1567, scenario 13's victim does** (#1594).
+  `bun run test:integration` ran compose with `--abort-on-container-exit`,
+  under which the first exit of *any* container ends the run: the victim
+  finished its `CoordinatedShutdown` pipeline, its process exited 0 because
+  nothing held the event loop open any more, and compose stopped the
+  controller mid-poll — a SIGTERM the `--exit-code-from controller` relay
+  reported as 143, with every scenario passing. The suite had been written
+  against the leaked interval #1567 removed, which is what kept the victim's
+  container alive after its own shutdown; the comment in scenario 13 that the
+  control port survives `ServiceUnbind` was never true either, since every
+  `newServerAt().bind()` is auto-registered there.
+
+  The run now uses `--abort-on-container-failure`: a node exiting 0 is a
+  scenario event, a node exiting non-zero still aborts the run at once with
+  its code, and compose returns only when the last container is gone. That
+  last clause turned into the suite's closing assertion. A final scenario
+  asks every node still answering — member or already left — for a
+  coordinated shutdown, one at a time, and requires its control port to close;
+  the exit itself is observed where it can be, at the container boundary. So
+  every push now checks the property #1567 was about and only a process
+  boundary can see: a node that has left and terminated exits on its own. A
+  node that lingers ten seconds past its actor system's termination is a
+  leaked handle, and `NodeRunner` now exits it with code 3 from an
+  `unref()`'d watchdog, which the same flag turns into an immediate red run
+  naming the container rather than a hang until `timeout-minutes`.
+  `tests/unit/ci/IntegrationHarnessCascade.test.ts` pins the flag, the
+  shutdown scenario's place at the end of the list — a scenario appended
+  after it would skip, silently green, on the empty cluster it finds — and
+  the watchdog's non-zero exit. The broker suites keep the exit-cascade
+  flag deliberately: their fixtures never exit on their own.
+- **The documentation site did not build: a code span wrapped onto a line
+  starting with `{` was parsed as an MDX flow expression** (#1595). The
+  English `fundamentals/blocking-and-cpu-bound-work.mdx` broke its
+  `pool.run(task, [bytes.buffer], { transfer: [bytes.buffer] })` sample
+  across a line break with the `{` first on the continuation line, and
+  `astro build` stopped with `Could not parse expression with acorn` — MDX
+  tries a brace-led line as a flow expression before it looks at inline
+  code, hands the text between the braces to acorn as JavaScript, and
+  `transfer: [bytes.buffer]` is not an expression. The German mirror
+  wrapped one word earlier and was fine. `docs-checks` had been red on
+  every `develop` push since the page was written.
+
+  The sentence is rewrapped (whitespace only, prose untouched), as are two
+  sibling lines on `cluster/pubsub.mdx` (EN + DE) that carried
+  `{ local, remoteNodes }>` at line start: they built only because a
+  sequence expression happens to be valid JavaScript and the trailing text
+  made the construct back off — one edit from the same failure, and a
+  valid expression alone on its line would have rendered evaluated instead
+  of failing. `tests/unit/docs/NoBraceLedLines.test.ts` now refuses any
+  documentation line outside a fenced block or the frontmatter that starts
+  with `{`, in both languages, with an allow-list for the day a page wants
+  a real flow expression (none does). It is a policy rather than a parser
+  — telling a broken span from a valid expression needs acorn, which the
+  root install deliberately lacks — and, like `FrontmatterParses`, it runs
+  in `bun test` because the four-minute site build is the one gate nobody
+  runs before committing.
+- **BREAKING — A custom `WorkerBackend` must declare whether its `error`
+  subscription contains a worker's failure (#1288).**
+
+  `WorkerBackend` gains a required `readonly containsWorkerErrors: boolean`.
+  The framework subscribes `error` on every worker it spawns, but whether
+  that subscription stops Node re-raising the error on the host or Deno
+  rejecting an unhandled promise is decided inside the adapter the backend
+  returns, and the compiler cannot see it — an adapter that stores the
+  handler and never wires it satisfies `WorkerLike` just as well — so a
+  custom backend opted out of #700's containment silently and the host died
+  of the first worker throw with no framework line saying why. Both shipped
+  backends and the in-tree fake declare `true`, each pointing at the adapter
+  line that earns it: the Node adapter forwards the subscription to
+  `worker.on('error')`, the Web adapter cancels the native `ErrorEvent` from
+  inside its listener, which is what Deno needs. On anything but an explicit
+  `true` — a `false`, or a declaration missing at runtime, which is what a
+  plain-JavaScript backend, a cast or a shape copied from an older version
+  looks like past the compiler — `WorkerCluster`, `OffloadPool` and
+  `ParallelMultiNodeSpec` report once per backend instance, before the first
+  spawn, through the sink they already report worker deaths to, and the line
+  says which it found (`declares containsWorkerErrors=false`, or `declares
+  nothing about containment`) — the `[worker]` logger, `system.log` under
+  `[offload]`, the console — and continue; the spawn is never refused,
+  because the declaration changes nothing the framework could do
+  differently, it only puts a line in the log for the host that later dies
+  that way. One resolver, `resolveWorkerBackend` in
+  `src/runtime/worker/index.ts`, holds the check and the per-instance latch,
+  so the diagnostic exists once and not three times, and `OffloadPool` no
+  longer pre-fills its backend memo from the option, or an explicit backend
+  would have been the one case the diagnostic never saw. The worker-mesh
+  page names `WorkerLike` for the first time, describes the per-runtime
+  contract behind a `true`, adds a "Custom backends" section with what a
+  `false` produces, lists the line under "What the mesh reports", and says
+  how to prove a declaration: spawn a bootstrap that throws at load through
+  the backend on Node and Deno and let the process surviving be the
+  assertion, the shape of smoke case 29.
+
+  *Migration:* Declare `containsWorkerErrors` on your `WorkerBackend`:
+  `true` if an `error` subscription on the `WorkerLike` it returns contains
+  the throw the way the shipped adapters do (forwarded to
+  `worker.on('error')` on Node, `preventDefault()` on the `ErrorEvent`
+  inside the listener on Deno), `false` otherwise — a `false`, or no
+  declaration at runtime, is reported once at the first spawn and the spawn
+  proceeds; only an explicit `true` is silent.
+
+- **The routing docs now say what the local `Router` pool actually does, and
+  carry a decision matrix plus the recipe for N identical actors across N
+  threads behind one address** (#170).  Four statements predated 49ddeb49
+  and were never revisited: a stopped routee is pruned on its `Terminated`
+  and a crashed one restarted in place — not left in the pool sending 1-in-N
+  messages to dead letters "until the whole router restarts"; `size` is
+  validated at the factory call and throws `OptionsError`, rather than being
+  a bug the framework "should" catch; a pool buys in-flight concurrency for
+  handlers that `await`, never CPU parallelism
+  (`benchmarks/single-node/router-pool.ts` says so); and `ClusterRouter`
+  does have a `smallest-mailbox` mode, on a cached depth. `pool-vs-group` no
+  longer claims the cluster router notices a stopped routee — routees are
+  derived from membership and never probed, so that node keeps its share and
+  drops it with a warning. `strategies` no longer denies that
+  `Router.scatterGatherFirstCompleted` ships (#1202). The overview's
+  "Routers are not (the only) way to parallelize" gained a five-row matrix —
+  local `Router`, `ClusterRouter` over the worker mesh, `OffloadPool`,
+  `actor-ts.parallelism.workers`, sharded entity — by unit of work, threads,
+  address, pool size, stop/crash behaviour, per-message cost and break-even,
+  quoting only figures the tree already prints (~320 ns / ~21 µs / ~180 µs
+  from `benchmarks/worker/mesh-message-cost.ts`, ~100 µs from the
+  parallelism page, ~10 µs from the CPU-bound page, ~22 µs / ~245 µs TCP
+  from the FAQ). Below it, the recipe the issue asked a
+  `statelessWorkerPool` for: the actor module's `setup()` spawns
+  `/user/encoder` on every worker and a role-filtered `ClusterRouter` on the
+  main thread finds them, with its three traps (a router matching `offload`
+  throws, a role-less router makes the main thread a routee whose share is
+  dropped, `smallest-mailbox` needs `ClusterMailboxDepthAgent.serve` on the
+  workers — a worker silent while others report is skipped, and round-robin
+  applies only when none reports).
+  `tests/unit/parallelism/ClusterRouterOverMesh.test.ts` runs the recipe on
+  the in-process mesh rig and pins both languages' fences to the code it
+  ran. Since #1570 the page also says the routees' figures reach the main
+  thread's `/metrics` under a `thread` label. The CPU-bound page's "Three
+  tiers" names the recipe as tier 2's third shape and the parallelism page
+  links it where it used to say "a router" spreads load across threads. EN +
+  DE. The sweep also closes #1202.
+
+- **Object-storage compression no longer holds the event loop**
+  (#1540).  `Compression.ts` called `gzipSync` / `gunzipSync` and the sync
+  zstd forms from inside `async` arrows — promise-shaped from the outside,
+  so every compression test was green while a 24 MiB body held the one
+  thread every actor runs on for its whole encode, and one store's
+  compression landed in the p99 of unrelated actors. Both ladders now call
+  the runtime's async forms — `zlib.gzip` / `zlib.gunzip`,
+  `Bun.zstdCompress` / `zlib.zstdCompress` on the write side,
+  `zlib.zstdDecompress` / `Bun.zstdDecompress` on the read side — through a
+  five-line local callback-to-promise helper, with the canaries probing the
+  async functions that actually serve the reads and writes. Measured (Bun
+  1.4.2, Node 26.7, Deno 2.6.8; 24 MiB body, 1 ms timer alive across the
+  `await`): the sync forms let the timer fire 0 times everywhere, the async
+  forms 30–115 times on Bun and Node. The `node:zlib`-first zstd read order
+  (#580) and the allocation-time `maxOutputLength` cap are unchanged — the
+  `ERR_BUFFER_TOO_LARGE` abort survives the callback form on all three
+  runtimes, so `decompressWithinCap` and the cap tests needed no change. On
+  Deno 2.6 the async forms defer the call and then run it as one main-thread
+  block (0 ticks, measured), so a large body there is `OffloadPool` work —
+  documented on the blocking-work and compression pages (EN + DE) rather
+  than routed, since persistence does not depend on `src/worker`; `fzstd`
+  (pure JS, no async form) stays synchronous. The chat example verifies
+  passwords with `crypto.scrypt` instead of `scryptSync`, the four per-login
+  derivations concurrently (`Promise.all`, 316→95 ms on Node, timing-flat
+  property kept), and `UserSessionActor.onReceive` returns its `match`
+  result so the cell holds the mailbox while the key derives. A new ratchet,
+  `tests/unit/ci/NoSyncWorkInHandlers.test.ts`, refuses any file under
+  `src/` or `examples/` that mentions a closed list of Node's blocking
+  `*Sync` names (zlib, `scrypt`/`pbkdf2`/`hkdf`, `child_process`, `fs`,
+  `@grpc/proto-loader`'s `loadSync`) more often than its ledger entry allows
+  — mentions, not calls, so an aliased local or an import specifier counts;
+  the ledger holds 14 startup/`preStart` mentions in `src/` and 21
+  boot/harness mentions in `examples/`, each with its reason, with no
+  directory exemptions.
+  `tests/unit/persistence/object-storage/CompressionLiveness.test.ts` (a 1
+  ms interval must tick during a 48 MiB compress and decompress per
+  algorithm, and tick in the second half of the window — a
+  deferred-then-blocking call passes the first count and fails the second)
+  and smoke case 41 (gzip round trip and the allocation-time cap on Bun,
+  Node and Deno; the liveness half gated on a capability probe of raw
+  `node:zlib`) bind the behaviour.
+
+- **`RemoteActorRef` accepted a bare `/user/…` path and silently targeted
+  the system root** (#1568).  `new RemoteActorRef(node, '/user/echo',
+  cluster)` kept the string verbatim as `targetPath`, and `tell` put exactly
+  that on the wire as `to`; the receiving node's `parsePathSegments` reads
+  only `actor-ts://<authority>/…`, so the envelope parsed to no segments,
+  skipped tree resolution and was dropped at warn level — silently under the
+  `NoopLogger` every benchmark and most tests run with. On the sending side
+  `.path` collapsed onto the root, so the `ask` timed out "waiting for reply
+  from actor-ts://<sys>/", two bare refs to different actors compared equal
+  and shared one map key (the #515 defect, back for bare input), and
+  `context.watch` answered an immediate
+  `Terminated{existenceConfirmed:false}` while the target lived, because the
+  `watch` frame carries the same field. The constructor now canonicalises
+  `targetPath` itself — `/user/x`, `user/x` and `//user/x` become
+  `actor-ts://<target node's system>/user/x`, a full URI is kept as written,
+  authority included — and derives `.path` from it, so delivery, death
+  watch, `equals`, `toString()` and the ask label agree whichever form was
+  passed. The canonicaliser is the new `canonicalActorPathString(systemName,
+  path)` in `ActorPath.ts`, idempotent and total for spellings: a string
+  that is neither form (`''`, `'garbage'`) is read as a path below the root
+  rather than thrown on, because the same constructor rebuilds a peer's
+  `from` claim and a `WireActorRef.path` on arrival, where a throw is
+  answered by dropping the connection. Segments are another matter: a `.` or
+  `..`, a backslash or a control character throws from the constructor
+  through `assertValidName`, for a bare `'..'` as for the full
+  `actor-ts://sys/..` — which was refused the same way before — so a peer
+  reaches nothing through the bare form it could not already reach, and the
+  throw is now pinned. `remoteActorPath` runs its input through the same
+  function, so `RemoteShardRef`, `RemoteWatcherRef` and the parallelism
+  extension share one semantics. The wire reader stays strict on purpose —
+  it is the reader behind `EnvelopeTrust` and the exact-string
+  envelope-handler map — and is now pinned by the first direct
+  `parsePathSegments` tests, asserting that a bare path on the wire still
+  resolves to nothing. `WorkerMesh.refFor` no longer prefixes the path
+  itself and is a plain pass-through; the forms it accepts are unchanged.
+  Documented in the *Refs across nodes* page (EN + DE).
+
+- **`OffloadPool` armed a run before posting it, so a transfer list the
+  runtime refused wedged the slot, terminated a healthy worker, or killed
+  the host** (#1571). `dispatch()` marked the slot busy, armed the deadline
+  and registered the abort listener, and only then called
+  `worker.postMessage(frame, transfer)` — which throws a `DataCloneError`
+  synchronously for an entry that is not transferable (the common mistake
+  `{ transfer: [bytes] }`, a `Uint8Array` view, where `[bytes.buffer]` was
+  meant), for a buffer an earlier run had already moved, or for an argument
+  structured clone cannot copy. Nothing caught it, and the two ways into
+  `dispatch()` failed differently. From `run()`, the caller's promise
+  rejected with the raw `DataCloneError` and the slot stayed marked busy:
+  the deadline, if there was one, freed it 1.5 s later by **terminating a
+  worker that had received nothing** and charging the restart budget
+  (measured: the next run waited 1524 ms for a 1500 ms deadline); with the
+  default `task-timeout = 0s` there was no deadline, and a size-1 pool was
+  wedged for good. From the worker's `message` listener — the bad run queued
+  behind a busy worker — the throw was an **uncaught exception on the main
+  thread**, host-killing without a handler, the shape #701 / #945 closed on
+  the wire path; the run then either never settled or was reported as a
+  misleading `OffloadTimeoutError`. The `postMessage` is now guarded: a throw
+  undoes the dispatch — slot idle again, deadline cancelled, abort listener
+  dropped — and rejects the run at once with the new `OffloadArgumentsError`
+  (the runtime's error as `cause`), on the package root and
+  `actor-ts/worker`; the worker is neither replaced nor charged, and the
+  slot takes the next queued run in the same pass. `offload_tasks_total`
+  counts it as `outcome="invalid-arguments"` rather than as a task fault.
+  The in-process fake worker now runs the runtimes' own transfer rule
+  through `structuredClone(value, { transfer })` — it accepted any list
+  before, which is exactly why this could not be caught without a thread;
+  a real-thread case covers both dispatch paths under an
+  `uncaughtException` listener. `fundamentals/blocking-and-cpu-bound-work`
+  (EN + DE) says the transfer list takes the `ArrayBuffer`, never the view.
+  Related: #1558, #1191.
+
+- **No metrics page said that a registry is per process — and, with worker
+  threads, per thread** (#1184). Every `ActorSystem` owns its own registry
+  and `GET /metrics` exports exactly the one of the system that bound the
+  route; a worker of a mesh boots its own system with its own registry and
+  no management endpoint, so an actor placed on a worker is invisible to
+  Prometheus — which `actor-ts.parallelism.workers` now does without a line
+  of application code changing. `observability/metrics/prometheus-exporter`
+  gains a "Scope" section (EN + DE) stating both shapes — scrape every
+  cluster node, and worker actors reach the main thread's scrape through
+  the mesh relay — and `fundamentals/parallelism` no longer says "scrape
+  every worker" where there is nothing to scrape. The relay is #1570, in
+  this release (see Added).
+
+- **`cluster-security.mdx` claimed every wire rejection is logged, and the
+  worker path logs none (#1275)** (#1275). The page stated the wire-edge
+  guarantees without naming a transport — "every frame is validated", "every
+  rejection is logged at `WARN` naming the peer and the offending field" —
+  and a reader deploying a worker mesh took both as covering it. The first
+  now holds on every transport: `MessageChannelTransport` runs the same
+  `validateWireFrame` the socket transports do (#945). The second never did
+  — the transport and `WorkerBroker` drop a refused frame in silence,
+  because neither has a logger to report through (#1276). The page now
+  scopes the logging claim to the socket transports and says what the worker
+  path does instead: envelope shape and payload validated, `from` rewritten
+  to the arriving port. Both halves of the channel have since gained a
+  logger and report what they refuse — the broker what it will not route
+  (#1276), the transport what it will not deliver (#1515) — each as a folded
+  `WARN` per reason. EN + DE.
+
+- **`WorkerNode.join()` never completed on Node — every worker bootstrap
+  hung out its handshake deadline there** (#1569). The worker-side helper
+  reached its parent through the Web Worker globals, `self.postMessage` out
+  and `self.onmessage` in, and Node's `worker_threads` has none of them:
+  inside a worker `postMessage`, `onmessage`, `self` and
+  `addEventListener` are all absent, and the parent is `parentPort`, a
+  module import. So the hello was posted into nothing and
+  `WorkerCluster.spawn` rejected with "did not become ready" for a worker
+  that had loaded fine — the mesh, the testkit's `ParallelMultiNodeSpec`
+  and every example alike, while the docs said the same code ran on all
+  three runtimes. Nothing noticed because the worker-thread suites run on
+  Bun and the one Node-capable worker script in the tree, a smoke fixture,
+  bridged `parentPort` by hand *because* the helper did not. A worker-side
+  runtime seam now sits next to the parent-side one:
+  `src/runtime/worker/WorkerScope.ts` finds the Web Worker globals
+  synchronously and falls back to `parentPort` behind a dynamic import, and
+  `WorkerNode.join()` speaks that and nothing runtime-specific. The mesh
+  smoke case joins real workers on Node and Deno from `dist/`.
+
+- **`'auto'` worker counts inside a container came up with the host's
+  cores** (#1440, #1562). `navigator.hardwareConcurrency` reports the
+  machine, not the cgroup CPU quota, so an `'auto'` pool on a 2-CPU pod of
+  a 64-core node spawned 64 workers. `src/runtime/Parallelism.ts` prefers
+  `os.availableParallelism()` — quota-aware on Linux — with the navigator as
+  the fallback and the same `2` as the floor; `WorkerCluster` resolves
+  `'auto'` through it, `DEFAULT_WORKER_COUNT` names the default the config
+  reference documents, and the benchmark helper of stage 0 goes with it.
+
+- **A config file could push `base-port + workers` past 65535** (#1439).
+  `port('basePort')` bounded the first slot only; both numbers are config
+  leaves since #883. The validator now refuses a numeric `workers` whose last
+  slot would sit above the port range, naming both values; `'auto'` resolves
+  after validation and is left alone.
+
+- **A fixed-rate task that cancelled itself on its first tick leaked an
+  interval nothing could clear — and every seeded cluster node kept its
+  process alive after `terminate()`** (#1567). `Scheduler.fixedRate` ran the
+  first tick *before* arming its `setInterval`. A task that calls `cancel()`
+  on its own handle from that tick settles the cancellable and drops it from
+  the scheduler's live set while the interval handle is still `null`; the
+  interval was then armed anyway, into a handle that `cancel()` treated as
+  already settled and `shutdown()` could no longer see. Its callback returned
+  early on every fire, so nothing observable happened — except that the
+  referenced timer held the event loop open for the life of the process.
+
+  This is the shape of `Cluster`'s seed-retry tick, which cancels itself the
+  moment the node is `up`: every node that joined through a seed and lived
+  past the 3 s retry interval — every successfully joined node, in other
+  words — could no longer exit on its own after `leave()` and
+  `ActorSystem.terminate()`. A node torn down within three seconds exited
+  cleanly, which is why no gate noticed: the cluster suites run under the
+  `ManualScheduler`, whose `advance()` lets the `cancelled` flag win over a
+  repeat, `bun test` exits regardless of open handles, and the smoke runner's
+  watchdog demotes a hang to a warning (#1196). Surfaced by the first
+  benchmark over a real worker-thread mesh (#1566, stage 0), whose process
+  ran until `timeout` killed it.
+
+  The interval is now armed only if the cancellable is still live after the
+  first tick. Two tests pin it: one spies on the interval primitives and
+  asserts a self-cancelling first tick arms nothing (with the defect,
+  `setInterval` is called and `clearInterval` never is — a count-based test
+  passes over the leak, because the leaked callback returns early), and one
+  spawns a child process that does exactly this and asserts it exits — the
+  property that actually failed, and the only vantage point from which a
+  leaked handle is visible on Bun.
+
+- **The configuration reference showed a `${key:-default}` form the parser
+  has never accepted, and described one application file as three
+  cumulative layers** (#1537). The environment-substitution sample ended in
+  `fallback-port = ${fallback-port:-2552}  # default-if-empty syntax`, which
+  is a required substitution of a key literally named `fallback-port:-2552`
+  and throws `Unresolved substitution`. Both pages now show HOCON's own
+  idiom — the default first, `${?ENV_PORT}` after it — which #1536 made true
+  inside one file, and say in so many words that `:-` does not exist. The
+  "Loading order" block listed `application.conf (CWD)`, `configFile` and
+  `ACTOR_TS_CONFIG` as layers 2, 3 and 4 that "each overlay on top of the
+  previous", with the variable holding "path or inline HOCON". `Config.load`
+  reads exactly one application file — `configFile`, else `ACTOR_TS_CONFIG`,
+  else `./application.conf`, the first one *set* deciding and a missing
+  file loading nothing rather than falling through — and the variable has
+  only ever been a path. The block is now the real chain in four steps, the
+  "three layers above" that opened *Validation* no longer counts a list it
+  did not match, and the German mirror moves in lockstep.
+- **The `include` replacement now names its one caveat** (#1071). The
+  parser's refusal and both configuration reference pages recommend
+  `Config.parseFile(shared).merge(Config.parseFile(application))` in place
+  of an `include`, which is right for key/value files and not equivalent
+  once the base file contains a substitution: `Config.parseString` resolves
+  substitutions per source, so a `${my.port}` in the shared file whose
+  `my.port` only the application file defines throws at the first
+  `parseFile`, where one included document would have resolved. The
+  refusal message and the docs (EN + DE) now say so in one sentence — a
+  value the base file refers to must live in that file or in the
+  environment — so a config ported from Akka or Pekko that pairs a template
+  with an overriding file fails with the reason rather than the symptom.
+- **An optional substitution that resolved to nothing dropped the value the
+  same file had set before it** (#1536). `port = 2552` followed by
+  `port = ${?PORT}` — the override idiom of every Akka and Pekko
+  `application.conf` — left `port` absent whenever `PORT` was unset: the
+  parser replaced the `2552` at parse time, the optional then resolved to
+  nothing, and the hole was stripped. The specification says the earlier
+  value remains, and now it does, in one file as across layers — a path
+  expression, an object literal, and a chain of optionals (`x = 1`,
+  `x = ${?A}`, `x = ${?B}`) all fall back to the nearest earlier value. What
+  has not changed: a later plain assignment still wins, an optional that is
+  the key's *first* assignment still leaves it unset, and a required
+  substitution still throws. The displaced value travels on the substitution
+  itself and is attached through one helper at both overwrite sites, so
+  parsing two documents concatenated and merging them parsed separately stay
+  the same operation — `HoconProperties.test.ts` holds them against each
+  other, chains included.
+
+  A key named after an `Object.prototype` member, such as `toString`,
+  `valueOf` or `hasOwnProperty`, which HOCON allows as a key, falls back the
+  same way: when nothing answers its optional substitution and nothing set
+  it before, it is left unset instead of holding the function the parser's
+  objects inherit under that name, and across layers it keeps the value the
+  base set.
+- **`examples/config/application.conf` spells its seed list as one
+  substitution per entry, under the key the cluster reads** (#1532). The
+  file built each address by HOCON value concatenation —
+  `${?SEED_HOST_1}":"${?SEED_PORT}` — which `src/config/HoconParser.ts` lists
+  among the features it leaves out (#537): the parser read the line as three
+  adjacent array elements, so `SEED_HOST_1=10.0.0.1 SEED_PORT=2552` produced
+  `["10.0.0.1", ":", 2552, ":", 2552]` rather than two addresses, and an
+  unset host left its `":"`/port pair behind. It was also written under
+  `cluster.seeds`, a key nothing reads — the list `Cluster.join` consults is
+  `cluster.seed-nodes` — so the block was inert as well as malformed, and
+  `examples/config/from-file.ts` never printed it, which is why nothing
+  noticed. The list is now `seed-nodes = [ ${?SEED_1}, ${?SEED_2} ]`, the
+  form `reference.conf` prescribes beside the key, with the whole `host:port`
+  in one variable; the example prints the resolved list as JSON, and its
+  manifest entry sets `SEED_1` alone and expects
+  `SEED NODES      : ["10.0.0.1:2552"]`, so a stray fragment, or an unset
+  entry that fails to drop out, is a red `examples` run. The docs carried a
+  defect of the same class: `reference/configuration.mdx` (EN + DE) showed
+  `fallback-port = ${fallback-port:-2552}` as a "default-if-empty syntax":
+  that is shell parameter expansion, not HOCON, and the parser resolves it as
+  an unresolved required substitution — the snippet is gone, and the prose
+  says that there is no inline default and an unset `${?ENV}` leaves the key
+  to the other layers instead. (The spec's own `a = 1` then `a = ${?UNSET}`
+  idiom dropped `a` in this parser where the spec keeps the `1` — #1533,
+  fixed as #1536 above, after which #1537 put the idiom back on the page.)
+- **The linear-scan guard measures in short windows interleaved across
+  sizes** (#1530). `tests/unit/LinearStringScans.test.ts` asserts that the
+  string scans a remote peer can drive grow ~4× per 4× input rather than
+  ~16× (#1198), from the minimum of a few timed windows per size. It took
+  every window of one size consecutively — three of 10 ms, then the next size
+  — and on the Windows `--parallel` leg a linear scan once read 8.7× against
+  the threshold of 8: whatever slowed the largest input outlasted its 30 ms
+  of measurement, so the minimum was taken over three disturbed windows.
+  Steady contention does not do that — a co-tenant burning or thrashing the
+  same two cores left every shape at ~4× — but a *bursty* one does, and
+  reproduces the failure: two co-tenants alternating 40–100 ms of cache
+  thrash with 60–150 ms of sleep, pinned to the measurement's two logical
+  cores, took the old shape to a worst step of 8.4× and 10.2× (p90 7.3× and
+  7.8×) over 40 runs each. The harness now takes fifty 1 ms windows per size,
+  round-major — every size gets one window per round — so a disturbance has to
+  last the whole ~150 ms measurement to reach a size's minimum: 4.2× and 5.1×
+  worst under the same bursts (p90 4.0×), and through `bun test` itself,
+  fifteen runs of each file under the harsher burst, the old file's scans read
+  p90 6.7× / worst 7.6× against the new one's p90 4.1× / worst 4.8×. The
+  quadratic control still reads 16×; its sizes drop two rungs (125 / 500 /
+  2 000) because fifty windows of a 62 ms call would be three seconds for a
+  fact 2 000 characters already establishes at 4.3 ms. The threshold stays
+  at 8 — widening it was the drive-by the issue ruled out.
+
+- **The MinIO integration suite pulls from `quay.io/minio/minio`, pinned to
+  `RELEASE.2025-09-07T16-13-09Z`** (#1531). Docker Hub's `minio/minio`
+  repository was removed in 2026-09 — the pull fails with "access denied" and
+  the Hub API answers 404 — which took the nightly `integration-brokers` run
+  down in the `MinIO (s3)` job before a test ran, leaving
+  `S3ObjectStorageBackend` exercised against nothing but its fake. MinIO's own
+  registry still publishes the image, but not new releases: quay's `latest`
+  has been an alias of that release (digest `sha256:14cea493…`) since
+  2025-09-07 and every tag since is a `.hotfix.*` rebuild of an older line. So
+  this suite pins where the others deliberately track `:latest` — a `latest`
+  that cannot move would only claim to surface regressions — and the compose
+  file says to move the pin on purpose and run the suite when doing so. The
+  local `docker run` recipe in the in-process S3 test follows.
+
+- **The S3 integration suite runs against Silo, `pgsty/silo` on Docker Hub,
+  pinned to `RELEASE.2026-10-26T00-00-00Z`** (#1795). The quay pin above
+  stopped pulling around 2026-09-24 — quay answers 401 "unauthorized" — so
+  the `integration-brokers` S3 job went red before a test ran on every run
+  since, and with Docker Hub's `minio/minio` already gone there was no MinIO
+  registry left. Silo is PGSTY's fork of MinIO and keeps its configuration
+  surface — the `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` /
+  `MINIO_KMS_SECRET_KEY` variables, port 9000, the `server` command and the
+  `/minio/health/live` path — so the scenarios are unchanged; the compose
+  service and the job are renamed `silo` / `Silo (s3)`. Like MinIO's, the
+  `RELEASE.<timestamp>` tag is not a version Dependabot reads, so the pin
+  moves by hand. The local `docker run` recipes in the in-process S3 test and
+  `examples/persistence/s3-snapshot-bank-account.ts` follow.
+
+- **`KubernetesLease`'s `operation-timeout` holds through a stalled TLS
+  handshake** (#1529). The lease client bounded each API-server request with
+  `https.request`'s `timeout` option — a *socket* timeout that Bun 1.4.2
+  never arms while a TLS handshake is pending, the same measurement #1524
+  made for the seed provider: against a server that accepts the connection
+  and writes nothing, `timeout: 300` and `req.setTimeout(300)` never fire on
+  Bun (five seconds waited) while Node fires them at ~620 ms. It matters more
+  here: the renewal loop's in-flight guard drops a tick that overlaps a
+  request still on the wire on the assumption that the request has a ceiling,
+  so a holder whose API server stalled mid-handshake kept its renewal wedged
+  on one PUT instead of timing out, firing `onLost` and letting a replica take
+  over — the failure the lease exists to bound. The ceiling is now a
+  wall-clock deadline through an `AbortController`, the abort reason a named
+  error both runtimes surface as the `AbortError`'s `cause`, so `onLost`
+  reads `renewal error: k8s request timeout: no answer from <host> within
+  <n>ms`. The socket timeout is not kept alongside it: an inactivity bound of
+  N ms can never fire before a wall-clock bound of the same N.
+
+  `tests/unit/coordination/K8sApiRequestTimeout.test.ts` aims the real
+  `node:https` client at a `net` server that accepts and never writes, once
+  for the request and once through a holder whose acquire is answered by a
+  stand-in and whose renewal PUT alone goes to the socket — `onLost` fires
+  within the budget, `checkAlive()` reads false. Both cases cap in the fixture,
+  because with the bound removed a pending handshake keeps bun's per-test
+  timeout from firing at all; against the old client both go red as `HUNG`
+  rather than hanging the runner. On the way: `reference.conf`'s
+  `request-timeout` comment from #1524 still called that ceiling a socket
+  timeout, which is precisely the mechanism it had replaced — corrected in
+  all three copies, with the `operation-timeout` comment now saying which
+  mechanism holds and why.
+
+- **`KubernetesApiSeedProvider` bounds its API-server request** (#1524). The
+  in-cluster fetcher issued its `https.request` with no timeout, no signal
+  and no `'timeout'` handler, so an API server that accepted the connection
+  and never answered — a control-plane restart, a `NetworkPolicy` dropping
+  the reply, a stalled admission webhook — produced neither `'error'` nor
+  `'end'` and `lookup()` never settled. Both layers above are written to
+  survive a provider that *throws*; a provider that *hangs* stalled the
+  whole bootstrap, and the discovery ladder never reached the static
+  fallback that exists for exactly this case.
+
+  New `requestTimeoutMs` on `KubernetesApiSeedProviderOptions` (builder
+  `withRequestTimeoutMs`), `kubernetesRequestTimeoutMs` on the auto-discovery
+  options, and the HOCON leaf `actor-ts.discovery.kubernetes.request-timeout`,
+  shipped at **10 s**. The value matches the lease client's
+  `operation-timeout` and is deliberately not shared with it: that number
+  feeds the lease renewal arithmetic, this one bounds a bootstrap poll.
+
+  **The mechanism the issue proposed does not work on Bun, and that was
+  measured rather than assumed.** `https.request`'s `timeout` option — the
+  lease client's own pattern, held up as the correct example — is a socket
+  timeout, and Bun 1.4.2 never arms it while a TLS handshake is pending:
+  against a server that accepts and writes nothing, `timeout: 300` and
+  `req.setTimeout(300)` both never fire on Bun (five seconds waited) while
+  Node fires them at ~620 ms. A stalled handshake is exactly the outage the
+  bound exists for. The fix therefore uses a wall-clock deadline through an
+  `AbortController` whose abort reason is a named error; both runtimes
+  surface it as the `AbortError`'s `cause`, which the rejection unwraps to.
+  The same hole in the lease client is filed as #1529.
+
+  Bound by a test that aims the request at a `net` server that accepts and
+  never writes, asserting the rejection lands within the ceiling and that an
+  `AggregateSeedProvider` then falls through to its next rung. The cap lives
+  in the fixture, because with the bound removed a pending `node:https`
+  handshake keeps bun's per-test timeout from firing at all — `bun test`
+  printed its header and hung until killed. With the fixture cap the same
+  regression is a red test in under two seconds.
+
+- **A mediator that started after its peers never learned their topics**
+  (#1193). `12-pubsub-fanout` timed out at 15 s on roughly one hosted run in
+  four, always in the same shape: the first burst, published from the node
+  listed first, reached all five subscribers; the second, published from the
+  next one along, stalled on one of them. The report put it down to resource
+  starvation after sixteen broker suites, which is where it was first seen —
+  but the hosted `integration.yml` job runs the controller suite alone on a
+  fresh runner and failed there too.
+
+  A mediator's registry only ever learns from a gossip frame that *arrives*,
+  so a node's claims spread by being sent, and two paths sent them:
+  `eagerGossip` broadcasts on a local `Subscribe`, and `gossipTick` pushes to
+  one random peer per interval as anti-entropy. Neither covers a broadcast
+  whose recipients are not listening yet — and that is every node in the
+  integration suite, each of which joins its cluster in its startup path and
+  only afterwards starts the extension that registers the pub/sub wire hook.
+  A frame `Cluster` cannot route is dropped without a trace, so whichever
+  mediator started first collected everybody's announcement and whichever
+  started last collected none. Its own announcement still went out, which is
+  why the failure was one-directional every time: publishes *to* that node
+  arrived, publishes *from* it reached only its own subscriber. Which node
+  that was came down to a five-container start-up race, so the stalling node
+  differed from run to run and the scenario looked flaky rather than wrong.
+
+  **The membership arm looked like it handled this and did not.** `onMemberUp`
+  incremented a `version` counter that rides on every gossip frame and that no
+  receiver reads — a write-only field, so the arm was a no-op with a body. It
+  now re-broadcasts, which both tells the new member and retries the peers
+  that missed the subscribe-time round. And an arriving frame is now answered,
+  once per peer: a frame that arrives is the one proof a push cannot supply —
+  that the sender is running and routing — so answering it makes the exchange
+  symmetric however two startups interleave. `gossipTick` is unchanged and
+  stays what it always was, the anti-entropy behind both.
+
+  Bound by a cross-node case that publishes from the mediator that started
+  *last* — the node with the empty registry every time, rather than whichever
+  one a container race produced — and by four unit cases, all of them run at a
+  gossip interval longer than the test, so nothing they observe can be owed to
+  the periodic round. Each half was verified by applying the wrong version and
+  watching only its own guard fail.
+
+- **JetStream push mode never worked, and it is the default** (#1526).
+  `consumer.mode` defaults to `'push'`, and that path bound a push
+  subscription to a durable the actor's own `upsertConsumer` had created
+  **without a `deliver_subject`** — which is what makes a consumer a push
+  consumer server-side. Lacking it, the server creates a *pull* consumer and
+  the push subscribe throws inside the driver on connect; the actor then
+  treats it as a failed connection and retries forever. Measured against a
+  real `nats-server -js`, reproducing exactly what the actor builds and calls.
+
+  **Why nothing caught it is the more useful half.** The live NATS suite
+  started its server with `command: ["-p", "4222"]` — no `-js` — so JetStream
+  was not enabled and no JetStream, key-value or object-store scenario had
+  ever existed. The unit suites were green because they assert against
+  hand-written structural stubs, and a stub is satisfied by whatever fake
+  matches it: the stub said `subscribe(subject, { stream, consumer })` existed
+  and the fake obliged. Nothing anywhere asked the driver.
+
+  Fixed by generating the deliver subject (`_deliver.<stream>.<durable>`,
+  outside the stream's own subjects or the server refuses it as a cycle), and
+  by giving the suite the coverage it was assumed to have: `-js` on the
+  server, and five scenarios where there were none — a driver-shape probe,
+  push, pull, key-value and object store. That the push scenario actually
+  catches this was verified by re-introducing the defect and watching exactly
+  that scenario fail.
+
+- **The documentation site could not build at all** (#1525). Four pages —
+  `fundamentals/throttling` and `reference/utility-helpers`, each in both
+  languages — carried a `description` whose unquoted value contained a colon
+  followed by a space: `` `{ qps: Infinity }` `` on one pair, `actor-ts/util
+  subpath: mergeOptions, …` on the other. YAML reads that as the start of a
+  nested mapping, so `astro build` died during content sync before rendering a
+  single page. Quoting the four values fixes it, and the text they publish is
+  byte-for-byte unchanged.
+
+  **The interesting half is why it survived.** `docs.yml` is the only workflow
+  that runs `astro build`, and it fires on pushes to `main` — which happen only
+  at release time. `docs-checks.yml` runs on every branch but does an API-drift
+  scan and a frozen install, never a build. Both offending commits landed after
+  v0.17.0, so no published release carries the defect; the next one would have
+  been the first, and it would have failed at the deploy step beside the npm
+  publish rather than anywhere a reviewer looks.
+
+  So the fix comes with the gate that was missing.
+  `tests/unit/docs/FrontmatterParses.test.ts` parses every page's frontmatter
+  with `Bun.YAML.parse` — the same question the build asks, rather than a
+  hand-rolled regex that would be a second and worse YAML implementation — and
+  runs under `bun test`, on every branch, in well under a second. It carries
+  the usual pair of guard-the-guard assertions: that the tree was actually
+  walked, and that the parser still rejects the exact shape that broke the
+  build and still accepts its quoted fix.
+
+- **Three HTTP-backend tests missed bun's undeclared 5 000 ms cap in a full run
+  and passed in isolation** (#1504).  Fixed the way the issue asked for — by
+  checking whether the work was avoidable before budgeting for it.
+
+  `StaticFiles.test.ts` started an `ActorSystem` and bound a server in each of
+  seventeen cases, three backends over, so a file about reading files off a disk
+  paid fifty-one server lifecycles.  Nothing there mutates server state, so the
+  isolation that bought was isolation from nothing; the block now binds one
+  server per backend and the file is ~24 % faster even idle.  The two
+  `BackendTransportFrameCap` cases genuinely cannot share one — the cap under
+  test is installed *during* the bind and each needs its own backend — so those
+  get a declared budget, and so do the other seven cases in that file, which do
+  the same work and differ only in which crossed the line first.
+
+  **The verification run then failed a fourth test of the same family**, and
+  measuring rather than patching it turned up the real shape: the same test took
+  **1.51 s in one parallel run and 5.05 s in another**, a 3.3× spread. So any
+  unbudgeted test above ~1.5 s is one load spike from the cap, which is a line
+  drawn from data rather than taste. Nine files were over it; all now declare a
+  budget — 30 s for the repo-file scanners that read every source under `src/`,
+  15 s for the cases that wait on a real server. Two full parallel runs green,
+  12 279 tests.
+
+- **The documented connection cap was red on Linux and green on Windows, and
+  the cause was neither the cap nor a flake** (#1505).  Measured on bun 1.4.0
+  with the runtime installed locally on both: an `http.Server` emits
+  `'connection'` for an accepted socket **immediately on Windows and only on
+  its first byte on Linux**, where `getConnections()` answers `0` until then —
+  so a socket that connects and stays silent is invisible to the server object
+  rather than merely uncounted.  `server.maxConnections` is ignored on that
+  pair as well, so neither enforcement can act on a silent client.
+
+  The three failing cases opened silent sockets, which is a connection the
+  Linux server does not have.  They now send a request, which is the connection
+  a cap is actually about, and pass on both platforms — verified by running
+  them under Linux, not inferred.  A connection that speaks is capped
+  identically everywhere; one that never speaks is bounded by nothing actor-ts
+  can see on Linux, and `http/security.mdx` now carries that gap and names the
+  OS- or proxy-level limit that closes it.
+
+- **A red nightly filed an issue naming no test, while the artifact beside it
+  named three** (#1506).  `scripts/nightly-flake-report.mjs` read `flaky` and
+  `consistent` off a night's `summary.json`; `scripts/stress-test.mjs` has
+  never written either field, only one `offenders` array.  So run 34329418185
+  — three tests failing in **all five** runs, aggregated correctly, written to
+  the artifact correctly — filed *"No test was named by any run"*, and the
+  first real red night the auto-issue mechanism ever saw reported nothing
+  actionable.  The classifier was not at fault and is unchanged.
+
+  What made it possible is that the document on disk was an object literal
+  inside a side-effecting `main()`, so no test could hold it: the reader's
+  hand-written `.d.mts` declared the two fields above a comment claiming they
+  were the harness's shape, `skipLibCheck` means a declaration is never checked
+  against its module, and the reader's own guard built its fixtures by hand
+  from the same imagination.  Three artifacts agreeing with each other and none
+  of them with the program.  `summaryDocument` is now an exported pure
+  function, every fixture in `tests/unit/ci/NightlyFlakeReport.test.ts` is
+  produced by calling it, and each offender carries its own `consistent` flag
+  so the flaky/broken split has one home rather than a copy in each reader.
+
+- **The transport's stall-deadline / handshake-deadline ordering rule is now
+  checked against the pair the transport will run with, not the pair the
+  caller supplied** (#846). It guarded on both values being present, so
+  `new TcpTransport(self, log, { incompleteFrameIdleMs: 1_000 })` — and a
+  lone `actor-ts.remote.incomplete-frame-idle = 1s` — resolved to the
+  inverted pair (5 s handshake, 1 s stall) and was accepted: exactly the
+  inversion the rule exists to prevent, and the opposite of what the
+  transports page and the `actor-ts.remote` reference already said. The same
+  held from the other side, where raising `handshake-timeout` past the 30 s
+  stall default was waved through. The rule now lives in one place shared by
+  both validators, so they cannot drift into refusing different pairs, and
+  the failure names the half you actually wrote rather than a default you
+  never typed — over HOCON as well, since phase 03 of the #887 wave:
+  `reference.conf` ships both leaves, so a lone
+  `actor-ts.remote.handshake-timeout = 45s` arrived beside the 30 s stall
+  default and was refused naming the key the operator had not written; a
+  value equal to its built-in default now counts as defaulted, and a lone
+  `incomplete-frame-idle` under 5 s says that the 5 s it ran into is the
+  built-in default. Either bound may still move alone, as far as the other's
+  built-in default allows. The hop from `actor-ts.remote.*` into the
+  transport `Cluster` builds is now bound by a test too — deleting the four
+  option lines from that constructor made all four keys inert with every
+  suite still green.
+
+  *Note:* The rule this enforces was announced in the same
+  still-unreleased #846 entry, so no release ever shipped the hole; a config
+  that sets only one of the two keys such that the resolved pair inverts (a
+  lone `incomplete-frame-idle` below 5s, or a `handshake-timeout` at or
+  above 30s) is now refused at startup instead of running inverted — move
+  the other key with it.
+
+- **BREAKING — A cluster singleton's proxy now settles a role by which layer
+  it came from rather than by the order `ref()` and `start()` were called on
+  the node (#855).**
+
+  Since the `actor-ts.cluster.singleton.*` block landed, a node that called
+  `ref()` first kept the configured role and refused the explicit one that
+  followed — so its proxy resolved a different host class than that node's
+  own manager, and it logged a conflicting-role warning naming the role that
+  should have won. The reverse order routed correctly but warned that a
+  documented, supported combination was impossible. An explicit role —
+  `StartSingletonOptions.withRole`, or one declared on the actor class's
+  `SingletonKey` — now wins over a configured one in either call order and
+  is not warned about, and a configured role arriving behind an explicit one
+  is discarded in silence, because that is the documented
+  explicit-over-HOCON precedence resolving. Two roles from the same layer
+  are still reported as the misconfiguration they are: one singleton cannot
+  be restricted two ways.
+
+  *Migration:* `ClusterSingletonProxy`'s constructor gained a `roleOrigin`
+  parameter in fifth position, ahead of `bufferSize`: a hand-written `new
+  ClusterSingletonProxy(cluster, key, resolveManager, role, bufferSize)`
+  becomes `(cluster, key, resolveManager, role, 'explicit', bufferSize)`. It
+  fails at compile time, not silently. Nothing else moves, and the proxy is
+  normally obtained from `cluster.singleton.start()` / `.ref()` rather than
+  constructed.
+
+- **Seed discovery once again reads `CLUSTER_NAMESPACE`**
+  (#860).  `reference.conf` published
+  `actor-ts.discovery.kubernetes.namespace = "default"`, and because the
+  config reader decides every field by whether the key is present, that leaf
+  was an explicit namespace on every node — layered above the environment by
+  `Cluster.bootstrap` and leaving the variable unreachable even where a
+  deployment had configured nothing. The Kubernetes rung then read
+  `/api/v1/namespaces/default/endpoints/<service>` with a namespace-scoped
+  ServiceAccount token, so a pod anywhere but `default` found no seeds and
+  self-elected: the cold-start split brain the bootstrap exists to close.
+  The key now ships comment-only, the same shape
+  `remote.tcp.advertised-host` uses, so `unset` is expressible again and the
+  chain is the key, then `CLUSTER_NAMESPACE`, then the built-in `default`. A
+  namespace written in config still wins, `"default"` included — which is
+  why the fix is an unpublished key rather than a reader that discards the
+  string. `dns.cache-ttl` and `dns.use-srv` keep their published values
+  deliberately: they have no environment layer beneath them to shadow. The
+  `actor-ts.discovery.*` block is now bound to the providers by tests that
+  drive the real `Cluster.bootstrap`; the previous ones re-implemented the
+  layering, so cutting the config block out of the bootstrap left the suite
+  green.
+
+  *Note:* No API change and no migration needed. One behaviour change to be
+  aware of: on a node that sets `CLUSTER_NAMESPACE` and configures no
+  namespace of its own, the Kubernetes discovery rung now reads that
+  variable's namespace instead of `"default"`. That is the documented
+  behaviour being restored, but a deployment that had (unknowingly) come to
+  rely on discovery hitting the default namespace will now hit the one its
+  variable names. A deployment that wants a fixed namespace regardless of
+  the environment writes `actor-ts.discovery.kubernetes.namespace` explicitly,
+  which still wins; a deployment that wants the variable at config
+  precedence keeps the documented substitution, namespace =
+  ${?CLUSTER_NAMESPACE}.
+- **The budget guard could not see the budgets it was written to check, and 37
+  tests were violating its invariant while it stayed green** (#1315).
+
+  `tests/unit/ci/AwaitConditionBudgets.test.ts` enforces one rule: the largest
+  `awaitCondition` budget a test can reach, plus a second of headroom, must fit
+  inside the per-test timeout containing it — otherwise bun kills the test
+  first, the label the helper exists to print is lost, and it resurfaces
+  seconds later as an unhandled error blaming an unrelated test.
+
+  It read exactly one shape, `timeoutMs: <numeric literal>`, and treated
+  everything else as `awaitCondition`'s 2 000 ms default. Thirty-five files wrap
+  the helper in a local `waitFor(predicate, timeoutMs = 5_000, …)` that forwards
+  the parameter in **shorthand** — `{ timeoutMs, intervalMs: 25, label }` — so
+  none of those budgets was ever read, and a call site passing `8_000`
+  positionally was invisible twice over.
+
+  Measured after teaching the scanner to read them: **37 tests across 8 files**
+  could reach a budget their cap could not accommodate, most at exactly the cap
+  (a 5 000 ms budget under bun's 5 000 ms default, which can never report) and
+  one at 8 000 ms under 5 000.
+
+  Three changes:
+
+  - The scanner resolves a shorthand `timeoutMs` from the wrapper's own
+    parameter default, and a budget passed positionally at the call site from
+    the index where the wrapper declares that parameter.
+  - It resolves a budget named by a module-level `const`.
+  - **Anything it still cannot evaluate is a finding rather than a default.**
+    That is the part that matters: a guard whose fallback is "assume the
+    smallest plausible number" is most confident exactly where it understands
+    least, which is how this stayed green for so long.
+
+  The 37 tests were given explicit caps rather than smaller budgets. Lowering a
+  budget to fit a cap tightens the tolerance of a test that already waits on a
+  cluster to converge, which is the direction that *causes* flakes; raising the
+  cap only changes how a stuck test reports.
+
+- **`bun run test:stress` reported `PASS` over sixteen runs of which none was
+  green** (#1359).
+
+  A test that failed more than once inside a single run pushed its run index
+  onto `failedRuns` once per failing *testcase*, so `failedRuns.length` could
+  exceed the run count — matching neither `< runs` (flaky) nor `=== runs`
+  (consistent). The offender fell out of both tables, out of `summary.json`'s
+  `offenders`, and out of the `$GITHUB_STEP_SUMMARY` table the nightly job is
+  read from; `offenderCount` was then zero, which is inside any budget, and the
+  run exited 0 printing "No test failed in any run that reported" two lines
+  under a failure rate of 100 %.
+
+  `nightly-flakes.yml` is `continue-on-error`, so those tables and that exit
+  status are the only signal it produces. A night in which a hook timed out
+  therefore annotated "nothing to add to the flake catalog tonight".
+
+  Four changes, and the last is the one that makes the other three unable to
+  rot:
+
+  - `failedRuns` counts **runs**, once per run however many testcases carried
+    the identity. The occurrence count survives as `failureCount` and is
+    reported beside the run count rather than folded into it.
+  - `consistent` matches `>= runs` rather than `=== runs`, so an off-by-one
+    anywhere upstream widens the "broken" bucket instead of re-opening the hole.
+  - `unexplainedRedRuns` names any run that reported failing tests which no
+    offender accounts for — empty by construction, computed anyway, and a
+    failure of the gate. It is a self-check on the identity map, in the shape
+    `runsRedWithoutFailures` already had for exit codes.
+  - The verdict now gates on **runs**: a run that was not green and that no
+    tolerated offender explains fails the harness however the tables read.
+    `greenRuns` is the field the quarantine's exit criterion is written in, and
+    the harness computed it, printed it, wrote it to `summary.json` and then
+    never acted on it.
+
+  `summary.json` gains what a nightly artifact needs to be read a week later:
+  `bunVersion` (a night is comparable with another night only while the
+  toolchain is), `randomized`, `unexplainedRedRuns`, per-offender
+  `failureCount`, and a `runsDetail` array carrying each run's duration, exit
+  status, counts and seed. The harness also learns `--randomize` and `--seed=N`
+  (the seed implies the shuffle, so it can never be silently inert), and prints
+  the seed on each run line, so an order-dependent failure is reproducible from
+  the artifact rather than from a log that has aged out.
+
+  Bound by a fixture that reproduces the real shape rather than a synthetic one:
+  a `describe` whose `beforeAll` and `afterAll` both blow their budget makes bun
+  emit two `(unnamed)` testcases under one classname. A throwing hook does not
+  reproduce it — bun names each test individually — and neither do two separate
+  blocks, whose classnames differ. Reverting the arithmetic turns the new cases
+  red.
+
+- **An actor restarts `maxRetries` times, not `maxRetries + 1`.**
+  `ActorCell` kept its own restart tally and its own arithmetic over it
+  while `RestartBudget` kept another, and the two disagreed by one.
+
+  Two implementations of one documented rule, read by different subsystems:
+  the worker mesh budgets slot respawns through the class (#734), an
+  ordinary supervised child went through the cell.  `maxRetries: 5`
+  therefore bought five restarts in one place and six in the other, and
+  `defaultStrategy`'s own "up to 10 times per minute" could not be true of
+  both.  The cell now delegates to the budget.  Nothing in the suite
+  observed the difference — 9209 cases stayed green through the change — so
+  two tests come with it, one driving a real supervised child to exhaustion
+  and one stating the two allowances as an equality.
+
+- **`parseDuration` accepts every spelling of the microsecond prefix.**  The
+  unit pattern admitted only U+03BC GREEK SMALL LETTER MU, so `1 µs` written
+  with U+00B5 MICRO SIGN — the character a German keyboard produces and most
+  copied text carries — was refused.
+
+  It was refused in the least helpful way available, too: the pattern runs
+  before the unit table is consulted, so the error read `Invalid duration`
+  and pointed at the number rather than at the letter.  U+039C GREEK CAPITAL
+  MU was rejected for the same reason, though the units are documented
+  case-insensitive and the ASCII spellings already were.  The unit is now
+  folded with NFKC before lower-casing; what counts as a unit is unchanged,
+  still decided by the table.
+
+- **`HttpServerOptions`' documented example no longer shows a wildcard bind,
+  or the wrong signature.**  It read `system.http('0.0.0.0', 8080)`, which
+  passes a host where the port goes and would not have compiled.
+
+  Found by widening the #756 bind guard, which had exempted
+  `system.http(port)` outright on the stated grounds that a host-less call
+  is "configuration".  It is not: `ActorSystem.http` resolves a missing host
+  to `0.0.0.0`, so the bare form binds the wildcard exactly as the literal
+  does and only hides it from the reader.  The guard now flags that form in
+  examples, the one example that genuinely wants a wildcard spells it out in
+  its own source and is named in an allow-list with the reason, and a third
+  pattern catches a positional host on both surfaces.  The framework default
+  itself is #1408.
+
+- **`Mailbox.prependUser`'s contract no longer tells a subclass author to
+  reintroduce a fixed defect.**  It ended "a signal is exempt from a bound,
+  a replay is not", which the fix for #729 made false.
+
+  A replayed lifecycle notification *is* exempt — that was the fix — and
+  both shipped overrides route an undroppable envelope to `enqueueSignal`.
+  The commit that changed the behaviour updated two neighbouring JSDoc
+  blocks and left this one, which is the worst of the three to leave stale:
+  it is not a description but the contract of an extension point, read by
+  anyone writing a bounded mailbox to learn what their override owes.
+
+- **BREAKING — `retry` defaults to a finite ceiling, and its clamp no longer
+  has a hole (#771, #782).**
+
+  `maxDelayMs` defaulted to `Infinity`. The hot-loop hazard the issue
+  reports was already closed by the 32-bit clamp, but the infinite default
+  left a second defect nobody had found: with a jitter factor of 1 the
+  jitter produced `NaN`, clamping `NaN` yields `NaN`, and the
+  delay-greater-than-zero check then skipped the sleep entirely — so retry
+  busy-looped. The default is now 60 000 ms and the clamp is applied before
+  the jitter as well as after, where a finite base can never produce `NaN`.
+  The deferral of the finite default rested solely on it being breaking,
+  which pre-1.0 permits (#771).
+
+  `CachedSnapshotStore` also stops caching plaintext behind an operator's
+  back. The decorator writes the fully decoded state into a caller-owned
+  cache, so a shared Redis or Memcached held a second, unencrypted copy of
+  state the wrapped store encrypts at rest — on three documentation surfaces
+  that actively recommend exactly that composition. The class now documents
+  the exposure, and a load whose state the wrapped store keeps encrypted at
+  rest is refused rather than forwarded blind, on both routes a deployment
+  can take to confidentiality: the per-call `encryption` directive an
+  actor's `encryption()` hook produces, and the store's own
+  `withEncryption(...)`, which the decorator reads through the new optional
+  `SnapshotStore.encryptsAtRest(persistenceId)` member — absence means
+  unknown and never refuses, the rule the whole capability family follows,
+  so a third-party store keeps its behaviour on upgrade.
+  `ObjectStorageSnapshotStore` implements it per persistenceId from the same
+  configuration its codec uses. A refused load also evicts the entry the
+  cache already holds for that persistenceId, so state cached before the
+  actor gained its hook, or before the store was configured to encrypt, no
+  longer stays readable until the next `save` or the end of `ttlMs`; the
+  price is one cache round-trip per refused load.
+  `withAllowPlaintextCache(true)` is the acknowledgement that restores the
+  caching.
+
+  `retry` validates `delayMs`, `factor` and `maxDelayMs` before the first
+  attempt instead of silently skipping every wait. Only `attempts` and
+  `randomFactor` were checked, so a negative, `NaN` or infinite base, a
+  non-positive or non-finite factor, and a `NaN` or negative ceiling each
+  produced a delay the loop discarded — the backoff turned into a hot loop
+  against the dependency that was already failing, which is the failure
+  direction the timer clamp exists to invert, reached through the options
+  instead of through the arithmetic. `maxDelayMs: Number.POSITIVE_INFINITY`
+  stays legal as the documented opt-out of the ceiling. All of `retry`'s
+  option refusals now raise `OptionsError` rather than a bare `Error`, so a
+  caller can tell a refused call from a failed dependency; only the class
+  changed, the message texts are unchanged, and `OptionsError` extends
+  `Error` (#1509).
+
+  The #782 half of this bullet — a `CachedSnapshotStore` serving a plaintext
+  copy of a snapshot its wrapped store encrypts — has since been closed at
+  the store level rather than only guarded here:
+  `SnapshotStore.encryptsAtRest(persistenceId)` is a public member now,
+  absence means no claim, and a cached store over an encrypting one refuses
+  the load instead of answering from the cache. That entry sits under Fixed
+  with this one, which is where a reader looking for #782 under Security
+  will not find it; both halves are the same issue and the later one
+  supersedes the guard described above.
+
+  **Migration.** A caller relying on an uncapped multi-day retry wait must
+  now set `maxDelayMs` explicitly. A `CachedSnapshotStore` wrapping an
+  encrypting store needs `withAllowPlaintextCache(true)` to keep its
+  previous behaviour, which is the acknowledgement the guard exists to
+  demand.
+
+
+- **The supervisor's control ticks are private symbols, and the system queue
+  documents its own bound** (#770, #794).
+
+  `BackoffSupervisor`'s respawn and stash-drain ticks were globally
+  reproducible `Symbol.for` values matched by bare equality on the
+  supervisor's public message channel, so in-process code holding the
+  registry string — a compile-time constant in the published package — could
+  forge a tick to collapse a backoff window to zero or flush the stash into
+  a child that had not yet cleared `preStart`. They are module-private
+  symbols now. No trust boundary was crossed, and the entry says so: symbols
+  survive neither JSON nor CBOR, so no cluster peer could reach it, and the
+  only caller who could already held the ref. The issue's second criterion,
+  a sender-is-self check, is refused rather than faked — a timer tick
+  arrives with a null sender, so that check would reject the legitimate one
+  (#770).
+
+  Separately, `Mailbox.enqueueSystem` now documents what was true and
+  written down nowhere: the system queue is deliberately uncapped, because
+  supervision and lifecycle messages must never be dropped, and no bound
+  reaches it — a subclass's own included. The mailboxes page says so in both
+  languages, so a reader sizing a capacity learns the ceiling covers user
+  messages only. Capping the drain loop was considered and refused: a
+  per-turn budget risks reordering supervision, which is the worse trade
+  (#794).
+
+
+- **The `ShardRegion` routing buffer is bounded** (#849).  `bufferShard`
+  held every message for a shard whose home was unknown or handing off in an
+  unbounded per-shard array, so a coordinator that never answers — no
+  leader, a lease it cannot acquire, or a registration it refused while the
+  region keeps accepting traffic — turned a stall into memory exhaustion,
+  and a remote peer could drive it through `onRemoteEnvelope`. The cap is a
+  region-wide total across every shard rather than a per-queue one, which at
+  the shipped defaults is the difference between 100 000 messages and 6 400
+  000; past it the newest arrival is dropped to dead letters with its
+  sender, so what is already queued keeps the order its caller sent it in,
+  and one warning is logged per overflow episode. Three `actor-ts.sharding`
+  keys ship with it, each at the value the code already hardcoded so that
+  merely wiring the block changes nothing: `buffer-size = 100000`
+  (region-wide, and `0` means *never buffer* — the opposite polarity to
+  `max-entities = 0` in the same block), `register-retry-interval = 500ms`
+  for an unacknowledged region registration, and `shard-region-query-timeout
+  = 5s` for `ClusterSharding.shards()` and `shardRefFor()`. #849, #461.
+- **A control-RPC reply in `ParallelMultiNodeSpec` is bound to the role and
+  the kind it answers** (#777).
+
+  Every spawned role resolved out of one instance-wide pending map keyed on
+  the request id alone, so a worker that originated a control frame carrying
+  another role's id settled the wrong promise. The symptom was the expensive
+  part: a mis-correlated reply makes the membership condition throw,
+  `awaitCondition` swallows that as a retry, and the spec then fails thirty
+  seconds later naming a convergence that was never the problem.
+
+  A frame whose role or kind disagrees is now dropped with a warning naming
+  both sides, and the pending entry is left in place — so the genuine reply
+  can still land, or the RPC timer fires and names the request that went
+  unanswered. Only a custom bootstrap module, or a scenario module posting
+  raw frames, could produce the collision: the shipped bootstrap stamps the
+  request id from the request it is answering.
+
+
+- **BREAKING — a configured downing provider now owns the eviction (#929).**
+
+  A cluster with a `DowningProvider` configured no longer evicts an
+  unreachable peer when `down-after` elapses.  The failure detector marks
+  the peer `unreachable` and stops; the transition to `down` / `removed` is
+  the strategy's alone.
+
+  Previously the detector deleted the member from the membership table on
+  the same tick it then asked the strategy to decide, so `evaluateDowning`
+  was handed a view whose `unreachable` set was already empty and every
+  bundled strategy read a healed cluster.  That made `LeaseMajority`'s
+  asynchronous acquire unwinnable — a 5 s default budget against a 5 s
+  `down-after`, with the deletion tripping `decide`'s `unreachable.length
+  === 0` reset — and it made a stability window above `down-after` minus
+  `unreachable-after`, 3 s on the reference defaults, impossible to express
+  at all.
+
+  A peer that fell silent while `joining`, `weakly-up` or `leaving` is now
+  marked `unreachable` too, so it enters the `up | leaving | unreachable`
+  candidate set every strategy filters on instead of being deleted
+  unmarked.  Only `MemberUnreachable` is announced on this path, never
+  `MemberDown`: with a provider configured, `MemberDown` and `MemberRemoved`
+  now originate in the resolver, which lengthens the window in which
+  `ClusterRouter` still holds a routee for an unreachable node.  The code
+  comment and four published claims in both languages — which already
+  described this behaviour before the code did — are corrected with it.
+
+  *Migration:* if you configure a `DowningProvider`, pick a strategy that
+  always reaches a verdict for your cluster shape.  A strategy that returns
+  an empty set forever now parks the member at `unreachable` indefinitely
+  instead of having the detector evict it at `down-after`.
+
+- **A region's shard claim is adjudicated, not adopted** (#948).  A
+  `sharding.Register` naming a shard that another live region already owns
+  no longer takes ownership of it.
+
+  The coordinator now checks a region's `hostedShards` claim against the
+  allocation map instead of writing it in wholesale: ids nobody holds are
+  adopted exactly as before, an id homed to a different registered region
+  stays where it is, and the claimant is answered with a `HandOff` so its
+  stale copy actually stops rather than running the same entity ids
+  alongside the true owner's — two writers on one `persistenceId` for a
+  `PersistentActor`.  Nothing clears a region's `localShards` when its node
+  is downed by a false positive, and the region re-registers on every
+  membership event and on a 500 ms retry, so the stale claim was what a
+  re-admitted node said as its first word.
+
+  The same handler also no longer replaces a region's recorded shard set
+  with the claim: a `Register` that crossed an in-flight `ShardHome` used to
+  drop the shard from the coordinator's bookkeeping while still naming that
+  region as its home, after which losing the region never reallocated the
+  shard and the coordinator-state snapshot persisted the hole.
+
+- **A WebSocket connection's `close()` can no longer be discarded by a
+  mailbox bound** (#985).  It now travels the same exempt lane a death-watch
+  `Terminated` and the `websocket-accept` command take
+  (`ActorCell.postSignalEnvelope` → `Envelope.undroppable` →
+  `Mailbox.enqueueSignal`).
+
+  `drop-head` cannot evict it as the oldest entry, `drop-new` cannot discard
+  it on arrival, and `reject` cannot throw `MailboxFullError` out of
+  `close()` on the caller's stack — which for
+  `WebsocketServerActor.closeAll()` aborted the loop on its first backlogged
+  client and failed the hub with every later client still connected.  Losing
+  a close is not losing a message: nothing retries, nothing else in the
+  process holds the socket, and a `closeAll(1008, 'rate limited')` that
+  returns normally while the peers stay connected is a control that failed
+  open.
+
+  `WebsocketConnection.isOpen` now also latches on request, so it reads
+  `false` the moment `close()` returns rather than staying `true` until the
+  connection actor drains — `broadcast` and your own `if (client.isOpen)`
+  checks stop selecting a peer you have already disconnected.
+
+  Unreachable under the shipped configuration since #1148 made the unbounded
+  mailbox the default again, and the per-connection actor is spawned with no
+  `ActorOptions` at all; the door is closed ahead of a global default
+  capacity (#862), which is the only thing that could re-arm it.  The
+  remaining half — routing control traffic ahead of queued bulk frames — is
+  deliberately untouched: it is one design decision shared with #717 and
+  #986.
+
+- **BREAKING — `JetStreamActor` keys acknowledgments on the delivery rather
+  than the message (#710).**
+
+  The pending-acknowledgment map was keyed on `streamSequence`, which
+  identifies a message and not a delivery. JetStream reuses that sequence
+  verbatim on every redelivery, and pull-mode fetch batches overlap by
+  design — the `fetch` command is dispatched without awaiting it, because
+  the acks it waits for arrive as mailbox messages and holding the turn open
+  would deadlock — so two in-flight deliveries of one message collided on a
+  single entry. The later delivery evicted the earlier one, whose
+  ack-timeout then deleted the live entry, and the application's
+  acknowledgment for that live delivery was dropped at `debug`, below the
+  default level: the message was silently redelivered and reprocessed.
+
+  Deliveries are now addressed by an opaque, delivery-scoped `ackToken`
+  carried on `JetStreamMessage`; the ack-timeout's delete is
+  identity-checked, so a superseded entry can never evict the live one; and
+  the unknown-key miss logs at `warn`. `disconnectImplementation` now
+  settles its pending entries instead of naking the handles and clearing the
+  map — clearing alone left every ack-timeout armed to fire into state a
+  reconnect had already rebuilt, which is how the same eviction reached the
+  default push mode. That last path is one the issue report explicitly said
+  did not exist.
+
+  All four JetStream settle commands now report an unknown `ackToken` at
+  `warn`, not only `acknowledgment`. `negativeAcknowledgment`, `terminate`
+  and `inProgress` each dropped the command in total silence, not even at
+  `debug`, which is exactly the signal a caller needs while converting four
+  settle call sites to the delivery-scoped token and missing one; a dropped
+  `terminate` is the worst of them, since the caller asked for a permanent
+  drop and instead got the ack-timeout's `nak()` and endless redelivery.
+  Under `ackPolicy: 'none'` the miss goes to `debug` instead: the token is
+  minted and shipped in that mode but names nothing, so a consumer that
+  settles defensively would otherwise take a warning per message at full
+  delivery rate, carrying an explanation that is false there. A connection
+  loss is now one aggregate warning naming how many deliveries were in
+  flight, with the per-delivery detail demoted to `debug` — a flapping
+  connection on a consumer with `maxAcknowledgmentPending` in the hundreds
+  wrote that many warnings per flap — and the doubled `JetStreamActor: pump
+  JetStreamActor:` prefix that every catch-path line carried is gone
+  (#1510).
+
+  One more break the paragraph above does not name: `ackToken` is declared
+  required on the exported `JetStreamMessage`, so code that constructs one —
+  a test double, a fixture, anything replaying a captured message — stops
+  compiling until it supplies a token. Reading a delivered message is
+  unaffected; the actor fills the field.
+
+  **Migration.** The four settle commands take `ackToken` instead of
+  `streamSeq`: `{ kind: 'acknowledgment', streamSeq: message.streamSeq }`
+  becomes `{ kind: 'acknowledgment', ackToken: message.ackToken }`, and the
+  same for `negativeAcknowledgment`, `terminate` and `inProgress`. The
+  sequence stays on the message, as `streamSequence` (#1443), where it
+  belongs — for log lines and application-side deduplication.
+
+
+- **`ConfigKeys`, `CircuitBreakerOptionsValidator`, `isPlainObject` and
+  `readDeadLetterQueueOptionsFromConfig` reached no entry point** (#1403).
+  `package.json` ships only `dist/` and its `exports` map has no wildcard, so
+  for the five barrels the core-only root cut (#414) folds into `src/index.ts`
+  — `config`, `deadletters`, `mailbox`, `pattern`, `typed` — the root barrel is
+  the only door, and a name it drops has left the package.  Three of the five
+  dropped one.
+
+  `ConfigKeys` is the one that mattered: AGENTS.md calls it the typed single
+  source of truth for HOCON paths, 47 files under `src/` read it and
+  `reference/reference-conf` names it to the reader, and no consumer could
+  name it.  `CircuitBreakerOptionsValidator` was the only `*OptionsValidator`
+  of a folded subsystem the root dropped — the options contract asks a
+  non-broker consumer to call `new XOptionsValidator().validate(settings)`, and
+  for a circuit breaker that line could not be written against the package.
+
+  All four are additive re-exports.  The durable half is
+  `tests/unit/ExportSurface.test.ts`, which derives the question from the tree
+  instead of a hand-kept list: it diffs each folded barrel's module namespace
+  against the root's, pins which barrels are folded so folding a sixth is a
+  decision rather than a default, checks every published subpath points at a
+  barrel that exists, and asserts the `util` barrel covers its own directory.
+  Same class as #1002 and #1307, which were each found by reading; #819's
+  `.d.ts` rollup supersedes the structural half when it lands, and covers the
+  type-only exports a module namespace cannot see.
+
+- **Two of the three fixed-delay waits `SleepRatchet` flagged in
+  `ActorThrottle.test.ts` were guarding against nothing** (#1399).  The file
+  arrived with #636 carrying three unannotated waits, and `develop` was red on
+  the ratchet.  Two of them sat between a `configure-throttle` tell and the
+  ticks that follow, under a premise repeated four times in the file — "the
+  limiter has to be installed before the ticks are sent".  That premise is
+  false: the throttle gates a message when it is **dequeued**, not when it is
+  enqueued (`ActorCell.handleThrottleExcess`, called from the dispatch path),
+  and both tells go from the test to the same actor, so the FIFO mailbox
+  already guarantees the limiter is installed before any tick is dequeued.
+  The tests prove it themselves — without the limiter every tick would process
+  and the following `toBeLessThan` would fail — so both waits are removed
+  rather than annotated, and the file was run 20× in a row to confirm it.  The
+  third is the absence assertion ("the throttle has NOT let all four through
+  yet") and keeps its wait, with the comment its sibling twelve lines up
+  already had.
+
+- **The supply-chain page said the SBOM starts "from the next release
+  onward", and then v0.17.0 shipped it — so the sentence began pointing past
+  the release the reader had just downloaded** (#1391).  The claim was
+  correct when written and became wrong on publication, because it was
+  relative to a moving point: read from a repository whose latest release is
+  v0.17.0, "the next release" is v0.18.0.  Both language mirrors now name
+  v0.17.0 as the first release carrying `actor-ts-sbom.cyclonedx.json` — in
+  the frontmatter, the artifact table and the aside — and still say plainly
+  that v0.16.0 and everything before it carry none, so the qualification
+  moves to a fixed point rather than being dropped.  `CHANGELOG.md` gets the
+  same fixed wording, and `tests/unit/ci/SupplyChainDocs.test.ts`, which pins
+  these sentences by literal text so the prose half of #539 cannot rot again,
+  moves in the same commit.  Its no-concrete-tag rule for `gh release
+  download` is untouched: a tag pinned in prose would now rot at v0.18.0
+  exactly as v0.16.0 did.
+- **`CoreStaticImports` walked a 148-file import closure inside the test body,
+  so bun's 5 000 ms per-test default killed the #1005 gate under a loaded
+  coverage run** (#1392).  Neither test declared a third argument and
+  `bunfig.toml` raises nothing, so the cap was bun's default; what ran against
+  it was `staticClosure('src/ActorSystem.ts')` — 148 files, 1.28 MiB of source,
+  29 ms of real work on an idle machine.  Observed at 6 723.89 ms in a full
+  `ACTOR_TS_SKIP_FLAKY_MNS=1 bun run test:coverage:gate` run on Windows /
+  bun 1.4.0 — roughly 230x — having passed a gated run earlier the same day and
+  passing standalone in 276 ms: the failure reported the machine, not the
+  invariant.  Both closures are now walked at module scope, which carries no
+  per-test timeout at all (measured), and which is the shape the sibling
+  repo-file guards `AwaitConditionBudgets`, `WorkflowHygiene` and
+  `NoDeadConfigKeys` already use.  The two assertions are untouched — `ActorSystem`
+  is still proven never to statically reach `FastifyBackend.ts` or a bare
+  `fastify`, and the canary still proves the walker is not blind — while the
+  test bodies drop from 29.15 ms and 1.24 ms to 0.41 ms and 0.04 ms, which puts
+  the same contention at ~95 ms against the 5 000 ms cap.  A larger third
+  argument was the other option and is the wrong one here: that remedy is for a
+  *failure budget*, one meant to expire and print a label, and a literal cap
+  would be one more encoded assumption about machine speed — the shared defect
+  #1376 is open to remove.
+- **`TreeShaking` built four bundles inside three test bodies, against the same
+  unset cap — 3.7x the exposure of the test that had already timed out**
+  (#1394).  Caught before it was ever observed failing, rather than after.  None
+  of the three tests declared a third argument, so four `Bun.build` calls raced
+  bun's 5 000 ms default; measured idle with the junit reporter the bodies were
+  0.6 ms, 66.5 ms, 30.1 ms and 109.7 ms, and that heaviest one is 3.7x the
+  29.1 ms `CoreStaticImports` was doing when a full coverage run stretched it
+  ~230x and bun killed it.  The bundles are now built at module scope — top-level
+  await, already used at
+  `tests/integration/in-process/persistence/journals/NodeSqliteDriver.test.ts:22`
+  — which also removed a duplicate: the narrow bundle was built twice from
+  byte-identical source, so three builds now do what four did.  The five
+  assertions are unchanged, and the bodies drop to 0.58 / 0.05 / 0.05 / 0.04 ms.
+- **`throttle({ qps: Infinity })` threw `TokenBucket: qps must be > 0, got
+  Infinity` instead of clearing the limiter — flatly contradicting its own
+  JSDoc, which documents `{ qps: Infinity }` as a way to remove a throttle**
+  (#636).  `ActorContext.throttle` promised the sentinel but `ActorCell`
+  passed it straight into a `TokenBucket`, whose constructor rejects any
+  non-finite `qps`, so the throw escaped into user code rather than flowing
+  through supervision.  `qps: Infinity` now removes the throttle (exactly
+  like `cancelThrottle()` — an unlimited rate installs no bucket), and a new
+  `ThrottleOptionsValidator` rejects an invalid `qps` / `burst` / `onExcess`
+  up front with an `OptionsError` naming the field, rather than a bare
+  `Error` from deep in the runtime.  Throttle options gain the standard
+  `XOptions` family (a fluent `ThrottleOptions` builder alongside the plain
+  object), and the per-actor throttle now has a dedicated docs page
+  (`fundamentals/throttling`, EN + DE).
+
+- **A node that restarts on the same `host:port` now ends its previous
+  incarnation on every node that still holds it** (#1426). The old run is
+  announced `MemberDown` and `MemberRemoved` before the new run's
+  `MemberJoined`. The merge used to replace the old run's record by version
+  and announce only the new run, so remote death watch, which reacts to
+  those two events alone, never sent the watchers of the old run's actors
+  their `Terminated` (`addressTerminated`) when the restart came back inside
+  `down-after` — and, under `auto-down = off`, when a parked peer restarted.
+  A reconnect of the same run announces nothing, and a record without an
+  incarnation (from a peer that predates the field, or relayed through one
+  that stripped it) keeps the silent replacement, because there a restart
+  and a reconnect look alike.
+
+- **A shard the region has asked to passivate stays closed to traffic when
+  the coordinator repeats its placement** (#1441). Every region sees such a
+  repeat after a leader change; the next message now waits for the shard
+  that replaces the passivating one instead of going into the stopping actor
+  and to dead letters.
+
+- **Under `entity-recovery.strategy = all`, a remembered registry that
+  reached a region while its shard was passivating was told to the stopping
+  shard actor and lost with it, so the shard came back empty while the
+  coordinator still listed every entity** (#851). One that arrived while the
+  shard handed off was dead-lettered the same way. A registry for a
+  passivating shard is now held and started in the shard that replaces it,
+  unless the shard moved away in the meantime, and one for a shard handing
+  off is left to the new owner the coordinator ships it to — the two rules
+  the paced drain follows.
+
+- **`parseLogLevel` reads `constructor` and `__proto__` as the unknown level
+  names they are** (#1425). Its name table was indexed through the prototype
+  chain, so either word, in any case, came back as a function or an object
+  instead of `undefined`. As `actor-ts.logger.level` it left the default
+  console logger printing nothing, `error()` included, and made
+  `ActorSystem.create` throw once any sink was configured; as a sink's
+  `min-level` it reached the sink's validator as that value instead of the
+  word that was written. Both now take the documented path: the system level
+  falls back to `info`, and a sink refuses the name.
+
+- **A subscriber whose `tell`, or whose channel's `instanceof`, throws a
+  value the logger cannot render no longer makes `EventStream.publish`
+  throw** (#1010), and a predicate that throws one is reported as a
+  predicate failure again. The bus contains each of these and warns with
+  what was thrown, and that warning itself threw when the stock `JsonLogger`
+  or `ConsoleLogger` could not render the value - an error whose `message`
+  getter throws, a revoked proxy, a throwing custom inspect. From the
+  delivery guard the throw left `publish`, so every subscription after the
+  faulty one missed the event; from the predicate guard the delivery guard
+  caught it and logged a delivery failure carrying the logger's own error.
+  The warning is now written without a value the logger cannot render, and a
+  logger that cannot write a line at all no longer makes `publish` throw.
+
+- **A shard coordinator restarted by its supervisor no longer leaves its
+  type headless** (#849). The supervisor restarts it after a user
+  `AllocationStrategy` throws out of `allocate`, for instance. A restart
+  moves no leader, so no region registered again: the replacement knew no
+  region, could place no shard and delivered nothing that needed the
+  coordinator. It now asks every region the instance before it knew to
+  register, so the map comes back from the regions' own claims and messages
+  are delivered again one round trip after the restart.
+
+- **`cluster.sharding` after `leave()` and a new `Cluster.join` on the same
+  `ActorSystem` now returns a facade bound to the new cluster** (#1465). The
+  facade was memoised per system and ignored the cluster it was asked for,
+  so the first incarnation to touch it kept it: a region started on the new
+  incarnation never registered, and with
+  `actor-ts.sharding.healthcheck.names` set its shard-region readiness check
+  stayed red for good. Each cluster incarnation now gets a facade of its
+  own, and repeated reads through one cluster still return one instance.
+  Leaving now stops what the left incarnation started, so a re-join can
+  start the same type again.
+
+- **`Config.load` names an application file it cannot read or parse**
+  (#1546). It refuses such a file with a `ConfigError` that names the file
+  and what selected it: `withConfigFile` or `LoadOptions.appConfPath`,
+  `ACTOR_TS_CONFIG`, or `application.conf` in the working directory. The
+  parser's error stays reachable as the cause, which `ConfigError` now
+  accepts as `ErrorOptions`. Before, the parser's error arrived alone and
+  said where in the text it stopped, not in which file.
+
+- **GELF over TCP with TLS and syslog over TLS no longer lose the first
+  batch on a fresh connection on Bun** (#1475). Bun's native dial resolved
+  at the TCP connect, before the TLS handshake, and what was written in
+  between was dropped, so every time a sink connected its first batch never
+  reached the collector. A native Bun TLS dial now resolves only once its
+  handshake is done, and one to a peer whose certificate the CA does not
+  sign is a failed dial instead of a connection that opens and closes again.
+
+- **The GELF and syslog TCP sinks give a collector that does not answer 10
+  s, then fail the batch retryably** (#1475). The 10 s cover the TCP connect
+  and the TLS handshake together. The dial had no bound but the operating
+  system's, so a collector that drops SYNs held each delivery attempt for 21
+  s on Windows and about two minutes on Linux, with every record behind it
+  waiting. A collector that refuses the connection fails the batch at once
+  and retryably on every runtime. The bound is fixed for now.
+
+- **A node that `weaklyUpAfterMs` moved to `weakly-up` before the leader
+  promoted it no longer stays `weakly-up` for good** (#935). The leader
+  promoted the joining record to up at the same version the node's own timer
+  had given weakly-up, the merge ignored the record as not newer, and the
+  node never emitted `SelfUp` or became ready while every peer counted it
+  up; on Deno a seed starting 150 to 170 ms after the timer fired hit this
+  on every run (#1493). An up record now wins over a weakly-up one at the
+  same version, on every node. Other equal-version disagreements are still
+  ignored, and #935 stays open for them.
+
+- **A cluster message body keeps a field named `__proto__`** (#1449). The
+  outbound copy that swaps actor refs for their wire form assigned each
+  field, so this one ran the prototype setter and never reached the frame;
+  it is now copied as data, refs inside it included, as the inbound side
+  already did.
+
+- **BREAKING — `Dispatchers.Hybrid(n)`, `Dispatchers.Throughput(n)` and the
+  `HybridDispatcher` and `ThroughputDispatcher` constructors refuse a budget
+  that is not an integer from 1 up** (#1461). The refusal is an
+  `OptionsError` naming the dispatcher and the argument. Such a budget used
+  to be accepted and then misbehave: below 1 no turn ever ran, so a system
+  built on `Dispatchers.Hybrid(0)` or on
+  `actor-ts.dispatcher { default = throughput, throughput = 0 }` never
+  answered an ask and `terminate()` never returned; `Infinity` never yielded
+  to the event loop; `NaN` stalled the throughput drain and never yielded on
+  the hybrid; and a fraction ran as the next integer up. A configured
+  dispatcher throughput of 0 or below now fails `ActorSystem.create` instead
+  of hanging. The dispatcher tuning page states the domain.
+
+  **Migration.** Pass an integer >= 1 to `Dispatchers.Hybrid` /
+  `Dispatchers.Throughput` or their constructors (round a fractional budget
+  up); for a dispatcher that never yields use `MicrotaskDispatcher`.
+
+- **`Cluster.leave()` hands this node's shards off and stops the sharding it
+  started before it tells the cluster it is leaving** (#1465). The regions,
+  their entities and the coordinators used to keep running after a leave,
+  bound to the cluster that had gone: when a member left, the leader
+  re-homed its shards and the next message started each entity a second time
+  beside the instance still alive on the node that had left, a second writer
+  for a persistent entity; when the leader left, its still-running region
+  registered its shards with the new leader's coordinator, which homed them
+  on the departed node and lost every message for them; and a re-join on the
+  same `ActorSystem` could not start a type the left incarnation ran ("Child
+  name 'coordinator-<type>' is not unique"). Now every region stops first,
+  so each entity finishes the message it is handling and runs `postStop`
+  before the coordinator re-homes its shard, then the coordinators stop,
+  each within its type's `hand-off-timeout`, and only then does the node
+  move to `leaving` and tell its peers. A region that overruns its
+  `hand-off-timeout` is told to stop at once and the leave goes on without
+  it, with a warning that says what it may still leave running. The
+  coordinated-shutdown pipeline does the same in its
+  `cluster-sharding-shutdown-region` phase, which `Cluster.join` now
+  registers; a node downed by its own split-brain decision or one that gave
+  its join up leaves at once and stops its sharding beside the departure.
+  Once `leave()` resolves, a re-join starts the same types through the new
+  cluster's sharding, and the left cluster's facade refuses `start()`.
+
+- **`promClientRegistry` refuses a `namePrefix` that no Prometheus metric
+  name can start with** (#1466). Anything but the empty string or the start
+  of a valid metric name, such as `app-` or `5`, is refused with an
+  `OptionsError` when the bridge is built. Such a prefix used to be accepted
+  and then made every framework metric throw `Invalid metric name` inside
+  the dispatcher, so actors stopped receiving messages.
+
+- **A `BackoffSupervisor` with `forwardDuringGrace: false` holds a message
+  that arrives inside the grace window under `forward: 'drop'` too**
+  (#1479). It keeps such a message in its stash and delivers it once the
+  child has survived the grace, as the option documents. It used to drop
+  such messages, losing every message sent in the first grace after each
+  start and respawn, 50 ms by default; `forward: 'drop'` now applies only
+  while there is no child at all.
+
+- **`bun run check:doc-samples` no longer reads a compile that did not
+  finish as a clean program** (#1335). A compiler that is killed, exits with
+  a status tsc never reports, prints a runtime crash report, fails without a
+  single diagnostic, or refuses its own configuration now ends the run with
+  exit 2 and the message "the compiler did not run to completion", where it
+  used to count every fence as clean and print OK; exit 1 keeps meaning that
+  a sample is wrong. The compiler's output buffer is raised from 1 MiB to 64
+  MiB, past which the output used to be cut and parsed only as far as the
+  cut.
+
+- **Every broker page publishes all of its root's leaves in a HOCON fence,
+  as the configuration page's table promises** (#1443). In both languages,
+  the Kafka, JetStream, JetStream key-value and object-store, email bridge
+  and MQTT pages gained the leaves they were missing — among them Kafka's
+  `brokers`, `client-id`, `ssl`, `sasl` and `consumer` leaves, the JetStream
+  blocks' `servers` and credentials, and MQTT's whole connection — and the
+  TCP page shows the listener's framing `delimiter` and `max-frame-bytes`.
+  The MQTT sample takes each leaf from the environment and says what that
+  costs: a value from the environment is read as JSON first, so
+  `ACTOR_TS_MQTT_KEEP_ALIVE=30` is refused as thirty milliseconds where
+  `30s` is meant, and a client id or password that reads as a number comes
+  back in that number's own spelling unless it is quoted inside the
+  variable.
+
+- **A DistributedData replicator restart no longer freezes the durable
+  record.** A restart while a durable save was still in flight — a modifier
+  that threw caused one until this release — used to build a second writer
+  of the replica's durable record: the save still out from before the
+  restart then landed past the revision the new writer had loaded, every
+  later save failed the optimistic-concurrency check with a "durable save
+  failed" warning, and the next start lost every write made since the
+  restart. One writer and its save coalescing now outlive a restart, and
+  `DurableDistributedDataStore.load` no longer moves the cached revision
+  backwards when a save of its own lands while it reads.
+
+- **A DistributedData update whose factory or modifier throws now fails only
+  that update.** `updateAsync` rejects with the error it threw, an update
+  nobody awaits logs it once at error naming the key, and the key keeps the
+  value it had. The throw used to escape into the replicator, where it went
+  down with the message — an `updateAsync` never settled — and restarted the
+  replicator; ten such failures in a minute stopped it for good. A modifier
+  that returns something other than a CRDT is reported the same way.
+
+- **A substitution whose target is itself a substitution resolves, in any
+  declaration order** (#1748). `b = 1`, `a = ${b}`, `x = ${a}` threw
+  `Unresolved substitution: ${a}` whichever order the lines came in, and the
+  optional form `x = ${?a}` fell through to the environment or dropped the
+  key without a word: the resolver re-walked the tree to a fixed point, and
+  its lookup took a target it had not resolved yet for a miss. A target now
+  resolves on demand. So a key the source defines wins over the environment
+  at every link of a chain, and `api.url = ${db.url}` with
+  `db.url = ${db.host}` reads the file's host even with `DB_URL` set. This
+  holds in every file `Config.load` reads and in each active profile.
+
+  A chain that leads back to where it started is refused as
+  `Substitution cycle: a -> b -> a`. An optional cycle used to resolve to
+  nothing in silence and is refused too. A key that names itself —
+  `pod.ip = ${?pod.ip}` — is no cycle: it still reads the environment and
+  then the value it replaced. A value that resolves to nothing now drops out
+  at every depth — inside a nested list or an object in a list — instead of
+  leaving an `undefined` behind.
+
+- **A key with nothing after its `=` or `:` no longer takes the next line as
+  its value** (#1786). The parser skipped line breaks before reading a
+  value, and an unquoted value runs to the end of its line, so `a =`
+  followed by `b = 1` parsed to `{ a: "b = 1" }`: `b` was gone, and `a = 1`,
+  `a =`, `b = 2` lost both. `a { x = }` threw `Expected a value`. Such an
+  assignment is now no assignment — the key keeps what an earlier line gave
+  it, and across files the layer below shows through — before a comma, a
+  closing `}`, a comment or the end of the file. `""` and `[]` stay the
+  explicit ways to set a key to empty, and a value on the line after its key
+  still works where that line does not start a field, as JSON lays out
+  `"a":` then `1`. A forbidden key or an `include` on the next line is still
+  refused where it stands rather than taken for a value.
+
+### Removed
+
+- **BREAKING — `OtelLoggerAdapterOptions` is gone: `otelLogger(options)` now
+  takes the `OtelLogsAdapterOptions` family from `actor-ts/tracing`, like
+  its tracer sibling — `OtelLogsAdapterOptionsType`, the
+  `OtelLogsAdapterOptionsBuilder` (`withApi`, `withLogger`,
+  `withLoggerName`, `withLoggerVersion`, `withLevel`) and the union with its
+  value alias** (#1466). A plain object still has to name `api`, which stays
+  a compile error rather than a crash at the first log call.
+
+  **Migration.** Import the type `OtelLogsAdapterOptionsType` in place of
+  `OtelLoggerAdapterOptions`; `otelLogger({ api })` call sites are
+  unchanged.
+
+- **BREAKING — `GrpcServerOptions` no longer offers `withReconnect`,
+  `withCircuitBreaker` or `withOutboundBuffer`, and `GrpcServerOptionsType`
+  no longer accepts `reconnect`, `circuitBreaker` or `outboundBuffer`**
+  (#1478). The gRPC server is a plain actor that binds rather than connects,
+  and never read any of them; `GrpcClientOptions` keeps all three.
+
+  **Migration.** Delete those calls and fields on a gRPC server's options;
+  they configured nothing.
+
+- **BREAKING — `EnvelopeMessage` no longer has `tag`, a type name five
+  cluster senders wrote and nothing ever read** (#1474).
+  `RemoteActorRef.tell` put the message's constructor name there — `Object`
+  for every kind-discriminated message — and the pub-sub mediator and the
+  three singleton senders put fixed literals, while delivery has only ever
+  been decided by the path and `body.kind`; the field cost 15 bytes on a
+  typical cross-node tell and advertised a routing hint that never existed.
+  `EnvelopeMessage` is a member of the `WireMessage` union exported from
+  `actor-ts/cluster`.
+
+  **Migration.** Drop `tag` from any envelope you construct — nothing read
+  it. A frame from an older node that still carries one is accepted and
+  delivered, and no release ever read the field, so this adds nothing to the
+  mixed-version hazard #823 tracks; it does not make mixed versions a
+  supported state.
+
+### Security
+
+- **A TLS listener refuses a `ca` that holds no certificate**
+  ([GHSA-9qrp-qppj-jmw7](https://github.com/pathosDev/actor-ts/security/advisories/GHSA-9qrp-qppj-jmw7)).
+  The cluster transport's listener and the TCP server actor now refuse at
+  bind — the actor at validation — a `ca` that is an empty or blank string,
+  an empty or whitespace-only byte array, an empty array, or `null`, naming
+  the field, whatever `requestClientCert` says. Such a value is what an
+  empty secret or an unset variable reads as, and it made the listener
+  accept client certificates from the system trust store. One-way TLS is
+  `requestClientCert: false`. A listener configured this way now fails at
+  bind instead of starting. The HTTP server options apply the same rule
+  through the same predicate.
+
+- **A node refuses a peer whose handshake claims the node's own address**
+  ([GHSA-j32m-x9vm-25vq](https://github.com/pathosDev/actor-ts/security/advisories/GHSA-j32m-x9vm-25vq)).
+  `TcpTransport` accepted a `hello`, or a `hello-ack` answering its own
+  dial, that named the receiving node and registered the connection under
+  that address: a node holds no connection to itself for the
+  duplicate-identity check to find, and without a certificate nothing else
+  held the claim against anything — so a peer on the plaintext transport
+  could remove a node from the cluster. Such a handshake is now refused
+  before anything reads it, the connection is dropped with nothing
+  registered, and one WARN names the address. The address alone decides, so
+  a claim with no incarnation or another one is refused the same way, and so
+  is one whose certificate vouches for the address. The worker-mesh and
+  in-memory transports are unchanged: a frame from a node's own address is
+  how its own sends come back to it there.
+
+- **A `sharding.GetShardStats` without a usable reply reference no longer
+  stops a shard's entities**
+  ([GHSA-rw73-vxp2-f5f7](https://github.com/pathosDev/actor-ts/security/advisories/GHSA-rw73-vxp2-f5f7)).
+  Such a request threw inside the shard, and the restart that followed
+  stopped every entity of that shard, so any sender that could reach a shard
+  could stop its entities. The request is now answered when its `replyTo`
+  has a callable `tell`, `equals` and a `path`, whatever copy of the
+  module minted it, and declined through `Actor.unhandled` otherwise, the
+  shard's entities left running (#1437; the Fixed entry below).
+
+- **A `PersistentFSM` command named after an `Object.prototype` member can
+  no longer stop the FSM**
+  ([GHSA-m77m-wxrj-2ff4](https://github.com/pathosDev/actor-ts/security/advisories/GHSA-m77m-wxrj-2ff4)).
+  The transition table was read through the prototype chain, so a command
+  whose `kind` was `toString`, `constructor` or `__proto__` found an
+  inherited function where a transition belonged and threw inside the actor,
+  which restarted it; eleven within 60 s passed the default restart limit
+  and stopped the FSM for good. Any sender that can choose a command kind
+  could do this, and the wire protocols carry `kind` by convention. A
+  command of kind `_timeout` could also fire the state timeout early. See
+  the Fixed entry below for the behaviour now (#1449).
+
+- **DistributedData no longer restarts its replicator when a value of
+  another CRDT kind arrives for a key it already holds**
+  ([GHSA-cvwq-42mg-7xj9](https://github.com/pathosDev/actor-ts/security/advisories/GHSA-cvwq-42mg-7xj9)).
+  A cluster peer could send one by gossip, in a quorum write or as a quorum
+  read reply; the merge then threw inside the replicator and restarted it, a
+  quorum read could be left unsettled, and for some pairs of kinds the merge
+  replaced the held value with one of the other kind instead. A local update
+  could restart it the same way. The replicator now compares kinds before
+  merging, ORMap entries included, keeps the value it holds, does not
+  acknowledge such a write, counts the drop in
+  `distributed_data_dropped_values_total` and logs one warning per key per
+  quiet period naming the key and both kinds; a durable record entry of
+  another kind is skipped the same way while the rest of the record reloads.
+  An update whose modifier fails on a value of another kind is rejected to
+  its caller instead of restarting the replicator.
+
+- **BREAKING — an object-storage store that reads with a decryption key
+  refuses an unencrypted body** (#965, CWE-757). Whether a body is
+  encrypted is recorded in a manifest byte of the body itself, outside the
+  AES-GCM tag, and `decodeBody` took that byte at its word: a store
+  configured `client-aes256-gcm` read a body whose flags said "not
+  encrypted" as plaintext. Anyone with write access to the bucket could
+  therefore replace an actor's encrypted state or snapshot with five bytes
+  of header and JSON of their choosing, needing no key. Supplying a key is
+  now the assertion that the body is encrypted, held the way an integrity
+  key holds an untagged body (#579), for `ObjectStorageDurableStateStore`
+  and `ObjectStorageSnapshotStore` alike and through the per-call
+  `PersistenceOptions.encryption` path too. The SQL stores closed the same
+  hole in #1802.
+
+  **Migration.** A bucket that already holds bodies written before
+  encryption was switched on needs the migration window:
+  `withAllowUnencryptedBodies(true)` on the store, or on
+  `ObjectStoragePluginOptions` for both registered stores. Then load and
+  write each `persistenceId` once — the write encrypts it; snapshots are
+  superseded by the next save — and remove the option. The re-encryption
+  sweep does not encrypt plaintext bodies, and the docs that said
+  enabling encryption on an existing bucket "just works" have been
+  corrected. A bucket encrypted from the start needs nothing.
+
+- **Only an approved run on a release ref can publish `actor-ts` to npm**
+  (#704). npm's Trusted Publisher checks the repository and the workflow
+  file name, never the ref, and the publish job's only gate was "this
+  version is not on npm yet" — idempotency, not authorization. Any account
+  with write access could therefore dispatch `publish.yml` on a branch of
+  its own, or push a copy with `on: push`, and ship a provenance-attested
+  tarball under a version nobody released. The `publish` job now runs in
+  the GitHub environment `npm`, which admits only `v*` tags and `main` and
+  requires a maintainer's approval, and the Trusted Publisher is registered
+  against that environment, so npm hands no token to a run outside it.
+  `WorkflowHygiene.test.ts` holds the key in place. For maintainers: a
+  release run now waits for that approval before anything is published.
+
+- **The SQL snapshot and durable-state stores refuse a row that lacks the
+  protection the actor asks for** (#1802, the SQL half of #965). Under
+  `encryption()` a plaintext JSON row, or a sealed frame without encryption,
+  is refused; under `integrity()` a row without a tag is; and every sealed
+  frame must be bound to the row it is read from. The bytes that say "not
+  encrypted" are bytes anyone with write access to the table controls, so the
+  frame's own flags are never taken as the answer. `withAllowPlaintextRows`
+  opens the migration window and is meant to be dropped once the rows are
+  rewritten.
+
+- **BREAKING — `cached()` no longer replays one caller's response to
+  another** (#980, CWE-524). It stored the whole response, headers verbatim,
+  under a key that said nothing about the caller, and a hit returns before the
+  wrapped handler — so with the documented path-keyed usage the second caller
+  received the first one's body and `Set-Cookie`, and an unauthenticated
+  caller got a 200 the handler's own 401 never had the chance to send. The
+  wrapper now stores only `GET` and answers only `GET`/`HEAD` from the cache
+  (`HEAD` reads a `GET` entry and never writes one); a request carrying
+  `Authorization`, `Proxy-Authorization` or `Cookie` bypasses the cache
+  unless the new `identity` option folds a per-caller scope into the key; a
+  response carrying `Set-Cookie`, `Cache-Control: no-store`/`no-cache`/
+  `private`, `Vary: *` or a streaming body is not stored; and one carrying
+  `Vary` is served only to a request with the same values of the named
+  headers, which are recorded as SHA-256 digests and never verbatim, so a
+  `Vary: Authorization` response puts no bearer token or cookie into the
+  backing cache. Stampede protection follows the same header rules — a
+  request waiting on another's in-flight handler takes its response only
+  where the two may share it, including a response `cacheStatuses` keeps out
+  of the cache (it governs storing, not sharing). An entry already in a
+  shared cache is re-checked before it is served: one carrying `Set-Cookie`,
+  an unshareable `Cache-Control`, `Vary: *` or a `Vary` with no recorded
+  values is treated as a miss. An entry minted before the upgrade from a
+  credentialed request whose response carried neither `Set-Cookie` nor
+  `Vary` is indistinguishable from a public one, though, and is served until
+  it expires — see the migration note. A streamed response no longer turns
+  into a cached `{}`.
+
+  **Migration.** Authorization must wrap `cached(...)`, not sit in the
+  handler — a hit never runs the handler. An endpoint that relied on caching
+  credentialed requests through a caller-derived `key` now bypasses the cache
+  until it sets `identity` (from verified claims, e.g.
+  `jwtClaimsOf(request)?.sub`; `() => 'public'` for a response that genuinely
+  does not depend on the caller), and with `identity` set a manual
+  invalidation deletes `<keyPrefix><scope>:<key>` with the scope
+  URI-encoded — `` `rsp:${encodeURIComponent(sub)}:users:me` ``, since a raw
+  `auth0|abc` misses. A token carried in any header other than
+  `Authorization`, `Proxy-Authorization` or `Cookie` (e.g.
+  `BearerTokenAuth({ headerName })`) does not trigger the bypass, so a
+  per-caller response behind one needs `identity`. Non-`GET` routes wrapped
+  in `cached()` now always run their handler. With a shared (e.g. Redis)
+  cache, once the last pod on the old version is gone, flush the
+  response-cache `keyPrefix` (`rsp:` by default) or let `ttlMs` elapse
+  before relying on the new rules — the old version's entries for
+  credentialed requests can otherwise still be served.
+
+- **A promotion can no longer choose the roles of the node it promotes**
+  (#1104). While a node is `joining` or `weakly-up`, a claim about its own
+  record is accepted when it says `up`, because the leader's promotion has to
+  arrive from outside — and that exception asks nothing of the sender. The
+  record was then merged wholesale, so a single gossip frame from an address
+  the node had never heard of promoted it with roles of the sender's choosing
+  (`["worker"]` became `["shard-host","singleton-host"]`), which is what shard
+  placement, singleton hosting, routing and downing quorums are computed from,
+  and the node gossiped the substituted set onward as its own. The node's own
+  roles now join the facts it keeps over any record about itself (address
+  incarnation, storage identities, configuration facts, app version), and so
+  does the absence of a `removedAt`. Storage identities and configuration
+  facts are now kept outright too: a node that had resolved no storage
+  identity of its own no longer adopts, and re-gossips, one a promotion
+  carried. A genuine leader promotion carries the roles the node gossiped and
+  lands unchanged. What a promotion still carries is the status and the
+  record's version, taken as sent and bounded only by the #114 skew cap
+  (`maxVersionSkewMs`, 5 minutes by default) — so a stranger can still date
+  this node's record up to that far ahead; clamping it is tracked in
+  #1797. The exception still does not require standing from the
+  sender: the frame carrying a joiner's promotion is routinely from a peer it
+  has not merged yet, and any stranger can grant itself standing one frame
+  earlier by announcing itself `up`.
+
+- **A gossip frame's payload `from` no longer files a member** (#939). `onGossip`
+  ended with a door that added the payload's `from` as `joining` whenever the
+  node held no record of it — outside `mergeMember`, so with no `maySpeakFor`,
+  and keyed on a field the sender writes rather than on the connection. One
+  frame naming a low-sorting address made it a member; the leader promoted it,
+  `leader()` moved to a node that does not exist and `isLeader()` went false on
+  the real leader, stopping the shard coordinator and misplacing the
+  singleton. The heartbeat and gossip ticks then dialled the address, so the
+  same frame also chose where this node connected (#936). The door is removed:
+  every gossip frame carries the sender's own record, which merges as a
+  self-announcement held to the connection's identity. What still mints a
+  member is that self-announcement, under the identity a peer presents in its
+  `hello` — which carries no credential, so without mTLS binding it to the
+  peer certificate (#912) anyone who can connect still chooses it.
+  **Behaviour change:** a joining node whose own record the merge refuses for
+  a wall clock more than `maxVersionSkewMs` ahead is no longer filed anyway as
+  a role-less `joining` member at version 1; it stays out, with the existing
+  `WARN` naming the cap, until its clock is back inside the budget.
+
+- **The cluster's failure detector no longer creates an entry for every
+  connection identity a frame arrives under** (#1103). `handleWire` credited
+  liveness for each frame before dispatching it, and the heartbeat handler
+  added a sample for each heartbeat frame, so an address the detector had
+  never seen got an entry — and only the local removal routes (a peer's
+  `leave`, `down()`, a downing decision) forgot one. Without mTLS the
+  identity is whatever the peer's `hello` claimed, so one peer reconnecting
+  under fresh names grew the detector without bound past the `max-members`
+  cap the member map holds: 500 names left 502 entries beside 3 members,
+  each carrying a `max-sample-size` window under the φ-accrual detector.
+  Liveness now reaches the detector only for a peer the node watches — a
+  member that is not a tombstone, or a configured seed that is not one
+  either — and every other frame is still dispatched. Every route that
+  admits a member registers it, and every route that takes one out of the
+  live set forgets its entry, including the two that kept it before: a
+  tombstone stored from gossip, and the tombstone prune. So the detector
+  holds an entry per live member and at most one per seed. A joiner is
+  registered by the frame that admits it, which starts its silence clock
+  where the credit used to; a seed is watched from the first dial, so one
+  that answers late is not read `unreachable` on admission; and a member
+  that returns after being tombstoned is judged from its return. A phantom
+  admitted through a gossip frame's sender field (#939) is now registered
+  too, so the detector declares it `down` like any silent member instead of
+  leaving it `up` until an operator removes it.
+
+- **A ref in a message body no longer makes the receiving node dial the
+  address it names** (#936). `decodeSingleRef` rebuilt a ref marker's node
+  with the raw `NodeAddress` constructor, and `_sendEnvelope` handed whatever
+  node a ref named to the transport, which dials what it is given — so an
+  actor answering a decoded `replyTo`, or watching it, opened a connection to
+  an address of the sender's choosing (a cloud metadata endpoint, an internal
+  admin port) and wrote a frame to it. A marker now goes through
+  `NodeAddress.fromJSON` and decodes to `Nobody` when it is not a valid node,
+  and `_sendEnvelope` and `_sendWire` send only to a member that is not a
+  tombstone or to a node the transport already holds a connection to, acked
+  or still in its handshake — so a `tell` to a seed straight after
+  `Cluster.join` resolves is still queued, not dropped. Anything else is
+  dropped, counted on the new `cluster_outbound_refusals_total{frame}` and
+  logged at most once every 30 seconds with the address escaped part by part;
+  a refused remote `watch` is answered at once with `Terminated`
+  (`existenceConfirmed` false) instead of never. The membership protocol's own
+  sends (seeds, gossip, heartbeats) are unaffected. `Transport` gains an
+  optional `holdsConnectionTo(peer)`; a custom transport without it is asked
+  through `peers()`, which knows acked connections only, so on it a frame to a
+  non-member is refused until the handshake lands. **This closes the route
+  through a message body, not the minting of a member.** Since #939 a gossip
+  frame's payload `from` no longer files a member, so a member is minted only
+  by a self-announcement held to the connection's identity — and that identity
+  is whatever a peer's `hello` claims until mTLS binds it to a certificate
+  (#912). Without mTLS, anyone who can connect can still become a member under
+  an address of its choosing, after which this gate and the membership
+  protocol's own gossip and heartbeats both send to it.
+
+- **Three configuration parsers no longer take quadratic time on a hostile
+  value** (#1792, CodeQL `js/polynomial-redos`). The HOCON number literal
+  (`\d+\.?\d*`) split a digit run two ways at every position, and the WHATWG
+  pre-parse normalisation behind the worker-entry rule (#1515) and the
+  connection-string inspection retried an unanchored `[\x00-\x20]+$` from
+  every position of an interior run of controls: 7.7 s, 2.7 s and 2.1 s on a
+  value of 40 000 characters. Each input is operator configuration — a HOCON
+  source, a worker-entry specifier, a journal URL — so the exposure was a
+  slow startup, not a remote denial of service. The literal is respelled
+  without the ambiguity and accepts the same language; the normalisation is a
+  linear scan, `asUrlParserReadsIt` in `src/util/StripCharacters.ts`.
+
+- **`HttpClient` no longer propagates the credential of a request URL in the
+  error the runtime's `fetch` throws** (#1458). On Node, `fetch` refuses a
+  URL with a userinfo outright, and its `TypeError` named the URL, password
+  included, in message and stack; on Bun a refused or broken connection
+  carried the request URL, credential included, as the error's own `path`
+  property, from the fetch and from a body read alike. Both are now masked
+  before they propagate, keeping the error's type and `code`; an error with
+  nothing to mask, such as the abort the deadline causes, propagates as
+  itself. A redirect refused or cut off by `maxRedirects` also no longer
+  prints the credential of a `Location` the scan cannot see — a
+  scheme-relative `//user:pass@host`, `https:user:pass@host` or the
+  backslash form — which v0.17.0 printed in clear; the target is named as
+  the URL it resolves to, with its credential masked.
+
+- **JWT verification closes the classic pitfalls by construction** (#810).
+  `alg: none` is refused in any spelling, because the algorithm must be
+  exactly one the application allowed; every key is imported once for one
+  algorithm and HMAC keys come only from configured secrets, so an HS256
+  token signed with the RSA public key cannot verify, and an HS256 token
+  never consults the JWK set at all; `jku`, `x5u`, `jwk` and `x5c` are never
+  read and `crit` is refused, whatever its value; ES256 signatures must be
+  the raw 64-byte form; HMAC secrets must be at least 32 bytes and never
+  PEM-shaped, RSA keys at least 2048 bits; a token naming an audience is
+  refused when none is configured. The key set fails closed: it is never
+  served stale after its lifetime, never fetched over plain http except from
+  a loopback host, and an unknown-key-id storm costs the issuer one fetch
+  per refresh interval.
+
+- **A SQLite store that refuses a remote path no longer carries the URL's
+  credentials in its error** (#1492). The durable-state store's refusal put
+  the whole `libsql://` URL, token included, into its message and the
+  error's value; the shared rule masks them, so a refusal that fails a
+  startup does not write the token to the log.
+
+  A SQLite store that refuses a remote path no longer carries a token from
+  the URL's query in its error. The shared rule masked only the userinfo,
+  and `@libsql/client` takes the token as a query parameter just as readily,
+  so `libsql://host?authToken=…` reached the `OptionsError` message and
+  value verbatim from all three stores and from the registration refusal
+  that fails `ActorSystem.create`. The refused value is now rendered as its
+  `redactedUrlLabel`: scheme, host and path, with the userinfo, the query
+  and the fragment dropped.
+
+- **`actor-ts.cluster.max-members` is the whole bound on gossip-introduced
+  phantom members** (#1426). A phantom is never heard from, so the failure
+  detector declares it down. Under the default `auto-down = on` it then
+  deletes it at `down-after`, but without a tombstone, so a node that still
+  carries the phantom gossips it straight back; with a split-brain strategy
+  configured, or `auto-down = off`, it parks it at unreachable, where it
+  holds a live member-map slot until a strategy or an operator removes it.
+  Either way `max-members` bounds the residue, not only the burst, so lower
+  it where the legitimate node count is known.
+
+- **A gossip frame no longer refreshes the failure-detector state of the
+  member its payload names** (#939). Liveness is credited to the
+  connection's peer only, so a peer can no longer keep a crashed member
+  looking healthy, and its singleton and shards from failing over, by naming
+  it in its gossip once per interval.
+
+- **A MongoDB store's private CA can come from configuration as a file path,
+  never as certificate bytes: the `ca-file` leaf names a PEM file the
+  framework reads when the client opens and hands to the driver as its `ca`
+  with TLS on, and an unreadable file, or one holding no PEM certificate,
+  fails the store's first use naming the leaf and the path without quoting
+  the file** (#1490). `ca-file` is refused when the store is built beside
+  anything that would drop it or set it aside — a `tlsCAFile` in the url or
+  in `clientOptions` (the driver reads that file only when it was handed no
+  CA), a `ca` in `clientOptions`, a `tls` or `ssl` set to `false`, a
+  `tlsInsecure` or `tlsAllowInvalidCertificates` that switches certificate
+  verification off, a `rejectUnauthorized` of `false` in `clientOptions` in
+  any letter case of the key (the switch `tlsInsecure` sets), a
+  `secureContext` there (its own trust store is used in place of the CA), or
+  a pre-built `client` (configured where it was built, it never reads the
+  leaf) — so a configured CA always means verified TLS against that CA.
+
+- **A WebSocket hub no longer takes a decoded message body for one of its
+  own signals** (#1431). `WebsocketServerActor` dispatched on `kind` alone,
+  and a hub at a `/user` path receives whatever a remote node addresses to
+  it, so a body such as
+  `{ kind: 'websocket-connected', connection: { id: 'x' } }` planted a
+  client whose `close` is not a function: the next `closeAll()` threw and
+  the hub restarted, tearing down every real connection. Forged
+  `websocket-data`, `websocket-disconnected`, `websocket-invalid` and
+  `websocket-accept` bodies ran `onMessage` with the peer's payload, evicted
+  a live client from `clients`, reported a connection that does not exist,
+  or failed the hub on a child name already taken. The hub now recognises
+  its signals only by fields no decoder can produce, a connection whose
+  `close` and `abort` are callable and an accept that carries a factory
+  function, so such a body reaches `onSelfMessage` and is declined as a dead
+  letter. It is the class of defect #713 closed for the receptionist and the
+  singleton manager.
+
+- **A retired camelCase spelling of a broker's input cap is refused at start
+  rather than ignored, so an `application.conf` that still sets
+  `maxConnections`, `maxFrameBytes`, `maxMessageBytes`, `maxValueBytes` or
+  `maxObjectBytes` can no longer leave a deployment on the built-in limit
+  unnoticed — for the TCP listener that limit is no cap at all** (#1443).
+
+  The TCP framing caps are covered too: `framing.maxLineLen` and
+  `framing.maxFrameLen` under `actor-ts.io.broker.tcp` or `tcp-server` stop
+  the actor at start, naming `max-line-bytes` and `max-frame-bytes`. Both
+  bound what a peer can make the actor buffer — the frame cap is 16 MiB by
+  default — so a lowered cap left under the old spelling can no longer be
+  dropped without a word. Any other leaf under a TCP framing block is
+  refused the same way, so a cap cannot be dropped under a spelling the
+  refusal does not list: the block takes `kind`, `delimiter`,
+  `max-line-bytes` and `max-frame-bytes`, and anything else, such as the
+  hand-migrated `max-frame-len` or `max-frame` or the field name
+  `maxFrameBytes`, stops the actor at start, naming it and the four. So does
+  a framing object that still carries `maxFrameLen` or `maxLineLen` in code,
+  which plain JavaScript, JSON or a cast hands over past the compiler's
+  check and which used to start the actor on the default cap.
+
+- **BREAKING — The Hono backend under Bun now holds
+  `actor-ts.http.server.idle-timeout`, as `Bun.serve`'s own `idleTimeout`**
+  (#1487). Before, a configured value was ignored and Bun's 10 s
+  whole-connection timeout cut any handler that stayed silent for about 12 s
+  with no response at all, a `requestTimeout()` 503 included. A set
+  `idle-timeout` is now written there (whole-connection inactivity, rounded
+  up to whole seconds, checked on Bun's 4 s sweep) and reported in effect,
+  and a value above 255 s fails `bind()` with an `OptionsError` naming the
+  key and `withIdleTimeoutMs`. Unset, the idle timeout is derived from the
+  server's longest request deadline
+  (`actor-ts.http.request-timeout.deadline`, raised to the longest
+  `requestTimeout()` in the routes) so the 503 is written first: 36 s for
+  the built-in 30 s, but 8 s, shorter than Bun's own 10 s, for a configured
+  deadline of 2 s or less, which counts even with no `requestTimeout()` in
+  the tree; a deadline past 250 s holds it at 255 s and `bind()` warns,
+  through the new `ServerOptionsReport.idleTimeoutHeldAtCeilingMs`. Hono
+  under Deno still reports `idle-timeout` not installed. A malformed
+  `actor-ts.http.request-timeout.deadline` now fails every `bind()`, since
+  it is read even where no `requestTimeout()` is.
+
+  `idle-timeout = 0` is no longer offered as a remedy there: the refusal of
+  a value past 255 s now ends on 'Set it to 255s or less', the warning for a
+  derived idle timeout held at the 255 s ceiling names a shorter deadline, a
+  handler that writes sooner or a bound chosen explicitly, and the Hono and
+  request-timeout pages say what `0` does there. It turns off the only bound
+  on that pair for a request whose body stops arriving and for a connection
+  left idle between requests, since `header-timeout`, `request-timeout` and
+  `max-connections` cannot be installed there: measured on bun 1.4.2, a body
+  announced at 10 bytes that stopped after 1 was still open after 40 s under
+  `0`, where the unset key closed it at 36 s. `0` itself is still accepted.
+
+  A set `idle-timeout` that can close a connection under a silent handler
+  before the request deadline's 503 is written is said at `bind()`: the
+  warning names the key, the value, the earliest moment the connection can
+  be cut and the deadline, and the new
+  `ServerOptionsReport.idleTimeoutEarliestCutMs` carries that moment.
+  `Bun.serve` checks idleness on a 4 s sweep, so a value cuts from one sweep
+  before itself on, and anything up to `32s` under the built-in 30 s
+  deadline can cut a handler before its 503 — the `5s` the configuration
+  reference shows as an example cuts a 10 s handler from 4 s on.
+
+  **Migration.** Hono under Bun: `idle-timeout` now takes effect as
+  whole-connection inactivity (a handler silent that long is cut) and a
+  value above 255 s fails `bind()`; unset is derived from the request
+  deadline instead of Bun's own 10 s — 36 s by default, but 8 s for a
+  configured deadline of 2 s or less, so a plain handler silent past 4 to 8
+  s is then cut without a response even with no `requestTimeout()` in the
+  tree; keep `idle-timeout` positive there.
+
+- **BREAKING — A Postgres store given both a `poolConfig.ssl` and a url (or
+  a `poolConfig.connectionString`) that carries an ssl parameter is refused
+  when it is built, with an `OptionsError` naming both sides** (#1490).
+  node-postgres assigns the TLS settings it parses out of the connection
+  string over the config object, so the object was silently replaced: run
+  against pg 8.23, a CA beside `sslmode=verify-full` was dropped, and beside
+  `sslmode=no-verify` verification went off with it. The new `ca-file`
+  leaves of the three SQL backends are refused the same way beside anything
+  that would leave the CA unused: a url ssl parameter for Postgres, a url
+  ssl the MariaDB connector reads as false, an `Encrypt` node-mssql reads as
+  false or a `TrustServerCertificate` it reads as true, a `poolConfig` that
+  switches TLS or verification off, or a second CA in `poolConfig`. Every
+  refusal names the field or leaf and the setting, never the url.
+
+  **Migration.** Configure Postgres TLS in one place: the url's ssl
+  parameters (`sslmode`, `sslrootcert`, …) or `poolConfig.ssl`, not both.
+
+- **A CORS max-age a browser cannot parse is refused instead of sent**
+  (#1462). `CorsOptions.withMaxAge` accepted any non-negative number, so
+  `withMaxAge(1.5)` went out as `Access-Control-Max-Age: 1.5`, which
+  browsers ignore, leaving preflight caching off while the code looked
+  configured. `maxAge` must now be a whole number of seconds, refused
+  otherwise with the `OptionsError` every invalid CORS option raises; the
+  HOCON path already refused a fraction.
+
+- **An HSTS max-age a browser cannot parse is refused instead of sent**
+  (#1462). `hsts()`, `securityHeaders({ hsts })` and
+  `withSecurityHeaders({ hsts })` accepted any non-negative number, so a
+  max-age of 1.5 went out as `max-age=1.5` and 1e21 as `max-age=1e+21`;
+  neither is RFC 6797 delta-seconds, a browser ignores the whole header, and
+  HSTS was off while the code looked configured. `maxAge` must now be a
+  whole number of seconds no larger than `Number.MAX_SAFE_INTEGER`, and
+  anything else is an `OptionsError` when the policy is resolved. 0 is still
+  accepted from code, as the deliberate way to un-pin clients.
+
+- **`classNameOf` (exported from `actor-ts/util`) now names a value's class
+  from its prototype, never from an own constructor key** (#1442). It is
+  what the default-on dead-letter record and the debug-unhandled line print
+  for a message, and a decoded peer body keeps every key as data: a body
+  carrying a constructor key could put a CR/LF into that record and forge a
+  second log line, or a non-string name whose interpolation threw out of
+  `deadLetters.tell` and restarted the actor that declined the body through
+  `Actor.unhandled`. The receptionist lost every registration it held that
+  way. A name that is not a string, and a getter or Proxy trap that throws,
+  now answer `Object`.
+
+- **`redactedUrlLabel` no longer prints part of a password that contains a
+  comma** (#1458). The label split a value at its commas before masking
+  anything, so `amqp://user:a,b@host` was labelled `amqp://user:a,***@host`
+  — and the label is what the broker lifecycle events and the WebSocket
+  client's warning hand on as already safe. The userinfo behind every
+  `scheme://` is now masked across the whole value first, and a comma ends a
+  userinfo only once an `@` has been seen, so every host of a credentialed
+  server list still reaches the label. A credential-free entry in front of a
+  scheme-less credentialed one is byte for byte such a password and is now
+  labelled as one URL (`nats://h1:4222,u:p@h2:4222` reads `nats://h2:4222`);
+  a comma in the password of a scheme-less `user:a,b@host` is still out of
+  reach, since nothing marks where that userinfo begins.
+
+  `redactedUrlLabel` masks a password with a comma in it whole, wherever its
+  `@` stands. A userinfo runs to its last `@` before the next `://`, as
+  WHATWG reads an authority, so `amqp://user:a,b@host` is labelled
+  `amqp://host` and `amqp://user:a@b,c@host` `amqp://***@host`; ending it at
+  a comma once an `@` had been seen printed `b`. The label is held to the
+  v0.17.0 label over 200,000 generated server lists: no credential the
+  release kept out reaches it. A credentialed list whose entries do not each
+  open with their own `scheme://` keeps only the hosts behind that last `@`,
+  and the `***@` stays to say hosts went with the mask:
+  `nats://h1:4222,u:p@h2:4222` is labelled `nats://***@h2:4222`. A comma in
+  the password of a scheme-less `user:a,b@host` is still out of reach, since
+  nothing marks where that userinfo begins.
+
+- **BREAKING — A password containing an unescaped `/`, `?` or `#` no longer
+  reaches a log line, an error or an endpoint label** (#1458).
+  `redactUrlCredentials`, `redactErrorCredentials` and `redactedUrlLabel`
+  ended the userinfo at the first of those characters, so
+  `amqp://user:pa/PW1@host:5672/vhost` came back whole — in an
+  `OptionsError`, in a driver error a broker actor republishes, in the
+  rendered configuration — and the label printed it whole or up to the `?`
+  or `#`; with a numeric front (`user:12/PW1@host`) the label's URL parse
+  even succeeded and read the secret as host, port and path. RFC 3986 wants
+  all three percent-encoded inside a userinfo, but a password is pasted as
+  it is, and a driver that then fails to connect republishes its label on
+  every reconnect attempt. The userinfo now runs to the last `@` before the
+  next `://`, entry by entry in a joined list, and the label masks before it
+  parses the URL or cuts its query. The price is a URL with no credential
+  and an `@` in its path, query or fragment: `https://host/a@b` now comes
+  back as `https://***@b` — except in the messages of `HttpClient` and
+  `SseActor`, which redact the URL the runtime parsed exactly, through
+  `redactParsedUrlCredentials`.
+
+  `redactErrorCredentials` leaves a credential-free stack as it is, because
+  a userinfo ends on its own line. Every frame of a driver from a scoped
+  package carries an `@`, so a userinfo read on to the next `://` folded a
+  credential-free target and the frame behind it into one `***` on Bun,
+  where an error's stack is scanned, and `BrokerActor` published that copy
+  as the cause of a disconnect. Once an `@` has been seen a line break ends
+  the userinfo, and before the first `@` the scan reads past a line break
+  only up to the first space or tab, so a stack frame or the next line of a
+  log is left alone, while a secret read from a file is still masked whole,
+  whether a trailing newline lands in front of the `@` or the secret is
+  wrapped over lines. Two shapes of secret are given up, and neither is
+  masked whole: a space or a tab after a line break ends the scan before it
+  reaches the `@`, so `amqp://user:pa\n ss@rabbit` comes back unchanged, and
+  an `@` in front of a line break ends the userinfo there, so
+  `amqp://user:p@ss\nword@rabbit` comes back as
+  `amqp://***@ss\nword@rabbit`; v0.17.0 masked both. `redactedUrlLabel`
+  hides both in a value it rebuilds from its parse, but not in every value
+  it masks instead, such as a joined server list. The utility-helpers
+  reference says so. An error with nothing to mask comes back as itself
+  rather than a copy, and a `DOMException` is copied as one, so its `name`
+  and `code` still answer.
+
+  `redactedUrlLabel` no longer names a host that is not the URL's own.
+  Because a userinfo runs to its last `@`, a URL with an `@` past its host
+  was labelled with whatever followed that `@`, and the parse behind the
+  label dropped the mask:
+  `https://user:pass@hooks.example/notify?to=ops@example.com` was labelled
+  `https://example.com/`, `wss://chat.example.com/rooms/@general`
+  `wss://general/`, and a query token with an `@` in it handed its tail to
+  the label as the host. The label now shows nothing behind the first `?` or
+  `#`, and names a host only where every reading of the bytes agrees on it;
+  where the same bytes are also a valid URL for another host it ends at the
+  mask, so all three come back as `https://***` or `wss://***`. A
+  credentialed URL whose password holds a `/` in front of which no valid
+  host stands keeps its host: `amqp://user:pa/PW1@host:5672/vhost` is
+  labelled `amqp://host:5672/vhost`.
+
+  **Migration.** Nothing to change unless code compares or re-parses what
+  `redactUrlCredentials` or `redactedUrlLabel` return: an `@` in a URL's
+  path, query or fragment now ends its userinfo, so `https://host/a@b`
+  renders as `https://***@b` from `redactUrlCredentials`, and
+  `redactedUrlLabel` labels such a URL `scheme://***` rather than by a host,
+  so code that parses labels must not expect a host for it.
+
+- **The dependency audit gate is green again on two of the three Bun
+  lockfiles it reads, and one advisory that no release fixes holds the
+  third red** (#1663, #1664). package-health's `bun audit` step had
+  failed on every run since 2026-09-30, on advisories published after
+  the last green one. Root `bun.lock` carried one critical and six high:
+  `proxy-addr` 2.0.7 under `express` (a devDependency and optional peer),
+  `fast-uri` 3.1.6 and 4.1.3 under `fastify > fast-json-stringify > ajv`,
+  and `brace-expansion` 5.0.9. `docs/bun.lock` carried eight high
+  (`brace-expansion`, `devalue`, `http-cache-semantics`, `sharp`,
+  `source-map-js`) and `devtools-ui/bun.lock` three (`fast-uri`,
+  `source-map-js`). Seventeen of the eighteen have a fixed release inside
+  the range the dependent already declares, so each lockfile is refreshed
+  in place with `bun audit fix`. The root moves brace-expansion
+  5.0.9→5.0.12, fast-uri 3.1.6→3.1.8 and 4.1.3→4.1.5, proxy-addr
+  2.0.7→2.0.8 and smol-toml 1.8.0→1.9.0. `docs/bun.lock` moves
+  brace-expansion 5.0.9→5.0.12, devalue 5.9.1→5.9.3, dompurify
+  3.4.13→3.4.16, markdown-it 14.3.0→14.3.1, sharp 0.35.4→0.35.5 and
+  source-map-js 1.2.1→1.2.2, and folds its nested smol-toml 1.7.1 into
+  the hoisted 1.9.0. `devtools-ui/bun.lock` moves fast-uri 3.1.6→3.1.8
+  and source-map-js 1.2.1→1.2.2. No range was widened, nothing is
+  suppressed, no `overrides` entry was added, and every lockfile stays at
+  lockfileVersion 1. The eighteenth is GHSA-ch52-4w7c-c8xp, against
+  `http-cache-semantics` 4.2.0 in `docs/bun.lock`. `bun audit fix` offers
+  4.3.0, but that release leaves the advisory's `max-stale` path
+  byte-identical. It falls outside the advisory's `<=4.2.0` range only
+  because the range predates it, and an open advisory-database pull
+  request proposes widening it to `<=4.3.0`. Taking it would have turned
+  the step green without fixing anything, so `bun run lint:audit` under
+  `docs/` keeps failing on that one advisory until upstream withdraws or
+  fixes it (#1664). None of it reached a consumer: no lockfile is
+  published, a fresh install already resolves the fixed `fast-uri`
+  releases out of fastify's own ranges, and Astro uses
+  `http-cache-semantics` only for remote images, which the docs site does
+  not have.
+
+- **Every value the secrets file sets is withheld from the boot config dump
+  and the DevTools `config.resolved` answer whatever its key is called**
+  (#1546). It stays withheld when a higher layer overrides the key, when a
+  loaded Config that read a secrets file is passed back in as the overrides
+  (`ActorSystemOptions.withConfig(Config.load({ secretsConfPath }))`), and
+  in a WorkerMesh worker: the worker receives the main thread's tree as one
+  overrides object, so WorkerMesh now sends the main thread's secret paths
+  beside it and the worker withholds the same keys.
+
+  That includes a key the secrets file quotes because it holds a dot - a
+  host or a domain name such as `webhooks."hooks.example.com"` - at the
+  file's root, nested or in its active profile: the boot dump, the DevTools
+  answer and a `WorkerMesh` worker's dump withhold it and attribute it to
+  the layer that set it. The renderers walked the merged tree into
+  dot-joined paths and asked each layer for those, which no layer holding
+  such a key ever answered, so its value printed in full under `reference`.
+  A key that is not a bare HOCON key now prints in double quotes, as HOCON
+  writes it - `my-app."stripe.live"` is one key, `my-app.stripe.live` two -
+  so it can no longer pass for the nested keys it reads like, borrow the
+  exemption of a shipped key, or write a line of its own into the dump.
+
+- **BREAKING — A connection string read from HOCON may no longer switch TLS
+  certificate verification off** (#1490). The `url` leaf of the Postgres,
+  SQL Server and MongoDB journal, snapshot-store and durable-state blocks is
+  inspected when the store is built, and a url carrying `sslmode=no-verify`
+  or `ssl=no-verify`, `sslmode=prefer`, `require` or `verify-ca` under
+  `uselibpqcompat=true`, `TrustServerCertificate` set to anything node-mssql
+  reads as true (every value but `false`, `no`, `0` or empty), or
+  `tlsInsecure`, `tlsAllowInvalidCertificates` or `tlsAllowInvalidHostnames`
+  set to anything but `false` is refused with a `ConfigError` that names the
+  leaf and the switch, never the url. Each string is read the way its driver
+  reads it, then matched in any letter case and at every occurrence of a
+  key. Only the configuration file is inspected: the same string set in code
+  with `withUrl(...)` is the code's decision and reaches the driver
+  untouched. About the file the refusal is strict, so a block's url is
+  refused even when code supplies its own connection, and a `${?ENV}`
+  substitution like a written url. Plaintext (`sslmode=disable`,
+  `Encrypt=false`, `tls=false`) stays allowed, and MariaDB's url, whose
+  `ssl` the connector reads as a boolean, is not inspected.
+
+  **Migration.** A HOCON url, a ${?ENV} substitution included, that carries
+  one of these switches is now refused; supply the CA instead
+  (`sslmode=verify-full` with `sslrootcert`, `tlsCAFile`, or the `ca-file`
+  leaf of a Postgres, MariaDB or SQL Server block), or set the url in code
+  with `withUrl(...)` if you mean it.
+
+- **The endpoint label that broker lifecycle events and log lines carry no
+  longer prints a password from a scheme-less server entry or a joined
+  server list** (#1458). `redactedUrlLabel` rebuilt the label from a URL
+  parse, and the parser reads a scheme-less `user:password@host` — a server
+  form nats.js accepts — as the scheme `user:` with `password@host` for a
+  path, so `BrokerConnected`, `BrokerDisconnected`, `BrokerReconnectFailed`
+  and `BrokerReconnectAttempt` published
+  `user://SECRET@nats.example.com:4222` for a `NatsActor` configured with
+  `user:SECRET@nats.example.com:4222`. A joined list without ports
+  (`nats://u:p1@h1,nats://u:p2@h2`) parsed as one URL and printed the second
+  password, and so did the `nats://` the JetStream actors put in front of a
+  list of `nats://` URLs. Only a value that is unambiguously one URL is
+  parsed now; anything else is masked entry by entry, so a list keeps its
+  shape (`nats://***@h1:4222,***@h2:4222`) and a bare `host:port` no longer
+  comes back as `localhost://4222`. A password with an unescaped `/`, `?` or
+  `#` in it is masked too: the userinfo now runs to the last `@` before the
+  next `://`.
+
+- **URL credentials in the rendered configuration are masked under any key
+  name** (#1458). DevTools' `config.resolved` answer, `configDumpLines` and
+  the boot dump that `actor-ts.diagnostics.log-config-on-start` writes to
+  every log sink withheld a value only when its key named a secret, so a
+  password inside a URL printed in full: `cache.redis.url` set from
+  `${?REDIS_URL}` as its own reference.conf comment recommends, the
+  `logger.sinks.*.url` keys, the persistence `url` connection strings, or an
+  application's own `dsn`. Both renderers now replace the userinfo of every
+  `scheme://user:password@host` in a value they show, list elements and
+  objects inside a list included, with `***`, and keep scheme, host, port,
+  path and query as written. DevTools masks before its 8 192-character wire
+  cut, so a truncation cannot leave part of a password behind, and the
+  dump's header counts the masked values beside the keys withheld by name. A
+  stock configuration prints exactly what it printed before. What neither
+  rule sees still prints: a bare password written out under a key that does
+  not name one (one a credential-named variable supplied is withheld,
+  #1788), a query-string credential, SQL Server's `Server=…;Password=…` form
+  and memcached's scheme-less `user:password@host` server list.
+
+  Both renderers now also read the fields of an object inside a list, which
+  is one key (#1458): a field whose name names a credential is withheld, so
+  `upstreams = [ { host = "db-1", password = "…" } ]` prints its password as
+  `<redacted>` and its host as written; a credential-named field withholds
+  everything beneath it, and a boolean never is. The dump header counts such
+  lists apart from the keys withheld by name and the values whose URL
+  credentials it masked.
+
+- **The per-actor encryption() and integrity() hooks of a PersistentActor
+  are now documented as protecting its snapshots only** (#1430). Every
+  journal stores events as plaintext JSON, nothing detects an event edited
+  in place, and database-side controls (transparent data encryption, an
+  encrypted volume, access control) are the only protection for events
+  today. The persistence pages in English and German, the hooks' JSDoc, the
+  PersistenceOptions type and the example recipes now say so; the seven
+  journal pages no longer imply that an unhonourable override refuses the
+  actor on the journal's behalf, since the journal is never asked; and the
+  refusal a PersistentActor gets over a snapshot store that cannot honour
+  the hooks no longer points at the object-storage snapshot store without
+  saying that the events stay unencrypted and unsigned. The per-actor
+  override sample on the snapshot-store backend page is a valid
+  EncryptionConfig with public hooks again.
+
+  The journal gap is now a recorded decision rather than an open question
+  (#1430). SECURITY.md's scope states that the at-rest confidentiality and
+  integrity of the event journal are delegated to the database (transparent
+  data encryption, an encrypted volume, access control) as a documented
+  non-goal, that `encryption()` and `integrity()` cover snapshots and
+  durable state only, and which half the delegation leaves uncovered:
+  transparent data encryption is not tamper detection, and while replay
+  still refuses a structurally broken stream, nothing detects an event
+  edited in place. A readable or edited event is therefore documented
+  behaviour rather than a vulnerability, while a page or message claiming
+  the hooks protect events stays in scope. The per-actor policies page and
+  the operations overview call the gap a documented non-goal and link to
+  that record; the Cassandra snapshot store's page and the operations
+  overview now say that events stay plaintext, and the overview's at-rest
+  row names snapshots and durable state instead of all persisted data.
+
+- **A custom `identity` survives a CRDT decode** (#766).
+
+  Threading the function into `fromJSON` — which is what the issue title
+  asks for — would not have fixed this, and the maintainer's own scope note
+  on the issue is why: `ORSet.fromJSON` filed each element under the key
+  that came off the *wire*, so a custom identity governed only future
+  operations while the already-gossiped element stayed a separate entry
+  forever. `ORSet`, `ORMap`, `GCounterMap` and `LWWMap` now re-file each
+  decoded entry under the identity, and `decodeCrdt` forwards one to every
+  kind that has an element identity.
+
+  The identity is derived from the `factory` that `update` already carries
+  rather than from new handle API — `DistributedDataHandle` is re-exported
+  by no entry point (#1307), so a `register()` method would have landed on a
+  type consumers cannot name. `Crdt` gains an optional `customIdentity()`
+  accessor, the extension learns one per live key, and a key materialised
+  before the application first named its identity — a gossip that arrived
+  first, or a durable reload — is re-keyed on that first `update`.
+  `DurableDistributedDataStore.load` takes an optional per-key identity
+  lookup, which neither the issue nor its fix plan named. It is the right
+  thing to hand the store and it is inert at the only call site there is:
+  `preStart` runs as its own mailbox task, so no update has been handled
+  when it runs and the registry it consults is necessarily empty for every
+  key the reload asks about. What actually puts a reloaded key right is the
+  re-keying on its first `update` — the same path a gossip-first key takes.
+  Decoding with no identity supplied is unchanged, byte for byte.
+
+  Deriving the identity and re-keying the value are separate failures: an
+  element the callback refuses stays in the set under the key it arrived
+  with, and the identity stays learned. Deleting it instead would have left
+  the configured rule off for the life of that key, with deduplication
+  silently back on `JSON.stringify` — the defect this entry describes,
+  reachable again through one peer-supplied element of an unexpected shape.
+
+  A tombstone vetoes by tag on every merge now, not only inside the bucket
+  its element happened to be filed under. `ORSet.fromJSON` re-files each
+  element under the caller's identity, but a bucket whose element was
+  removed and never re-added carries no instance to re-identify from and
+  stays under the sender's key, so the per-bucket lookup never saw it: a
+  post-remove frame and a stale pre-remove frame from the same replica, both
+  decoded under `{ identity: (i) => i.sku }`, merged back to one live
+  element where the same pair decoded blind merged to none, and "once
+  removed, always removed" did not hold. The condition is the repair path
+  rather than a misconfigured cluster, which is what the code comment
+  claimed: an identity is a closure and never travels, so a peer on the
+  default rule and a durable record written before the identity was
+  configured are both filed under a key the receiver would not have chosen,
+  and both are exactly what the re-key is fed. Tags are minted once per add
+  from 96 bits of entropy, so a tombstoned tag can never be legitimately
+  live under another key; the flattened veto is therefore identical to the
+  old lookup for state this library produced and stricter only where a
+  frame's buckets and elements disagree. No wire change, and `ORMap`
+  inherits it through `ORMap.merge` delegating key liveness to its keyset.
+  Two smaller corrections ride along: `ORMap`'s identity remap hands back a
+  keyset over the entry ceiling untouched instead of running a `JSON.parse`
+  per element before `ORSet.fromJSON` gets to refuse it — one refused frame
+  cost 1 parse with no identity and 4 098 with one — and `ORSet.toJSON` no
+  longer tells callers to pass the sender's identity to `fromJSON`, which is
+  the contract the re-key exists to replace. The sets page also names #1421
+  for the nested-identity limit it already described (#1511).
+
+  Under Security rather than Fixed for the second half: the ORMap pre-cap is
+  a peer-reachable decode-work amplification fix, the same family as the
+  ceiling #698 restored and as #722, and one refused frame cost 1 parse
+  without an identity against 4 098 with one. The identity half on its own
+  would have been a correctness entry.
+
+- **BREAKING — `websocket()` routes require a same-origin upgrade by
+  default, and the client keepalive stops pretending (#756, #751).**
+
+  `requireSameOrigin` flips from `false` to `true`, so a cross-origin
+  browser upgrade is rejected with 403 before the handshake unless the route
+  names the origin or opts out. A non-browser client is unaffected: a Node,
+  Bun or Deno `WebSocket`, and every server-to-server dialer, sends no
+  `Origin` header at all, and a missing `Origin` stays allowed — Cross-Site
+  WebSocket Hijacking needs a browser. One subtler consequence is that a
+  route which previously set only `allowedOrigins` now also admits its own
+  host, since the two rules combine.
+
+  The option is documented for the first time in both languages, which is
+  the part that made this worth doing as one change rather than two: it
+  shipped a month ago under #566 and flipping the default of an option
+  nobody had written up is not a defensible move. The canonical example
+  binds loopback instead of the wildcard address, and so does the
+  `websocket()` JSDoc snippet — which propagated the pattern to every
+  developer who read the API before the example (#756).
+
+  Separately, the client's `pingIntervalMs` keepalive no longer arms a timer
+  that provably sends nothing. It called `ws.ping?.()`, a method the WHATWG
+  `WebSocket` on Node and Deno does not have, so the documented
+  application-level keepalive was a silent no-op on two of the three
+  supported runtimes while a blackholed connection kept reporting
+  `connected`. A new overridable `keepAliveFrame()` hook supplies the
+  payload the framework cannot invent, the native `ping()` stays the
+  fallback where a runtime has one, and an interval that can send nothing
+  now logs one warning at connect time and starts no timer (#751).
+
+  The same-origin default that every `websocket()` route now carries is
+  documented with its limits, and its value lives in one place. `Origin` and
+  `Host` are both client-sent, so a page that reaches the server under a
+  name of its own — DNS rebinding — presents a matching pair and passes the
+  same-origin arm; the comparison is scheme-blind as well, so an `http://`
+  page on the same host and port passes a check an `https://` listener might
+  read as same-origin. What that exposes is a route whose authentication is
+  the network itself, `IpAllowlist` or trusting loopback, rather than one
+  with a cookie session, because no cookies for the real host travel with a
+  rebound page — such a route should name its origins in `allowedOrigins`
+  instead of relying on the default alone. The mechanism is unchanged.
+  Alongside the caveat, the `allowedOrigins` JSDoc stops claiming that
+  leaving it unset means no origin check, which contradicted both the code
+  and the documentation pages in the file a caller reads in their editor,
+  and the default's value moves out of the routing directive into
+  `DEFAULT_WEBSOCKET_REQUIRE_SAME_ORIGIN` beside the field it defaults, with
+  a test deriving a bare route's expected answer from it so the two cannot
+  drift (#1514).
+
+  A WebSocket client keepalive is written straight to the live socket
+  instead of through `sendRaw()`, so it can no longer enter the outbound
+  resend buffer. `sendRaw()` is `enqueueOutbound`, the application's
+  bounded, FIFO-evicting replay queue, and a heartbeat fails both of that
+  queue's premises: it is addressed to one socket, so replaying it onto the
+  next one sends a keepalive for a connection that no longer exists against
+  a period that has already elapsed, and it competes for a bounded slot, so
+  on a full buffer it evicts a real message to make room for itself. The
+  window is narrow but reachable and nothing else closed it — every teardown
+  path clears the keepalive timer except `handleConnectionLost`, which
+  `BrokerActor` reaches when a `dispatchOutgoing` throws and which schedules
+  a reconnect without running `disconnectImplementation`, leaving the actor
+  offline for the length of the backoff while still holding a live socket
+  handle and a live timer. Measured with `outboundBuffer: 1`: four
+  buffer-overflow evictions in one backoff window, the application's own
+  message lost, and a stale heartbeat as the first frame on the replacement
+  socket; under `reconnect: false` there is no backoff to end it and the
+  timer buffers forever. A tick now runs only while its own socket is still
+  the connected one, and a refused send is swallowed for the same reason a
+  refused `ping()` is — a keepalive stops a proxy closing an idle
+  connection, and it is `idleTimeoutMs`, not this timer, that concludes a
+  connection is gone (#1514).
+
+  Two claims in that entry were wrong. The constant holding the same-origin
+  default and the guard reading it can drift: replacing the constant read
+  with an inlined true leaves the origin allowlist suite at 21 pass and 0
+  fail, every websocket suite at 258 pass and 0 fail and typecheck at exit
+  0, because the test derives its expectation from the constant, which keeps
+  the two agreeing on the value but never checks that the guard still reads
+  it. And the dial helper's documentation asserted that Bun's WebSocket
+  keeps the Host it computes for the bound address when headers are
+  supplied; a supplied host entry is sent verbatim, measured on bun 1.4.2
+  through a node:http upgrade capture, where an origin plus host of
+  evil.example reached the server as exactly that pair while an origin alone
+  arrived beside the loopback host. That false sentence was the stated
+  reason the forged-pair case stayed at the unit seam, so the case now runs
+  at the backend seam on all three backends, where it is a characterisation
+  of the rebinding limit rather than a regression guard and says so at the
+  site. The two rejection cases also assert the 403 itself, over a raw
+  upgrade that reads the status line, instead of resolving on any of an
+  error event, an early close or their own timeout: pointed at a path
+  carrying no route at all they were previously green on a 404, and now fail
+  with 403 expected against 404 received on Express, Fastify and Hono alike.
+
+  Filed under Security rather than Fixed because both halves are: #756 flips
+  a default that was admitting cross-origin upgrades, and #751 is a
+  keepalive that reported a live connection it was no longer probing. Both
+  issues carry a CWE id.
+
+  **Migration.** A route whose page is served from a different origin than
+  the socket must say so with `withAllowedOrigins([...])`, or restore the
+  old behaviour with `withRequireSameOrigin(false)`; a route that wants its
+  allowlist alone needs the latter too. For the keepalive, override
+  `keepAliveFrame()` to return the heartbeat your protocol uses, and set
+  `idleTimeoutMs` so a connection dropped anyway is still detected.
+
+- **BREAKING — A `file:` worker-entry URL whose path begins `//` is
+  refused** (#1515). The host rule exists to stop a worker's entry module
+  being fetched off a remote server, and it reads the URL's host; with a
+  fourth slash the URL parser leaves the authority in the path instead, so
+  the host is empty and the check passes. On bun 1.4.2
+  `file:////a-server/share/worker.js` resolves to the UNC path
+  `\a-server\share\worker.js`, byte-for-byte what
+  `file://a-server/share/worker.js` is refused for, and
+  `file://localhost//a-server/share/worker.js` lands in the same place
+  because the parser erases that host and leaves the doubled slash behind.
+  Node 26.7.0 throws on the same URL instead, so the permissive runtime is
+  the primary toolchain. All six worker-entry slots are covered, because
+  they share one rule.
+
+  **Migration.** A worker entry written `file:////server/share/worker.js` is
+  now refused when the options are validated; write
+  `file:///path/to/worker.js` for a module on the local filesystem.
+
+- **The guard that binds the publish credential split now sees the spellings
+  that switch it off** (#703). A workflow-level permissions: write-all
+  written at column 0 grants contents: write and id-token: write to every
+  job in the file, including the one that installs and executes the whole
+  dependency tree, and both guards that exist to refuse exactly that
+  returned nothing and passed having asserted nothing. A job-level flow
+  mapping (permissions: { contents: read, id-token: write }) was invisible
+  the same way, as were a trailing comment on the permissions key and a
+  block indented deeper than two spaces. The scanner now reads the key in
+  every form GitHub accepts, normalising read-all and write-all so a
+  read-only floor still passes and a typo still fails. trustedDependencies:
+  [] in the root manifest, which is what keeps the pack job's install from
+  running install-time scripts and which two documentation pages and a
+  publish.yml comment lean on, could be deleted with every gate green and is
+  now asserted. The twelve workflows that declare a workflow-level block are
+  pinned by name, because blinding the scanner to all twelve left the guard
+  over every workflow reporting zero failures.
+
+- **The scanner that keeps installs out of the credentialed publish job
+  reads the short command spellings as well as the long ones** (#1622). It
+  knew bun install, bunx, npm ci, npm install, npx, pnpm install and yarn
+  install and nothing else, so a step running bun i --frozen-lockfile inside
+  the job holding id-token: write passed the entire suite; bun add, bun x,
+  npm i, npm add, npm exec, pnpm i, pnpm add, pnpm dlx and yarn add did the
+  same. Each alternative is closed with a word boundary so bun init and npm
+  init stay invisible, and the short forms are seen through a bun run into
+  the script that actually runs them. AGENTS.md stated as a flat guarantee
+  that the hygiene test fails on an install there; it now names the
+  spellings the pattern reads and the ones that still get past it, and a
+  test holds the sentence and the pattern to each other in both directions.
+
+- **BREAKING — A label key beginning with `__` is refused where it is minted
+  and where it is relayed** (#1513). Prometheus reserves `__`-prefixed label
+  names for itself and drops them after relabeling, but `__name__` is not
+  one of the dropped ones: it *is* the series name, and a scrape job
+  configured with `honor_labels: true` keeps the target's value for it.
+  `counter('hits_total', { __name__: 'forged_series' })` therefore rendered
+  a perfectly well-formed `hits_total{__name__="forged_series"} 1` that the
+  server filed under `forged_series` — the forged series #784 refuses in the
+  name position, reached one layer later rather than closed. `client_golang`
+  and `client_python` refuse the prefix at the same point.
+  `RESERVED_LABEL_PREFIX` joins `THREAD_LABEL` and the two grammars in
+  `src/metrics/Constants.ts`, and both doors now ask one shared helper
+  rather than a hand-copied predicate each: `DefaultMetricsRegistry` when a
+  family is minted, and the worker-mesh relay for a snapshot no registry of
+  ours produced. A prefix rather than a list of the server's current label
+  names, because `__address__`, `__scheme__` and the `__meta_*` family move
+  between Prometheus releases while the reservation does not. It is a second
+  rule and not a narrowed grammar: `PROMETHEUS_LABEL_NAME_PATTERN` still
+  describes the exposition format, which does admit `__name__`. Only the key
+  side is reserved — a `__` prefix in a label *value* is untouched, which is
+  what keeps the cardinality cap's `__overflow__` marker legal. A relayed
+  sample carrying a `__proto__` label key is now refused on this rule
+  whatever its value, where before only an object under it was refused.
+
+  **Migration.** Rename any label key that begins with `__` — the prefix
+  belongs to the server. A `__` prefix in a label *value* needs no change.
+
+- **Attaching DevTools no longer pushes message bodies into a tracer the
+  application already had** (#1420). Switching payload capture on is what
+  DevTools does for its own Payload column, and on a system that was already
+  exporting, the tee handed every span — body included — to the exporter
+  that was there first, under that backend's retention and access rules
+  rather than the application's. #714 added a warning line; the warning was
+  the whole of the mitigation. The tee now takes a list of attribute keys
+  the observer sees and the inner tracer does not, and the span tap fills it
+  with `actor.message.payload` exactly when the capture is DevTools' own, so
+  nothing leaves the process because a debugger attached. A capture the
+  application had set for itself is forwarded untouched: DevTools declines
+  to add an export, it never removes one. Both doors into a span's attribute
+  bag are filtered, the initial bag and `setAttribute` — filtering only the
+  first passes every test that goes through a real system, because the cell
+  writes the payload into the bag and never through `setAttribute`. The
+  trade is that the tee is no longer fully transparent; its own header said
+  it was, and now says what it withholds and why. The visible consequence is
+  that `isCapturingMessagePayloads()` reads as on while an operator's own
+  backend shows no such attribute, which is what the line logged at attach
+  now says.
+
+- **The guidance on which DevTools panels to switch off left out the one
+  with the broadest payload coverage** (#1420). Three surfaces named time
+  travel, dead letters and the event stream as the panels that surface
+  message contents; the tracing panel's Payload column carries the
+  serialised body of every actor message that passed while DevTools was
+  attached. Corrected in both languages of the DevTools overview and the
+  configuration reference's panel table, and in `DevToolsOptions.panels`
+  itself, where the tracing field's documentation now says what its column
+  holds and the switched-off-alongside lists on `deadLetters` and
+  `eventStream` name it. The same sentence also lives in the reference
+  configuration and its two published mirrors; that copy is untouched here
+  and reported.
+
+- **The object-storage pages now name the control that catches a
+  durable-state record moved between storage keys, in both languages**
+  (#1417). They said both replay shapes were closed since #612 and presented
+  `requireContextBinding` as what closes the gap, which reads as though
+  catching a move is opt-in. It is not: with `client-aes256-gcm` or
+  `hmac-sha256` configured, the storage key has gone into the authenticated
+  bytes on every write since #612, so a moved body is refused with
+  `requireContextBinding` unset. The knob refuses bodies carrying no binding
+  at all, the pre-#612 corpus, and on a store with neither authenticator it
+  is ignored outright, because demanding a binding where nothing produces
+  one would reject the store's own writes. That store is the default and the
+  only shape a config file can express, both authenticators needing a
+  32-byte key, and there nothing at this layer detects a move: the
+  durable-state body is `{ revision, state, timestamp }`, names no entity,
+  and load answers with the requested `persistenceId` and the state it
+  found. `ObjectStorageSnapshotStore` is not in the same position on the
+  same bucket, since a snapshot body names its entity and the store
+  disbelieves one naming another, and that asymmetry was documented on the
+  snapshot side only. The pages also say why the answer is an authenticator
+  rather than a body-carried entity name: moving an object needs bucket
+  write access, and on a plaintext corpus the same access rewrites the body,
+  so a name in the body catches the accident and not the writer. A new guard
+  reads all six pages against the store, from both sides, so the claim and
+  the mechanism cannot drift apart. No behaviour changed.
+
+  The guard added with those pages could be satisfied by text no reader ever
+  sees, and could not tell the claim from its negation, so the sentence
+  saying the claim and the mechanism cannot drift apart overstated what it
+  did. An MDX comment renders nothing - @mdx-js/mdx compiles a trailing one
+  into a hoisted JS comment and emits only the words before it - yet every
+  assertion read the page source, so the pre-claim page plus one editorial
+  note carrying the markers in a brace comment under each heading scored 22
+  pass and 0 fail here and 1456 pass and 0 fail across the docs guards.
+  Separately the marker the change called the discriminating assertion
+  matched the substring inside "there is no knob-free path to move
+  detection", which asserts the reverse, and the same weakness let the
+  English page say a store with neither authenticator has move detection at
+  all times while the German page said it has none, again at 22 pass and 0
+  fail. The extractor now drops fenced blocks, brace comments in all three
+  of their forms and line-anchored ESM statements, so it reads what a reader
+  reads, and it has its own fixture tests in both directions because an
+  extractor that returned nothing would satisfy every negative assertion for
+  the wrong reason. The prose assertions are now two layers that were
+  previously conflated: term matches, named as the topic checks they are,
+  and phrase assertions in which each proposition carries its English and
+  German binding in one table entry, so a claim cannot be stated for one
+  language and forgotten in the other. Both attacks now fail, at 23 pass and
+  5 fail and at 34 pass and 3 fail, each naming its reason. The
+  client-aes256-gcm half of the claim is bound as well, where only
+  hmac-sha256 was, with the un-moved record loaded and asserted first so
+  that a store unable to read its own writes cannot pass as a caught move.
+
+- **The release workflow no longer runs the dependency tree beside the
+  credential that publishes the package** (#703). publish.yml is split into
+  an uncredentialed pack job that installs, builds, typechecks, tests and
+  runs npm pack, and a publish job holding id-token: write that neither
+  checks out the repository nor installs anything -- it downloads the
+  tarball, reads the version out of those same bytes and ships them with npm
+  publish --provenance --access public --ignore-scripts. Previously a single
+  job ran both frozen installs, the whole suite and prepublishOnly next to a
+  token that npm trades for a one-shot publish credential, so any package in
+  the two closures could have shipped a release under a provenance
+  attestation. trustedDependencies: [] on the root manifest pins the other
+  half: nothing in the root closure carries an install-time script today,
+  and a dependency that acquires one now surfaces as a bun pm untrusted line
+  instead of running silently. The WorkflowHygiene guard that kept contents:
+  write away from installs now covers id-token: write too.
+
+- **The MQTT page now states the trust boundary it had left implicit:
+  possession of an MqttActor ref is the boundary, cluster members included**
+  (#1510). A valid member holding the ref can subscribe itself to anything
+  the underlying client is entitled to read, exactly as a local actor can,
+  and no per-command trust hook would change that, because the capability
+  travels with the ref rather than with the command. The page says what to
+  do instead — do not register that actor with the receptionist, do not hand
+  its ref across nodes, give private traffic its own actor — and records
+  where the refusal's secondary argument does not reach: being able to
+  publish to a topic tree is not being able to read everything the broker
+  serves that client, so the publish capability explains why the fan-out
+  stays open, not why reading it is harmless. The primary ground is
+  untouched: the fan-out is the actor's advertised contract. The rules an
+  external command is subject to also moved to where a caller reads them — a
+  JSDoc on MqttSubscribeCommand.qos and on MqttUnsubscribeCommand, and a
+  paragraph in the class JSDoc — rather than living only in a private
+  method's comment and on the docs page.
+
+- **`SECURITY.md`'s out-of-scope list now states that a worker thread of the
+  mesh is in-process code the operator loaded, so a per-worker inbound
+  budget on the broker is out of scope: bounding what a buggy worker can
+  send is robustness, not an attacker boundary** (#1415). A record of the
+  decision, not a behaviour change.
+
+- **The MongoDB journal now refuses a `persistenceId` that is not a string
+  on `read`, `delete`, `highestSeq` and `raiseCompactionMark`, before it
+  reaches the query document** (#1507). The `string` in the signature is
+  erased at runtime, and a per-entity feed built from request data hands the
+  query whatever the body parser produced; MongoDB reads an object in a
+  filter position as an operator expression, so `{ $gte: '' }` selected
+  every stream — `read` returned other actors' events, `delete` emptied them
+  and raised another stream's compaction mark through the `{ _id: … }`
+  upsert. Every other backend binds the id as a driver parameter and refuses
+  a non-string there; this is the read-side twin of #738, which guarded the
+  tag path. Only the type is checked, so a stream stored under a legacy id
+  stays readable and compactable, and `MongoQuery` inherits the guard
+  through the journal.
+
+  The MongoDB snapshot store and durable-state store now refuse a
+  `persistenceId` that is not a string, closing the same hole the journal
+  closed earlier in this release. A persistence id that reached the call as
+  an object — what a request body parser produces from `?id[$gte]=` —
+  becomes an operator expression in the filter document rather than a value,
+  and selects every stream: `loadLatest` handed over another entity's whole
+  snapshot, `load` returned a neighbour's durable state under the caller's
+  own id, and `delete` emptied the collection. The two upserts are guarded
+  for the same reason, because their id rides in the filter: `save` and
+  `upsert` rewrote a neighbour's document in place and reported success to
+  the caller. Only the type is checked, so a stream stored under an id
+  today's rules would refuse stays readable, saveable and deletable. The
+  guard is now one exported function shared by all three stores instead of a
+  module-local copy in the journal, and the persistence-ID guarantee in the
+  persistent-actor guide is narrowed to the claim it actually makes, about
+  an id's content.
+
+- **BREAKING — DevTools.attach() refuses a system DevTools is already
+  mounted into, and SpanTap refuses a second live tap on one ActorSystem**
+  (#1512). mount() guarded on the server the extension holds while attach()
+  guarded on a binding a mount never has, so DevTools.mount(system, …)
+  followed by DevTools.attach(system, …) built a second DevToolsServer,
+  bound a port and orphaned the mounted one: detach() stopped only the newer
+  server, and every tap of the mounted one — the SpanTap teeing message
+  payloads into the application's exporter with both tracing switches on
+  among them, plus the event-stream, dead-letter and actor taps and the hub
+  actor — stayed installed for the life of the process while isAttached()
+  reported false and the shutdown hooks, which run the same detach(), had
+  nothing left to stop. attach() now throws on that system, naming detach()
+  as the way out; a second attach() on an attached system still returns the
+  existing binding. The #714 snapshot/restore in SpanTap was also not
+  re-entrant: two taps on one system uninstalled in install order — what two
+  directly constructed DevToolsServers stopped separately do — put the first
+  tap's dead recorder back with root spans and payload capture on, the #714
+  end state by another route and worse than before the restore existed.
+  install() now refuses when the system already carries a live tap, through
+  a weak per-system registry that uninstall() releases, so a corrupted
+  restore became an error that says what is wrong.
+
+  **Migration.** One DevTools entry point per ActorSystem:
+  DevTools.mount(...) for routes in your own server, or DevTools.attach(...)
+  for a port of its own. Combining them on one system now throws at
+  attach(); call DevTools.detach(system) before switching. A second
+  DevToolsServer or SpanTap constructed directly on a system that already
+  has one fails at bind()/mount()/install() with the same message.
+
+- **The advisory gate now reads every Bun lockfile CI installs, not only the
+  root one** (#1413). `package-health.yml` runs `bun audit
+  --audit-level=high` over `docs/bun.lock` — through a new `lint:audit`
+  script in `docs/package.json`, so `bun run lint:audit` under `docs/` is
+  exactly what CI runs — and over `devtools-ui/bun.lock`, which
+  `publish.yml` installs inside the job that holds the publishing token;
+  both manifests and lockfiles join the workflow's path filters, and its
+  Monday cron covers them. The two closures had been read by no gate and
+  carried nine high advisories with fixes inside their declared ranges —
+  five in `docs/bun.lock` (`brace-expansion`, `nanoid`, `smol-toml`) and
+  four in `devtools-ui/bun.lock` (`fast-uri`) — while the root gate stayed
+  green. Both lockfiles are refreshed with `bun audit fix`: `docs/bun.lock`
+  moves brace-expansion 5.0.6→5.0.9, devalue 5.8.1→5.9.1, dompurify
+  3.4.3→3.4.13, mermaid 11.15.0→11.16.1 (with @mermaid-js/parser
+  1.1.1→1.2.1), nanoid 3.3.16→3.3.18, postcss-selector-parser 6.1.2→6.1.3
+  and smol-toml 1.6.1→1.7.1; `devtools-ui/bun.lock` moves fast-uri
+  3.1.5→3.1.6, hono 4.13.3→4.13.5 and qs 6.15.3→6.16.0. No range was widened
+  and nothing is suppressed. `tests/unit/ci/SecurityPolicy.test.ts` now
+  derives the audited closures from the workflow's own steps, folds every
+  step's `--ignore` flags into the one list `SECURITY.md` has to match,
+  requires each audited closure's manifest and lockfile in both path
+  filters, holds `SECURITY.md`, `AGENTS.md` and the supply-chain page (EN +
+  DE) to naming every lockfile the gate reads, and fails when any workflow
+  installs a Bun closure no step audits — `benchmarks/comparison` is the one
+  listed exception, with its reason.
+
+- **The SQL Server and MariaDB `poolConfig` surfaces give the TLS guidance
+  the Postgres ones got in #755** (#1416). `MsSqlConnection.poolConfig`
+  illustrated itself with `options: { encrypt, trustServerCertificate }` and
+  no warning, although tedious inverts that second option straight into
+  `tls.connect`'s `rejectUnauthorized` and node-mssql passes the object
+  through untouched, so the value written there is the value on the wire;
+  the three SQL Server `withPoolConfig` builders were one-line comments and
+  the four MariaDB surfaces mentioned TLS nowhere, although the connector's
+  `ssl` is Node's own TLS options and therefore exactly the Postgres knob.
+  All eight now show the safe shape for their driver — `options: { encrypt:
+  true, cryptoCredentialsDetails: { ca: fs.readFileSync('rds-ca.pem') } }`
+  for SQL Server, which tedious hands to `tls.createSecureContext`, with
+  `serverName` naming the identity the certificate has to carry; the
+  Postgres `ssl` object for MariaDB — say in prose that trusting the server
+  certificate switches verification off and that encryption without
+  verification authenticates nobody, state that the object reaches `new
+  mssql.ConnectionPool(...)` or `mariadb.createPool(...)` verbatim, and link
+  the TLS page. The SQL Server `url` JSDoc adds that a connection string
+  carries the same switch as `TrustServerCertificate=` and no key for a CA,
+  so a private CA means the object form. The SQL Server journal page's
+  caution no longer quotes the unsafe value with "keep it to development"
+  and shows the CA shape instead, the MariaDB page gains an equivalent
+  caution, and the TLS page's persistence section gains PostgreSQL, MariaDB
+  and SQL Server subsections, so the link the JSDocs carry lands on the
+  driver being configured. The guard from #755 binds all twelve relational
+  JSDocs: one illustration and one unsafe spelling per backend, anchors on
+  the method declaration line, and a refusal of any anchor that matches more
+  than one line — a table copied from the Postgres rows would have bound the
+  class-level usage example on five of the eight new builders and failed for
+  the wrong reason. `trustServerCertificate` written in code under `src/` is
+  a stated blind spot of the scanner, with a fixture; nothing in `src/`
+  writes it.
+
+- **A lease holder that stalled past its TTL no longer goes on believing it
+  holds the lease** (#937).  `checkAlive()` answered from a cached flag in
+  both `InMemoryLease` and `KubernetesLease`, and only a renewal that noticed
+  the loss ever cleared it.  A holder whose event loop stalled longer than
+  the TTL — a GC pause, a starved container — never ran that renewal, so it
+  still answered `true` while another node had legitimately taken the lease,
+  and the renewal that finally ran extended the lapsed record whenever nobody
+  had claimed it yet.  `LeaseMajority`, which caches the decision its lease
+  acquire produced, went on replaying a win the other side now held, and both
+  halves of a split acted as the survivor.
+
+  `checkAlive()` now compares against the deadline of the last write the
+  backend accepted, measured from when that write was sent, and turns
+  `false` at the deadline itself.  `KubernetesLease` judges it on two clocks
+  and lets either one end it: `performance.now()`, which NTP cannot step
+  back, and the wall clock, which still counts the time a suspended host
+  lost.  A renewal tick past the deadline fires `onLost` and extends nothing;
+  `KubernetesLease` checks ahead of its in-flight guard, so a renewal PUT
+  hanging for up to `operationTimeoutMs` no longer holds the report back.
+  `LeaseMajority` returns a cached win only while `checkAlive()` holds and
+  otherwise arbitrates again — it loses if the other side has the lease, and
+  wins it back if nobody took it.
+
+  Consumers that react to `onLost` — the singleton manager, the sharding
+  coordinator, persistence fencing — now hear about such a stall at the
+  first renewal after it, where the lapsed lease used to be extended
+  silently.  Fencing does not re-acquire, so a `PersistentActor` stays in
+  observer mode afterwards, as it already did after any other loss.
+  `InMemoryLeaseStore.renew` takes the caller's `now`, as `tryAcquire` has
+  since #1424, and refuses a lapsed record.
+
+- **The DevTools UI toolchain is installed frozen in CI, and the
+  frozen-install guard reads through `bun run <script>`** (#1622).  Three
+  workflows installed the nested Angular toolchain as `bun run ui:install`,
+  whose body is `bun install --cwd devtools-ui` — the one install in CI
+  without `--frozen-lockfile` (#622), so the UI typecheck and its Vitest
+  suite ran against whatever `devtools-ui/package.json`'s ranges resolved to
+  that morning, and `publish.yml`, whose `prepublishOnly` rebuilds the
+  embedded bundle from the same tree, packed a DevTools bundle built from an
+  unrecorded resolve under a provenance attestation.  `check:ui` could not
+  notice: its hash covers the ranges, not the bytes.  The three steps now
+  write `bun install --frozen-lockfile --cwd devtools-ui` out; `ui:install`
+  stays the developer's unfrozen command, the nested counterpart of a bare
+  root `bun install` and the way the lockfile gets regenerated.
+
+  The guard was blind to it by construction — `installSteps()` in
+  `tests/unit/ci/WorkflowHygiene.test.ts` matched literal `bun install` on
+  workflow lines, and a `package.json` script is not a workflow line.  It now
+  resolves every `bun run <name>` step against the manifest its
+  `working-directory:` selects (walking up to the nearest one, as bun does),
+  follows chained `bun run`s, and holds each `bun install` segment it finds to
+  the same assertion, naming the script in the failure; a `bun run` under a
+  `${{ matrix.* }}` directory, whose manifest it cannot read, is reported
+  rather than passed.  The write-access assertion (`contents: write` never
+  beside an install) reads through scripts the same way.  Applied to the tree
+  before the workflow change, the extended guard failed on exactly the three
+  UI installs.
+
+- **`cors()` no longer echoes an `Origin` it cannot serialise back**
+  (#1516).  `Access-Control-Allow-Origin` carried the request header
+  verbatim whenever the matcher was a predicate.
+
+  Only that one configuration reached it, and saying which bounds the
+  change: an allowlist matches with `origins.includes(origin)`, so a matched
+  origin *is* one of the configured strings, and the wildcard answers a
+  literal — while the credentialed wildcard that would fall through to an
+  echo is already refused at construction because the Fetch spec forbids it.
+  A predicate is different in kind: it returns a boolean about text nothing
+  constrained, so whatever satisfied it went into the header.
+
+  An origin is now echoed only when it round-trips through the URL parser
+  unchanged, and the header is omitted otherwise — the same thing the
+  browser sees for an origin that did not match.  The round trip is the
+  check rather than a pattern: the parser strips tab and newline,
+  lower-cases the scheme and host, drops a trailing slash and answers `null`
+  for an opaque origin, so every way of being malformed shows up as a
+  difference from its own serialisation.  The literal `null` is admitted,
+  because a sandboxed iframe really sends it.
+
+  Nothing is repaired and re-sent, which is where this differs from the
+  sibling guard on the echoed header list (#792): a browser compares the
+  value byte for byte against the origin it sent, so a corrected spelling
+  would fail on the client while reading as allowed on the server.
+  Stripping the offending characters is the plausible wrong fix here and the
+  new cases fail against it, deliberately.
+
+  Latent rather than exploitable, for the reasons #792 records — every
+  runtime's request parser rejects a bare CR/LF and `setHeader` /
+  `Headers.set` reject one on the way out — and closed for that commit's own
+  stated reason: an echo that is load-bearing must not depend on the layers
+  beneath it.
+
+- **The connection cap no longer fails open on a socket that cannot report
+  its close** (#1409).  `enforceMaxConnections` counted such a connection
+  and un-counted it in the same breath, so the held count never grew and the
+  cap never fired at all.
+
+  Silently, and while reporting itself installed — which is the shape of the
+  defect that had `actor-ts.http.server.max-connections` doing nothing on
+  the Linux runners while passing everywhere else.  The count is now kept
+  either way: a runtime that cannot report a close makes the bound a
+  lifetime budget rather than a concurrency one, which is stricter than
+  asked for and is the wrong answer in the right direction.  A refusal also
+  writes `end()` before `destroy()`, the order the sibling header deadline
+  measured as the one a peer actually observes.
+
+  Whether that was the whole cause is not settled, and the guesswork is
+  replaced by a measurement rather than a claim: the guard reports what it
+  has seen — installed, seen, refused, held — and a new case drives a bare
+  `node:http` server with the runtime property deliberately unset, so
+  nothing but the guard can close anything.  Its failure message carries the
+  report, which separates "never installed" from "never saw the event" from
+  "hung up and the peer did not notice".  #1409 tracks the end-to-end
+  result, and both security pages now say the cap is verified on Bun/Windows
+  and Node and under investigation elsewhere.
+
+- **`actor-ts.serialization.read-constraints.max-document-bytes` now bounds
+  the cluster wire too** (#880).  A frame is handed to `JSON.parse` and the
+  tagged-tree walker directly and never passes through a serializer, so the
+  key that both serializers honoured governed every untrusted decode in the
+  process except the one whose bytes a hostile peer chooses — set it and the
+  wire ignored you. It is now checked against the frame's 4-byte length
+  prefix, beside `remote.max-frame-bytes`, which refuses the frame before
+  its payload is buffered and is the earliest point in the framework at
+  which the key can act. The default stays `0` (off). The residual is now
+  documented with its measurements: at shipped defaults an over-deep frame
+  is still refused only after the parse has materialised it — one 16 MiB
+  frame of balanced `[` costs about 1.0 s of CPU and 260 MiB of heap on Bun
+  1.4, roughly four times what a legitimate frame of the same size costs. A
+  pre-parse scan of the raw buffer would close that with neither knob set;
+  it was measured at 18-28 % of every frame decode and not shipped. The
+  block's other two guarantees — that every tagged container charges the
+  depth cap for its own level, and that the three config-to-runtime sites
+  carry the configured ceilings — were correct as shipped and are now held
+  by tests rather than by nothing.
+
+  *Note:* None. The default stays `0` (off), so no payload that decodes
+  today stops decoding; a deployment that had set the key now gets it
+  enforced on the cluster wire as well as in the two serializers.
+
+- **A `max-connections` cap is held by the framework rather than handed to
+  the runtime** (#870).  It is counted here and the offending socket
+  destroyed, instead of writing `maxConnections` onto the server and
+  trusting it to be honoured.
+
+  The property is still written — where a runtime enforces it the socket is
+  refused before `'connection'` is emitted, which is earlier and cheaper,
+  and a refused socket therefore never reaches the listener that does the
+  counting.  What changes is that the bound no longer depends on it.  The
+  same runtime release was measured honouring the property on one operating
+  system and ignoring it on another, which showed up as three tests red on
+  CI and green on every developer machine.  That is an acceptable outcome
+  for a tuning hint and not for the control `http/security.mdx` offers as
+  the answer to a connection flood: a cap an operator sets and the process
+  does not hold is worse than an absent one, because it is believed.
+
+  Unchanged where it was already honest: a backend that exposes no server
+  object (Hono on Bun or Deno) has nothing to count, and still reports the
+  cap as not installed rather than pretending.
+
+- **`GCounter.merge` bounds the number of slots it accumulates** (#1407).
+  Two counters that each decode could merge into one that no decoder would
+  accept, and every peer then dropped that key.
+
+  `MAX_COUNTER_SLOT` is computed as `MAX_SAFE_INTEGER / MAX_CRDT_ENTRIES`,
+  so the per-slot ceiling is sound only while the slot *count* is bounded —
+  and merge was the one operation that could raise the count without passing
+  a decoder.  Measured: two wire-valid counters of 4096 slots merged to
+  8192, `value()` returned 18014398509477888, and re-encoding threw.  Since
+  every wire call site routes through `decodeOrDrop`, the key then stopped
+  converging cluster-wide, and the holder could not gossip it back into
+  health because what it would send is exactly what everyone refuses.  One
+  valid frame from one peer was enough.
+
+  Slots already held are never given up: each still takes its componentwise
+  maximum, so no replica loses a count it had and the local replica's own
+  contribution is safe.  Only new replica ids compete for the remaining
+  room, admitted in sorted id order so the outcome does not depend on `Map`
+  iteration order.  The cost is commutativity **in the overflow case only**
+  — with more than `MAX_CRDT_ENTRIES` distinct ids in play, `a.merge(b)` and
+  `b.merge(a)` can keep different newcomers.  Refusing the merge would have
+  made a CRDT join partial; evicting the smallest slots would have let a
+  grow-only counter go down.  Bounding who may occupy a slot at all stays
+  upstream, in #955's pruning.
+
+- **BREAKING — A cluster peer, or an outside `ClusterClient`, can no longer
+  reach a `/system` framework actor by naming its path (#877).**
+
+  `Cluster.dispatchEnvelope` and `ClusterClientReceptionist` both resolved
+  the peer-supplied `to` string through `ActorSystem._resolvePath`, which
+  walks from the root cell with no guardian scope — so shard coordinators
+  and regions, singleton managers, the pub-sub mediator, the DistributedData
+  replica and both DevTools lanes were addressable by anyone who completed a
+  `hello`, past the per-path handler each of them registers and therefore
+  with no sender attached at all (#964). Those handlers remain the way a
+  framework actor is reached; only generic path resolution is closed, and no
+  configuration reopens it.
+
+  Two new keys narrow the other half. `/user` stays open by default, because
+  a peer naming an application actor is how an `ActorRef` works across
+  nodes; `actor-ts.remote.untrusted-mode = true` then admits an inbound
+  envelope only when `actor-ts.remote.trusted-selection-paths` lists its
+  target. An entry is an exact path unless it ends in `/*`, which makes it
+  that path and its whole subtree — segment-anchored, so `/user/orders/*`
+  admits `/user/orders/7` and refuses `/user/orders-archive`. A `*` anywhere
+  else is rejected at startup rather than matched literally. In code the
+  pair is `ClusterOptions.withUntrustedMode(…)` and
+  `withTrustedSelectionPaths(…)`.
+
+  Refusals are counted on `cluster_envelope_refusals_total{reason, frame}`
+  and folded into at most one WARN per reason every 30 seconds, naming the
+  connection's peer and never the requested path: an envelope is its own
+  frame, so a line per refusal would let a peer write the node's log at
+  message rate. At the receptionist a refused path is answered with the same
+  `path not found` a genuine miss gets, so the endpoint cannot be walked as
+  an existence oracle for the actor tree. #877.
+
+  *Migration:* A `ClusterClient` that addressed a framework actor by an
+  absolute `/system/…` path — `client.ask('system/cluster/…', …)` — now
+  receives `path not found`. Reach the extension through its own API
+  (`ClusterSharding`, `ClusterSingleton`, `DistributedPubSub`, …) instead.
+  Nothing else moves: `/user` paths behave exactly as before until you set
+  `actor-ts.remote.untrusted-mode = true`.
+
+- **BREAKING — The chat example refuses to start without a session secret
+  (#791).**
+
+  It fell back to a secret checked into this repository when
+  `CHAT_TOKEN_SECRET` was unset, so anyone reading the source could mint a
+  session token for any user of a running demo. The whole mitigation was one
+  warning line, which is exactly the shape a developer copying the example
+  carries into their own service. The session store now throws at
+  construction unless the secret is present or the demo fallback is
+  explicitly opted into, and the example README no longer documents the
+  warn-and-continue behaviour it used to have.
+
+  The opt-in branch had one hole left, closed here. With the fallback
+  enabled and `CHAT_TOKEN_SECRET` set but empty, the assignment read
+  `configured ?? DEMO_FALLBACK_SECRET` — and `??` steps over `null` and
+  `undefined`, not the empty string — so the store keyed its HMAC on zero
+  bytes while `usingDemoSecret` and the warning both reported the checked-in
+  demo secret was in use. Every token minted in that state verifies against
+  a key an attacker does not have to read the repository to guess. The guard
+  one line above reads `!configured` and was always right; only the
+  assignment disagreed with it.
+
+  The chat sample now resolves its session-token secret as the first act of
+  start-up, so a node with no CHAT_TOKEN_SECRET and no
+  CHAT_ALLOW_DEMO_SECRET stops before it creates its data directory,
+  registers its SQLite plug-ins or binds its cluster transport. The refusal
+  itself is unchanged; what changed is that it no longer costs a
+  half-started node that the entry point's error path never unwinds, because
+  the shutdown task that would close the stores and leave the cluster is
+  registered far below the point that threw. A spawned-node test asserts the
+  exit code, the message, the absent data directory and the absence of the
+  transport-bound log line, and asserts that --help still answers without a
+  secret, since that is where an operator reads which variable to set
+  (#1512).
+
+  Every in-repo instruction for starting a chat backend now names the
+  session-token secret those commands have needed since the fail-closed
+  change: the program's own --help output, the file headers of
+  backend/main.ts, backend/config.ts, smoke-test.ts and failover-test.ts,
+  and the run line in the root README. The example gate could not catch any
+  of this, because the manifest injects the demo opt-in for the chat case
+  and skips the failover script, so no automated run ever executes a
+  documented bare command. A new suite spawns --help and reads the headers
+  instead. The German chat-sample page also has its remaining English code
+  comments translated, and the chat README no longer describes the refusal
+  as happening at store construction (#1512).
+
+  *Migration:* set `CHAT_SESSION_SECRET` before starting the chat example,
+  or `CHAT_ALLOW_DEMO_SECRET=1` to opt into the repository's demo secret and
+  keep the warning. Anything else — including an unset variable, an empty
+  one and the literal `CHAT_ALLOW_DEMO_SECRET=0` — is a refusal at start-up
+  rather than a silent fallback.
+
+- **The zstd fallback path is reachable from a test at last** (#780).
+
+  The resolver prefers native zstd, then the runtime global, then the
+  optional `fzstd` peer — and a candidate is accepted only by being called
+  against a canary frame, so on Bun and Node the native path always wins and
+  the peer arm executed on no runtime any gate exercised. That arm is the
+  only zstd read path on a runtime without native zstd — Deno, where
+  `node:zlib` exports both symbols and calling either throws — so a
+  reordering or an early return could have removed the fallback entirely, or
+  given up the allocation-time output bound #580 relies on, with the whole
+  suite, the smoke matrix and the coverage badge all green. It now has an
+  internal seam, and both its position in the resolution order and its
+  identity are gated: the tests tell the pure-JS peer from a native decoder
+  by two properties only the peer has — it accepts a frame whose content
+  checksum is wrong, and it reports a truncated frame in its own error
+  vocabulary — so a rung whose body was swapped for a native decode cannot
+  pass them. Candidates are ranked by that documented order alone,
+  `node:zlib` first because it is the only one that can take the bound. No
+  behaviour, API or configuration change.
+
+  The rest of #780 — eighteen optional peers said to have no coverage — was
+  already closed by the two-context dependency design and its guards; the
+  arithmetic in the issue no longer reproduces.
+
+  A candidate is accepted by being called against a canary frame — the two
+  native decompress candidates, that is. The optional `fzstd` peer is
+  accepted on a successful import instead, because it is pure JavaScript
+  with no native binding that could be missing, so loading it already
+  answers what a call would ask; the resolver's own comment has said so
+  since the fallback landed. The compression pages carried the same
+  imprecision in both languages and now make the distinction, with a guard
+  that reads them against the source so the claim and the mechanism cannot
+  drift apart again (#1507).
+
+
+- **Bounded what the decoders will descend, and published the ceilings as a
+  new `actor-ts.serialization.read-constraints` block** (#880).  The JSON
+  side previously had no cap of any kind: `decodeJsonTree` recursed once per
+  level with no counter, and `JSON.parse` supplies nothing to inherit —
+  measured on Bun, Node and Deno, all three accept 100 000 levels of `[`
+  without complaint — so the recursion that overflowed was the framework's
+  own walker. The cluster wire reaches that walker directly on every
+  accepted frame, bounded only by `remote.max-frame-bytes = 16M`, and a 16
+  MiB frame of `[[[[…` is inside every byte cap the transport has; any peer
+  that completes the handshake could send one, and the eventual `RangeError`
+  from a blown stack is not the typed failure the transport's error handling
+  is written against. Three keys ship, each with a mechanism behind it:
+  `max-nesting-depth = 256`, threaded through every recursion site in
+  `decodeJsonTree` and read from an instance field in `CborDecoder`;
+  `max-document-bytes = 0` (off), checked in both serializers' `fromBinary`
+  before the bytes are parsed; and `max-string-length = 20M`, checked
+  against a CBOR item's length prefix before the bytes are allocated —
+  CBOR-only, because by the time the JSON walker sees a string `JSON.parse`
+  has already materialised it. The read depth may be lowered freely and
+  never raised past the encoder's hard `MAX_NESTING_DEPTH`, so the #1036
+  invariant that a node can decode everything it encodes survives the new
+  key rather than being quietly undone by it. `SerializationExtension` now
+  reads `system.config` in the factory that used to ignore its `system`; the
+  cluster wire, which does not go through the extension, reads the same keys
+  in `Cluster` and threads them to a `FrameDecoder` per connection. Two
+  edges stay deliberately unconstrained and say so in the docs: the
+  persistence `PayloadCodec`, whose bytes this framework wrote itself, and
+  the HTTP body edge, which has no system handle to read config through
+  (#967).
+
+  Dropped from the issue's six proposed keys, because nothing would read
+  them: `max-number-length` (CBOR numbers are fixed-width and the one
+  variable-length case is already capped by `MAX_BIGNUM_BYTES`; JSON's
+  literal is consumed by `JSON.parse` before any project code runs),
+  `max-token-count` (needs a streaming tokenizer neither codec has, and
+  every CBOR token costs at least one byte, so a byte cap dominates it), and
+  `max-name-length` (CBOR map keys take the same `readBytes` path as any
+  text string). MessagePack coverage is not applicable — there is no
+  MessagePack codec in `src/serialization/`.
+
+- **`MessageChannelTransport` guards a posted frame before anything reads
+  it** (#945, #701).
+
+  The transport cast the posted data to its frame type and dereferenced it,
+  so one malformed `postMessage` from a worker threw out of the
+  `MessagePort` callback — where no runtime this framework targets has a
+  caller to unwind into — and terminated the receiving thread, taking the
+  host process and every sibling worker with it. Separately, a gossip frame
+  carrying a member status outside the legal set reached
+  `Cluster.mergeMember` intact on the multi-core path alone, because the
+  other two transports refuse it.
+
+  The envelope's `from` and `to` now go through the same check both worker
+  brokers spend, the payload through the same `validateWireFrame` the TCP
+  and in-memory transports run, and the wire handler is called inside a
+  try/catch. The set behind `peers()` is bounded at 1024 distinct senders,
+  refusing new ones once full rather than evicting established peers —
+  eviction would let a flood of strangers take a healthy node out of its
+  load balancer, since the worker-mesh readiness check is that set's only
+  reader. One shared malformed-frame corpus now runs against all three
+  transport implementations.
+
+  This also closes #701, whose last criterion was exactly this guard. It had
+  been delegated here in a code comment and a commit body and recorded on
+  neither issue, which is why the tracker showed two open items for one
+  piece of work.
+
+- **BREAKING — gRPC bidirectional streams use a capability handle, and both
+  gRPC actors accept channel options (#788, #790).**
+
+  `bidiStart` published its stream id in-band as a `stream-data` chunk
+  shaped `{ __streamId }` — and `__streamId` is a legal protobuf field name,
+  so a server message carrying one was indistinguishable from the
+  framework's own handshake. Worse, `bidiSend` and `bidiClose` resolved any
+  id against a client-wide map whose recorded owner was never consulted, and
+  ids came from a sequential counter: any actor able to reach the client
+  could write into, or close, a stream it never opened. Bidi now uses the
+  same handle the client-streaming class already had, with a dedicated
+  `stream-started` frame and a 64-bit random token, so the map lookup *is*
+  the ownership check. `streamId` still rides on the data, end and error
+  frames as the correlation id (#788).
+
+  A command carrying no usable handle — absent, `null`, or not an object —
+  is published as a `DeadLetter` addressed to the client actor rather than
+  throwing inside the dispatch. A throw there was read one layer up as a
+  dropped connection, which pushed the offending message back at the head of
+  the outbound buffer and re-dispatched it after every reconnect, so one
+  malformed `tell` became an unbounded reconnect loop that starved every
+  legitimate write behind it. A well-formed handle naming an unknown stream
+  stays a silent no-op, because that race happens in correct use.
+
+  Both actors also gained a `channelOptions` field and a
+  `withChannelOptions` builder method, passed verbatim to the server
+  constructor and to the service client's third slot. Message-size caps,
+  keepalive enforcement, connection idle and age reaping, and
+  concurrent-stream limits were unreachable without forking, because
+  `deadlineMs` bounds an RPC while a connection outlives every RPC on it. It
+  is a code-only surface with no HOCON leaf: the keys belong to grpc-js and
+  nothing here validates them. The missing server-options validator stays
+  with #675, its own issue, rather than being claimed by two (#790).
+
+  **Migration.** `bidiSend` and `bidiClose` take `handle: GrpcStreamHandle`
+  instead of `streamId: number`, and `bidiStart` no longer publishes the `{
+  __streamId }` chunk. Read the handle off the `stream-started` frame,
+  exactly as `clientStreamStart` already asks.
+
+- **BREAKING — The two object-storage stores write under disjoint key
+  namespaces, and the snapshot store stops trusting prefix membership
+  (#716).**
+
+  The plugin registration hands both stores the same prefix, so an entity
+  persisted both ways had its durable-state record returned as its newest
+  snapshot — which failed recovery with a `SnapshotIntegrityError` rather
+  than merely returning the wrong state. That variant needs no invalid
+  persistence id at all, and it is the one that was live: the nested-id
+  exploit the report leads with died when the id validator started rejecting
+  slashes at the actor boundary.
+
+  The snapshot store now compares the persistence id inside a body against
+  the one it was asked for and reports no snapshot on a mismatch, and it
+  filters every list-driven path — load-latest, load-before, delete and
+  prune — to keys shaped like its own, so an object another writer left
+  under the prefix is neither returned as state, deleted, nor counted
+  towards `keepN`. Returning nothing rather than throwing is deliberate and
+  only works together with the filter: either half alone trades one failure
+  for another, while the pair turns an unrecoverable integrity error into
+  correct recovery.
+
+  ObjectStorageSnapshotStore.save refuses a sequence number the store's own
+  reader cannot address. The reader demands a leaf of exactly the padding
+  width that parses back to a safe integer, while save checked only
+  Number.isFinite(seq) && seq >= 0, so the two halves of one store disagreed
+  about what a sequence number is and the writing half was the permissive
+  one. save('p', 1.5) wrote snapshots/p/000000000000000001.5.json and
+  save('p', 12345678901234567890) wrote twenty digits that are no longer the
+  number asked for; neither is reachable again through the API, because
+  loadLatest skips them, delete never matches them and keepN pruning never
+  counts them, so the object is invisible, undeletable and accumulates
+  forever. The old parser matched both keys, which is what made this a
+  regression rather than a pre-existing gap. The rule is now the reader's
+  own, Number.isSafeInteger(seq) && seq >= 0, and it throws a JournalError
+  before anything is written (#716).
+
+  The object-storage key-namespace documentation now says which half of the
+  #716 fix closed the reported collision. The snapshot store's leaf-shape
+  filter rejects state.json on its own — a leaf it reads is exactly twenty
+  digits followed by .json, and state.json is ten characters — so the
+  collision is closed whether or not the two stores share a directory. The
+  disjoint snapshots/ and state/ namespaces are defence in depth on the
+  corpora themselves: two sets of objects that are disjoint by prefix can
+  carry lifecycle rules, backup selections and a re-encryption sweep scope
+  stated in terms the bucket itself evaluates, rather than ones that hold
+  only because a filename fails a length check inside the package (#1507).
+
+  **Migration.** Snapshots need none — they are a recovery accelerator, not
+  a source of truth, so a load finding nothing replays the journal and the
+  next save writes at the new key. Durable state does, and
+  `migrateObjectStorageDurableStateLayout(backend, { prefix })` is it: one
+  pass with the application stopped, moving each
+  `<prefix><persistenceId>/state.json` to
+  `<prefix>state/<persistenceId>/state.json`. It moves the *body* rather
+  than replaying the record through a store, which is what keeps `revision`
+  and `timestamp` the bytes that were already there — re-`upsert`ing cannot,
+  because at a record's own revision the compare-and-swap finds no entry at
+  the empty destination and raises `DurableStateConcurrencyError`, and
+  `upsert(id, 0, state)` is the only form that lands and writes revision 1
+  over a record that was at 7. A body with neither client-side encryption
+  nor an integrity HMAC carries no key binding and is copied verbatim; a
+  context-bound body (#612) is sealed against its old key, so it is decoded
+  there and re-sealed against the new one — pass the store's own
+  `encryption` / `integrity` for that, which also re-encrypts it under the
+  keyring's active master key. A destination that already holds an object is
+  never overwritten and sources stay in place, so the pass is repeatable;
+  re-run it with `deleteSource: true` to retire them once the upgrade is
+  verified. A caller passing a fractional sequence, or one past
+  Number.MAX_SAFE_INTEGER, now gets a thrown JournalError where the call
+  previously resolved. Those writes produced objects the store could never
+  read, delete or prune, so pass a safe non-negative integer;
+  Number.MAX_SAFE_INTEGER itself is still accepted and reads back.
+
+- **`ConsumerController` serialises its handler, and bounds the out-of-order
+  set** (#643, #728).
+
+  The controller fire-and-forgot its delivery handler, so the cell started
+  the next delivery while the user handler was still running — a burst that
+  fits the producer's window became that many overlapping invocations,
+  contradicting the options documentation, which has always promised the
+  acknowledgment follows the handler. `onReceive` now returns the promise.
+  The same change closes a read-check-act race in which a retransmit
+  arriving while its own sequence was still being handled re-entered the
+  handler instead of being absorbed as a duplicate, because the dedup window
+  is only written after the handler returns (#643).
+
+  The per-producer out-of-order set is bounded by a new `maxOutOfOrder`
+  option (default 1024, `Infinity` to opt out) with its builder method and
+  validator rule. A sender that withholds one sequence and keeps sending the
+  ones after it grew that set without limit, which neither the producer cap
+  nor the idle sweep covered. At the cap the consumer refuses the delivery
+  outright — it neither runs the handler nor acknowledges — so the
+  producer's window stalls and its retransmit recovers, rather than a drop
+  costing a duplicate invocation for a message already handled. The sequence
+  that closes the gap is always admitted, so this is a stall and never a
+  deadlock (#728).
+
+  Order mattered here: the cap is only an exact post-condition once the
+  handler is serialised. While the handler ran detached, every in-flight
+  delivery could pass the size check before any of them inserted, so the set
+  overshot by the concurrency.
+
+  Under Security for the bound, not for the serialisation: #728 is the
+  unbounded out-of-order set a producer can grow, and it carries `severity:
+  medium`. #643 — the fire-and-forget handler — is an ordinary correctness
+  bug with no security label, and this is the only entry that covers it, so
+  a reader looking for it under Fixed will not find it there.
+
+  **Migration.** A stock `ProducerController` can reach the cap, and its
+  window of 16 is not what decides that: the consumer acknowledges every
+  out-of-order delivery it admits, which frees the producer's slot and lets it
+  keep streaming past a gap that is still open — measured at 63 sequences
+  retained past one withheld sequence, from 64 sends. Reaching the cap stalls
+  that producer until the missing sequence lands, which is the intended
+  backpressure and is what its own retransmit clears, so nothing is lost and
+  most senders need no action. Raise `maxOutOfOrder` if you sustain more than
+  roughly 2000 sends a second through a link that drops them, or set
+  `Infinity` for the previous unbounded retention; a producer configured with
+  a window above 1024 wants a matching `maxOutOfOrder` regardless, since that
+  many sends are already in flight when a gap opens.
+
+
+- **A priority mailbox keeps an undroppable envelope through a stash replay,
+  and a dead letter carries what the envelope lost** (#729, #773).
+
+  `PriorityMailbox.prependUser` re-entered its own `enqueue`, whose capacity
+  check never read `Envelope.undroppable` — so a death-watch `Terminated`
+  that round-tripped through `stash()` and `unstashAll()` was discarded
+  under `drop-new`, threw `MailboxFullError` inside the replaying actor
+  under `reject` (the constructor default once a capacity is named), and
+  cost a bystander its place under `drop-lowest-priority`. A notification
+  replayed from the untyped stash now takes the same exempt lane it takes
+  arriving fresh, and the reader list in the `undroppable` JSDoc names this
+  mailbox rather than omitting it. The typed DSL's `Behaviors.withStash` is
+  not covered and says so on the page: its buffer holds bare messages, so the
+  replay rebuilds envelopes without the marker (#729, #1319).
+
+  A `DeadLetter` can now carry the MDC context and the tracing span context
+  the lost envelope was travelling with, in a new optional `attribution`
+  field. A bounded or priority mailbox drop fills both from the discarded
+  envelope; a `BackoffSupervisor` stash eviction fills the MDC from a
+  snapshot taken when the message was buffered, because that path never
+  captured it in the first place. This was the one clause of the fix that
+  did not land last time, and the deferral existed only in a commit message
+  — nothing was filed, which is why it was invisible until the criteria were
+  audited (#773).
+
+  A captured `DeadLetterEntry` deliberately does not persist the
+  attribution: an entry outlives the process under `store: 'persistent'`,
+  while an MDC routinely carries tenant and user identifiers. `toString()`
+  and the throttled dead-letter log line are unchanged.
+
+- **The CORS preflight filter kept the characters it existed to remove, and
+  the Postgres pool JSDoc illustrated the pattern the TLS page forbids**
+  (#792, #755).
+
+  `sanitiseRequestHeaders` used the negated class `[^A-Za-z0-9,\s-]`, and
+  `\s` inside a *negated* class preserves CR, LF, HTAB and U+00A0 —
+  precisely what the guard existed to strip — while removing only the
+  harmless punctuation around them. This is the default preflight path,
+  taken by every `cors()` route configured without `withAllowedHeaders`.
+  Nothing could split a response through it, and that was never this
+  function's doing: measured on Bun 1.4.0, Node 26.7.0 and Deno 2.6.8, no
+  request parser admits a bare CR or LF inside a header value and both
+  response-header sinks throw on one. HTAB and U+00A0 did get past all six
+  and reach the wire verbatim.
+
+  The value is now read as what it is — a comma-separated list of header
+  names — and an element survives only if it is a whole RFC 7230 token, so
+  an illegal element is dropped rather than scrubbed into a name the client
+  never asked for. The field is omitted entirely when nothing survives, and
+  the 1024-character cap spends its budget on whole names instead of cutting
+  the last one in half.
+
+  Separately, `PostgresConnection.poolConfig` no longer illustrates itself
+  with `ssl: { rejectUnauthorized: false }` — the pattern the project's own
+  TLS page marks with a cross, flowing unfiltered into `new pg.Pool(...)`
+  and producing an encrypted but unauthenticated link to the journal
+  database. It and the three Postgres `withPoolConfig` builders now show the
+  CA form the journal's documentation page already used, and link the
+  TLS-everywhere page. Because no test can fail on JSDoc text, a new
+  repo-invariant guard holds all four surfaces to that illustration and
+  refuses any `rejectUnauthorized` binding under `src/` — the key bare or
+  quoted, the pair split across lines, `:` or `=` — whose value is not
+  `true`, a `boolean` type annotation, or a forward of the caller's own
+  value. It does not see a key assembled at runtime, the other knobs that
+  disable verification, or what a caller passes in `poolConfig`, and its own
+  comment lists those limits with fixtures behind them (#755).
+
+  The guard's third property is judged per sentence rather than per comment
+  block. A verifier appended a bare, copyable `e.g. { ssl: {
+  rejectUnauthorized: false } }` line to the one block the inventory permits
+  and the guard stayed green, because the block already said "instead" forty
+  characters earlier — #755's own failure mode inside the allow-list. The
+  sentence carrying the value must now warn itself: comment lines are read
+  as prose, a sentence runs from one full stop, question or exclamation mark
+  to the next and never across a block comment's delimiters, and code spans
+  are removed before the markers are matched, so a key named `instead`
+  inside the copyable value is not a warning. The permitted Deno sentence
+  stays green on its own merits. The verifier's mutation is a fixture, as
+  are the same line in a block of its own, a warning one sentence before or
+  after the value, the pair split across two lines, CRLF endings and the
+  `*/` boundary; a marker word written into the value's own sentence still
+  passes, which the file states as the phrase-heuristic limit the inventory
+  stands in front of (#1513).
+
+  The TLS page the guidance links to is checked to exist. The guard quoted
+  the URL "so a page rename is loud", but the constant was only ever
+  compared against the JSDocs that carry it, and renaming
+  `operations/security/tls-everywhere.mdx` left the guard green with the
+  shipped links pointing at a 404. The page path is now derived from the
+  constant against the site origin — never written a second time — and
+  asserted to exist under both the English content root and the German
+  mirror, with the derivation itself asserted non-vacuous, so a constant
+  rewritten to another host or to the site root fails rather than checking
+  nothing (#1508).
+
+  The CORS options table and the `allowedHeaders` JSDoc stop calling the
+  echoed `Access-Control-Allow-Headers` value sanitised. They read "echo the
+  (sanitised) request headers" in both languages, a dozen lines above the
+  aside insisting the value is filtered rather than trimmed, that a name
+  carrying anything else is dropped whole, and that the field is omitted
+  entirely when nothing survives — and sanitised is the word that change
+  spent three paragraphs repudiating, because a character-class scrub is
+  exactly what it replaced. All three sites now describe the filter, and the
+  module-private helper is named for filtering rather than sanitising
+  (#1514).
+
+- **An external `subscribe` can no longer rewrite an `MqttActor` subclass's
+  declared QoS** (#783).
+
+  The QoS write was last-writer-wins and was followed by an immediate broker
+  re-SUBSCRIBE, so any holder of the actor's ref could move a subclass's
+  constructor-declared QoS-2 subscription down to QoS 0 — the application
+  still believing delivery was exactly-once while the broker was free to
+  drop. A `subscribe` command's `qos` now applies only to a pattern the
+  command itself creates; a subclass changes its own by calling
+  `subscribe(topic, { qos })`.
+
+  The wildcard half of the report is deliberately not addressed: attaching a
+  handler to any filter, `#` included, is the actor's advertised contract,
+  the documentation shows it as ordinary usage, and anyone holding the ref
+  can already publish — so narrowing it would break a documented contract
+  for no security gain. This change is the additive mirror of the guard the
+  `unsubscribe` path already carried, and that guard is now covered by a
+  test as well, having been asserted by nothing. What the wildcard half gets
+  instead is visibility: an external `subscribe` that introduces a filter the
+  actor did not already hold now logs at info — naming the filter, the QoS
+  the SUBSCRIBE actually carries, and whether delivery goes to the actor's
+  own `onMessage` or fans out to another actor — while a join to a filter it
+  already holds, and the subclass's own subscriptions, stay silent.
+
+- **BREAKING — The filesystem object-storage CAS token is a SHA-256 digest
+  rather than a 32-bit hash** (#786). The ETag is the durable-state
+  optimistic-concurrency token — put re-derives it from disk to evaluate
+  ifMatch — so its equality check rested on four bytes of a
+  non-cryptographic hash. It is now a SHA-256 digest of the body truncated
+  to 16 bytes. A colliding 49-byte pair was constructed by birthday search
+  in seconds, and the lost update it enables is now a regression test: an
+  attacker holding write access to the store authors the intervening
+  revision so that its ETag equals the one a CAS holder has already read,
+  and the holder's stale ifMatch then passes over content that changed
+  underneath them. The preconditions still stack — the S3 backend was never
+  affected, the per-key O_EXCL advisory lock removes the ordinary race, and
+  a forged body must match the byte length too — but this is a demonstrated
+  lost update rather than a hygiene argument. Two claims in the original
+  account were wrong and are corrected in the source: the attack is the
+  intervening writer, not a stale writer computing a body to match an ETag
+  they already hold, which buys nothing because put compares against the
+  bytes on disk; and the old hash was never trivially invertible, because
+  hash = (hash * 0x01000193) >>> 0 is a float64 multiply that rounds above
+  2^53, measurably not textbook FNV-1a and with an effective space near
+  2^30.8 rather than 2^32, so even odds arrive around 50 000 same-length
+  bodies. The ETag keeps its shape and stays opaque to every caller, so
+  nothing that stores or compares one needs changing.
+
+  **Migration.** ETag values minted before this release do not match ones
+  minted after. That matters only for an ETag a consumer persisted across
+  the upgrade; the durable-state store recovers on its own, since a mismatch
+  drops its cached entry and the next attempt re-reads the real one.
+
+
+- **BREAKING — The worker-mesh handshake latches on the first hello, and
+  `bootstrap` is constrained to a `file:` URL (#775, #776, #778).**
+
+  `postMessage` structured-clones on the posting thread, and the init frame
+  carries whatever `withInitData` was given, so an unlatched hello let one
+  worker charge the host an arbitrarily expensive main-thread clone per
+  one-word frame for the whole `readyTimeoutMs` window — with every
+  sibling's traffic queued behind it on the shared broker hub. A first-hello
+  latch per handshake replaces it, in `WorkerCluster` and in the testkit's
+  `ParallelMultiNodeSpec` copy (#775).
+
+  `WorkerClusterOptionsValidator` now constrains `bootstrap`, the one option
+  whose value the runtime executes: it must be present, absolute, and carry
+  the `file:` scheme. The allow-list was measured per runtime rather than
+  assumed — a `data:` entry runs as a worker's main module on Bun, Node and
+  Deno, `blob:` on Bun and Deno, and a remote specifier is fetched and run
+  on Deno — so every other scheme is refused. A missing `bootstrap` now
+  throws a named `OptionsError` at spawn instead of a raw `ERR_INVALID_URL`
+  from inside the runtime, and a bare relative specifier fails with a
+  message naming the fix. `bootstrap` stays deliberately absent from HOCON,
+  and the reason is now written down beside the config-defaults type (#776).
+
+  The URL must also carry **no host**. A `file:` URL may hold an authority,
+  so `file://attacker.example.com/share/worker.js` passed a check on the
+  scheme alone — and all three runtimes accept that specifier, Windows
+  resolving it to the UNC path `\\attacker.example.com\share\worker.js`, so
+  only the SMB fetch failed. On a host where the share resolves, the
+  worker's main module is code off a remote server. The rule is a single
+  emptiness test on the parsed host rather than a host allow-list, because
+  the URL parser already erases `file://localhost/…` to an empty host on all
+  three runtimes; `127.0.0.1` and `[::1]` are not erased and are refused.
+
+  `WorkerNode.join()` cancels its 30 s init timer on the success path
+  instead of relying on `unref()`, which is a Node and Bun extension that
+  silently did nothing on Deno's numeric timer handle — so a worker that had
+  resolved `join()` and wanted to exit promptly waited out the full timeout
+  there (#778). The cross-subsystem `unref` sweep the file's own marker
+  proposed is deliberately not done: the helper has a single caller, and
+  #1283 argues that call is itself wrong.
+
+  The first-hello latch narrows the worker-side protocol contract, and the
+  Migration paragraph should say so. A bootstrap that posts `worker-hello`
+  before it installs a message handler used to be rescued by its next hello;
+  it now loses its only init frame on Bun and Deno, where an undeliverable
+  frame is dropped rather than queued, and then waits out the full
+  `readyTimeoutMs` with no error. `WorkerNode.join()` listens first and says
+  hello afterwards, which is what makes the latch safe — a property of this
+  framework's worker half and not of the wire protocol, and one a
+  hand-written bootstrap owes too. It is stated on `WorkerHelloMessage`, on
+  the worker-mesh page in both languages, and asserted by a test for the
+  first time (#1515).
+
+  **Migration.** Pass `bootstrap` as a `file:` URL —
+  `WorkerClusterOptions.create().withBootstrap(new URL('./worker.js',
+  import.meta.url))` already produces one. A `data:`, `blob:`, `http:` or
+  `https:` specifier, a bare relative string, and an omitted `bootstrap` now
+  all throw `OptionsError` rather than reaching the `Worker` constructor or
+  the runtime's URL parser.
+
+- **BREAKING — `SseActor` refuses a redirect and a wrong media type, and
+  stopped rescanning its buffer (#749, #787).**
+
+  A `3xx` carrying a `Location` now fails the connect with a descriptive
+  error instead of replaying every custom request header — vendor API keys
+  included, since the Fetch standard strips only `Authorization`, `Cookie`
+  and `Proxy-Authorization` across origins — to whatever host the feed
+  named, and instead of letting a compromised endpoint rather than the
+  configuration decide which address an authenticated `GET` reaches. The
+  response must also announce `content-type: text/event-stream`; any other
+  type, or none, is refused before a byte of the body is parsed. Both
+  refusals travel the ordinary reconnect path — backoff, the circuit breaker,
+  a `BrokerReconnectAttempt` per retry and a `BrokerReconnectFailed` once the
+  retries run out — so a feed that starts redirecting surfaces as a broker
+  that cannot connect rather than as a silent change of where credentials go;
+  a refused connect publishes no `BrokerDisconnected`, which marks a live
+  connection being lost. Neither needs a new option, and so neither needs a
+  HOCON leaf (#787).
+
+  Separately, the read loop stopped rescanning its pending buffer. The
+  delimiter search restarted at index 0 on every read *and* the growing
+  string was re-materialised each time, so a feed that dribbles bytes
+  without ever sending the blank line cost roughly 512 MiB of character
+  scanning to deliver 256 KiB — the 1 MiB safety cap set that ceiling rather
+  than lowering it. Characters now accumulate unjoined and each read
+  searches only the arriving chunk plus one character of seam, measured at
+  2048x down to 1.02x. The cap keeps its previous semantics and stays a
+  module constant, so #371 is untouched (#749).
+
+  **Migration.** A feed that answers with a redirect, or that does not
+  announce the SSE media type, now fails to connect instead of being
+  consumed. Point `url` at the final endpoint, and make sure it sends
+  `text/event-stream`.
+
+- **BREAKING — Metric names and label keys are validated where they are
+  minted (#784).**
+
+  The exposition interpolates the name and label-key positions raw, because
+  the Prometheus 0.0.4 text format offers no escaping for them. An
+  application that derived either from request data — a per-tenant counter,
+  a header-named label — could therefore end the current series and write a
+  forged one into the scrape, indistinguishable from a real series to
+  whatever consumed it and enough to silence an alert built on it.
+  `DefaultMetricsRegistry` now rejects a name outside
+  `[a-zA-Z_:][a-zA-Z0-9_:]*` and a label key outside
+  `[a-zA-Z_][a-zA-Z0-9_]*` when a family or a series is first minted, and
+  the exporter now removes the carriage return — and every other C0 control
+  except tab — from label values and from `# HELP` text, instead of escaping
+  it. `\r` is not one of the three escapes the 0.0.4 table defines, and
+  prometheus/common's parser treats an escape it does not define as a syntax
+  error for the whole body, so a single label value carrying a control
+  character cost the entire scrape on Pushgateway, the node_exporter
+  textfile collector and `promtool check metrics`. Neither Go parser ever
+  split a line on the raw byte the escape replaced, so nothing is lost by
+  dropping it; readers that do split on a lone carriage return are served by
+  the removal just as well. The backslash, line feed and double quote keep
+  the escapes the table does define. Two label values differing only in
+  stripped C0 controls are one series whose counter sums. The strip is not
+  only a rendering rule any more: `seriesKey` applies the same one before it
+  encodes a tuple, so `counter('m_total', { msg: 'ab' }).inc(1)` beside
+  `counter('m_total', { msg: 'a\x1fb' }).inc(2)` leaves the registry holding
+  one series and renders the single row `m_total{msg="ab"} 3`. Until that
+  half landed the two stayed two children of the family and the body carried
+  the same series twice — two rows whose name and label set are
+  byte-identical, carrying 1 and 2 rather than one row carrying 3 — and a
+  Prometheus scrape rejects a body with a duplicated series wholesale, so
+  one label value with a unit separator in it took every other family in the
+  exposition down with it. A gauge reached the same place and a histogram
+  repeated all four of its identities, `_sum` and `_count` included. The
+  registry also stores the normalised tuple, so `collect()` carries the
+  value every exporter will render rather than only the Prometheus one.
+  `STRIPPED_CONTROL_CHARACTERS_PATTERN` moved to `src/metrics/Constants.ts`
+  and a single `stripExpositionControlCharacters` is what both the mint path
+  and the exporter call, so "the same strip the exporter applies" is
+  something the compiler checks instead of something a comment claims. The
+  unlabeled tuple `ActorCell` passes three times per delivered user message
+  is untouched — 47.2 ns against 46.6 ns over nine interleaved rounds of 500
+  000 calls — because the short-circuit returns before a value is looked at,
+  and a number or a boolean skips the scan entirely; a string label value
+  costs 33 ns more, halved from what an unconditional rewrite would cost
+  because the strip asks with `search` before it rewrites. TAB, the line
+  feed and DEL are outside what the strip removes and stay, which is now
+  pinned in both directions. The exporter's JSDoc and the
+  Prometheus-exporter page in both languages describe the merge, and
+  `tests/unit/metrics/PrometheusC0SeriesIdentityClaims.test.ts` reads the
+  outcome out of a real exposition body and fails if any of the three drifts
+  from it in either direction.
+
+  Both checks sit after their own memo hit, so an increment on an
+  established series costs no regular expression, and the label-key check
+  sits before the cardinality-cap branch so a family already at its cap
+  cannot mint an overflow series carrying a forged key. The cap on the
+  number of families is a separate open concern (#1068) and is deliberately
+  not addressed here.
+
+  **Migration.** Metric names and label keys must be developer-chosen
+  constants. Move any request-derived part into a label *value*, bounded
+  with `bucketize`.
+
+- **Duration and size units resolve by own property only** (#785).
+
+  `parseDuration` and `parseSize` looked their unit up through the prototype
+  chain, so the unit `constructor` reached `Object` instead of `undefined`,
+  bypassed the unknown-unit error and returned a silent `NaN` — which
+  coerces to 0 in a timer and makes every `>` cap comparison false. Both
+  unit tables are now null-prototyped and both lookups guarded with
+  `Object.hasOwn`, the shape `src/http/MimeTypes.ts` took under #608.
+
+  Both parsers additionally assert `Number.isFinite` on the value they
+  return, rather than only on a numeric argument — which is what a `NaN`
+  needed in order to escape. Two documented keys reach a runtime effect with
+  no options validator behind them:
+  `actor-ts.system.shutdown-drain-timeout`, where a `NaN` silently zeroes
+  the drain budget and defeats the documented `0` opt-out, and
+  `actor-ts.coordinated-shutdown.default-phase-timeout`, which is copied
+  into all twelve canonical phases and handed to `setTimeout`. The same
+  check stops a digit string long enough to overflow a double from coming
+  back as `Infinity`. This is the config *value* path; #589 hardened the
+  lookups that descend the config *tree* — `HoconParser.lookup`,
+  `Config.lookup` and the environment fallback — and #406 made `__proto__`,
+  `constructor` and `prototype` poisoned config *keys*, with `deepMerge` and
+  `stripUndefined` filtering them.
+
+
+- **BREAKING — a store refuses an encryption request it cannot honour
+  (#960).**
+
+  Snapshot and durable-state stores now declare which fields of
+  `PersistenceOptions` they actually act on, and an unhonourable request is
+  refused instead of dropped.  Only the object-storage pair has ever read
+  the per-actor `compression()` / `encryption()` / `integrity()` hooks; the
+  other eleven shipped stores bound the parameter and ignored it, and both
+  contracts sanctioned that in prose — so setting `encryption()` on a
+  Postgres-backed actor produced plaintext rows and no error at all.
+
+  Every store now carries a `persistenceOptionSupport` triple, and
+  `PersistentActor` and `DurableStateActor` compare it against the actor's
+  hooks at start: encryption and integrity throw
+  `UnsupportedPersistenceOptionError` naming the store and the field, while
+  compression — a performance hint rather than a control — warns once and
+  lets the actor run.  The check fires before the first *read*, not merely
+  the first write, because a durable-state actor loads in `preStart` and
+  reading with encryption set against a store that cannot decrypt returns a
+  plaintext record the actor believes was ciphertext.
+
+  A store that declares nothing stays unknown and is never refused, the same
+  rule `storageLocality` follows, so third-party stores are unaffected; `{
+  mode: 'none' }` is accepted everywhere, since "do not encrypt" is exactly
+  what a store that cannot encrypt does.  `CachedSnapshotStore` delegates
+  its declaration to the store it wraps rather than stating a constant
+  either way.  The type and the error class are exported from
+  `actor-ts/persistence`, and the shared persistence contract suite now
+  holds every store's declaration to its measured behaviour.  This covers
+  the field #613 implemented store-locally in the object-storage pair.
+
+  *Migration:* an actor whose `encryption()` or `integrity()` hook returns
+  anything other than `{ mode: 'none' }` now throws
+  `UnsupportedPersistenceOptionError` at start unless its store declares
+  support.  Drop the override, switch to the object-storage snapshot /
+  durable-state store, or return `{ mode: 'none' }` to state that the data
+  is deliberately unprotected.
+
+- **The dependency audit gate was red on `develop`, and is now green with no
+  suppressions at all** (#779, #781).
+
+  `bun run lint:audit` had been exiting 1 on the integration branch: six
+  `fast-uri` advisories reached the runtime closure through `fastify >
+  fast-json-stringify > ajv` and were published after the gate's suppression
+  baseline was written, so none of them was on it. Refreshing `bun.lock`
+  clears those and everything behind them. All nineteen high advisories the
+  closure carried were fixed by a release inside the range `package.json`
+  already declares, so only the lockfile moved — `fast-uri` 3.1.0 to 3.1.6
+  and 4.1.0 to 4.1.3, `find-my-way` 9.6.0 to 9.7.0, `ws` 8.20.0 to 8.21.0,
+  `@fastify/static` 10.1.0 to 10.1.2, `brace-expansion` 5.0.5 to 5.0.9,
+  `fastify` 5.10.0 to 5.12.1, plus `@hono/node-server`, `hono`,
+  `body-parser` and `qs` for the moderate and low bands. No range was
+  widened, no suppression was added and no `overrides` entry was introduced,
+  so a consumer installing actor-ts resolves the same fixed releases of the
+  runtime closure — `fastify`, `ts-pattern` and their transitives — out of
+  the published manifest exactly as this repository does. That claim stops
+  at the runtime closure: the optional peers' ranges were not raised,
+  because a peer floor is a consumer-visible change, so a range such as `ws:
+  ^8.0.0` still admits releases under a high advisory fixed only in 8.21.0,
+  and whether a consumer's own pin clears it is that consumer's audit to
+  run.
+
+  With the closure clean the entire eleven-ID `--ignore` baseline goes, and
+  the "Accepted advisories" table in `SECURITY.md` goes with it — the two
+  are asserted to be a bijection, so they had to move together. Measured
+  rather than assumed: `bun audit --audit-level=high` with no `--ignore`
+  flag reports no vulnerabilities where the same command reported nineteen
+  before.
+
+  `typescript` also stops being the manifest's only mandatory peer (#781).
+  It carried no `peerDependenciesMeta` entry, so npm 7 and later installed a
+  compiler — a large package with executable bin entries — into every
+  consumer that did not already have one, plain-JavaScript consumers and
+  production images running `npm i actor-ts --omit=dev` included, for a
+  package nothing under `src/` imports and no shipped declaration
+  references. The guard over peer declarations could not have reported it,
+  because it reads its subject list out of `peerDependenciesMeta` and a
+  mandatory peer never appears there; it now asserts that every declared
+  peer is marked optional, in a form that fails on `optional: false` as well
+  as on a missing entry.
+
+  What the manifest says now, which the paragraph above described only as a
+  guard: `typescript` carries `peerDependenciesMeta.typescript.optional =
+  true` like every other declared peer, while its range stays `^5.6.0 ||
+  ^6.0.0 || ^7.0.0`. A consumer that wants the compiler still gets the
+  version check; one that does not is no longer handed it.
+
+- **BREAKING — MariaDB and SQL Server pin a binary collation on every
+  `persistence_id` and `tag` column (#707).**
+
+  Both dialects previously inherited the server default, which folds case on
+  a stock install of either, so two ids differing only in case shared one
+  event stream and one durable-state row on those two backends while staying
+  distinct on Postgres, SQLite, MongoDB and DynamoDB. An actor started as
+  `Alice` would recover `alice`'s events, fold them into its own state and
+  append into `alice`'s stream; durable state keyed on the same column could
+  be read, overwritten or deleted across entities. The only symptom was a
+  run of `JournalConcurrencyError`s that reads like a storage fault.
+  Validating the id cannot close this, because both spellings pass any
+  character allow-list — what differs is the comparison, and that is a
+  property of the column.
+
+  The DDL now emits `COLLATE utf8mb4_bin` and `COLLATE
+  Latin1_General_100_BIN2` respectively. Note that `utf8mb4_bin` is PAD
+  SPACE, so trailing-space equality survives on MariaDB and MySQL; there is
+  no portable NO PAD binary collation to pin.
+
+  The SQL Server recipe is one transaction with `XACT_ABORT` on, and both
+  pages name what the migration window does to tag queries.
+  `RelationalQuery` joins `events_tags` to `events` on `persistence_id`, and
+  between the statements that re-collate the two tables the columns carry
+  different collations: SQL Server refuses that join with error 468, a hard
+  failure rather than a wrong answer, and the same conflict is permanent for
+  a `tagsTable` pointed at a new table beside a legacy `events` until
+  `events` is re-collated too. DDL is transactional on SQL Server, so inside
+  the transaction a reader blocks on the schema lock until `COMMIT` instead
+  of seeing the mixed state, and a failing statement rolls the whole batch
+  back. MariaDB resolves the same join under `utf8mb4_bin` — a `_bin`
+  collation wins over a `_ci` one of the same character set — so its page
+  notes only that tag queries in the window cannot use the un-migrated
+  side's index and are slow rather than wrong (#1507).
+
+  MariaDbQuery no longer claims the pinned utf8mb4_bin makes its tag index
+  as selective as Postgres's. It does for case and accent, which is what the
+  pin was for; utf8mb4_bin is PAD SPACE, so trailing-space variants still
+  fold together on MariaDB and do not on Postgres, and the pre-filter stays
+  less selective for them however new the table is. Answers are unaffected,
+  because RelationalQuery re-checks every row against the events table's own
+  tags column, so the cost is rows fetched and discarded. The dialect test
+  behind the collation pin also derives its list of DDL emitters from each
+  dialect's own keys instead of naming four by hand, so a fifth DDL family
+  cannot escape the assertion that exactly persistence_id and tag are
+  collated (#1507).
+
+  Pinning the collation pins the charset, which has an index-length
+  consequence the journal page carries and this entry did not: both
+  `VARCHAR(255)` columns of the `events_tags` primary key then count 1020
+  index bytes, 2056 for the four-column key. That is comfortable under
+  InnoDB's 3072-byte limit on the `DYNAMIC` row format — the default since
+  MariaDB 10.2 and MySQL 5.7 — and over the 767-byte limit of the legacy
+  `COMPACT` format, where the `CREATE TABLE` fails with error 1071 instead.
+  A custom schema that widens either column eats that headroom fast.
+
+  **Migration.** New databases pick the collation up automatically. An
+  existing one does not — the guarded `CREATE TABLE` never revisits a table
+  it finds — but the store now says so: at open it reads its own tables out
+  of the catalogue and warns, naming the table, the column and the collation
+  found (#1412). Run the `ALTER TABLE … MODIFY` (MariaDB, MySQL) or the
+  drop-constraint / `ALTER COLUMN` / recreate sequence (SQL Server, which
+  refuses to re-collate a column an index depends on) given on the MariaDB
+  and SQL Server journal pages, with no node writing. Check for
+  already-merged streams first: the ALTER splits them apart again, and those
+  actors then fail recovery with `JournalIntegrityError` on the resulting
+  sequence gap. The pages carry a query that detects them.
+
+- **BREAKING — Read-side tag filters are validated where every backend meets
+  them (#738).**
+
+  A caller-supplied filter value reached MongoDB's query document unbound. A
+  filter built straight out of request data — `?tag[$ne]=x`, which Express,
+  Fastify and Hono all parse into an object, since `ReadonlyArray<string>`
+  exists only at compile time — became a MongoDB operator expression. The
+  multikey `{ tags: 1, timestamp: 1 }` index could then neither serve nor
+  sort the query, so one request forced a full collection traversal, a
+  blocking in-memory sort, and every surviving document into the application
+  heap before the JavaScript refinement discarded all of them. Every other
+  backend binds the value and its driver refuses it, so MongoDB was the one
+  exposed.
+
+  `normalizeTagFilter` now requires every member of `all`, `any` and `not`
+  to be a string within the same length bound stored tags are held to. Two
+  adjacent erased-type holes close in the same place: an operator that is
+  not an array used to walk the string character by character, and a filter
+  that was neither string nor object read as the specification that matches
+  every event. `assertValidFilterTags` is exported from
+  `actor-ts/persistence` so an application can check a filter ahead of the
+  query, as `assertValidTags` already allows on the write side.
+
+  The read rules are deliberately narrower than the write rules. An empty
+  tag, a repeated tag, a comma and a control character are all refused on
+  write and all stay queryable, because a journal written before a rule
+  existed must remain inspectable — and `{ all: [''] }` is how the empty-tag
+  bucket is found in the first place.
+
+  normalizeTagFilter now copies each operator list, not only the object
+  around them. Its JSDoc promised a sanitisation boundary it did not
+  provide: the returned spec shared the caller's all, any and not arrays,
+  and MongoQuery carries spec.any into its $in document across an await on
+  openForQuery, so an application mutating its own filter array during that
+  window changed a query the validation had already approved. An absent
+  operator deliberately stays absent rather than becoming an empty list,
+  since any: [] matches nothing while an absent any imposes no constraint.
+  The documentation gains what the guard landed without: the two structural
+  refusals — an operator that is not an array, and a filter root that is
+  neither a tag string nor an object — and the fact that currentEventsByTag
+  and eventsByTag both refuse at the call rather than on the first result,
+  so a try/catch wrapped around only the for-await loop never sees the
+  error. The validator also records the one population the length rule
+  strands: a tag longer than the cap can only come from a journal written
+  before v0.12.0 or by a foreign writer, and those events stay readable by
+  persistenceId while no longer being queryable by tag (#1507).
+
+  **Migration.** A tag-filter member longer than `MAX_TAG_LENGTH` (255) now
+  throws instead of resolving to no events. It could never have matched,
+  since writes have been capped at the same length since #136, so shorten
+  the filter or drop the query. Nothing else newly rejected is expressible
+  in type-correct TypeScript.
+
+- **Detaching DevTools restores the two tracing switches it turns on at
+  attach** (#714).
+
+  On a system already exporting spans to an APM, `SpanTap.uninstall()` took
+  the branch that puts the previous tracer back — which touches neither
+  `recordRootSpans` nor `captureMessagePayloads`. After one
+  attach-and-detach cycle every actor message kept opening a root span
+  carrying `actor.message.payload`, the whole message serialised, and the
+  restored exporter kept shipping it to that backend until the process
+  restarted, with no log line and no metric to reveal it.
+
+  Both switches are now snapshotted at attach and put back on every branch —
+  restored rather than cleared, so a capture an application set for itself
+  survives a debugging session — and attaching to a system that already has
+  a tracer logs one warning line about what the attach changed for that
+  backend. The two existing assertions looked like they covered this and did
+  not: both ran on a fresh system, where the other branch clears the
+  switches as a side effect.
+
+  Swapping the exported no-op tracer in through `enable()` now clears both
+  switches as `disable()` does, which is what makes "every branch" true: the
+  extension reports itself disabled in that state, so a tap detaching
+  afterwards had been restoring a recording flag onto an extension that said
+  it was off.
+
+  The actor-tracing page's privacy caution — message field values are never
+  attached to spans, by design — now says that the default holds only until
+  captureMessagePayloads(true) or a DevTools attach switches payload capture
+  on, and links the DevTools tracing page for what an attach does to a
+  tracer the application already had. Both language mirrors (#714).
+
+
+- **The filesystem object-storage lock reclaim judged a planted entry by its
+  target, and could not stop asking** (#1360).  Taking `<key>.lock` was always
+  safe — POSIX specifies that an `O_CREAT|O_EXCL` create fails with `EEXIST` on
+  a symbolic link whatever it points at, so `{ flag: 'wx' }` never followed one.
+  The stale-lock recovery behind it did.  It asked `stat` how old the entry was,
+  and `stat` answers about the link's *target*, so a link aimed at an ancient
+  file let whoever planted it declare the lock abandoned.  The recovery now uses
+  `lstat` — the entry's own age — and refuses anything that is not a regular
+  file rather than removing it, because a regular file is the only thing this
+  backend ever writes there.  It also runs **at most once** per acquisition: the
+  branch is reached only after the timeout is already spent and both of its
+  retry paths skip the backoff, so an entry that kept giving the same answer was
+  an unbounded loop with no exit — a dangling link was exactly such an entry, and
+  it wedged `put` and `delete` on that key.  Measured rather than assumed: with
+  the fix reverted the new test does not fail, it hangs, because the loop's only
+  `await` never yields to the macrotask queue the test runner's timeout lives on.
+  One claim in the report does not survive contact with the code and is recorded
+  here rather than quietly fixed: `unlink` does not follow a final-component
+  link, so the old recovery removed the link and never touched its target.  Both
+  documentation mirrors, which named this as a known gap, now describe what the
+  reclaim checks.
+- **`HonoBackend` built a `Response` from an unvalidated status, so an
+  impossible one threw inside the request path instead of answering it**
+  (#1362).  `Response` rejects anything outside `101` and `[200, 599]` with a
+  `RangeError`, and every status reaching `writeResponse` comes from code the
+  backend does not control — a route handler, the `notFound` fallback, a
+  WebSocket `authorize` guard, or a `HttpError` whose `status` is not validated
+  at construction either.  A guard that meant to refuse an upgrade with `403`
+  and computed the number wrong took the response down rather than sending one,
+  and on the `onError` path there was no handler left to catch the throw.  A
+  status outside that range is now answered as `500` with the response the
+  caller actually built, so the request is served and only the impossible number
+  is replaced.  Not lifted to a shared helper on purpose: Node's writer accepts
+  `[100, 999]` and Fastify `[100, 600)`, so there is no single range all three
+  backends agree on, and a shared clamp would move the surprise rather than
+  remove it.
+- **Broker lifecycle events carried the driver's raw `Error`, which can embed
+  the credential #741 removed from the field beside it** (#1388).
+  `BrokerDisconnected.cause` and `BrokerReconnectFailed.cause` are published on
+  the system-wide `EventStream`, to the same audience and on the same schedule
+  as the `endpoint` that #741 made safe — and several drivers put the connection
+  target, userinfo included, into the message they throw, so the secret reached
+  the same place by a different route.  Both are now passed through a new
+  `redactErrorCredentials`, exported from the package root: it returns a **copy**
+  (the error belongs to the driver, which may still hold it and may have handed
+  it to listeners of its own) with the message, the stack, every own
+  string-valued property and the `cause` chain masked.  The copy carries the
+  original's prototype and own enumerable properties, so `instanceof`, `name`
+  and `code` — what a monitor actually branches on — still answer the same;
+  anything reachable only through a getter is deliberately dropped, since a
+  getter can recompute the secret.  `BrokerNotConnected` needed nothing: it
+  carries no cause.
+
+- **An HTTP/2 request whose body is still arriving when
+  `actor-ts.http.server.request-timeout` passes is answered `408` and its
+  stream reset** (#870). The key reached a server only as the HTTP/1.1
+  `requestTimeout` property, which no HTTP/2 stream reads, so on an HTTP/2
+  listener a request that never finished sending held its stream, and the
+  connection with it, open indefinitely while the binding reported the bound
+  in effect. Each stream now carries a receive deadline of its own, spent
+  once the client has finished sending, so a request received in full is
+  still never cut, however long its handler takes.
+
+- **A WebSocket connection the hub closes with a code a close frame cannot
+  carry, such as 1006, or with a reason over 123 bytes is now closed**
+  (#1431). The `ws`-backed backends (Fastify, Express, and Hono on Node) and
+  Deno's socket refuse such a close, and the socket stayed open while the
+  hub was told the client had left, so the peer stayed connected and kept
+  its `maxConnections` slot. `close()` now sends only what a close frame can
+  carry: a code it cannot carry goes out as 1000, and the reason is cut to
+  123 UTF-8 bytes between two characters. A close the transport refuses
+  anyway is followed by a hard close where the backend has one, and
+  `onClientDisconnected` still reports the code and reason that were passed.
+
+- **The runners behind the Hono backend keep TLS, the HTTP versions and the
+  listener their own: a `serveOptions` bag can no longer change them**
+  (#1486). The Node runner drops every `node:tls` server option from a
+  caller's `serveOptions.serverOptions`, so the typed `tls` is the whole TLS
+  configuration of the listener. Merged beneath the TLS material, an option
+  the typed `tls` left unset reached the listener: a `pfx` or an
+  `SNICallback` presented another certificate in place of the configured
+  one, `requestCert: true` made a one-way listener demand a client
+  certificate with no `ca` to verify it against, and switching
+  `rejectUnauthorized` off admitted a client without a certificate past a
+  configured demand (measured on node v26.10.0). The Bun runner drops every
+  TLS option `Bun.serve` reads from the top level of its options, the older
+  `certFile`, `keyFile` and `caFile` included, besides the `tls` member it
+  already dropped: with no `tls` configured, a bag `cert` and `key` made the
+  listener terminate TLS. It drops the bag's `http1` and `http3` too, so
+  HTTP/1.1 stays beside h2 on every runtime, where a bag `http1: false`
+  answered HTTP/1.1 with 505, and `routes`, `static` and `unix`: `Bun.serve`
+  answers a path in `routes` or `static` ahead of the runner's `fetch`, and
+  `unix` moves the listener off host and port. The Deno runner reserves
+  `certFile`, `keyFile`, `certChain`, `privateKey` and `path` besides `cert`
+  and `key`, with typed `tls` or without: on deno 2.6.8 a bag `certFile` or
+  `keyFile` made `serve()` throw. Internal: the runners are not exported,
+  and the only producer of either bag is the runners' own WebSocket bridge.
+
+- **A TCP framing `kind` other than `bytes`, `lines` or `length-prefixed` is
+  refused when the actor starts** (#1443). The refusal names `framing.kind`.
+  Read from HOCON such a kind used to become `bytes`, dropping the framing
+  and its size cap on a typo, and built in code it was framed as
+  `length-prefixed` on the default 16 MiB cap.
+
+- **A query parameter named `__proto__` stays an own parameter of
+  `request.query` on the Express and Hono backends** (#1449). Express keeps
+  it with its single value or its array of values, and Hono hands it to a
+  handler like any other parameter, on route requests and WebSocket upgrade
+  requests alike. `queryParam` and `pathParam` answer only for the
+  parameters a request carries: a name that was neither sent nor bound is
+  `undefined`, or a missing path parameter, never a member the record
+  inherits such as `constructor` or `toString`.
+
+- **An `MqttActor` or a `WebsocketClientActor` no longer takes a decoded
+  message body for one of its own signals** (#1431). Both actors dispatched
+  their internal signals on `kind` alone, and an actor at a `/user` path
+  receives whatever a remote node addresses to it, so a body such as
+  `{ kind: 'mqtt-connected' }` ran the handler of the signal it spelled.
+  Forged `mqtt-inbound`, `mqtt-connected` and `mqtt-disconnected` bodies
+  handed the peer's message to `onMessage` and to every fan-out target on a
+  matching filter, failing and restarting the actor (a broker disconnect and
+  reconnect) as soon as a handler read the payload, or ran `onConnected` or
+  `onDisconnected` with no change to the connection. Forged
+  `websocket-client-inbound`, `websocket-client-invalid`,
+  `websocket-client-connected` and `websocket-client-disconnected` bodies
+  ran `onMessage`, `onInvalidMessage`, `onConnected` or `onDisconnected`
+  with the peer's values, so a client that sends on connect sent again. Each
+  signal now has to carry a mark that only the framework's own signal
+  constructors set, a property keyed by a module-private symbol that no
+  decoder can produce, so such a body reaches `onSelfMessage` and is
+  declined as a dead letter. The commands are unchanged: `publish`,
+  `subscribe` and `unsubscribe` on an `MqttActor`, and `websocketSend(...)`
+  on a client, still work for anyone who holds the ref. It is the
+  requirement the WebSocket hub's signals already carry.
+
+- **BREAKING — A `bigint` now crosses either serializer only within
+  `-2^8192` to `2^8192 - 1`, checked before anything is parsed or written**
+  (#967). The JSON tree decoder takes three steps. It refuses a `__bigint__`
+  digit string longer than 2467 digits (a leading minus sign aside) without
+  parsing it. It parses only the spelling the encoder writes, a minus sign
+  only below zero and then decimal digits without a leading zero, so `''`,
+  `-`, `+5`, `007`, `-0`, whitespace and hex are refused on every runtime
+  alike (Bun's `BigInt()` used to read a lone `-` as `0n`). It refuses a
+  parsed value outside the range. `JsonSerializer`, the cluster wire and the
+  persistence payload codec therefore accept exactly what the CBOR codec's 1
+  KiB bignum cap admits. Both encoders refuse the same range where a value
+  is written: `toBinary` throws, `persist()` rejects without storing
+  anything, and a remote `tell` drops that one message and logs it. Before,
+  a SQLite journal kept such a row, and every later recovery of that entity
+  failed on it. Parsing a decimal string costs more than linear time in its
+  length, and nothing bounded it: measured on Bun 1.4.2, a
+  four-million-digit tag in a request body held the decode for almost two
+  seconds. Every refusal is a `SerializationError` (a `CborEncodeError` from
+  the CBOR encoder), and none echoes the digits.
+
+  **Migration.** Carry an integer wider than 8192 bits as a decimal string
+  field and convert it with `BigInt()` after checking its length (CBOR caps
+  bignums at the same 8192 bits), and write a `__bigint__` by hand only as
+  `String(value)` would.
+
+- **The config dump and DevTools withhold a value a credential-named
+  environment variable supplied, whatever its key is called** (#1788,
+  severity low). `my-app.dsn = ${DB_PASSWORD}` printed the password in full
+  in the boot dump, in `configDumpLines` and in DevTools' `config.resolved`
+  answer: every rule read the key, and the merged tree no longer said where
+  a value came from. The loader now records, per leaf, the variables whose
+  values make it up — read directly, through a reference to another key or
+  as a piece of a concatenation, out of the real environment or a `.env`
+  file — and both renderers withhold a leaf when one of those names reads as
+  a credential by the rule a key is read by, in whichever layer read it, a
+  code override that replaced the key included. Code overrides record their
+  own (`Config.parseString` and `Config.parseFile`, kept through `merge` and
+  `withFallback`), and a `WorkerMesh` worker receives them beside the tree
+  as `WorkerMeshInitData.variables`, so its dump withholds the same keys.
+
+  Every dump line now names the variables behind its value, withheld or not
+  (`[application, from $DB_HOST]`), and the header counts the keys withheld
+  by variable name apart from the other reasons and names the project
+  `reference.conf` and the `.env` file it looked for. A `config.resolved`
+  entry carries the names as `variables`, and the answer `referencePath` and
+  `environmentFilePath` beside `secretsPath`; the panel names the bundled
+  file `reference.conf (actor-ts)` and the project's own `reference.conf`,
+  and shows the variables in a row's tooltip. A password written out under a
+  key that does not name one still prints, as do the query-string,
+  `Server=…;Password=…` and scheme-less `user:password@host` forms.
+
+- **The working directory now decides more of the configuration on Node and
+  Deno** (#1785). `Config.load` reads a `./reference.conf` and a `./.env`
+  beside `./application.conf` and `./secrets.conf`, and a `.env` may name
+  the other files and the profile (`ACTOR_TS_CONFIG=…`,
+  `ACTOR_TS_PROFILE=…`). On Bun a `./.env` already reached `process.env`
+  before any code ran; on Node and Deno a file dropped into the working
+  directory now does the same for the config. Whoever can write a file there
+  can therefore change what a system is configured with, as they already
+  could with an `application.conf`. A deployment that does not trust its
+  working directory names every file in code — `withReferenceConfigFile`,
+  `withConfigFile`, `withSecretsFile`, `withEnvironmentFile`, each also
+  taking `false` to read none — or runs from a directory it controls. On
+  Deno, a narrow `--allow-read` has to name the four files, or say `false`
+  for the ones it does not ship, and `--allow-env` every variable a `${VAR}`
+  reads; the Deno runtime page lists both.
+
 ## [0.17.0] — 2026-08-29
 
 ### Added
@@ -6716,7 +18589,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   instead of from the first upgrade.
 
 - **Security scanning and a security policy: CodeQL, an advisory gate over
-  `bun.lock`, a CycloneDX SBOM from the next release onward, and a
+  `bun.lock`, a CycloneDX SBOM from v0.17.0 onward, and a
   `SECURITY.md` that names a channel (#539).**
 
   The repository had never been statically analysed once —

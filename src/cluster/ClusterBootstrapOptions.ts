@@ -1,5 +1,6 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
+import { ConfigError } from '../config/Config.js';
 import type { Config } from '../config/Config.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
 import { ClusterReadinessOptionsValidator } from './ClusterReadiness.js';
@@ -11,27 +12,6 @@ import type { StableObservationTuning } from './bootstrap/StableObservationOptio
 import type { ProcessSignal } from '../util/ProcessSignal.js';
 
 /**
- * Built-in default for {@link ClusterBootstrapOptionsType.port} — the
- * remoting port a node binds when neither the options nor `reference.conf`
- * name one.  2552 is Akka's historical cluster port, kept so a mixed
- * toolchain's firewall rules and runbooks carry over unchanged.
- */
-export const DEFAULT_PORT = 2552;
-
-/**
- * Built-in default for {@link ClusterBootstrapOptionsType.host} — the
- * interface a node binds when neither the options nor the environment name
- * one.
- *
- * A wildcard is the right answer for *binding*, and only for binding: a
- * container accepts traffic on an address it does not know at start-up, so
- * "every interface" is what it has to say.  What this value must never become
- * is the node's identity — see
- * {@link ClusterBootstrapOptionsType.advertisedHost} and #944.
- */
-export const DEFAULT_BIND_HOST = '0.0.0.0';
-
-/**
  * Built-in timeout for {@link ClusterBootstrapOptionsType.awaitReady} when it
  * is `true` rather than a number of milliseconds — how long `bootstrap`
  * waits for the node to reach `up` before giving up.
@@ -39,9 +19,86 @@ export const DEFAULT_BIND_HOST = '0.0.0.0';
 export const DEFAULT_AWAIT_READY_MS = 5_000;
 
 /**
+ * The `discovery:` values `actor-ts.cluster.bootstrap.discovery.method` can
+ * name — the string half of {@link ClusterBootstrapOptionsType.discovery},
+ * since the object halves (a `SeedProvider`, a `{ providers }` chain) are
+ * shapes HOCON cannot express.
+ *
+ * One list, three consumers: the option's own type is
+ * {@link DiscoveryMethod}, the reader validates against this array, and the
+ * published enum in `reference.conf` is documented from it.  A second copy
+ * anywhere would be a place for the three to drift.
+ */
+export const DISCOVERY_METHODS = ['auto', 'kubernetes', 'dns', 'config'] as const;
+
+/** One of {@link DISCOVERY_METHODS}. */
+export type DiscoveryMethod = (typeof DISCOVERY_METHODS)[number];
+
+/**
+ * Built-in default for {@link ClusterBootstrapOptionsType.discovery} — the
+ * env-driven ladder rather than one pinned provider.
+ *
+ * Named out of the two `?? 'auto'` literals in `ClusterBootstrap` so
+ * `actor-ts.cluster.bootstrap.discovery.method` has a constant to be pinned
+ * against (#860).  `'auto'` is also why the published enum lists four values
+ * and not the issue's three: a key that could not express the behaviour the
+ * framework already ships would be a trap, not a knob.  Annotated rather than
+ * inferred so a typo here is a compile error rather than a fifth method.
+ */
+export const DEFAULT_DISCOVERY_METHOD: DiscoveryMethod = 'auto';
+
+/**
+ * Built-in default for {@link ClusterBootstrapOptionsType.newClusterEnabled}
+ * — on, so a deployment's first start and single-node development need no
+ * configuration to form a cluster (#860).  The cost of on is carried by the
+ * warning `bootstrapCluster` logs at every start while it is, not by the
+ * default: a default of off would make every first start fail.
+ */
+export const DEFAULT_NEW_CLUSTER_ENABLED = true;
+
+/**
  * Options accepted by {@link Cluster.bootstrap}.  Everything is
  * optional except `name`; sensible defaults turn the call into a
  * single-line hello-cluster.  Build one with {@link ClusterBootstrapOptions}.
+ *
+ * **What a bootstrap forwards (#860).**  Beside the fields that are its own —
+ * discovery, stable observation, `newClusterEnabled`, readiness, the signal
+ * handlers, the receptionist — it carries a fixed set of the fields of the two
+ * option types it builds a node from, under their names there:
+ *
+ *   - to `ActorSystem.create`: `logger`, `otelLogs`, `logSinks`, `logLevel`,
+ *     `config`, `configFile`, `persistence`;
+ *   - to `Cluster.join`: `host`, `port`, `advertisedHost`, `advertisedPort`
+ *     (each resolved through its own chain first), `transport`, the seeds
+ *     (`seeds`, or what discovery found), `roles`, `appVersion`,
+ *     `failureDetector`, `failureDetectorAutoDown`, `gossipIntervalMs`,
+ *     `downing`, `splitBrainResolver`, `shutdownAfterUnsuccessfulJoinMs`.
+ *
+ * Each travels only when it is set.  Whatever is forwarded is an explicit
+ * option and outranks the config file in the system's and the join's merge,
+ * so an unset field forwarded as a default would shadow the file without a
+ * word — the #836 defect.  `selfElection` is not among them: it is the
+ * bootstrap's own decision, derived from stable observation and
+ * `newClusterEnabled`.
+ *
+ * **Every other field of `ClusterOptionsType` and `ActorSystemOptionsType` is
+ * HOCON-only on this path** — set under `actor-ts.cluster.*`,
+ * `actor-ts.remote.*` or the system's own blocks, in `application.conf` or
+ * through `config` / `configFile`.  Nothing is lost by that: the system and
+ * the join read their keys themselves, so a HOCON-only field reaches a
+ * bootstrapped node with the precedence it has on a direct join.  Forwarding
+ * every field instead would make this a second copy of two option types,
+ * where each forwarded field is one more place a change to its target has to
+ * remember, and a forward that is missed or made unconditional is silent —
+ * the target still validates and the file still parses.  The set is what an
+ * application decides in code: the node's identity, its membership, how
+ * failures are handled, the join's deadline and where the logs go.  What
+ * HOCON cannot express (a dispatcher instance, a scheduler, startup tasks)
+ * needs `ActorSystem.create` + `Cluster.join`.  The config profile, which no
+ * file can select for itself, still answers to `ACTOR_TS_PROFILE`, and the
+ * project `reference.conf`, the secrets file and the `.env` file answer to
+ * `ACTOR_TS_REFERENCE_CONFIG`, `ACTOR_TS_SECRETS_CONF` and `ACTOR_TS_ENV_FILE`
+ * (#1769).
  */
 export type ClusterBootstrapOptionsType = {
   /* ----------------------------- System -------------------------------- */
@@ -57,10 +114,31 @@ export type ClusterBootstrapOptionsType = {
   readonly persistence?: ActorSystemOptionsType['persistence'];
 
   /**
+   * The system logger built from the OpenTelemetry Logs API — see
+   * `ActorSystemOptionsType.otelLogs` (#1466).  The system builds it, so
+   * `actor-ts.tracing.logger-name` / `logger-version` layer under these
+   * options as they do on `ActorSystem.create`.  {@link logger} wins over it;
+   * it wins over {@link logSinks} and the `actor-ts.logger.sinks.*` block.
+   */
+  readonly otelLogs?: ActorSystemOptionsType['otelLogs'];
+
+  /**
+   * Log destinations, wrapped in a `MultiSinkLogger` by the system — see
+   * `ActorSystemOptionsType.logSinks`.  Set, the list replaces the
+   * `actor-ts.logger.sinks.*` block wholesale, an empty list included; unset,
+   * the block decides.
+   */
+  readonly logSinks?: ActorSystemOptionsType['logSinks'];
+
+  /**
    * Whether the bootstrap helper installs `SIGTERM` + `SIGINT`
    * handlers that call the returned `shutdown()` once.  Set
    * to a list of signals to customise, or to `false` to disable.
-   * Default: `['SIGTERM', 'SIGINT']`.
+   *
+   * Left unset, the default comes from
+   * `actor-ts.coordinated-shutdown.run-by-process-signals` (itself `true`),
+   * so a deployment can take the handlers off every bootstrapped node from
+   * its config file.  Any value here is explicit and wins over that key.
    */
   readonly shutdownOnSignals?: boolean | ReadonlyArray<ProcessSignal>;
 
@@ -77,12 +155,22 @@ export type ClusterBootstrapOptionsType = {
    * the ordinary case and covers both jobs; naming a wildcard binds every
    * interface and leaves the advertised address to be derived (#944).
    *
-   * Resolution order for the bind host:
+   * Resolution order for the bind host — the framework's usual precedence
+   * with the environment appended at the bottom (#1435):
    *   1. `options.host`
-   *   2. `process.env.CLUSTER_HOST`
-   *   3. `process.env.POD_IP` (Kubernetes, via the downward API)
-   *   4. `process.env.HOSTNAME`
-   *   5. {@link DEFAULT_BIND_HOST}
+   *   2. `actor-ts.remote.tcp.host`
+   *   3. `process.env.CLUSTER_HOST`
+   *   4. `process.env.POD_IP` (Kubernetes, via the downward API)
+   *   5. `process.env.HOSTNAME`
+   *   6. `DEFAULT_BIND_HOST` (`'0.0.0.0'`, in `ClusterOptions.ts`)
+   *
+   * The key sits above the variables, as `actor-ts.discovery.*` does above
+   * the `CLUSTER_*` variables discovery reads, and ships comment-only for the
+   * same reason: a published value would be the config layer on every node
+   * and leave the variables below it unreachable.  A deployment that wants a
+   * variable to win over its own file lifts it with a substitution —
+   * `host = ${?CLUSTER_HOST}` — which is a read during parsing, not a fourth
+   * layer.
    *
    * Two caveats on the environment stages, both of which cost a cluster when
    * they are assumed away.  `POD_IP` exists only if the pod spec exports it —
@@ -104,16 +192,38 @@ export type ClusterBootstrapOptionsType = {
    * here — an address meaning "every interface" identifies nothing, and every
    * node that claimed it would claim the same string.
    *
-   * Unset resolves through {@link host} (when that is not a wildcard), then
-   * `CLUSTER_HOST` / `POD_IP` / `HOSTNAME`, then loopback.
+   * Unset resolves through `actor-ts.remote.tcp.advertised-host`, then
+   * {@link host} (when that is not a wildcard), then `CLUSTER_HOST` /
+   * `POD_IP` / `HOSTNAME`, then loopback — the chain `Cluster.join` runs, so
+   * the identity the bootstrap elects on is the one the node announces.
    */
   readonly advertisedHost?: string;
 
   /**
-   * Bind port.  Default: `process.env.CLUSTER_PORT` (when present and
-   * a finite integer), otherwise `2552`.
+   * The port to bind — and, unless {@link advertisedPort} overrides it, the
+   * port peers dial.  Resolution order, the same shape as {@link host}'s
+   * (#1435): `options.port`, then `actor-ts.remote.tcp.port`, then
+   * `process.env.CLUSTER_PORT` (when present and a positive integer), then
+   * `DEFAULT_PORT` (`2552`, in `ClusterOptions.ts`).  A port in the file
+   * therefore outranks `CLUSTER_PORT`; the variable answers on a node whose
+   * file names none.
    */
   readonly port?: number;
+
+  /**
+   * The port peers dial, when it differs from the bound one (#845).
+   *
+   * The published-container-port shape: the process listens on 2552 and the
+   * outside world reaches it on whatever `docker run -p 3000:2552` published,
+   * so 3000 is what belongs in the seed lists and the gossip frames.  There is
+   * no environment stage behind it — unlike {@link port}, which reads
+   * `CLUSTER_PORT` — because no platform publishes the mapping anywhere a
+   * process can read it.
+   *
+   * Unset means `actor-ts.remote.tcp.advertised-port`, and without that the
+   * same as {@link port}.
+   */
+  readonly advertisedPort?: number;
 
   /** Transport override.  Default: `TcpTransport`. */
   readonly transport?: ClusterOptionsType['transport'];
@@ -127,19 +237,22 @@ export type ClusterBootstrapOptionsType = {
   /**
    * Discovery strategy.  Values:
    *
-   *   - `'auto'` (default) — env-driven {@link autoDiscovery} chain.
-   *   - `'kubernetes' | 'dns' | 'config'` — pin to a single provider,
-   *     still configured from env vars.
+   *   - `'auto'` (default) — the {@link autoDiscovery} ladder.
+   *   - `'kubernetes' | 'dns' | 'config'` — pin to a single provider.
    *   - a `SeedProvider` instance — use as-is.
    *   - `{ providers: [...] }` — assemble a custom aggregate chain.
+   *
+   * Unset, the string half falls through to
+   * `actor-ts.cluster.bootstrap.discovery.method` and then to
+   * {@link DEFAULT_DISCOVERY_METHOD}; the two object halves are code-only,
+   * since HOCON cannot express either.  Whichever provider results reads its
+   * own settings from `actor-ts.discovery.*` and then from the `CLUSTER_*`
+   * variables (#860).
    *
    * Ignored when `seeds` is set.
    */
   readonly discovery?:
-    | 'auto'
-    | 'kubernetes'
-    | 'dns'
-    | 'config'
+    | DiscoveryMethod
     | SeedProvider
     | { readonly providers: ReadonlyArray<SeedProvider> };
 
@@ -172,10 +285,72 @@ export type ClusterBootstrapOptionsType = {
    */
   readonly stableObservation?: boolean | StableObservationTuning;
 
+  /**
+   * May this node **form a new cluster** when it finds nobody to join (#860)?
+   *
+   *   - `true` — yes, which is what a deployment's very first start needs and
+   *     what single-node development relies on.  The bootstrap logs one WARN
+   *     per start while it is on, naming
+   *     `actor-ts.cluster.bootstrap.new-cluster-enabled`.
+   *   - `false` — never.  The self-election policy handed to the join is
+   *     `'never'` on both paths — the plain one, where it would otherwise be
+   *     `'immediate'`, and stable observation, where the elected node would
+   *     otherwise self-elect after its grace — and an explicit `seeds: []`,
+   *     which says "I am the first node", is refused with an `OptionsError`.
+   *     A node that then finds nobody stays `joining`: under the default
+   *     {@link awaitReady} the start rejects with `ClusterReadyTimeoutError`;
+   *     with `awaitReady: false` it resolves and goes on waiting for a leader
+   *     to promote it.
+   *
+   * Unset falls through to `actor-ts.cluster.bootstrap.new-cluster-enabled`
+   * and then to {@link DEFAULT_NEW_CLUSTER_ENABLED}.  Turn it off once the
+   * cluster exists: on every start after the first, a node cut off from its
+   * peers would otherwise found a second cluster beside the running one.
+   */
+  readonly newClusterEnabled?: boolean;
+
   readonly roles?: ClusterOptionsType['roles'];
+
+  /**
+   * The application version this node states to its peers — see
+   * `ClusterOptionsType.appVersion`.  Unset, `actor-ts.cluster.app-version`
+   * answers, which is the usual home for it (`app-version = ${?APP_VERSION}`).
+   * A value from the environment is read as JSON first, so an unquoted
+   * `APP_VERSION=1.10` reaches the peers as `1.1`; quote such a value inside
+   * the variable (`APP_VERSION='"1.10"'`), or set it in code.
+   */
+  readonly appVersion?: ClusterOptionsType['appVersion'];
+
   readonly failureDetector?: ClusterOptionsType['failureDetector'];
+
+  /**
+   * Whether the failure detector removes an unreachable peer itself when no
+   * {@link downing} provider is configured — see
+   * `ClusterOptionsType.failureDetectorAutoDown`.  Unset,
+   * `actor-ts.cluster.failure-detector.auto-down` answers.
+   */
+  readonly failureDetectorAutoDown?: ClusterOptionsType['failureDetectorAutoDown'];
+
   readonly gossipIntervalMs?: ClusterOptionsType['gossipIntervalMs'];
   readonly downing?: ClusterOptionsType['downing'];
+
+  /**
+   * *When* {@link downing} is consulted — the stability window and the
+   * unstable-escalation switch; see `ClusterOptionsType.splitBrainResolver`.
+   * Merged per field over `actor-ts.cluster.split-brain-resolver`, so a field
+   * left out here still comes from the file.
+   */
+  readonly splitBrainResolver?: ClusterOptionsType['splitBrainResolver'];
+
+  /**
+   * How long the join may stay `joining` before it gives up, in ms — see
+   * `ClusterOptionsType.shutdownAfterUnsuccessfulJoinMs` (#1500); `0` sets no
+   * deadline.  Unset, `actor-ts.cluster.shutdown-after-unsuccessful-join`
+   * answers.  The value here, or the file's when this is unset, is the one
+   * the join arms, so it is also the one {@link awaitReady} composes with and
+   * the one held to the election budget behind {@link stableObservation}.
+   */
+  readonly shutdownAfterUnsuccessfulJoinMs?: ClusterOptionsType['shutdownAfterUnsuccessfulJoinMs'];
 
   /**
    * Auto-start the {@link Receptionist} extension so service-key
@@ -202,6 +377,26 @@ export type ClusterBootstrapOptionsType = {
    * means a formed cluster, never a node still `joining` (#943).  To restore
    * the old fire-and-forget shape, pass `awaitReady: false` and wait (or
    * don't) yourself via `cluster.awaitReady().catch(…)`.
+   *
+   * **It composes with the join's own deadline** —
+   * {@link shutdownAfterUnsuccessfulJoinMs}, or
+   * `actor-ts.cluster.shutdown-after-unsuccessful-join` where that is unset —
+   * which the join under every `bootstrap()` arms when it is set, counted from
+   * the join, so after discovery and any stable observation (#1500):
+   *
+   *   - this budget fires first → the rejection above; the pipeline runs with
+   *     `ClusterJoinUnsuccessfulReason`, the reason the give-up passes too;
+   *   - the give-up fires first → the wait ends at once, the bootstrap awaits
+   *     the pipeline the give-up started, and it rejects with a
+   *     `ClusterReadyTimeoutError` that names that key and carries its
+   *     deadline as `timeoutMs`;
+   *   - `false` / `0` → the give-up is the only deadline left once
+   *     `bootstrap()` has returned;
+   *   - behind {@link stableObservation}, a give-up that does not exceed the
+   *     self-election grace + 5 000 ms — the computed budget above — is
+   *     refused before the join with an `OptionsError` naming both keys: every
+   *     node but the elected one waits for that grace to run out with nothing
+   *     able to promote it, and would give up on a cluster about to form.
    */
   readonly awaitReady?: boolean | number | ClusterReadinessOptions;
 };
@@ -210,9 +405,9 @@ export type ClusterBootstrapOptionsType = {
  * Fluent builder for {@link ClusterBootstrapOptionsType} — the sole input
  * to {@link Cluster.bootstrap}.  `name` is required; everything else has
  * a sensible default.  Polymorphic / whole-value fields (`transport`,
- * `downing`, `discovery`, `failureDetector`, `seeds`, `roles`, the
- * logger / config / persistence forwards) are passed as-is via a single
- * `withX(value)`.
+ * `downing`, `splitBrainResolver`, `discovery`, `failureDetector`, `seeds`,
+ * `roles`, the logger / config / persistence forwards) are passed as-is via a
+ * single `withX(value)`.
  *
  *     const { system, cluster, shutdown } = await Cluster.bootstrap(
  *       ClusterBootstrapOptions.create('my-app').withPort(2552),
@@ -235,6 +430,24 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
     return this.set('logger', logger);
   }
 
+  /**
+   * Build the system logger from the OpenTelemetry Logs API — forwarded to
+   * `ActorSystem.create`, which layers `actor-ts.tracing.logger-name` /
+   * `logger-version` under these options.  Ignored if `withLogger` is set;
+   * wins over `withLogSinks` and the HOCON sinks.
+   */
+  withOtelLogs(otelLogs: NonNullable<ClusterBootstrapOptionsType['otelLogs']>): this {
+    return this.set('otelLogs', otelLogs);
+  }
+
+  /**
+   * Log destinations forwarded to `ActorSystem.create`, which wraps them in a
+   * `MultiSinkLogger`.  Ignored if `withLogger` or `withOtelLogs` is set.
+   */
+  withLogSinks(logSinks: NonNullable<ClusterBootstrapOptionsType['logSinks']>): this {
+    return this.set('logSinks', logSinks);
+  }
+
   /** Log level forwarded to `ActorSystem.create`. */
   withLogLevel(logLevel: NonNullable<ClusterBootstrapOptionsType['logLevel']>): this {
     return this.set('logLevel', logLevel);
@@ -245,7 +458,7 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
     return this.set('config', config);
   }
 
-  /** Config file path forwarded to `ActorSystem.create`. */
+  /** Config file path forwarded to `ActorSystem.create`; `false` reads no application file. */
   withConfigFile(configFile: NonNullable<ClusterBootstrapOptionsType['configFile']>): this {
     return this.set('configFile', configFile);
   }
@@ -268,8 +481,9 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
 
   /**
    * The interface to bind — and, unless {@link withAdvertisedHost} overrides
-   * it, the address gossiped for peers to dial back.  Defaults resolve via
-   * `CLUSTER_HOST` / `POD_IP` / `HOSTNAME` / `0.0.0.0`.
+   * it, the address gossiped for peers to dial back.  Unset resolves via
+   * `actor-ts.remote.tcp.host`, then `CLUSTER_HOST` / `POD_IP` / `HOSTNAME`,
+   * then `0.0.0.0`.
    */
   withHost(host: string): this {
     return this.set('host', host);
@@ -283,9 +497,21 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
     return this.set('advertisedHost', advertisedHost);
   }
 
-  /** Bind port.  Defaults to `CLUSTER_PORT` env or `2552`. */
+  /**
+   * The port to bind — and, unless {@link withAdvertisedPort} overrides it,
+   * the port gossiped for peers to dial back.  Unset resolves via
+   * `actor-ts.remote.tcp.port`, then the `CLUSTER_PORT` env var, then `2552`.
+   */
   withPort(port: number): this {
     return this.set('port', port);
+  }
+
+  /**
+   * The port peers dial, when it differs from the bound one — the published
+   * port of a `docker run -p 3000:2552` (#845).
+   */
+  withAdvertisedPort(advertisedPort: number): this {
+    return this.set('advertisedPort', advertisedPort);
   }
 
   /** Transport override.  Default: `TcpTransport`. */
@@ -311,14 +537,42 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
     return this.set('stableObservation', stableObservation);
   }
 
+  /**
+   * Whether this node may form a new cluster when it finds nobody to join —
+   * `true` (the default), or `false`, the setting for every start after a
+   * deployment's first.  See
+   * {@link ClusterBootstrapOptionsType.newClusterEnabled}.
+   */
+  withNewClusterEnabled(enabled = true): this {
+    return this.set('newClusterEnabled', enabled);
+  }
+
   /** Role tags exposed to other members. */
   withRoles(roles: NonNullable<ClusterBootstrapOptionsType['roles']>): this {
     return this.set('roles', roles);
   }
 
+  /**
+   * The application version this node states to its peers — an advisory
+   * label for operators; nothing places, routes or downs on it.
+   */
+  withAppVersion(appVersion: string): this {
+    return this.set('appVersion', appVersion);
+  }
+
   /** Failure-detector thresholds. */
   withFailureDetector(failureDetector: NonNullable<ClusterBootstrapOptionsType['failureDetector']>): this {
     return this.set('failureDetector', failureDetector);
+  }
+
+  /**
+   * Whether the failure detector removes an unreachable peer itself when no
+   * downing provider is configured.  Default `true`, the peer removed at
+   * `down-after`; `false` parks it at `unreachable` until a strategy or an
+   * operator decides (#1426).
+   */
+  withFailureDetectorAutoDown(autoDown: boolean): this {
+    return this.set('failureDetectorAutoDown', autoDown);
   }
 
   /** How often gossip is pushed to a random reachable peer. */
@@ -329,6 +583,24 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
   /** Optional split-brain resolver. */
   withDowning(downing: NonNullable<ClusterBootstrapOptionsType['downing']>): this {
     return this.set('downing', downing);
+  }
+
+  /**
+   * When the resolver is consulted — the stability window and the
+   * unstable-escalation switch (#839).  Merged per field over the config
+   * file's values, like {@link withFailureDetector}.
+   */
+  withSplitBrainResolver(splitBrainResolver: NonNullable<ClusterBootstrapOptionsType['splitBrainResolver']>): this {
+    return this.set('splitBrainResolver', splitBrainResolver);
+  }
+
+  /**
+   * Give the join up after this many ms, if nothing can promote this node by
+   * then — warn, leave, and run the coordinated-shutdown pipeline with
+   * `ClusterJoinUnsuccessfulReason`.  0 sets no deadline (default) (#1500).
+   */
+  withShutdownAfterUnsuccessfulJoinMs(ms: number): this {
+    return this.set('shutdownAfterUnsuccessfulJoinMs', ms);
   }
 
   /** Auto-start the Receptionist extension.  Default `true`. */
@@ -362,7 +634,15 @@ export class ClusterBootstrapOptionsValidator extends OptionsValidator<ClusterBo
     // Positive integer (not the TCP 1..65535 range) — the bootstrap port may
     // be a synthetic InMemoryTransport node id, same as ClusterOptions.port.
     this.positiveInt('port');
+    // Same helper for the same reason as `port` — the advertised port is an
+    // identity discriminator, not necessarily a TCP port number (#845).
+    this.positiveInt('advertisedPort');
     this.positiveNumber('gossipIntervalMs');
+    // The join's own rule for the field, checked here as well because the
+    // bootstrap judges the deadline itself — against the election budget,
+    // before the join's validator ever sees it — and `NaN` would otherwise be
+    // refused there for the wrong reason, after a system had been built.
+    this.nonNegativeNumber('shutdownAfterUnsuccessfulJoinMs');
     // awaitReady is boolean | number(ms) | readiness bag; a numeric budget
     // must be >= 0 (0 = skip), and a bag is held to the readiness rules here
     // — before the ActorSystem exists — rather than only at consume time.
@@ -389,6 +669,50 @@ export type ClusterBootstrapConfigDefaults = {
 };
 
 /**
+ * The half of `actor-ts.cluster.bootstrap` that decides the join plan — which
+ * provider the bootstrap builds, what it asks about, and what an empty answer
+ * means (#860).
+ *
+ * Its own type and its own reader rather than more fields on
+ * {@link ClusterBootstrapConfigDefaults}, for the reason the block already
+ * has two readers instead of one: they have different consumers and different
+ * lifetimes.  The timings behind `readStableObservationOptionsFromConfig` are
+ * read only under stable observation, the readiness pair is read after the
+ * join, and these are read before it.  Widening the readiness type would
+ * also have made every exact-object assertion about it an assertion about
+ * discovery, which is how a test stops saying what its name says.
+ *
+ * `newClusterEnabled` sits beside the `discovery` pair rather than in a reader
+ * of its own because it shares their consumer and their moment: it is the
+ * other half of the same decision — a provider that answers nothing is "join
+ * nobody", and this flag says whether "nobody" may mean "found a cluster".
+ */
+export type ClusterBootstrapDiscoveryDefaults = {
+  /**
+   * Which seed provider the bootstrap builds when the caller named no
+   * `discovery:` — the string half of that option only.  A `SeedProvider`
+   * instance and a `{ providers }` chain stay code-only: they are objects
+   * HOCON cannot express, and a name-to-instance registry is #160's shape,
+   * not this one's.
+   */
+  readonly method?: DiscoveryMethod;
+  /**
+   * The service the provider asks about — the DNS name resolved and the
+   * Kubernetes Service whose `Endpoints` are read.  Layered above
+   * `CLUSTER_SERVICE_NAME` rather than below it; see
+   * `AutoDiscoveryOptionsType`.
+   */
+  readonly serviceName?: string;
+  /**
+   * `actor-ts.cluster.bootstrap.new-cluster-enabled` — whether a node that
+   * finds nobody may form a new cluster.  Published `on`, so it is present
+   * on every node that loads the reference layer; absent only from a config
+   * built without it.
+   */
+  readonly newClusterEnabled?: boolean;
+};
+
+/**
  * Read the readiness pair of the bootstrap block.  Only keys actually
  * present are returned, so an absent one falls through to the computed /
  * built-in default instead of landing as an explicit `undefined`.
@@ -404,6 +728,54 @@ export function readClusterBootstrapDefaultsFromConfig(
   } = {};
   if (config.hasPath(keys.awaitReady)) out.awaitReadyMs = config.getDuration(keys.awaitReady);
   if (config.hasPath(keys.minimumMembers)) out.minimumMembers = config.getInt(keys.minimumMembers);
+  return out;
+}
+
+/**
+ * Read the `discovery` sub-block and `new-cluster-enabled` — what
+ * `bootstrapCluster` layers under the caller's `discovery:` and
+ * `newClusterEnabled` options (#860).  Absent keys stay absent, for the
+ * reason the reader above gives.
+ *
+ * `service-name` is additionally dropped when it is the empty string it
+ * ships as: `""` is the published *shape* of the key, not a service anyone
+ * runs with, and passing it on would shadow `CLUSTER_SERVICE_NAME` with a
+ * value nobody wrote — the reading `readDowningFromConfig` gives the three
+ * `role` placeholders.
+ *
+ * `method` is rejected rather than ignored when it names something outside
+ * {@link DISCOVERY_METHODS}: a typo would otherwise select the `auto` ladder
+ * silently, and a node that quietly discovers *differently* from its peers is
+ * the split-brain shape the bootstrap exists to close.  A `ConfigError` here
+ * reaches the caller through `bootstrapCluster`'s own guard, which terminates
+ * the just-created system before rethrowing.
+ */
+export function readClusterBootstrapDiscoveryFromConfig(
+  config: Config,
+): ClusterBootstrapDiscoveryDefaults {
+  const keys = ConfigKeys.cluster.bootstrap;
+  const out: {
+    -readonly [K in keyof ClusterBootstrapDiscoveryDefaults]:
+    ClusterBootstrapDiscoveryDefaults[K]
+  } = {};
+  if (config.hasPath(keys.discovery.method)) {
+    const method = config.getString(keys.discovery.method);
+    if (!(DISCOVERY_METHODS as readonly string[]).includes(method)) {
+      throw new ConfigError(
+        `${keys.discovery.method} must be one of ${DISCOVERY_METHODS.join(' | ')} — got "${method}"`,
+      );
+    }
+    out.method = method as DiscoveryMethod;
+  }
+  if (config.hasPath(keys.discovery.serviceName)) {
+    const serviceName = config.getString(keys.discovery.serviceName).trim();
+    if (serviceName.length > 0) out.serviceName = serviceName;
+  }
+  // `getBoolean` refuses anything that is not one of HOCON's six boolean
+  // spellings, which reaches the caller through the bootstrap's guard.  A
+  // malformed formation switch guessed either way is the wrong outcome on
+  // half the deployments that wrote it.
+  if (config.hasPath(keys.newClusterEnabled)) out.newClusterEnabled = config.getBoolean(keys.newClusterEnabled);
   return out;
 }
 

@@ -46,7 +46,10 @@ Drei Muster:
 
 1. **Langsamer zugrunde liegender Store** — Object-Storage mit
    Multi-Hop-Netzwerklatenz, verschlüsselter State mit teurer
-   Entschlüsselung.
+   Entschlüsselung.  Für den verschlüsselten Fall lies zuerst
+   [Sicherheit — der Cache hält Klartext](#sicherheit--der-cache-hält-klartext):
+   das ist der stärkste Grund, zum Cache zu greifen, und der eine,
+   der eine Entscheidung braucht.
 2. **Häufige Actor-Churn** — gesharde Entities, die ständig
    passivieren / neu spawnen und jeweils denselben Snapshot neu
    lesen.
@@ -63,9 +66,10 @@ der zugrunde liegende Store messbare Read-Latenz hat.**
 
 ```ts
 type CachedSnapshotStoreOptionsType = {
-  cache:      Cache;   // Backing-Cache (erforderlich)
-  ttlMs?:     number;  // Cache-TTL in ms, Default 5 Minuten
-  keyPrefix?: string;  // Key-Prefix, Default 'snap:'
+  cache:                 Cache;    // Backing-Cache (erforderlich)
+  ttlMs?:                number;   // Cache-TTL in ms, Default 5 Minuten
+  keyPrefix?:            string;   // Key-Prefix, Default 'snap:'
+  allowPlaintextCache?:  boolean;  // verschlüsselten State trotzdem cachen, Default false
 };
 ```
 
@@ -74,16 +78,119 @@ type CachedSnapshotStoreOptionsType = {
 | `cache` | Backing-Cache (**erforderlich**) — in Produktion typischerweise Redis.  Jeder `Cache`: In-Memory, Redis oder Memcached. |
 | `ttlMs` | Cache-TTL in Millisekunden.  Default: 5 Minuten. |
 | `keyPrefix` | Key-Prefix (Default `'snap:'`) — verhindert Kollisionen in geteilten Caches. |
+| `allowPlaintextCache` | Bestätigt, dass der Cache den Klartext von State halten darf, den der eingewickelte Store at rest verschlüsselt — und cacht trotzdem.  Default `false` — siehe unten. |
 
 Der zugrunde liegende Store ist das **erste Argument** des
 Konstruktors — `new CachedSnapshotStore(underlying, options)` —
 keine Option.
 
+## Sicherheit — der Cache hält Klartext
+
+Gecacht wird, was `loadLatest` zurückgibt, und das ist der
+**dekodierte** Domain-State: dekomprimiert und bei den
+Object-Storage-Stores entschlüsselt.  Kombinierst du diesen
+Decorator mit
+[client-seitiger Snapshot-Verschlüsselung](/de/persistence/object-storage/encryption/),
+hält das Deployment zwei Kopien des States — eine verschlüsselt im
+Bucket, eine im Klartext in einem Cache, der dir gehört, den du mit
+anderen Subsystemen teilst und der oft unauthentifiziert in einem
+"privaten" Netz läuft.  Die zweite Kopie zu lesen braucht weder den
+Bucket noch den Master-Key, und ein Redis-RDB-Dump hält sie danach
+weiter lesbar.
+
+Am Bucket selbst wird dadurch nichts schwächer; die zweite Kopie
+ist die ganze Exposition.  Das macht es zu einer
+Kompositions-Gefahr statt zu einem Fehler in einem der beiden
+Teile — und es ist eine Komposition, die genau diese Seite
+empfiehlt, weshalb sie hier ausgeschrieben steht.
+
+Ein `loadLatest`, dessen State der eingewickelte Store at rest
+verschlüsselt hält, wird deshalb **direkt aus dem eingewickelten
+Store bedient, ohne Cache**, und der Decorator warnt einmal.  Er
+**räumt außerdem**, was der Cache unter dieser `persistenceId`
+bereits hält: Ein Eintrag, der gecacht wurde, bevor der Actor seinen
+`encryption()`-Hook bekam oder bevor der Store auf Verschlüsselung
+konfiguriert wurde, bliebe sonst bis zum nächsten `save` oder bis
+zum Ablauf von `ttlMs` im Klartext lesbar.  Der Preis ist ein
+Cache-Round-Trip pro verweigertem Load — pro jedem, nicht nur dem,
+der warnt — auf einem Pfad, der ohnehin den vollen Read des
+eingewickelten Stores zahlt.  Beide Wege zur Verweigerung zählen —
+eine Per-Call-`encryption`-Direktive mit einem anderen Modus als
+`'none'` und das `withEncryption(...)` des Stores selbst, das in den
+Options keines Calls je auftaucht:
+
+```text
+persistence: CachedSnapshotStore caches decoded snapshot state, and on
+'ObjectStorageSnapshotStore' this loadLatest asked for encryption — …
+
+persistence: CachedSnapshotStore caches decoded snapshot state, and on
+'ObjectStorageSnapshotStore' the store's own configuration keeps this
+persistenceId encrypted — …
+```
+
+`withAllowPlaintextCache(true)` ist deine Bestätigung, dass der
+Cache so geschützt ist wie der Bucket, und stellt das Caching
+wieder her:
+
+```ts
+const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create()
+  .withCache(cache)
+  .withTtlMs(60_000)
+  .withAllowPlaintextCache(true);
+```
+
+Vernünftige Antworten auf die Frage, die das Flag stellt:
+
+- **In-Process-`InMemoryCache`** — der Klartext verlässt den Knoten
+  nicht, der ohnehin entschlüsselt hat.  Setze das Flag.
+- **Redis oder Memcached innerhalb derselben Vertrauensgrenze**,
+  mit Authentifizierung, Transportverschlüsselung und ohne
+  Persistenz auf Platte — setze das Flag und halte die Begründung
+  dort fest, wo deine übrigen Key-Management-Entscheidungen leben.
+- **Ein geteilter Cache, der auch HTTP-Middleware trägt**, oder
+  einer, dessen Betreiber nicht die Betreiber des Buckets sind —
+  setze das Flag nicht.  Gib dem verschlüsselten Store einen
+  eigenen Cache oder nimm die Cold-Start-Kosten in Kauf.
+
+### Was der Check sieht — und was nicht
+
+Er sieht beide Wege, auf denen ein Deployment zu Vertraulichkeit
+kommt: die **Per-Call-`PersistenceOptions`**, die der
+`encryption()`-Hook deines Actors erzeugt, und die **Store-eigene
+Konfiguration**, die er über das optionale Member
+`encryptsAtRest(persistenceId)` von `SnapshotStore` liest.
+`ObjectStorageSnapshotStore` implementiert das aus derselben
+`encryption`-Konfiguration, die auch sein Codec benutzt, pro
+`persistenceId` — ein Resolver, der ein Präfix verschlüsselt und ein
+anderes nicht, wird also pro Entity entschieden statt einmal für den
+ganzen Store.
+
+Eine Per-Call-Direktive gewinnt gegen die Store-Konfiguration, hier
+wie überall sonst; ein explizites Per-Call-`{ mode: 'none' }` ist
+deshalb ein Opt-out, auch über einem Store, der verschlüsselt.
+
+Zwei Dinge sieht er weiterhin nicht:
+
+- **Einen Store, der verschlüsselt und nichts deklariert.**  Das
+  Member ist optional, Abwesenheit heißt *unbekannt*, und unbekannt
+  verweigert nie — die Regel, der die ganze Capability-Familie
+  folgt, damit ein Fremd-Store nicht beim Upgrade sein Verhalten
+  ändert, nur weil er nichts deklariert hat.  Ein eigener Store, der
+  verschlüsselt, sollte `encryptsAtRest` implementieren.
+- **Verschlüsselung *unterhalb* des Stores** — ein Server-Side-
+  Default des Buckets oder ein Backend, das auf dem Weg nach außen
+  verschlüsselt.  Kein Member dieses Contracts meldet das, der
+  Decorator hat nichts zu warnen, und die Entscheidung liegt allein
+  bei dir.
+
 ## Cache-Semantik
 
 - **`loadLatest(persistenceId)`** — Read-Through mit TTL.  Cache prüfen; bei
   Treffer zurückgeben.  Bei Miss aus dem zugrunde liegenden Store laden, das
-  Ergebnis mit `ttlMs` cachen, zurückgeben.
+  Ergebnis mit `ttlMs` cachen, zurückgeben.  Ein Load, den der
+  [Sicherheitsabschnitt](#sicherheit--der-cache-hält-klartext)
+  verweigert, überspringt die Abfrage, **löscht** stattdessen den
+  Eintrag und wird aus dem zugrunde liegenden Store bedient.
 - **`save(persistenceId, seq, state)`** — Write-Through-with-Invalidate: an den
   zugrunde liegenden Store delegieren, dann den Cache-Eintrag **löschen**.  Es
   schreibt den neuen Snapshot bewusst *nicht* zurück — im Cluster können zwei

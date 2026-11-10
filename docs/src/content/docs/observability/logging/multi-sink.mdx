@@ -165,6 +165,12 @@ covers both shutdown paths — a direct `terminate()` and a
 [coordinated shutdown](/fundamentals/coordinated-shutdown/), whose last
 phase calls `terminate()` anyway.
 
+With `actor-ts.coordinated-shutdown.exit-process` on, a pipeline that ends
+without tearing the system down — a run a phase halted, or one with
+`terminate-actor-system = false` — flushes the sinks before the process
+exits, within the same budget, and leaves them open: a buffered line,
+the halt's own report among them, still reaches its destination.
+
 A destination that hangs cannot hold the process: when the budget
 expires the shutdown continues, and a line on the console says what was
 dropped.  Records logged *after* the sinks close fall back to a plain

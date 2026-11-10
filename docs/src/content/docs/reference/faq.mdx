@@ -130,7 +130,8 @@ bookkeeping.
 ### What's the per-message overhead?
 
 Measured on Bun 1.3.14, 10 cores of an Intel i9-12900K under Linux, mean of
-a hundred rounds — see
+a hundred rounds, except where a bullet names its own machine — then that
+is the environment its figures come from.  See
 [Benchmarks](/reference/benchmarks/) for the methodology and the
 comparison against other frameworks:
 
@@ -141,9 +142,15 @@ comparison against other frameworks:
   "how long does `tell` take" and "how many messages per second" are
   different questions with answers an order of magnitude apart.
 - **`ask` round trip** — **0.9 µs** at p50, depth 1.
-- **Cross-cluster `tell`** — bounded by network + serialization
-  cost.  Sub-millisecond on localhost, ms-range over LAN.  Not yet
-  measured; the cluster benchmarks do not leave the process.
+- **Cross-cluster `tell`** — about **22 µs** per message, and about
+  **245 µs** per `ask` round trip, both harness means rather than p50s,
+  over a real `TcpTransport` on loopback with the far node on a worker
+  thread (Bun 1.4.2, Windows 11, 32 hardware threads, 2026-09-18;
+  `benchmarks/cluster/tcp-message-cost.ts`, every batch
+  completion-verified).  That is the same per-message cost as the
+  thread hop measured on the [worker mesh](/cluster/worker-mesh/) page, so
+  the socket is not where a cross-node message pays — the protocol is.
+  Over a LAN the round trip is the network's: ms-range.
 
 **A mailbox with depth is doing most of the work in that first figure**, and
 the difference is worth understanding before designing around it.  An actor
@@ -199,14 +206,44 @@ Compose setup.
 
 Two layers:
 
-- **Downing strategies** that force a winner during partition.
-  See [Downing strategies](/cluster/downing-strategies/).
+- **Downing strategies** that force a winner during partition —
+  with one configured, the failure detector only parks a silent
+  member, and the strategy decides who is removed.
+  See [Downing strategies](/cluster/downing-strategies/), and
+  [Failure detector](/cluster/failure-detector/) for what the
+  cluster does without one.
 - **Optional leases** for sharding coordinator and singletons.
   See [Singleton with lease](/cluster/singleton/with-lease/).
 
-Without a downing strategy, the default behavior is "wait
-indefinitely" — operators must down nodes manually.  Pick one for
-production.
+Without a downing strategy — the default — the failure detector
+removes a member it has given up on itself, once it declares it
+`down` (`down-after` on the default detector;
+`actor-ts.cluster.failure-detector.auto-down` ships `on`), and the
+last available node takes over its shards and singletons.  That is
+right for a crashed node and forks the cluster under a partition:
+every side removes the others at the same moment and carries on as a
+cluster of its own, and the two do not merge again when the network
+heals ([issue #930](https://github.com/pathosDev/actor-ts/issues/930)).
+With two or more survivors, a removed member can also come back as
+`unreachable` for a while, when one survivor's gossip still carries
+it after the other's removal.  So pick a strategy for production —
+`lease-majority`, or another one from
+[Downing strategies](/cluster/downing-strategies/).
+
+`auto-down = off` is the opt-out: the member is parked at
+`unreachable` instead, its shards stay homed on it and its remote
+watchers get no `Terminated`, until an operator downs it
+(`Cluster.down(address)`, or `POST /cluster/down` with
+`actor-ts.management.enable-down-endpoint = on`), a strategy is
+configured, or the node restarts on the same address, which ends the
+old run before the new one joins.  A heartbeat brings a parked member
+back only after a pause — never after a symmetric partition, which
+leaves both sides parked and the cluster split until an operator
+acts.  Parking does not keep the leader where it was, either: the
+leader is the first `up` member in a node's view, so the members that
+can still reach each other elect another one, and a singleton without
+a role moves with it — under a partition, each side can end up
+hosting its own.
 
 ### Can I use Kubernetes for cluster discovery?
 
@@ -246,7 +283,10 @@ See [Migration overview](/persistence/migration/overview/).
 
 Each projection persists its own offset; if a projection crashes
 after processing event N but before persisting offset N, it'll
-re-process N on restart.  In that sense, **at-least-once**.
+re-process N on restart.  In that sense, **at-least-once**.  A
+projection with a grouped handler (`handleGroup`) persists its
+offset once per group, so what it re-processes is the whole group
+that contained N.
 
 For exactly-once semantics, the projection must be idempotent
 (use the event's seqNr as a dedup key) or transactional (commit

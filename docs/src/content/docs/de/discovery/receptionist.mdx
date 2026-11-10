@@ -78,7 +78,10 @@ Sagt dem lokalen Receptionist: "Dieser Actor auf diesem Node
 liefert den Service."  Der Receptionist:
 
 1. Fügt die Ref seiner lokalen Map unter `key` hinzu.
-2. Gossipt das Hinzufügen an Peers (nächste Gossip-Runde).
+2. Gossipt sie: alle `gossipIntervalMs` (Default 1 s) schickt der
+   Receptionist all seine lokalen Registrierungen an einen
+   zufälligen `up`-Peer.  `Register` selbst sendet nichts an
+   andere Nodes.
 
 Übergib ein optionales `replyTo` als drittes Argument
 (`new Register(key, actorRef, replyTo)`), um eine
@@ -130,8 +133,14 @@ Die Antwort trägt die **aktuelle Sicht** — keine synchrone
 Cluster-Abfrage.  Bedeutet: Registrierungen auf anderen Nodes,
 die noch nicht gegossipt wurden, fehlen.
 
-Innerhalb einer Gossip-Runde oder zwei (1-2 Sekunden Default)
-konvergiert jeder Node auf dieselbe Sicht.
+Wie lange das dauert, wächst mit dem Cluster.  Die Registrierungen
+eines Nodes erreichen einen Peer erst, wenn dieser Node ihn für
+einen seiner Gossip-Ticks auswählt — ein zufälliger `up`-Peer pro
+Tick, und nichts wird weitergereicht —, also erfährt bei N
+Mitgliedern ein bestimmter Peer im Mittel nach N - 1 Ticks von
+einer neuen Registrierung: beim Default von 1 s etwa 2 s bei drei
+Mitgliedern und etwa 9 s bei zehn, und bis jeder Peer sie kennt,
+länger.
 
 ## Subscriben
 
@@ -313,8 +322,10 @@ import { Aside } from '@astrojs/starlight/components';
   // Lokales Find funktioniert sofort; Remote-Nodes warten auf Gossip.
   ```
   Lokale Registrierungen sind sofort für lokale `Find`-Anfragen
-  sichtbar.  Remote-Sichtbarkeit ist durch `gossipIntervalMs`
-  begrenzt (1 s Default).  Für "warte, bis die Registrierung
+  sichtbar.  Ein Remote-Node sieht sie, sobald der Gossip dieses
+  Nodes ihn ausgewählt hat — ein zufälliger Peer pro
+  `gossipIntervalMs` (1 s Default) —, was in einem größeren Cluster
+  mehrere Ticks dauert.  Für "warte, bis die Registrierung
   überall propagiert ist"-Muster: auf Consumer-Seite `Subscribe`-n
   und reagieren, wenn das `Listing` eintrifft.
 </Aside>

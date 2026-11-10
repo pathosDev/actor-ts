@@ -5,6 +5,20 @@ import {
   type DynamoDbOptionsBaseType,
 } from './DynamoDbOptionsBase.js';
 
+/**
+ * Table a DynamoDB event log is written to when nothing named one.
+ *
+ * `actor_ts_`-prefixed rather than the bare `events` the SQL family uses, and
+ * that difference is DynamoDB's rather than an oversight: a table name is
+ * account- and region-global there, not scoped by a database or a schema, so an
+ * unqualified `events` would collide with whatever else the account owns.
+ *
+ * Beside the options type rather than in `src/persistence/Constants.ts` because
+ * it is the built-in default of exactly one `XOptionsType` field with exactly
+ * one read site.  Named at all because `reference.conf` publishes it (#872).
+ */
+export const DEFAULT_DYNAMODB_EVENTS_TABLE = 'actor_ts_events';
+
 export interface DynamoDbJournalOptionsType extends DynamoDbOptionsBaseType {
   /** Events table name.  Default: `actor_ts_events`. */
   readonly eventsTable?: string;

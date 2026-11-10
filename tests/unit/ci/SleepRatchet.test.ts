@@ -45,13 +45,14 @@ import { describe, expect, test } from 'bun:test';
  *     (`docs/src/content/docs/testing/overview.mdx`).  A new wait lands by
  *     stating why, which is a line of prose, not a redesign.
  *  2. A **re-declared** `sleep`, when `tests/util/AwaitCondition.ts` already
- *     exports one.  85 files re-declare `const sleep = (ms: number) =>
- *     Bun.sleep(ms)` against 8 that import the shared one; the remedy is the
- *     import.
- *  3. A **re-invented** polling helper.  35 modules hand-roll a
- *     `waitFor` / `waitUntil` / `awaitConvergence` with its own timeout, its
- *     own poll step and no label; the remedy is `awaitCondition`, or a
- *     two-line wrapper over it (two files already do exactly that).
+ *     exports one.  This is nearly paid off: one file still declares its own —
+ *     `tests/integration/scenarios/Types.ts`, which exports it for that tree —
+ *     against 129 that import the shared one.  The header used to say 85
+ *     against 8, measured before the #418 sweep merged (#1313).
+ *  3. A **re-invented** polling helper.  11 modules hand-roll a
+ *     `while (Date.now() < deadline)` loop with its own timeout, its own poll
+ *     step and no label; the remedy is `awaitCondition`, or a two-line wrapper
+ *     over it (two files already do exactly that).
  *
  * Each of the three ledgers below is a **ceiling that only ever moves down**.
  * A change that would need one raised is a change that should have carried a

@@ -1,7 +1,14 @@
+import type { Config } from '../../config/Config.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { PersistentEvent } from '../JournalTypes.js';
-import type { LiveQueryOptions, PersistenceQuery, TagFilter } from '../query/PersistenceQuery.js';
+import {
+  type LiveQueryOptions,
+  type PersistenceQuery,
+  type TagFilter,
+  normalizeTagFilter,
+} from '../query/PersistenceQuery.js';
 import type { OffsetStore } from './OffsetStore.js';
 
 /* ---------------------- handler-failure recovery ---------------------- */
@@ -24,6 +31,17 @@ import type { OffsetStore } from './OffsetStore.js';
  *     and carry on.  Trades a hole in the read model for liveness.
  *   - `retry-and-fail` — retry with exponential backoff, then `fail`.
  *   - `retry-and-skip` — retry with exponential backoff, then `skip`.
+ *
+ * A `handleGroup` projection applies the strategy to the failed group first:
+ * a retry forms the group again from the same first event — larger, if more
+ * events were journaled during the backoff, with the attempt count carried
+ * over — and a stop stops before its first event.  A group is never skipped,
+ * though, because that would drop the good events in it along with the bad
+ * one.  Where the strategy would skip, the group is split instead — its
+ * events are delivered again one per call, each with its own retry budget —
+ * so the strategy skips exactly the event that fails.  Under
+ * `retry-and-skip` that costs two budgets: the group's, which its good
+ * events wait out before the split, then the bad event's own.
  */
 export type ProjectionRecoveryStrategy =
   | 'fail'
@@ -39,7 +57,13 @@ export const PROJECTION_RECOVERY_STRATEGIES: readonly ProjectionRecoveryStrategy
   'retry-and-skip',
 ];
 
-/** What a projection actually did about one handler failure. */
+/**
+ * What a projection actually did about one handler failure.
+ *
+ * Deliberately no fourth value for splitting a group: the attempt that hands
+ * a group over to one-event-per-call delivery reports `retry`, because that
+ * is what happens to each of its events next.
+ */
 export type ProjectionFailureAction = 'retry' | 'skip' | 'stop';
 
 /**
@@ -54,11 +78,20 @@ export type ProjectionFailureAction = 'retry' | 'skip' | 'stop';
 export type ProjectionFailure<E> = {
   /** The projection's `name`. */
   readonly projection: string;
-  /** The event whose handler threw. */
+  /**
+   * The event whose handler threw — for a failed `handleGroup` call, the
+   * group's first event, the one the cursor is still waiting on.
+   */
   readonly event: PersistentEvent<E>;
-  /** Whatever `handle` threw — not necessarily an `Error`. */
+  /**
+   * Every event of the failed `handleGroup` call.  Present only for a group
+   * attempt: a `handle` failure, and a failure while a split group goes out
+   * one event per call, concern exactly the one event in `event`.
+   */
+  readonly group?: ReadonlyArray<PersistentEvent<E>>;
+  /** Whatever the handler threw — not necessarily an `Error`. */
   readonly error: unknown;
-  /** 1 on the first failure for this event, 2 on the first retry, and so on. */
+  /** 1 on the first failure for this event or group, 2 on the first retry, and so on. */
   readonly attempt: number;
   /** What the configured strategy did about it. */
   readonly action: ProjectionFailureAction;
@@ -92,6 +125,28 @@ export const DEFAULT_PROJECTION_RETRY_BACKOFF_MS = 1_000;
  */
 export const DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS = 60_000;
 
+/**
+ * Default for {@link ProjectionOptionsType.groupAfterEnvelopes} — the most
+ * events one `handleGroup` call receives.
+ *
+ * The number is the size of one call into the read model, and both sides of
+ * the trade scale with it.  What a group buys is round trips: N events cost
+ * one handler call and one cursor save instead of N of each.  What it costs
+ * is everything a failure touches: a crash between the call and its commit
+ * replays the whole group, every group retry sends all of it again, and a
+ * split delivers it again one call per event.  The saving is 1 − 1/N while
+ * the cost grows linearly, so the curve flattens early — 20 already removes
+ * 95 % of the round trips, and 100 would remove 4 % more for five times the
+ * replay and retry surface.
+ *
+ * 20 also fits the smallest single-call limit among the common read-model
+ * sinks, DynamoDB's 25-item `BatchWriteItem`, so the default never makes a
+ * handler cut the group it was handed into smaller requests.  A sink with a
+ * larger bulk path — a multi-row upsert, a search engine's bulk endpoint —
+ * raises it per projection.
+ */
+export const DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES = 20;
+
 /** The handler-failure half of a projection's settings, with every field resolved. */
 export type ProjectionRecoveryOptionsType = {
   readonly recoveryStrategy: ProjectionRecoveryStrategy;
@@ -118,11 +173,50 @@ export type ProjectionOptionsType<E> = {
   readonly query: PersistenceQuery;
   /** Where to persist the cursor.  Default: in-memory (lost on restart). */
   readonly offsetStore?: OffsetStore;
-  /** User handler — runs once per event.  Must be idempotent. */
-  readonly handle: (event: PersistentEvent<E>) => void | Promise<void>;
+  /**
+   * User handler — runs once per event.  Must be idempotent.  A projection
+   * sets exactly one of `handle` and {@link handleGroup}.
+   *
+   * Called with this projection's options as `this`: the object the factory
+   * spawned it with, every default merged in.  So a method-shorthand or
+   * `function` handler can read `this.name`, `this.persistenceId` or
+   * `this.tag` — the receiver TypeScript already types a method of an options
+   * object literal with, and the one released versions called it on.  An
+   * arrow function keeps its own `this`, as it always does.
+   */
+  readonly handle?: (event: PersistentEvent<E>) => void | Promise<void>;
+  /**
+   * User handler for groups of events — runs once per group of at most
+   * {@link groupAfterEnvelopes} events, in journal order, and never with an
+   * empty array.  The alternative to `handle` for a read model whose cost is
+   * the round trip rather than the event: one bulk write instead of N.
+   *
+   * Groups are cut from what one poll returned and all of them are delivered
+   * in that tick; nothing is held back to fill a group, so the poll interval
+   * is the window and a quiet journal gets a short group rather than a wait.
+   * The cursor is committed once per successful group, to its last event —
+   * which makes the group the unit of at-least-once replay: a crash between
+   * the call and the commit delivers the whole group again, so the handler
+   * must be idempotent over every event in it.
+   *
+   * Called with the same `this` as {@link handle} — this projection's options,
+   * every default merged in — for a group, and equally for each one-event
+   * group a failed group is split into (see {@link ProjectionRecoveryStrategy}).
+   */
+  readonly handleGroup?: (events: ReadonlyArray<PersistentEvent<E>>) => void | Promise<void>;
+  /**
+   * Most events per `handleGroup` call.  Default:
+   * `actor-ts.projection.group-after-envelopes`, else
+   * {@link DEFAULT_PROJECTION_GROUP_AFTER_ENVELOPES}.  Refused on a `handle`
+   * projection, which has no group to size — a value there that silently did
+   * nothing would read as tuning that took effect.  The HOCON leaf is not
+   * applied to one at all: it is a process-wide default for the projections
+   * it can size.
+   */
+  readonly groupAfterEnvelopes?: number;
   /** Tunables passed to the underlying live query. */
   readonly liveOptions?: LiveQueryOptions;
-  /** What to do when `handle` throws.  Default: {@link DEFAULT_PROJECTION_RECOVERY_STRATEGY}. */
+  /** What to do when the handler throws.  Default: {@link DEFAULT_PROJECTION_RECOVERY_STRATEGY}. */
   readonly recoveryStrategy?: ProjectionRecoveryStrategy;
   /** Retries after the first attempt, for the `retry-*` strategies.  Default: 3. */
   readonly maxRetries?: number;
@@ -185,9 +279,23 @@ export class ProjectionOptionsBuilder<E> extends OptionsBuilder<ProjectionOption
     return this.set('offsetStore', offsetStore);
   }
 
-  /** User handler — runs once per event.  Must be idempotent. */
+  /** User handler — runs once per event.  Must be idempotent.  Exclusive with `withHandleGroup`. */
   withHandle(handle: (event: PersistentEvent<E>) => void | Promise<void>): this {
     return this.set('handle', handle);
+  }
+
+  /**
+   * User handler for groups of events — runs once per group of at most
+   * `groupAfterEnvelopes` events.  Must be idempotent over the whole group.
+   * Exclusive with `withHandle`.  See {@link ProjectionOptionsType.handleGroup}.
+   */
+  withHandleGroup(handleGroup: (events: ReadonlyArray<PersistentEvent<E>>) => void | Promise<void>): this {
+    return this.set('handleGroup', handleGroup);
+  }
+
+  /** Most events per `handleGroup` call.  Default: 20.  Only with `withHandleGroup`. */
+  withGroupAfterEnvelopes(groupAfterEnvelopes: number): this {
+    return this.set('groupAfterEnvelopes', groupAfterEnvelopes);
   }
 
   /** Tunables passed to the underlying live query. */
@@ -195,7 +303,7 @@ export class ProjectionOptionsBuilder<E> extends OptionsBuilder<ProjectionOption
     return this.set('liveOptions', liveOptions);
   }
 
-  /** What to do when `handle` throws.  Default: `retry-and-fail`. */
+  /** What to do when the handler throws.  Default: `retry-and-fail`. */
   withRecoveryStrategy(recoveryStrategy: ProjectionRecoveryStrategy): this {
     return this.set('recoveryStrategy', recoveryStrategy);
   }
@@ -254,9 +362,23 @@ export class ByPersistenceIdProjectionOptionsBuilder<E> extends OptionsBuilder<B
     return this.set('offsetStore', offsetStore);
   }
 
-  /** User handler — runs once per event.  Must be idempotent. */
+  /** User handler — runs once per event.  Must be idempotent.  Exclusive with `withHandleGroup`. */
   withHandle(handle: (event: PersistentEvent<E>) => void | Promise<void>): this {
     return this.set('handle', handle);
+  }
+
+  /**
+   * User handler for groups of events — runs once per group of at most
+   * `groupAfterEnvelopes` events.  Must be idempotent over the whole group.
+   * Exclusive with `withHandle`.  See {@link ProjectionOptionsType.handleGroup}.
+   */
+  withHandleGroup(handleGroup: (events: ReadonlyArray<PersistentEvent<E>>) => void | Promise<void>): this {
+    return this.set('handleGroup', handleGroup);
+  }
+
+  /** Most events per `handleGroup` call.  Default: 20.  Only with `withHandleGroup`. */
+  withGroupAfterEnvelopes(groupAfterEnvelopes: number): this {
+    return this.set('groupAfterEnvelopes', groupAfterEnvelopes);
   }
 
   /** Tunables passed to the underlying live query. */
@@ -264,7 +386,7 @@ export class ByPersistenceIdProjectionOptionsBuilder<E> extends OptionsBuilder<B
     return this.set('liveOptions', liveOptions);
   }
 
-  /** What to do when `handle` throws.  Default: `retry-and-fail`. */
+  /** What to do when the handler throws.  Default: `retry-and-fail`. */
   withRecoveryStrategy(recoveryStrategy: ProjectionRecoveryStrategy): this {
     return this.set('recoveryStrategy', recoveryStrategy);
   }
@@ -329,9 +451,23 @@ export class ByTagProjectionOptionsBuilder<E> extends OptionsBuilder<ByTagProjec
     return this.set('offsetStore', offsetStore);
   }
 
-  /** User handler — runs once per event.  Must be idempotent. */
+  /** User handler — runs once per event.  Must be idempotent.  Exclusive with `withHandleGroup`. */
   withHandle(handle: (event: PersistentEvent<E>) => void | Promise<void>): this {
     return this.set('handle', handle);
+  }
+
+  /**
+   * User handler for groups of events — runs once per group of at most
+   * `groupAfterEnvelopes` events.  Must be idempotent over the whole group.
+   * Exclusive with `withHandle`.  See {@link ProjectionOptionsType.handleGroup}.
+   */
+  withHandleGroup(handleGroup: (events: ReadonlyArray<PersistentEvent<E>>) => void | Promise<void>): this {
+    return this.set('handleGroup', handleGroup);
+  }
+
+  /** Most events per `handleGroup` call.  Default: 20.  Only with `withHandleGroup`. */
+  withGroupAfterEnvelopes(groupAfterEnvelopes: number): this {
+    return this.set('groupAfterEnvelopes', groupAfterEnvelopes);
   }
 
   /** Tunables passed to the underlying live query. */
@@ -339,7 +475,7 @@ export class ByTagProjectionOptionsBuilder<E> extends OptionsBuilder<ByTagProjec
     return this.set('liveOptions', liveOptions);
   }
 
-  /** What to do when `handle` throws.  Default: `retry-and-fail`. */
+  /** What to do when the handler throws.  Default: `retry-and-fail`. */
   withRecoveryStrategy(recoveryStrategy: ProjectionRecoveryStrategy): this {
     return this.set('recoveryStrategy', recoveryStrategy);
   }
@@ -386,22 +522,42 @@ export type ByTagProjectionOptions<E> = ByTagProjectionOptionsBuilder<E> | Parti
 export const ByTagProjectionOptions = ByTagProjectionOptionsBuilder;
 
 /**
- * Bounds on the handler-failure fields, shared by both projection shapes.
+ * Bounds on the handler-failure and grouping fields, and on whatever the
+ * handler slot holds, shared by both projection shapes — and, told which
+ * shape it is checking, the fields a spawned projection cannot run without,
+ * its handler among them.
  *
  * Run by `ProjectionActor.byPersistenceId` / `byTag` on the merged settings
  * — see the note there for why the static factory rather than the actor's
- * constructor is the consume point for a projection.
+ * constructor is the consume point for a projection.  Merged means the group
+ * size default is already in: the factories apply it to a `handleGroup`
+ * projection only, so a size on a `handle` projection here is one the caller
+ * wrote.
  */
 export class ProjectionOptionsValidator<E> extends OptionsValidator<ProjectionOptionsType<E>> {
-  constructor() { super('ProjectionOptions'); }
+  constructor(
+    /**
+     * The field that names the projection's cursor — `persistenceId` for
+     * `byPersistenceId`, `tag` for `byTag` — when the options are the ones
+     * that factory is about to spawn.  Given, `name`, `query`, that field and
+     * a handler are required too.  Omitted, only the values present are
+     * checked: a shared base that an application spreads into several
+     * projections has no name, cursor or handler of its own and is still
+     * worth validating — `validate({})` passes, as it did before handlers
+     * became optional.
+     */
+    private readonly cursorField?: 'persistenceId' | 'tag',
+  ) { super('ProjectionOptions'); }
 
   protected rules(s: Partial<ProjectionOptionsType<E>>): void {
+    if (this.cursorField !== undefined) this.spawnRules(s, this.cursorField);
     this.oneOf('recoveryStrategy', PROJECTION_RECOVERY_STRATEGIES);
     // 0 is meaningful: `retry-and-skip` with no retries is a `skip` that
     // still reports every attempt through `onFailure`.
     this.nonNegativeInt('maxRetries');
     this.positiveNumber('retryBackoffMs');
     this.positiveNumber('maxRetryBackoffMs');
+    this.positiveInt('groupAfterEnvelopes');
     // The delay doubles *up to* the cap, so a cap below the first delay does
     // not shorten the backoff curve — it flattens it to a constant at the
     // cap, which is the opposite of what someone lowering it intends.
@@ -413,5 +569,179 @@ export class ProjectionOptionsValidator<E> extends OptionsValidator<ProjectionOp
         s.maxRetryBackoffMs,
       );
     }
+    // The slot rules below ask only whether a handler is `undefined`, so a
+    // `null` from JavaScript would pass them and fail at the first event —
+    // where the recovery strategy retries it as though the event were at
+    // fault.
+    for (const field of ['handle', 'handleGroup'] as const) {
+      const handler = s[field];
+      if (handler !== undefined && typeof handler !== 'function') this.fail(field, 'must be a function', handler);
+    }
+    // Two handlers would need a rule for which one an event goes to, and any
+    // such rule is a guess about what the caller meant.
+    if (s.handle !== undefined && s.handleGroup !== undefined) {
+      this.fail('handleGroup', 'cannot be combined with handle — set exactly one of them');
+    }
+    if (s.handle !== undefined && s.groupAfterEnvelopes !== undefined) {
+      this.fail(
+        'groupAfterEnvelopes',
+        'applies only to handleGroup — a handle projection is delivered one event per call',
+        s.groupAfterEnvelopes,
+      );
+    }
   }
+
+  /**
+   * The fields a projection cannot run without.  None has a default, and
+   * none fails where it is missing: a projection without a `query` spawns
+   * and fails every poll, retried on the backoff forever; one without a
+   * `name` runs, under the actor name `undefined-<pid>`, and saves its cursor
+   * under the projection name `undefined` — shared with every other unnamed
+   * projection of that entity; one without its cursor field throws a
+   * `TypeError` out of the actor-name computation that names no field; and
+   * one without a handler fails its first event.
+   *
+   * The handler is required here and nowhere else, because it is a field of
+   * one projection exactly as its name is: a shared base validated on its own
+   * has none, and refusing it for that would refuse every such base.
+   *
+   * Present is not enough for the two fields a poll uses, because a value
+   * every poll fails on spawns a projection that retries for good, exactly
+   * as a missing one did.  A query must have the method this projection's
+   * polls call — checked by method, not by class, so any implementation of
+   * {@link PersistenceQuery} passes, and not rendered into the message,
+   * because a query can hold a connection and its credentials.  A tag is held
+   * to the query layer's own rule, `normalizeTagFilter`, which every
+   * backend's tag query starts with: one definition, so an empty tag and `{}`
+   * pass here as they do there, and a refusal carries the query layer's
+   * reason.  Whether the query *works* — a reachable backend, rows of the
+   * right shape — only a poll can tell.
+   */
+  private spawnRules(s: Partial<ProjectionOptionsType<E>>, cursorField: 'persistenceId' | 'tag'): void {
+    if (typeof s.name !== 'string' || s.name.length === 0) {
+      this.fail('name', 'must be a non-empty string — it names the actor and keys the offset store', s.name);
+    }
+    if (s.query === undefined || s.query === null) {
+      this.fail('query', 'must be set — without one every poll fails, retried forever', s.query);
+    }
+    const pollMethod = cursorField === 'persistenceId' ? 'currentEventsByPersistenceId' : 'currentEventsByTag';
+    if (typeof (s.query as Partial<PersistenceQuery>)[pollMethod] !== 'function') {
+      this.fail('query', `must be a PersistenceQuery — it has no ${pollMethod}, which every poll calls`);
+    }
+    // Both options shapes are `Partial`, so nothing in the type system keeps
+    // a projection from omitting its handler.  Without this the projection
+    // spawns, reads its first event and fails it with a TypeError, which the
+    // recovery strategy then retries as though the event were at fault.
+    if (s.handle === undefined && s.handleGroup === undefined) {
+      this.fail('handle', 'or handleGroup must be set — a projection without one fails on its first event');
+    }
+    if (cursorField === 'persistenceId') {
+      const persistenceId = (s as Partial<ByPersistenceIdProjectionOptionsType<E>>).persistenceId;
+      if (typeof persistenceId !== 'string' || persistenceId.length === 0) {
+        this.fail('persistenceId', 'must be a non-empty string — the entity whose event log is followed', persistenceId);
+      }
+      return;
+    }
+    const tag = (s as Partial<ByTagProjectionOptionsType<E>>).tag;
+    if (tag === undefined || tag === null) {
+      this.fail('tag', 'must be set — a tag, or a TagFilter, to follow across the journal', tag);
+    }
+    const refusal = tagFilterRefusal(tag);
+    if (refusal !== undefined) this.fail('tag', `is one every poll would refuse — ${refusal}`);
+  }
+}
+
+/** The query layer's reason for refusing `tag` at every poll, or `undefined` when it accepts it. */
+function tagFilterRefusal(tag: TagFilter): string | undefined {
+  try {
+    normalizeTagFilter(tag);
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+/* ---------------------------- HOCON defaults --------------------------- */
+
+/**
+ * The slice of a projection's settings HOCON can supply —
+ * `actor-ts.projection.*`, the process-wide defaults under whatever a single
+ * projection sets explicitly.
+ *
+ * `name`, `query`, `offsetStore`, `handle`, `handleGroup` and `onFailure` are
+ * absent because they identify one projection or are objects HOCON cannot
+ * express; what remains is failure policy, cadence and group size, which is
+ * exactly what an operator retunes per environment without touching code.
+ *
+ * `pollIntervalMs` is spelled out rather than picked, because on
+ * {@link ProjectionOptionsType} it lives one level down inside
+ * {@link ProjectionOptionsType.liveOptions} — flat here, because a projection
+ * has exactly one poll cadence and the HOCON leaf that sets it is flat too.
+ */
+export type ProjectionConfigDefaults = Partial<ProjectionRecoveryOptionsType> & {
+  /** Gap between polls, in milliseconds — merged into `liveOptions.pollIntervalMs`. */
+  readonly pollIntervalMs?: number;
+  /**
+   * Most events per `handleGroup` call — merged into
+   * {@link ProjectionOptionsType.groupAfterEnvelopes} of a `handleGroup`
+   * projection only.  A `handle` projection has no group to size, so the
+   * factories do not read the leaf for one at all: neither a process-wide
+   * default nor a value the reader cannot parse trips anything on a per-event
+   * projection, whose refusal of a size is meant for one its own code wrote.
+   */
+  readonly groupAfterEnvelopes?: number;
+};
+
+/**
+ * Read `actor-ts.projection.*` into the shape the two `ProjectionActor`
+ * static factories merge under the caller's own options.
+ *
+ * Only keys actually present are returned, so an absent one falls through to
+ * the built-in default instead of landing as an explicit `undefined` that
+ * would shadow it.
+ *
+ * Deliberately **not** validated here.  `ProjectionOptionsValidator` already
+ * checks these fields on the merged settings inside the factory, which is the
+ * project's validate-once-at-consume-time rule and the only place a
+ * cross-field bound (`maxRetryBackoffMs >= retryBackoffMs`) can be judged at
+ * all — half of such a pair routinely comes from HOCON and half from code.
+ * Rejecting a bad `recovery-strategy` here as well would produce two error
+ * messages for one mistake, differing only in which layer it came from.
+ *
+ * `handler` names the handler field of the projection the defaults are for,
+ * because one leaf applies to only one of them.  `group-after-envelopes`
+ * sizes `handleGroup` groups and nothing else, so for `'handle'` it is
+ * neither read nor checked: a value the integer reader refuses — `2.5`, a
+ * word — refuses the grouped projections it would size, naming the key, and
+ * leaves a `handle` projection alone.  Every other leaf applies to both, so
+ * a malformed one still refuses every projection.  For `'handleGroup'`, and
+ * when `handler` is omitted, the whole block is read — omitted is for a
+ * caller inspecting the block rather than spawning from it.
+ */
+export function readProjectionOptionsFromConfig(
+  config: Config,
+  handler?: 'handle' | 'handleGroup',
+): ProjectionConfigDefaults {
+  const keys = ConfigKeys.projection;
+  // Mutable while being filled; consumers see the readonly shape.
+  const out: {
+    -readonly [K in keyof ProjectionConfigDefaults]: ProjectionConfigDefaults[K]
+  } = {};
+  if (config.hasPath(keys.recoveryStrategy)) {
+    out.recoveryStrategy = config.getString(keys.recoveryStrategy) as ProjectionRecoveryStrategy;
+  }
+  if (config.hasPath(keys.maxRetries)) out.maxRetries = config.getInt(keys.maxRetries);
+  if (config.hasPath(keys.retryBackoff)) {
+    out.retryBackoffMs = config.getDuration(keys.retryBackoff);
+  }
+  if (config.hasPath(keys.maxRetryBackoff)) {
+    out.maxRetryBackoffMs = config.getDuration(keys.maxRetryBackoff);
+  }
+  if (config.hasPath(keys.pollInterval)) {
+    out.pollIntervalMs = config.getDuration(keys.pollInterval);
+  }
+  if (handler !== 'handle' && config.hasPath(keys.groupAfterEnvelopes)) {
+    out.groupAfterEnvelopes = config.getInt(keys.groupAfterEnvelopes);
+  }
+  return out;
 }

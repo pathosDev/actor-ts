@@ -3,17 +3,20 @@
  *
  * Splits the cluster into a {node-a, node-b} side and a
  * {node-c, node-d, node-e} side via iptables drops inside each
- * container.  The default downing strategy keeps the majority
- * (KeepMajority), so the {c, d, e} side should converge to a
- * 3-member view while {a, b} either down themselves or see only
- * the other side as Unreachable.
+ * container.  No downing strategy runs here: `NodeRunner` configures
+ * none and `split-brain-resolver.active-strategy` ships `off`.  And
+ * `failure-detector.auto-down` ships `off` as well, so nothing removes
+ * either side — each marks the other unreachable and parks it there.
+ * The {c, d, e} side converges to 3 up + 2 unreachable, and {a, b}
+ * sees the three as unreachable while staying `up` itself.
  *
  * After verification, heal the partition and assert that the
- * 5-member view is reachable again (modulo any nodes that ended
- * up in the `down`/`removed` state on the loser side — for the
- * default KeepMajority strategy the loser side stays `up` but
- * sees its peers as Unreachable; the cluster doesn't auto-down
- * here, that's the LeaseMajority / SBR story).
+ * 5-member view is reachable again.  The heal follows as soon as both
+ * sides have seen the cut, which on a healthy run is inside
+ * `NodeRunner`'s down-after (4 s), so the scenario normally never
+ * reaches a `down` verdict.  A cut held past it would leave the far
+ * side parked rather than removed (#1426); how a parked peer finds its
+ * way back after a symmetric partition is #930's question.
  *
  * Requires at least 5 nodes — skips with a warning otherwise.
  */

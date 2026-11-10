@@ -29,6 +29,120 @@ name means "I'm a separate cluster".
 spawned eagerly; user actors don't exist yet — you spawn them via
 `spawn` (covered below).
 
+## Starting up
+
+Some work belongs between `create` and the first request: opening the
+journal, running a migration, checking that a service the system
+depends on answers.  The system runs that work itself, as a **startup
+graph** — tasks you hand to `ActorSystemOptions.withCoordinatedStartup`,
+run in phases as the last step of `create`.  Nothing in `main` has to
+start it.
+
+```ts
+import {
+  ActorSystem,
+  ActorSystemOptions,
+  CoordinatedStartupOptions,
+  StartupPhases,
+} from 'actor-ts';
+
+const startupOptions = CoordinatedStartupOptions.create().withTasks([
+  {
+    phase: StartupPhases.BeforeSystemReady,
+    name: 'check-inventory-service',
+    task: async (signal) => {
+      const response = await fetch('https://inventory.internal/health', { signal });
+      if (!response.ok) throw new Error(`inventory answered ${response.status}`);
+    },
+  },
+]);
+const actorSystemOptions = ActorSystemOptions.create().withCoordinatedStartup(startupOptions);
+const system = ActorSystem.create('orders', actorSystemOptions);
+
+await system.whenReady();
+```
+
+Two phases are seeded and run in this order: `persistence-start`, for
+opening what persistence needs, then `before-system-ready`, for
+everything else.  Tasks of one phase run at the same time, and a phase
+starts once the one before it has finished.  Each phase has a budget —
+30 seconds unless `withDefaultPhaseTimeoutMs` says otherwise — and each
+task gets an `AbortSignal` that aborts when the budget runs out or the
+system is terminated before startup finished, so pass it to whatever
+the task waits on.  `withPhases` gives a seeded phase another budget or
+declares a phase of your own, which has to name the phase it runs
+after.
+
+A deployment tunes the same budgets in its configuration file, under
+whatever the code sets:
+
+```hocon
+actor-ts.coordinated-startup {
+  default-phase-timeout = 45s
+  phases {
+    persistence-start { timeout = 2m }
+  }
+}
+```
+
+`withDefaultPhaseTimeoutMs` wins over `default-phase-timeout`, and a
+phase `withPhases` names is the code's as a whole; the block's
+`phases` children take the [coordinated
+shutdown](/reference/configuration/#actor-tscoordinated-shutdown)
+block's shape — see
+[`actor-ts.coordinated-startup`](/reference/configuration/#actor-tscoordinated-startup).
+
+The framework puts work of its own into `persistence-start`: a system
+that wires persistence opens its selected journal, snapshot store and
+durable-state store there, so a store that cannot be opened fails the
+startup like any task — see [opening the stores at
+startup](/persistence/overview/#opening-the-stores-at-startup).  Every
+store that ships with actor-ts reaches its backend as it opens — with
+`auto-create-tables` off, a relational store pings its database and a
+DynamoDB store describes its table — except the object-storage snapshot
+and durable-state stores.  Those have nothing to open ahead of time, so
+a bucket they cannot reach fails their first operation, not the
+startup; so does a store of your own that has no `start()`.
+Turning `autoStart` off in the persistence behaviour — or
+`actor-ts.persistence.auto-start = off` in the configuration — leaves
+them closed until their first operation instead.  Off in code, it also
+leaves the rest of the `actor-ts.persistence` behaviour block unread
+until something reads it: `create` does not need it, so a mistake in it
+is refused where persistence first reads it rather than by `create`.
+That is what a WorkerMesh worker
+sets, so a worker boots on the main thread's configuration whether or
+not it ever persists.
+
+`system.whenReady()` resolves once the last phase has run.  It is the
+same promise on every call, and already resolved for a system with no
+startup tasks.  Nothing has to await it, though: while the graph runs,
+the `startup` [readiness check](/observability/management/health-checks/)
+keeps `/ready` false, so a load balancer sends no traffic to a node
+that is still starting.
+
+**A failed startup takes the system down.**  A task that throws,
+rejects or outlives its phase's budget stops the run: `whenReady()`
+rejects with an error naming the phase and the task, the later phases
+do not run, the system logs one ERROR line and runs the [coordinated
+shutdown](/fundamentals/coordinated-shutdown/) pipeline with a
+`StartupFailedReason`, and `runUntilTerminated()` then rejects with the
+same error — so a `main` that awaits it exits by itself, non-zero, and
+the orchestrator starts a fresh process.
+
+**A shutdown during startup abandons it instead**, because nothing
+failed: `whenReady()` rejects with an abandonment error, the later
+phases do not run, nothing is logged above debug and no shutdown of its
+own runs — so a SIGTERM while the system starts ends the process as a
+shutdown, not as a failed start.  It happens at once, whatever started
+the shutdown — `terminate()`, a SIGTERM, an explicit `run()` of the
+coordinated-shutdown pipeline: the running tasks' signals abort before
+the pipeline's first phase runs.
+
+The graph is sealed when `create` returns.
+`system.extension(CoordinatedStartupId).addTask(...)` afterwards throws
+and names `withCoordinatedStartup` — a task added that late could find
+its phase already over.
+
 ## Configuration
 
 `ActorSystem.create` takes an optional settings object as the second
@@ -46,11 +160,18 @@ The full settings shape:
 | Field | Purpose |
 | --- | --- |
 | `logger` | Custom `Logger` instance.  Defaults to a console logger respecting `logLevel`. |
+| `otelLogs` | Build the system logger from the OpenTelemetry Logs API: the `OtelLogsAdapterOptions` the system hands to `otelLogger` at construction, with `actor-ts.tracing.logger-name` / `logger-version` layered under them — see [OTLP-Logs pipeline](/fundamentals/logging/#otlp-logs-pipeline--withotellogs).  Its level is the options' own, else `logLevel`, else `actor-ts.logger.level`.  The logger fields are tried in order and the first one set wins: `logger` > `otelLogs` > `logSinks` > the sinks `actor-ts.logger.sinks` enables > the console logger. |
 | `logLevel` | One of `debug` / `info` / `warn` / `error` / `off`. |
-| `dispatcher` | Custom `Dispatcher`.  Defaults to the immediate dispatcher; swap in a microtask- or throughput-based one to tune scheduling. |
+| `dispatcher` | Custom `Dispatcher`.  Defaults to the one `actor-ts.dispatcher.default` selects — `HybridDispatcher` unless configured; swap in an immediate- or throughput-based one, or `Dispatchers.Hybrid(n)` with another budget, to tune scheduling.  A budget is an integer from `1` up: `Dispatchers.Hybrid(0)` is refused with an `OptionsError` when it is built, and with `actor-ts.dispatcher.default = throughput` a configured `throughput` of `0` fails `ActorSystem.create` the same way. |
 | `scheduler` | Custom `Scheduler`.  Defaults to a real-time scheduler; tests inject `ManualScheduler` to control time. |
-| `config` | Either a prebuilt `Config` or a plain object of HOCON overrides.  Layered on top of reference defaults + any `application.conf`. |
-| `configFile` | Explicit path to an `application.conf` file.  Overrides the `ACTOR_TS_CONFIG` env var and the CWD lookup. |
+| `config` | Either a prebuilt `Config` or a plain object of HOCON overrides.  Layered on top of reference defaults + any `application.conf`.  Pass a `Config` itself, never a spread of one: `{ ...config }` copies its private fields, not its configuration, and `create` refuses it with a `ConfigError` — as it refuses a class instance (a `Map`, a `Date`, a nested `Config`) anywhere inside the object. |
+| `configFile` | Explicit path to an `application.conf` file.  Overrides the `ACTOR_TS_CONFIG` env var and the CWD lookup; `false` reads no application file. |
+| `referenceConfigFile` | Explicit path to the [project's own `reference.conf`](/reference/configuration/#the-project-referenceconf) — its defaults, over the bundled ones and under `application.conf`.  Overrides the `ACTOR_TS_REFERENCE_CONFIG` env var and the CWD lookup; `false` reads none. |
+| `secretsFile` | Explicit path to the [secrets file](/reference/configuration/#secrets-file), every value of which the config dump and the DevTools panel withhold.  Overrides the `ACTOR_TS_SECRETS_CONF` env var and the CWD lookup; `false` reads none. |
+| `environmentFile` | Explicit path to the [`.env` file](/reference/configuration/#environment-files) whose variables answer `${VAR}` behind the real environment.  Overrides the `ACTOR_TS_ENV_FILE` env var and the CWD lookup; `false` reads none. |
+| `profile` | The config [profile](/reference/configuration/#profiles) — the `profiles.<name>` block of each file the loader reads, the project `reference.conf`, `application.conf` and the secrets file, laid over each file's root.  Overrides the `ACTOR_TS_PROFILE` env var; a name no file defines is refused at startup.  Reaches `system.config` only, not the components that load their own configuration. |
+| `persistence` | Persistence wired at creation.  `plugins` are functions handed the system's `PersistenceExtension` that register backends — `(persistence) => registerSqlitePlugins(persistence)` — and run inside `create`, in the order given, so the plugin the config selects resolves as soon as `create` returns.  A promise one returns is awaited in the `persistence-start` phase of the [startup graph](#starting-up), where a rejection fails the startup; one that throws makes `create` throw.  `journal`, `snapshotStore` and `durableStateStore` are store instances, each winning over the plugin its axis selects.  `behavior` is the persistence behaviour, layered over `actor-ts.persistence` field by field; its `autoStart`, on unless set false, opens the selected stores in `persistence-start`, where a selection nothing registered or a store that cannot open fails the startup — off, they open on first use. |
+| `coordinatedStartup` | The startup graph — tasks the system runs in phases as the last step of `create`, awaited through `system.whenReady()`.  See [Starting up](#starting-up). |
 
 Constructor settings always win over anything in config — they're the
 explicit code-level overrides.
@@ -66,6 +187,7 @@ actor-ts {
     level = "info"
   }
   dispatcher {
+    default = "throughput"   # the count below is read under this kind only
     throughput = 100
   }
   cluster {
@@ -75,9 +197,15 @@ actor-ts {
 }
 ```
 
-The framework loads it automatically when present.  ENV substitution
-(`${?ENV_NAME}`) works as the HOCON spec defines — values pulled
-from the environment fall back to the default when unset.  See
+The framework loads it automatically when present, over a
+[`reference.conf` of the project's own](/reference/configuration/#the-project-referenceconf)
+when there is one.  ENV substitution (`${?ENV_NAME}`) works as the
+HOCON spec defines — values pulled from the environment fall back to
+the default when unset — and a [`.env` file](/reference/configuration/#environment-files)
+beside it can supply them.  One file can carry several environments
+as [profiles](/reference/configuration/#profiles), and credentials
+belong in the optional
+[secrets file](/reference/configuration/#secrets-file) beside it.  See
 [Configuration](/reference/configuration/) for every key
 the framework reads.
 
@@ -155,11 +283,14 @@ of racing them into dead letters.
 
 The `/deadLetters` "actor" is special — messages to a `tell` on a
 stopped ref, or to a ref that never existed, route there.  Each one is
-published on the event stream as a `DeadLetter` naming the recipient it
-failed to reach, and that is **all** that happens by default: nothing
-logs them and nothing keeps them, so with no subscriber the message is
-gone.  Subscribe to react programmatically, or turn on the bounded —
-optionally durable — queue that keeps and replays them; see
+logged and published on the event stream as a `DeadLetter` naming the
+recipient it failed to reach.  The log line carries the recipient, the
+sender and the message's class — never the payload — and is throttled
+after the first ten, so a delivery outage does not become a log outage.
+Nothing *keeps* the letter, though: with no subscriber and no queue the
+message itself is gone once the line is written.  Subscribe to react
+programmatically, or turn on the bounded — optionally durable — queue
+that keeps and replays them; see
 [Dead letters](/operations/dead-letters/).
 
 ## Extensions
@@ -220,35 +351,39 @@ await system.terminate();
 
 `terminate` performs an ordered shutdown:
 
-1. Notify the cluster (if joined) — gossip "I'm leaving" so peers
-   stop routing to this node.
-2. **Drain `/user`** — wait until no actor there has a turn in flight or
+1. **Drain `/user`** — wait until no actor there has a turn in flight or
    a message queued, so `ref.tell(x); await system.terminate()` handles
    `x`.  The wait is transitive: a cell is marked busy the moment
    something tells it, so replies, router fan-outs and restarts keep the
    drain going instead of flushing each mailbox once.
-3. Stop `/user` recursively — your actors get `postStop`, children
+2. Stop `/user` recursively — your actors get `postStop`, children
    first.  Actors with in-flight async `onReceive`s finish their
    current message before stopping.
-4. Stop `/system` — framework internals unwind.  This starts only once
-   `/user` is fully drained, so a `postStop` in step 3 can still talk to
+3. Stop `/system` — framework internals unwind.  This starts only once
+   `/user` is fully drained, so a `postStop` in step 2 can still talk to
    the sharding, pub-sub or delivery actors it depends on.
-5. Close the dispatcher and scheduler — no new messages, no new
+4. Close the dispatcher and scheduler — no new messages, no new
    timers.
-6. Resolve the returned promise.
+5. Resolve the returned promise.
 
-The drain in step 2 is bounded by
+That is all a bare `terminate()` does.  No coordinated-shutdown phase
+runs, so a bound HTTP port is not released and a joined cluster node
+does not leave — its peers keep routing to it until their failure
+detectors give up.  The next section covers the calls that run the
+pipeline first.
+
+The drain in step 1 is bounded by
 `actor-ts.system.shutdown-drain-timeout` (2 s by default), and it
 returns the instant the tree goes quiet — an idle system pays a tick,
 not the budget.  Set it to `0` to skip draining entirely; anything
-still queued when the budget runs out is dead-lettered by step 3, which
+still queued when the budget runs out is dead-lettered by step 2, which
 is what happened to the whole backlog before draining existed.
 
 Three things are deliberately **not** waited for:
 
-- a mailbox parked by `context.throttle(...)`, and one suspended while
-  a supervisor decides — neither drains at a rate a shutdown can wait
-  for, so both count as quiet;
+- a mailbox parked by [`context.throttle(...)`](/fundamentals/throttling/),
+  and one suspended while a supervisor decides — neither drains at a rate
+  a shutdown can wait for, so both count as quiet;
 - anything under `/system` — heartbeats, failure detectors and broker
   reconnect loops are never quiet by design;
 - work that is not in a mailbox yet — a `context.timers` tick that has
@@ -261,8 +396,9 @@ To stop **one** actor after its mailbox drains and wait for that, use
 
 ### Running until the process is asked to stop
 
-For a service, `terminate()` is not what you call — it is what happens
-at the end.  The whole of a `main` after the actors are wired is:
+For a service, a bare `terminate()` is not what you call — it is what
+happens at the end.  The whole of a `main` after the actors are wired
+is:
 
 ```ts
 await system.runUntilTerminated();
@@ -282,6 +418,27 @@ actors can still finish what they are holding.
 It is also the version that works everywhere: Deno delivers signals
 through `Deno.addSignalListener`, not `process.on`, and a listener
 there keeps the event loop alive until it is removed.
+
+When the system's [startup](#starting-up) failed, the promise rejects
+with the startup's error once the system is down — which is what ends
+the process.
+
+When the shutdown is your program's own decision rather than a
+signal's — an admin endpoint, the end of a batch job — ask `terminate()`
+for the same pipeline:
+
+```ts
+await system.terminate({ runCoordinatedShutdown: true });
+```
+
+Every phase runs first, with `ActorSystemTerminateReason`, and the
+promise resolves once the pipeline has finished and the system is down.
+A `terminate()` that lands while a run is already in flight — from one
+of its tasks, say — starts nothing and resolves at once; outside the
+pipeline, await `system.whenTerminated()` when you need the system down
+— a task must not: the teardown it would wait for runs in the last phase,
+so the wait holds the task's own phase for its whole budget (see
+[Calling `system.terminate()` directly](/fundamentals/coordinated-shutdown/#common-pitfalls)).
 
 import { Aside } from '@astrojs/starlight/components';
 

@@ -16,8 +16,9 @@ import { ClusterOptions } from '../../../src/cluster/ClusterOptions.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { THREAD_LABEL } from '../../../src/metrics/Constants.js';
 import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
-import type { MetricsRegistry } from '../../../src/metrics/Metrics.js';
+import type { MetricSample, MetricsRegistry } from '../../../src/metrics/Metrics.js';
 import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
 class Echo extends Actor<string> {
@@ -401,20 +402,34 @@ const STOCK_LABELS: Readonly<Record<string, ReadonlyArray<string>>> = {
   actor_mailbox_dropped_total: ['class', 'reason'],
   actor_dispatcher_queue_delay_seconds: ['dispatcher'],
   actor_dead_letters_total: ['outcome'],
+  actor_unhandled_total: ['class'],
   cluster_members_up: [],
   cluster_gossip_rounds_total: [],
   cluster_gossip_records_refused_total: ['reason'],
+  cluster_sharding_registrations_refused_total: ['reason', 'type'],
   cluster_envelope_from_mismatch_total: ['frame'],
+  cluster_envelope_refusals_total: ['reason', 'frame'],
+  cluster_outbound_refusals_total: ['frame'],
   distributed_data_quorum_pending: [],
   distributed_data_quorum_timeouts_total: ['operation'],
+  offload_tasks_total: ['task', 'outcome'],
+  offload_queue_depth: [],
+  offload_task_seconds: ['task'],
   distributed_data_quorum_rejected_total: ['operation'],
   distributed_data_dropped_values_total: [],
   distributed_data_gossip_skipped_keys_total: ['reason'],
   persistence_projection_events_skipped_total: ['projection'],
   persistence_projection_failures_total: ['projection', 'reason'],
   persistence_projection_stalled: ['projection'],
+  persistence_journal_latency_seconds: ['operation'],
+  persistence_journal_failures_total: ['operation', 'reason'],
+  persistence_snapshot_latency_seconds: ['operation'],
+  persistence_snapshot_failures_total: ['operation', 'reason'],
+  persistence_breaker_state: ['breaker'],
   router_scatter_gather_resolved_total: ['outcome'],
   router_scatter_gather_latency_seconds: [],
+  websocket_client_inbound_paused_seconds_total: [],
+  worker_mesh_snapshot_age_seconds: ['worker'],
 };
 
 /**
@@ -439,6 +454,44 @@ const PER_INSTANCE_LABELS: Readonly<Record<string, string>> = {
     + 'you declare; a per-pid fan-out is a cardinality the deployment opted into',
   'persistence_projection_failures_total.projection': 'as above',
   'persistence_projection_stalled.projection': 'as above',
+  'persistence_breaker_state.breaker': 'a closed set — journal, snapshot: the store a '
+    + 'persistence breaker guards, never its configured id, so two series whatever '
+    + 'journal-breaker and snapshot-breaker name. Deliberately not a program-bounded label '
+    + 'name: a gauge over every breaker resolved by id would carry the same name bounded '
+    + 'only by configuration, and has to justify itself here (#1478)',
+  'offload_tasks_total.task': 'the export name and module file of an offloaded task — '
+    + 'bounded by the tasks the application defines with defineOffloadTask, never off the '
+    + 'wire, and the label the metric exists to carry: which task is timing out or throwing '
+    + 'is the whole of the alert (#1558)',
+  'offload_tasks_total.outcome': 'a closed set — ok, threw, timeout, aborted, lost, invalid-arguments, unavailable',
+  'offload_task_seconds.task': 'as offload_tasks_total.task',
+  'cluster_sharding_registrations_refused_total.type': 'the sharded type name, taken '
+    + 'from this node’s own StartShardingOptions and never off the wire, so it is '
+    + 'bounded by the types the deployment starts — the same shape as the '
+    + 'projection rows above, and the label the metric exists to carry, since which '
+    + 'type is misconfigured is the whole of the alert',
+  'worker_mesh_snapshot_age_seconds.worker': 'the slot of a mesh worker, worker-<N>, '
+    + 'minted by the main thread from its own WorkerHandle.id and never off the wire — '
+    + 'bounded by worker-mesh.workers, and the label the metric exists to carry, since '
+    + 'which worker went silent is the whole of the alert; the series is removed when '
+    + 'the slot leaves the mesh (#1570)',
+};
+
+/**
+ * Labels the exposition adds **at export time** and no call site ever writes
+ * (#1570).  A separate table from {@link STOCK_LABELS} on purpose: the scan
+ * below reads label sets off `.counter(` / `.gauge(` / `.histogram(` calls,
+ * and a label stamped by `MetricsExtension.collectAll` or the worker-mesh
+ * relay is invisible to it — putting `thread` into a stock row would fail the
+ * inventory, and leaving it undeclared would leave it unjustified.  The test
+ * over the merged output is what checks this table, in both directions.
+ */
+const EXPOSITION_LABELS: Readonly<Record<string, string>> = {
+  thread: 'main | worker-<slot> — which thread of a worker mesh produced the sample, '
+    + 'stamped by MetricsExtension.collectAll on the main thread’s own samples and by '
+    + 'MetricsRelay on a worker’s, only while a relay is active; bounded by '
+    + 'worker-mesh.workers + 1 and never written at a call site, so a single-threaded '
+    + 'system exports no such label at all (#1570)',
 };
 
 /**
@@ -584,6 +637,143 @@ describe('Stock metric label sets (#745)', () => {
       const label = key.slice(key.lastIndexOf('.') + 1);
       expect(STOCK_LABELS[family] ?? []).toContain(label);
     }
+  });
+});
+
+/**
+ * The export seam (#1570): `collectAll()` is `collect()` until a sample
+ * source is registered, and the merged output's only label beyond the
+ * inventory is the one {@link EXPOSITION_LABELS} declares.
+ */
+describe('Exposition-time labels (#1570)', () => {
+  const STOCK_LABEL_NAMES: ReadonlySet<string> = new Set(Object.values(STOCK_LABELS).flat());
+
+  async function withEnabledSystem(body: (sys: ActorSystem) => Promise<void>): Promise<void> {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('m-exposition', sysOptions);
+    sys.extension(MetricsExtensionId).enable();
+    try {
+      await body(sys);
+    } finally {
+      await sys.terminate();
+    }
+  }
+
+  test('with no source registered, collectAll() is collect() — the same array, no thread label anywhere', () => withEnabledSystem(async (sys) => {
+    const metrics = sys.extension(MetricsExtensionId);
+    sys.spawn(Echo, 'a');
+    await awaitCondition(() => metrics.get().collect().length > 0, { timeoutMs: 4_000, label: 'the stock families minted' });
+    const all = metrics.collectAll();
+    const own = metrics.get().collect();
+    expect(all).toEqual(own);
+    expect(all.some((s) => 'thread' in s.labels)).toBe(false);
+    // Not merely equal: the very array `collect()` built, so a single-threaded
+    // exposition costs nothing it did not cost before.  Pinned through a
+    // registry whose `collect()` hands out one known array.
+    const fixed: MetricSample[] = [{ name: 'fixed_total', help: '', kind: 'counter', labels: {}, value: 1 }];
+    const real = metrics.get();
+    metrics.useRegistry({
+      counter: (name, labels, options) => real.counter(name, labels, options),
+      gauge: (name, labels, options) => real.gauge(name, labels, options),
+      histogram: (name, labels, options) => real.histogram(name, labels, options),
+      collect: () => fixed,
+      remove: (name, labels) => real.remove(name, labels),
+      clear: () => real.clear(),
+    });
+    expect(metrics.collectAll()).toBe(fixed);
+  }));
+
+  test('with a source registered, every main sample is stamped thread=main, the source’s samples follow, and thread is the only label beyond the inventory', () => withEnabledSystem(async (sys) => {
+    const metrics = sys.extension(MetricsExtensionId);
+    sys.spawn(Echo, 'a');
+    await awaitCondition(() => metrics.get().collect().length > 0, { timeoutMs: 4_000, label: 'the stock families minted' });
+    const contributed: MetricSample = {
+      name: 'actor_messages_delivered_total', help: '', kind: 'counter', labels: { thread: 'worker-0' }, value: 9,
+    };
+    const remove = metrics._addSampleSource(() => [contributed]);
+    try {
+      const all = metrics.collectAll();
+      const own = metrics.get().collect();
+      expect(all).toHaveLength(own.length + 1);
+      for (const sample of all.slice(0, own.length)) expect(sample.labels.thread).toBe('main');
+      expect(all.at(-1)).toEqual(contributed);
+      // Stamped on copies: the registry's own label objects are untouched.
+      expect(own.some((s) => 'thread' in s.labels)).toBe(false);
+
+      const beyondInventory = new Set(
+        all.flatMap((s) => Object.keys(s.labels)).filter((label) => !STOCK_LABEL_NAMES.has(label)),
+      );
+      expect([...beyondInventory].sort()).toEqual(Object.keys(EXPOSITION_LABELS).sort());
+      expect(new Set(all.map((s) => s.labels.thread))).toEqual(new Set(['main', 'worker-0']));
+    } finally {
+      remove();
+    }
+    // Unsubscribed: back to collect(), bit for bit.
+    expect(metrics.collectAll()).toEqual(metrics.get().collect());
+  }));
+
+  test('the same source registered twice contributes once, and the main thread’s registry being the noop merges nothing', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('m-exposition-noop', sysOptions);
+    try {
+      const metrics = sys.extension(MetricsExtensionId);
+      const source = (): MetricSample[] => [{ name: 'x_total', help: '', kind: 'counter', labels: { thread: 'worker-0' }, value: 1 }];
+      const removeFirst = metrics._addSampleSource(source);
+      const removeSecond = metrics._addSampleSource(source);
+      // Metrics off on the main thread: the relay is not active, so the
+      // exposition is the noop's — empty — rather than stale worker rows alone.
+      expect(metrics.collectAll()).toEqual([]);
+      metrics.enable();
+      expect(metrics.collectAll().filter((s) => s.name === 'x_total')).toHaveLength(1);
+      removeFirst();
+      expect(metrics.collectAll().some((s) => s.name === 'x_total')).toBe(false);
+      removeSecond();
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a source that writes to the main registry is read back by the same collectAll() — the sources run before the registry is read', () => withEnabledSystem(async (sys) => {
+    const metrics = sys.extension(MetricsExtensionId);
+    // The relay's shape, reduced to the seam: on every export the source
+    // *sets* a gauge on the main registry (the snapshot age) and contributes
+    // no rows of its own.  What a scrape carries has to be the value that
+    // scrape's own run of the source wrote — with the order inverted, the
+    // first export has no such series and every later one carries the
+    // previous export's value, and nothing else in the tree notices.
+    let exports = 0;
+    const remove = metrics._addSampleSource(() => {
+      exports++;
+      metrics.get().gauge('source_written_at_export', {}, { help: 'set by the source, read by the same export' }).set(exports);
+      return [];
+    });
+    try {
+      const written = (samples: ReadonlyArray<MetricSample>): number | undefined =>
+        samples.find((s) => s.name === 'source_written_at_export')?.value;
+      // The first export: the series does not exist until the source runs, so
+      // an export that read the registry first would carry no such series at all.
+      expect(written(metrics.collectAll())).toBe(1);
+      // Every later export: the reading is this export's write, not the last one's.
+      expect(written(metrics.collectAll())).toBe(2);
+      expect(written(metrics.collectAll())).toBe(3);
+      expect(exports).toBe(3);
+    } finally {
+      remove();
+    }
+  }));
+
+  test('every exposition label is justified, and every justification names a label the merge really stamps', () => {
+    for (const [label, why] of Object.entries(EXPOSITION_LABELS)) {
+      expect(why.length).toBeGreaterThan(40);
+      expect(STOCK_LABEL_NAMES.has(label)).toBe(false);
+    }
+    // The stamp's key is the declared one — pinned so a rename on either side
+    // cannot leave the table describing a label nothing emits.
+    expect(Object.keys(EXPOSITION_LABELS)).toEqual([THREAD_LABEL]);
   });
 });
 

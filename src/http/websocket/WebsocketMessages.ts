@@ -13,6 +13,7 @@
  */
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorFactory } from '../../Actor.js';
+import type { ActorOptionsType } from '../../ActorOptions.js';
 import type { WebsocketDecodeError } from './WebsocketCodec.js';
 import type { WebsocketConnection } from './WebsocketConnection.js';
 import type { WebsocketCloseInfo } from './Types.js';
@@ -22,8 +23,8 @@ import type { WebsocketCloseInfo } from './Types.js';
 /**
  * Command — ask the hub to spawn a per-connection actor as its own child.
  * Sent by the wiring layer at upgrade time; the hub does `context.spawn(
- * actor, name)` so the connection actor is a genuine sub-actor of the
- * server.  A command ("do X"), not a lifecycle signal.
+ * actor, name, options)` so the connection actor is a genuine sub-actor of
+ * the server.  A command ("do X"), not a lifecycle signal.
  *
  * The factory rides along on the message rather than being resolved by the
  * hub: only the wiring layer has the socket and codec to close over, and the
@@ -33,10 +34,25 @@ export type WebsocketAcceptCommand = {
   readonly kind: 'websocket-accept';
   readonly actor: ActorFactory<unknown>;
   readonly name: string;
+  /**
+   * What the connection actor is spawned with — the route's connection
+   * mailbox bound (#1432).  Absent when the route sets none, so the actor is
+   * spawned exactly as before and falls through to `actor-ts.mailbox.default.*`.
+   * Built by the wiring layer from the resolved policy for the same reason the
+   * factory is: the hub serves every route bound to it, and only the wiring
+   * layer knows which route this connection came in on.
+   */
+  readonly options?: ActorOptionsType<unknown>;
 };
 /** @internal */
-export function websocketAcceptCommand(actor: ActorFactory<unknown>, name: string): WebsocketAcceptCommand {
-  return { kind: 'websocket-accept', actor, name };
+export function websocketAcceptCommand(
+  actor: ActorFactory<unknown>,
+  name: string,
+  options?: ActorOptionsType<unknown>,
+): WebsocketAcceptCommand {
+  return options === undefined
+    ? { kind: 'websocket-accept', actor, name }
+    : { kind: 'websocket-accept', actor, name, options };
 }
 
 /** Signal — a connection opened. */
@@ -157,21 +173,74 @@ export type WebsocketClientMessage<TOut, TIn, TSelf = never> =
   | WebsocketClientSend<TOut>
   | WebsocketClientSignal<TIn>;
 
+/**
+ * The mark every client signal carries — the part of one that a decoded
+ * message body cannot have.  The `kind` names a signal but does not make one;
+ * `WebsocketClientActor`'s dispatch asks for this mark as well (see
+ * {@link isWebsocketClientSignal}).
+ *
+ * A client actor sits at an ordinary `/user` path, so what a remote node
+ * addresses to that path reaches its mailbox as a plain object with the
+ * peer's keys as its own, `kind` among them.  A decoder produces string keys
+ * only, so a symbol-keyed property is out of its reach, and a plain
+ * `Symbol()` — never `Symbol.for()`, whose registry anyone holding the
+ * description can read — is out of reach of every module but this one.
+ *
+ * A symbol *key*, not a symbol value under a string key: the message
+ * boundary check (#1386) clones a message and round-trips it through the
+ * serializer, both of which skip symbol keys and both of which would report a
+ * symbol value, although a signal never leaves the process.  The signal
+ * types do not mention the mark; nothing outside this module builds one.
+ *
+ * `websocket-client-send` carries no mark: it is a command, the one
+ * {@link websocketSend} builds for anyone who holds the ref.
+ */
+const WEBSOCKET_CLIENT_SIGNAL = Symbol('WebsocketClientActor.signal');
+
+/** A client signal as the constructors below build it. */
+type MarkedClientSignal = { readonly [WEBSOCKET_CLIENT_SIGNAL]: true };
+
 /** @internal */
 export function websocketClientInbound<TIn>(message: TIn): WebsocketClientInbound<TIn> {
-  return { kind: 'websocket-client-inbound', message };
+  const signal: WebsocketClientInbound<TIn> & MarkedClientSignal = {
+    kind: 'websocket-client-inbound', message, [WEBSOCKET_CLIENT_SIGNAL]: true,
+  };
+  return signal;
 }
 /** @internal */
 export function websocketClientInvalid(error: WebsocketDecodeError): WebsocketClientInvalid {
-  return { kind: 'websocket-client-invalid', error };
+  const signal: WebsocketClientInvalid & MarkedClientSignal = {
+    kind: 'websocket-client-invalid', error, [WEBSOCKET_CLIENT_SIGNAL]: true,
+  };
+  return signal;
 }
 /** @internal */
 export function websocketClientConnected(): WebsocketClientConnected {
-  return { kind: 'websocket-client-connected' };
+  const signal: WebsocketClientConnected & MarkedClientSignal = {
+    kind: 'websocket-client-connected', [WEBSOCKET_CLIENT_SIGNAL]: true,
+  };
+  return signal;
 }
 /** @internal */
 export function websocketClientDisconnected(cause?: Error): WebsocketClientDisconnected {
-  return { kind: 'websocket-client-disconnected', cause };
+  const signal: WebsocketClientDisconnected & MarkedClientSignal = {
+    kind: 'websocket-client-disconnected', cause, [WEBSOCKET_CLIENT_SIGNAL]: true,
+  };
+  return signal;
+}
+
+/**
+ * @internal Whether `signal` was built by one of the client signal
+ * constructors above.
+ *
+ * `WebsocketClientActor`'s dispatch asks this before every signal arm, so a
+ * body that merely spells a signal's `kind` — every decoded body does, if it
+ * spells one at all — matches none of them and reaches `onSelfMessage`,
+ * whose default declines it as a dead letter.  The requirement #1431 put on
+ * the hub's signals.
+ */
+export function isWebsocketClientSignal(signal: object): boolean {
+  return (signal as Partial<MarkedClientSignal>)[WEBSOCKET_CLIENT_SIGNAL] === true;
 }
 
 /** Push a typed outbound message through a client actor's ref: `ref.tell(websocketSend(m))`. */

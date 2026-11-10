@@ -60,6 +60,8 @@ type MultiNodeSpecOptionsType = {
   awaitTimeoutMs?:   number;                  // default 10_000 — how long await* helpers wait
   logLevel?:         LogLevel;                // defaults to a quiet NoopLogger
   downing?:          (role: string) => DowningProvider | undefined;
+  failureDetectorAutoDown?: boolean;          // default unset = the shipped true
+  stableAfterMs?:    number;                  // default 100 (vs. 20 s in production)
 };
 ```
 
@@ -73,6 +75,8 @@ type MultiNodeSpecOptionsType = {
 | `awaitTimeoutMs` | Default timeout for the `await*` helpers.  Default 10 s. |
 | `logLevel` | Log level — quiet by default. |
 | `downing` | Per-role split-brain resolver factory. |
+| `failureDetectorAutoDown` | Whether every node's failure detector removes a peer it declares `down`.  Unset keeps the shipped `true`: a crashed role is removed at `down-after`, so a spec that exercises crash failover with no `downing` strategy needs nothing more.  `false` is the opt-out a spec sets to watch a crashed role parked at `unreachable`, where it stays a member.  A role's `downing` provider decides that role's removals whatever this says. |
+| `stableAfterMs` | How long the view must hold still before `downing` is consulted.  Default 100 ms — the shipped 20 s is twice `awaitTimeoutMs`, so a spec that inherited it would time out before its resolver was asked anything. |
 
 Pass a plain object as shown, or build it fluently with
 `MultiNodeSpecOptions.create().withRoles(['a', 'b', 'c'])`.
@@ -132,6 +136,7 @@ out abruptly (peers detect it via the failure detector), and
 const spec = new MultiNodeSpec({
   roles:           ['a', 'b', 'c'],
   failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
+  // No downing strategy: the shipped auto-down removes the crashed node at downAfterMs.
 });
 await spec.start();
 await Promise.all([
@@ -146,20 +151,143 @@ await Promise.all([
 const host = spec.clusterFor('a').leader().toNullable();
 await spec.crash('a');
 
-// Wait for the survivors to down 'a' and re-converge:
+// Wait for the survivors to re-converge without 'a':
 await spec.awaitMembers('b', 2);
-await spec.awaitMemberStatus('b', 'a', 'down');
 
 // ... assert the singleton has moved to a survivor ...
 
 await spec.stop();
 ```
 
-`crash(role)` removes the node abruptly; the others observe the
-unreachable status, gossip the change, then trigger downing +
-failover.  The `await*` helpers replace fragile `setTimeout`
-sleeps — they poll until the condition holds (or throw after
-`awaitTimeoutMs`).
+`crash(role)` removes the node abruptly; the others' detectors mark
+it `unreachable` after `unreachableAfterMs` and reach `down` at
+`downAfterMs`.  What that verdict does is the spec's choice: by
+default the detector removes the node, as above —
+`failureDetectorAutoDown` unset keeps the shipped `true`; a role's
+`downing` strategy decides instead; and with
+`failureDetectorAutoDown: false` and no strategy, the node stays a
+member at `unreachable` — no shard is reallocated and no remote
+watcher gets `Terminated`.  The `await*` helpers replace
+fragile `setTimeout` sleeps — they poll until the condition holds (or
+throw after `awaitTimeoutMs`).
+
+## Restarting a node
+
+`restart(role)` brings a role back at the **same address as a new process** —
+the shape of a pod replacement.  The old system is crashed and terminated, a
+fresh system and cluster join in its place with a new incarnation, and the
+other members see the old run end before the new one joins.  `withNodeSetup`
+runs on every node after its join and again on a restarted one, so the
+sharded types, singletons and subscriptions a test starts exist on the new
+node too.
+
+```ts
+const spec = new MultiNodeSpec(MultiNodeSpecOptions.create()
+  .withRoles(['a', 'b', 'c'])
+  // Runs on every node once it has joined — and again on a restarted one.
+  .withNodeSetup((role, system, cluster) => {
+    cluster.sharding.start(shardingOptions);
+  }));
+await spec.start();
+
+const oldRun = spec.clusterFor('a').selfAddress.incarnation;
+await spec.restart('a');                  // same address, new process
+await spec.awaitMembers('b', 3);
+expect(spec.clusterFor('a').selfAddress.incarnation).not.toBe(oldRun);
+```
+
+The restarted node's seeds are the other running roles, so a restarted seed
+rejoins the cluster it founded.  Pass `restart(role, { seeds: [] })` to have it
+found a cluster of its own instead — the fork
+[issue #1176](https://github.com/pathosDev/actor-ts/issues/1176) is about.
+References taken from `systemFor` / `clusterFor` before the restart name the
+old node; ask again afterwards.
+
+## A network that works badly
+
+`partition` and `crash` describe a network that is perfect or severed. Between
+them lies every condition a cluster actually runs in: a fifth of the gossip
+pushes lost, frames overtaking each other, a peer that is slow rather than
+dead. `degrade(roleA, roleB, profile)` is that middle, and `restore(roleA,
+roleB)` undoes it.
+
+A `partition` that outlasts `downAfterMs` behaves as it does in production:
+with no `downing` strategy, each side removes the other and runs on alone, and
+a later `heal` does not bring the two back together
+([issue #930](https://github.com/pathosDev/actor-ts/issues/930)). A spec that
+wants one side to win gives the roles a strategy through `downing`.
+
+```ts
+const spec = new MultiNodeSpec(MultiNodeSpecOptions.create()
+  .withRoles(['a', 'b', 'c'])
+  .withScheduler(new ManualScheduler())
+  .withFaultSeed(20_231));
+
+await spec.start();
+
+// The cluster forms on a clean network, and the network then gets worse.
+spec.degrade('a', 'b', {
+  dropProbability:      0.2,   // a fifth of the frames never arrive
+  duplicateProbability: 0.1,   // a tenth arrive twice
+  reorderWindow:        4,     // up to four frames may overtake each other
+  latencyMs:            50,    // measured on the spec's scheduler
+});
+
+await spec.advanceUntil(
+  () => spec.clusterFor('a').getMembers().filter((m) => m.status === 'up').length === 3,
+  { budgetMs: 60_000, description: 'the view converges despite the loss' },
+);
+
+spec.restore('a', 'b');
+```
+
+Every field is optional and defaults to "no fault", so a profile names only what
+it changes. `degrade` is bidirectional like `partition`; for a one-way
+degradation reach for `spec.faultsFor(role).degradeTo(address, profile)`.
+
+### The faults are deterministic
+
+Every decision comes from one seeded generator per node, drawn in send order —
+and under a shared `ManualScheduler` that order is itself deterministic. So a
+run that goes red reproduces exactly, and the spec's timeout messages name the
+seed that does it:
+
+```
+MultiNodeSpec: timeout after 10000 ms — awaitMembers(a, expected=3) — current: 2
+  Faults were injected on: a, b. Reproduce with withFaultSeed(20231).
+```
+
+That is not a detail. An unreproducible chaos test is a flake generator, and a
+fixed seed is what makes the difference — the trade being that the suite stops
+finding *new* networks on its own. Vary the seed deliberately (a loop over
+`withFaultSeed`) when the question is "does this hold for many networks" rather
+than "does this hold for the network that broke".
+
+### `latencyMs` needs a scheduler
+
+A delay taken from the wall clock would reintroduce exactly the timing
+dependence [`ManualScheduler`](/testing/manual-scheduler/) exists to remove, so
+it is refused rather than quietly taken: a non-zero `latencyMs` without a
+scheduler throws at construction. The other three faults need no clock.
+
+### `reorderWindow` is a depth, not a shuffle
+
+A window of `n` holds up to `n` frames and releases them as one permuted batch,
+so a frame is displaced by **fewer than `n` positions**. That bound is the
+point: a shuffle could permute a frame to the end of the run and leave a test
+waiting for something that is never coming. The last partial batch is released
+by `restore`, by `stop`, and by the next batch filling up — continuous gossip
+does the last of those on its own.
+
+### It works on any transport
+
+`FaultyTransport` is a decorator, so `InMemoryTransport`, `MultiNodeTransport`
+and `MessageChannelTransport` all gain the same controls without any of them
+growing fault logic. Outside a spec:
+
+```ts
+const link = new FaultyTransport(new InMemoryTransport(address), { dropProbability: 0.2 });
+```
 
 ## Per-node TestProbe
 

@@ -47,6 +47,7 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # Reads the repository and uploads an artifact — nothing else.  The
     # upload action uses the Actions runtime token, not `GITHUB_TOKEN`,
     # so it needs no Pages scope of its own.
@@ -66,7 +67,7 @@ jobs:
       # system Node has to satisfy Astro's minimum (>= 22.12 for Astro 7).
       # We install the repo's `engines` floor.
       - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
 
@@ -108,6 +109,13 @@ jobs:
         working-directory: docs
         run: bun run build
 
+      # A green build is not proof the output is right — #1527 shipped 423
+      # unstyled mermaid diagrams through one.  Same check `docs-checks.yml`
+      # runs on every docs change, here so it also gates the deploy (#1528).
+      - name: Assert on the rendered output
+        working-directory: docs
+        run: bun run check:rendered
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
@@ -117,6 +125,7 @@ jobs:
     name: Deploy to GitHub Pages
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # The two scopes `actions/deploy-pages` documents as its minimum, and
     # they live here rather than at workflow level so only this job — one
     # step, no checkout, no dependencies — can mint them.  `contents: read`
@@ -130,4 +139,4 @@ jobs:
     steps:
       - name: Deploy
         id: deployment
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

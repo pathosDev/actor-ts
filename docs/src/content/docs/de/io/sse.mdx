@@ -40,6 +40,27 @@ Der Actor nutzt das globale `fetch` (Bun, Node ≥ 18 und Deno bringen
 alle eines mit), es gibt also keine zusätzliche Abhängigkeit zu
 installieren.
 
+**Redirects werden abgelehnt, nie verfolgt**, und die Antwort muss sich
+als `text/event-stream` ausweisen.  Ein `3xx` mit `Location` lässt den
+Connect fehlschlagen: Ihm zu folgen würde jeden eigenen Header —
+Vendor-API-Keys eingeschlossen, denn der Fetch-Standard entfernt nur
+`authorization`, `cookie` und `proxy-authorization` — an den Host
+weiterspielen, den der Feed benannt hat, und den Endpoint statt Ihrer
+Konfiguration entscheiden lassen, welche Adresse der Request
+tatsächlich erreicht.  Richten Sie `url` deshalb auf den endgültigen
+Endpoint.  Ein Body, der einen anderen Content-Type angibt — oder gar
+keinen —, wird abgelehnt, bevor ein Byte davon geparst wird.  Beide
+Ablehnungen laufen über den gewöhnlichen Reconnect-Pfad — Backoff,
+Circuit Breaker, ein `BrokerReconnectAttempt` je Versuch und ein
+`BrokerReconnectFailed` mit der Ablehnung, sobald die Versuche
+aufgebraucht sind —, sodass ein Feed, der plötzlich weiterleitet, als
+Broker sichtbar wird, der sich nicht verbinden kann, statt als lautlose
+Änderung daran, wohin Ihre Credentials gehen.  Nicht
+`BrokerDisconnected`: dieses Event steht für eine *bestehende*
+Verbindung, die verloren geht, und ein abgelehnter Connect hatte nie
+eine.  Ein Alert auf einen plötzlich weiterleitenden Feed muss auf die
+Reconnect-Events lauschen.
+
 ## Settings
 
 ```ts
@@ -76,7 +97,7 @@ type SseEvent = {
 ```
 
 Der Client parst das SSE-Wire-Format — Events durch eine Leerzeile
-(`\n\n`) getrennt, Felder als `field: value`:
+getrennt, Felder als `field: value`:
 
 ```
 data: hello
@@ -92,6 +113,13 @@ data: line-2
 
 Parsing-Regeln, die der SSE-Spezifikation folgen:
 
+- **Zeilenenden.**  Eine Zeile endet mit `\n`, `\r\n` **oder** `\r` —
+  alle drei, wie die Spezifikation es erlaubt.  Ein Feed, der mit
+  `\r\n\r\n` oder `\r\r` rahmt, wird deshalb genauso geparst wie das
+  `\n\n`-Beispiel oben, und auf keinem Feldwert bleibt ein Carriage
+  Return zurück.  Ein Zeilenende, das über zwei Netzwerk-Reads
+  verteilt ankommt — ein `\r` beendet den einen, ein `\n` eröffnet den
+  nächsten —, zählt einmal, nicht zweimal.
 - **Default-Event-Name.**  Ein Block ohne `event:`-Feld kommt mit
   `event: 'message'` an.
 - **Mehrzeilige Daten.**  Mehrere `data:`-Zeilen in einem Block
@@ -110,14 +138,16 @@ das mehrzeilige `{ event: 'message', data: 'line-1\nline-2' }`.
 
 `SseActor` erweitert `BrokerActor`, daher werden
 Reconnect-mit-Backoff und der Circuit Breaker **geerbt** —
-konfiguriere sie am Builder:
+konfiguriere sie am Builder.  Der Breaker wird per Id benannt und ist aus,
+bis er es ist; seine Zahlen liegen unter `actor-ts.circuit-breaker.<id>`
+(siehe [BrokerActor-Basis](/de/io/broker-actor-base/#circuit-breaker)):
 
 ```ts
 SseOptions.create()
   .withUrl('https://example.com/events')
   .withTarget(target)
   .withReconnect({ /* base delay, max delay, jitter … */ })
-  .withCircuitBreaker(5, 30_000);   // failureThreshold, resetMs
+  .withCircuitBreaker('events');   // a breaker id: actor-ts.circuit-breaker.events
 ```
 
 Wenn der Stream endet oder die Verbindung **beobachtbar** abbricht,
@@ -181,8 +211,8 @@ HOCON > eingebaute Defaults**.  Der HOCON-Pfad ist
 actor-ts.io.broker.sse {
   url = "https://example.com/events"
   headers { authorization = "Bearer …" }
-  idleTimeoutMs    = 60000
-  connectTimeoutMs = 10000
+  idle-timeout    = 60s
+  connect-timeout = 10s
 }
 ```
 

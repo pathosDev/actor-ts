@@ -61,19 +61,40 @@ Drei Dinge passieren:
    Nachricht.  Weil sie über die Mailbox ankommt, ist die Ordnung
    gegenüber User-Nachrichten wohldefiniert: alle `tell`s, die
    *vor* dem Stop des beobachteten Actors gesendet wurden, werden in
-   Reihenfolge verarbeitet, danach folgt das `Terminated`.
+   Reihenfolge verarbeitet, danach folgt das `Terminated`.  Meldet ein
+   anderer Node den Tod, nimmt das `Terminated` zuerst einen Hop über
+   die System-Queue des Watchers und reiht sich danach in dieselbe
+   Reihe ein — hinter allem, was bei seiner Ankunft schon in der Queue
+   steht.
 
 „Wie jede andere Nachricht" bezieht sich auf die Reihenfolge — und nur
-darauf.  Ein Tod wird **einmal** angekündigt, das Framework kann ihn
-nicht erneut senden.  Deshalb ist die Benachrichtigung von allem
+darauf.  Die Reihenfolge gilt auf jeder Mailbox, die die
+Ankunftsreihenfolge einhält — der Default-Mailbox, einer
+`BoundedMailbox` und einer
+[`ControlAwareMailbox`](/de/fundamentals/mailboxes/#controlawaremailbox),
+deren Prädikat `Terminated` gewöhnlich lässt.  Eine Mailbox, die
+Nachrichten umordnet, ordnet auch diese nach derselben Regel: eine
+`PriorityMailbox` rangiert sie mit deinem `priorityFor`, und eine
+`ControlAwareMailbox`, die sie als Control einstuft, übergibt sie vor
+dem Backlog.  Ein Tod wird **einmal** angekündigt, das Framework kann
+ihn nicht erneut senden.  Deshalb ist die Benachrichtigung von allem
 ausgenommen, was User-Nachrichten beim Einreihen verwirft: von einer
 [Mailbox-Schranke](/de/fundamentals/mailboxes/) jeder Policy und von
-einem `throttle({ onExcess: 'drop' })`.  Einen Watcher zu beschränken
+einem [`throttle({ onExcess: 'drop' })`](/de/fundamentals/throttling/).  Einen Watcher zu beschränken
 kostet ihn Backlog, niemals die Tode, auf die er wartet.  Und wenn die
 Benachrichtigung wirklich nicht zugestellt werden kann — der Watcher
 ist selbst schon gestoppt, oder seine Mailbox verweigert die Nachricht
 — wird sie zum [Dead Letter](/de/operations/dead-letters/), damit der
 Verlust sichtbar statt stillschweigend ist.
+
+**Ein geparktes `Terminated` kommt nicht zurück.**  Die Registrierung
+wird von dem Tod verbraucht, den sie beschreibt — sie ist also bereits
+weg, wenn [`unstashAll()`](/de/fundamentals/become-and-stash/) die
+Benachrichtigung wieder abspielt, und der Watcher hat nichts mehr,
+woran er sie erkennen könnte.  Das Replay wird zum Dead Letter, nach
+derselben Regel wie oben: sichtbar, aber keine zweite Zustellung.
+Behandle ein `Terminated` dort, wo es ankommt — oder registriere die
+Watch mit `watchWith` (unten), der Form, die den Rundlauf übersteht.
 
 ## Die `Terminated`-Nachricht
 
@@ -92,21 +113,26 @@ Drei Felder:
 | Feld | Bedeutung |
 | --- | --- |
 | `actor` | Die Ref, die gestoppt hat.  Dieselbe Instanz, die du an `watch` übergeben hast. |
-| `existenceConfirmed` | Ob das Framework diesen Actor vor seiner Termination existieren sah.  Aktuell immer `true` — jedes vom Framework gelieferte `Terminated` verwendet den Konstruktor-Default. |
-| `addressTerminated` | Reserviert für den Cluster-Fall (ein gesamter **Node** wird unerreichbar, nicht nur dieser Actor).  Aktuell immer `false` — das Framework setzt es noch nicht. |
+| `existenceConfirmed` | Ob ein Node diesen Actor vor seiner Termination existieren sah.  `true` bei jedem lokalen Tod und bei einem Remote-Actor, der gestoppt hat; `false`, wenn du einen Pfad auf einem anderen Node beobachtet hast, der dort ins Leere lief — der ferne Node antwortet sofort, und das Flag ist seine Art zu sagen „nie gesehen". |
+| `addressTerminated` | `true`, wenn die Notification synthetisiert wurde, weil der ganze **Node** des Actors den Cluster verlassen hat — downed oder removed — und nicht, weil der Actor selbst gestoppt hat.  Bei einem lokalen Tod immer `false`. |
 
 Einen bereits gestoppten Actor zu beobachten, liefert `Terminated`
 **sofort** — dein Watcher bekommt immer eine Notification, egal wann
-du registriert hast.  Diese Notification trägt wie jede andere den
-Default `existenceConfirmed = true`; die aktuelle Implementierung
-setzt es nie auf `false`, also verlasse dich nicht darauf als
-Fehlersignal.
+du registriert hast.  Lokal trägt sie wie jede andere
+`existenceConfirmed = true`: der Actor hat existiert, er ist nur
+weg.  Das Flag wird nur über den Cluster hinweg `false`, für einen
+Pfad, den der ferne Node nicht auflösen konnte — verzweige also nur
+dort darauf.
 
-Das `addressTerminated`-Flag ist für Cluster-Setups reserviert, in
-denen ein ganzer Node — nicht nur ein Actor — verschwindet.  Es ist
-aktuell immer `false`: das Framework löst noch keine Node-weiten
-`Terminated`-Notifications aus.  Siehe
-[Cluster](/de/cluster/overview/) für die Membership-Geschichte.
+Das `addressTerminated`-Flag gehört zum Cluster-Fall, in dem ein
+ganzer Node — nicht nur ein Actor — verschwindet.  Wird ein Node,
+in den du eine beobachtete Ref hältst, downed oder aus der
+Membership entfernt, bekommt jeder Watcher eines Actors auf diesem
+Node ein `Terminated` mit gesetztem Flag — aus der Membership
+synthetisiert, nicht vom Actor gesendet.  Siehe
+[Cluster](/de/cluster/overview/) für die Membership-Geschichte und
+[Watchen über den Cluster hinweg](#watchen-über-den-cluster-hinweg)
+unten.
 
 ## Nur die Runtime kann einen Tod verkünden
 
@@ -228,6 +254,16 @@ Registrierungen automatisch aufgeräumt.  Deine Domain-Nachricht erbt
 die Ausnahme des `Terminated`, das sie ersetzt — auch sie kann von
 einer Schranke oder einem Throttle nicht verworfen werden, denn sie ist
 weiterhin die Ankündigung eines Todes, der einmal passiert.
+
+An der einen Stelle, an der ein `Terminated` keine gewöhnliche
+User-Nachricht ist, ist sie es: `stash()` parkt sie und `unstashAll()`
+gibt sie zurück, während ein geparktes `Terminated` stattdessen zum
+Dead Letter wird.  Von der Death Watch steckt dann nichts mehr darin —
+was dein Handler bekommen hat, ist eine Nachricht aus deinem eigenen
+Protokoll, und der Stash behandelt sie als solche.  Wenn ein Watcher
+Phasen hat, in denen er einen Tod noch nicht verarbeiten kann, ist
+genau das der Grund, zu `watchWith` zu greifen — auch dann, wenn
+`Terminated` alles gesagt hätte, was du brauchst.
 
 ### Eine Registrierung, ein Tod
 
@@ -375,13 +411,50 @@ const remoteEntity = await this.system.actorSelection(
 this.context.watch(remoteEntity);
 ```
 
-Watch funktioniert über Nodes hinweg auf dieselbe Weise — das
-Framework propagiert Termination-Notifications über den
-Cluster-Transport, wenn der beobachtete Actor stoppt.  Node-weite
-Unerreichbarkeit liefert noch kein `Terminated` (das
-`addressTerminated`-Flag ist immer `false`).  Siehe
-[Refs zwischen Nodes](/de/cluster/refs-across-nodes/) für das
-Wire-Protokoll, das das möglich macht.
+Watch funktioniert über Nodes hinweg auf dieselbe Weise.  Dein
+Node schickt einen `watch`-Frame an den Node, den die Ref nennt;
+der pflanzt einen Stellvertreter in das Watcher-Set des
+beobachteten Actors, und wenn der Actor stoppt, antwortet er mit
+einem `watch-terminated`-Frame, der hier als dasselbe gebrandete
+`Terminated` ankommt wie bei einem lokalen Tod — über die
+gewöhnlichen `watch`- / `watchWith`- / `unwatch`-Aufrufe, ohne
+etwas zu konfigurieren.  Zwei Dinge unterscheiden sich vom lokalen
+Fall:
+
+- Ein Pfad, den der ferne Node **nicht auflösen kann**, wird sofort
+  beantwortet, mit `existenceConfirmed = false`.  Dieselbe Antwort
+  deckt einen Pfad ab, den der ferne Node per Namen nicht
+  herausgibt — `/system/…` immer, und unter `untrusted-mode` jeden
+  `/user`-Pfad außerhalb der Allow-List — sodass ein Watcher nie an
+  einer Ablehnung hängt und ein Peer `watch` nicht nutzen kann, um
+  zu sondieren, welche Actors existieren.  Siehe
+  [Cluster-Sicherheit](/de/operations/security/cluster-security/).
+- Ein Node, der **downed oder removed** wird, schickt nichts; dein
+  Node synthetisiert das `Terminated` aus der Membership, mit
+  `addressTerminated = true`.  Ein Node, der nur *unreachable* ist,
+  löst es nicht aus — er kann zurückkommen.  Zuerst muss ihn etwas
+  entfernen: eine [Downing-Strategie](/de/cluster/downing-strategies/),
+  ein `Cluster.down` eines Operators oder — ohne konfigurierte
+  Strategie, der Default — der Failure Detector selbst bei
+  `down-after` (`failure-detector.auto-down = on`).  Per Default
+  bekommen die Watcher eines abgestürzten Nodes ihr `Terminated` also
+  etwa fünf Sekunden, nachdem er verstummt ist.  Dieses Entfernen ist
+  allerdings eine Vermutung: Ein Node, der nur langsam war, wird
+  trotzdem entfernt, seine Watcher erfahren `addressTerminated`, und
+  derselbe Lauf kann danach zurückkommen, während ihr `Terminated`
+  bestehen bleibt.  Unter dem Opt-out `auto-down = off` ohne
+  Strategie bekommen die Watcher eines abgestürzten Nodes kein
+  `Terminated`, bis jemand ihn downt — oder bis der Node auf derselben
+  Adresse neu startet, was den alten Lauf beendet, sein Entfernen
+  verkündet und das `Terminated` zustellt, bevor der neue Lauf
+  beitritt
+  ([ein Neustart beendet den vorherigen Lauf](/de/cluster/failure-detector/#ein-neustart-beendet-den-vorherigen-lauf)).
+
+Ein beobachtender Actor, der stoppt, zieht seine Remote-Watches
+zurück, und ein Node, der den Cluster verlässt, zieht jeden
+Stellvertreter zurück, den er anderswo gepflanzt hat.  Siehe
+[Refs zwischen Nodes](/de/cluster/refs-across-nodes/) für den Rest
+der Wire-Geschichte.
 
 ## Was es NICHT ersetzt
 

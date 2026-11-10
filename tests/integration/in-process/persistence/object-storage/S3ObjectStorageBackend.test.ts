@@ -1,17 +1,19 @@
 /**
- * Integration tests for `S3ObjectStorageBackend` against a live MinIO
- * instance.  Skipped automatically when the env vars are missing — CI
- * stays green even without MinIO running.
+ * Integration tests for `S3ObjectStorageBackend` against a live
+ * S3-compatible store — Silo, the MinIO fork the broker suite runs
+ * against (#1795), or MinIO itself.  Skipped automatically when the env
+ * vars are missing — CI stays green even without a store running.
+ * Silo keeps MinIO's default root credentials, `minioadmin`.
  *
  * To run locally:
- *   docker run --rm -p 9000:9000 minio/minio server /data
+ *   docker run --rm -p 9000:9000 pgsty/silo:RELEASE.2026-10-26T00-00-00Z server /data
  *   S3_ENDPOINT=http://localhost:9000 \
  *   S3_ACCESS_KEY=minioadmin \
  *   S3_SECRET_KEY=minioadmin \
  *   S3_BUCKET=actor-ts-test \
  *     bun test tests/unit/persistence/object-storage/S3ObjectStorageBackend.test.ts
  *
- * (Create the bucket once via `mc mb` or the MinIO console.)
+ * (Create the bucket once via `mc mb` or the console.)
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';

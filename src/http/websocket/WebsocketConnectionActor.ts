@@ -10,7 +10,9 @@
  *     with this connection as the sender;
  *   - outbound: its mailbox is the connection's write queue — a
  *     {@link WebsocketConnection}'s `tell` / `sendRaw` / `close` enqueue here,
- *     and it encodes + writes to the socket (with a backpressure check);
+ *     and it encodes + writes to the socket (with a backpressure check).
+ *     `abort` does not queue: it shuts the socket on the caller's stack and
+ *     stops this actor ahead of the queue (`abortConnection`);
  *   - lifecycle: on socket close it stops itself; `postStop` reports the
  *     disconnect to the hub exactly once and closes the socket.
  *
@@ -20,7 +22,12 @@
  */
 import { match } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
-import { WebsocketReadyState, type WebsocketSocketAdapter } from './SocketAdapter.js';
+import {
+  isSendableCloseCode,
+  sendableCloseReason,
+  WebsocketReadyState,
+  type WebsocketSocketAdapter,
+} from './SocketAdapter.js';
 import { WebsocketDecodeError, type WebsocketCodec } from './WebsocketCodec.js';
 import {
   WebsocketConnectionImplementation,
@@ -70,7 +77,14 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
   }
 
   override preStart(): void {
-    const connection = new WebsocketConnectionImplementation<TOut>(this.d.id, this.d.upgrade, this.d.socket, this.self, this.system.name);
+    const connection = new WebsocketConnectionImplementation<TOut>(
+      this.d.id,
+      this.d.upgrade,
+      this.d.socket,
+      this.self,
+      this.system.name,
+      (code, reason) => this.abortConnection(code, reason),
+    );
     this.connection = connection;
     // Tell the hub 'connected' BEFORE attaching listeners, so it is
     // mailbox-ordered before any inbound data flushed by setListeners.
@@ -122,8 +136,8 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
 
   override postStop(): void {
     // Report the disconnect to the hub exactly once — covers normal
-    // close (info set by handleClose), hub-initiated close, and crashes
-    // (framework stops the actor → postStop runs → synthetic info).
+    // close (info set by handleClose), hub-initiated close or abort, and
+    // crashes (framework stops the actor → postStop runs → synthetic info).
     if (this.connection && !this.disconnectReported) {
       this.disconnectReported = true;
       const info: WebsocketCloseInfo = this.closeInfo ?? { code: 1011, reason: '', initiatedBy: 'error' };
@@ -131,13 +145,34 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
     }
     if (!this.closed) {
       this.closed = true;
-      try { this.d.socket.close(); } catch { /* already closed */ }
+      this.shutSocket();
     }
   }
 
   /* ------------------------------ inbound ------------------------------- */
 
+  /**
+   * Nothing reaches the hub once this side has decided to close (#1431).
+   *
+   * The transport does not stop on its own.  `ws` keeps emitting `'message'`
+   * while a socket is CLOSING — a frame the peer sent before it saw the close
+   * frame is still parsed and handed over — and these listeners stay attached
+   * after the actor has stopped.  Unguarded, such a frame was decoded and told
+   * to the hub *after* `postStop` had reported `onClientDisconnected`, which
+   * breaks the one ordering a hub is promised per connection:
+   * `onClientConnected → onMessage* → onClientDisconnected`.  A frame
+   * pipelined right behind the one that made this side close got through the
+   * same way, only earlier.
+   *
+   * Keyed on `closed`, this actor's own decision, rather than on the socket's
+   * `readyState`: `closed` is set before the socket is touched, and it does not
+   * depend on what an adapter reports.
+   */
   private handleInbound(data: string | Uint8Array): void {
+    if (this.closed) {
+      this.log.debug(`WebsocketConnectionActor ${this.d.id}: inbound frame after close — dropped`);
+      return;
+    }
     const frame = normalizeInbound(data);
     if (!frame) {
       this.log.warn(`WebsocketConnectionActor ${this.d.id}: unrecognised inbound frame type — dropped`);
@@ -198,11 +233,85 @@ export class WebsocketConnectionActor<TOut, TIn, TSelf = never>
     }
   }
 
+  /**
+   * The hub hears `code` and `reason` as they were asked for; the socket gets
+   * what a close frame can carry — a code it cannot carry becomes 1000, what
+   * `close()` sends when it is given none — see {@link shutSocket}.
+   */
   private closeSocket(code: number, reason: string): void {
     if (this.closed) return;
     this.closed = true;
     if (this.closeInfo === null) this.closeInfo = { code, reason, initiatedBy: 'server' };
-    try { this.d.socket.close(code, reason); } catch { /* already closed */ }
+    this.shutSocket(isSendableCloseCode(code) ? code : 1000, sendableCloseReason(reason));
+    this.context.stopSelf();
+  }
+
+  /**
+   * Close the socket, and see that it ends up shut (#1431).
+   *
+   * The callers hand over a code and reason a close frame can carry, because a
+   * transport asked for more does not shut the socket: `ws` throws after it has
+   * already moved the socket to CLOSING — no close frame goes out, no close
+   * timer starts, and the next `close()` returns at once — and Deno's socket
+   * throws without closing at all.  The peer then stays connected and keeps
+   * its `maxConnections` slot, while `postStop` tells the hub it has gone.
+   *
+   * What is left is a `close()` that throws anyway, for a reason of the
+   * transport's own.  `terminate()` still shuts such a socket.  An adapter
+   * without it, as Hono's is under Deno, has nothing left to try, and the
+   * warning is the only trace of a socket that may still be open.
+   */
+  private shutSocket(code?: number, reason?: string): void {
+    const socket = this.d.socket;
+    try {
+      socket.close(code, reason);
+    } catch (err) {
+      if (socket.terminate) {
+        try { socket.terminate(); } catch { /* already gone */ }
+      } else {
+        this.log.warn(`WebsocketConnectionActor ${this.d.id}: close failed and this backend cannot terminate the socket, which may still be open: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  /**
+   * This actor's half of `WebsocketConnection.abort()` (#1431), handed to the
+   * connection in `preStart`.
+   *
+   * It runs on the caller's stack — usually the hub's — and not on a turn of
+   * this actor, because an abort that waited for a turn would be `close()`.
+   * The order is the point:
+   *
+   *   1. The decision.  Shutting the socket may raise its close event before
+   *      the call returns, and `handleClose` would then record the shutdown as
+   *      one the *client* made — `{ 1006, '', 'client' }` after a hard close.
+   *      With `closed` and `closeInfo` already set, `handleClose` returns
+   *      early, `handleInbound` drops what the transport still delivers, and
+   *      `postStop` reports this code and reason, as the server's, once.
+   *   2. The socket.  `terminate()` where the adapter has one — the `ws`-backed
+   *      backends, and Hono under Bun and Node: no close frame, and nothing
+   *      still buffered is sent — otherwise a close, which is what Hono under
+   *      Deno gets: with `reason` cut to fit a close frame and with `code`, or
+   *      1008 — what `abort()` sends when it is given none — where a close
+   *      frame cannot carry `code`.  Asked for more, Deno's socket refuses the
+   *      close and stays open (see {@link shutSocket}).
+   *   3. The actor, through the system lane, which the mailbox serves ahead of
+   *      every queued command.  The backlog never gets a turn; stopping drains
+   *      it to dead letters.
+   *
+   * A connection already closing — this actor closed it, the client did, or
+   * the actor has stopped — is left as it is.
+   */
+  private abortConnection(code: number, reason: string): void {
+    if (this.closed || this.closeInfo !== null) return;
+    this.closed = true;
+    this.closeInfo = { code, reason, initiatedBy: 'server' };
+    const socket = this.d.socket;
+    if (socket.terminate) {
+      try { socket.terminate(); } catch { /* already gone */ }
+    } else {
+      this.shutSocket(isSendableCloseCode(code) ? code : 1008, sendableCloseReason(reason));
+    }
     this.context.stopSelf();
   }
 }

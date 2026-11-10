@@ -39,6 +39,24 @@ sys.spawnAnonymous(() => new SseActor(
 The actor uses the global `fetch` (Bun, Node ≥ 18, and Deno all
 provide one), so there is no extra dependency to install.
 
+**Redirects are refused, never followed**, and the response has to
+announce itself as `text/event-stream`.  A `3xx` carrying a `Location`
+fails the connect: following it would replay every custom header —
+vendor API keys included, since the Fetch standard strips only
+`authorization`, `cookie` and `proxy-authorization` — to whatever host
+the feed named, and would let the endpoint rather than your
+configuration decide which address the request actually reaches.  So
+point `url` at the final endpoint.  A body announcing any other content
+type, or none at all, is refused before a byte of it is parsed.  Both
+refusals travel the ordinary reconnect path — backoff, the circuit
+breaker, a `BrokerReconnectAttempt` per retry and a
+`BrokerReconnectFailed` carrying the refusal once the retries run out —
+so a feed that starts redirecting surfaces as a broker that cannot
+connect, rather than as a silent change of where your credentials go.
+Not `BrokerDisconnected`: that event marks a *live* connection being
+lost, and a connect that was refused never had one.  An alert on a feed
+that starts redirecting has to watch the reconnect events.
+
 ## Settings
 
 ```ts
@@ -75,7 +93,7 @@ type SseEvent = {
 ```
 
 The client parses the SSE wire format — events separated by a blank
-line (`\n\n`), fields as `field: value`:
+line, fields as `field: value`:
 
 ```
 data: hello
@@ -91,6 +109,12 @@ data: line-2
 
 Parsing rules that follow the SSE spec:
 
+- **Line endings.**  A line ends with `\n`, `\r\n` **or** `\r` — all
+  three, as the spec allows.  A feed framed with `\r\n\r\n` or `\r\r`
+  therefore parses exactly like the `\n\n` example above, and no
+  carriage return survives on a field value.  A terminator that
+  arrives split across two network reads — a `\r` ending one, an `\n`
+  opening the next — counts once, not twice.
 - **Default event name.**  A block without an `event:` field
   arrives with `event: 'message'`.
 - **Multiline data.**  Multiple `data:` lines in one block are
@@ -108,14 +132,17 @@ multiline `{ event: 'message', data: 'line-1\nline-2' }`.
 ## Reconnect and circuit breaker
 
 `SseActor` extends `BrokerActor`, so reconnect-with-backoff and the
-circuit breaker are **inherited** — configure them on the builder:
+circuit breaker are **inherited** — configure them on the builder.  The
+breaker is named by id and is off until it is; its numbers live under
+`actor-ts.circuit-breaker.<id>` (see
+[BrokerActor base](/io/broker-actor-base/#circuit-breaker)):
 
 ```ts
 SseOptions.create()
   .withUrl('https://example.com/events')
   .withTarget(target)
   .withReconnect({ /* base delay, max delay, jitter … */ })
-  .withCircuitBreaker(5, 30_000);   // failureThreshold, resetMs
+  .withCircuitBreaker('events');   // a breaker id: actor-ts.circuit-breaker.events
 ```
 
 When the stream ends or the connection drops **observably**, the base
@@ -176,8 +203,8 @@ HOCON > built-in defaults**.  The HOCON path is
 actor-ts.io.broker.sse {
   url = "https://example.com/events"
   headers { authorization = "Bearer …" }
-  idleTimeoutMs    = 60000
-  connectTimeoutMs = 10000
+  idle-timeout    = 60s
+  connect-timeout = 10s
 }
 ```
 

@@ -65,6 +65,10 @@ class FakeConnection extends ActorRef<DevToolsServerFrame> implements WebsocketC
     this.isOpen = false;
   }
 
+  abort(): void {
+    this.isOpen = false;
+  }
+
   /** Frames answering `requestId`, in arrival order. */
   answersTo(requestId: number): DevToolsServerFrame[] {
     return this.received.filter(

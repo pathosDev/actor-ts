@@ -201,6 +201,35 @@ function carriesMaterial(pem: string | Uint8Array | undefined): boolean {
 }
 
 /**
+ * Whether a `ca` value holds a certificate at all — the test a trust anchor
+ * has to pass wherever one is set.
+ *
+ * Stricter than {@link carriesMaterial}, which only asks for a non-zero
+ * length: whitespace is not a certificate, and neither is a container holding
+ * none.  A blank or empty string, a byte array that is empty or holds only
+ * whitespace, an empty array, and `null` all hold nothing, and an array holds
+ * a certificate when one of its entries does.  The parameter is `unknown`
+ * because the values that matter most are the ones the option type rules out
+ * — a JavaScript caller's `null`, or an array where the type names a single
+ * bundle; `node:tls` and `Bun.serve` both take an array there.
+ *
+ * A `ca` that fails it is refused wherever it is set — on a listener here
+ * ({@link assertListenerTlsIsCoherent}) and by `HttpServerOptionsValidator` —
+ * rather than read as unset.
+ */
+export function holdsCertificate(ca: unknown): boolean {
+  if (typeof ca === 'string') return ca.trim() !== '';
+  if (ArrayBuffer.isView(ca)) {
+    const bytes = new Uint8Array(ca.buffer, ca.byteOffset, ca.byteLength);
+    // Space, or tab through carriage return: what a newline-padded or blank
+    // secret is made of once it is read as bytes rather than text.
+    return bytes.some((byte) => byte !== 0x20 && (byte < 0x09 || byte > 0x0d));
+  }
+  if (Array.isArray(ca)) return ca.some((entry) => holdsCertificate(entry));
+  return false;
+}
+
+/**
  * Reject a TLS listener configuration that reads as secured but cannot be.
  * Called by each adapter before it hands the options to the runtime, because
  * failing closed at bind time is the only way a misconfiguration becomes
@@ -215,6 +244,12 @@ function carriesMaterial(pem: string | Uint8Array | undefined): boolean {
  * so the operator saw a node that had "TLS configured" and a cluster that
  * formed.  Refusing the bind converts a silent downgrade into a startup
  * failure.
+ *
+ * A `ca` that is set but holds no certificate ({@link holdsCertificate}) is
+ * refused on the same grounds, whatever `requestClientCert` says: it is what a
+ * missing secret looks like by the time it arrives, not a choice of one-way
+ * TLS — leaving `ca` unset is that — and the HTTP server options read it the
+ * same way.
  *
  * This is a **listener-only** rule and deliberately not applied to
  * {@link TcpBackend.connect}.  A dialer given `{ ca }` alone is the ordinary,
@@ -247,6 +282,13 @@ export function assertListenerTlsIsCoherent(
       'no `key`, so the listener has nothing to present and would bind in PLAINTEXT. A `ca` ' +
       'authenticates the peers this node dials; it cannot serve inbound connections. Supply the ' +
       'server certificate and its key, or omit `tls` entirely for a plaintext listener.',
+    );
+  }
+  if (tls.ca !== undefined && !holdsCertificate(tls.ca)) {
+    throw new Error(
+      'TLS transport: `ca` is set on this listener but holds no certificate — it is empty, blank or null, ' +
+      'which is what an empty secret or an unset variable reads as. Supply the CA bundle that signs your ' +
+      'peers\' certificates, or leave `ca` unset for one-way TLS.',
     );
   }
   if (tls.requestClientCert === true && tls.ca === undefined) {
@@ -324,10 +366,97 @@ export interface TcpBackend {
     handlers: TcpSocketHandlers;
   }): Promise<TcpListener>;
 
+  /**
+   * Dial `host:port`, over TLS when `tls` is given.
+   *
+   * **The promise settles when the dial is decided, and only then.**  It
+   * resolves with the socket once the socket is open — over TLS, once the
+   * handshake is done — with `onOpen` fired, exactly once, by the time the
+   * caller resumes; and it rejects when the connection cannot be established.
+   * A dial that fails fires no handler: the rejection is the whole report.  So
+   * a refused or unresolvable peer, a certificate the CA does not sign and a
+   * close before the open are all rejections, and a caller may write the moment
+   * it has the socket.  Node's adapter used to resolve before the TCP connect
+   * had even started and report a refusal through `onError` instead, so one
+   * refused peer was a failed connect on Bun and Deno and a dead established
+   * socket on Node (#1475).
+   *
+   * Each runtime's own notion of "open" stops short of that over TLS, so each
+   * adapter supplies the rest.  `tls.connect` reports `connect` at the TCP
+   * connect and `secureConnect` at the handshake, on Node and in Bun's
+   * `node:tls`, and the adapter opens on the second.  Native `Bun.connect`
+   * resolves at the TCP connect, and a write made before the handshake is
+   * dropped — the first batch of the GELF and syslog sinks was, on every fresh
+   * connection — so a native Bun dial opens on Bun's handshake report.
+   * `Deno.connectTls` resolves at the TCP connect and leaves the handshake to
+   * the first read or write, so the Deno adapter runs it before it attaches the
+   * connection.
+   *
+   * **What a write does under back-pressure differs, and nothing reports it.**
+   * `TcpSocketLike.write` returns nothing (#931).  A Node socket, Bun's
+   * `node:net` and `node:tls` — every Bun dial that carries a `signal` — and a
+   * Deno connection keep what the peer cannot take yet in memory, without
+   * bound; a native Bun socket, which is every socket `Bun.listen` accepts and
+   * every Bun dial without a `signal`, drops what the kernel will not take.
+   * Whether the bound belongs in the backends or in the transport above them is
+   * #931's question; nothing here applies one.
+   *
+   * **`signal` gives a dial up.**  Aborting it before the promise settles
+   * rejects the promise with the signal's reason, no handler fires afterwards,
+   * and whatever native socket the dial has opened — or opens later — is
+   * destroyed, never half-closed: `end()` on a socket still connecting does
+   * not stop the connect on Node, and a dial given up that way went on for
+   * about 21 s.  Once the promise has resolved the socket is the caller's,
+   * and aborting changes nothing; how an *open* connection closes is the
+   * caller's decision, not the dial's.
+   *
+   * How far "destroyed" reaches is up to the runtime.  Node cancels the
+   * connect itself: `destroy()` on a socket still connecting closes it at once.
+   * Bun's adapter dials through Bun's `node:net` / `node:tls` whenever a signal
+   * is given, because native `Bun.connect` takes none and cannot be cancelled.
+   * Deno cancels a plaintext dial through `Deno.connect({ signal })` and cannot
+   * cancel the TCP connect of a TLS one: `Deno.connectTls` takes no signal and
+   * `Deno.startTls` no client certificate, so the promise rejects at once and
+   * the connection is closed the moment it appears, but the connect underneath
+   * runs on until it completes or the OS gives up on it — the one combination
+   * in which a dial outlives the deadline that gave it up.  The handshake after
+   * that connect does stop when the connection is closed, but Deno 2.6.8 does
+   * not end the TCP connection under it: the far side keeps its socket until it
+   * closes it itself.
+   */
   connect(options: {
     host: string;
     port: number;
     tls?: TlsTransportOptionsType;
     handlers: TcpSocketHandlers;
+    signal?: AbortSignal;
   }): Promise<TcpSocketLike>;
+}
+
+/**
+ * `backend.connect`, given up if the dial has not opened within `timeoutMs`.
+ *
+ * For a caller with no deadline of its own — the GELF and syslog TCP sinks,
+ * whose dial was bounded by nothing but the operating system's connect
+ * timeout (#1475).  The deadline rides on the dial's `signal`, so it gives
+ * the dial up exactly as {@link TcpBackend.connect} describes: the promise
+ * rejects with an error naming the deadline, and the socket under it is
+ * destroyed as far as the runtime allows.  The timer is unref'd: a dial
+ * nobody is left waiting for must not be what keeps a process alive.
+ */
+export async function connectWithin(
+  backend: Pick<TcpBackend, 'connect'>,
+  options: { host: string; port: number; tls?: TlsTransportOptionsType; handlers: TcpSocketHandlers },
+  timeoutMs: number,
+): Promise<TcpSocketLike> {
+  const dial = new AbortController();
+  const timer = setTimeout(() => {
+    dial.abort(new Error(`no connection within ${timeoutMs} ms`));
+  }, timeoutMs);
+  (timer as { unref?: () => void }).unref?.();
+  try {
+    return await backend.connect({ ...options, signal: dial.signal });
+  } finally {
+    clearTimeout(timer);
+  }
 }

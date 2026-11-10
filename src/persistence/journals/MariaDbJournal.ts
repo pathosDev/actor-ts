@@ -1,7 +1,11 @@
 import { mariaDbDialect } from '../relational/MariaDbDialect.js';
 import { RelationalJournal } from '../relational/RelationalJournal.js';
 import { adaptMariaDbPool, buildMariaDbPool } from './MariaDbClient.js';
-import type { MariaDbJournalOptions, MariaDbJournalOptionsType } from './MariaDbJournalOptions.js';
+import {
+  MariaDbJournalOptionsValidator,
+  type MariaDbJournalOptions,
+  type MariaDbJournalOptionsType,
+} from './MariaDbJournalOptions.js';
 
 /**
  * Journal backed by MariaDB / MySQL via the `mariadb` connector (which speaks
@@ -14,6 +18,7 @@ import type { MariaDbJournalOptions, MariaDbJournalOptionsType } from './MariaDb
 export class MariaDbJournal extends RelationalJournal {
   constructor(options: MariaDbJournalOptions = {}) {
     const resolvedOptions = (options as MariaDbJournalOptionsType);
+    new MariaDbJournalOptionsValidator().validate(resolvedOptions);
     super({
       storeName: 'MariaDbJournal',
       dialect: mariaDbDialect,

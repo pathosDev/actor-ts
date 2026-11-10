@@ -45,6 +45,14 @@ its subtree (the backend's own 404, the generic 500) carries none.
 and `reportTo` are supported. A source token containing `;`, `,`, or
 whitespace throws at construction — no silent header injection.
 
+The policy is **code-only**: there is no `actor-ts.http.csp` block, by
+decision rather than by omission. A policy is application code — it lists the
+origins the app's own pages load from — and a configuration file that could
+add `'unsafe-inline'` or `*` to `script-src` would widen the policy of every
+route in the process with one line. That is the failure a code-only opt-in
+exists to prevent, which is also why [CORS](/http/middleware/cors/) has no key
+for `withAnyOrigin()`. So no source token, safe or not, comes from a file.
+
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="note" title="Nonces are not built in (yet)">

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { FrameDecoder, encodeFrame, type WireMessage } from '../../src/cluster/Protocol.js';
 import { NodeAddress } from '../../src/cluster/NodeAddress.js';
+import { wireFrameProblem } from '../../src/cluster/WireValidation.js';
 
 const sampleHello: WireMessage = {
   kind: 'hello',
@@ -364,7 +365,7 @@ describe('FrameDecoder', () => {
         ],
       },
       { kind: 'envelope', to: 'path', from: null, body: { hello: 'world' } },
-      { kind: 'envelope', to: 'path', from: 'sender', body: 'str', tag: 'Str' },
+      { kind: 'envelope', to: 'path', from: 'sender', body: 'str' },
       { kind: 'leave', node: new NodeAddress('s', 'h', 1).toJSON() },
     ];
     for (const v of variants) {
@@ -373,5 +374,34 @@ describe('FrameDecoder', () => {
       expect(out).toHaveLength(1);
       expect(out[0]).toEqual(v);
     }
+  });
+
+  /**
+   * The envelope that used to sit in the round-trip above carried `tag`, which
+   * this node no longer writes (#1474).  A node on an older release still does
+   * — the constructor name on every `RemoteActorRef.tell`, a literal on the
+   * pub-sub and singleton frames — so the case survives as the frame such a
+   * node sends, built from JSON text rather than from a typed literal because
+   * that is what it is: bytes another release produced.
+   *
+   * What has to hold is that it is still an ordinary frame: it decodes, the
+   * validator finds nothing wrong with it (it never read the field), and the
+   * payload is intact.  Whether the unknown field rides on past the decoder is
+   * #823's unknown-field question, so it is deliberately not asserted either
+   * way.  The same frame is delivered to an actor through a running cluster in
+   * `tests/unit/cluster/EnvelopeTagRemoval.test.ts`.
+   */
+  test('an envelope from an older node that still carries tag is still a valid frame', () => {
+    const payload = new TextEncoder().encode(
+      JSON.stringify({ kind: 'envelope', to: 'path', from: 'sender', body: 'str', tag: 'Str' }),
+    );
+    const frame = new Uint8Array(4 + payload.byteLength);
+    new DataView(frame.buffer).setUint32(0, payload.byteLength, false);
+    frame.set(payload, 4);
+
+    const out = new FrameDecoder().push(frame);
+    expect(out).toHaveLength(1);
+    expect(wireFrameProblem(out[0]!)).toBeNull();
+    expect(out[0]).toMatchObject({ kind: 'envelope', to: 'path', from: 'sender', body: 'str' });
   });
 });

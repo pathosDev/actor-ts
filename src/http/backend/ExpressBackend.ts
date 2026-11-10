@@ -1,18 +1,25 @@
 import type { IncomingMessage, Server } from 'node:http';
-import { ServerResponse } from 'node:http';
+import { createServer, ServerResponse } from 'node:http';
+import { createServer as createHttpsServer, type ServerOptions as HttpsServerOptions } from 'node:https';
 import type { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { Readable } from 'node:stream';
 import { match } from 'ts-pattern';
+import { detectRuntime } from '../../runtime/Detect.js';
+import { refuseClientCertificateDemand } from '../../runtime/http/DenoHonoRunner.js';
+import { nodeTlsServerOptions } from '../../runtime/http/NodeHonoRunner.js';
 import { Lazy } from '../../util/Lazy.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../Types.js';
 import { ExpressBackendOptionsValidator } from './ExpressBackendOptions.js';
 import type { ExpressBackendOptions, ExpressBackendOptionsType } from './ExpressBackendOptions.js';
 import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
 import {
+  applyServerOptions,
+  bodyCapOf,
   contentLengthExceeds,
   DEFAULT_RESPONSE_SECURITY_HEADERS,
   PAYLOAD_TOO_LARGE_RESPONSE,
+  serverOptionsReportOf,
   transportFrameCapOf,
 } from './HttpServerBackend.js';
 import type {
@@ -21,6 +28,7 @@ import type {
   ServerBinding,
   WebsocketRouteRegistration,
 } from './HttpServerBackend.js';
+import type { HttpServerOptionsType, HttpTlsOptionsType } from '../HttpServerOptions.js';
 import { websocketPackageAdapter, type WebsocketPackageSocket } from '../websocket/SocketAdapter.js';
 
 /** Minimal shape of the `ws` package's WebSocketServer (noServer mode). */
@@ -115,22 +123,75 @@ function asNetSocket(socket: Duplex): Socket {
 }
 
 /**
+ * The server `listen()` binds: `node:https` under `tls`, `node:http`
+ * otherwise, built with the header cap when one is set and handed the app as
+ * `app.listen()` hands it.
+ *
+ * Everything after construction treats the two alike, and can: an
+ * `https.Server` carries the same `keepAliveTimeout`, `headersTimeout`,
+ * `requestTimeout` and `maxConnections`, and emits the same `'upgrade'`, so
+ * the server timeouts, the header guard and the WebSocket dispatch reach a TLS
+ * listener unchanged.  The header guard follows each connection into TLS at
+ * `'secureConnection'` — on Node the TCP and the TLS socket are two objects,
+ * and the `408` has to be written to the second — see `enforceHeaderTimeout`.
+ */
+function serverFor(app: ExpressAppLike, tls: HttpTlsOptionsType | undefined, headerCap: number | undefined): Server {
+  const tuning = headerCap !== undefined ? { maxHeaderSize: headerCap } : {};
+  if (tls === undefined) return createServer(tuning, app);
+  // The TLS fields map through `nodeTlsServerOptions`, the spelling the Hono
+  // runner on Node and Fastify's factory options share.  Bytes arrive as a
+  // Uint8Array, which `node:tls` reads as it reads a Buffer — any
+  // ArrayBufferView, on Node, Bun and Deno alike — though `@types/node` names
+  // only Buffer, hence the cast.
+  const options = { ...tuning, ...nodeTlsServerOptions(tls) } as HttpsServerOptions;
+  return createHttpsServer(options, app);
+}
+
+/**
+ * Refuse a client-certificate demand on the runtime that would accept it and
+ * enforce nothing.
+ *
+ * Deno's `node:https` takes `requestCert` and ignores it: measured on deno
+ * 2.6.8, a server built with `{ ca, requestCert: true }` answered a client that
+ * presented no certificate at all, where node v26.10.0 and bun 1.4.2 refused
+ * the same client during the handshake.  The rule is the one `DenoHonoRunner`
+ * applies to `Deno.serve`, which has no such option, and it lives once, in
+ * {@link refuseClientCertificateDemand}; this backend adds the runtime check,
+ * since it runs everywhere, and its own reason.
+ */
+function refuseUnenforcedClientCertificate(tls: HttpTlsOptionsType): void {
+  if (detectRuntime() !== 'deno') return;
+  refuseClientCertificateDemand(
+    tls,
+    'ExpressBackend: tls.requestClientCert is not supported on Deno — its node:https accepts requestCert and '
+    + 'enforces nothing (deno 2.6.8 answered a client that presented no certificate), so the demand could only '
+    + 'be ignored.  Terminate TLS in front of the process, or run on Node or Bun, where it is enforced.',
+  );
+}
+
+/**
  * Subset of the Express app API we touch.  Covers v4 and v5.  Paths accept
  * a RegExp as well as a string: a trailing-`*` wildcard route registers as
  * a RegExp so it works identically on Express 4 and 5 (v5's path-to-regexp
  * rejects a bare string `*`).
  *
  * The call signature is the app itself — `express()` returns
- * `function (request, response, next) { app.handle(...) }`, which is what
- * `app.listen()` hands to `http.createServer`.  Calling it is how a
- * WebSocket upgrade is pushed through the middleware chain (see
+ * `function (request, response, next) { app.handle(...) }` — and it is what
+ * this backend hands to `http.createServer`, or to `https.createServer` under
+ * `tls`, which call it without `next`, as Express's own `app.listen()`
+ * arranges: Express falls back to its final handler then.  Calling it with a `next` is how a WebSocket upgrade is
+ * pushed through the middleware chain (see
  * {@link ExpressBackend.attachUpgradeDispatch}).  It is declared instead of
  * `app.handle` deliberately: `@types/express` types the app as callable but
  * does not declare `handle`, so requiring the method would reject a genuine
  * Express app at `ExpressBackendOptionsBuilder.withApp`.
+ *
+ * `app.listen` is not part of it: the backend builds and listens on its own
+ * server, because `app.listen()` takes no server options and the header cap
+ * is one (#1488) — and the certificate is another.
  */
 export interface ExpressAppLike {
-  (request: IncomingMessage, response: ServerResponse, next: ExpressNext): void;
+  (request: IncomingMessage, response: ServerResponse, next?: ExpressNext): void;
   get(path: string | RegExp, handler: ExpressHandler): void;
   post(path: string | RegExp, handler: ExpressHandler): void;
   put(path: string | RegExp, handler: ExpressHandler): void;
@@ -139,7 +200,6 @@ export interface ExpressAppLike {
   head(path: string | RegExp, handler: ExpressHandler): void;
   options(path: string | RegExp, handler: ExpressHandler): void;
   use(mw: ExpressHandler | ExpressErrorHandler): void;
-  listen(port: number, hostname: string, callback: (err?: Error) => void): Server;
 }
 
 /**
@@ -174,6 +234,35 @@ type PendingUpgrade = {
  * and a middleware that answers the request cancels the handshake (#623).
  * See {@link ExpressBackend.attachUpgradeDispatch} for the mechanics.
  *
+ * **TLS is terminated on the server the backend builds.**  Under
+ * `HttpServerOptions.tls` that server is `https.createServer`, handed the app
+ * the way Express's own HTTPS recipe hands it, so the header cap, the server
+ * timeouts and the WebSocket upgrade path reach the TLS listener exactly as
+ * they reach a plain one — see {@link serverFor}.  On Deno a client-certificate
+ * demand is refused rather than accepted and ignored: see
+ * {@link refuseUnenforcedClientCertificate}.
+ *
+ * **HTTP/2 is refused**, at `listen()`, rather than answered as HTTP/1.1 under
+ * a setting that says h2.  Express reassigns every request and response onto
+ * prototypes derived from `node:http`'s `IncomingMessage` and `ServerResponse`
+ * (`app.handle` in express 5.2.1), and `node:http2`'s compatibility objects do
+ * not survive it: their `url`, `method`, `headers` and `socket` are accessors on
+ * prototypes of their own, and their header store is not the one `node:http`'s
+ * response methods write to.  Measured with express 5.2.1 behind
+ * `http2.createSecureServer({ allowHTTP1: true })`: an h2 request negotiated
+ * `h2` through ALPN and was never answered on node v26.10.0 — a `TypeError` in
+ * `IncomingMessage._read`, then one in finalhandler's `removeHeader` — nor on
+ * bun 1.4.2, where finalhandler's `removeHeader` threw likewise, while HTTP/1.1
+ * on the same port was answered on both; deno 2.6.8 does not implement
+ * `http2.createSecureServer` at all.  HTTP/2 stays with the Hono and Fastify
+ * backends.
+ *
+ * Express 4, the other half of the peer range, is not installed in this
+ * repository, and neither path was run against it.  What is known about it:
+ * `https.createServer(options, app)` is the HTTPS recipe its own documentation
+ * gives, and its `expressInit` middleware reassigns the same two prototypes,
+ * so nothing suggests HTTP/2 would fare better there.
+ *
  * `express` is an optional peer dependency: install it only if you use
  * this backend.  When no app is injected, the backend imports `express`
  * dynamically and builds a fresh one.
@@ -186,7 +275,15 @@ export class ExpressBackend implements HttpServerBackend {
   private readonly ownsApp: boolean;
   /** Upgrades waiting for the Express stack to reach their route. */
   private readonly pendingUpgrades = new WeakMap<object, PendingUpgrade>();
-  private readonly maxBodyBytes: number;
+  /**
+   * What `withMaxBodyBytes` said, or `undefined` — kept apart from the default
+   * so `listen()` can tell an untouched backend, which yields to the server's
+   * `max-content-length`, from one built with a cap of its own, which must
+   * agree with it.  See {@link bodyCapOf}.
+   */
+  private readonly maxBodyBytes: number | undefined;
+  /** The cap the body reader holds, decided at `listen()`. */
+  private bodyCapBytes = DEFAULT_HTTP_MAX_BODY_BYTES;
   private readonly registered: RouteRegistration[] = [];
   private readonly wsRegistered: WebsocketRouteRegistration[] = [];
   private wss: WebsocketServerLike | null = null;
@@ -199,7 +296,7 @@ export class ExpressBackend implements HttpServerBackend {
     new ExpressBackendOptionsValidator().validate(resolvedOptions);
     this.app = resolvedOptions.app ?? null;
     this.ownsApp = resolvedOptions.app == null;
-    this.maxBodyBytes = resolvedOptions.maxBodyBytes ?? DEFAULT_HTTP_MAX_BODY_BYTES;
+    this.maxBodyBytes = resolvedOptions.maxBodyBytes;
   }
 
   /** Inject / access the underlying Express app — useful for native middleware. */
@@ -234,7 +331,26 @@ export class ExpressBackend implements HttpServerBackend {
     this.defaultResponseHeaders = headers;
   }
 
-  async listen(host: string, port: number): Promise<ServerBinding> {
+  async listen(host: string, port: number, serverOptions?: Partial<HttpServerOptionsType>): Promise<ServerBinding> {
+    // Every refusal comes before anything is registered on the app, so a
+    // refused bind leaves it as the caller handed it over.
+    //
+    // TLS is terminated below, on the server this backend builds; HTTP/2 is
+    // not, because Express does not survive `node:http2`'s compatibility API
+    // (see the class comment for what was measured).  Answering HTTP/1.1
+    // under a setting that says h2 is the outcome ruled out (#1522).
+    if (serverOptions?.http2 === true) {
+      throw new Error(
+        'ExpressBackend serves TLS but not HTTP/2, and will not serve HTTP/1.1 under HttpServerOptions.http2.  '
+        + 'Express reassigns every request and response onto node:http\'s own prototypes, which node:http2\'s '
+        + 'compatibility objects do not survive: with express 5.2.1 behind '
+        + 'http2.createSecureServer({ allowHTTP1: true }), an h2 request was negotiated and never answered on '
+        + 'node v26.10.0 and bun 1.4.2, and deno 2.6.8 does not implement http2.createSecureServer.  '
+        + 'Drop http2 to serve HTTPS from Express, or use the Hono or Fastify backend for HTTP/2.',
+      );
+    }
+    if (serverOptions?.tls !== undefined) refuseUnenforcedClientCertificate(serverOptions.tls);
+    this.bodyCapBytes = bodyCapOf('ExpressBackend', this.maxBodyBytes, serverOptions?.maxContentLength);
     if (!this.app) this.app = await this.createExpressApp();
     // Register our raw-body middleware first so routes see req.rawBody.
     this.app.use(this.rawBodyMiddleware());
@@ -258,15 +374,34 @@ export class ExpressBackend implements HttpServerBackend {
     }
     this.app.use(this.makeErrorMiddleware());
 
+    // The server is built here rather than by `app.listen()`, which is
+    // `http.createServer(app)` with no way to pass a server option — and
+    // `maxHeaderSize`, the header cap, exists only as one (#1488), as the
+    // certificate does under `tls`.  The app is handed over exactly as
+    // `app.listen()` hands it, and the `'error'` that a failed bind raises
+    // still rejects.
+    const headerCap = serverOptions?.maxHeaderBytes;
+    const server = serverFor(this.app, serverOptions?.tls, headerCap);
+    this.server = server;
     const actualPort = await new Promise<number>((resolve, reject) => {
-      const server = this.app!.listen(port, host, (err?: Error) => {
-        if (err) { reject(err); return; }
+      server.once('error', reject);
+      server.listen(port, host, () => {
         const addr = server.address();
         if (addr && typeof addr === 'object') resolve(addr.port);
         else resolve(port);
       });
-      server.once('error', reject);
-      this.server = server;
+    });
+
+    // Express never touched these, so the server has carried `node:http`'s
+    // own numbers since the backend existed — 5 s keep-alive, 300 s request
+    // timeout.  The policy overwrites whichever of them it names, on the https
+    // server exactly as on the http one, and what took goes back on the
+    // binding, for `bind()` to warn from.  The body cap is this backend's own
+    // reader, so a set key always holds; the header cap is read back, because
+    // a runtime may accept the option and ignore it — Deno's `node:http` and
+    // `node:https` shims read it back as `undefined` (deno 2.6.8).
+    const serverOptionsReport = serverOptionsReportOf(applyServerOptions(server, serverOptions), serverOptions, {
+      maxHeaderBytes: headerCap !== undefined && (server as { maxHeaderSize?: number }).maxHeaderSize === headerCap,
     });
 
     if (this.wsRegistered.length > 0 && this.server) {
@@ -276,6 +411,7 @@ export class ExpressBackend implements HttpServerBackend {
     return {
       host,
       port: actualPort,
+      serverOptionsReport,
       unbind: async (gracePeriodMs?: number) => {
         const srv = this.server;
         if (!srv) return;
@@ -499,7 +635,7 @@ export class ExpressBackend implements HttpServerBackend {
    * content-negotiation (JSON vs. CBOR vs. text) stays in charge.
    */
   private rawBodyMiddleware(): ExpressHandler {
-    const cap = this.maxBodyBytes;
+    const cap = this.bodyCapBytes;
     return async (req, res, next) => {
       const method = req.method.toUpperCase();
       if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') {
@@ -584,13 +720,28 @@ export class ExpressBackend implements HttpServerBackend {
     };
   }
 
+  /**
+   * The request's query parameters as every backend hands them over: one value
+   * as a string, a repeated parameter as the array of its values.
+   *
+   * Each parameter is defined on the copy rather than assigned to it.  An
+   * assignment runs a parameter named `__proto__` through `Object.prototype`'s
+   * setter instead of creating it, so that one never arrived as a parameter and
+   * the query did not stay the record the other parameters are in; defined, it
+   * is an own parameter like any other.
+   */
   private normaliseQuery(raw: Record<string, unknown>): Record<string, string | string[] | undefined> {
     const out: Record<string, string | string[] | undefined> = {};
     for (const [key, value] of Object.entries(raw)) {
       if (value === undefined || value === null) continue;
-      if (typeof value === 'string') out[key] = value;
-      else if (Array.isArray(value)) out[key] = value.map((x) => String(x));
-      else out[key] = String(value);
+      Object.defineProperty(out, key, {
+        value: typeof value === 'string'
+          ? value
+          : Array.isArray(value) ? value.map((x) => String(x)) : String(value),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
     }
     return out;
   }

@@ -46,7 +46,7 @@ type UnsubscribeCommand = { readonly kind: 'unsubscribe'; readonly subject: stri
 export type NatsCommand = PublishCommand | SubscribeCommand | UnsubscribeCommand;
 
 /**
- * NATS-Core (no JetStream) actor backed by the official `nats` peer-dep.
+ * NATS-Core (no JetStream) actor backed by the official nats.js transport.
  * Plain pub/sub with optional request/reply via `replyTo`.  For durable
  * streams + consumers, use the sister `JetStreamActor`.
  *
@@ -67,16 +67,10 @@ export class NatsActor
 
   constructor(options: NatsOptions = {}) { super(options); }
 
-  protected configKey(): string { return ConfigKeys.io.broker.nats; }
+  protected configKey(): string { return ConfigKeys.io.broker.nats.root; }
   protected builtInDefaultOptions(): Partial<NatsOptionsType> { return {}; }
   protected readOptionsFromConfig(config: Config): Partial<NatsOptionsType> {
-    const out: { -readonly [K in keyof NatsOptionsType]?: NatsOptionsType[K] } = {};
-    if (config.hasPath('servers')) out.servers = config.getStringList('servers');
-    if (config.hasPath('token')) out.token = config.getString('token');
-    if (config.hasPath('user')) out.user = config.getString('user');
-    if (config.hasPath('password')) out.password = config.getString('password');
-    if (config.hasPath('name')) out.name = config.getString('name');
-    return out;
+    return readNatsOptionsFromConfig(config);
   }
   protected requiredOptions(): ReadonlyArray<keyof NatsOptionsType> { return ['servers']; }
   protected override optionsValidator(): NatsOptionsValidator { return new NatsOptionsValidator(); }
@@ -86,13 +80,13 @@ export class NatsActor
     return typeof servers === 'string' ? servers : '';
   }
 
-  /** @internal Test seam — override to inject a fake `nats` module. */
+  /** @internal Test seam — override to inject a fake transport module. */
   protected natsModule(): Promise<NatsModuleLike> { return natsLazy.get(); }
 
   /**
    * Build a `NatsConnectionLike`.  Override in a test subclass to inject
    * a mock connection — mirrors `JetStreamActor.createNatsConnection`,
-   * and keeps the `nats` peer-dep out of the unit tests.
+   * and keeps the transport peer-dep out of the unit tests.
    *
    * Overriding this replaces the connect options, TLS included — override
    * {@link natsModule} instead when a test wants to *observe* them.
@@ -207,16 +201,40 @@ export class NatsActor
   }
 }
 
+/* ----------------------------- HOCON reader ----------------------------- */
+
+/**
+ * Read the `actor-ts.io.broker.nats` block's own leaves off the system config,
+ * at the full paths `keys` holds; the reconnect / breaker / buffer leaves are
+ * `BrokerActor`'s.  An unset leaf is omitted.  Every leaf here was a single
+ * word before #1443, so this block has no retired spelling of its own.
+ * `subscriptions` names actors and `tls` is certificate material, so neither
+ * has a leaf.
+ */
+export function readNatsOptionsFromConfig(
+  config: Config,
+  keys: typeof ConfigKeys.io.broker.nats = ConfigKeys.io.broker.nats,
+): Partial<NatsOptionsType> {
+  const out: { -readonly [K in keyof NatsOptionsType]?: NatsOptionsType[K] } = {};
+  if (config.hasPath(keys.servers)) out.servers = config.getStringList(keys.servers);
+  if (config.hasPath(keys.token)) out.token = config.getString(keys.token);
+  if (config.hasPath(keys.user)) out.user = config.getString(keys.user);
+  if (config.hasPath(keys.password)) out.password = config.getString(keys.password);
+  if (config.hasPath(keys.name)) out.name = config.getString(keys.name);
+  return out;
+}
+
 /* -------------------- nats peer-dep type stubs --------------------- */
 /*
- * Hand-written on purpose — not a placeholder for the real `nats` types.
- * `nats` is declared only in `tests/integration/brokers/package.json`, which
- * the root install deliberately does not materialise, so the build compile
- * cannot resolve it; and these types are exported through `src/io/index.ts`,
- * so importing the module here would emit that specifier into a published
- * `.d.ts` a consumer who took the "optional" peer at its word cannot resolve
- * either. Widen the stub instead. The drift a real import would have caught
- * is covered by the live broker under `tests/integration/brokers/nats/`, and
+ * Hand-written on purpose — not a placeholder for the real nats.js types.
+ * `@nats-io/transport-node` is declared only in
+ * `tests/integration/brokers/package.json`, which the root install
+ * deliberately does not materialise, so the build compile cannot resolve it;
+ * and these types are exported through `src/io/index.ts`, so importing the
+ * module here would emit that specifier into a published `.d.ts` a consumer
+ * who took the "optional" peer at its word cannot resolve either. Widen the
+ * stub instead. The drift a real import would have caught is covered by the
+ * live broker under `tests/integration/brokers/nats/`, and
  * `tests/unit/ci/OptionalPeerDeclarations.test.ts` asserts the boundary. #676.
  */
 
@@ -224,7 +242,7 @@ export class NatsActor
  * Minimal subscription/connection surface the actor depends on.
  * Exported so test seams (subclasses overriding
  * `createNatsConnection`) can satisfy the shape without the real
- * `nats` peer-dep.
+ * transport peer-dep.
  */
 export interface NatsSubscriptionLike {
   unsubscribe(): void;
@@ -243,7 +261,13 @@ export interface NatsConnectionLike {
   closed(): Promise<Error | undefined>;
 }
 
-/** The `nats` module surface we use.  Exported as a test seam. */
+/**
+ * The `@nats-io/transport-node` surface we use.  Exported as a test seam.
+ *
+ * nats.js v3 split the monolithic `nats` package: the transport keeps
+ * `connect()` and the core protocol, while JetStream, KV and the object
+ * store moved into their own packages.  Core NATS needs only this one.
+ */
 export interface NatsModuleLike {
   connect(options: {
     servers: string[];
@@ -261,5 +285,5 @@ export interface NatsModuleLike {
 }
 
 const natsLazy: Lazy<Promise<NatsModuleLike>> = Lazy.of(
-  () => lazyImportModule<NatsModuleLike>('nats', { context: 'NatsActor' }),
+  () => lazyImportModule<NatsModuleLike>('@nats-io/transport-node', { context: 'NatsActor' }),
 );

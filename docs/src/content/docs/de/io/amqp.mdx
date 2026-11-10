@@ -62,6 +62,36 @@ Bindings deklarieren die Queue, das Exchange-Binding UND den
 Consumer-Actor-Target auf einen Schlag — der Actor verdrahtet alles
 beim Connect (idempotente erneute Deklaration).
 
+Dieselben Settings kommen auch aus HOCON, unter `actor-ts.io.broker.amqp`,
+unterhalb expliziter Optionen und oberhalb der eingebauten Defaults:
+
+```hocon
+actor-ts.io.broker.amqp {
+  url              = ${?ACTOR_TS_AMQP_URL}  # amqp://user:password@rabbitmq:5672/vhost, or amqps://
+  prefetch         = 10                     # default 1; 0 = unlimited
+  auto-acknowledge = false                  # default true
+}
+```
+
+Die URL trägt die Zugangsdaten, deshalb nimmt das Beispiel sie aus der
+Umgebung statt aus der Datei.  Ein Wert aus der Umgebung wird zuerst als JSON
+gelesen, wo immer er sich als JSON parsen lässt; eine `amqp://`-URL tut das nie
+und kommt deshalb so an, wie sie geschrieben ist.  Ein Wert, der es tut, käme
+verändert an oder ließe den Start scheitern: Einer, der sich wie eine Zahl
+liest, kommt in der Schreibweise dieser Zahl zurück — `1e3` als `1000`, und
+eine ganze Zahl jenseits von `Number.MAX_SAFE_INTEGER` womöglich mit anderen
+letzten Ziffern (`20261104123456789` als `20261104123456788`) —, und einer, der
+sich wie `null`, eine Liste oder ein Objekt liest, lässt den Start mit einem
+`ConfigError` scheitern.  Einen solchen Wert in der Variablen selbst quoten
+oder im Code setzen.
+
+`bindings` und `tls` haben kein Blatt: Ein
+Binding benennt den Actor, an den seine Queue ausliefert, und TLS-Material ist
+ein privater Schlüssel — beides wird im Code gesetzt.  Die Reconnect-,
+Circuit-Breaker- und Outbound-Buffer-Blätter, die sich alle Broker teilen,
+gehören unter denselben Root — siehe
+[BrokerActor-Basis](/de/io/broker-actor-base/#reconnect-mit-backoff).
+
 ## Exchanges und Routing
 
 | Typ | Routing |

@@ -1,9 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
-import { Config } from '../../../src/config/Config.js';
+import { Config, ConfigError } from '../../../src/config/Config.js';
 import { MicrotaskDispatcher, ThroughputDispatcher } from '../../../src/Dispatcher.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { DEFAULT_ASK_TIMEOUT_MS } from '../../../src/util/Constants.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { DEFAULT_SCATTER_GATHER_TIMEOUT_MS, MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATHER_MS } from '../../../src/ScatterGatherOptions.js';
+import { RecordingLogger } from '../../util/RecordingLogger.js';
 
 describe('ActorSystem — config integration', () => {
   test('exposes the merged config on `.config`', async () => {
@@ -81,6 +85,156 @@ describe('ActorSystem — config integration', () => {
     await zero.terminate();
   });
 
+  test('the default ask deadline defaults, reads config, and refuses a value no ask could arm', async () => {
+    // Nested and not `{'actor-ts.actor.ask-timeout': '2s'}`: a dotted string
+    // stays a literal top-level key, so `hasPath` would still resolve the
+    // reference value and the assertion would prove nothing.
+    const plainOptions = ActorSystemOptions.create().withLogger(new NoopLogger());
+    const plain = ActorSystem.create('cfg', plainOptions);
+    expect(plain._defaultAskTimeoutMs).toBe(DEFAULT_ASK_TIMEOUT_MS);
+    await plain.terminate();
+
+    const tunedOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withConfig({ 'actor-ts': { actor: { 'ask-timeout': '2s' } } });
+    const tuned = ActorSystem.create('cfg', tunedOptions);
+    expect(tuned._defaultAskTimeoutMs).toBe(2_000);
+    await tuned.terminate();
+
+    // NOT clamped the way `throughput` above is, and the difference is the
+    // point: `throughput = 0` has a nearest honest reading, `ask-timeout = 0`
+    // has none — an ask that arms no deadline can never settle (#765).  So the
+    // system refuses to start and names the key, rather than throwing later at
+    // every ask site in the application.
+    for (const bad of ['0s', '-1s']) {
+      const badOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withConfig({ 'actor-ts': { actor: { 'ask-timeout': bad } } });
+      let caught: unknown = null;
+      try { ActorSystem.create('cfg', badOptions); } catch (e) { caught = e; }
+      expect(caught).toBeInstanceOf(OptionsError);
+      expect((caught as OptionsError).field).toBe('ask-timeout');
+      expect((caught as OptionsError).message).toContain('actor-ts.actor.ask-timeout');
+    }
+  });
+
+  test('an ask timeout that undercuts the scatter-gather default warns once, naming both knobs', async () => {
+    // #1088 in reverse: the scatter default sits under the ask default so the
+    // router can name the failing routees first.  Lowering the ask default
+    // past it silently restores the defect, and nothing downstream can notice
+    // — the router resolves its own default at a call site with no system.
+    const quietLog = new RecordingLogger();
+    const quietOptions = ActorSystemOptions.create()
+      .withLogger(quietLog)
+      .withConfig({ 'actor-ts': { actor: { 'ask-timeout': `${MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATHER_MS}ms` } } });
+    const quiet = ActorSystem.create('cfg', quietOptions);
+    expect(quiet._defaultAskTimeoutMs).toBe(MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATHER_MS);
+    // Exactly at the floor is fine — the comparison is `>=`, so the boundary
+    // is not a warning, which is what makes the number a threshold and not an
+    // approximation.
+    expect(quietLog.records.filter((r) => r.message.includes('ask-timeout'))).toHaveLength(0);
+    await quiet.terminate();
+
+    const loudLog = new RecordingLogger();
+    const loudOptions = ActorSystemOptions.create()
+      .withLogger(loudLog)
+      .withConfig({ 'actor-ts': { actor: { 'ask-timeout': `${MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATHER_MS - 1}ms` } } });
+    const loud = ActorSystem.create('cfg', loudOptions);
+    const warnings = loudLog.records.filter((r) => r.message.includes('actor-ts.actor.ask-timeout'));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]!.level).toBe('warn');
+    // Both knobs, because the operator has to decide which of the two they
+    // meant — a warning naming only the one they just set says nothing.
+    expect(warnings[0]!.message).toContain(String(DEFAULT_SCATTER_GATHER_TIMEOUT_MS));
+    expect(warnings[0]!.message).toContain('ScatterGatherOptions.withTimeoutMs()');
+    await loud.terminate();
+
+    // And the shipped default is above the floor, so an untouched system is
+    // silent — a warning every process printed would be one nobody reads.
+    const defaultLog = new RecordingLogger();
+    const defaultOptions = ActorSystemOptions.create().withLogger(defaultLog);
+    const untouched = ActorSystem.create('cfg', defaultOptions);
+    expect(defaultLog.records.filter((r) => r.message.includes('ask-timeout'))).toHaveLength(0);
+    await untouched.terminate();
+  });
+
+  test('the global mailbox bound defaults to off, reads config, and treats 0 as off', async () => {
+    // Nested and not `{'actor-ts.mailbox.default.capacity': 4}`: a dotted
+    // string stays a literal top-level key, so the assertion would read the
+    // reference value back and prove nothing.
+    const plainOptions = ActorSystemOptions.create().withLogger(new NoopLogger());
+    const plain = ActorSystem.create('cfg', plainOptions);
+    // The shipped `capacity = 0` has to leave the field ABSENT, not land as a
+    // zero: `undefined` is what falls through to the unbounded mailbox, and a
+    // 0 would reach BoundedMailbox's validator instead.
+    expect(plain._defaultMailbox.capacity).toBeUndefined();
+    expect(plain._defaultMailbox.overflow).toBe('drop-head');
+    await plain.terminate();
+
+    const boundOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withConfig({ 'actor-ts': { mailbox: { default: { capacity: 4, overflow: 'reject' } } } });
+    const bound = ActorSystem.create('cfg', boundOptions);
+    expect(bound._defaultMailbox.capacity).toBe(4);
+    expect(bound._defaultMailbox.overflow).toBe('reject');
+    await bound.terminate();
+
+    // A negative capacity is the same statement as 0 made by a typo, and is
+    // answered the same way rather than by an OptionsError at the first spawn.
+    const negativeOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withConfig({ 'actor-ts': { mailbox: { default: { capacity: -1 } } } });
+    const negative = ActorSystem.create('cfg', negativeOptions);
+    expect(negative._defaultMailbox.capacity).toBeUndefined();
+    await negative.terminate();
+  });
+
+  test('a global overflow policy outside the three is refused at startup, bounded or not (#862)', async () => {
+    // A typo here used to start the system.  With no capacity nothing read
+    // the policy until some actor set withMailboxCapacity, perhaps never; with
+    // one, the first spawn under /user failed instead — an OptionsError that
+    // named no key, far from the line that caused it.  Both shapes have to
+    // fail at create, because the second is not what an operator who forgot
+    // the capacity would ever see.
+    const blocks: ReadonlyArray<Readonly<Record<string, number | string>>> = [
+      { overflow: 'drop-oldest' },
+      { capacity: 4, overflow: 'drop-oldest' },
+    ];
+    for (const block of blocks) {
+      const badOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withConfig({ 'actor-ts': { mailbox: { default: block } } });
+      let caught: unknown = null;
+      let started: ActorSystem | null = null;
+      try { started = ActorSystem.create('cfg', badOptions); } catch (e) { caught = e; }
+      await started?.terminate();
+      expect(caught).toBeInstanceOf(ConfigError);
+      const message = (caught as ConfigError).message;
+      expect(message).toContain('actor-ts.mailbox.default.overflow');
+      expect(message).toContain('"drop-oldest"');
+      for (const policy of ['drop-head', 'drop-new', 'reject']) expect(message).toContain(policy);
+      // Refused on its merits, not as the wrong kind: the value IS a string,
+      // which is what the key's kind says.  The getter's kind-mismatch wording
+      // would tell the operator to change the type of a value whose type is
+      // already right.
+      expect(message).not.toMatch(/Config at ".*" is not a/);
+    }
+  });
+
+  test('each of the three global overflow policies is read back exactly as written (#862)', async () => {
+    // The other side of the refusal above: a check that also turned away a
+    // member — a misspelt entry in its own list — would pass that test and
+    // break every deployment that configures the member.
+    for (const overflow of ['drop-head', 'drop-new', 'reject'] as const) {
+      const memberOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withConfig({ 'actor-ts': { mailbox: { default: { overflow } } } });
+      const member = ActorSystem.create('cfg', memberOptions);
+      expect(member._defaultMailbox).toEqual({ overflow });
+      await member.terminate();
+    }
+  });
+
   test('picks log level from config', async () => {
     // Use NoopLogger-like shim so nothing is printed; just verify derived LogLevel.
     const captured: number[] = [];
@@ -109,6 +263,83 @@ describe('ActorSystem — config integration', () => {
     const sys = ActorSystem.create('cfg', sysOptions);
     expect(sys.log).toBe(customLogger);
     expect(sys.dispatcher).toBe(customDispatcher);
+    await sys.terminate();
+  });
+
+  test('a NaN drain budget is refused at startup rather than at the timer (#1513)', () => {
+    // The end of the path the Config-level test pins: `shutdown-drain-timeout`
+    // has no options validator between the read and the runtime effect, so a
+    // NaN used to be stored as the budget.  It then fails open twice over —
+    // `NaN <= 0` is false, so the documented "0 skips the drain" opt-out does
+    // not fire, and the drain computes `deadline = Date.now() + NaN` and is
+    // silently over before it starts.  Refusing at `create` is what lets the
+    // message name the key.
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      const badOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withConfig({ 'actor-ts': { system: { 'shutdown-drain-timeout': bad } } });
+      let caught: unknown = null;
+      try { ActorSystem.create('cfg', badOptions); } catch (e) { caught = e; }
+      expect(caught).toBeInstanceOf(ConfigError);
+      expect((caught as ConfigError).message).toContain('actor-ts.system.shutdown-drain-timeout');
+      expect((caught as ConfigError).message).toContain('finite duration');
+    }
+  });
+
+  test('a finite drain budget still reaches the system unchanged (#1513)', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withConfig({ 'actor-ts': { system: { 'shutdown-drain-timeout': '250ms' } } });
+    const sys = ActorSystem.create('cfg', sysOptions);
+    expect(sys._shutdownDrainTimeoutMs).toBe(250);
+    await sys.terminate();
+
+    // And 0 — the documented opt-out — is a finite number, so the new check
+    // must not be reading "falsy" for "absent".
+    const optedOutOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withConfig({ 'actor-ts': { system: { 'shutdown-drain-timeout': 0 } } });
+    const optedOut = ActorSystem.create('cfg', optedOutOptions);
+    expect(optedOut._shutdownDrainTimeoutMs).toBe(0);
+    await optedOut.terminate();
+  });
+
+  test('withConfig can still spell the two documented Infinity opt-outs (#1513)', async () => {
+    // `reference.conf` calls both opt-outs "code only" because HOCON has no
+    // `Infinity` literal — and `withConfig` is code, which is the reading that
+    // makes this the whole merge chain rather than only `Config.fromObject`:
+    // reference ships `accept-timeout = 10s` and `max-decompressed-bytes = 512M`,
+    // so the override has to win over a shipped finite default to be observed.
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withConfig({
+        'actor-ts': {
+          http: { websocket: { 'accept-timeout': Number.POSITIVE_INFINITY } },
+          persistence: {
+            'snapshot-store': {
+              'object-storage': { 'max-decompressed-bytes': Number.POSITIVE_INFINITY },
+            },
+          },
+        },
+      });
+    const sys = ActorSystem.create('cfg', sysOptions);
+    expect(sys.config.getDuration('actor-ts.http.websocket.accept-timeout')).toBe(
+      Number.POSITIVE_INFINITY,
+    );
+    expect(
+      sys.config.getBytes('actor-ts.persistence.snapshot-store.object-storage.max-decompressed-bytes'),
+    ).toBe(Number.POSITIVE_INFINITY);
+    // The neighbouring leaves of both blocks keep their shipped finite values,
+    // so the opt-out did not arrive as "this block is unchecked".  Compared
+    // against the reference layer rather than a literal: the assertion is that
+    // the override changed nothing else, not what `1M` happens to be today.
+    const reference = Config.loadReference();
+    expect(sys.config.getBytes('actor-ts.http.websocket.max-frame-bytes')).toBe(
+      reference.getBytes('actor-ts.http.websocket.max-frame-bytes'),
+    );
+    expect(
+      sys.config.getInt('actor-ts.persistence.snapshot-store.object-storage.keep-n'),
+    ).toBe(reference.getInt('actor-ts.persistence.snapshot-store.object-storage.keep-n'));
     await sys.terminate();
   });
 

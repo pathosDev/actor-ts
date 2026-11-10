@@ -49,7 +49,19 @@ export function encodePayload(value: unknown, serializer?: Serializer): string {
 }
 
 export function decodePayload(text: string, serializer?: Serializer): unknown {
-  const parsed: unknown = JSON.parse(text);
+  // A corrupt row is reported as a `SerializationError` naming the parse
+  // failure, like every other row this function refuses (#1449).  Only the
+  // parse is wrapped: a malformed tag and a refusing serializer below already
+  // say what they are, and a wider wrap would label them "not JSON" too.
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (cause) {
+    throw new SerializationError(
+      `stored payload is not valid JSON: ${(cause as Error).message}`,
+      { cause },
+    );
+  }
   const frame = serializedFrame(parsed);
   if (frame !== undefined) {
     if (!serializer) {

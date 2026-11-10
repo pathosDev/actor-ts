@@ -51,6 +51,19 @@ async function withSpec(
   }
 }
 
+/**
+ * A gossip interval no test in this file can reach.
+ *
+ * Two cases here used to assert `elapsed < 250` and `elapsed < 200` against
+ * gossip intervals of 1 s and 5 s: the bound *was* the discriminator, because
+ * waiting for a round would have crossed it.  That works until the machine is
+ * slow, at which point a correct implementation crosses it too — the whole
+ * shape #1338 is about.  Setting the interval out of reach says the same thing
+ * without a stopwatch: if the call ever waited for gossip it would not return
+ * at all, and the per-test cap reports that.
+ */
+const UNREACHABLE_GOSSIP_INTERVAL_MS = 60 * 60 * 1_000;
+
 describe('DistributedData — WriteConsistency / ReadConsistency', () => {
   test('WriteMajority on 3-node cluster resolves after 2/3 replicas ack', async () => {
     await withSpec(['a', 'b', 'c'], async (spec) => {
@@ -178,12 +191,17 @@ describe('DistributedData — WriteConsistency / ReadConsistency', () => {
 
   test('single-node cluster — every consistency level resolves immediately', async () => {
     await withSpec(['solo'], async (spec) => {
+      // A gossip interval this test cannot reach, which is what turns
+      // "resolves immediately" into a structural fact: with no peers, `all` and
+      // `majority` are satisfied by the local replica alone and return at once.
+      // An implementation that waited for a gossip round instead would hang here
+      // and be reported by the per-test cap — where the `elapsed < 250` this
+      // replaces would have failed for a slow machine just as readily.
       const ddOptions = DistributedDataOptions.create()
-        .withGossipInterval(1_000);
+        .withGossipInterval(UNREACHABLE_GOSSIP_INTERVAL_MS);
       const dd = spec.systemFor('solo').extension(DistributedDataId)
         .start(spec.clusterFor('solo'), ddOptions);
 
-      const t0 = Date.now();
       await dd.updateAsync<GCounter>('k', GCounter.empty,
         (valueC) => valueC.increment(dd.selfReplicaId(), 1),
         { consistency: 'all' });
@@ -192,12 +210,8 @@ describe('DistributedData — WriteConsistency / ReadConsistency', () => {
         { consistency: 'majority' });
       const value = await dd.getAsync<GCounter>('k',
         { consistency: 'all' });
-      const elapsed = Date.now() - t0;
 
       expect(value?.value()).toBe(2);
-      // All three round-trips combined should be near-instant — no
-      // peers to wait for.  Generous bound (250 ms) to keep CI happy.
-      expect(elapsed).toBeLessThan(250);
     });
   }, 15_000);
 
@@ -242,22 +256,22 @@ describe('DistributedData — WriteConsistency / ReadConsistency', () => {
   test('local consistency — fire-and-forget, no waiting', async () => {
     await withSpec(['a', 'b'], async (spec) => {
       const ddOptions = DistributedDataOptions.create()
-        .withGossipInterval(5_000);
+        .withGossipInterval(UNREACHABLE_GOSSIP_INTERVAL_MS);
       const ddA = spec.systemFor('a').extension(DistributedDataId)
         .start(spec.clusterFor('a'), ddOptions);
       spec.systemFor('b').extension(DistributedDataId)
         .start(spec.clusterFor('b'), ddOptions);
 
-      const t0 = Date.now();
+      // The peer is made unreachable, which is what "no peer round-trip" means
+      // when it is a fact rather than a duration: a `local` write that needed
+      // anything from `b` cannot complete now, and the `await` below hangs
+      // instead of merely taking longer than a bound somebody guessed.
+      spec.partition('a', 'b');
+
       await ddA.updateAsync<GCounter>('local-k', GCounter.empty,
         (valueC) => valueC.increment(ddA.selfReplicaId(), 42),
         { consistency: 'local' });
-      const elapsed = Date.now() - t0;
-
       expect(ddA.get<GCounter>('local-k')?.value()).toBe(42);
-      // 'local' returns immediately after the actor applies — no peer
-      // round-trip.
-      expect(elapsed).toBeLessThan(200);
     });
   }, 15_000);
 

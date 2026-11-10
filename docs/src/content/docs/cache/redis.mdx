@@ -75,6 +75,55 @@ keyPrefix: 'my-app:cache:'
 // → 'my-app:cache:user:42', 'my-app:cache:session:abc', ...
 ```
 
+## From config alone
+
+The framework registers the Redis factory itself, so a cache comes up on
+Redis with no `registerCache` call and no `new RedisCache(...)` anywhere
+in your code — just a plugin id and a block:
+
+```hocon
+actor-ts.cache {
+  sessions.plugin = "actor-ts.cache.redis"   # cache('sessions') is Redis
+
+  redis {
+    url        = ${?REDIS_URL}   # or host/port below
+    db         = 0
+    key-prefix = "my-app:"
+    password   = ${?REDIS_PASSWORD}
+  }
+}
+```
+
+The leaves are the kebab-case of the `RedisCacheOptionsType` fields
+above.  `host` and `port` are read but ship as **comments** in
+[reference.conf](/reference/reference-conf/): `url` is mutually exclusive
+with them, and a published `host = "localhost"` would be set for every
+deployment and would turn every `url` into an `OptionsError`.  Left
+unset, `ioredis` applies its own `127.0.0.1:6379`.
+
+**An empty string means unset.**  `url`, `key-prefix` and `password` ship
+as `""` so you can see the shape of the key; the reader drops them rather
+than handing them on.  Explicit options always win over the block, and
+the block over the built-in defaults.
+
+Each named cache can have its own connection settings, layered over the
+global block leaf by leaf — which is what lets two consumers share one
+server without sharing a database:
+
+```hocon
+actor-ts.cache {
+  redis.url = ${?REDIS_URL}
+
+  rate-limit  { plugin = "actor-ts.cache.redis", redis.db = 1 }
+  idempotency { plugin = "actor-ts.cache.redis", redis.db = 2 }
+}
+```
+
+`ioredis` is a lazy optional peer, so the block costs nothing until a
+cache actually resolves onto it: the driver is imported on the first
+cache *operation*, not at startup.  A bad value is refused at the first
+`cache(name)` with an `OptionsError` naming the field.
+
 ## Cluster mode
 
 ```ts

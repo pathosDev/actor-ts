@@ -1,15 +1,55 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn, type Mock } from 'bun:test';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { gunzipSync } from 'node:zlib';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
-import { ConsoleLogger, LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { Config } from '../../../src/config/Config.js';
+import { REFERENCE_CONF } from '../../../src/config/Reference.js';
+import { ConsoleLogger, LogLevel, NoopLogger, type Logger } from '../../../src/Logger.js';
+import { ConsoleSink } from '../../../src/logging/ConsoleSink.js';
+import { FileSink } from '../../../src/logging/FileSink.js';
+import { GelfSink } from '../../../src/logging/GelfSink.js';
+import { LokiSink } from '../../../src/logging/LokiSink.js';
 import { MultiSinkLogger } from '../../../src/logging/MultiSinkLogger.js';
+import { OtlpHttpSink } from '../../../src/logging/OtlpHttpSink.js';
+import { ParseableSink } from '../../../src/logging/ParseableSink.js';
+import { SeqSink } from '../../../src/logging/SeqSink.js';
+import { SplunkSink } from '../../../src/logging/SplunkSink.js';
+import { SyslogSink } from '../../../src/logging/SyslogSink.js';
 import type { LogRecord } from '../../../src/logging/LogRecord.js';
 import type { LogSink, LogSinkContext } from '../../../src/logging/LogSink.js';
+import type { OtelLogRecord, OtelLogsApiLike } from '../../../src/tracing/OtelLogsAdapter.js';
+import * as OtelLogsAdapterOptionsModule from '../../../src/tracing/OtelLogsAdapterOptions.js';
+import { DEFAULT_OTEL_LOGGER_NAME, OtelLogsAdapterOptions } from '../../../src/tracing/OtelLogsAdapterOptions.js';
+// Each sink class and its options reader as a module namespace, so a test can
+// watch what `buildLoggerFromConfig` calls and constructs.
+import * as ConsoleSinkModule from '../../../src/logging/ConsoleSink.js';
+import * as ConsoleSinkOptionsModule from '../../../src/logging/ConsoleSinkOptions.js';
+import * as FileSinkModule from '../../../src/logging/FileSink.js';
+import * as FileSinkOptionsModule from '../../../src/logging/FileSinkOptions.js';
+import * as GelfSinkModule from '../../../src/logging/GelfSink.js';
+import * as GelfSinkOptionsModule from '../../../src/logging/GelfSinkOptions.js';
+import * as LokiSinkModule from '../../../src/logging/LokiSink.js';
+import * as LokiSinkOptionsModule from '../../../src/logging/LokiSinkOptions.js';
+import * as OtlpHttpSinkModule from '../../../src/logging/OtlpHttpSink.js';
+import * as OtlpHttpSinkOptionsModule from '../../../src/logging/OtlpHttpSinkOptions.js';
+import * as ParseableSinkModule from '../../../src/logging/ParseableSink.js';
+import * as ParseableSinkOptionsModule from '../../../src/logging/ParseableSinkOptions.js';
+import * as SeqSinkModule from '../../../src/logging/SeqSink.js';
+import * as SeqSinkOptionsModule from '../../../src/logging/SeqSinkOptions.js';
+import * as SplunkSinkModule from '../../../src/logging/SplunkSink.js';
+import * as SplunkSinkOptionsModule from '../../../src/logging/SplunkSinkOptions.js';
+import * as SyslogSinkModule from '../../../src/logging/SyslogSink.js';
+import * as SyslogSinkOptionsModule from '../../../src/logging/SyslogSinkOptions.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 /**
  * How the sinks reach — and leave — a running system: construction
- * precedence, the `attach` that hands them the scheduler, and the flush
- * `terminate()` owes them.
+ * precedence, the `attach` that hands them the scheduler, the flush
+ * `terminate()` owes them, and the sink each `actor-ts.logger.sinks.*`
+ * block builds.
  */
 
 class RecordingSink implements LogSink {
@@ -22,6 +62,40 @@ class RecordingSink implements LogSink {
   write(record: LogRecord): void { this.records.push(record); }
   attach(context: LogSinkContext): void { this.contexts.push(context); }
   async close(): Promise<void> { this.closes += 1; }
+}
+
+/** One `getLogger(name, version)` call, as the OTel logger provider received it. */
+type GetLoggerCall = readonly [name: string, version: string | undefined];
+
+/**
+ * A stand-in `@opentelemetry/api-logs` namespace: what the system's OTel
+ * logger asked the provider for, and every record it emitted.
+ */
+type FakeOtelLogs = {
+  readonly api: OtelLogsApiLike;
+  readonly emitted: OtelLogRecord[];
+  readonly getLoggerCalls: GetLoggerCall[];
+};
+
+function fakeOtelLogs(): FakeOtelLogs {
+  const emitted: OtelLogRecord[] = [];
+  const getLoggerCalls: GetLoggerCall[] = [];
+  const api: OtelLogsApiLike = {
+    SeverityNumber: { TRACE: 1, DEBUG: 5, INFO: 9, WARN: 13, ERROR: 17, FATAL: 21 },
+    logs: {
+      getLoggerProvider: () => ({
+        getLogger(name, version) {
+          getLoggerCalls.push([name, version]);
+          return { emit(record) { emitted.push(record); } };
+        },
+      }),
+    },
+  };
+  return { api, emitted, getLoggerCalls };
+}
+
+function bodiesOf(otel: FakeOtelLogs): unknown[] {
+  return otel.emitted.map((record) => record.body);
 }
 
 let consoleErrors: unknown[][] = [];
@@ -97,6 +171,183 @@ describe('logger construction precedence', () => {
     system.log.warn('kept');
     expect(sink.records.map((r) => r.message)).toEqual(['kept']);
     await system.terminate();
+  });
+
+  it('builds the system logger from the otelLogs slot through otelLogger', async () => {
+    const otel = fakeOtelLogs();
+    const otelLogsOptions = OtelLogsAdapterOptions.create().withApi(otel.api);
+    const system = ActorSystem.create('logging-otel', ActorSystemOptions.create().withOtelLogs(otelLogsOptions));
+    try {
+      system.log.info('to the collector');
+      // Built once, at construction, under the default name and no version.
+      expect(otel.getLoggerCalls).toEqual([[DEFAULT_OTEL_LOGGER_NAME, undefined]]);
+      expect(bodiesOf(otel)).toContain('to the collector');
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  it('lets an explicit loggerName on the slot reach getLogger', async () => {
+    const otel = fakeOtelLogs();
+    const otelLogsOptions = OtelLogsAdapterOptions.create()
+      .withApi(otel.api)
+      .withLoggerName('checkout')
+      .withLoggerVersion('3.1.0');
+    const system = ActorSystem.create('logging-otel-named', ActorSystemOptions.create().withOtelLogs(otelLogsOptions));
+    try {
+      expect(otel.getLoggerCalls).toEqual([['checkout', '3.1.0']]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  it("hands the slot logger's getLogger the HOCON logger-name and logger-version", async () => {
+    const otel = fakeOtelLogs();
+    const otelLogsOptions = OtelLogsAdapterOptions.create().withApi(otel.api);
+    const systemOptions = ActorSystemOptions.create()
+      .withOtelLogs(otelLogsOptions)
+      .withConfig(Config.parseString('actor-ts.tracing { logger-name = "billing", logger-version = "2.4.0" }'));
+    const system = ActorSystem.create('logging-otel-hocon', systemOptions);
+    try {
+      expect(otel.getLoggerCalls).toEqual([['billing', '2.4.0']]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  it('lets an explicit loggerName win over the HOCON one, and keeps the HOCON version', async () => {
+    const otel = fakeOtelLogs();
+    const otelLogsOptions = OtelLogsAdapterOptions.create()
+      .withApi(otel.api)
+      .withLoggerName('checkout');
+    const systemOptions = ActorSystemOptions.create()
+      .withOtelLogs(otelLogsOptions)
+      .withConfig(Config.parseString('actor-ts.tracing { logger-name = "billing", logger-version = "2.4.0" }'));
+    const system = ActorSystem.create('logging-otel-explicit-name', systemOptions);
+    try {
+      // Field by field: naming the logger in code leaves the file's version.
+      expect(otel.getLoggerCalls).toEqual([['checkout', '2.4.0']]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  it('lets a field left undefined in a plain slot object fall through to the file and the system level', async () => {
+    // The plain object is the builder's shorthand, and one assembled from the
+    // environment carries `loggerName: process.env.X` as `undefined` when the
+    // variable is unset.  Undefined is "not set" in the merge, so the block
+    // still names the logger and the system level still applies; a plain
+    // spread would let the undefined fields shadow both.
+    const otel = fakeOtelLogs();
+    const systemOptions = ActorSystemOptions.create()
+      .withOtelLogs({ api: otel.api, loggerName: undefined, loggerVersion: undefined, level: undefined })
+      .withLogLevel(LogLevel.Warn)
+      .withConfig(Config.parseString('actor-ts.tracing { logger-name = "billing", logger-version = "2.4.0" }'));
+    const system = ActorSystem.create('logging-otel-undefined-fields', systemOptions);
+    try {
+      expect(otel.getLoggerCalls).toEqual([['billing', '2.4.0']]);
+      expect(system.log.level).toBe(LogLevel.Warn);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  it('reads the logger leaves through readOtelLogsAdapterOptionsFromConfig, from the system config', async () => {
+    // The dead-key gate proves the reader reads both leaves, not that the
+    // constructor asks the reader; an inline read of the same keys beside it
+    // would leave the gate green.
+    const reader = spyOn(OtelLogsAdapterOptionsModule, 'readOtelLogsAdapterOptionsFromConfig');
+    try {
+      const otelLogsOptions = OtelLogsAdapterOptions.create().withApi(fakeOtelLogs().api);
+      const system = ActorSystem.create('logging-otel-reader', ActorSystemOptions.create().withOtelLogs(otelLogsOptions));
+      try {
+        expect(reader.mock.calls.map(([config]) => config)).toEqual([system.config]);
+      } finally {
+        await system.terminate();
+      }
+    } finally {
+      reader.mockRestore();
+    }
+  });
+
+  it('lets an explicit logger win over the otelLogs slot', async () => {
+    const otel = fakeOtelLogs();
+    const otelLogsOptions = OtelLogsAdapterOptions.create().withApi(otel.api);
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withOtelLogs(otelLogsOptions);
+    const system = ActorSystem.create('logging-otel-explicit', systemOptions);
+    try {
+      expect(system.log).toBeInstanceOf(NoopLogger);
+      system.log.info('ignored');
+      // Never built, rather than built and then discarded.
+      expect(otel.getLoggerCalls).toEqual([]);
+      expect(otel.emitted).toEqual([]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  it('lets the otelLogs slot win over logSinks', async () => {
+    const otel = fakeOtelLogs();
+    const sink = new RecordingSink();
+    const otelLogsOptions = OtelLogsAdapterOptions.create().withApi(otel.api);
+    const systemOptions = ActorSystemOptions.create()
+      .withOtelLogs(otelLogsOptions)
+      .withLogSinks([sink]);
+    const system = ActorSystem.create('logging-otel-over-sinks', systemOptions);
+    try {
+      expect(system.log).not.toBeInstanceOf(MultiSinkLogger);
+      system.log.info('one destination');
+      expect(bodiesOf(otel)).toContain('one destination');
+      expect(sink.records).toHaveLength(0);
+      // The sinks are not half-wired either: never attached to the scheduler.
+      expect(sink.contexts).toHaveLength(0);
+    } finally {
+      await system.terminate();
+    }
+    expect(sink.closes).toBe(0);
+  });
+
+  it('lets the otelLogs slot win over the sinks enabled in HOCON', async () => {
+    const otel = fakeOtelLogs();
+    const otelLogsOptions = OtelLogsAdapterOptions.create().withApi(otel.api);
+    const systemOptions = ActorSystemOptions.create()
+      .withOtelLogs(otelLogsOptions)
+      .withConfig({ 'actor-ts': { logger: { sinks: { console: { enabled: true } } } } });
+    const system = ActorSystem.create('logging-otel-over-hocon-sinks', systemOptions);
+    try {
+      expect(system.log).not.toBeInstanceOf(MultiSinkLogger);
+      expect(system.log).not.toBeInstanceOf(ConsoleLogger);
+      system.log.info('one destination');
+      expect(bodiesOf(otel)).toContain('one destination');
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  it("resolves the slot logger's level as its own level, then logLevel, then actor-ts.logger.level", async () => {
+    const hoconWarn = { 'actor-ts': { logger: { level: 'warn' } } };
+    const levelCases = [
+      { name: 'hocon', withLevel: undefined, logLevel: undefined, expected: LogLevel.Warn },
+      { name: 'log-level', withLevel: undefined, logLevel: LogLevel.Error, expected: LogLevel.Error },
+      { name: 'slot', withLevel: LogLevel.Debug, logLevel: LogLevel.Error, expected: LogLevel.Debug },
+    ] as const;
+    for (const levelCase of levelCases) {
+      const otel = fakeOtelLogs();
+      const otelLogsOptions = OtelLogsAdapterOptions.create().withApi(otel.api);
+      if (levelCase.withLevel !== undefined) otelLogsOptions.withLevel(levelCase.withLevel);
+      const systemOptions = ActorSystemOptions.create()
+        .withOtelLogs(otelLogsOptions)
+        .withConfig(hoconWarn);
+      if (levelCase.logLevel !== undefined) systemOptions.withLogLevel(levelCase.logLevel);
+      const system = ActorSystem.create(`logging-otel-level-${levelCase.name}`, systemOptions);
+      try {
+        expect(system.log.level, levelCase.name).toBe(levelCase.expected);
+      } finally {
+        await system.terminate();
+      }
+    }
   });
 
   it('rejects a sink block with an unusable min-level instead of guessing', () => {
@@ -197,4 +448,383 @@ describe('actor logging through the pipeline', () => {
     const record = sink.records.find((r) => r.message === 'from an actor');
     expect(record?.source).toBe('actor-ts://logging-actors/user/order');
   });
+});
+
+type OtlpAttribute = { readonly key: string; readonly value: { readonly stringValue: string } };
+type OtlpLogRecord = { readonly body: { readonly stringValue: string } };
+
+/** The part of an OTLP `ExportLogsServiceRequest` these tests read. */
+type OtlpExportRequest = {
+  readonly resourceLogs: ReadonlyArray<{
+    readonly resource: { readonly attributes: readonly OtlpAttribute[] };
+    readonly scopeLogs: ReadonlyArray<{ readonly logRecords: readonly OtlpLogRecord[] }>;
+  }>;
+};
+
+type PostedExport = {
+  readonly url: string;
+  readonly contentEncoding: string | undefined;
+  readonly body: OtlpExportRequest;
+};
+
+/**
+ * What the OTLP sink sent, read off a stubbed global `fetch`.  A sink built
+ * from HOCON has no `fetchFn` — config cannot carry a function — so it takes
+ * the global one, and the request it makes is what a collector would see.
+ */
+let posted: PostedExport[] = [];
+const realFetch = globalThis.fetch;
+
+function recordPosts(): void {
+  posted = [];
+  globalThis.fetch = (async (url: string | URL, init: RequestInit = {}) => {
+    const headers = init.headers as Record<string, string>;
+    const raw = init.body as string | Uint8Array;
+    const text = headers['content-encoding'] === 'gzip'
+      ? gunzipSync(raw as Uint8Array).toString('utf8')
+      : typeof raw === 'string' ? raw : new TextDecoder().decode(raw);
+    posted.push({
+      url: String(url),
+      contentEncoding: headers['content-encoding'],
+      body: JSON.parse(text) as OtlpExportRequest,
+    });
+    return new Response(null, { status: 200 });
+  }) as typeof fetch;
+}
+
+/** `service.name` of every resource in every request, deduplicated. */
+function serviceNamesPosted(): string[] {
+  const names = posted.flatMap((request) => request.body.resourceLogs.map((resourceLog) =>
+    resourceLog.resource.attributes.find((attribute) => attribute.key === 'service.name')?.value.stringValue
+      ?? '(no service.name)'));
+  return [...new Set(names)];
+}
+
+function messagesPosted(): string[] {
+  return posted.flatMap((request) => request.body.resourceLogs.flatMap((resourceLog) =>
+    resourceLog.scopeLogs.flatMap((scopeLog) => scopeLog.logRecords.map((logRecord) => logRecord.body.stringValue))));
+}
+
+/** Log one line, deliver it, and stop the system whatever happens. */
+async function logAndTerminate(system: ActorSystem, message: string): Promise<void> {
+  try {
+    expect(system.log).toBeInstanceOf(MultiSinkLogger);
+    system.log.info(message);
+    await (system.log as MultiSinkLogger).flush();
+  } finally {
+    await system.terminate();
+  }
+}
+
+const DOCS_ROOT = join(import.meta.dir, '..', '..', '..', 'docs', 'src', 'content', 'docs');
+
+/**
+ * The first `hocon` fence under a page's `## OTLP` heading — the block a
+ * reader copies.  Read line by line, so a page checked out with CRLF still
+ * compares equal to a mirror that has LF.
+ */
+function otlpHoconSampleOf(page: string): string {
+  const lines = readFileSync(join(DOCS_ROOT, page), 'utf8').split(/\r?\n/);
+  const heading = lines.findIndex((line) => line.startsWith('## OTLP'));
+  const nextHeading = lines.findIndex((line, index) => index > heading && line.startsWith('## '));
+  const section = heading === -1 ? [] : lines.slice(heading + 1, nextHeading === -1 ? undefined : nextHeading);
+  const open = section.findIndex((line) => /^```hocon\s*$/.test(line));
+  const close = section.findIndex((line, index) => index > open && line.startsWith('```'));
+  if (open === -1 || close === -1) throw new Error(`${page}: no hocon sample under the OTLP heading`);
+  return section.slice(open + 1, close).join('\n');
+}
+
+describe('the OTLP sink enabled from HOCON alone', () => {
+  beforeEach(recordPosts);
+  afterEach(() => { globalThis.fetch = realFetch; });
+
+  it('starts with nothing but enabled = true, and sends the system name as service.name', async () => {
+    // The whole user config.  reference.conf ships `service-name = ""` as the
+    // key's placeholder; read as a value, it made this one line throw at
+    // ActorSystem.create, before any record could be sent.
+    const systemOptions = ActorSystemOptions.create()
+      .withConfig(Config.parseString('actor-ts.logger.sinks.otlp.enabled = true'));
+    const system = ActorSystem.create('checkout', systemOptions);
+
+    await logAndTerminate(system, 'placing order');
+
+    expect(messagesPosted()).toContain('placing order');
+    expect([...new Set(posted.map((request) => request.url))]).toEqual(['http://localhost:4318/v1/logs']);
+    expect(serviceNamesPosted()).toEqual(['checkout']);
+  });
+
+  it('keeps a service-name set in HOCON', async () => {
+    const systemOptions = ActorSystemOptions.create()
+      .withConfig(Config.parseString('actor-ts.logger.sinks.otlp { enabled = true, service-name = "checkout-api" }'));
+    const system = ActorSystem.create('checkout', systemOptions);
+
+    await logAndTerminate(system, 'placing order');
+
+    expect(messagesPosted()).toContain('placing order');
+    expect(serviceNamesPosted()).toEqual(['checkout-api']);
+  });
+
+  it('runs the sample on the integrations page as written', async () => {
+    const sample = otlpHoconSampleOf('observability/logging/integrations.mdx');
+    // The German page carries the same block, so this runs both.
+    expect(otlpHoconSampleOf('de/observability/logging/integrations.mdx')).toBe(sample);
+    const system = ActorSystem.create('orders', ActorSystemOptions.create().withConfig(Config.parseString(sample)));
+
+    await logAndTerminate(system, 'placing order');
+
+    // What the page promises: its url, gzip on, and service.name taken from
+    // the system's name, as in the request it prints.
+    expect(messagesPosted()).toContain('placing order');
+    expect([...new Set(posted.map((request) => request.url))]).toEqual(['http://collector:4318/v1/logs']);
+    expect([...new Set(posted.map((request) => request.contentEncoding))]).toEqual(['gzip']);
+    expect(serviceNamesPosted()).toEqual(['orders']);
+  });
+});
+
+/**
+ * The sinks a {@link MultiSinkLogger} fans out to.  The logger keeps them
+ * private — a view must not hand them out — so this reads the runtime field,
+ * and throws rather than answering `[]` when that field moves: an empty list
+ * would let a test about a missing sink pass for the wrong reason.
+ */
+function sinksOf(log: Logger): readonly LogSink[] {
+  expect(log).toBeInstanceOf(MultiSinkLogger);
+  const targets = (log as unknown as { pipeline?: { targets?: unknown } }).pipeline?.targets;
+  if (!Array.isArray(targets)) {
+    throw new Error('MultiSinkLogger no longer keeps its sinks at pipeline.targets; update sinksOf()');
+  }
+  return targets.map((target: { sink: LogSink }) => target.sink);
+}
+
+/** One `actor-ts.logger.sinks.*` block and the sink class it has to build. */
+type SinkBlockCase = {
+  readonly block: string;
+  readonly sinkClass: abstract new (...args: never[]) => LogSink;
+  /** Leaves the sink cannot start without, beyond `enabled`. */
+  readonly requiredLeaves: (directory: string) => string;
+};
+
+const NOTHING_REQUIRED = (): string => '';
+
+/**
+ * Every block the reference ships.  The four remote sinks without a default
+ * endpoint refuse to start without a url (and Splunk without its token), and
+ * the file sink is pointed at a temporary directory so nothing lands in the
+ * working tree.
+ */
+const SINK_BLOCK_CASES: readonly SinkBlockCase[] = [
+  { block: 'console', sinkClass: ConsoleSink, requiredLeaves: NOTHING_REQUIRED },
+  { block: 'file', sinkClass: FileSink, requiredLeaves: (directory) => `directory = ${JSON.stringify(directory)}` },
+  { block: 'gelf', sinkClass: GelfSink, requiredLeaves: NOTHING_REQUIRED },
+  { block: 'loki', sinkClass: LokiSink, requiredLeaves: () => 'url = "http://127.0.0.1:3100"' },
+  { block: 'otlp', sinkClass: OtlpHttpSink, requiredLeaves: NOTHING_REQUIRED },
+  { block: 'parseable', sinkClass: ParseableSink, requiredLeaves: () => 'url = "http://127.0.0.1:8000"' },
+  { block: 'seq', sinkClass: SeqSink, requiredLeaves: () => 'url = "http://127.0.0.1:5341"' },
+  {
+    block: 'splunk',
+    sinkClass: SplunkSink,
+    requiredLeaves: () => 'url = "https://127.0.0.1:8088", token = "example-hec-token"',
+  },
+  { block: 'syslog', sinkClass: SyslogSink, requiredLeaves: NOTHING_REQUIRED },
+];
+
+describe('every sink block builds its sink from HOCON alone', () => {
+  let directory = '';
+
+  beforeEach(() => {
+    // No sink here should send anything — min-level is `error` and nothing
+    // logs at error — but an HTTP sink that did would reach this stub, not
+    // the network.
+    recordPosts();
+    directory = mkdtempSync(join(tmpdir(), 'logger-wiring-'));
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    // Only once mkdtempSync assigned it: bun test runs this hook even when
+    // `beforeEach` threw first, and on Bun `rmSync('', { recursive: true,
+    // force: true })` empties the working directory.
+    if (directory !== '') rmSync(directory, { recursive: true, force: true });
+    directory = '';
+  });
+
+  it('covers every block the reference ships', () => {
+    const shipped = Object.keys(Config.parseString(REFERENCE_CONF).getObject('actor-ts.logger.sinks'));
+    expect(SINK_BLOCK_CASES.map((sinkCase) => sinkCase.block).sort()).toEqual(shipped.sort());
+  });
+
+  for (const sinkCase of SINK_BLOCK_CASES) {
+    it(`actor-ts.logger.sinks.${sinkCase.block} builds its ${sinkCase.sinkClass.name}`, async () => {
+      // `min-level = "error"` is not what the reference ships, so only this
+      // block's own reader can have handed it to the sink — a branch reading
+      // a neighbour's block, or none, would build it at `info`.
+      const leaves = ['enabled = true', 'min-level = "error"', sinkCase.requiredLeaves(directory)]
+        .filter((leaf) => leaf !== '')
+        .join(', ');
+      const systemOptions = ActorSystemOptions.create()
+        .withConfig(Config.parseString(`actor-ts.logger.sinks.${sinkCase.block} { ${leaves} }`));
+      const system = ActorSystem.create(`wiring-${sinkCase.block}`, systemOptions);
+      try {
+        const sinks = sinksOf(system.log);
+        expect(sinks.map((sink) => sink.name)).toEqual([sinkCase.block]);
+        expect(sinks[0]).toBeInstanceOf(sinkCase.sinkClass);
+        expect(sinks[0]!.minLevel).toBe(LogLevel.Error);
+      } finally {
+        await system.terminate();
+      }
+    });
+  }
+});
+
+/**
+ * Spies on the `new` a module's class export is built with, and builds it all
+ * the same.  bun's spy on a class export calls the class without `new`, which
+ * a class refuses, so the spy constructs the class it replaced; and it is
+ * typed as a plain function, because `spyOn` types a class export as nothing
+ * callable.
+ */
+function spyOnConstruction<Arguments extends unknown[], Instance>(
+  namespace: object,
+  exportName: string,
+  original: new (...args: Arguments) => Instance,
+): Mock<(...args: Arguments) => Instance> {
+  const seam = namespace as Record<string, (...args: Arguments) => Instance>;
+  return spyOn(seam, exportName).mockImplementation((...args: Arguments) => new original(...args));
+}
+
+/** One sink branch of `buildLoggerFromConfig`: the reader it calls and the class it builds, each by its module. */
+type SinkWiringCase = {
+  readonly block: string;
+  readonly readerModule: object;
+  readonly readerName: string;
+  readonly sinkModule: object;
+  readonly sinkClass: new (options: never) => LogSink;
+  /** The leaves set beyond `enabled`, `min-level` and the required ones, so the reader answers with every field it has. */
+  readonly everyLeaf: string;
+  /** The fields that answer carries, so a field the config stopped setting is noticed rather than passed by default. */
+  readonly answerFields: readonly string[];
+};
+
+/** The unpublished half of every delivery block, and the overflow only the file sink ships. */
+const DELIVERY_TEMPLATE = 'delivery { max-retries = 4, min-backoff = 300ms, max-backoff = 12s, random-factor = 0.4 }';
+const NETWORK_DELIVERY = `${DELIVERY_TEMPLATE}\ndelivery.overflow = "drop-head"`;
+
+const SINK_WIRING_CASES: readonly SinkWiringCase[] = [
+  {
+    block: 'console', readerModule: ConsoleSinkOptionsModule, readerName: 'readConsoleSinkOptionsFromConfig',
+    sinkModule: ConsoleSinkModule, sinkClass: ConsoleSink, everyLeaf: '',
+    answerFields: ['format', 'minLevel', 'stream'],
+  },
+  {
+    block: 'file', readerModule: FileSinkOptionsModule, readerName: 'readFileSinkOptionsFromConfig',
+    sinkModule: FileSinkModule, sinkClass: FileSink, everyLeaf: DELIVERY_TEMPLATE,
+    answerFields: ['compressRotated', 'delivery', 'directory', 'extension', 'format', 'maxAgeMs', 'maxFileBytes',
+      'maxFiles', 'minLevel', 'prefix', 'rotateInterval'],
+  },
+  {
+    block: 'gelf', readerModule: GelfSinkOptionsModule, readerName: 'readGelfSinkOptionsFromConfig',
+    sinkModule: GelfSinkModule, sinkClass: GelfSink,
+    everyLeaf: `url = "http://127.0.0.1:12201/gelf"\nhost-name = "wiring-host"\n${NETWORK_DELIVERY}`,
+    answerFields: ['compression', 'delivery', 'host', 'hostName', 'maxChunkBytes', 'minLevel', 'port', 'protocol',
+      'requestTimeoutMs', 'url'],
+  },
+  {
+    block: 'loki', readerModule: LokiSinkOptionsModule, readerName: 'readLokiSinkOptionsFromConfig',
+    sinkModule: LokiSinkModule, sinkClass: LokiSink,
+    everyLeaf: `tenant-id = "wiring-tenant"\nlabels.service = "wiring"\n${NETWORK_DELIVERY}`,
+    answerFields: ['delivery', 'format', 'labels', 'minLevel', 'requestTimeoutMs', 'structuredMetadata', 'tenantId', 'url'],
+  },
+  {
+    block: 'otlp', readerModule: OtlpHttpSinkOptionsModule, readerName: 'readOtlpSinkOptionsFromConfig',
+    sinkModule: OtlpHttpSinkModule, sinkClass: OtlpHttpSink,
+    everyLeaf: `service-name = "wiring-service"\n${NETWORK_DELIVERY}`,
+    answerFields: ['delivery', 'gzip', 'minLevel', 'requestTimeoutMs', 'scopeName', 'serviceName', 'url'],
+  },
+  {
+    block: 'parseable', readerModule: ParseableSinkOptionsModule, readerName: 'readParseableSinkOptionsFromConfig',
+    sinkModule: ParseableSinkModule, sinkClass: ParseableSink,
+    // Basic auth rather than api-key: the two are refused together.
+    everyLeaf: `stream = "wiring"\nusername = "wiring"\npassword = "wiring-secret"\n${NETWORK_DELIVERY}`,
+    answerFields: ['delivery', 'minLevel', 'password', 'requestTimeoutMs', 'stream', 'url', 'username'],
+  },
+  {
+    block: 'seq', readerModule: SeqSinkOptionsModule, readerName: 'readSeqSinkOptionsFromConfig',
+    sinkModule: SeqSinkModule, sinkClass: SeqSink,
+    everyLeaf: `api-key = "wiring-key"\n${NETWORK_DELIVERY}`,
+    answerFields: ['apiKey', 'delivery', 'minLevel', 'requestTimeoutMs', 'url'],
+  },
+  {
+    block: 'splunk', readerModule: SplunkSinkOptionsModule, readerName: 'readSplunkSinkOptionsFromConfig',
+    sinkModule: SplunkSinkModule, sinkClass: SplunkSink,
+    everyLeaf: `index = "wiring"\nhost-name = "wiring-host"\n${NETWORK_DELIVERY}`,
+    answerFields: ['delivery', 'hostName', 'index', 'minLevel', 'requestTimeoutMs', 'source', 'sourcetype', 'token', 'url'],
+  },
+  {
+    block: 'syslog', readerModule: SyslogSinkOptionsModule, readerName: 'readSyslogSinkOptionsFromConfig',
+    sinkModule: SyslogSinkModule, sinkClass: SyslogSink,
+    everyLeaf: `app-name = "wiring-app"\nhost-name = "wiring-host"\n${NETWORK_DELIVERY}`,
+    answerFields: ['appName', 'delivery', 'facility', 'framing', 'host', 'hostName', 'minLevel', 'port', 'transport'],
+  },
+];
+
+/**
+ * The case above shows that each block builds its own sink class at its own
+ * min-level, and a branch that hands the sink only that much — `minLevel`,
+ * `url`, a token — passes it as well as one that hands over everything: an
+ * OTLP branch keeping minLevel, url, serviceName and gzip and dropping
+ * scopeName, requestTimeoutMs and the delivery block stayed green, and so did
+ * Loki, Parseable, Seq and Splunk branches keeping minLevel, url and token
+ * (#1425).  So each branch is run with its block set throughout, and what the
+ * sink was constructed with is compared, as an exact object, with what its
+ * reader returned on that call.
+ */
+describe('every sink branch hands its sink everything its reader returned', () => {
+  let directory = '';
+
+  beforeEach(() => {
+    recordPosts();
+    directory = mkdtempSync(join(tmpdir(), 'logger-wiring-whole-'));
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    // As above: only once mkdtempSync assigned it.
+    if (directory !== '') rmSync(directory, { recursive: true, force: true });
+    directory = '';
+  });
+
+  it('covers every sink block the reference ships', () => {
+    expect(SINK_WIRING_CASES.map((wiring) => wiring.block).sort())
+      .toEqual(SINK_BLOCK_CASES.map((sinkCase) => sinkCase.block).sort());
+  });
+
+  for (const wiring of SINK_WIRING_CASES) {
+    it(`actor-ts.logger.sinks.${wiring.block} builds its ${wiring.sinkClass.name} with ${wiring.readerName}'s whole answer`, async () => {
+      const blockCase = SINK_BLOCK_CASES.find((sinkCase) => sinkCase.block === wiring.block)!;
+      const leaves = ['enabled = true', 'min-level = "error"', blockCase.requiredLeaves(directory), wiring.everyLeaf]
+        .filter((leaf) => leaf !== '')
+        .join('\n');
+      const systemOptions = ActorSystemOptions.create()
+        .withConfig(Config.parseString(`actor-ts.logger.sinks.${wiring.block} {\n${leaves}\n}`));
+      const reader = spyOn(wiring.readerModule as Record<string, (config: Config) => object>, wiring.readerName);
+      const construction = spyOnConstruction(wiring.sinkModule, wiring.sinkClass.name, wiring.sinkClass);
+      let system: ActorSystem | undefined;
+      try {
+        system = ActorSystem.create(`wiring-whole-${wiring.block}`, systemOptions);
+        expect(reader).toHaveBeenCalledTimes(1);
+        expect(construction).toHaveBeenCalledTimes(1);
+        const answer = reader.mock.results[0]!.value as object;
+        // Read after the sink was built, so a branch that edits the answer it
+        // was handed shows here as well as a reader whose fields changed.
+        expect(
+          Object.keys(answer).sort(),
+          `${wiring.readerName}'s answer, as the sink got it, carries other fields than this case sets`,
+        ).toEqual([...wiring.answerFields].sort());
+        expectExactOptions(construction.mock.calls[0]![0] as object, answer);
+        expect(sinksOf(system.log)[0]).toBeInstanceOf(wiring.sinkClass);
+      } finally {
+        reader.mockRestore();
+        construction.mockRestore();
+        await system?.terminate();
+      }
+    });
+  }
 });

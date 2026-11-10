@@ -18,6 +18,7 @@ import {
   type ClusterClientEnvelopeMessage,
   type ClusterClientReplyMessage,
 } from '../../../src/cluster/ClusterClientReceptionist.js';
+import { EnvelopeTrust } from '../../../src/cluster/EnvelopeTrust.js';
 import { NodeAddress, type NodeAddressData } from '../../../src/cluster/NodeAddress.js';
 import type { WireMessage } from '../../../src/cluster/Protocol.js';
 import type { LogContextData } from '../../../src/LogContext.js';
@@ -70,12 +71,20 @@ class RecordingLogger implements Logger {
 }
 
 /**
- * The receptionist touches exactly three things on a `Cluster` — its own
- * address, the wire-handler registry and `transport.send` — so the whole
- * envelope path is drivable without a socket.
+ * The receptionist touches exactly four things on a `Cluster` — its own
+ * address, the wire-handler registry, `transport.send` and the node's
+ * inbound-path trust policy — so the whole envelope path is drivable without a
+ * socket.
+ *
+ * The policy is a **real** `EnvelopeTrust` in its shipped posture (untrusted
+ * mode off, no allow-list), not a stub that admits everything: a fake that
+ * always said yes would make every path assertion in this file vacuous, which
+ * is the shape `ClusterClientReceptionistPathScope.test.ts` exists to pin from
+ * the other side (#877).
  */
 class FakeCluster {
   readonly sent: Array<{ to: NodeAddress; reply: ClusterClientReplyMessage }> = [];
+  readonly _envelopeTrust: EnvelopeTrust;
   private handler: ((message: WireMessage, from: NodeAddress) => void) | null = null;
 
   readonly transport = {
@@ -84,7 +93,9 @@ class FakeCluster {
     },
   };
 
-  constructor(readonly selfAddress: NodeAddress) {}
+  constructor(readonly selfAddress: NodeAddress, system: ActorSystem, log: Logger) {
+    this._envelopeTrust = new EnvelopeTrust(system, log, false, []);
+  }
 
   _onWire(_kind: string, handler: (message: WireMessage, from: NodeAddress) => void): () => void {
     this.handler = handler;
@@ -141,7 +152,7 @@ function startFixture(name: string): Fixture {
   system.extension(MetricsExtensionId).enable();
   system.spawn(Exploding, 'exploding');
   system.spawn(Echo, 'echo');
-  const cluster = new FakeCluster(new NodeAddress(name, '10.0.0.5', 2_552));
+  const cluster = new FakeCluster(new NodeAddress(name, '10.0.0.5', 2_552), system, log);
   system.extension(ClusterClientReceptionistId).start(cluster as unknown as Cluster);
   return { system, cluster, log };
 }

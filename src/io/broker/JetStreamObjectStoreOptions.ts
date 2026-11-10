@@ -10,6 +10,7 @@
  */
 import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
 import type { BrokerCommonOptionsType } from './BrokerOptions.js';
+import { findNatsServerCredentialsProblem } from './NatsOptions.js';
 
 /**
  * Whole-body ceiling for v1, in bytes.  See the class doc of
@@ -124,6 +125,8 @@ export class JetStreamObjectStoreOptionsValidator extends BrokerOptionsValidator
   protected rules(s: Partial<JetStreamObjectStoreOptionsType>): void {
     this.commonRules(s);
     this.nonEmptyStringOrArray('servers', s.servers);
+    const serversProblem = findNatsServerCredentialsProblem(s.servers);
+    if (serversProblem !== null) this.fail(serversProblem.field, serversProblem.reason, serversProblem.value);
     this.nonEmptyString('bucket');
     this.oneOf('storage', ['memory', 'file']);
     this.positiveInt('replicas');

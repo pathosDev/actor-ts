@@ -46,7 +46,8 @@ internal static class Harness
         double MeanNs, double StddevNs, double MinNs, double MaxNs,
         double P50Ns, double P95Ns, double P99Ns,
         long ExpectedOperations, long CompletedOperations,
-        string? Notes);
+        string? Notes,
+        int? ActorCount = null, int? WorkIterationsPerMessage = null, long? Checksum = null);
 
     /// <summary>
     /// Warm up, then measure, asserting after every single call that the system

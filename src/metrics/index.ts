@@ -11,6 +11,7 @@ export {
   MetricsRegistryOptions,
   MetricsRegistryOptionsBuilder,
   MetricsRegistryOptionsValidator,
+  readMetricsRegistryOptionsFromConfig,
 } from './MetricsRegistryOptions.js';
 export type { MetricsRegistryOptionsType } from './MetricsRegistryOptions.js';
 export type {
@@ -30,6 +31,7 @@ export {
   MetricsExtensionId,
   metricsOf,
 } from './MetricsExtension.js';
+export type { MetricSampleSource } from './MetricsExtension.js';
 export { MailboxDepthSampler } from './MailboxDepthSampler.js';
 export {
   DEFAULT_MAILBOX_DEPTH_SAMPLE_INTERVAL_MS,
@@ -37,18 +39,26 @@ export {
   MAILBOX_DEPTH_BUCKETS_MESSAGES,
   MAILBOX_DEPTH_REPORTING_FLOOR,
   MAILBOX_WAIT_BUCKETS_SECONDS,
+  MAIN_THREAD_LABEL_VALUE,
+  PROMETHEUS_LABEL_NAME_PATTERN,
+  PROMETHEUS_METRIC_NAME_PATTERN,
+  RESERVED_LABEL_PREFIX,
+  THREAD_LABEL,
 } from './Constants.js';
 export {
   exportPrometheus,
   prometheusHandler,
+  renderPrometheusSamples,
 } from './PrometheusExporter.js';
 export { promClientRegistry } from './PromClientAdapter.js';
 export {
+  DEFAULT_PROM_CLIENT_NAME_PREFIX,
   PromClientAdapterOptions,
   PromClientAdapterOptionsBuilder,
   PromClientAdapterOptionsValidator,
+  readPromClientAdapterOptionsFromConfig,
 } from './PromClientAdapterOptions.js';
-export type { PromClientAdapterOptionsType } from './PromClientAdapterOptions.js';
+export type { PromClientAdapterConfigDefaults, PromClientAdapterOptionsType } from './PromClientAdapterOptions.js';
 export type {
   PromClientLike,
   PromClientRegistryLike,

@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { acquireLock } from '../../../src/cache/CacheLock.js';
 import { InMemoryCache } from '../../../src/cache/InMemoryCache.js';
 import { DEFAULT_MAX_ENTRIES, InMemoryCacheOptions } from '../../../src/cache/InMemoryCacheOptions.js';
+import { MAX_TIMER_DELAY_MS } from '../../../src/util/Constants.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 import { runCacheContractTests } from './_Contract.js';
@@ -791,5 +792,379 @@ describe('InMemoryCache — options + validation', () => {
       .not.toThrow();
     expect(() => new InMemoryCache({ maxEntries: Infinity, cleanupMs: 0, prefixQuotas: { 'a:': 2 } }))
       .not.toThrow();
+  });
+});
+
+/**
+ * The two configured expiry policies (#876), and the line both stop at.
+ *
+ * `timeToLiveMs` stamps a lifetime on an entry whose writer named no `ttlMs`;
+ * `timeToIdleMs` slides that lifetime forward on every read.  Neither touches
+ * `incr` or `setIfAbsent`, and the slide stops at any entry a guarantee has
+ * moved into the protected half — because for a counter or a claim this cache
+ * is the source of truth, and a lifetime it did not ask for releases a lock
+ * nobody released.
+ *
+ * The half-membership assertions below are made through **eviction**, not
+ * through a peek at the internals: which half an entry sits in is only ever
+ * observable as who survives a key flood, and that is also the property that
+ * matters.
+ */
+describe('InMemoryCache — configured expiry policies', () => {
+  describe('timeToLiveMs', () => {
+    test('expires a set that named no ttlMs of its own', async () => {
+      const cache = new InMemoryCache({ cleanupMs: 0, timeToLiveMs: 20 });
+      await cache.set('k', 'v');
+      expect((await cache.get('k')).toNullable()).toBe('v');
+      // Lazy expiry, so there is no event to poll for — the elapsed window IS
+      // the assertion, and 60 ms has to outlast the configured 20 ms.
+      await sleep(60);
+      expect((await cache.get('k')).isNone()).toBe(true);
+      await cache.close();
+    });
+
+    test('expires an mset the same way', async () => {
+      const cache = new InMemoryCache({ cleanupMs: 0, timeToLiveMs: 20 });
+      await cache.mset(new Map([['a', 1], ['b', 2]]));
+      expect((await cache.mget(['a', 'b'])).size).toBe(2);
+      await sleep(60);   // the elapsed window IS the assertion: 60 ms outlasts the configured 20 ms
+      expect((await cache.mget(['a', 'b'])).size).toBe(0);
+      await cache.close();
+    });
+
+    test('a caller ttlMs wins in both directions', async () => {
+      // Downward: a short explicit TTL is not stretched to the policy's.
+      const longPolicy = new InMemoryCache({ cleanupMs: 0, timeToLiveMs: 60_000 });
+      await longPolicy.set('k', 'v', 20);
+      await sleep(60);   // elapsed time IS the assertion: past the caller's 20 ms, far short of the policy's minute
+      expect((await longPolicy.get('k')).isNone()).toBe(true);
+
+      // Upward: a long explicit TTL is not cut down to the policy's.
+      const shortPolicy = new InMemoryCache({ cleanupMs: 0, timeToLiveMs: 20 });
+      await shortPolicy.set('k', 'v', 60_000);
+      await sleep(60);   // an absence: past the policy's 20 ms, which must not have touched this entry
+      expect((await shortPolicy.get('k')).toNullable()).toBe('v');
+
+      await longPolicy.close();
+      await shortPolicy.close();
+    });
+
+    test('does not reach setIfAbsent — a ttlMs-less claim stays unbounded', async () => {
+      const cache = new InMemoryCache({ cleanupMs: 0, timeToLiveMs: 20 });
+      expect(await cache.setIfAbsent('lock:pay-1', 'held')).toBe(true);
+      await sleep(60);   // an absence — nothing may expire here, so there is no event to poll for
+      // Still held, and still refusing a second claimant: a lock released by a
+      // number in a config file is a lock handed out twice.
+      expect((await cache.get('lock:pay-1')).toNullable()).toBe('held');
+      expect(await cache.setIfAbsent('lock:pay-1', 'other')).toBe(false);
+      await cache.close();
+    });
+
+    test('does not reach incr — a ttlMs-less counter stays unbounded', async () => {
+      const cache = new InMemoryCache({ cleanupMs: 0, timeToLiveMs: 20 });
+      expect(await cache.incr('rate:tenant-a')).toBe(1);
+      await sleep(60);   // an absence — the counter must survive a window three times the policy's
+      // 2, not 1: a window the caller never bounded must not reset itself.
+      expect(await cache.incr('rate:tenant-a')).toBe(2);
+      await cache.close();
+    });
+
+    test('0 is the off switch, and is the default', async () => {
+      const off = new InMemoryCache({ cleanupMs: 0, timeToLiveMs: 0 });
+      const unset = new InMemoryCache({ cleanupMs: 0 });
+      await off.set('k', 1);
+      await unset.set('k', 1);
+      await sleep(60);   // an absence: with both policies off, neither entry may expire at all
+      expect((await off.get('k')).toNullable()).toBe(1);
+      expect((await unset.get('k')).toNullable()).toBe(1);
+      await off.close();
+      await unset.close();
+    });
+
+    test('is refused when it is negative or not finite', () => {
+      expect(() => new InMemoryCache({ timeToLiveMs: -1 })).toThrow(OptionsError);
+      expect(() => new InMemoryCache({ timeToLiveMs: -1 })).toThrow(/timeToLiveMs/);
+      expect(() => new InMemoryCache({ timeToIdleMs: Infinity })).toThrow(/timeToIdleMs/);
+      expect(() => new InMemoryCache({ timeToIdleMs: Number.NaN })).toThrow(/timeToIdleMs/);
+    });
+  });
+
+  describe('timeToIdleMs', () => {
+    test('a read pushes the expiry out, and a quiet window still ends it', async () => {
+      const cache = new InMemoryCache({ cleanupMs: 0, timeToIdleMs: 120 });
+      await cache.set('session:1', 'alive');
+      // Four reads 40 ms apart — 160 ms in total, past the 120 ms window the
+      // write opened, so surviving is only possible if each read moved it.
+      for (let i = 0; i < 4; i++) {
+        await sleep(40);   // one gap of the sliding window; the elapsed total IS the assertion
+        expect((await cache.get('session:1')).toNullable()).toBe('alive');
+      }
+      // Then stop reading: the window closes on its own.
+      await sleep(220);
+      expect((await cache.get('session:1')).isNone()).toBe(true);
+      await cache.close();
+    });
+
+    test('never past the timeToLiveMs deadline the entry was written with', async () => {
+      const cache = new InMemoryCache({ cleanupMs: 0, timeToLiveMs: 200, timeToIdleMs: 60_000 });
+      await cache.set('hot', 'value');
+      await sleep(50);   // a read inside the 200 ms lifetime, so it may extend but not past it
+      expect((await cache.get('hot')).toNullable()).toBe('value');
+      await sleep(50);   // and a second one, still inside it
+      expect((await cache.get('hot')).toNullable()).toBe('value');
+      // An idle window of a minute would keep a key read this often alive
+      // forever; the lifetime is the ceiling, so it does not.
+      await sleep(200);
+      expect((await cache.get('hot')).isNone()).toBe(true);
+      await cache.close();
+    });
+
+    test('does not extend an entry a guarantee has moved into the protected half', async () => {
+      const cache = new InMemoryCache({ cleanupMs: 0, timeToIdleMs: 100 });
+      // Seeded opportunistically, then adopted as a counter by `incr` (#1295).
+      await cache.set('rate:tenant-a', 0);
+      expect(await cache.incr('rate:tenant-a')).toBe(1);
+      // Reads every 40 ms for 160 ms.  Extending on each of them would keep the
+      // window open indefinitely, which is the failure this rule exists for.
+      for (let i = 0; i < 3; i++) {
+        await sleep(40);   // one read gap; the elapsed total IS the assertion
+        await cache.get('rate:tenant-a');
+      }
+      await sleep(40);   // 160 ms in total, past the 100 ms window nothing was allowed to extend
+      expect((await cache.get('rate:tenant-a')).isNone()).toBe(true);
+      await cache.close();
+    });
+
+    test('0 leaves the lifetime alone however often the key is read', async () => {
+      const cache = new InMemoryCache({ cleanupMs: 0, timeToLiveMs: 200, timeToIdleMs: 0 });
+      await cache.set('k', 'v');
+      await sleep(60);   // two reads inside the 200 ms lifetime, neither of which may move it
+      expect((await cache.get('k')).toNullable()).toBe('v');
+      await sleep(60);   // …the second of them
+      expect((await cache.get('k')).toNullable()).toBe('v');
+      await sleep(160);  // 280 ms in total: past the lifetime, which the reads did not extend
+      expect((await cache.get('k')).isNone()).toBe(true);
+      await cache.close();
+    });
+  });
+
+  /**
+   * The two places a configured lifetime widens the eviction-protected half.
+   * Both follow rules that were already there — `inheritsGuarantee` needs a
+   * finite expiry, and `incr` adopts an entry whose expiry is finite — so what
+   * changes is which writes have one.  Proved by flooding the map and seeing
+   * who is left, which is the only thing half membership ever means.
+   */
+  describe('which entries change halves', () => {
+    /** Write `count` distinct opportunistic keys, enough to churn the whole map. */
+    async function flood(cache: InMemoryCache, count: number): Promise<void> {
+      for (let i = 0; i < count; i++) await cache.set(`rsp:/public/${i}`, i);
+    }
+
+    test('a set replacing a live claim inherits its protection under a policy TTL', async () => {
+      const cache = new InMemoryCache({ maxEntries: 3, cleanupMs: 0, timeToLiveMs: 60_000 });
+      expect(await cache.setIfAbsent('idem:pay-1', 'claim', 60_000)).toBe(true);
+      await cache.set('idem:pay-1', 'record');   // no ttlMs — the policy supplies one
+      await flood(cache, 20);
+      expect((await cache.get('idem:pay-1')).toNullable()).toBe('record');
+      await cache.close();
+    });
+
+    test('and does not without one — the same write is opportunistic', async () => {
+      // The control, and the reason the test above is not vacuous: with no
+      // policy the record's expiry is Infinity, `inheritsGuarantee` refuses it,
+      // and the flood takes it.
+      const cache = new InMemoryCache({ maxEntries: 3, cleanupMs: 0 });
+      expect(await cache.setIfAbsent('idem:pay-1', 'claim', 60_000)).toBe(true);
+      await cache.set('idem:pay-1', 'record');
+      await flood(cache, 20);
+      expect((await cache.get('idem:pay-1')).isNone()).toBe(true);
+      await cache.close();
+    });
+
+    test('a ttlMs-less claim is still unprotected under a policy TTL', async () => {
+      // The class header refuses to pin an unbounded lock, and a configured
+      // lifetime must not quietly turn one into a pinned entry either — it
+      // does not reach `setIfAbsent` at all.
+      const cache = new InMemoryCache({ maxEntries: 3, cleanupMs: 0, timeToLiveMs: 60_000 });
+      expect(await cache.setIfAbsent('lock:pay-1', 'held')).toBe(true);
+      await flood(cache, 20);
+      expect((await cache.get('lock:pay-1')).isNone()).toBe(true);
+      await cache.close();
+    });
+  });
+});
+
+/** 2^31 ms — one past the largest delay a host timer holds. */
+const CEILING_PLUS_ONE_MS = MAX_TIMER_DELAY_MS + 1;
+
+/** One timer the runtime armed while its primitives were recorded. */
+type RecordedTimer = {
+  readonly callback: unknown;
+  readonly delayMs: unknown;
+  readonly handle: unknown;
+};
+
+/** Every call the runtime's four timer primitives received while recorded. */
+type RecordedHostTimers<T> = {
+  readonly result: T;
+  readonly timeouts: readonly RecordedTimer[];
+  readonly intervals: readonly RecordedTimer[];
+  /** Handles handed to `clearTimeout` or `clearInterval`, in order. */
+  readonly cleared: readonly unknown[];
+};
+
+/**
+ * Run `act` with the runtime's timer primitives recorded.  Every call still
+ * reaches the real primitive, because the handle it returns is what a later
+ * clear has to clear — so every case that uses this closes its cache.
+ */
+function recordingHostTimers<T>(act: () => T): RecordedHostTimers<T> {
+  const real = {
+    setTimeout: globalThis.setTimeout,
+    setInterval: globalThis.setInterval,
+    clearTimeout: globalThis.clearTimeout,
+    clearInterval: globalThis.clearInterval,
+  };
+  const timeouts: RecordedTimer[] = [];
+  const intervals: RecordedTimer[] = [];
+  const cleared: unknown[] = [];
+  globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+    const handle = real.setTimeout(...args);
+    timeouts.push({ callback: args[0], delayMs: args[1], handle });
+    return handle;
+  }) as typeof setTimeout;
+  globalThis.setInterval = ((...args: Parameters<typeof setInterval>) => {
+    const handle = real.setInterval(...args);
+    intervals.push({ callback: args[0], delayMs: args[1], handle });
+    return handle;
+  }) as typeof setInterval;
+  globalThis.clearTimeout = ((handle: Parameters<typeof clearTimeout>[0]) => {
+    cleared.push(handle);
+    real.clearTimeout(handle);
+  }) as typeof clearTimeout;
+  globalThis.clearInterval = ((handle: Parameters<typeof clearInterval>[0]) => {
+    cleared.push(handle);
+    real.clearInterval(handle);
+  }) as typeof clearInterval;
+  try {
+    return { result: act(), timeouts, intervals, cleared };
+  } finally {
+    globalThis.setTimeout = real.setTimeout;
+    globalThis.setInterval = real.setInterval;
+    globalThis.clearTimeout = real.clearTimeout;
+    globalThis.clearInterval = real.clearInterval;
+  }
+}
+
+/**
+ * Stand in for a recorded one-shot elapsing: clear the real timer so it can
+ * never also fire, then run its callback now, recording whatever that arms.
+ */
+function elapse(timer: RecordedTimer | undefined): RecordedHostTimers<void> {
+  if (timer === undefined) throw new Error('no timer was armed to elapse');
+  clearTimeout(timer.handle as ReturnType<typeof setTimeout>);
+  return recordingHostTimers(() => { (timer.callback as () => void)(); });
+}
+
+const delaysOf = (timers: readonly RecordedTimer[]): unknown[] => timers.map((timer) => timer.delayMs);
+
+/** Whether a host timer would keep the process alive on its own (Bun and Node handles). */
+const isReferenced = (timer: RecordedTimer): boolean => (timer.handle as { hasRef(): boolean }).hasRef();
+
+describe('InMemoryCache — a cleanupMs past the host timer ceiling (found while #870)', () => {
+  // `setInterval` cannot hold a period above MAX_TIMER_DELAY_MS (~24.9 days):
+  // Bun and Node arm it as 1 ms, so a `cleanupMs` of 30 days — which the
+  // validator admits, as it admits any non-negative number — swept the whole
+  // map every millisecond for the life of the cache.
+
+  test('does not sweep on the wall clock long after the overflow would have', async () => {
+    const cache = new InMemoryCache({ cleanupMs: CEILING_PLUS_ONE_MS });
+    try {
+      await cache.set('lapsed', 'value', 1);
+      // A ~1 ms sweep loop reclaims the lapsed entry within milliseconds; a
+      // sweep due in 2^31 ms leaves it where it is, because expiry is lazy
+      // otherwise and `sizeForTest` reads without touching it.  An absence, so
+      // it needs a window; the window only has to outlast that loop by a wide
+      // margin.
+      const sweptWithinWindow = await awaitCondition(() => cache.sizeForTest() === 0, {
+        timeoutMs: 150,
+        label: 'a sweep due in 2^31 ms reclaimed the lapsed entry',
+      }).then(() => true, () => false);
+      expect(sweptWithinWindow).toBe(false);
+      expect(cache.sizeForTest()).toBe(1);
+    } finally {
+      await cache.close();
+    }
+  });
+
+  test('sweeps once per full interval, as unreferenced one-shots chained over host timers', async () => {
+    const built = recordingHostTimers(() => new InMemoryCache({ cleanupMs: CEILING_PLUS_ONE_MS }));
+    const cache = built.result;
+    try {
+      // No `setInterval` at all: it would coerce this period exactly as
+      // `setTimeout` coerces a delay.
+      expect(delaysOf(built.intervals)).toEqual([]);
+      expect(delaysOf(built.timeouts)).toEqual([MAX_TIMER_DELAY_MS]);
+      // Each link is as unable to hold the process open as the interval a
+      // shorter period gets.  Read while the link is armed: a cleared timer
+      // reports itself unreferenced whatever it was.
+      expect(built.timeouts.map(isReferenced)).toEqual([false]);
+
+      await cache.set('lapsed', 'value', 1);
+      // Read after the write, so the entry's expiry is at most this plus 1 ms.
+      const writtenBy = Date.now();
+      await awaitCondition(() => Date.now() > writtenBy + 1, { label: 'the 1 ms TTL ran out' });
+
+      // 24.9 days on: the first link elapsing is not the sweep.
+      const second = elapse(built.timeouts[0]);
+      expect(delaysOf(second.timeouts)).toEqual([1]);
+      expect(second.timeouts.map(isReferenced)).toEqual([false]);
+      expect(cache.sizeForTest()).toBe(1);
+
+      // The last millisecond is, and the next period starts over at the ceiling.
+      const third = elapse(second.timeouts[0]);
+      expect(cache.sizeForTest()).toBe(0);
+      expect(delaysOf(third.timeouts)).toEqual([MAX_TIMER_DELAY_MS]);
+      expect(delaysOf(third.intervals)).toEqual([]);
+      expect(third.timeouts.map(isReferenced)).toEqual([false]);
+
+      // close() reaches the link that is armed now, not the first one.
+      const [armedLink] = third.timeouts;
+      expect(armedLink).toBeDefined();
+      const closing = recordingHostTimers(() => cache.close());
+      await closing.result;
+      expect(closing.cleared).toEqual([armedLink!.handle]);
+    } finally {
+      await cache.close();
+    }
+  });
+
+  test('a cleanupMs at the ceiling still runs on one unreferenced host interval, as it always did', async () => {
+    const built = recordingHostTimers(() => new InMemoryCache({ cleanupMs: MAX_TIMER_DELAY_MS }));
+    const cache = built.result;
+    try {
+      expect(delaysOf(built.intervals)).toEqual([MAX_TIMER_DELAY_MS]);
+      expect(delaysOf(built.timeouts)).toEqual([]);
+      expect(built.intervals.map(isReferenced)).toEqual([false]);
+
+      const closing = recordingHostTimers(() => cache.close());
+      await closing.result;
+      expect(closing.cleared).toEqual([built.intervals[0]!.handle]);
+    } finally {
+      await cache.close();
+    }
+  });
+
+  test('0 and Infinity still arm no sweep at all', async () => {
+    for (const cleanupMs of [0, Number.POSITIVE_INFINITY]) {
+      const built = recordingHostTimers(() => new InMemoryCache({ cleanupMs }));
+      try {
+        expect(delaysOf(built.intervals)).toEqual([]);
+        expect(delaysOf(built.timeouts)).toEqual([]);
+      } finally {
+        await built.result.close();
+      }
+    }
   });
 });

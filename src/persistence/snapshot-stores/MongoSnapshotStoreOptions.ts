@@ -1,7 +1,6 @@
 import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '../storage/StoreSerializerOptions.js';
-import { OptionsValidator } from '../../util/OptionsValidator.js';
 import { assertMongoName, assertMongoUrl } from '../journals/MongoJournalOptions.js';
-import type { MongoClientLike, MongoConnection } from '../journals/MongoClient.js';
+import { MongoOptionsValidatorBase, type MongoClientLike, type MongoConnection } from '../journals/MongoClient.js';
 
 export interface MongoSnapshotStoreOptionsType extends MongoConnection, StoreSerializerOptionsBase {
   /** Snapshots collection name.  Default: `snapshots`. */
@@ -35,7 +34,11 @@ export class MongoSnapshotStoreOptionsBuilder extends StoreSerializerOptionsBuil
     return this.set('databaseName', databaseName);
   }
 
-  /** Extra `MongoClient` options — `{ tls, authSource, maxPoolSize, … }`. */
+  /**
+   * Extra `MongoClient` options — `{ authSource, readPreference, appName, … }` —
+   * handed to the driver as they are.  The pool size, the two timeouts and a CA
+   * have setters of their own, below.
+   */
   withClientOptions(clientOptions: Record<string, unknown>): this {
     return this.set('clientOptions', clientOptions);
   }
@@ -43,6 +46,34 @@ export class MongoSnapshotStoreOptionsBuilder extends StoreSerializerOptionsBuil
   /** Pre-built client — bypasses the lazy `mongodb` import; share it across stores. */
   withClient(client: MongoClientLike): this {
     return this.set('client', client);
+  }
+
+  /** Most connections the client holds open to one server — the driver's `maxPoolSize`.  Unset: 100. */
+  withMaxPoolSize(maxPoolSize: number): this {
+    return this.set('maxPoolSize', maxPoolSize);
+  }
+
+  /** Fewest connections the client keeps open to one server — the driver's `minPoolSize`.  Unset: 0. */
+  withMinPoolSize(minPoolSize: number): this {
+    return this.set('minPoolSize', minPoolSize);
+  }
+
+  /** How long an operation waits for a usable server, in ms — `serverSelectionTimeoutMS`.  Unset: 30 000. */
+  withServerSelectionTimeoutMs(serverSelectionTimeoutMs: number): this {
+    return this.set('serverSelectionTimeoutMs', serverSelectionTimeoutMs);
+  }
+
+  /** Time allowed to open a connection, in ms — the driver's `connectTimeoutMS`.  Unset: 30 000. */
+  withConnectTimeoutMs(connectTimeoutMs: number): this {
+    return this.set('connectTimeoutMs', connectTimeoutMs);
+  }
+
+  /**
+   * PEM file of the CA that signed the server's certificate, read when the
+   * client opens and handed to the driver as `ca` — see `MongoConnection.caFile`.
+   */
+  withCaFile(caFile: string): this {
+    return this.set('caFile', caFile);
   }
 
   /** Snapshots collection name.  Default: `snapshots`. */
@@ -75,9 +106,10 @@ export const MongoSnapshotStoreOptions = MongoSnapshotStoreOptionsBuilder;
 /**
  * `keepN` is checked as an integer rather than a positive one: zero and
  * negatives are the documented way to disable pruning, so only a fractional
- * value is a mistake.
+ * value is a mistake.  The typed client fields are checked as every MongoDB
+ * store checks them — see `MongoOptionsValidatorBase`.
  */
-export class MongoSnapshotStoreOptionsValidator extends OptionsValidator<MongoSnapshotStoreOptionsType> {
+export class MongoSnapshotStoreOptionsValidator extends MongoOptionsValidatorBase<MongoSnapshotStoreOptionsType> {
   constructor() { super('MongoSnapshotStoreOptions'); }
 
   protected rules(s: Partial<MongoSnapshotStoreOptionsType>): void {
@@ -87,5 +119,6 @@ export class MongoSnapshotStoreOptionsValidator extends OptionsValidator<MongoSn
     if (s.keepN !== undefined && !Number.isInteger(s.keepN)) {
       this.fail('keepN', 'must be an integer (<= 0 disables pruning)', s.keepN);
     }
+    this.checkClient(s);
   }
 }

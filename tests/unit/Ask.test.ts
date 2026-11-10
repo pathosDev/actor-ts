@@ -5,6 +5,11 @@ import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { AskTimeoutError } from '../../src/SystemMessages.js';
 import { OptionsError } from '../../src/util/OptionsValidator.js';
+import { DEFAULT_ASK_TIMEOUT_MS, MAX_TIMER_DELAY_MS } from '../../src/util/Constants.js';
+import { Nobody, type ActorRef } from '../../src/ActorRef.js';
+import { EntityRef } from '../../src/cluster/sharding/EntityRef.js';
+import { TestProbe } from '../../src/testkit/TestProbe.js';
+import { assertDoesNotCompleteWithin } from '../util/AsyncAssertions.js';
 import { sleep } from '../util/AwaitCondition.js';
 
 const newSystem = (name = 'ask-unit'): ActorSystem => {
@@ -228,5 +233,222 @@ describe('ask — reply-ref naming (#119)', () => {
 
     await first.terminate();
     await second.terminate();
+  });
+});
+
+describe('ask — the configured default deadline (#863)', () => {
+  /**
+   * Nested and not `{'actor-ts.actor.ask-timeout': …}`: a dotted string stays a
+   * literal top-level key, so the read would fall through to the reference
+   * value and every assertion below would pass against a system that ignored
+   * the configuration entirely.
+   */
+  const configuredSystem = (askTimeout: string, name = 'ask-configured'): ActorSystem => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({ 'actor-ts': { actor: { 'ask-timeout': askTimeout } } });
+    return ActorSystem.create(name, sysOptions);
+  };
+
+  class Silent extends Actor<string> { override onReceive(_: string): void {} }
+
+  test('an omitted deadline on a local ref arms the configured value', async () => {
+    const sys = configuredSystem('40ms');
+    const ref = sys.spawn(Silent, 's');
+
+    // Asserted through the rejection message rather than by timing the await:
+    // the message quotes the deadline that was actually armed, so a system
+    // that fell back to the 5 000 ms constant fails here in milliseconds
+    // instead of failing five seconds later, or passing on a slow machine.
+    let caught: unknown = null;
+    try { await ref.ask('hi'); } catch (e) { caught = e; }
+    expect(caught).toBeInstanceOf(AskTimeoutError);
+    expect((caught as Error).message).toContain('after 40ms');
+
+    // `undefined` takes the same road as an omitted argument — the parameter
+    // is optional now rather than defaulted, and `??` is what resolves it.
+    let caughtUndefined: unknown = null;
+    try { await ref.ask('hi', undefined); } catch (e) { caughtUndefined = e; }
+    expect((caughtUndefined as Error).message).toContain('after 40ms');
+
+    await sys.terminate();
+  });
+
+  test('an explicit per-call deadline still wins over the configured one', async () => {
+    const sys = configuredSystem('40ms', 'ask-explicit-wins');
+    const ref = sys.spawn(Silent, 's');
+    let caught: unknown = null;
+    try { await ref.ask('hi', 90); } catch (e) { caught = e; }
+    expect(caught).toBeInstanceOf(AskTimeoutError);
+    expect((caught as Error).message).toContain('after 90ms');
+    await sys.terminate();
+  });
+
+  test('a configured value still has to be positive at the call site', async () => {
+    // The system refuses a non-positive `ask-timeout` at construction, so this
+    // is the other half: an explicit `0` is not rescued by a healthy configured
+    // default — the per-call guard is unchanged and still owns that domain.
+    const sys = configuredSystem('40ms', 'ask-explicit-zero');
+    const ref = sys.spawn(Silent, 's');
+    let caught: unknown = null;
+    try { void ref.ask('hi', 0).catch(() => undefined); } catch (e) { caught = e; }
+    expect(caught).toBeInstanceOf(OptionsError);
+    expect((caught as OptionsError).field).toBe('timeoutMs');
+    await sys.terminate();
+  });
+
+  test('which refs honour the key, and which keep the constant', async () => {
+    const sys = configuredSystem('40ms', 'ask-ref-coverage');
+    const local = sys.spawn(Silent, 's');
+    const probe = new TestProbe(sys);
+    // A local region ref stands in for the sharding one: `EntityRef` reaches
+    // its system only through whatever ref it was handed, and that delegation
+    // is the whole mechanism — the region's own kind is not part of it.
+    const entity = new EntityRef(local, 'counter', 'user-42', 8, sys.name);
+
+    expect(local._defaultAskTimeoutMs()).toBe(40);
+    expect(probe._defaultAskTimeoutMs()).toBe(40);
+    expect(entity._defaultAskTimeoutMs()).toBe(40);
+
+    // Documented partial coverage, asserted so it stays a decision rather than
+    // becoming an accident: these hold a system *name*, not a system, and the
+    // configured value cannot reach them.  Widening the key to cover them means
+    // changing this test on purpose.
+    expect(sys.deadLetters._defaultAskTimeoutMs()).toBe(DEFAULT_ASK_TIMEOUT_MS);
+    expect(Nobody._defaultAskTimeoutMs()).toBe(DEFAULT_ASK_TIMEOUT_MS);
+
+    await sys.terminate();
+  });
+
+  test('an untouched system still arms the built-in constant', async () => {
+    // The reference default and the built-in fallback are two numbers that
+    // could drift apart; this is the one assertion that reads them as one.
+    const sys = newSystem('ask-untouched');
+    const ref = sys.spawn(Silent, 's');
+    expect(ref._defaultAskTimeoutMs()).toBe(DEFAULT_ASK_TIMEOUT_MS);
+    await sys.terminate();
+  });
+});
+
+/**
+ * A deadline past the host timer ceiling is the deadline that was asked for.
+ *
+ * `setTimeout` arms anything above {@link MAX_TIMER_DELAY_MS} (~24.9 days) as
+ * 1 ms on Bun and Node (Deno wraps it modulo 2^32), and an ask on a real
+ * system arms its deadline with a raw `setTimeout` — the scheduler is only
+ * consulted when time is virtual.  So `ask(m, 2^31)`
+ * rejected with `AskTimeoutError` after ~14 ms, and a 30-day deadline after
+ * ~1 ms.  `assertAskTimeout` accepts any positive finite number, which is what
+ * makes this a defect rather than a missing refusal: the value was accepted
+ * and then not honoured.
+ */
+describe('ask — a deadline past the host timer ceiling', () => {
+  const CEILING_PLUS_ONE_MS = MAX_TIMER_DELAY_MS + 1;
+  const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1_000;
+  /** Long enough that nothing the system arms for itself is mistaken for a link. */
+  const ONE_DAY_MS = 24 * 60 * 60 * 1_000;
+
+  class Silent extends Actor<string> { override onReceive(_: string): void {} }
+
+  class Echo extends Actor<string> {
+    override onReceive(m: string): void { this.sender.forEach((s) => s.tell(m)); }
+  }
+
+  /** Holds the first asker and answers it once told to, so a test can settle its ask. */
+  class Holder extends Actor<string> {
+    private waiting: ActorRef | null = null;
+    override onReceive(m: string): void {
+      if (m !== 'release') {
+        this.waiting = this.sender.toNullable();
+        return;
+      }
+      this.waiting?.tell('released');
+      this.waiting = null;
+    }
+  }
+
+  type ParkedTimeout = { readonly callback: () => void; readonly delayMs: number };
+
+  /**
+   * Run `action` with every runtime timer of a day or longer parked instead of
+   * armed, so a test can elapse a link by calling it.  Everything shorter is the
+   * system's own business and reaches the real primitive unchanged.
+   */
+  function parkingLongTimeouts<T>(parked: ParkedTimeout[], action: () => T): T {
+    const realSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+      const [callback, delayMs] = args;
+      if (typeof delayMs === 'number' && delayMs >= ONE_DAY_MS) {
+        parked.push({ callback: callback as () => void, delayMs });
+        return -1 as unknown as ReturnType<typeof setTimeout>;
+      }
+      return realSetTimeout(...args);
+    }) as typeof setTimeout;
+    try {
+      return action();
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+    }
+  }
+
+  /** One full turn of the event loop, so a rejection already queued has landed. */
+  const nextTurn = (): Promise<void> => new Promise<void>((resolve) => { setImmediate(resolve); });
+
+  test('has not timed out on the wall clock long after the overflow would have', async () => {
+    const sys = newSystem('ask-long-wall-clock');
+    const holder = sys.spawn(Holder, 'holder');
+    try {
+      const pending = holder.ask<string>('hold', CEILING_PLUS_ONE_MS);
+      // An absence, so it needs a window; it only has to outlast the ~14 ms the
+      // overflow took by a wide margin.
+      await assertDoesNotCompleteWithin(pending, 150, 'an ask with a 2^31 ms deadline');
+      // Settled by a reply rather than left armed: the reply cancels the chain.
+      holder.tell('release');
+      expect(await pending).toBe('released');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('is armed as a chain whose links add up to the deadline', async () => {
+    const sys = newSystem('ask-long-chain');
+    const silent = sys.spawn(Silent, 'silent');
+    const parked: ParkedTimeout[] = [];
+    let outcome = 'pending';
+    try {
+      const settled = parkingLongTimeouts(parked, () => silent.ask<string>('hi', THIRTY_DAYS_MS)).then(
+        () => { outcome = 'replied'; },
+        (error: unknown) => { outcome = error instanceof AskTimeoutError ? 'timed out' : 'rejected'; },
+      );
+      expect(parked.map((link) => link.delayMs)).toEqual([MAX_TIMER_DELAY_MS]);
+
+      // 24.9 days pass: the first link elapses and arms the rest of the deadline.
+      parkingLongTimeouts(parked, () => { parked[0]!.callback(); });
+      await nextTurn();
+      expect(outcome).toBe('pending');
+      expect(parked.map((link) => link.delayMs)).toEqual([MAX_TIMER_DELAY_MS, THIRTY_DAYS_MS - MAX_TIMER_DELAY_MS]);
+
+      parkingLongTimeouts(parked, () => { parked[1]!.callback(); });
+      await settled;
+      expect(outcome).toBe('timed out');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('no deadline that is accepted today is refused', async () => {
+    // The HTTP layer refuses a deadline past the ceiling; an ask must not start
+    // to, because every one of these was a valid call before the chain.  Each is
+    // answered at once, which also cancels the chain it armed.
+    const sys = newSystem('ask-long-accepted');
+    const echo = sys.spawn(Echo, 'echo');
+    try {
+      for (const timeoutMs of [CEILING_PLUS_ONE_MS, THIRTY_DAYS_MS, Number.MAX_SAFE_INTEGER, Number.MAX_VALUE]) {
+        expect(await echo.ask<string>(`deadline ${timeoutMs}`, timeoutMs)).toBe(`deadline ${timeoutMs}`);
+      }
+    } finally {
+      await sys.terminate();
+    }
   });
 });

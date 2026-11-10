@@ -86,6 +86,21 @@ steuert `entityCount: 0` bei, statt den ganzen Aufruf scheitern zu
 lassen. Du bekommst eine vollständige Shard-Liste mit einer
 konservativen Zahl, keine Exception.
 
+### Wie lange eine Abfrage wartet
+
+`shards()` und `shardRefFor()` warten `actor-ts.sharding.shard-region-query-timeout`
+(5 s), oder was `withShardRegionQueryTimeoutMs` dem Typ mitgegeben hat, oder
+ein `timeoutMs`, das du als letztes Argument übergibst. Die Region behält eine
+wartende Abfrage eine Minute lang, oder so lange wie `actor-ts.actor.ask-timeout`
+oder der Query-Timeout des Typs, wenn einer davon länger ist — ein `timeoutMs`
+pro Aufruf sieht sie nicht. Ein `timeoutMs` über dieser Lebensdauer wird also
+nicht voll ausgewartet: Eine Antwort, die danach eintrifft, erreicht niemanden,
+und der Aufruf scheitert mit `AskTimeoutError`, wenn sein eigenes `timeoutMs`
+abläuft. Bei `shards()` gilt das auch für die Teilantwort des Koordinators, die
+nach 0,6 × `timeoutMs` kommt, wenn eine Region langsam ist. Wer länger als eine
+Minute warten will, erhöht den Query-Timeout des Typs statt des Arguments; die
+Lebensdauer steigt mit.
+
 ## Eine Ref auf einen Shard
 
 ```ts
@@ -96,6 +111,12 @@ Hat Shard 7 noch kein Zuhause, **platziert** dieser Aufruf ihn — genau
 das, was eine erste Nachricht an ihn auch getan hätte — und antwortet,
 sobald der Koordinator entschieden hat.
 
+Eine ID, die kein Shard des Typs sein kann — alles außer einer ganzen
+Zahl von 0 bis `numShards - 1` —, wird sofort mit einem `RangeError`
+abgelehnt, der den Bereich nennt. Kein Koordinator würde sie je
+platzieren; Warten endete nur in einem Timeout, der nichts über den Grund
+sagt.
+
 Ein Shard, der
 [leer passiviert wurde](/de/cluster/sharding/overview/#shards-passivieren-ebenfalls),
 braucht keine Sonderbehandlung: die Ref bleibt über die Lücke hinweg
@@ -104,7 +125,13 @@ Lokal passiert das schon beim Fragen, denn ein Handle auf einen nicht
 laufenden Actor wäre ein Handle auf nichts; bei einem Shard auf einem
 anderen Node stellt die Ref über dessen Region zu, die den Shard vor dem
 Weiterleiten materialisiert. `shardRefFor()` weckt einen lokalen Shard
-also sofort, einen entfernten das erste `tell`.
+also sofort, einen entfernten das erste `tell`. Die Ausnahmen sind ein lokaler
+Shard, der
+[nach einem Ausfall zurückwartet](/de/cluster/sharding/overview/#wenn-shards-und-entities-immer-wieder-ausfallen),
+und einer, der gerade stoppt, weil er übergeben oder passiviert wird: Dann
+leitet die Ref über die Region weiter, die festhält, was eintrifft, bis der
+Shard es annehmen kann, oder es dorthin schickt, wohin ein Handoff den Shard
+verlegt hat.
 
 Die Ref ist das echte Ding. Ein Shard ist ein Actor
 (`/system/cluster/sharding/region-counter/shard-7`), und die Ref trägt diesen Pfad als
@@ -130,6 +157,11 @@ Und um zu fragen, was ein Shard hält:
 const stats = await shard.ask<ShardStats>({ kind: 'sharding.GetShardStats' });
 // { shardId: 7, entityCount: 2, entityIds: ['user-42', 'user-99'] }
 ```
+
+`StartEntity` und `GetShardStats` sind Shard-Nachrichten: der Region statt
+einer Shard-Ref geschickt, werden sie nicht weitergeleitet, sondern
+abgelehnt — als Dead Letter, der die Region nennt, gezählt in
+`actor_unhandled_total{class="ShardRegion"}`.
 
 <Aside type="caution" title="`ask` auf eine *entfernte* Shard-Ref läuft in den Timeout">
   `ask` erzeugt eine Einweg-Antwort-Ref, und die ist von einem anderen
@@ -237,6 +269,144 @@ platziert".
 Greif stattdessen zu [`shards()`](#die-shards-auflisten), wenn du
 Entity-Zahlen oder lebende Refs brauchst, und zu `ShardMapChanged`, wenn
 du die Änderungen statt des letzten Stands willst.
+
+## Kann die Region schon routen?
+
+Eine Region registriert sich beim Coordinator, der auf dem Leader läuft —
+über einen eigenen Retry-Timer. Das ist ein anderer Schritt als der
+Cluster-Beitritt, und **Membership-Konvergenz ist kein Ersatz dafür**: ein
+vollständig konvergierter Cluster kann sehr wohl eine Region halten, die
+sich noch nicht registriert hat.
+
+```ts
+if (cluster.sharding.isRegistered('cart')) { /* der Coordinator hat die Region dieser Node bestätigt */ }
+```
+
+Synchron und gratis, wie [`shardMap`](#der-karte-folgen), und auf demselben
+Weg gespeist — aus einem `ShardRegionRegistered`-Event, das die Region
+dieser Node publisht, sobald der Coordinator sie bestätigt. `false` für
+einen Typ, den diese Node nie gestartet hat; für einen, dessen
+Registrierung wegen eines `numShards`-Mismatch abgelehnt wurde; für
+einen, dessen Region mitgeteilt bekam, dass sie [wegen Verstummens
+entfernt](/de/reference/configuration/#eine-verstummte-region-erkennen)
+wurde, bis ihre neue Registrierung bestätigt ist; und für einen, dessen
+Region gestoppt wurde. In jedem dieser Fälle platziert der Coordinator
+keinen Shard des Typs auf dieser Node — eine Readiness-Probe, die auf
+diesem Signal aufbaut, nimmt die Node also aus der Rotation, statt sie als
+bereit zu melden.
+
+Es ist die Sicht dieser Node auf ihre Registrierung, gebaut aus dem, was
+ihrer Region mitgeteilt wurde, und zwei Situationen sollte man genau
+kennen:
+
+- **Ein Leader-Wechsel macht es nicht `false`.** Jede Region registriert
+  sich beim Coordinator des neuen Leaders erneut, und die Node gilt
+  währenddessen weiter als registriert — eine Wahl nimmt also nicht alle
+  Nodes gleichzeitig aus der Rotation. Das gilt auch dann, wenn der neue
+  Leader für den Typ gar keinen Coordinator betreibt: Der Wert kann das
+  nicht von einer Neuregistrierung unterscheiden, die noch unterwegs ist.
+  Eine Ablehnung des alten Leaders verfällt mit ihm — vom Leader-Wechsel
+  an, bis der neue Coordinator antwortet, ist `registrationRefusal` `null`
+  und der Typ gilt als nicht registriert: wartend, nicht abgelehnt.
+- **Von einer Entfernung erfährt die Region durch die Mitteilung des
+  Coordinators**, einen einzelnen, unbestätigten Frame. Geht er verloren,
+  behält die Region ihre Shards, und der Wert bleibt `true`, während der
+  Coordinator keinen Eintrag für die Region mehr hält — bis ihr nächster
+  Beat den Coordinator erreicht, der einen Beat von einer Region, die er
+  nicht kennt, mit der Aufforderung beantwortet, sich zu registrieren. Das
+  Fenster ist ein `heartbeat-interval` plus ein Round-Trip, und die erneute
+  Registrierung nimmt die veralteten Kopien der umverteilten Shards auf der
+  Region herunter. Ohne Stale-Region-Erkennung wird nichts entfernt, ein
+  solches Fenster gibt es dann nicht.
+
+Diese Probe liefert das Framework mit. Nenne den Typ, und `Cluster.join`
+installiert für ihn einen Readiness-Check `shard-region:cart`, dessen
+`detail` sagt, welcher dieser Fälle ihn rot hält:
+
+```hocon
+actor-ts.sharding.healthcheck.names = ["cart"]
+```
+
+Für einen Typ, den nur der Code kennt, registrierst du
+`shardRegionRegistered(cluster, 'cart')` aus `actor-ts/management` selbst —
+siehe [Auf eine Shard-Region warten](/de/observability/management/health-checks/#auf-eine-shard-region-warten).
+
+```ts
+cluster.subscribe((event) => {
+  if (event instanceof ShardRegionRegistered) console.log(event.type, 'can route');
+});
+```
+
+Das Event ist node-lokal wie jedes Cluster-Event: es sagt etwas über die
+Region *dieser* Node. Wer die Registrierungen aller Nodes an einer Stelle
+sehen will, bridgt es — es entsteht auf genau einer Node, ist also ein
+sinnvoller Bridge-Kandidat:
+
+```ts
+cluster.eventStream.bridge(ShardRegionRegistered);
+```
+
+<Aside type="note" title="Keine Voraussetzung fürs Senden">
+  Eine Nachricht, die vor Abschluss der Registrierung gesendet wird, geht
+  **nicht** verloren. Die Region puffert alles, dessen Shard-Home unbekannt
+  ist, und fragt den Coordinator danach; sobald sie registriert ist, fragt
+  sie für alles bereits Gepufferte erneut — die Nachricht kommt also
+  verspätet an, statt verworfen zu werden. Dasselbe gilt für `shards()` und
+  `shardRefFor()`: eine Abfrage von vor der Registrierung wird erneut
+  gestellt, sobald der Coordinator die Region bestätigt.
+
+  Ablaufen kann ein `ask`, das um eine solche Nachricht herumliegt, oder
+  eine dieser Abfragen: jedes trägt seine eigene Frist, und die läuft,
+  während es wartet. Dies ist also das Signal, auf das man vor einem `ask`
+  mit knappem Budget wartet — und das, was eine Readiness-Probe melden
+  sollte — kein Gate vor einem `tell`.
+</Aside>
+
+## Wenn der Coordinator eine Region ablehnt
+
+Ein Coordinator lehnt eine Region ab, deren `numShards` nicht zu der Zahl
+passt, mit der er den Typ verwaltet. Das ist die Signatur eines Rolling
+Deployments, das die Einstellung auf einem Teil der Nodes geändert hat und
+auf dem Rest nicht — und es ist der eine Sharding-Fehler, der schlimmer
+wird, je länger er unbemerkt bleibt: die abgelehnte Region läuft weiter,
+nimmt weiter Traffic für den Typ an, und alles Angenommene **puffert**. Am
+Ende steht eine Node ohne Speicher.
+
+```ts
+const refusal = cluster.sharding.registrationRefusal('cart');
+if (refusal) {
+  console.error(
+    `refused: this node has ${refusal.regionNumShards},`
+    + ` the coordinator governs ${refusal.coordinatorNumShards}`,
+  );
+}
+```
+
+`null`, wenn es keine Ablehnung gibt, und geleert, sobald eine spätere
+Registrierung angenommen wird — ein Deployment, das den Mismatch behebt,
+meldet also keinen mehr — und wenn der Leader wechselt: Eine Ablehnung ist
+das Urteil des Coordinators, der sie ausgesprochen hat, und bis der
+Coordinator des neuen Leaders antwortet, gibt es keine zu melden. Dieselbe
+Ablehnung wird als Cluster-Event `ShardRegionRegistrationRefused` publisht,
+für Code, der reagieren statt pollen will.
+
+**Alarmieren sollte man auf den Zähler**, der ohne eigenen Code auskommt:
+
+```
+cluster_sharding_registrations_refused_total{type="cart",reason="num-shards-mismatch"}
+```
+
+Jeder Wert ungleich null ist einen Alarm wert — eine Ablehnung ist nie
+vorübergehend und löst sich nie von selbst. Sie folgt dem Label-Schema von
+`cluster_gossip_records_refused_total` und wird, wie jede Metrik hier, nur
+erfasst, wenn Metriken auf dem System aktiviert sind.
+
+<Aside type="caution" title="Die Log-Zeile ist nicht das Signal">
+  Die Ablehnung erzeugt zusätzlich eine `error`-Zeile, die beide Zahlen und
+  den zu setzenden HOCON-Key nennt. Diese Zeile ist für den, der ohnehin
+  gerade Logs liest; auf ihr lässt sich kein Alarm bauen — genau dafür gibt
+  es den Zähler und das Event.
+</Aside>
 
 ## Wohin als Nächstes
 

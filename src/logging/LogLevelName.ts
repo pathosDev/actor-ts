@@ -35,9 +35,16 @@ const BY_LEVEL: Readonly<Record<LogLevel, LogLevelName>> = {
  * for anything unrecognised so the caller decides what an unknown value
  * means — the system logger falls back to `info`, a sink's options
  * validator rejects it, and both are right in their own context.
+ *
+ * Own names only.  `BY_NAME` is an object literal, so a bare index also
+ * answers for `constructor` and `__proto__` — the two `Object.prototype`
+ * members that survive the lower-casing — and hands back a function or an
+ * object as a level.  The system logger then dropped every record, `error()`
+ * included, and with any sink configured the system refused to start.
  */
 export function parseLogLevel(raw: string): LogLevel | undefined {
-  return BY_NAME[raw.trim().toLowerCase() as LogLevelName];
+  const name = raw.trim().toLowerCase();
+  return Object.hasOwn(BY_NAME, name) ? BY_NAME[name as LogLevelName] : undefined;
 }
 
 /** The canonical lowercase name of a level. */

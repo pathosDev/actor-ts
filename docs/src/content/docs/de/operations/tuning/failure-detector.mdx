@@ -66,11 +66,24 @@ Ein Node stirbt, aber der Cluster reagiert erst nach 10+ Sekunden.
 Singletons / sharded Entities ziehen lange nicht um.
 ```
 
-**Ursache**: `unreachableAfterMs` + Downing-Strategy-Verzögerung
-ist zu lang. Der Cluster wartet, bevor er entscheidet.
+**Ursache**: Entweder wird der abgestürzte Node nie entfernt, oder
+sein Entfernen kommt spät. Ohne Downing-Strategy entfernt der
+Detector ein stummes Mitglied bei `downAfterMs` —
+`failure-detector.auto-down` ist per Default an —, das Failover
+dauert also `downAfterMs` plus die Übergabe; mit einer Strategy
+`unreachableAfterMs` plus deren `stable-after`. Unter dem Opt-out
+`auto-down = off` ohne Strategy parkt der Detector das Mitglied nur
+auf `unreachable`, und nichts bewegt sich, bis es zurückkommt oder
+jemand es downt.
 
-**Fix**: `unreachableAfterMs` und `downAfterMs` proportional
-senken.
+**Fix**: Zuerst sicherstellen, dass etwas den Node entfernt: der
+Default `failure-detector.auto-down = on` oder — für Produktion die
+richtige Wahl, weil der Default den Cluster bei einer echten
+Partition spaltet — eine Downing-Strategy wie `lease-majority`
+(`split-brain-resolver.active-strategy`, siehe
+[Downing-Strategien](/de/cluster/downing-strategies/)). Dann
+`unreachableAfterMs` und `downAfterMs` proportional senken, mit einer
+Strategy auch deren `stable-after`.
 
 ```ts
 failureDetector: {

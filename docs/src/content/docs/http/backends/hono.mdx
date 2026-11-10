@@ -81,6 +81,75 @@ const honoBackendOptions = HonoBackendOptions.create().withMaxBodyBytes(4 * 1024
 new HonoBackend(honoBackendOptions);
 ```
 
+The server-wide `actor-ts.http.server.max-content-length` sets the same cap
+without touching the backend, and it holds on **every** runtime this backend
+runs on: the body is read by this backend's own code, so Bun and Deno count it
+exactly as Node does — a declared length over it is refused before a byte is
+read, a chunked body is abandoned once it crosses it. A backend built with a
+different `withMaxBodyBytes` is refused at `bind()`, naming both.
+
+:::caution[Most of `actor-ts.http.server` reaches this backend on Node only]
+The connection-level bounds — `idle-timeout`, `header-timeout`,
+`request-timeout`, `max-connections` — are properties of a `node:http` server,
+and Hono owns no server of its own: it delegates to a runner per runtime.
+Only `@hono/node-server` hands its `node:http` server back, so on **Deno none
+of the four is installed at all**, and on **Bun only `idle-timeout`** is —
+through `Bun.serve`'s own `idleTimeout`, below. Nothing is written and nothing
+pretends to have been, and `bind()` names each one you set that did not take in
+a warning.
+
+`max-header-bytes` is the same split by another route. On Node the runner
+builds it into `@hono/node-server`'s server, and a request whose header block
+is larger never reaches a handler. `Bun.serve` and `Deno.serve` take no
+per-server header cap, so there it is reported not in effect and warned about
+too: Bun's cap is the process-wide `--max-http-header-size`, 16 KiB unless the
+process was started with another, and `Deno.serve` accepted a 256 KiB header
+block (deno 2.6.8).
+
+It is the same shape as the WebSocket transport frame cap on this page: a knob
+the runtime does not expose is reported as absent rather than approximated.
+Use the Fastify or Express backend where these bounds matter, or set them at
+the reverse proxy in front.
+
+On Bun, `idle-timeout` is `Bun.serve`'s own `idleTimeout`, and that is a
+**whole-connection** bound rather than a keep-alive window: a connection is
+closed once it has been silent that long, and a request whose handler has not
+written a byte yet counts as silent. So on Hono under Bun a long poll, an SSE
+stream with sparse events or a slow handler has to write within the idle
+timeout, or is closed without a response. It counts whole seconds — a value is
+rounded up, so it never becomes the `0` that disables it — and Bun checks it on
+a 4 s sweep, so a connection can be closed up to one sweep early. Above `255s`
+it fails `bind()`, naming the key: `Bun.serve` holds no more. An idle HTTP/2
+session is closed by it too.
+
+A value you set is written as given. Where it can cut a silent handler before
+the request deadline's `503` — its earliest cut, one sweep before the value,
+lands less than 2 s past the deadline — `bind()` names the key, the value and
+the deadline in a warning. Under the built-in 30 s deadline that is anything up
+to `32s`: `5s`, say, cuts a handler that has written nothing from 4 s on, at the
+latest by 8 s.
+
+Keep it positive. `0` turns it off, and on Hono under Bun it is the only bound
+on a request whose body stops arriving and on a connection left idle between
+requests, since none of the other three is installed: with `0` such a
+connection stays open until the client closes it. Bun itself still closes a
+connection whose request headers never complete, at about 12 s.
+
+Unset, it is not Bun's own 10 s, which closed any request silent for about
+12 s. The backend derives it from the server's longest request deadline —
+`actor-ts.http.request-timeout.deadline`, raised to the longest
+`requestTimeout()` in the route tree — so that the `503` is written before the
+connection is cut: **36 s for the built-in 30 s deadline**. The derived value is
+`4 × (⌈(deadline + 2 s) / 4⌉ + 1)` seconds, so it is not always longer than
+Bun's own: a configured deadline of 2 s or less derives 8 s, and since the
+configured deadline counts with no `requestTimeout()` in the tree, a plain
+handler that stays silent past 4 to 8 s is then cut without a response. Past a
+deadline of about 250 s the timeout is held at `255s`, which no longer covers
+it, and `bind()` says so in a warning. On Deno none of this exists:
+`Deno.serve` has no idle knob, and `idle-timeout` is reported not installed
+there.
+:::
+
 ## Security headers
 
 Every response this backend writes carries
@@ -116,7 +185,9 @@ backend.getApp().use('*', secureHeaders());
 
 Hono's middleware ecosystem is smaller than Express's but
 covers the common cases — CORS, security headers, JWT auth,
-basic auth, compression.
+basic auth, compression.  For JWT verification that behaves the
+same on every backend, use the portable
+[`JwtAuth`](/http/middleware/jwt/) instead of Hono's own.
 
 ## Peer dependency
 
@@ -167,6 +238,38 @@ import { Aside } from '@astrojs/starlight/components';
   Long-running actors don't fit.  Use for short-lived
   per-request actor patterns only.
 </Aside>
+
+## WebSockets and abort()
+
+`websocket()` routes work on every runtime this backend runs on, through
+Hono's own adapter for each. What a connection's `abort()` — and a server
+shutdown that cuts its sockets — does depends on the socket that adapter hands
+over. On **Bun** (`Bun.serve`'s `ServerWebSocket`) and on **Node**
+(`@hono/node-ws`, which hands over a `ws` socket) the socket has a hard close,
+so `abort()` drops the connection on the spot: the client sees it close with
+`1006` and no close frame, as on the Fastify and Express backends. On **Deno**
+the socket is a standard `WebSocket`, which has no hard close, so `abort()`
+falls back to a close frame carrying its code and reason. Measured on bun 1.4.2,
+bun 1.4.4, node v26.10.0 and deno 2.6.8.
+
+## TLS and HTTP/2
+
+Set on the server options like every backend
+(see [TLS and HTTP/2](/http/overview/#tls-and-http2)); Hono hands the pair
+to whichever runtime it is on:
+
+| Runtime | TLS | `http2: true` |
+| --- | --- | --- |
+| Bun | `Bun.serve({ tls })` | `Bun.serve({ http2: true })` — h2 through ALPN, HTTP/1.1 kept; Bun ≥ 1.4.1, refused on an older one |
+| Node | `https.createServer` under `@hono/node-server` | `http2.createSecureServer` with `allowHTTP1` |
+| Deno | `Deno.serve({ cert, key })` | negotiated whenever TLS is on; no knob, so the flag records intent |
+
+Client-certificate verification (`requestClientCert`) reaches the Bun and
+Node sockets; `Deno.serve` has no client-auth option, so on Deno it is
+**refused** at bind rather than accepted and not applied. It needs a `ca` to
+verify against: without one, bind refuses it on every runtime, because the
+TLS stack would otherwise check client certificates against the runtime's
+default trust store and admit any certificate a public CA issued.
 
 ## Where to next
 

@@ -133,9 +133,12 @@ Drei Dinge, die du wissen solltest, bevor du den Default wechselst:
   entscheidet die Overflow-Policy der Mailbox (`drop-head` /
   `drop-new` / `reject`), nicht der Router.
 
-Nur lokal.  Die Mailbox-Tiefe ist In-Process-Zustand, `ClusterRouter`
-hat deshalb keinen Smallest-Mailbox-Modus — siehe
-[Cluster-Router](/de/cluster/cluster-router/).
+Beide Router haben sie.  Der lokale liest die Mailboxen seiner Kinder
+direkt — sie liegen im selben Prozess.  Das `smallest-mailbox` des
+`ClusterRouter` kann das nicht und routet deshalb auf einer
+**gecachten** Tiefe, die jeder Routee-Node auf einem Hintergrund-Tick
+berichtet; siehe [Cluster-Router](/de/cluster/cluster-router/) dazu,
+was dieser Nachlauf kosten kann und was nicht.
 
 ## `Router.custom` — eigene Strategie mitbringen
 
@@ -191,24 +194,29 @@ const oneRoutee = (await system.actorSelection(
 oneRoutee.stop();
 ```
 
-Wenn ein Routee stoppt, beobachtet der Router ihn und… tut
-standardmäßig nichts im aktuellen Router des Frameworks.  Seine Ref
-bleibt im Pool — der Router entfernt sie nie — sodass Round-Robin
-ihm weiterhin etwa jede N-te Nachricht zuteilt, die bis zum Neustart
-des ganzen Routers in Dead Letters landet.  Für selbstheilende Pools
-wickle den Routee in eine Supervisor-Strategie, die bei Stop
-restartet (oder wickle den ganzen Pool in einen BackoffSupervisor).
+Wenn ein Routee stoppt, entfernt der Router — der jeden Routee
+`watch`t — seine Ref auf das `Terminated` aus dem Pool: Der Pool ist um
+einen Routee kleiner, und in die Lücke wird nichts geroutet.  Ein
+Routee, der *crasht*, ist der andere Fall: Die Default-Supervisor-
+Strategie startet ihn an Ort und Stelle neu, und der Pool ändert sich
+nie.  Für einen Pool, der nach einem Stop heilen statt schrumpfen soll,
+mache den Routee zu einem `BackoffSupervisor` um den Worker —
+`Router.roundRobin(4, BackoffSupervisor.factory({ child: Worker }))` —
+sodass der Slot nach einem Backoff wieder gefüllt wird; siehe
+[BackoffSupervisor](/de/patterns/backoff-supervisor/).
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="`size = 0` ist ein Bug">
+<Aside type="note" title="`size` wird beim Factory-Aufruf validiert">
   ```ts
-  Router.roundRobin(0, Worker);   // ← kompiliert, aber jede Nachricht geht nirgendwohin
+  Router.roundRobin(0, Worker);   // ← throws OptionsError: Router: size must be an integer >= 1 (got 0)
   ```
-  Ein Pool mit null Routees gibt aus der Strategie ein leeres
-  Iterable zurück, jedes `tell` wird also verworfen (still — kein
-  Dead-Letter-Routing).  Das Framework validiert `size > 0` nicht;
-  sollten wir.  Bis dahin liegt die Verantwortung bei dir.
+  Ein Pool mit null Routees würde aus jeder Strategie ein leeres
+  Iterable zurückgeben und jedes `tell` still verwerfen, deshalb läuft
+  die Größenprüfung im `Router.roundRobin(...)`-Aufruf selbst — nicht
+  in `preStart` —, und der Stack zeigt noch auf den Aufruf, der sie
+  falsch hatte.  Dieselbe Prüfung deckt jede Factory ab,
+  `scatterGatherFirstCompleted` eingeschlossen.
 </Aside>
 
 <Aside type="caution" title="Routees können nicht sagen, wer eine Nachricht gesendet hat">

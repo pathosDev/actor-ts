@@ -1,4 +1,10 @@
-import { redactUrlCredentials } from '../util/RedactUrlCredentials.js';
+import { armChainedTimeout, type Cancellable, unreferencedHostTimers } from '../Scheduler.js';
+import { MAX_TIMER_DELAY_MS } from '../util/Constants.js';
+import {
+  redactErrorCredentials,
+  redactParsedUrlCredentials,
+  redactUrlCredentials,
+} from '../util/RedactUrlCredentials.js';
 import {
   DEFAULT_HTTP_CLIENT_MAX_REDIRECTS,
   DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES,
@@ -47,6 +53,26 @@ const BODY_DESCRIBING_HEADERS: readonly string[] = [
 
 /** The only schemes a redirect may land on — per the Fetch spec, as the platform enforces. */
 const FOLLOWABLE_SCHEMES: ReadonlySet<string> = new Set(['http:', 'https:']);
+
+/**
+ * What the runtime threw, with every credential in it masked: an `Error`
+ * through {@link redactErrorCredentials}, a thrown string through the scan.
+ * Only for what the platform raises — this client's own errors name parsed
+ * URLs, masked exactly, and the scan would misread an `@` past their host.
+ */
+function redactedFailure(error: unknown): unknown {
+  if (error instanceof Error) return redactErrorCredentials(error);
+  return typeof error === 'string' ? redactUrlCredentials(error) : error;
+}
+
+/** `location` resolved against the URL whose response sent it, or `undefined` when it does not parse. */
+function resolvedLocation(location: string, base: URL): URL | undefined {
+  try {
+    return new URL(location, base);
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * One request.  The four bounds it may override come from
@@ -115,7 +141,11 @@ export class HttpRedirectError extends Error {
     message: string,
     /** URL whose response redirected, with any inline credentials masked. */
     readonly url: string,
-    /** Redirect target that was refused, as sent, with credentials masked. */
+    /**
+     * Redirect target that was refused, with credentials masked: resolved
+     * against `url`, as the next hop would have been, or as sent when it does
+     * not parse.
+     */
     readonly location: string,
     /** Hops already followed when the refusal happened. */
     readonly hops: number,
@@ -187,7 +217,13 @@ export class HttpClient {
     // deadline" and does not silently reinstate the fallback.
     const timeoutMs = request.timeoutMs ?? this.settings.defaultTimeoutMs;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    if (timeoutMs > 0) {
+    let chain: Cancellable | null = null;
+    if (timeoutMs > MAX_TIMER_DELAY_MS) {
+      // One host timer fires a deadline past its ceiling (~24.9 days) early —
+      // after 1 ms on Bun and Node, aborting the request almost as it is sent —
+      // and both validators admit any finite deadline, so it is a chain.
+      chain = armChainedTimeout(() => controller.abort(), timeoutMs, unreferencedHostTimers);
+    } else if (timeoutMs > 0) {
       timer = setTimeout(() => controller.abort(), timeoutMs);
       (timer as { unref?: () => void }).unref?.();
     }
@@ -202,13 +238,7 @@ export class HttpClient {
         body: this.serialiseBody(request.body),
       };
       for (let hops = 0; ; hops++) {
-        const res = await fetch(current, {
-          method: hop.method,
-          headers: hop.headers,
-          body: hop.body as unknown as BodyInit | null | undefined,
-          signal: controller.signal,
-          redirect: 'manual',
-        });
+        const res = await this.fetchHop(current, hop, controller.signal);
         const location = res.headers.get('location');
         // A 3xx without a Location is the final answer, exactly as it is for
         // the platform — and so is any non-redirect status.  `'manual'` keeps
@@ -225,6 +255,32 @@ export class HttpClient {
       }
     } finally {
       if (timer) clearTimeout(timer);
+      chain?.cancel();
+    }
+  }
+
+  /**
+   * One hop through the platform's `fetch`, never followed by it.
+   *
+   * What `fetch` throws is the runtime's own error, and it names the URL it
+   * was handed, credential included: Node refuses a URL with a userinfo
+   * outright, with a `TypeError` whose message is that URL, and Bun attaches
+   * it as the `path` of a failed connection.  None of this client's masking
+   * ran on it, so it is masked here, before it propagates (#1458).  An error
+   * with nothing to mask — the abort the deadline causes among them — comes
+   * back as itself.
+   */
+  private async fetchHop(url: URL, hop: RequestHop, signal: AbortSignal): Promise<Response> {
+    try {
+      return await fetch(url, {
+        method: hop.method,
+        headers: hop.headers,
+        body: hop.body as unknown as BodyInit | null | undefined,
+        signal,
+        redirect: 'manual',
+      });
+    } catch (error) {
+      throw redactedFailure(error);
     }
   }
 
@@ -247,6 +303,13 @@ export class HttpClient {
    * Every rejection here happens before the hop is issued.  A check on where
    * the chain ended up would be no defence at all: by then the internal host
    * has been contacted, and contacting it is the side effect.
+   *
+   * Both URLs a refusal names are ones this client parsed — the hop it made,
+   * and the `Location` resolved against it as the next hop would be — so their
+   * credentials are known exactly and are all that is masked.  The scan for a
+   * string nothing parsed reads up to the last `@` as userinfo and would name
+   * `https://registry.npmjs.org/@types%2fnode` as `https://***@types%2fnode`
+   * (found while #1458); only a `Location` that does not parse is left to it.
    */
   private followTarget(
     status: number,
@@ -256,8 +319,9 @@ export class HttpClient {
     maxRedirects: number,
     hops: number,
   ): URL {
-    const from = redactUrlCredentials(current.toString());
-    const to = redactUrlCredentials(location);
+    const target = resolvedLocation(location, current);
+    const from = redactParsedUrlCredentials(current);
+    const to = target === undefined ? redactUrlCredentials(location) : redactParsedUrlCredentials(target);
     if (redirect === 'error') {
       throw new HttpRedirectError(
         `${from} answered ${status} redirecting to ${to}, and redirect is 'error'.`,
@@ -270,10 +334,7 @@ export class HttpClient {
         from, to, hops,
       );
     }
-    let target: URL;
-    try {
-      target = new URL(location, current);
-    } catch {
+    if (target === undefined) {
       throw new HttpRedirectError(
         `${from} answered ${status} with an unparseable Location: ${to}`,
         from, to, hops,
@@ -351,7 +412,7 @@ export class HttpClient {
    */
   private async readCappedBody(
     response: Response,
-    url: string | URL,
+    url: URL,
     maxBytes: number,
     controller: AbortController,
   ): Promise<Uint8Array> {
@@ -361,12 +422,14 @@ export class HttpClient {
     const chunks: Uint8Array[] = [];
     let total = 0;
     for (;;) {
-      const chunk = await reader.read();
+      const chunk = await this.nextChunk(() => reader.read());
       if (chunk.done) break;
       total += chunk.value.byteLength;
       if (total > maxBytes) {
         controller.abort();
-        throw new HttpResponseTooLargeError(redactUrlCredentials(String(url)), maxBytes);
+        // The URL of the hop that answered, as this client parsed it: its
+        // credential is masked exactly and an `@` in its path is kept.
+        throw new HttpResponseTooLargeError(redactParsedUrlCredentials(url), maxBytes);
       }
       chunks.push(chunk.value);
     }
@@ -378,6 +441,21 @@ export class HttpClient {
       offset += part.byteLength;
     }
     return buffer;
+  }
+
+  /**
+   * The next chunk of a body, as `read` hands it over.  A connection that
+   * breaks mid-body fails the read with the runtime's own error, which on Bun
+   * carries the request URL as its `path` — so it is masked the way
+   * {@link fetchHop} masks one.  Generic over the result, because the DOM
+   * library and the runtimes' own type the reader's answer differently.
+   */
+  private async nextChunk<R>(read: () => Promise<R>): Promise<R> {
+    try {
+      return await read();
+    } catch (error) {
+      throw redactedFailure(error);
+    }
   }
 
   /** Release an intermediate 3xx body; a failure here is never the caller's problem. */

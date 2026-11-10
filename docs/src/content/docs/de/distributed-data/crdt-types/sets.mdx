@@ -125,6 +125,80 @@ s.add('node-b', { sku: 'book-1', price: 12 });
 Die Identity-Funktion bestimmt die **Deduplikation**; die
 Tag-Mechanik arbeitet pro Add unabhängig davon.
 
+#### Identität innerhalb von DistributedData
+
+Eine Identity-Funktion ist ein Closure und reist deshalb nie über
+die Leitung.  Eine Replika, die einen Key aus dem Gossip eines
+Peers, aus einer Quorum-Antwort oder aus ihrem Durable-Record
+materialisiert, muss also *gesagt bekommen*, welche sie nehmen
+soll — und der einzige Ort, an dem dieses Wissen liegt, ist die
+`factory`, die du `update` ohnehin schon übergibst:
+
+```ts
+const emptyCart = () => ORSet.empty<CartItem>({ identity: (i) => i.sku });
+dd.update('cart-42', emptyCart, (c) => c.add(dd.selfReplicaId(), item));
+```
+
+Übergib dieselbe Factory bei jedem `update` für einen Key, und
+die Replika legt jeden Wert, den sie für diesen Key dekodiert,
+unter deiner Identität ab — einschließlich Einträgen, die ein
+Peer unter der Standard-Identität geschrieben hat.  Die werden
+umgeschlüsselt und in den Eintrag gemergt, zu dem sie gehören,
+statt als Duplikate daneben stehen zu bleiben: jedenfalls jedes
+Element, das dein Callback benennen kann.  Was mit einem
+passiert, das er nicht benennen kann, steht in der letzten Notiz
+weiter unten.
+
+Zwei Grenzen sind es wert, bekannt zu sein (#766):
+
+- **Das erste `update` für einen Key ist das, was sie beibringt.**
+  Ein Key, der per Gossip ankam oder nach einem Neustart aus
+  einem `durableStore` zurückkam, bleibt bis dahin auf der
+  Standard-Identität — ein blankes `dd.get('cart-42')` direkt
+  nach dem Start kann dir also ein Set liefern, das per
+  `JSON.stringify` dedupliziert.  Setz das `update` vorher ab,
+  wenn das eine Rolle spielt.
+- **Verschachtelung endet nach einer Ebene** (#1421).  Eine
+  `ORMap` stellt ihre eigene Key-Identität wieder her, die CRDTs
+  *in* ihr aber nicht: weder der Frame noch ein leeres Template
+  sagt, welche ihre sein soll — eine `ORMap` von Warenkörben
+  stellt also den Tenant-Key wieder her und lässt jeden Warenkorb
+  per `JSON.stringify` deduplizieren.  Die äußere Funktion an das
+  innere Set weiterzureichen ist nicht die fehlende Hälfte und
+  wäre schlimmer als die Lücke — sie schlüsselt jedes Item nach
+  einem Feld, das Items nicht haben, und klappt einen ganzen
+  Warenkorb auf einen Eintrag zusammen —, deshalb ist die Grenze
+  festgehalten statt geraten.
+
+Beachte außerdem: deine Identity-Funktion läuft jetzt auch über
+Werte, die ein Peer geschickt hat, nicht nur über solche, die
+dein Prozess gebaut hat.  Ein Callback, der die Form seines
+Arguments voraussetzt, sieht Daten, die er nicht erzeugt hat —
+und was eine Verweigerung kostet, hängt davon ab, wann das
+Element hineingekommen ist:
+
+- **Ein Frame, der ankommt, wenn die Identität bereits bekannt
+  ist, wird verworfen.**  Wirft der Callback bei irgendeinem
+  Element darin, ist der ganze Wert nicht dekodierbar, und jede
+  Wire-Aufrufstelle behandelt das als „diesen einen verwerfen“ —
+  der Sender bietet ihn beim nächsten Gossip-Tick erneut an, es
+  geht also nichts verloren, was je akzeptiert war.
+- **Ein Element, das schon in der View liegt, behält den Key,
+  unter dem es hereinkam.**  Ein Wert, der per Gossip ankam oder
+  aus einem `durableStore` zurückgelesen wurde, bevor das erste
+  `update` lief, wurde auf der Standard-Identität dekodiert und
+  kann deshalb bereits ein Element enthalten, das dein Callback
+  verweigert.  Das Umschlüsseln beim ersten `update`
+  schlüsselt dann jedes Element um, das der Callback benennen
+  *kann*, und lässt das verweigerte genau dort, wo es ist.  Das
+  Element wird nicht verworfen, der Key verliert seine Identität
+  nicht, und spätere `update`s deduplizieren wie gewohnt nach
+  deiner Regel; die Replika loggt eine Warnung, die den Key
+  nennt.  Der einzige sichtbare Effekt ist, dass das Set gemischt
+  geschlüsselt ist, bis dieses Element verschwindet — was,
+  da `remove` es mit demselben Callback benennen müsste, der es
+  verweigert, heißt: solange der Key lebt.
+
 ## Auswahl zwischen beiden
 
 | Frage | Typ |

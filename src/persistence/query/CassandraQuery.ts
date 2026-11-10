@@ -98,6 +98,13 @@ export class CassandraQuery extends InMemoryQuery {
     // fault, not a query failure, so it surfaces as itself instead of as a
     // JournalError blaming the read (security audit #614).
     const qualified = this.cassandra.qualifiedTagIndexTable;
+    // This path reads the journal's client itself, the one read that does not
+    // go through a journal method that opens the journal first.  A journal that
+    // never started has no client yet, and one whose start failed has shut its
+    // client down and dropped it, so open it here (#1473).  Outside the try, as
+    // in the journal's own reads: a failed open or a closed journal surfaces as
+    // itself, not as a failed read.
+    await this.cassandra.start();
     let response;
     try {
       response = await this.access.client.execute(

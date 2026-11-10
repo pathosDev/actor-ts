@@ -50,6 +50,41 @@ interface TcpSocketOptionsType extends BrokerCommonOptionsType {
 }
 ```
 
+The same settings come from HOCON, under `actor-ts.io.broker.tcp` — explicit
+options override HOCON, which overrides the built-in defaults:
+
+```hocon
+actor-ts.io.broker.tcp {
+  host            = "metrics-collector.example.com"
+  port            = 8125
+  framing {
+    kind           = "lines"   # bytes (the default) | lines | length-prefixed
+    delimiter      = "\n"      # lines only; the default
+    max-line-bytes = 64K       # lines only; default 1M
+    # max-frame-bytes = 16M    # length-prefixed only; the default
+  }
+  idle-timeout    = 90s        # default 0 = off
+  connect-timeout = 10s        # default 0 = off
+  keep-alive      = 45s        # the default; 0 = off
+}
+```
+
+Each leaf is the kebab-case of its field.  The durations drop their unit
+suffix — `idle-timeout`, `connect-timeout` and `keep-alive`, so `90s` and a
+bare millisecond count read alike — and the two framing caps are sizes that
+keep theirs: `max-line-bytes` and `max-frame-bytes`, where `64K` is 65 536
+bytes.  A `framing` block names its `kind`, and only that strategy's leaves
+take effect.  Those four leaves are all it takes: any other one stops the
+actor at start with a `ConfigError` that names it and lists the four, rather
+than leaving a cap at its default.  That covers every way a migration by hand
+spells a cap — `max-frame-len`, `max-frame` with the unit dropped, the field
+name `maxFrameBytes`, and their line twins — and the old `maxLineLen` /
+`maxFrameLen` are refused naming their replacement.  `target` names an actor
+and has no leaf.  The
+reconnect, circuit-breaker and outbound-buffer leaves every broker shares go
+under the same root — see
+[BrokerActor base](/io/broker-actor-base/#reconnect-with-backoff).
+
 ### Inbound messages
 
 Inbound frames are pushed straight to the `target` actor you wire
@@ -135,21 +170,21 @@ strategies ship:
 
 ```ts
 type TcpFraming =
-  | { kind: 'bytes' }                                          // default — raw chunks
-  | { kind: 'lines'; delimiter?: string; maxLineLen?: number }
-  | { kind: 'length-prefixed'; maxFrameLen?: number };
+  | { kind: 'bytes' }                                            // default — raw chunks
+  | { kind: 'lines'; delimiter?: string; maxLineBytes?: number }
+  | { kind: 'length-prefixed'; maxFrameBytes?: number };
 ```
 
 - **`bytes`** (default) — every chunk delivered raw; the target
   handles byte-stream semantics itself.
 - **`lines`** — split on `delimiter` (default `'\n'`); each frame
-  arrives as a `string`.  `maxLineLen` caps a line in **bytes**, the
+  arrives as a `string`.  `maxLineBytes` caps a line, the
   un-terminated one included — that second half is what bounds the
   re-assembly buffer against a peer that never sends a delimiter.
   Bytes, not characters: one CJK character costs three of them.
 - **`length-prefixed`** — the first **4 bytes** (big-endian
   `uint32`) carry the payload size; the prefix width is fixed, only
-  `maxFrameLen` is configurable.
+  `maxFrameBytes` is configurable.
 
 With `lines` or `length-prefixed`, each message the target receives
 is **one full frame**, not an arbitrary chunk.
@@ -164,7 +199,13 @@ throws an `OptionsError` before a socket exists rather than at the
 first inbound byte.  A cap that is not a positive integer is
 rejected, and so is an **empty `delimiter`** — it matches at every
 offset without consuming anything, which is not a slow framer but a
-wedged process.
+wedged process.  So is a `kind` other than the three, which would
+otherwise drop the framing and its cap together, and so is a framing
+that still carries `maxLineLen` or `maxFrameLen`, the names the two
+caps had before they were renamed.  The compiler catches those only
+in an object literal; one parsed from JSON or built in plain
+JavaScript reaches the actor with the old field on it, and nothing
+reads that field.
 
 Both actors read the same strategies from the same code — on
 `TcpServerActor` the chosen framing is applied **per accepted
@@ -212,6 +253,28 @@ interface TcpServerOptionsType extends BrokerCommonOptionsType {
 With `bindPort: 0` the OS picks the port — read it back from the
 actor's `boundPort` once it is bound.  `connectionCount` reports
 the live connections.
+
+From HOCON, the listener reads its own root,
+`actor-ts.io.broker.tcp-server`:
+
+```hocon
+actor-ts.io.broker.tcp-server {
+  bind-host       = "0.0.0.0"  # the default
+  bind-port       = 9000       # required; 0 lets the OS pick
+  max-connections = 1024       # admission cap; unset = unlimited
+  framing {
+    kind           = "lines"
+    delimiter      = ${?ACTOR_TS_TCP_SERVER_DELIMITER}            # lines only; unset = "\n"
+    max-line-bytes = 64K
+    # max-frame-bytes = ${?ACTOR_TS_TCP_SERVER_MAX_FRAME_BYTES}   # length-prefixed only; unset = 16M
+  }
+}
+```
+
+`framing` takes the same leaves as the client's.  `tls` has no leaf — a
+config file is the wrong place for a private key — and neither has `target`.
+The shared reconnect, circuit-breaker and outbound-buffer leaves go under this
+root too, `outbound-buffer` defaulting to `0` here (see [Bounds](#bounds)).
 
 ### Inbound messages
 

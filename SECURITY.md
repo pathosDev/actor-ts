@@ -83,12 +83,54 @@ boundary specific rather than obvious, so it is written out here.
 - Anything requiring an attacker who already has code execution in the
   actor system's own process, or read access to its configuration and
   key material.
+- A worker thread of the mesh is in-process code the operator loaded,
+  so a per-worker inbound budget on the broker is out of scope: bounding
+  what a buggy worker can send is robustness, not an attacker boundary.
 - Denial of service by an operator against their own system — an
   unbounded mailbox that a local caller fills, a dispatcher starved by
   application code.
 - Vulnerabilities in the example applications under `examples/`, which
   are illustrations and are not published to npm. Report them, but as
   ordinary bugs.
+
+### Out of scope — the event journal at rest
+
+`encryption()` and `integrity()` on a `PersistentActor` protect its
+snapshots only: every journal stores events as plaintext JSON, nothing
+detects an event edited in place, and database-side controls —
+transparent data encryption, an encrypted volume, access control — are
+the only protection for events today.
+
+That is a decision rather than a gap awaiting a fix
+([#1430](https://github.com/pathosDev/actor-ts/issues/1430)): at-rest
+confidentiality and integrity of the event journal are delegated to the
+database, as a documented non-goal. The two hooks cover snapshots and
+durable state only — a `PersistentActor`'s snapshots and a
+`DurableStateActor`'s whole state, on the object-storage stores that
+honour them; every other shipped snapshot or durable-state store refuses
+an actor that asks it for either, at start
+([#960](https://github.com/pathosDev/actor-ts/issues/960)). No journal
+is asked about either hook, so nothing refuses or warns on the journal's
+behalf.
+
+The database can carry the confidentiality half. The integrity half
+stays uncovered, because transparent data encryption is not tamper
+detection: it protects a disk or a backup that leaves the building, and
+an edit made through the database is encrypted and decrypted like any
+other write. Replay does refuse a stream whose shape is broken — out of
+order, holed, outside the window it asked for — with a
+`JournalIntegrityError`, but nothing authenticates what an event says:
+an event edited in place by anyone who can write to the database is
+folded on recovery as written. What stands between that edit and a
+recovered state is the database's own access control and auditing;
+nothing in the framework detects it.
+
+So an event that reads as plaintext in the database, and an edited
+event that recovers without an error, are the documented behaviour and
+not vulnerabilities. Still in scope: a page, a JSDoc comment or an
+error message that says these hooks protect events — a documented
+mitigation that does not deliver what it says — and anything that lets
+the framework itself read or write another entity's stream.
 
 ### In scope — everything the mitigations promise
 
@@ -102,7 +144,9 @@ boundary specific rather than obvious, so it is written out here.
 - Missing or bypassable bounds on untrusted input — frame-size limits,
   header limits, decompression ratios.
 - Cryptographic mistakes: predictable identifiers where unpredictability
-  is load-bearing, key handling, at-rest encryption and key rotation.
+  is load-bearing, key handling, the at-rest encryption and integrity
+  that `encryption()` and `integrity()` promise for snapshots and durable
+  state, and key rotation.
 - Persistence: reading or writing another entity's stream, replay of a
   fenced writer, injection through a persistence backend.
 - Anything that lets a cluster member escalate beyond what membership is
@@ -116,41 +160,62 @@ relying on when they install a published version:
 | Gate | Where | What it catches |
 | --- | --- | --- |
 | **CodeQL** (`javascript-typescript`) | `.github/workflows/codeql.yml` — pull requests, pushes to `main`/`develop`, weekly | Injection, path traversal, unsafe deserialization and the rest of the `security-extended` query suite. Results land in the repository's code-scanning alerts. |
-| **`bun audit`** | `.github/workflows/package-health.yml` — same triggers plus a weekly cron | Published advisories against the versions `bun.lock` actually pins. |
+| **`bun audit`** | `.github/workflows/package-health.yml` — same triggers plus a weekly cron | Published advisories against the versions the Bun lockfiles CI installs actually pin: `bun.lock`, `docs/bun.lock` and `devtools-ui/bun.lock`. |
 | **SHA-pinned actions** | `tests/unit/ci/WorkflowHygiene.test.ts` | A mutable action tag being repointed under a job that holds a publishing credential. |
-| **npm provenance** | `.github/workflows/publish.yml` | Ties the published tarball to the workflow run and commit that built it. |
+| **npm provenance** | `.github/workflows/publish.yml` | Ties the published tarball to the workflow run and commit that built it. The tarball is built, tested and packed in a job holding no credential, then published from a job that neither checks out the repository nor installs anything — so a compromised dependency cannot reach the token that publishes it (#703). The publishing job runs in the `npm` environment, which admits only a `v*` tag or `main`, needs a maintainer's approval, and is the environment the npm Trusted Publisher is registered against — so write access to the repository alone cannot publish (#704). |
 | **CycloneDX SBOM** | `.github/workflows/publish.yml` | Attached to every GitHub Release, so a consumer can diff the closure without reconstructing it. |
 
-`bun audit` reads `bun.lock`. GitHub's dependency graph does not resolve
-that file — it records the unresolved ranges from `package.json` — which
-is why Dependabot's alerts on this repository have only ever come from
-the npm lockfiles under `examples/`, and why `actions/dependency-review-action`
+`bun audit` reads a lockfile, and the job runs it over each Bun lockfile
+CI installs: `bun.lock`, the shipped closure; `docs/bun.lock`, which the
+documentation build installs; and `devtools-ui/bun.lock`, which the
+DevTools UI build installs inside the publishing job. The two nested
+ones were read by nothing until
+[#1413](https://github.com/pathosDev/actor-ts/issues/1413) and carried
+nine high advisories between them, all with in-range fixes, while the
+root gate stayed green; `tests/unit/ci/SecurityPolicy.test.ts` now
+fails when a workflow installs a Bun closure the job does not audit.
+GitHub's dependency graph does not resolve any of those files — it
+records the unresolved ranges from `package.json` — which is why
+Dependabot's alerts on this repository have only ever come from the npm
+lockfiles under `examples/`, and why `actions/dependency-review-action`
 is deliberately *not* used here.
 
 ## Accepted advisories
 
-The audit gate fails on any **new** high or critical advisory. The
-advisories below were already present when the gate was introduced and
-are suppressed by ID in the `lint:audit` script so that the gate could
-land green rather than land red and be ignored. They are not dismissed —
-[#779](https://github.com/pathosDev/actor-ts/issues/779) is the
-dependency refresh that removes both the advisories and these entries.
+The audit gate fails on any high or critical advisory, and **there are
+no accepted ones**: the `lint:audit` script carries no `--ignore` flag.
 
-| Advisory | Package | Severity | Reached through |
-| --- | --- | --- | --- |
-| [GHSA-83w8-p2f5-377r](https://github.com/advisories/GHSA-83w8-p2f5-377r) | `@fastify/static` | high | direct dependency |
-| [GHSA-mh99-v99m-4gvg](https://github.com/advisories/GHSA-mh99-v99m-4gvg) | `brace-expansion` | high | `@fastify/static › glob › minimatch` |
-| [GHSA-rgw5-rvv9-x895](https://github.com/advisories/GHSA-rgw5-rvv9-x895) | `brace-expansion` | high | `@fastify/static › glob › minimatch` |
-| [GHSA-3jxr-9vmj-r5cp](https://github.com/advisories/GHSA-3jxr-9vmj-r5cp) | `brace-expansion` | high | `@fastify/static › glob › minimatch` |
-| [GHSA-4c8g-83qw-93j6](https://github.com/advisories/GHSA-4c8g-83qw-93j6) | `fast-uri` | high | `fastify › fast-json-stringify › ajv` |
-| [GHSA-7p8r-x3mc-p8w7](https://github.com/advisories/GHSA-7p8r-x3mc-p8w7) | `fast-uri` | high | `fastify › fast-json-stringify › ajv` |
-| [GHSA-v2hh-gcrm-f6hx](https://github.com/advisories/GHSA-v2hh-gcrm-f6hx) | `fast-uri` | high | `fastify › fast-json-stringify › ajv` |
-| [GHSA-q3j6-qgpj-74h6](https://github.com/advisories/GHSA-q3j6-qgpj-74h6) | `fast-uri` | high | `fastify › fast-json-stringify › ajv` |
-| [GHSA-v39h-62p7-jpjc](https://github.com/advisories/GHSA-v39h-62p7-jpjc) | `fast-uri` | high | `fastify › fast-json-stringify › ajv` |
-| [GHSA-c96f-x56v-gq3h](https://github.com/advisories/GHSA-c96f-x56v-gq3h) | `find-my-way` | high | `fastify` |
-| [GHSA-96hv-2xvq-fx4p](https://github.com/advisories/GHSA-96hv-2xvq-fx4p) | `ws` | high | `@fastify/websocket`, `@hono/node-ws` |
+It used to. The gate landed with a baseline of eleven suppressed
+advisory IDs — every high advisory the lockfile carried at the time —
+so that it could land green rather than land red and be ignored, with
+[#779](https://github.com/pathosDev/actor-ts/issues/779) tracking the
+refresh that would remove them. Six more were published upstream
+afterwards, all against `fast-uri` and all against a lockfile nobody
+had touched; those were never suppressed, and the gate did what a gate
+is for and went red.
 
-`tests/unit/ci/SecurityPolicy.test.ts` asserts that this table and the
-`lint:audit` ignore list stay identical, so an advisory cannot be
-silenced without appearing here, and an entry cannot linger here after
-the suppression is dropped.
+The refresh has now landed and clears both halves. All nineteen high
+advisories in the closure turned out to be reachable by an **in-range**
+bump:
+`@fastify/static`, `brace-expansion`, `fast-uri` (both major lines),
+`find-my-way` and `ws` all had a fixed release inside the range
+`package.json` already declared. So only `bun.lock` moved. No
+dependency range was widened and no `overrides` entry was added, so a
+consumer installing `actor-ts` resolves the fixed versions of the
+runtime closure — `fastify`, `ts-pattern` and their transitives — from
+the published manifest exactly as this repository does. That claim
+stops at the runtime closure. The optional peers' ranges were not
+raised, because a peer floor is a consumer-visible change: `ws` is
+still declared as `^8.0.0`, a range that admits releases carrying a
+published high advisory fixed only in 8.21.0, so a consumer pinned to
+one of them resolves it whatever this repository's lockfile says, and
+their own audit is what tells them. (The advisory is deliberately not
+named here: an ID under this heading reads as an accepted one.)
+
+If a suppression is ever needed again it belongs back here as a table —
+advisory, package, severity, and the path it is reached through — and
+adding one is a deliberate act, not a way to get a change through.
+`tests/unit/ci/SecurityPolicy.test.ts` asserts that this section and the
+`lint:audit` ignore list name the same set of advisories, so one cannot
+be silenced without appearing here, and a row cannot linger here after
+its suppression is dropped.

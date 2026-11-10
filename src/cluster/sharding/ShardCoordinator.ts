@@ -2,13 +2,26 @@ import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
-import { SHARD_MAP_PUBLISH_DELAY_MS } from '../Constants.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import {
+  CONFLICT_RELEASE_MAX_ATTEMPTS,
+  CONFLICT_RELEASE_RETRY_INTERVAL_MS,
+  COORDINATOR_REGISTRATION_GOSSIP_ROUNDS,
+  SHARD_MAP_PUBLISH_DELAY_MS,
+} from '../Constants.js';
+import { DEFAULT_REGISTER_RETRY_INTERVAL_MS } from './ShardingOptions.js';
+import {
+  DEFAULT_ACQUIRE_RETRY_INTERVAL_MS,
+  DEFAULT_COORDINATOR_STATE_LOAD_TIMEOUT_MS,
   DEFAULT_HAND_OFF_TIMEOUT_MS,
+  DEFAULT_REBALANCE_ABSOLUTE_LIMIT,
   DEFAULT_REBALANCE_INTERVAL_MS,
+  DEFAULT_REBALANCE_RELATIVE_LIMIT,
+  DEFAULT_REGION_STALE_AFTER_MS,
 } from './ShardCoordinatorOptions.js';
 import type { ShardCoordinatorOptions, ShardCoordinatorOptionsType } from './ShardCoordinatorOptions.js';
 import { LeaderChanged, MemberRemoved } from '../ClusterEvents.js';
+import type { Member } from '../Member.js';
 import { NodeAddress, type NodeAddressData } from '../NodeAddress.js';
 import type { EnvelopeMessage } from '../Protocol.js';
 import { RemoteActorRef } from '../RemoteActorRef.js';
@@ -27,10 +40,13 @@ import type {
   GetRememberedEntities,
   GetShardHome,
   HandOffComplete,
+  RegionEvicted,
+  RegionHeartbeat,
   RegionTerminated,
   RegisterAcknowledgment,
   RegisterRefused,
   RegisterRegion,
+  RegistrationRequest,
   ShardingMessage,
   ShardLocation,
   ShardMapUpdate,
@@ -44,30 +60,95 @@ import type {
  * an in-flight `lease.acquire()`.  Mirrors the same pattern used in
  * `ClusterSingletonManager` (#38).
  */
+type ReconcileEvent = { readonly kind: 'reconcile' };
+
+type LeaseAcquireResultEvent = { readonly kind: 'lease-acquire-result'; readonly got: boolean; readonly error?: Error };
+
+type LeaseLostEvent = { readonly kind: 'lease-lost'; readonly reason: string };
+
+type AcquireRetryEvent = { readonly kind: 'acquire-retry' };
+
+/** Where one region lives — all a {@link RegistrationRequest} needs to reach it. */
+type RegionAddress = { readonly path: string; readonly node: NodeAddressData };
+
+/**
+ * The regions an instance about to be replaced knew, told to its replacement
+ * through the mailbox the two share — see {@link ShardCoordinator.preRestart}.
+ */
+type RequestRegistrationsEvent = {
+  readonly kind: 'request-registrations';
+  readonly regions: ReadonlyArray<RegionAddress>;
+};
+
+/** The registration barrier ran out — see `ShardCoordinator.beginRegistrationBarrier`. */
+type RegistrationBarrierTimeoutEvent = { readonly kind: 'registration-barrier-timeout' };
+
+/** Time to repeat a conflict release — see `ShardCoordinator.trackConflictRelease`. */
+type ConflictReleaseRetryEvent = { readonly kind: 'conflict-release-retry'; readonly shardId: number };
+
+/** The cluster's leader moved — handled in the mailbox, not in the cluster's callback (#952). */
+type LeaderChangedEvent = { readonly kind: 'leader-changed' };
+
+/** The coordinator-state load of leader term `term` finished — see `ShardCoordinator.startCoordinatorStateLoad`. */
+type CoordinatorStateLoadedEvent = {
+  readonly kind: 'coordinator-state-loaded';
+  readonly term: number;
+  readonly data: CoordinatorStateData | null;
+};
+
+/** The coordinator-state load of leader term `term` took longer than `coordinatorStateLoadTimeoutMs`. */
+type CoordinatorStateLoadTimeoutEvent = { readonly kind: 'coordinator-state-load-timeout'; readonly term: number };
+
 type CoordinatorEvent =
-  | { kind: 'reconcile' }
-  | { kind: 'lease-acquire-result'; got: boolean; error?: Error }
-  | { kind: 'lease-lost'; reason: string }
-  | { kind: 'acquire-retry' };
+  | ReconcileEvent
+  | LeaseAcquireResultEvent
+  | LeaseLostEvent
+  | AcquireRetryEvent
+  | RequestRegistrationsEvent
+  | RegistrationBarrierTimeoutEvent
+  | ConflictReleaseRetryEvent
+  | LeaderChangedEvent
+  | CoordinatorStateLoadedEvent
+  | CoordinatorStateLoadTimeoutEvent;
 
 type CoordinatorInbox = ShardingMessage | AuthenticatedShardingMessage | CoordinatorEvent;
+
+/**
+ * What a coordinator that has just become leader is still waiting for before
+ * it places shards — see `ShardCoordinator.beginRegistrationBarrier`.
+ */
+type RegistrationBarrier = {
+  /** Members whose region has not registered yet, by `NodeAddress.toString()`. */
+  readonly awaiting: Set<string>;
+  /** Ends the wait for registrations; `null` when there were none to wait for. */
+  readonly windowTimer: Cancellable | null;
+  /** The registration window has run out. */
+  windowElapsed: boolean;
+  /** The coordinator-state load has not finished yet (#1188). */
+  loading: boolean;
+  /** Ends the wait for the load; `null` once it finished or when there is none. */
+  loadTimer: Cancellable | null;
+};
 
 function isCoordinatorEvent(message: CoordinatorInbox): message is CoordinatorEvent {
   if (!message || typeof message !== 'object') return false;
   const discriminator = (message as { kind?: unknown }).kind;
   return discriminator === 'reconcile' || discriminator === 'lease-acquire-result'
-    || discriminator === 'lease-lost' || discriminator === 'acquire-retry';
+    || discriminator === 'lease-lost' || discriminator === 'acquire-retry'
+    || discriminator === 'request-registrations' || discriminator === 'registration-barrier-timeout'
+    || discriminator === 'conflict-release-retry' || discriminator === 'leader-changed'
+    || discriminator === 'coordinator-state-loaded' || discriminator === 'coordinator-state-load-timeout';
 }
 
 /**
  * The node a coordinator-inbound frame claims to speak for, or `null` when the
  * kind carries no address at all.
  *
- * Six of the ten kinds a coordinator accepts name a node in their payload, and
- * every one of them is a statement only that node can truthfully make: which
- * shards it hosts, that its region is gone, that a hand-off finished, where to
- * send a shard home or a statistics reply.  This is the lookup the authority
- * gate compares against the authenticated peer (#712).
+ * Seven of the eleven kinds a coordinator accepts name a node in their payload,
+ * and every one of them is a statement only that node can truthfully make:
+ * which shards it hosts, that its region is gone or still there, that a
+ * hand-off finished, where to send a shard home or a statistics reply.  This is
+ * the lookup the authority gate compares against the authenticated peer (#712).
  *
  * The four that return `null` — `EntityStarted`, `EntityStopped`,
  * `GetRememberedEntities`, `BeginHandOffAcknowledgment` — have no address to
@@ -77,6 +158,7 @@ function claimedNode(message: ShardingMessage): NodeAddressData | null {
   return match(message)
     .with({ kind: 'sharding.Register' }, (m) => m.node)
     .with({ kind: 'sharding.RegionTerminated' }, (m) => m.node)
+    .with({ kind: 'sharding.RegionHeartbeat' }, (m) => m.node)
     .with({ kind: 'sharding.HandOffComplete' }, (m) => m.node)
     .with({ kind: 'sharding.GetShardHome' }, (m) => m.requesterNode)
     .with({ kind: 'sharding.GetClusterShardingStats' }, (m) => m.requesterNode)
@@ -106,6 +188,77 @@ type RegionInfo = {
   readonly path: string;
   readonly proxy: boolean;
   readonly shards: Set<number>;
+  /**
+   * When this region's silence clock was last restarted (#853): when it was
+   * last heard from — its registration, its beat, or any other frame that
+   * names it — or, while its node is a member the cluster has not decided
+   * about, the last sweep that found it parked there.  Not `readonly`: it is
+   * the one field of a `RegionInfo` that moves without the entry being
+   * replaced.
+   *
+   * Refreshed by ordinary traffic as well as by the beat, so a busy region is
+   * never swept for having had nothing to say.  The parked sweep writes its own
+   * tick's time, which is what judges a region whose node comes back from that
+   * tick rather than from the silence it piled up while cut off — and which
+   * means that, after such a return, the silence an eviction reports (the
+   * warning, and `RegionEvicted.silentForMs`) counts from the last parked tick,
+   * not from the region's last frame.  An entry seeded from a snapshot starts
+   * at its seeding time; see {@link seededFromSnapshot}.
+   */
+  lastSeenAtMs: number;
+  /**
+   * When this region last sent a {@link RegionHeartbeat}, or `null` if it never
+   * has — which, for a region that registered, is what makes it eligible for
+   * the sweep at all.
+   *
+   * A region only beats when its own node has `staleRegionDetection` on, so for
+   * a registered region `null` means "this region did not opt in", and evicting
+   * it would be acting on a signal it never agreed to send.  That is exactly a
+   * rolling deploy: for the window in which the leader runs the new build and
+   * some regions do not, a `lastSeenAtMs`-only rule would evict every one of
+   * them on a timer, they would re-register, and the loop would run until the
+   * deploy finished.
+   *
+   * An entry seeded from a snapshot is the one exception — see
+   * {@link seededFromSnapshot}.
+   */
+  lastHeartbeatAtMs: number | null;
+  /**
+   * `true` for an entry `applyCoordinatorState` restored from a coordinator-state
+   * snapshot whose region has not registered in this leader term.  The region's
+   * own `Register` replaces the entry, so registering is what clears it.
+   *
+   * Such an entry is a sweep candidate once it has been silent for `stale-after`,
+   * although it has never beaten.  Its `null` beat record says nothing about
+   * opting out — nothing has beaten to *this* coordinator yet — and a snapshot
+   * can name a region that is not there at all: on a node that is up and runs
+   * nothing for the type, where no membership event will ever evict it and no
+   * goodbye will ever come, so its shards would stay homed to nobody for the
+   * rest of the term.  Treating it as a candidate does not bring the
+   * rolling-deploy loop back, because every live region registers again whether
+   * or not it beats: on a leader change through `ensureRegistered` and its
+   * register retry, and after the snapshot load in any case, because the load
+   * asks each entry it seeds for a registration (a {@link RegistrationRequest}).
+   * That matters for the load that follows a *restart*, which moves no leader
+   * and so gives no region a reason of its own to register (#853).  Either way
+   * the mark is cleared one round trip in, long before a `stale-after` runs
+   * out.  Its `lastSeenAtMs` is its seeding time, so the grace is one full
+   * window counted from the moment this coordinator adopted it.
+   */
+  readonly seededFromSnapshot: boolean;
+};
+
+/**
+ * How one `Register`'s accepted ids divide against the allocation map, decided
+ * before the handler writes anything — see {@link ShardCoordinator.adjudicateClaim}.
+ */
+type ClaimVerdict = {
+  /** Ids this registration takes ownership of. */
+  readonly adopted: ReadonlySet<number>;
+  /** Ids another registered region owns; the claimant is released from these. */
+  readonly conflicting: ReadonlySet<number>;
+  /** What `RegionInfo.shards` becomes: `adopted` plus what this key already holds. */
+  readonly owned: Set<number>;
 };
 
 /**
@@ -125,8 +278,56 @@ type StatsQuery = {
   timer: Cancellable | null;
 };
 
+/**
+ * The eligible subset as {@link ShardCoordinator.observeEligibleSet} last saw
+ * it, and since when it has looked that way (#1467).
+ */
+type EligibleSetRecord = {
+  /** The eligible regions' keys, sorted and serialised — compared, never parsed. */
+  readonly keys: string;
+  /** When `keys` last changed, on the system clock. */
+  readonly changedAtMs: number;
+};
+
+/** A registry entry together with the key it is filed under. */
+type RegionEntry = readonly [key: string, info: RegionInfo];
+
 function regionKey(node: NodeAddress, path: string): string {
   return `${node}|${path}`;
+}
+
+/** The nodes of `entries`, one per entry and in their order — what a strategy is handed as candidates. */
+function nodesOf(entries: ReadonlyArray<RegionEntry>): NodeAddress[] {
+  return entries.map(([, info]) => info.node);
+}
+
+/**
+ * The key of the first of `entries` whose region is on `node`, or `null` when
+ * none is — how a strategy's pick is turned back into a region, and the reason
+ * a pick outside the set the strategy was asked over is never placed.
+ */
+function regionKeyOn(node: NodeAddress, entries: ReadonlyArray<RegionEntry>): string | null {
+  for (const [key, info] of entries) {
+    if (info.node.equals(node)) return key;
+  }
+  return null;
+}
+
+/**
+ * The shard ids each node's non-proxy regions hold, keyed by node address
+ * string so an `AllocationStrategy` can match the map against the
+ * `NodeAddress` candidates it is handed.
+ */
+function shardCountsOf(regions: Iterable<RegionInfo>): Map<string, Set<number>> {
+  const out = new Map<string, Set<number>>();
+  for (const info of regions) {
+    if (info.proxy) continue;
+    const address = info.node.toString();
+    const existing = out.get(address) ?? new Set<number>();
+    for (const shardId of info.shards) existing.add(shardId);
+    out.set(address, existing);
+  }
+  return out;
 }
 
 /**
@@ -137,9 +338,13 @@ function regionKey(node: NodeAddress, path: string): string {
  *
  * State is reconstructed from Register messages: each region reports the
  * shards it currently hosts, and the coordinator merges that with any new
- * allocation requests.  This is deliberately lightweight — a production
- * upgrade would snapshot state to a journal so the coordinator can recover
- * across restarts without re-allocating every shard from scratch.
+ * allocation requests.  A coordinator that starts without a leader change —
+ * rebuilt by its supervisor after one of its handlers threw — would never hear
+ * those again, so it asks every region the instance before it knew to
+ * register (see {@link ShardCoordinator.preRestart} and `RegistrationRequest`), and the map comes
+ * back from the regions' own claims rather than from a fresh allocation.  A
+ * `coordinatorStateStore` additionally seeds the map from the last snapshot
+ * on every promotion, and each region it seeds is asked the same way.
  */
 export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private readonly regions = new Map<string, RegionInfo>();
@@ -214,6 +419,62 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private shardMapVersion = 0;
   private shardMapPublishTimer: Cancellable | null = null;
 
+  /**
+   * Latch for {@link warnRoleMatchesNoRegion} — one line per episode of "the
+   * configured role matches no registered region", not one per shard id.
+   */
+  private roleMismatchWarned = false;
+
+  /**
+   * Latch for {@link warnNoEligibleRegion} — one line per episode of "regions
+   * can host the type, but none of them is on a member that is up", cleared by
+   * the next allocation that succeeds.
+   */
+  private noEligibleRegionWarned = false;
+
+  /**
+   * Latch for {@link warnOffCandidatePick} — the shards whose ask got a pick
+   * outside the candidates the strategy was handed, one line each until that
+   * shard is placed (#1467).  At most `numShards` entries.
+   */
+  private readonly offCandidatePickWarned = new Set<number>();
+
+  /**
+   * How long the eligible set has to hold still before it counts as settled:
+   * the cluster's derived membership settle window, read once in
+   * {@link preStart} (#1467).
+   */
+  private membershipSettleWindowMs = 0;
+
+  /**
+   * The eligible set as last observed, or `null` before the first observation
+   * of this leader term — see {@link observeEligibleSet}.
+   */
+  private eligibleSetRecord: EligibleSetRecord | null = null;
+  /**
+   * The members whose regions a coordinator that has just become leader waits
+   * for before it places any shard, keyed by `NodeAddress.toString()`, with the
+   * timer that ends the wait regardless (#1272).  `null` outside that window.
+   * See {@link beginRegistrationBarrier}.
+   */
+  private registrationBarrier: RegistrationBarrier | null = null;
+  /**
+   * Counts the leader terms this coordinator has begun, so the result of a
+   * coordinator-state load started in one term is recognised, and dropped, if
+   * it arrives in another (#952).
+   */
+  private leaderTerm = 0;
+  /** Whether the current leader term has begun — see {@link beginLeaderTerm}. */
+  private leadingTerm = false;
+  /**
+   * Conflict releases still waiting on their claimant, by shard id: who was
+   * told to give the shard up, how often, and the timer that repeats it
+   * (#1272).  Kept apart from {@link rebalanceInProgress} for the reason
+   * {@link releaseConflictingShards} gives: a rebalance's timeout reallocates,
+   * and here the shard already has its owner.
+   */
+  private readonly conflictReleases = new Map<number, { readonly claimant: string; attempts: number; timer: Cancellable }>();
+
   public readonly options: ShardCoordinatorOptionsType;
 
   constructor(options: ShardCoordinatorOptions) {
@@ -253,10 +514,17 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       }
     }
 
+    // Derived by the cluster from timings that do not change at runtime, and
+    // read once so placement and rebalancing agree on one number for the
+    // coordinator's whole life (#1467).
+    this.membershipSettleWindowMs = this.options.cluster._membershipSettleWindowMs;
+
     this.unsubscribeCluster = this.options.cluster.subscribe(evt =>
       match(evt)
         .with(P.instanceOf(MemberRemoved), (e) => this.onMemberRemoved(e.member.address))
-        .with(P.instanceOf(LeaderChanged), () => this.onLeaderChanged())
+        // Through the mailbox (#952): the handler clears and seeds the maps
+        // every other handler reads, so it must not interleave with them.
+        .with(P.instanceOf(LeaderChanged), () => this.self.tell({ kind: 'leader-changed' } satisfies CoordinatorEvent))
         .otherwise(() => this.onOtherClusterEvent()),
     );
     if (this.options.lease) {
@@ -271,7 +539,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.rebalanceTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       rebalanceIntervalMs,
       rebalanceIntervalMs,
-      () => { if (this.isActive()) this.rebalanceTick(); },
+      () => { if (this.isActive() && this.registrationBarrier === null) this.rebalanceTick(); },
     );
   }
 
@@ -301,6 +569,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.rebalanceTimer?.cancel();
     this.acquireRetryTimer?.cancel();
     this.shardMapPublishTimer?.cancel();
+    this.endRegistrationBarrierQuietly();
+    this.dropConflictReleases();
     for (const rebalance of this.rebalanceInProgress.values()) rebalance.timer.cancel();
     for (const query of this.statsQueries.values()) query.timer?.cancel();
     this.statsQueries.clear();
@@ -308,6 +578,36 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       try { await this.options.lease.release(); } catch { /* best-effort */ }
       this.leaseState = 'none';
     }
+  }
+
+  /**
+   * Hand the replacement the regions this instance knew (#849, #853).
+   *
+   * A restart is this coordinator's supervisor rebuilding it after one of its
+   * handlers threw — a user `AllocationStrategy` throwing out of `allocate` is
+   * enough — and it moves no leader, so no region sees a reason to register
+   * again.  The replacement starts from an empty registry, or re-seeds one
+   * from a coordinator-state snapshot, and either way it would never hear from
+   * them: without a store the type was headless, every shard unplaceable, and
+   * a seeded entry that never registers is swept once its grace runs out —
+   * taking a live region that simply does not beat with it.
+   *
+   * The addresses travel through the mailbox, which the restart keeps: a
+   * message told now is handled by the replacement, after its `preStart` has
+   * claimed the envelope route the answers arrive on.  Only the addresses
+   * travel.  The shard map is rebuilt from the answers, each region's own
+   * `hostedShards` adjudicated as usual, rather than carried over from an
+   * instance whose handler has just failed.
+   */
+  override async preRestart(reason: Error, message?: CoordinatorInbox): Promise<void> {
+    const regions = Array.from(this.regions.values(), (info): RegionAddress => ({
+      path: info.path,
+      node: info.node.toJSON(),
+    }));
+    if (regions.length > 0) {
+      this.self.tell({ kind: 'request-registrations', regions } satisfies CoordinatorEvent);
+    }
+    await super.preRestart(reason, message);
   }
 
   override onReceive(message: CoordinatorInbox): void {
@@ -353,6 +653,12 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    */
   private receiveShardingMessage(message: ShardingMessage, peer: NodeAddress | null): void {
     if (!this.isLeader()) return;
+    // A frame can reach a coordinator that already leads before its own
+    // `leader-changed` event does — the event goes through the mailbox (#952),
+    // behind whatever was queued first.  The term, and its barrier, begin
+    // before the frame is handled, or it would be served by a term that has
+    // not started (#1272).
+    if (!this.leadingTerm) this.beginLeaderTerm();
     // Refused before the lease buffer, not after: an unauthorised frame is
     // never going to be dispatched, and letting it take a slot in a bounded
     // buffer would let a flood of forgeries crowd out the registrations the
@@ -426,12 +732,13 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       .with({ kind: 'sharding.HandOffComplete' }, (m) => this.onHandOffComplete(m))
       .with({ kind: 'sharding.BeginHandOffAcknowledgment' }, () => this.onBeginHandOffAcknowledgment())
       .with({ kind: 'sharding.RegionTerminated' }, (m) => this.onRegionTerminated(m))
+      .with({ kind: 'sharding.RegionHeartbeat' }, (m) => this.onRegionHeartbeat(m))
       .with({ kind: 'sharding.EntityStarted' }, (m) => this.onEntityStarted(m))
       .with({ kind: 'sharding.EntityStopped' }, (m) => this.onEntityStopped(m))
       .with({ kind: 'sharding.GetRememberedEntities' }, (m) => this.onGetRememberedEntities(m))
       .with({ kind: 'sharding.GetClusterShardingStats' }, (m) => this.onGetClusterShardingStats(m))
       .with({ kind: 'sharding.ShardRegionStats' }, (m) => this.onShardRegionStats(m))
-      .otherwise(() => this.onUnhandled());
+      .otherwise((m) => this.onUnhandled(m));
   }
 
   private isLeader(): boolean { return this.options.cluster.isLeader(); }
@@ -455,6 +762,12 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       .with({ kind: 'lease-acquire-result' }, (m) => this.onLeaseAcquireResult(m))
       .with({ kind: 'lease-lost' }, (m) => this.onLeaseLost(m))
       .with({ kind: 'acquire-retry' }, () => this.onAcquireRetry())
+      .with({ kind: 'request-registrations' }, (m) => this.onRequestRegistrations(m))
+      .with({ kind: 'registration-barrier-timeout' }, () => this.onRegistrationBarrierTimeout())
+      .with({ kind: 'conflict-release-retry' }, (m) => this.onConflictReleaseRetry(m))
+      .with({ kind: 'leader-changed' }, () => this.onLeaderChanged())
+      .with({ kind: 'coordinator-state-loaded' }, (m) => this.onCoordinatorStateLoaded(m))
+      .with({ kind: 'coordinator-state-load-timeout' }, (m) => this.onCoordinatorStateLoadTimeout(m))
       .exhaustive();
   }
 
@@ -507,7 +820,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     }
   }
 
-  private onLeaseAcquireResult(result: { got: boolean; error?: Error }): void {
+  private onLeaseAcquireResult(result: LeaseAcquireResultEvent): void {
     if (this.leaseState !== 'acquiring') {
       // Spurious result — release if we somehow got it.
       if (result.got) void this.options.lease!.release().catch(() => { /* ignore */ });
@@ -541,7 +854,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     }
   }
 
-  private onLeaseLost(message: { reason: string }): void {
+  private onLeaseLost(message: LeaseLostEvent): void {
     if (this.leaseState !== 'held') return;
     this.system.log.warn(
       `[sharding] coordinator '${this.options.typeName}' lost lease — ${message.reason}; stepping down`,
@@ -554,6 +867,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     // register loop).
     for (const rebalance of this.rebalanceInProgress.values()) rebalance.timer.cancel();
     this.rebalanceInProgress.clear();
+    this.dropConflictReleases();
     this.pending.clear();
     this.acquireBuffer = [];
     // Deliberately do NOT clear `regions` or `shardHome` here.  We
@@ -568,36 +882,215 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   }
 
   private scheduleAcquireRetry(): void {
-    const interval = this.options.acquireRetryIntervalMs ?? 5_000;
+    const interval = this.options.acquireRetryIntervalMs ?? DEFAULT_ACQUIRE_RETRY_INTERVAL_MS;
     this.acquireRetryTimer?.cancel();
     this.acquireRetryTimer = this.system.scheduler.scheduleOnceFunction(interval, () => {
       this.self.tell({ kind: 'acquire-retry' } satisfies CoordinatorEvent);
     });
   }
 
-  private candidates(): NodeAddress[] {
-    const role = this.options.role;
-    const activeRegions = Array.from(this.regions.values()).filter(r => !r.proxy);
-    const addrs = activeRegions.map(r => r.node);
-    if (!role) return addrs;
-    return addrs.filter(a => {
-      const member = this.options.cluster.getMembers().find(x => x.address.equals(a));
-      return member?.hasRole(role) ?? false;
-    });
+  /* ------------------------- Registration requests ------------------------- */
+
+  /**
+   * Ask every region the instance before this one knew to register with this
+   * one — see {@link preRestart}.
+   *
+   * Skipped once this node is no longer the leader: every region re-registers
+   * with whoever is, on the leader change itself.  A region that has already
+   * registered with this instance is not asked again; one that is only seeded
+   * from a snapshot is, since seeded is exactly what it must not stay.
+   */
+  private onRequestRegistrations(event: RequestRegistrationsEvent): void {
+    if (!this.isLeader()) return;
+    for (const region of event.regions) {
+      const key = regionKey(NodeAddress.fromJSON(region.node), region.path);
+      if (this.regions.get(key)?.seededFromSnapshot === false) continue;
+      this.requestRegistration(region);
+    }
   }
 
-  private currentShardCounts(): Map<string, Set<number>> {
-    // Keyed by node address string so AllocationStrategy can match against
-    // the NodeAddress it returned in `allocate`.
-    const out = new Map<string, Set<number>>();
-    for (const info of this.regions.values()) {
-      if (info.proxy) continue;
-      const addr = info.node.toString();
-      const existing = out.get(addr) ?? new Set<number>();
-      for (const shardId of info.shards) existing.add(shardId);
-      out.set(addr, existing);
+  /**
+   * Ask one region for its `Register` (#853, #849).  See
+   * {@link RegistrationRequest} for the three ways a coordinator ends up
+   * without a registration it should have, and why the request goes only to a
+   * region it has a concrete reason to believe in.
+   */
+  private requestRegistration(region: RegionAddress): void {
+    const request: RegistrationRequest = {
+      kind: 'sharding.RegistrationRequest',
+      coordinator: this.self.path.toString(),
+    };
+    this.replyTo(region.path, region.node, request);
+  }
+
+  /**
+   * Every registered region that could host the type — the **full** candidate
+   * set: not a proxy, not refused over its shard count, and, when the type is
+   * placed by a role, on a member that carries it.
+   *
+   * "Could", not "can right now": membership status is deliberately not read
+   * here, because two questions need the set before it is narrowed.  Whether
+   * any region matches the role at all is {@link warnRoleMatchesNoRegion}'s
+   * discriminating condition, and a member that went `unreachable` does not
+   * stop matching it; and while the eligible set is settling,
+   * {@link tryAllocate} asks the strategy over this set first.  The narrowing to
+   * regions whose member is `up` is {@link observeEligibleSet}'s (#1467).
+   *
+   * A refused key is skipped even though it is in `regions`: the refusal only
+   * keeps a refused region *out*, so an entry `applyCoordinatorState` seeded
+   * before the region's own `Register` was refused is still there (#633).
+   */
+  private candidateRegions(): RegionEntry[] {
+    const role = this.options.role;
+    const out: RegionEntry[] = [];
+    for (const [key, info] of this.regions) {
+      if (info.proxy || this.refusedRegions.has(key)) continue;
+      if (role && !(this.memberRecord(info.node)?.hasRole(role) ?? false)) continue;
+      out.push([key, info]);
     }
     return out;
+  }
+
+  /** The nodes of {@link candidateRegions}, one per region, in registry order. */
+  private candidates(): NodeAddress[] {
+    return nodesOf(this.candidateRegions());
+  }
+
+  /**
+   * The {@link candidateRegions} whose member is `up` — the **eligible** subset,
+   * the only regions a shard is ever placed on — and a note of whether that set
+   * changed since the last look (#1467).
+   *
+   * Observed at the start of every {@link tryAllocate} and every
+   * {@link rebalanceTick}, the only two decisions that read it, so a change is
+   * seen by the first decision it could affect without the coordinator
+   * subscribing to reachability events.  The set is compared by region key: a
+   * region registering again under its own key is no change, a member going
+   * `unreachable` or coming back is.  The first observation of a leader term
+   * counts as a change — {@link onLeaderChanged} drops the record when the term
+   * ends — so a new leader settles before it rebalances, like any other change.
+   *
+   * Timed on the system clock rather than the wall clock, so a
+   * `ManualScheduler` drives the window like every other timer here.
+   */
+  private observeEligibleSet(candidates: ReadonlyArray<RegionEntry> = this.candidateRegions()): RegionEntry[] {
+    const eligible = candidates.filter(([, info]) => this.isUpMember(info.node));
+    const keys = JSON.stringify(eligible.map(([key]) => key).sort());
+    if (this.eligibleSetRecord?.keys !== keys) {
+      this.eligibleSetRecord = { keys, changedAtMs: this.system.clock.now() };
+    }
+    return eligible;
+  }
+
+  /**
+   * Whether the eligible set has gone unchanged for the membership settle
+   * window, so that allocation and rebalancing may both run over it (#1467).
+   *
+   * Settling is not a failure state.  Shards are still placed, only never on a
+   * member that is not up, and rebalancing simply waits.  What the window buys
+   * is that a member which goes `unreachable` and comes back before anything
+   * decides about it moves no shard that was placed before it — a shard first
+   * asked for meanwhile lands on a member that is up, and may move once the
+   * window has run out on the restored set — and that a member which stays
+   * parked costs one round of moves rather than one every tick.  A parked
+   * member does not hold the window open: it is simply not part of the set
+   * that has to hold still.  A member that flaps does.  Every time it leaves
+   * or rejoins the set the window starts again, so one that flips faster than
+   * the window stalls rebalancing — onto a newly joined region too — for as
+   * long as it flaps.
+   */
+  private isEligibleSetSettled(): boolean {
+    const record = this.eligibleSetRecord;
+    return record !== null && this.system.clock.now() - record.changedAtMs >= this.membershipSettleWindowMs;
+  }
+
+  /**
+   * Say out loud that a configured role matches none of the regions that did
+   * register — the one shape of "no candidates" that is a misconfiguration
+   * rather than a phase of startup (#847).
+   *
+   * `tryAllocate` returns silently on an empty candidate set, which is correct
+   * and unremarkable while nobody has registered yet.  The same silence over a
+   * role that no member carries is a deployment stuck forever with every
+   * message for the type accumulating in the regions' routing buffers (#849),
+   * and nothing anywhere naming the cause.  Per-type in code that risk is one
+   * `withRole` typo; read from a shared config file it is every sharded type on
+   * every node, which is what makes it worth a line.
+   *
+   * Registered-but-filtered-out is the discriminating condition: with no
+   * non-proxy region at all the cause is "nobody has registered", so warning
+   * there would fire on every healthy cold start. One line per episode, cleared
+   * as soon as an allocation succeeds, so a role that becomes wrong again is
+   * still reported — the latch shape #849's buffer overflow uses.
+   *
+   * The remedy names both places a node's roles come from, the config key
+   * `actor-ts.cluster.roles` and `ClusterOptions.withRoles`.  An operator who
+   * set the role from a config file is the likeliest reader of this line, and
+   * may have no code to change at all.
+   */
+  private warnRoleMatchesNoRegion(): void {
+    const role = this.options.role;
+    if (!role || this.roleMismatchWarned) return;
+    const registered = Array.from(this.regions.values()).filter(r => !r.proxy).length;
+    if (registered === 0) return;
+    this.roleMismatchWarned = true;
+    this.log.warn(
+      `[sharding] no member hosting type "${this.options.typeName}" carries role "${role}", so none of `
+      + `the ${registered} registered region(s) can be allocated a shard; every message for the type will `
+      + 'buffer until one does. Set actor-ts.sharding.role (or withRole) to a role the hosting nodes '
+      + 'actually declare, or declare it on them with actor-ts.cluster.roles (or ClusterOptions.withRoles)',
+    );
+  }
+
+  /**
+   * Say that every region that could host the type is on a member that is not
+   * `up`, so a request for a new shard waits — and why (#1467).
+   *
+   * Not {@link warnRoleMatchesNoRegion}'s case, and deliberately not its line:
+   * the role, if there is one, does match, and the remedy is not a
+   * configuration change but a member coming back or being decided about.
+   * While #930 is open, a member cut off by a symmetric partition is not heard
+   * from again after the network heals, so it does not come back on its own
+   * and only the decision ends the wait.  What decides about a member that
+   * stopped answering depends on the downing configuration, so the line names
+   * each route by its key: with a split-brain strategy, the strategy's
+   * verdict; without one, the failure detector itself at `down-after` while
+   * `failure-detector.auto-down` is on, and only an operator's `down` while it
+   * is off — the member stays parked at `unreachable` until then.  The keys
+   * come from {@link ConfigKeys}, the one place a renamed key changes; a
+   * literal here once named a key that did not exist (#633).  One line per
+   * episode, cleared by the next allocation that succeeds — the latch
+   * {@link roleMismatchWarned} uses.
+   */
+  private warnNoEligibleRegion(candidateCount: number): void {
+    if (this.noEligibleRegionWarned) return;
+    this.noEligibleRegionWarned = true;
+    const failureDetectorKeys = ConfigKeys.cluster.failureDetector;
+    this.log.warn(
+      `[sharding] none of the ${candidateCount} registered region(s) that can host type `
+      + `"${this.options.typeName}" is on a member that is up, so no new shard of the type can be `
+      + 'allocated and its messages buffer until one is. A member that stopped answering is back once '
+      + 'it is heard from again, or is removed: by the split-brain strategy when one is configured '
+      + `(${ConfigKeys.cluster.splitBrainResolver.activeStrategy}), and otherwise by the failure detector `
+      + `at ${failureDetectorKeys.downAfter} when ${failureDetectorKeys.autoDown} is on, or by an `
+      + 'operator (Cluster.down, POST /cluster/down) when it is off',
+    );
+  }
+
+  /** {@link shardCountsOf} over the whole registry. */
+  private currentShardCounts(): Map<string, Set<number>> {
+    return shardCountsOf(this.regions.values());
+  }
+
+  /**
+   * {@link shardCountsOf} over every registered region whose member is `up` —
+   * the eligible regions, and with them the ones that are no candidate: refused
+   * over their shard count, or on a member without the type's role.  What
+   * {@link rebalanceTick} shows the strategy, and why it is wider than the
+   * candidates is said there (#1467).
+   */
+  private shardCountsOnUpMembers(): Map<string, Set<number>> {
+    return shardCountsOf(Array.from(this.regions.values()).filter((info) => this.isUpMember(info.node)));
   }
 
   /* ------------------------------- Handlers -------------------------------- */
@@ -606,9 +1099,89 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     /* informational only */
   }
 
-  private onUnhandled(): void {
-    /* other ShardingMessage variants are region-side */
+  /**
+   * A region says it is still there (#853).
+   *
+   * The frame carries no claim beyond its own identity, so the handler has
+   * nothing to adjudicate — see {@link RegionHeartbeat} for why a periodic
+   * re-`Register` was not an option.
+   *
+   * A beat from a region this coordinator holds no entry for is answered with
+   * a {@link RegistrationRequest}.  Most of the time that region is about to
+   * register anyway — it beat before its registration landed, or a leader
+   * change cleared the map — and the request costs one round trip it would
+   * have made regardless.  But one case has nothing else to fix it: a region
+   * this coordinator evicted whose {@link RegionEvicted} was lost.  That region
+   * believes it is registered, keeps the shards that were re-homed, and has no
+   * event coming that would make it register again; until it does,
+   * `ClusterSharding.isRegistered` on its node keeps reading `true` about a
+   * registration that no longer exists.  The request bounds that to one beat.
+   * Not sent to a region refused this term, which has not beaten and would
+   * not answer.
+   */
+  private onRegionHeartbeat(message: RegionHeartbeat): void {
+    const info = this.regionFor(message.region, message.node);
+    if (!info) {
+      const key = regionKey(NodeAddress.fromJSON(message.node), message.region);
+      if (!this.refusedRegions.has(key)) this.requestRegistration({ path: message.region, node: message.node });
+      return;
+    }
+    const now = Date.now();
+    info.lastSeenAtMs = now;
+    info.lastHeartbeatAtMs = now;
   }
+
+  /**
+   * The registry entry a frame's `(region, node)` pair names, if there is one.
+   *
+   * The address is safe to rebuild here even though `NodeAddress.fromJSON`
+   * throws on a shape the wire is free to send: `maySpeakFor` has already
+   * compared this very field against the authenticated peer, so anything that
+   * reaches a handler matched a real member's address.
+   */
+  private regionFor(path: string, nodeData: NodeAddressData): RegionInfo | undefined {
+    return this.regions.get(regionKey(NodeAddress.fromJSON(nodeData), path));
+  }
+
+  /**
+   * Note that a region spoke, whatever it said (#853).
+   *
+   * Called from every coordinator-inbound kind that names a region *and* the
+   * node hosting it, which is what `regionKey` needs to resolve one:
+   * `GetShardHome`, `HandOffComplete` and `ShardRegionStats`.  A region under
+   * load therefore never needs the beat at all, and the beat only has to cover
+   * an idle one.
+   *
+   * `EntityStarted` / `EntityStopped` name no region and are deliberately not
+   * here.  The peer alone could be matched against `RegionInfo.node`, but a
+   * node may host a proxy and a real region for the same type, and refreshing
+   * both on one frame would credit liveness to a region that said nothing.
+   *
+   * It deliberately does **not** touch `lastHeartbeatAtMs`: ordinary traffic
+   * says the region is alive, not that it has opted into being swept when it
+   * stops.  Only the beat says that.
+   */
+  private markRegionSeen(path: string, nodeData: NodeAddressData): void {
+    const info = this.regionFor(path, nodeData);
+    if (info) info.lastSeenAtMs = Date.now();
+  }
+
+  /**
+   * A `sharding.` kind no arm above claims, from a frame the authority gate
+   * let through.  Two things land here: a kind meant for a region rather than
+   * the coordinator — a `ShardHome`, a `HandOff` — and one this build does not
+   * know at all, a newer member's protocol.  `claimedNode` reads no address
+   * from either, so `maySpeakFor` has nothing to compare and an authenticated
+   * peer's frame of either kind reaches this arm, on the leader only.
+   *
+   * Declined through `unhandled`, so it is a dead letter naming this
+   * coordinator and a tick of `actor_unhandled_total{class="ShardCoordinator"}`
+   * — on the peer path with no sender, since the frame was re-enqueued
+   * without one.  Healthy traffic never reaches this arm —
+   * `tests/multi-node/ShardingUnhandledArms.test.ts` holds the counter at zero
+   * through a rebalance, a region stop and a leader failover.
+   */
+  private onUnhandled(message: ShardingMessage): void { this.unhandled(message); }
 
   /**
    * A region claiming a different shard count than this coordinator governs is
@@ -627,7 +1200,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    *
    * Compared against the coordinator's own configured count rather than the
    * first registrant's, which is not a durable authority — `onLeaderChanged`
-   * clears `regions` wholesale and `loadCoordinatorState` restores no shard
+   * clears `regions` wholesale and `applyCoordinatorState` restores no shard
    * count, so "first" would be re-decided at every election.
    */
   private isAgreedNumShards(message: RegisterRegion): boolean {
@@ -654,17 +1227,44 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   }
 
   private onRegister(message: RegisterRegion): void {
-    if (!this.isAgreedNumShards(message)) return;
-    const hostedShards = this.acceptedHostedShards(message);
     const node = NodeAddress.fromJSON(message.node);
+    if (!this.isAgreedNumShards(message)) {
+      // Refused, but heard from: a refused region is never a placement
+      // candidate and gives its shards up, so it is not one to wait for.
+      this.noteRegistered(node);
+      return;
+    }
+    const hostedShards = this.acceptedHostedShards(message);
     const key = regionKey(node, message.region);
+    this.releaseHomesOfPreviousRun(key, node, hostedShards);
+    // Judged against the map as it stands *before* any write below — the whole
+    // point is that the claim does not get to decide what it is compared with.
+    const verdict = this.adjudicateClaim(key, hostedShards);
     this.regions.set(key, {
       node,
       path: message.region,
       proxy: message.proxy,
-      shards: new Set(hostedShards),
+      shards: verdict.owned,
+      // A registration is the loudest possible "I am here", so a re-registering
+      // region gets a full `stale-after` to produce its first beat (#853).  The
+      // beat record is carried across a re-registration rather than reset: a
+      // region that has proved it beats does not stop being a sweep candidate
+      // because a leader change made it register again.
+      lastSeenAtMs: Date.now(),
+      lastHeartbeatAtMs: this.regions.get(key)?.lastHeartbeatAtMs ?? null,
+      // And registering ends a seeded entry's grace: the region is demonstrably
+      // there, so from here it is judged like any registered one — on its beat
+      // record, which is carried above and never invented here.
+      seededFromSnapshot: false,
     });
-    for (const shardId of hostedShards) {
+    for (const shardId of verdict.adopted) {
+      const previous = this.shardHome.get(shardId);
+      // Defensive, and one line: under the classification above an adopted id's
+      // previous home is either absent, this same key, or a key that has left
+      // `regions`, so the optional call is a no-op today.  It is what keeps
+      // "ownership moving away clears the old owner's set" true by construction
+      // rather than by case analysis, for whichever write path drifts next.
+      if (previous !== undefined && previous !== key) this.regions.get(previous)?.shards.delete(shardId);
       this.shardHome.set(shardId, key);
     }
     const ack: RegisterAcknowledgment = {
@@ -672,13 +1272,422 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       coordinator: this.self.path.toString(),
     };
     this.replyTo(message.region, message.node, ack);
+    this.settleConflictReleasesOf(key, verdict.conflicting);
+    // Strictly after the acknowledgment: the ack is what cancels the claimant's
+    // 500 ms register retry (`ShardRegion.onRegisterAcknowledgment`), and a
+    // directive that overtakes it lands on a region still re-registering.
+    this.releaseConflictingShards(key, message, verdict.conflicting);
 
-    for (const shardId of hostedShards) this.flushPending(shardId);
+    // Adopted only.  Run over the whole claim these would answer a pending
+    // `GetShardHome` for a shard this registration did not get, and re-ship the
+    // entire remembered-entity registry of a shard to the region that just lost
+    // the argument about owning it.
+    for (const shardId of verdict.adopted) this.flushPending(shardId);
 
     if (this.options.rememberEntities) {
-      for (const shardId of hostedShards) this.shipRememberedEntities(shardId);
+      for (const shardId of verdict.adopted) this.shipRememberedEntities(shardId);
     }
     this.afterShardMapChange();
+    this.noteRegistered(node);
+  }
+
+  /**
+   * A region whose entry was seeded from a snapshot registers from a different
+   * incarnation of its node than the one the snapshot recorded: the homes the
+   * snapshot gave that entry belong to a process that is gone (#1272).
+   *
+   * Region keys are `host:port` plus a path and carry no incarnation, so a node
+   * restarted at the same address re-registered under the very key its previous
+   * run's shards were filed under, and kept every one of them — `adjudicateClaim`
+   * merges the homes the map already assigns to a key into what it owns.  A
+   * fresh process hosts nothing it did not just claim; the shards the old run
+   * held have meanwhile been taken over elsewhere, and handing the new run their
+   * homes made the coordinator answer `GetShardHome` with a region that starts
+   * them a second time.  So the homes it does not claim are released, and are
+   * placed again on demand, after the region that really runs them has claimed
+   * them.
+   *
+   * Only on a known, differing incarnation: the same run re-registering after a
+   * leader change may legitimately hold a home its claim does not show yet — a
+   * `ShardHome` the previous leader sent and the region had not acted on.
+   */
+  private releaseHomesOfPreviousRun(key: string, node: NodeAddress, claimed: ReadonlySet<number>): void {
+    const seeded = this.regions.get(key);
+    if (seeded?.seededFromSnapshot !== true) return;
+    const recordedRun = seeded.node.incarnation;
+    if (recordedRun === undefined || node.incarnation === undefined || recordedRun === node.incarnation) return;
+    let released = 0;
+    for (const [shardId, home] of Array.from(this.shardHome)) {
+      if (home !== key || claimed.has(shardId)) continue;
+      this.shardHome.delete(shardId);
+      seeded.shards.delete(shardId);
+      released += 1;
+    }
+    if (released === 0) return;
+    this.log.info(
+      `[sharding] ${node} restarted since the coordinator-state snapshot of "${this.options.typeName}" was `
+      + `taken; releasing the ${released} shard home(s) the snapshot gave its previous run`,
+    );
+  }
+
+  /* ------------------------- Registration barrier ------------------------- */
+
+  /**
+   * Hold every new shard placement for {@link registrationWindowMs} after
+   * this coordinator becomes leader, and longer while a state load is
+   * outstanding (#1272).  The awaited members are tracked so the window's
+   * end can name the ones that never registered.
+   *
+   * A coordinator runs on every node and takes authority from `isLeader()`, so a
+   * leader change hands it over with no protocol between the outgoing and the
+   * incoming instance — the shape #949 closed for the singleton.  The incoming
+   * one starts from an empty map, and the regions learn of the change through
+   * gossip, each at its own moment.  Placing a shard in that window decides on a
+   * map that does not yet hold the region already running it: a node restarted
+   * at the lowest address, or one that joins with it, becomes leader at once,
+   * and the first `GetShardHome` it answers places the shard on itself while a
+   * survivor still hosts it.  The claim that would have said so arrives a gossip
+   * round later and can only release the stale copy after the fact.
+   *
+   * So placement waits for the claims.  Nothing needs asking: every region
+   * re-registers, `hostedShards` and all, on the `LeaderChanged` it observes,
+   * and retries every 500 ms until acknowledged.  A `GetShardHome` for a shard
+   * that a registration has already homed is answered at once — the barrier
+   * holds only what would need a *new* home, as a pending request.
+   *
+   * Which members are waited for: every `up` member but this one, narrowed to
+   * the type's role when it has one.  Members outside the role run at most a
+   * proxy, which hosts nothing.  A member that leaves the cluster stops being
+   * waited for; one that never registers — it has not started the type, or it
+   * is unreachable — is what the window is for.  Its end logs which members it
+   * gave up on and that uniqueness was not proven for them, as the singleton's
+   * hand-over does; the lease stays the hard guarantee.
+   *
+   * Only at a leader *change* with other members already up: a cluster's first
+   * leader founds it alone, and the members that join it afterwards do not move
+   * the leader, so a forming cluster places shards without waiting.
+   */
+  private beginRegistrationBarrier(): void {
+    this.endRegistrationBarrierQuietly();
+    const self = this.options.cluster.selfAddress;
+    const role = this.options.role;
+    const awaiting = new Set<string>();
+    for (const member of this.options.cluster.upMembers()) {
+      if (member.address.equals(self)) continue;
+      if (role && !member.hasRole(role)) continue;
+      awaiting.add(member.address.toString());
+    }
+    for (const info of this.regions.values()) awaiting.delete(info.node.toString());
+    const loading = this.options.coordinatorStateStore !== undefined;
+    if (awaiting.size === 0 && !loading) return;
+    const timeoutMs = this.registrationWindowMs();
+    const windowTimer = awaiting.size === 0 ? null : this.system.scheduler.scheduleOnceFunction(timeoutMs, () => {
+      this.self.tell({ kind: 'registration-barrier-timeout' } satisfies CoordinatorEvent);
+    });
+    const term = this.leaderTerm;
+    const loadTimer = !loading ? null : this.system.scheduler.scheduleOnceFunction(this.coordinatorStateLoadTimeoutMs(), () => {
+      this.self.tell({ kind: 'coordinator-state-load-timeout', term } satisfies CoordinatorEvent);
+    });
+    this.registrationBarrier = { awaiting, windowTimer, windowElapsed: windowTimer === null, loading, loadTimer };
+    this.log.debug(
+      `[sharding] coordinator '${this.options.typeName}' became leader; holding shard placement until `
+      + `${awaiting.size} member(s) have registered (at most ${timeoutMs} ms)`
+      + (loading ? ` and its coordinator state has loaded (at most ${this.coordinatorStateLoadTimeoutMs()} ms)` : ''),
+    );
+  }
+
+  /**
+   * How long the barrier waits for the coordinator-state load:
+   * `coordinatorStateLoadTimeoutMs`, ten seconds unless configured (#1188).
+   */
+  private coordinatorStateLoadTimeoutMs(): number {
+    return this.options.coordinatorStateLoadTimeoutMs ?? DEFAULT_COORDINATOR_STATE_LOAD_TIMEOUT_MS;
+  }
+
+  /**
+   * Lift the barrier once nothing holds it any more: the load is done, and
+   * every awaited member has registered or the registration window ran out.
+   */
+  private endRegistrationBarrierIfDone(): void {
+    const barrier = this.registrationBarrier;
+    if (barrier === null || barrier.loading) return;
+    // The window is a floor as well as a ceiling.  The awaited set is this
+    // node's view of who is up when the term began, and a node that has just
+    // joined — the restarted lowest address, which is the case this exists
+    // for — may not have heard of every member yet.  Lifting the moment the
+    // members it knows of have registered placed a shard that a member it had
+    // not heard of still ran (#1272, measured 2 of 20 under load).
+    if (barrier.windowElapsed) this.endRegistrationBarrier();
+  }
+
+  /**
+   * How long {@link beginRegistrationBarrier} waits at most: as long as the
+   * leader change takes to reach the other members by gossip, plus one region
+   * register retry — {@link COORDINATOR_REGISTRATION_GOSSIP_ROUNDS} explains the
+   * rounds — and never longer than `handOffTimeoutMs`, the coordinator's bound
+   * on any hand-off.
+   */
+  private registrationWindowMs(): number {
+    const propagation = COORDINATOR_REGISTRATION_GOSSIP_ROUNDS * this.options.cluster._gossipIntervalMs
+      + DEFAULT_REGISTER_RETRY_INTERVAL_MS;
+    return Math.min(propagation, this.options.handOffTimeoutMs ?? DEFAULT_HAND_OFF_TIMEOUT_MS);
+  }
+
+  /** A region of `node` registered: one member fewer to wait for. */
+  private noteRegistered(node: NodeAddress): void {
+    this.stopAwaiting(node.toString());
+  }
+
+  /** `key` no longer holds the barrier up — it registered, or it left the cluster. */
+  private stopAwaiting(key: string): void {
+    const barrier = this.registrationBarrier;
+    if (barrier === null || !barrier.awaiting.delete(key)) return;
+    this.endRegistrationBarrierIfDone();
+  }
+
+  /**
+   * Gave up waiting: place shards anyway, and say what was not proven.  The
+   * same trade the singleton's hand-over timeout makes — availability over
+   * uniqueness — and the same remedy for a deployment that will not make it:
+   * a lease on the coordinator.
+   */
+  private onRegistrationBarrierTimeout(): void {
+    const barrier = this.registrationBarrier;
+    if (barrier === null) return;
+    barrier.windowElapsed = true;
+    if (barrier.awaiting.size === 0) {
+      this.endRegistrationBarrierIfDone();
+      return;
+    }
+    const missing = Array.from(barrier.awaiting).sort();
+    // At info, not warn: the common reason is a member that does not run this
+    // type at all, which is a legitimate deployment and would otherwise warn on
+    // every leader change.
+    this.log.info(
+      `[sharding] coordinator '${this.options.typeName}' places shards without a registration from `
+      + `${missing.join(', ')}, ${this.registrationWindowMs()} ms after becoming leader. If one of them runs `
+      + 'the type, a shard it still hosts may be started a second time until its registration releases it; '
+      + 'a lease on the coordinator is what rules that out.',
+    );
+    this.endRegistrationBarrierIfDone();
+  }
+
+  /** Lift the barrier and serve what it held: answer what has a home, place the rest. */
+  private endRegistrationBarrier(): void {
+    this.endRegistrationBarrierQuietly();
+    if (!this.isActive()) return;
+    for (const shardId of Array.from(this.pending.keys())) {
+      const home = this.shardHome.get(shardId);
+      if (home !== undefined && this.regions.has(home)) {
+        this.flushPending(shardId);
+      } else if (!this.rebalanceInProgress.has(shardId)) {
+        this.tryAllocate(shardId);
+      }
+    }
+  }
+
+  private endRegistrationBarrierQuietly(): void {
+    this.registrationBarrier?.windowTimer?.cancel();
+    this.registrationBarrier?.loadTimer?.cancel();
+    this.registrationBarrier = null;
+  }
+
+  /**
+   * Split an accepted claim into what this registration may take and what it
+   * may not (#948).
+   *
+   * `hostedShards` is a region's statement about *itself*, and #712 made the
+   * sender honest — the frame is attributed to the peer and its ids are in
+   * range — without making the claim true.  A region whose `localShards` has
+   * gone stale keeps claiming what it used to own: nothing clears that set when
+   * a node is downed by a false positive (`ShardRegion.invalidateHomesOnNode`
+   * deliberately leaves it alone), and `ensureRegistered()` re-sends the claim
+   * on every `MemberUp`, `MemberRemoved` and `LeaderChanged` plus a 500 ms
+   * retry.  Written straight into `shardHome`, that takes the shard back from
+   * whoever took over and runs the same entity ids on both nodes — two writers
+   * on one `persistenceId` for a `PersistentActor`.
+   *
+   * So an id is **adopted** only when the map does not already hand it to
+   * somebody else: no home at all, a home naming a key that has since left
+   * `regions` (a leader term that cleared the map, or a terminated region whose
+   * entry dangled), or a home that is this claimant's already.  An id homed to a
+   * *different* key that is still registered is **conflicting**: ownership does
+   * not move, and the claimant is released from it instead.
+   *
+   * `owned` is what `RegionInfo.shards` becomes, and it is a **merge**, not the
+   * claim.  `tryAllocate` writes `shardHome[N] = K` and `K.shards.add(N)` and
+   * only then pushes `ShardHome` at K, so a `Register` from K that was already
+   * in flight carries a `localShards` without N and used to drop N from
+   * `RegionInfo.shards` while `shardHome` still named K — after which
+   * `onRegionTerminated(K)` iterates `info.shards` and never reallocates N, and
+   * `snapshotCoordinatorState` persists the hole.  Adding back every id
+   * `shardHome` already assigns to this key closes that in the same pass.
+   *
+   * The guard shape is `applyCoordinatorState`'s (`regions.has` / `!shardHome.has`
+   * before writing).  A fresh leader term clears `regions` and `shardHome`
+   * wholesale, so in the first moments of a term every claim is unowned and the
+   * rule degenerates to first-claim-wins by mailbox order.  What keeps a
+   * *placement* out of that window is {@link beginRegistrationBarrier}: no shard
+   * is given a new home until the other members' regions have claimed theirs,
+   * so the first claim is the running copy's rather than a fresh allocation.  A
+   * double-homing that predates the election is still not resolved here; the
+   * conflict path releases it on the claimant's registration.
+   */
+  private adjudicateClaim(key: string, claimed: ReadonlySet<number>): ClaimVerdict {
+    const adopted = new Set<number>();
+    const conflicting = new Set<number>();
+    for (const shardId of claimed) {
+      const home = this.shardHome.get(shardId);
+      if (home === undefined || home === key || !this.regions.has(home)) {
+        adopted.add(shardId);
+        continue;
+      }
+      conflicting.add(shardId);
+    }
+    const owned = new Set<number>(adopted);
+    for (const [shardId, home] of this.shardHome) {
+      if (home === key) owned.add(shardId);
+    }
+    return { adopted, conflicting, owned };
+  }
+
+  /**
+   * Tell a claimant to give up the shards it does not own.
+   *
+   * A `HandOff` rather than an authoritative `ShardHome`.  A `ShardHome` naming
+   * another region does stop a copy that still runs on the receiver (#953), but
+   * as a release that answers nobody; `onHandOff` stops it as a hand-off — it
+   * marks the shard `handing-off`, acknowledges, forgets its entities and stops
+   * the `Shard`, so a persistent entity runs `postStop` and flushes before the
+   * true owner's copy takes traffic — and its `HandOffComplete` is what a
+   * tracked release can wait on.  Nothing new is needed for it — the frame is in the protocol
+   * and `replyTo` already authenticates the local leg.
+   *
+   * Deliberately **not** recorded in `rebalanceInProgress`.  That map's timeout
+   * callback deletes `shardHome[shardId]` and reallocates, which here would
+   * destroy the *true owner's* ownership on a timer over a hand-off it never
+   * agreed to.  It is tracked in {@link conflictReleases} instead, which only
+   * ever repeats the hand-off ({@link trackConflictRelease}); the claimant's
+   * `HandOffComplete` ends that and reallocates nothing.
+   *
+   * A shard already mid-rebalance is skipped for the mirror-image reason:
+   * `onHandOffComplete` checks no ownership and is handed no peer (#1231), so
+   * the claimant's completion would end the true owner's genuine rebalance
+   * early. Its stale copy stays up for now — the status quo for that id, minus
+   * the map corruption — and the next registration releases it once the
+   * rebalance has finished.
+   */
+  private releaseConflictingShards(
+    key: string, message: RegisterRegion, conflicting: ReadonlySet<number>,
+  ): void {
+    if (conflicting.size === 0) return;
+    const owners = new Set<string>();
+    let released = 0;
+    for (const shardId of conflicting) {
+      // The owner's *address*, never its region key: a key carries the
+      // caller-chosen path it was built from, and this line is reachable by
+      // anyone who can register.  Every conflicting id has a registered owner by
+      // construction, so nothing is lost by having no fallback.
+      const owner = this.regions.get(this.shardHome.get(shardId) ?? '');
+      if (owner) owners.add(owner.node.toString());
+      if (this.rebalanceInProgress.has(shardId)) continue;
+      this.sendToRegion(key, { kind: 'sharding.HandOff', shardId });
+      this.trackConflictRelease(shardId, key);
+      released += 1;
+    }
+    // One line per registration, never one per id — the same rule
+    // `acceptedHostedShards` states, and for the same reason: the claim is
+    // caller-sized, and a stale region re-registers on every membership event.
+    this.log.warn(
+      `[sharding] region ${message.region} on ${message.node.host}:${message.node.port} claimed `
+      + `${conflicting.size} shard(s) of type "${this.options.typeName}" that ${Array.from(owners).sort().join(', ')} `
+      + `already own${owners.size === 1 ? 's' : ''}; ownership stays put and ${released} hand-off(s) were sent `
+      + `to give the stale copies up`,
+    );
+  }
+
+  /**
+   * Keep a conflict release going until the claimant has given the shard up
+   * (#1272).
+   *
+   * {@link releaseConflictingShards} sent its `HandOff` once and forgot it, and
+   * a region drops one for ordinary reasons: it does not yet believe this node
+   * hosts the coordinator — the gap after a leader change — or the shard is
+   * mid-stop for another reason.  The claimant re-registers only on a member
+   * or leader event, or on its register retry before an acknowledgment, so on
+   * a stable cluster a dropped `HandOff` left the stale copy running beside the
+   * owner indefinitely.  Now the hand-off is repeated every
+   * {@link conflictReleaseRetryMs} until one of these says it is done: the
+   * claimant's `HandOffComplete`, a registration of it that no longer claims
+   * the shard, the claimant or the owner leaving, or the end of this leader
+   * term — or until {@link CONFLICT_RELEASE_MAX_ATTEMPTS} sends have gone
+   * unanswered, which is logged once.
+   */
+  private trackConflictRelease(shardId: number, claimant: string): void {
+    const existing = this.conflictReleases.get(shardId);
+    if (existing?.claimant === claimant) return;
+    if (existing) existing.timer.cancel();
+    this.conflictReleases.set(shardId, { claimant, attempts: 1, timer: this.scheduleConflictReleaseRetry(shardId) });
+  }
+
+  private scheduleConflictReleaseRetry(shardId: number): Cancellable {
+    return this.system.scheduler.scheduleOnceFunction(this.conflictReleaseRetryMs(), () => {
+      this.self.tell({ kind: 'conflict-release-retry', shardId } satisfies CoordinatorEvent);
+    });
+  }
+
+  /**
+   * How long a conflict release waits for its claimant before repeating the
+   * `HandOff`: {@link CONFLICT_RELEASE_RETRY_INTERVAL_MS}, never longer than
+   * `handOffTimeoutMs`, the coordinator's bound on any hand-off.
+   */
+  private conflictReleaseRetryMs(): number {
+    return Math.min(CONFLICT_RELEASE_RETRY_INTERVAL_MS, this.options.handOffTimeoutMs ?? DEFAULT_HAND_OFF_TIMEOUT_MS);
+  }
+
+  private onConflictReleaseRetry(event: ConflictReleaseRetryEvent): void {
+    const release = this.conflictReleases.get(event.shardId);
+    if (!release) return;
+    const home = this.shardHome.get(event.shardId);
+    // Nothing left to release: the claimant is gone, or it is the owner after
+    // all, or the shard has no owner whose copy the claimant's would shadow.
+    if (!this.regions.has(release.claimant) || home === undefined || home === release.claimant || !this.regions.has(home)) {
+      this.endConflictRelease(event.shardId);
+      return;
+    }
+    if (release.attempts >= CONFLICT_RELEASE_MAX_ATTEMPTS) {
+      const claimantNode = this.regions.get(release.claimant)?.node.toString() ?? 'a departed region';
+      this.log.warn(
+        `[sharding] ${claimantNode} has not given up shard ${event.shardId} of "${this.options.typeName}" after `
+        + `${release.attempts} hand-off(s); its stale copy may still run until it registers again`,
+      );
+      this.endConflictRelease(event.shardId);
+      return;
+    }
+    // A rebalance of the shard is under way: its own hand-off is the one in
+    // flight, so this one waits a round rather than crossing it.
+    if (!this.rebalanceInProgress.has(event.shardId)) {
+      this.sendToRegion(release.claimant, { kind: 'sharding.HandOff', shardId: event.shardId });
+      release.attempts += 1;
+    }
+    release.timer = this.scheduleConflictReleaseRetry(event.shardId);
+  }
+
+  /** A registration from `key` that no longer claims a shard ends that shard's release. */
+  private settleConflictReleasesOf(key: string, stillConflicting: ReadonlySet<number>): void {
+    for (const [shardId, release] of Array.from(this.conflictReleases)) {
+      if (release.claimant === key && !stillConflicting.has(shardId)) this.endConflictRelease(shardId);
+    }
+  }
+
+  private endConflictRelease(shardId: number): void {
+    this.conflictReleases.get(shardId)?.timer.cancel();
+    this.conflictReleases.delete(shardId);
+  }
+
+  private dropConflictReleases(): void {
+    for (const release of this.conflictReleases.values()) release.timer.cancel();
+    this.conflictReleases.clear();
   }
 
   /**
@@ -764,6 +1773,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   }
 
   private onGetShardHome(message: GetShardHome): void {
+    this.markRegionSeen(message.requester, message.requesterNode);
     if (!this.isKnownShardId(message.shardId)) return;
     // A refused region's shard ids are drawn from a different modulus, so
     // answering one places the *same* entity id in a second shard — the exact
@@ -792,14 +1802,64 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (!this.rebalanceInProgress.has(message.shardId)) this.tryAllocate(message.shardId);
   }
 
+  /**
+   * Find `shardId` a home and tell whoever needs to know (#1467).
+   *
+   * A shard is only ever placed on a region whose member is `up` — never on
+   * one that is `unreachable`, `joining`, `weakly-up`, `leaving` or `down`,
+   * nor on an address that is no member at all ({@link isUpMember}).  Which set
+   * the strategy is asked over depends on whether the eligible set has settled
+   * ({@link isEligibleSetSettled}):
+   *
+   * - **Settling** — over every candidate region first, and that pick stands
+   *   when its member is up.  Should the member that dropped out come back,
+   *   those shards are already where the strategy wants them with it in view,
+   *   so only the ones whose first pick was that member have to move.  Only a
+   *   pick on a member that is not up is asked again, over the eligible
+   *   regions.
+   * - **Settled** — over the eligible regions alone, the set
+   *   {@link rebalanceTick} hands the strategy too.  Allocating over a wider set
+   *   than rebalancing is the loop the window exists to stop: under the default
+   *   strategy every shard a rebalance handed off would be allocated straight
+   *   back to the owner it left, on every tick, for as long as a member stayed
+   *   parked.
+   *
+   * A pick is placed only on a region of the set it was asked over, so an
+   * address outside it — which a custom strategy is free to return — is never
+   * placed, and the shard waits for its next ask; {@link warnOffCandidatePick}
+   * says so, once per shard.
+   *
+   * No candidate at all is {@link warnRoleMatchesNoRegion}'s case; candidates of
+   * which none is on an up member are {@link warnNoEligibleRegion}'s.  Either
+   * way the request stays pending until the membership decides.  A member that
+   * comes back re-emits `MemberUp`, on which every region registers again and
+   * re-asks for the shards it buffered, so the shard is allocated then without
+   * the coordinator watching reachability itself; a member that is removed
+   * takes its regions with it, and the request waits for a region that can
+   * host the type.  While #930 is open, a member cut off by a symmetric
+   * partition is not heard from again after the network heals, so it does not
+   * come back on its own: there the request waits until auto-down, a strategy
+   * or an operator removes the member.
+   */
   private tryAllocate(shardId: number): void {
-    const cs = this.candidates();
-    if (cs.length === 0) return;
-    const owner = this.options.allocationStrategy.allocate(
-      shardId, cs, this.currentShardCounts(),
-    );
-    const key = this.findRegionKey(owner);
-    if (!key) return;
+    // Held until the regions that may already run the shard have claimed it;
+    // the request stays pending and is served when the barrier lifts.
+    if (this.registrationBarrier !== null) return;
+    const candidates = this.candidateRegions();
+    const eligible = this.observeEligibleSet(candidates);
+    if (candidates.length === 0) {
+      this.warnRoleMatchesNoRegion();
+      return;
+    }
+    this.roleMismatchWarned = false;
+    if (eligible.length === 0) {
+      this.warnNoEligibleRegion(candidates.length);
+      return;
+    }
+    const key = this.placementFor(shardId, candidates, eligible);
+    if (key === null) return;
+    this.noEligibleRegionWarned = false;
+    this.offCandidatePickWarned.delete(shardId);
     this.shardHome.set(shardId, key);
     const info = this.regions.get(key)!;
     info.shards.add(shardId);
@@ -817,23 +1877,122 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.afterShardMapChange();
   }
 
+  /**
+   * The key of the region `shardId` goes to, or `null` when the strategy picked
+   * nothing in the set it was asked over — see {@link tryAllocate} for which set
+   * that is.  The full-set pick is checked against the eligible regions, which
+   * holds it exactly when its member is up.
+   */
+  private placementFor(
+    shardId: number,
+    candidates: ReadonlyArray<RegionEntry>,
+    eligible: ReadonlyArray<RegionEntry>,
+  ): string | null {
+    const strategy = this.options.allocationStrategy;
+    if (!this.isEligibleSetSettled()) {
+      const pick = strategy.allocate(shardId, nodesOf(candidates), this.currentShardCounts());
+      const kept = regionKeyOn(pick, eligible);
+      if (kept !== null) return kept;
+      // A candidate whose member is not up is no stray pick: asking again over
+      // the eligible regions below is the protocol for it.
+      if (regionKeyOn(pick, candidates) === null) this.warnOffCandidatePick(shardId, pick, candidates);
+    }
+    const pick = strategy.allocate(shardId, nodesOf(eligible), shardCountsOf(eligible.map(([, info]) => info)));
+    const placed = regionKeyOn(pick, eligible);
+    if (placed === null) this.warnOffCandidatePick(shardId, pick, eligible);
+    return placed;
+  }
+
+  /**
+   * Say that the strategy answered an ask for `shardId` with an address outside
+   * the candidates it was handed, so the answer is not placed (#1467).
+   *
+   * A pick is turned back into a region only within the set the strategy was
+   * asked over, and a custom strategy is free to answer with anything — a node
+   * it pins shards to that is not up, or that carries no region the coordinator
+   * offers.  Such an answer is dropped.  When it was the last ask, the shard
+   * stays unallocated with its messages buffering in the region that asked;
+   * without this line that is a type that stopped serving and nothing anywhere
+   * naming the cause.  A first ask's stray answer that the second ask makes up
+   * for is reported all the same: the strategy gave it.  A pick on a candidate
+   * whose member is not up, in the first ask while the set settles, is not
+   * one — that address was handed, and the second ask is the protocol.
+   *
+   * One line per shard, until the shard is placed — every renewed ask would
+   * otherwise repeat it — and the latch goes with the rest of a term's state
+   * when the leadership is lost.
+   */
+  private warnOffCandidatePick(shardId: number, pick: NodeAddress, asked: ReadonlyArray<RegionEntry>): void {
+    if (this.offCandidatePickWarned.has(shardId)) return;
+    this.offCandidatePickWarned.add(shardId);
+    this.log.warn(
+      `[sharding] the allocation strategy of type "${this.options.typeName}" picked ${pick} for shard `
+      + `${shardId}, which is not one of the ${asked.length} candidate(s) it was handed `
+      + `(${nodesOf(asked).join(', ')}); the pick is dropped, since a shard is only placed on a candidate `
+      + 'the strategy was asked over, and the shard waits, its messages buffering, until an ask for it is '
+      + 'answered with one',
+    );
+  }
+
+  /**
+   * A region reports that nothing of `shardId` runs on it any more.
+   *
+   * It ends a hand-off only when it comes from the region that hand-off was
+   * sent to (#1467).  The authority gate already holds a region to speaking for
+   * itself, but not to speaking about *this* hand-off, and a completion from
+   * elsewhere is not hypothetical: a region refused over its shard count
+   * answers every `HandOff` it is sent (`ShardRegion.answerHandOffWhileRefused`),
+   * and a stale copy told to stand down by `releaseConflictingShards` reports
+   * the same way.  Taken from any region, a late or duplicated one of those
+   * ended whichever hand-off of the shard happened to be in flight — and
+   * re-homed the shard while its real owner was still stopping it.
+   */
   private onHandOffComplete(message: HandOffComplete): void {
+    this.markRegionSeen(message.region, message.node);
     const shardId = message.shardId;
+    const sender = regionKey(NodeAddress.fromJSON(message.node), message.region);
+    // A claimant giving up a shard it did not own: the owner stays, so there
+    // is nothing to reallocate — only the release to end.
+    if (this.conflictReleases.get(shardId)?.claimant === sender) {
+      this.endConflictRelease(shardId);
+      return;
+    }
     const inProgress = this.rebalanceInProgress.get(shardId);
     if (!inProgress) return;
+    if (inProgress.from !== regionKey(NodeAddress.fromJSON(message.node), message.region)) return;
     inProgress.timer.cancel();
     this.rebalanceInProgress.delete(shardId);
-
-    // Remove ownership from old region.
-    const oldPath = inProgress.from;
-    const old = this.regions.get(oldPath);
-    if (old) old.shards.delete(shardId);
-    this.shardHome.delete(shardId);
+    this.releaseFromPreviousOwner(shardId, inProgress.from);
 
     // Reallocate (the pending queries will get the new home).
     // tryAllocate already calls scheduleCoordinatorStateSave, so a
     // second save here would be redundant.
     this.tryAllocate(shardId);
+  }
+
+  /**
+   * Take `shardId` off the region a hand-off was moving it away from, so the
+   * reallocation that follows starts from a map in which nobody owns it.  Both
+   * ways a hand-off can end — {@link onHandOffComplete} and
+   * {@link onHandOffTimeout} — take this step, which is why it is one method.
+   *
+   * Clearing `shardHome` is not enough on its own.  `RegionInfo.shards` is the
+   * per-region index of it, and everything that asks who owns what reads the
+   * index: `currentShardCounts` hands it to the allocation strategy,
+   * `onRegionTerminated` re-homes exactly the ids a departing region lists, and
+   * `snapshotCoordinatorState` persists it.  Clearing the home and keeping the
+   * listing leaves a phantom every one of them believes — which is what the
+   * timeout did while it carried its own copy of this step, minus the listing
+   * (#1429).  Under the default strategy every rebalance tick then handed the
+   * shard off from its true owner and straight back to it, and losing the
+   * timed-out region re-homed the shard away from the region that had it.
+   *
+   * `previousOwnerKey` is the hand-off's own `from`: the region that was asked
+   * to give the shard up, and so the one still listing it.
+   */
+  private releaseFromPreviousOwner(shardId: number, previousOwnerKey: string): void {
+    this.regions.get(previousOwnerKey)?.shards.delete(shardId);
+    this.shardHome.delete(shardId);
   }
 
   private onEntityStarted(message: EntityStarted): void {
@@ -942,6 +2101,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   }
 
   private onShardRegionStats(message: ShardRegionStats): void {
+    this.markRegionSeen(message.region, message.node);
     const query = this.statsQueries.get(message.queryId);
     if (!query) return;
     const key = regionKey(NodeAddress.fromJSON(message.node), message.region);
@@ -990,6 +2150,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     const info = this.regions.get(key);
     if (!info) return;
     this.regions.delete(key);
+    for (const [shardId, release] of Array.from(this.conflictReleases)) {
+      if (release.claimant === key) this.endConflictRelease(shardId);
+    }
     for (const shardId of info.shards) {
       this.shardHome.delete(shardId);
       const inProg = this.rebalanceInProgress.get(shardId);
@@ -1004,6 +2167,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   }
 
   private onMemberRemoved(addr: NodeAddress): void {
+    this.stopAwaiting(addr.toString());
     for (const [_key, info] of Array.from(this.regions.entries())) {
       if (info.node.equals(addr)) {
         this.onRegionTerminated({
@@ -1025,24 +2189,24 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       // A refusal is a verdict of *this* leader term.  Every region
       // re-registers on the leader change, so the next term re-derives it.
       this.refusedRegions.clear();
+      // So is the eligible set's history: a term that starts again settles
+      // from its own first observation (#1467).
+      this.eligibleSetRecord = null;
+      // And which shards a stray pick was reported for: the next term reports
+      // its own.
+      this.offCandidatePickWarned.clear();
       this.acquireBuffer = [];
       for (const rebalance of this.rebalanceInProgress.values()) rebalance.timer.cancel();
       this.rebalanceInProgress.clear();
+      this.dropConflictReleases();
       // In-flight stats queries answered from a view we no longer own would
       // be worse than the caller's own timeout — drop them.
       for (const query of this.statsQueries.values()) query.timer?.cancel();
       this.statsQueries.clear();
-    } else {
-      // Just became leader (or re-elected).  If a state store is
-      // configured, try to seed `regions` + `shardHome` from the
-      // last known snapshot — saves the from-scratch reallocation
-      // storm of every shard re-registering through a fresh
-      // tryAllocate call.  Failure is tolerated: we fall back to
-      // the v1 rebuild-from-Register path when the load fails or
-      // returns nothing.
-      if (this.options.coordinatorStateStore) {
-        void this.loadCoordinatorState();
-      }
+      this.endRegistrationBarrierQuietly();
+      this.leadingTerm = false;
+    } else if (!this.leadingTerm) {
+      this.beginLeaderTerm();
     }
     // Lease-aware coordinators re-evaluate the acquire/release cycle
     // any time the leader role flips — see `reconcileLease()`.  We
@@ -1053,11 +2217,85 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     }
   }
 
+  /**
+   * Just became leader (or re-elected): a new term, which placement waits on
+   * until the regions have claimed theirs and, with a state store configured,
+   * the last snapshot has loaded.  A load that fails or finds nothing leaves
+   * the map to the registrations, as without a store.  Begun by whichever
+   * comes first, the `leader-changed` event or the first frame served as
+   * leader, and only once per term.
+   */
+  private beginLeaderTerm(): void {
+    this.leadingTerm = true;
+    this.leaderTerm += 1;
+    this.beginRegistrationBarrier();
+    if (this.options.coordinatorStateStore) this.startCoordinatorStateLoad(this.leaderTerm);
+  }
+
   private onOtherClusterEvent(): void {
     /* other events are not observed here */
   }
 
   /* ------------------- Coordinator-state persistence ------------------ */
+
+  /**
+   * Read the coordinator state for leader term `term`, and hand the result back
+   * through the mailbox (#952).
+   *
+   * The read is asynchronous, and the term it was started for may end while it
+   * runs.  It used to seed the maps from inside the promise, outside the
+   * mailbox: a demotion that cleared `regions` and `shardHome` while the load
+   * was in flight was undone by the load landing afterwards, and a stale
+   * snapshot repopulated a coordinator that was no longer leader.  Now only
+   * the read happens out here; the seeding is a message, applied in turn and
+   * only if its term is still the current one.
+   */
+  private startCoordinatorStateLoad(term: number): void {
+    const store = this.options.coordinatorStateStore;
+    if (!store) return;
+    const loaded = (data: CoordinatorStateData | null): void => {
+      this.self.tell({ kind: 'coordinator-state-loaded', term, data } satisfies CoordinatorEvent);
+    };
+    store.load(this.options.typeName).then(loaded, (err: unknown) => {
+      this.system.log.warn(`[sharding] coordinator-state load failed for '${this.options.typeName}'`, err);
+      loaded(null);
+    });
+  }
+
+  private onCoordinatorStateLoaded(event: CoordinatorStateLoadedEvent): void {
+    if (event.term !== this.leaderTerm || !this.isLeader()) {
+      this.log.debug(
+        `[sharding] dropping a coordinator-state load of '${this.options.typeName}' from leader term ${event.term}; `
+        + `this coordinator is ${this.isLeader() ? `in term ${this.leaderTerm}` : 'no longer leader'}`,
+      );
+      return;
+    }
+    if (event.data !== null) this.applyCoordinatorState(event.data);
+    this.finishCoordinatorStateLoad();
+  }
+
+  /**
+   * The load of term `event.term` has not come back in time: placement goes on
+   * without the snapshot, and says so.  A load that still arrives later in the
+   * same term is applied then, as it always was.
+   */
+  private onCoordinatorStateLoadTimeout(event: CoordinatorStateLoadTimeoutEvent): void {
+    if (event.term !== this.leaderTerm || this.registrationBarrier?.loading !== true) return;
+    this.log.warn(
+      `[sharding] coordinator '${this.options.typeName}' gave up waiting for its coordinator state after `
+      + `${this.coordinatorStateLoadTimeoutMs()} ms; placing shards from region registrations alone`,
+    );
+    this.finishCoordinatorStateLoad();
+  }
+
+  private finishCoordinatorStateLoad(): void {
+    const barrier = this.registrationBarrier;
+    if (barrier === null || !barrier.loading) return;
+    barrier.loading = false;
+    barrier.loadTimer?.cancel();
+    barrier.loadTimer = null;
+    this.endRegistrationBarrierIfDone();
+  }
 
   /**
    * Read the most recent snapshot from `coordinatorStateStore` and
@@ -1078,26 +2316,17 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * restored refusal is a full placement candidate again.
    *
    * The refusal check sits *inside* the loop rather than in front of it because
-   * the load is fire-and-forget (`void this.loadCoordinatorState()` on the
-   * promotion) — a `Register` refused while the store call is still in flight
-   * leaves `regions.has(key)` false when the loop finally runs, so a guard
-   * hoisted above the loop would read an empty refusal set and let the entry
-   * through anyway.
+   * the read is asynchronous ({@link startCoordinatorStateLoad}) — a `Register`
+   * refused while the store call is still in flight leaves `regions.has(key)`
+   * false when the loop finally runs, so a guard hoisted above the loop would
+   * read an empty refusal set and let the entry through anyway.
+   *
+   * Every entry it seeds is then asked to register (#853).  A seeded entry is
+   * a sweep candidate until its region registers, and nothing else makes the
+   * region do so when the load follows a restart rather than a leader change —
+   * see {@link RegistrationRequest}.
    */
-  private async loadCoordinatorState(): Promise<void> {
-    const store = this.options.coordinatorStateStore;
-    if (!store) return;
-    let data: CoordinatorStateData | null;
-    try {
-      data = await store.load(this.options.typeName);
-    } catch (err) {
-      this.system.log.warn(
-        `[sharding] coordinator-state load failed for '${this.options.typeName}'`,
-        err,
-      );
-      return;
-    }
-    if (!data) return;
+  private applyCoordinatorState(data: CoordinatorStateData): void {
     if (data.numShards !== this.options.numShards) {
       this.log.warn(
         `[sharding] ignoring the coordinator-state snapshot for '${this.options.typeName}' written by `
@@ -1116,6 +2345,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       this.options.cluster.upMembers().map((m) => m.address.toString()),
     );
 
+    const seeded: RegionAddress[] = [];
     for (const region of data.regions) {
       if (!livingNodes.has(region.node.systemName + '@' + region.node.host + ':' + region.node.port)) {
         // Node dropped out of the cluster between snapshot and now
@@ -1126,8 +2356,24 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       const node = NodeAddress.fromJSON(region.node);
       if (this.regions.has(region.key)) continue; // already known via Register
       this.regions.set(region.key, {
-        node, path: region.path, proxy: region.proxy, shards: new Set(region.shards),
+        node,
+        path: region.path,
+        proxy: region.proxy,
+        shards: new Set(region.shards),
+        // Stamped fresh at seed time, not carried from the snapshot: the entry
+        // is being adopted now, and a `takenAt` from the previous leader would
+        // hand a region a debt it never ran up (#853).  No beat is recorded —
+        // nothing has beaten to *this* coordinator — and the entry is marked
+        // seeded instead, which gives it a grace of one `stale-after` from now:
+        // its region's `Register` clears the mark, and an entry still marked
+        // when the window runs out names a region that is not there.  That is
+        // the "startup grace" the issue asked for, derived rather than
+        // configured, and bounded — see `RegionInfo.seededFromSnapshot`.
+        lastSeenAtMs: Date.now(),
+        lastHeartbeatAtMs: null,
+        seededFromSnapshot: true,
       });
+      seeded.push({ path: region.path, node: region.node });
     }
     for (const [shardId, regionKey] of data.shardHome) {
       // Only adopt the home if the region survived the filter above.
@@ -1135,6 +2381,11 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
         this.shardHome.set(shardId, regionKey);
       }
     }
+    // Applied only in the term it was read for (`onCoordinatorStateLoaded`), so
+    // this node still leads; checked all the same, since a follower's request
+    // would be refused by every region it reached.
+    if (!this.isLeader()) return;
+    for (const region of seeded) this.requestRegistration(region);
   }
 
   /**
@@ -1227,20 +2478,330 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       regions,
       shardHome,
       // The modulus every id above was produced under, so the next leader can
-      // tell whether the map means anything to it — see `loadCoordinatorState`.
+      // tell whether the map means anything to it — see `applyCoordinatorState`.
       numShards: this.options.numShards,
     };
   }
 
   /* ------------------------------- Rebalance ------------------------------- */
 
+  /**
+   * One voluntary rebalance pass: onto the eligible regions, off any region
+   * whose member is up, once the eligible set has settled, and bounded by the
+   * configured ceiling (#1467, #850).
+   *
+   * **Up members only.**  The strategy is handed the eligible regions as its
+   * candidates and the shards of every region whose member is `up` — nothing of
+   * a region on a member that is not.  Such a region is never handed a shard,
+   * so balancing it in would propose moves onto a node that cannot take them;
+   * and a hand-off *from* it can only time out into a force-reallocation, which
+   * gives the shard a second live home while the cut-off node keeps running it.
+   * So whatever the strategy returns — a custom one may return any id — a
+   * proposal whose current owner is not up is dropped before the ceiling is
+   * applied.  A parked member's shards stay where they are until the membership
+   * decides about it: removed, its regions go through {@link onMemberRemoved};
+   * back `up`, it is eligible again.
+   *
+   * **Off a region that is no candidate.**  The map is wider than the
+   * candidates on purpose.  A region on an up member can be registered and
+   * still be no candidate — refused over its shard count (#633), or on a member
+   * without the type's role — and hold shards all the same: a coordinator-state
+   * snapshot seeds them before the refusal, a registration claims them.  Shown
+   * only the candidates' shards, a strategy never proposes moving those, so a
+   * refused region goes on being named the home of shards it hashes under
+   * another count — the split the refusal exists to prevent.  Shown them,
+   * {@link HashAllocationStrategy} proposes every one, because its slot is
+   * always a candidate.  That reopens no loop: the shard is allocated over the
+   * eligible regions, which never include the region it left.
+   *
+   * **Once settled.**  While the eligible set is settling the strategy is not
+   * asked at all, so a member that goes `unreachable` and comes back within the
+   * window starts no hand-off of any shard, during the blip or after it.  One
+   * that stays parked past the window costs one round of moves between the
+   * members that are up — under {@link HashAllocationStrategy} the shards whose
+   * slot changed with the set's size — after which allocation asks over the
+   * same set and the next tick finds nothing to do.  Asking over the eligible
+   * set without the window would be no better: the blip itself would then hand
+   * off every shard whose slot moved, and its end would hand them back.
+   *
+   * **Bounded.**  The bound lives here rather than in an `AllocationStrategy`
+   * because only one strategy in the tree caps itself, and it is not the default
+   * one: `ClusterSharding.ensureCoordinator` wires
+   * {@link HashAllocationStrategy}, which returns *every* shard whose
+   * `shardId % candidates.length` no longer matches its owner — 42 to 44 of the
+   * shipped 64 when a third node joins, depending on where it sorts in address
+   * order.  A cap inside a strategy would also say nothing about a
+   * user-supplied one.  The budget subtracts what is already in
+   * flight, which is what makes it a bound on *concurrency* rather than on
+   * batch size: both shipped strategies skip shards in `rebalanceInProgress`,
+   * so a per-tick-only cap would simply stack — the tick fires every
+   * `rebalanceIntervalMs` (2 s) while a hand-off may stand for a whole
+   * `handOffTimeoutMs` (10 s), so a per-tick six would admit roughly thirty at
+   * once.  What the budget leaves behind the strategy proposes again on the
+   * next tick, so the cluster still converges, just over more ticks.
+   */
   private rebalanceTick(): void {
-    const shardsToMove = this.options.allocationStrategy.rebalance(
-      this.currentShardCounts(),
-      this.candidates(),
+    // Before the strategy is consulted, so a shard whose owner has just been
+    // declared gone is re-homed on this tick rather than being proposed for a
+    // voluntary move away from a region that no longer exists.
+    this.sweepStaleRegions();
+    const eligible = this.observeEligibleSet();
+    if (!this.isEligibleSetSettled()) return;
+    const proposed = this.options.allocationStrategy.rebalance(
+      this.shardCountsOnUpMembers(),
+      nodesOf(eligible),
       new Set(this.rebalanceInProgress.keys()),
     );
-    for (const shardId of shardsToMove) this.beginHandOff(shardId);
+    const budget = this.rebalanceCeiling() - this.rebalanceInProgress.size;
+    if (budget <= 0) return;
+    for (const shardId of this.shardsWithinBudget(this.ownedByUpMembers(proposed), budget)) {
+      this.beginHandOff(shardId);
+    }
+  }
+
+  /**
+   * The proposed shards whose current owner is a region on a member that is
+   * `up` — the only owners a hand-off can complete from (#1467).
+   */
+  private ownedByUpMembers(proposed: ReadonlySet<number>): Set<number> {
+    const out = new Set<number>();
+    for (const shardId of proposed) {
+      const ownerKey = this.shardHome.get(shardId);
+      const owner = ownerKey === undefined ? undefined : this.regions.get(ownerKey);
+      if (owner !== undefined && this.isUpMember(owner.node)) out.add(shardId);
+    }
+    return out;
+  }
+
+  /**
+   * Evict every registered region that has gone silent on a node that is up
+   * (#853).
+   *
+   * The gap this closes is a region that is gone or wedged on a node that is
+   * **still up and heartbeating**.  #648's `RegionTerminated` is single-shot,
+   * unacknowledged, and its send error is swallowed on the way down, and
+   * `candidates()` is derived from the registry and never checks whether the
+   * region itself is alive — so a lost one left the shards allocated to an
+   * actor that does not exist, permanently, and with the node up no membership
+   * event was ever going to say otherwise.
+   *
+   * A node that stops answering is a different case, and deliberately not this
+   * sweep's.  The failure detector marks it `unreachable`, and it stays a
+   * member until something decides about it: with a split-brain strategy, the
+   * strategy's verdict; without one, the detector itself at `down-after` while
+   * `actor-ts.cluster.failure-detector.auto-down` is on, and an operator's
+   * `down` while it is off.  The `MemberRemoved` that follows evicts its
+   * regions through {@link onMemberRemoved}.  Until then the node may well be
+   * running, and its shards with it, so evicting its region here would re-home
+   * them across what may be a partition and give each a second live home: two
+   * writers on one `persistenceId` for a `PersistentActor`.  So a region whose
+   * node is a member the cluster has not decided about (see
+   * {@link awaitsMembershipDecision}) is skipped, and its shards wait for the
+   * decision — #929's integrity-first rule, which a strategy that never reaches
+   * one leaves unavailable rather than doubled.
+   *
+   * Skipping a region re-arms its silence clock with this tick's `now`.  Silence
+   * is measured as `now - lastSeenAtMs`, and nothing refreshes that while the
+   * node is cut off, so without the re-arm the first tick after the node is up
+   * again would evict a healthy region for the silence it piled up while it
+   * could not be heard.  With it, the region gets a full window counted from the
+   * last tick that found its node parked.  A region whose node is not a member
+   * at all is not parked: no decision is ever coming for it, and it stays a
+   * candidate like any other.
+   *
+   * Three properties, each of which is the difference between a backstop and a
+   * new failure mode:
+   *
+   * - **It rides the existing rebalance tick**, inside the `isActive()` guard
+   *   that tick already carries.  A passive coordinator must not evict regions
+   *   it does not own, and a second timer would have needed its own copy of
+   *   that guard as well as its own key.
+   * - **Only a region that has opted in is a candidate** — one that has beaten
+   *   (see {@link RegionInfo.lastHeartbeatAtMs}), or a seeded entry whose
+   *   region has not registered this term (see
+   *   {@link RegionInfo.seededFromSnapshot}).
+   * - **Eviction goes through {@link onRegionTerminated}**, the same
+   *   synthesised-frame path `onMemberRemoved` uses.  It bypasses `maySpeakFor`
+   *   deliberately: the message is built here from this coordinator's own
+   *   state, not from anything a peer said, and reusing it is what keeps
+   *   eviction, reallocation and `afterShardMapChange` in one place instead of
+   *   two that can drift.  A region that already sent its own
+   *   `RegionTerminated` is gone from `regions`, so the sweep cannot
+   *   double-evict it.
+   *
+   * And the region is **told**, which the other two eviction paths neither need
+   * nor can do — `onMemberRemoved` fires for a node that has left, and a
+   * region's own `RegionTerminated` comes from a region that is already
+   * stopping.  This one alone evicts a peer the coordinator has every reason to
+   * think is still there, so it is the only one that can leave the shard with a
+   * second live home; see {@link RegionEvicted}.
+   */
+  private sweepStaleRegions(): void {
+    if (!this.options.staleRegionDetection) return;
+    const staleAfterMs = this.options.regionStaleAfterMs ?? DEFAULT_REGION_STALE_AFTER_MS;
+    const now = Date.now();
+    // Snapshotted: `onRegionTerminated` deletes from the map being walked.
+    for (const info of Array.from(this.regions.values())) {
+      if (this.awaitsMembershipDecision(info.node)) {
+        // Parked with its node, and re-armed so it is judged afresh once the
+        // node is up again — see above.
+        info.lastSeenAtMs = now;
+        continue;
+      }
+      // A registered region that never beat did not opt in; a seeded entry
+      // whose region never registered has had nothing to opt in with.
+      if (info.lastHeartbeatAtMs === null && !info.seededFromSnapshot) continue;
+      const silentForMs = now - info.lastSeenAtMs;
+      if (silentForMs < staleAfterMs) continue;
+      // Past the skip above a node is either `up` or not a member at all, and
+      // the two ask different things of whoever reads this line.
+      const nodeState = this.memberRecord(info.node) === undefined
+        ? 'and its node is no longer a member'
+        : 'while its node is up';
+      this.log.warn(
+        `[sharding] region ${info.path} on ${info.node} has not been heard from for `
+        + `${silentForMs} ms (stale-after ${staleAfterMs} ms) ${nodeState}; `
+        + `re-homing the ${info.shards.size} shard(s) of type "${this.options.typeName}" it held`,
+      );
+      this.onRegionTerminated({
+        kind: 'sharding.RegionTerminated',
+        region: info.path,
+        node: info.node.toJSON(),
+      });
+      this.notifyEvicted(info, silentForMs);
+    }
+  }
+
+  /**
+   * Whether `node`'s member record in this node's view has status `up` — the
+   * one placement predicate, which the stale-region sweep and shard placement
+   * both read (#853, #1467).  A node absent from the member map fails it.
+   *
+   * The same question {@link applyCoordinatorState} asks of a snapshot's regions
+   * through `upMembers()`, answered per node.  `up` and nothing wider, because
+   * every other status is one the cluster has not decided about yet: `joining`
+   * and `weakly-up` have not been admitted, `unreachable` waits for a
+   * strategy's verdict — or, with none, for `down-after` while auto-down is on
+   * and for an operator's `down` while it is off — and `leaving` and `down` are
+   * on their way to a `MemberRemoved`.  Read from the view rather than from
+   * `Cluster.placementCandidates`: that configuration filter is a local send
+   * decision, and a shard's home is elected.
+   */
+  private isUpMember(node: NodeAddress): boolean {
+    return this.memberRecord(node)?.status === 'up';
+  }
+
+  /**
+   * Whether `node` is a current member that fails {@link isUpMember} — a node
+   * the cluster has not decided about, whose regions the sweep leaves to that
+   * decision.
+   *
+   * "Current" is `getMembers()`, which drops only `removed` tombstones.  A node
+   * that is no member at all does not qualify: no decision is ever coming for
+   * it, so parking its region would park it for good.
+   */
+  private awaitsMembershipDecision(node: NodeAddress): boolean {
+    return this.memberRecord(node) !== undefined && !this.isUpMember(node);
+  }
+
+  /** `node`'s record in this node's member view, or `undefined` when it is no member. */
+  private memberRecord(node: NodeAddress): Member | undefined {
+    return this.options.cluster.getMembers().find((member) => member.address.equals(node));
+  }
+
+  /**
+   * Tell a region the sweep just removed that it has been removed (#853).
+   *
+   * Sent through {@link replyTo} rather than {@link sendToRegion}, which
+   * resolves its target out of `regions` — and the entry is gone by the time
+   * this runs.  Notifying *after* the eviction rather than before it is
+   * deliberate: the region answers by releasing and registering afresh, and a
+   * `Register` that overtook the delete would be undone by it.
+   *
+   * A send failure is swallowed at debug.  Every reason this frame cannot be
+   * delivered is a reason the eviction was right — the region is gone, its node
+   * is unreachable — and a coordinator that let a broken transport throw out of
+   * its rebalance tick would skip the remaining regions in the sweep.
+   */
+  private notifyEvicted(info: RegionInfo, silentForMs: number): void {
+    const evicted: RegionEvicted = {
+      kind: 'sharding.RegionEvicted',
+      coordinator: this.self.path.toString(),
+      silentForMs,
+    };
+    try {
+      this.replyTo(info.path, info.node.toJSON(), evicted);
+    } catch (error) {
+      this.log.debug(
+        `[sharding] could not tell region ${info.path} on ${info.node} that it was evicted`,
+        error,
+      );
+    }
+  }
+
+  /**
+   * Shards that may be in flight at once, or `Infinity` when both limits are
+   * off — the pre-#850 behaviour, and the only way to express it.
+   *
+   * Where both are set the lower wins, and the result never floors below one:
+   * `0.1 × 8` truncates to zero, and a cluster that can never move a single
+   * shard does not rebalance at all rather than rebalancing slowly.
+   */
+  private rebalanceCeiling(): number {
+    const absolute = this.options.rebalanceAbsoluteLimit ?? DEFAULT_REBALANCE_ABSOLUTE_LIMIT;
+    const relative = this.options.rebalanceRelativeLimit ?? DEFAULT_REBALANCE_RELATIVE_LIMIT;
+    const fromAbsolute = absolute > 0 ? absolute : Number.POSITIVE_INFINITY;
+    const fromRelative = relative > 0
+      ? Math.floor(relative * this.options.numShards)
+      : Number.POSITIVE_INFINITY;
+    const ceiling = Math.min(fromAbsolute, fromRelative);
+    return Number.isFinite(ceiling) ? Math.max(1, ceiling) : Number.POSITIVE_INFINITY;
+  }
+
+  /**
+   * Which `budget` of the proposed shards go first — **round-robin across their
+   * current owners**, owners in address order and each owner's shards in id
+   * order.
+   *
+   * Order matters as soon as a ceiling bites, and the obvious answer is wrong.
+   * `HashAllocationStrategy` builds its set by iterating `currentShardCounts()`,
+   * a map keyed by node address in region-registration order, so taking the
+   * first `budget` entries would drain whichever node happens to sort first and
+   * leave the others untouched for as many ticks as that takes — a ceiling that
+   * empties one node is worse than no ceiling.  Sorting by shard id has the
+   * same failure whenever ownership runs in id blocks.
+   *
+   * Round-robin is also fully determined by the shard map, so the same map
+   * always yields the same hand-offs — an operator can predict it, and a test
+   * can pin it.
+   */
+  private shardsWithinBudget(shardsToMove: ReadonlySet<number>, budget: number): number[] {
+    const byOwner = new Map<string, number[]>();
+    for (const shardId of shardsToMove) {
+      const ownerKey = this.shardHome.get(shardId);
+      // No home means nothing to hand off; `beginHandOff` would bail anyway,
+      // and counting it against the budget would waste a slot.
+      if (ownerKey === undefined) continue;
+      const owned = byOwner.get(ownerKey);
+      if (owned) owned.push(shardId);
+      else byOwner.set(ownerKey, [shardId]);
+    }
+    const queues = Array.from(byOwner.entries())
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([, shardIds]) => shardIds.sort((left, right) => left - right));
+
+    const picked: number[] = [];
+    for (let round = 0; picked.length < budget; round++) {
+      let progressed = false;
+      for (const queue of queues) {
+        if (round >= queue.length) continue;
+        progressed = true;
+        picked.push(queue[round]!);
+        if (picked.length >= budget) break;
+      }
+      if (!progressed) break;
+    }
+    return picked;
   }
 
   private beginHandOff(shardId: number): void {
@@ -1250,25 +2811,30 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (!owner) return;
 
     const timeout = this.options.handOffTimeoutMs ?? DEFAULT_HAND_OFF_TIMEOUT_MS;
-    const timer = this.system.scheduler.scheduleOnceFunction(timeout, () => {
-      if (this.rebalanceInProgress.delete(shardId)) {
-        this.system.log.warn(`[sharding] handoff timeout for shard ${shardId}; forcing reallocate`);
-        this.shardHome.delete(shardId);
-        this.tryAllocate(shardId);
-      }
-    });
+    const timer = this.system.scheduler.scheduleOnceFunction(timeout, () => this.onHandOffTimeout(shardId));
     this.rebalanceInProgress.set(shardId, { from: ownerKey, timer });
     this.sendToRegion(ownerKey, { kind: 'sharding.HandOff', shardId });
   }
 
-  /* --------------------------------- Helpers ------------------------------- */
-
-  private findRegionKey(node: NodeAddress): string | null {
-    for (const [key, info] of this.regions) {
-      if (!info.proxy && info.node.equals(node)) return key;
-    }
-    return null;
+  /**
+   * The region asked to give `shardId` up never confirmed it: move the shard on
+   * regardless, ending the hand-off the way {@link onHandOffComplete} ends one.
+   *
+   * The entry is read before it is deleted, because its `from` is the only
+   * record of which region still lists the shard (#1429).  No entry means the
+   * hand-off already ended some other way — completed, or cleared with its
+   * region, a lost lease or a lost leadership — and there is nothing to force.
+   */
+  private onHandOffTimeout(shardId: number): void {
+    const inProgress = this.rebalanceInProgress.get(shardId);
+    if (!inProgress) return;
+    this.rebalanceInProgress.delete(shardId);
+    this.system.log.warn(`[sharding] handoff timeout for shard ${shardId}; forcing reallocate`);
+    this.releaseFromPreviousOwner(shardId, inProgress.from);
+    this.tryAllocate(shardId);
   }
+
+  /* --------------------------------- Helpers ------------------------------- */
 
   private flushPending(shardId: number): void {
     const pending = this.pending.get(shardId);

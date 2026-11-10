@@ -1,13 +1,20 @@
 ---
 title: Event stream
-description: A system-wide pub/sub bus — subscribe to a class of event or to a `kind`-discriminated type, receive it via `tell` whenever someone publishes. Predicate filtering, class-hierarchy delivery, and where to use it instead of direct messaging.
+description: One ActorSystem's pub/sub bus — subscribe to a class of event or to a `kind`-discriminated type, receive it via `tell` whenever someone publishes. Node-local by design, with predicate filtering, class-hierarchy delivery, and where to use it instead of direct messaging.
 ---
 
-The **event stream** is a system-wide bus for one-to-many messaging
-that doesn't fit the parent-child or sender-receiver shape.  Any
-actor can subscribe to a class of event, or to a `kind`-discriminated
-type; any code can publish; the bus matches and `tell`s the event to
-every subscriber.
+The **event stream** is one `ActorSystem`'s bus for one-to-many
+messaging that doesn't fit the parent-child or sender-receiver shape.
+Any actor can subscribe to a class of event, or to a
+`kind`-discriminated type — and so can a plain callback; any code can
+publish; the bus matches and `tell`s the event to every subscribed
+actor, and calls every subscribed callback.
+
+**It is node-local**, and that is by design: an `ActorSystem` is one
+node, so a publish here reaches that node's subscribers and nobody
+else's.  The counterpart that crosses nodes is
+[`cluster.eventStream`](/cluster/event-stream/) — the same channel
+forms, cluster-wide.  Everything below is about the local bus.
 
 ```ts
 import { Actor, ActorSystem } from 'actor-ts';
@@ -66,21 +73,42 @@ class EventStream {
 
   unsubscribe<TEvent>(subscriber: ActorRef, channel?: EventChannel<TEvent>): boolean;
 
+  subscribeFunction<TEvent>(
+    channel: EventChannel<TEvent>,
+    callback: (event: TEvent) => void,
+  ): () => void;
+
   publish(event: object): void;
 }
 ```
 
-Three operations:
+Four operations:
 
-- **`subscribe(ref, channel)`** — register interest.  The channel is
-  a class, an `EventKey`, or a kind string.  Returns `true` if a new
-  subscription was added, `false` if a duplicate was ignored, and
-  **throws** if the channel is unusable (see the caution below).
-- **`unsubscribe(ref, channel?)`** — remove subscriptions.  With a
-  channel, just that one; without, every subscription for that ref.
+- **`subscribe(ref, channel)`** — register an actor's interest.  The
+  channel is a class, an `EventKey`, or a kind string.  Returns `true`
+  if a new subscription was added, `false` if a duplicate was ignored,
+  and **throws** a `TypeError` if the channel is unusable (see the
+  caution below) or if `ref` is not an `ActorRef` — anything without a
+  callable `tell` and `equals` and a `path`.  A function passed as
+  `ref` is refused the same way: `subscribeFunction` is the form that
+  takes one.
+- **`unsubscribe(ref, channel?)`** — remove an actor's subscriptions.
+  With a channel, just that one; without, every subscription for that
+  ref.  It throws on the same two mistakes, even when nothing is
+  subscribed: a cleanup with a typo in it fails rather than reporting
+  that it had nothing to remove.
+- **`subscribeFunction(channel, callback)`** — subscribe a plain
+  callback, with no actor to spawn, name or stop.  Returns the
+  `() => void` handle that ends the subscription; the rules are under
+  [Callback subscriptions](#callback-subscriptions).  The channel comes
+  first here, where `subscribe` puts the ref first, so it **throws** a
+  `TypeError` naming that order when the callback slot holds a class,
+  an `EventKey` or a string — the call written the other way round —
+  as it does for an unusable channel or any other callback that is
+  not a function.
 - **`publish(event)`** — fire-and-forget.  The bus walks its
   subscription list, matches each subscription's channel, and `tell`s
-  every match.
+  every matching actor; then it calls every matching callback.
 
 Class channels match with `instanceof`, so **subclass instances reach
 base-class subscribers**:
@@ -196,6 +224,77 @@ Three details:
 - **Predicates run at publish time**, on the publisher's stack.
   Keep them fast and pure — a heavy predicate slows every publish.
 
+## Callback subscriptions
+
+An actor is the default subscriber: its mailbox orders, buffers and
+isolates what it receives.  When there is nothing to spawn — a
+counter, a test, a bridge to code outside the actor tree — subscribe a
+plain function instead:
+
+```ts
+import { ActorStopped, ActorSystem } from 'actor-ts';
+
+const system = ActorSystem.create('demo');
+const stopped = new Set<string>();
+const unsubscribe = system.eventStream.subscribeFunction(ActorStopped, (event) => {
+  stopped.add(event.actor.path.toString());
+});
+
+// When the code that subscribed is torn down:
+unsubscribe();
+```
+
+The channel is named exactly as for `subscribe` — a class, an
+`EventKey` or a kind string — and a class or a key types the
+callback's parameter.  The rest follows from having no mailbox:
+
+- **Delivery is synchronous.**  The callback runs inside `publish`, on
+  the publisher's stack, after every actor subscriber has been told.
+  A slow callback slows every publish of its channel, and for the
+  framework's own events that means every actor start, stop or dead
+  letter.  Work that takes time belongs in an actor.
+- **The handle ends exactly one subscription.**  Every call subscribes
+  anew, even with the same function, and calling a handle twice does
+  nothing.  Once the handle has returned, the callback is not called
+  again — not even with an event that was already being delivered.  A
+  callback subscribed during a delivery starts with the next event.
+- **A failing callback stays its own problem.**  A throw is logged at
+  `warn` and skips that callback for that event; it stays subscribed,
+  and everyone else still receives the event.  A returned promise is
+  not awaited, and its rejection is logged the same way instead of
+  surfacing as an unhandled rejection.  That holds whatever was
+  thrown, as it does for every failure the bus contains: a value the
+  logger cannot render — an error whose `message` getter throws, say —
+  is left out of the warning, which is written without it.
+- **No actor stop ends a callback subscription; the system's end
+  does.**  The callback sees the whole shutdown, every `ActorStopped`
+  included, and is not called again once the system has terminated.
+  Subscribing after that throws, since nothing would be left to end
+  the subscription.  While the system is still terminating,
+  subscribing works — there is no actor to spawn.
+
+<Aside type="caution" title="A callback must not publish on its own channel">
+  A callback that publishes runs the nested `publish`, and every
+  callback that one reaches, before its own call returns.  Publishing
+  on another channel is fine.  Publishing on its own channel, directly
+  or through another callback, makes it call itself, level after
+  level.  Past 16 nested levels the bus cuts the cascade — everything
+  one callback's call on the published event set off: from then on,
+  nothing the cascade publishes reaches a callback, and the bus logs
+  one warning for it.  The actor subscribers still receive every
+  event, and the deliveries already under way finish, so every event
+  published below the bound reaches every callback that wants it.
+  Each callback the published event reaches has a cascade of its own,
+  so a loop in one cascade never cuts another, and with several
+  callbacks publishing on their own channel the bus warns once per
+  cascade — a sixteen-level loop through two callbacks costs 62 calls
+  and two warnings, not the 131 070 calls of every path through it.
+  The bound contains the loop; it does not make it correct.  An actor
+  subscriber cannot loop like this, because its mailbox takes the
+  delivery off the stack — when a reaction has to publish on its own
+  channel, that is the subscriber to use.
+</Aside>
+
 ## Watching it live
 
 DevTools has an [event-stream panel](/observability/devtools/event-stream/)
@@ -208,9 +307,13 @@ Three good fits:
 
 1. **Cross-cutting observation** — logging, metrics, audit.  Many
    subscribers, none of which the publisher should know about.
-2. **System-wide notifications** — "the cluster gained a member,"
+2. **Node-wide notifications** — "the cluster gained a member,"
    "the cache flushed."  The cluster extension publishes its own
-   events here; you can subscribe and react.
+   events here; you can subscribe and react.  Membership events are
+   worth reading carefully, because they look like an exception and
+   are not: you see other nodes' membership changes because *every*
+   node publishes its own copy, derived from the gossip it merged —
+   not because the event crossed the wire.
 3. **De-coupling actor wiring** in tests — instead of plumbing a
    spy ref through five layers, publish on the stream and let the
    spy subscribe directly.
@@ -258,7 +361,7 @@ The framework publishes several event types you can subscribe to:
 
 | Event | Where it comes from |
 | --- | --- |
-| `DeadLetter` | Every message routed to `/deadLetters` is published here, and publishing is *all* that happens to it — nothing logs or keeps it, so with no subscriber it is gone.  Each carries the `recipient` it failed to reach.  For a bounded, optionally durable record with replay, see [Dead letters](/operations/dead-letters/). |
+| `DeadLetter` | Every message routed to `/deadLetters` is published here and logged — one throttled `info` line naming the recipient, the sender and the message's class, never the payload.  Nothing *keeps* it, so with no subscriber and no queue the message itself is gone.  Each carries the `recipient` it failed to reach.  For a bounded, optionally durable record with replay, see [Dead letters](/operations/dead-letters/). |
 | `DispatcherError` | A unit of work scheduled on a dispatcher threw where no supervisor could see it.  Carries the dispatcher `id`, the `cause`, and the `ActorRef` whose turn it was (`null` for work belonging to no actor).  Quiet by design — see [Dispatchers](/fundamentals/dispatchers/#when-a-work-unit-throws). |
 | `SchedulerError` | A task handed to `scheduler.scheduleOnceFunction` / `scheduleAtFixedRateFunction` threw inside a raw timer callback, where no supervisor could see it.  Carries the `cause` — and nothing else, because a scheduled task is an anonymous closure and a system has exactly one scheduler.  The message-delivery forms do not publish here.  See [Timers and scheduling](/fundamentals/timers-and-scheduling/#errors-inside-timer-callbacks). |
 | `MemberUp`, `MemberRemoved`, `MemberUnreachable`, … | Concrete cluster membership events published by the cluster extension.  Subscribe to each class directly — `ClusterEvent` is a union type, not a subscribable base class.  See [Cluster](/cluster/overview/). |
@@ -280,9 +383,12 @@ publishes.
 
 ## Where to next
 
+- **[Cluster event stream](/cluster/event-stream/)** — this bus, but
+  cluster-wide: the same class and `kind` channels reaching every node.
+  Also how to *bridge* a channel of this bus onto that one.
 - **[DistributedPubSub](/cluster/pubsub/)** — cluster-wide
-  publish/subscribe with topic routing; complementary to the
-  local event stream.
+  publish/subscribe with topic routing; string topics chosen at
+  runtime, and anycast.
 - **[Actor system](/fundamentals/actor-system/)** —
   `system.eventStream` is where you reach the bus.
 - **[Messages](/fundamentals/messages/)** — the shape

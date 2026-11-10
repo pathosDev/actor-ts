@@ -7,7 +7,7 @@
  * installed — forcing a choice between exporting to OpenTelemetry and
  * looking at a local flame graph.  Teeing removes the choice: the
  * original tracer keeps doing its job, unaware, while a second consumer
- * sees the same spans.
+ * sees the spans too.
  *
  *     const original = tracerOf(system);
  *     tracing.enable(new TeeTracer(original, (span) => buffer.push(span)));
@@ -15,6 +15,18 @@
  * The observer is called after the inner span has ended, and its
  * exceptions are swallowed: an observer is a bystander, and a bug in
  * one must not break the traced code.
+ *
+ * **The two sides no longer necessarily see the same spans.**  A third
+ * argument names attribute keys the observer gets and the inner tracer
+ * does not, and it exists for one situation: the observer switched an
+ * instrumentation flag on for its own sake, and the value that flag
+ * produces would otherwise ride out through a tracer somebody else
+ * configured.  DevTools' `SpanTap` withholds `actor.message.payload`
+ * that way, so attaching a debugger cannot push message bodies into an
+ * APM the operator never pointed at them (#1420).  Nothing else is
+ * filtered — name, timings, status, exceptions, parentage and every
+ * other attribute are forwarded verbatim — and with the argument left
+ * out the tee is transparent, exactly as it was.
  */
 import type { RecordedSpan } from './RecordingTracer.js';
 import { highResNow } from '../runtime/Detect.js';
@@ -35,6 +47,16 @@ export class TeeTracer implements Tracer {
     private readonly inner: Tracer,
     /** Called once per completed span. */
     private readonly observe: (span: RecordedSpan) => void,
+    /**
+     * Attribute keys the observer sees and {@link inner} never does.
+     *
+     * Empty by default, which is the transparent tee.  A fresh `Set`
+     * rather than a shared frozen one: a tee is built once per
+     * installation, so the allocation is not on any path worth
+     * optimising, and a module-level mutable singleton handed to every
+     * instance is a footgun for the cost of nothing.
+     */
+    private readonly withheldAttributes: ReadonlySet<string> = new Set(),
   ) {}
 
   /** The wrapped tracer, so a caller can restore it later. */
@@ -52,15 +74,37 @@ export class TeeTracer implements Tracer {
       : options?.parent ?? this.activeSpan()?.context() ?? null;
 
     return new TeeSpan(
-      this.inner.startSpan(name, options),
+      this.inner.startSpan(name, this.withoutWithheldAttributes(options)),
       name,
       options?.kind ?? 'internal',
       parent,
       options?.startTimeMs ?? Date.now(),
       options?.startTimeMs === undefined ? highResNow() / 1_000_000 : undefined,
+      // The observer's copy is taken from the ORIGINAL options: the
+      // filtering is about what leaves through `inner`, not about what
+      // the span was.
       options?.attributes ?? {},
+      this.withheldAttributes,
       (span) => this.emit(span),
     );
+  }
+
+  /**
+   * `options` as the inner tracer is allowed to see it.
+   *
+   * Returns the caller's own object whenever nothing would be dropped,
+   * so the ordinary tee — and every span that carries no withheld key —
+   * allocates nothing extra.  `startSpan` runs once per actor message.
+   */
+  private withoutWithheldAttributes(options?: SpanOptions): SpanOptions | undefined {
+    if (this.withheldAttributes.size === 0 || options?.attributes === undefined) return options;
+    let kept: Record<string, AttributeValue> | null = null;
+    for (const key of Object.keys(options.attributes)) {
+      if (!this.withheldAttributes.has(key)) continue;
+      kept ??= { ...options.attributes };
+      delete kept[key];
+    }
+    return kept === null ? options : { ...options, attributes: kept };
   }
 
   withActiveSpan<T>(span: Span, callback: () => T): T {
@@ -96,6 +140,12 @@ export class TeeTracer implements Tracer {
  * everything a {@link RecordedSpan} needs.  The inner `Span` interface
  * is write-only apart from `context()`, so nothing can be read back
  * out of it at the end.
+ *
+ * Its own copy is the complete one; `withheldAttributes` subtracts only
+ * from what reaches the delegate.  `setAttribute` is the second door
+ * into a span's bag — filtering the initial one in
+ * {@link TeeTracer.startSpan} and not this one would be no filter at
+ * all for any instrumentation that writes after the span opens.
  */
 class TeeSpan implements Span {
   private _ended = false;
@@ -112,6 +162,7 @@ class TeeSpan implements Span {
     private readonly startTimeMs: number,
     private readonly startHighResolutionMs: number | undefined,
     initialAttributes: Readonly<Record<string, AttributeValue>>,
+    private readonly withheldAttributes: ReadonlySet<string>,
     private readonly onEnd: (span: RecordedSpan) => void,
   ) {
     Object.assign(this._attributes, initialAttributes);
@@ -129,7 +180,7 @@ class TeeSpan implements Span {
   setAttribute(key: string, value: AttributeValue): this {
     if (!this._ended) {
       this._attributes[key] = value;
-      this.inner.setAttribute(key, value);
+      if (!this.withheldAttributes.has(key)) this.inner.setAttribute(key, value);
     }
     return this;
   }

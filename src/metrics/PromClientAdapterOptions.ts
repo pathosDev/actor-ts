@@ -1,9 +1,20 @@
+import type { Config } from '../config/Config.js';
+import { ConfigKeys } from '../config/ConfigKeys.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 import type {
   PromClientLike,
   PromClientRegistryLike,
 } from './PromClientAdapter.js';
+
+/**
+ * Built-in name prefix of the prom-client bridge: none.  The bridge publishes
+ * the framework's families under the names the in-process registry uses, so a
+ * dashboard written against one works against the other; a prefix is the
+ * caller's choice to namespace them inside a registry it shares with its own
+ * metrics.
+ */
+export const DEFAULT_PROM_CLIENT_NAME_PREFIX = '';
 
 /** Plain options-object shape accepted by {@link promClientRegistry}. */
 export type PromClientAdapterOptionsType = {
@@ -13,7 +24,8 @@ export type PromClientAdapterOptionsType = {
   readonly registry: PromClientRegistryLike;
   /**
    * Optional name prefix, e.g. `'actor_ts_'`.  Applied to every metric
-   * name registered through the adapter.  Default: empty.
+   * name registered through the adapter.  Default
+   * {@link DEFAULT_PROM_CLIENT_NAME_PREFIX}: none.
    */
   readonly namePrefix?: string;
   /**
@@ -34,12 +46,11 @@ export type PromClientAdapterOptionsType = {
 /**
  * Fluent builder for {@link PromClientAdapterOptionsType}:
  *
- *     promClientRegistry(
- *       PromClientAdapterOptions.create()
- *         .withClient(client)
- *         .withRegistry(client.register)
- *         .withNamePrefix('actor_ts_'),
- *     )
+ *     const promOptions = PromClientAdapterOptions.create()
+ *       .withClient(client)
+ *       .withRegistry(client.register)
+ *       .withNamePrefix('actor_ts_');
+ *     system.extension(MetricsExtensionId).enablePromClient(promOptions);
  *
  * `withClient` + `withRegistry` are mandatory — the bridge has nothing to
  * publish into without them.
@@ -90,3 +101,35 @@ export class PromClientAdapterOptionsValidator extends OptionsValidator<PromClie
 export type PromClientAdapterOptions = PromClientAdapterOptionsBuilder | Partial<PromClientAdapterOptionsType>;
 /** Value alias so `PromClientAdapterOptions.create()` / `new PromClientAdapterOptions()` resolve to the builder. */
 export const PromClientAdapterOptions = PromClientAdapterOptionsBuilder;
+
+/**
+ * The slice of the bridge's settings HOCON can supply.  `client` and
+ * `registry` are missing on purpose: both are live objects — the `prom-client`
+ * namespace the application imports and the `Registry` it publishes into —
+ * which a config file cannot hold, so they stay code-only.
+ */
+export type PromClientAdapterConfigDefaults = Pick<PromClientAdapterOptionsType, 'namePrefix' | 'maxSeriesPerFamily'>;
+
+/**
+ * Read `actor-ts.metrics.*` for the prom-client bridge: the prefix, and the
+ * cap the in-process registry reads from the same leaf.
+ *
+ * The `Config` is a **required argument**, and nothing here calls
+ * `Config.load()`.  The one consumer is `MetricsExtension.enablePromClient()`,
+ * which holds an `ActorSystem` and passes `system.config`; `promClientRegistry`
+ * itself stays the pure code path and never reads a file, so a bridge built
+ * without a system behaves exactly as its options say.
+ *
+ * An absent leaf stays absent rather than being filled with its built-in
+ * default, so `mergeOptions` layers the caller's options over this answer per
+ * field.  An empty `name-prefix` is returned as `''` rather than dropped: it is
+ * the published default, not a placeholder, and a file that writes it out has
+ * said something.
+ */
+export function readPromClientAdapterOptionsFromConfig(config: Config): PromClientAdapterConfigDefaults {
+  const keys = ConfigKeys.metrics;
+  const out: { -readonly [K in keyof PromClientAdapterConfigDefaults]: PromClientAdapterConfigDefaults[K] } = {};
+  if (config.hasPath(keys.namePrefix)) out.namePrefix = config.getString(keys.namePrefix);
+  if (config.hasPath(keys.maxSeriesPerFamily)) out.maxSeriesPerFamily = config.getInt(keys.maxSeriesPerFamily);
+  return out;
+}

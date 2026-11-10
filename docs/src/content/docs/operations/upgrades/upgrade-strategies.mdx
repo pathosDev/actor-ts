@@ -26,18 +26,21 @@ caught by the additive patterns below.
 | --- | --- | --- |
 | **v0.15.x → v0.16.0** | **Not safe** (#112) | Every gossip frame carries a `sequence`, and `GossipMessage` gains a required field.  An upgraded peer refuses an old node's frames; an old node ignores an upgraded peer's.  Nothing errors — **membership silently never converges** while both versions run, so the cluster never agrees on who is in it. |
 | **v0.16.0 → v0.17.0** | **Not safe** (#450) | Frames are a tagged JSON tree instead of bare `JSON.stringify` output.  Most legacy traffic decodes unchanged; a legacy body that already had a reserved tag's shape does not.  `__map__`, `__set__`, `__regexp__`, `__bigint__`, `__url__`, `__number__` and `__error__` **throw at any depth**, and a decoder throw costs the **whole connection** along with every frame batched into the same chunk.  Two fail silently instead: `__bytes__` decodes to a `Uint8Array`, `__date__` to an Invalid Date.  The other direction is plainly lossy — an older node reads the tag wrapper as ordinary data. |
+| **v0.17.x → v0.18.0** | **Not safe** (#823) | The cluster wire gains a version, announced in every handshake, and version 2 requires every node address on a frame to name its incarnation.  Unlike the two rows above this one **fails loudly**: a v0.18.0 node refuses an older node's `hello` with a `hello-refused` and a WARN on its own side naming both versions, and an older node logs that frame as unclaimed with the reason in it.  The two never form one cluster. |
 
 **Upgrade the cluster in one step.** Stop every node, then start every node
-on the new version.  No intermediate version makes either leg rollable, so a
-hop from v0.15.x straight to v0.17.0 crosses both breaks and needs the same
-treatment — once, rather than twice.
+on the new version.  No intermediate version makes any of these legs
+rollable, so a hop across several of them needs the same treatment — once,
+rather than once per leg.
 
-**When this ends.** Both breaks exist for the same reason: the cluster
-protocol has no version negotiation, so a node cannot ask a peer what it
-speaks and adapt.
-[#823](https://github.com/pathosDev/actor-ts/issues/823) adds that
-handshake.  Until it lands, a mixed-version window is a hazard rather than a
-supported state, and this table is what to check before an upgrade.
+**From v0.18.0 on, the handshake says so.** Every `hello` and `hello-ack`
+carries the cluster wire versions the node speaks
+([#823](https://github.com/pathosDev/actor-ts/issues/823)), and two nodes
+that share none refuse each other at the handshake — a `hello-refused` with
+the reason, and a WARN on both sides — instead of half-working.  A future
+release that changes the wire can then speak a range of versions and keep a
+rolling upgrade possible; one that raises the minimum is a stop-and-start
+upgrade again, and this table will say which.
 
 ## Code-only upgrades
 
@@ -63,6 +66,47 @@ right; see
 - Replicas ≥ 2.  Single-replica clusters can't drain cleanly.
 - Coordinated shutdown configured with sane phase timeouts.
 - Health checks correctly gate readiness.
+
+### Reading the rollout off the cluster
+
+A rolling update is a window in which two releases of your application run
+in one cluster, and the question an operator keeps asking during it is which
+node runs which.  Have every node state its release:
+
+```hocon
+actor-ts.cluster.app-version = ${?APP_VERSION}
+```
+
+Set `APP_VERSION` in the deployment beside the image tag, and every member
+carries the label in gossip.
+[`GET /cluster/members`](/observability/management/http-endpoints/#get-clustermembers)
+then lists it per member, and every log line that prints a member shows it
+as `app-version=…`, so a stalled rollout reads as a count of members still on
+the old release rather than as a guess.  The label is advisory: nothing
+places, routes or downs on it, and a node that states none is simply shown
+without one.
+
+A value from the environment is read as JSON first wherever it parses as
+JSON.  A version that reads as a number comes back in that number's own
+spelling — `1.10` as `1.1`, `2.0` as `2`, `1e3` as `1000` — so releases `1.1`
+and `1.10` print the same label, a whole number past `Number.MAX_SAFE_INTEGER`
+can come back with other last digits (`20261104123456789` as
+`20261104123456788`), and one that reads as `null`, a list or an object stops
+the start with a `ConfigError`; a version with a second dot (`1.2.3`) or a
+letter (`v1.10`) is unchanged.  Quote such a value inside the variable (`APP_VERSION='"1.10"'`),
+or set it in code with `withAppVersion(...)`.
+
+The label belongs to the run that states it.  A node restarted without one
+— rolled back onto a release that sets none, or deployed without
+`APP_VERSION` — is shown without one, never with the label of the run
+before it: a peer that has not heard of the restart yet still gossips the
+previous run's record, and that record no longer counts for the address.
+
+The first upgrade onto an actor-ts release that carries the field is itself
+a rollout the label covers.  A node still on the older actor-ts drops the
+label from every record it passes on, so for a moment a peer can show a
+member without one — and the member's own gossip puts it back within a few
+rounds.
 
 ## Schema-breaking upgrades
 

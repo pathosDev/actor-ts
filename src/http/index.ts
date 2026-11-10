@@ -83,6 +83,11 @@ export {
   TimeoutOptions,
   TimeoutOptionsBuilder,
   TimeoutOptionsValidator,
+  JwtAuth,
+  jwtClaimsOf,
+  JwtAuthOptions,
+  JwtAuthOptionsBuilder,
+  JwtAuthOptionsValidator,
 } from './middleware/index.js';
 export type {
   BearerTokenAuthOptions,
@@ -100,6 +105,12 @@ export type {
   RequestIdOptionsType,
   BasicAuthOptionsType,
   TimeoutOptionsType,
+  JwtClaims,
+  JwtAlgorithm,
+  JwtAuthOptionsType,
+  JwtPublicJwk,
+  JwtPublicKey,
+  JwtSecret,
 } from './middleware/index.js';
 
 export { entity, marshal, pickRequestSerializer, pickResponseSerializer } from './Marshalling.js';
@@ -148,7 +159,7 @@ export type {
   HttpRedirectMode,
 } from './HttpClientOptions.js';
 
-export { FastifyBackend } from './backend/FastifyBackend.js';
+export { FastifyBackend, fastifyFactoryOptions } from './backend/FastifyBackend.js';
 export { ExpressBackend } from './backend/ExpressBackend.js';
 export { ExpressBackendOptions, ExpressBackendOptionsBuilder, ExpressBackendOptionsValidator } from './backend/ExpressBackendOptions.js';
 export type { ExpressBackendOptionsType } from './backend/ExpressBackendOptions.js';
@@ -156,12 +167,23 @@ export { HonoBackend } from './backend/HonoBackend.js';
 export { HonoBackendOptions, HonoBackendOptionsBuilder, HonoBackendOptionsValidator } from './backend/HonoBackendOptions.js';
 export type { HonoBackendOptionsType } from './backend/HonoBackendOptions.js';
 export { DEFAULT_HTTP_MAX_BODY_BYTES } from './Constants.js';
+export {
+  DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS,
+  DEFAULT_HTTP_SERVER_HTTP2,
+  DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS,
+  HttpServerOptions,
+  HttpServerOptionsBuilder,
+  HttpServerOptionsValidator,
+} from './HttpServerOptions.js';
+export type { HttpServerOptionsType, HttpTlsOptionsType } from './HttpServerOptions.js';
 export { DEFAULT_RESPONSE_SECURITY_HEADERS, PAYLOAD_TOO_LARGE_RESPONSE } from './backend/HttpServerBackend.js';
 export type {
   HttpServerBackend,
   RouteRegistration,
   WebsocketRouteRegistration,
   ServerBinding,
+  ServerListenOptions,
+  ServerOptionsReport,
 } from './backend/HttpServerBackend.js';
 export type {
   WebsocketSocketAdapter,
@@ -177,6 +199,10 @@ export {
   Status,
 } from './Types.js';
 export type { HttpMethod, HttpRequest, HttpResponse } from './Types.js';
+
+// Request attributes — the slot a middleware hands a handler what it
+// established about a request (verified claims, a session).
+export { RequestAttributeKey, attribute, withAttribute } from './RequestAttributes.js';
 
 // HTTP caching middleware (response-cache, rate-limit, idempotency-key).
 export {

@@ -1,7 +1,10 @@
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import { Lazy } from '../../util/Lazy.js';
+import { redactParsedUrlCredentials, redactUrlCredentials } from '../../util/RedactUrlCredentials.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
+import { SseEventBuffer } from './SseEventBuffer.js';
 import { SseOptionsValidator } from './SseOptions.js';
 import type { SseOptions, SseOptionsType } from './SseOptions.js';
 
@@ -18,10 +21,17 @@ export type SseEvent = {
 export type SseCommand = never;  // SSE is read-only
 
 /**
- * Safety cap on the pending event buffer (chars).  A well-behaved server
- * delimits events with `\n\n` frequently; this bounds the damage from one
- * that never does (security audit BRK-2).  1 MiB is far above any real
- * single SSE event.
+ * Safety cap on the pending event buffer (chars).  A well-behaved server ends
+ * an event with a blank line frequently — in any of the three framings the
+ * grammar allows, `\n\n`, `\r\n\r\n` or `\r\r`, all of which reach the
+ * delimiter search as `\n\n` (#1510) — and this bounds the damage from one
+ * that never does (security audit BRK-2).  1 MiB is far above any real single
+ * SSE event.
+ *
+ * Measured against the characters as they *arrive*, while what the buffer
+ * keeps is the normalised form, which is never longer.  So normalising cannot
+ * loosen the cap: a CRLF-framed feed reaches it no later than the same bytes
+ * framed with LF would.
  */
 const SSE_MAX_BUFFER_CHARS = 1_048_576;
 
@@ -38,22 +48,12 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
 
   constructor(options: SseOptions = {}) { super(options); }
 
-  protected configKey(): string { return ConfigKeys.io.broker.sse; }
+  protected configKey(): string { return ConfigKeys.io.broker.sse.root; }
   protected builtInDefaultOptions(): Partial<SseOptionsType> { return {}; }
   protected readOptionsFromConfig(config: Config): Partial<SseOptionsType> {
-    const out: { -readonly [K in keyof SseOptionsType]?: SseOptionsType[K] } = {};
-    if (config.hasPath('url')) out.url = config.getString('url');
-    if (config.hasPath('headers')) {
-      const headers: Record<string, string> = {};
-      for (const [headerName, headerValue] of Object.entries(config.getObject('headers'))) {
-        if (typeof headerValue === 'string') headers[headerName] = headerValue;
-      }
-      out.headers = headers;
-    }
-    if (config.hasPath('idleTimeoutMs')) out.idleTimeoutMs = config.getDuration('idleTimeoutMs');
-    if (config.hasPath('connectTimeoutMs')) out.connectTimeoutMs = config.getDuration('connectTimeoutMs');
-    return out;
+    return readSseOptionsFromConfig(config);
   }
+  protected override retiredLeaves(): RetiredLeaves { return RETIRED_SSE_LEAVES; }
   protected requiredOptions(): ReadonlyArray<keyof SseOptionsType> { return ['url', 'target']; }
   protected override optionsValidator(): SseOptionsValidator { return new SseOptionsValidator(); }
   protected endpointLabel(): string { return this.options.url ?? '<unknown>'; }
@@ -93,10 +93,25 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
     const response = await fetchFunction(this.options.url!, {
       method: 'GET',
       headers: { Accept: 'text/event-stream', ...(this.options.headers ?? {}) },
+      redirect: 'manual',
       signal: this.aborter.signal,
     });
-    if (!response.ok) throw new Error(`SSE connect failed: HTTP ${response.status}`);
-    if (!response.body) throw new Error('SSE connect: no response body');
+    try {
+      // Before `ok`, deliberately: `redirect: 'manual'` surfaces the 3xx
+      // itself, and "HTTP 302" alone would tell an operator nothing about the
+      // policy that produced it.
+      this.refuseRedirect(response);
+      if (!response.ok) throw new Error(`SSE connect failed: HTTP ${response.status}`);
+      this.requireEventStreamContentType(response);
+      if (!response.body) throw new Error('SSE connect: no response body');
+    } catch (rejection) {
+      // A refused response still has an open body nothing will ever read, and
+      // the failure path does not run `disconnectImplementation` — so the
+      // socket to the endpoint that just failed the check would stay up until
+      // the garbage collector got to it.  Aborting the signal releases it.
+      try { this.aborter?.abort(); } catch { /* ignore */ }
+      throw rejection;
+    }
 
     this.streamRunning = true;
     void this.consume(response.body);
@@ -116,10 +131,99 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
 
   /* ----------------------------- internals ----------------------------- */
 
+  /**
+   * Refuse a redirect rather than follow it (#787).
+   *
+   * `fetch` defaults to `redirect: 'follow'`, and the Fetch standard strips
+   * only `Authorization`, `Cookie` and `Proxy-Authorization` when a redirect
+   * crosses origins.  Every other operator-supplied header survives — which
+   * for the feeds this actor exists to consume means the `x-api-key` shape
+   * most LLM and market-data vendors require, replayed verbatim to whatever
+   * host the feed names.  Following also makes a long-lived outbound client a
+   * blind-SSRF primitive: the endpoint, not the configuration, picks the
+   * address the authenticated `GET` actually reaches — link-local addresses
+   * included — and whatever comes back is parsed and fanned into `target`.
+   *
+   * Refusing outright is the whole policy, and that is a choice.  Re-issuing
+   * the request to a same-origin target would need a strip-list of credential
+   * header names that rots as vendors invent new ones, and it would buy an
+   * operator nothing they cannot get by configuring the final URL: an endpoint
+   * that has moved now fails the connect and degrades through the base class'
+   * backoff and circuit breaker like any other unreachable one, which is
+   * visible rather than silent.  It also needs no option, so there is no way
+   * to configure the hole back open.
+   *
+   * The `Location` is the redirector's string, so it is named the way
+   * `HttpClient` names one — see {@link redirectTarget} — because a
+   * `Location` carrying userinfo would otherwise put a credential into the
+   * `Error` that fails the connect, and so onto the `BrokerReconnectFailed`
+   * that ends the cycle.  Not `BrokerDisconnected`, as this said before: a
+   * connect that never succeeded reaches no `handleConnectionLost`, which is
+   * that event's only publish site (#749, #787).
+   */
+  private refuseRedirect(response: FetchResponse): void {
+    // The 3xx class, and only with a `Location`: that pair is exactly what the
+    // runtime would have followed.  A 304 or a bodyless 300 carries none and
+    // is left to the ordinary `response.ok` check.
+    if (response.status < 300 || response.status >= 400) return;
+    const location = response.headers.get('location');
+    if (location === null) return;
+    throw new Error(
+      `SSE connect refused a redirect: HTTP ${response.status} to `
+      + `${this.redirectTarget(location)}.  Redirects are never followed, because every `
+      + 'custom request header — vendor API keys included — would be replayed to the '
+      + 'redirect target.  Point `url` at the final endpoint.',
+    );
+  }
+
+  /**
+   * `location` as a refusal names it: resolved against the connect URL, which
+   * is the URL `fetch` would have requested next, with exactly its credential
+   * masked — the one the `Location` names, or the one a path-only reference
+   * inherits from `url`.  The scan for a string nothing parsed reads up to the
+   * last `@` as userinfo and would name `https://registry.npmjs.org/@types%2fnode`
+   * as `https://***@types%2fnode` (found while #1458); only a `Location` that
+   * does not parse is left to it.
+   */
+  private redirectTarget(location: string): string {
+    let target: URL;
+    try {
+      target = new URL(location, this.options.url);
+    } catch {
+      return redactUrlCredentials(location);
+    }
+    return redactParsedUrlCredentials(target);
+  }
+
+  /**
+   * Refuse a body that does not announce itself as `text/event-stream` (#787).
+   *
+   * Nothing downstream of here can tell a feed from anything else: `consume`
+   * splits whatever arrives on `\n\n` and forwards every block that parses to
+   * a `data:` field, so an endpoint that answers the request with some other
+   * document has a channel into the application's event handling for free.
+   * The `Accept` header asks for the right type; this is the half that checks
+   * the answer.
+   *
+   * A missing header is refused too.  It is the SSE specification's required
+   * type, the ask is explicit, and treating "absent" as "probably fine" would
+   * leave the check trivially bypassable by the only party it constrains.
+   */
+  private requireEventStreamContentType(response: FetchResponse): void {
+    const contentType = response.headers.get('content-type') ?? '';
+    // Trimmed and lowercased because the parameters (`; charset=utf-8`) and
+    // the case of a media type are both the server's to choose.
+    if (contentType.trim().toLowerCase().startsWith('text/event-stream')) return;
+    throw new Error(
+      `SSE connect refused a non-event-stream body: content-type ${contentType || '<absent>'}, `
+      + 'expected text/event-stream.',
+    );
+  }
+
   private async consume(stream: ReadableStream<Uint8Array>): Promise<void> {
     const reader = stream.getReader();
     const decoder = new TextDecoder('utf-8');
-    let buffer = '';
+    const buffer = new SseEventBuffer();
     try {
       while (this.streamRunning) {
         const { done, value } = await reader.read();
@@ -128,11 +232,14 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
         // no event at all — which is exactly how a well-behaved server holds
         // an idle feed open (#753).
         this.noteInboundActivity();
-        buffer += decoder.decode(value, { stream: true });
+        const text = decoder.decode(value, { stream: true });
         // Cap the pending buffer: a hostile / MITM'd endpoint that streams
-        // bytes without an event delimiter (`\n\n`) would otherwise grow it
-        // without bound (security audit BRK-2).
-        if (buffer.length > SSE_MAX_BUFFER_CHARS) {
+        // bytes without ever ending an event would otherwise grow it without
+        // bound (security audit BRK-2).  Measured on what the chunk
+        // *would* make pending, before any of it is split off, so the bound is
+        // the one the cap has always enforced.  What it does not bound is the
+        // work spent reaching it — that is `SseEventBuffer`'s job (#749).
+        if (buffer.pendingLength() + text.length > SSE_MAX_BUFFER_CHARS) {
           this.streamRunning = false;
           try { this.aborter?.abort(); } catch { /* ignore */ }
           this.handleConnectionLost(
@@ -140,13 +247,9 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
           );
           return;
         }
-        let index = buffer.indexOf('\n\n');
-        while (index >= 0) {
-          const block = buffer.slice(0, index);
-          buffer = buffer.slice(index + 2);
-          const ev = parseEventBlock(block);
-          if (ev && this.options.target) this.options.target.tell(ev);
-          index = buffer.indexOf('\n\n');
+        for (const block of buffer.push(text)) {
+          const event = parseEventBlock(block);
+          if (event && this.options.target) this.options.target.tell(event);
         }
       }
     } catch (e) {
@@ -162,8 +265,56 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
   }
 }
 
+/* ----------------------------- HOCON reader ----------------------------- */
+
+/**
+ * The camelCase spellings SSE's own leaves had before #1443, mapped to the
+ * leaves that replaced them — see `BrokerActor.retiredLeaves`.
+ */
+const RETIRED_SSE_LEAVES: RetiredLeaves = {
+  idleTimeoutMs: 'idle-timeout',
+  connectTimeoutMs: 'connect-timeout',
+};
+
+/**
+ * Read the `actor-ts.io.broker.sse` block's own leaves off the system config,
+ * at the full paths `keys` holds; the reconnect / breaker / buffer leaves are
+ * `BrokerActor`'s.  An unset leaf is omitted.  The two deadlines are
+ * durations, so `60s` and a bare millisecond count read alike.
+ *
+ * `headers` is read as a block whose keys are header names — the operator's
+ * data, not leaves of the framework's — and a non-string value in it is
+ * skipped.  `target` names an actor and has no leaf.
+ */
+export function readSseOptionsFromConfig(
+  config: Config,
+  keys: typeof ConfigKeys.io.broker.sse = ConfigKeys.io.broker.sse,
+): Partial<SseOptionsType> {
+  const out: { -readonly [K in keyof SseOptionsType]?: SseOptionsType[K] } = {};
+  if (config.hasPath(keys.url)) out.url = config.getString(keys.url);
+  if (config.hasPath(keys.headers)) {
+    const headers: Record<string, string> = {};
+    for (const [headerName, headerValue] of Object.entries(config.getObject(keys.headers))) {
+      if (typeof headerValue === 'string') headers[headerName] = headerValue;
+    }
+    out.headers = headers;
+  }
+  if (config.hasPath(keys.idleTimeout)) out.idleTimeoutMs = config.getDuration(keys.idleTimeout);
+  if (config.hasPath(keys.connectTimeout)) out.connectTimeoutMs = config.getDuration(keys.connectTimeout);
+  return out;
+}
+
 /* --------------------- inline SSE wire-format parser ------------------- */
 
+/**
+ * Cut one completed block into its fields.
+ *
+ * Splitting on `'\n'` alone is correct because of where this is called from
+ * and nowhere else: `SseEventBuffer` normalises the grammar's CRLF and lone-CR
+ * terminators to LF on the way in, so a block can no longer carry a `\r` for
+ * `split` to leave glued to the end of every value (#1510).  Anything that
+ * ever hands this function unbuffered wire text has to normalise it first.
+ */
 function parseEventBlock(block: string): SseEvent | null {
   let event = 'message';
   let id: string | undefined;
@@ -182,12 +333,46 @@ function parseEventBlock(block: string): SseEvent | null {
   return { event, data: dataLines.join('\n'), id };
 }
 
+/**
+ * The subset of `Headers` this actor reads off a response.  An `interface`
+ * because it prescribes a function head; the two shapes beside it are plain
+ * data and stay `type`s.
+ */
+interface FetchResponseHeaders {
+  get(name: string): string | null;
+}
+
+/**
+ * The subset of a `fetch` `Response` this actor reads.
+ *
+ * `headers` is here because neither the redirect refusal nor the content-type
+ * assertion was *expressible* before it: the declaration exposed `ok`,
+ * `status` and `body` only, so the `Location` of a 3xx and the type of the
+ * body were both invisible to this file (#787).
+ */
+type FetchResponse = {
+  readonly ok: boolean;
+  readonly status: number;
+  readonly headers: FetchResponseHeaders;
+  readonly body: ReadableStream<Uint8Array> | null;
+};
+
+/**
+ * The subset of `RequestInit` this actor sends.
+ *
+ * `redirect` is **required**, which is the point: omitting it is what let the
+ * runtime default of `'follow'` apply, and a required field turns forgetting
+ * it back into a compile error rather than a silent policy (#787).
+ */
+type FetchRequestOptions = {
+  readonly method: string;
+  readonly headers: Record<string, string>;
+  readonly redirect: 'follow' | 'error' | 'manual';
+  readonly signal?: AbortSignal;
+};
+
 interface FetchModule {
-  (url: string, options: { method: string; headers: Record<string, string>; signal?: AbortSignal }): Promise<{
-    ok: boolean;
-    status: number;
-    body: ReadableStream<Uint8Array> | null;
-  }>;
+  (url: string, options: FetchRequestOptions): Promise<FetchResponse>;
 }
 
 const fetchLazy: Lazy<Promise<FetchModule>> = Lazy.of(async () => {

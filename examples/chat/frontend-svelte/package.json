@@ -3,6 +3,10 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "imports": {
+    "#lib": "./src/lib",
+    "#lib/*": "./src/lib/*"
+  },
   "scripts": {
     "build": "vite build && node scripts/copy-build.mjs",
     "dev": "vite dev",
@@ -10,15 +14,18 @@
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
   },
   "devDependencies": {
-    "@sveltejs/adapter-static": "^3.0.10",
-    "@sveltejs/kit": "^2.69.3",
-    "@sveltejs/vite-plugin-svelte": "^7.2.0",
-    "svelte": "^5.56.5",
-    "svelte-check": "^4.7.3",
-    "typescript": "~5.9.3",
-    "vite": "^8.1.4"
+    "@sveltejs/adapter-static": "^4.0.1",
+    "@sveltejs/kit": "^3.1.1",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "svelte": "^5.57.3",
+    "svelte-check": "^4.7.8",
+    "typescript": "~6.0.3",
+    "vite": "^8.3.6"
   },
   "dependencies": {
-    "ts-pattern": "^5.9.0"
+    "ts-pattern": "^5.9.2"
+  },
+  "overrides": {
+    "cookie": "^2.0.2"
   }
 }

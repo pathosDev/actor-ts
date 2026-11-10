@@ -28,6 +28,18 @@
  *
  * **Compare** uses `crypto.timingSafeEqual` so a hash-mismatch leaks
  * no timing info about *where* the mismatch occurred.
+ *
+ * **Async, not `scryptSync`.**  Both functions await `crypto.scrypt`,
+ * which runs the key derivation on the runtime's thread pool and hands
+ * the result back through a callback.  The sync form did the same work
+ * on the event loop — the one thread every actor in the backend runs on
+ * — so each login held every room, every DM and every other user's
+ * frames for the whole ~10 ms, and four of them at once (see
+ * `credentials.ts`) for ~40 ms.  Measured with the parameters above
+ * (#1540): during four concurrent derivations a 1 ms timer fired 25
+ * times on Node, 126 on Bun and 342 on Deno, where the sync form let it
+ * fire zero times on all three.  `tests/unit/ci/NoSyncWorkInHandlers.
+ * test.ts` refuses a `scryptSync` mention returning to `examples/`.
  */
 import * as crypto from 'node:crypto';
 
@@ -39,12 +51,22 @@ const SCRYPT_PARAMS = {
 } as const;
 const KEY_LEN = 32;
 
+/** `crypto.scrypt` as a promise — Node's callback form, off the event loop. */
+function scrypt(plain: string, salt: Buffer): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(plain, salt, KEY_LEN, SCRYPT_PARAMS, (error, derived) => {
+      if (error) reject(error);
+      else resolve(derived);
+    });
+  });
+}
+
 /**
  * Verify `plain` against a stored `<salt-hex>:<hash-hex>` record.
  * Returns `false` for malformed records and for mismatches alike —
  * no distinguishing error message exposed.
  */
-export function verifyPassword(plain: string, stored: string): boolean {
+export async function verifyPassword(plain: string, stored: string): Promise<boolean> {
   const sep = stored.indexOf(':');
   if (sep <= 0 || sep === stored.length - 1) return false;
   let salt: Buffer;
@@ -58,7 +80,7 @@ export function verifyPassword(plain: string, stored: string): boolean {
   if (salt.length === 0 || expected.length !== KEY_LEN) return false;
   let computed: Buffer;
   try {
-    computed = crypto.scryptSync(plain, salt, KEY_LEN, SCRYPT_PARAMS);
+    computed = await scrypt(plain, salt);
   } catch {
     return false;
   }
@@ -74,8 +96,8 @@ export function verifyPassword(plain: string, stored: string): boolean {
  * Not used at server start-up: the demo's hashes are pre-baked into
  * source for repeatability.
  */
-export function hashPassword(plain: string): string {
+export async function hashPassword(plain: string): Promise<string> {
   const salt = crypto.randomBytes(16);
-  const hash = crypto.scryptSync(plain, salt, KEY_LEN, SCRYPT_PARAMS);
+  const hash = await scrypt(plain, salt);
   return `${salt.toString('hex')}:${hash.toString('hex')}`;
 }

@@ -25,12 +25,13 @@ bun add @aws-sdk/client-dynamodb
 
 Es ist dieselbe SDK-Familie, die das S3-Object-Storage-Backend schon nutzt — wer
 das einsetzt, kennt die Runtime-Situation also bereits. Das Framework importiert
-sie lazy, erst wenn ein DynamoDB-Store zum ersten Mal genutzt wird.
+sie erst, wenn ein DynamoDB-Store öffnet — beim Start, oder bei der ersten
+Verwendung, wenn das Öffnen beim Start abgeschaltet ist.
 
 ## Einrichtung
 
-Registriere Journal + Snapshot-Store an der `PersistenceExtension` und erhalte
-einen einsatzbereiten Durable-State-Store. Setz die Verbindung einmal am
+Registriere alle drei Stores über den `plugins`-Slot der Optionen des Systems
+und wähle sie in seiner Konfiguration aus. Setz die Verbindung einmal am
 Composite, dann erben sie alle drei Komponenten:
 
 ```ts
@@ -42,24 +43,10 @@ import {
   DynamoDbDurableStateStoreOptions,
   DynamoDbJournalOptions,
   DynamoDbSnapshotStoreOptions,
-  PersistenceExtensionId,
   RegisterDynamoDbPluginsOptions,
   registerDynamoDbPlugins,
 } from 'actor-ts/persistence';
 
-const systemOptions = ActorSystemOptions.create()
-  // Die DynamoDB-Plugins als aktives Journal + Snapshot-Store auswählen.
-  .withConfig({
-    'actor-ts': {
-      persistence: {
-        journal: { plugin: 'actor-ts.persistence.journal.dynamodb' },
-        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.dynamodb' },
-      },
-    },
-  });
-const system = ActorSystem.create('my-app', systemOptions);
-
-const ext = system.extension(PersistenceExtensionId);
 const dynamoDbSnapshotStoreOptions = DynamoDbSnapshotStoreOptions.create()
   .withKeepN(3);
 const registerOptions = RegisterDynamoDbPluginsOptions.create()
@@ -67,8 +54,28 @@ const registerOptions = RegisterDynamoDbPluginsOptions.create()
   .withJournal(DynamoDbJournalOptions.create() /* .withEventsTable(...) */)
   .withSnapshotStore(dynamoDbSnapshotStoreOptions)
   .withDurableStateStore(DynamoDbDurableStateStoreOptions.create() /* .withTable(...) */);
-const { durableStateStore } = registerDynamoDbPlugins(ext, registerOptions);
+const systemOptions = ActorSystemOptions.create()
+  // Select the DynamoDB plugins for all three stores.
+  .withConfig({
+    'actor-ts': {
+      persistence: {
+        journal: { plugin: 'actor-ts.persistence.journal.dynamodb' },
+        'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.dynamodb' },
+        'durable-state': { plugin: 'actor-ts.persistence.durable-state.dynamodb' },
+      },
+    },
+  })
+  .withPersistence({ plugins: [(persistence) => registerDynamoDbPlugins(persistence, registerOptions)] });
+const system = ActorSystem.create('my-app', systemOptions);
 ```
+
+Das Plug-in läuft innerhalb von `ActorSystem.create`, also sind alle drei
+Stores registriert, bevor `create` zurückkehrt, und die, die die Konfiguration
+auswählt, öffnen als Teil des Starts — siehe [Stores beim Start
+öffnen](/de/persistence/overview/#stores-beim-start-öffnen).
+`registerDynamoDbPlugins` gibt außerdem den Durable-State-Store zurück, falls
+du ihn lieber von Hand verdrahtest; ein so verdrahteter Store ist kein
+ausgewählter, er öffnet also bei der ersten Verwendung statt mit dem Start.
 
 Credentials kommen aus der Standard-AWS-Provider-Kette (Umgebung, Shared Config,
 IAM-Rolle) — daran ist nichts actor-ts-spezifisch. Mit
@@ -86,6 +93,116 @@ const dynamoDbJournalOptions = DynamoDbJournalOptions.create()
   .withClientConfig({ credentials: { accessKeyId: 'local', secretAccessKey: 'local' } });
 ```
 
+## Aus HOCON konfigurieren
+
+Die Plugin-Id **ist** der Config-Abschnitt: Der Block, der nach der Id benannt
+ist, ist der Block, den dieses Plugin liest (#872).  Die gesamte
+Erreichbarkeits-Hälfte — Region, Endpoint und die Tabellennamen — kann aus der
+`application.conf` kommen, `registerDynamoDbPlugins(persistence)` braucht damit gar keine
+Optionen mehr:
+
+```ts
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerDynamoDbPlugins } from 'actor-ts/persistence';
+
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerDynamoDbPlugins(persistence)],
+});
+const system = ActorSystem.create('my-app', systemOptions);
+```
+
+```hocon
+actor-ts.persistence {
+  journal        { plugin = "actor-ts.persistence.journal.dynamodb" }
+  snapshot-store { plugin = "actor-ts.persistence.snapshot-store.dynamodb" }
+  durable-state  { plugin = "actor-ts.persistence.durable-state.dynamodb" }
+
+  journal.dynamodb        { region = "eu-central-1", events-table = "actor_ts_events" }
+  snapshot-store.dynamodb { region = "eu-central-1", keep-n = 5 }
+  durable-state.dynamodb  { region = "eu-central-1", table = "actor_ts_durable_state" }
+}
+```
+
+`endpoint` ist das Blatt für `dynamodb-local` oder LocalStack; leer gelassen
+bedeutet es den echten Dienst.  **Credentials haben gar kein Blatt** — weggelassen
+liefert sie die Default-Chain des SDK (`AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY`, ein Instance-Profile oder IAM Roles for Service
+Accounts), also genau die Behandlung, die auch das S3-Backend des
+Object-Storage-Plugins bekommt.  `clientConfig` ebenso wenig — die ganze
+Optionsfläche des SDK, die code-only bleibt — und eine vorab gebaute
+`operations`-Fassade oder ein `serializer` sind lebende Objekte.
+
+Was du am Client tatsächlich einstellst, hat **typisierte Blätter** (#1490), jedes
+als Kommentar in der Referenzkonfiguration, damit Weglassen die eigene Auflösung
+des SDK behält — `AWS_MAX_ATTEMPTS` oder `AWS_RETRY_MODE`, dann die geteilte
+Config-Datei, dann den Default des SDK — statt sie zu überstimmen:
+
+```hocon
+actor-ts.persistence.journal.dynamodb {
+  region             = "eu-central-1"
+  max-attempts       = 5          # attempts per request, the first included (SDK default 3)
+  retry-mode         = adaptive   # standard (the SDK default) or adaptive
+  request-timeout    = 10s        # one attempt's limit, after which it fails (default: none)
+  connection-timeout = 2s         # opening the connection (default: none)
+}
+```
+
+Jedes erreicht das SDK nur, wenn es gesetzt ist.  `retry-mode` nimmt `standard`
+oder `adaptive` — die eigenen Wörter des SDK, schon kebab-case — und alles andere
+wird beim Start mit dem Key und den beiden Werten abgelehnt, weil das SDK jedes
+andere Wort als `standard` lesen und nichts sagen würde.  Die beiden Timeouts
+werden zu `requestTimeout` und `connectionTimeout` des Request-Handlers, und
+`request-timeout` setzt `throwOnRequestTimeout` daneben: Ohne das loggt der
+Handler nur eine Warnung, wenn ein Request seinen Timeout überdauert, das Blatt
+würde also nichts abbrechen.  Es begrenzt einen Versuch, und die Retry-Strategie
+darf es erneut versuchen, ein Aufruf kann also bis zu `max-attempts` davon plus
+den Backoff dazwischen dauern.  Ein aus diesen Blättern gebauter Handler ersetzt
+den Default-Handler des SDK, ein Connection-Timeout, den `AWS_DEFAULTS_MODE`
+liefern würde, gilt dann also nicht mehr; setze `connection-timeout` neben
+`request-timeout`, wenn du dich auf einen verlässt.
+
+Der Store prüft sie beim Bauen: Eine Anzahl von Versuchen oder ein Timeout, das
+keine positive ganze Zahl ist, oder ein Timeout, das länger ist, als ein Timer
+halten kann, wird mit einem `OptionsError` abgelehnt.  Ebenso ein Blatt neben
+dem, was es in `clientConfig` ersetzt — `maxAttempts` oder `retryMode`, eine
+`retryStrategy`, die beide gegenstandslos macht, oder ein `requestHandler` —
+unter Nennung beider Seiten, statt dass eine davon stillschweigend gewinnt.
+
+Auch das **Provisioning** der Tabellen — wie eine Tabelle angelegt wird, die der
+Store beim Öffnen anlegt — hat Blätter (#1490), unter allen drei
+Blöcken: `billing-mode` (`"pay-per-request"`), `table-ready-timeout` (`30s`) und
+`auto-create-tables` (`on`).  Die Werte des Billing-Modus sind kebab-case, wie
+jeder HOCON-Wert, und der Reader bildet sie auf die Schreibweise von AWS ab:
+`pay-per-request` ist `PAY_PER_REQUEST` und `provisioned` ist `PROVISIONED`.
+`PAY_PER_REQUEST` in einer Config-Datei wird beim Start abgelehnt, mit dem Key
+und den beiden Werten, die er annimmt.
+
+Das Kapazitätspaar wird als **Kommentar** ausgeliefert, weil es veröffentlicht
+unter dem Default `pay-per-request` für jeden Store abgelehnt würde — AWS
+ignoriert Kapazität dort, und der Validator sagt das, statt einen Tippfehler
+unbemerkt durchzulassen.  **Eine `provisioned`-Tabelle ohne Paar wird mit 5
+Lese- und 5 Schreib-Kapazitätseinheiten angelegt**
+(`DEFAULT_DYNAMODB_PROVISIONED_CAPACITY_UNITS`), aus einer Config-Datei wie aus
+dem Code — nenne das Paar also, wenn du bewusst provisionierst:
+
+```hocon
+actor-ts.persistence.journal.dynamodb {
+  billing-mode = provisioned
+  provisioned-throughput { read-capacity-units = 25, write-capacity-units = 10 }
+}
+```
+
+Setzt du eine Hälfte ohne die andere, startet der Store nicht und nennt die
+fehlende Hälfte — kein Default ergänzt das Paar stillschweigend.
+
+**`durable-state.plugin` wählt jetzt den Durable-State-Store dieses Backends
+aus.**  Früher wurde er eifrig gebaut und von `registerDynamoDbPlugins`
+zurückgegeben, ließ sich also nur verdrahten, indem man diese Instanz durch den
+Anwendungscode reichte.  Das zurückgegebene Handle funktioniert weiterhin und
+liefert dieselbe Instanz — sie wird nur gebaut, wenn sie zum ersten Mal
+angefragt wird, statt bei der Registrierung, und bei einem ausgewählten Store
+ist das der Start.
+
 ## Wann du es einsetzt
 
 - **Du bist auf AWS und willst keine Datenbank betreiben.** Keine Instanz, kein
@@ -100,28 +217,32 @@ const dynamoDbJournalOptions = DynamoDbJournalOptions.create()
 
 ```ts
 type DynamoDbConnection = {
-  region?:       string;                    // eu-central-1, …
-  endpoint?:     string;                    // http(s)-URL — dynamodb-local, LocalStack
-  clientConfig?: Record<string, unknown>;   // { credentials, maxAttempts, … }
-  operations?:   DynamoDbOperations;        // vorgebaute / geteilte Fassade
+  region?:              string;                    // eu-central-1, …
+  endpoint?:            string;                    // http(s) URL — dynamodb-local, LocalStack
+  clientConfig?:        Record<string, unknown>;   // { credentials, … } — the code-only long tail
+  operations?:          DynamoDbOperations;        // pre-built / shared façade
+  maxAttempts?:         number;                    // attempts per request, SDK default 3  (max-attempts)
+  retryMode?:           'standard' | 'adaptive';   // SDK default 'standard'               (retry-mode)
+  requestTimeoutMs?:    number;                    // requestTimeout, fails the attempt    (request-timeout)
+  connectionTimeoutMs?: number;                    // connectionTimeout                    (connection-timeout)
 };
 
 type DynamoDbTableProvisioning = {
-  autoCreateTables?:      boolean;   // Default true
-  billingMode?:           'PAY_PER_REQUEST' | 'PROVISIONED';   // Default On-Demand
+  autoCreateTables?:      boolean;   // default true
+  billingMode?:           'PAY_PER_REQUEST' | 'PROVISIONED';   // default on-demand
   provisionedThroughput?: { readCapacityUnits: number; writeCapacityUnits: number };
-  tableReadyTimeoutMs?:   number;    // Default 30_000
+  tableReadyTimeoutMs?:   number;    // default 30_000
 };
 
 interface DynamoDbJournalOptions extends DynamoDbConnection, DynamoDbTableProvisioning {
-  eventsTable?: string;   // Default 'actor_ts_events'
+  eventsTable?: string;   // default 'actor_ts_events'
 }
 interface DynamoDbSnapshotStoreOptions extends DynamoDbConnection, DynamoDbTableProvisioning {
-  snapshotsTable?: string;   // Default 'actor_ts_snapshots'
-  keepN?:          number;   // neueste N pro pid; Default 3, <=0 behält alle
+  snapshotsTable?: string;   // default 'actor_ts_snapshots'
+  keepN?:          number;   // keep newest N per pid; default 3, <=0 keeps all
 }
 interface DynamoDbDurableStateStoreOptions extends DynamoDbConnection, DynamoDbTableProvisioning {
-  table?: string;   // Default 'actor_ts_durable_state'
+  table?: string;   // default 'actor_ts_durable_state'
 }
 ```
 
@@ -129,7 +250,9 @@ Die Optionen werden bei der Konstruktion des Stores validiert. Zwei Regeln
 lohnen sich besonders: ein Tabellenname wird gegen DynamoDBs eigenen Zeichensatz
 und die Längengrenze geprüft, und Kapazitätseinheiten werden abgelehnt, solange
 `billingMode` nicht `PROVISIONED` ist — AWS ignoriert sie sonst still, was den
-Fehler unsichtbar macht.
+Fehler unsichtbar macht.  Die umgekehrte Lücke ist erlaubt und still:
+`PROVISIONED` ohne `provisionedThroughput` legt jede Tabelle mit 5 Lese- und 5
+Schreib-Kapazitätseinheiten an.
 
 ## Tabellen
 
@@ -139,11 +262,27 @@ Fehler unsichtbar macht.
 | `actor_ts_snapshots` | `pid` | `seq` (N) | ein Item pro Snapshot |
 | `actor_ts_durable_state` | `pid` | — | ein Item pro persistenceId |
 
-Mit `autoCreateTables` (dem Default) legt jeder Store seine Tabelle beim ersten
-Zugriff an und **wartet, bis sie `ACTIVE` ist** — `CreateTable` kehrt zurück,
-während die Tabelle noch `CREATING` ist, und jede Operation darauf scheitert bis
-zum Umschalten. Das Warten passiert im Lazy-Init: der erste Aufrufer blockiert,
-alle dahinter bekommen eine funktionierende Tabelle.
+Mit `autoCreateTables` (dem Default) legt jeder Store seine Tabelle beim Öffnen
+an und **wartet, bis sie `ACTIVE` ist** — `CreateTable` kehrt zurück, während
+die Tabelle noch `CREATING` ist, und jede Operation darauf scheitert bis zum
+Umschalten. Das Warten gehört zum Öffnen: Ein ausgewählter Store öffnet beim
+Start, also wartet der Start — oder, wenn das Öffnen beim Start abgeschaltet
+ist, der erste Aufrufer —, und alle dahinter bekommen eine funktionierende
+Tabelle.  Beim Start zählt das Warten gegen das Budget der Phase
+`persistence-start`, 30 s, sofern `withCoordinatedStartup` kein anderes setzt —
+so viel wie das Default-`table-ready-timeout` —, ein erster Start, der seine
+Tabellen erst anlegen muss, braucht also ein größeres Budget oder vorab
+angelegte Tabellen.
+
+Mit abgeschaltetem `autoCreateTables` — Tabellen, die du selbst anlegst —
+beschreibt jeder Store stattdessen beim Öffnen seine eigene Tabelle: ein
+`DescribeTable`, einmal pro Öffnen und nie pro Operation.  Ein Endpoint, den der
+Knoten nicht erreicht, und eine Tabelle, die es nicht gibt, lassen beide das
+Öffnen mit einem Fehler scheitern, der den Store nennt, also scheitert der Start
+statt erst die erste persistierte Nachricht.  `DescribeTable` liest die Metadaten
+der Tabelle und braucht kein Schreibrecht, ist aber ein eigener Aufruf: Eine
+Rolle, die auf die Item-Aufrufe beschränkt ist, braucht zusätzlich
+`dynamodb:DescribeTable` auf der Tabelle des Stores.
 
 ## Concurrency-Modell
 
@@ -234,9 +373,24 @@ import { Aside } from '@astrojs/starlight/components';
   Service abgelehnt. Halte Events klein, was Event-Sourcing ohnehin will.
 </Aside>
 
-<Aside type="caution" title="Compression- / Encryption-Optionen werden ignoriert">
-  Per-Call-`PersistenceOptions` gelten nur für die Object-Storage-Stores, wie bei
-  jedem SQL-Backend, Cassandra und MongoDB.
+<Aside type="caution" title="Per-Actor-Verschlüsselung und -Integrität schützen keine Events">
+  Per-Call-`PersistenceOptions` gelten nur für die Object-Storage-Stores und
+  die SQL-Snapshot- und -Durable-State-Stores ([#1802](https://github.com/pathosDev/actor-ts/issues/1802)), nicht für
+  Cassandra oder MongoDB.  Der DynamoDB-Snapshot-Store
+  und der DynamoDB-Durable-State-Store deklarieren, dass sie keinen der
+  drei Hooks honorieren, also **verweigert** ein `encryption()`- oder
+  `integrity()`-Override gegen einen der beiden **den Actor beim Start**,
+  und `compression()` warnt einmal
+  ([#960](https://github.com/pathosDev/actor-ts/issues/960)).
+
+  Das Journal wird nie gefragt.  `encryption()` und `integrity()` an
+  einem `PersistentActor` schützen nur seine Snapshots: Jedes Journal
+  speichert Events als Klartext-JSON, nichts erkennt ein an Ort und
+  Stelle manipuliertes Event, und datenbankseitige Kontrollen —
+  Transparent Data Encryption, ein verschlüsseltes Volume,
+  Zugriffskontrolle — sind heute der einzige Schutz für Events.  Ein
+  Actor, der dieses Journal mit dem Object-Storage-Snapshot-Store
+  kombiniert, startet sauber und schreibt seine Events hier im Klartext.
 </Aside>
 
 ## Wie geht's weiter

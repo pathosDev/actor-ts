@@ -171,6 +171,42 @@ ignoriert, die er noch nicht behandeln kann.
 Exhaustiveness-Prüfung; greife bewusst dazu, wenn "ignoriere den
 Rest" die richtige Semantik ist.
 
+### Sag es, wenn du ablehnst — `this.unhandled(m)`
+
+`.otherwise()` sagt nur *dieser Arm hat es gefangen*.  Was der Handler
+tut, entscheidet, ob eine abgelehnte Nachricht überhaupt eine Spur
+hinterlässt — und die Antwort des Frameworks ist eine Zeile:
+
+```ts
+private onUnhandled(message: Command): void {
+  this.unhandled(message);
+}
+```
+
+`Actor.unhandled` verpackt die Nachricht in einen `DeadLetter`, der
+**diesen** Actor als Empfänger nennt, publiziert ihn auf dem
+[Event-Stream](/de/fundamentals/event-stream/) und zählt
+`actor_unhandled_total{class}` hoch.
+
+Der Counter ist nicht redundant zum Brief.  Die
+[Dead-Letter-Queue](/de/operations/dead-letters/) steht per Default auf
+`store = off`, also zählt auf einem unkonfigurierten System niemand
+einen Dead Letter — der Counter ist das einzige Ratensignal, das es
+gibt, und genau das willst du, wenn ein Rolling Upgrade anfängt, einen
+Frame zu senden, den dieser Build nicht kennt.
+
+**Automatisch erkannt wird hier nichts.**  Die Runtime kann eine
+absichtlich ignorierte Nachricht nicht von einer verlorenen
+unterscheiden; ein Handler, der einfach zurückkehrt, erzeugt also
+weiterhin nichts — die richtige Antwort für einen Actor, der eine ganze
+Nachrichtenklasse bewusst ignoriert.  Ablehnen ist eine Aussage, die du
+triffst.
+
+Die typed API sagt dasselbe von der anderen Seite: ein Behavior, das
+`Behaviors.unhandled` zurückgibt, landet auf genau diesem Pfad.  Zwei
+Dinge namens `unhandled` — eine Methode, die du aufrufst, und ein
+Sentinel, den du zurückgibst.
+
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`.exhaustive()` motzt und der Fehler ist undurchsichtig">

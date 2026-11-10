@@ -16,7 +16,7 @@ const metrics = system.extension(MetricsExtensionId);
 
 // Inside an HTTP handler:
 get(async () => {
-  const text = exportPrometheus(metrics.registry);
+  const text = exportPrometheus(metrics.get());
   return { status: 200, body: text, contentType: 'text/plain; version=0.0.4' };
 });
 ```
@@ -80,6 +80,65 @@ as a healthy target with no series. Scrape prom-client's own
 `/metrics` route in that setup and leave `enableMetricsEndpoint`
 off.
 
+## Scope: per process, per thread
+
+Every `ActorSystem` owns its own registry, and `GET /metrics` exports
+exactly the one belonging to the system that bound the route.  Nothing
+aggregates across systems, and two deployment shapes follow from that:
+
+- **Cluster nodes.**  Each node exports itself.  That is the Prometheus
+  model — scrape every instance, aggregate in the TSDB — and it is the
+  opposite of what [DevTools](/observability/devtools/overview/) does,
+  which federates figures across nodes for its own views.  A number that
+  agrees across nodes in DevTools is expected to differ per target under
+  `/metrics`.
+- **Worker threads.**  Each worker of a [worker mesh](/cluster/worker-mesh/)
+  — including the ones `actor-ts.parallelism.workers` starts for you
+  ([parallelism](/fundamentals/parallelism/)) — boots its own
+  `ActorSystem` with its own registry, and no management endpoint runs
+  inside a worker.  The mesh **relays** them: every
+  `actor-ts.worker-mesh.metrics-relay-interval` (default `10s`) the main
+  thread pulls each worker's registry and exports it beside its own, so
+  `GET /metrics` on the main thread is the whole process.  While the
+  relay runs, every series carries a `thread` label — `main` for the
+  main thread's own samples, `worker-0`, `worker-1`, … for each worker's
+  (the slot, which is also the thread's name) — because two threads
+  report the same stock families under the same labels, and the label is
+  what keeps them apart.  Aggregate across it for a process figure:
+
+  ```promql
+  # Messages delivered by the whole process, all threads
+  sum without (thread) (rate(actor_messages_delivered_total[5m]))
+  # …and per thread, to see whether the offloaded actors carry the load
+  sum by (thread) (rate(actor_messages_delivered_total[5m]))
+  # A worker that has stopped answering the relay
+  worker_mesh_snapshot_age_seconds > 30
+  ```
+
+  A worker's figures are at most one relay interval old.  A worker that
+  is alive but has stopped answering keeps its last snapshot exported —
+  a series that vanishes is the failure mode `503` above exists to
+  prevent — and `worker_mesh_snapshot_age_seconds{worker="worker-N"}`
+  on the main thread says for how long; a worker that leaves the mesh
+  takes its series with it, and a respawned slot comes back under the
+  same label with its counters starting over, a reset `rate()` handles.
+  The first request goes out when the mesh starts and it is also what
+  switches a worker's registry on, so nothing has to be enabled inside
+  a worker; a worker's counting starts with its first request, so an
+  `enable()` on the main thread after the mesh is up takes effect on the
+  next tick.  `metrics-relay-interval = 0` switches the relay off, and
+  with it the `thread` label: a single-threaded system, or a mesh with
+  the relay off, exports exactly the bytes it exported before the relay
+  existed.  Switching workers on is therefore the one moment every
+  series' label set changes — a rule over a raw family
+  (`actor_mailbox_dropped_total > 0`) keeps working, one that compares a
+  family against itself across the change needs the `sum without
+  (thread)` above.  The relay covers a mesh started by hand with
+  `WorkerMesh.start` and the one the parallelism extension starts alike;
+  [OffloadPool](/fundamentals/blocking-and-cpu-bound-work/#offloadpool-pure-functions-on-worker-threads)
+  workers run no `ActorSystem`, and the `offload_*` families are the
+  main thread's already.
+
 ## Manual wiring
 
 If you're not using the management routes, route a `GET /metrics`
@@ -92,15 +151,98 @@ import { exportPrometheus } from 'actor-ts/metrics';
 const routes = path('metrics',
   get(async () => ({
     status: 200,
-    body: exportPrometheus(metrics.registry),
+    body: exportPrometheus(metrics.get()),
     contentType: 'text/plain; version=0.0.4',
     headers: {},
   })),
 );
 ```
 
+`exportPrometheus(registry)` and `prometheusHandler(registry)` render
+**that registry** — the main thread's own — and nothing else.  On a
+system running a [worker mesh](/cluster/worker-mesh/) the relayed worker
+snapshots live on the `MetricsExtension`, not in the registry, so the
+merged view the management route serves is
+`renderPrometheusSamples(collectAll())`:
+
+```ts
+import { path, get } from 'actor-ts/http';
+import { MetricsExtensionId, renderPrometheusSamples } from 'actor-ts/metrics';
+
+const routes = path('metrics',
+  get(async () => ({
+    status: 200,
+    body: renderPrometheusSamples(system.extension(MetricsExtensionId).collectAll()),
+    contentType: 'text/plain; version=0.0.4',
+    headers: {},
+  })),
+);
+```
+
+`collectAll()` is `collect()` until a mesh registers its relay, so the
+second form is safe to use everywhere and the first is a documented
+half on a mesh.
+
 Bind on a dedicated port if you can — Prometheus's scrapes are
 periodic and shouldn't share the app port.
+
+### The renderer trusts its input
+
+`renderPrometheusSamples` writes family names and label keys **raw** —
+the text format offers no escaping for either position, because they
+*are* its grammar.  What makes that safe is the registry: it refuses a
+name outside `[a-zA-Z_:][a-zA-Z0-9_:]*` and a label key outside
+`[a-zA-Z_][a-zA-Z0-9_]*` when the series is minted, so anything it
+collected has already been checked.  The renderer does not check again,
+deliberately — that would cost a regular expression per family on every
+scrape, for a question that was answered once at registration.
+
+So the obligation travels with the input.  If you implement
+`MetricsRegistry` yourself, or hand `renderPrometheusSamples` a list you
+assembled rather than collected, **you** own that check.  A sample named
+`x_total 1\nnode_up{job="prod"} 0\n#` renders as those three lines, and
+whatever scrapes it cannot tell the forged `node_up` from a real one —
+an alert on `node_up == 0` is silenced as effectively as by a fixed
+outage.  The two grammars are exported for exactly this, and the two
+reserved keys with them:
+
+```ts
+import {
+  PROMETHEUS_LABEL_NAME_PATTERN,
+  PROMETHEUS_METRIC_NAME_PATTERN,
+  RESERVED_LABEL_PREFIX,
+  THREAD_LABEL,
+  renderPrometheusSamples,
+  type MetricSample,
+} from 'actor-ts/metrics';
+
+const usableLabelKey = (key: string): boolean =>
+  PROMETHEUS_LABEL_NAME_PATTERN.test(key)
+  && key !== THREAD_LABEL
+  && !key.startsWith(RESERVED_LABEL_PREFIX);
+
+const trustworthy = (sample: MetricSample): boolean =>
+  PROMETHEUS_METRIC_NAME_PATTERN.test(sample.name)
+  && Object.keys(sample.labels).every(usableLabelKey);
+
+// `samples` came from somewhere this package never checked.
+const renderForeign = (samples: ReadonlyArray<MetricSample>): string =>
+  renderPrometheusSamples(samples.filter(trustworthy));
+```
+
+The grammars are the injection half; the two reserved keys are the forgery
+the grammars do not catch.  `thread` is the label the exposition stamps
+itself while a worker mesh is relaying (#1570), and `__` is the server's
+own namespace — a `__name__` among a sample's labels is honoured by a
+scrape job running `honor_labels: true`, which then files the sample under
+whatever name that label carries (#1513).
+
+The worker-mesh relay is the worked example: a snapshot arriving from a
+worker crosses a thread boundary, so the relay re-checks every name and
+every label key — both grammars and both reservations, through the same
+helper the registry uses — before the samples reach the renderer.  Nothing
+minted by `system.metrics` needs this: the check already happened at the
+call that minted it.
 
 ## Naming conventions
 
@@ -147,6 +289,35 @@ samples.
 The exporter handles the formatting; you don't construct it
 manually.
 
+A label value is the one field that carries data, and the 0.0.4 escape
+table defines exactly three escapes for it — `\\`, `\n` and `"`.  The
+exporter emits those three and nothing else: every other C0 control
+character (carriage return, NUL, the unit separator, …) is **removed**
+from the value and from the `# HELP` text rather than escaped, because an
+escape outside that table makes `prometheus/common`-based readers —
+Pushgateway, the `node_exporter` textfile collector, `promtool check
+metrics` — reject the *whole* scrape body, not just the one series.  A
+tab survives; so does a line feed, as `\n`.
+
+**The same strip also runs when a series is minted**, one layer below the
+exporter, so two values that differ only in control characters are
+**one series whose counter sums** rather than two.  Measured:
+`counter('m_total', { msg: 'ab' }).inc(1)` beside
+`counter('m_total', { msg: 'a\x1fb' }).inc(2)` leaves the registry
+holding one series and renders the single row `m_total{msg="ab"} 3`.
+
+That the two merge is a correctness property, not a convenience.  Until
+#1414 the strip ran at render time only, the registry kept two children,
+and the body carried two rows whose metric name and label set were
+byte-identical — a duplicated series, which a Prometheus scrape rejects
+by rejecting the **whole body**, so one label value with a unit
+separator in it took every other family down with it.
+
+A control character in a label value is still a bug at its source, so
+strip or replace it **there** rather than relying on the exporter: the
+merge keeps the exposition valid, it does not make the two subjects one
+subject.
+
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Don't expose /metrics publicly">
@@ -188,5 +359,7 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Stock metrics](/observability/metrics/stock-metrics/)** —
   the framework's auto-recorded metrics that appear here.
 
-The [`exportPrometheus`](/api/functions/exportprometheus/)
-function reference covers the full API.
+`exportPrometheus`, `prometheusHandler` and `renderPrometheusSamples`
+ship from the `actor-ts/metrics` sub-path.  The generated
+[API reference](/api/) is built from the root `actor-ts` barrel alone,
+so this page is the reference for the three of them.

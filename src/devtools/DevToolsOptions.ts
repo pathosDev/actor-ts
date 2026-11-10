@@ -1,7 +1,11 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
+import { mergeOptions, stripUndefined } from '../util/OptionsMerge.js';
+import { ConfigKeys } from '../config/ConfigKeys.js';
+import type { Config } from '../config/Config.js';
 import type { HttpServerBackend, Middleware } from '../http/index.js';
 import type { Cluster } from '../cluster/Cluster.js';
+import { BUS_EVENT_BUFFER_DEFAULT } from './protocol/EventStreamFrames.js';
 import type { ReplayFoldRegistration } from './replay/ReplayRegistry.js';
 
 /**
@@ -17,7 +21,17 @@ export type DevToolsPanelOptionsType = {
   readonly actors?: boolean;
   /** Cluster topology, shard maps, membership timeline (#204).  Default `true`. */
   readonly cluster?: boolean;
-  /** Span flame graph / waterfall (#217).  Default `true`. */
+  /**
+   * Span flame graph / waterfall (#217).  Default `true`.
+   *
+   * Its Payload column carries the serialised body of every actor
+   * message that passed while DevTools was attached, so it belongs with
+   * {@link timeTravel}, {@link deadLetters} and {@link eventStream}
+   * anywhere those contents are not the operator's to read.  The
+   * switch-these-off guidance named only the other three, which left the
+   * panel with the broadest payload coverage of the four off the list
+   * (#1420).
+   */
   readonly tracing?: boolean;
   /** Per-actor explain plan (#218).  Default `true`. */
   readonly explain?: boolean;
@@ -35,8 +49,8 @@ export type DevToolsPanelOptionsType = {
    * actually recording — `deadLetters.store` defaults to `'off'`.
    *
    * Shows message payloads, so it is switched off alongside
-   * {@link timeTravel} anywhere the payloads are not the operator's to
-   * read.
+   * {@link tracing} and {@link timeTravel} anywhere the payloads are not
+   * the operator's to read.
    */
   readonly deadLetters?: boolean;
   /**
@@ -44,9 +58,9 @@ export type DevToolsPanelOptionsType = {
    * Default `true`.
    *
    * Shows every published event, payload included, so it is switched off
-   * alongside {@link timeTravel} and {@link deadLetters} anywhere those
-   * payloads are not the operator's to read.  Nothing is observed until a
-   * panel actually subscribes.
+   * alongside {@link tracing}, {@link timeTravel} and {@link deadLetters}
+   * anywhere those payloads are not the operator's to read.  Nothing is
+   * observed until a panel actually subscribes.
    */
   readonly eventStream?: boolean;
   /**
@@ -180,6 +194,28 @@ export type DevToolsOptionsType = {
   /** How often buffered spans are flushed to the panel, in ms.  Default `250`. */
   readonly spanFlushIntervalMs?: number;
   /**
+   * Let the attach switch message-payload capture on.  Default `true`.
+   *
+   * On rather than off because the export that made this a safety
+   * question is closed: since #1420 the tee withholds
+   * `actor.message.payload` from a tracer the application already had
+   * whenever DevTools is what switched capture on, so the only consumer
+   * of the capture is the tracing panel the operator deliberately
+   * attached.  Defaulting to off would empty that panel's Payload column
+   * for everyone to protect nobody, and would contradict the documented
+   * behaviour that recording runs from attach with no button to press.
+   *
+   * So this is an opt-*out*, and the deployment it exists for is the
+   * shared staging or demo box whose DevTools port is reachable by more
+   * people than the message bodies should be.  It is narrower than
+   * {@link DevToolsPanelOptionsType.tracing}, which was the only control
+   * before it and takes the spans, the timings and the flame graph with
+   * it: this one leaves the panel live and empties one column.  A capture
+   * the application set for itself is untouched either way — DevTools
+   * declines to add an export, it never removes one.
+   */
+  readonly capturePayloads?: boolean;
+  /**
    * Ceiling on events the bus tail buffers between flushes.  Default `500`.
    *
    * Past it the oldest are dropped and the panel is told how many — a tail
@@ -310,6 +346,17 @@ export class DevToolsOptionsBuilder extends OptionsBuilder<DevToolsOptionsType> 
     return this.set('spanFlushIntervalMs', intervalMs);
   }
 
+  /**
+   * Let the attach switch message-payload capture on.  Default `true`.
+   *
+   * No parameter default, unlike the acknowledgements above: the field's
+   * own default is `true`, so a no-argument `withCapturePayloads()` would
+   * be a call that reads like a decision and changes nothing.
+   */
+  withCapturePayloads(value: boolean): this {
+    return this.set('capturePayloads', value);
+  }
+
   /** Folds the time-travel panel uses to reconstruct state. */
   withReplayFolds(folds: ReadonlyArray<ReplayFoldRegistration>): this {
     return this.set('replayFolds', folds);
@@ -421,7 +468,16 @@ export function isLoopbackHost(host: string): boolean {
   return LOOPBACK_HOSTS.includes(host.toLowerCase());
 }
 
-/** Built-in defaults, merged under HOCON-free explicit options. */
+/**
+ * Built-in defaults — the bottom layer of {@link mergeDevToolsOptions}, under
+ * the config file and the caller's options.
+ *
+ * `eventBufferCapacity` and `eventFlushIntervalMs` joined it with the HOCON
+ * block (#881): both were literals at their read site in `DevToolsServer`,
+ * which is fine while nothing publishes them and a lie the moment
+ * `reference.conf` does — a published default needs a constant to be pinned
+ * against, or the two drift with nothing able to notice.
+ */
 export const DEVTOOLS_DEFAULTS = {
   host: '127.0.0.1',
   port: 9333,
@@ -433,5 +489,123 @@ export const DEVTOOLS_DEFAULTS = {
   statsIntervalMs: 1_000,
   spanBufferCapacity: 10_000,
   spanFlushIntervalMs: 250,
+  capturePayloads: true,
+  eventBufferCapacity: BUS_EVENT_BUFFER_DEFAULT,
+  eventFlushIntervalMs: 250,
   replayAutoCapture: true,
 } as const satisfies Partial<DevToolsOptionsType>;
+
+/**
+ * Read `actor-ts.devtools.*` into the shape `attach` and `mount` layer under
+ * the caller's options.  Only keys actually present are returned, so an
+ * absent one falls through to the built-in default instead of landing as an
+ * explicit `undefined` — the rule {@link mergeOptions} encodes.
+ *
+ * The block cannot start DevTools — `DevTools.attach(system)` is always a
+ * code call — so it changes *how* an attachment behaves, never *whether* one
+ * happens.  That is also why the security rule matters here rather than
+ * being an afterthought: a config-sourced `host` reaches
+ * {@link DevToolsOptionsValidator} exactly as a code-set one does, and since
+ * `auth` and `ipAllowlist` are middleware with no HOCON form,
+ * `allow-remote` is the only answer to the host rule a file can give.
+ *
+ * Leaves are read one literal `ConfigKeys.devtools.*` at a time, each with
+ * the getter of its kind and onto its own field.  A table loop would serve
+ * the dead-key gate as well: it changes each leaf and watches this reader's
+ * answer, whatever the reader's source looks like (#1425).
+ */
+export function readDevToolsOptionsFromConfig(config: Config): Partial<DevToolsOptionsType> {
+  const keys = ConfigKeys.devtools;
+  const out: { -readonly [K in keyof DevToolsOptionsType]?: DevToolsOptionsType[K] } = {};
+  if (config.hasPath(keys.host)) out.host = config.getString(keys.host);
+  if (config.hasPath(keys.port)) out.port = config.getInt(keys.port);
+  if (config.hasPath(keys.allowRemote)) out.allowRemote = config.getBoolean(keys.allowRemote);
+  if (config.hasPath(keys.serveUi)) out.serveUi = config.getBoolean(keys.serveUi);
+  if (config.hasPath(keys.allowedOrigins)) {
+    out.allowedOrigins = config.getStringList(keys.allowedOrigins);
+  }
+  if (config.hasPath(keys.mailboxSampleInterval)) {
+    out.mailboxSampleIntervalMs = config.getDuration(keys.mailboxSampleInterval);
+  }
+  if (config.hasPath(keys.mailboxSampleLimit)) {
+    out.mailboxSampleLimit = config.getInt(keys.mailboxSampleLimit);
+  }
+  if (config.hasPath(keys.statsInterval)) {
+    out.statsIntervalMs = config.getDuration(keys.statsInterval);
+  }
+  if (config.hasPath(keys.spanBufferCapacity)) {
+    out.spanBufferCapacity = config.getInt(keys.spanBufferCapacity);
+  }
+  if (config.hasPath(keys.spanFlushInterval)) {
+    out.spanFlushIntervalMs = config.getDuration(keys.spanFlushInterval);
+  }
+  if (config.hasPath(keys.capturePayloads)) {
+    out.capturePayloads = config.getBoolean(keys.capturePayloads);
+  }
+  if (config.hasPath(keys.eventBufferCapacity)) {
+    out.eventBufferCapacity = config.getInt(keys.eventBufferCapacity);
+  }
+  if (config.hasPath(keys.eventFlushInterval)) {
+    out.eventFlushIntervalMs = config.getDuration(keys.eventFlushInterval);
+  }
+  if (config.hasPath(keys.replayAutoCapture)) {
+    out.replayAutoCapture = config.getBoolean(keys.replayAutoCapture);
+  }
+  const panels = readPanelsFromConfig(config);
+  if (panels !== undefined) out.panels = panels;
+  return out;
+}
+
+/**
+ * The `panels` sub-block, on the same "absent stays absent" rule: a file that
+ * names no panel yields `undefined`, not ten `undefined` switches, so it
+ * cannot flatten a set of switches the caller passed in code.
+ */
+function readPanelsFromConfig(config: Config): DevToolsPanelOptionsType | undefined {
+  const keys = ConfigKeys.devtools.panels;
+  const out: { -readonly [K in keyof DevToolsPanelOptionsType]?: boolean } = {};
+  if (config.hasPath(keys.actors)) out.actors = config.getBoolean(keys.actors);
+  if (config.hasPath(keys.cluster)) out.cluster = config.getBoolean(keys.cluster);
+  if (config.hasPath(keys.tracing)) out.tracing = config.getBoolean(keys.tracing);
+  if (config.hasPath(keys.explain)) out.explain = config.getBoolean(keys.explain);
+  if (config.hasPath(keys.timeTravel)) out.timeTravel = config.getBoolean(keys.timeTravel);
+  if (config.hasPath(keys.profiler)) out.profiler = config.getBoolean(keys.profiler);
+  if (config.hasPath(keys.deadLetters)) out.deadLetters = config.getBoolean(keys.deadLetters);
+  if (config.hasPath(keys.eventStream)) out.eventStream = config.getBoolean(keys.eventStream);
+  if (config.hasPath(keys.config)) out.config = config.getBoolean(keys.config);
+  if (config.hasPath(keys.send)) out.send = config.getBoolean(keys.send);
+  return Object.keys(out).length === 0 ? undefined : out;
+}
+
+/**
+ * Layer the three sources in the project's precedence order — explicit
+ * options over HOCON over {@link DEVTOOLS_DEFAULTS} — with the one departure
+ * {@link mergeOptions} cannot make on its own.
+ *
+ * `mergeOptions` is shallow, which is right for every scalar field here and
+ * wrong for `panels`: that is a bag of ten independent switches, so replacing
+ * it wholesale turns "switch one panel off in code" into "switch every panel
+ * the operator disabled in `application.conf` back on" — time travel, dead
+ * letters and the event stream among them, the three that surface message
+ * payloads.  Merging it switch by switch applies the same precedence one
+ * level deeper: a panel set in code wins, a panel only the file mentions
+ * keeps the file's answer.
+ */
+export function mergeDevToolsOptions(
+  fromConfig: Partial<DevToolsOptionsType>,
+  fromExplicit: Partial<DevToolsOptionsType>,
+): DevToolsOptionsType {
+  const merged = mergeOptions<DevToolsOptionsType>(DEVTOOLS_DEFAULTS, fromConfig, fromExplicit);
+  const panels = mergePanels(fromConfig.panels, fromExplicit.panels);
+  return panels === undefined ? merged : { ...merged, panels };
+}
+
+/** Explicit switches over configured ones, switch by switch. */
+function mergePanels(
+  fromConfig: DevToolsPanelOptionsType | undefined,
+  fromExplicit: DevToolsPanelOptionsType | undefined,
+): DevToolsPanelOptionsType | undefined {
+  if (fromConfig === undefined) return fromExplicit;
+  if (fromExplicit === undefined) return fromConfig;
+  return { ...fromConfig, ...stripUndefined(fromExplicit) };
+}

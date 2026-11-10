@@ -194,7 +194,12 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   This is by design — message contents may contain PII or
   large payloads.  Add custom attributes manually where it's
-  safe and useful.
+  safe and useful.  The default holds until payload capture is
+  switched on — by `captureMessagePayloads(true)` in your own
+  code, or by attaching DevTools, which switches it on for the
+  whole system but
+  [withholds the bodies from a tracer you already had](/observability/devtools/tracing/)
+  until the detach.
 </Aside>
 
 <Aside type="caution" title="`pipeTo` doesn't propagate active span">

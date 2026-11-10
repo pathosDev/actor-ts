@@ -1,3 +1,11 @@
+import {
+  DEFAULT_HEALTH_CHECK_TIMEOUT_MS,
+  HealthCheckRegistryOptionsValidator,
+  type HealthCheckRegistryOptions,
+  type HealthCheckRegistryOptionsType,
+} from './HealthCheckRegistryOptions.js';
+import { stripUndefined } from '../util/OptionsMerge.js';
+
 /** Return value of a health check.  `status=true` means healthy. */
 export type HealthCheckResult = {
   readonly name: string;
@@ -65,10 +73,38 @@ export function isHealthy(results: ReadonlyArray<HealthCheckResult>): boolean {
  * `healthChecksOf(system)`.  Application checks go into that same
  * registry, which is what keeps `/ready` and the gRPC health service from
  * ever disagreeing about what "ready" means.
+ *
+ * **Every check runs against a deadline** (#467).  A probe aggregates all of
+ * them into one response, so without a per-check budget the slowest check is
+ * the response time and a check that never settles is a probe that never
+ * answers — which an orchestrator reads as a failed probe, with no clue as to
+ * which dependency caused it.  `checkTimeoutMs` bounds one check; past it the
+ * registry answers *for* the check and its siblings still report normally.
+ * The deadline is a property of the registry rather than of a single check,
+ * because that is what an operator can set from `application.conf`:
+ * `actor-ts.management.health-checks.check-timeout`.
  */
 export class HealthCheckRegistry {
   private readonly liveness: HealthCheckFunction[] = [];
   private readonly readiness: HealthCheckFunction[] = [];
+  private readonly checkTimeoutMs: number;
+
+  /**
+   * `healthChecksOf(system)` builds the per-system registry with the settings
+   * behind `actor-ts.management.health-checks`; a hand-built registry takes
+   * whatever it is passed and the built-in defaults for the rest.
+   *
+   * Validated here, once, on the merged settings — the same rules a
+   * config-sourced value faces, because they are the same values.
+   */
+  constructor(options: HealthCheckRegistryOptions = {}) {
+    const settings = {
+      checkTimeoutMs: DEFAULT_HEALTH_CHECK_TIMEOUT_MS,
+      ...stripUndefined(options as Partial<HealthCheckRegistryOptionsType>),
+    };
+    new HealthCheckRegistryOptionsValidator().validate(settings);
+    this.checkTimeoutMs = settings.checkTimeoutMs;
+  }
 
   /**
    * Register a liveness check; the return value removes it again.
@@ -101,16 +137,53 @@ export class HealthCheckRegistry {
   }
 
   async checkLiveness(): Promise<HealthCheckResult[]> {
-    return Promise.all(this.liveness.map(async (check) => {
-      try { return await check(); }
-      catch (err) { return { name: 'unknown', status: false, detail: String(err) }; }
-    }));
+    return Promise.all(this.liveness.map((check) => this.runWithDeadline(check)));
   }
 
   async checkReadiness(): Promise<HealthCheckResult[]> {
-    return Promise.all(this.readiness.map(async (check) => {
-      try { return await check(); }
-      catch (err) { return { name: 'unknown', status: false, detail: String(err) }; }
-    }));
+    return Promise.all(this.readiness.map((check) => this.runWithDeadline(check)));
   }
+
+  /**
+   * Run one check, answering for it if it outlasts `checkTimeoutMs`.
+   *
+   * **A timed-out check has no name.**  The name lives inside the
+   * `HealthCheckResult` the check never returned, so the registry has nothing
+   * to report but the same `'unknown'` the throw path has always used — the
+   * deadline goes in the `detail`, which is the only field that can carry it.
+   * That is a real limitation of registering checks as bare functions and not
+   * an oversight to fix here: naming a slow check needs `addReadiness` to take
+   * a name, which changes a public signature.
+   *
+   * The loser of the race is abandoned rather than cancelled — a
+   * `HealthCheckFunction` returns a promise and promises do not cancel — so a
+   * genuinely stuck check stays pending for the life of the process.  It holds
+   * no handle of the framework's and is not re-entered; the next probe starts
+   * a fresh call.  The timer is always cleared, so a check that wins the race
+   * leaves nothing behind to keep the event loop alive.
+   */
+  private async runWithDeadline(check: HealthCheckFunction): Promise<HealthCheckResult> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<HealthCheckResult>((resolve) => {
+      timer = setTimeout(() => resolve({
+        name: 'unknown',
+        status: false,
+        detail: `health check did not answer within ${this.checkTimeoutMs}ms`,
+      }), this.checkTimeoutMs);
+    });
+    try {
+      return await Promise.race([runCheck(check), deadline]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
+/**
+ * Invoke a check and turn any failure into a result, including one thrown
+ * synchronously before a promise ever exists.
+ */
+async function runCheck(check: HealthCheckFunction): Promise<HealthCheckResult> {
+  try { return await check(); }
+  catch (err) { return { name: 'unknown', status: false, detail: String(err) }; }
 }

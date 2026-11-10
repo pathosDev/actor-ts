@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * The JVM arm's entry point (#27).
@@ -39,6 +40,16 @@ public final class Main {
     private static final int PING_PONG_ITERATIONS = 20;
     private static final int PING_PONG_EXCHANGES = 10_000;
     private static final int PING_PONG_WARMUP = 10;
+    private static final int PARALLEL_LIGHT_ITERATIONS = 200;
+    private static final int PARALLEL_LIGHT_WARMUP = 100;
+    private static final int PARALLEL_LIGHT_ROUNDS = 5_000;
+    private static final int PARALLEL_HEAVY_ITERATIONS = 50;
+    private static final int PARALLEL_HEAVY_WARMUP = 20;
+    private static final int PARALLEL_HEAVY_ROUNDS = 100_000;
+
+    private static final String PARALLEL_NOTE =
+            "Sixty-four actors on the default dispatcher, which spreads them over every core; "
+            + "the sixty-four asks per iteration are issued from the driver thread and joined.";
 
     /** Generous by design: this turns a deadlock into a failure, not a bound on a measurement. */
     private static final Duration REPLY_TIMEOUT = Duration.ofSeconds(60);
@@ -95,6 +106,11 @@ public final class Main {
                         return completed.longValue();
                     }));
 
+            results.add(parallelCase(system, refs.parallelWorkers(), "load=light",
+                    PARALLEL_LIGHT_ITERATIONS, PARALLEL_LIGHT_WARMUP, PARALLEL_LIGHT_ROUNDS));
+            results.add(parallelCase(system, refs.parallelWorkers(), "load=heavy",
+                    PARALLEL_HEAVY_ITERATIONS, PARALLEL_HEAVY_WARMUP, PARALLEL_HEAVY_ROUNDS));
+
             if (Harness.SMOKE_MODE) {
                 System.out.println("  smoke mode - " + results.size()
                         + " case(s) executed, results NOT written (one unwarmed iteration "
@@ -104,6 +120,64 @@ public final class Main {
             }
         } finally {
             system.terminate();
+        }
+    }
+
+    /**
+     * One {@code parallel-workload} row: every call sends one message to each of
+     * the sixty-four workers, joins the replies, and counts the ones that carry
+     * the result the work must produce.  The checksum over every reply — warmup
+     * included — is published with the row, and report.ts recomputes it from
+     * js/workload.ts (#1565).
+     */
+    private static Harness.ScenarioResult parallelCase(
+            ActorSystem<?> system,
+            List<ActorRef<Actors.Work>> workers,
+            String caseName,
+            int iterations,
+            int warmup,
+            int rounds) throws Exception {
+        ParallelWorkload workload = new ParallelWorkload(system, workers, rounds);
+        Harness.ScenarioResult measured = Harness.measure("parallel-workload", caseName, "msg",
+                iterations, Actors.PARALLEL_ACTORS, warmup, PARALLEL_NOTE, workload::run);
+        return measured.withParallelWorkload(Actors.PARALLEL_ACTORS, rounds, workload.checksum());
+    }
+
+    private static final class ParallelWorkload {
+        private final ActorSystem<?> system;
+        private final List<ActorRef<Actors.Work>> workers;
+        private final int rounds;
+        private int messageIndex;
+        private long checksum;
+
+        ParallelWorkload(ActorSystem<?> system, List<ActorRef<Actors.Work>> workers, int rounds) {
+            this.system = system;
+            this.workers = workers;
+            this.rounds = rounds;
+        }
+
+        long run() {
+            int message = messageIndex++;
+            List<CompletableFuture<Integer>> replies = new ArrayList<>(workers.size());
+            for (int actor = 0; actor < workers.size(); actor++) {
+                int seed = Actors.workSeed(actor, message);
+                replies.add(AskPattern.<Actors.Work, Integer>ask(
+                        workers.get(actor),
+                        replyTo -> new Actors.Work(seed, rounds, replyTo),
+                        REPLY_TIMEOUT,
+                        system.scheduler()).toCompletableFuture());
+            }
+            long correct = 0;
+            for (int actor = 0; actor < workers.size(); actor++) {
+                int reply = replies.get(actor).join();
+                if (reply == Actors.workRounds(Actors.workSeed(actor, message), rounds)) correct++;
+                checksum = (checksum + Integer.toUnsignedLong(reply)) & 0xFFFF_FFFFL;
+            }
+            return correct;
+        }
+
+        long checksum() {
+            return checksum;
         }
     }
 

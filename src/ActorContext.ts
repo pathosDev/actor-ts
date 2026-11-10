@@ -6,6 +6,9 @@ import type { ActorOptions } from './ActorOptions.js';
 import type { EntityContext } from './EntityContext.js';
 import type { Logger } from './Logger.js';
 import type { Option } from './util/Option.js';
+import type { ThrottleOptions, ThrottleOnExcess } from './ThrottleOptions.js';
+import type { OffloadRunOptions } from './worker/OffloadPool.js';
+import type { OffloadTask } from './worker/OffloadTask.js';
 
 /** Behaviour is just a message handler. Used for become/unbecome. */
 export type Receive<T> = (message: T) => void | Promise<void>;
@@ -135,6 +138,14 @@ export interface ActorContext<TMessage = unknown> {
    * sends it once and has no way to send it again (#729).  A watcher that
    * cannot be reached at all — it has already stopped — gets a dead letter, so
    * the loss is visible rather than silent.
+   *
+   * A `RemoteActorRef` is watched across the cluster (#918): the far node
+   * reports the stop, answers a path it cannot resolve at once with
+   * `existenceConfirmed = false`, and a node that is downed or removed
+   * surfaces as `addressTerminated = true`, synthesised from membership.  On a
+   * system that has not joined a cluster, or for a ref shape the framework
+   * cannot watch, the call records the subject and **warns** that no
+   * `Terminated` can come — it never fails silently.
    */
   watch(ref: ActorRef): ActorRef;
 
@@ -157,6 +168,12 @@ export interface ActorContext<TMessage = unknown> {
    * there, and it is exempt from this actor's mailbox bound and throttle for
    * the same reason the `Terminated` it replaces is (#729) — a death is
    * announced once.
+   *
+   * It is also what {@link stash} parks.  The behavior is handed `message`, so
+   * parking it parks a protocol message, and it replays on `unstashAll()` like
+   * any other (#1098).  That is the one thing a plain {@link watch} cannot
+   * offer: there the parked message is the signal itself, and the registration
+   * that would admit it a second time was retired by the first delivery.
    *
    * Last call wins: `watchWith` on an already-watched ref replaces whatever the
    * previous `watch`/`watchWith` registered, and a later plain `watch` drops the
@@ -193,6 +210,19 @@ export interface ActorContext<TMessage = unknown> {
    * Buffer the message currently being handled.  It is reinserted into the
    * mailbox when `unstashAll()` is called.  Throws if called outside a
    * user-message handler or if the stash is full.
+   *
+   * A death-watch notification is the one message whose round trip is not
+   * symmetric, and it is worth knowing which half you are on before you park
+   * one (#1098).  A registration is consumed by the death it describes, so it
+   * is already gone when the replay arrives.  Under {@link watchWith} that
+   * costs nothing — what gets parked is the domain message the behavior was
+   * handed, and it comes back as the ordinary user message it always was.
+   * Under a plain {@link watch} the parked message *is* the `Terminated`, and
+   * the cell has nothing left to recognise it by: it becomes a dead letter
+   * instead of a second delivery.  So park a death you mean to come back to
+   * only when you registered it with `watchWith`; otherwise handle it where it
+   * arrives, or record what you need from it before stashing something of your
+   * own.
    */
   stash(): void;
 
@@ -265,36 +295,33 @@ export interface ActorContext<TMessage = unknown> {
 
   /** Remove any active throttle, restoring unlimited dequeue rate. */
   cancelThrottle(): void;
+
+  /**
+   * Run a pure function on a worker thread and get its result back
+   * (#1558) — the system's default `OffloadPool`, built from
+   * `actor-ts.offload-pool.*` on first use.  `task` names an export of a
+   * module (`defineOffloadTask`), because a function cannot cross a thread;
+   * `args` are structured-cloned, and so is the result.
+   *
+   * The result is a **later message**: the handler that started the run has
+   * returned by the time it arrives, so feed it back to yourself
+   * (`pipeTo`, a `tell` to `self`) rather than touching state from the
+   * continuation as if it were still the same turn.
+   */
+  offload<TArgs extends readonly unknown[], TResult>(
+    task: OffloadTask<TArgs, TResult>,
+    args: TArgs,
+    options?: OffloadRunOptions,
+  ): Promise<TResult>;
 }
 
 /**
- * What to do with a user message dequeued while the actor's
- * {@link ActorContext.throttle | throttle} bucket is empty.
+ * The throttle option types live in `./ThrottleOptions.ts` alongside the
+ * rest of the Options family (the fluent builder and the validator);
+ * re-exported here so they travel with the {@link ActorContext.throttle}
+ * method that consumes them.
  */
-export type ThrottleOnExcess =
-  /**
-   * *(default)* Don't dequeue — pause the message-pump until tokens
-   * replenish, then resume normally.  Natural backpressure: the
-   * mailbox queues up, every message eventually processes, latency
-   * grows under load.
-   */
-  | 'pause'
-  /**
-   * Dequeue the message and discard it (with a debug log).  Useful
-   * for telemetry-style traffic where staleness is worse than loss.
-   */
-  | 'drop';
-
-export type ThrottleOptions = {
-  /** Token-refill rate, tokens per second.  Required; must be > 0. */
-  readonly qps: number;
-  /** Bucket capacity.  Default: `qps` (one second of refill). */
-  readonly burst?: number;
-  /** What to do when the bucket is empty.  Default: `'pause'`. */
-  readonly onExcess?: ThrottleOnExcess;
-  /** Time source — pass a deterministic clock for tests.  Default: `Date.now`. */
-  readonly now?: () => number;
-};
+export type { ThrottleOptions, ThrottleOnExcess };
 
 /**
  * Actor-scoped scheduler.  A fresh `startSingleTimer`/`startTimerWithFixedDelay`

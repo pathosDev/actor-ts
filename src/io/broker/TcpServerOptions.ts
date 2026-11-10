@@ -23,7 +23,11 @@ export interface TcpServerOptionsType extends BrokerCommonOptionsType {
   readonly bindPort?: number;
   /** Frame extraction, applied per accepted connection.  Default `{ kind: 'bytes' }`. */
   readonly framing?: TcpFraming;
-  /** Subscriber for every connection event and inbound frame.  Required. */
+  /**
+   * Subscriber for every connection event and inbound frame.  Required.  No
+   * HOCON leaf: an `ActorRef` names a live actor in this process, which a
+   * config file cannot denote.
+   */
   readonly target?: ActorRef<TcpServerMessage>;
   /**
    * Serve TLS instead of plaintext.  Carries the certificate **material**,

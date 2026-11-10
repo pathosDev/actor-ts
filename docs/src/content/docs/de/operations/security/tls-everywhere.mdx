@@ -14,10 +14,12 @@ Cert-Material jede Komponente braucht.
 import { TcpTransport, Cluster, ClusterOptions } from 'actor-ts/cluster';
 
 const transport = new TcpTransport(self, log, {
-  cert: fs.readFileSync('./tls/cluster.crt'),
-  key:  fs.readFileSync('./tls/cluster.key'),
-  ca:   fs.readFileSync('./tls/ca.crt'),
-  rejectUnauthorized: true,
+  tls: {
+    cert: fs.readFileSync('./tls/cluster.crt'),
+    key:  fs.readFileSync('./tls/cluster.key'),
+    ca:   fs.readFileSync('./tls/ca.crt'),
+    rejectUnauthorized: true,
+  },
 });
 
 const clusterOptions = ClusterOptions.create()
@@ -30,7 +32,8 @@ await Cluster.join(system, clusterOptions);
 
 Mutually authenticated TLS zwischen Cluster-Nodes. Siehe
 [Cluster-Sicherheit](/de/operations/security/cluster-security/)
-für die vollständige Diskussion.
+für die vollständige Diskussion und [Client-Zertifikate](#client-zertifikate)
+für die Regel, an der die `ca` jedes Listeners gemessen wird.
 
 Jedes Feld hier nimmt **das Zertifikatsmaterial selbst** entgegen,
 niemals einen Pfad darauf — deshalb liest das Beispiel die Dateien
@@ -52,43 +55,119 @@ in Depth.
 
 ## HTTP-Server
 
+TLS ist eine Server-Option und liest sich deshalb auf jedem Backend gleich —
+Fastify, Express und Hono —, welches auch immer gemountet ist:
+
 ```ts
-import { HttpExtensionId } from 'actor-ts/http';
+import { readFileSync } from 'node:fs';
+import { HttpExtensionId, HttpServerOptions } from 'actor-ts/http';
 
-const http = system.extension(HttpExtensionId);
+const serverOptions = HttpServerOptions.create()
+  .withTls({
+    cert: readFileSync('./tls/http.crt'),
+    key:  readFileSync('./tls/http.key'),
+  });
 
-await http.newServerAt('0.0.0.0', 8443)
-  .useBackend(new FastifyBackend({
-    https: {
-      cert: fs.readFileSync('./tls/http.crt'),
-      key:  fs.readFileSync('./tls/http.key'),
-    },
-  }))
+await system.extension(HttpExtensionId)
+  .newServerAt('0.0.0.0', 8443)
+  .withServerOptions(serverOptions)
   .bind(routes);
 ```
+
+Aus der Konfigurationsdatei sind dieselben Felder **Pfade** —
+`actor-ts.http.server.tls.cert-file`, `key-file` und `ca-file`, einmal bei
+`bind()` gelesen.  Client-Zertifikate (`requestClientCert`) folgen der Regel
+unter [Client-Zertifikate](#client-zertifikate); HTTP/2 ist `withHttp2()`
+auf Fastify und Hono, während Express TLS bedient, HTTP/2 aber ablehnt.  Die
+Details pro Backend und Runtime stehen unter
+[TLS und HTTP/2](/de/http/overview/#tls-und-http2).
 
 Für HTTPS auf der Anwendungsebene. Oft **am Load Balancer
 terminiert** stattdessen — in K8s übernimmt Service/Ingress TLS,
 die App spricht intern Plain-HTTP. Wählen je nach Form deiner
 Infrastruktur.
 
+Die eine Stelle, an der die eigene `https`-Factory-Option von Fastify noch zählt,
+ist ein Fastify-Backend, das du selbst konstruierst: Fastify nimmt das Zertifikat
+bei der Konstruktion, eine selbst gebaute Instanz braucht es also dann.
+`fastifyFactoryOptions(serverOptions)` baut diese Option — und `http2` sowie die
+Größengrenzen — aus denselben Server-Optionen, beide Ebenen stimmen also
+überein; ein selbst gebautes Fastify ohne TLS, dem `withTls(...)` übergeben wird,
+wird bei `bind()` abgelehnt, statt reines HTTP zu servieren:
+
+```ts
+import { FastifyBackend, fastifyFactoryOptions } from 'actor-ts/http';
+
+const backend = new FastifyBackend({
+  logger: false,
+  ...fastifyFactoryOptions(serverOptions),   // { https: { cert, key, … } }
+});
+
+await system.extension(HttpExtensionId)
+  .newServerAt('0.0.0.0', 8443)
+  .useBackend(backend)
+  .withServerOptions(serverOptions)
+  .bind(routes);
+```
+
+## Client-Zertifikate
+
+Jeder Listener, der ein Client-Zertifikat verlangen kann — der HTTP-Server auf
+jedem Backend, der Cluster-Transport und der [TCP-Listener](#tcp-listener) —,
+misst diese Forderung an einer Regel und lehnt beim Bind ab, was ihr nicht
+genügt:
+
+- **Das Zertifikat wird gegen die `ca` geprüft, die du konfigurierst.**  Auf
+  dem HTTP-Server stellt `requestClientCert: true` die Forderung; auf dem
+  Cluster-Transport und dem TCP-Listener stellt sie eine `ca` von sich aus.
+  Eine Forderung ohne `ca` wird abgelehnt.
+- **Eine `ca` muss ein Zertifikat enthalten.**  Ein leerer oder nur aus
+  Leerzeichen bestehender String, ein leeres Byte-Array, ein leeres Array,
+  `null` oder eine `ca-file`, die auf eine leere Datei zeigt, wird abgelehnt,
+  mit dem Namen des Felds, was immer `requestClientCert` sagt.  So sieht ein
+  fehlendes Secret aus, wenn es ankommt — keine Bitte um einseitiges TLS; das
+  ist `requestClientCert: false`, auf jedem Listener.
+- **Auf Deno wird die Forderung abgelehnt.**  `Deno.serve` hat keine Option
+  für Client-Zertifikate, und Denos `node:https` nimmt `requestCert` an, ohne
+  es durchzusetzen; Hono, Fastify und Express lehnen sie dort deshalb alle
+  ab.  `Deno.listenTls` kann ebenfalls kein Zertifikat verlangen, also auch
+  kein Cluster- oder TCP-Listener auf Deno.  Auf Node und Bun wird sie
+  durchgesetzt.
+
+```ts
+const clientCertificateServerOptions = HttpServerOptions.create()
+  .withTls({
+    cert: readFileSync('./tls/http.crt'),
+    key:  readFileSync('./tls/http.key'),
+    ca:   readFileSync('./tls/clients-ca.crt'),   // die CA, die die Zertifikate deiner Clients signiert
+    requestClientCert: true,
+  });
+```
+
 ## Management-Endpunkt
 
 ```ts
-import { FastifyBackend } from 'actor-ts/http';
+import { readFileSync } from 'node:fs';
+import { HttpServerOptions } from 'actor-ts/http';
 import { managementRoutes } from 'actor-ts/management';
 
 const routes = managementRoutes(system, cluster);
 
-// TLS is a property of the HTTP backend — Fastify's `https` option.
-const tlsBackend = new FastifyBackend({
-  https: {
-    cert: fs.readFileSync('./tls/mgmt.crt'),
-    key:  fs.readFileSync('./tls/mgmt.key'),
-  },
-});
-await system.http(8558, { backend: tlsBackend }).bind(routes);
+const managementServerOptions = HttpServerOptions.create()
+  .withTls({
+    cert: readFileSync('./tls/mgmt.crt'),
+    key:  readFileSync('./tls/mgmt.key'),
+  });
+await system.http(8558)
+  .withServerOptions(managementServerOptions)
+  .bind(routes);
 ```
+
+Dieselben Server-Optionen nehmen eine `ca` und `requestClientCert: true`, wenn
+ihn nur Clients mit einem Zertifikat deiner eigenen CA erreichen dürfen.  Ein
+von Hand gebautes Fastify-Backend, das als Option `backend` übergeben wird,
+bekommt das Zertifikat über `fastifyFactoryOptions(managementServerOptions)`,
+wie oben.
 
 Der Management-Server ist standardmäßig nur intern — aber **TLS
 hilft trotzdem**:
@@ -214,7 +293,8 @@ Consumer-Client werden aus demselben Material gebaut.
 Der einzige Broker-Actor auf der *eingehenden* Seite. Er nimmt dasselbe
 Material wie der Cluster-Transport, und ein gesetztes `ca` schaltet die
 Client-Zertifikatsprüfung ein, sofern nicht `requestClientCert: false`
-etwas anderes sagt:
+etwas anderes sagt — nach der Regel unter
+[Client-Zertifikate](#client-zertifikate):
 
 ```ts
 const tcpServerOptions = TcpServerOptions.create()
@@ -270,11 +350,257 @@ Cluster-Transport und sämtliche HTTP-Clients eingeschlossen.
 
 ## Persistence-Backends
 
+Drei dieser Treiber lesen einen Verifizierungs-Schalter aus dem
+Connection-String selbst: node-postgres, node-mssql und der
+MongoDB-Treiber. Kommt dieser String aus HOCON — dem `url`-Blatt des
+Plugin-Blocks —, lehnt das Framework einen ab, der die Verifizierung
+abschaltet, mit einem `ConfigError`, der Blatt und Schalter nennt
+(#1490). Inspiziert wird nur die Konfigurationsdatei: Derselbe String,
+an `withUrl(...)` übergeben, ist die Entscheidung deines Codes, im
+Review sichtbar, und erreicht den Treiber unverändert. Für die Datei ist
+die Ablehnung strikt — die `url` eines Blocks wird auch dann abgelehnt,
+wenn der Code eine eigene Verbindung mitgibt, und eine
+`${?DATABASE_URL}`-Substitution wird abgelehnt wie eine ausgeschriebene
+URL. Sie betrifft TLS, das niemanden authentifiziert, nicht Klartext:
+`sslmode=disable`, `Encrypt=false` und `tls=false` bleiben erlaubt, denn
+kein TLS ist eine andere Entscheidung und liest sich als das, was sie
+ist. Die Abschnitte unten nennen die Schalter jedes Treibers.
+
 ### SQLite
 
 ```
 Nicht zutreffend — lokaler Datei-Zugriff. TLS nicht anwendbar.
 ```
+
+### PostgreSQL
+
+```ts
+const postgresJournalOptions = PostgresJournalOptions.create()
+  .withUrl(process.env.DATABASE_URL!)
+  .withPoolConfig({
+    ssl: { rejectUnauthorized: true, ca: fs.readFileSync('./tls/rds-ca.pem') },
+  });
+new PostgresJournal(postgresJournalOptions);
+```
+
+`poolConfig` wird über `{ connectionString: url }` gemergt und landet
+unverändert in `new pg.Pool(...)` — nichts filtert es, `ssl` ist also
+genau das, was node-postgres an `tls.connect` übergibt. Eine
+Managed-Instanz veröffentlicht ihr CA-Bundle; `ca` ist der Platz dafür.
+Ein Connection-String kann ebenfalls auf ein Root-Zertifikat zeigen
+(`sslrootcert=`), aber seine `sslmode=`-Werte stammen aus libpq — wo
+`require` allein die Chain nicht prüft — und node-postgres hat seine
+Lesart davon zwischen Releases geändert; die Objektform, die genau
+sagt, was geprüft wird, ist also die zum Kopieren. Snapshot-Store und
+Durable-State-Store nehmen dasselbe `withPoolConfig`.
+
+Aus HOCON gibt es zwei Wege zu einer privaten CA. Im Connection-String
+ist die eine Schreibweise, die ihre Bedeutung über diese Releases hinweg
+behält, `verify-full`, mit `sslrootcert=`, das die CA-Datei nennt:
+
+```hocon
+actor-ts.persistence.journal.postgres {
+  url = "postgres://actor_ts@db.example.com:5432/app?sslmode=verify-full&sslrootcert=/etc/ssl/rds-ca.pem"
+}
+```
+
+Oder das Blatt `ca-file` des Blocks nennt sie, neben einer URL ganz ohne
+ssl-Parameter (#1490). Das Framework liest die Datei beim Öffnen des
+Pools und übergibt sie node-postgres als `ssl.ca`; Nodes TLS-Default
+prüft dann Chain und Namen:
+
+```hocon
+actor-ts.persistence.journal.postgres {
+  url     = "postgres://actor_ts@db.example.com:5432/app"
+  ca-file = "/etc/ssl/rds-ca.pem"
+}
+```
+
+Eins von beiden, nie beides. node-postgres legt die TLS-Einstellungen,
+die es aus dem Connection-String parst, über sein Config-Objekt — gegen
+pg 8.23 ausgeführt, fiel eine CA neben `sslmode=verify-full` weg, und
+neben `sslmode=no-verify` kam sie mit abgeschalteter Verifizierung
+zurück —, der Store lehnt `ca-file` neben irgendeinem ssl-Parameter in
+der URL deshalb beim Bau ab, und im Code ein `poolConfig.ssl` daneben
+ebenso.
+
+Eine aus HOCON gelesene `url` wird abgelehnt, wenn sie
+`sslmode=no-verify` oder `ssl=no-verify` trägt — Letzteres liest `pg`
+selbst, nach dem Parser — oder, unter `uselibpqcompat=true`, das
+`sslmode` die Bedeutungen von libpq gibt, `sslmode=prefer`, `require`
+oder `verify-ca`. Mit diesen Bedeutungen prüfen `prefer` und `require`
+ohne `sslrootcert` gar nichts; `verify-ca` und `require` mit
+Root-Zertifikat prüfen die Chain, aber nicht den Hostnamen, sodass ein
+Zertifikat, das dieselbe Stelle für einen beliebigen anderen Host
+ausgestellt hat, durchgeht. Ohne `uselibpqcompat` liest pg 8 alle drei
+weiterhin als `verify-full`, sie werden also nicht abgelehnt; sein
+Parser warnt, dass das nächste Major-Release ihnen die Bedeutungen von
+libpq geben wird. Ein Kanal bleibt außerhalb der Ablehnung:
+Konfigurieren weder die URL noch `poolConfig` noch `ca-file` TLS, greift
+node-postgres auf die Umgebungsvariable `PGSSLMODE` zurück, und
+`no-verify` dort schaltet die Verifizierung ab, ganz ohne HOCON.
+
+### MariaDB
+
+```ts
+const mariaDbJournalOptions = MariaDbJournalOptions.create()
+  .withPoolConfig({
+    host: 'db.example.com', port: 3306, database: 'app',
+    user: 'actor_ts', password: process.env.MARIADB_PASSWORD,
+    ssl: { rejectUnauthorized: true, ca: fs.readFileSync('./tls/rds-ca.pem') },
+  });
+new MariaDbJournal(mariaDbJournalOptions);
+```
+
+Das `ssl` des Connectors nimmt Nodes eigene TLS-Optionen — wörtlich die
+Postgres-Form — und `poolConfig` erreicht `mariadb.createPool(...)`
+unverändert. Sein Connection-String ist die Ausnahme von der Ablehnung
+oben, weil darin nichts abzulehnen ist: Der Connector liest das `ssl`
+einer URL als Boolean (mariadb 3.5), und `ssl=true` prüft die Chain
+gegen den Trust-Store. Eine MariaDB-`url` aus HOCON wird daher nicht
+inspiziert — und kann auch keine CA tragen. Aus der Konfiguration wird
+eine private CA stattdessen mit dem Blatt `ca-file` des Blocks genannt
+(#1490): Das Framework liest die Datei beim Öffnen des Pools und übergibt
+sie dem Connector als `ssl.ca`, über die URL gelegt, die so geparst wird,
+wie der Connector sie parst, damit Host, Datenbank und Optionen erhalten
+bleiben.
+
+```hocon
+actor-ts.persistence.journal.mariadb {
+  url     = "mariadb://actor_ts@db.example.com:3306/app"
+  ca-file = "/etc/ssl/rds-ca.pem"
+}
+```
+
+Abgelehnt wird es neben einem `ssl` in der URL, das der Connector als
+false liest — jeder Wert außer genau `true`, also auch `ssl=TRUE` —, weil
+das TLS abschaltet und die CA ungenutzt ließe.
+
+### SQL Server
+
+```ts
+const msSqlJournalOptions = MsSqlJournalOptions.create()
+  .withPoolConfig({
+    server: 'db.example.com', database: 'app',
+    user: 'actor_ts', password: process.env.MSSQL_PASSWORD,
+    options: {
+      encrypt: true,
+      cryptoCredentialsDetails: { ca: fs.readFileSync('./tls/rds-ca.pem') },
+      serverName: 'db.example.com',
+    },
+  });
+new MsSqlJournal(msSqlJournalOptions);
+```
+
+`mssql` verschlüsselt per Default und prüft das Server-Zertifikat. Der
+Treiber darunter, tedious, reicht `cryptoCredentialsDetails` an
+`tls.createSecureContext` durch, `ca` ist also der Platz für eine private
+CA, und `serverName` ist der Name, den das Zertifikat tragen muss, wenn
+er von `server` abweicht. Die Alternative des Treibers — ihm zu sagen, er
+solle dem Server-Zertifikat vertrauen, was ein Connection-String als
+`TrustServerCertificate=` schreibt — ist der Schalter, den der Hinweis
+unten mit einem Kreuz markiert, nur unter anderem Namen: tedious kehrt
+ihn direkt in `tls.connect`s `rejectUnauthorized` um, die Verbindung
+bleibt also verschlüsselt und authentifiziert niemanden. Ein
+Connection-String hat gar keinen Schlüssel für eine CA, im Code heißt
+eine private CA also `poolConfig`. Das Objekt erreicht
+`new mssql.ConnectionPool(...)` unverändert.
+
+Aus HOCON wird dieser Schalter abgelehnt. node-mssql liest jeden Wert
+von `TrustServerCertificate` als true außer `false`, `no`, `0` und einem
+leeren — `yes`, `1`, `{true}` und sogar ein gequotetes `" false"`
+schalten die Verifizierung ab —, ein `url`-Blatt, dessen
+Connection-String ihn auf irgendetwas anderes setzt, scheitert also, in
+jeder Groß- und Kleinschreibung des Schlüssels, mit einem `ConfigError`.
+Dasselbe gilt für den Schalter in der Query einer `mssql://`-URL, obwohl
+node-mssql seit seinem 8.0 nur noch die Form `Server=...;Database=...`
+parst — und ein Store lehnt eine solche URL beim Bau ohnehin ab. Ohne
+Schlüssel für eine CA im Connection-String wird ein SQL Server hinter
+einer privaten CA daneben mit dem Blatt `ca-file` des Blocks genannt
+(#1490): Das Framework liest die Datei beim Öffnen des Pools und übergibt
+sie tedious in `cryptoCredentialsDetails`.
+
+```hocon
+actor-ts.persistence.journal.mssql {
+  url     = "Server=db.example.com;Database=app;User Id=actor_ts;Encrypt=true"
+  ca-file = "/etc/ssl/rds-ca.pem"
+}
+```
+
+Abgelehnt wird es neben einem `Encrypt`, das node-mssql als false liest
+und damit TLS abschaltet, und neben einem `TrustServerCertificate`, das es
+als true liest und damit die Verifizierung abschaltet — beides ließe die
+CA ungenutzt. Einer, dessen Zertifikat auf eine öffentliche Wurzel
+zurückführt, braucht nichts als den Default, `Encrypt=true`.
+
+Bei allen dreien gilt: das Zertifikat kommt nie als Bytes in die
+Konfiguration. Im Code gehört das Material ins Objekt, von deinem Code aus
+einer Datei gelesen. Aus der Konfiguration ist es ein Pfad: `ca-file`, das
+das Framework beim Öffnen des Pools liest, oder — bei Postgres — das
+`sslrootcert` der URL, das der Treiber liest. Darin unterscheiden sich die
+Persistence-Stores vom Cluster-Transport und den Brokern, deren
+TLS-Felder das Material selbst nehmen: Ein Store wird aus seinem eigenen
+Config-Block gebaut, und ein Pfad dort hält das PEM aus der Datei heraus,
+ohne dass Code es lesen muss. Und das Journal ist das System of Record der
+Anwendung; alles auf dem Weg dorthin, das ein eigenes Zertifikat vorlegen
+kann, kann also die Historie umschreiben.
+
+### MongoDB
+
+```ts
+const mongoJournalOptions = MongoJournalOptions.create().withUrl('mongodb://db.example.com:27017/app?tls=true&tlsCAFile=/etc/ssl/rds-ca.pem');
+new MongoJournal(mongoJournalOptions);
+```
+
+Der MongoDB-Treiber nimmt seine TLS-Einstellungen aus dem
+Connection-String: `tls=true` verschlüsselt und prüft sowohl das
+Zertifikat des Servers als auch seinen Hostnamen, und `tlsCAFile` nennt
+die Datei einer privaten CA, die der Treiber beim Verbinden selbst
+liest. `mongodb+srv://` schaltet TLS per Default ein.
+
+Aus HOCON führen zwei Wege zu einer privaten CA, wie bei Postgres.
+Dieselbe URL funktioniert dort unverändert, oder das Blatt `ca-file` des
+Blocks nennt die Datei (#1490): Das Framework liest sie, wenn der Client
+öffnet, und übergibt sie dem Treiber als `ca`, mit eingeschaltetem
+`tls`.
+
+```hocon
+actor-ts.persistence.journal.mongodb {
+  url     = "mongodb://db.example.com:27017/app"
+  ca-file = "/etc/ssl/rds-ca.pem"
+}
+```
+
+Das eine oder das andere, nie beides, und nichts daneben, das die CA
+beiseiteschiebt. Der Store lehnt `ca-file` beim Bauen mit einem
+`OptionsError` ab, der beide Seiten nennt, und zwar neben:
+
+- einem `tlsCAFile` in der URL oder in `clientOptions` oder einem `ca` in
+  `clientOptions` — der Treiber liest `tlsCAFile` nur, wenn er kein `ca`
+  bekommen hat, eines von beiden fiele also weg;
+- einem `tls` oder `ssl` mit `false` in einem von beiden, das die CA
+  ungenutzt ließe;
+- einem `tlsInsecure` oder `tlsAllowInvalidCertificates` in einem von
+  beiden, das die Zertifikatsprüfung abschaltet, und einem
+  `rejectUnauthorized` mit `false` in `clientOptions`, in jeder Groß- und
+  Kleinschreibung des Schlüssels — dem Schalter, den `tlsInsecure` setzt
+  und der unverändert an `node:tls` geht;
+- einem `secureContext` in `clientOptions`, das einen eigenen Trust-Store
+  mitbringt, den `node:tls` statt der CA benutzt;
+- einem vorgebauten `client`, der dort konfiguriert wurde, wo er gebaut
+  wurde, und `ca-file` nie liest — gib diesem Client seine CA dort, wo du
+  ihn baust.
+
+Die drei Auswege des Treibers aus der Verifizierung sind `tlsInsecure`,
+`tlsAllowInvalidCertificates` — beide prüfen das Zertifikat nicht mehr —
+und `tlsAllowInvalidHostnames`, das die Chain behält und den Namen
+fallen lässt. Sie sind der Schalter, den der Hinweis unten mit einem
+Kreuz markiert, nur unter anderen Namen. Eine aus HOCON gelesene `url`,
+die einen davon auf irgendetwas außer `false` setzt, wird in jeder
+Groß- und Kleinschreibung des Schlüssels mit einem `ConfigError`
+abgelehnt; im Code gesetzt, mit `withUrl(...)` oder `clientOptions`,
+werden sie nicht inspiziert, solange kein `ca-file` danebensteht — dann
+gilt die Liste oben. `tls=false` ist Klartext und bleibt erlaubt.
 
 ### Cassandra
 

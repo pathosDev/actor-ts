@@ -1,4 +1,11 @@
-import type { ManagementRoutesOptions, ManagementRoutesOptionsType } from './ManagementRoutesOptions.js';
+import {
+  defaultManagementRoutesOptions,
+  ManagementRoutesOptionsValidator,
+  readManagementRoutesOptionsFromConfig,
+  type ManagementRoutesOptions,
+  type ResolvedManagementRoutesOptions,
+} from './ManagementRoutesOptions.js';
+import { mergeOptions } from '../util/OptionsMerge.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import type { Cluster } from '../cluster/Cluster.js';
 import {
@@ -13,8 +20,8 @@ import {
   type Middleware,
   type Route,
 } from '../http/index.js';
-import { exportPrometheus } from '../metrics/PrometheusExporter.js';
-import { metricsOf } from '../metrics/MetricsExtension.js';
+import { renderPrometheusSamples } from '../metrics/PrometheusExporter.js';
+import { MetricsExtensionId } from '../metrics/MetricsExtension.js';
 import { isCollectable } from '../metrics/Metrics.js';
 import { CLUSTER_MEMBERSHIP_CHECK_NAME } from '../cluster/ClusterHealthChecks.js';
 import { isHealthy } from './HealthCheck.js';
@@ -58,13 +65,28 @@ import { healthChecksOf } from './HealthCheckExtension.js';
  * backend it has no business knowing about and made the endpoint's answer
  * depend on the operator having wired one up.  It asks `ClusterSharding`
  * now (#557, #682).
+ *
+ * **The endpoint toggles and the two probe paths also come from HOCON**
+ * (`actor-ts.management.*`, #882), layered in the usual order: an explicit
+ * option wins, a file fills what the caller left unset, and the built-in
+ * defaults are the floor.  `auth` and `ipAllowlist` stay code-only — they are
+ * `Middleware` functions with no HOCON form — so a config file can move a
+ * probe or open an endpoint, never weaken who may reach one.
  */
 export function managementRoutes(
   system: ActorSystem,
   cluster: Cluster | null,
   optionsInput: ManagementRoutesOptions = {},
 ): Route {
-  const options = optionsInput as ManagementRoutesOptionsType;
+  // Validated once, on the merged settings, so a path from a file faces the
+  // same rules as one written in code — and cross-layer results (a file's
+  // path under a caller's toggles) are what the rules actually see.
+  const options = mergeOptions<ResolvedManagementRoutesOptions>(
+    defaultManagementRoutesOptions,
+    readManagementRoutesOptionsFromConfig(system.config),
+    optionsInput as Partial<ResolvedManagementRoutesOptions>,
+  );
+  new ManagementRoutesOptionsValidator().validate(options);
   const health = healthChecksOf(system);
 
   const clusterMembers = get(async () => {
@@ -75,6 +97,10 @@ export function managementRoutes(
         status: m.status,
         version: m.version,
         roles: Array.from(m.roles),
+        // The application version the member states — omitted, not `null`, for
+        // one that states none, the member record's own rule (#843).  Advisory:
+        // what a rolling update has where, never an input to anything.
+        ...(m.appVersion === undefined ? {} : { appVersion: m.appVersion }),
       })),
       self: cluster.selfAddress.toString(),
     });
@@ -129,8 +155,12 @@ export function managementRoutes(
   const leaveRoute: Route = options.enableLeaveEndpoint && cluster
     ? post(async () => {
       // Fire-and-forget leave — the caller typically uses this as a PreStop
-      // hook and doesn't wait for completion in-request.  We do await one
-      // microtask so the intent is registered before returning 202.
+      // hook and doesn't wait for completion in-request.  Nothing is awaited
+      // and nothing needs to be: `leave()` claims the leave synchronously,
+      // before the 202 goes out, so a second request or a coordinated-shutdown
+      // run does not start another.  The leave broadcast follows the sharding
+      // hand-off, bounded by each type's hand-off-timeout (#1465), so the peers
+      // may hear of it some seconds after this reply.
       void cluster.leave();
       return complete(Status.Accepted, 'leaving');
     })
@@ -218,11 +248,19 @@ export function managementRoutes(
    * therefore be a guard that holds for one wiring order and not the other,
    * while taking `/health` and `/ready` down with it on the order it does
    * catch; the route that is actually wrong is the one that should fail.
+   *
+   * The body is `collectAll()`, not `collect()` (#1570): a worker mesh relays
+   * its threads' registries into the main thread's extension, and this route
+   * is where the merged view is meant to surface.  The collectability check
+   * stays on the main registry alone — it is the one whose `collect()` this
+   * process would otherwise misreport as empty; a worker that installed a
+   * write-through registry is the relay's to notice, and it contributes
+   * nothing rather than turning the whole scrape into a 503.
    */
   const metricsRoute: Route = options.enableMetricsEndpoint
     ? get(async () => {
-      const registry = metricsOf(system);
-      if (!isCollectable(registry)) {
+      const metrics = system.extension(MetricsExtensionId);
+      if (!isCollectable(metrics.get())) {
         return complete(
           Status.ServiceUnavailable,
           'metrics endpoint unavailable: the installed MetricsRegistry does not '
@@ -233,7 +271,7 @@ export function managementRoutes(
       }
       return {
         status: Status.OK,
-        body: exportPrometheus(registry),
+        body: renderPrometheusSamples(metrics.collectAll()),
         contentType: 'text/plain; version=0.0.4; charset=utf-8',
       };
     })
@@ -255,9 +293,12 @@ export function managementRoutes(
     clusterSubtree = withMiddleware(options.auth, clusterSubtree);
   }
 
+  // The two probe segments are resolved settings rather than literals: an
+  // operator fronting several services on one ingress renames them from
+  // `application.conf` instead of rebuilding the image.
   let healthSubtree: Route = concat(
-    path('health', liveness),
-    path('ready', readiness),
+    path(options.livenessPath, liveness),
+    path(options.readinessPath, readiness),
   );
   if (options.auth && options.authProtectHealth === true) {
     healthSubtree = withMiddleware(options.auth, healthSubtree);

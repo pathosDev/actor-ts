@@ -63,6 +63,21 @@ const LOG_LEVEL = (process.env.LOG_LEVEL ?? 'info').toLowerCase();
 // that's still alive (so the controller can verify the hook fired).
 const PEERS = (process.env.PEERS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 
+/**
+ * How long a process may outlive its actor system before the exit watchdog
+ * gives up on it.  A node exits within a few hundred milliseconds of
+ * `terminate()` once nothing holds a handle (measured at ~230–340 ms, both
+ * for a member and for a node that had already left), so ten seconds is
+ * not a tuning knob but a line between "still draining" and "leaked".
+ */
+const LINGER_LIMIT_MS = 10_000;
+/**
+ * Exit status of a node the watchdog had to kill.  Distinct from 1 (a
+ * `main()` failure) so the compose log names the cause, and non-zero on
+ * purpose: `--abort-on-container-failure` is what turns it into a red run.
+ */
+const EXIT_CODE_LINGERING_PROCESS = 3;
+
 function parseLevel(name: string): LogLevel {
   switch (name) {
     case 'debug': return LogLevel.Debug;
@@ -246,6 +261,29 @@ async function main(): Promise<void> {
   logger.info('test-control HTTP listening', { port: CONTROL_PORT });
 
   logger.info('node ready', { node: NODE_NAME });
+
+  // The run's last property, and the one the controller cannot see: a node
+  // whose actor system has terminated exits on its own.  Both HTTP servers
+  // are gone by then (`ServiceUnbind` closes the control port along with
+  // every other binding), the cluster is left, and nothing else in this
+  // process holds a handle — so the event loop drains and Bun exits 0,
+  // which is what `docker compose up --abort-on-container-failure` waits
+  // for before it ends a green run (#1594).  A process still here ten
+  // seconds later is the #1567 shape: ports closed, a leaked referenced
+  // handle keeping the loop alive, and from outside indistinguishable from
+  // a cluster that is still shutting down.  The watchdog is `unref()`'d so
+  // it never becomes that handle itself; it fires only if something else
+  // already is, and then trades a run that hangs until `timeout-minutes`
+  // for one that goes red at once, naming this container.
+  void system.whenTerminated().then(() => {
+    const watchdog = setTimeout(() => {
+      logger.error('process still alive after the actor system terminated — a leaked handle is holding the event loop open', {
+        lingerLimitMs: LINGER_LIMIT_MS,
+      });
+      process.exit(EXIT_CODE_LINGERING_PROCESS);
+    }, LINGER_LIMIT_MS);
+    watchdog.unref();
+  });
 
   // Stay alive until SIGTERM / SIGINT.
   const shutdown = async (signal: string): Promise<void> => {

@@ -26,13 +26,14 @@ und mit ziemlicher Sicherheit schon in deinem Stack.
 bun add pg
 ```
 
-Das Framework lazy-importiert `pg` erst beim ersten Zugriff auf einen
-Postgres-Store, hält es also bis zum Opt-in aus deinem Bundle.
+Das Framework importiert `pg` erst, wenn ein Postgres-Store öffnet — beim
+Start, oder bei der ersten Verwendung, wenn das Öffnen beim Start
+abgeschaltet ist —, hält es also bis zum Opt-in aus deinem Bundle.
 
 ## Einrichtung
 
-Registriere Journal + Snapshot-Store an der `PersistenceExtension` und
-erhalte einen einsatzbereiten Durable-State-Store.  Gib einen geteilten
+Registriere alle drei Stores über den `plugins`-Slot der Optionen des
+Systems und wähle sie in seiner Konfiguration aus.  Gib einen geteilten
 `pool` mit, damit alle drei Komponenten einen Connection-Pool nutzen:
 
 ```ts
@@ -42,7 +43,6 @@ import {
   ActorSystemOptions,
 } from 'actor-ts';
 import {
-  PersistenceExtensionId,
   PostgresJournalOptions,
   PostgresSnapshotStoreOptions,
   PostgresDurableStateStoreOptions,
@@ -50,38 +50,51 @@ import {
   registerPostgresPlugins,
 } from 'actor-ts/persistence';
 
+const postgresSnapshotStoreOptions = PostgresSnapshotStoreOptions.create().withKeepN(3);
+const registerOptions = RegisterPostgresPluginsOptions.create()
+  // One pool shared by journal + snapshot + durable-state (recommended).
+  .withPool(new Pool({ connectionString: 'postgres://user:pass@host:5432/app' }))
+  .withJournal(PostgresJournalOptions.create() /* .withEventsTable(...).withTagsTable(...).withAutoCreateTables(...) */)
+  .withSnapshotStore(postgresSnapshotStoreOptions)
+  .withDurableStateStore(PostgresDurableStateStoreOptions.create() /* .withTable(...) */);
 const systemOptions = ActorSystemOptions.create()
-  // Postgres-Plugins als aktives Journal + Snapshot-Store wählen.
+  // Select the Postgres plugins for all three stores.
   .withConfig({
     'actor-ts': {
       persistence: {
         journal: { plugin: 'actor-ts.persistence.journal.postgres' },
         'snapshot-store': { plugin: 'actor-ts.persistence.snapshot-store.postgres' },
+        'durable-state': { plugin: 'actor-ts.persistence.durable-state.postgres' },
       },
     },
-  });
+  })
+  .withPersistence({ plugins: [(persistence) => registerPostgresPlugins(persistence, registerOptions)] });
 const system = ActorSystem.create('my-app', systemOptions);
-
-const ext = system.extension(PersistenceExtensionId);
-const postgresSnapshotStoreOptions = PostgresSnapshotStoreOptions.create().withKeepN(3);
-const registerOptions = RegisterPostgresPluginsOptions.create()
-  // Ein Pool, geteilt von Journal + Snapshot + Durable-State (empfohlen).
-  .withPool(new Pool({ connectionString: 'postgres://user:pass@host:5432/app' }))
-  .withJournal(PostgresJournalOptions.create() /* .withEventsTable(...).withTagsTable(...).withAutoCreateTables(...) */)
-  .withSnapshotStore(postgresSnapshotStoreOptions)
-  .withDurableStateStore(PostgresDurableStateStoreOptions.create() /* .withTable(...) */);
-const { durableStateStore } = registerPostgresPlugins(ext, registerOptions);
 ```
 
-`registerPostgresPlugins` registriert Journal + Snapshot-Store über die
-Extension (ausgewählt durch die Plugin-IDs oben) und **gibt** den
-Durable-State-Store **zurück**.  `PersistenceExtension` hat kein
-Durable-State-Registry — reiche `durableStateStore` direkt in die
-Settings deines `DurableStateActor` (gleiches Muster wie beim
-Object-Storage-Plugin).
+Das Plug-in läuft innerhalb von `ActorSystem.create`, also sind alle drei
+Stores registriert, bevor `create` zurückkehrt, und die, die die
+Konfiguration auswählt, öffnen als Teil des Starts: Eine Datenbank, die der
+Knoten nicht erreicht, lässt den Start scheitern statt erst die erste
+persistierte Nachricht — siehe [Stores beim Start
+öffnen](/de/persistence/overview/#stores-beim-start-öffnen).
+Das gilt auch mit `autoCreateTables: false`, weil das Öffnen dann ein
+`SELECT 1` schickt, wo es sonst das DDL ausführen würde, und solange das
+Öffnen beim Start an ist, der Default: Ist das Öffnen beim Start abgeschaltet,
+wandert der Fehler zur ersten Operation des Stores.  Das gilt für diese Stores,
+nicht für jede Achse: Ein Object-Storage-Snapshot- oder -Durable-State-Store,
+der daneben ausgewählt ist, oder ein eigener Store ohne `start()` hat vorab
+nichts zu öffnen und scheitert stattdessen bei seiner ersten Operation.
+`registerPostgresPlugins` **gibt** außerdem den Durable-State-Store
+**zurück**, falls du ihn lieber von Hand verdrahtest; ein Plug-in behält ihn,
+indem es das Ergebnis zuweist,
+`(persistence) => { postgres = registerPostgresPlugins(persistence, registerOptions); }`.
+Seit #872 ist das eine Bequemlichkeit und nicht mehr der einzige Weg, und ein
+von Hand verdrahteter Store ist kein ausgewählter, er öffnet also bei der
+ersten Verwendung statt mit dem Start.
 
-Ohne geteilten `pool` baut jede Komponente lazy ihren eigenen Pool aus
-`url` / `poolConfig`:
+Ohne geteilten `pool` baut jede Komponente ihren eigenen Pool aus
+`url` / `poolConfig`, wenn sie öffnet:
 
 ```ts
 const postgresJournalOptions = PostgresJournalOptions.create().withUrl('postgres://user:pass@host:5432/app');
@@ -92,8 +105,100 @@ const registerPostgresPluginsOptions = RegisterPostgresPluginsOptions.create()
   .withJournal(postgresJournalOptions)
   .withSnapshotStore(postgresSnapshotStoreOptions)
   .withDurableStateStore(postgresDurableStateStoreOptions);
-registerPostgresPlugins(ext, registerPostgresPluginsOptions);
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerPostgresPlugins(persistence, registerPostgresPluginsOptions)],
+});
 ```
+
+## Aus HOCON konfigurieren
+
+Die Plugin-Id **ist** der Config-Abschnitt: Der Block, der nach der Id benannt
+ist, ist der Block, den dieses Plugin liest (#872).  Alles außer den lebenden
+Objekten kann aus der `application.conf` kommen, `registerPostgresPlugins(persistence)` braucht damit
+gar keine Optionen mehr:
+
+```ts
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import { registerPostgresPlugins } from 'actor-ts/persistence';
+
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerPostgresPlugins(persistence)],
+});
+const system = ActorSystem.create('my-app', systemOptions);
+```
+
+```hocon
+actor-ts.persistence {
+  journal        { plugin = "actor-ts.persistence.journal.postgres" }
+  snapshot-store { plugin = "actor-ts.persistence.snapshot-store.postgres" }
+  durable-state  { plugin = "actor-ts.persistence.durable-state.postgres" }
+
+  journal.postgres        { url = ${?DATABASE_URL}, events-table = "events" }
+  snapshot-store.postgres { url = ${?DATABASE_URL}, keep-n = 5 }
+  durable-state.postgres  { url = ${?DATABASE_URL}, table = "durable_state" }
+}
+```
+
+An `registerPostgresPlugins` übergebene Optionen gewinnen weiterhin, Feld für Feld, und ein
+nicht gesetztes Feld fällt auf den Block durch, statt ihn zu leeren — ein
+geteilter `Pool` im Code und die Tabellennamen in HOCON sind also eine
+normale Mischung.  Ein vorab gebauter `Pool` und ein `serializer` haben
+**gar kein Blatt**: Das sind lebende Objekte, die eine Config-Datei nicht
+ausdrücken kann.  `poolConfig` ebenso wenig — die gesamte Optionsfläche des
+Treibers, die code-only bleibt.  `tags-table` wird gelesen, wird aber als
+*Kommentar* statt als Schlüssel ausgeliefert, weil sein Default aus
+`events-table` abgeleitet wird und genau die Abwesenheit beide im Gleichlauf
+hält.
+
+Was du am Pool tatsächlich einstellst, hat **typisierte Blätter** (#1490), jedes
+in der Referenzkonfiguration nur als Kommentar, damit Weglassen den eigenen
+Default von pg behält:
+
+```hocon
+actor-ts.persistence.journal.postgres {
+  url             = ${?DATABASE_URL}
+  max-pool-size   = 20                    # pg-pool's max (default 10)
+  idle-timeout    = 30s                   # pg-pool's idleTimeoutMillis (default 10s)
+  connect-timeout = 5s                    # pg's connectionTimeoutMillis (default: none)
+  ca-file         = "/etc/ssl/rds-ca.pem" # read when the pool opens, handed to pg as ssl.ca
+}
+```
+
+Jedes erreicht den Treiber nur, wenn es gesetzt ist.  Der Store prüft sie beim
+Bau: eine Größe oder ein Timeout, das keine positive ganze Zahl ist, oder ein
+Timeout, länger als ein Timer halten kann, wird mit einem `OptionsError`
+abgelehnt — ebenso ein Blatt neben demselben Schlüssel in `poolConfig`
+(`max-pool-size` neben `max` etwa), das dann beide nennt, statt eine Seite still
+gewinnen zu lassen.  `ca-file` ist ein Pfad, den das Framework liest, nie das
+Zertifikat selbst; eine Datei, die es nicht lesen kann, lässt das Öffnen des
+Stores scheitern — den Start, oder seine erste Nutzung, wenn das Öffnen beim
+Start abgeschaltet ist — und nennt Blatt und Pfad.
+
+**Eine `url`, die die TLS-Verifizierung abschaltet, wird abgelehnt.**
+`sslmode=no-verify`, `ssl=no-verify` und — unter `uselibpqcompat=true` —
+`sslmode=prefer`, `require` oder `verify-ca` lassen den Reader einen
+`ConfigError` werfen, der Blatt und Schalter nennt, in jeder Groß- und
+Kleinschreibung und gleich, ob die URL ausgeschrieben oder aus
+`${?DATABASE_URL}` substituiert ist.  Für die Datei ist die Ablehnung strikt:
+Die `url` des Blocks wird auch dann abgelehnt, wenn `registerPostgresPlugins`
+eine eigene URL oder einen eigenen Pool bekommt.  Inspiziert wird nur HOCON —
+derselbe String, an `withUrl(...)` übergeben, ist die Entscheidung deines Codes,
+und dort gehört ein unverifizierter Server hin, wenn du wirklich einen meinst.
+Für eine private CA setzt du `ca-file` und lässt die ssl-Parameter der URL weg,
+oder du schreibst `sslmode=verify-full&sslrootcert=<CA-Datei>` — eins von
+beiden: node-postgres legt die TLS-Einstellungen, die es aus der URL parst, über
+die ihm übergebenen, deshalb wird `ca-file` neben irgendeinem ssl-Parameter der
+URL abgelehnt statt verworfen.  `sslmode=disable` ist Klartext statt
+unverifiziertem TLS und bleibt erlaubt.  Die Begründung und die Schalter
+vollständig stehen unter
+[TLS everywhere](/de/operations/security/tls-everywhere/#postgresql).
+
+**`durable-state.plugin` wählt jetzt den Durable-State-Store dieses Backends
+aus.**  Früher wurde er eifrig gebaut und von `registerPostgresPlugins` zurückgegeben, ließ
+sich also nur verdrahten, indem man diese Instanz durch den Anwendungscode
+reichte.  Das zurückgegebene Handle funktioniert weiterhin und liefert dieselbe
+Instanz — sie wird nur gebaut, wenn sie zum ersten Mal angefragt wird, statt
+bei der Registrierung, und bei einem ausgewählten Store ist das der Start.
 
 ## Wann einsetzen
 
@@ -113,23 +218,27 @@ einfacher (eine Datei, kein Server).
 
 ```ts
 type PostgresConnection = {
-  url?:        string;                      // postgres://user:pass@host:5432/db
-  poolConfig?: Record<string, unknown>;     // weitere pg.Pool-Optionen (ssl, max, …)
-  pool?:       PgPoolLike;                   // vorgebauter / geteilter Pool
+  url?:              string;                   // postgres://user:pass@host:5432/db
+  poolConfig?:       Record<string, unknown>;  // extra pg.Pool config — the code-only long tail
+  pool?:             PgPoolLike;               // pre-built / shared pool
+  maxPoolSize?:      number;                   // pg-pool max, default 10            (max-pool-size)
+  idleTimeoutMs?:    number;                   // idleTimeoutMillis, default 10 000  (idle-timeout)
+  connectTimeoutMs?: number;                   // connectionTimeoutMillis, no limit  (connect-timeout)
+  caFile?:           string;                   // PEM file read into ssl.ca          (ca-file)
 };
 
 interface PostgresJournalOptions extends PostgresConnection {
-  eventsTable?:      string;   // Default 'events'
-  tagsTable?:        string;   // Default '<eventsTable>_tags'
-  autoCreateTables?: boolean;  // Default true
+  eventsTable?:      string;   // default 'events'
+  tagsTable?:        string;   // default '<eventsTable>_tags'
+  autoCreateTables?: boolean;  // default true
 }
 interface PostgresSnapshotStoreOptions extends PostgresConnection {
-  snapshotsTable?:   string;   // Default 'snapshots'
-  keepN?:            number;   // neueste N pro pid; Default 3, <=0 = alle behalten
+  snapshotsTable?:   string;   // default 'snapshots'
+  keepN?:            number;   // keep newest N per pid; default 3, <=0 keeps all
   autoCreateTables?: boolean;
 }
 interface PostgresDurableStateStoreOptions extends PostgresConnection {
-  table?:            string;   // Default 'durable_state'
+  table?:            string;   // default 'durable_state'
   autoCreateTables?: boolean;
 }
 ```
@@ -139,10 +248,20 @@ gegen ein Safe-Identifier-Muster geprüft; alles andere — persistenceIds,
 Tags, Payloads — geht als Bind-Parameter (`$1, $2, …`), nie per
 String-Concat.
 
+Die Verbindung wird beim Bau des Stores validiert, und eine Kombination, die
+bisher durchging, wird abgelehnt: ein `poolConfig.ssl` neben einer URL (oder
+einem `poolConfig.connectionString`) mit ssl-Parameter.  node-postgres legt die
+TLS-Einstellungen, die es aus dem Connection-String parst, über das
+Config-Objekt, das `ssl`-Objekt wurde also nie zusammengeführt, sondern
+ersetzt — gegen den Treiber ausgeführt, fiel eine CA neben `sslmode=verify-full`
+weg, und neben `sslmode=no-verify` ging die Verifizierung mit ihr aus.
+Konfiguriere TLS an einer der beiden Stellen.
+
 ## Schema
 
-Mit `autoCreateTables` (Default) führt das Backend beim ersten Zugriff
-`CREATE TABLE IF NOT EXISTS` aus:
+Mit `autoCreateTables` (Default) führt das Backend
+`CREATE TABLE IF NOT EXISTS` aus, wenn der Store öffnet — beim Start, oder
+bei der ersten Verwendung, wenn das Öffnen beim Start abgeschaltet ist:
 
 ```sql
 CREATE TABLE events (
@@ -176,7 +295,9 @@ CREATE TABLE durable_state (
 ```
 
 Lege die Tabellen vorab an (und vergib nur `INSERT/SELECT/UPDATE/DELETE`)
-und setze `autoCreateTables: false`, wenn deine DB-Rolle kein DDL darf.
+und setze `autoCreateTables: false`, wenn deine DB-Rolle kein DDL darf.  Ist
+es aus, schickt der Store ein `SELECT 1`, wo er sonst das DDL ausführen würde,
+und erreicht die Datenbank also trotzdem, wenn er öffnet.
 
 ## Tag-Queries
 
@@ -245,19 +366,37 @@ import { Aside } from '@astrojs/starlight/components';
   `LISTEN/NOTIFY`-basierter Bus ist ein mögliches künftiges Feature.)
 </Aside>
 
-<Aside type="caution" title="Compression- / Encryption-Optionen werden ignoriert">
-  Per-Call-`PersistenceOptions` (Compression, Encryption) gelten nur für
-  die Object-Storage-Stores.  Die SQL-Backends speichern JSON als `TEXT` —
-  die Optionen werden hier still ignoriert, genau wie bei SQLite und
-  Cassandra.
+<Aside type="caution" title="Per-Actor-Verschlüsselung und -Integrität schützen keine Events">
+  Per-Call-`PersistenceOptions` (Compression, Encryption, Integrity)
+  werden vom Postgres-Snapshot-Store und vom Postgres-Durable-State-Store
+  honoriert, wie von jedem SQL- und Object-Storage-Store: Eine Zeile,
+  die unter einem Hook geschrieben wird, ist der Object-Storage-Frame in
+  Base64 hinter einem `ats1:`-Präfix, in derselben `TEXT`-Spalte,
+  gebunden an ihre Persistence-ID und ihre Sequenznummer bzw. Revision
+  ([#1802](https://github.com/pathosDev/actor-ts/issues/1802)).  Eine Zeile ohne den Schutz, den der Actor verlangt, wird
+  verweigert, sofern der Store nicht für eine Migration mit
+  `withAllowPlaintextRows(true)` gebaut wurde.
+
+  Das Journal wird nie gefragt.  `encryption()` und `integrity()` an
+  einem `PersistentActor` schützen nur seine Snapshots: Jedes Journal
+  speichert Events als Klartext-JSON, nichts erkennt ein an Ort und
+  Stelle manipuliertes Event, und datenbankseitige Kontrollen —
+  Transparent Data Encryption, ein verschlüsseltes Volume,
+  Zugriffskontrolle — sind heute der einzige Schutz für Events.  Ein
+  Actor, der dieses Journal mit dem Object-Storage-Snapshot-Store
+  kombiniert, startet sauber und schreibt seine Events hier im Klartext.
 </Aside>
 
 <Aside type="caution" title="TLS zu einer Managed-Instanz">
+  ```hocon
+  actor-ts.persistence.journal.postgres.ca-file = "/etc/ssl/rds-ca.pem"
+  ```
+  Nenne die CA, die eine Managed-Instanz veröffentlicht — aus der
+  Konfiguration mit `ca-file` oder im Code über `poolConfig`:
   ```ts
   poolConfig: { ssl: { rejectUnauthorized: true, ca: fs.readFileSync('rds-ca.pem') } }
   ```
-  Reiche `ssl` über `poolConfig` durch, wenn dein Managed-Postgres TLS
-  verlangt.
+  Eins von beiden, und keins neben einem ssl-Parameter in der URL.
 </Aside>
 
 ## Wie geht's weiter

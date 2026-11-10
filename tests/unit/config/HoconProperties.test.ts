@@ -30,9 +30,11 @@ import { parseSize } from '../../../src/config/Size.js';
  * for three different reasons — worth separating, because only one of them is
  * a gap that might close:
  *
- *  1. Array and string concatenation (`a += [x]`, `"hi " ${name}`) and
- *     triple-quoted strings are unimplemented and tracked (#537,
- *     `src/config/HoconParser.ts:17-19`).
+ *  1. Object and list concatenation (`{a = 1} {b = 2}`, `a += [x]`) and
+ *     triple-quoted strings are unimplemented and tracked (#537, the header
+ *     of `src/config/HoconParser.ts`).  String concatenation is implemented and
+ *     has a property of its own; the renderer still quotes every string, so a
+ *     value it writes is always one piece.
  *  2. `include` is NOT in that category.  It is a deliberate, permanent
  *     refusal with its own diagnostic (`src/config/HoconParser.ts:21-23`,
  *     `:119-124`, `:373-386`) — resolving one would let a config source name
@@ -258,6 +260,45 @@ describe('HOCON properties — declaring a key twice merges', () => {
       { numRuns: RUNS },
     );
   });
+
+  /**
+   * An assignment with nothing after it is no assignment (#1786), so a line
+   * `key =` for any key of the document — inserted before any line, in either
+   * assignment style — leaves the parsed model exactly as it was.  The keys
+   * blanked are the model's own, at its root, so each one has a value the
+   * blank line could take away if it were read as an assignment.
+   */
+  test('a blank assignment of an existing key, anywhere in the document, changes nothing', () => {
+    const style: RenderStyle = {
+      assignment: '=', separator: 'newline', explicitRootBraces: false,
+      objectShorthand: false, comments: false, indentation: '',
+    };
+    fc.assert(
+      fc.property(
+        modelArbitrary.filter((model) => Object.keys(model).length > 0),
+        fc.integer({ min: 0, max: 99 }),
+        fc.integer({ min: 0, max: 99 }),
+        fc.constantFrom('=', ':'),
+        (model, keyPick, linePick, assignment) => {
+          const keys = Object.keys(model);
+          const blank = `${renderKey(keys[keyPick % keys.length]!)} ${assignment}`;
+          const lines = renderRoot(model, style).split('\n');
+          // Only in front of a top-level field, or at the end: inside a
+          // multi-line object a root key would be a different, nested key.
+          // With no indentation, a top-level field is a line that starts with
+          // a key character rather than a closing brace or a value.
+          const boundaries = [
+            ...lines.flatMap((line, index) => (/^["A-Za-z0-9_-]/.test(line) ? [index] : [])),
+            lines.length,
+          ];
+          const at = boundaries[linePick % boundaries.length]!;
+          const source = [...lines.slice(0, at), blank, ...lines.slice(at)].join('\n');
+          expect(parseHocon(source)).toStrictEqual(parseHocon(lines.join('\n')));
+        },
+      ),
+      { numRuns: RUNS },
+    );
+  });
 });
 
 describe('HOCON properties — substitutions read the tree', () => {
@@ -303,6 +344,97 @@ describe('HOCON properties — substitutions read the tree', () => {
           expect(optional['a']).toBeUndefined();
         },
       ),
+      { numRuns: RUNS },
+    );
+  });
+
+  /**
+   * The specification's rule for an undefined `${?x}` that would have
+   * overridden an earlier value: the earlier value remains.  Every primitive
+   * the model can produce must survive the override line unchanged (#1536).
+   */
+  test('an unset optional override never removes a value the same document set earlier', () => {
+    const style: RenderStyle = {
+      assignment: '=', separator: 'newline', explicitRootBraces: false,
+      objectShorthand: false, comments: false, indentation: '',
+    };
+    fc.assert(
+      fc.property(primitiveArbitrary, (value) => {
+        const source = `${renderRoot({ port: value }, style)}\nport = \${?UNSET_zzz}`;
+        const resolved = resolveSubstitutions(parseHocon(source), {});
+        expect(resolved['port']).toStrictEqual(value);
+      }),
+      { numRuns: RUNS },
+    );
+  });
+
+  /**
+   * A string cut into pieces and written back as a concatenation is the
+   * string again (#537): each piece becomes a quoted string or a variable,
+   * written next to each other with no space, and the resolved value is the
+   * pieces joined.  The variables hold the pieces verbatim, so a piece that
+   * reads as JSON — a number, `true` — must still join in as its text.
+   *
+   * Two quoted pieces in a row are written as one: `"a""b"` is fine, but an
+   * empty one next to another quote makes `"""`, which HOCON reads as a
+   * triple-quoted string and this parser refuses (found by this property; the
+   * plain case beside it pins the refusal).
+   */
+  test('a string written as a concatenation of its pieces resolves to the string', () => {
+    const pieceArbitrary = fc.oneof(
+      fc.string({ maxLength: 6 }),
+      fc.constantFrom('42', 'true', 'null', '1e5', '"q"', '[1]', ' ', '://'),
+    );
+    fc.assert(
+      fc.property(
+        fc.array(fc.record({ text: pieceArbitrary, fromVariable: fc.boolean() }), { minLength: 2, maxLength: 6 }),
+        (pieces) => {
+          const environment: Record<string, string> = {};
+          const written: string[] = [];
+          let quoted: string | null = null;
+          for (const [index, { text, fromVariable }] of pieces.entries()) {
+            // An empty variable counts as unset (#1787), so an empty piece is written quoted.
+            if (!fromVariable || text === '') { quoted = (quoted ?? '') + text; continue; }
+            if (quoted !== null) { written.push(JSON.stringify(quoted)); quoted = null; }
+            environment[`PIECE_${index}`] = text;
+            written.push(`\${PIECE_${index}}`);
+          }
+          if (quoted !== null) written.push(JSON.stringify(quoted));
+          const source = written.join('');
+          const resolved = resolveSubstitutions(parseHocon(`a = ${source}`), environment);
+          expect(resolved['a']).toBe(pieces.map(({ text }) => text).join(''));
+        },
+      ),
+      { numRuns: RUNS },
+    );
+  });
+
+  /**
+   * A chain of aliases resolves whatever order its links are declared in
+   * (#1748): `link0 = ${link1}`, `link1 = ${link2}`, …, and the last link holds
+   * the value, so every link must read that value.  The links are the only
+   * keys of the document, so none can collide with another.
+   */
+  test('a chain of aliases resolves to its last link in every declaration order', () => {
+    const style: RenderStyle = {
+      assignment: '=', separator: 'newline', explicitRootBraces: false,
+      objectShorthand: false, comments: false, indentation: '',
+    };
+    const chain = fc.integer({ min: 1, max: 6 }).chain((links) => fc.record({
+      value: primitiveArbitrary,
+      order: fc.shuffledSubarray([...Array(links + 1).keys()], { minLength: links + 1 }),
+    }));
+    fc.assert(
+      fc.property(chain, ({ value, order }) => {
+        const last = order.length - 1;
+        const source = order
+          .map((link) => link === last
+            ? renderRoot({ [`link${link}`]: value }, style)
+            : `link${link} = \${link${link + 1}}`)
+          .join('\n');
+        const resolved = resolveSubstitutions(parseHocon(source), {});
+        for (let link = 0; link <= last; link++) expect(resolved[`link${link}`]).toStrictEqual(value);
+      }),
       { numRuns: RUNS },
     );
   });

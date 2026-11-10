@@ -16,15 +16,15 @@ steuerbar.
 
 ```ts
 import { ActorSystem, ActorSystemOptions } from 'actor-ts';
-import { MqttActor, MqttOptions, type MqttMessage } from 'actor-ts/io';
+import { MqttActor, MqttOptions, type MqttOptionsBuilder, type MqttMessage } from 'actor-ts/io';
 
 type Reading = { sensor: string; celsius: number };
 
 const actorSystemOptions = ActorSystemOptions.create().withConfig({
-    'actor-ts': { io: { broker: { mqtt: { brokerUrl: 'mqtt://localhost:1883' } } } },
+    'actor-ts': { io: { broker: { mqtt: { 'broker-url': 'mqtt://localhost:1883' } } } },
   });
 class TemperatureHub extends MqttActor<Reading> {
-  constructor(options: MqttOptions) {
+  constructor(options: MqttOptionsBuilder) {
     super(options.withQos(1).withClientId('temperature-hub'));
     this.subscribe('sensors/+/temp');
     this.subscribe('alerts/#', { qos: 2 });
@@ -60,7 +60,7 @@ sind **versiegelt** — die Basisklassen dispatchen an die Hooks unten;
 | `onConnected()` | Die Verbindung wurde (neu) geöffnet; die Subscription-Registry ist beim Broker erneut angewendet. |
 | `onDisconnected(cause?)` | Die Verbindung brach ab; ein Reconnect-Zyklus kann folgen (gemäß Settings). |
 | `onInvalidMessage(err, message)` | `onMessage` warf einen `MqttDecodeError` (ein lazy `entity()` auf einem fehlerhaften Payload).  Default: loggen + verwerfen.  Erneut werfen zum Eskalieren. |
-| `onSelfMessage(message)` | Eine Anwendungsnachricht (`TSelf`) wurde diesem Ref getellt. |
+| `onSelfMessage(message)` | Eine Anwendungsnachricht (`TSelf`) wurde diesem Ref getellt — oder etwas anderes, das keiner der eigenen Kinds des Aktors trifft, auch der Body eines entfernten Knotens.  Default: ein Warn mit der Klasse der Nachricht (nie ihrem Payload), dann [`this.unhandled(message)`](/de/fundamentals/actor/#eine-nachricht-ablehnen--unhandled) — ein Dead Letter, der diesen Aktor nennt, gezählt in `actor_unhandled_total{class}`. |
 | `onTerminated(signal)` | Ein Aktor, den du mit `context.watch` beobachtest, hat gestoppt.  Von `BrokerActor` geerbt; die Zustellziele, die dieser Aktor selbst beobachtet, sind bereits erledigt. |
 
 Eingehende und Lifecycle-Ereignisse werden über die Mailbox zugestellt,
@@ -101,6 +101,15 @@ interface MqttOptionsType extends BrokerCommonOptionsType {
 }
 ```
 
+Unter `actor-ts.io.broker.mqtt` werden die mehrteiligen Feldnamen in
+kebab-case geschrieben — `broker-url`, `client-id`, `clean-session`,
+`keep-alive`, `protocol-version` —, und das HOCON-`keep-alive` ist eine
+**Dauer in ganzen Sekunden**, der Einheit, in der MQTT es überträgt:
+`keep-alive = 30s` ergibt 30.  Ein Wert, der keine ganze Zahl von Sekunden
+ist, wird beim Start abgelehnt, `1500ms` ebenso wie ein nacktes `30`, denn
+HOCON liest eine nackte Zahl als Millisekunden; `0` schaltet keep-alive
+weiterhin ab.
+
 Häufige Muster:
 
 - **`withCleanSession(false)`** — die Session bleibt bestehen; der Broker
@@ -112,6 +121,69 @@ Häufige Muster:
 - **`withProtocolVersion(5)`** — aktiviert MQTT-5-Features (User-
   Properties, Reason-Codes auf `MqttMessage`).  Braucht einen v5-fähigen
   Broker.
+
+### Die Verbindung aus HOCON
+
+Die Blätter der Verbindung liegen ebenfalls unter `actor-ts.io.broker.mqtt`.
+Dieses Beispiel nimmt jedes davon aus der Umgebung: Ein Blatt, dessen
+Variable nicht gesetzt ist, bleibt ungesetzt, beim eingebauten Default, den
+sein Kommentar nennt.
+
+```hocon
+actor-ts.io.broker.mqtt {
+  broker-url       = ${?ACTOR_TS_MQTT_BROKER_URL}        # mqtt:// mqtts:// ws:// wss://; required, here or in code
+  client-id        = ${?ACTOR_TS_MQTT_CLIENT_ID}
+  credentials {
+    username = ${?ACTOR_TS_MQTT_USERNAME}
+    password = ${?ACTOR_TS_MQTT_PASSWORD}
+  }
+  qos              = ${?ACTOR_TS_MQTT_QOS}               # 0, 1 or 2; unset = 0
+  clean-session    = ${?ACTOR_TS_MQTT_CLEAN_SESSION}     # unset = true
+  keep-alive       = ${?ACTOR_TS_MQTT_KEEP_ALIVE}        # whole seconds, such as 30s; unset = 60s
+  protocol-version = ${?ACTOR_TS_MQTT_PROTOCOL_VERSION}  # 4 (MQTT 3.1.1) or 5; unset = 4
+}
+```
+
+Ein Wert aus der Umgebung wird zuerst als JSON gelesen, wo immer er sich als
+JSON parsen lässt.  `ACTOR_TS_MQTT_KEEP_ALIVE=30` ist also die nackte Zahl 30,
+die `keep-alive` als dreißig Millisekunden ablehnt — schreib `30s` —, und eine
+Client-ID oder ein Passwort, das sich wie eine Zahl liest, kommt in der
+Schreibweise dieser Zahl zurück, `1e3` als `1000`, `1.50` als `1.5` und eine
+ganze Zahl jenseits von `Number.MAX_SAFE_INTEGER` womöglich mit anderen letzten
+Ziffern (`20261104123456789` als `20261104123456788`); ein Wert, der sich wie
+`null`, eine Liste oder ein Objekt liest, lässt den Start mit einem
+`ConfigError` scheitern.  Einen solchen Wert in der Variablen selbst quoten
+(`ACTOR_TS_MQTT_PASSWORD='"1e3"'`) oder im Code setzen.
+
+### Das Will aus HOCON
+
+Das Last Will will eine Flotte üblicherweise pro Deployment setzen statt pro
+Build, deshalb hat es einen eigenen Block unter `actor-ts.io.broker.mqtt`:
+
+```hocon
+actor-ts.io.broker.mqtt {
+  will {
+    topic   = "devices/42/status"
+    payload = "offline"
+    qos     = 1
+    retain  = true
+  }
+}
+```
+
+Zwei Dinge dazu.
+
+`payload` ist hier ein **String**.  Das Feld ist `string | Uint8Array`, und
+eine Config-Datei hat keine Schreibweise für Bytes — ein binäres Will bleibt
+also code-only.  Ohne `payload` ist es das leere, was gültiges MQTT ist und
+genau so ein Retained Will gelöscht wird — `topic` dagegen ist Pflicht, und
+ein `will`-Block ohne eines wird beim Start abgelehnt, statt zum Broker zu
+gehen und dort zu scheitern.
+
+Der Block wird **als Ganzes** gelesen.  `withWill({ … })` im Code ersetzt das
+konfigurierte Will vollständig, statt Blatt für Blatt damit zu mischen — das
+ist die gewohnte Präzedenz (Konstruktor > HOCON > Defaults), angewendet auf
+das Feld, das dieses Objekt *ist*.
 
 ## Typisierte Payloads
 
@@ -197,13 +269,80 @@ ref.tell({ kind: 'unsubscribe', topic: 'y/#', target: someHandler });
 - Ein `subscribe` **ohne `target`** liefert passende Nachrichten an das
   eigene `onMessage` des Aktors; mit `target` fan-outet es an jenen
   Aktor.  Überlappende Patterns liefern an jedes Ref höchstens einmal.
-- Ein `unsubscribe` mit `target` entfernt jenes Target.  **Ohne
-  `target`** entfernt es alle *fremden* Targets, lässt aber die eigene
-  Subscription des Aktors bestehen — ein externer Controller kann die
-  im Konstruktor deklarierte Subscription der Subklasse nicht stummschalten.
+- Ein `unsubscribe` entfernt nur, was ein externes `subscribe` angehängt
+  hat: das Target, das es nennt, oder — **ohne `target`** — alle extern
+  angehängten Targets auf einmal.  Die eigene `onMessage`-Zustellung des
+  Aktors entfernt es nie, und ebensowenig ein Target, das die Subklasse
+  selbst per `subscribe(topic, { target })` deklariert hat — auch dann
+  nicht, wenn das Kommando genau dieses Target nennt.  Ein externer
+  Controller kann die im Konstruktor deklarierte Subscription der
+  Subklasse nicht stummschalten, in welcher der beiden Formen sie auch
+  deklariert wurde.  Aus der Subklasse heraus entfernt
+  `unsubscribe(topic, { target })` jedes Target, egal wer es anhängte.
+- Das `qos` eines `subscribe` gilt nur für ein Pattern, **das das Kommando
+  selbst anlegt**.  Nennt es ein bereits vorhandenes Pattern, hängt es sich
+  mit dem dort registrierten QoS an; sein eigenes `qos` wird dabei
+  ignoriert.  Das ist das additive Gegenstück zur Regel darüber: Wer die
+  Subscription der Subklasse nicht stummschalten kann, soll sie auch nicht
+  unbemerkt herunterstufen können — eine mit QoS 0 neu ausgestellte
+  QoS-2-Subscription ließe die Anwendung an Exactly-once-Zustellung glauben,
+  während der Broker verwerfen darf.  Um das QoS des eigenen Patterns zu
+  ändern, ruf in der Subklasse `subscribe(topic, { qos })` auf.
 - Fan-out-Targets werden per Deathwatch beobachtet: stoppt ein Target-
   Aktor, wird er automatisch entfernt (und ein Broker-UNSUBSCRIBE feuert,
   sobald ein Pattern keine Konsumenten mehr hat).
+- Ein externes `subscribe`, das ein Filter einführt, das der Aktor **noch
+  nicht** hielt, wird auf Info-Level geloggt — und ebenso eines, dessen
+  `qos` die Regel darüber aus einem bereits gehaltenen Filter heraushält:
+  eine abgelehnte Anfrage ist für einen Betreiber so viel wert wie ein
+  neues Filter, denn sonst sieht der Sender nur ein erfolgreiches
+  Re-SUBSCRIBE.  Ein bloßes Anhängen bleibt still: es führt weder ein
+  Filter noch einen Konsumenten ein, den es nicht schon gab, und hat um
+  nichts gebeten, was es nicht bekam.  Ebenso das eigene `subscribe()` der
+  Subklasse, im Konstruktor wie zur Laufzeit.  Umsonst ist ein Anhängen am
+  Broker allerdings nicht — im verbundenen Zustand stellt es das SUBSCRIBE
+  neu aus, und ein MQTT-Re-SUBSCRIBE spielt die Retained-Nachrichten des
+  Filters an jeden Konsumenten dieses Patterns erneut aus.
+
+Der erste Eintrag nennt das Filter, das QoS, das das SUBSCRIBE tatsächlich
+trägt, und ob passende Nachrichten an das eigene `onMessage` des Aktors
+gehen oder an einen anderen Aktor fan-outen; der zweite nennt das
+angefragte QoS neben dem beibehaltenen:
+
+```text
+MqttActor: external subscribe introduced broker filter 'tele/#' at QoS 1, delivering to actor 'actor-ts://sensors/user/mirror'
+MqttActor: external subscribe asked QoS 0 for filter 'own/#', which the actor already holds at QoS 2; kept QoS 2
+```
+
+Das ist das Gegengewicht zur ersten Regel, keine Einschränkung davon.  Einen
+Handler an ein beliebiges Filter zu hängen, `#` eingeschlossen, bleibt offen,
+weil es der Vertrag des Aktors ist und wer das Ref hält ohnehin überallhin
+publishen kann — vertretbar ist das genau so lange, wie ein Betreiber es
+sehen kann.  Aus einer Nachricht wird nichts geloggt: der Eintrag beschreibt
+eine Subscription, keinen Verkehr, damit aus einer Zeile pro neuem Filter nie
+eine Zeile pro Payload wird.  Das Filter wird vorher escaped und in der Länge
+gekappt, denn es ist Text, den der *Sender* gewählt hat — ein Zeilenumbruch
+darin würde sonst eine zweite Logzeile fälschen, die wie eine echte aussieht.
+Wenn dein Topic-Schema ein Credential enthält (manche Broker legen einen
+API-Key in den Pfad), beachte: es landet hier auf Info-Level im Log, genau so
+wie bereits in den Warnungen dieses Aktors zu fehlgeschlagenem Subscribe und
+nicht dekodierbarem Payload.
+
+Damit ist **der Besitz des Refs die Vertrauensgrenze** — Cluster-Mitglieder
+eingeschlossen.  Ein gültiges Mitglied, das das Ref dieses Aktors hält, kann
+sich auf alles subscriben, was der darunterliegende Client lesen darf, genau
+wie ein lokaler Aktor; einen Trust-Hook pro Kommando gibt es nicht, und er
+würde auch nicht helfen, weil die Capability am Ref hängt und nicht am
+Kommando.  Beachte dabei: das hier ist eine Lese-Capability, die
+Publish-Regel daneben eine Schreib-Capability — in einen Topic-Baum
+publishen zu können heißt nicht, alles lesen zu können, was der Broker
+diesem Client ausliefert.  „Es kann ohnehin publishen" erklärt also, warum
+der Fan-out offen bleibt, nicht, warum Lesen harmlos wäre.  Ein Feed, der
+privat bleiben muss, darf seinen Aktor deshalb nicht bei der Receptionist
+registrieren und sein Ref nicht über Knotengrenzen reichen.  Gib diesem
+Verkehr einen eigenen `MqttActor`, halte das Ref in dem Subsystem, dem es
+gehört, und lass den extern steuerbaren die Topics tragen, deren Spiegelung
+du in Kauf nimmst.
 
 Da diese Kommandos einfache Objekte sind, halte ein selbst definiertes
 `TSelf` von den `kind`-Werten `publish` / `subscribe` / `unsubscribe`

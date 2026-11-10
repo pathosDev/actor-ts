@@ -7,6 +7,8 @@ import { FilesystemObjectStorageOptions } from '../../../../../src/persistence/o
 import { ObjectStorageSnapshotStore } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStore.js';
 import { ObjectStorageSnapshotStoreOptions } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
 import { compressionByPrefix } from '../../../../../src/persistence/object-storage/PluginConfig.js';
+import { OBJECT_STORAGE_SNAPSHOT_NAMESPACE } from '../../../../../src/persistence/Constants.js';
+import { JournalError } from '../../../../../src/persistence/JournalTypes.js';
 
 /** HKDF context — required on every client-side encryption config (#108). */
 const info = 'acme/test/snapshot/v1';
@@ -130,9 +132,9 @@ describe('ObjectStorageSnapshotStore — compression resolver', () => {
     await store.save('large/x', 1, { data: 'x'.repeat(200) });
     await store.save('small/y', 1, { data: 'y' });
     await store.save('other/z', 1, { data: 'z' });
-    expect(seenAlgos.get('large/x/00000000000000000001.json')).toBe('zstd');
-    expect(seenAlgos.get('small/y/00000000000000000001.json')).toBeUndefined();
-    expect(seenAlgos.get('other/z/00000000000000000001.json')).toBe('gzip');
+    expect(seenAlgos.get(`${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}large/x/00000000000000000001.json`)).toBe('zstd');
+    expect(seenAlgos.get(`${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}small/y/00000000000000000001.json`)).toBeUndefined();
+    expect(seenAlgos.get(`${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}other/z/00000000000000000001.json`)).toBe('gzip');
   });
 
   test('round-trip survives gzip and zstd', async () => {
@@ -155,7 +157,8 @@ describe('ObjectStorageSnapshotStore — prefix', () => {
     const store = new ObjectStorageSnapshotStore(storeOptions);
     await store.save('account-1', 5, { x: 1 });
     const items = await backend.list({ prefix: 'env-prod/' });
-    expect(items.map(i => i.key)).toContain('env-prod/account-1/00000000000000000005.json');
+    expect(items.map(i => i.key))
+      .toContain(`env-prod/${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}account-1/00000000000000000005.json`);
   });
 });
 
@@ -168,7 +171,7 @@ describe('ObjectStorageSnapshotStore — encryption (client-aes256-gcm)', () => 
       .withEncryption({ mode: 'client-aes256-gcm', masterKey, info });
     const store = new ObjectStorageSnapshotStore(storeOptions);
     await store.save('p', 1, { secret: 'attack-at-dawn-zero-zero' });
-    const fetched = await backend.get('p/00000000000000000001.json');
+    const fetched = await backend.get(`${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}p/00000000000000000001.json`);
     expect(fetched.isSome()).toBe(true);
     if (fetched.isSome()) {
       const asString = new TextDecoder('utf-8', { fatal: false }).decode(fetched.value.body);
@@ -194,8 +197,8 @@ describe('ObjectStorageSnapshotStore — encryption (client-aes256-gcm)', () => 
     // SAME master key the two snapshots use different subkeys.  We prove
     // that by sniffing the bytes — the bigcorp snapshot must not decrypt
     // as if it were acme's.
-    const acme = await backend.get('tenant-acme/x/00000000000000000001.json');
-    const big = await backend.get('tenant-bigcorp/x/00000000000000000001.json');
+    const acme = await backend.get(`${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}tenant-acme/x/00000000000000000001.json`);
+    const big = await backend.get(`${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}tenant-bigcorp/x/00000000000000000001.json`);
     expect(acme.isSome() && big.isSome()).toBe(true);
 
     // Each pid loads correctly through the store.
@@ -233,5 +236,89 @@ describe('ObjectStorageSnapshotStore — maxDecompressedBytes cap (#3)', () => {
     const store = new ObjectStorageSnapshotStore(okOptions);
     const loaded = await store.loadLatest<{ blob: string }>('p');
     expect(loaded.toNullable()?.state.blob.length).toBe(50_000);
+  });
+});
+
+/**
+ * #716 made the reader strict: a snapshot leaf must be exactly `SEQ_PADDING`
+ * digits followed by `.json`, and must parse back to a safe integer.  `save`
+ * kept the precondition it had before — `Number.isFinite(seq) && seq >= 0` —
+ * so the two sides of this store disagreed about which numbers are sequence
+ * numbers, and the *writing* side was the permissive one.
+ *
+ * A sequence the writer accepts and the reader refuses is worse than either
+ * rejecting it or reading it back wrongly.  `save('p', 1.5)` wrote
+ * `snapshots/p/000000000000000001.5.json`: `loadLatest` skips it, `delete`
+ * never matches it and `keepN` pruning never counts it, so the object is
+ * invisible, undeletable through the store API, and accumulates forever.
+ * The old `/(\d{1,20})\.json$/` parser matched those keys, which is what
+ * makes this a regression rather than a pre-existing gap — #716 turned a
+ * wrong-sequence bug into a silent permanent orphan.
+ *
+ * So `save` now fails loudly, on the reader's own terms, and these cases are
+ * paired deliberately: each rejection asserts that *nothing was written*,
+ * because a version that threw after the `put` would satisfy a bare
+ * `.rejects` and leave the orphan behind anyway.
+ */
+describe('ObjectStorageSnapshotStore — save refuses a sequence the reader cannot address (#716)', () => {
+  /** Every object in the backend, whatever namespace or entity it sits under. */
+  const storedKeys = async (): Promise<string[]> =>
+    (await backend.list({ prefix: '' })).map((item) => item.key);
+
+  test('a fractional sequence is refused, and nothing is written', async () => {
+    const storeOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend);
+    const store = new ObjectStorageSnapshotStore(storeOptions);
+    await expect(store.save('p', 1.5, { balance: 1 })).rejects.toBeInstanceOf(JournalError);
+    expect(await storedKeys()).toEqual([]);
+  });
+
+  test('a sequence past MAX_SAFE_INTEGER is refused, and nothing is written', async () => {
+    const storeOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend);
+    const store = new ObjectStorageSnapshotStore(storeOptions);
+    // `2 ** 53` is the first integer a double cannot represent uniquely, and
+    // the first one `snapshotSequenceOf`'s `Number.isSafeInteger` check
+    // refuses.
+    await expect(store.save('p', 2 ** 53, { balance: 1 })).rejects.toBeInstanceOf(JournalError);
+    expect(await storedKeys()).toEqual([]);
+  });
+
+  test('a sequence wider than the padding is refused, and nothing is written', async () => {
+    const storeOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend);
+    const store = new ObjectStorageSnapshotStore(storeOptions);
+    // `String(seq)` renders this one as `12345678901234567000` — twenty
+    // characters, so it passes the leaf-shape filter on its way out and
+    // would read back as a number nobody asked for.  Only the safe-integer
+    // rule catches it, which is the point of adopting the reader's rule
+    // rather than inventing a width check.
+    await expect(store.save('p', 12345678901234567890, { balance: 1 }))
+      .rejects.toBeInstanceOf(JournalError);
+    expect(await storedKeys()).toEqual([]);
+  });
+
+  test('MAX_SAFE_INTEGER itself is still accepted and reads back', async () => {
+    // The boundary in the other direction.  Without it the rule could be
+    // "refuse anything large" and every case above would still pass, while a
+    // legitimate sequence at the top of the safe range stopped working.
+    const storeOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend);
+    const store = new ObjectStorageSnapshotStore(storeOptions);
+    await store.save('p', Number.MAX_SAFE_INTEGER, { balance: 7 });
+    const latest = await store.loadLatest<{ balance: number }>('p');
+    expect(latest.toNullable()?.sequenceNr).toBe(Number.MAX_SAFE_INTEGER);
+    expect(latest.toNullable()?.state.balance).toBe(7);
+  });
+
+  test('the rejections that were already in force stay in force', async () => {
+    const storeOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend);
+    const store = new ObjectStorageSnapshotStore(storeOptions);
+    await expect(store.save('p', -1, { balance: 1 })).rejects.toBeInstanceOf(JournalError);
+    await expect(store.save('p', Number.NaN, { balance: 1 })).rejects.toBeInstanceOf(JournalError);
+    await expect(store.save('p', Number.POSITIVE_INFINITY, { balance: 1 }))
+      .rejects.toBeInstanceOf(JournalError);
+    expect(await storedKeys()).toEqual([]);
   });
 });

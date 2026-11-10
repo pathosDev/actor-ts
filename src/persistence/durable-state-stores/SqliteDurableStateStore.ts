@@ -32,7 +32,7 @@ export class SqliteDurableStateStore extends RelationalDurableStateStore {
   override readonly storageLocality: StorageLocality = 'node-local';
 
   constructor(options: SqliteDurableStateStoreOptions = {}) {
-    const resolvedOptions = (options as SqliteDurableStateStoreOptionsType);
+    const resolvedOptions = withoutNullDatabase(options as SqliteDurableStateStoreOptionsType);
     new SqliteDurableStateStoreOptionsValidator().validate(resolvedOptions);
     super({
       storeName: 'SqliteDurableStateStore',
@@ -40,9 +40,11 @@ export class SqliteDurableStateStore extends RelationalDurableStateStore {
       table: resolvedOptions.table,
       autoCreateTables: resolvedOptions.autoCreateTables,
       serializer: resolvedOptions.serializer,
-      // A caller-supplied handle is a shared handle — closing it here would
-      // pull the database out from under the journal and snapshot store using
-      // the same one.
+      allowPlaintextRows: resolvedOptions.allowPlaintextRows,
+      // A caller-supplied handle belongs to whoever opened it — closing it here
+      // would pull the database out from under the code that handed it over.
+      // No SQLite journal or snapshot store shares it: they open their own
+      // handle (#491).
       ownsPool: resolvedOptions.database === undefined,
       openPool: async () => adaptSqliteDatabase(
         await buildSqliteDatabase(resolvedOptions),
@@ -50,4 +52,21 @@ export class SqliteDurableStateStore extends RelationalDurableStateStore {
       ),
     });
   }
+}
+
+/**
+ * `options`, with an untyped `database: null` read as no handle at all
+ * (#1492).
+ *
+ * The path rule and `buildSqliteDatabase` already count `null` — the value a
+ * caller without the declared types passes for "none" — as no handle, so
+ * `null` beside a path opens the path and `null` with no path is refused as a
+ * store given neither.  What is left to this store is ownership: it decides
+ * `ownsPool` and the adapter's close from `database === undefined`, so
+ * without this a store that opened the path itself would leave that database
+ * open on `close()`, as if a caller owned it.
+ */
+function withoutNullDatabase(options: SqliteDurableStateStoreOptionsType): SqliteDurableStateStoreOptionsType {
+  if ((options.database as unknown) !== null) return options;
+  return { ...options, database: undefined };
 }

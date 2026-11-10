@@ -134,8 +134,13 @@ type SubscriberEntry = {
  * the topic→node set so Publish can reach every subscriber with at
  * most one remote hop.
  *
- * Simple delta model: each mediator periodically gossips its local
- * topic set to one random peer.  Peers merge into their view.
+ * Full-state gossip, not deltas: on its own timer, each mediator pushes
+ * every topic name it holds local subscribers for to one random `up` peer,
+ * and the receiver replaces that sender's contribution wholesale, so a
+ * topic missing from the frame is dropped for that node.  A local
+ * subscribe or unsubscribe, and a member reaching `up`, push the same set
+ * to every `up` peer at once; the periodic round is the anti-entropy
+ * behind those.
  *
  * A `Publish` is a broadcast by default and an anycast with
  * `delivery = 'one-subscriber'` — one subscriber cluster-wide, chosen by a
@@ -154,6 +159,19 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
   private unsubscribeWire: (() => void) | null = null;
   private unsubscribeCluster: (() => void) | null = null;
   private version = 0;
+  /**
+   * Peers whose first gossip frame this mediator has answered.
+   *
+   * A frame that *arrives* establishes the one thing a push cannot: that
+   * the sender is running and its wire hook is registered.  Answering it is
+   * therefore the half of the exchange that cannot be dropped for want of a
+   * listener — see {@link handleGossip} for why that matters.
+   *
+   * Keyed by address string, and cleared for a peer by {@link forgetNode},
+   * so a node that leaves and rejoins is answered again rather than treated
+   * as still holding the registry it lost when it restarted.
+   */
+  private readonly answeredPeers = new Set<string>();
 
   /**
    * Which local subscribers each topic has, and which topics each subscriber
@@ -427,6 +445,13 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
    * which from the outside is indistinguishable from a healthy cluster with
    * nothing to do.  This node can only fix its own half of that, and does:
    * whatever it cannot route becomes observable (#155).
+   *
+   * The hand-rolled `deadLetters.tell(new DeadLetter(…))` this used to end
+   * with was the prototype for `Actor.unhandled`, so it now calls that
+   * instead (#1178).  Same letter, same recipient, plus the counter — which
+   * matters here more than anywhere, since version skew produces these at
+   * message rate and the dead-letter store that would otherwise count them is
+   * `off` by default.
    */
   private onUnhandled(message: MediatorInbox | PubSubWireMessage): void {
     const kind = (message as { kind?: unknown } | null)?.kind;
@@ -434,7 +459,7 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
       `[pubsub] no handler for '${String(kind ?? message)}' → dead letters — `
       + 'a peer may be speaking a newer wire protocol than this node',
     );
-    this.system.deadLetters.tell(new DeadLetter(message, this.sender.toNullable(), this.self));
+    this.unhandled(message);
   }
 
   /** Fan out to local subscribers; returns how many actually got the body. */
@@ -549,7 +574,10 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
    * Send the current subscription state to **every** peer
    * immediately.  Used after local subscribe / unsubscribe so a
    * follow-up publish doesn't have to wait several gossip ticks
-   * for the random-peer-per-tick scheme to reach every node.
+   * for the random-peer-per-tick scheme to reach every node —
+   * and after a member reaches `up`, which is both the first
+   * chance to tell that member anything and the retry for every
+   * peer that was not yet listening when we subscribed (#1193).
    * Periodic `gossipTick` continues to run as steady-state
    * anti-entropy.
    */
@@ -619,14 +647,63 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
         + `maxTopics (${this.maxTopics}) / maxRemoteNodesPerTopic (${this.maxRemoteNodesPerTopic}) is full`,
       );
     }
+    // Answer the first frame each peer sends.  Both sides push their state
+    // when membership moves, but a push is aimed at an address, not at a
+    // listener: a node joins its cluster before it starts the extension that
+    // registers this hook, so a push sent into that window reaches a
+    // `Cluster` with nowhere to route it and is dropped without a trace.
+    // Whichever mediator starts last hears from nobody — every peer announced
+    // itself while it was not yet listening — and a broadcast it publishes
+    // then reaches only the subset it happens to have learnt, which is what
+    // made the second burst of `12-pubsub-fanout` stall on one node while the
+    // first burst, published from the node that started first, always
+    // arrived (#1193).
+    //
+    // This frame is proof of the opposite: the sender is up and routing.
+    // Handing our state back along it makes the exchange symmetric however
+    // the two startups interleaved.  Once per peer — answering every frame
+    // would double the steady gossip rate, and `gossipTick` remains the
+    // anti-entropy that covers whatever this does not.
+    if (!this.answeredPeers.has(senderAddr)) {
+      this.answeredPeers.add(senderAddr);
+      this.sendWire(from, this.buildGossip());
+    }
   }
 
   private onMemberRemoved(e: MemberRemoved): void {
     this.forgetNode(e.member.address);
   }
 
+  /**
+   * A peer reached `up` — push our topics to it, rather than only counting
+   * the event.
+   *
+   * {@link onSubscribe} already refuses the random-peer-per-tick bet for the
+   * subscribe event, and its comment spells out the odds it refuses.  But
+   * {@link eagerGossip} takes the membership it sees *at subscribe time* as
+   * final, so a mediator that subscribes before its cluster has converged
+   * broadcasts to nobody — and nothing ever asked again, because this arm
+   * only bumped `version`, a field every receiver ignores.  The membership
+   * half of the same bet was left standing (#1193).
+   *
+   * Re-broadcasting rather than addressing the new member alone is not just
+   * the cheaper thing to write.  The subscribe-time broadcast may have
+   * reached a *subset* — a peer whose own mediator was not yet listening
+   * drops the frame — so every membership change is also the retry that
+   * those peers never got.  The payload is topic names, and a member comes
+   * up far less often than a topic is published to; `eagerGossip` already
+   * accepts the same cost on every local subscribe.
+   *
+   * A frame can still land before the recipient has registered its own wire
+   * hook — a node joins its cluster before it starts the extensions that use
+   * it — which is exactly why a frame is *answered* rather than only sent;
+   * see {@link answeredPeers}.
+   */
   private onMemberUp(): void {
     this.version++;
+    // `updateMember` writes the member before it emits, so the new peer is
+    // already in `upMembers()` here and this reaches it.
+    this.eagerGossip();
   }
 
   private onOtherClusterEvent(): void {
@@ -635,6 +712,9 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
 
   private forgetNode(addr: NodeAddress): void {
     const key = addr.toString();
+    // Dropped with the claims, so a rejoin is answered rather than assumed
+    // to still hold what it had before it left.
+    this.answeredPeers.delete(key);
     for (const [topic, state] of this.topics) {
       state.remoteNodes.delete(key);
       this.maybeDropTopic(topic);
@@ -794,7 +874,6 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
       to: mediatorPath(to.systemName),
       from: null,
       body: message,
-      tag: message.kind === 'pubsub-publish' ? 'PubSubPublish' : 'PubSubPublishOne',
     });
   }
 }

@@ -45,6 +45,51 @@ type MemcachedCacheOptionsType = {
 über `username`/`password`.  Mehrere Server werden über Hashing
 verteilt.
 
+## Allein aus der Config
+
+Das Framework registriert die Memcached-Factory selbst; ein Cache kommt
+also auf Memcached hoch, ohne `registerCache`-Aufruf und ohne irgendein
+`new MemcachedCache(...)` in deinem Code — es braucht nur eine Plugin-Id
+und einen Block:
+
+```hocon
+actor-ts.cache {
+  sessions.plugin = "actor-ts.cache.memcached"   # cache('sessions') is Memcached
+
+  memcached {
+    servers    = "memcache-a:11211,memcache-b:11211"
+    username   = ${?MEMCACHED_USERNAME}
+    password   = ${?MEMCACHED_PASSWORD}
+    key-prefix = "my-app:"
+  }
+}
+```
+
+Die Blätter sind die Felder aus `MemcachedCacheOptionsType` oben in
+kebab-case.  `servers` ist **ein kommagetrennter String** und keine
+Liste, weil `memjs`' `Client.create` genau das nimmt.
+
+**Ein leerer String bedeutet „nicht gesetzt".**  `username`, `password`
+und `key-prefix` werden als `""` ausgeliefert, damit du die Form des Keys
+siehst; der Reader verwirft sie, statt sie weiterzureichen, und ein leeres
+`servers` fällt auf das eingebaute `localhost:11211` durch, statt
+abgelehnt zu werden.
+
+Jeder benannte Cache kann eigene Verbindungs-Settings haben, Blatt für
+Blatt über den globalen Block gelegt:
+
+```hocon
+actor-ts.cache {
+  memcached.servers = "memcache-a:11211"
+
+  sessions { plugin = "actor-ts.cache.memcached", memcached.key-prefix = "sess:" }
+}
+```
+
+`memjs` ist ein lazy geladener optionaler Peer, der Block kostet also
+nichts, solange kein Cache tatsächlich darauf auflöst: Der Treiber wird
+bei der ersten Cache-*Operation* importiert, nicht beim Start.
+
 ## Peer-Dependency
 
 ```bash

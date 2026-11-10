@@ -244,14 +244,44 @@ replacement arrived, leaving the cache permanently cold.
 
 ## Routee discovery
 
-Every gossip round, the router re-derives its routee set from the
-cluster's up-members.  Triggers a rebuild on:
+The router derives its routee set from
+`Cluster.placementCandidates()` — the up-members this node is
+willing to put work on.  Triggers a rebuild on:
 
 - `MemberUp` — a new up-member matching the role.  Add it.
 - `MemberRemoved` — a removed member.  Drop it.
 
 The set is **ordered deterministically** (by address), so
 round-robin counters stay sane across rebuilds.
+
+### Candidates, not simply up-members
+
+`placementCandidates()` **is** `upMembers()` while
+`actor-ts.cluster.configuration-compatibility-check.enforce` is
+`off`, which is the default — so most deployments can read the two
+as one set.
+
+With enforcement on, a peer whose
+[checked configuration](/cluster/joining-and-seeds/#settings-that-have-to-agree)
+disagrees with this node's drops out of the set and the router stops
+sending to it.  The peer is not downed and stays `up` for every
+other purpose; only placement changes.
+
+Routee selection is the **only** consumer of that set, deliberately.
+The view is per-node — each node compares what its peers gossip
+against its own resolved values — so it is asymmetric by
+construction: with A and B agreeing and C diverging, C excludes both
+of them while they exclude only C.  That costs a routee here, and it
+would produce two winners anywhere a role is *elected*, which is why
+[cluster singletons](/cluster/singleton/overview/) and the shard
+coordinator keep reading up-members.
+
+A divergence is not a membership event, so a router that is already
+running applies it at its next rebuild — the next `MemberUp` or
+`MemberRemoved`.  In the ordinary case that is not a wait: the
+settings the framework itself publishes are resolved before a node's
+first frame, so a diverging peer is already outside the candidate
+set by the time joining it fires `MemberUp`.
 
 ## When the routee set is empty
 
@@ -279,7 +309,7 @@ ClusterRouter.factory(
 );
 ```
 
-Only up-members carrying the `compute` role are candidates.
+Only candidates carrying the `compute` role are routees.
 Useful for asymmetric clusters:
 
 - Nodes with `compute` role do heavy work.
@@ -287,7 +317,8 @@ Useful for asymmetric clusters:
 - Nodes with `coordinator` role host singletons.
 
 The role is declared at `Cluster.join` time per node.  The router's
-`role` field filters; without it, **every up-member is a candidate**.
+`role` field narrows the candidate set; without it, **every
+candidate is a routee**.
 
 ## Self-routing
 

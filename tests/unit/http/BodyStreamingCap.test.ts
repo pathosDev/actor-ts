@@ -39,6 +39,7 @@ import { HonoBackend } from '../../../src/http/backend/HonoBackend.js';
 import { HonoBackendOptions } from '../../../src/http/backend/HonoBackendOptions.js';
 import type { HttpServerBackend, ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
+import { HttpServerOptions } from '../../../src/http/HttpServerOptions.js';
 import { completeJson, path, post, type Route } from '../../../src/http/Route.js';
 import { Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
@@ -82,7 +83,7 @@ function echoLength(seen: { called: boolean }): Route {
   }));
 }
 
-async function start(backend: HttpServerBackend, routes: Route): Promise<number> {
+async function start(backend: HttpServerBackend, routes: Route, serverOptions: HttpServerOptions = {}): Promise<number> {
   const systemOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
@@ -91,6 +92,7 @@ async function start(backend: HttpServerBackend, routes: Route): Promise<number>
     const binding = await system.extension(HttpExtensionId)
       .newServerAt('127.0.0.1', 0)
       .useBackend(backend)
+      .withServerOptions(serverOptions)
       .bind(routes);
     live.push({ binding, system });
     return binding.port;
@@ -273,6 +275,57 @@ describe.each([...backends])('body cap is applied before the body is complete �
     expect(outcome.settled).not.toBe('never');
     expect(seen.called).toBe(false);
     // When the answer did survive the teardown, it says what it should.
+    if (outcome.settled === 'response') expect(outcome.status).toBe(413);
+  });
+});
+
+/**
+ * #1488 — the same two mechanisms, with the cap coming from the server's
+ * `max-content-length` rather than from the backend's own options.
+ *
+ * Express and Hono read bodies themselves, so the key has to reach the byte
+ * counter and the declared-length check, not only the fast path a `fetch`
+ * exercises.  Both backends are built with no cap of their own — the shared
+ * 1 MiB, which the bodies below never approach — so only a counter running at
+ * the key's cap can decide anything before the body ends.
+ */
+describe.each([
+  ['express', () => new ExpressBackend()],
+  ['hono', () => new HonoBackend()],
+] as const)('max-content-length is applied before the body is complete — %s backend', (_name, makeBackend) => {
+  const serverOptions = HttpServerOptions.create().withMaxContentLength(CAP_BYTES);
+
+  test('an over-long declared Content-Length is refused at the key\'s cap without a body byte being sent', async () => {
+    const seen = { called: false };
+    const port = await start(makeBackend(), echoLength(seen), serverOptions);
+    const exchange = await connectRaw(port);
+    try {
+      exchange.write(
+        'POST /up HTTP/1.1\r\n'
+        + `Host: 127.0.0.1:${port}\r\n`
+        + 'Content-Type: application/octet-stream\r\n'
+        + `Content-Length: ${CAP_BYTES * 4}\r\n`
+        + 'Connection: close\r\n\r\n',
+      );
+
+      const response = await awaitResponse(exchange, SETTLE_TIMEOUT_MS);
+
+      expect(response).not.toBeNull();
+      expect(statusOf(response!)).toBe(413);
+      expect(seen.called).toBe(false);
+    } finally {
+      exchange.close();
+    }
+  });
+
+  test('a chunked body over the key\'s cap is abandoned before its terminating chunk', async () => {
+    const seen = { called: false };
+    const port = await start(makeBackend(), echoLength(seen), serverOptions);
+
+    const outcome = await streamChunkedBody(port);
+
+    expect(outcome.settled).not.toBe('never');
+    expect(seen.called).toBe(false);
     if (outcome.settled === 'response') expect(outcome.status).toBe(413);
   });
 });

@@ -1,19 +1,43 @@
 import { describe, expect, test } from 'bun:test';
 import { Config, ConfigError } from '../../../src/config/Config.js';
 import {
+  DEFAULT_BIND_HOST,
+  DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS,
+  DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE,
+  DEFAULT_FAILURE_DETECTOR_AUTO_DOWN,
+  DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION,
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
+  DEFAULT_MINIMUM_MEMBERS_BEFORE_UP,
+  DEFAULT_PORT,
+  DEFAULT_DOWN_SMALLER_ISLAND,
+  DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN,
   DEFAULT_SEED_RETRY_INTERVAL_MS,
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
   DEFAULT_TOMBSTONE_TTL_MS,
+  DEFAULT_UNTRUSTED_MODE,
   isRemoteTlsRequested,
   readClusterOptionsFromConfig,
   withClusterConfigDefaults,
 } from '../../../src/cluster/ClusterOptions.js';
 import type { ClusterOptionsType } from '../../../src/cluster/ClusterOptions.js';
+import { KeepMajority } from '../../../src/cluster/downing/KeepMajority.js';
+import { KeepOldest } from '../../../src/cluster/downing/KeepOldest.js';
+import {
+  DEFAULT_DOWN_ALL_WHEN_UNSTABLE,
+  DEFAULT_STABLE_AFTER_MS,
+} from '../../../src/cluster/downing/SplitBrainResolverOptions.js';
 import { defaultFailureDetectorOptions } from '../../../src/cluster/FailureDetector.js';
+import { defaultPhiAccrualOptions } from '../../../src/cluster/PhiAccrualFailureDetector.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../../src/util/Constants.js';
 import { DEFAULT_MAX_FRAME_BYTES } from '../../../src/cluster/Protocol.js';
+import {
+  HANDSHAKE_TIMEOUT_MS,
+  INCOMPLETE_FRAME_IDLE_MS,
+  MAX_INBOUND_CONNECTIONS,
+  MAX_PENDING_FRAMES,
+} from '../../../src/cluster/Constants.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 describe('readClusterOptionsFromConfig', () => {
   test('reads the cluster block and the bind/wire settings under remote', () => {
@@ -35,7 +59,7 @@ describe('readClusterOptionsFromConfig', () => {
       }
     `);
 
-    expect(readClusterOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readClusterOptionsFromConfig(config), {
       host: '10.0.0.7',
       port: 3551,
       maxFrameBytes: 2 * 1024 * 1024,
@@ -59,8 +83,7 @@ describe('readClusterOptionsFromConfig', () => {
       }
     `);
 
-    expect(readClusterOptionsFromConfig(config))
-      .toEqual({ host: '0.0.0.0', advertisedHost: '10.0.0.7' });
+    expectExactOptions(readClusterOptionsFromConfig(config), { host: '0.0.0.0', advertisedHost: '10.0.0.7' });
   });
 
   test('advertisedHost is absent when the key is, so "unset" stays expressible', () => {
@@ -69,39 +92,506 @@ describe('readClusterOptionsFromConfig', () => {
     // deployment that names one routable host relies on.
     const config = Config.parseString('actor-ts.remote.tcp.host = "10.0.0.7"');
 
-    expect(readClusterOptionsFromConfig(config)).toEqual({ host: '10.0.0.7' });
+    expectExactOptions(readClusterOptionsFromConfig(config), { host: '10.0.0.7' });
     expect(Config.loadReference().hasPath('actor-ts.remote.tcp.advertised-host')).toBe(false);
+  });
+
+  test('reads the advertised port, which the bind port does not stand in for', () => {
+    // The same two facts one axis over (#845): the port bound, and the port
+    // peers dial.  They differ exactly where a deployment published the
+    // process on a different one.
+    const config = Config.parseString(`
+      actor-ts.remote.tcp {
+        port           = 2552
+        advertised-port = 3000
+      }
+    `);
+
+    expectExactOptions(readClusterOptionsFromConfig(config), { port: 2552, advertisedPort: 3000 });
+  });
+
+  test('advertisedPort is absent when the key is, so "unset" stays expressible', () => {
+    // It ships no leaf in `reference.conf` for the reason `advertised-host`
+    // does not: a key that is always present could not mean "the same as
+    // `port`", which is what every deployment that does not remap it relies
+    // on.
+    const config = Config.parseString('actor-ts.remote.tcp.port = 2552');
+
+    expectExactOptions(readClusterOptionsFromConfig(config), { port: 2552 });
+    expect(Config.loadReference().hasPath('actor-ts.remote.tcp.advertised-port')).toBe(false);
+  });
+
+  test('reads the app version this node states (#843)', () => {
+    const config = Config.parseString('actor-ts.cluster.app-version = "2.4.0-rc.1"');
+
+    expectExactOptions(readClusterOptionsFromConfig(config), { appVersion: '2.4.0-rc.1' });
+  });
+
+  test('appVersion is absent when the key is, so an unconfigured node states none (#843)', () => {
+    // Comment-only in `reference.conf`, the `advertised-host` shape: a leaf
+    // that is always present could not mean "this node states no version",
+    // and that meaning is what keeps a fleet that never set one from putting
+    // anything on the wire.
+    const config = Config.parseString('actor-ts.cluster.gossip-interval = 250ms');
+
+    expectExactOptions(readClusterOptionsFromConfig(config), { gossipIntervalMs: 250 });
+    expect(Config.loadReference().hasPath('actor-ts.cluster.app-version')).toBe(false);
+  });
+
+  test('the documented substitution reads APP_VERSION, and an unset variable leaves no key (#843)', () => {
+    // The line `reference.conf` prints beside the key, run as written: an
+    // optional substitution over an unset variable drops the key rather than
+    // landing an empty label, which is what makes one shared file correct on
+    // a node whose deployment never sets the variable.
+    const recipe = 'actor-ts.cluster.app-version = ${?APP_VERSION}';
+    const saved = process.env.APP_VERSION;
+    try {
+      delete process.env.APP_VERSION;
+      expectExactOptions(readClusterOptionsFromConfig(Config.parseString(recipe)), {});
+      process.env.APP_VERSION = '2.4.0';
+      expectExactOptions(readClusterOptionsFromConfig(Config.parseString(recipe)), { appVersion: '2.4.0' });
+    } finally {
+      if (saved === undefined) delete process.env.APP_VERSION;
+      else process.env.APP_VERSION = saved;
+    }
+  });
+
+  test('an explicit app version wins over the file, an unset one falls through (#843)', () => {
+    const configured = Config.parseString('actor-ts.cluster.app-version = "from-file"');
+
+    expect(withClusterConfigDefaults(configured, {} as ClusterOptionsType).appVersion).toBe('from-file');
+    expect(withClusterConfigDefaults(
+      configured,
+      { host: 'h', port: 1, appVersion: 'from-code' } as ClusterOptionsType,
+    ).appVersion).toBe('from-code');
   });
 
   test('omits failureDetector entirely when no threshold is configured', () => {
     const config = Config.parseString('actor-ts.cluster.gossip-interval = 250ms');
 
-    expect(readClusterOptionsFromConfig(config)).toEqual({ gossipIntervalMs: 250 });
+    expectExactOptions(readClusterOptionsFromConfig(config), { gossipIntervalMs: 250 });
+  });
+
+  test('reads the detector selector and the whole φ sub-block (#840)', () => {
+    const config = Config.parseString(`
+      actor-ts.cluster.failure-detector {
+        implementation = phi
+        phi {
+          unreachable-threshold      = 8.5
+          down-threshold             = 16
+          max-sample-size            = 42
+          min-std-deviation          = 250ms
+          acceptable-heartbeat-pause = 2500ms
+          expected-response-after    = 1500ms
+        }
+      }
+    `);
+
+    expectExactOptions(readClusterOptionsFromConfig(config), {
+      failureDetectorImplementation: 'phi',
+      phiAccrual: {
+        // Fractional on purpose: φ is a continuous score, and `getInt` would
+        // throw on this value — which is what pins the reader to `getNumber`.
+        unreachableThreshold: 8.5,
+        downThreshold: 16,
+        maxSampleSize: 42,
+        minStdDeviationMs: 250,
+        // No value the leaf ships with, so the exact object holds it only if
+        // the reader actually read it.
+        acceptableHeartbeatPauseMs: 2_500,
+        // The duration arm of the auto-or-duration leaf (#1451).
+        expectedResponseAfterMs: 1_500,
+      },
+    });
+  });
+
+  test('expected-response-after = auto passes through as the word (#1451)', () => {
+    // The other arm: the reader decides by the raw value, and `getDuration`
+    // on `auto` would throw.  The word reaches the detector, which resolves it
+    // to the cadence the cluster imposed — so it keeps following a cadence
+    // tuned anywhere, which a resolved number written here could not.
+    const config = Config.parseString('actor-ts.cluster.failure-detector.phi.expected-response-after = auto');
+
+    expectExactOptions(readClusterOptionsFromConfig(config), { phiAccrual: { expectedResponseAfterMs: 'auto' } });
+  });
+
+  test('omits phiAccrual entirely when no φ setting is configured', () => {
+    // Same rule as `failureDetector` one block over: an absent leaf has to
+    // fall through to the built-in default, not land as an explicit value.
+    const config = Config.parseString('actor-ts.cluster.failure-detector.unreachable-after = 400ms');
+
+    expectExactOptions(readClusterOptionsFromConfig(config), { failureDetector: { unreachableAfterMs: 400 } });
+  });
+
+  test('a φ leaf on its own is read without the selector', () => {
+    // The two are independent keys: tuning the block without switching to it
+    // is legitimate (stage the values, flip `implementation` later), and a
+    // reader that only looked at `phi` when `implementation = phi` would
+    // silently drop them.
+    const config = Config.parseString('actor-ts.cluster.failure-detector.phi.down-threshold = 20');
+
+    expectExactOptions(readClusterOptionsFromConfig(config), { phiAccrual: { downThreshold: 20 } });
+  });
+
+  test('auto-down reads through as its own field, beside the selector (#1426)', () => {
+    // `off`, against the shipped `on`, so the exact object can only hold `false`
+    // if the reader read this leaf.  The whole object rather than one property:
+    // the switch must land flat on `failureDetectorAutoDown` and must NOT drag
+    // a `failureDetector` block in with it — that block is the simple
+    // detector's thresholds, and the switch governs both detectors.
+    const config = Config.parseString('actor-ts.cluster.failure-detector.auto-down = off');
+
+    expectExactOptions(readClusterOptionsFromConfig(config), { failureDetectorAutoDown: false });
+  });
+
+  test('an explicit auto-down wins over the file, an unset one falls through (#1426)', () => {
+    const configured = Config.parseString('actor-ts.cluster.failure-detector.auto-down = on');
+
+    expect(withClusterConfigDefaults(configured, {} as ClusterOptionsType).failureDetectorAutoDown)
+      .toBe(true);
+    // `false` is a value, not an absence: a merge that treated it as "unset"
+    // would let the file turn eviction back on over a caller who turned it off.
+    expect(withClusterConfigDefaults(
+      configured,
+      { host: 'h', port: 1, failureDetectorAutoDown: false } as ClusterOptionsType,
+    ).failureDetectorAutoDown).toBe(false);
+  });
+
+  test('run-coordinated-shutdown-when-down reads through as its own field (#1456)', () => {
+    // `off`, against the shipped `on`, so the exact object can only hold
+    // `false` if the reader read this leaf — and the whole object, so the
+    // switch must land flat on its own field and must NOT drag a
+    // `splitBrainResolver` or a `downing` key in with it: it is about what this
+    // node does once a decision is made, not part of how one is made.
+    const config = Config.parseString('actor-ts.cluster.run-coordinated-shutdown-when-down = off');
+
+    expectExactOptions(readClusterOptionsFromConfig(config), { runCoordinatedShutdownWhenDown: false });
+  });
+
+  test('an explicit run-coordinated-shutdown-when-down wins over the file, an unset one falls through (#1456)', () => {
+    const configured = Config.parseString('actor-ts.cluster.run-coordinated-shutdown-when-down = off');
+
+    expect(withClusterConfigDefaults(configured, {} as ClusterOptionsType).runCoordinatedShutdownWhenDown)
+      .toBe(false);
+    // An explicit `true` wins over a file that says `off`: code that asks for
+    // the stand-down gets it, whatever the deployment's file says.
+    expect(withClusterConfigDefaults(
+      configured,
+      { host: 'h', port: 1, runCoordinatedShutdownWhenDown: true } as ClusterOptionsType,
+    ).runCoordinatedShutdownWhenDown).toBe(true);
   });
 
   test('an empty config yields no settings at all', () => {
-    expect(readClusterOptionsFromConfig(Config.empty())).toEqual({});
+    expectExactOptions(readClusterOptionsFromConfig(Config.empty()), {});
+  });
+
+  test('a named split-brain strategy arrives as a built provider (#838)', () => {
+    const configured = Config.parseString(
+      'actor-ts.cluster.split-brain-resolver.active-strategy = keep-majority',
+    );
+
+    const read = readClusterOptionsFromConfig(configured);
+
+    // The whole object, not just the one key: a reader that also punched in a
+    // default for the three `role` leaves would still satisfy an assertion on
+    // `downing` alone, and this shape is what `Cluster.join` merges.
+    expect(Object.keys(read)).toEqual(['downing']);
+    expect(read.downing).toBeInstanceOf(KeepMajority);
+  });
+
+  test('active-strategy = off leaves no downing key at all (#838)', () => {
+    // Asserted on both spellings for the reason `min-retention` is: an
+    // explicit default must behave like an omitted one, and an explicit
+    // `downing: undefined` would still be a key that the merge then has to
+    // strip rather than never see.
+    expect(readClusterOptionsFromConfig(
+      Config.parseString('actor-ts.cluster.split-brain-resolver.active-strategy = off'),
+    )).not.toHaveProperty('downing');
+    expect(readClusterOptionsFromConfig(Config.loadReference()))
+      .not.toHaveProperty('downing');
+  });
+
+  test('the stats cadence reads through with its own value (#842)', () => {
+    // `Config.parseString`, never `Config.fromObject` with a dotted key: the
+    // dotted string would stay a literal top-level key and `hasPath` would
+    // resolve the shipped `0s` behind it instead of the value written here.
+    const configured = Config.parseString('actor-ts.cluster.publish-stats-interval = 30s');
+
+    expectExactOptions(readClusterOptionsFromConfig(configured), { publishStatsIntervalMs: 30_000 });
+  });
+
+  test('the join give-up reads through with its own value (#1500)', () => {
+    // 30 s against the shipped `0s`, so the exact object can hold it only if
+    // the reader took this leaf — and the whole object, so it lands in its own
+    // field and in no neighbour: a give-up read into `seedRetryIntervalMs` or
+    // `weaklyUpAfterMs` would be a different node with the same config file.
+    const configured = Config.parseString('actor-ts.cluster.shutdown-after-unsuccessful-join = 30s');
+
+    expectExactOptions(readClusterOptionsFromConfig(configured), { shutdownAfterUnsuccessfulJoinMs: 30_000 });
+  });
+
+  test('the resolver policy reads through with its own values (#839)', () => {
+    // `Config.parseString`, never `Config.fromObject` with dotted keys: the
+    // dotted string stays a literal top-level key, `hasPath` resolves the
+    // *reference* value behind it, and both numbers below would be the shipped
+    // defaults rather than the ones written here.
+    const configured = Config.parseString(`
+      actor-ts.cluster.split-brain-resolver {
+        stable-after           = 45s
+        down-all-when-unstable = on
+      }
+    `);
+
+    // The whole object: the two policy leaves must NOT drag a `downing` key in
+    // with them.  `active-strategy` is absent here, and a reader that folded
+    // the block in as one unit would build a provider nobody asked for.
+    expectExactOptions(readClusterOptionsFromConfig(configured), {
+      splitBrainResolver: { stableAfterMs: 45_000, downAllWhenUnstable: true },
+    });
+  });
+
+  test('omits splitBrainResolver entirely when neither policy leaf is set (#839)', () => {
+    // Same rule as `failureDetector` and `phiAccrual`: an absent leaf falls
+    // through to the built-in default rather than landing as an explicit
+    // value.  Asserted with the *selector* present, because that is the shape
+    // that would tempt a reader into emitting an empty policy object beside
+    // the provider it just built.
+    const configured = Config.parseString(
+      'actor-ts.cluster.split-brain-resolver.active-strategy = keep-oldest',
+    );
+
+    expect(readClusterOptionsFromConfig(configured)).not.toHaveProperty('splitBrainResolver');
+  });
+
+  test('one explicit policy field does not blank the other from the file (#839)', () => {
+    // The nested merge pass, and the bug it exists to stop: a caller who pins
+    // only the window must keep the file's escalation switch.  The shallow
+    // merge would replace the whole object and silently turn the escalation
+    // this deployment asked for back off.
+    const configured = Config.parseString(
+      'actor-ts.cluster.split-brain-resolver.down-all-when-unstable = on',
+    );
+
+    expect(withClusterConfigDefaults(
+      configured,
+      { host: 'h', port: 1, splitBrainResolver: { stableAfterMs: 9_000 } } as ClusterOptionsType,
+    ).splitBrainResolver).toEqual({ stableAfterMs: 9_000, downAllWhenUnstable: true });
   });
 
   test('the reference defaults round-trip to the built-in ones', () => {
     // Wiring the block must not move any default, so the two are pinned
     // together here rather than trusted to stay in sync by eye.
-    expect(readClusterOptionsFromConfig(Config.loadReference())).toEqual({
-      host: '0.0.0.0',
-      port: 2552,
+    //
+    // No `host` and no `port`: the bind pair ships comment-only (#1435), so
+    // the exact-object shape is what says an unconfigured node leaves the
+    // layer empty for `CLUSTER_HOST` / `CLUSTER_PORT` beneath it.  The
+    // built-in pair is applied by the merge instead — see the
+    // `withClusterConfigDefaults` block below.
+    expectExactOptions(readClusterOptionsFromConfig(Config.loadReference()), {
       maxFrameBytes: DEFAULT_MAX_FRAME_BYTES,
       gossipIntervalMs: DEFAULT_GOSSIP_INTERVAL_MS,
       seedRetryIntervalMs: DEFAULT_SEED_RETRY_INTERVAL_MS,
       weaklyUpAfterMs: 0,
+      // 0 = arm no stats timer (#842).  Pinned here rather than only in the
+      // reference file, because this exact-object shape is what says the leaf
+      // lands in `publishStatsIntervalMs` — `NoDeadConfigKeys` fails the leaf
+      // once the reader drops it (#1425), not when it is read into another
+      // field.
+      publishStatsIntervalMs: 0,
+      // 0 = no join deadline, which is what every release before #1500 did:
+      // the off state is a timer `Cluster._start` never arms, so there is no
+      // constant to pin it to, and this exact-object shape is what says the
+      // shipped leaf lands in its own field at all.
+      shutdownAfterUnsuccessfulJoinMs: 0,
       maxMembers: DEFAULT_MAX_MEMBERS,
       maxTombstones: DEFAULT_MAX_TOMBSTONES,
+      // The Up threshold ships a leaf, so it always lands; the per-role
+      // siblings ship comment-only and so must NOT appear next to it — which
+      // is what the exact-object shape of this assertion checks (#837).
+      minimumMembersBeforeUp: DEFAULT_MINIMUM_MEMBERS_BEFORE_UP,
+      // `off`: a node whose own downing decision removes it only leaves
+      // (#1456).  Pinned to the constant `Cluster` falls back to, so a shipped
+      // `on` would be a divergence this line reports.
+      runCoordinatedShutdownWhenDown: DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN,
+      downSmallerIsland: DEFAULT_DOWN_SMALLER_ISLAND,
+      // Both ship `[]`, so both always land — and `[]` is behaviourally the
+      // same node as an absent key, because `Cluster.join` reads
+      // `resolvedOptions.seeds ?? []` and the constructor `options.roles ?? []`
+      // (#836).  Pinned here rather than trusted, because these two are the
+      // reversal of a position four files used to publish: if the leaves ever
+      // go away, this assertion is the one that says so.
+      seeds: [],
+      roles: [],
+      // No `appVersion`: the key ships comment-only (#843), and its absence
+      // here is what says a node nobody configured states no version at all.
       tombstoneTtlMs: DEFAULT_TOMBSTONE_TTL_MS,
       tombstonePruneIntervalMs: DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
       // 0 is the file's way of saying "derive from down-after"; the
       // derivation lives in the Cluster constructor, not here.
       tombstoneMinRetentionMs: 0,
+      // Both leaves ship a value, so both always land here — and the shipped
+      // pair is the open one: any /user actor addressable by name, which is
+      // what an ActorRef across nodes needs.  /system is refused either way and
+      // has no leaf at all, deliberately (#877, #964).
+      untrustedMode: DEFAULT_UNTRUSTED_MODE,
+      trustedSelectionPaths: [],
+      // The configuration-agreement pair (#844).  Both leaves ship a value, so
+      // both always land — and the published `checked-paths` is the one place
+      // the seeded path is written as a *list*, which is what makes this the
+      // assertion that catches an entry being added to `reference.conf` and
+      // not to the constant, or the other way round.
+      configurationCompatibilityEnforce: DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE,
+      configurationCompatibilityCheckedPaths: [...DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS],
+      // The four association-lifecycle bounds, pinned to the constants the
+      // transport still falls back to when nothing configures them (#846).
+      // Wiring them must not move a single one: each was a hard-coded bound
+      // with a JSDoc explaining the number, and this test is what says the
+      // number survived being published.
+      handshakeTimeoutMs: HANDSHAKE_TIMEOUT_MS,
+      // No `connectTimeoutMs`: the key ships comment-only (#1475), and its
+      // absence here is what lets an unconfigured dial follow the handshake
+      // deadline instead of a number of its own.
+      outboundQueueSize: MAX_PENDING_FRAMES,
+      maxInboundConnections: MAX_INBOUND_CONNECTIONS,
+      incompleteFrameIdleMs: INCOMPLETE_FRAME_IDLE_MS,
+      failureDetectorImplementation: DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION,
+      // `off`: with no strategy the detector parks an unreachable peer instead
+      // of removing it (#1426).  Pinned to the constant `Cluster` falls back
+      // to, so a shipped `on` would be a divergence this line reports.
+      failureDetectorAutoDown: DEFAULT_FAILURE_DETECTOR_AUTO_DOWN,
       failureDetector: defaultFailureDetectorOptions,
+      // The resolver's POLICY half (#839) — how long the view must hold still
+      // and what happens when it never does.  A sibling of `downing` rather
+      // than part of it: `active-strategy = off` leaves no `downing` key at
+      // all (asserted two tests up), and these two must still land, or a
+      // deployment could not stage a window and turn the strategy on later.
+      splitBrainResolver: {
+        stableAfterMs: DEFAULT_STABLE_AFTER_MS,
+        downAllWhenUnstable: DEFAULT_DOWN_ALL_WHEN_UNSTABLE,
+      },
+      // Field by field rather than against `defaultPhiAccrualOptions` whole:
+      // that object also carries `heartbeatIntervalMs`, and the φ block has no
+      // leaf for it on purpose — the cadence comes from
+      // `failure-detector.heartbeat-interval` for either implementation
+      // (#1142).  Pinning the whole object would demand a leaf that must not
+      // exist.
+      phiAccrual: {
+        unreachableThreshold: defaultPhiAccrualOptions.unreachableThreshold,
+        downThreshold: defaultPhiAccrualOptions.downThreshold,
+        maxSampleSize: defaultPhiAccrualOptions.maxSampleSize,
+        minStdDeviationMs: defaultPhiAccrualOptions.minStdDeviationMs,
+        acceptableHeartbeatPauseMs: defaultPhiAccrualOptions.acceptableHeartbeatPauseMs,
+        // `auto`, published as the word rather than as a number: a resolved
+        // value here would freeze the estimate at 500 ms for a node whose
+        // heartbeat-interval is tuned elsewhere (#1451).
+        expectedResponseAfterMs: defaultPhiAccrualOptions.expectedResponseAfterMs,
+      },
     });
+  });
+
+  test('the reference φ block carries no heartbeat interval of its own (#1142)', () => {
+    // The trap this guards: a `failure-detector.phi.heartbeat-interval` would
+    // let switching the implementation silently change how often the node
+    // talks to its peers, which is the drift aff9d371 collapsed onto one
+    // constant.  Asserted on the leaf rather than on the reader, because a
+    // leaf nothing reads is exactly what the guard has to catch.
+    expect(Config.loadReference().hasPath('actor-ts.cluster.failure-detector.phi.heartbeat-interval'))
+      .toBe(false);
+    expect(readClusterOptionsFromConfig(Config.loadReference()).phiAccrual)
+      .not.toHaveProperty('heartbeatIntervalMs');
+  });
+
+  test('the two wire-trust keys read through, list and all (#877)', () => {
+    // `Config.parseString`, never `Config.fromObject` with a dotted key: that
+    // keeps the dotted string as a literal top-level key, so `hasPath` would
+    // resolve the *reference* value instead and the assertion would be about
+    // the shipped default rather than about this file.
+    const configured = Config.parseString(`
+      actor-ts.remote {
+        untrusted-mode          = true
+        trusted-selection-paths = ["/user/orders/*", "/user/reporting/intake"]
+      }
+    `);
+
+    expectExactOptions(readClusterOptionsFromConfig(configured), {
+      untrustedMode: true,
+      trustedSelectionPaths: ['/user/orders/*', '/user/reporting/intake'],
+    });
+  });
+
+  test('an explicit allow-list wins over the file, an unset one falls through (#877)', () => {
+    const configured = Config.parseString(
+      'actor-ts.remote.trusted-selection-paths = ["/user/from-config"]',
+    );
+
+    expect(withClusterConfigDefaults(configured, {} as ClusterOptionsType).trustedSelectionPaths)
+      .toEqual(['/user/from-config']);
+    expect(withClusterConfigDefaults(
+      configured,
+      { host: 'h', port: 1, trustedSelectionPaths: ['/user/from-code'] } as ClusterOptionsType,
+    ).trustedSelectionPaths).toEqual(['/user/from-code']);
+  });
+
+  test('the four association-lifecycle bounds read through (#846)', () => {
+    // `Config.parseString`, never `Config.fromObject` with dotted keys: the
+    // dotted string would stay a literal top-level key, `hasPath` would resolve
+    // the *reference* value behind it, and every number below would be the
+    // shipped default rather than the one written here.
+    const configured = Config.parseString(`
+      actor-ts.remote {
+        handshake-timeout       = 12s
+        outbound-queue-size     = 250
+        max-inbound-connections = 64
+        incomplete-frame-idle   = 45s
+      }
+    `);
+
+    // The whole object rather than four `toHaveProperty`s: a reader that also
+    // punched in a default for a neighbouring leaf would satisfy per-key
+    // assertions and still change what `Cluster.join` merges.
+    expectExactOptions(readClusterOptionsFromConfig(configured), {
+      handshakeTimeoutMs: 12_000,
+      outboundQueueSize: 250,
+      maxInboundConnections: 64,
+      incompleteFrameIdleMs: 45_000,
+    });
+  });
+
+  test('an explicit lifecycle bound wins over the file, an unset one falls through (#846)', () => {
+    const configured = Config.parseString('actor-ts.remote.max-inbound-connections = 64');
+
+    expect(withClusterConfigDefaults(configured, {} as ClusterOptionsType).maxInboundConnections)
+      .toBe(64);
+    expect(withClusterConfigDefaults(
+      configured,
+      { host: 'h', port: 1, maxInboundConnections: 8 } as ClusterOptionsType,
+    ).maxInboundConnections).toBe(8);
+  });
+
+  test('the connect deadline reads through as its own field (#1475)', () => {
+    const configured = Config.parseString('actor-ts.remote.connect-timeout = 2s');
+
+    expectExactOptions(readClusterOptionsFromConfig(configured), { connectTimeoutMs: 2_000 });
+  });
+
+  test('connectTimeoutMs is absent when the key is, so "the same as handshake-timeout" stays expressible (#1475)', () => {
+    // Comment-only in `reference.conf`, the `advertised-host` shape: a shipped
+    // value could not mean "follow the handshake deadline", and a constant in
+    // its place would refuse every `handshake-timeout` set below it.
+    const configured = Config.parseString('actor-ts.remote.handshake-timeout = 1s');
+
+    expectExactOptions(readClusterOptionsFromConfig(configured), { handshakeTimeoutMs: 1_000 });
+    expect(Config.loadReference().hasPath('actor-ts.remote.connect-timeout')).toBe(false);
+  });
+
+  test('an explicit connect deadline wins over the file, an unset one falls through (#1475)', () => {
+    const configured = Config.parseString('actor-ts.remote.connect-timeout = 2s');
+
+    expect(withClusterConfigDefaults(configured, {} as ClusterOptionsType).connectTimeoutMs).toBe(2_000);
+    expect(withClusterConfigDefaults(
+      configured,
+      { host: 'h', port: 1, connectTimeoutMs: 1_500 } as ClusterOptionsType,
+    ).connectTimeoutMs).toBe(1_500);
   });
 
   test('the housekeeping block reads through with its own values (#841)', () => {
@@ -120,7 +610,7 @@ describe('readClusterOptionsFromConfig', () => {
       }
     `);
 
-    expect(readClusterOptionsFromConfig(configured)).toEqual({
+    expectExactOptions(readClusterOptionsFromConfig(configured), {
       weaklyUpAfterMs: 4_000,
       maxMembers: 12,
       maxTombstones: 34,
@@ -128,6 +618,70 @@ describe('readClusterOptionsFromConfig', () => {
       tombstonePruneIntervalMs: 30_000,
       tombstoneMinRetentionMs: 2_000,
     });
+  });
+
+  test('the Up threshold and its per-role block read through together (#837)', () => {
+    // `Config.parseString`, never `Config.fromObject` with dotted keys: a
+    // dotted string stays a literal top-level key, so `hasPath` would resolve
+    // the *reference* value behind it and this would assert the shipped `1`.
+    const configured = Config.parseString(`
+      actor-ts.cluster {
+        minimum-members-before-up = 3
+        role {
+          backend.minimum-members-before-up  = 2
+          frontend.minimum-members-before-up = 1
+        }
+      }
+    `);
+
+    // The whole object rather than two `toHaveProperty`s: the per-role map is
+    // assembled by enumeration, and a reader that also punched in an entry for
+    // a role the file never named would satisfy per-key assertions while
+    // changing what `Cluster.join` merges.
+    expectExactOptions(readClusterOptionsFromConfig(configured), {
+      minimumMembersBeforeUp: 3,
+      minimumMembersBeforeUpPerRole: { backend: 2, frontend: 1 },
+    });
+  });
+
+  test('a per-role threshold stands alone, without the global one (#837)', () => {
+    // Two independent keys: "at least two backends, however many nodes there
+    // are" is a legitimate configuration, and a reader that only looked at the
+    // block when the global leaf was explicitly set would silently drop it.
+    const configured = Config.parseString(
+      'actor-ts.cluster.role.backend.minimum-members-before-up = 2',
+    );
+
+    expectExactOptions(readClusterOptionsFromConfig(configured), { minimumMembersBeforeUpPerRole: { backend: 2 } });
+  });
+
+  test('the per-role block ships comment-only, so an unset one stays absent (#837)', () => {
+    // Role names belong to the deployment, so there is no leaf that could be
+    // published — and an empty `{}` from the reader would be a *set* field,
+    // which `mergeOptions` does not strip, so it would shadow an explicit
+    // `withMinimumMembersBeforeUpPerRole(…)` rather than fall through.
+    expect(Config.loadReference().hasPath('actor-ts.cluster.role')).toBe(false);
+    expect(readClusterOptionsFromConfig(Config.loadReference()))
+      .not.toHaveProperty('minimumMembersBeforeUpPerRole');
+    // A role block that names no threshold at all is the same state: the
+    // enumeration finds the role and no leaf under it, and must not turn that
+    // into an entry (or into an empty map, which is the same defect).
+    expect(readClusterOptionsFromConfig(
+      Config.parseString('actor-ts.cluster.role.backend.some-other-key = 7'),
+    )).not.toHaveProperty('minimumMembersBeforeUpPerRole');
+  });
+
+  test('an explicit per-role map wins over the file, an unset one falls through (#837)', () => {
+    const configured = Config.parseString(
+      'actor-ts.cluster.role.backend.minimum-members-before-up = 2',
+    );
+
+    expect(withClusterConfigDefaults(configured, {} as ClusterOptionsType)
+      .minimumMembersBeforeUpPerRole).toEqual({ backend: 2 });
+    expect(withClusterConfigDefaults(
+      configured,
+      { host: 'h', port: 1, minimumMembersBeforeUpPerRole: { backend: 5 } } as ClusterOptionsType,
+    ).minimumMembersBeforeUpPerRole).toEqual({ backend: 5 });
   });
 });
 
@@ -170,6 +724,67 @@ describe('withClusterConfigDefaults', () => {
     });
   });
 
+  test('a partial phiAccrual overrides one field and keeps the other five (#840)', () => {
+    // The trap the second nested pass exists for: `mergeOptions` is shallow,
+    // so without it an explicit `{ downThreshold }` replaces the whole object
+    // and the file's other five φ settings silently revert to the built-in
+    // defaults — settings the caller never mentioned.
+    const configured = Config.parseString(`
+      actor-ts.cluster.failure-detector.phi {
+        unreachable-threshold      = 9
+        down-threshold             = 14
+        max-sample-size            = 64
+        min-std-deviation          = 300ms
+        acceptable-heartbeat-pause = 2s
+        expected-response-after    = 750ms
+      }
+    `);
+
+    const merged = withClusterConfigDefaults(
+      configured,
+      { phiAccrual: { downThreshold: 20 } } as ClusterOptionsType,
+    );
+
+    expect(merged.phiAccrual).toEqual({
+      unreachableThreshold: 9,
+      downThreshold: 20,
+      maxSampleSize: 64,
+      minStdDeviationMs: 300,
+      acceptableHeartbeatPauseMs: 2_000,
+      expectedResponseAfterMs: 750,
+    });
+  });
+
+  test('an explicit implementation wins over the file, and an unset one falls through', () => {
+    const configured = Config.parseString('actor-ts.cluster.failure-detector.implementation = phi');
+
+    expect(withClusterConfigDefaults(configured, {} as ClusterOptionsType)
+      .failureDetectorImplementation).toBe('phi');
+    expect(withClusterConfigDefaults(
+      configured,
+      { failureDetectorImplementation: 'simple' } as ClusterOptionsType,
+    ).failureDetectorImplementation).toBe('simple');
+  });
+
+  test('an explicit withDowning wins over the configured strategy (#838)', () => {
+    // The precedence the block needs and does not implement: `mergeOptions`
+    // strips `undefined` from the explicit layer, so a caller who named a
+    // provider keeps it and a caller who named none inherits the file's.
+    const configured = Config.parseString(
+      'actor-ts.cluster.split-brain-resolver.active-strategy = keep-majority',
+    );
+    const inCode = new KeepOldest();
+    const joinOptions = (downing?: KeepOldest): ClusterOptionsType =>
+      ({ host: 'h', port: 1, downing }) as ClusterOptionsType;
+
+    expect(withClusterConfigDefaults(configured, joinOptions(inCode)).downing).toBe(inCode);
+    expect(withClusterConfigDefaults(configured, {} as ClusterOptionsType).downing)
+      .toBeInstanceOf(KeepMajority);
+    // …and an explicit `undefined` is "not set", not "explicitly none".
+    expect(withClusterConfigDefaults(configured, joinOptions()).downing)
+      .toBeInstanceOf(KeepMajority);
+  });
+
   test('an explicit undefined threshold does not shadow the file', () => {
     const merged = withClusterConfigDefaults(
       config,
@@ -183,6 +798,47 @@ describe('withClusterConfigDefaults', () => {
     const options = { host: 'h', port: 1 } as ClusterOptionsType;
 
     expect(withClusterConfigDefaults(Config.empty(), options)).toEqual(options);
+  });
+
+  test('with no option and no key, the bind pair is the built-in one (#1435)', () => {
+    // `reference.conf` used to be what filled the two required fields; its
+    // leaves are comment-only now, so the merge's bottom layer is the only
+    // thing between a bare join and an undefined bind address.  Checked over
+    // the shipped reference as well as an empty config, because that is the
+    // config every unconfigured node actually reads.
+    for (const config of [Config.empty(), Config.loadReference()]) {
+      const merged = withClusterConfigDefaults(config, {} as ClusterOptionsType);
+
+      expect(merged.host).toBe(DEFAULT_BIND_HOST);
+      expect(merged.port).toBe(DEFAULT_PORT);
+    }
+    expect(DEFAULT_BIND_HOST).toBe('0.0.0.0');
+    expect(DEFAULT_PORT).toBe(2552);
+  });
+
+  test('a configured bind pair outranks the built-in one, and an explicit one outranks both (#1435)', () => {
+    const configured = Config.parseString('actor-ts.remote.tcp { host = "10.0.0.7", port = 3551 }');
+
+    const fromFile = withClusterConfigDefaults(configured, {} as ClusterOptionsType);
+    expect([fromFile.host, fromFile.port]).toEqual(['10.0.0.7', 3551]);
+
+    const explicit = withClusterConfigDefaults(configured, { host: '10.0.0.8', port: 3552 } as ClusterOptionsType);
+    expect([explicit.host, explicit.port]).toEqual(['10.0.0.8', 3552]);
+  });
+
+  test('the shipped reference names no bind pair, so the variables beneath it stay reachable (#1435)', () => {
+    // The precedence reason the leaves are comment-only, stated at the file:
+    // a published value would be the config layer on every node, above the
+    // bootstrap's CLUSTER_HOST / POD_IP / HOSTNAME and CLUSTER_PORT stages.
+    const reference = Config.loadReference();
+
+    expect(reference.hasPath('actor-ts.remote.tcp.host')).toBe(false);
+    expect(reference.hasPath('actor-ts.remote.tcp.port')).toBe(false);
+    // Still live keys, not deleted ones: a node that names them is read.
+    expectExactOptions(
+      readClusterOptionsFromConfig(Config.parseString('actor-ts.remote.tcp { host = "10.0.0.7", port = 3551 }')),
+      { host: '10.0.0.7', port: 3551 },
+    );
   });
 });
 
@@ -251,10 +907,13 @@ describe('isRemoteTlsRequested', () => {
     // value it was given while changing nothing is worse than none at all.
     const configured = Config.parseString('actor-ts.remote.tls.enabled = true');
 
-    expect(readClusterOptionsFromConfig(configured)).toEqual({});
+    expectExactOptions(readClusterOptionsFromConfig(configured), {});
     // Keys rather than the whole object: the merge returns a
     // `ClusterOptionsType`, and comparing it against a bare `{}` is a type
-    // error even when the value is right.
-    expect(Object.keys(withClusterConfigDefaults(configured, {} as ClusterOptionsType))).toEqual([]);
+    // error even when the value is right.  The bind pair is the merge's own
+    // bottom layer (#1435) and the only thing in it, so it is all that may
+    // appear.
+    expect(Object.keys(withClusterConfigDefaults(configured, {} as ClusterOptionsType)).sort())
+      .toEqual(['host', 'port']);
   });
 });

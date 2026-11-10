@@ -31,6 +31,9 @@ import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { type Dispatcher, type DispatcherErrorSink, Dispatchers } from '../../../src/Dispatcher.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { PoisonPill } from '../../../src/SystemMessages.js';
+import { type Envelope, Mailbox } from '../../../src/internal/Mailbox.js';
+import { TestKit } from '../../../src/testkit/TestKit.js';
+import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
 
 /**
@@ -48,6 +51,26 @@ class CountingDispatcher implements Dispatcher {
   execute(task: () => void | Promise<void>): void {
     this.turns += 1;
     setImmediate(() => { void task(); });
+  }
+}
+
+/**
+ * A {@link Mailbox} that records the dispatcher turn of every requeue.
+ *
+ * A throttle pause puts the envelope it could not deliver back at the head of
+ * the queue.  A batch that looped past the pause instead of ending would
+ * re-dequeue and requeue that one envelope for the rest of its budget, which
+ * delivers nothing — so no handler, turn count or clock can see it, and only
+ * the queue can.
+ */
+class RequeueRecordingMailbox<T> extends Mailbox<T> {
+  readonly requeueTurns: number[] = [];
+
+  constructor(private readonly readTurn: () => number) { super(); }
+
+  override prependUser(envs: Array<Envelope<T>>): void {
+    this.requeueTurns.push(this.readTurn());
+    super.prependUser(envs);
   }
 }
 
@@ -182,6 +205,14 @@ describe('a batch ends early rather than skipping the condition that ended it', 
     type ConfigureMessage = { kind: 'configure' };
     type Message = TickMessage | ConfigureMessage;
 
+    // Virtual time on both halves of the pause: the bucket refills from the
+    // scheduler's clock and the resume timer is armed on the scheduler.  So
+    // the test decides when a token arrives, rather than sleeping past a
+    // point it observed — a poll that woke late under load made a resume
+    // that came on time look like one that came early.
+    const kitOptions = TestKitOptions.create().withDispatcher(Dispatchers.Immediate());
+    const { kit, scheduler } = TestKit.withManualScheduler('batching-throttle', kitOptions);
+
     const turns: number[] = [];
     class Throttled extends Actor<Message> {
       override onReceive(m: Message): void {
@@ -193,32 +224,47 @@ describe('a batch ends early rather than skipping the condition that ended it', 
 
       private onTick(): void { turns.push(dispatcher.turns); }
 
-      /** Two tokens, then a refill slow enough to be visible from the test. */
-      private onConfigure(): void { this.context.throttle({ qps: 20, burst: 2 }); }
+      /** Two tokens, then one per 50 ms of virtual time. */
+      private onConfigure(): void { this.context.throttle({ qps: 20, burst: 2, clock: scheduler }); }
     }
 
+    const mailbox = new RequeueRecordingMailbox<Message>(() => dispatcher.turns);
     const options = ActorOptions.create<Message>()
       .withDispatcher(dispatcher)
-      .withThroughput(16);
-    const ref = system.spawn(Throttled, 'throttled', options);
+      .withThroughput(16)
+      .withMailbox(() => mailbox);
+    try {
+      const ref = kit.system.spawn(Throttled, 'throttled', options);
+      ref.tell({ kind: 'configure' });
+      await kit.settle();
+      for (let index = 0; index < 6; index++) ref.tell({ kind: 'tick' });
+      // `settle` throws if the cell never goes quiet, which is what a cell
+      // that reported its parked queue as dispatchable would do while time
+      // stands still: re-schedule itself every turn (#1167).
+      await kit.settle();
 
-    ref.tell({ kind: 'configure' });
-    await awaitCondition(() => dispatcher.turns > 0);
-    for (let index = 0; index < 6; index++) ref.tell({ kind: 'tick' });
+      // The two tokens went in one batch, which ended at the third tick: it
+      // put that envelope back once and stopped, where a loop that carried
+      // on would requeue it again on every iteration left in its budget.
+      const parkedTurn = dispatcher.turns;
+      expect(turns).toEqual([parkedTurn, parkedTurn]);
+      expect(mailbox.requeueTurns).toEqual([parkedTurn]);
 
-    await awaitCondition(() => turns.length === 2);
-    const turnsWhenBucketEmptied = dispatcher.turns;
-    // The parked message must not earn a turn until the resume timer clears
-    // it: a batch that looped instead of breaking would burn the remaining 14
-    // iterations re-dequeuing the very envelope it just put back.
-    await Bun.sleep(20);
-    expect(turns.length).toBe(2);
-    expect(batchSizesOf(turns)).toEqual([2]);
-
-    // ...and the refill does eventually deliver the rest, on later turns.
-    await awaitCondition(() => turns.length === 6, { timeoutMs: 4_000 });
-    expect(dispatcher.turns).toBeGreaterThan(turnsWhenBucketEmptied);
-  }, 10_000);
+      // One millisecond short of the refill nothing moves.  At the refill the
+      // resume timer delivers the parked tick on exactly one new turn, and
+      // every later token does the same: a turn and one requeue per pause.
+      await kit.advance(49);
+      expect(turns).toHaveLength(2);
+      await kit.advance(1);
+      for (let refill = 0; refill < 3; refill++) await kit.advance(50);
+      expect(turns).toEqual([
+        parkedTurn, parkedTurn, parkedTurn + 1, parkedTurn + 2, parkedTurn + 3, parkedTurn + 4,
+      ]);
+      expect(mailbox.requeueTurns).toEqual([parkedTurn, parkedTurn + 1, parkedTurn + 2, parkedTurn + 3]);
+    } finally {
+      await kit.shutdown();
+    }
+  });
 
   test('a handler that throws ends the batch at the failure', async () => {
     const turns: number[] = [];

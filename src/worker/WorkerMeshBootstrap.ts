@@ -1,0 +1,197 @@
+import { ActorSystem } from '../ActorSystem.js';
+import { ActorSystemOptions } from '../ActorSystemOptions.js';
+import { Cluster } from '../cluster/Cluster.js';
+import { ClusterOptions } from '../cluster/ClusterOptions.js';
+import type { NodeAddress } from '../cluster/NodeAddress.js';
+import { Config } from '../config/Config.js';
+import type { ConfigObject } from '../config/HoconParser.js';
+import { collectActorExports, isActorClass, type WorkerActorClass } from '../parallelism/ActorModuleRegistry.js';
+import { ParallelismOptions } from '../parallelism/ParallelismOptions.js';
+import { serveParallelism } from '../parallelism/SpawnProtocol.js';
+import { PersistenceBehaviorOptions } from '../persistence/PersistenceBehaviorOptions.js';
+import { serveWorkerMeshMetrics } from './MetricsRelay.js';
+import type { WorkerNodeContext } from './WorkerNode.js';
+
+export { isActorClass };
+export type { WorkerActorClass };
+
+/**
+ * What the main thread hands every mesh worker in its init frame (#1562).
+ *
+ * `config` is the main system's **effective** configuration, `system.config`
+ * as a plain document — not the file it came from.  Builder-set values on the
+ * main thread never reach a file, so a worker that re-read `application.conf`
+ * would run with different cluster timings than the node that spawned it, and
+ * the configuration-compatibility check (#844) would either flag the mesh
+ * against itself or, worse, not be configured to.
+ */
+export type WorkerMeshInitData = {
+  readonly kind: 'worker-mesh-init';
+  readonly config: ConfigObject;
+  /**
+   * The leaves of `config` the main thread withholds because a secrets layer
+   * set them (#1546).  `config` arrives as one overrides object, so nothing
+   * in it says which of its values came out of the secrets file — and the
+   * worker's own load may not see that file, since code can name it in a way
+   * no environment variable carries here.
+   */
+  readonly secretPaths: ReadonlyArray<string>;
+  /**
+   * The environment variables behind each leaf of `config` that one supplied
+   * on the main thread, in any of its layers, keyed by the leaf's keys as a
+   * JSON array (#1788).  The tree says nothing about a value having come out
+   * of `${DB_PASSWORD}`, and one the main thread's code overrides read is in
+   * no file the worker could read again — so its dump withholds by these, and
+   * names them, as the main thread's does.  Absent when none supplied one.
+   */
+  readonly variables?: Readonly<Record<string, ReadonlyArray<string>>>;
+  /**
+   * Where the main thread looked for each of its files — named in code, by an
+   * `ACTOR_TS_*` variable, or the default in the working directory — found
+   * there or not, and `false` where it looked nowhere (#1546, #1785).  The
+   * worker's own load reads exactly these.  So a key only another file sets
+   * cannot reach a worker and not its main thread, a required `${X}` that only
+   * a `.env` named in code answers resolves in the worker as well, and a stray
+   * file an environment variable names cannot break a worker whose main
+   * thread was given another.  Absent when the sender did not say, which
+   * leaves the worker to its own chain.
+   */
+  readonly configFile?: string | false;
+  /** The main thread's project `reference.conf`, as for `configFile`. */
+  readonly referenceConfigFile?: string | false;
+  /** The main thread's secrets file, as for `configFile`. */
+  readonly secretsFile?: string | false;
+  /** The main thread's `.env` file, as for `configFile`. */
+  readonly environmentFile?: string | false;
+  /** The main thread's address — the one seed every worker dials. */
+  readonly seeds: ReadonlyArray<string>;
+  readonly roles: ReadonlyArray<string>;
+  /** `href`s of the actor modules to import, in order. */
+  readonly modules: ReadonlyArray<string>;
+};
+
+/** What a mesh worker reports on `ready()`: the actor classes it can spawn, by export name. */
+export type WorkerMeshReadyData = {
+  readonly kind: 'worker-mesh-ready';
+  readonly actors: ReadonlyArray<string>;
+};
+
+/**
+ * What an actor module's optional `setup` receives, once the worker's node is
+ * up.  Spawn here whatever the worker should host from the start; `actors` is
+ * the registry the bootstrap built from every module's exports.
+ */
+export type WorkerMeshSetupContext = {
+  readonly system: ActorSystem;
+  readonly cluster: Cluster;
+  readonly selfAddress: NodeAddress;
+  readonly actors: ReadonlyMap<string, WorkerActorClass>;
+};
+
+/**
+ * The shape an actor module may have beyond its class exports: a `setup` the
+ * bootstrap awaits before it reports ready.  A module with no `setup` is
+ * fine — the classes alone are the point for a mesh whose placement is driven
+ * from the main thread.
+ */
+export interface WorkerMeshSetupModule {
+  setup?(context: WorkerMeshSetupContext): void | Promise<void>;
+}
+
+/** How the bootstrap loads a module — replaceable so a test can hand it modules without a file. */
+export type ModuleImporter = (href: string) => Promise<Record<string, unknown>>;
+
+const defaultImporter: ModuleImporter = (href) => import(href) as Promise<Record<string, unknown>>;
+
+/**
+ * Everything a mesh worker does after `WorkerNode.join()` — kept apart from
+ * the entry file so the in-process tests can run the identical code against a
+ * `MessageChannel` with no thread underneath (#1562).
+ *
+ * Order matters: the system is built from the effective config first, the
+ * cluster joins the main thread second, the modules load third — so a module's
+ * `setup` sees a live cluster — and only then is `ready()` sent, carrying the
+ * registry.  A throw anywhere here propagates out of the bootstrap, which the
+ * runtime reports as a worker `error` and `WorkerCluster` turns into a
+ * rejected `spawn()` naming the worker (#700).
+ */
+export async function runWorkerMeshNode(
+  context: WorkerNodeContext<WorkerMeshInitData>,
+  importModule: ModuleImporter = defaultImporter,
+): Promise<{ readonly system: ActorSystem; readonly cluster: Cluster }> {
+  const init = context.initData;
+  if (init?.kind !== 'worker-mesh-init') {
+    throw new Error('worker-mesh bootstrap: the init frame is not a worker-mesh init — was this worker spawned by WorkerMesh?');
+  }
+  // The effective config carries the main thread's `actor-ts.parallelism.*`
+  // — including a `workers` above zero when the mesh was configured from
+  // HOCON — and a worker that honoured it would start a mesh of its own
+  // inside a mesh, fail for want of a module, and never finish its
+  // handshake.  A worker is a leaf: the explicit option outranks the file.
+  // The tree carries the main thread's secret paths with it, so the worker's
+  // boot dump withholds what the main thread's does.
+  const workerParallelism = ParallelismOptions.create().withWorkers(0);
+  // The same file selects the main thread's persistence plug-ins, and a
+  // worker inherits that selection but none of the code that registered them
+  // — so opening the selected stores at startup would fail every worker's
+  // startup with an unknown plug-in (#1473).  Explicit, so it outranks
+  // whatever the file says about opening at startup.
+  const workerPersistenceBehavior = PersistenceBehaviorOptions.create().withAutoStart(false);
+  // The main thread applied its profile once, and the tree is what that
+  // produced — so the worker selects none (#1546).  Left to the environment,
+  // its load would apply `ACTOR_TS_PROFILE` a second time, to whichever file
+  // it found, and refuse a profile defined only in a file the main thread was
+  // given in code.  The files it reads are the main thread's too: the tree
+  // overrides every key those files set, but a different file could add keys
+  // the main thread never saw, and their substitutions resolve against the
+  // main thread's `.env` (#1785).
+  const systemOptions = ActorSystemOptions.create()
+    .withConfig(Config._withSecretPaths(init.config, init.secretPaths, init.variables))
+    .withProfile('')
+    .withParallelism(workerParallelism)
+    .withPersistence({ behavior: workerPersistenceBehavior });
+  if (init.configFile !== undefined) systemOptions.withConfigFile(init.configFile);
+  if (init.referenceConfigFile !== undefined) systemOptions.withReferenceConfigFile(init.referenceConfigFile);
+  if (init.secretsFile !== undefined) systemOptions.withSecretsFile(init.secretsFile);
+  if (init.environmentFile !== undefined) systemOptions.withEnvironmentFile(init.environmentFile);
+  const system = ActorSystem.create(context.systemName, systemOptions);
+  const clusterOptions = ClusterOptions.create()
+    .withHost(context.self.host)
+    .withPort(context.self.port)
+    .withSeeds([...init.seeds])
+    .withRoles([...init.roles])
+    .withTransport(context.transport);
+  const cluster = await Cluster.join(system, clusterOptions);
+
+  const actors = new Map<string, WorkerActorClass>();
+  const origins = new Map<string, string>();
+  const modules: Array<{ readonly href: string; readonly exports: Record<string, unknown> }> = [];
+  for (const href of init.modules) {
+    const exports = await importModule(href);
+    modules.push({ href, exports });
+    try {
+      collectActorExports(href, exports, actors, origins);
+    } catch (error) {
+      throw new Error(`worker-mesh bootstrap: ${(error as Error).message}`, { cause: error });
+    }
+  }
+  // Before any `setup` runs, so a spawn frame that arrives while a slow setup
+  // is still awaiting is answered rather than dropped as an unclaimed kind.
+  // Only the seed — the main thread — may ask this worker to spawn.
+  serveParallelism({ system, cluster, actors, trustedPeers: init.seeds });
+  // Same trust, same timing: the main thread's first metrics request is what
+  // switches this worker's registry on (#1570), and it may arrive before
+  // `setup` has spawned anything.
+  serveWorkerMeshMetrics({ system, cluster, trustedPeers: init.seeds });
+
+  const setupContext: WorkerMeshSetupContext = { system, cluster, selfAddress: context.self, actors };
+  for (const module of modules) {
+    const setup = (module.exports as WorkerMeshSetupModule).setup;
+    if (typeof setup === 'function') await setup.call(module.exports, setupContext);
+  }
+
+  const ready: WorkerMeshReadyData = { kind: 'worker-mesh-ready', actors: [...actors.keys()] };
+  context.ready(ready);
+  return { system, cluster };
+}
+

@@ -16,7 +16,13 @@ import {
 import { MqttOptions, type MqttOptionsType } from '../../../../../src/io/broker/MqttOptions.js';
 import type { MqttDecodeError } from '../../../../../src/io/broker/MqttCodec.js';
 import type { MqttMessage, MqttQos, MqttRef } from '../../../../../src/io/broker/MqttMessages.js';
+import { MetricsExtensionId } from '../../../../../src/metrics/MetricsExtension.js';
+import type { MetricsRegistry } from '../../../../../src/metrics/Metrics.js';
+import { DeadLetter } from '../../../../../src/SystemMessages.js';
+import { TestKit } from '../../../../../src/testkit/TestKit.js';
+import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
 import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
+import { RecordingLogger, type RecordedLog } from '../../../../util/RecordingLogger.js';
 
 const enc = new TextEncoder();
 
@@ -170,6 +176,24 @@ function makeSystem(): ActorSystem {
   return ActorSystem.create(`mqtt-unit-${++sysCounter}`, sysOptions);
 }
 
+/**
+ * The same system with the log kept instead of thrown away.
+ *
+ * An explicit `logger` is used verbatim by `ActorSystem` — no level filter is
+ * layered over it — so the recorder sees every record the actor emits, and
+ * `RecordingLogger` defaults to `LogLevel.Debug`, which is what lets an *info*
+ * record through `DisplayNameLogger`'s own level check.
+ */
+function makeLoggingSystem(): { sys: ActorSystem; log: RecordingLogger } {
+  const log = new RecordingLogger();
+  const sysOptions = ActorSystemOptions.create().withLogger(log);
+  return { sys: ActorSystem.create(`mqtt-unit-${++sysCounter}`, sysOptions), log };
+}
+
+/** The external-subscribe advisories only; a real system logs other things too. */
+const subscribeAdvisories = (log: RecordingLogger): RecordedLog[] =>
+  log.records.filter((r) => r.level === 'info' && r.message.includes('external subscribe'));
+
 async function boot<T, TSelf>(
   sys: ActorSystem,
   actor: TestMqttActor<T, TSelf>,
@@ -322,6 +346,573 @@ describe('MqttActor inbound routing', () => {
       });
       await sleep(SETTLE_MS);  // the exact-count half of the claim; see SETTLE_MS
       expect(actor.inbound.map((m) => m.topic)).toEqual(['x/y']);
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+/* -------------------- external-command provenance (#783) ------------ */
+
+/**
+ * The registry distinguishes a change the actor made from one an external
+ * command asked for, in both directions.  The removal half has been guarded
+ * since the actor was written — its JSDoc states the invariant outright — but
+ * nothing sent this actor an `unsubscribe` command until now, so the guard
+ * was asserted by nothing; the additive half was missing entirely (#783).
+ */
+describe('MqttActor external-command provenance', () => {
+  test('an external subscribe cannot rewrite the QoS the subclass declared', async () => {
+    const sys = makeSystem();
+    try {
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withQos(1);
+      const actor = new TestMqttActor({
+        options: mqttOptions,
+        ctorSubs: [{ topic: 'own/#', qos: 2 }],
+      });
+      const ref = await boot(sys, actor);
+      expect(actor.module.last().subscribes).toEqual([{ topic: 'own/#', qos: 2 }]);
+      // Same pattern, lower QoS, from outside the actor.  The command may join
+      // the pattern; it must not downgrade exactly-once to at-most-once.
+      ref.tell({ kind: 'subscribe', topic: 'own/#', qos: 0 });
+      // Poll on the *arrival* of the second SUBSCRIBE rather than on its QoS:
+      // the re-SUBSCRIBE fires either way, so the wait cannot pass the
+      // assertion below by outrunning the bug it is meant to catch.
+      await awaitCondition(() => actor.module.last().subscribes.length >= 2, {
+        timeoutMs: 4_000, label: 'the external subscribe reached the broker',
+      });
+      await sleep(SETTLE_MS);  // the subscribe list is asserted exactly; see SETTLE_MS
+      expect(actor.module.last().subscribes).toEqual([
+        { topic: 'own/#', qos: 2 },
+        { topic: 'own/#', qos: 2 },
+      ]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  /**
+   * The other side of the same rule, and the side that is easy to get wrong in
+   * the direction #783 reports.
+   *
+   * `registerSubscription` decides whether a QoS may be rewritten from one
+   * boolean, and there are exactly three call sites that pass it: the external
+   * command (`true`, asserted above), the protected `subscribe`, and the
+   * `preStart` flush of the constructor's declarations.  A `true` at either of
+   * the last two silently pins a pattern to whatever QoS first created it —
+   * `defaultQos`, i.e. at-most-once, when the first declaration named none —
+   * while the subclass's own later, specific declaration is discarded.  That is
+   * the exact loss #783 is about, arriving through the fix's own plumbing, so
+   * both internal call sites carry a test that names the QoS they end up with.
+   */
+  test("the actor's own runtime subscribe re-declares the QoS of a pattern it holds", async () => {
+    const sys = makeSystem();
+    try {
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withQos(0);
+      const actor = new TestMqttActor({
+        options: mqttOptions,
+        ctorSubs: [{ topic: 'own/#', qos: 1 }],
+      });
+      await boot(sys, actor);
+      expect(actor.module.last().subscribes).toEqual([{ topic: 'own/#', qos: 1 }]);
+
+      // The protected API, called from inside the actor: it owns the pattern,
+      // so raising at-least-once to exactly-once is its call to make.  No
+      // polling — `registerSubscription` issues the SUBSCRIBE synchronously
+      // while connected.
+      actor.doSubscribe('own/#', { qos: 2 });
+
+      expect(actor.module.last().subscribes).toEqual([
+        { topic: 'own/#', qos: 1 },
+        { topic: 'own/#', qos: 2 },
+      ]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test("the preStart flush lets the constructor's own declarations set the QoS", async () => {
+    const sys = makeSystem();
+    try {
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withQos(0);
+      const actor = new TestMqttActor({
+        options: mqttOptions,
+        // Two declarations of one pattern, which is what puts the flush on the
+        // rewriting branch at all: the first creates the entry carrying no QoS
+        // of its own, the second is the specific one that has to survive.
+        ctorSubs: [{ topic: 'own/#' }, { topic: 'own/#', qos: 2 }],
+      });
+      await boot(sys, actor);
+
+      // One registry entry, so one SUBSCRIBE — at the QoS the constructor
+      // asked for and not at the actor's default.
+      expect(actor.module.last().subscribes).toEqual([{ topic: 'own/#', qos: 2 }]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('an external subscribe still sets the QoS of a pattern it creates', async () => {
+    const sys = makeSystem();
+    try {
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withQos(0);
+      const actor = new TestMqttActor({ options: mqttOptions });
+      const ref = await boot(sys, actor);
+      ref.tell({ kind: 'subscribe', topic: 'fresh/#', qos: 2 });
+      await awaitCondition(
+        () => actor.module.last().subscribes.some((s) => s.topic === 'fresh/#'),
+        { timeoutMs: 4_000, label: 'the external subscribe reached the broker' },
+      );
+      // The guard is on rewriting an entry, not on creating one — a pattern the
+      // subclass never declared carries no QoS worth protecting, so the
+      // command's own value stands rather than falling back to the default 0.
+      expect(actor.module.last().subscribes).toEqual([{ topic: 'fresh/#', qos: 2 }]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('an external unsubscribe with no target clears the targets external commands attached', async () => {
+    const sys = makeSystem();
+    try {
+      const inbox = new InboxActor<unknown>();
+      const inboxRef = sys.spawn(() => inbox, 'inbox-external-unsubscribe') as ActorRef<MqttMessage<unknown>>;
+      const mqttOptions = MqttOptions.create().withBrokerUrl('mqtt://x');
+      const actor = new TestMqttActor({
+        options: mqttOptions,
+        ctorSubs: [{ topic: 'shared/#' }],  // the subclass's own delivery
+      });
+      const ref = await boot(sys, actor);
+      // Attached from outside, so an outside command may take it away again —
+      // this is the half of the rule that still removes something.
+      ref.tell({ kind: 'subscribe', topic: 'shared/#', target: inboxRef });
+      ref.tell({ kind: 'unsubscribe', topic: 'shared/#' });
+      // Commands and the inbound signal share one mailbox, so FIFO puts both
+      // strictly before this message: the routing decision below is taken
+      // against the post-command registry, with no wait in between.
+      actor.module.last().fireMessage('shared/x', enc.encode('after'));
+      await awaitCondition(() => actor.inbound.length >= 1, {
+        timeoutMs: 4_000,
+        label: "the subclass's own subscription still delivers after an external unsubscribe",
+      });
+      await sleep(SETTLE_MS);  // the fan-out copy is an absence; see SETTLE_MS
+      expect(actor.inbound.map((m) => m.topic)).toEqual(['shared/x']);
+      expect(inbox.received).toHaveLength(0);
+      // The pattern still has a consumer, so it was never dropped at the broker.
+      expect(actor.module.last().unsubscribes).toEqual([]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  /**
+   * The shape the guarantee is actually stated for, and the one it used to miss.
+   *
+   * `deliverToSelf` is not the only thing a subclass declares: `subscribe(topic,
+   * { target })` is documented usage and the fan-out form the MQTT page shows
+   * first, and a pattern declared that way has no own delivery to fall back on.
+   * Clearing every target on an external `unsubscribe` therefore emptied the
+   * entry, deleted it, and issued a broker UNSUBSCRIBE — after which a plain
+   * `subscribe` re-created the pattern at whatever QoS it named, because
+   * `registerSubscription` guards a rewrite but not a creation.  Two messages
+   * from any holder of the ref, and the subclass's exactly-once feed came back
+   * at at-most-once pointed somewhere else (#1510).
+   *
+   * Targets carry their origin now, so the external branch removes only what an
+   * external command attached.  All three consequences are asserted below: the
+   * declared target keeps receiving, the feed is not redirected into the actor's
+   * own `onMessage`, and the surviving entry still has a QoS worth guarding.
+   */
+  test('an external unsubscribe with no target keeps a target the subclass declared', async () => {
+    const sys = makeSystem();
+    try {
+      const worker = new InboxActor<unknown>();
+      const workerRef = sys.spawn(() => worker, 'worker-declared') as ActorRef<MqttMessage<unknown>>;
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withQos(0);
+      const actor = new TestMqttActor({
+        options: mqttOptions,
+        ctorSubs: [{ topic: 'own/#', qos: 2, target: workerRef }],
+      });
+      const ref = await boot(sys, actor, 'mqtt-declared-target');
+      expect(actor.module.last().subscribes).toEqual([{ topic: 'own/#', qos: 2 }]);
+
+      ref.tell({ kind: 'unsubscribe', topic: 'own/#' });
+      actor.module.last().fireMessage('own/x', enc.encode('still mine'));
+      await awaitCondition(() => worker.received.length >= 1, {
+        timeoutMs: 4_000,
+        label: 'the declared target still receives after an external unsubscribe',
+      });
+      await sleep(SETTLE_MS);  // the redirected copy is an absence; see SETTLE_MS
+      expect(worker.received.map((m) => m.topic)).toEqual(['own/x']);
+      // Not a redirect either: the declared feed did not fall back into this
+      // actor's own handler, which is where the probe found it.
+      expect(actor.inbound).toHaveLength(0);
+      // The entry kept a consumer, so the pattern was never dropped at the broker.
+      expect(actor.module.last().unsubscribes).toEqual([]);
+
+      // And because the entry survived, the QoS guard still has something to
+      // guard: the follow-up joins at QoS 2 instead of re-creating at 0.
+      ref.tell({ kind: 'subscribe', topic: 'own/#', qos: 0 });
+      await awaitCondition(() => actor.module.last().subscribes.length >= 2, {
+        timeoutMs: 4_000, label: 'the external subscribe reached the broker',
+      });
+      await sleep(SETTLE_MS);  // the subscribe list is asserted exactly; see SETTLE_MS
+      expect(actor.module.last().subscribes).toEqual([
+        { topic: 'own/#', qos: 2 },
+        { topic: 'own/#', qos: 2 },
+      ]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  /**
+   * Knowing a ref is not owning it.
+   *
+   * The no-target branch is where the bypass was found, but naming the ref
+   * outright is the same capability spelled differently — a fan-out target is
+   * routinely a ref the rest of the system already holds, so a rule that only
+   * covered the anonymous form would leave the guarantee true by obscurity.
+   * The origin travels with the target rather than with the shape of the
+   * command, so both forms answer the same question.  The subclass's own
+   * `unsubscribe(topic, { target })` is unaffected: it owns the registry.
+   */
+  test('an external unsubscribe naming a target removes only one attached from outside', async () => {
+    const sys = makeSystem();
+    try {
+      const declared = new InboxActor<unknown>();
+      const declaredRef = sys.spawn(() => declared, 'target-declared') as ActorRef<MqttMessage<unknown>>;
+      const attached = new InboxActor<unknown>();
+      const attachedRef = sys.spawn(() => attached, 'target-attached') as ActorRef<MqttMessage<unknown>>;
+      const mqttOptions = MqttOptions.create().withBrokerUrl('mqtt://x');
+      const actor = new TestMqttActor({
+        options: mqttOptions,
+        ctorSubs: [{ topic: 'fan/#', target: declaredRef }],
+      });
+      const ref = await boot(sys, actor, 'mqtt-targeted-unsubscribe');
+      ref.tell({ kind: 'subscribe', topic: 'fan/#', target: attachedRef });
+      ref.tell({ kind: 'unsubscribe', topic: 'fan/#', target: declaredRef });
+      ref.tell({ kind: 'unsubscribe', topic: 'fan/#', target: attachedRef });
+      actor.module.last().fireMessage('fan/x', enc.encode('one'));
+      await awaitCondition(() => declared.received.length >= 1, {
+        timeoutMs: 4_000, label: 'the declared target survived the targeted unsubscribe',
+      });
+      await sleep(SETTLE_MS);  // the detached target's copy is an absence; see SETTLE_MS
+      expect(declared.received.map((m) => m.topic)).toEqual(['fan/x']);
+      expect(attached.received).toHaveLength(0);
+      expect(actor.module.last().unsubscribes).toEqual([]);
+
+      // The subclass detaching its own declared target is the control: the rule
+      // is about where the command came from, not about which ref it names.
+      actor.doUnsubscribe('fan/#', { target: declaredRef });
+      await awaitCondition(() => actor.module.last().unsubscribes.includes('fan/#'), {
+        timeoutMs: 4_000, label: 'the emptied pattern was unsubscribed at the broker',
+      });
+      expect(actor.module.last().unsubscribes).toEqual(['fan/#']);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  /**
+   * The bypass the rule above invites, and the reason the origin is written
+   * once rather than on every attach.
+   *
+   * A target's origin is a claim about who put it there, and an external
+   * `subscribe` naming a ref the subclass already declared is a second claim on
+   * the same slot.  Letting the later one win costs the controller exactly one
+   * extra message to walk back into the branch it was just refused: claim the
+   * ref, then detach it.  `attachTarget` keeps `'own'` for that reason — a
+   * controller may mirror a feed the subclass declared, and may take its own
+   * mirror away again, but never acquires the subclass's copy by asking for it.
+   */
+  test('an external subscribe re-naming a declared target does not make it detachable', async () => {
+    const sys = makeSystem();
+    try {
+      const worker = new InboxActor<unknown>();
+      const workerRef = sys.spawn(() => worker, 'worker-reclaimed') as ActorRef<MqttMessage<unknown>>;
+      const mqttOptions = MqttOptions.create().withBrokerUrl('mqtt://x');
+      const actor = new TestMqttActor({
+        options: mqttOptions,
+        ctorSubs: [{ topic: 'own/#', target: workerRef }],
+      });
+      const ref = await boot(sys, actor, 'mqtt-reclaimed-target');
+      ref.tell({ kind: 'subscribe', topic: 'own/#', target: workerRef });
+      ref.tell({ kind: 'unsubscribe', topic: 'own/#', target: workerRef });
+      actor.module.last().fireMessage('own/x', enc.encode('mine'));
+      await awaitCondition(() => worker.received.length >= 1, {
+        timeoutMs: 4_000, label: 'the declared target survived the claim-then-detach pair',
+      });
+      await sleep(SETTLE_MS);  // a second copy would mean two live entries; see SETTLE_MS
+      expect(worker.received.map((m) => m.topic)).toEqual(['own/x']);
+      expect(actor.module.last().unsubscribes).toEqual([]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+/* ----------------- external-subscribe visibility (#783) ------------- */
+
+/**
+ * The wildcard fan-out stays externally controllable on purpose — the class
+ * JSDoc advertises it, the MQTT page shows it as ordinary usage, and a holder
+ * of the ref can already publish anywhere — so narrowing it would break a
+ * documented contract for no security gain.  What makes that answer
+ * defensible rather than merely convenient is that an operator can *see* it
+ * happen: #783's third suggested fix asks for an info record when an external
+ * `subscribe` introduces a filter the actor did not already hold, so an
+ * unexpected `#` shows up in the log rather than only in a heap dump.
+ *
+ * The two silences are as much of the contract as the record.  A join to a
+ * filter the actor already holds is not news, and the subclass's own
+ * `subscribe()` — constructor or runtime — is the operator's own declaration,
+ * so logging it would put a line in the log for every actor that starts and
+ * bury the one line that means something.
+ */
+describe('MqttActor external-subscribe visibility', () => {
+  test('an external subscribe introducing a new filter is logged with its QoS and target', async () => {
+    const { sys, log } = makeLoggingSystem();
+    try {
+      const inbox = new InboxActor<unknown>();
+      const inboxRef = sys.spawn(() => inbox, 'inbox-visibility') as ActorRef<MqttMessage<unknown>>;
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withQos(1);
+      const actor = new TestMqttActor({ options: mqttOptions });
+      const ref = await boot(sys, actor, 'mqtt-visibility-new');
+      ref.tell({ kind: 'subscribe', topic: 'tele/#', target: inboxRef });
+      await awaitCondition(() => subscribeAdvisories(log).length >= 1, {
+        timeoutMs: 4_000, label: 'the new external filter was logged',
+      });
+      await sleep(SETTLE_MS);  // exactly one record; see SETTLE_MS
+      const advisories = subscribeAdvisories(log);
+      expect(advisories).toHaveLength(1);
+      const message = advisories[0]!.message;
+      expect(message).toContain('tele/#');
+      // The QoS the broker was actually given — the command carried none, so
+      // this is the actor's default resolving.  A record naming a QoS the
+      // SUBSCRIBE did not carry would be worse than no record at all.
+      expect(actor.module.last().subscribes).toContainEqual({ topic: 'tele/#', qos: 1 });
+      expect(message).toContain('QoS 1');
+      // Enough about the target to tell a foreign ref from the actor's own
+      // handler — which of the two it is decides whether this is a fan-out to
+      // somebody else or the actor simply widening its own feed.
+      expect(message).toContain(inboxRef.path.toString());
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('an external subscribe joining a filter the actor already holds is not logged', async () => {
+    const { sys, log } = makeLoggingSystem();
+    try {
+      const inbox = new InboxActor<unknown>();
+      const inboxRef = sys.spawn(() => inbox, 'inbox-join') as ActorRef<MqttMessage<unknown>>;
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withQos(2);
+      const actor = new TestMqttActor({
+        options: mqttOptions,
+        ctorSubs: [{ topic: 'own/#', qos: 2 }],
+      });
+      const ref = await boot(sys, actor, 'mqtt-visibility-join');
+      // The join first, then a filter that really is new.  Both commands ride
+      // one mailbox in FIFO order, so the second record cannot arrive before
+      // the first one would have: waiting for it makes the join's silence an
+      // observation rather than a sleep that outran nothing.
+      ref.tell({ kind: 'subscribe', topic: 'own/#', target: inboxRef });
+      ref.tell({ kind: 'subscribe', topic: 'other/#', target: inboxRef });
+      await awaitCondition(() => subscribeAdvisories(log).length >= 1, {
+        timeoutMs: 4_000, label: 'the genuinely new external filter was logged',
+      });
+      await sleep(SETTLE_MS);  // the join's record is an absence; see SETTLE_MS
+      const advisories = subscribeAdvisories(log);
+      expect(advisories).toHaveLength(1);
+      expect(advisories[0]!.message).toContain('other/#');
+      expect(advisories[0]!.message).not.toContain('own/#');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  /**
+   * The join is silent because it changes nothing; a refused `qos` is a join
+   * that asked for something and did not get it, which is not the same thing.
+   *
+   * The guard that keeps the QoS is right, and the sender still sees a
+   * successful re-SUBSCRIBE — at a QoS it did not ask for.  A controller
+   * legitimately retuning a filter therefore failed with no signal anywhere:
+   * no log record, no dead letter, nothing in the reply.  That is the same
+   * argument that put the introduced-filter record in (#783): the refusal is
+   * defensible precisely because an operator can see it happen.
+   */
+  test('an external subscribe whose QoS the actor keeps says so once', async () => {
+    const { sys, log } = makeLoggingSystem();
+    try {
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withQos(1);
+      const actor = new TestMqttActor({
+        options: mqttOptions,
+        ctorSubs: [{ topic: 'own/#', qos: 2 }],
+      });
+      const ref = await boot(sys, actor, 'mqtt-visibility-refused-qos');
+      ref.tell({ kind: 'subscribe', topic: 'own/#', qos: 0 });
+      await awaitCondition(() => subscribeAdvisories(log).length >= 1, {
+        timeoutMs: 4_000, label: 'the kept QoS was recorded',
+      });
+      await sleep(SETTLE_MS);  // exactly one record; see SETTLE_MS
+      const advisories = subscribeAdvisories(log);
+      expect(advisories).toHaveLength(1);
+      const message = advisories[0]!.message;
+      expect(message).toContain('own/#');
+      expect(message).toContain('QoS 0');  // what the command asked for
+      expect(message).toContain('QoS 2');  // what the SUBSCRIBE carried
+      // The record has to agree with the wire, or it reads as an observation
+      // of something that did not happen.
+      expect(actor.module.last().subscribes).toEqual([
+        { topic: 'own/#', qos: 2 },
+        { topic: 'own/#', qos: 2 },
+      ]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  /**
+   * What separates the record from the silence is whether the broker would
+   * have seen a different number, not whether the two fields differ.
+   *
+   * An entry that named no QoS of its own resolves to the actor's default at
+   * SUBSCRIBE time, so `{ qos: 1 }` against a default of 1 is a request
+   * *granted* — comparing the stored values instead of the effective ones
+   * would announce a refusal that did not occur, on a command that asked for
+   * precisely what it got.
+   */
+  test('a join that would change nothing about the QoS stays silent', async () => {
+    const { sys, log } = makeLoggingSystem();
+    try {
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withQos(1);
+      const actor = new TestMqttActor({
+        options: mqttOptions,
+        ctorSubs: [{ topic: 'explicit/#', qos: 2 }, { topic: 'default/#' }],
+      });
+      const ref = await boot(sys, actor, 'mqtt-visibility-granted-qos');
+      // Asks for exactly what the entry holds.
+      ref.tell({ kind: 'subscribe', topic: 'explicit/#', qos: 2 });
+      // Asks for the actor's default, which is what this entry resolves to.
+      ref.tell({ kind: 'subscribe', topic: 'default/#', qos: 1 });
+      // And one that really is refused, so the two silences are measured
+      // against a record that had to travel the same mailbox behind them.
+      ref.tell({ kind: 'subscribe', topic: 'explicit/#', qos: 0 });
+      await awaitCondition(() => subscribeAdvisories(log).length >= 1, {
+        timeoutMs: 4_000, label: 'the refused QoS was recorded',
+      });
+      await sleep(SETTLE_MS);  // the two granted joins are absences; see SETTLE_MS
+      const advisories = subscribeAdvisories(log);
+      expect(advisories).toHaveLength(1);
+      expect(advisories[0]!.message).toContain('QoS 0');
+      expect(advisories[0]!.message).not.toContain('default/#');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  /**
+   * The new record is a second sender-drivable success path, so it inherits the
+   * hostile-filter rule rather than being trusted because it is a refusal.
+   *
+   * Nothing here needs a subclass to cooperate: a sender introduces the filter
+   * itself and then joins its own filter at a different QoS, which reaches the
+   * record with text it chose end to end.  A CR or LF in it forges a second
+   * line that reads exactly like a genuine one — and a log line claiming a QoS
+   * refusal is a more useful thing to forge than most.
+   */
+  test('the kept-QoS record escapes a filter the sender chose', async () => {
+    const { sys, log } = makeLoggingSystem();
+    try {
+      const forged = 'forged\ninfo  MqttActor: external subscribe/#';
+      const mqttOptions = MqttOptions.create().withBrokerUrl('mqtt://x');
+      const actor = new TestMqttActor({ options: mqttOptions });
+      const ref = await boot(sys, actor, 'mqtt-visibility-kept-hostile');
+      ref.tell({ kind: 'subscribe', topic: forged, qos: 0 });  // introduces it
+      ref.tell({ kind: 'subscribe', topic: forged, qos: 2 });  // joins it, QoS kept
+      await awaitCondition(() => subscribeAdvisories(log).length >= 2, {
+        timeoutMs: 4_000, label: 'both records for the forged filter arrived',
+      });
+      await sleep(SETTLE_MS);  // exactly two records; see SETTLE_MS
+      const advisories = subscribeAdvisories(log);
+      expect(advisories).toHaveLength(2);
+      expect(advisories[1]!.message).toContain('QoS 2');
+      expect(advisories[1]!.message).not.toContain('\n');
+      expect(advisories[1]!.message).toContain('\\u000a');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test("the subclass's own subscriptions are silent, in the constructor and at runtime", async () => {
+    const { sys, log } = makeLoggingSystem();
+    try {
+      const mqttOptions = MqttOptions.create().withBrokerUrl('mqtt://x');
+      const actor = new TestMqttActor({
+        options: mqttOptions,
+        ctorSubs: [{ topic: 'own/#' }],
+      });
+      const ref = await boot(sys, actor, 'mqtt-visibility-internal');
+      actor.doSubscribe('runtime/#');
+      // A third, external filter gives the two absences something to be
+      // measured against: it proves the recorder is wired and the internal
+      // registrations really were silent rather than merely unobserved.
+      ref.tell({ kind: 'subscribe', topic: 'external/#' });
+      await awaitCondition(() => subscribeAdvisories(log).length >= 1, {
+        timeoutMs: 4_000, label: 'the external filter was logged',
+      });
+      await sleep(SETTLE_MS);  // the two internal records are absences; see SETTLE_MS
+      const advisories = subscribeAdvisories(log);
+      expect(advisories).toHaveLength(1);
+      expect(advisories[0]!.message).toContain('external/#');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('an externally supplied filter is escaped and length-capped in the record', async () => {
+    const { sys, log } = makeLoggingSystem();
+    try {
+      const mqttOptions = MqttOptions.create().withBrokerUrl('mqtt://x');
+      const actor = new TestMqttActor({ options: mqttOptions });
+      const ref = await boot(sys, actor, 'mqtt-visibility-hostile');
+      // The `topic` on a subscribe command is arbitrary text from whoever
+      // holds the ref, and this record is the first success path that puts it
+      // in the log on demand.  A CR or LF forges a second record that reads
+      // exactly like a genuine one; an unbounded filter writes an unbounded
+      // line.  Both are the sender's choice, so neither may be the log's.
+      ref.tell({ kind: 'subscribe', topic: 'forged\ninfo  MqttActor: external subscribe/#' });
+      ref.tell({ kind: 'subscribe', topic: `${'a'.repeat(4_000)}/#` });
+      await awaitCondition(() => subscribeAdvisories(log).length >= 2, {
+        timeoutMs: 4_000, label: 'both hostile filters were logged',
+      });
+      await sleep(SETTLE_MS);  // exactly two records; see SETTLE_MS
+      const advisories = subscribeAdvisories(log);
+      expect(advisories).toHaveLength(2);
+      expect(advisories[0]!.message).not.toContain('\n');
+      expect(advisories[0]!.message).toContain('\\u000a');
+      expect(advisories[1]!.message.length).toBeLessThan(300);
+      expect(advisories[1]!.message).toContain('…');
     } finally {
       await sys.terminate();
     }
@@ -511,6 +1102,101 @@ describe('MqttActor onSelfMessage', () => {
       expect(actor.module.last().subscribes.map((s) => s.topic)).toContain('s/#');
     } finally {
       await sys.terminate();
+    }
+  });
+});
+
+/** What an application might tell its MQTT actor — and must never find in a log line. */
+const SECRET_PAYLOAD = 'session-token-7f3a9c';
+
+/**
+ * An MQTT actor with a `TSelf` and no `onSelfMessage` of its own, so the
+ * default is what runs — `TestMqttActor` overrides it, which is why this is a
+ * class of its own.  Counts its starts: for a broker actor a restart is a
+ * disconnect and a reconnect, the one thing the default must not cause.
+ */
+class DefaultHookMqttActor extends MqttActor<unknown, string> {
+  constructor(
+    private readonly module: FakeMqttModule,
+    private readonly starts: { count: number },
+  ) {
+    const mqttOptions = MqttOptions.create().withBrokerUrl('mqtt://x');
+    super(mqttOptions);
+  }
+
+  override async preStart(): Promise<void> {
+    this.starts.count += 1;
+    await super.preStart();
+  }
+
+  protected override mqttModule(): Promise<MqttModuleLike> {
+    return Promise.resolve(this.module as unknown as MqttModuleLike);
+  }
+
+  override onMessage(_message: MqttMessage<unknown>): void { /* nothing is subscribed */ }
+}
+
+/** Total across every series of `actor_unhandled_total` carrying `class = className`. */
+function unhandledCountFor(registry: MetricsRegistry, className: string): number {
+  return registry.collect()
+    .filter((sample) => sample.name === 'actor_unhandled_total' && sample.labels['class'] === className)
+    .reduce((total, sample) => total + sample.value, 0);
+}
+
+describe('MqttActor default onSelfMessage (#1442)', () => {
+  test('declines through Actor.unhandled: a dead letter naming the actor, counted under its class', async () => {
+    const log = new RecordingLogger();
+    const kit = TestKit.create('mqtt-default-hook', TestKitOptions.create().withLogger(log));
+    try {
+      const registry = kit.system.extension(MetricsExtensionId).enable();
+      const probe = kit.createTestProbe();
+      kit.system.eventStream.subscribe(probe, DeadLetter);
+      const mqtt = kit.system.spawn(() => new DefaultHookMqttActor(new FakeMqttModule(), { count: 0 }), 'mqtt');
+
+      mqtt.tell(SECRET_PAYLOAD);
+
+      const letter = await probe.receiveOne(1_000) as DeadLetter;
+      expect(letter.message).toBe(SECRET_PAYLOAD);
+      expect(letter.recipient.path.toString()).toBe(mqtt.path.toString());
+      expect(unhandledCountFor(registry, 'DefaultHookMqttActor')).toBe(1);
+      const warns = log.records
+        .filter((record) => record.level === 'warn' && record.message.includes('unhandled self message'))
+        .map((record) => record.message);
+      expect(warns).toEqual(['MqttActor: unhandled self message: string']);
+      expect(log.records.filter((record) => record.message.includes(SECRET_PAYLOAD))).toEqual([]);
+    } finally {
+      await kit.system.terminate();
+    }
+  });
+
+  test('a body the old warn could not render does not restart the actor', async () => {
+    const kit = TestKit.create('mqtt-default-hook-hostile', TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off));
+    try {
+      const probe = kit.createTestProbe();
+      kit.system.eventStream.subscribe(probe, DeadLetter);
+      const starts = { count: 0 };
+      const module = new FakeMqttModule();
+      const mqtt = kit.system.spawn(() => new DefaultHookMqttActor(module, starts), 'mqtt');
+
+      // The shapes a decoded peer body takes: a plain object with the peer's
+      // keys as its own.
+      mqtt.tell({ kind: 'peer.FromTheFuture', toString: 0 } as never);
+      mqtt.tell({ kind: 'peer.FromTheFuture', constructor: { name: { toString: 0 } } } as never);
+      mqtt.tell('marker');
+
+      const letters: DeadLetter[] = [];
+      for (let index = 0; index < 3; index++) letters.push(await probe.receiveOne(1_000) as DeadLetter);
+      expect(letters.map((letter) => letter.recipient.path.toString())).toEqual(
+        [mqtt.path.toString(), mqtt.path.toString(), mqtt.path.toString()],
+      );
+      expect(letters[2]!.message).toBe('marker');
+      expect(starts.count).toBe(1);
+      // The broker-side face of the same fact: one client, never a reconnect.
+      expect(module.clients).toHaveLength(1);
+    } finally {
+      await kit.system.terminate();
     }
   });
 });

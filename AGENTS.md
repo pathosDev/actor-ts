@@ -81,6 +81,61 @@ deliberately tiny — `fastify` + `ts-pattern` — and everything else
 - **`main` is branch-protected** — merges require a pull request and the `test`
   status check; the maintainer (admin) may bypass for the release merge.
 
+### Never `git stash` in a worktree
+
+Every checkout of this clone — the main one and each `.claude/worktrees/*`
+session — has its own `HEAD` and index, but they all share one `.git`, and
+`refs/stash` and its reflog live in that common directory: `git rev-parse
+--git-path refs/stash` prints the same path from every checkout. There is one
+stash stack, and every session pushes onto it and pops from it.
+
+- **So do not stash — in a worktree, or in the main checkout while a session
+  runs.** `git stash pop` takes whatever entry is on top, whichever session
+  pushed it: if another session stashes between your push and your pop, you
+  get its work, untracked files included, and its pop later takes yours.
+  Care does not make it safe. `git stash drop` refuses a SHA and takes a
+  position, `stash@{n}`, which another session's push can shift onto someone
+  else's entry between the moment you look it up and the moment you drop.
+- **Set work aside with a commit instead.** A commit on your `features/…`
+  branch is cheap, because nothing is pushed, and reversible:
+  `git reset HEAD~1` takes it off the branch and leaves the changes in the
+  tree. For an A/B against a baseline, copy the handful of files you changed
+  to a scratch directory and back.
+- **If a pop has already gone wrong, drop nothing.** The pop printed
+  `Dropped refs/stash@{0} (<sha>)`: that commit is the other session's work,
+  and it is still in the object store. Store it back where its owner will
+  look, then take its changes out of your tree:
+
+  ```sh
+  git stash store -m '<its message>, restored after a cross-worktree pop' <sha>
+  ```
+
+  Recover your own work with `git stash apply <sha>`, which restores the
+  tracked and the untracked half and stages nothing you had not staged — not
+  with `git checkout <sha> -- .`, which stages every path it restores and
+  leaves out the untracked files (they are in the third parent, `<sha>^3`).
+  `store` and `apply` both take a SHA, so no other session's push can change
+  what they act on. Your entry is still listed by
+  `git stash list --format='%H %gs'` unless another pop took it as well; a SHA
+  nobody wrote down is found by its message, `On <branch>: <message>` or
+  `WIP on <branch>: …`:
+
+  ```sh
+  git fsck --unreachable | awk '$2 == "commit" { print $3 }' |
+    git log --merges --no-walk --stdin --format='%H %ci %s'
+  ```
+
+- **The object store and the worktree registry are shared as well.**
+  `git gc --prune=now` and `git prune` delete unreachable objects with no
+  grace period, a dropped stash another session is about to recover among
+  them. A default `git gc` only prunes those older than `gc.pruneExpire` (two
+  weeks), and git's manual warns that `--prune=now` risks corruption while
+  another process writes to the repository. `git worktree prune`, run from any
+  checkout, deletes the registration of every checkout whose directory it
+  cannot find — `.git/worktrees/<name>`, holding that checkout's `HEAD`, index
+  and reflog — unless the checkout is locked. Leave all three for a moment
+  when no other session is running. #1446.
+
 ## Release strategy
 
 SemVer, and the project is **pre-1.0**:
@@ -125,6 +180,16 @@ Tags are `vX.Y.Z`; GitHub Releases are cut as normal **Latest** releases
    never in `README.md`** — the README is the summary and links to the full
    tables for the pins. #1322.
 
+   **The cross-cluster hop is measured by a benchmark `bench:compare` never
+   runs**, and it has surfaces of its own. In the same session, run
+   `bun run benchmarks/cluster/tcp-message-cost.ts` three times in full and
+   quote the mean of the `perOp` column — the tcp rows agree within 8 %
+   between runs, the local `tell` row drifts by a third, so a single run
+   is not a figure. It feeds the cross-cluster `tell`/`ask` bullet in
+   `docs/.../reference/faq.mdx` (EN + DE) and the "What a hop costs"
+   section of `docs/.../cluster/transports.mdx` (EN + DE); both carry the
+   Bun version and the date inline, so those move with the figures. #1177.
+
    The cross-language arms need a JDK and a .NET SDK; if a toolchain is
    missing, re-measure the arms you can rather than skipping the step. Each
    result file carries its own date and commit and `RESULTS.md` prints one
@@ -137,10 +202,42 @@ Tags are `vX.Y.Z`; GitHub Releases are cut as normal **Latest** releases
    style of prior releases.
 
 Publishing the release triggers `.github/workflows/publish.yml`, which
-runs typecheck + test + build and then `npm publish --provenance` via
-**npm Trusted Publishing (OIDC)** — no long-lived token. It is
-version-guarded, so re-running is safe. Locally, `prepublishOnly` runs
-clean + build + typecheck + test.
+runs in **two jobs, and the split is the security property** (#703): a
+`pack` job with no credential at all runs clean + build + typecheck +
+test + test:ui and `npm pack`s the tarball, and a `publish` job that
+neither checks out nor installs downloads that tarball and ships it with
+`npm publish --provenance --access public --ignore-scripts` via **npm
+Trusted Publishing (OIDC)** — no long-lived token. So nothing from the
+dependency tree ever executes beside `id-token: write`. Keep it that
+way: a step added to the `publish` job is a step running next to a
+credential that can publish the package, and
+`tests/unit/ci/WorkflowHygiene.test.ts` fails on an install there — it
+reads both spellings of every package manager's install and execute
+subcommands (`bun install`, `bun i`, `bun add`, `bunx`, `bun x`,
+`npm ci`, `npm install`, `npm i`, `npm add`, `npx`, `npm exec`,
+`pnpm install`, `pnpm i`, `pnpm add`, `pnpm dlx`, `yarn install`,
+`yarn add`, `yarn dlx`) and follows a `bun run` through to the script
+it actually runs. It is a pattern over command text and not a sandbox,
+though: a bare `yarn`, an install behind a shell variable and one inside
+a composite action all get past it. A spelling it misses is a gap to
+close in that pattern, not a step the job may have — and that list is
+pinned from both ends by the same test, so neither half moves alone.
+
+It is version-guarded — the guard reads the version out of the packed
+tarball, not the working tree — so re-running is safe. Locally,
+`prepublishOnly` (clean + build + typecheck + test + test:ui) is still
+the net under a `npm publish` run by hand from a clone; CI does not rely
+on it, because `npm pack` runs `prepack`/`postpack` only and
+`npm publish <tarball>` runs no lifecycle script at all.
+
+The version guard is idempotency, not authorization. **Authorization is the
+GitHub environment `npm`** that the `publish` job runs in (#704): it admits
+only a `v*` tag or `main`, holds the run until the maintainer approves it,
+and is the environment the Trusted Publisher on npmjs.com is registered
+against, so npm hands no publish token to a run outside it. So **a release
+run waits for that approval** before anything reaches npm, and the job
+must keep its `environment: npm` key — `WorkflowHygiene.test.ts` fails
+without it.
 
 ## Breaking changes
 
@@ -154,17 +251,21 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
 
 - Docs are **Starlight MDX** under `docs/src/content/docs/` (English),
   mirrored **1:1** under `docs/src/content/docs/de/` (German). **Every
-  content change updates BOTH languages** — code samples stay identical,
-  prose is translated. The `i18n` label tracks translation work.
+  content change updates BOTH languages** — prose is translated, and a code
+  sample stays identical in its code: statements, identifiers and literals
+  match the English page. Comments inside a fence may be translated. One
+  fence stays byte-identical outright: the HOCON block of
+  `reference/reference-conf.mdx` mirrors `src/config/Reference.ts` in both
+  languages, and `tests/unit/config/ReferenceConfDocs.test.ts` holds it. The
+  `i18n` label tracks translation work.
 - Feature or behavior changes also update **`README.md`** and
   **`CHANGELOG.md`**.
 - **The README test-count / coverage badges are bot-maintained** — a CI
   workflow pushes `chore(readme): update test count + coverage stats
   [skip ci]` commits directly to `develop` after test runs. Do NOT edit
-  those numbers by hand (the bot overwrites them, with CI-measured values
-  that skip the quarantined multi-node suites via
-  `ACTOR_TS_SKIP_FLAKY_MNS` — see *Verification gates* — so they differ
-  slightly from a local full run). After pushing `develop`, fetch again
+  those numbers by hand (the bot overwrites them with CI-measured values;
+  since nothing is quarantined they now cover the same population a local
+  full run does). After pushing `develop`, fetch again
   before branching — a bot commit may already have landed on top.
 - Adding a page: keep `docs/scripts/scaffold.mjs` and the Astro sidebar
   (`docs/astro.config.mjs`) in sync — same path and label.
@@ -272,31 +373,85 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
 
   The aggregate went **80 → 90 on 2026-08-25** (#541), and the measurement the
   policy above asks for lives beside the constant in `scripts/coverage-gate.mjs`:
-  93.63 % on the CI population locally (bun 1.4.0, `ACTOR_TS_SKIP_FLAKY_MNS=1`)
-  against 93 % from the badge bot's hosted run, with the same lcov reduced to
-  `Σ LH / Σ LF` reading 92.85 %. The 13-point band the old floor left is a
-  3-point one, and 90 clears every candidate statistic, so #1016 changing which
-  one the aggregate *is* cannot turn CI red on its own fix.
-- **Three suites do not run in CI at all.** `ACTOR_TS_SKIP_FLAKY_MNS=1` in
-  `test.yml`, `multi-runtime.yml` and `publish.yml` skips
-  `tests/multi-node/LeaseMajority.test.ts`,
-  `tests/multi-node/ParallelPubSub.test.ts` and
-  `tests/unit/testkit/ParallelMultiNodeSpec.test.ts` — Bun on GitHub's hosted
-  runners cannot respawn functional worker threads after the first worker
-  test, which also starves LeaseMajority's lease arbitration into a false
-  split-brain. **A local `bun test` runs them; a green CI check says nothing
-  about them.** `.github/workflows/nightly-flakes.yml` runs them nightly with
-  the flag OFF; its header carries the exit criterion (14 consecutive green
-  nights), and `docs/…/testing/diagnosing-flakes.mdx` states it in prose.
-  #538.
+  93.63 % on the then-CI population locally (bun 1.4.0, three suites still
+  removed by `ACTOR_TS_SKIP_FLAKY_MNS=1`) against 93 % from the badge bot's
+  hosted run, with the same lcov reduced to `Σ LH / Σ LF` reading 92.85 %. The
+  13-point band the old floor left is a 3-point one, and 90 clears every
+  candidate statistic, so #1016 changing which one the aggregate *is* cannot
+  turn CI red on its own fix. Re-measured 2026-09-07 over the whole suite, with
+  nothing quarantined: **94.39 %**, so the headroom grew rather than shrank.
+- **Every suite runs in CI, and no environment variable may change that.**
+  Three used to be removed by `ACTOR_TS_SKIP_FLAKY_MNS=1` (#538) and are back:
+  the two worker-thread ones on 21 consecutive green nights of
+  `nightly-flakes.yml` against a written criterion of fourteen, and
+  `LeaseMajority` because its cause was found rather than waited out — a
+  product defect in split-brain resolution, not a runner problem (#839).
+  `tests/unit/ci/NoEnvironmentGatedSkips.test.ts` now refuses a test gated on
+  `process.env`, because that is exactly what a workflow can set. Gate on a
+  **capability probe** instead — `available ? describe : describe.skip` asks
+  the machine a question no workflow can answer for it — or add the file to
+  that guard's allow-list with the reason it cannot hide a failure. Every job
+  in `.github/workflows/` carries `timeout-minutes`, so a suite that stops
+  making progress fails inside the hour instead of burning the six-hour
+  default. `nightly-flakes.yml` keeps running the three on their own as the
+  regression guard; `docs/…/testing/diagnosing-flakes.mdx` carries the
+  history.
 - **Repeat-run flake hunting:** `bun run test:stress`
   (`scripts/stress-test.mjs`) loops the suite N times and aggregates failures
   by test identity, splitting *flaky* (failed in some runs) from
-  *consistently failing* (broken, not flaky). It **drops
-  `ACTOR_TS_SKIP_FLAKY_MNS` from the child environment by default** — a
-  harness that inherited it would report a reliable pass rate over exactly
-  the tests known not to be reliable. Not a per-commit gate; reach for it
-  when a test fails intermittently, or when a nightly names one. #290.
+  *consistently failing* (broken, not flaky). `failedRuns` counts **runs**,
+  once per run however many testcases carried an identity, and the verdict
+  fails on a run that was not green and that no tolerated offender explains —
+  before #1359 an identity failing twice inside one run fell out of both
+  tables and the harness printed `PASS` over sixteen runs of which none was
+  green. `--randomize` / `--seed=N` surface and pin order dependence. Not a
+  per-commit gate; reach for it when a test fails intermittently, or when a
+  nightly names one. #290.
+
+  **A red night files an issue** (`nightly-flake` label, one open at a time),
+  and a green one closes it — `scripts/nightly-flake-report.mjs` builds the
+  body, `tests/unit/ci/NightlyFlakeReport.test.ts` covers it. Both nightly jobs
+  are allowed to go red now that the finding is actionable; nothing is gated on
+  a scheduled workflow. The `continue-on-error` they carried was defensible on
+  its own terms — a red check for a *measurement* trains people to ignore it —
+  and the alternative it chose was no conclusion at all, which is exactly how a
+  fourteen-night exit criterion stood at twenty-one before anybody read it
+  (#1310). A summary that is *missing* counts as red, deliberately: "the job
+  produced no verdict" and "the job was green" are opposite facts, and the first
+  two nights of that workflow uploaded no artifact while nobody noticed.
+- **`bun test --parallel` is on everywhere, including the coverage run** — and
+  it was off for the coverage run until the Bun 1.4.2 pin, which is the part
+  worth remembering. On 32 cores the suite goes 293 s → **28 s**, and nothing
+  depends on cross-file state that the implied `--isolate` breaks. But on bun
+  1.4.0 the flag changed *what was measured*: 721 of 723 files reported the same
+  hit count and the numerator was byte-for-byte the same 55 293 lines, while 407
+  files reported a larger instrumented-line denominator and none a smaller one,
+  so the aggregate read **79.16 % against 93.82 % on the same code** — straight
+  through the 90 % floor by changing the denominator rather than the tests
+  (#1332).
+
+  Bun 1.4.1 fixed the under-reporting across workers and 1.4.2 measures clean:
+  **0 of 728 lcov records report a larger denominator**, 20 report one smaller
+  by a line or three, the numerator is identical at 56 041, the aggregate agrees
+  to 0.05 points, and the coverage run drops **352 s → 41 s** (#1521). So
+  `test.yml`'s coverage step carries the flag too, *after* `--coverage` because
+  `tests/unit/ci/CoverageGate.test.ts` locates the invocation by that prefix, and
+  `tests/unit/ci/WorkflowHygiene.test.ts` now asserts the flag is **present**
+  rather than absent. The floor and the denominator stay the pair that moves
+  together: if a future Bun re-inflates it the gate goes red, and the answer is
+  to drop the flag again — never to lower the floor.
+- **Generative tests run against a pinned seed.**
+  `tests/setup/property-seed.ts` calls `fc.configureGlobal` and is loaded by
+  `bunfig.toml`'s `preload`, so all ~52 `fc.assert` sites share one seed, one
+  `numRuns` floor and `endOnFailure` — a property with a random seed can pass on
+  the next run, and its counterexample lives only in a log that rotates (#1372).
+  A fixed seed stops the suite finding *new* cases on its own; that is the trade
+  and it is worth it, because a case found by an unlucky nightly and then lost
+  was never turned into a regression test anyway. **When a property fails, copy
+  the shrunk counterexample into a plain example test beside it before fixing
+  anything.** `tests/unit/ci/PropertySeedPolicy.test.ts` asks fast-check what
+  seed it is *actually* running with, so a preload that is registered and never
+  loaded fails instead of silently restoring the random default.
 - **Cross-runtime:** `bun run smoke` runs `tests/smoke/cases/*.mjs` on
   Bun, Node, and Deno. Add a smoke case for anything runtime-sensitive.
   A case must release every handle it opens **on every path**, not just the
@@ -341,6 +496,18 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
   `bun run build:lib` is `tsc` alone, for the jobs that want `dist/` and have
   no opinion about the UI.
 
+  **`ui:install` is the developer's command and stays unfrozen** — it is the
+  nested counterpart of a bare root `bun install`, the way `devtools-ui/bun.lock`
+  gets regenerated after a manifest edit. CI does not call it: the three
+  workflows that need the toolchain write `bun install --frozen-lockfile --cwd
+  devtools-ui` out, like every other install in CI (#622), so an edit to
+  `devtools-ui/package.json` needs the regenerated `bun.lock` in the same
+  commit or the frozen install goes red. Through the script it was the one CI
+  install that resolved its ranges afresh, and the one
+  `tests/unit/ci/WorkflowHygiene.test.ts` could not see; that guard now reads a
+  `bun run <script>` through to the manifest the step runs in, so moving an
+  install behind a script is not a way past it (#1622).
+
   The UI has **two test runners, and their file patterns must stay disjoint**.
   The framework-free half (`format`, `history`, `flamegraph`, `profileTree`,
   `stateDiff`, `actorsTree`, `uptime`, and the chart-option builders) runs
@@ -366,16 +533,33 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
   a per-clone problem with per-clone fixes (`git diff --stat`, a pathspec
   exclude, `.git/info/attributes`).
 - **Security scanning is CI-side, with one local half.** `bun run
-  lint:audit` is `bun audit --audit-level=high` over `bun.lock` and gates
-  `package-health.yml`; run it after any dependency change, because that
-  is the one that can turn it red. It reads the lockfile deliberately —
-  GitHub's dependency graph resolves only the ranges in `package.json`,
-  so Dependabot and `dependency-review-action` are blind to the shipped
-  closure and are not used as gates here. Advisories that predate the
-  gate are suppressed by ID in the script *and* listed in `SECURITY.md`;
-  `tests/unit/ci/SecurityPolicy.test.ts` fails if the two sets differ, so
-  never silence one without the other. **CodeQL** (`codeql.yml`, pull
-  requests + weekly) and the workflow-hygiene invariants asserted by
+  lint:audit` is `bun audit --audit-level=high` over a Bun lockfile, and
+  `package-health.yml` runs it over every one CI installs: at the root
+  for `bun.lock`, under `docs/` for `docs/bun.lock` (the script is in
+  that manifest too), and with the same flags written out in the step
+  for `devtools-ui/bun.lock` — that manifest is hashed into the embedded
+  UI bundle, so a script there would cost a `build:ui`. Run it in the
+  directory whose lockfile moved after any dependency change, because
+  that is the one that can turn it red; a fourth Bun closure a workflow
+  starts installing fails `tests/unit/ci/SecurityPolicy.test.ts` until a
+  step audits it (#1413). It reads the lockfile deliberately — GitHub's
+  dependency graph resolves only the ranges in `package.json`, so
+  Dependabot and `dependency-review-action` are blind to every one of
+  those closures and are not used as gates here.
+  **Nothing is suppressed today.** The gate landed with eleven
+  `--ignore`d advisory IDs, every high the closure carried at the time,
+  and #779 cleared them with an in-range lockfile refresh — the shape a
+  red audit almost always wants, and the first thing to try. A
+  suppression that is ever needed again goes into the script by ID
+  *and* into the table in `SECURITY.md`;
+  `tests/unit/ci/SecurityPolicy.test.ts` fails if the two sets differ, and
+  it holds the "nothing is suppressed" sentences on `SECURITY.md`, the
+  supply-chain page (EN + DE) and this paragraph to that list in both
+  directions — they go when the first suppression lands and come back
+  when the last one is dropped. So never silence one without the other,
+  and never leave the sentence standing over a list that is not empty.
+  **CodeQL** (`codeql.yml`, pull requests + weekly) and the
+  workflow-hygiene invariants asserted by
   `tests/unit/ci/WorkflowHygiene.test.ts` — SHA-pinned actions, explicit
   read-only workflow permissions, frozen installs — are the rest of it.
   A new workflow file has to satisfy that test on the first `bun test`.
@@ -440,7 +624,8 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
     lint:audit` is the gate that decides whether a peer *can* live there at
     all — a driver whose closure carries an unfixable high advisory cannot,
     and that is a security decision, not a packaging one. Do not reach for a
-    new `--ignore`: every suppression in `lint:audit` predates the gate, and
+    new `--ignore`: the list has been empty since #779 — the eleven it
+    started with predated the gate and left with an in-range refresh — and
     adding one to get a change through is how a gate stops gating. Record the
     gap in the guard's allow-list instead and raise it.
 
@@ -547,10 +732,65 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
   `mergeOptions` from `src/util/OptionsMerge.ts`, where `undefined` on a
   higher layer means "not set" and falls through rather than shadowing.
   **A key in `reference.conf` must be reachable from `ConfigKeys` and read
-  by something in `src/`** — `tests/unit/config/NoDeadConfigKeys.test.ts`
-  fails otherwise. A knowingly-unimplemented key goes in that test's
-  `KNOWN_DEAD_KEYS` with the issue that will remove it; adding a key
-  nothing reads is not an option.
+  by a registered reader** — `tests/unit/config/NoDeadConfigKeys.test.ts`
+  fails otherwise. Reachable means an exact `ConfigKeys` entry or a block
+  root above the leaf. Read is observed rather than looked for in the
+  source: the gate changes each leaf on its own to another value of its
+  kind — a longer duration, the other switch position, a suffixed word, an
+  object with one entry changed — runs every reader registered in
+  `tests/util/ConfigReaderRegistry.ts` over the result, and needs at least
+  one of them to answer differently. **A refusal is not a read:** a value
+  checked and then dropped is refused just the same as one that is kept, so
+  a reader that only throws on the new value leaves the leaf unread. A
+  reader that takes the leaf as another kind than it ships as — a size
+  where a duration ships, an integer where a size ships as a bare count, a
+  size where a fraction ships — fails it.
+
+  Registering is what makes a reader count. A new block's reader is an
+  entry in that registry, naming the suite whose `expectExactOptions` cases
+  bind it, and every exported `read…FromConfig` is an entry or is excused,
+  with its reason, in `READERS_OUTSIDE_THE_REGISTRY`. Leaves a reader reads
+  only under a selector get `contexts` on its entry — an overlay that
+  selects their branch, with the companion leaves the branch needs, as
+  `dispatcher.default = throughput` does for `dispatcher.throughput`. A
+  published leaf whose changed value no reader can answer to — an enum that
+  refuses any word but its members, a union whose literal is its word arm —
+  gets a `PERTURBATION_OVERRIDES` entry in `tests/util/ConfigPerturbation.ts`,
+  with its reason, giving it another member or the other arm. A key
+  `reference.conf` does not publish — a comment-only one, or a broker key —
+  goes into its section's unpublished leaves in the registry
+  (`UNPUBLISHED_LEAVES`): the gate introduces it at the entry's `value`,
+  changes it to a second — the entry's `override`, where no inferred one is
+  a value the reader takes — and a reader has to answer the two
+  differently.
+
+  A knowingly-unimplemented key goes in the test's `KNOWN_DEAD_KEYS` with
+  the issue that will remove it, and an empty list means none: an entry
+  fails once a reader reads its key. Adding a key nothing reads is not an
+  option. Two documented settings stay outside the gate:
+  `coordinated-shutdown.phases`, which the shutdown extension folds into its
+  phase graph itself, so no registered reader answers to it, and the
+  Cassandra blocks' `replication.data-centers`, which is a gap in the
+  registry rather than a limit of the gate. A list of objects is no
+  obstacle: an `UNPUBLISHED_LEAVES` entry whose `override` gives the second
+  list, and `contexts` on the two Cassandra readers selecting
+  `network-topology-strategy` — they refuse data centers under any other
+  class, and a refusal is not a read — would bring it in. Neither has been
+  written yet.
+
+  **The gate proves a read, not the wiring.** It cannot see whether the
+  runtime calls a reader or keeps its answer, with one exception inside the
+  registry: a sub-reader that another registered reader calls — a sink's
+  delivery block, the cluster's downing provider and split-brain window —
+  counts only where that caller answers to the same leaf, and its entry
+  names those callers in `calledBy`, which the gate checks against the
+  direct calls in `src/`. Beyond the registry,
+  `tests/unit/config/ConsumersReadThroughRegisteredReaders.test.ts` pins the
+  consumers that have read a key directly to their readers, while a
+  consumer that calls its reader and still reads a key beside it, and
+  wiring that drops what a reader returned, are left to each block's own
+  tests. That a value is right is what the block's exact-object reader
+  tests bind.
 - **JSDoc explains the *why*** — constraints, rationale, non-obvious
   trade-offs — not a restatement of the code. Match the surrounding
   comment density; no narration or noise.
@@ -636,10 +876,14 @@ Further rules:
   and explicit type annotations across. Dropping them is how a "pure move"
   silently widens a type: `'drop-head' as const` becomes `string`, a
   `ReadonlySet` becomes mutable.
-- **Constants move, `ConfigKeys` reads do not.**
-  `tests/unit/config/NoDeadConfigKeys.test.ts` matches `ConfigKeys.<group>`
-  and `.<leaf>` in the *same file*, so relocating a reader breaks it even
-  when behaviour is identical. `bun run typecheck` cannot see that failure.
+- **`ConfigKeys` reads may move with their constants.** The dead-key gate
+  watches what the registered readers answer, not which file writes an
+  accessor, so moving a read changes nothing it checks while a registered
+  reader still makes it. A reader moved to another module leaves a stale
+  import in `tests/util/ConfigReaderRegistry.ts`, which
+  `bun run typecheck:dev` reports and which stops `NoDeadConfigKeys` from
+  loading; a read moved out of every registered reader turns the gate red
+  for its leaf.
 - **Naming:** `DEFAULT_<DOMAIN>_<UNIT>` with the unit suffix. Prefix a
   vendor limit with the vendor (`DYNAMODB_MAX_BATCH_ITEMS`) — a bare
   `MAX_BATCH_ITEMS` is unambiguous in one driver and meaningless in a
@@ -664,9 +908,29 @@ Further rules:
     resolve to the builder).
 
   Naming lockstep with **no divergence**: builder method `withX` ⇔ field `x` ⇔
-  HOCON leaf `x` (e.g. `withQos` ⇔ `qos`, never `defaultQos`). Multi-arg sugar
-  is fine when the field still matches the stem (`withCredentials(u, p)` → field
-  `credentials`; `withCircuitBreaker(f, r)` → field `circuitBreaker`).
+  HOCON leaf **`kebab(x)`, with any unit suffix dropped** (e.g. `withQos` ⇔
+  `qos` ⇔ `qos`, never `defaultQos`; `withGossipIntervalMs` ⇔ `gossipIntervalMs`
+  ⇔ `gossip-interval`; `withCleanupMs` ⇔ `cleanupMs` ⇔ `cleanup-interval`).
+  The suffix goes because HOCON carries the unit in the *value* and the reader
+  is `getDuration`, which takes `30s` and a bare millisecond count alike —
+  repeating `Ms` in the key names one unit next to a value in another. The
+  field keeps it, because TypeScript has nowhere else to say what `30_000`
+  means. #1405 and #1443 converted the last leaves that spelled it the other
+  way — #1443 those under `actor-ts.io.broker.*`, which `ConfigKeys` now
+  declares as full paths, with `brokerCommonKeysUnder(root)` composing the ones
+  every broker shares. A retired spelling is refused with a `ConfigError`
+  naming its replacement rather than ignored, and it is refused where its block
+  is first read — a broker actor's `preStart`, a gRPC server's start, the first
+  `HttpExtension` access, the `bind()` of a server with a WebSocket route,
+  `cache(name)` — not up front at `ActorSystem.create`, so a block nothing reads
+  is never checked. Where a rename moved TypeScript as well, its table passes
+  `rejectRetiredLeaves` a note saying what changed in code: the TCP framing
+  caps, whose fields became `maxLineBytes` / `maxFrameBytes`, and the broker
+  breaker, whose numbers became an id that `circuitBreaker` holds and
+  `withCircuitBreaker(id)` takes. Every other table keeps the default, which
+  tells the operator no code change is needed. Multi-arg sugar is fine when
+  the field still matches the stem (`withCredentials(u, p)` → field
+  `credentials`).
 - **An optional fourth export, `XOptionsValidator`**, when the options have
   fields with real constraints (ports, positive durations/counts, byte sizes,
   enums, non-empty strings/arrays, URLs, cross-field rules). It `extends

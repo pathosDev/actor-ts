@@ -33,10 +33,46 @@
 import { dispatch, query, spawn, spawnStateless, start, stop, type Ref } from 'nact';
 import { createRequire } from 'node:module';
 import { runArm, type ArmCase } from './arm.js';
-import { workloadCase } from './workload.js';
+import { workRounds, workSeed, workloadCase, type WorkloadCase } from './workload.js';
 
 const REPLY_TIMEOUT_MS = 60_000;
 const LIFECYCLE_TIMEOUT_MS = 60_000;
+
+const SINGLE_THREAD_NOTE =
+  'nact runs every actor on the one JavaScript thread: the sixty-four actors take turns, so this row is '
+  + 'the single-threaded figure for the same work — the scenario\'s finding, not a skip.';
+
+type WorkMessage = { readonly seed: number; readonly rounds: number; readonly sender: Ref<number> };
+
+/**
+ * The `parallel-workload` rows: sixty-four stateless actors, one message
+ * each per call, every reply checked against the work the message asked for.
+ */
+class ParallelWorkload {
+  private messageIndex = 0;
+  private total = 0;
+
+  constructor(readonly workload: WorkloadCase, private readonly workers: ReadonlyArray<Ref<WorkMessage>>) {}
+
+  async run(): Promise<number> {
+    const rounds = this.workload.workIterationsPerMessage ?? 0;
+    const message = this.messageIndex++;
+    const replies = await Promise.all(this.workers.map((ref, actor) =>
+      query<WorkMessage, (sender: Ref<number>) => WorkMessage>(
+        ref,
+        (sender) => ({ seed: workSeed(actor, message), rounds, sender }),
+        REPLY_TIMEOUT_MS,
+      )));
+    let correct = 0;
+    for (let actor = 0; actor < replies.length; actor++) {
+      if (replies[actor] === workRounds(workSeed(actor, message), rounds)) correct++;
+      this.total = (this.total + replies[actor]!) >>> 0;
+    }
+    return correct;
+  }
+
+  checksum(): number { return this.total; }
+}
 
 /* ------------------------------ message shapes --------------------------- */
 
@@ -128,6 +164,15 @@ async function main(): Promise<void> {
   const tellLarge = workloadCase('tell-throughput', 'batch=10k');
   const askWorkload = workloadCase('ask-round-trip', 'sequential');
   const pingPongWorkload = workloadCase('ping-pong', 'exchanges=10k');
+  // One set of sixty-four stateless workers serves both rows.
+  const parallelWorkers: Ref<WorkMessage>[] = [];
+  for (let i = 0; i < (workloadCase('parallel-workload', 'load=light').actorCount ?? 0); i++) {
+    parallelWorkers.push(spawnStateless(system, (message: WorkMessage): void => {
+      dispatch(message.sender, workRounds(message.seed, message.rounds));
+    }, `parallel-${i}`));
+  }
+  const parallelLight = new ParallelWorkload(workloadCase('parallel-workload', 'load=light'), parallelWorkers);
+  const parallelHeavy = new ParallelWorkload(workloadCase('parallel-workload', 'load=heavy'), parallelWorkers);
 
   const spawnBatch = async (batch: number): Promise<number> => {
     let startedCount = 0;
@@ -191,6 +236,12 @@ async function main(): Promise<void> {
         REPLY_TIMEOUT_MS,
       ),
     },
+    ...[parallelLight, parallelHeavy].map((parallel): ArmCase => ({
+      workload: parallel.workload,
+      notes: SINGLE_THREAD_NOTE,
+      run: () => parallel.run(),
+      checksum: () => parallel.checksum(),
+    })),
   ];
 
   await runArm({

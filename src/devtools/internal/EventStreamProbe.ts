@@ -5,10 +5,15 @@
  * would otherwise need its own actor class, spawn call and teardown.
  * This wraps all three.
  *
- * Probes are ordinary `/user` actors — DevTools has no privileged place
- * to hide them — so they DO show up in the actor tree they help render.
- * That is honest (they really are running) and the `devtools-` name
- * prefix, shared with the hub, lets the panel offer to filter them out.
+ * Probes live under `/system/devtools`, beside the hub, with the bare name
+ * the caller passes (`stats`, `actor-tree`): the group already says whose
+ * they are, so no `devtools-` prefix repeats it, and `freeActorName` adds a
+ * suffix only while a sibling still holds the name — in practice a
+ * re-attach racing the previous attachment's teardown.  They DO show up in
+ * the actor tree they help render.  That is honest (they really are
+ * running), and the tooling mark they inherit from the group is what the
+ * panel hides them by, as it does by default, and what keeps whole-system
+ * tracing off them.
  */
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';

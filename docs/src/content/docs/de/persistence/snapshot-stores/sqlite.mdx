@@ -35,7 +35,7 @@ const system = ActorSystem.create('my-app', actorSystemOptions);
 
 ```ts
 type SqliteSnapshotStoreOptions = {
-  path?:           string;     // Dateipfad oder ':memory:'
+  path?:           string;     // Pflicht: Dateipfad oder ':memory:' für eine In-Memory-DB
   snapshotsTable?: string;     // Default 'snapshots'
   keepN?:          number;     // max. Snapshots pro persistenceId, beim Speichern beschnitten (Default 3)
   busyTimeoutMs?:  number;     // Lock-Wartebudget, Default 1000; 0 = sofort scheitern

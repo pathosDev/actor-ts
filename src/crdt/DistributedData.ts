@@ -1,15 +1,20 @@
 import { match, P } from 'ts-pattern';
 import { Actor } from '../Actor.js';
-import type { ActorRef } from '../ActorRef.js';
+import { ActorRef } from '../ActorRef.js';
+import type { ActorCell } from '../internal/ActorCell.js';
+import { LocalActorRef } from '../internal/LocalActorRef.js';
 import { SystemActorNames, SystemGroups } from '../internal/SystemPaths.js';
+import { Terminated } from '../SystemMessages.js';
 import type { ActorSystem } from '../ActorSystem.js';
+import type { Logger } from '../Logger.js';
 import type { Cancellable } from '../Scheduler.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
-import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
+import { DEFAULT_ASK_TIMEOUT_MS, DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
 import { mergeOptions } from '../util/OptionsMerge.js';
 import { metricsOf } from '../metrics/MetricsExtension.js';
 import { randomId } from '../util/RandomString.js';
 import {
+  DEFAULT_LOG_DATA_SIZE_EXCEEDING_BYTES,
   DEFAULT_MAX_GOSSIP_BYTES,
   DEFAULT_MAX_PENDING_QUORUM_REQUESTS,
   DEFAULT_MAX_QUORUM_TIMEOUT_MS,
@@ -21,7 +26,8 @@ import type { Cluster } from '../cluster/Cluster.js';
 import { MemberRemoved, MemberUp } from '../cluster/ClusterEvents.js';
 import { NodeAddress } from '../cluster/NodeAddress.js';
 import type { WireMessage } from '../cluster/Protocol.js';
-import type { Crdt } from './Crdt.js';
+import { RemoteActorRef } from '../cluster/RemoteActorRef.js';
+import type { Crdt, CrdtIdentityFunction } from './Crdt.js';
 import { DurableDistributedDataStore } from './DurableDistributedDataStore.js';
 import { GOSSIP_SKIP_WARN_INTERVAL_MS, MAX_CRDT_NESTING_DEPTH } from './Constants.js';
 import { encodeJsonTree } from '../serialization/JsonTree.js';
@@ -91,12 +97,28 @@ export type CrdtJson =
  * The switch itself lives in {@link decodeCrdtAtDepth}, which carries the
  * nesting depth `ORMap` recursion has to bound; this is the entry point that
  * starts it at zero.
+ *
+ * ## The `identity` parameter
+ *
+ * A CRDT's identity function is a closure and cannot travel on the wire, so a
+ * decoder has to be told which one to file elements under.  Passing none
+ * leaves every set- and map-shaped value on the built-in `JSON.stringify`
+ * dedup, which is what made the documented `identity` option inert for
+ * anything DistributedData materialised from a frame or from its durable
+ * record (#766).  The four kinds that have no element identity — the two
+ * counters and the two registers — ignore it.
+ *
+ * Only the *outer* value is covered: an `ORMap`'s inner CRDTs decode through
+ * this same dispatcher with no identity, because nothing in the frame or in
+ * the caller's empty template says what theirs should be.
  */
-export function decodeCrdt(json: CrdtJson): Crdt<any> {
-  return decodeCrdtAtDepth(json, 0);
+export function decodeCrdt(json: CrdtJson, identity?: CrdtIdentityFunction): Crdt<any> {
+  return decodeCrdtAtDepth(json, 0, identity);
 }
 
-function decodeCrdtAtDepth(json: CrdtJson, depth: number): Crdt<any> {
+function decodeCrdtAtDepth(
+  json: CrdtJson, depth: number, identity: CrdtIdentityFunction | undefined,
+): Crdt<any> {
   if (depth > MAX_CRDT_NESTING_DEPTH) {
     throw new CrdtDecodeError(`CRDT nesting deeper than ${MAX_CRDT_NESTING_DEPTH} levels`);
   }
@@ -106,17 +128,19 @@ function decodeCrdtAtDepth(json: CrdtJson, depth: number): Crdt<any> {
   switch (json.kind) {
     case 'GCounter':    return GCounter.fromJSON(json);
     case 'PNCounter':   return PNCounter.fromJSON(json);
-    case 'GSet':        return GSet.fromJSON<unknown>(json);
-    case 'ORSet':       return ORSet.fromJSON<unknown>(json);
+    case 'GSet':        return GSet.fromJSON<unknown>(json, { identity });
+    case 'ORSet':       return ORSet.fromJSON<unknown>(json, { identity });
     case 'LWWRegister': return LWWRegister.fromJSON<unknown>(json);
-    case 'GCounterMap': return GCounterMap.fromJSON<unknown>(json);
-    case 'LWWMap':      return LWWMap.fromJSON<unknown, unknown>(json);
+    case 'GCounterMap': return GCounterMap.fromJSON<unknown>(json, { identity });
+    case 'LWWMap':      return LWWMap.fromJSON<unknown, unknown>(json, { identity });
     case 'MVRegister':  return MVRegister.fromJSON<unknown>(json);
     case 'ORMap':       return ORMap.fromJSON<unknown, Crdt<any>>(
       json,
       // Inner CRDTs decode through the same dispatcher — a value can
-      // be any of the registered CRDT kinds.
-      (inner) => decodeCrdtAtDepth(inner as CrdtJson, depth + 1) as Crdt<any>,
+      // be any of the registered CRDT kinds.  Identity stops at this level;
+      // see the entry point's doc.
+      (inner) => decodeCrdtAtDepth(inner as CrdtJson, depth + 1, undefined) as Crdt<any>,
+      { identity },
     );
     default: {
       const _exhaustive: never = json;
@@ -124,6 +148,144 @@ function decodeCrdtAtDepth(json: CrdtJson, depth: number): Crdt<any> {
       throw new Error(`decodeCrdt: unknown CRDT kind`);
     }
   }
+}
+
+/**
+ * `identity`, answering with the built-in `JSON.stringify` key for an element
+ * it refuses rather than throwing.
+ *
+ * Exactly one caller — {@link DistributedDataActor.repairKeying}, and
+ * deliberately not any wire decode.  Its doc carries the reasoning; the short
+ * version is that the value being repaired is one this replica already holds,
+ * so a refused element has to keep a key rather than cost the key its identity,
+ * whereas a frame that arrives *after* the identity is known is refused by
+ * `decodeOrDrop` and loses nothing.
+ *
+ * `JSON.stringify` is spelled out here rather than imported because every CRDT
+ * module declares its own module-local `defaultIdentity` on purpose — see
+ * `Crdt.customIdentity`, which identity-compares against it.
+ */
+function withDefaultKeyForRefusedElements(identity: CrdtIdentityFunction): CrdtIdentityFunction {
+  return (value) => {
+    try {
+      return identity(value);
+    } catch {
+      return JSON.stringify(value);
+    }
+  };
+}
+
+/* ============================ kind conflicts =========================== */
+
+/**
+ * The two CRDT kinds that keep a pair of values from merging.  `nested` says
+ * the disagreement sits inside an `ORMap` entry both values hold, and the kinds
+ * are then that entry's.
+ */
+type CrdtKindConflict = {
+  readonly held: string;
+  readonly received: string;
+  readonly nested: boolean;
+};
+
+/**
+ * Whether `received` can be merged into `held`, and if not, which kinds stand
+ * in the way.
+ *
+ * `merge` takes an argument of its own kind and does not check that it got
+ * one.  Given another kind, most merges throw, an empty `LWWRegister` returns
+ * the other value whatever it is, and a few pairs return a value whose own
+ * `toJSON` throws — so the question has to be asked before merging; catching
+ * afterwards would still let the silent cases through.
+ *
+ * `ORMap` is the one kind that holds other CRDTs, and its merge pairs up the
+ * entries both sides hold by id, removed ones included.  The check descends
+ * into exactly those pairs, read from the two maps' entry tables.  No public
+ * accessor shows a removed entry; the encoded form does, but encoding both
+ * maps on every merge measured at about twice the cost of the merge itself
+ * for 1 000 and 10 000 entries, where walking the tables adds a few percent.
+ * A map whose table is not where {@link ormapEntryTable} looks, and two
+ * values of one kind built from different class objects, take the encoded
+ * form instead — slower, never wrong.  Two values of one class of any other
+ * kind cannot disagree, which keeps the path every ordinary merge takes to a
+ * single comparison.
+ */
+function crdtKindConflict(held: Crdt<any>, received: Crdt<any>, nested = false): CrdtKindConflict | null {
+  if (held.constructor === received.constructor) {
+    if (!(held instanceof ORMap)) return null;
+    const conflict = entryTableKindConflict(held, received as ORMap<unknown, Crdt<any>>);
+    if (conflict !== undefined) return conflict;
+  }
+  return encodedKindConflict(held.toJSON(), received.toJSON(), nested);
+}
+
+/**
+ * The kind conflict among the entries two ORMaps both hold, or `null` — and
+ * `undefined` when either entry table is not where it is expected, so the
+ * caller asks the encoded form instead.
+ *
+ * It walks the smaller table and looks each id up in the larger one, which
+ * finds the same pairs as walking either.
+ */
+function entryTableKindConflict(
+  held: ORMap<unknown, Crdt<any>>,
+  received: ORMap<unknown, Crdt<any>>,
+): CrdtKindConflict | null | undefined {
+  const heldTable = ormapEntryTable(held);
+  const receivedTable = ormapEntryTable(received);
+  if (heldTable === null || receivedTable === null) return undefined;
+  const heldIsSmaller = heldTable.size <= receivedTable.size;
+  const [smaller, larger] = heldIsSmaller ? [heldTable, receivedTable] : [receivedTable, heldTable];
+  for (const [id, entry] of smaller) {
+    const counterpart = larger.get(id);
+    if (counterpart === undefined) continue;
+    const conflict = heldIsSmaller
+      ? crdtKindConflict(entry.value, counterpart.value, true)
+      : crdtKindConflict(counterpart.value, entry.value, true);
+    if (conflict !== null) return conflict;
+  }
+  return null;
+}
+
+/**
+ * An ORMap's entry table — every entry it holds by id, removed ones included
+ * — or `null` when it is not where this looks.
+ *
+ * `ORMap` keeps the table private and offers no accessor that includes
+ * removed entries, so this reads it by name, and falls back rather than
+ * fails when it is gone.  `DistributedDataMergeTypeMismatch.test.ts` checks
+ * the table is still there, so the walk cannot quietly turn into an encode of
+ * both maps on every merge.
+ */
+function ormapEntryTable(
+  map: ORMap<unknown, Crdt<any>>,
+): ReadonlyMap<string, { readonly value: Crdt<any> }> | null {
+  const table = (map as unknown as { readonly entries?: unknown }).entries;
+  return table instanceof Map ? table as ReadonlyMap<string, { readonly value: Crdt<any> }> : null;
+}
+
+function encodedKindConflict(held: unknown, received: unknown, nested: boolean): CrdtKindConflict | null {
+  const heldKind = encodedKind(held);
+  const receivedKind = encodedKind(received);
+  if (heldKind !== receivedKind) return { held: heldKind, received: receivedKind, nested };
+  if (heldKind !== 'ORMap') return null;
+  const heldValues = (held as ORMapJson).values;
+  const receivedValues = (received as ORMapJson).values;
+  for (const id of Object.keys(heldValues)) {
+    if (!Object.hasOwn(receivedValues, id)) continue;
+    const conflict = encodedKindConflict(heldValues[id], receivedValues[id], true);
+    if (conflict !== null) return conflict;
+  }
+  return null;
+}
+
+/** The `kind` an encoded CRDT names, or `unknown` for a value that names none. */
+function encodedKind(encoded: unknown): string {
+  if (typeof encoded === 'object' && encoded !== null) {
+    const kind = (encoded as { readonly kind?: unknown }).kind;
+    if (typeof kind === 'string') return kind;
+  }
+  return 'unknown';
 }
 
 /**
@@ -289,7 +451,22 @@ export class DistributedData implements Extension {
     // the state and the gossip loop.  We hand the actor a setter for a
     // shared "view" the public handle reads, so callers don't have to
     // ask().
-    const view: SharedView = { state: new Map(), listeners: new Map() };
+    const view: SharedView = {
+      state: new Map(),
+      listeners: new Map(),
+      subscriberSlots: new Map(),
+      subscribers: new Map(),
+      durable: resolvedOptions.durableStore
+        ? {
+            store: new DurableDistributedDataStore(
+              resolvedOptions.durableStore,
+              cluster.selfAddress.toString(),
+            ),
+            saveInFlight: false,
+            dirty: false,
+          }
+        : null,
+    };
     const ref = this.system._spawnSystemActor(
       () => new DistributedDataActor({ cluster, options: resolvedOptions, view }),
       SystemGroups.clusterCrdt,
@@ -313,7 +490,11 @@ export class DistributedData implements Extension {
         ref.tell({ kind: 'ddata-wire', peer: from, frame: message as unknown as DDataWireFrame });
       }));
     }
-    this._handle = new DistributedDataHandle(ref, view, cluster, unsubscribes);
+    // The handle warns through the replicator's own source, so a listener
+    // that throws on its replay and one that throws on a merge are reported
+    // as the same component.
+    const log = this.system.log.withSource(ref.path.toString());
+    this._handle = new DistributedDataHandle(ref, view, cluster, log, unsubscribes);
     return this._handle;
   }
 
@@ -341,11 +522,217 @@ export const DistributedDataId: ExtensionId<DistributedData> = extensionId<Distr
 
 /* ============================== handle ============================== */
 
+/**
+ * What an actor subscribed to a key with
+ * {@link DistributedDataHandle.subscribe} is told when that key changes on
+ * the local replica.
+ *
+ * A class, so a subscriber can match it by `P.instanceOf` as well as by its
+ * `kind`, and named for the subsystem rather than plainly `changed`: it lands
+ * in a protocol the subscriber also writes its own messages into, where a bare
+ * `changed` is the first name one of those would take.
+ *
+ * `value` is the replica's own CRDT for `key` — the object `get(key)` returns,
+ * immutable like every CRDT here.  While the notification waits in the
+ * subscriber's mailbox, a later change to the key replaces its `value` rather
+ * than queueing a second notification behind it, and the replacing stops the
+ * moment the subscriber is handed it.  So the value a handler reads is the
+ * latest one as of that hand-over, and a subscriber that falls behind is told
+ * less often rather than told every value late.
+ */
+export class DistributedDataChanged<C extends Crdt<C>> {
+  readonly kind = 'distributed-data-changed' as const;
+
+  constructor(
+    /** The key that changed. */
+    readonly key: string,
+    /** What the local replica holds for `key` — see the class doc for when it was read. */
+    readonly value: C,
+  ) {}
+}
+
+/** A callback subscriber, as the replicator calls it. */
+type SubscriberCallback = (value: Crdt<any>) => void;
+
+/**
+ * One callback subscription, and the identity that tells it apart from a later
+ * one of the same function.
+ *
+ * A subscription belongs to its function and key, so subscribing a function
+ * again finds this registration rather than adding a second — but a function
+ * that unsubscribed and subscribed again holds a *new* one.  The difference is
+ * what the identity is for (#1468).  A fan-out already in flight captured the
+ * registrations it owes a call, and the function alone cannot say whether the
+ * one it finds now is the captured one or its successor: holding the bare
+ * function, the fan-out handed a function that re-subscribed from inside a
+ * notification the value it had just been replayed.  And an unsubscribe is
+ * bound to the registration it was returned for, so one kept from a
+ * subscription that already ended cannot end the next.
+ */
+type SubscriberCallbackRegistration = { readonly listener: SubscriberCallback };
+
+/** An actor subscriber, as the replicator tells it. */
+type SubscriberActor = ActorRef<DistributedDataChanged<any>>;
+
+/**
+ * The latest-value slot that paces what one actor is told about one key
+ * (#1468).
+ *
+ * At most one notification per subscriber and key is ever posted and not yet
+ * handed over.  A change finds the slot either empty — and posts a fresh
+ * `DistributedDataChanged` — or holding the one still waiting in the
+ * subscriber's mailbox, whose value it overwrites in place.  The slot empties
+ * when the subscriber's cell hands that notification to the behavior: the
+ * release `postSignalEnvelope` fires, which is the one moment after which the
+ * next change has to become a fresh message rather than land in one the
+ * subscriber is already holding.  So the rate the subscriber is told at is the
+ * rate it takes them, and no timer is involved.
+ *
+ * One per subscriber path and key, so subscribing again finds it rather than
+ * adding a second — and it outlives the subscription that holds it while a
+ * notification is still queued.  That is what keeps the bound across an
+ * unsubscribe: a subscription taken out before the actor is handed that
+ * notification takes it over, and its replay overwrites the value in place.
+ * A slot that went with its subscription let every unsubscribe and subscribe
+ * while the actor was behind leave one more notification no bound could shed.
+ */
+type SubscriberSlot = {
+  readonly subscriber: SubscriberActor;
+  /**
+   * The subscriber's cell when it is an actor on this node, which is what the
+   * slot posts through.  `null` for any other in-process ref — a `TestProbe`
+   * extends `ActorRef` directly and has no mailbox to pace anything — and such
+   * a subscriber is told every change directly instead.
+   */
+  readonly cell: ActorCell<DistributedDataChanged<any>> | null;
+  /** The notification posted and not yet handed over, or `null`. */
+  queued: DistributedDataChanged<any> | null;
+  /**
+   * The subscription that holds the slot, or `null` once it ended with a
+   * notification still queued.  No change reaches the slot then; it stays,
+   * and the replicator's watch with it, only until that notification is
+   * handed over or a new subscription takes it over.
+   */
+  registration: SubscriberActorRegistration | null;
+};
+
+/**
+ * One actor subscription, and the identity that tells it apart from a later
+ * one of the same actor and key — what {@link SubscriberCallbackRegistration}
+ * is for a function.  The slot cannot be that identity, because a later
+ * subscription may take over the slot an ended one left: the function the
+ * ended one returned has to go on ending nothing.
+ */
+type SubscriberActorRegistration = { readonly slot: SubscriberSlot };
+
+/**
+ * Every key one actor holds a slot for — what a single `Terminated` cleans up,
+ * and what says when the watch can go: once its last subscription has ended
+ * and it has been handed every notification those left queued.
+ */
+type SubscriberEntry = {
+  readonly subscriber: SubscriberActor;
+  readonly keys: Set<string>;
+  /** Whether the replicator watches it: an actor on this node, as opposed to a directly-told ref. */
+  readonly watched: boolean;
+};
+
+/**
+ * Which subscription one `subscribe(key, ref)` call ended up holding.
+ *
+ * Filled in on the replicator's turn, when the call is handled, and read there
+ * again by the unsubscribe the call returned — the handle never looks inside.
+ * It is how an actor subscription answers what a callback registration
+ * answers: a repeated `subscribe` is bound to the registration the first one
+ * made, so either returned function ends it, and one kept from a subscription
+ * that has since ended names a registration no slot holds any more, so it ends
+ * nothing — not even the subscription that took that slot over.
+ */
+type SubscriptionTicket = { registration: SubscriberActorRegistration | null };
+
 /** Shared between actor + handle so reads stay synchronous. */
 type SharedView = {
   state: Map<string, Crdt<any>>;
-  listeners: Map<string, Set<(value: Crdt<any>) => void>>;
+  /** Per key, each subscribed function and the registration it currently holds. */
+  listeners: Map<string, Map<SubscriberCallback, SubscriberCallbackRegistration>>;
+  /**
+   * Per key, per subscriber path, the actor subscriptions.  Held here with the
+   * listeners rather than on the actor: a failure restarts the replicator, the
+   * restart builds a new instance, and only the view outlives it — the
+   * watches the cell holds survive too, so the two stay in step.
+   */
+  subscriberSlots: Map<string, Map<string, SubscriberSlot>>;
+  /** Per subscriber path, every key it holds a slot for. */
+  subscribers: Map<string, SubscriberEntry>;
+  /**
+   * The replica's durable writer, or `null` without a `durableStore`.  Held
+   * here for the reason the actor subscriptions are: a restart builds a new
+   * replicator, and only the view outlives it.
+   *
+   * On the actor, the restart built a second writer of the one record.  The
+   * new one loaded the record — and its revision — while the old one's save
+   * was still out; that save then landed past the revision the new writer
+   * held, so every save the new writer made failed the optimistic-concurrency
+   * check, the record froze, and the next start lost every write made since
+   * the restart.  One writer tracks one revision, and a save still out across
+   * a restart is the one a change made meanwhile waits behind.
+   */
+  durable: DurableWriter | null;
 };
+
+/**
+ * One replica's durable record and the coalescing of its saves — see
+ * {@link SharedView.durable} for why it outlives the replicator.
+ */
+type DurableWriter = {
+  readonly store: DurableDistributedDataStore;
+  /**
+   * Set while a save is in flight.  A change meanwhile sets {@link dirty}
+   * instead of starting a second save, and the one in flight starts the
+   * catch-up when it settles.
+   */
+  saveInFlight: boolean;
+  dirty: boolean;
+};
+
+/**
+ * Overwrite the value of a notification still waiting in a subscriber's
+ * mailbox — see {@link SubscriberSlot}.  The one place a
+ * `DistributedDataChanged` is written after construction; `readonly` is the
+ * subscriber's view of it, and the replicator stops writing before the
+ * subscriber is handed it.
+ */
+function replaceQueuedValue(notification: DistributedDataChanged<any>, value: Crdt<any>): void {
+  (notification as { value: Crdt<any> }).value = value;
+}
+
+/**
+ * Hand one subscriber a value, containing whatever it throws.
+ *
+ * Both deliveries come through here — the replay `subscribe` makes on the
+ * caller's stack and the fan-out `applyMerged` makes on the replicator's turn
+ * — so a broken listener is reported the same way whichever of the two it
+ * broke in.  The replay used to swallow its throw without a word while the
+ * fan-out warned, which made a listener's first call the one failure nobody
+ * heard about (#1468).
+ *
+ * Contained rather than rethrown in both places: the fan-out owes the
+ * remaining listeners their call and must not fail the replicator, and a
+ * `subscribe` that threw would leave its caller without the unsubscribe
+ * function for a listener that is registered all the same.
+ */
+function deliverToSubscriber(
+  log: Logger,
+  key: string,
+  listener: SubscriberCallback,
+  value: Crdt<any>,
+): void {
+  try {
+    listener(value);
+  } catch (e) {
+    log.warn(`DistributedData: subscriber for "${key}" threw`, e);
+  }
+}
 
 type UpdateMessage = {
   readonly kind: 'ddata-update';
@@ -362,7 +749,8 @@ type UpdateMessage = {
   readonly quorum?: {
     readonly pendingId: string;
     readonly consistency: WriteConsistency;
-    readonly timeoutMs: number;
+    /** The caller's deadline; absent means the replicator's `quorumTimeout`. */
+    readonly timeoutMs?: number;
     readonly resolve: () => void;
     readonly reject: (err: Error) => void;
   };
@@ -374,7 +762,8 @@ type ReadMessage = {
   readonly key: string;
   readonly pendingId: string;
   readonly consistency: ReadConsistency;
-  readonly timeoutMs: number;
+  /** The caller's deadline; absent means the replicator's `quorumTimeout`. */
+  readonly timeoutMs?: number;
   readonly resolve: (value: Crdt<any> | undefined) => void;
   readonly reject: (err: Error) => void;
 };
@@ -403,11 +792,52 @@ type WireFrameMessage = {
   readonly frame: DDataWireFrame;
 };
 
+/**
+ * `subscribe(key, ref)`, carried to the replicator rather than applied on the
+ * caller's stack: the subscription is the replicator's to watch, and a watch
+ * is taken from the watcher's own turn.  It also puts the replay in mailbox
+ * order — after every update told before the call, ahead of every one after.
+ */
+type DistributedDataSubscribeMessage = {
+  readonly kind: 'distributed-data-subscribe';
+  readonly key: string;
+  readonly subscriber: SubscriberActor;
+  readonly ticket: SubscriptionTicket;
+};
+
+/** What a function `subscribe(key, ref)` returned sends when it is called. */
+type DistributedDataUnsubscribeMessage = {
+  readonly kind: 'distributed-data-unsubscribe';
+  readonly key: string;
+  readonly ticket: SubscriptionTicket;
+};
+
+/**
+ * The notification an ended subscription left queued has been handed over,
+ * so the slot kept for it can go.  Told by the release, which runs on the
+ * subscriber's turn: the slot, the subscriber's entry and the watch are the
+ * replicator's, and are let go of on its own.
+ */
+type DistributedDataHandedOverMessage = {
+  readonly kind: 'distributed-data-handed-over';
+  readonly key: string;
+  readonly slot: SubscriberSlot;
+};
+
+/**
+ * Everything the replicator handles.  `Terminated` is here because it watches
+ * its actor subscribers; it reaches the actor through death watch, never from
+ * a holder of the ref.
+ */
 type ActorMessage =
   | UpdateMessage
   | DeleteMessage
   | ReadMessage
-  | WireFrameMessage;
+  | WireFrameMessage
+  | DistributedDataSubscribeMessage
+  | DistributedDataUnsubscribeMessage
+  | DistributedDataHandedOverMessage
+  | Terminated;
 
 /**
  * Public handle returned from `extension.start(cluster)`.  Holds a
@@ -419,6 +849,8 @@ export class DistributedDataHandle {
     private readonly ref: ActorRef<ActorMessage>,
     private readonly view: SharedView,
     private readonly cluster: Cluster,
+    /** What {@link subscribe}'s replay warns through when a listener throws. */
+    private readonly log: Logger,
     private wireUnsubscribes: ReadonlyArray<() => void> = [],
   ) {}
 
@@ -456,15 +888,17 @@ export class DistributedDataHandle {
    * the local apply is done.
    *
    * Rejects with a timeout error if not enough acks arrive within
-   * `timeoutMs` (default `gossipIntervalMs × 5`).  A timeout does NOT
-   * roll the local write back — the value is already applied locally
-   * and will continue to gossip; the rejection only signals "I'm not
-   * sure enough replicas saw it".
+   * `timeoutMs`.  A call that names none waits the replicator's
+   * `quorumTimeout` — `actor-ts.distributed-data.quorum-timeout`, 5 s unless
+   * configured — which the replicator resolves, so a value set at `start`
+   * or in HOCON reaches every call.  A timeout does NOT roll the local write
+   * back — the value is already applied locally and will continue to
+   * gossip; the rejection only signals "I'm not sure enough replicas saw it".
    *
-   * Two settings bound the wait: `timeoutMs` is clamped to
-   * `maxQuorumTimeout`, and the call rejects immediately — again without
-   * undoing the local write — when `maxPendingQuorumRequests` unsettled
-   * quorum requests are already in flight.
+   * Two settings bound the wait: the deadline, whichever of the two it is,
+   * is clamped to `maxQuorumTimeout`, and the call rejects immediately —
+   * again without undoing the local write — when `maxPendingQuorumRequests`
+   * unsettled quorum requests are already in flight.
    *
    *   await dd.updateAsync<GCounter>('hits', GCounter.empty,
    *     (c) => c.increment(dd.selfReplicaId(), 1),
@@ -480,13 +914,12 @@ export class DistributedDataHandle {
   ): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const pendingId = nextPendingId();
-      const timeoutMs = options.timeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
       this.ref.tell({
         kind: 'ddata-update', key,
         factory: factory as unknown as CrdtFactory<Crdt<any>>,
         mutator: mutator as unknown as (c: Crdt<any>) => Crdt<any>,
         quorum: {
-          pendingId, consistency: options.consistency, timeoutMs,
+          pendingId, consistency: options.consistency, timeoutMs: options.timeoutMs,
           resolve, reject,
         },
       });
@@ -500,11 +933,11 @@ export class DistributedDataHandle {
    * `undefined` if no replica knows the key.
    *
    * Self always counts as the first response — `'local'` returns
-   * immediately with whatever's in the local view.  Timeout default,
-   * `maxQuorumTimeout` clamping and the `maxPendingQuorumRequests`
-   * rejection are all the same as {@link updateAsync}; unlike a write,
-   * a read that *does* get tracked resolves best-effort on timeout with
-   * whatever merged so far.
+   * immediately with whatever's in the local view.  The default deadline
+   * (`quorumTimeout`), `maxQuorumTimeout` clamping and the
+   * `maxPendingQuorumRequests` rejection are all the same as
+   * {@link updateAsync}; unlike a write, a read that *does* get tracked
+   * resolves best-effort on timeout with whatever merged so far.
    *
    *   const cart = await dd.getAsync<ORSet<string>>('cart-42',
    *     { consistency: 'majority' });
@@ -517,10 +950,9 @@ export class DistributedDataHandle {
   ): Promise<C | undefined> {
     return new Promise<C | undefined>((resolve, reject) => {
       const pendingId = nextPendingId();
-      const timeoutMs = options.timeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
       this.ref.tell({
         kind: 'ddata-read', key, pendingId,
-        consistency: options.consistency, timeoutMs,
+        consistency: options.consistency, timeoutMs: options.timeoutMs,
         resolve: resolve as (v: Crdt<any> | undefined) => void,
         reject,
       });
@@ -537,29 +969,168 @@ export class DistributedDataHandle {
   }
 
   /**
-   * Subscribe to changes for `key`.  Listener fires synchronously
-   * after every successful update / merge that changes the local
-   * value (deep-equal check via the CRDT's own `toJSON`).  Returns
-   * an unsubscribe function.
+   * Subscribe a function to changes of `key`; returns the function that
+   * unsubscribes.  For anything that does work or touches actor state,
+   * subscribe an actor instead — the `ActorRef` signature below.
+   *
+   * Both kinds of subscriber are told about the same changes: every merge that
+   * changes the local value of `key`, whatever produced it — a local `update`,
+   * a gossip round, a quorum write or read, a durable reload, an
+   * element-identity repair.  A merge that leaves the value as it was
+   * (compared through the CRDT's own `toJSON`) tells nobody, and neither does
+   * a `delete` (#690).
+   *
+   * `listener` runs synchronously on the replicator's own turn, inside the
+   * merge, once per changed key per merge — the form for a cheap synchronous
+   * read.  Its time is the replicator's time: while it runs, no merge, gossip
+   * round or quorum reply is processed, for any key.  Twenty calls of a 10 ms
+   * listener held a local read queued behind them back by 203 ms.
+   *
+   * What the replicator waits for is what the listener does before it
+   * returns.  So a debounce helps: a listener that only re-arms a trailing
+   * timer still runs once per change, but the work runs once, after the
+   * burst, and the same read waited under 5 ms — though that work runs on a
+   * timer, outside any actor, and must not touch actor state.  Telling an
+   * actor each change does not help: the actor is told once per change, and
+   * its turns run between the replicator's on the one thread, so the read
+   * still waited as long.  For work that should run once per burst rather
+   * than once per change, subscribe the actor itself — the overload below.
+   *
+   * A key that already holds a value is replayed to the new listener at once,
+   * on the caller's stack, before `subscribe` returns.  A merge reaches the
+   * subscriptions that existed when it landed and still do when their turn
+   * comes, so one taken out from inside a notification for the same key
+   * receives that value through its replay alone — even by a function that
+   * gave up an earlier subscription in the same notification.  A listener that
+   * throws, on the replay or on a merge, is warned about
+   * (`DistributedData: subscriber for "<key>" threw`, with the error) and
+   * stays subscribed; the throw reaches neither the caller nor the replicator.
+   *
+   * A subscription belongs to its subscriber — the function, or the actor's
+   * path — and its key, and both kinds answer the same way.  Subscribing again
+   * adds no second subscription: a function is still called once per merge.
+   * The current value is replayed again, which is what asking twice asks for.
+   * Any function `subscribe` returned for that subscription ends it, and one
+   * returned for a subscription that has already ended does nothing, so it
+   * cannot end a later one.
    */
+  subscribe<C extends Crdt<C>>(key: string, listener: (value: C) => void): () => void;
+  /**
+   * Subscribe an actor to changes of `key`; returns the function that
+   * unsubscribes.  The actor is told a {@link DistributedDataChanged} and
+   * handles it on its own turn, outside the merge — the form for anything
+   * that does work or touches actor state.  What counts as a change is the
+   * function form's: every merge that changes the local value.
+   *
+   * Its turns still share the one thread with the replicator's, so its work
+   * is not free.  What bounds it is the coalescing below: under a burst the
+   * actor works once per notification it is handed rather than once per
+   * change.  The twenty changes that held a read 203 ms behind a 10 ms
+   * listener held it 21 ms behind an actor doing the same work, which was
+   * handed two of the twenty values.
+   *
+   * What the actor is told is coalesced into a latest-value slot per subscriber
+   * and key.  At most one notification waits in its mailbox; a change while it
+   * waits replaces the value it carries instead of queueing a second, and the
+   * next one is posted only after the actor has been handed the last.  So the
+   * actor handles the latest value as of its own dispatch, and how often it is
+   * told is bounded by how fast it takes them — its own mailbox is the pacing,
+   * and there is no timer and nothing to configure.  The notification takes
+   * the door no bound may shed (`ActorCell.postSignalEnvelope`): evicted, it
+   * would leave the slot waiting for a hand-over that never comes, and the
+   * actor would never be told about the key again.
+   *
+   * A key that already holds a value is replayed through the same slot —
+   * asynchronously, in mailbox order: the replicator handles the subscription
+   * after everything told to it before, so nothing arrives before `subscribe`
+   * returns, unlike the function form's replay.  Subscribing again adds no
+   * second subscription, replays the current value again, and either returned
+   * function ends the one subscription, exactly as for a function.  Ending it
+   * leaves a notification already queued where it is, carrying the value it
+   * had — unless the actor subscribes to the key again before it is handed
+   * that notification: the new subscription takes it over, and its replay
+   * overwrites the value in place rather than queueing a second, so the bound
+   * of one per key holds however often the actor unsubscribes and subscribes.
+   *
+   * The actor has to live on this node.  A `RemoteActorRef` is refused here
+   * with a `TypeError`: a notification carries this replica's live CRDT, and
+   * every node holds a replica of its own, so subscribe on the subscriber's
+   * node.  The replicator watches every actor it notifies, so one that stops
+   * takes its subscriptions with it, and a replicator restart keeps them; the
+   * watch ends with the last subscription the actor gives up, once it has been
+   * handed any notification that subscription left queued.  Any other
+   * in-process ref — a `TestProbe` extends `ActorRef` directly and has no
+   * mailbox to pace — is told every change directly and is not watched.
+   *
+   *   class Dashboard extends Actor<DistributedDataChanged<GCounter>> {
+   *     override preStart(): void {
+   *       this.system.extension(DistributedDataId).get()
+   *         .subscribe<GCounter>('hits', this.self);
+   *     }
+   *     override onReceive(changed: DistributedDataChanged<GCounter>): void {
+   *       this.log.info(`hits is now ${changed.value.value()}`);
+   *     }
+   *   }
+   */
+  subscribe<C extends Crdt<C>>(key: string, subscriber: ActorRef<DistributedDataChanged<C>>): () => void;
   subscribe<C extends Crdt<C>>(
-    key: string, listener: (value: C) => void,
+    key: string,
+    subscriber: ((value: C) => void) | ActorRef<DistributedDataChanged<C>>,
   ): () => void {
-    let set = this.view.listeners.get(key);
-    if (!set) { set = new Set(); this.view.listeners.set(key, set); }
-    const wrapper = listener as unknown as (value: Crdt<any>) => void;
-    set.add(wrapper);
+    // On `typeof` rather than on the declared type, because JavaScript can
+    // pass either: a ref used to be filed as a listener, and the replicator
+    // then contained the `TypeError` of calling it on every merge, so the
+    // actor was never told anything.
+    if (typeof subscriber === 'function') {
+      return this.subscribeFunction(key, subscriber as unknown as SubscriberCallback);
+    }
+    return this.subscribeActor(key, subscriber);
+  }
+
+  /** The function form of {@link subscribe}. */
+  private subscribeFunction(key: string, callback: SubscriberCallback): () => void {
+    let registrations = this.view.listeners.get(key);
+    if (!registrations) { registrations = new Map(); this.view.listeners.set(key, registrations); }
+    let registration = registrations.get(callback);
+    if (registration === undefined) {
+      registration = { listener: callback };
+      registrations.set(callback, registration);
+    }
     // Replay current value so a late subscriber catches up immediately.
     const current = this.view.state.get(key);
-    if (current) {
-      try { wrapper(current); } catch (e) { /* ignore in tests */ void e; }
-    }
+    if (current) deliverToSubscriber(this.log, key, callback, current);
+    const held = registration;
     return () => {
-      const listenerSet = this.view.listeners.get(key);
-      if (listenerSet) {
-        listenerSet.delete(wrapper);
-        if (listenerSet.size === 0) this.view.listeners.delete(key);
-      }
+      const live = this.view.listeners.get(key);
+      if (live === undefined || live.get(callback) !== held) return;
+      live.delete(callback);
+      if (live.size === 0) this.view.listeners.delete(key);
+    };
+  }
+
+  /**
+   * The actor form of {@link subscribe}: refuse what cannot be notified here,
+   * and hand the rest to the replicator, whose turn the subscription is made
+   * on — see {@link DistributedDataSubscribeMessage}.
+   */
+  private subscribeActor(key: string, subscriber: SubscriberActor): () => void {
+    if (subscriber instanceof RemoteActorRef) {
+      throw new TypeError(
+        `DistributedData: ${subscriber.path.toString()} lives on another node and cannot subscribe to `
+        + `"${key}" here — subscribe on the subscriber's own node.  A notification carries this `
+        + `replica's live CRDT, and every node holds a replica of its own.`,
+      );
+    }
+    if (!(subscriber instanceof ActorRef)) {
+      throw new TypeError(
+        `DistributedData: a subscriber to "${key}" is a function or an ActorRef, `
+        + `not ${subscriber === null ? 'null' : typeof subscriber}`,
+      );
+    }
+    const ticket: SubscriptionTicket = { registration: null };
+    this.ref.tell({ kind: 'distributed-data-subscribe', key, subscriber, ticket });
+    return () => {
+      this.ref.tell({ kind: 'distributed-data-unsubscribe', key, ticket });
     };
   }
 
@@ -648,6 +1219,22 @@ type GossipSkipTally = {
 };
 
 /**
+ * What one tick found *above* the reporting threshold but still small enough
+ * to travel — the same shape as {@link GossipSkipTally}, kept separate because
+ * the two say opposite things.
+ *
+ * A skip is a key that did not converge; an entry here converged perfectly and
+ * merely cost a large share of the tick doing so.  Folding them into one tally
+ * would put both under one rate limiter, and the first warning an operator
+ * silences by raising `max-gossip-bytes` would take the second — the one that
+ * explains why everything else is sweeping slowly — with it.
+ */
+type LargeGossipEntryTally = {
+  count: number;
+  largest: { readonly key: string; readonly bytes: number } | null;
+};
+
+/**
  * Shared encoder for the gossip byte accounting.  One instance rather than one
  * per measurement: the packer measures every key on every tick, and a fresh
  * `TextEncoder` per entry would allocate more than the strings it is sizing.
@@ -657,18 +1244,21 @@ const utf8 = new TextEncoder();
 class DistributedDataActor extends Actor<ActorMessage> {
   private readonly view: SharedView;
   private readonly gossipIntervalMs: number;
+  /**
+   * The deadline of a quorum call that names no `timeoutMs`.  Resolved here
+   * rather than in the handle, which reads no configuration: this is the one
+   * place every layer — explicit options, `actor-ts.distributed-data`, the
+   * built-in default — has already been merged, and the one place the
+   * ceiling below is applied, so a configured default is clamped like a
+   * caller's own.
+   */
+  private readonly quorumTimeoutMs: number;
   /** `0` disables the cap.  See the options field for the mailbox argument. */
   private readonly maxPendingQuorumRequests: number;
   /** `0` disables the ceiling. */
   private readonly maxQuorumTimeoutMs: number;
-  private readonly durable: DurableDistributedDataStore | null;
   private gossipTimer: Cancellable | null = null;
   private unsubscribeCluster: (() => void) | null = null;
-  /** Set while a durable save is in flight; subsequent changes set
-   *  `_durableDirty = true` so the in-flight save is followed by a
-   *  catch-up save instead of multiple overlapping saves. */
-  private durableSaveInFlight = false;
-  private durableDirty = false;
   /** Outstanding quorum-write requests, keyed by pendingId. */
   private readonly pendingWrites = new Map<string, PendingWrite>();
   /** Outstanding quorum-read requests, keyed by pendingId. */
@@ -681,6 +1271,41 @@ class DistributedDataActor extends Actor<ActorMessage> {
    * without a metrics backend being wired up at all.
    */
   private droppedFrames = 0;
+  /**
+   * Values this replica did not merge because they were of another CRDT kind
+   * than the value they would have joined.  A running total for the warn
+   * line, for the reason {@link droppedFrames} is one.
+   */
+  private droppedKindConflicts = 0;
+  /**
+   * Per key, when its last kind-conflict warning went out.
+   *
+   * Per key because the condition is: two replicas that disagree on a key's
+   * kind disagree on every gossip round for as long as both hold it, so one
+   * such key would otherwise write a line per round forever, and a single
+   * quiet period for all keys would hide every key but the first.  An entry
+   * exists only for a key this replica holds or asked a quorum read for, and
+   * {@link onDelete} drops it with the value.
+   */
+  private readonly lastKindConflictWarnAtMs = new Map<string, number>();
+  /**
+   * Per-key element identity, learned from the `factory` that `update`
+   * already carries — `null` once a key is known to be on the default.
+   *
+   * This is what makes the documented `identity` option work for a value
+   * DistributedData materialised rather than the application constructing it
+   * (#766).  Deriving it beats a `register(key, factory)` on the handle for a
+   * reason that is not about taste: `DistributedDataHandle` is re-exported by
+   * no entry point (#1307), so a method added there would land on a type
+   * consumers cannot name — while `update`'s factory is already in every
+   * caller's hands and already says exactly this.
+   *
+   * Growth is one small entry per *live* key, the same shape the view has:
+   * {@link onDelete} drops the entry with the value, and the next `update`
+   * for a resurrected key relearns it and re-keys whatever gossip brought
+   * back in the meantime.
+   */
+  private readonly identities = new Map<string, CrdtIdentityFunction | null>();
   /** `0` removes the budget.  Still clamped to the transport's frame cap. */
   private readonly maxGossipBytes: number;
   /**
@@ -709,6 +1334,18 @@ class DistributedDataActor extends Actor<ActorMessage> {
    */
   private gossipSkips = 0;
   private lastGossipSkipWarnAtMs = 0;
+  /** `0` never warns.  Purely a report — the key is packed either way. */
+  private readonly logDataSizeExceeding: number;
+  /** Running total and quiet period for the large-entry warning, as above. */
+  private largeGossipEntries = 0;
+  private lastLargeEntryWarnAtMs = 0;
+  /**
+   * Key patterns the durable record is narrowed to — empty means every key.
+   *
+   * Held even when {@link SharedView.durable} is `null`, so `preStart` can say that a
+   * whitelist was configured for a persistence layer that is not running.
+   */
+  private readonly durableKeys: readonly string[];
 
   constructor(public readonly options: {
     cluster: Cluster;
@@ -717,17 +1354,15 @@ class DistributedDataActor extends Actor<ActorMessage> {
   }) {
     super();
     this.view = options.view;
-    this.gossipIntervalMs = options.options.gossipInterval ?? 1_000;
+    this.gossipIntervalMs = options.options.gossipInterval ?? DEFAULT_GOSSIP_INTERVAL_MS;
+    this.quorumTimeoutMs = options.options.quorumTimeout ?? DEFAULT_ASK_TIMEOUT_MS;
     this.maxPendingQuorumRequests =
       options.options.maxPendingQuorumRequests ?? DEFAULT_MAX_PENDING_QUORUM_REQUESTS;
     this.maxQuorumTimeoutMs = options.options.maxQuorumTimeout ?? DEFAULT_MAX_QUORUM_TIMEOUT_MS;
     this.maxGossipBytes = options.options.maxGossipBytes ?? DEFAULT_MAX_GOSSIP_BYTES;
-    this.durable = options.options.durableStore
-      ? new DurableDistributedDataStore(
-          options.options.durableStore,
-          options.cluster.selfAddress.toString(),
-        )
-      : null;
+    this.logDataSizeExceeding =
+      options.options.logDataSizeExceeding ?? DEFAULT_LOG_DATA_SIZE_EXCEEDING_BYTES;
+    this.durableKeys = options.options.durableKeys ?? [];
   }
 
   /**
@@ -755,15 +1390,51 @@ class DistributedDataActor extends Actor<ActorMessage> {
       this.gossipIntervalMs, this.gossipIntervalMs, () => this.gossipTick(),
     );
 
-    if (this.durable) {
+    // A whitelist naming keys nothing will ever write is the one way this
+    // option is silently wrong, and it is wrong in the direction that costs
+    // data: an operator who wrote it believes those keys survive a restart.
+    // `durableStore` has no HOCON spelling, so the two halves are configured
+    // in different places and can only disagree here.
+    const durable = this.view.durable;
+    if (durable === null && this.durableKeys.length > 0) {
+      this.log.warn(
+        `DistributedData: actor-ts.distributed-data.durable-keys names `
+        + `${this.durableKeys.length} key pattern(s) but no durableStore is configured, so `
+        + `nothing is persisted at all. Pass one with DistributedDataOptions.withDurableStore(…).`,
+      );
+    }
+
+    if (durable !== null) {
       // Load + populate the in-memory view BEFORE accepting any
       // user-issued updates.  Subscribers registered after preStart
       // will see the recovered values via the handle's replay
       // mechanism (subscribe() fires once with the current value).
       try {
-        const loaded = await this.durable.load();
+        // The resolver is the right thing to hand the store and is inert here,
+        // and both halves are worth stating.  `preStart` runs as its own
+        // mailbox task and the mailbox is sequential, so no `ddata-update` has
+        // been handled yet and `identities` is necessarily empty for every key
+        // this loop asks about — the store's own doc says the same from its
+        // side ("a door, not the repair").  What actually puts a reloaded key
+        // right is `learnIdentity` on its first `update`; passing the registry
+        // costs a closure and keeps the call site correct rather than merely
+        // adequate, which is why it stays.  It is not, however, load-bearing
+        // for the reload: removing it changes nothing observable.
+        const loaded = await durable.store.load((key) => this.identityFor(key));
         for (const [key, crdt] of loaded) {
-          this.applyMerged(key, null, crdt);
+          // Merged into the view rather than set over it.  On a first start
+          // the view is empty and the two are the same; on a restart the view
+          // kept everything the previous instance merged, and the record trails
+          // it by any save still in flight — setting it rolled the replica back
+          // to an older value and told every subscriber so (found while #1468).
+          // A record entry of another kind than the view's value is dropped
+          // like any other value that cannot be merged, and the rest of the
+          // record still loads.
+          const current = this.view.state.get(key);
+          const merged = current === undefined
+            ? crdt
+            : this.mergeOrKeep(key, current, crdt, 'the durable record');
+          if (merged !== null) this.applyMerged(key, current ?? null, merged);
         }
       } catch (err) {
         this.log.warn(`DistributedData: durable load failed`, err);
@@ -799,6 +1470,9 @@ class DistributedDataActor extends Actor<ActorMessage> {
     }
     this.pendingReads.clear();
     this.syncPendingQuorumGauge();
+    // The actor subscriptions stay where they are, in the view.  A restart
+    // runs this too — `preRestart` calls `postStop` — and the subscriptions
+    // have to outlive it the way the cell's watches on their subscribers do.
   }
 
   /* ----------------------------- quorum caps ---------------------------- */
@@ -821,7 +1495,8 @@ class DistributedDataActor extends Actor<ActorMessage> {
   }
 
   /**
-   * Clamp a caller's `timeoutMs` to the configured ceiling.  Clamping rather
+   * Clamp a quorum deadline — a caller's `timeoutMs`, or the configured
+   * default standing in for it — to the configured ceiling.  Clamping rather
    * than rejecting, for the same reason `clampQuorum` clamps `{ from: K }`:
    * the request is well-formed and runnable, only its deadline is out of
    * range, and a shorter deadline costs the caller a rejection they already
@@ -884,17 +1559,217 @@ class DistributedDataActor extends Actor<ActorMessage> {
   private countDroppedFrame(): void {
     metricsOf(this.system).counter(
       'distributed_data_dropped_values_total', {},
-      { help: 'Peer-supplied CRDT values this replica refused to decode.' },
+      {
+        help: 'CRDT values this replica dropped: peer-supplied ones it could not decode, '
+          + 'and any of another CRDT kind than the value it holds for the key.',
+      },
     ).inc();
   }
 
   override onReceive(message: ActorMessage): void {
     match(message)
+      .with(P.instanceOf(Terminated), (m) => this.onTerminated(m))
       .with({ kind: 'ddata-update' }, (m) => this.onUpdate(m))
       .with({ kind: 'ddata-delete' }, (m) => this.onDelete(m))
       .with({ kind: 'ddata-read' }, (m) => this.onRead(m))
       .with({ kind: 'ddata-wire' }, (m) => this.onWireFrame(m))
+      .with({ kind: 'distributed-data-subscribe' }, (m) => this.onDistributedDataSubscribe(m))
+      .with({ kind: 'distributed-data-unsubscribe' }, (m) => this.onDistributedDataUnsubscribe(m))
+      .with({ kind: 'distributed-data-handed-over' }, (m) => this.onDistributedDataHandedOver(m))
       .exhaustive();
+  }
+
+  /* --------------------------- actor subscribers -------------------------- */
+
+  /**
+   * Take a subscription out on this turn: find or make the slot, watch an
+   * actor the first time it subscribes to anything, and replay the current
+   * value through the slot.  A repeated subscription finds the slot and does
+   * nothing but the replay.  So does one that finds the slot an ended
+   * subscription left for a notification still queued: it takes the slot
+   * over, and the replay overwrites that notification's value instead of
+   * posting a second — see {@link SubscriberSlot}.
+   */
+  private onDistributedDataSubscribe(message: DistributedDataSubscribeMessage): void {
+    const { key, subscriber, ticket } = message;
+    const path = subscriber.path.toString();
+    let slots = this.view.subscriberSlots.get(key);
+    if (slots === undefined) {
+      slots = new Map();
+      this.view.subscriberSlots.set(key, slots);
+    }
+    let slot = slots.get(path);
+    if (slot === undefined) {
+      slot = {
+        subscriber,
+        cell: subscriber instanceof LocalActorRef ? subscriber.getCell() : null,
+        queued: null,
+        registration: null,
+      };
+      slots.set(path, slot);
+      this.rememberSubscriber(path, slot, key);
+    }
+    slot.registration ??= { slot };
+    ticket.registration = slot.registration;
+    const current = this.view.state.get(key);
+    if (current !== undefined) this.offerToSubscriber(key, slot, current);
+  }
+
+  /**
+   * End the subscription this ticket was bound to, if it still holds its slot.
+   *
+   * A notification already queued is left alone: the subscriber is handed it
+   * as it is.  The slot stays for it, out of every later change's reach, so
+   * that a subscription taken out before the hand-over takes it over rather
+   * than queueing a second — and so does the watch, so that a subscriber that
+   * stops first is still cleaned up by its `Terminated`.  The release ends
+   * both once the notification is handed over.
+   */
+  private onDistributedDataUnsubscribe(message: DistributedDataUnsubscribeMessage): void {
+    const registration = message.ticket.registration;
+    if (registration === null) return;
+    const slot = registration.slot;
+    if (slot.registration !== registration) return;
+    const path = slot.subscriber.path.toString();
+    const slots = this.view.subscriberSlots.get(message.key);
+    if (slots === undefined || slots.get(path) !== slot) return;
+    slot.registration = null;
+    if (slot.queued !== null) return;
+    this.dropSlot(message.key, path, slots);
+  }
+
+  /**
+   * The notification an ended subscription left was handed over: drop the
+   * slot kept for it, unless a subscription took it over meanwhile.
+   */
+  private onDistributedDataHandedOver(message: DistributedDataHandedOverMessage): void {
+    const { key, slot } = message;
+    if (slot.registration !== null || slot.queued !== null) return;
+    const path = slot.subscriber.path.toString();
+    const slots = this.view.subscriberSlots.get(key);
+    if (slots === undefined || slots.get(path) !== slot) return;
+    this.dropSlot(key, path, slots);
+  }
+
+  /** Let go of one subscriber's slot for `key`, and of the watch with its last. */
+  private dropSlot(key: string, path: string, slots: Map<string, SubscriberSlot>): void {
+    slots.delete(path);
+    if (slots.size === 0) this.view.subscriberSlots.delete(key);
+    this.forgetSubscription(path, key);
+  }
+
+  /**
+   * A watched subscriber stopped, and every slot it held goes with it.  An
+   * unsubscribe is the subscriber's to send and a stopped actor sends none, so
+   * without this its slots would stay, each posting one notification into dead
+   * letters and then waiting for ever on a hand-over that cannot come.  That
+   * includes a slot kept for a notification an ended subscription left: the
+   * dead cell lets go of its release unfired, and an actor spawned later on
+   * the same path would otherwise take that slot over.
+   *
+   * No `unwatch`: the cell dropped the watch when it delivered this.
+   */
+  private onTerminated(message: Terminated): void {
+    const path = message.actor.path.toString();
+    const entry = this.view.subscribers.get(path);
+    if (entry === undefined) return;
+    this.view.subscribers.delete(path);
+    for (const key of entry.keys) {
+      const slots = this.view.subscriberSlots.get(key);
+      if (slots === undefined) continue;
+      slots.delete(path);
+      if (slots.size === 0) this.view.subscriberSlots.delete(key);
+    }
+  }
+
+  /**
+   * Book `key` against the subscriber, and watch it on its first subscription
+   * — one watch per actor however many keys it subscribes to, so the single
+   * `Terminated` that follows cleans up all of them.  A ref with no cell here
+   * is told directly and never watched.
+   */
+  private rememberSubscriber(path: string, slot: SubscriberSlot, key: string): void {
+    let entry = this.view.subscribers.get(path);
+    if (entry === undefined) {
+      entry = { subscriber: slot.subscriber, keys: new Set(), watched: slot.cell !== null };
+      this.view.subscribers.set(path, entry);
+      if (entry.watched) this.context.watch(slot.subscriber);
+    }
+    entry.keys.add(key);
+  }
+
+  /** Strike `key` off the subscriber, and end the watch with its last slot. */
+  private forgetSubscription(path: string, key: string): void {
+    const entry = this.view.subscribers.get(path);
+    if (entry === undefined) return;
+    entry.keys.delete(key);
+    if (entry.keys.size > 0) return;
+    this.view.subscribers.delete(path);
+    if (entry.watched) this.context.unwatch(entry.subscriber);
+  }
+
+  /**
+   * Tell one actor subscriber that `key` now holds `value`, through its slot.
+   *
+   * An empty slot posts a fresh notification; a slot whose notification is
+   * still queued gets that notification's value replaced, and nothing is
+   * posted.  The post goes through the subscriber's signal door with a release
+   * that empties the slot as the subscriber is handed the notification, so the
+   * next change after that posts again — and a fresh object every time, since
+   * a release is keyed by the message it was posted with.  The door is not a
+   * convenience here: the notification has to survive the subscriber's bound,
+   * because one evicted is never handed over, and its slot would wait for ever.
+   *
+   * A post the subscriber's mailbox refuses is warned about and leaves the
+   * slot empty, so the next change tries again; the replicator does not fail
+   * for a subscriber's queue.
+   *
+   * A release that finds the slot's subscription ended tells the replicator,
+   * which drops the slot kept for it — see {@link onDistributedDataUnsubscribe}.
+   * Only then: a live slot's release clears the mark and nothing else, because
+   * it runs on the subscriber's turn and the slot maps are the replicator's.
+   */
+  private offerToSubscriber(key: string, slot: SubscriberSlot, value: Crdt<any>): void {
+    if (slot.cell === null) {
+      this.tellDirectly(key, slot.subscriber, value);
+      return;
+    }
+    if (slot.queued !== null) {
+      replaceQueuedValue(slot.queued, value);
+      return;
+    }
+    const notification = new DistributedDataChanged(key, value);
+    const replicator = this.self;
+    // Marked before the post, not after it: a dispatcher may run the
+    // subscriber's turn inside the post, and the release that fires there has
+    // to find the mark it clears.
+    slot.queued = notification;
+    try {
+      slot.cell.postSignalEnvelope({ message: notification, sender: null }, () => {
+        if (slot.queued !== notification) return;
+        slot.queued = null;
+        if (slot.registration === null) replicator.tell({ kind: 'distributed-data-handed-over', key, slot });
+      });
+    } catch (e) {
+      if (slot.queued === notification) slot.queued = null;
+      this.log.warn(
+        `DistributedData: ${slot.subscriber.path.toString()} refused a notification for "${key}"`, e,
+      );
+    }
+  }
+
+  /**
+   * A subscriber with no cell on this node, told every change as it happens —
+   * there is no mailbox to pace a slot by, and no hand-over to release one.
+   */
+  private tellDirectly(key: string, subscriber: SubscriberActor, value: Crdt<any>): void {
+    try {
+      subscriber.tell(new DistributedDataChanged(key, value), null);
+    } catch (e) {
+      this.log.warn(
+        `DistributedData: ${subscriber.path.toString()} refused a notification for "${key}"`, e,
+      );
+    }
   }
 
   /**
@@ -914,9 +1789,11 @@ class DistributedDataActor extends Actor<ActorMessage> {
   }
 
   private onUpdate(message: UpdateMessage): void {
-    const current = this.view.state.get(message.key) ?? message.factory();
-    const next = message.mutator(current);
-    this.applyMerged(message.key, current, next);
+    // Before the read, not after: learning the identity can replace the
+    // stored value with a re-keyed copy of itself.
+    this.learnIdentity(message.key, message.factory);
+    const next = this.applyModifier(message);
+    if (next === null) return;
     if (!message.quorum) return;
 
     // Quorum write: self-vote counts as the first ack.  If only self
@@ -936,7 +1813,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
       this.countQuorumRejected('write');
       return;
     }
-    const timeoutMs = this.cappedQuorumTimeout(message.quorum.timeoutMs);
+    const timeoutMs = this.cappedQuorumTimeout(message.quorum.timeoutMs ?? this.quorumTimeoutMs);
     const timer = this.system.scheduler.scheduleOnceFunction(timeoutMs, () => {
       const pending = this.pendingWrites.get(message.quorum!.pendingId);
       if (!pending) return;
@@ -966,6 +1843,48 @@ class DistributedDataActor extends Actor<ActorMessage> {
     }
   }
 
+  /**
+   * Run the caller's factory and modifier and apply what they return — or,
+   * when either throws, report the failure to the caller and return `null`,
+   * with the key keeping the value it holds.
+   *
+   * Both are the caller's code, and a modifier can fail on the value it is
+   * handed as well as on its own.  A throw used to escape into the
+   * replicator: the update went down with the failed message, so an
+   * `updateAsync` never settled, and the replicator restarted — and the
+   * restart budget turns ten of those a minute into a stopped replicator.
+   * The failure is the caller's, so it goes to the caller: a quorum update's
+   * promise rejects with it, and an update nobody awaits is logged once, at
+   * error, naming the key.
+   *
+   * Applying is part of the guarded step because a modifier that returns
+   * something other than a CRDT fails there, in the encoding `applyMerged`
+   * does before it stores anything — the same failure, reported the same way.
+   */
+  private applyModifier(message: UpdateMessage): Crdt<any> | null {
+    try {
+      const current = this.view.state.get(message.key) ?? message.factory();
+      const next = message.mutator(current);
+      this.applyMerged(message.key, current, next);
+      return next;
+    } catch (e) {
+      this.reportFailedUpdate(message, e);
+      return null;
+    }
+  }
+
+  private reportFailedUpdate(message: UpdateMessage, failure: unknown): void {
+    if (message.quorum !== undefined) {
+      message.quorum.reject(failure as Error);
+      return;
+    }
+    this.log.error(
+      `DistributedData: the update of "${message.key}" failed in its factory or modifier `
+      + `and was not applied; the key keeps the value it had`,
+      failure,
+    );
+  }
+
   private onRead(message: ReadMessage): void {
     const peers = this.cluster.upMembers()
       .filter((m) => !m.address.equals(this.cluster.selfAddress));
@@ -986,7 +1905,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
       this.countQuorumRejected('read');
       return;
     }
-    const timeoutMs = this.cappedQuorumTimeout(message.timeoutMs);
+    const timeoutMs = this.cappedQuorumTimeout(message.timeoutMs ?? this.quorumTimeoutMs);
     const timer = this.system.scheduler.scheduleOnceFunction(timeoutMs, () => {
       const pending = this.pendingReads.get(message.pendingId);
       if (!pending) return;
@@ -1023,7 +1942,13 @@ class DistributedDataActor extends Actor<ActorMessage> {
     const incoming = this.decodeOrDrop(message.value, message.key, peer);
     if (incoming === null) return;
     const current = this.view.state.get(message.key);
-    const merged = current ? current.merge(incoming) : incoming;
+    const merged = current === undefined
+      ? incoming
+      : this.mergeOrKeep(message.key, current, incoming, peer.toString());
+    // Not merged, so not acknowledged — the answer an undecodable value gets
+    // too: the writer's quorum must not count a replica the write never
+    // reached.
+    if (merged === null) return;
     this.applyMerged(message.key, current ?? null, merged);
     // The ack goes back down the connection the request arrived on.  It used
     // to go to whatever address the payload named, so a peer could make this
@@ -1085,8 +2010,12 @@ class DistributedDataActor extends Actor<ActorMessage> {
       // A garbled response counts as an answer — the peer replied, it just
       // replied with something unusable.  Dropping the value rather than the
       // whole response keeps the quorum from stalling on one bad replica.
+      // A value of another kind than the read has so far is unusable in the
+      // same way, and is dropped the same way.
       if (incoming !== null) {
-        pending.merged = pending.merged ? pending.merged.merge(incoming) : incoming;
+        pending.merged = pending.merged === undefined
+          ? incoming
+          : this.mergeOrKeep(pending.key, pending.merged, incoming, peer.toString()) ?? pending.merged;
       }
     }
     if (pending.responses.size >= pending.required) {
@@ -1098,14 +2027,30 @@ class DistributedDataActor extends Actor<ActorMessage> {
       // latest state to this replica without waiting for gossip.
       if (pending.merged) {
         const current = this.view.state.get(pending.key);
-        this.applyMerged(pending.key, current ?? null,
-          current ? current.merge(pending.merged) : pending.merged);
+        const merged = current === undefined
+          ? pending.merged
+          : this.mergeOrKeep(pending.key, current, pending.merged, 'a quorum read');
+        if (merged === null) {
+          // The key gained a value of another kind while the read was out,
+          // and that value stays.  The read answers with it, so what it
+          // resolves to and what `get` returns next agree on the kind.
+          pending.resolve(current);
+          return;
+        }
+        this.applyMerged(pending.key, current ?? null, merged);
       }
       pending.resolve(pending.merged);
     }
   }
 
   private onDelete(message: DeleteMessage): void {
+    // The learned identity goes with the value, so the registry never
+    // outgrows the view.  Nothing is lost by it: a peer that re-introduces
+    // the key gossips it under whatever identity it holds, and the next
+    // `update` relearns and re-keys — the same repair a durable reload gets.
+    // The kind-conflict quiet period goes with it for the same reason.
+    this.identities.delete(message.key);
+    this.lastKindConflictWarnAtMs.delete(message.key);
     if (this.view.state.delete(message.key)) {
       // Notify subscribers with a best-effort signal — we synthesise
       // a fresh CRDT via the most-recently-seen factory.  Since we
@@ -1125,7 +2070,10 @@ class DistributedDataActor extends Actor<ActorMessage> {
       const incoming = this.decodeOrDrop(json, key, peer);
       if (incoming === null) continue;
       const current = this.view.state.get(key);
-      const merged = current ? current.merge(incoming) : incoming;
+      const merged = current === undefined
+        ? incoming
+        : this.mergeOrKeep(key, current, incoming, peer.toString());
+      if (merged === null) continue;
       this.applyMerged(key, current ?? null, merged);
     }
   }
@@ -1147,7 +2095,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
    */
   private decodeOrDrop(json: CrdtJson, key: string, peer: NodeAddress): Crdt<any> | null {
     try {
-      return decodeCrdt(json);
+      return decodeCrdt(json, this.identityFor(key));
     } catch (e) {
       this.droppedFrames++;
       this.countDroppedFrame();
@@ -1158,6 +2106,186 @@ class DistributedDataActor extends Actor<ActorMessage> {
       );
       return null;
     }
+  }
+
+  /**
+   * Merge `received` into `held`, or drop it when the two are of different
+   * CRDT kinds — `null` then, and `held` stays what the key keeps.
+   *
+   * The counterpart of {@link decodeOrDrop} for a value that decodes fine but
+   * cannot join the one it meets: two kinds have no merge, and `merge` handed
+   * one anyway either throws inside the replicator, which restarts it, or
+   * quietly replaces the held value with a value of the other kind.  Keeping
+   * the held value is the one answer that changes nothing; the value dropped
+   * is the other replica's to keep, and it is re-offered every round for as
+   * long as the two disagree, which is what {@link reportKindConflict} is
+   * rate-limited against.
+   *
+   * `source` names where `received` came from, for the warning.
+   */
+  private mergeOrKeep(key: string, held: Crdt<any>, received: Crdt<any>, source: string): Crdt<any> | null {
+    const conflict = crdtKindConflict(held, received);
+    if (conflict === null) return held.merge(received);
+    this.reportKindConflict(key, conflict, source);
+    return null;
+  }
+
+  /**
+   * Count a value {@link mergeOrKeep} dropped, and say so at most once per
+   * key per {@link GOSSIP_SKIP_WARN_INTERVAL_MS}.
+   *
+   * That quiet period is borrowed rather than given a constant of its own
+   * because its reasoning is this condition's too: it is found again on every
+   * gossip round for as long as the key exists, so logged per occurrence it
+   * would be a line a round forever.  The running total travels in the line,
+   * and every drop is counted in `distributed_data_dropped_values_total`.
+   *
+   * The time comes from the system's clock, so a test can say a quiet period
+   * has passed.
+   */
+  private reportKindConflict(key: string, conflict: CrdtKindConflict, source: string): void {
+    this.droppedKindConflicts++;
+    this.countDroppedFrame();
+    const now = this.system.clock.now();
+    const lastWarnAtMs = this.lastKindConflictWarnAtMs.get(key);
+    if (lastWarnAtMs !== undefined && now - lastWarnAtMs < GOSSIP_SKIP_WARN_INTERVAL_MS) return;
+    this.lastKindConflictWarnAtMs.set(key, now);
+    const where = conflict.nested ? ' in an ORMap entry both hold' : '';
+    this.log.warn(
+      `DistributedData: kept the value held for "${key}" and dropped the one from ${source}: `
+      + `it is a ${conflict.received} where the held value is a ${conflict.held}${where}, `
+      + `and values of different CRDT kinds cannot be merged `
+      + `(${this.droppedKindConflicts} dropped so far)`,
+    );
+  }
+
+  /**
+   * The identity to decode `key` under, or `undefined` while none is known.
+   *
+   * `undefined` is the honest answer for a key the application has never
+   * updated: nothing in a frame, and nothing in the durable record, says what
+   * a value's identity should be.  {@link learnIdentity} is what repairs such
+   * a value once the application does say.
+   */
+  private identityFor(key: string): CrdtIdentityFunction | undefined {
+    return this.identities.get(key) ?? undefined;
+  }
+
+  /**
+   * Take `key`'s identity from the caller's factory, and repair a value that
+   * was materialised before it was known.
+   *
+   * Once per key, because the answer cannot change: `update` for a key we
+   * already know returns on the first line, so the common path costs a map
+   * lookup and the caller's factory is not invoked a second time.
+   *
+   * The repair is the half that fixes a **durable reload** and a
+   * **gossip-first** key, and it is not optional in the way it looks.  Both
+   * put a value in the view before any factory has been seen — `preStart`
+   * decodes the durable record before the mailbox is drained, and a peer
+   * gossips a key whenever it likes — so threading the identity into the
+   * decoders alone would leave exactly the two cases the issue reports.  One
+   * encode/decode round through the wire form is the whole repair, because
+   * `fromJSON` now files every entry under the identity it is given; entries
+   * that were separate under `JSON.stringify` and share a key under the
+   * caller's identity merge, rather than surviving as duplicates forever.
+   *
+   * The repaired value goes back through {@link applyMerged} rather than
+   * straight into the view, because a repair is a real change when it lands:
+   * two entries the sender kept apart can collapse into one, and that has to
+   * reach the subscribers and the durable record like any other merge would.
+   * When nothing moved — the ordinary case — the encoded forms match and
+   * `applyMerged` skips both.
+   *
+   * **Deriving the identity and repairing the value are separate failures and
+   * are handled separately.**  A `factory` or a `customIdentity` that throws
+   * means the identity genuinely is not known, so nothing is learned and the
+   * caller finds out anyway — the very next line of `onUpdate` calls the same
+   * factory when the key is absent.  A *repair* that throws means the opposite:
+   * the identity came back fine and is now known, and only the value already in
+   * the view resisted being re-filed under it.  Unlearning there put the whole
+   * of #766 back, silently: the repair throws on a peer-supplied element the
+   * callback refuses — the untrusted input this subsystem exists to survive —
+   * and once the entry is deleted the next `update` re-derives, throws in the
+   * same place and deletes again, so the configured rule is off for the life of
+   * the key and deduplication is back on `JSON.stringify`.  Escalating instead
+   * is not the alternative either; a throw out of here is an actor failure, and
+   * twelve of those terminate DistributedData (#699, #721).
+   */
+  private learnIdentity(key: string, factory: CrdtFactory<Crdt<any>>): void {
+    if (this.identities.has(key)) return;
+    let identity: CrdtIdentityFunction | null;
+    try {
+      identity = factory().customIdentity?.() ?? null;
+    } catch (e) {
+      this.log.warn(
+        `DistributedData: could not derive the element identity for "${key}" from its factory`, e,
+      );
+      return;
+    }
+    this.identities.set(key, identity);
+    if (identity === null) return;
+    this.repairKeying(key, identity);
+  }
+
+  /**
+   * Re-file `key`'s current value under `identity` — the one encode/decode
+   * round that puts a gossip-first or durable-reloaded value right.
+   *
+   * The second attempt is what keeps an element the callback refuses from
+   * costing the whole key its identity.  Which is not the only option, so:
+   *
+   *   - *Unlearning* is what this method replaced, and it is the defect above.
+   *   - *Retrying on the next `update`* buys nothing and costs a decode every
+   *     time.  The condition is not transient the way a garbled frame is — the
+   *     refused element sits in the local view, and nothing removes it, since
+   *     `remove` would have to name it with the same callback that refuses it.
+   *   - *Dropping the element* would make a decode lose data a peer committed,
+   *     which is not a decoder's decision to take.
+   *
+   * So the element stays, under the key it arrived with, and every element the
+   * callback *can* name is re-keyed around it.  Those are the same string here:
+   * a value materialised before its identity was known was decoded with no
+   * identity, so its elements are already filed under `JSON.stringify`, which
+   * is exactly what the fallback answers.  The refused element therefore does
+   * not move, its tombstones stay with it, and the value stays self-consistent
+   * — mixed-keyed, but every key is some element's real key.
+   *
+   * A later merge survives that mixed state because a merge unions by key
+   * string and never re-runs an identity.  What the registry keeps is the
+   * caller's own function, **not** the lenient wrapper: a frame that arrives
+   * later carrying an element the callback refuses is still dropped by
+   * {@link decodeOrDrop}.  That asymmetry is deliberate — an element already in
+   * the view was accepted before the rule that governs it was known, so
+   * refusing it now would be data loss, while refusing a fresh frame loses
+   * nothing that was ever accepted.
+   */
+  private repairKeying(key: string, identity: CrdtIdentityFunction): void {
+    const current = this.view.state.get(key);
+    if (current === undefined) return;
+    const json = current.toJSON() as CrdtJson;
+    let repaired: Crdt<any>;
+    try {
+      repaired = decodeCrdt(json, identity);
+    } catch (e) {
+      this.log.warn(
+        `DistributedData: "${key}" holds an element the configured identity refuses — it keeps `
+        + `the key it arrived with, every other element is re-keyed around it, and the identity `
+        + `stays in force for this key`,
+        e,
+      );
+      try {
+        repaired = decodeCrdt(json, withDefaultKeyForRefusedElements(identity));
+      } catch (second) {
+        this.log.warn(
+          `DistributedData: "${key}" could not be re-keyed at all — its value is left exactly as `
+          + `it was, and the identity still governs every later decode for this key`,
+          second,
+        );
+        return;
+      }
+    }
+    this.applyMerged(key, current, repaired);
   }
 
   private applyMerged(key: string, prev: Crdt<any> | null, next: Crdt<any>): void {
@@ -1171,40 +2299,95 @@ class DistributedDataActor extends Actor<ActorMessage> {
     // (preStart loop), this re-saves the same state we just loaded
     // — harmless and keeps the code path uniform.
     this.scheduleDurableSave();
-    const listeners = this.view.listeners.get(key);
-    if (!listeners) return;
-    for (const listener of listeners) {
-      try { listener(next); } catch (e) {
-        this.log.warn(`DistributedData: subscriber for "${key}" threw`, e);
+    // The actor subscribers first, and without a copy: the slot maps change
+    // only when this actor handles a subscribe, an unsubscribe, a hand-over or
+    // a `Terminated`, and nothing an offer runs can hand it one of those
+    // synchronously — a subscription made meanwhile is a message, queued.  A
+    // slot kept for an ended subscription's notification is passed over: that
+    // notification keeps the value it had.
+    const slots = this.view.subscriberSlots.get(key);
+    if (slots !== undefined) {
+      for (const slot of slots.values()) {
+        if (slot.registration !== null) this.offerToSubscriber(key, slot, next);
       }
+    }
+    const registrations = this.view.listeners.get(key);
+    if (!registrations) return;
+    // The subscriptions as they stood when this merge landed, each asked again
+    // before its call.  Walking the live map instead hands `next` twice to a
+    // listener subscribed from inside a notification for this key — once by
+    // its own replay, once here, because a `Map` iterator visits entries
+    // added while it runs.  The copy alone would lose the other half: a
+    // listener unsubscribed earlier in this fan-out would still be called.
+    // What is asked is whether the function still holds *this* registration,
+    // not whether it is subscribed at all: a function that unsubscribed and
+    // subscribed again inside this fan-out holds a new one, and was replayed
+    // the value already.  And it is asked of the map captured above rather
+    // than the key's current entry: when the last listener leaves, the map is
+    // dropped, and a listener subscribing after that lands in a new one.
+    for (const registration of [...registrations.values()]) {
+      if (registrations.get(registration.listener) !== registration) continue;
+      deliverToSubscriber(this.log, key, registration.listener, next);
     }
   }
 
   /**
    * Fire a durable save off the actor mailbox.  Coalesces overlapping
-   * requests: if a save is already in flight, we mark `durableDirty`
+   * requests: if a save is already in flight, we mark the writer dirty
    * and the in-flight save's `.finally` handler kicks off a follow-up.
    * Net effect: a burst of mutations produces 1-2 disk writes, not N.
+   *
+   * Everything this touches is in the shared view, the writer included, so
+   * the follow-up is right even when the `.finally` runs on an instance a
+   * restart has since replaced: it saves the same view through the same
+   * writer the new instance would have used.
    */
   private scheduleDurableSave(): void {
-    if (!this.durable) return;
-    if (this.durableSaveInFlight) {
-      this.durableDirty = true;
+    const writer = this.view.durable;
+    if (writer === null) return;
+    if (writer.saveInFlight) {
+      writer.dirty = true;
       return;
     }
-    this.durableSaveInFlight = true;
-    const snapshot = new Map(this.view.state);
-    void this.durable.save(snapshot)
+    writer.saveInFlight = true;
+    const snapshot = this.durableSnapshot();
+    void writer.store.save(snapshot)
       .catch((err) => {
         this.log.warn(`DistributedData: durable save failed`, err);
       })
       .finally(() => {
-        this.durableSaveInFlight = false;
-        if (this.durableDirty) {
-          this.durableDirty = false;
+        writer.saveInFlight = false;
+        if (writer.dirty) {
+          writer.dirty = false;
           this.scheduleDurableSave();
         }
       });
+  }
+
+  /**
+   * The view as the durable record should hold it — everything, or only the
+   * keys `durableKeys` names.
+   *
+   * A copy either way, because `save` is asynchronous and the live view keeps
+   * being mutated underneath it; the filter merely decides what goes into the
+   * copy.  An empty pattern list short-circuits to the whole view, which is
+   * both the fast path and the compatible one: every release before this
+   * option persisted everything, and reading `[]` as "persist nothing" would
+   * turn adopting a newer version into silent total durable data loss.
+   *
+   * Filtering *at save time* rather than at load time is what makes narrowing
+   * the list destructive — `DurableDistributedDataStore.save` replaces the
+   * replica's whole record — and that is stated in the option's own JSDoc, in
+   * `reference.conf` and on the durable-storage page, because it cannot be
+   * inferred from the key's name.
+   */
+  private durableSnapshot(): Map<string, Crdt<any>> {
+    if (this.durableKeys.length === 0) return new Map(this.view.state);
+    const out = new Map<string, Crdt<any>>();
+    for (const [key, crdt] of this.view.state) {
+      if (matchesDurableKey(key, this.durableKeys)) out.set(key, crdt);
+    }
+    return out;
   }
 
   /**
@@ -1264,6 +2447,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
     const envelopeBytes = this.gossipEnvelopeBytes();
     const packed: Array<readonly [string, CrdtJson]> = [];
     const skips: GossipSkipTally = { oversize: 0, unserialisable: 0, largest: null };
+    const large: LargeGossipEntryTally = { count: 0, largest: null };
     const start = this.gossipCursor % keys.length;
     let used = envelopeBytes;
     let advance = 0;
@@ -1275,6 +2459,17 @@ class DistributedDataActor extends Actor<ActorMessage> {
         this.countGossipSkip('unserialisable');
         advance++;
         continue;
+      }
+      // Reported before either size decision below, and on every key the
+      // packer visits — including one it is about to skip.  The two lines
+      // answer different questions ("this key is shaping your sweep" versus
+      // "this key will never converge"), so an operator who fixes the second
+      // by raising the budget must still be told the first.
+      if (this.logDataSizeExceeding > 0 && measured.bytes > this.logDataSizeExceeding) {
+        large.count++;
+        if (!large.largest || measured.bytes > large.largest.bytes) {
+          large.largest = { key, bytes: measured.bytes };
+        }
       }
       // Order matters: a key too large for a frame of its own has to be
       // stepped over, not waited for.  Treated as "does not fit right now" it
@@ -1300,6 +2495,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
     // same head of it forever.
     this.gossipCursor = (start + advance) % keys.length;
     this.reportGossipSkips(skips, budget);
+    this.reportLargeGossipEntries(large, budget);
     if (packed.length === 0) return null;
     // `Object.fromEntries`, not `out[key] = …`: a store key is an application
     // string, and for the one value `__proto__` an assignment invokes the
@@ -1424,6 +2620,45 @@ class DistributedDataActor extends Actor<ActorMessage> {
     );
   }
 
+  /**
+   * Name the keys that are large enough to shape the sweep, once per
+   * {@link GOSSIP_SKIP_WARN_INTERVAL_MS}.
+   *
+   * **Its own timestamp, not the skip warning's**, and that is the whole
+   * design decision here rather than an implementation detail.  A store that
+   * has one unsendable key almost always has several merely-large ones, so a
+   * shared quiet period would let whichever fired first hide the other for a
+   * minute at a time — and the two ask for opposite responses. The oversize
+   * line says *split this value or raise the budget*; this one says *this
+   * value is fine but it is costing every other key a share of every tick it
+   * appears in*. Raising `max-gossip-bytes` silences the first and makes the
+   * second more true, which is exactly when it must still be audible.
+   *
+   * The budget travels into the line because the threshold alone does not
+   * make the cost legible: what matters is the key's share of one frame, and
+   * an operator who has moved either number needs both to read it.
+   */
+  private reportLargeGossipEntries(large: LargeGossipEntryTally, budget: number): void {
+    if (large.count === 0) return;
+    this.largeGossipEntries += large.count;
+    const now = Date.now();
+    if (now - this.lastLargeEntryWarnAtMs < GOSSIP_SKIP_WARN_INTERVAL_MS) return;
+    this.lastLargeEntryWarnAtMs = now;
+    // Non-null by construction: the only place `count` is incremented also
+    // sets `largest`, unlike the skip tally where an unserialisable key raises
+    // a count with no size to record.
+    const largest = large.largest!;
+    this.log.warn(
+      `DistributedData: ${large.count} gossiped key(s) exceed the `
+      + `${this.logDataSizeExceeding}-byte reporting threshold `
+      + `(${this.largeGossipEntries} since start); largest is "${largest.key}" at `
+      + `${largest.bytes} bytes against a ${budget}-byte frame budget. Such a key still `
+      + `converges, but it takes that share of every tick it travels in, so the rest of the `
+      + `store sweeps more slowly: split the value, or raise `
+      + `actor-ts.distributed-data.log-data-size-exceeding if this size is expected.`,
+    );
+  }
+
   private countGossipSkip(reason: GossipSkipReason): void {
     metricsOf(this.system).counter(
       'distributed_data_gossip_skipped_keys_total', { reason },
@@ -1451,6 +2686,36 @@ class DistributedDataActor extends Actor<ActorMessage> {
  */
 function nextPendingId(): string {
   return `p${randomId(16)}`;
+}
+
+/**
+ * Does `key` match any entry of a `durableKeys` whitelist?
+ *
+ * Two forms and no third: an exact key name, or a prefix ending in one `*`.
+ * Written out as `startsWith` / `===` rather than compiled into a matcher,
+ * because the patterns come from `reference.conf` and therefore from an
+ * `application.conf` an operator edits — and `new RegExp(text)` over that is a
+ * catastrophic-backtracking surface reachable from a config file, on the code
+ * path that decides what survives a restart.  `ActorSelection` reached the
+ * same conclusion for actor paths and ships exact segments only.
+ *
+ * A richer glob is a deliberate non-goal rather than an omission: it would
+ * need its own escaping rules for a key namespace that is application-defined
+ * (`__proto__` is a legal key here), and the two forms below cover the shape
+ * durable whitelists actually take — a handful of names, or one family behind
+ * a prefix.  `DistributedDataOptionsValidator` rejects anything else at
+ * consume time, so a pattern this function would silently fail to honour
+ * never reaches it.
+ */
+function matchesDurableKey(key: string, patterns: readonly string[]): boolean {
+  for (const pattern of patterns) {
+    if (pattern.endsWith('*')) {
+      if (key.startsWith(pattern.slice(0, -1))) return true;
+      continue;
+    }
+    if (key === pattern) return true;
+  }
+  return false;
 }
 
 /**

@@ -5,6 +5,7 @@ import {
   type DurableStateStore,
 } from '../DurableStateStore.js';
 import { JournalError } from '../JournalTypes.js';
+import type { PersistenceOptionSupport } from '../PersistenceCapabilities.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import { none, some, type Option } from '../../util/Option.js';
 import {
@@ -20,6 +21,7 @@ import { DynamoDbStore, type DynamoDbTableSchema } from '../journals/DynamoDbSto
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import {
+  DEFAULT_DYNAMODB_DURABLE_STATE_TABLE,
   DynamoDbDurableStateStoreOptionsValidator,
   type DynamoDbDurableStateStoreOptions,
   type DynamoDbDurableStateStoreOptionsType,
@@ -44,6 +46,17 @@ import {
  * cheap insurance in a place that would otherwise fail at runtime only.
  */
 export class DynamoDbDurableStateStore extends DynamoDbStore implements DurableStateStore {
+  /**
+   * The payload is a plain item attribute — `options` is bound and never
+   * read (#960).  DynamoDB's own server-side encryption is a table setting
+   * the store neither configures nor observes, so it cannot be claimed here.
+   */
+  readonly persistenceOptionSupport: PersistenceOptionSupport = {
+    encryption: false,
+    compression: false,
+    integrity: false,
+  };
+
   private readonly tableName: string;
 
   private readonly serializer?: Serializer;
@@ -60,7 +73,7 @@ export class DynamoDbDurableStateStore extends DynamoDbStore implements DurableS
       ownsClient: resolvedOptions.operations === undefined,
       openClient: () => buildDynamoDbOperations(resolvedOptions),
     });
-    this.tableName = resolvedOptions.table ?? 'actor_ts_durable_state';
+    this.tableName = resolvedOptions.table ?? DEFAULT_DYNAMODB_DURABLE_STATE_TABLE;
     this.serializer = resolvedOptions.serializer;
   }
 

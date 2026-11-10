@@ -3,6 +3,7 @@ import { none, some, type Option } from '../../util/Option.js';
 import { randomId } from '../../util/RandomString.js';
 import { wrapError } from '../../util/WrapError.js';
 import { makeKeyValidator, ObjectStorageWriteKeyRules } from '../storage/KeyValidator.js';
+import { requireSubtle } from './Integrity.js';
 import {
   ObjectStorageBackendError,
   ObjectStorageConcurrencyError,
@@ -38,10 +39,13 @@ import type { StorageLocality } from '../StorageLocality.js';
  * Implementation notes:
  *
  *  - **Disk is canonical.**  Etags are content-derived
- *    ({@link computeEtag} — deterministic FNV-1a + length).  No in-memory
- *    map; the file content alone determines the etag, so a fresh process
- *    sees the exact same etags every other process does.  Same key, same
- *    bytes → same etag, regardless of who wrote them or when.
+ *    ({@link computeEtag} — deterministic truncated SHA-256 + length).  No
+ *    in-memory map; the file content alone determines the etag, so a fresh
+ *    process sees the exact same etags every other process does.  Same key,
+ *    same bytes → same etag, regardless of who wrote them or when.  The
+ *    digest is the CAS token and is sized as one — see {@link computeEtag}
+ *    for why a cheap non-cryptographic hash is the wrong primitive here
+ *    (#786).
  *  - **Per-key advisory lock.**  The lock file lives next to the target
  *    file as `<key>.lock`.  Acquisition uses
  *    `fs.writeFile(lockPath, ..., { flag: 'wx' })`, which is
@@ -318,9 +322,9 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
       // follow a link at the final component, exactly as it does in `get`.
       // Without it a link planted at `<key>` and pointing out of the root was
       // read and hashed, and the mismatch message handed the caller the
-      // target's exact byte length and its FNV-1a — an oracle for a file this
-      // backend is documented as unable to reach.  `ifNoneMatch: '*'` leaked
-      // the coarser half of the same fact.
+      // target's exact byte length and its content digest — an oracle for a
+      // file this backend is documented as unable to reach.  `ifNoneMatch:
+      // '*'` leaked the coarser half of the same fact.
       //
       // **Inside the lock, unlike the parent check, and that is load-bearing
       // on Windows.**  Canonicalising a path opens a handle to it, and
@@ -350,30 +354,49 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
 
       // Read current state from disk — disk is canonical, no in-memory
       // shadow that could disagree with another process's writes.
-      let currentEtag: string | undefined;
+      let existing: Uint8Array | undefined;
       try {
-        const existing = new Uint8Array(await fs.readFile(fullPath));
-        currentEtag = computeEtag(existing);
+        existing = new Uint8Array(await fs.readFile(fullPath));
       } catch (e) {
         if ((e as { code?: string })?.code !== 'ENOENT') {
           throw new ObjectStorageBackendError(
             `filesystem put-read-current failed for ${key}`, e,
           );
         }
-        // ENOENT → object doesn't exist yet; currentEtag stays undefined.
+        // ENOENT → object doesn't exist yet; `existing` stays undefined,
+        // which is what both CAS branches below read it for.
       }
 
       // Validate CAS preconditions.
-      if (options.ifNoneMatch === '*' && currentEtag !== undefined) {
+      //
+      // `ifNoneMatch: '*'` asks whether bytes are *there*, which `readFile`
+      // has already answered.  It used to test the derived etag's
+      // definedness instead — same answer, one SHA-256 to reach it.
+      if (options.ifNoneMatch === '*' && existing !== undefined) {
         throw new ObjectStorageConcurrencyError(
           key, `key ${key} already exists; ifNoneMatch=* rejected`,
         );
       }
-      if (options.ifMatch !== undefined && currentEtag !== options.ifMatch) {
-        throw new ObjectStorageConcurrencyError(
-          key,
-          `etag mismatch on ${key}: expected ${options.ifMatch}, actual ${currentEtag ?? '<absent>'}`,
-        );
+      if (options.ifMatch !== undefined) {
+        // Derived inside the branch that reads its value, not beside the
+        // read above.  Unconditional was the right shape while the etag was
+        // a 32-bit loop over the bytes already in memory; since #786 it is a
+        // SHA-256 through WebCrypto, and the two callers that dominate this
+        // path — `ObjectStorageSnapshotStore.save` and every durable-state
+        // upsert that holds no cached etag — put with no CAS option at all
+        // and would pay for a token nobody compares.
+        //
+        // Outside the read's own `try` for the reason it always was: only
+        // `readFile` is the read that branch reports on, and a `computeEtag`
+        // failure is a WebCrypto fault that "put-read-current failed" would
+        // send an operator to check the disk for.
+        const currentEtag = existing === undefined ? undefined : await computeEtag(existing);
+        if (currentEtag !== options.ifMatch) {
+          throw new ObjectStorageConcurrencyError(
+            key,
+            `etag mismatch on ${key}: expected ${options.ifMatch}, actual ${currentEtag ?? '<absent>'}`,
+          );
+        }
       }
 
       // Atomic write: write to a per-process temp file, then rename.
@@ -424,7 +447,7 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
         }
       }
 
-      return { etag: computeEtag(body) };
+      return { etag: await computeEtag(body) };
     } finally {
       await release();
     }
@@ -472,7 +495,7 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
     }
     return some({
       body,
-      etag: computeEtag(body),
+      etag: await computeEtag(body),
       lastModified: stat.mtime,
       contentEncoding,
       contentType,
@@ -647,6 +670,13 @@ export type FsModule = {
     readFile(p: string): Promise<Buffer>;
     readFile(p: string, encoding: 'utf8'): Promise<string>;
     stat(p: string): Promise<{ size: number; mtime: Date }>;
+    /**
+     * `stat` without dereferencing a final-component link.  The lock
+     * reclaim in {@link acquireLock} is the only caller, and it needs the
+     * two things `stat` cannot give it: the age of the *entry* rather than
+     * of whatever it points at, and whether the entry is a regular file.
+     */
+    lstat(p: string): Promise<{ mtime: Date; isFile(): boolean; isSymbolicLink(): boolean }>;
     readdir(p: string, opts: { withFileTypes: true }): Promise<DirectoryEntry[]>;
     unlink(p: string): Promise<void>;
     rename(oldPath: string, newPath: string): Promise<void>;
@@ -782,6 +812,15 @@ const LEGACY_TMP_FILE_RE = /\.tmp\.\d+\.\d+\.\d+$/;
  * Returns an async release function that unlinks the lock file.  Callers
  * must invoke it in a `finally` block; the OS won't auto-release on
  * process exit (stale-lock detection covers that pathology).
+ *
+ * **The reclaim is the part that needs care, not the acquire** (#1360).
+ * Creating the lock is safe by construction: POSIX specifies that an
+ * `O_CREAT|O_EXCL` open fails with `EEXIST` when the final component is a
+ * symbolic link, whatever it points at, so `{ flag: 'wx' }` never follows one.
+ * The reclaim then has to decide, about a name someone else may have planted,
+ * both *how old it is* and *whether it is ours to remove* — and `stat` answers
+ * the first question about the link's target instead of about the link.  See
+ * the branch itself for what each check buys.
  */
 async function acquireLock(
   fs: FsModule['fs'],
@@ -791,6 +830,16 @@ async function acquireLock(
 ): Promise<() => Promise<void>> {
   const start = Date.now();
   let backoffMs = 5;
+  // One reclaim round, which the JSDoc above has always promised ("one final
+  // retry") but the code did not enforce.  It is load-bearing rather than
+  // tidiness: the reclaim branch is only reachable once the timeout is already
+  // exhausted, and both of its `continue`s skip the backoff — so any entry that
+  // keeps producing the same answer spins a core with no way out.  A dangling
+  // link at `<key>.lock` was exactly such an entry before this function used
+  // `lstat`: `wx` refused it with `EEXIST` while `stat` followed it to nothing
+  // and threw `ENOENT`, and the two disagreed forever.  `lstat` closes that
+  // particular disagreement; the bound closes the shape.
+  let reclaimAttempted = false;
   // Bounded loop — termination is via either successful acquisition,
   // throw on non-EEXIST error, or throw on total-timeout-exhausted.
   for (;;) {
@@ -822,16 +871,50 @@ async function acquireLock(
         // Total timeout exhausted — last-ditch stale-lock check.  If the
         // lock file is older than `staleLockMs`, the holder almost
         // certainly crashed; remove it and retry one more time.  If the
-        // lock disappears between EEXIST and stat (winner finished mid-
+        // lock disappears between EEXIST and lstat (winner finished mid-
         // check), `continue` lets us retake it normally.
-        let stale = false;
+        if (reclaimAttempted) {
+          throw new ObjectStorageBackendError(
+            `timed out acquiring lock ${lockPath} after ${totalTimeoutMs}ms`,
+          );
+        }
+        reclaimAttempted = true;
+        let entry: { mtime: Date; isFile(): boolean; isSymbolicLink(): boolean };
         try {
-          const stat = await fs.stat(lockPath);
-          stale = Date.now() - stat.mtime.getTime() > staleLockMs;
+          // `lstat`, never `stat`.  A link planted at `<key>.lock` is aimed at
+          // an old file precisely so the age test below says "stale": `stat`
+          // reports the *target's* mtime, which lets whoever planted the link
+          // choose the answer.  `lstat` reports the link's own, which is by
+          // definition as young as the moment it was planted.
+          entry = await fs.lstat(lockPath);
         } catch {
           continue; // lock vanished — try to acquire it on the next loop
         }
-        if (stale) {
+        if (!entry.isFile()) {
+          // Refuse rather than remove.  This function only ever creates a
+          // regular file here, so anything else is a name someone else owns,
+          // and unlinking it would make the reclaim a delete primitive aimed
+          // at a path this backend never chose.
+          //
+          // What that is *not*: `unlink` does not follow a final-component
+          // link — it removes the link and leaves the target alone, the same
+          // POSIX rule `delete` relies on above — so the pre-fix code never
+          // deleted the target.  The reachable damage was narrower and still
+          // real: the staleness question was answered by the target, and a
+          // planted link turned the reclaim into a spin (see `reclaimAttempted`).
+          throw new ObjectStorageBackendError(
+            `refusing to reclaim lock ${lockPath}: not a regular file `
+            + `(${entry.isSymbolicLink() ? 'symbolic link' : 'directory or special file'})`,
+          );
+        }
+        if (Date.now() - entry.mtime.getTime() > staleLockMs) {
+          // A window stays open between `lstat` and `unlink`, and closing it
+          // needs `unlinkat`/`O_NOFOLLOW`, which `node:fs/promises` does not
+          // expose portably — the same bound `realPathWithinRoot` records for
+          // its own hop.  It is narrower here than it looks: `unlink` cannot
+          // follow a link, so the worst a winner of that race gets is our own
+          // lock file removed, which is the outcome of an ordinary
+          // two-reclaimer race anyway.
           try { await fs.unlink(lockPath); } catch { /* race with another reclaimer is fine */ }
           continue;
         }
@@ -845,18 +928,158 @@ async function acquireLock(
   }
 }
 
-/** Cheap content-derived ETag — FNV-1a hex + length suffix. */
-function computeEtag(body: Uint8Array): string {
-  // Sync, deterministic approximation good enough for FS:
-  // 32-bit FNV-1a over the bytes, hex-prefixed.  Real S3 uses MD5/sha256;
-  // for our CAS purposes the only invariant required is "same bytes →
-  // same etag, different bytes → different etag with very high probability".
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < body.length; i++) {
-    hash ^= body[i]!;
-    hash = (hash * 0x01000193) >>> 0;
+/**
+ * Width of the SHA-256 digest an etag carries, in bytes — 16, rendered as
+ * 32 hex characters.
+ *
+ * Same truncation the integrity tag next door uses, for the same reason
+ * `Integrity.ts` gives for its `HMAC_TAG_LENGTH`: 128 bits sits well above
+ * any practical forgery threshold while keeping the token a fixed, readable
+ * length.  It stays in this file rather than moving to
+ * `src/persistence/Constants.ts` because it is not a tuned bound — it is a
+ * size fixed by the primitive chosen here and baked into the etag's own
+ * string format, the same category as `Encryption.ts`'s `IV_LENGTH`.
+ */
+const ETAG_DIGEST_BYTES = 16;
+
+/**
+ * `SubtleCrypto` or an {@link ObjectStorageBackendError}, for the etag.
+ *
+ * The guard itself is the directory's shared {@link requireSubtle} — this
+ * used to be a third verbatim copy of those six lines, under a JSDoc saying
+ * it followed the two next door, which is an argument for calling one of
+ * them.  What stays local is the error *class*: everything a backend throws
+ * has to be catchable as an `ObjectStorageBackendError`, so a bare `Error`
+ * escaping from here would be the one fault in `put` that a caller
+ * discriminating on backend failures could not see.  The message is carried
+ * across unchanged; only the wrapper is added.
+ */
+function requireEtagSubtle(): SubtleCrypto {
+  try {
+    return requireSubtle(
+      'The filesystem object-storage backend derives its compare-and-swap '
+      + 'ETag from SHA-256 and so requires WebCrypto — Node, Bun, or Deno.',
+    );
+  } catch (e) {
+    throw new ObjectStorageBackendError((e as Error).message, e);
   }
-  // Mix in length so empty vs single-zero-byte differ trivially.
-  hash ^= body.length;
-  return `"fs-${(hash >>> 0).toString(16).padStart(8, '0')}-${body.length}"`;
+}
+
+/**
+ * Probe whether WebCrypto is available for the etag.  Resolves on success,
+ * throws the {@link ObjectStorageBackendError} {@link computeEtag} would
+ * throw on the first `put` otherwise.
+ *
+ * Called by `validateObjectStoragePeerDeps` when the configured backend is
+ * this one, for the reason the encryption and integrity probes next door
+ * exist (#18, #59) and the one #613 gave for integrity needing its own:
+ * **a capability nothing probes fails at first use**.  Since #786 this
+ * backend hard-requires WebCrypto with every codec set to `'none'` — which
+ * is the default, and the configuration that skips all three of those probes
+ * — so without this one the failure lands inside a persistence write on a
+ * runtime the deployment could have been told about at registration.
+ *
+ * Only this backend.  The S3 one forwards `IfMatch` to the service and
+ * returns the service's own ETag, so it derives nothing locally and was
+ * never part of #786; a `custom` backend answers for its own requirements.
+ */
+export async function probeFilesystemEtagAvailability(): Promise<void> {
+  requireEtagSubtle();
+}
+
+/**
+ * Content-derived ETag — `"fs-<32 hex chars>-<byte length>"`, where the hex
+ * is SHA-256 over the body truncated to {@link ETAG_DIGEST_BYTES}.
+ *
+ * **This is the compare-and-swap token, not a cache validator**, which is the
+ * whole of #786.  `put` re-derives it from disk and compares it against
+ * `options.ifMatch` to decide whether the caller's read is still current, and
+ * `ObjectStorageDurableStateStore` builds that `ifMatch` from the etag it
+ * cached — so equality here *is* the durable-state concurrency check.
+ *
+ * It used to be a 32-bit hash xor'd with the length, and the comment here
+ * scoped its invariant to "different bytes → different etag with very high
+ * probability" — an accidental-collision claim, where what a CAS token owes
+ * is an adversarial one.  Two further things this comment said about that
+ * were **wrong**, both inherited from the issue body rather than measured,
+ * and the #786 verification pass corrected them.  They are restated here
+ * rather than quietly deleted, because this JSDoc is the repository's
+ * permanent explanation of a security decision and the next report in this
+ * family will be calibrated against it.
+ *
+ * **The attack was described backwards.**  It said a stale writer could
+ * *compute* a body matching an etag they still hold.  That buys nothing:
+ * `put` derives the comparison's left-hand side from the body **on disk**,
+ * so the writer's own new body never enters it.  The real mechanism runs the
+ * other way round — an attacker authors the **intervening** body so that its
+ * etag equals the one a CAS holder has already read.  The holder's stale
+ * `ifMatch` then passes over content that changed underneath them and their
+ * write clobbers it: a lost update, and for `ObjectStorageDurableStateStore`
+ * the revision check itself failing open.
+ *
+ * **And the old hash was not invertible**, because it was not textbook
+ * FNV-1a.  The shipped line was `hash = (hash * 0x01000193) >>> 0` — a
+ * float64 multiply whose exact product exceeds 2^53 and rounds, which
+ * destroys the bijection "trivially invertible by construction" rested on;
+ * measured, it disagrees with a `Math.imul` FNV-1a on 2000 of 2000 random
+ * 49-byte bodies.  The rounding costs it space as well, which is the half
+ * that matters: 43 collisions in 400 000 random 49-byte bodies puts the
+ * effective size near 2^30.8 rather than 2^32, so even odds arrive around
+ * 50 000 bodies and not the ~65 000 quoted above.  A birthday **search**,
+ * then — cheaper than the number that was given, and not an inversion.
+ *
+ * **The collision was constructed**, in seconds, and the pair is a fixture
+ * in `FilesystemObjectStorageBackend.etagStrength.test.ts` that drives the
+ * stale-`ifMatch` write through it.  So the statement here is no longer the
+ * hygiene one this comment settled for.  What does still hold: the
+ * preconditions stack (this backend rather than S3, an attacker holding
+ * write access to the store, and a body whose *length* matches too, since
+ * the length is a literal component of the string), and the per-key `O_EXCL`
+ * lock in {@link acquireLock} removes the ordinary race — it simply cannot
+ * make the comparison sound, because a colliding body passes it whether or
+ * not it was taken under the lock.  The S3 backend was never affected: it
+ * forwards `IfMatch` to the service and returns S3's own ETag.
+ *
+ * **No cheap fallback, deliberately.**  `Integrity.ts` and `Encryption.ts`
+ * next door resolve `SubtleCrypto` and throw when it is absent; this goes
+ * through the same {@link requireSubtle} they do — by calling it rather than
+ * by copying it a third time — and not after `IdempotencyKey.ts`, which
+ * degrades to FNV-1a
+ * for exotic runtimes.  A silent downgrade path would reinstate exactly the
+ * defect above on whichever runtime took it, and no runtime this backend can
+ * even load on needs one: it already hard-depends on `node:fs/promises`, and
+ * every runtime the framework supports that has that also exposes WebCrypto
+ * as a global (Bun, Node ≥ 24, Deno).
+ *
+ * **What WebCrypto costs, since the choice was never written down.**  Over a
+ * 256-byte body, after a 200-iteration warmup on Bun 1.4.2:
+ * `subtle.digest('SHA-256')` is 34 µs against 1.1 µs for `node:crypto`'s
+ * synchronous `createHash('sha256')` — 32x — and that is the call, not
+ * promise overhead, since a bare `await Promise.resolve()` measures 0.18 µs
+ * on the same run.  `node:crypto` was reachable: this backend already
+ * hard-depends on `node:fs/promises`, so it is available wherever the
+ * backend can load at all.
+ *
+ * It stays WebCrypto, and the number is what makes that a decision rather
+ * than an oversight.  34 µs is noise beside the filesystem round-trips every
+ * `put` performs regardless; the direction reverses with size, where the
+ * digest beats the old per-byte JS loop by an order of magnitude at 1 MB;
+ * and on a multi-MB body an off-thread digest is what #1540's
+ * no-synchronous-work policy asks for, where `createHash` would block the
+ * loop.  Parity with `Encryption.ts` and `Integrity.ts` — which resolve
+ * `SubtleCrypto` through the same {@link requireSubtle} — settles the rest.
+ */
+async function computeEtag(body: Uint8Array): Promise<string> {
+  const subtle = requireEtagSubtle();
+  // Cast through BufferSource — TS 5.7+'s DOM types tighten the
+  // `BufferSource` constraint in a way that doesn't match
+  // `Uint8Array<ArrayBufferLike>` cleanly.  Same cast, same reason, as
+  // `computeRequestFingerprint` in `src/http/cache/IdempotencyKey.ts`.
+  const digest = await subtle.digest('SHA-256', body as unknown as BufferSource);
+  const truncated = new Uint8Array(digest).subarray(0, ETAG_DIGEST_BYTES);
+  const hex = Array.from(truncated, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  // The length stays in the string.  It buys nothing against an adversary now
+  // that the digest carries the weight, but it is part of the format callers
+  // and fixtures already match on, and it keeps a mismatch message legible.
+  return `"fs-${hex}-${body.length}"`;
 }

@@ -57,9 +57,20 @@ describe('BrokerOptionsValidator — common broker fields (via Kafka)', () => {
     expect(() => check({ ...ok, reconnect: { randomFactor: 1 } })).not.toThrow();
   });
 
-  test('rejects circuitBreaker.failureThreshold < 1', () => {
-    expect(() => check({ ...ok, circuitBreaker: { failureThreshold: 0, resetMs: 100 } }))
-      .toThrow(/circuitBreaker\.failureThreshold/);
+  test('accepts a circuit-breaker id, and the empty id that means none', () => {
+    expect(() => check({ ...ok, circuitBreaker: 'orders-kafka' })).not.toThrow();
+    expect(() => check({ ...ok, circuitBreaker: '' })).not.toThrow();
+  });
+
+  // #1478 — the field is an id now.  A plain-JavaScript caller still handing
+  // over the `{ failureThreshold, resetMs }` object it used to take would
+  // otherwise resolve a breaker named "[object Object]" on the defaults.
+  test('rejects a circuitBreaker that is not an id, naming where the numbers went', () => {
+    const legacy = { failureThreshold: 3, resetMs: 1_000 } as unknown as string;
+    expect(() => check({ ...ok, circuitBreaker: legacy })).toThrow(OptionsError);
+    expect(() => check({ ...ok, circuitBreaker: legacy })).toThrow(/circuitBreaker must be a circuit-breaker id/);
+    expect(() => check({ ...ok, circuitBreaker: legacy })).toThrow(/actor-ts\.circuit-breaker\.<id>/);
+    expect(() => check({ ...ok, circuitBreaker: 5 as unknown as string })).toThrow(/circuitBreaker/);
   });
 });
 
@@ -132,6 +143,71 @@ describe('NatsOptionsValidator', () => {
   });
 });
 
+/*
+ * nats.js reads a server entry for its host and port only: the userinfo of
+ * `nats://user:password@host:4222` is discarded, and a dotless host carrying
+ * one does not parse at all.  CONNECT credentials come from `user` / `password`
+ * / `token` alone, so a credential written into a server URL is a setting
+ * nothing reads — the connection goes out unauthenticated — and the place it
+ * is refused is here, by every validator whose actor hands `servers` to
+ * nats.js.  Found while #1443.
+ */
+describe('NATS server entries carry no credentials', () => {
+  const validators = [
+    { name: 'NatsOptionsValidator', validate: (servers: unknown) =>
+      new NatsOptionsValidator().validate({ servers: servers as NatsOptionsType['servers'] }) },
+    { name: 'JetStreamOptionsValidator', validate: (servers: unknown) =>
+      new JetStreamOptionsValidator().validate({ servers: servers as JetStreamOptionsType['servers'] }) },
+    { name: 'JetStreamKeyValueOptionsValidator', validate: (servers: unknown) =>
+      new JetStreamKeyValueOptionsValidator().validate({
+        servers: servers as JetStreamKeyValueOptionsType['servers'], bucket: 'sessions',
+      }) },
+    { name: 'JetStreamObjectStoreOptionsValidator', validate: (servers: unknown) =>
+      new JetStreamObjectStoreOptionsValidator().validate({
+        servers: servers as JetStreamObjectStoreOptionsType['servers'], bucket: 'assets',
+      }) },
+  ] as const;
+
+  const refusalOf = (validate: (servers: unknown) => void, servers: unknown): OptionsError => {
+    try {
+      validate(servers);
+    } catch (e) {
+      if (e instanceof OptionsError) return e;
+      throw e;
+    }
+    throw new Error(`servers ${JSON.stringify(servers)} was accepted`);
+  };
+
+  describe.each([...validators])('$name', ({ validate }) => {
+    test.each([
+      { label: 'a user and password in a URL', servers: 'nats://alice:hunter2@nats.local:4222', field: 'servers' },
+      { label: 'a user alone', servers: 'nats://alice@nats.local:4222', field: 'servers' },
+      { label: 'a token in the userinfo', servers: 'nats://hunter2@nats.local:4222', field: 'servers' },
+      { label: 'a scheme-less entry', servers: 'alice:hunter2@nats.local:4222', field: 'servers' },
+      { label: 'a dotless host, which nats.js cannot parse', servers: 'nats://alice:hunter2@h1:4222', field: 'servers' },
+      {
+        label: 'the second entry of a list',
+        servers: ['nats://a.local:4222', 'tls://alice:hunter2@b.local:4222'],
+        field: 'servers[1]',
+      },
+    ])('refuses $label, naming the entry and the credential options', ({ servers, field }) => {
+      const refusal = refusalOf(validate, servers);
+      expect(refusal.field).toBe(field);
+      expect(refusal.message).toContain('user / password');
+      expect(refusal.message).toContain('token');
+      // The refusal is logged at ERROR when preStart fails, so the value it
+      // quotes must not be the credential it is refusing.
+      expect(refusal.message).not.toContain('hunter2');
+      expect(String(refusal.value)).not.toContain('hunter2');
+    });
+
+    test('accepts entries without a userinfo, as a string and as a list', () => {
+      expect(() => validate('nats://nats.local:4222')).not.toThrow();
+      expect(() => validate(['nats://a.local:4222', 'tls://b.local:4222', 'c.local:4222'])).not.toThrow();
+    });
+  });
+});
+
 describe('JetStreamOptionsValidator', () => {
   const check = (s: Partial<JetStreamOptionsType>): void => new JetStreamOptionsValidator().validate(s);
 
@@ -145,6 +221,149 @@ describe('JetStreamOptionsValidator', () => {
 
   test('accepts a valid configuration', () => {
     expect(() => check({ servers: 'nats://h:4222', acknowledgmentTimeout: 30_000 })).not.toThrow();
+  });
+});
+
+/*
+ * `consumer.deliverPolicy` is checked whole.  The compiler vouches for the
+ * object arms only at a typed call site; a cast or a plain-JavaScript caller
+ * hands over any `kind`, and one outside the union used to reach nats.js as
+ * `deliver_policy: 'all'` — a consumer that replays the stream from its first
+ * message.  Found while #1443.
+ */
+describe('JetStreamOptionsValidator — consumer.deliverPolicy', () => {
+  type DeliverPolicy = NonNullable<JetStreamOptionsType['consumer']>['deliverPolicy'];
+  const withPolicy = (deliverPolicy: unknown): Partial<JetStreamOptionsType> => ({
+    servers: 'nats://h:4222',
+    consumer: { durable: 'd', deliverPolicy: deliverPolicy as DeliverPolicy },
+  });
+  const refusalOf = (deliverPolicy: unknown): OptionsError => {
+    try {
+      new JetStreamOptionsValidator().validate(withPolicy(deliverPolicy));
+    } catch (e) {
+      if (e instanceof OptionsError) return e;
+      throw e;
+    }
+    throw new Error(`deliverPolicy ${JSON.stringify(deliverPolicy)} was accepted`);
+  };
+
+  test('accepts the three strings and both object kinds', () => {
+    const accepted: ReadonlyArray<DeliverPolicy> = [
+      undefined,
+      'all',
+      'last',
+      'new',
+      { kind: 'by-start-sequence', startSeq: 4242 },
+      { kind: 'by-start-time', startTimeMs: 1_767_225_600_000 },
+    ];
+    for (const deliverPolicy of accepted) {
+      expect(
+        () => new JetStreamOptionsValidator().validate(withPolicy(deliverPolicy)),
+        `${JSON.stringify(deliverPolicy)} was refused`,
+      ).not.toThrow();
+    }
+  });
+
+  // Named like the HOCON reader names it, so the two doors a policy comes in
+  // through give the same answer.
+  test.each([
+    { retired: 'byStartSeq', replacement: 'by-start-sequence', start: { startSeq: 4242 } },
+    { retired: 'byStartTime', replacement: 'by-start-time', start: { startTimeMs: 1_767_225_600_000 } },
+  ])('refuses the retired kind $retired, naming $replacement', ({ retired, replacement, start }) => {
+    const refusal = refusalOf({ kind: retired, ...start });
+    expect(refusal.field).toBe('consumer.deliverPolicy.kind');
+    expect(refusal.value).toBe(retired);
+    expect(refusal.message).toContain(`'${replacement}'`);
+    expect(refusal.message).toMatch(/renamed/);
+  });
+
+  // Each near miss is what a lenient check would let through: the driver's
+  // own spelling, a different case, a longer word, and a name every object
+  // inherits — which a lookup with `in` would find.
+  test.each(['from-the-top', 'by_start_sequence', 'By-Start-Sequence', 'by-start-sequences', 'constructor'])(
+    'refuses the unknown kind %s, naming the kinds that exist',
+    (kind) => {
+      const refusal = refusalOf({ kind, startSeq: 4242, startTimeMs: 1_767_225_600_000 });
+      expect(refusal.field).toBe('consumer.deliverPolicy.kind');
+      expect(refusal.value).toBe(kind);
+      expect(refusal.message).toContain("'by-start-sequence'");
+      expect(refusal.message).toContain("'by-start-time'");
+      expect(refusal.message).not.toMatch(/renamed/);
+    },
+  );
+
+  test('refuses an object that carries no kind', () => {
+    const refusal = refusalOf({ startSeq: 4242 });
+    expect(refusal.field).toBe('consumer.deliverPolicy.kind');
+    expect(refusal.message).toContain("'by-start-sequence'");
+  });
+
+  // Wrapped, because `test.each` spreads an array row into arguments.
+  test.each([
+    { label: 'null', deliverPolicy: null },
+    { label: 'a number', deliverPolicy: 42 },
+    { label: 'a boolean', deliverPolicy: true },
+    { label: 'an array', deliverPolicy: ['by-start-sequence'] },
+  ])('refuses $label, which is neither a string nor a { kind } object', ({ deliverPolicy }) => {
+    const refusal = refusalOf(deliverPolicy);
+    expect(refusal.field).toBe('consumer.deliverPolicy');
+    expect(refusal.value).toEqual(deliverPolicy);
+  });
+
+  // An object arm is only as good as the value it carries: nats.js hands
+  // `startSeq` on as `opt_start_seq` and `startTimeMs` as `opt_start_time`, so
+  // an arm without a usable one provisions a consumer the server refuses at
+  // connect — and since that error is rethrown into the reconnect loop, which
+  // retries forever by default, a configuration mistake used to surface as an
+  // endless outage instead of a startup failure naming the field.
+  test.each([
+    { label: 'a missing startSeq', start: {} },
+    { label: 'startSeq 0, before the first sequence', start: { startSeq: 0 } },
+    { label: 'a negative startSeq', start: { startSeq: -3 } },
+    { label: 'a fractional startSeq', start: { startSeq: 7.5 } },
+    { label: 'a NaN startSeq', start: { startSeq: Number.NaN } },
+    { label: 'an infinite startSeq', start: { startSeq: Number.POSITIVE_INFINITY } },
+    { label: 'a startSeq spelled as a string', start: { startSeq: '42' } },
+  ])('refuses by-start-sequence with $label, naming the field', ({ start }) => {
+    const refusal = refusalOf({ kind: 'by-start-sequence', ...start });
+    expect(refusal.field).toBe('consumer.deliverPolicy.startSeq');
+    expect(refusal.message).toMatch(/positive integer/);
+  });
+
+  test.each([
+    { label: 'a missing startTimeMs', start: {} },
+    { label: 'a negative startTimeMs', start: { startTimeMs: -1 } },
+    { label: 'a NaN startTimeMs', start: { startTimeMs: Number.NaN } },
+    { label: 'an infinite startTimeMs', start: { startTimeMs: Number.POSITIVE_INFINITY } },
+    // Finite, and still past the last instant a Date can hold, so the actor's
+    // `new Date(startTimeMs).toISOString()` throws a RangeError at connect.
+    { label: 'a startTimeMs past the range of a Date', start: { startTimeMs: 8.64e15 + 1 } },
+    // A Date holds them, but toISOString() writes a five-digit year the
+    // server's RFC 3339 parser refuses — the first, and an epoch in
+    // microseconds mistaken for milliseconds.
+    { label: 'a startTimeMs in the year 10000', start: { startTimeMs: 253_402_300_800_000 } },
+    { label: 'a startTimeMs in microseconds', start: { startTimeMs: 1_767_225_600_000_000 } },
+    { label: 'a startTimeMs spelled as a date string', start: { startTimeMs: '2026-01-01T00:00:00Z' } },
+  ])('refuses by-start-time with $label, naming the field', ({ start }) => {
+    const refusal = refusalOf({ kind: 'by-start-time', ...start });
+    expect(refusal.field).toBe('consumer.deliverPolicy.startTimeMs');
+    expect(refusal.message).toMatch(/epoch milliseconds/);
+  });
+
+  test('accepts the edges: the first sequence, the epoch, and the last instant the server parses', () => {
+    for (const deliverPolicy of [
+      { kind: 'by-start-sequence', startSeq: 1 },
+      { kind: 'by-start-time', startTimeMs: 0 },
+      { kind: 'by-start-time', startTimeMs: 253_402_300_799_999 },
+    ] as const) {
+      expect(
+        () => new JetStreamOptionsValidator().validate(withPolicy(deliverPolicy)),
+        `${JSON.stringify(deliverPolicy)} was refused`,
+      ).not.toThrow();
+    }
+    // The bound is the last four-digit year, not a rounder number near it.
+    expect(new Date(253_402_300_799_999).toISOString()).toBe('9999-12-31T23:59:59.999Z');
+    expect(new Date(253_402_300_800_000).toISOString()).toBe('+010000-01-01T00:00:00.000Z');
   });
 });
 
@@ -243,36 +462,36 @@ describe('TcpSocketOptionsValidator', () => {
   // `length > cap`, and every comparison against NaN is false, so a
   // non-numeric value did not clamp anything: it removed the cap and restored
   // the unbounded buffering the limit exists to prevent.
-  test('rejects an implausible framing.maxLineLen', () => {
-    for (const maxLineLen of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+  test('rejects an implausible framing.maxLineBytes', () => {
+    for (const maxLineBytes of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(
-        () => check({ host: 'h', port: 9000, framing: { kind: 'lines', maxLineLen } }),
-        `maxLineLen=${maxLineLen} was accepted`,
+        () => check({ host: 'h', port: 9000, framing: { kind: 'lines', maxLineBytes } }),
+        `maxLineBytes=${maxLineBytes} was accepted`,
       ).toThrow(OptionsError);
     }
   });
 
-  test('rejects an implausible framing.maxFrameLen', () => {
-    for (const maxFrameLen of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+  test('rejects an implausible framing.maxFrameBytes', () => {
+    for (const maxFrameBytes of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(
-        () => check({ host: 'h', port: 9000, framing: { kind: 'length-prefixed', maxFrameLen } }),
-        `maxFrameLen=${maxFrameLen} was accepted`,
+        () => check({ host: 'h', port: 9000, framing: { kind: 'length-prefixed', maxFrameBytes } }),
+        `maxFrameBytes=${maxFrameBytes} was accepted`,
       ).toThrow(OptionsError);
     }
   });
 
   test('the error names the nested field', () => {
     try {
-      check({ host: 'h', port: 9000, framing: { kind: 'lines', maxLineLen: Number.NaN } });
+      check({ host: 'h', port: 9000, framing: { kind: 'lines', maxLineBytes: Number.NaN } });
       throw new Error('expected the validator to reject');
     } catch (e) {
       expect(e).toBeInstanceOf(OptionsError);
-      expect((e as OptionsError).field).toBe('framing.maxLineLen');
+      expect((e as OptionsError).field).toBe('framing.maxLineBytes');
     }
   });
 
   test('accepts plausible caps, an unset cap, and bytes framing', () => {
-    expect(() => check({ host: 'h', port: 9000, framing: { kind: 'lines', maxLineLen: 65_536 } })).not.toThrow();
+    expect(() => check({ host: 'h', port: 9000, framing: { kind: 'lines', maxLineBytes: 65_536 } })).not.toThrow();
     expect(() => check({ host: 'h', port: 9000, framing: { kind: 'lines' } })).not.toThrow();
     expect(() => check({ host: 'h', port: 9000, framing: { kind: 'length-prefixed' } })).not.toThrow();
     expect(() => check({ host: 'h', port: 9000, framing: { kind: 'bytes' } })).not.toThrow();
@@ -345,6 +564,16 @@ describe('EmailBridgeOptionsValidator', () => {
   test('rejects an unknown onProcessed action', () => {
     expect(() => check({ imap: { ...imap, onProcessed: 'delete' as 'move' }, target }))
       .toThrow(/imap\.onProcessed/);
+  });
+
+  // #1443 — every value a HOCON key takes is kebab-case, so the union lost
+  // the camelCase spelling the action shipped with.  A caller that gets past
+  // the type (plain JavaScript, a cast) meets this rule instead, and the rule
+  // names the spelling that replaced it.
+  test('refuses the retired markSeen spelling and accepts mark-seen', () => {
+    expect(() => check({ imap: { ...imap, onProcessed: 'markSeen' as 'move' }, target }))
+      .toThrow(/imap\.onProcessed must be one of "mark-seen", "move"/);
+    expect(() => check({ imap: { ...imap, onProcessed: 'mark-seen' }, target })).not.toThrow();
   });
 
   test('rejects move mode without a destination', () => {

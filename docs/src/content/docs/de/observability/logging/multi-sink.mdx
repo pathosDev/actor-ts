@@ -170,6 +170,12 @@ geleert wird.  Er deckt außerdem beide Shutdown-Pfade ab — ein direktes
 [koordinierten Shutdown](/de/fundamentals/coordinated-shutdown/), dessen
 letzte Phase ohnehin `terminate()` aufruft.
 
+Mit `actor-ts.coordinated-shutdown.exit-process` endet eine Pipeline,
+die das System nicht abbaut — ein Lauf, den eine Phase abgebrochen hat,
+oder einer mit `terminate-actor-system = false` —, erst nach einem Flush
+der Sinks im selben Budget, der sie offen lässt: Eine gepufferte Zeile,
+auch die Meldung des Abbruchs selbst, erreicht ihr Ziel noch.
+
 Ein hängendes Ziel kann den Prozess nicht festhalten: Läuft das Budget
 ab, geht der Shutdown weiter, und eine Zeile auf der Konsole sagt, was
 verworfen wurde.  Records, die *nach* dem Schließen der Sinks geloggt

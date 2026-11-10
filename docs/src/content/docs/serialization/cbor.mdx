@@ -153,6 +153,33 @@ $ cat events.cbor | cbor-diag
 For debugging, you may want to **briefly switch to JSON** when
 hunting a bug, then switch back.
 
+## What the decoder refuses
+
+A binary format is read from a length prefix, which makes a hostile payload
+cheap to write and — happily — cheap to refuse.  The CBOR decoder applies the
+ceilings in
+[`actor-ts.serialization.read-constraints`](/reference/configuration/#actor-tsserialization):
+
+| Ceiling | Default | What it refuses |
+| --- | --- | --- |
+| `max-nesting-depth` | `256` | An item nested deeper than this.  A single `0x81` byte is one array level, so a hundred kilobytes of them is a hundred-thousand-level structure. |
+| `max-string-length` | `20M` | A byte string, text string or map key whose announced length exceeds it — checked on the header, so the bytes are never allocated. |
+| `max-document-bytes` | `0` (off) | A document larger than this, checked before the decoder is even built. |
+
+Each is a `CborDecodeError` naming the offset, and each fires before the work
+it exists to prevent.  `max-nesting-depth` may be lowered but not raised past
+`256`, which is also the encoder's hard cap: a node that read deeper than it
+writes would accept a payload it cannot produce.
+
+`max-string-length` ships above `remote.max-frame-bytes` on purpose, so the
+default cannot change what the cluster wire already accepts — the frame cap is
+the effective ceiling there.  Lower it where CBOR payloads are known to be
+small.
+
+Two bounds are not configurable and stay hard-coded: bignum magnitudes are
+capped at 1 KiB (8192-bit integers), and indefinite-length items are refused
+outright.
+
 ## Library
 
 The framework's CBOR implementation is internal — pure JS, no

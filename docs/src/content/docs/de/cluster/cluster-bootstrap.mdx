@@ -149,8 +149,22 @@ actor-ts.cluster.bootstrap {
   max-wait                = 60s
   required-contact-points = 3
   self-election-grace     = 10s
+
+  discovery {
+    method       = "kubernetes"
+    service-name = "my-app"
+  }
 }
 ```
+
+Der `discovery`-Unterblock wird von **jedem** `bootstrapCluster`-Aufruf
+gelesen, nicht nur vom Stable-Observation-Pfad: Er ist die `discovery:`-Option
+in Config-Form, ein Deployment kann die Wahl des Providers und den Namen des
+Service also aus dem Anwendungscode herausziehen.  Ein `method` außerhalb von
+`auto | config | dns | kubernetes` wird abgelehnt statt ignoriert.  Die
+Einstellungen der Provider selbst — DNS-Cache, SRV-Modus, Adress-Pins, eine
+statische Seed-Liste — stehen unter
+[`actor-ts.discovery`](/de/reference/configuration/#actor-tsdiscovery).
 
 `requiredContactPoints` ist der Wert, den es lohnt anzufassen. Die
 Margin fängt Discovery ab, die *langsam* ist; nur eine Mindestanzahl
@@ -159,6 +173,90 @@ konsequent zwei von drei Pods liefert, wird sich bereitwillig auf die
 falsche Menge einpendeln. Der Default `1` existiert, damit
 Einzelknoten-Entwicklung ohne Konfiguration läuft; in Produktion auf die
 erwartete Replica-Anzahl setzen.
+
+### Was die Optionen weiterreichen und was in HOCON bleibt
+
+Neben den eigenen Einstellungen — Discovery, Stable Observation, Readiness,
+`newClusterEnabled`, die Signal-Handler, der Receptionist — trägt
+`ClusterBootstrapOptions` eine feste Auswahl an Feldern der beiden
+Options-Typen, aus denen ein Knoten gebaut wird, unter den Namen, die sie dort
+haben:
+
+| Weitergereicht an | Felder |
+| --- | --- |
+| `ActorSystem.create` | `logger`, `otelLogs`, `logSinks`, `logLevel`, `config`, `configFile`, `persistence` |
+| `Cluster.join` | `host`, `port`, `advertisedHost`, `advertisedPort`, `transport`, die Seeds (`seeds` oder was die Discovery gefunden hat), `roles`, `appVersion`, `failureDetector`, `failureDetectorAutoDown`, `gossipIntervalMs`, `downing`, `splitBrainResolver`, `shutdownAfterUnsuccessfulJoinMs` |
+
+Jedes davon wird **nur weitergereicht, wenn es gesetzt ist**, und hat dann
+Vorrang vor der Konfiguration, wie eine explizite Option überall.  Ein
+ungesetztes Feld wird nicht als Default weitergereicht: Das System oder der
+Join liest seinen eigenen Schlüssel, also entscheiden
+`actor-ts.cluster.app-version`, `split-brain-resolver.stable-after` oder
+`actor-ts.logger.sinks.*` in der Datei genau so wie bei einem direkten
+`Cluster.join`.
+
+`failureDetectorAutoDown` ist das Feld, das man kennen sollte, wenn kein
+`downing` gesetzt ist.  Ungesetzt liest der Join
+`actor-ts.cluster.failure-detector.auto-down`, das `on` ausgeliefert wird:
+Der Failure Detector entfernt einen Peer, der über `down-after` hinaus still
+bleibt, und die überlebenden Nodes übernehmen seine Shards und Singletons.
+`false` ist das Opt-out, und im Code gesetzt gewinnt es gegen die Datei,
+der Failure Detector parkt den Peer dann stattdessen auf `unreachable`.  Das
+Beispiel unten konfiguriert `KeepMajority`, die Form, die ein
+Produktions-Deployment übernehmen sollte: Ohne Strategie entfernt bei einer
+echten Partition jede Seite die andere, und beide laufen als zwei Cluster
+weiter — siehe [Downing-Strategien](/de/cluster/downing-strategies/).
+
+```ts
+import { ClusterBootstrapOptions, KeepMajority } from 'actor-ts/cluster';
+
+const bootstrapOptions = ClusterBootstrapOptions.create('my-app')
+  .withDiscovery('kubernetes')
+  .withDowning(new KeepMajority())
+  .withSplitBrainResolver({ stableAfterMs: 20_000 })
+  .withShutdownAfterUnsuccessfulJoinMs(60_000);
+```
+
+Jedes andere Feld von `ClusterOptions` und `ActorSystemOptions` — der
+φ-Accrual-Detektor, die Seed-Retry- und Tombstone-Timings, die
+Beförderungsschwellen, die Grenzen und Timeouts der Leitung, Dead-Letter- und
+Diagnose-Einstellungen — ist auf diesem Pfad **nur über HOCON** erreichbar:
+unter `actor-ts.cluster.*`, `actor-ts.remote.*` oder im eigenen Block des
+Systems setzen, in der `application.conf` oder über `withConfig`.  Dabei geht
+nichts verloren, denn das System und der Join lesen diese Schlüssel selbst,
+mit der Präzedenz, die sie bei einem direkten Join haben.  Der Bootstrap
+gewinnt dadurch, eine kurze Liste dessen zu bleiben, was eine Anwendung im
+Code entscheidet — die Identität des Knotens, seine Mitgliedschaft, wie
+Ausfälle behandelt werden, die Frist des Joins und wohin die Logs gehen —,
+statt einer zweiten Kopie zweier Options-Typen, in der jedes weitergereichte
+Feld eine Stelle mehr ist, an die eine Änderung denken muss, und ein
+vergessenes Weiterreichen still scheitert.  Was HOCON nicht ausdrücken kann —
+eine Dispatcher-Instanz, ein Scheduler, Startup-Tasks —, braucht
+`ActorSystem.create` und `Cluster.join` direkt.  Das Config-Profil, das keine
+Datei für sich selbst wählen kann, folgt weiterhin `ACTOR_TS_PROFILE`, und
+die `reference.conf` des Projekts, die Secrets-Datei und die `.env`-Datei
+folgen `ACTOR_TS_REFERENCE_CONFIG`, `ACTOR_TS_SECRETS_CONF` und
+`ACTOR_TS_ENV_FILE`.
+
+## Die eigene Adresse des Knotens
+
+Die Wahl ordnet nach der Adresse dieses Knotens, also löst der Bootstrap die
+Adresse auf, bevor er irgendetwas beobachtet — aus den Schichten, die
+`Cluster.join` liest, mit den Umgebungsvariablen ganz unten:
+
+```
+explizite Optionen  >  actor-ts.remote.tcp.*  >  CLUSTER_HOST / POD_IP / HOSTNAME, CLUSTER_PORT  >  0.0.0.0, 2552
+```
+
+Ein Port in der `application.conf` gewinnt also gegen `CLUSTER_PORT`, und die
+Variable antwortet weiterhin auf einem Knoten, dessen Datei keinen nennt: Die
+`reference.conf` liefert keines der beiden Leaves aus, eine unkonfigurierte
+Datei lässt die Schicht also leer.  Die Identität, die Peers wählen —
+`advertised-host` / `advertised-port` im selben Block —, wird genauso
+aufgelöst, und die Wahl, der Seed-Filter und die Discovery verwenden sie alle
+vor dem Join; die Adresse, auf der ein Knoten gewählt wird, ist also die, die
+er ankündigt.  Siehe
+[`actor-ts.remote`](/de/reference/configuration/#actor-tsremote).
 
 ## Auf Readiness warten
 
@@ -188,7 +286,7 @@ berechnete Budget durch:
 | Feld | Default | Was |
 | --- | --- | --- |
 | `minimumMembers` | 1 | Wenigste `up`-Mitglieder — self eingeschlossen —, bevor das Cluster als bereit gilt. Wie `requiredContactPoints` dimensionieren: auf die Replica-Anzahl. |
-| `timeoutMs` | abgeleitet | `await-ready`, wenn gesetzt; sonst `self-election-grace` + 5 s hinter Stable Observation — das Budget, an dem die Readiness jedes Knotens tatsächlich hängt, Gewinner oder nicht — sonst flache 5 s. |
+| `timeoutMs` | abgeleitet | `await-ready`, wenn gesetzt; sonst `self-election-grace` + 5 s hinter Stable Observation mit `new-cluster-enabled` an — das Budget, an dem die Readiness jedes Knotens tatsächlich hängt, Gewinner oder nicht — sonst flache 5 s. |
 
 ```hocon
 actor-ts.cluster.bootstrap {
@@ -211,7 +309,8 @@ cluster.selfElected;    // true — this node founded its cluster
 Ohne `timeoutMs` wartet das Promise unbegrenzt, wie
 `system.whenTerminated()` — überall dort mit einer Deadline paaren, wo
 das Cluster legitim ausbleiben kann; ein Knoten, der das Cluster
-verlassen hat oder entfernt wurde, wird nie bereit. Readiness heißt hier
+verlassen hat oder entfernt wurde, wird nie bereit, und ein Warten, das
+noch aussteht, wenn der Join aufgibt, lehnt sofort ab. Readiness heißt hier
 bewusst *Mitgliedschaft*: App-registrierte Readiness-Checks (das
 Aggregat des `/ready`-Endpoints) können von Initialisierung abhängen,
 die erst nach dem Bootstrap läuft — auf sie zu warten könnte genau den
@@ -220,6 +319,104 @@ Balancers; `awaitReady` ist die prozessinterne.
 
 Das alte Fire-and-forget-Verhalten liefert `awaitReady: false` plus ein
 eigenes `cluster.awaitReady().catch(…)`.
+
+### Verbunden mit der eigenen Frist des Joins
+
+Jeder `Cluster.join` kann eine eigene Frist tragen,
+[`actor-ts.cluster.shutdown-after-unsuccessful-join`](/de/cluster/joining-and-seeds/#wenn-kein-seed-je-antwortet),
+und der Join unter dem Bootstrap ist keine Ausnahme. Beide sind
+ausdrücklich miteinander verbunden:
+
+- **`awaitReady` läuft zuerst ab** — die Ablehnung von oben. Die Pipeline
+  läuft mit `ClusterJoinUnsuccessfulReason`, dem Grund, den auch das
+  Aufgeben übergibt, also erkennt ein Shutdown-Task einen gescheiterten
+  Join an einem einzigen Grund, egal welche Frist abgelaufen ist. Das
+  Scheitern wird auf Error geloggt, bevor dieser Lauf beginnt — unter
+  `exit-process = on` beendet der Lauf den Prozess, bevor die Ablehnung den
+  Aufrufer erreichen kann —, und der Lauf endet nie mit `0`: Mit
+  `exit-code = 0` endet er mit `1`.  `shutdown()` auf einem Knoten, der
+  gestartet ist, übergibt weiterhin `ClusterLeavingReason`.
+- **Das Aufgeben kommt zuerst** — das Warten endet sofort. Der Bootstrap
+  wartet auf die Pipeline, die das Aufgeben gestartet hat, und lehnt mit
+  einem `ClusterReadyTimeoutError` ab, der
+  `actor-ts.cluster.shutdown-after-unsuccessful-join` nennt und dessen
+  Frist als `timeoutMs` trägt.
+- **`awaitReady: false` oder `0`** — das Aufgeben ist die einzige Frist,
+  die bleibt, sobald `bootstrapCluster` zurückgekehrt ist.
+- **Hinter Stable Observation mit `new-cluster-enabled` an** wird ein
+  Aufgeben, das `self-election-grace` + 5 s — das berechnete Budget von
+  oben — nicht überschreitet, vor dem Join mit einem `OptionsError`
+  abgelehnt, der beide Schlüssel nennt. Jeder Knoten außer dem gewählten
+  wartet diese Frist ab, ohne dass ihn etwas befördern kann, und gäbe auf
+  einem Cluster auf, der gerade entsteht.  Ist `new-cluster-enabled` aus,
+  wird niemand gewählt und keine Frist läuft, also wird auch kein
+  Aufgeben ihretwegen abgelehnt.
+
+Die Uhr des Aufgebens startet beim Join, also laufen Discovery und Stable
+Observation vorher. Setze es in HOCON, wo jeder Knoten des Deployments
+denselben Wert liest:
+
+```hocon
+actor-ts.cluster.shutdown-after-unsuccessful-join = 60s
+```
+
+oder auf den Bootstrap-Optionen, die Vorrang vor der Datei haben und den Join
+nur erreichen, wenn sie gesetzt sind:
+
+```ts
+const bootstrapOptions = ClusterBootstrapOptions.create('my-app')
+  .withDiscovery('kubernetes')
+  .withShutdownAfterUnsuccessfulJoinMs(60_000);
+```
+
+So oder so prüft die Ablehnung hinter Stable Observation die Frist, die der
+Join scharf schaltet: Ein explizites `0` über einer Datei, die eine setzt,
+lässt nichts abzulehnen.
+
+## Einen Cluster gründen: nur beim ersten Start
+
+Ein gebootstrappter Knoten, der niemanden zum Beitreten findet, gründet einen
+Cluster — auf dem einfachen Pfad sofort, hinter der Stable Observation nach
+der Wahl-Grace.  Beim ersten Start eines Deployments ist das richtig, irgendwer
+muss es tun, und bei jedem Start danach ist es das Split-Brain: Ein Knoten, den
+eine Partition, ein Discovery-Ausfall oder eine DNS-Antwort, die der
+Pod-Readiness hinterherhinkt, von seinen Peers abschneidet, kommt als Gründer
+eines zweiten Clusters neben dem laufenden hoch.
+
+`actor-ts.cluster.bootstrap.new-cluster-enabled` ist der Weg, auf dem ein
+Deployment sagt, dass der Cluster jetzt existiert:
+
+```hocon
+actor-ts.cluster.bootstrap.new-cluster-enabled = off
+```
+
+Aus wählt sich kein gebootstrappter Knoten selbst — die Policy, die der Join
+bekommt, ist auf beiden Pfaden `'never'` —, und ein explizites `seeds: []`, das
+„ich bin der erste Knoten“ sagt, wird mit einem `OptionsError` abgelehnt.  Ein
+Knoten, der niemanden findet, bleibt `joining`: Unter dem Default-`awaitReady`
+scheitert der Start mit `ClusterReadyTimeoutError` und baut das System ab, mit
+`awaitReady: false` löst er auf und wartet darauf, dass ein Leader ihn
+befördert.  Ein existierender Cluster befördert den Neuankömmling genau wie
+vorher — aus verbietet das Gründen, nicht das Beitreten.
+
+Der Schlüssel wird mit `on` ausgeliefert, damit ein erster Start und
+Einzelknoten-Entwicklung nichts brauchen, und jeder Start loggt eine Warnung,
+solange er an ist: Die Erst-Deploy-Einstellung, die in Produktion an bleibt,
+ist genau der Fall, für den es den Schlüssel gibt.  `withNewClusterEnabled(…)`
+im Code gewinnt über den Schlüssel, wie jede Option.
+
+Die Stable Observation selbst hat im Block keinen Schalter, und das ist eine
+Entscheidung, keine Lücke.  Sie einzuschalten ändert, was `bootstrapCluster`
+dem aufrufenden Code verspricht: Jeder Start wartet mindestens
+`stable-margin`, ein Start, dessen Discovery nie zur Ruhe kommt, scheitert
+nach `max-wait`, statt beizutreten, und mit `new-cluster-enabled` an wächst
+das Readiness-Budget um die Wahl-Grace.  Das sind Eigenschaften des
+Startpfads, um den eine Anwendung
+herumgeschrieben ist, also bleibt der Schalter neben diesem Code
+(`withStableObservation`), und die fünf Timings sind Konfiguration, weil sie
+eine Phase einstellen, die der Code gewählt hat.  Was ein Deployment aus einer
+Datei heraus sagen muss, ist, ob ein Knoten überhaupt einen Cluster gründen
+darf — und das ist dieser Schlüssel.
 
 ## Was die Phase verweigert
 

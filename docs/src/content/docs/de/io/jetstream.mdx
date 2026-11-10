@@ -28,13 +28,13 @@ const jetStream = system.spawn(
   'orders-stream',
 );
 
-// Publish (idempotent, wenn messageId gesetzt ist):
+// Publish (idempotent when messageId is set):
 jetStream.tell({
   kind: 'publish',
   publish: {
     subject:   'orders.created',
     payload:   JSON.stringify(order),
-    messageId: order.id,          // Server dedupliziert innerhalb des Dedup-Fensters des Streams
+    messageId: order.id,          // server dedupes within the stream's dedup window
   },
 });
 ```
@@ -50,13 +50,13 @@ class OrderProcessor extends Actor<JetStreamMessage> {
   async onReceive(message: JetStreamMessage): Promise<void> {
     try {
       await db.insertOrder(JSON.parse(new TextDecoder().decode(message.payload)));
-      this.jetStream.tell({ kind: 'acknowledgment', streamSeq: message.streamSeq });
+      this.jetStream.tell({ kind: 'acknowledgment', ackToken: message.ackToken });
     } catch {
-      // erneute Zustellung nach 5 s
+      // redeliver after 5 s
       this.jetStream.tell({
-        kind:      'negativeAcknowledgment',
-        streamSeq: message.streamSeq,
-        delayMs:   5_000,
+        kind:     'negativeAcknowledgment',
+        ackToken: message.ackToken,
+        delayMs:  5_000,
       });
     }
   }
@@ -67,16 +67,16 @@ class OrderProcessor extends Actor<JetStreamMessage> {
 
 ```ts
 interface JetStreamOptionsType extends BrokerCommonOptionsType {
-  servers?:  string[] | string;       // NATS-Server-URLs
+  servers?:  string[] | string;       // NATS server URLs
   token?:    string;
   user?:     string;
   password?: string;
-  name?:     string;                  // Client-Bezeichner
-  tls?:      TlsTransportOptionsType; // Cert-Material; aktiviert TLS; nur im Code
-  stream?:   JetStreamStreamConfig;   // gesetzt, wenn dieser Actor den Stream besitzt
-  consumer?: JetStreamConsumerConfig; // nötig, um eine Subscription zu starten
-  target?:   ActorRef<JetStreamMessage>; // empfängt jede konsumierte Nachricht
-  acknowledgmentTimeout?: number;     // Ack-Wait-Obergrenze; Default consumer.ackWaitMs ?? 30_000
+  name?:     string;                  // client identifier
+  tls?:      TlsTransportOptionsType; // cert material; also enables TLS; code-only
+  stream?:   JetStreamStreamConfig;   // set when this actor owns the stream
+  consumer?: JetStreamConsumerConfig; // required to start a subscription
+  target?:   ActorRef<JetStreamMessage>; // receives every consumed message
+  acknowledgmentTimeout?: number;     // ack-wait ceiling; default consumer.ackWaitMs ?? 30_000
 }
 ```
 
@@ -105,9 +105,16 @@ aktualisieren** soll (`create` ist standardmäßig `true`).
 | `subjects` | Vom Stream erfasste Subjects, z. B. `['orders.>']` (erforderlich). |
 | `retention` | `'limits'` *(Default)*, `'interest'` oder `'workqueue'`. |
 | `storage` | `'file'` (dauerhaft) oder `'memory'`. |
-| `maxMessages` / `maxBytes` | Aufbewahrungs-Obergrenzen. |
-| `maxAge` | Max. Alter in **Nanosekunden** (unverändert durchgereicht). |
+| `maxMessages` / `maxBytes` | Aufbewahrungs-Obergrenzen.  `-1` bedeutet **keine Grenze**. |
+| `maxAge` | Max. Alter in **Nanosekunden** (unverändert durchgereicht).  `0` bedeutet **keine Grenze**. |
 | `create` | Stream beim Verbinden anlegen/aktualisieren.  Default `true`. |
+
+Die Schreibweisen für „keine Grenze“ stammen von NATS selbst und sind **nicht**
+symmetrisch: die beiden Mengen-Obergrenzen nehmen `-1`, `maxAge` nimmt `0` — es
+ist eine Nanosekunden-Spanne, bei der ein negativer Wert nichts bedeuten würde.
+Sie werden unverändert an den Server durchgereicht.  Jeder *andere* nicht
+positive Wert wird beim Start abgelehnt, `-2` bleibt also der Tippfehler, der er
+ist.
 
 ### Consumer-Konfiguration
 
@@ -117,12 +124,100 @@ Setze `consumer`, um eine dauerhafte Subscription zu binden.
 | --- | --- |
 | `durable` | Dauerhafter Consumer-Name (erforderlich — übersteht Neustarts). |
 | `mode` | `'push'` *(Default)* oder `'pull'` (siehe unten). |
-| `deliverPolicy` | `'all'` *(Default)*, `'last'`, `'new'`, `{ kind: 'byStartSeq', startSeq }` oder `{ kind: 'byStartTime', startTimeMs }`. |
+| `deliverPolicy` | `'all'` *(Default)*, `'last'`, `'new'`, `{ kind: 'by-start-sequence', startSeq }` oder `{ kind: 'by-start-time', startTimeMs }`. |
 | `ackPolicy` | `'explicit'` *(Default — ack/nak/term erforderlich)*, `'none'` oder `'all'`. |
 | `ackWaitMs` | Zeit, bevor der Server ohne Ack erneut zustellt.  Default `30_000`. |
 | `filterSubject` | Subject-Filter — standardmäßig alle Subjects des Streams. |
-| `maxAcknowledgmentPending` | Max. unbestätigte Nachrichten in Flight.  Default `1024`. |
+| `maxAcknowledgmentPending` | Max. unbestätigte Nachrichten in Flight.  Default `1024`; `-1` bedeutet **keine Grenze**. |
 | `create` | Consumer beim Verbinden anlegen/aktualisieren.  Default `true`. |
+
+`ackWaitMs` hat keine solche Schreibweise — NATS liest ein Ack-Wait von null als
+„Server-Default verwenden“, und genau das sagt bereits ein nicht gesetztes Feld
+— der Wert muss also positiv sein.
+
+### Beide Gruppen aus HOCON
+
+Welchen Stream ein Actor besitzt und welches Durable er bindet, ist
+Deployment-Gestalt und keine Anwendungslogik — beide Gruppen sind deshalb
+unter `actor-ts.io.broker.jetstream` lesbar, ebenso die Verbindung, so
+geschrieben wie auf der [NATS-Seite](/de/io/nats/), und die
+Ack-Wait-Obergrenze:
+
+```hocon
+actor-ts.io.broker.jetstream {
+  servers  = ["nats://nats-1:4222", "nats://nats-2:4222"]   # a list, even for one server
+  name     = "billing"
+  user     = "billing"
+  password = ${?ACTOR_TS_NATS_PASSWORD}
+  # token  = ${?ACTOR_TS_NATS_TOKEN}   # instead of user and password
+
+  acknowledgment-timeout = 45s
+
+  stream {
+    name         = "BILLING"
+    subjects     = ["billing.>"]
+    retention    = "workqueue"
+    storage      = "file"
+    max-messages = 1000000
+    max-bytes    = 8M
+    max-age      = 3600000000000   # NANOseconds, passed through verbatim
+    create       = true
+  }
+
+  consumer {
+    durable                   = "billing-proc"
+    mode                      = "push"
+    deliver-policy            = "all"
+    ack-policy                = "explicit"
+    ack-wait                  = 30s
+    filter-subject            = "billing.charges"
+    max-acknowledgment-pending = 1024
+    create                    = true
+  }
+}
+```
+
+`deliver-policy` nimmt auch seine beiden parametrisierten Formen, als Objekt.
+Das `kind` behält seine TypeScript-Schreibweise, weil es ein *Wert* ist, der
+unverändert in der Union landet — und diese Schreibweise ist kebab-case, wie
+jeder Wert, den ein HOCON-Schlüssel annimmt:
+
+```hocon
+consumer {
+  durable        = "billing-proc"
+  deliver-policy { kind = "by-start-sequence", start-seq = 4242 }
+  # deliver-policy { kind = "by-start-time", start-time = 1767225600000 }  # or this; epoch ms
+}
+```
+
+Ein unbekanntes `kind` wird beim Start abgelehnt, statt still auf `all`
+zurückzufallen — das würde bei einem Tippfehler einen ganzen Stream erneut
+zustellen.  Das gilt ebenso für ein im Code gebautes Objekt, dem ein Cast oder
+reines JavaScript jedes beliebige `kind` mitgeben kann: Es wird beim Start mit
+einem `OptionsError` abgelehnt, der die vorhandenen Kinds nennt — oder, bei
+einer abgelösten Schreibweise, diejenige, die sie ersetzt hat.
+
+Auch der Startwert wird beim Start geprüft, sodass ein Consumer, den der Server
+beim Connect ablehnen und die Reconnect-Schleife endlos wiederholen würde,
+schon vorher scheitert und das Feld nennt.  `start-seq` (`startSeq`) ist eine
+positive Ganzzahl bis `Number.MAX_SAFE_INTEGER`: Stream-Sequenzen beginnen bei
+1, und jenseits dieser Grenze hält eine Zahl nicht mehr jede Ganzzahl, die
+gesendete Sequenz wäre also nicht immer die geschriebene.  `start-time`
+(`startTimeMs`) ist ein Zeitpunkt in Epoch-Millisekunden von `0` bis
+`253402300799999`, also `9999-12-31T23:59:59.999Z`: Der Server liest ihn als
+RFC-3339-Zeit, deren Jahr vier Stellen hat, und eine Epoch in Mikrosekunden,
+für Millisekunden gehalten, landet weit dahinter.
+
+Beide Gruppen werden **als Ganzes** gelesen: `withStream({ … })` /
+`withConsumer({ … })` im Code ersetzen den konfigurierten Block, statt sich
+hineinzumischen — die gewohnte Präzedenz (Konstruktor > HOCON > Defaults),
+angewendet auf das Feld, das das jeweilige Objekt *ist*.  `name` + `subjects`
+sowie `durable` sind Pflicht; ein Block ohne eines wird beim Start abgelehnt
+und benennt das Blatt.
+
+`target` hat keinen Config-Key — eine `ActorRef` benennt einen lebenden Actor
+in diesem Prozess, und den kann eine Config-Datei nicht bezeichnen.  `tls`
+ebenso wenig: es trägt das Zertifikatsmaterial selbst.
 
 ## Befehle
 
@@ -131,30 +226,64 @@ Setze `consumer`, um eine dauerhafte Subscription zu binden.
 | `kind` | Felder | Zweck |
 | --- | --- | --- |
 | `publish` | `publish: JetStreamPublish` | Nachricht publizieren (siehe [idempotentes Publish](#idempotentes-publish)). |
-| `acknowledgment` | `streamSeq` | Zugestellte Nachricht bestätigen — Server markiert sie als konsumiert. |
-| `negativeAcknowledgment` | `streamSeq`, `delayMs?` | Erneut zustellen (optional nach `delayMs`). |
-| `terminate` | `streamSeq`, `reason?` | Endgültiger Fehler — Server verwirft die Nachricht dauerhaft. |
-| `inProgress` | `streamSeq` | Heartbeat — verlängert das Ack-Fenster für einen langen Handler. |
+| `acknowledgment` | `ackToken` | Zugestellte Nachricht bestätigen — Server markiert sie als konsumiert. |
+| `negativeAcknowledgment` | `ackToken`, `delayMs?` | Erneut zustellen (optional nach `delayMs`). |
+| `terminate` | `ackToken`, `reason?` | Endgültiger Fehler — Server verwirft die Nachricht dauerhaft. |
+| `inProgress` | `ackToken` | Heartbeat — verlängert das Ack-Fenster für einen langen Handler. |
 | `fetch` | `batch`, `expiresMs?` | **Nur Pull-Modus** — bis zu `batch` Nachrichten anfordern. |
 
 Jede eingehende `JetStreamMessage` trägt `subject`, `payload`
-(`Uint8Array`), `replyTo`, `streamSeq`, `consumerSeq`, `deliveries`
-(Zustellungszähler — `1` beim ersten Versuch), `timestamp` und
-`headers`.
+(`Uint8Array`), `replyTo`, `streamSequence`, `consumerSequence`, `deliveries`
+(Zustellungszähler — `1` beim ersten Versuch), `ackToken`, `timestamp`
+und `headers`.
 
 ## Der Ack-Handshake
 
 Mit dem Default `ackPolicy: 'explicit'` muss jede zugestellte Nachricht
 mit genau einem von `acknowledgment`, `negativeAcknowledgment` oder
-`terminate` aufgelöst werden, adressiert über `streamSeq`:
+`terminate` aufgelöst werden, adressiert über `ackToken`:
 
 - **`acknowledgment`** — Verarbeitung erfolgreich; der Server rückt den Consumer vor.
 - **`negativeAcknowledgment`** — erneut versuchen; der Server stellt erneut zu (nach `delayMs`, falls angegeben).
 - **`terminate`** — endgültig aufgeben; keine erneute Zustellung.
 - **`inProgress`** — nicht terminal; setzt den Ack-Wait-Timer zurück, damit ein langsamer Handler nicht mitten in der Arbeit erneut zugestellt wird.
 
+`ackToken` ist eine opake Zahl, die der Actor pro **Zustellung** vergibt
+und mit der Nachricht ausliefert.  Es ist bewusst nicht `streamSequence`: Die
+Stream-Sequenz identifiziert die *Nachricht*, und JetStream verwendet sie
+bei jeder erneuten Zustellung unverändert weiter (nur `consumerSequence` und
+`deliveries` bewegen sich).  Zwei Zustellungen einer Nachricht können
+gleichzeitig in Flight sein — im Pull-Modus regelmäßig, weil sich
+Fetch-Batches überlappen —, und nur `ackToken` unterscheidet sie.  Sende
+es nie an den Broker zurück und persistiere es nicht: Außerhalb der
+Actor-Instanz, die es vergeben hat, bedeutet es nichts, und es übersteht
+keinen Reconnect.
+
 Setze `ackPolicy: 'none'` für reine Fire-and-Hose-Zustellung ohne
-erwartetes Ack.
+erwartetes Ack.  Nachrichten tragen auch in diesem Modus ein `ackToken`,
+aber **das Token benennt nichts**: Der Actor registriert keine Zustellung,
+also wird jedes `acknowledgment` / `negativeAcknowledgment` / `terminate` /
+`inProgress` darauf ignoriert.  Ein Consumer, der vorsorglich quittiert,
+macht dabei nichts falsch — der Drop wird hier auf `debug` gemeldet, nicht
+auf `warn`.
+
+Ein Settle-Befehl, der in einem *anderen* Modus ins Leere läuft, **wird**
+auf `warn` gemeldet, bei allen vier Befehlen, mit Nennung des Befehls und
+des Tokens: Die adressierte Zustellung ist bereits abgelaufen, wurde
+bereits aufgelöst oder stammt von vor einem Reconnect — die Nachricht wird
+also erneut zugestellt und erneut verarbeitet.
+
+**Ein Verbindungsverlust löst jede laufende Zustellung lokal auf.**  Jede
+wird fehlgeschlagen, best-effort `nak`'t, damit der Server sie erneut
+zustellt, und ihr Ack-Timeout wird entschärft — der Reconnect startet also
+mit leerer Pending-Map, und ein Settle-Befehl, der noch für eine Zustellung
+von vor dem Verbindungsverlust unterwegs ist, läuft ins Leere (siehe oben).
+Der Verlust ist **eine** `warn`-Zeile, die nennt, wie viele Zustellungen in
+Flight waren; das Detail pro Zustellung geht auf `debug`, denn eine
+flatternde Verbindung würde bei einem Consumer mit `maxAcknowledgmentPending`
+im dreistelligen Bereich sonst Hunderte Warnungen pro Flattern schreiben.
+Ein Ack-Timeout bleibt auf `warn`: Das benennt einen einzelnen Handler, der
+nicht rechtzeitig geantwortet hat.
 
 ## Push- vs. Pull-Consumer
 
@@ -168,6 +297,14 @@ erwartetes Ack.
   Ack-Handshake.  Passt besser zu langsamen/schubweisen Consumern als
   Push-Fan-out.
 
+**Fetches überlappen sich — so gewollt.** Ein `fetch`-Befehl gibt den
+Mailbox-Turn sofort zurück, sodass ein zweites `fetch` bedient wird,
+während die Acks des ersten Batches noch ausstehen — und das muss so sein,
+denn diese Acks treffen selbst als Mailbox-Nachrichten ein, und ein
+`fetch`, das seinen Turn offen hielte, liefe darauf in einen Deadlock.
+Fetches zu pipelinen ist deshalb unterstützt, und genau darum wird eine
+Zustellung über `ackToken` adressiert und nicht über `streamSequence`.
+
 ## Idempotentes Publish
 
 `JetStreamPublish` unterstützt JetStreams serverseitige Deduplizierung
@@ -177,10 +314,10 @@ und optimistische Nebenläufigkeit:
 jetStream.tell({
   kind: 'publish',
   publish: {
-    subject:         'orders.created',
-    payload:         JSON.stringify(order),
-    messageId:       order.id,   // als Nats-Msg-Id gesendet — dedupliziert Re-Publishes im Fenster des Streams
-    expectedLastSeq: lastSeq,    // Server lehnt das Publish ab, wenn der Stream-Kopf sich bewegt hat (optimistische Nebenläufigkeit)
+    subject:              'orders.created',
+    payload:              JSON.stringify(order),
+    messageId:            order.id,       // sent as Nats-Msg-Id — dedupes re-publishes in the stream's window
+    expectedLastSequence: lastSequence,   // server rejects the publish if the stream head moved (optimistic concurrency)
   },
 });
 ```
@@ -188,19 +325,24 @@ jetStream.tell({
 ## Peer-Dependency
 
 ```bash
-npm install nats
-# oder: bun add nats
+npm install @nats-io/transport-node @nats-io/jetstream
+# or: bun add @nats-io/transport-node @nats-io/jetstream
 ```
 
-Das `nats`-Paket enthält sowohl Core-NATS als auch den JetStream-Client.
+Seit nats.js v3 sind es zwei Pakete: der Transport verbindet,
+`@nats-io/jetstream` trägt Streams, Consumer und deren Acknowledgments.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="ackWaitMs muss die Handler-Zeit übersteigen">
-  Braucht ein Handler regelmäßig länger als `ackWaitMs`, stellt der
-  Server die Nachricht mitten in der Verarbeitung erneut zu.  Erhöhe
-  entweder `ackWaitMs` oder sende `{ kind: 'inProgress', streamSeq }`,
-  um das Fenster für einen langlaufenden Handler zu verlängern.
+<Aside type="caution" title="Ein Handler langsamer als ackWaitMs bekommt die Nachricht zweimal">
+  Braucht ein Handler regelmäßig länger als `ackWaitMs`, stellt der Server
+  erneut zu, **während die erste Zustellung noch verarbeitet wird** — die
+  Arbeit läuft also zweimal, und zwei Zustellungen einer Nachricht sind
+  gleichzeitig in Flight.  Das ist eine Frage der Korrektheit, keine des
+  Feintunings: Der Handler muss idempotent sein und jede Zustellung über
+  deren eigenes `ackToken` auflösen.  Damit die Überlappung gar nicht erst
+  entsteht, sende `{ kind: 'inProgress', ackToken }`, um das Fenster für
+  einen noch arbeitenden Handler zu verlängern, oder erhöhe `ackWaitMs`.
 </Aside>
 
 <Aside type="caution" title="`fetch` gilt nur im Pull-Modus">

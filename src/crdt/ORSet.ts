@@ -1,5 +1,5 @@
 import { TAG_ENTROPY_CHARACTERS } from './Constants.js';
-import type { Crdt, ReplicaId } from './Crdt.js';
+import type { Crdt, CrdtIdentityFunction, ReplicaId } from './Crdt.js';
 import { randomId } from '../util/RandomString.js';
 import {
   assertPlainObject,
@@ -59,9 +59,13 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
    *                identity-string) lets `value()` return the
    *                original instances even when a custom identity
    *                callback is configured.
-   * `tombstones` — tags removed for an element-key.  Veto on merge
-   *                so a stale state from a slow peer can't resurrect
-   *                an already-removed tag.
+   * `tombstones` — tags removed, filed under the element-key they were
+   *                removed for.  Veto on merge so a stale state from a
+   *                slow peer can't resurrect an already-removed tag.
+   *                The bucketing is bookkeeping, not the rule: `merge`
+   *                vetoes by tag across every bucket, because a frame
+   *                can arrive with its buckets and its elements filed
+   *                under different keys (#1511).
    */
   private constructor(
     private readonly elements: ReadonlyMap<string, ElementEntry<E>>,
@@ -132,6 +136,11 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
     return (this.elements.get(this.identity(element))?.tags.size ?? 0) > 0;
   }
 
+  /** @see {@link Crdt.customIdentity} */
+  customIdentity(): CrdtIdentityFunction | undefined {
+    return this.identity === defaultIdentity ? undefined : this.identity;
+  }
+
   value(): ReadonlyArray<E> {
     const out: E[] = [];
     for (const entry of this.elements.values()) {
@@ -150,18 +159,34 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
     // 1. Tombstones are unioned — once removed, always removed.
     const mergedTombstones = unionMapOfSets(this.tombstones, other.tombstones);
 
-    // 2. Elements are merged per-key: union the tag sets, drop any
-    //    tag that appears in the merged tombstones, then drop empty
-    //    entries so `has` / `value` reflect cleanly.
+    // 2. The veto is **by tag, not per bucket** (#1511).  A tag is minted once,
+    //    for one element, from 96 bits of entropy (#722), so a tag tombstoned
+    //    under any key can never be legitimately live under another — which
+    //    makes the flattened set exactly as selective as the per-bucket lookup
+    //    for state this library produced, and strictly more selective for
+    //    state whose buckets and elements no longer agree on a key.
+    //
+    //    That disagreement is ordinary rather than exotic.  An identity never
+    //    travels on the wire, so a peer on the default rule, or a durable
+    //    record written before the identity was configured, files an element
+    //    under a key this replica would not have chosen; `fromJSON` re-files
+    //    the element, but a tombstone whose element was removed and never
+    //    re-added has no instance left in the frame to move with it and stays
+    //    under the sender's key.  Vetoing per bucket then missed it and the
+    //    removed element came back on the next merge with a slower peer.
+    const vetoedTags = flattenMapOfSets(mergedTombstones);
+
+    // 3. Elements are merged per-key: union the tag sets, drop any
+    //    tombstoned tag, then drop empty entries so `has` / `value`
+    //    reflect cleanly.
     const allKeys = new Set<string>([...this.elements.keys(), ...other.elements.keys()]);
     const mergedElements = new Map<string, ElementEntry<E>>();
     for (const key of allKeys) {
       const ours = this.elements.get(key);
       const theirs = other.elements.get(key);
-      const tomb = mergedTombstones.get(key) ?? EMPTY_SET;
       const merged = new Set<string>();
-      if (ours) for (const tag of ours.tags) if (!tomb.has(tag)) merged.add(tag);
-      if (theirs) for (const tag of theirs.tags) if (!tomb.has(tag)) merged.add(tag);
+      if (ours) for (const tag of ours.tags) if (!vetoedTags.has(tag)) merged.add(tag);
+      if (theirs) for (const tag of theirs.tags) if (!vetoedTags.has(tag)) merged.add(tag);
       if (merged.size > 0) {
         // Prefer the locally-known element; fall back to the peer's.
         const element = ours?.element ?? theirs?.element as E;
@@ -169,17 +194,27 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
       }
     }
 
-    // No third step: tags carry their own entropy, so nothing has to be
+    // No fourth step: tags carry their own entropy, so nothing has to be
     // carried across a merge to keep the next-issued one fresh.
     return new ORSet<E>(mergedElements, mergedTombstones, this.identity);
   }
 
   toJSON(): ORSetJson {
-    // Wire shape — each element is JSON-stringified verbatim so
-    // the default round-trip works.  Custom identity does NOT
-    // change the wire shape: callers must pass the same `identity`
-    // option to `fromJSON` to reconstruct a set with the same
-    // dedup rule.
+    // Wire shape — each element is JSON-stringified verbatim so the default
+    // round-trip works.  A custom identity does not change that shape, and
+    // the reason is what makes the frame portable: an element *key* is
+    // identity-function output, while `elementValues` carries the instance
+    // itself.  A decoder therefore never has to reproduce the sender's rule —
+    // it reads each element back out and files it under its own, which is
+    // exactly what `fromJSON` does with an `identity` option (#766).
+    //
+    // This used to instruct callers to pass the sender's identity to
+    // `fromJSON` to get the same dedup rule back.  That was the contract #766
+    // was filed against: an identity is a closure and never travels, so the
+    // supported and interesting case is the receiver passing a *different*
+    // one — a peer on the default rule, or a durable record written before
+    // the identity was configured, decoded by a replica that has since
+    // learned it.
     //
     // Built with `Object.fromEntries` rather than by assignment: an element
     // key is identity-function output, so a custom identity can produce the one
@@ -198,9 +233,45 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
     };
   }
 
+  /**
+   * Rebuild a set from its wire shape, **filed under the caller's identity
+   * rather than the sender's**.
+   *
+   * The re-key is the substance of #766, and it is why forwarding an
+   * `identity` option was not on its own enough to fix that issue.  Element
+   * keys are identity-function output, so a frame from a peer on the default
+   * identity carries `JSON.stringify` keys; filing them verbatim — which is
+   * what this decoder used to do — left the custom identity governing only
+   * *future* operations, and the element that arrived on the wire stayed a
+   * separate entry from the one the application later added under the same
+   * SKU.  `GSet.fromJSON` never had the bug because its wire shape is an
+   * array and it has always had to compute `identity(element)` itself.
+   *
+   * Two consequences worth naming:
+   *
+   *   - Entries that collapse onto one key are **merged**, not overwritten —
+   *     tag sets union, and the entry already filed keeps its element
+   *     instance, the same preference `merge` states outright when it writes
+   *     `ours?.element ?? theirs?.element`.  Note this is *not* what `add`
+   *     does: `add` stores the instance it was handed, so for a key already
+   *     present the newest one wins there.  The two are different operations
+   *     and only the tags carry CRDT meaning — the instance is what `value()`
+   *     hands back, which is why the choice is worth stating either way.
+   *   - The caller's `identity` now runs over **peer-supplied** values.  A
+   *     callback that throws on an unexpected shape turns a hostile frame
+   *     into a decode failure, which every wire call site already treats as
+   *     "drop this value"; it is not a new escalation path, but an identity
+   *     function that assumes its argument's shape will see data it did not
+   *     produce.
+   *
+   * With no `identity` option the decode is byte-for-byte what it always was:
+   * the re-key is skipped rather than run and found to be a no-op, so the
+   * default path gains no `JSON.stringify` per element and no new throw site.
+   */
   static fromJSON<E>(json: ORSetJson, options: ORSetOptions<E> = {}): ORSet<E> {
     if (json.kind !== 'ORSet') throw new Error(`ORSet.fromJSON: unexpected kind ${json.kind}`);
-    const identity = options.identity ?? (defaultIdentity as (e: E) => string);
+    const custom = options.identity;
+    const identity = custom ?? (defaultIdentity as (e: E) => string);
     // Tombstones are honoured on merge, so an unvalidated set lets a peer
     // pre-tombstone tags a victim replica has not issued yet — its future
     // adds then vanish on the next merge, silently and permanently (#722).
@@ -210,18 +281,29 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
       assertStringArray(tags, `ORSet.tombstones['${key}']`);
     }
     const elements = new Map<string, ElementEntry<E>>();
-    for (const [key, tags] of safeEntries(json.elements, 'ORSet.elements')) {
-      assertStringArray(tags, `ORSet.elements['${key}']`);
+    /** Wire element key → the key this replica files it under.  Empty unless re-keyed. */
+    const localKeys = new Map<string, string>();
+    for (const [wireKey, tags] of safeEntries(json.elements, 'ORSet.elements')) {
+      assertStringArray(tags, `ORSet.elements['${wireKey}']`);
       // Backwards-compat: old wire shape didn't carry
       // `elementValues` — fall back to JSON.parse(key) which is
       // exactly the default-identity round-trip.
-      const raw = json.elementValues?.[key];
+      const raw = json.elementValues?.[wireKey];
       const element: E = raw !== undefined
         ? (JSON.parse(raw) as E)
-        : (JSON.parse(key) as E);
-      elements.set(key, { element, tags: new Set(tags) });
+        : (JSON.parse(wireKey) as E);
+      const key = custom === undefined ? wireKey : custom(element);
+      if (key !== wireKey) localKeys.set(wireKey, key);
+      const existing = elements.get(key);
+      if (existing === undefined) {
+        elements.set(key, { element, tags: new Set(tags) });
+        continue;
+      }
+      const mergedTags = new Set(existing.tags);
+      for (const tag of tags) mergedTags.add(tag);
+      elements.set(key, { element: existing.element, tags: mergedTags });
     }
-    return new ORSet<E>(elements, objectToMapOfSets(json.tombstones), identity);
+    return new ORSet<E>(elements, objectToMapOfSets(json.tombstones, localKeys), identity);
   }
 
   equals(other: ORSet<E>): boolean {
@@ -236,7 +318,19 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
   }
 }
 
-const EMPTY_SET: ReadonlySet<string> = new Set();
+/**
+ * Every tag in every bucket, as one set — the veto `merge` applies.
+ *
+ * Built rather than kept as a second field: it is derived state, and a derived
+ * field is one refactor away from disagreeing with what derives it.  The pass
+ * is linear in the tombstone count, which `unionMapOfSets` has just walked
+ * anyway, so the merge keeps the shape of its cost.
+ */
+function flattenMapOfSets(map: ReadonlyMap<string, ReadonlySet<string>>): ReadonlySet<string> {
+  const out = new Set<string>();
+  for (const tagSet of map.values()) for (const tag of tagSet) out.add(tag);
+  return out;
+}
 
 function unionMapOfSets(
   ours: ReadonlyMap<string, ReadonlySet<string>>,
@@ -274,11 +368,41 @@ function mapOfSetsToObject(
   );
 }
 
+/**
+ * Decode the tombstone map, moving each bucket to the key its element now
+ * lives under (`localKeys`, from the element re-key above).
+ *
+ * A bucket whose element is *not* in `localKeys` stays where it arrived, and
+ * that covers two different cases.  The ordinary one is the default path,
+ * where nothing was re-keyed at all and every bucket keeps its wire key.  The
+ * other is an **orphan** bucket — an element removed and never re-added, so
+ * the frame carries its tags but no instance to re-identify from — and it is
+ * left alone deliberately: guessing a key for it means `JSON.parse`-ing the
+ * sender's, which only succeeds when the sender was on the default identity
+ * and silently does the wrong thing when it was not.
+ *
+ * Where the bucket sits therefore does not decide what it vetoes.  {@link
+ * ORSet.merge} vetoes **by tag across every bucket** (#1511), so an orphan
+ * bucket refuses its tags wherever the element they belong to turns up — under
+ * the sender's key, under this replica's, or under a third peer's.  It has to:
+ * an identity never travels on the wire, so a peer on the default rule and a
+ * durable record written before the identity was configured *both* file an
+ * element under a key this replica would not have chosen, and both are exactly
+ * what the re-key above is fed.  Keying the tombstones by tag on the wire
+ * would make the position irrelevant as well, but that is a wire change and
+ * the veto does not need one.
+ */
 function objectToMapOfSets(
   obj: Record<string, string[]>,
+  localKeys: ReadonlyMap<string, string>,
 ): Map<string, ReadonlySet<string>> {
-  const out = new Map<string, ReadonlySet<string>>();
-  for (const [key, tagArray] of Object.entries(obj)) out.set(key, new Set(tagArray));
+  const out = new Map<string, Set<string>>();
+  for (const [wireKey, tagArray] of Object.entries(obj)) {
+    const key = localKeys.get(wireKey) ?? wireKey;
+    const bucket = out.get(key);
+    if (bucket === undefined) out.set(key, new Set(tagArray));
+    else for (const tag of tagArray) bucket.add(tag);
+  }
   return out;
 }
 

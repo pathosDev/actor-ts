@@ -32,12 +32,26 @@ import { BrokerOptionsBuilder, BrokerOptionsValidator } from '../../io/broker/Br
 import type { BrokerCommonOptionsType } from '../../io/broker/BrokerOptions.js';
 import type { WebsocketCodec } from './WebsocketCodec.js';
 
+/**
+ * What the inbound low-water mark defaults to, as a divisor of the high-water
+ * mark: a quarter.  Resuming at the first free slot would flap the socket
+ * between paused and reading once per frame; a quarter leaves the consumer
+ * a run of frames to work through before the peer is asked for more, and
+ * matches the shape the issue that introduced it sketched (256 / 64).
+ */
+export const DEFAULT_WEBSOCKET_INBOUND_LOW_WATER_MARK_DIVISOR = 4;
+
 /** Plain options-object shape accepted by a {@link WebsocketClientActor}. */
 export interface WebsocketClientOptionsType<TOut = unknown, TIn = unknown> extends BrokerCommonOptionsType {
   /** WebSocket URL (`ws://…` or `wss://…`).  Required (ctor or HOCON). */
   readonly url?: string;
   readonly protocols?: string | ReadonlyArray<string>;
-  /** Wire codec.  Default: `jsonCodec<TOut, TIn>()`. */
+  /**
+   * Wire codec.  Default: `jsonCodec<TOut, TIn>()`.
+   *
+   * No HOCON leaf: a codec is a pair of functions, and a function cannot come
+   * from a config file.
+   */
   readonly codec?: WebsocketCodec<TOut, TIn>;
   /**
    * Inbound frame size cap.  An oversize frame closes the connection with 1009
@@ -47,9 +61,34 @@ export interface WebsocketClientOptionsType<TOut = unknown, TIn = unknown> exten
    * but so that a peer cannot repeat it on the same connection.  Default 1 MiB.
    */
   readonly maxFrameBytes?: number;
-  /** What to do with an inbound frame the codec can't decode.  Default 'drop'. */
+  /**
+   * What to do with an inbound frame the codec can't decode.  Default 'drop'.
+   *
+   * Readable from HOCON as `on-invalid-message`.  The server-side key of the
+   * same name (`actor-ts.http.websocket.on-invalid-message`) takes a
+   * *different* value list — `close` instead of `disconnect` — so the two
+   * cannot be copied across.
+   */
   readonly onInvalidMessage?: 'drop' | 'hook' | 'disconnect';
-  /** Send a ping every `pingIntervalMs` to keep the connection alive.  Default: disabled. */
+  /**
+   * Send a keepalive every `pingIntervalMs`, so a proxy or load balancer does
+   * not close the connection for being idle.  Default: disabled.
+   *
+   * **What goes on the wire is the actor's to decide, and by default nothing
+   * does.**  `WebsocketClientActor.keepAliveFrame()` returns `null` until a
+   * subclass overrides it, and the framework invents no payload of its own —
+   * bytes it made up would be an unannounced message in your protocol.  With
+   * the hook un-overridden the timer falls back to the runtime's native
+   * `WebSocket.ping()`, which is a protocol-level control frame and exists on
+   * Bun only: the WHATWG `WebSocket` that Node and Deno ship has no such
+   * method.  So on those two runtimes an un-overridden hook can send nothing
+   * at all, and the client says so once at connect time instead of running a
+   * timer that puts zero bytes on the wire (#751).
+   *
+   * A keepalive stops a proxy *closing* an idle connection.  It does not
+   * detect one that was dropped anyway — that is {@link idleTimeoutMs}, and
+   * the two are worth setting together.
+   */
   readonly pingIntervalMs?: number;
   /**
    * Declare the connection lost after this many milliseconds without a single
@@ -74,6 +113,33 @@ export interface WebsocketClientOptionsType<TOut = unknown, TIn = unknown> exten
    * handshake settles only on `open` or `error`.
    */
   readonly connectTimeoutMs?: number;
+  /**
+   * Receiver-side flow control: how many decoded inbound frames may be
+   * waiting in this actor's mailbox before the socket is **paused**, so the
+   * peer stops being read and TCP does the pushing back.  Unset — the
+   * default — never pauses, which is how every version before #1523
+   * behaved: each frame is decoded and `tell`'d onward the instant it
+   * arrives, and a peer that publishes faster than `onMessage` drains has
+   * nowhere to push back to.
+   *
+   * **Bun only, in practice.**  `pause()`/`resume()` exist on Bun 1.4.1+'s
+   * client `WebSocket` and on neither Node's nor Deno's; where they are
+   * absent the actor keeps today's behaviour and says so once at connect
+   * time rather than pretending to apply a limit it cannot enforce.
+   *
+   * `websocket_client_inbound_paused_seconds_total` accumulates the time
+   * spent paused, so the condition is observable rather than inferred from
+   * a stall.  Readable from HOCON as `inbound-high-water-mark`.
+   */
+  readonly inboundHighWaterMark?: number;
+  /**
+   * Where a paused socket is **resumed**: once the mailbox backlog of
+   * inbound frames has drained to this many.  Must be below
+   * {@link inboundHighWaterMark}; defaults to a quarter of it
+   * ({@link DEFAULT_WEBSOCKET_INBOUND_LOW_WATER_MARK_DIVISOR}).  Readable
+   * from HOCON as `inbound-low-water-mark`.
+   */
+  readonly inboundLowWaterMark?: number;
 }
 
 /** Fluent builder for {@link WebsocketClientOptionsType}. */
@@ -115,7 +181,13 @@ export class WebsocketClientOptionsBuilder<TOut = unknown, TIn = unknown>
     return this.set('onInvalidMessage', policy);
   }
 
-  /** Send a ping every `ms` to keep the connection alive.  Default: disabled. */
+  /**
+   * Send a keepalive every `ms` so an idle connection is not closed by a
+   * proxy.  Default: disabled.  Override
+   * `WebsocketClientActor.keepAliveFrame()` to say what is sent — without it
+   * the timer can only fall back to the runtime's native `ping()`, which
+   * exists on Bun and on neither Node nor Deno (#751).
+   */
   withPingIntervalMs(ms: number): this {
     return this.set('pingIntervalMs', ms);
   }
@@ -128,6 +200,21 @@ export class WebsocketClientOptionsBuilder<TOut = unknown, TIn = unknown>
   /** Abandon a connect attempt that has not reached `open` after `ms`.  Default: disabled. */
   withConnectTimeoutMs(ms: number): this {
     return this.set('connectTimeoutMs', ms);
+  }
+
+  /**
+   * Pause the socket once this many decoded inbound frames are waiting in
+   * the mailbox.  Default: never — see
+   * {@link WebsocketClientOptionsType.inboundHighWaterMark} for why this is
+   * Bun-only in practice.
+   */
+  withInboundHighWaterMark(frames: number): this {
+    return this.set('inboundHighWaterMark', frames);
+  }
+
+  /** Resume a paused socket once the backlog has drained to this many frames.  Default: a quarter of the high-water mark. */
+  withInboundLowWaterMark(frames: number): this {
+    return this.set('inboundLowWaterMark', frames);
   }
 }
 
@@ -146,6 +233,18 @@ export class WebsocketClientOptionsValidator<TOut = unknown, TIn = unknown>
     this.nonNegativeInt('idleTimeoutMs');
     this.nonNegativeInt('connectTimeoutMs');
     this.oneOf('onInvalidMessage', ['drop', 'hook', 'disconnect']);
+    this.positiveInt('inboundHighWaterMark');
+    this.nonNegativeInt('inboundLowWaterMark');
+    // Cross-field: a low-water mark is a resume point on a pause that has
+    // to exist, and one at or above the high-water mark would resume the
+    // socket in the same breath it was paused.
+    if (s.inboundLowWaterMark !== undefined) {
+      if (s.inboundHighWaterMark === undefined) {
+        this.fail('inboundLowWaterMark', 'needs inboundHighWaterMark — it is where a paused socket resumes', s.inboundLowWaterMark);
+      } else if (s.inboundLowWaterMark >= s.inboundHighWaterMark) {
+        this.fail('inboundLowWaterMark', `must be below inboundHighWaterMark (${s.inboundHighWaterMark})`, s.inboundLowWaterMark);
+      }
+    }
   }
 }
 

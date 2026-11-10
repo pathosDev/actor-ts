@@ -43,7 +43,11 @@ export class CassandraSnapshotStoreOptionsBuilder extends StoreSerializerOptions
     return this.set('localDataCenter', localDataCenter);
   }
 
-  /** Keyspace to `USE` after connect.  Must already exist, or pass `withAutoCreateKeyspace(true)`. */
+  /**
+   * Keyspace that qualifies every statement (`keyspace.table`); the client is
+   * never bound to it with `USE`.  Must already exist, or pass
+   * `withAutoCreateKeyspace(true)`.
+   */
   withKeyspace(keyspace: string): this {
     return this.set('keyspace', keyspace);
   }
@@ -68,7 +72,10 @@ export class CassandraSnapshotStoreOptionsBuilder extends StoreSerializerOptions
     return this.set('replication', replication);
   }
 
-  /** CQL consistency level for all reads and writes.  Default `LOCAL_QUORUM` (6). */
+  /**
+   * CQL consistency level for all reads and writes.  Unset leaves the level to
+   * the driver rather than defaulting to one here; `LOCAL_QUORUM` is 6.
+   */
   withConsistency(consistency: number): this {
     return this.set('consistency', consistency);
   }

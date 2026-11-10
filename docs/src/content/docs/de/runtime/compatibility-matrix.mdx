@@ -21,8 +21,8 @@ Für jede Zeile:
 | `Actor`-Basisklasse | ✓ | ✓ | ✓ |
 | `ActorSystem` | ✓ | ✓ | ✓ |
 | `ActorOptions` + `withDispatcher` etc. | ✓ | ✓ | ✓ |
-| `MicrotaskDispatcher` / `ImmediateDispatcher` / `ThroughputDispatcher` | ✓ | ✓ | ✓ |
-| `BoundedMailbox` / `PriorityMailbox` | ✓ | ✓ | ✓ |
+| `HybridDispatcher` / `MicrotaskDispatcher` / `ImmediateDispatcher` / `ThroughputDispatcher` | ✓ | ✓ | ✓ |
+| `BoundedMailbox` / `PriorityMailbox` / `ControlAwareMailbox` | ✓ | ✓ | ✓ |
 | Supervision-Strategien | ✓ | ✓ | ✓ |
 | `context.timers` + `system.scheduler` | ✓ | ✓ | ✓ |
 | Death-Watch | ✓ | ✓ | ✓ |
@@ -55,6 +55,7 @@ Für jede Zeile:
 | `TcpTransport` | ✓ | ✓ | ⚠ |
 | TLS auf Cluster-Transport | ✓ | ✓ | ⚠ |
 | `InMemoryTransport` (Tests) | ✓ | ✓ | ✓ |
+| `MessageChannelTransport` / `WorkerCluster` / `WorkerMesh` (Worker-Threads) | ✓ | ✓ | ✓ |
 | `ClusterSingleton` | ✓ | ✓ | ⚠ |
 | `ClusterSharding` | ✓ | ✓ | ⚠ |
 | `DistributedPubSub` | ✓ | ✓ | ⚠ |
@@ -89,8 +90,8 @@ Für jede Zeile:
 | `KafkaActor` (`kafkajs`) | ✓ | ✓ | ⚠ |
 | `MqttActor` (`mqtt`) | ✓ | ✓ | ⚠ |
 | `AmqpActor` (`amqplib`) | ⚠ | ✓ | ⚠ |
-| `NatsActor` (`nats`) | ✓ | ✓ | ⚠ |
-| `JetStreamActor` | ✓ | ✓ | ⚠ |
+| `NatsActor` (`@nats-io/transport-node`) | ✓ | ✓ | ⚠ |
+| `JetStreamActor` (`@nats-io/jetstream`) | ✓ | ✓ | ⚠ |
 | `RedisStreamsActor` (`ioredis`) | ✓ | ✓ | ⚠ |
 | `GrpcServerActor` / `GrpcClientActor` | ✓ | ✓ | ⚠ |
 | `WebsocketClientActor` | ✓ | ✓ | ✓ |
@@ -99,6 +100,13 @@ Für jede Zeile:
 | `TcpSocketActor` | ✓ | ✓ | ✓ |
 | `TcpServerActor` | ✓ | ✓ | ✓ (mTLS-Listener: ✗) |
 | `UdpSocketActor` | ✓ | ✓ | ✓ |
+
+Die NATS-Zeilen stehen auf Deno aus einem Grund auf `⚠`, den nats.js v3
+konkret gemacht hat: der Transport ist jetzt ein eigenes Paket, und das hier
+deklarierte heißt `@nats-io/transport-node`. Es gibt einen Deno-Transport, auf
+JSR statt npm veröffentlicht, und nichts hier bindet ihn ein — die Actors
+erreichen Deno also über dessen npm-Kompatibilitätsschicht, was hier ungetestet
+ist, nicht bekanntermaßen kaputt.
 
 ## HTTP
 
@@ -177,7 +185,7 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Version-Pinning">
   ```json
   // package.json
-  { "engines": { "bun": ">=1.3", "node": ">=24" } }
+  { "engines": { "bun": ">=1.4", "node": ">=24" } }
   ```
   Pinne sowohl Bun- als auch Node-Engines, wenn dein Code auf
   beiden läuft — verhindert versehentlichen Dev-/Prod-Runtime-

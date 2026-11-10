@@ -1,5 +1,5 @@
 import { HttpClient } from '../../http/HttpClient.js';
-import { DEFAULT_D1_MAX_RESPONSE_BYTES } from '../Constants.js';
+import { DEFAULT_D1_MAX_RESPONSE_BYTES, DEFAULT_D1_TIMEOUT_MS } from '../Constants.js';
 import type { SqlPool, SqlResult } from '../relational/SqlPool.js';
 import { stripTrailing } from '../../util/StripCharacters.js';
 
@@ -59,7 +59,7 @@ export type D1Connection = {
   readonly apiToken?: string;
   /** API base URL.  Override only for a proxy or a test double. */
   readonly baseUrl?: string;
-  /** Per-request timeout in milliseconds.  Default 30 000. */
+  /** Per-request timeout in milliseconds.  Default 30 s — see `DEFAULT_D1_TIMEOUT_MS`. */
   readonly timeoutMs?: number;
   /**
    * Ceiling on one D1 response body, in bytes.  Default 64 MiB — see
@@ -103,7 +103,7 @@ export function buildD1Client(connection: D1Connection): D1ClientLike {
   const httpClient = new HttpClient({
     maxResponseBytes: connection.maxResponseBytes ?? DEFAULT_D1_MAX_RESPONSE_BYTES,
   });
-  const timeoutMs = connection.timeoutMs ?? 30_000;
+  const timeoutMs = connection.timeoutMs ?? DEFAULT_D1_TIMEOUT_MS;
 
   return {
     async query(sql, params) {

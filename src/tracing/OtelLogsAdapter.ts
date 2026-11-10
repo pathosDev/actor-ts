@@ -31,6 +31,8 @@ import {
   LogLevel,
 } from '../Logger.js';
 import { LogContext, type LogContextData } from '../LogContext.js';
+import type { OtelLogsAdapterOptions, OtelLogsAdapterOptionsType } from './OtelLogsAdapterOptions.js';
+import { DEFAULT_OTEL_LOGGER_NAME } from './OtelLogsAdapterOptions.js';
 
 /* ----------------------- OpenTelemetry API surface ----------------------- */
 /* Structural — keep in sync with @opentelemetry/api-logs v0.x.  We use only */
@@ -78,46 +80,29 @@ export type OtelLogsApiLike = {
 
 /* ------------------------------ public API ------------------------------ */
 
-export type OtelLoggerAdapterOptions = {
-  /** The `@opentelemetry/api-logs` namespace
-   *  (`import * as logsApi from '@opentelemetry/api-logs'`). */
-  readonly api: OtelLogsApiLike;
-  /**
-   * Optional pre-built OTel logger; defaults to
-   * `api.logs.getLoggerProvider().getLogger(loggerName, loggerVersion)`.
-   * Override when you've already created a named logger you want
-   * actor-ts records to flow into.
-   */
-  readonly logger?: OtelLoggerLike;
-  /** Logger name passed to `getLogger`.  Default: `'actor-ts'`. */
-  readonly loggerName?: string;
-  /** Logger version passed to `getLogger`. */
-  readonly loggerVersion?: string;
-  /**
-   * Initial level filter.  Records below this level skip the OTel
-   * round-trip entirely.  Default: `LogLevel.Info`.
-   */
-  readonly level?: LogLevel;
-};
-
 /**
  * Build a `Logger` whose calls translate to OTel `LogRecord.emit({...})`.
+ * Takes an {@link OtelLogsAdapterOptions} — the builder or the plain object.
  *
  *     import * as logsApi from '@opentelemetry/api-logs';
- *     const system = ActorSystem.create('my-app',
- *       ActorSystemOptions.create().withLogger(otelLogger({ api: logsApi })));
+ *     const otelLogsOptions = OtelLogsAdapterOptions.create().withApi(logsApi);
+ *     const actorSystemOptions = ActorSystemOptions.create().withLogger(otelLogger(otelLogsOptions));
  *
  * After SDK wire-up (`LoggerProvider` + an OTLP-Logs exporter), every
  * `this.log.info(...)` inside an actor lands as a `LogRecord` with the
  * actor's path on `source`, the merged MDC on `attributes`, and the
  * active span's traceId/spanId automatically linked.
+ *
+ * This is the pure path: one options argument and no config, so the logger
+ * it returns behaves exactly as its options say.
  */
-export function otelLogger(options: OtelLoggerAdapterOptions): FrameworkLogger {
-  const provider = options.api.logs.getLoggerProvider();
-  const otelLog = options.logger
-    ?? provider.getLogger(options.loggerName ?? 'actor-ts', options.loggerVersion);
-  const level = options.level ?? LogLevel.Info;
-  return new OtelLoggerImplementation(otelLog, options.api.SeverityNumber, level, '', {});
+export function otelLogger(options: OtelLogsAdapterOptions): FrameworkLogger {
+  const settings = options as OtelLogsAdapterOptionsType;
+  const provider = settings.api.logs.getLoggerProvider();
+  const otelLog = settings.logger
+    ?? provider.getLogger(settings.loggerName ?? DEFAULT_OTEL_LOGGER_NAME, settings.loggerVersion);
+  const level = settings.level ?? LogLevel.Info;
+  return new OtelLoggerImplementation(otelLog, settings.api.SeverityNumber, level, '', {});
 }
 
 /* ------------------------------- internals ------------------------------ */

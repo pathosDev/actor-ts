@@ -35,6 +35,16 @@ object Main:
   private val PingPongIterations = 20
   private val PingPongExchanges = 10_000
   private val PingPongWarmup = 10
+  private val ParallelLightIterations = 200
+  private val ParallelLightWarmup = 100
+  private val ParallelLightRounds = 5_000
+  private val ParallelHeavyIterations = 50
+  private val ParallelHeavyWarmup = 20
+  private val ParallelHeavyRounds = 100_000
+
+  private val ParallelNote =
+    "Sixty-four actors on the default dispatcher, which spreads them over every core; " +
+      "the sixty-four asks per iteration are issued from the driver thread and joined."
 
   /** Generous by design: this turns a deadlock into a failure, not a bound on a measurement. */
   private given Timeout = Timeout(60.seconds)
@@ -103,6 +113,11 @@ object Main:
             refs.ping, Actors.VolleyCommand.StartVolley(PingPongExchanges, _)
           ).toLong
         },
+
+        parallelCase(refs.parallelWorkers, "load=light",
+          ParallelLightIterations, ParallelLightWarmup, ParallelLightRounds),
+        parallelCase(refs.parallelWorkers, "load=heavy",
+          ParallelHeavyIterations, ParallelHeavyWarmup, ParallelHeavyRounds),
       )
 
       if Harness.SmokeMode then
@@ -113,6 +128,40 @@ object Main:
       else ResultFile.write(outputPath(), EnvironmentBlock.fromDriver(), results)
     finally system.terminate()
   end main
+
+  /**
+   * One `parallel-workload` row: every call sends one message to each of the
+   * sixty-four workers, joins the replies, and counts the ones that carry the
+   * result the work must produce.  The checksum over every reply — warmup
+   * included — is published with the row, and report.ts recomputes it from
+   * js/workload.ts (#1565).
+   */
+  private def parallelCase(
+      workers: Vector[ActorRef[Actors.Work]],
+      caseName: String,
+      iterations: Int,
+      warmup: Int,
+      rounds: Int,
+  )(using Timeout, Scheduler): Harness.ScenarioResult =
+    var messageIndex = 0
+    var checksum = 0L
+    val measured = Harness.measure(
+      "parallel-workload", caseName, "msg",
+      iterations, Actors.ParallelActors, warmup, Some(ParallelNote),
+    ) { () =>
+      val message = messageIndex
+      messageIndex += 1
+      val replies = workers.zipWithIndex.map: (worker, actor) =>
+        val seed = Actors.workSeed(actor, message)
+        worker.ask[Int](replyTo => Actors.Work(seed, rounds, replyTo))
+      var correct = 0L
+      replies.zipWithIndex.foreach: (reply, actor) =>
+        val value = Await.result(reply, Duration.Inf)
+        if value == Actors.workRounds(Actors.workSeed(actor, message), rounds) then correct += 1
+        checksum = (checksum + Integer.toUnsignedLong(value)) & 0xFFFFFFFFL
+      correct
+    }
+    measured.copy(actorCount = Some(Actors.ParallelActors), workIterationsPerMessage = Some(rounds), checksum = Some(checksum))
 
   private def tellBatch(counter: ActorRef[Actors.CounterCommand], batch: Int)(using
       Scheduler

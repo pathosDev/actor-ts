@@ -60,6 +60,10 @@ object Harness:
       expectedOperations: Long,
       completedOperations: Long,
       notes: Option[String],
+      /** The three fields only a `parallel-workload` row carries (#1565). */
+      actorCount: Option[Int] = None,
+      workIterationsPerMessage: Option[Int] = None,
+      checksum: Option[Long] = None,
   )
 
   /**

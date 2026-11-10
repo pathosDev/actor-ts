@@ -28,6 +28,18 @@ That builds the image, brings up all six containers, runs every
 scenario in `scenarios/`, and exits with the controller's
 status code (0 = all pass, 1 = at least one failed).
 
+The run ends when the last container is gone, not when the
+controller is: compose runs with `--abort-on-container-failure`,
+so a node that exits 0 mid-run is a scenario event (13's victim
+does exactly that after its `CoordinatedShutdown`), while a node
+that exits non-zero aborts the run at once with its code.  The
+final scenario (17) therefore shuts every remaining node down, and
+a green run's last lines are the nodes' own clean exits (#1594).  A
+node whose process is still alive ten seconds after its actor
+system terminated is killed by `NodeRunner`'s watchdog with exit
+code 3 — a leaked handle, the #1567 class — and that is a red run
+naming the container, not a hang.
+
 To clean up afterwards (volumes, networks, dangling containers):
 
 ```bash
@@ -83,17 +95,20 @@ injection uses `tc qdisc add ... netem delay`.
 ## CI
 
 `.github/workflows/integration.yml` runs the same `bun run
-test:integration` command on pull requests targeting `main`
-(i.e. the release PR) and on a nightly schedule.  Routine
-`develop` pushes and feature PRs do NOT run it automatically —
-it's expensive and the fast unit suite catches most
-regressions.  Manually re-run via the GitHub Actions UI when a
-change touches transport / cluster / downing code.
+test:integration` command on every `develop` push and pull
+request that touches `src/`, `tests/integration/` or the
+toolchain pins, nightly on `develop`, and on manual dispatch —
+the suite proved fast enough (~25 s of scenarios plus the
+container build) that it no longer waits for the release PR.
 
 ## Adding a scenario
 
 1. Drop a new file in `scenarios/` exporting `scenario: Scenario`.
-2. Add the import to `Controller.ts`'s `scenarios` list.
+2. Add the import to `Controller.ts`'s `scenarios` list — **above**
+   `clusterShutdown`, which must stay last: it takes the cluster
+   down, and a scenario after it would find no nodes and, like most
+   scenarios on a too-small cluster, skip rather than fail.
+   `tests/unit/ci/IntegrationHarnessCascade.test.ts` pins the order.
 3. Test locally with `bun run test:integration`.
 
 The `Scenario.run(ctx)` function receives a `ControllerContext`

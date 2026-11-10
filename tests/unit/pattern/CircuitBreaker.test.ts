@@ -5,7 +5,11 @@ import {
   CircuitBreakerTimeoutError,
 } from '../../../src/pattern/CircuitBreaker.js';
 import { CircuitBreakerOptions } from '../../../src/pattern/CircuitBreakerOptions.js';
+import { Scheduler } from '../../../src/Scheduler.js';
+import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
+import { MAX_TIMER_DELAY_MS } from '../../../src/util/Constants.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { assertDoesNotCompleteWithin } from '../../util/AsyncAssertions.js';
 import { sleep } from '../../util/AwaitCondition.js';
 
 describe('CircuitBreaker — basics', () => {
@@ -32,6 +36,22 @@ describe('CircuitBreaker — basics', () => {
     let caught: unknown = null;
     try { await breaker.call(async () => 'never called'); } catch (e) { caught = e; }
     expect(caught).toBeInstanceOf(CircuitBreakerOpenError);
+  });
+
+  test('a refusal says how long the breaker stays open, measured on its own clock', async () => {
+    // What a caller that wants to come back needs, and the one thing it cannot
+    // work out for itself: the window is the breaker's (grown, jittered) and so
+    // is the clock it runs on (#1478).
+    const scheduler = new ManualScheduler();
+    const breaker = new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 30_000, scheduler });
+    await expect(breaker.call(async () => { throw new Error('upstream'); })).rejects.toThrow('upstream');
+    scheduler.advance(10_000);
+
+    const refusal: unknown = await breaker.call(async () => 'never called').catch((e: unknown) => e);
+    expect(refusal).toBeInstanceOf(CircuitBreakerOpenError);
+    expect((refusal as CircuitBreakerOpenError).remainingMs).toBe(20_000);
+    // An error built by hand knows no breaker, so it says nothing.
+    expect(new CircuitBreakerOpenError().remainingMs).toBe(0);
   });
 
   test('half-opens after resetTimeoutMs; a success closes it', async () => {
@@ -68,6 +88,98 @@ describe('CircuitBreaker — call timeout', () => {
     try { await breaker.call(() => new Promise(() => { /* never resolves */ })); }
     catch (e) { caught = e; }
     expect(caught).toBeInstanceOf(CircuitBreakerTimeoutError);
+    expect(breaker.state).toBe('open');
+  });
+});
+
+/**
+ * A call timeout past the host timer ceiling is the timeout that was asked for.
+ *
+ * `setTimeout` arms anything above {@link MAX_TIMER_DELAY_MS} (~24.9 days) as
+ * 1 ms on Bun and Node, and the breaker armed its per-call deadline with a raw
+ * `setTimeout` wherever time is not virtual — with no scheduler, and with a
+ * wall-clock one.  So a breaker with `callTimeoutMs` 2^31 rejected the call
+ * with `CircuitBreakerTimeoutError` after ~2 ms and counted it as a failure.
+ * The validator accepts any positive finite value, which is what makes this a
+ * defect rather than a missing refusal.  Found while #870.
+ */
+describe('CircuitBreaker — a call timeout past the host timer ceiling', () => {
+  const CEILING_PLUS_ONE_MS = MAX_TIMER_DELAY_MS + 1;
+  const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1_000;
+  /** Long enough that nothing the runtime arms for itself is mistaken for a link. */
+  const ONE_DAY_MS = 24 * 60 * 60 * 1_000;
+
+  type ParkedTimeout = { readonly callback: () => void; readonly delayMs: number };
+
+  /**
+   * Run `action` with every runtime timer of a day or longer parked instead of
+   * armed, so a test can elapse a link by calling it.  The shape `Ask.test.ts`
+   * uses for the `ask` deadline.
+   */
+  function parkingLongTimeouts<T>(parked: ParkedTimeout[], action: () => T): T {
+    const realSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+      const [callback, delayMs] = args;
+      if (typeof delayMs === 'number' && delayMs >= ONE_DAY_MS) {
+        parked.push({ callback: callback as () => void, delayMs });
+        return -1 as unknown as ReturnType<typeof setTimeout>;
+      }
+      return realSetTimeout(...args);
+    }) as typeof setTimeout;
+    try {
+      return action();
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+    }
+  }
+
+  /** One full turn of the event loop, so a rejection already queued has landed. */
+  const nextTurn = (): Promise<void> => new Promise<void>((resolve) => { setImmediate(resolve); });
+
+  test.each([
+    { label: 'no scheduler', options: {} },
+    { label: 'a wall-clock scheduler', options: { scheduler: new Scheduler() } },
+  ])('with $label, a call has not timed out long after the overflow would have', async ({ options }) => {
+    const breaker = new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 1_000, callTimeoutMs: CEILING_PLUS_ONE_MS, ...options });
+    let release!: (value: string) => void;
+    const pending = breaker.call(() => new Promise<string>((resolve) => { release = resolve; }));
+    // An absence, so it needs a window; it only has to outlast the ~2 ms the
+    // overflow took by a wide margin.
+    await assertDoesNotCompleteWithin(pending, 150, 'a breaker call with a 2^31 ms timeout');
+    expect(breaker.state).toBe('closed');
+    // Settled by the call rather than left armed: settling clears the chain.
+    release('answered');
+    expect(await pending).toBe('answered');
+  });
+
+  test('is armed as a chain whose links add up to the timeout, and fails the call at its end', async () => {
+    const breaker = new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 1_000, callTimeoutMs: THIRTY_DAYS_MS });
+    const parked: ParkedTimeout[] = [];
+    let outcome = 'pending';
+    const settled = parkingLongTimeouts(parked, () => breaker.call(() => new Promise<never>(() => { /* never settles */ })))
+      .then(
+        () => { outcome = 'resolved'; },
+        (error: unknown) => { outcome = error instanceof CircuitBreakerTimeoutError ? 'timed out' : 'rejected'; },
+      );
+    expect(parked.map((link) => link.delayMs)).toEqual([MAX_TIMER_DELAY_MS]);
+
+    // 24.9 days pass: the first link elapses and arms the rest of the timeout.
+    parkingLongTimeouts(parked, () => { parked[0]!.callback(); });
+    await nextTurn();
+    expect(outcome).toBe('pending');
+    expect(parked.map((link) => link.delayMs)).toEqual([MAX_TIMER_DELAY_MS, THIRTY_DAYS_MS - MAX_TIMER_DELAY_MS]);
+
+    parkingLongTimeouts(parked, () => { parked[1]!.callback(); });
+    await settled;
+    expect(outcome).toBe('timed out');
+    expect(breaker.state).toBe('open');
+  });
+
+  test('a timeout under the ceiling still fails a slow call on time', async () => {
+    // The chain must not have moved the ordinary case: one link, the delay asked for.
+    const breaker = new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 1_000, callTimeoutMs: 20 });
+    await expect(breaker.call(() => new Promise<never>(() => { /* never settles */ })))
+      .rejects.toBeInstanceOf(CircuitBreakerTimeoutError);
     expect(breaker.state).toBe('open');
   });
 });
@@ -133,5 +245,394 @@ describe('CircuitBreaker — options validation', () => {
 
   test('accepts resetTimeoutMs 0 (immediate probe)', () => {
     expect(() => new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 0 })).not.toThrow();
+  });
+
+  test('rejects a backoffFactor below 1 or non-finite with OptionsError', () => {
+    expect(() => new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 10, backoffFactor: 0.5 }))
+      .toThrow(OptionsError);
+    expect(() => new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 10, backoffFactor: 0 }))
+      .toThrow(/backoffFactor/);
+    expect(() => new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 10, backoffFactor: Infinity }))
+      .toThrow(/backoffFactor/);
+    // 1 is the neutral value and has to stay legal — it is what reference.conf
+    // publishes.
+    expect(() => new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 10, backoffFactor: 1 }))
+      .not.toThrow();
+  });
+
+  test('rejects a randomFactor outside [0, 1] with OptionsError', () => {
+    expect(() => new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 10, randomFactor: -0.1 }))
+      .toThrow(OptionsError);
+    expect(() => new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 10, randomFactor: 1.5 }))
+      .toThrow(/randomFactor/);
+    expect(() => new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 10, randomFactor: 1 }))
+      .not.toThrow();
+  });
+
+  test('rejects a non-positive maxResetTimeoutMs, and one below resetTimeoutMs', () => {
+    expect(() => new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 10, maxResetTimeoutMs: 0 }))
+      .toThrow(/maxResetTimeoutMs/);
+    expect(() => new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 10, maxResetTimeoutMs: Infinity }))
+      .toThrow(/maxResetTimeoutMs/);
+    // The cross-field rule: a ceiling under the base window would silently
+    // shorten the very first open, so it is refused rather than applied.
+    expect(() => new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 5_000, maxResetTimeoutMs: 1_000 }))
+      .toThrow(/maxResetTimeoutMs/);
+    // And against the EFFECTIVE ceiling, so an unset one is checked too — the
+    // built-in ceiling is 60 s, and this window is longer.
+    expect(() => new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 300_000 }))
+      .toThrow(/maxResetTimeoutMs/);
+    expect(() => new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 300_000, maxResetTimeoutMs: 600_000 }))
+      .not.toThrow();
+  });
+
+  test('rejects an ignoredErrorNames member that is not a non-empty string', () => {
+    expect(() => new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 10, ignoredErrorNames: [''] }))
+      .toThrow(/ignoredErrorNames\[0\]/);
+    expect(() => new CircuitBreaker({
+      maxFailures: 1, resetTimeoutMs: 10,
+      ignoredErrorNames: ['Ok', 7 as unknown as string],
+    })).toThrow(/ignoredErrorNames\[1\]/);
+    // `[]` is the neutral value and the one reference.conf publishes, so
+    // `nonEmptyArray` would have been the wrong rule.
+    expect(() => new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 10, ignoredErrorNames: [] }))
+      .not.toThrow();
+  });
+});
+
+/**
+ * The reopen window is no longer a constant, so it is asserted through
+ * `nextProbeAt` rather than by outlasting it with `sleep`.  A growing window
+ * measured that way gets slower and flakier with every cycle; this reads the
+ * schedule the breaker just computed, with no timer and no wall-clock wait.
+ */
+describe('CircuitBreaker — reopen backoff', () => {
+  /**
+   * Force one more open cycle and bracket the delay it scheduled.
+   *
+   * `nextProbeAt` is `Date.now() + delay` sampled somewhere between the two
+   * readings here, so the true delay lies in `[low, high]` and the width of
+   * that interval is the wall time of one synchronous `setState`.  The width
+   * is asserted too — without it a slow clock would widen the bracket until it
+   * admitted the wrong answer, which is a guard that stops guarding.
+   */
+  function scheduleNextOpen(breaker: CircuitBreaker): { low: number; high: number } {
+    if (breaker.state === 'open') breaker.setState('half-open');
+    const before = Date.now();
+    breaker.setState('open');
+    const after = Date.now();
+    return { low: breaker.nextProbeAt - after, high: breaker.nextProbeAt - before };
+  }
+
+  function expectDelay(scheduled: { low: number; high: number }, expected: number): void {
+    expect(scheduled.low).toBeLessThanOrEqual(expected);
+    expect(scheduled.high).toBeGreaterThanOrEqual(expected);
+    expect(scheduled.high - scheduled.low).toBeLessThanOrEqual(50);
+  }
+
+  test('backoffFactor 1 keeps the flat window every earlier release had', () => {
+    const breaker = new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 1_000 });
+    expectDelay(scheduleNextOpen(breaker), 1_000);
+    expectDelay(scheduleNextOpen(breaker), 1_000);
+    expectDelay(scheduleNextOpen(breaker), 1_000);
+  });
+
+  test('the window grows by backoffFactor once per consecutive open', () => {
+    const breaker = new CircuitBreaker({
+      maxFailures: 1, resetTimeoutMs: 1_000, backoffFactor: 2, maxResetTimeoutMs: 60_000,
+    });
+    expectDelay(scheduleNextOpen(breaker), 1_000);
+    expect(breaker.consecutiveOpens).toBe(1);
+    expectDelay(scheduleNextOpen(breaker), 2_000);
+    expectDelay(scheduleNextOpen(breaker), 4_000);
+    expect(breaker.consecutiveOpens).toBe(3);
+  });
+
+  test('maxResetTimeoutMs is the ceiling the growth stops at', () => {
+    const breaker = new CircuitBreaker({
+      maxFailures: 1, resetTimeoutMs: 1_000, backoffFactor: 10, maxResetTimeoutMs: 5_000,
+    });
+    expectDelay(scheduleNextOpen(breaker), 1_000);
+    expectDelay(scheduleNextOpen(breaker), 5_000);  // 10_000, clamped
+    expectDelay(scheduleNextOpen(breaker), 5_000);  // 100_000, clamped
+  });
+
+  test('closing resets the exponent, so a recovered dependency starts over', () => {
+    const breaker = new CircuitBreaker({
+      maxFailures: 1, resetTimeoutMs: 1_000, backoffFactor: 4, maxResetTimeoutMs: 60_000,
+    });
+    expectDelay(scheduleNextOpen(breaker), 1_000);
+    expectDelay(scheduleNextOpen(breaker), 4_000);
+
+    breaker.setState('half-open');
+    breaker.setState('closed');
+    expect(breaker.consecutiveOpens).toBe(0);
+
+    expectDelay(scheduleNextOpen(breaker), 1_000);
+  });
+
+  test('a failing half-open probe is what grows the window in normal operation', async () => {
+    const breaker = new CircuitBreaker({
+      maxFailures: 1, resetTimeoutMs: 0, backoffFactor: 2, maxResetTimeoutMs: 60_000,
+    });
+    // resetTimeoutMs 0 means the next call always probes, so three failures
+    // walk the state machine open -> half-open -> open twice with no waiting.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await expect(breaker.call(async () => { throw new Error('still down'); }))
+        .rejects.toThrow('still down');
+    }
+    expect(breaker.state).toBe('open');
+    expect(breaker.consecutiveOpens).toBe(3);
+  });
+
+  test('randomFactor spreads the window around the computed base', () => {
+    // `random()` maps [0, 1) onto a multiplier of [1 - randomFactor,
+    // 1 + randomFactor); two exact points pin that affine map, and a third
+    // catches a sign or a halving error.
+    const lower = new CircuitBreaker({
+      maxFailures: 1, resetTimeoutMs: 1_000, randomFactor: 0.5, random: () => 0,
+    });
+    expectDelay(scheduleNextOpen(lower), 500);
+
+    const middle = new CircuitBreaker({
+      maxFailures: 1, resetTimeoutMs: 1_000, randomFactor: 0.5, random: () => 0.5,
+    });
+    expectDelay(scheduleNextOpen(middle), 1_000);
+
+    const upper = new CircuitBreaker({
+      maxFailures: 1, resetTimeoutMs: 1_000, randomFactor: 0.5, random: () => 0.75,
+    });
+    expectDelay(scheduleNextOpen(upper), 1_250);
+  });
+
+  test('jitter applies to the grown window, not to the base one', () => {
+    const breaker = new CircuitBreaker({
+      maxFailures: 1, resetTimeoutMs: 1_000, backoffFactor: 2,
+      maxResetTimeoutMs: 60_000, randomFactor: 0.5, random: () => 0,
+    });
+    expectDelay(scheduleNextOpen(breaker), 500);    // 1_000 grown by 2^0, then halved
+    expectDelay(scheduleNextOpen(breaker), 1_000);  // 2_000 grown by 2^1, then halved
+  });
+});
+
+/**
+ * `nextProbeAt` is compared against `Date.now()` and nothing else, so a
+ * non-finite one is not a wrong delay — it is a breaker that has stopped being
+ * a breaker.  `Date.now() >= NaN` is `false` forever, so
+ * `maybeTransitionToHalfOpen` never fires again and a recovered dependency is
+ * never probed.  Nothing about that state is observable from the outside
+ * except by trying a call that should have gone through, which is why the
+ * schedule is asserted directly here rather than through elapsed time.
+ */
+describe('CircuitBreaker — the reopen window stays finite', () => {
+  /**
+   * Walk `breaker` through `opens` open cycles and collect the schedule it
+   * computed each time.  Every open runs through `setState`, so alternating it
+   * is the same code path a failing half-open probe takes — and it costs no
+   * wall time, which is what makes a count past 1024 assertable at all.
+   */
+  function walkOpenCycles(breaker: CircuitBreaker, opens: number): readonly number[] {
+    const scheduled: number[] = [];
+    for (let cycle = 0; cycle < opens; cycle++) {
+      if (breaker.state === 'open') breaker.setState('half-open');
+      breaker.setState('open');
+      scheduled.push(breaker.nextProbeAt);
+    }
+    return scheduled;
+  }
+
+  test('a zero window with a backoff factor still probes a recovered dependency', async () => {
+    // `resetTimeoutMs: 0` is pinned legal above, and 0 with `backoffFactor: 2`
+    // is what the normal-operation test one describe up already ships.  With a
+    // zero window every rejection is instantly a fresh open cycle, so a hard-
+    // down upstream reaches four figures of consecutive opens in a fraction of
+    // a second — and `Math.pow(2, 1024)` is `Infinity`, `0 * Infinity` is
+    // `NaN`, and `Math.min` propagates that instead of clamping it (#864).
+    const breaker = new CircuitBreaker({
+      maxFailures: 1, resetTimeoutMs: 0, backoffFactor: 2, maxResetTimeoutMs: 60_000,
+    });
+    for (let attempt = 0; attempt < 1_200; attempt++) {
+      await expect(breaker.call(async () => { throw new Error('still down'); }))
+        .rejects.toThrow('still down');
+    }
+    expect(breaker.consecutiveOpens).toBeGreaterThan(1_024);
+
+    // The upstream recovers.  A zero window means the very next call is a
+    // probe, so this factory has to actually run.
+    let attempted = false;
+    const value = await breaker.call(async () => { attempted = true; return 'recovered'; });
+    expect(attempted).toBe(true);
+    expect(value).toBe('recovered');
+    expect(breaker.state).toBe('closed');
+  });
+
+  test('nextProbeAt is finite for every legal window at every open count', () => {
+    // The exponent that overflows `Math.pow` depends on the factor (1024
+    // doublings, 2^1024 for 1.5 is reached later), so the sweep runs past the
+    // worst of them rather than at one hand-picked count.
+    const wedged: string[] = [];
+    for (const resetTimeoutMs of [0, 1, 1_000]) {
+      for (const backoffFactor of [1, 1.5, 2, 10]) {
+        for (const randomFactor of [0, 0.5]) {
+          const breaker = new CircuitBreaker({
+            maxFailures: 1, resetTimeoutMs, backoffFactor, randomFactor,
+            maxResetTimeoutMs: 60_000, random: () => 0.75,
+          });
+          for (const [index, probeAt] of walkOpenCycles(breaker, 2_100).entries()) {
+            if (!Number.isFinite(probeAt)) {
+              wedged.push(
+                `resetTimeoutMs=${resetTimeoutMs} backoffFactor=${backoffFactor}`
+                + ` randomFactor=${randomFactor} firstWedgedAtOpen=${index + 1}`,
+              );
+              break;
+            }
+          }
+        }
+      }
+    }
+    expect(wedged).toEqual([]);
+  });
+});
+
+describe('CircuitBreaker — ignored error names', () => {
+  /** Throw `name` from a breaker call and hand back the error it rejected with. */
+  async function callThrowing(breaker: CircuitBreaker, name: string): Promise<Error> {
+    const thrown = new Error(`${name} happened`);
+    thrown.name = name;
+    let caught: unknown;
+    try { await breaker.call(async () => { throw thrown; }); } catch (e) { caught = e; }
+    expect(caught).toBe(thrown);
+    return thrown;
+  }
+
+  test('a listed name never counts, and still rejects to the caller', async () => {
+    const breaker = new CircuitBreaker({
+      maxFailures: 1, resetTimeoutMs: 1_000, ignoredErrorNames: ['ValidationError'],
+    });
+    await callThrowing(breaker, 'ValidationError');
+    await callThrowing(breaker, 'ValidationError');
+    expect(breaker.state).toBe('closed');
+  });
+
+  test('an unlisted name still opens the breaker', async () => {
+    const breaker = new CircuitBreaker({
+      maxFailures: 1, resetTimeoutMs: 1_000, ignoredErrorNames: ['ValidationError'],
+    });
+    await callThrowing(breaker, 'SocketError');
+    expect(breaker.state).toBe('open');
+  });
+
+  test('the list wins over isFailure, whichever way isFailure votes', async () => {
+    // The precedence #864 pins: the name list is the operator's half of the
+    // classifier and arrives from a config file, so a compiled predicate must
+    // not be able to overrule it — otherwise the leaf goes inert for exactly
+    // the deployments that set it.
+    const listedButCounted = new CircuitBreaker({
+      maxFailures: 1, resetTimeoutMs: 1_000,
+      ignoredErrorNames: ['ValidationError'],
+      isFailure: () => true,
+    });
+    await callThrowing(listedButCounted, 'ValidationError');
+    expect(listedButCounted.state).toBe('closed');
+
+    // And in the other direction: for an UNlisted name isFailure still decides.
+    const unlistedAndExcused = new CircuitBreaker({
+      maxFailures: 1, resetTimeoutMs: 1_000,
+      ignoredErrorNames: ['ValidationError'],
+      isFailure: () => false,
+    });
+    await callThrowing(unlistedAndExcused, 'SocketError');
+    expect(unlistedAndExcused.state).toBe('closed');
+  });
+
+  test('CircuitBreakerTimeoutError is listable, and then a slow call is free', async () => {
+    const breaker = new CircuitBreaker({
+      maxFailures: 1, resetTimeoutMs: 1_000, callTimeoutMs: 20,
+      ignoredErrorNames: ['CircuitBreakerTimeoutError'],
+    });
+    let caught: unknown = null;
+    try { await breaker.call(() => new Promise(() => { /* never resolves */ })); }
+    catch (e) { caught = e; }
+    expect(caught).toBeInstanceOf(CircuitBreakerTimeoutError);
+    // Surprising, coherent, and documented: a call that blew its own deadline
+    // does not count against the breaker.
+    expect(breaker.state).toBe('closed');
+  });
+});
+
+/**
+ * The classifier a caller brings with the call (#874).
+ *
+ * A breaker resolved by id through `CircuitBreakerExtension` is shared, and
+ * the registry hands back the instance that already exists rather than
+ * reconfiguring it — so an `isFailure` supplied as a construction option
+ * reaches the instance only when its supplier happened to be the first
+ * caller.  A predicate that classifies *this call's* errors belongs with the
+ * call, where no resolution order can drop it.
+ */
+describe('CircuitBreaker — a per-call classifier', () => {
+  /** Throw `name` from a breaker call, optionally with a per-call classifier. */
+  async function callThrowingWith(
+    breaker: CircuitBreaker,
+    name: string,
+    isFailure?: (error: Error) => boolean,
+  ): Promise<Error> {
+    const thrown = new Error(`${name} happened`);
+    thrown.name = name;
+    let caught: unknown;
+    try { await breaker.call(async () => { throw thrown; }, isFailure); } catch (e) { caught = e; }
+    expect(caught).toBe(thrown);
+    return thrown;
+  }
+
+  test('a per-call classifier excuses an error the breaker was built without', async () => {
+    const breaker = new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 1_000 });
+    await callThrowingWith(breaker, 'LostTheRace', (error) => error.name !== 'LostTheRace');
+    await callThrowingWith(breaker, 'LostTheRace', (error) => error.name !== 'LostTheRace');
+    expect(breaker.state).toBe('closed');
+  });
+
+  test('it excuses nothing else — an unmatched error still opens the breaker', async () => {
+    const breaker = new CircuitBreaker({ maxFailures: 1, resetTimeoutMs: 1_000 });
+    await callThrowingWith(breaker, 'SocketError', (error) => error.name !== 'LostTheRace');
+    expect(breaker.state).toBe('open');
+  });
+
+  test('it wins over a construction-time isFailure, and a call without one is unaffected', async () => {
+    // Last word rather than conjunction: the caller knows what *this* call
+    // means, while a shared instance's option was chosen by whoever built it.
+    const breaker = new CircuitBreaker({
+      maxFailures: 1, resetTimeoutMs: 1_000, isFailure: () => false,
+    });
+    await callThrowingWith(breaker, 'SocketError', () => true);
+    expect(breaker.state).toBe('open');
+
+    const excusedByOption = new CircuitBreaker({
+      maxFailures: 1, resetTimeoutMs: 1_000, isFailure: () => false,
+    });
+    await callThrowingWith(excusedByOption, 'SocketError');
+    expect(excusedByOption.state).toBe('closed');
+  });
+
+  test('ignoredErrorNames still comes first', async () => {
+    // The operator's half of the classifier arrives from a config file and
+    // cannot be overruled by a compiled predicate — per-call or not.
+    const breaker = new CircuitBreaker({
+      maxFailures: 1, resetTimeoutMs: 1_000, ignoredErrorNames: ['ValidationError'],
+    });
+    await callThrowingWith(breaker, 'ValidationError', () => true);
+    expect(breaker.state).toBe('closed');
+  });
+
+  test('an excused error is not a success either — the consecutive count survives it', async () => {
+    // Not "counted as a success": a carve-out that reset the failure count
+    // would let one excused error between every two real ones hold a dead
+    // dependency open forever.
+    const breaker = new CircuitBreaker({ maxFailures: 2, resetTimeoutMs: 1_000 });
+    await callThrowingWith(breaker, 'SocketError');
+    await callThrowingWith(breaker, 'LostTheRace', (error) => error.name !== 'LostTheRace');
+    expect(breaker.state).toBe('closed');
+    await callThrowingWith(breaker, 'SocketError');
+    expect(breaker.state).toBe('open');
   });
 });

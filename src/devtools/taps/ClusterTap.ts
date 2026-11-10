@@ -20,8 +20,10 @@ import { SWEEP_INTERVAL_MS } from '../Constants.js';
 import type { Cluster } from '../../cluster/Cluster.js';
 import type { Member } from '../../cluster/Member.js';
 import {
+  ClusterStatsPublished,
   CurrentClusterState,
   LeaderChanged,
+  MemberConfigurationMismatch,
   MemberDown,
   MemberJoined,
   MemberLeft,
@@ -34,6 +36,8 @@ import {
   SelfRemoved,
   SelfUp,
   ShardMapChanged,
+  ShardRegionRegistered,
+  ShardRegionRegistrationRefused,
   type ClusterEvent,
 } from '../../cluster/ClusterEvents.js';
 import { match, P } from 'ts-pattern';
@@ -143,8 +147,79 @@ export class ClusterTap implements DevToolsTap {
       .with(P.instanceOf(ShardMapChanged), (e) => this.onShardMapChanged(e))
       .with(P.instanceOf(CurrentClusterState), () => this.onCurrentClusterState())
       .with(P.instanceOf(ReachabilityChanged), (e) => this.onReachabilityChanged(e))
+      .with(
+        P.union(
+          P.instanceOf(ShardRegionRegistered),
+          P.instanceOf(ShardRegionRegistrationRefused),
+        ),
+        () => this.onShardRegistrationEvent(),
+      )
+      .with(P.instanceOf(MemberConfigurationMismatch), () => this.onConfigurationMismatch())
+      .with(P.instanceOf(ClusterStatsPublished), () => this.onStatsPublished())
       .otherwise((e) => this.onMemberEvent(e));
   }
+
+  /**
+   * A periodic membership sample is not a membership change, and this panel
+   * renders changes.  The same figures already reach the dashboard on
+   * `StatsTap`'s own ticker, so forwarding them here would give one number two
+   * periodic sources — which is how two views of one cluster start disagreeing
+   * about it (#842).
+   *
+   * An explicit arm rather than a fall-through, for the reason
+   * {@link onShardRegistrationEvent} states: `otherwise` leads to
+   * {@link onMemberEvent}, whose whole contract is that every event it sees
+   * carries a `member`, and this one has none.
+   *
+   * **The compiler cannot catch its absence, and that was measured.**  Deleting
+   * this arm *and* dropping the type from the `Exclude` below compiles clean:
+   * `ClusterStatsPublished` carries `leader: Option<Member>`, which makes it
+   * structurally assignable to {@link LeaderChanged}, and `Exclude` works by
+   * assignability — so the union member vanishes from `onMemberEvent`'s
+   * parameter on its own and `event.member` never has to be explained.
+   * Deleting the arm alone compiles clean as well, because `ts-pattern` narrows
+   * what reaches `otherwise` by the same assignability.  At runtime it would
+   * then reach {@link onUnknownEvent}, which used to be an empty method, so no
+   * test could see the difference either; its report is what the stats test
+   * and the cluster-event inventory now look for (#1502).
+   *
+   * The compiler guards one kind of fall-through only.  An event that carries
+   * no `member` and is not structurally assignable to any class an earlier arm
+   * takes — the two {@link onShardRegistrationEvent} handles are of that kind,
+   * though they share `type` with {@link ShardMapChanged} — does not compile
+   * once it reaches `otherwise`.  One that carries a `member`
+   * ({@link MemberConfigurationMismatch}) or a `leader: Option<Member>` (this
+   * one, and {@link CurrentClusterState}) always does.
+   */
+  private onStatsPublished(): void { /* not a membership change */ }
+
+  /**
+   * A configuration divergence carries a `member`, so without this arm it
+   * would fall through to {@link onMemberEvent} with nothing at compile time to
+   * stop it — to the type checker it is one more member event — and be
+   * reported there as an event the tap has no arm for.  That is the wrong
+   * report, for the reason {@link onShardRegistrationEvent} states: it is a
+   * known event that no panel renders.  Of the tests, only the cluster-event
+   * inventory notices this arm missing (#1502).  The membership is unchanged;
+   * what diverged is what the two nodes are configured for, and there is no
+   * configuration panel to say so in.
+   */
+  private onConfigurationMismatch(): void { /* not a membership change */ }
+
+  /**
+   * The cluster panel renders membership, and a region's registration — taken
+   * or refused — is not a membership change.  It says something about one
+   * node's sharding, which the shard panel already reads from
+   * `ShardMapChanged`.
+   *
+   * An explicit arm rather than letting these fall through: `otherwise` leads
+   * to {@link onMemberEvent}, whose whole contract is that every event it sees
+   * carries a `member`.  Falling through would have been handled at runtime by
+   * the unknown-event path, which is the wrong report — these events are known,
+   * they simply have no panel — and it would have typed `event.member` on
+   * something that has none.
+   */
+  private onShardRegistrationEvent(): void { /* not a membership change */ }
 
   /**
    * The ten member events are structurally identical — every one is
@@ -156,11 +231,13 @@ export class ClusterTap implements DevToolsTap {
     event: Exclude<
       ClusterEvent,
       LeaderChanged | ShardMapChanged | CurrentClusterState | ReachabilityChanged
+      | ShardRegionRegistered | ShardRegionRegistrationRefused
+      | MemberConfigurationMismatch | ClusterStatsPublished
     >,
   ): void {
     const name = MEMBER_EVENT_NAMES.get(event.constructor as MemberEventClass);
     if (name === undefined) {
-      this.onUnknownEvent();
+      this.onUnknownEvent(event);
       return;
     }
     this.emit?.(clusterEventPayload(Date.now(), name, this.toMemberInfo(event.member)));
@@ -222,8 +299,23 @@ export class ClusterTap implements DevToolsTap {
     this.emit?.(shardMapChangedPayload(Date.now(), shardMap));
   }
 
-  /** A cluster event added after this build — ignore it. */
-  private onUnknownEvent(): void {}
+  /**
+   * An event of this build's own union that no arm took.
+   *
+   * It cannot be a newer node's event: the tap listens through
+   * `cluster.subscribe`, which only this process's `Cluster` feeds — its own
+   * transitions, plus what sharding hands it through `_publishClusterEvent`.
+   * So every call here is a union member this file has no arm for, a gap in
+   * the tap rather than in the data, and an empty method is what kept that gap
+   * invisible (#1502).  Debug, because a gap is a defect to be caught before
+   * release rather than a condition an operator can act on.
+   */
+  private onUnknownEvent(event: ClusterEvent): void {
+    this.system.log.debug(
+      `[devtools] the cluster tap has no arm for ${event.constructor.name},`
+      + ' so the cluster panel never saw it',
+    );
+  }
 
   private toMemberInfo(member: Member): ClusterMemberInfo {
     return {

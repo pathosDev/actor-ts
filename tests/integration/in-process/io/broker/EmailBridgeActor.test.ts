@@ -4,6 +4,7 @@ import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { Actor } from '../../../../../src/Actor.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
+import { ConfigError } from '../../../../../src/config/Config.js';
 import type { ConfigObject } from '../../../../../src/config/HoconParser.js';
 import {
   EmailBridgeActor,
@@ -399,6 +400,30 @@ class TestEmailBridgeActor extends EmailBridgeActor {
 }
 
 /**
+ * A bridge whose start refusal is kept for the test to read, instead of
+ * failing the actor.
+ *
+ * `startSettled` is polled rather than the failure itself, so a case that
+ * expects a refusal and gets a clean start fails on the assertion that names
+ * the difference, not on a timeout.  `_closeTransport` returns early when no
+ * connection was ever opened, so a swallowed refusal stops cleanly.
+ */
+class StartCapturingEmailBridgeActor extends TestEmailBridgeActor {
+  startFailure: unknown = null;
+  startSettled = false;
+
+  override async preStart(): Promise<void> {
+    try {
+      await super.preStart();
+    } catch (e) {
+      this.startFailure = e;
+    } finally {
+      this.startSettled = true;
+    }
+  }
+}
+
+/**
  * Wait for `preStart`'s first connect attempt to settle, either way — see
  * {@link TestEmailBridgeActor.firstConnectSettled} for why that flag and not
  * the connection state.
@@ -602,7 +627,7 @@ describe('EmailBridgeActor — inbound sweep', () => {
     }
   });
 
-  test('markSeen mode creates no mailbox', async () => {
+  test('mark-seen mode creates no mailbox', async () => {
     const system = makeSystem();
     try {
       const inbox = new InboxActor(() => null, 'silent');
@@ -1175,17 +1200,17 @@ describe('EmailBridgeActor — options', () => {
                 mailbox: 'Alerts',
                 user: 'hocon-user',
                 password: 'hocon-secret',
-                onProcessed: 'move',
-                moveToMailbox: 'Done',
-                disableIdle: true,
-                pollIntervalMs: 45,
-                maxMessageBytes: 2048,
+                'on-processed': 'move',
+                'move-to-mailbox': 'Done',
+                'disable-idle': true,
+                'poll-interval': 45,
+                'max-message-bytes': 2048,
               },
               smtp: {
                 host: 'smtp.from-hocon.test',
                 port: 2525,
                 from: 'hocon@example.test',
-                maxConnections: 3,
+                'max-connections': 3,
               },
             },
           },
@@ -1236,13 +1261,13 @@ describe('EmailBridgeActor — options', () => {
                 user: 'reader',
                 password: 'pw',
                 mailbox: 'Watched',
-                onProcessed: 'move',
-                moveToMailbox: 'Archive',
-                disableIdle: true,
-                maxIdleTimeMs: 111,
-                pollIntervalMs: 222,
-                maxMessageBytes: 333,
-                acknowledgmentTimeoutMs: 444,
+                'on-processed': 'move',
+                'move-to-mailbox': 'Archive',
+                'disable-idle': true,
+                'max-idle-time': 111,
+                'poll-interval': 222,
+                'max-message-bytes': 333,
+                'acknowledgment-timeout': 444,
               },
               smtp: {
                 host: 'smtp.example.test',
@@ -1251,8 +1276,8 @@ describe('EmailBridgeActor — options', () => {
                 user: 'sender',
                 password: 'pw2',
                 from: 'noreply@example.test',
-                maxConnections: 7,
-                maxMessages: 8,
+                'max-connections': 7,
+                'max-messages': 8,
               },
             },
           },
@@ -1291,6 +1316,83 @@ describe('EmailBridgeActor — options', () => {
         maxConnections: 7,
         maxMessages: 8,
       });
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  // #1443 — every HOCON key is kebab-case, and so is every value one takes:
+  // the leaf is `on-processed`, its value speaks the TypeScript union.
+  test('on-processed = "mark-seen" is read from HOCON and settles by flag', async () => {
+    const system = makeSystem({
+      'actor-ts': {
+        io: {
+          broker: {
+            'email-bridge': {
+              imap: { host: 'imap.example.test', 'poll-interval': 25, 'on-processed': 'mark-seen' },
+            },
+          },
+        },
+      },
+    });
+    try {
+      let bridgeRef: ActorRef<EmailBridgeCommand> | null = null;
+      const inbox = new InboxActor(() => bridgeRef);
+      const inboxRef = system.spawn(() => inbox, 'inbox');
+
+      const imapModule = new FakeImapModule();
+      imapModule.seed = () => [textMail(9, 'alert', 'body')];
+      const actor = new TestEmailBridgeActor(EmailBridgeOptions.create().withTarget(inboxRef), imapModule);
+      bridgeRef = system.spawn(() => actor, 'bridge') as ActorRef<EmailBridgeCommand>;
+      await awaitCondition(
+        () => imapModule.clients.length > 0 && imapModule.last().flagAdds.length >= 1,
+        { timeoutMs: 4_000, label: 'the acknowledgment reached the server as a flag add' },
+      );
+
+      expect(actor.resolvedOptions.imap?.onProcessed).toBe('mark-seen');
+      expect(imapModule.last().flagAdds).toEqual([{ uid: '9', flags: ['\\Seen'] }]);
+      // Swept for unseen mail, with no destination mailbox: mark-seen mode.
+      expect(imapModule.last().searches[0]).toEqual({ seen: false });
+      expect(imapModule.last().mailboxCreates).toEqual([]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('the retired on-processed = "markSeen" is refused at startup, naming "mark-seen"', async () => {
+    const system = makeSystem({
+      'actor-ts': {
+        io: {
+          broker: {
+            'email-bridge': { imap: { host: 'imap.example.test', 'on-processed': 'markSeen' } },
+          },
+        },
+      },
+    });
+    try {
+      const inbox = new InboxActor(() => null, 'silent');
+      const inboxRef = system.spawn(() => inbox, 'inbox');
+      const imapModule = new FakeImapModule();
+      const actor = new StartCapturingEmailBridgeActor(
+        EmailBridgeOptions.create().withTarget(inboxRef),
+        imapModule,
+      );
+      system.spawn(() => actor, 'bridge');
+      await awaitCondition(() => actor.startSettled, {
+        timeoutMs: 4_000, label: "the bridge's preStart settled",
+      });
+
+      // The reader's ConfigError, not the validator's OptionsError: the value
+      // is a rename, and the message says which spelling replaced it.
+      expect(actor.startFailure).toBeInstanceOf(ConfigError);
+      const message = (actor.startFailure as ConfigError).message;
+      expect(message).toContain('markSeen');
+      expect(message).toContain('mark-seen');
+      expect(message).toMatch(/renamed/);
+      // The leaf by its full kebab path, the one the operator has to edit.
+      expect(message).toContain('actor-ts.io.broker.email-bridge.imap.on-processed = "markSeen"');
+      // Refused before the bridge opened anything.
+      expect(imapModule.clients).toEqual([]);
     } finally {
       await system.terminate();
     }

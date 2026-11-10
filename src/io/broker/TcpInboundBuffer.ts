@@ -10,9 +10,9 @@
  * Resuming the delimiter search where the last chunk stopped (the first half,
  * in `extractLineFrames`) removed the scan from that loop but not the copy,
  * and the copy was the larger share of it: 256 KiB delivered in 64-byte
- * chunks moved ~512 MiB.  Under a `maxLineLen` sized in mebibytes — a cap the
- * docs call a DoS limit — that is seconds of blocked event loop a peer can ask
- * for without ever breaching the cap.
+ * chunks moved ~512 MiB.  Under a `maxLineBytes` sized in mebibytes — a cap
+ * the docs call a DoS limit — that is seconds of blocked event loop a peer can
+ * ask for without ever breaching the cap.
  *
  * So the bytes go into a slab grown by doubling, with a read cursor: a
  * consumed frame advances the cursor instead of re-allocating, and the space
@@ -31,8 +31,8 @@ import {
   TCP_RETAINED_INBOUND_BUFFER_BYTES,
 } from '../Constants.js';
 import {
-  DEFAULT_MAX_FRAME_LENGTH,
-  DEFAULT_MAX_LINE_LENGTH,
+  DEFAULT_MAX_FRAME_BYTES,
+  DEFAULT_MAX_LINE_BYTES,
   extractFrames,
 } from './TcpFraming.js';
 import type { FrameExtraction, TcpFraming } from './TcpFraming.js';
@@ -124,7 +124,7 @@ export class TcpInboundBuffer {
    * **Sized from what arrived, never from what was claimed.**  A
    * `length-prefixed` header announces its payload, and allocating that the
    * moment it is read would re-open the vector the frame cap closes: a peer
-   * claims just under `maxFrameLen`, sends no payload at all, and holds the
+   * claims just under `maxFrameBytes`, sends no payload at all, and holds the
    * whole cap per connection for free.  Doubling off received bytes gives the
    * same amortised cost with the resident size bounded by what the peer
    * actually paid to send.
@@ -192,7 +192,7 @@ function replaceSlab(slab: Uint8Array, start: number, end: number, capacity: num
  * stops being rounded up.
  */
 function pendingCeilingBytes(framing: TcpFraming): number {
-  if (framing.kind === 'lines') return framing.maxLineLen ?? DEFAULT_MAX_LINE_LENGTH;
-  if (framing.kind === 'length-prefixed') return framing.maxFrameLen ?? DEFAULT_MAX_FRAME_LENGTH;
+  if (framing.kind === 'lines') return framing.maxLineBytes ?? DEFAULT_MAX_LINE_BYTES;
+  if (framing.kind === 'length-prefixed') return framing.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES;
   return 0;
 }

@@ -62,6 +62,7 @@ type InitData = {
   readonly role: string;
   readonly seeds: ReadonlyArray<string>;
   readonly failureDetector?: Partial<FailureDetectorOptionsType>;
+  readonly failureDetectorAutoDown?: boolean;
   readonly gossipIntervalMs?: number;
   readonly logLevel?: LogLevel;
   readonly scenarioModule?: string;       // serialised URL string
@@ -111,6 +112,9 @@ async function main(): Promise<void> {
     .withSeeds([...init.seeds])
     .withTransport(context.transport);
   if (init.failureDetector) clusterOptions.withFailureDetector(init.failureDetector);
+  if (init.failureDetectorAutoDown !== undefined) {
+    clusterOptions.withFailureDetectorAutoDown(init.failureDetectorAutoDown);
+  }
   if (init.gossipIntervalMs !== undefined) {
     clusterOptions.withGossipIntervalMs(init.gossipIntervalMs);
   }
@@ -232,6 +236,9 @@ async function main(): Promise<void> {
   };
 
   if (typeof selfScope.addEventListener === 'function') {
+    // No origin check: worker-thread message channel, not window.postMessage —
+    // messages come only from the trusted parent, and payloads are validated by
+    // `kind` in onControl (CodeQL js/missing-origin-check — false positive).
     selfScope.addEventListener('message', (e) => { void onControl(e.data); });
   }
 

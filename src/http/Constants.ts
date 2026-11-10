@@ -136,3 +136,65 @@ export const STATIC_FILE_READ_CHUNK_BYTES = 64 * 1024;
  * name longer than that is not a diagnostic anyway.
  */
 export const MAXIMUM_INBOUND_SHAPE_LABEL_LENGTH = 32;
+
+/**
+ * Longest `Access-Control-Allow-Headers` value a synthesised preflight echoes
+ * back when the route configured none of its own — 1024 characters.
+ *
+ * That value is assembled from client-supplied bytes, so it is bounded as well
+ * as filtered: without a cap a preflight carrying a header-sized
+ * `Access-Control-Request-Headers` is answered with an equally large response
+ * header, which is a small request buying a large one.  1024 is far past any
+ * honest preflight — a browser lists the handful of non-simple headers the
+ * `fetch` call actually set — while still being a cap rather than a limit
+ * nobody hits.
+ *
+ * The budget is spent in whole header names: a name that does not fit is
+ * dropped rather than cut, because half of `authorization` is not a name a
+ * browser can do anything with, and truncation is how a length cap turns a
+ * well-formed list into a malformed one.
+ *
+ * It lives here rather than in `CorsOptions.ts` because it is not the default
+ * of any options field — `allowedHeaders` decides *whether* the request's own
+ * names are echoed; this decides how much of them fits once they are.
+ */
+export const MAXIMUM_ECHOED_CORS_HEADERS_LENGTH = 1024;
+
+/**
+ * The interface `ActorSystem.http(port)` binds when the caller names none —
+ * loopback.
+ *
+ * It was `0.0.0.0` until #1408, which made the shortest form of the shortcut
+ * the one that published the server on every interface: a reader who wanted
+ * that had no way to tell they were getting it, and a reader who did not want
+ * it had to know to ask.  Defaults decide what happens when nobody thought
+ * about it, and "reachable from the whole network" is not that answer.
+ *
+ * Only the *shortcut* defaults.  `newServerAt(host, port)` still takes the
+ * host as a required argument, because a call that names the interface is
+ * already saying what it means.
+ */
+export const DEFAULT_HTTP_BIND_HOST = '127.0.0.1';
+
+/**
+ * The shortest `max-age`, in seconds, that `actor-ts.http.hsts.max-age` may
+ * set: one day.  A pin shorter than that has lapsed before a visitor comes
+ * back the next day, so a file that set it would switch HSTS off in all but
+ * name — and `0` switches it off outright (RFC 6797 §6.1.1).  A day still
+ * leaves every stage of hstspreload.org's ramp-up from one week on to the
+ * file; its five-minute first stage, the one meant for backing out quickly,
+ * is a decision for code (`withMaxAge(300)`), as is any value below this.
+ */
+export const MINIMUM_CONFIGURED_HSTS_MAX_AGE_SECONDS = 86_400;
+
+/**
+ * The first Deno whose `node:http` applies `keepAliveTimeout` and
+ * `requestTimeout` (#1793).  Measured under `idle-timeout = 600ms` and
+ * `request-timeout = 2s`: deno 2.6.8, 2.7.0, 2.7.7, 2.7.11 and 2.7.12 held an
+ * idle keep-alive connection open past 4 s and a stalled body past 40 s;
+ * 2.7.13, 2.7.14, 2.8.0 and 2.9.8 closed the first at 1.6 s and the second at
+ * 30 s — Node's sweep, answered `400` on 2.7.13 and `408` from 2.8.0 on.  The
+ * same release first builds `node:http2`'s `createSecureServer`, and its
+ * HTTP/1.1 fallback holds both too.  Below it both are reported not in effect.
+ */
+export const DENO_NODE_HTTP_TIMEOUTS_SINCE = '2.7.13';

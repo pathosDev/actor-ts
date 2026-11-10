@@ -55,6 +55,77 @@ describe('parseDuration', () => {
     expect(() => parseDuration('5 lightyears')).toThrow(/Unknown duration unit/);
   });
 
+  // #785.  The unit table used to be a plain object literal, so
+  // `UNIT_MS['constructor']` resolved through `Object.prototype` to the
+  // `Object` function, the `undefined` guard never fired, and the result was a
+  // silent `NaN` instead of the loud error every other bad unit produces.
+  // Asserting the *unknown-unit* message, not merely that it throws: a fix
+  // that only rejected the non-finite result would throw "Invalid duration"
+  // here and leave the lookup itself resolving through the prototype.
+  test('the unit lookup is own-property-only', () => {
+    expect(() => parseDuration('1constructor')).toThrow(
+      /Unknown duration unit "constructor" in 1constructor/,
+    );
+    expect(() => parseDuration('1 CONSTRUCTOR')).toThrow(/Unknown duration unit/);
+    // The rest of `Object.prototype` cannot reach the lookup at all — they are
+    // mixed-case and do not survive the lowercasing — but they must stay
+    // rejected for the reason the guard is positive rather than a blocklist.
+    for (const member of ['toString', 'valueOf', 'hasOwnProperty', 'isPrototypeOf']) {
+      expect(() => parseDuration(`1${member}`)).toThrow();
+    }
+    // `__proto__` never gets that far: the unit pattern has no underscore.
+    expect(() => parseDuration('1__proto__')).toThrow(/Invalid duration/);
+  });
+
+  // The own-key half of the same guard: a null-prototype table plus a positive
+  // `Object.hasOwn` check must leave every declared unit answering as before.
+  // Mixed-case spellings are in the list deliberately — the guard sees the
+  // lowercased unit, and one written against the raw capture instead rejects
+  // every capitalised unit in the file.
+  //
+  // **All 34, not a sample.**  The list used to name 22, and the eleven it
+  // skipped — `nano`, `nanos`, `micro`, `microsecond`, `milli`, `millisecond`,
+  // `secs`, `mins`, `minute`, `hrs`, `hour` — could be deleted from `UNIT_MS`
+  // with `tests/unit/config/` still green, under a test whose name promised
+  // otherwise.  A spelling nobody exercises is a spelling nobody notices
+  // losing, and every one of them is a documented HOCON duration a
+  // `reference.conf` may already be written in.
+  test('every declared unit still resolves', () => {
+    const declared: ReadonlyArray<readonly [string, number]> = [
+      ['1ns', 1e-6], ['1nano', 1e-6], ['1nanos', 1e-6],
+      ['1nanosecond', 1e-6], ['1NANOSECONDS', 1e-6],
+      ['1us', 1e-3], ['1μs', 1e-3], ['1micro', 1e-3], ['1micros', 1e-3],
+      ['1microsecond', 1e-3], ['1Microseconds', 1e-3],
+      ['1ms', 1], ['1MS', 1], ['1milli', 1], ['1millis', 1],
+      ['1millisecond', 1], ['1milliseconds', 1],
+      ['1s', 1_000], ['1sec', 1_000], ['1secs', 1_000],
+      ['1second', 1_000], ['1Seconds', 1_000],
+      ['1m', 60_000], ['1min', 60_000], ['1mins', 60_000],
+      ['1minute', 60_000], ['1MINUTES', 60_000],
+      ['1h', 3_600_000], ['1hr', 3_600_000], ['1hrs', 3_600_000],
+      ['1hour', 3_600_000], ['1Hours', 3_600_000],
+      ['1d', 86_400_000], ['1day', 86_400_000], ['1DAYS', 86_400_000],
+    ];
+    for (const [input, expected] of declared) {
+      expect(parseDuration(input)).toBeCloseTo(expected, 9);
+    }
+    // Counted on the distinct unit — the mixed-case entries above are extra
+    // spellings of a unit already in the list, not extra units — so that a
+    // unit dropped from the list here is as loud as one dropped from the
+    // table.  `UnitTableHardening` covers the other direction, where a unit is
+    // added to the table and to neither list.
+    const distinct = new Set(declared.map(([input]) => input.slice(1).toLowerCase()));
+    expect(distinct.size).toBe(34);
+  });
+
+  // #785, second half.  The finite check used to guard only a numeric
+  // argument, so anything the arithmetic produced was returned unexamined.
+  test('never returns a non-finite duration', () => {
+    const overflowing = '9'.repeat(400);
+    expect(() => parseDuration(overflowing)).toThrow(/Invalid duration/);
+    expect(() => parseDuration(`${'9'.repeat(305)}d`)).toThrow(/Invalid duration/);
+  });
+
   test('rejects malformed strings', () => {
     expect(() => parseDuration('abc')).toThrow(/Invalid duration/);
     expect(() => parseDuration('5.5.5s')).toThrow();

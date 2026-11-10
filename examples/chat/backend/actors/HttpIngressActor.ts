@@ -18,12 +18,16 @@
  * the failed node are lost — clients reconnect, re-login, and the
  * persistent chat history is already there.
  *
- * Trade-off: failover takes about as long as the cluster's
- * `downAfterMs` plus a couple of singleton-handshake hops
- * (~5–10 s with the demo's failure-detector settings).  For real
- * zero-downtime active/active deployments you'd front the cluster
- * with an external load balancer (nginx, HAProxy, K8s Service);
- * that's out of scope for the local sample.
+ * Trade-off: failover after a crash is not instant.  The survivors
+ * stop counting the dead holder as `up` at `unreachable-after`
+ * (1.5 s here), which is when a new host is chosen; the keep-majority
+ * strategy in `application.conf` removes the node `stable-after`
+ * (3 s) later, which is what hands its rooms over.  With a couple of
+ * singleton-handshake hops that is ~5–10 s before everything is back.
+ * A graceful stop (Ctrl+C) leaves the cluster first and hands over
+ * faster.  For real zero-downtime active/active deployments you'd
+ * front the cluster with an external load balancer (nginx, HAProxy,
+ * K8s Service); that's out of scope for the local sample.
  */
 import * as path from 'node:path';
 import {

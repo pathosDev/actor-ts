@@ -106,12 +106,12 @@ cart.tell({ kind: 'add', sku: 'book-2' });
 ```ts
 type DurableStateOptionsType<S> = {
   persistenceId: string;
-  store:         DurableStateStore;
+  store?:        DurableStateStore;
   emptyState:    () => S;
 };
 ```
 
-Drei Felder:
+Drei Felder, eines davon optional:
 
 - **`persistenceId`** — der Schlüssel, unter dem der State
   gespeichert ist.  Wie bei `PersistentActor` eine ID pro logischer
@@ -124,7 +124,9 @@ Drei Felder:
   bevor der Actor an einen Store gebunden wird — und meldet einen
   Verstoß als `OptionsError` auf dem Feld `persistenceId`.
 - **`store`** — die `DurableStateStore`-Implementierung (in-memory,
-  SQLite, Object Storage, benutzerdefiniert).
+  SQLite, Object Storage, benutzerdefiniert).  **Optional**: bleibt es
+  ungesetzt, nutzt der Actor den Store, den das System ausgewählt hat — siehe
+  [Den Store aus der Konfiguration wählen](#den-store-aus-der-konfiguration-wählen).
 - **`emptyState()`** — Factory, die aufgerufen wird, wenn noch kein
   Eintrag existiert (erste Ausführung, gelöschter State).  Stellt
   den Initialwert bereit.
@@ -132,6 +134,87 @@ Drei Felder:
 Reiche sie durch die `() => new Cart({...})`-Factory.
 Die Settings können pro Actor-Inkarnation variieren (unterschiedliche
 IDs für unterschiedliche User, derselbe Store).
+
+## Den Store aus der Konfiguration wählen
+
+Durable State war bislang der einzige Persistence-Vertrag ohne Plugin-Registry:
+jeder `registerXxxPlugins(...)`-Helper baute seinen Store eifrig und gab ihn
+zurück, ihn zu erreichen ging also nur, indem man diese Instanz durch den
+eigenen Code fädelte.  Jetzt wird er genauso ausgewählt wie Journal und
+Snapshot Store seit jeher:
+
+```hocon
+actor-ts.persistence.durable-state {
+  plugin = "actor-ts.persistence.durable-state.sqlite"
+  sqlite { path = "/var/lib/my-app/app.db" }
+}
+```
+
+```ts
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [(persistence) => registerSqlitePlugins(persistence)],
+});
+const system = ActorSystem.create('demo', systemOptions);
+
+// No store in the options — the actor takes the configured one.
+const cartFactory = () => new Cart(
+  DurableStateOptions.create<State>()
+    .withPersistenceId('cart-user-42')
+    .withEmptyState(() => ({ items: [] })),
+);
+```
+
+Der Default ist der In-Memory-Referenz-Store, exakt wie beim Journal — eine App,
+die nichts konfiguriert, verhält sich also wie bisher.  Ein `withStore(...)` in
+den Options gewinnt weiterhin; das ist die richtige Wahl für einen Store, den
+die Anwendung selbst besitzt: ein mit etwas anderem geteiltes Handle, einer von
+mehreren Stores in einem Prozess, oder ein Spy im Test.  Geändert hat sich nur,
+dass es nicht mehr der *einzige* Weg ist.
+
+Jedes Backend, das einen Durable-State-Store mitbringt, registriert ihn auch:
+SQLite, die fünf relationalen Backends, MongoDB, DynamoDB und Object-Storage.
+Cassandra ist die eine Ausnahme, und zwar eine ehrliche — das Framework hat gar
+keinen Cassandra-Durable-State-Store, dieses Backend hat also zwei Plugin-Achsen,
+wo die übrigen drei haben.
+
+Eine nicht registrierte Plugin-Id wird abgelehnt statt still ersetzt:
+`ext.durableStateStore` wirft `Unknown durable-state plugin '…'` und benennt die
+Id — dasselbe Fehlerverhalten, das die beiden anderen Achsen seit #377 haben.
+Mit dem Öffnen beim Start, dem Default, löst das System die ausgewählten Stores
+innerhalb von `create` auf, die Ablehnung lässt also den Start scheitern —
+siehe [Stores beim Start öffnen](/de/persistence/overview/#stores-beim-start-öffnen).
+
+Ein Wert an der Stelle des Blocks wird ebenfalls abgelehnt und nennt den
+Schlüssel.  `actor-ts.persistence.durable-state = "actor-ts.persistence.durable-state.sqlite"`
+sieht aus wie eine Auswahl, ersetzt aber den Block, der den Selektor enthält,
+und wurde früher als gar keine Auswahl gelesen: Der Store blieb im Speicher,
+der Start meldete Bereitschaft, und der Zustand war beim nächsten Neustart weg.
+Jetzt lässt er den Start mit einem `ConfigError` scheitern, der sagt, dass
+`actor-ts.persistence.durable-state` ein Block mit einem `plugin`-Feld sein
+muss — schreib `plugin = "…"` in den Block, wie oben.  Dasselbe gilt für den
+Journal- und den Snapshot-Store-Block und für `actor-ts.persistence` selbst,
+und ein Selektor, der gar keine Id hält — `null`, ein Block, eine Liste —,
+lässt jede Achse scheitern, nicht nur seine eigene.
+
+Ein vertippter Schlüssel wird ebenfalls abgelehnt und mit vollem Namen genannt.
+`plugn = "…"` im Block liest niemand, und früher ließ es `plugin` auf der
+In-Memory-Id, die `reference.conf` mitbringt, also startete das System ohne
+Fehler und ohne Warnung mit dem In-Memory-Store, genau als wäre nichts
+ausgewählt.  Jetzt lässt es den Start mit einem `ConfigError` scheitern, der
+`actor-ts.persistence.durable-state.plugn` nennt, und ebenso jeder andere Wert
+im Block neben `plugin` — darunter eine Einstellung eines Plug-ins, eine Ebene
+zu hoch geschrieben — und jeder Schlüssel direkt unter `actor-ts.persistence`,
+den das Framework nicht liest.  Korrigiere die Schreibweise, oder verschiebe die
+Einstellung in den Block ihres Plug-ins.  Ein vertipptes Leaf im eigenen Block
+eines Plug-ins abzulehnen ist Sache dieses Plug-ins.
+
+Ein ausgewählter SQLite-Store ohne Pfad wird ebenfalls abgelehnt, und zwar
+früher: `registerSqlitePlugins` prüft schon beim Registrieren jeden Store, den
+die Konfiguration auswählt — außer einem, den `withPersistence` im Code setzt,
+der die Auswahl ersetzt und sie ungebaut lässt —, sodass `create` mit einem
+Fehler wirft, der `actor-ts.persistence.durable-state.sqlite.path` nennt.  Gib dem Block einen
+Pfad — `":memory:"` für eine In-Memory-Datenbank — oder übergib dem Plugin im
+Code eine Datenbank.
 
 ## State-Zugriff + Persistenz
 
@@ -255,15 +338,54 @@ class Sensitive extends DurableStateActor<Command, State> {
 }
 ```
 
-**Nur der Object-Storage-Durable-State-Store liest diese.**  Neun
-der zehn Durable-State-Stores nehmen die Optionen entgegen und
-sehen sie nie an
-([#960](https://github.com/mknorr/actor-ts/issues/960)): Auf
-In-Memory, SQLite, Postgres, Mongo und DynamoDB wird ein Override
-hier stillschweigend fallen gelassen — keine Verschlüsselung,
-keine Manipulationserkennung und kein Fehler, der dich darauf
-hinweist.  Prüfe den Override gegen den Store, den du tatsächlich
-betreibst, bevor du ihn als greifende Kontrolle behandelst.
+**Die Object-Storage- und SQL-Durable-State-Stores lesen diese.**
+Der Object-Storage-Store und die SQL-Familie — SQLite, Postgres,
+MariaDB, MSSQL, libSQL und D1 ([#1802](https://github.com/pathosDev/actor-ts/issues/1802)) — honorieren alle drei
+Hooks auf Schreib- und Lesepfad.  Die SQL-Stores behalten das
+Schema: Der Datensatz landet in derselben `payload`-Spalte, als
+Object-Storage-Frame in Base64 hinter einem `ats1:`-Präfix,
+gebunden an Persistence-ID und Revision, sodass ein Payload, der mit
+einer anderen Revision gepaart wird, sich nicht entschlüsseln lässt.
+Ein Actor mit `encryption()` verweigert eine Zeile, die nicht
+verschlüsselt ist, Klartext-JSON eingeschlossen, denn diese Zeile
+ist entweder älter als der Hook oder wurde von jemandem mit Zugriff
+auf die Tabelle geschrieben.  Um einen Hook über bestehenden
+Datensätzen einzuschalten, baust du den Store mit
+`withAllowPlaintextRows(true)`: Der nächste `persist` schreibt jede
+Zeile versiegelt neu, danach kommt die Option wieder heraus.  Was
+kein Schlüssel erkennen kann, ist eine ganze Zeile — Revision und
+Payload zusammen —, die auf eine ältere Kopie zurückgesetzt wird.
+
+Die übrigen drei Durable-State-Stores nehmen die Optionen entgegen
+und sehen sie nie an — aber sie sagen es, über eine
+`persistenceOptionSupport`-Deklaration, die das Framework beim
+Actor-Start prüft ([#960](https://github.com/pathosDev/actor-ts/issues/960)).  Auf In-Memory, Mongo und DynamoDB
+**verweigern** `encryption()` oder `integrity()`
+**den Actor vor dem Start**, mit einem
+`UnsupportedPersistenceOptionError`, der Store und Feld benennt.
+Die Verweigerung liegt bewusst vor dem Load in `preStart` und
+nicht erst beim ersten Write: Ein Durable-State-Actor liest, bevor
+er schreibt, und ein Lesen gegen einen Store, der nicht
+entschlüsseln kann, würde ihm einen Klartext-Datensatz geben, den
+er für Chiffrat hält.  `compression()` ist ein Performance-Hinweis,
+warnt also einmal, und der Datensatz wird unkomprimiert
+geschrieben; `{ mode: 'none' }` wird überall akzeptiert.
+
+Einen der beiden Authentifikatoren zu konfigurieren —
+`client-aes256-gcm` oder `hmac-sha256` — erkauft neben
+Vertraulichkeit und Manipulationserkennung noch etwas Zweites:
+Erst dadurch bekommt der Object-Storage-Store eine
+**Verschiebungserkennung**.  Jeder Write bindet den Body an den
+Storage-Key, auf den er geht; ein Datensatz, der später unter
+dem Key einer anderen Entity auftaucht, wird abgelehnt, und
+dafür ist nichts einzuschalten.  Ohne einen davon — der
+Standard — bemerkt es auf dieser Ebene nichts: Ein
+Durable-State-Body ist `{ revision, state, timestamp }` und
+nennt keine Entity, und `load` antwortet mit der
+`persistenceId`, nach der gefragt wurde.  Der Snapshot-Store
+steht nicht an derselben Stelle;
+[Was Verschlüsselung nicht abdeckt](/de/persistence/object-storage/encryption/#was-verschlüsselung-nicht-abdeckt)
+legt den Unterschied dar.
 
 Siehe
 [Object-Storage-Verschlüsselung](/de/persistence/object-storage/encryption/)

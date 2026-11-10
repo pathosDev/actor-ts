@@ -12,24 +12,26 @@
  * subkey only compromises one pid's snapshots, not the entire bucket.
  */
 
+import { requireSubtle } from './Integrity.js';
+
 /**
- * Lazily resolve `SubtleCrypto`.  Capturing it at module load (the old
- * approach) crashed the import itself on runtimes without WebCrypto;
- * deferring the lookup lets `probeEncryptionAvailability` surface a
- * clear "WebCrypto not available" error at registration time instead
- * (#18, #59).
+ * Lazily resolve `SubtleCrypto`, through the directory's shared
+ * {@link requireSubtle}.  Capturing it at module load (the old approach)
+ * crashed the import itself on runtimes without WebCrypto; deferring the
+ * lookup lets `probeEncryptionAvailability` surface a clear "WebCrypto not
+ * available" error at registration time instead (#18, #59).
+ *
+ * The message tail is this module's own and stays that way: it is what tells
+ * an operator staring at the shared opening sentence that it is *encryption*
+ * they need to stop configuring, and it carries the bundler advice the other
+ * two requirements have no use for.
  */
 function getSubtle(): SubtleCrypto {
-  const subtle = (globalThis.crypto as Crypto | undefined)?.subtle;
-  if (!subtle) {
-    throw new Error(
-      'SubtleCrypto is not available in this runtime.  Client-side '
-      + 'encryption requires WebCrypto support — Node, Bun, or '
-      + 'Deno.  In bundled/edge environments, ensure the bundler '
-      + 'includes a WebCrypto polyfill.',
-    );
-  }
-  return subtle;
+  return requireSubtle(
+    'Client-side encryption requires WebCrypto support — Node, Bun, or '
+    + 'Deno.  In bundled/edge environments, ensure the bundler includes a '
+    + 'WebCrypto polyfill.',
+  );
 }
 
 /**

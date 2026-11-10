@@ -63,6 +63,15 @@ dafür braucht es den Schlüssel; aber er kann die vorhandenen echten
 Bodies **verschieben und erneut einspielen**, und das Auth-Tag reist mit
 den Bytes mit.
 
+Fälschen kann er einen Body auch nicht, indem er **erklärt, es gebe keine
+Verschlüsselung**.  Ob ein Body verschlüsselt ist, steht in einem
+Manifest-Byte des Bodys selbst, außerhalb des Auth-Tags.  Ein Schreiber
+ohne Schlüssel könnte sonst fünf Bytes Header und JSON nach seiner Wahl
+ablegen, und das würde als State des Actors gelesen.  Ein Store, der mit
+einem Entschlüsselungsschlüssel liest, lehnt einen unverschlüsselten Body
+ab ([#965](https://github.com/pathosDev/actor-ts/issues/965)); nur
+[das Migrationsfenster](#alte-payloads-lesen) lässt einen wieder zu.
+
 Zwei Ausprägungen davon, beide seit
 [#612](https://github.com/pathosDev/actor-ts/issues/612) geschlossen und
 keine davon durch Verschlüsselung allein:
@@ -77,6 +86,38 @@ keine davon durch Verschlüsselung allein:
   Revision liegt *innerhalb* der authentifizierten Bytes.  Der
   DurableState-Store führt stattdessen eine prozesslokale Untergrenze —
   siehe [Rollback-Schutz](#rollback-schutz-durable-state).
+
+Geschlossen von einem **Authentifikator**, genauer gesagt —
+`client-aes256-gcm` oder `hmac-sha256` — und von nichts sonst.
+Konfiguriere einen davon, und der Storage-Key geht bei jedem Write in
+die authentifizierten Bytes ein; ein verschobener Body verifiziert dann
+nicht mehr, und dafür ist kein Schalter nötig.
+`requireContextBinding` ist eine zweite Kontrolle mit einer anderen
+Aufgabe; siehe [Die Bindung verlangen](#die-bindung-verlangen).
+
+Ein Store ohne einen der beiden Authentifikatoren hat überhaupt keine
+Verschiebungserkennung, und genau dieser Store ist der Standard.  Er ist außerdem die einzige Form,
+die eine Konfigurationsdatei ausdrücken kann, denn beide
+Authentifikatoren brauchen einen 32-Byte-Schlüssel.
+`ObjectStorageDurableStateStore` schreibt einen Body aus
+`{ revision, state, timestamp }`, der keine Entity nennt, und `load`
+antwortet mit der `persistenceId`, nach der gefragt wurde, und dem
+State, den es gefunden hat — ein Datensatz, der auf den Key einer
+anderen Entity kopiert wurde, kommt also als deren State zurück.
+`ObjectStorageSnapshotStore` steht im selben Bucket nicht an derselben
+Stelle: Ein Snapshot-Body nennt die Entity, für die er geschrieben
+wurde, und der Store verweigert einen, der eine andere nennt — mit oder
+ohne Schlüssel.  Die beiden Stores unterscheiden sich hier tatsächlich
+— siehe
+[Zwei Stores, ein Prefix](/de/persistence/object-storage/snapshot-store-backend/#zwei-stores-ein-prefix).
+
+Ob das zählt, ist eine Frage nach ein und demselben Schreiber.  Ein
+Objekt zu verschieben setzt Schreibzugriff auf den Bucket voraus, und
+in einem Klartext-Korpus ändert derselbe Zugriff den Body ebenso
+leicht.  Ein Entity-Name im Body finge das *Versehen* — eine
+Bucket-Kopie, ein Restore, ein halb fertiges Migrationsskript — und
+nicht einen absichtlichen Schreiber; deshalb ist die Kontrolle hier ein
+Authentifikator und kein Feld.
 
 ## Konfiguration
 
@@ -175,7 +216,10 @@ wurde (retired Schlüssel bleiben im Ring).
 
 ## Was es verschlüsselt
 
-- **Den Body** — serialisierter State / Event / Snapshot.
+- **Den Body** — einen serialisierten Durable State oder Snapshot,
+  nie ein Event: Es gibt kein Object-Storage-Journal, und kein
+  Journal verschlüsselt (siehe
+  [Snapshots brauchen es ebenso](#snapshots-brauchen-es-ebenso)).
 - **Nicht** — den Object-Key, Object-Metadaten-Header, den
   Bucket-Namen.
 
@@ -265,19 +309,43 @@ state/cart-42  ← alt, Plaintext (Encrypted-Flag im Manifest nicht gesetzt)
 state/cart-43  ← neu, verschlüsselt (Encrypted-Flag gesetzt, Schlüsselversion 0)
 ```
 
-Das Framework erkennt jedes Pro-Payload über das Body-Manifest:
+Ein Store, der mit `client-aes256-gcm` konfiguriert ist, **lehnt** den
+alten Body **ab**:
 
-- **Encrypted-Flag nicht gesetzt** → Plaintext-Pfad.
-- **Encrypted-Flag gesetzt** → mit der Schlüsselversion entschlüsseln,
-  die das Manifest festhält.
+```
+BodyCodec: body is not encrypted but a decryption key was supplied
+for decoding.
+```
 
-Bedeutet, **du kannst Verschlüsselung schrittweise aktivieren** —
-neue Writes werden verschlüsselt, alte Reads funktionieren immer
-noch, und ein Hintergrund-Re-Encryption-Sweep kann den Rest
-migrieren.
+Das Flag, das „nicht verschlüsselt“ sagt, steht im Body.  Ein
+Plaintext-Body von vor der Umstellung und einer, den ein Angreifer über
+einen verschlüsselten geschrieben hat, sehen von hier aus gleich aus —
+und nur gegen den zweiten lohnt es sich, etwas zu tun.  Öffne das
+Migrationsfenster ausdrücklich:
 
-Siehe [Schlüsselrotation](/de/persistence/object-storage/key-rotation/)
-für den Rotation-Flow.
+```ts
+const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create()
+  .withBackend(backend)
+  .withEncryption({ mode: 'client-aes256-gcm', masterKey, info })
+  .withAllowUnencryptedBodies(true);
+```
+
+Der Snapshot-Store und `ObjectStoragePluginOptions` nehmen dasselbe
+`withAllowUnencryptedBodies`.  Solange es gesetzt ist, liest das
+Framework jeden Body nach seinem Manifest — ein verschlüsselter wird mit
+der Schlüsselversion entschlüsselt, die er festhält, ein
+unverschlüsselter so gelesen, wie er ist — und jeder Write wird
+verschlüsselt.
+
+Schreibe anschließend jedes Objekt neu — ein `load` gefolgt von einem
+`upsert` pro `persistenceId` verschlüsselt es; Snapshots werden vom
+nächsten Save abgelöst und von `keepN` aufgeräumt — und **entferne die
+Option wieder**.  Solange sie gesetzt ist, wird ein Plaintext-Body von
+jedem angenommen, der in den Bucket schreiben kann.  Der
+[Re-Encryption-Sweep](/de/persistence/object-storage/key-rotation/)
+übernimmt diesen Schritt nicht: Er rotiert verschlüsselte Bodies auf einen
+neuen Schlüssel und zählt Plaintext-Bodies als `skippedUnencrypted`,
+statt sie zu verschlüsseln.
 
 ## Body-Integrität (HMAC)
 
@@ -315,7 +383,13 @@ Ein-Aufruf-Verdrahtung reicht sie an beide Stores zugleich weiter:
 const objectStoragePluginOptions = ObjectStoragePluginOptions.create()
   .withBackend({ kind: 's3', bucket: 'my-app', region: 'eu-central-1' })
   .withIntegrity({ mode: 'hmac-sha256', integrityKey });
-const { durableStateStore } = await registerObjectStoragePlugins(ext, objectStoragePluginOptions);
+let objectStorage: ObjectStoragePluginHandles | undefined;
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [async (persistence) => {
+    objectStorage = await registerObjectStoragePlugins(persistence, objectStoragePluginOptions);
+  }],
+});
+const system = ActorSystem.create('my-app', systemOptions);
 ```
 
 Ein Snapshot ist dabei wohl das lohnendere Ziel von beiden: Recovery
@@ -324,6 +398,17 @@ bestimmt den Zustand, mit dem ein Actor zurückkehrt.  Replay begrenzt
 die `sequenceNr`, die ein Snapshot behaupten darf — ein Snapshot vor
 dem Journal wird abgelehnt —, aber sonst authentifiziert nichts das
 `state`-Payload.
+
+Die Events, die auf ihn gefaltet werden, authentifiziert ebenso
+nichts.  `encryption()` und `integrity()` an einem
+`PersistentActor` schützen nur seine Snapshots: Jedes Journal
+speichert Events als Klartext-JSON, nichts erkennt ein an Ort und
+Stelle manipuliertes Event, und datenbankseitige Kontrollen —
+Transparent Data Encryption, ein verschlüsseltes Volume,
+Zugriffskontrolle — sind heute der einzige Schutz für Events.  Wer
+die Zeilen des Journals schreiben kann, bestimmt den
+wiederhergestellten Zustand genauso sicher wie jemand, der einen
+Snapshot umschreiben kann.
 
 ### Das Tag ist Pflicht, nicht bloß geprüft
 
@@ -448,6 +533,15 @@ Manifest-Bit hält fest, dass es geschehen ist.  Nichts zu konfigurieren
 — beide Object-Storage-Stores kennen den Key, auf den sie schreiben.
 
 ### Die Bindung verlangen
+
+Das ist nicht die Kontrolle, die auf einem Store mit Authentifikator
+einen verschobenen Body fängt — das tut bereits die Bindung von oben,
+bei jedem Write, und dafür ist kein Schalter nötig.  Was
+`requireContextBinding`
+hinzufügt, ist die Ablehnung von Bodies, die *gar keine* Bindung tragen;
+auf einem Store ohne einen der beiden Authentifikatoren wird die Option
+schlicht ignoriert: Eine Bindung dort zu verlangen, wo nichts eine
+erzeugt, würde die eigenen Writes des Stores ablehnen.
 
 Bodies, die vor dieser Änderung geschrieben wurden, tragen keine Bindung
 und werden weiterhin dekodiert: Ein alter Bucket funktioniert weiter.

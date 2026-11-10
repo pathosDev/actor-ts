@@ -1,4 +1,5 @@
 import type { Snapshot } from '../JournalTypes.js';
+import type { PersistenceOptionSupport } from '../PersistenceCapabilities.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
@@ -35,6 +36,19 @@ export class InMemorySnapshotStore implements SnapshotStore {
   private readonly keepN: number;
   /** See `InMemoryJournal.storageLocality` — writable for shared in-process fixtures (#1356). */
   storageLocality: StorageLocality = 'node-local';
+
+  /**
+   * A process-heap map — there is nothing at rest to protect, and nothing
+   * here reads `options` (#960).  The reference store declares `false`
+   * rather than pretending: an actor whose production store encrypts must
+   * not pass its tests against an in-memory store that quietly does not.
+   */
+  readonly persistenceOptionSupport: PersistenceOptionSupport = {
+    encryption: false,
+    compression: false,
+    integrity: false,
+  };
+
   /** See `InMemoryJournal.mintedStorageIdentity` — one instance, one identity (#1358). */
   private readonly mintedStorageIdentity: string = crypto.randomUUID();
 

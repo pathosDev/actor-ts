@@ -1,5 +1,7 @@
 import type { ActorSystem } from '../../ActorSystem.js';
 import type { PersistenceExtension } from '../PersistenceExtension.js';
+import { Lazy } from '../../util/Lazy.js';
+import { mergeOptions } from '../../util/OptionsMerge.js';
 import { ObjectStorageDurableStateStore } from '../durable-state-stores/ObjectStorageDurableStateStore.js';
 import { ObjectStorageSnapshotStore } from '../snapshot-stores/ObjectStorageSnapshotStore.js';
 import { probeCompressionAvailability } from './Compression.js';
@@ -9,12 +11,19 @@ import {
   validateMasterKeyRing,
 } from './Encryption.js';
 import { probeIntegrityAvailability } from './Integrity.js';
-import { FilesystemObjectStorageBackend } from './FilesystemObjectStorageBackend.js';
+import {
+  FilesystemObjectStorageBackend,
+  probeFilesystemEtagAvailability,
+} from './FilesystemObjectStorageBackend.js';
 import {
   S3ObjectStorageBackend,
   type S3Credentials,
 } from './S3ObjectStorageBackend.js';
 import type { ObjectStorageBackend } from './ObjectStorageBackend.js';
+import {
+  ObjectStoragePluginOptionsValidator,
+  readObjectStoragePluginOptionsFromConfig,
+} from './ObjectStoragePluginOptions.js';
 import type { ObjectStoragePluginOptions, ObjectStoragePluginOptionsType } from './ObjectStoragePluginOptions.js';
 import {
   knownConfigsOf,
@@ -37,7 +46,20 @@ export const OBJECT_STORAGE_DURABLE_STATE_PLUGIN_ID = 'actor-ts.persistence.dura
  * accepted for advanced cases (mock backend in tests, custom subclass).
  */
 export type ObjectStorageBackendSpec =
-  | { readonly kind: 'filesystem'; readonly dir: string }
+  | {
+      readonly kind: 'filesystem';
+      readonly dir: string;
+      /**
+       * Forwarded to {@link FilesystemObjectStorageBackend}.  They live on the
+       * spec rather than only on the backend's own options because the spec is
+       * the *only* way the one-call wiring reaches the backend — before #873
+       * the two fields were unreachable through `registerObjectStoragePlugins`
+       * at all, so `filesystem.lock-timeout` would have been a documented key
+       * with nothing behind it.
+       */
+      readonly lockTimeoutMs?: number;
+      readonly staleLockMs?: number;
+    }
   | {
       readonly kind: 's3';
       readonly bucket: string;
@@ -52,10 +74,17 @@ export interface ObjectStoragePluginHandles {
   /** The shared backend — both stores write through this. */
   readonly backend: ObjectStorageBackend;
   /**
-   * The DurableState store instance.  `PersistenceExtension` doesn't
-   * carry a DurableState registry today, so callers that want
-   * DurableState pass this directly into `DurableStateActor`'s
-   * options.
+   * The DurableState store instance, for a caller that wires
+   * `DurableStateOptions.store` by hand rather than selecting the store with
+   * `actor-ts.persistence.durable-state.plugin`.
+   *
+   * A **getter**, and built on first read rather than at registration (#872).
+   * The store is a registered factory now — `OBJECT_STORAGE_DURABLE_STATE_PLUGIN_ID`
+   * was an exported constant nothing could select until the extension grew a
+   * durable-state registry — and both routes resolve the same lazy, so either
+   * yields the one object and a caller that never touches durable state builds
+   * none.  It still shares the backend with the snapshot store, so
+   * {@link close} is unchanged: the plugin owns the backend either way.
    */
   readonly durableStateStore: ObjectStorageDurableStateStore;
   /**
@@ -67,45 +96,89 @@ export interface ObjectStoragePluginHandles {
 }
 
 /**
- * Register the object-storage SnapshotStore against `PersistenceExtension`
- * and return a ready-to-use DurableStateStore instance.  Mirrors the
- * Cassandra plugin's one-call wiring while accepting that DurableState
- * isn't extension-managed today — callers who want DurableState read
- * `handles.durableStateStore` from the return value and pass it into
- * their `DurableStateActor` options.
+ * Register the object-storage snapshot store *and* durable-state store against
+ * `PersistenceExtension`.  Both plugin ids become selectable — the
+ * durable-state one for the first time (#872) — and the returned
+ * `handles.durableStateStore` still hands back the same instance, for a caller
+ * that would rather pass it into `DurableStateActor`'s options than name it in
+ * config.
  *
- * **Eager peer-dep validation (#18, #59).**  Before returning, this
- * function probes any optional peer-dependency the configured codecs
- * need — `fzstd` for `compression: 'zstd'` (when neither Bun nor
+ * **Eager peer-dep validation (#18, #59).**  Before the returned promise
+ * settles, this function probes any optional peer-dependency the configured
+ * codecs need — `fzstd` for `compression: 'zstd'` (when neither Bun nor
  * Node provides a native impl), `SubtleCrypto` when a client-side
- * encryption or an integrity config is supplied.  A failing probe surfaces the
- * "install X" message **here**, at registration time, instead of
- * silently surviving until the first persist call.  For resolvers
+ * encryption or an integrity config is supplied.  A failing probe rejects
+ * the promise with the "install X" message, at registration time, instead
+ * of silently surviving until the first persist call.  For resolvers
  * built via `compressionByPrefix` / `encryptionByPrefix` every config
  * the resolver could return is probed; opaque user-written resolvers
  * fall back to first-use checks.
  *
+ * **Registered first, probed second (#1473).**  Both factories are in the
+ * registry before the probes are awaited — by the time the call returns its
+ * promise.  That is what makes this a plug-in for
+ * `ActorSystemOptions.withPersistence({ plugins })`: the system runs it inside
+ * `ActorSystem.create`, so the selected store resolves on the line after
+ * `create`, and it awaits the promise in the `persistence-start` phase, so a
+ * failed probe fails the startup.
+ *
  * Example:
  *
- *   const ext = system.extension(PersistenceExtensionId);
- *   const { durableStateStore } = await registerObjectStoragePlugins(ext,
- *     ObjectStoragePluginOptions.create()
- *       .withBackend({ kind: 's3', bucket: 'my-app', region: 'eu-central-1' })
- *       .withCompression({ algorithm: 'zstd' })
- *       .withEncryption(encryptionByPrefix({ default: { mode: 'sse-s3' } })));
+ *   let objectStorage: ObjectStoragePluginHandles | undefined;
+ *   const pluginOptions = ObjectStoragePluginOptions.create()
+ *     .withBackend({ kind: 's3', bucket: 'my-app', region: 'eu-central-1' })
+ *     .withCompression({ algorithm: 'zstd' })
+ *     .withEncryption(encryptionByPrefix({ default: { mode: 'sse-s3' } }));
+ *   const systemOptions = ActorSystemOptions.create().withPersistence({
+ *     plugins: [async (persistence) => {
+ *       objectStorage = await registerObjectStoragePlugins(persistence, pluginOptions);
+ *     }],
+ *   });
+ *   const system = ActorSystem.create('my-app', systemOptions);
+ *   await system.whenReady();   // the probes passed; `objectStorage` is set
  *   // ... and to make the snapshot plugin active:
  *   //   actor-ts.persistence.snapshot-store.plugin = "actor-ts.persistence.snapshot-store.object-storage"
+ *
+ * The handles are the caller's to keep: `objectStorage.close()` releases the
+ * shared backend once the system has terminated.
+ *
+ * **From configuration (#873).**  `options` is optional, because everything
+ * except a serializer, a pre-built backend and client-side key material can
+ * come from `actor-ts.persistence.snapshot-store.object-storage`:
+ *
+ *   plugins: [(persistence) => registerObjectStoragePlugins(persistence)]   // bucket, region, prefix, … from HOCON
+ *
+ * Precedence is the project-wide one — explicit options > HOCON > built-in
+ * defaults, per field, with an unset field falling through rather than
+ * shadowing.  Validation runs **once, on the merged settings**, so a
+ * cross-field rule (`bucket` required for S3, `kmsKeyId` for `sse-kms`) sees
+ * the values that will actually be used no matter which layer supplied them.
  */
 export async function registerObjectStoragePlugins(
   ext: PersistenceExtension,
-  options: ObjectStoragePluginOptions,
+  options?: ObjectStoragePluginOptions,
 ): Promise<ObjectStoragePluginHandles> {
-  const resolvedOptions = (options as ObjectStoragePluginOptionsType);
-  if (resolvedOptions.backend === undefined) throw new Error('registerObjectStoragePlugins: backend is required (call withBackend()).');
+  const resolvedOptions = mergeOptions<ObjectStoragePluginOptionsType>(
+    {},
+    readObjectStoragePluginOptionsFromConfig(ext.config),
+    (options ?? {}) as Partial<ObjectStoragePluginOptionsType>,
+  );
+  // Validation precedes the required-field throw so a config that names S3
+  // and forgets the bucket is answered by the field it got wrong, rather than
+  // by a `backend is required` message about a backend it did supply.
+  new ObjectStoragePluginOptionsValidator().validate(resolvedOptions);
+  if (resolvedOptions.backend === undefined) {
+    throw new Error(
+      'registerObjectStoragePlugins: backend is required — call withBackend(), or set '
+      + 'actor-ts.persistence.snapshot-store.object-storage.backend to "filesystem" or "s3".',
+    );
+  }
   assertEncryptionInfo(resolvedOptions);
   assertMasterKeyRings(resolvedOptions);
-  await validateObjectStoragePeerDeps(resolvedOptions);
 
+  // Built and registered before the probes are awaited, so both factories are
+  // in the registry by the time the synchronous part of this call returns —
+  // which, for a plug-in, is when `ActorSystem.create` returns (#1473).
   const backend = buildBackend(resolvedOptions.backend);
   const snapshotId = resolvedOptions.snapshotPluginId ?? OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID;
 
@@ -119,13 +192,18 @@ export async function registerObjectStoragePlugins(
       ...(resolvedOptions.encryption !== undefined ? { encryption: resolvedOptions.encryption } : {}),
       ...(resolvedOptions.integrity !== undefined ? { integrity: resolvedOptions.integrity } : {}),
       ...(resolvedOptions.allowUntaggedBodies !== undefined ? { allowUntaggedBodies: resolvedOptions.allowUntaggedBodies } : {}),
+      ...(resolvedOptions.allowUnencryptedBodies !== undefined ? { allowUnencryptedBodies: resolvedOptions.allowUnencryptedBodies } : {}),
       ...(resolvedOptions.requireContextBinding !== undefined ? { requireContextBinding: resolvedOptions.requireContextBinding } : {}),
       ...(resolvedOptions.maxDecompressedBytes !== undefined ? { maxDecompressedBytes: resolvedOptions.maxDecompressedBytes } : {}),
       ...(resolvedOptions.serializer !== undefined ? { serializer: resolvedOptions.serializer } : {}),
     });
   });
 
-  const durableStateStore = new ObjectStorageDurableStateStore({
+  // One instance, whichever way it is reached: the registry's factory and the
+  // returned handle both resolve this lazy.  Building the backend is
+  // synchronous, so the thunk is too, and the probes below are the only
+  // thing `registerObjectStoragePlugins` awaits.
+  const durableStateStoreLazy = Lazy.of(() => new ObjectStorageDurableStateStore({
     backend,
     ownsBackend: false,
     ...(resolvedOptions.prefix !== undefined ? { prefix: resolvedOptions.prefix } : {}),
@@ -133,11 +211,19 @@ export async function registerObjectStoragePlugins(
     ...(resolvedOptions.encryption !== undefined ? { encryption: resolvedOptions.encryption } : {}),
     ...(resolvedOptions.integrity !== undefined ? { integrity: resolvedOptions.integrity } : {}),
     ...(resolvedOptions.allowUntaggedBodies !== undefined ? { allowUntaggedBodies: resolvedOptions.allowUntaggedBodies } : {}),
+    ...(resolvedOptions.allowUnencryptedBodies !== undefined ? { allowUnencryptedBodies: resolvedOptions.allowUnencryptedBodies } : {}),
     ...(resolvedOptions.requireContextBinding !== undefined ? { requireContextBinding: resolvedOptions.requireContextBinding } : {}),
     ...(resolvedOptions.rejectRevisionRollback !== undefined ? { rejectRevisionRollback: resolvedOptions.rejectRevisionRollback } : {}),
     ...(resolvedOptions.maxDecompressedBytes !== undefined ? { maxDecompressedBytes: resolvedOptions.maxDecompressedBytes } : {}),
     ...(resolvedOptions.serializer !== undefined ? { serializer: resolvedOptions.serializer } : {}),
-  });
+  }));
+  ext.registerDurableStateStore(OBJECT_STORAGE_DURABLE_STATE_PLUGIN_ID, () => durableStateStoreLazy.get());
+
+  // The verdict still settles the promise: a probe that fails rejects it, and
+  // a plug-in's rejection fails the startup.  The factories stay registered —
+  // there is no unregistering — and a store resolved from them would fail on
+  // the same missing capability at its first use.
+  await validateObjectStoragePeerDeps(resolvedOptions);
 
   // The backend is shared across both stores, so neither owns it.  The plugin
   // owns it and closes it once, here, on shutdown.
@@ -148,13 +234,18 @@ export async function registerObjectStoragePlugins(
     await backend.close?.();
   };
 
-  return { backend, durableStateStore, close };
+  return {
+    backend,
+    get durableStateStore(): ObjectStorageDurableStateStore { return durableStateStoreLazy.get(); },
+    close,
+  };
 }
 
 /**
- * Probe every codec peer-dep the configured options may need.  Public
- * so callers can pre-validate (e.g. at app bootstrap) independently of
- * actually registering the plugin.
+ * Probe every runtime capability the configured options may need — the
+ * codec peer-deps, and the backend's own requirements.  Public so callers
+ * can pre-validate (e.g. at app bootstrap) independently of actually
+ * registering the plugin.
  */
 export async function validateObjectStoragePeerDeps(
   options: ObjectStoragePluginOptions,
@@ -183,6 +274,20 @@ export async function validateObjectStoragePeerDeps(
   const integrityConfigs = collectIntegrityConfigs(resolvedOptions.integrity);
   if (integrityConfigs.some((c) => c.mode === 'hmac-sha256')) {
     await probeIntegrityAvailability();
+  }
+
+  // ETag: the filesystem backend derives its compare-and-swap token from
+  // SHA-256 (#786), so it needs SubtleCrypto whatever the codecs above are
+  // set to — including the default, where all three are `'none'` and every
+  // probe above sits the call out.  Same argument as integrity's own probe
+  // (#613): nothing else looks, so without this the failure surfaces on the
+  // first `put`, inside a persistence write.
+  //
+  // Backend-specific by construction, not a blanket WebCrypto requirement:
+  // S3 forwards `IfMatch` to the service and returns the service's own ETag,
+  // and a `custom` backend answers for itself.
+  if (resolvedOptions.backend?.kind === 'filesystem') {
+    await probeFilesystemEtagAvailability();
   }
 }
 
@@ -276,7 +381,11 @@ function collectIntegrityConfigs(
 function buildBackend(spec: ObjectStorageBackendSpec): ObjectStorageBackend {
   switch (spec.kind) {
     case 'filesystem':
-      return new FilesystemObjectStorageBackend({ dir: spec.dir });
+      return new FilesystemObjectStorageBackend({
+        dir: spec.dir,
+        ...(spec.lockTimeoutMs !== undefined ? { lockTimeoutMs: spec.lockTimeoutMs } : {}),
+        ...(spec.staleLockMs !== undefined ? { staleLockMs: spec.staleLockMs } : {}),
+      });
     case 's3':
       return new S3ObjectStorageBackend({
         bucket: spec.bucket,

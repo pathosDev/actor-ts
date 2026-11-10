@@ -6,30 +6,72 @@ description: Was ein Dead Letter ist, was actor-ts standardmäßig damit macht u
 Ein **Dead Letter** ist eine Nachricht, die das System nicht zustellen
 konnte: ein `tell` an eine Ref, deren Actor gestoppt ist, eine Selection,
 die ins Leere lief, ein Behavior, das mit `unhandled` geantwortet hat, ein
-Cluster-Singleton ohne Host. Nichts ist aus Versehen verloren gegangen —
-das Framework hat es bemerkt, und so sagt es das.
+Actor, der eine Nachricht mit
+[`this.unhandled(m)`](/de/fundamentals/actor/#eine-nachricht-ablehnen--unhandled)
+abgelehnt hat, ein Cluster-Singleton ohne Host. Nichts ist aus Versehen
+verloren gegangen — das Framework hat es bemerkt, und so sagt es das.
+
+Die beiden `unhandled`-Einträge sind von anderer Art als der Rest: die
+Nachricht *wurde* zugestellt, und ein lebender Actor hat sie abgelehnt.
+Unterscheiden lässt sich das an einem Counter — `actor_unhandled_total{class}`
+steigt nur bei einer abgelehnten Nachricht, und anders als
+`actor_dead_letters_total` braucht er die Queue unten nicht erst
+eingeschaltet.
+
+Drei Basisklassen des Frameworks lehnen standardmäßig auf diese Weise ab.
+Der `onSelfMessage`-Hook von `WebsocketServerActor`, `WebsocketClientActor`
+und `MqttActor` bekommt alles, was keinen der eigenen Kinds des Actors
+trifft: eine Anwendungsnachricht, die deine Subklasse nie behandelt, oder
+einen Body, den ein entfernter Knoten an den Pfad des Actors adressiert
+hat.  Solange du ihn nicht überschreibst, macht er daraus einen Dead
+Letter, der den Actor nennt, nach einem `warn`, das die Klasse der
+Nachricht nennt und nie ihren Payload.
 
 ## Was standardmäßig passiert
 
-Jedes Dead Letter wird in ein `DeadLetter` verpackt und **auf dem
-[Event-Stream](/de/fundamentals/event-stream/) veröffentlicht**. Das ist
-das gesamte Standardverhalten.
+Jedes Dead Letter wird in ein `DeadLetter` verpackt, **geloggt** und **auf
+dem [Event-Stream](/de/fundamentals/event-stream/) veröffentlicht**. Das
+ist das gesamte Standardverhalten.
 
-Insbesondere **loggt** das Framework Dead Letters **nicht**.
-`DeadLetterRef` hält keinen Logger; wenn niemand den Stream abonniert, ist
-das Letter weg. Für einen Entwicklungslauf ist das in Ordnung und eine
-schlechte Antwort auf „was haben wir während des Vorfalls letzte Nacht
-verworfen?“ — genau dafür gibt es die Queue weiter unten.
+Der Eintrag ist eine `info`-Zeile mit dem Empfängerpfad, dem Sender sofern
+bekannt und der **Klasse** der Nachricht — nie der Payload, aus demselben
+Datenschutzgrund, aus dem `store` weiter unten auf `off` steht. Er ist
+gedrosselt: Die ersten zehn Dead Letters werden vollständig geloggt, dann
+meldet eine einzelne `warn`-Zeile, dass das Logging aussetzt, und die
+nächsten fünf Minuten bleiben still. Beim Wiederaufnehmen sagt eine
+weitere `warn`-Zeile, wie viele Letters unberichtet blieben. Beide Zahlen
+sind Einstellungen — siehe
+[`actor-ts.diagnostics`](/de/reference/configuration/) — und `0` heißt „nie
+loggen“ für die Anzahl und „nie aussetzen“ für das Fenster.
+
+Der Schwall, den `terminate()` beim Leeren der Mailboxen erzeugt, wird
+**nicht** geloggt, solange du es nicht mit
+`log-dead-letters-during-shutdown = on` verlangst: Ein geordnetes
+Herunterfahren entsorgt jede eingereihte und gestashte Nachricht auf
+diesem Weg, und das zu melden lässt einen sauberen Stopp wie einen Vorfall
+aussehen. Ein einzelnes `ref.stop()` loggt weiterhin, denn das System
+terminiert nicht.
+
+Was die Log-Zeile *nicht* ist, ist eine *Aufzeichnung*. Sie trägt keine
+Payload, und im Prozess bewahrt sie nichts auf; wenn auch niemand den
+Stream abonniert, ist das Letter selbst weg. Für einen Entwicklungslauf
+ist das in Ordnung und eine schlechte Antwort auf „was haben wir während
+des Vorfalls letzte Nacht verworfen?“ — genau dafür gibt es die Queue
+weiter unten.
 
 ```ts
-import { DeadLetter } from 'actor-ts';
+import { Actor, DeadLetter } from 'actor-ts';
+import { classNameOf } from 'actor-ts/util';
 
 class Watcher extends Actor<DeadLetter> {
   override preStart(): void {
     this.system.eventStream.subscribe(this.self, DeadLetter);
   }
   override onReceive(letter: DeadLetter): void {
-    this.system.log.warn(`undelivered: ${letter.message} -> ${letter.recipient.path}`);
+    // The class, never the payload: interpolating the message prints a
+    // string payload verbatim and throws on a decoded body with no usable
+    // toString.
+    this.system.log.warn(`undelivered: ${classNameOf(letter.message)} -> ${letter.recipient.path}`);
   }
 }
 ```
@@ -109,11 +151,12 @@ es jemand aufbewahrt. Beide ergänzen sich; keine ersetzt die andere.
 :::
 
 Jeder Key in diesem Block entscheidet, **was aufbewahrt wird** — deshalb
-liegen sie unter `actor-ts.dead-letters` und nicht neben den künftigen
-Stellschrauben für Logging und Rate-Limiting: Die entscheiden, wie laut ein
-Letter *angekündigt* wird, werden auf dem Publish-Pfad gelesen und nicht von
-der Queue, und sitzen bewusst hinter dem Erfassen — eine
-Unterdrückungseinstellung kann diese Aufzeichnung also nie still
+liegen sie unter `actor-ts.dead-letters` und nicht neben den
+Logging-Stellschrauben in
+[`actor-ts.diagnostics`](/de/reference/configuration/): Die entscheiden,
+wie laut ein Letter *angekündigt* wird, werden auf dem Publish-Pfad
+gelesen und nicht von der Queue, und sitzen bewusst hinter dem Erfassen —
+eine Unterdrückungseinstellung kann diese Aufzeichnung also nie still
 unvollständig machen.
 
 ## Inspizieren
@@ -298,5 +341,45 @@ aus, für den die Schranke gedacht ist. Siehe
 
 Der Letter trägt die Nachricht, ihren Sender und den Actor, den sie nie
 erreicht hat — dieselben drei Felder, die jeder andere Verlustpfad
-festhält. Der MDC-Kontext des Envelopes und sein Tracing-Span überleben ihn
-nicht; `DeadLetter` hat für beides keinen Platz.
+festhält — und in `attribution` den MDC-Kontext des Envelopes sowie seinen
+Tracing-Span:
+
+```ts
+class Auditor extends Actor<DeadLetter> {
+  override preStart(): void {
+    this.system.eventStream.subscribe(this.self, DeadLetter);
+  }
+  override onReceive(letter: DeadLetter): void {
+    const { context, trace } = letter.attribution;
+    this.system.log
+      .withFields({ ...context, traceId: trace?.traceId ?? 'none' })
+      .warn(`undelivered -> ${letter.recipient.path}`);
+  }
+}
+```
+
+Dieses Paar ist das, was ein Zähler nie liefern kann: nicht, dass eine
+Nachricht verloren ging, sondern *welche Anfrage* sie verloren hat. Beide
+fehlen, wenn der Send keines von beidem trug — ein `tell` außerhalb jedes
+`LogContext.run` oder ein System mit deaktiviertem Tracing — und
+`attribution` selbst ist immer da, ein Zugriff darüber braucht also keine
+Absicherung.
+
+Füllen kann es nur ein Verlustpfad, der noch weiß, woher die Nachricht kam.
+Ein Overflow-Drop kopiert beide Felder direkt vom verworfenen Envelope; eine
+Stash-Verdrängung im `BackoffSupervisor` trägt den MDC, den ihr Eintrag beim
+Puffern erfasst hat, und keinen Span — nichts legt Actor-Code den Span eines
+ankommenden Envelopes offen, der Supervisor hat also keinen zu kopieren. Ein
+Letter, der aus einer bloßen Nachricht gebaut wurde — ein Projection-Event,
+eine Singleton-Übergabe — trägt eine leere Attribution, und das ist die
+Wahrheit und keine Auslassung.
+
+**Die Attribution bleibt am Event.** Ein erfasster `DeadLetterEntry` — das,
+was [`list()`](#inspizieren) zurückgibt — trägt sie bewusst nicht. Ein
+Eintrag wird `retentionMs` lang aufbewahrt und unter `store: 'persistent'`
+in ein Journal geschrieben, das den Prozess überlebt — während ein MDC
+regelmäßig Mandanten-, Benutzer- und Request-Kennungen trägt. Das ist
+dieselbe Entscheidung, die den Store standardmäßig `off` lässt und die
+Payload aus der Log-Zeile heraushält, nur eine Ebene tiefer. Abonniere
+`DeadLetter`, wenn du die Attribution dauerhaft willst — unter einer
+Aufbewahrung, die du gewählt hast.

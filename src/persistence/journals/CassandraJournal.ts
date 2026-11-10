@@ -6,16 +6,23 @@ import {
   type PersistentEvent,
 } from '../JournalTypes.js';
 import {
+  DEFAULT_CASSANDRA_TAG_INDEX_TABLE,
   createCassandraClient,
   keyspaceDdl,
   type CassandraClientLike,
   type CassandraConnection,
 } from './CassandraClient.js';
-import { CassandraJournalOptionsValidator } from './CassandraJournalOptions.js';
+import {
+  CassandraJournalOptionsValidator,
+  DEFAULT_CASSANDRA_ALL_IDS_TABLE,
+  DEFAULT_CASSANDRA_LIGHTWEIGHT_TRANSACTIONS,
+  DEFAULT_CASSANDRA_METADATA_TABLE,
+  DEFAULT_CASSANDRA_PARTITION_SIZE,
+} from './CassandraJournalOptions.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
-import { STORAGE_IDENTITY_TABLE } from '../Constants.js';
+import { DEFAULT_AUTO_CREATE_TABLES, DEFAULT_EVENTS_TABLE, STORAGE_IDENTITY_TABLE } from '../Constants.js';
 import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 import { assertValidEntryTags } from '../storage/TagValidator.js';
 import type { StorageLocality } from '../StorageLocality.js';
@@ -69,7 +76,7 @@ export class CassandraJournal implements Journal {
     if (this.cachedStorageIdentity !== null) return this.cachedStorageIdentity;
     await this.ensureStarted();
     const table = this.qualified(STORAGE_IDENTITY_TABLE);
-    if (this.options.autoCreateTables ?? true) {
+    if (this.options.autoCreateTables ?? DEFAULT_AUTO_CREATE_TABLES) {
       await this.client.execute(
         `CREATE TABLE IF NOT EXISTS ${table} ( singleton int PRIMARY KEY, identity text )`,
       );
@@ -100,7 +107,7 @@ export class CassandraJournal implements Journal {
   private started = false;
   /** Single-flight guard so two concurrent first calls don't both connect + run DDL. */
   private startPromise: Promise<void> | null = null;
-  /** Toggle so shutdown only happens once. */
+  /** Set by `close()`: from then on `start()` and every operation reject, and shutdown happens once. */
   private stopped = false;
   /** Only shut down the client if WE created it — don't close someone else's. */
   private ownsClient: boolean;
@@ -118,9 +125,14 @@ export class CassandraJournal implements Journal {
   /**
    * Explicitly connect + ensure schema.  Called lazily on first use.
    * Single-flight: concurrent callers share one in-flight start; a failed
-   * start clears the guard so a later call can retry.
+   * start shuts down a client it created and clears the guard, so a later
+   * call retries on a fresh client.  After `close()` it rejects instead of
+   * reconnecting (#1473) — a closed journal used to resolve here, and one
+   * closed before it ever started connected a fresh client nobody would shut
+   * down.
    */
   async start(): Promise<void> {
+    this.throwIfClosed();
     if (this.started) return;
     if (!this.startPromise) {
       this.startPromise = this.doStart().catch((e) => {
@@ -131,18 +143,62 @@ export class CassandraJournal implements Journal {
     await this.startPromise;
   }
 
+  /**
+   * Build the client this journal owns, on the first start when none was
+   * injected.  Override in a test subclass to hand it a fake — mirrors
+   * `NatsActor.createNatsConnection`, and keeps the `cassandra-driver` peer
+   * dependency out of the unit tests while the journal still treats the
+   * client as its own, which is the part an injected client cannot show:
+   * what `close()` does with a client the journal created.
+   */
+  protected async createClient(): Promise<CassandraClientLike> {
+    return createCassandraClient(this.options as CassandraConnection);
+  }
+
   private async doStart(): Promise<void> {
     if (this.ownsClient && !this.client) {
-      this.client = await createCassandraClient(this.options as CassandraConnection);
+      this.client = await this.createClient();
     }
-    await this.client.connect();
-    if (this.options.autoCreateKeyspace) {
-      await this.client.execute(keyspaceDdl(this.options as CassandraConnection));
-    }
-    if (this.options.autoCreateTables ?? true) {
-      await this.ensureTables();
+    try {
+      // Re-checked after every step — the client, the connect, the keyspace
+      // and the tables: a start that finds the journal closed stops rather
+      // than connecting, or creating tables, for nobody.
+      this.throwIfClosed();
+      await this.client.connect();
+      this.throwIfClosed();
+      if (this.options.autoCreateKeyspace) {
+        await this.client.execute(keyspaceDdl(this.options as CassandraConnection));
+        this.throwIfClosed();
+      }
+      if (this.options.autoCreateTables ?? DEFAULT_AUTO_CREATE_TABLES) {
+        await this.ensureTables();
+      }
+      this.throwIfClosed();
+    } catch (e) {
+      await this.shutDownFailedClient();
+      throw e;
     }
     this.started = true;
+  }
+
+  /**
+   * A failed start holds nothing it opened (#1473): an owned client is shut
+   * down before the rejection surfaces, and dropped, so the next start creates
+   * a fresh one.  Kept for the retry instead, a client that failed at the
+   * schema step was a live connection only `close()` could end; and once shut
+   * down, a `cassandra-driver` client that had connected refuses every later
+   * connect ("Connecting after shutdown is not supported").  An injected
+   * client is the caller's and stays.
+   */
+  private async shutDownFailedClient(): Promise<void> {
+    if (!this.ownsClient || !this.client) return;
+    const client = this.client;
+    this.client = undefined as unknown as CassandraClientLike;
+    try { await client.shutdown(); } catch { /* the start's own failure is the one to report */ }
+  }
+
+  private throwIfClosed(): void {
+    if (this.stopped) throw new JournalError('CassandraJournal is closed');
   }
 
   /** CQL query options for data-path reads/writes, honouring the configured consistency level. */
@@ -193,7 +249,7 @@ export class CassandraJournal implements Journal {
     }
 
     const now = Date.now();
-    const partitionSize = this.options.partitionSize ?? 500_000;
+    const partitionSize = this.options.partitionSize ?? DEFAULT_CASSANDRA_PARTITION_SIZE;
     const written: PersistentEvent<E>[] = [];
     const lastSeq = actualSeq + entries.length;
 
@@ -300,7 +356,7 @@ export class CassandraJournal implements Journal {
 
   async read<E>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
     await this.ensureStarted();
-    const partitionSize = this.options.partitionSize ?? 500_000;
+    const partitionSize = this.options.partitionSize ?? DEFAULT_CASSANDRA_PARTITION_SIZE;
     const highest = await this.readHighestSeq(persistenceId);
     const hi = toSeq !== undefined ? Math.min(toSeq, highest) : highest;
     if (hi < fromSeq) return [];
@@ -356,7 +412,7 @@ export class CassandraJournal implements Journal {
    */
   async delete(persistenceId: string, toSeq: number): Promise<void> {
     await this.ensureStarted();
-    const partitionSize = this.options.partitionSize ?? 500_000;
+    const partitionSize = this.options.partitionSize ?? DEFAULT_CASSANDRA_PARTITION_SIZE;
     const lastPartition = Math.floor(Math.max(toSeq - 1, 0) / partitionSize);
     for (let partition = 0; partition <= lastPartition; partition++) {
       try {
@@ -514,17 +570,26 @@ export class CassandraJournal implements Journal {
   async close(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
-    if (this.ownsClient && this.started) {
+    // A start still in flight settles first: it sees the close at its next
+    // step and fails, shutting down the client it is creating or connecting
+    // rather than leaving it connected.
+    const pending = this.startPromise;
+    if (pending !== null) {
+      try { await pending; } catch { /* the caller that started it reports the failure */ }
+    }
+    // What is left is a started client: a start that failed shut its own
+    // client down and dropped it (#1473).
+    if (this.ownsClient && this.client) {
       try { await this.client.shutdown(); } catch { /* ignore */ }
     }
   }
 
   /* ========================== internal ========================== */
 
-  private get eventsTable(): string { return this.options.eventsTable ?? 'events'; }
-  private get metadataTable(): string { return this.options.metadataTable ?? 'metadata'; }
-  private get allIdsTable(): string { return this.options.allIdsTable ?? 'all_persistence_ids'; }
-  private get tagIndexTable(): string { return this.options.tagIndexTable ?? 'events_by_tag'; }
+  private get eventsTable(): string { return this.options.eventsTable ?? DEFAULT_EVENTS_TABLE; }
+  private get metadataTable(): string { return this.options.metadataTable ?? DEFAULT_CASSANDRA_METADATA_TABLE; }
+  private get allIdsTable(): string { return this.options.allIdsTable ?? DEFAULT_CASSANDRA_ALL_IDS_TABLE; }
+  private get tagIndexTable(): string { return this.options.tagIndexTable ?? DEFAULT_CASSANDRA_TAG_INDEX_TABLE; }
   /**
    * `keyspace.tagIndexTable`, validated — the form `CassandraQuery` targets.
    *
@@ -537,7 +602,7 @@ export class CassandraJournal implements Journal {
   /** Whether dual-writes to the tag-index side table are enabled. */
   get useTagIndex(): boolean { return this.options.useTagIndex === true; }
   /** Whether appends claim their sequence range with an LWT (#475).  On by default. */
-  private get lightweightTransactions(): boolean { return this.options.lightweightTransactions ?? true; }
+  private get lightweightTransactions(): boolean { return this.options.lightweightTransactions ?? DEFAULT_CASSANDRA_LIGHTWEIGHT_TRANSACTIONS; }
 
   private qualified(table: string): string {
     // keyspace + table are interpolated into CQL (identifiers can't be bound)
@@ -659,6 +724,10 @@ export class CassandraJournal implements Journal {
   }
 
   private async ensureStarted(): Promise<void> {
+    // Before the `started` shortcut: a journal closed after it started has
+    // shut its own client down, or must stop writing through an injected one
+    // — either way the caller gets the closed error, not a driver's.
+    this.throwIfClosed();
     if (this.started) return;
     await this.start();
   }

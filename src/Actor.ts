@@ -3,6 +3,7 @@ import type { ActorRef } from './ActorRef.js';
 import type { ActorSystem } from './ActorSystem.js';
 import type { Cluster } from './cluster/Cluster.js';
 import type { EntityContext } from './EntityContext.js';
+import { recordUnhandled } from './internal/Unhandled.js';
 import type { Logger } from './Logger.js';
 import { defaultStrategy, SupervisorStrategy } from './Supervision.js';
 import type { Option } from './util/Option.js';
@@ -23,6 +24,29 @@ export abstract class Actor<TMessage = unknown> {
   /** @internal */
   _attach(context: ActorContext<TMessage>): void {
     this._context = context;
+  }
+
+  /**
+   * @internal Which of this actor's messages are **control** messages —
+   * handled ahead of everything ordinary already queued, and never shed by a
+   * bound — or `undefined` for none, which is the default (#1431).
+   *
+   * Asked once, by the cell, when the first instance has been built.  An
+   * answer replaces the queue the framework built at spawn with a
+   * `ControlAwareMailbox` holding the same bound; a spawn site that supplied
+   * its own `mailbox` keeps it, because that caller chose the queue, lane and
+   * all.  The question goes to the instance and not to the spawn options
+   * because the framework never spawns the actors that need it: an
+   * application spawns its own WebSocket hub, in the class form or through a
+   * factory, and only the instance knows what it is.
+   *
+   * Return a stateless, module-level predicate.  The queue outlives every
+   * restart, so a closure over an instance would keep the first incarnation
+   * reachable and answer for it after it is gone; and it runs on every
+   * sender's stack, so it should only look at the message's shape.
+   */
+  _controlMessages(): ((message: unknown) => boolean) | undefined {
+    return undefined;
   }
 
   /** Runtime context. Only valid after the actor has been started. */
@@ -95,6 +119,48 @@ export abstract class Actor<TMessage = unknown> {
    * A thrown error (sync or async) is caught by the supervisor.
    */
   abstract onReceive(message: TMessage): void | Promise<void>;
+
+  /**
+   * Say that this actor was handed `message` and declined it — the blessed
+   * body of an `.otherwise((m) => this.onUnhandled(m))` arm.
+   *
+   * The message becomes a `DeadLetter` naming **this actor** as recipient, so
+   * it is published on the event stream, reaches the dead-letter queue when
+   * one is turned on, and is logged by the throttled record #1000 added.  It
+   * also ticks `actor_unhandled_total{class}`, which is the part routing to
+   * dead letters does *not* supply: `actor_dead_letters_total` only moves
+   * while `actor-ts.dead-letters.store` is on, and it is `off` by default.
+   *
+   * **Nothing detects this for you, by design.** The runtime cannot tell an
+   * intentionally ignored message from a dropped one, so an `onReceive` that
+   * simply returns still produces nothing at all.  Declining is a statement
+   * the actor makes.
+   *
+   * ```ts
+   * override onReceive(message: Command): void {
+   *   match(message)
+   *     .with({ kind: 'deposit' }, (m) => this.onDeposit(m))
+   *     .otherwise((m) => this.onUnhandled(m));
+   * }
+   *
+   * private onUnhandled(message: Command): void { this.unhandled(message); }
+   * ```
+   *
+   * `unknown` rather than `TMessage`, because the arm that reaches here is
+   * the un-narrowed remainder — and a framework actor at a resolvable path
+   * receives whatever a remote peer addressed to it, which is not `TMessage`
+   * at all.
+   *
+   * Not to be confused with the exported `unhandled` of the typed API
+   * (`Behaviors.unhandled`, re-exported from the package root): that one is a
+   * *sentinel a behavior returns*, and it lands on this same path from the
+   * other side.  Two things named `unhandled`, one method and one factory.
+   */
+  protected unhandled(message: unknown): void {
+    recordUnhandled(
+      this.system, this.self, this.constructor.name, this.sender.toNullable(), message,
+    );
+  }
 
   /** Called after construction and before the first message is processed. */
   preStart(): void | Promise<void> {}

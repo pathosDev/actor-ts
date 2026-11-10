@@ -60,6 +60,8 @@ type MultiNodeSpecOptionsType = {
   awaitTimeoutMs?:   number;                  // Default 10_000 — wie lange await*-Helfer warten
   logLevel?:         LogLevel;                // Default: ein leiser NoopLogger
   downing?:          (role: string) => DowningProvider | undefined;
+  failureDetectorAutoDown?: boolean;          // Default ungesetzt = das ausgelieferte true
+  stableAfterMs?:    number;                  // Default 100 (vs. 20 s in Produktion)
 };
 ```
 
@@ -73,6 +75,8 @@ type MultiNodeSpecOptionsType = {
 | `awaitTimeoutMs` | Default-Timeout für die `await*`-Helfer. Default 10 s. |
 | `logLevel` | Log-Level — standardmäßig leise. |
 | `downing` | Per-Rolle Split-Brain-Resolver-Factory. |
+| `failureDetectorAutoDown` | Ob der Failure Detector jedes Nodes einen Peer entfernt, den er für `down` erklärt. Ungesetzt bleibt es beim ausgelieferten `true`: Eine abgestürzte Rolle wird bei `down-after` entfernt, ein Spec, der Crash-Failover ohne `downing`-Strategie prüft, braucht also nichts weiter. `false` ist das Opt-out, das ein Spec setzt, um eine abgestürzte Rolle auf `unreachable` geparkt zu sehen, wo sie Mitglied bleibt. Der `downing`-Provider einer Rolle entscheidet deren Entfernungen, was immer dieser Schalter sagt. |
+| `stableAfterMs` | Wie lange das Bild stillstehen muss, bevor `downing` gefragt wird. Default 100 ms — die ausgelieferten 20 s sind das Doppelte von `awaitTimeoutMs`, ein Spec mit dem Produktionswert liefe also ins Timeout, bevor sein Resolver überhaupt gefragt wurde. |
 
 Übergib ein einfaches Objekt wie gezeigt, oder baue es fluent mit
 `MultiNodeSpecOptions.create().withRoles(['a', 'b', 'c'])`.
@@ -134,6 +138,7 @@ Cluster-Austritt durch.
 const spec = new MultiNodeSpec({
   roles:           ['a', 'b', 'c'],
   failureDetector: { heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 },
+  // Keine Downing-Strategie: Das ausgelieferte auto-down entfernt den abgestürzten Node bei downAfterMs.
 });
 await spec.start();
 await Promise.all([
@@ -148,20 +153,147 @@ await Promise.all([
 const host = spec.clusterFor('a').leader().toNullable();
 await spec.crash('a');
 
-// Warten, bis die Überlebenden 'a' downen und neu konvergieren:
+// Warten, bis die Überlebenden ohne 'a' neu konvergieren:
 await spec.awaitMembers('b', 2);
-await spec.awaitMemberStatus('b', 'a', 'down');
 
 // ... asserten, dass der Singleton zu einem Überlebenden umgezogen ist ...
 
 await spec.stop();
 ```
 
-`crash(role)` entfernt den Node abrupt; die anderen beobachten
-den Unreachable-Status, gossipen die Änderung und lösen dann
-Downing + Failover aus. Die `await*`-Helfer ersetzen fragile
-`setTimeout`-Schlafphasen — sie pollen, bis die Bedingung gilt
+`crash(role)` entfernt den Node abrupt; die Detectors der anderen
+markieren ihn nach `unreachableAfterMs` als `unreachable` und
+erreichen bei `downAfterMs` das Urteil `down`. Was dieses Urteil
+bewirkt, entscheidet der Spec: Per Default entfernt der Detector den
+Node, wie oben — `failureDetectorAutoDown` ungesetzt bleibt beim
+ausgelieferten `true`; die `downing`-Strategie einer Rolle entscheidet
+stattdessen; und mit `failureDetectorAutoDown: false` ohne Strategie
+bleibt der Node Mitglied auf `unreachable` — kein Shard wird neu
+vergeben, und kein entfernter Watcher bekommt `Terminated`. Die `await*`-Helfer ersetzen
+fragile `setTimeout`-Schlafphasen — sie pollen, bis die Bedingung gilt
 (oder werfen nach `awaitTimeoutMs`).
+
+## Einen Node neu starten
+
+`restart(role)` bringt eine Rolle **an derselben Adresse als neuen Prozess**
+zurück — die Form eines Pod-Austauschs.  Das alte System wird gecrasht und
+beendet, ein frisches System mit Cluster tritt an seiner Stelle mit einer
+neuen Inkarnation bei, und die anderen Mitglieder sehen den alten Lauf enden,
+bevor der neue beitritt.  `withNodeSetup` läuft auf jedem Node nach seinem
+Beitritt und erneut auf einem neu gestarteten, sodass die Sharding-Typen,
+Singletons und Abonnements, die ein Test startet, auch auf dem neuen Node
+existieren.
+
+```ts
+const spec = new MultiNodeSpec(MultiNodeSpecOptions.create()
+  .withRoles(['a', 'b', 'c'])
+  // Läuft auf jedem Node, sobald er beigetreten ist — und erneut auf einem neu gestarteten.
+  .withNodeSetup((role, system, cluster) => {
+    cluster.sharding.start(shardingOptions);
+  }));
+await spec.start();
+
+const oldRun = spec.clusterFor('a').selfAddress.incarnation;
+await spec.restart('a');                  // gleiche Adresse, neuer Prozess
+await spec.awaitMembers('b', 3);
+expect(spec.clusterFor('a').selfAddress.incarnation).not.toBe(oldRun);
+```
+
+Die Seeds des neu gestarteten Nodes sind die anderen laufenden Rollen, ein neu
+gestarteter Seed tritt also wieder dem Cluster bei, den er gegründet hat.  Mit
+`restart(role, { seeds: [] })` gründet er stattdessen einen eigenen — die
+Gabelung, um die es in
+[Issue #1176](https://github.com/pathosDev/actor-ts/issues/1176) geht.
+Referenzen aus `systemFor` / `clusterFor` von vor dem Neustart benennen den
+alten Node; danach erneut abfragen.
+
+## Ein Netz, das schlecht funktioniert
+
+`partition` und `crash` beschreiben ein Netz, das perfekt oder durchtrennt ist.
+Dazwischen liegt jeder Zustand, in dem ein Cluster tatsächlich läuft: ein
+Fünftel der Gossip-Pushes verloren, Frames, die einander überholen, ein Peer,
+der langsam statt tot ist. `degrade(roleA, roleB, profile)` ist diese Mitte,
+`restore(roleA, roleB)` nimmt sie zurück.
+
+Eine `partition`, die `downAfterMs` überdauert, verhält sich wie in Produktion:
+Ohne `downing`-Strategie entfernt jede Seite die andere und läuft allein weiter,
+und ein späteres `heal` bringt die beiden nicht wieder zusammen
+([Issue #930](https://github.com/pathosDev/actor-ts/issues/930)). Ein Spec, der
+eine Seite gewinnen lassen will, gibt den Rollen über `downing` eine Strategie.
+
+```ts
+const spec = new MultiNodeSpec(MultiNodeSpecOptions.create()
+  .withRoles(['a', 'b', 'c'])
+  .withScheduler(new ManualScheduler())
+  .withFaultSeed(20_231));
+
+await spec.start();
+
+// Der Cluster bildet sich auf einem sauberen Netz, danach wird es schlechter.
+spec.degrade('a', 'b', {
+  dropProbability:      0.2,   // ein Fünftel der Frames kommt nie an
+  duplicateProbability: 0.1,   // ein Zehntel kommt doppelt an
+  reorderWindow:        4,     // bis zu vier Frames dürfen einander überholen
+  latencyMs:            50,    // auf dem Scheduler der Spec gemessen
+});
+
+await spec.advanceUntil(
+  () => spec.clusterFor('a').getMembers().filter((m) => m.status === 'up').length === 3,
+  { budgetMs: 60_000, description: 'die Sicht konvergiert trotz der Verluste' },
+);
+
+spec.restore('a', 'b');
+```
+
+Jedes Feld ist optional und steht per Default auf „kein Fehler", ein Profil
+nennt also nur, was es ändert. `degrade` wirkt beidseitig wie `partition`; für
+eine einseitige Verschlechterung greifst du zu
+`spec.faultsFor(role).degradeTo(address, profile)`.
+
+### Die Fehler sind deterministisch
+
+Jede Entscheidung stammt aus einem geseedeten Generator pro Node, gezogen in
+Sende-Reihenfolge — und unter einem geteilten `ManualScheduler` ist diese
+Reihenfolge selbst deterministisch. Ein rot gewordener Lauf reproduziert also
+exakt, und die Timeout-Meldungen der Spec nennen den Seed dazu:
+
+```
+MultiNodeSpec: timeout after 10000 ms — awaitMembers(a, expected=3) — current: 2
+  Faults were injected on: a, b. Reproduce with withFaultSeed(20231).
+```
+
+Das ist kein Detail. Ein nicht reproduzierbarer Chaos-Test ist ein
+Flake-Generator; ein fester Seed macht den Unterschied — der Preis ist, dass die
+Suite von sich aus keine *neuen* Netze mehr findet. Variiere den Seed bewusst
+(eine Schleife über `withFaultSeed`), wenn die Frage „gilt das für viele Netze"
+lautet und nicht „gilt das für das Netz, das kaputtging".
+
+### `latencyMs` braucht einen Scheduler
+
+Eine Verzögerung von der Wanduhr würde genau die Timing-Abhängigkeit
+zurückholen, die [`ManualScheduler`](/de/testing/manual-scheduler/) beseitigen
+soll — sie wird deshalb abgelehnt statt stillschweigend genommen: ein
+`latencyMs` ungleich null ohne Scheduler wirft schon bei der Konstruktion. Die
+anderen drei Fehler brauchen gar keine Uhr.
+
+### `reorderWindow` ist eine Tiefe, kein Shuffle
+
+Ein Fenster von `n` hält bis zu `n` Frames zurück und gibt sie als eine
+permutierte Charge frei; ein Frame verschiebt sich also um **weniger als `n`
+Positionen**. Genau diese Schranke ist der Punkt: ein Shuffle könnte einen Frame
+ans Ende des Laufs permutieren und einen Test auf etwas warten lassen, das nie
+kommt. Die letzte unvollständige Charge geben `restore`, `stop` und die nächste
+volle Charge frei — kontinuierliches Gossip erledigt Letzteres von allein.
+
+### Es funktioniert auf jedem Transport
+
+`FaultyTransport` ist ein Dekorator: `InMemoryTransport`, `MultiNodeTransport`
+und `MessageChannelTransport` bekommen dieselben Regler, ohne dass einer von
+ihnen Fehler-Logik dazubekommt. Außerhalb einer Spec:
+
+```ts
+const link = new FaultyTransport(new InMemoryTransport(address), { dropProbability: 0.2 });
+```
 
 ## Per-Node-TestProbe
 

@@ -13,10 +13,10 @@
  * below `maxFileSize` nothing can buffer past it.
  *
  * **Why streaming is opt-in and not the default (#465).**  A stream body is
- * one-shot and two first-party middlewares still mishandle one: `cached()` /
- * `idempotent()` serialise a body by testing for `Uint8Array` and store a
- * stream as `{}` (#674), and `ExpressBackend` pipes it with no error handler
- * (#979).  Turning streaming on by default would make both live for the
+ * one-shot and two first-party pieces still mishandle one: `idempotent()`
+ * serialises a body by testing for `Uint8Array` and stores a stream as `{}`
+ * (#674; `cached()` passes a stream through uncached since #980), and
+ * `ExpressBackend` pipes it with no error handler (#979).  Turning streaming on by default would make both live for the
  * out-of-the-box static route rather than latent.  The default stays buffered
  * until those land; flipping it is then a one-line change here.
  */

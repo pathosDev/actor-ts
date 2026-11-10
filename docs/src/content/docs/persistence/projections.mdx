@@ -69,7 +69,8 @@ The actor:
    `preStart`.
 2. Polls the **query layer** for events matching `tag` from the
    cursor onwards.
-3. Calls `handle` for each event.
+3. Calls `handle` for each event — or `handleGroup` for each group
+   of events, see [Grouped handlers](#grouped-handlers).
 4. Persists the new cursor.
 5. Repeats.
 
@@ -107,7 +108,10 @@ const byTagProjectionOptions = ByTagProjectionOptions.create<AccountEvent>()
 ```
 
 Each operator is optional and they combine with AND.  An empty `{}`
-matches every event.
+matches every event.  A filter the query layer refuses — a tag longer
+than 255 characters, an operator that is not a list of strings — is
+refused by `ProjectionActor.byTag` with an `OptionsError` naming `tag`,
+instead of spawning a projection whose every poll fails.
 
 **The filter is part of the cursor identity.**  A bare string keeps the
 cursor it already has, but the two spellings do not share one:
@@ -131,6 +135,12 @@ If the handler runs but the cursor isn't persisted, the projection
 **re-processes the same event** on restart.  This is **at-least-once
 delivery** — the framework guarantees no event is missed, but
 duplicates are possible.
+
+With [`handleGroup`](#grouped-handlers) the unit of replay is the
+group.  The cursor is persisted once per group, to its last event,
+so a crash between the call and that save delivers **every event of
+the group** again — not only the one that was being processed.
+Idempotency has to hold for each event in it.
 
 Handlers must be **idempotent**:
 
@@ -180,13 +190,56 @@ Retries are **not immediate**.  The next attempt is deferred by
 means a bad event reaches the handler four times before the
 projection gives up on it.
 
+### The same knobs in HOCON
+
+Failure handling is usually an *operational* decision — the same code
+wants `retry-and-fail` in production and `skip` in a dev loop — so
+the four fields, the poll cadence and the group size also have
+process-wide defaults under `actor-ts.projection`:
+
+```hocon
+actor-ts.projection {
+  recovery-strategy     = "retry-and-skip"
+  max-retries           = 5
+  retry-backoff         = 2s
+  max-retry-backoff     = 60s
+  poll-interval         = 1s
+  group-after-envelopes = 50   # handleGroup projections only
+}
+```
+
+Precedence is the project's usual three layers, applied **per
+field**: explicit `ProjectionOptions` > HOCON > built-in default.  A
+field this projection does not set falls through to the block above,
+and one the block does not carry falls through to the built-in value
+— so the configuration reaches every projection that has not made up
+its own mind about that field, and none that has.  Passing an empty
+`liveOptions` is *not* making up your mind: `poll-interval` still
+applies.
+
+Set `max-retry-backoff` whenever you set `retry-backoff`.  The two
+are checked against each other on the *merged* settings, so raising
+only the first past the 60 s ceiling makes every projection in the
+process throw `OptionsError` when it starts — from a config file
+alone, with no code change.
+
+`group-after-envelopes` sizes the groups of every
+[grouped projection](#grouped-handlers) that does not call
+`withGroupAfterEnvelopes` itself, and of no other: a `handle`
+projection is still delivered one event per call, whatever the block
+says.  Nor is it refused for the leaf being there — the `OptionsError`
+for a size on a `handle` projection is for a size its own code wrote,
+and a file that every projection in the process reads is not that.
+
 ### What a failure produces
 
 - **`onFailure`** — called on every attempt with the offending
   `PersistentEvent`, the error, the attempt number, and the action
-  taken (`retry` / `skip` / `stop`).  This is the structured signal;
-  wire it to your alerting.  A hook that throws is logged and
-  swallowed — a broken reporter cannot take the projection with it.
+  taken (`retry` / `skip` / `stop`).  A failed group adds the `group`
+  itself — see [When a group fails](#when-a-group-fails).  This is
+  the structured signal; wire it to your alerting.  A hook that
+  throws is logged and swallowed — a broken reporter cannot take the
+  projection with it.
 - **A dead letter** — a skipped event is published on the system
   event stream wrapped in a `DeadLetter` naming the projection as its
   recipient, so nothing vanishes without a trace:
@@ -219,6 +272,88 @@ than the spin it replaced and no more useful.
 
 A stopped projection keeps its cursor, so fixing the cause and
 starting it again resumes at exactly the event that failed.
+
+## Grouped handlers
+
+`handle` runs once per event, so a projection pays its read model one
+round trip per event — one statement, one request.  Where that round
+trip is the cost, take the events in groups instead:
+
+```ts
+import { ProjectionActor, ByTagProjectionOptions } from 'actor-ts/persistence';
+
+const byTagProjectionOptions = ByTagProjectionOptions.create<AccountEvent>()
+  .withName('account-statement-view')
+  .withTag('account')
+  .withQuery(new SqliteQuery(eventsJournal))
+  .withOffsetStore(new InMemoryOffsetStore())
+  .withGroupAfterEnvelopes(50)
+  .withHandleGroup(async (events) => {
+    // One statement per group; the conflict clause makes a replayed group harmless.
+    await viewDb.execute(
+      'INSERT INTO statement_lines (pid, seq, kind) VALUES '
+        + events.map(() => '(?, ?, ?)').join(', ')
+        + ' ON CONFLICT (pid, seq) DO NOTHING',
+      events.flatMap((event) => [event.persistenceId, event.sequenceNr, event.event.kind]),
+    );
+  });
+const projection = ProjectionActor.byTag<AccountEvent>(system, byTagProjectionOptions);
+```
+
+- **One handler, not two.**  A projection sets `withHandle` *or*
+  `withHandleGroup`.  The factory throws `OptionsError` for neither,
+  for both, for a `groupAfterEnvelopes` that is not a positive
+  integer, and for one on a `handle` projection, where it would
+  silently do nothing.
+- **The poll is the window.**  Each tick cuts what its poll returned
+  into groups of at most `groupAfterEnvelopes` events — 20 by
+  default — and delivers every one of them in that tick, in journal
+  order.  Nothing is held back to fill a group: a busy journal yields
+  full groups and a quiet one a short group per poll, so while no
+  group fails, no event waits longer than it would with `handle`.  A
+  failing group holds its good events back with it — see
+  [When a group fails](#when-a-group-fails).  For larger groups at a
+  lower rate, lengthen the poll interval.
+- **One commit per group**, to its last event.  Fewer offset writes
+  are part of what grouping buys, and they make the group the unit
+  of replay — see [At-least-once delivery](#at-least-once-delivery).
+
+### When a group fails
+
+The recovery strategy applies to the group first, with the budget an
+event would get.  A retry forms the group again after the backoff,
+from the same first event, because the cursor has not moved: the same
+events, unless more were journaled in the meantime — then the group
+fills up to `groupAfterEnvelopes` again, and the attempt count carries
+over to the larger group.  `fail` and `retry-and-fail` stop before
+the group's first event, so the cursor stays put and a restart
+delivers from that event again.
+
+A group is never skipped, because that would throw its good events
+away with the bad one.  Where the strategy would skip — `skip` at
+once, `retry-and-skip` once its retries are spent — the group is
+**split** instead: its events go out again one per call, as
+`handleGroup([event])`, each with its own retry budget and its own
+commit.  The event that fails is then retried and skipped exactly as
+under `handle` — one dead letter, one step of
+`persistence_projection_events_skipped_total` — while the events
+before it are committed and the ones after it follow.  Once the split
+range is through, delivery is grouped again.  A group of one, such as
+the short tail of a poll, already is one event per call and fails the
+per-event way from the start.
+
+A split comes only once the group's own attempts are spent, so it
+costs time that `handle` would not: under `retry-and-skip`, the good
+events of the group wait out the group's whole retry budget first, and
+the bad event then spends a second budget on its own, which every
+event after it waits out as well.
+
+`onFailure` tells the two kinds of attempt apart.  A group attempt
+carries `group` — every event of the failed call — with `event` set
+to the first of them, the one the cursor is waiting on.  The attempt
+that hands a group over to the split reports `retry`, since each of
+its events is about to be tried again.  A failure inside the split
+carries no `group`, like a failure of `handle`.
 
 ## OffsetStore
 
@@ -255,6 +390,75 @@ re-processes events one node already handled — or skips the ones
 the other node's cursor is past.  See [storage locality &
 identity](/persistence/overview/#storage-locality--identity).
 
+### The composite key has a length budget
+
+`DurableStateOffsetStore` does not store a cursor under your
+`persistenceId`.  It stores it under a **composite** —
+`projection|seq|persistenceId` for a by-persistence-id projection,
+`projection|tag|tag` for a by-tag one — and that string becomes the
+`persistenceId` of the underlying `DurableStateStore`.  That column is
+`VARCHAR(255)` under `MariaDbDialect` and `NVARCHAR(255)` under
+`MsSqlDialect`; `PostgresDialect` and `SqliteDialect` declare it
+`TEXT`.  Two of the four relational dialects, then — and a
+`DurableStateStore` need not be relational at all.
+
+So the framework can compose a key you never wrote.  A 250-character
+`persistenceId` is legal on its own (the limit is 255), but under a
+projection named `orders-projection` the composite is 272 characters.
+The store refuses it rather than passing it on, with an error naming
+**both halves** — neither alone identifies the trouble, since the same
+id under a shorter projection name is fine:
+
+```text
+Projection offset key is 272 characters, over the 255-character
+durable_state.persistence_id column: projection "orders-projection" (17)
++ "|seq|" + persistenceId "order-xxx…" (250). Shorten the projection
+name or the persistenceId — ...
+```
+
+The budget for the second half is **255 − the projection name − 5**.
+Under `orders-projection` that leaves 233 characters.  A by-tag
+projection spends the same budget on the rendered tag filter
+(`all(a,b)+any(c)`), so a filter over several tags can outgrow it
+without any one tag being unusual.
+
+Refusing here rather than letting the database decide is deliberate,
+because the databases disagree and none of the answers is one you can
+act on:
+
+- SQL Server, and MariaDB in strict mode (the default since 10.2.4),
+  raise a truncation error — loud, but naming a column you never wrote.
+- MariaDB with strict mode off truncates to 255, and two projections
+  whose names share a prefix then share one cursor row.  Nothing
+  fails; the projection simply skips events.
+- Postgres and SQLite store `TEXT` and keep the whole thing, so the
+  same code works until the read model moves.
+
+The bound is therefore a **portability floor, not a column
+constraint** — it holds on the two dialects where nothing would have
+complained.  That is the point of it: the case it exists for is the
+move off `TEXT`, where a key that fit on SQLite becomes, on MariaDB
+with strict mode off, a row two projections share.  A bound that
+applied only where the column is narrow would make the same projection
+legal on one backend and refused on another, which restates the trap
+instead of closing it — and `DurableStateOffsetStore` has no dialect
+to ask in any case, since a `DurableStateStore` is just as likely to
+be object storage, the filesystem, Cassandra, DynamoDB or MongoDB.
+
+Loads are refused as well as writes, so a projection that could never
+commit its cursor fails before it runs your handler rather than after.
+What you see when that happens is the projection's own instruments and
+not a bare actor failure: `persistence_projection_failures_total`
+moves with `reason="poll"`, `persistence_projection_stalled` goes to
+1, and one error line per start attempt names the projection and
+carries the key it refused.  The actor then fails to its supervisor as
+before — restarted, and stopped once the restart budget is spent — so
+what you are left with is a stopped projection whose alert is up,
+rather than one that was silently never there.
+
+`InMemoryOffsetStore` has no such bound — its keys are `Map` keys, not
+column values.
+
 ## Polling
 
 ```ts
@@ -274,6 +478,9 @@ per `pollIntervalMs`.  Tuning:
 - Lower (250-500 ms) → faster end-to-end propagation, more
   database load.
 - Higher (5-10 s) → slow visibility but cheap.
+
+`actor-ts.projection.poll-interval` sets the same cadence for every
+projection in the process; `withLiveOptions` overrides it for one.
 
 For very-low-latency read-model updates, see
 [Push-based query](/persistence/push-based-query/) which
@@ -384,9 +591,14 @@ import { Aside } from '@astrojs/starlight/components';
   }
   ```
   Handler latency directly limits throughput.  At 500 ms/event,
-  the projection processes 2 events/sec.  For high-throughput
-  journals, parallelize inside the handler (Promise.all) or split
-  the work into multiple projections.
+  the projection processes 2 events/sec — and `Promise.all` inside
+  `handle` cannot help, because `handle` receives one event per call.
+  Take the events in groups with [`handleGroup`](#grouped-handlers)
+  instead: send each group in one request, or, where the service only
+  takes one event at a time, run the group's calls side by side with
+  `Promise.all(events.map(...))`, which gives up their order within
+  the group.  If the work is too slow even then, split it across
+  multiple projections.
 </Aside>
 
 ## Where to next

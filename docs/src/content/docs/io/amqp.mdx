@@ -62,6 +62,33 @@ Bindings declare the queue, the exchange binding, AND the
 consumer-actor target in one go — the actor wires everything up
 on connect (idempotent re-declaration).
 
+The same settings come from HOCON, under `actor-ts.io.broker.amqp`, below
+explicit options and above the built-in defaults:
+
+```hocon
+actor-ts.io.broker.amqp {
+  url              = ${?ACTOR_TS_AMQP_URL}  # amqp://user:password@rabbitmq:5672/vhost, or amqps://
+  prefetch         = 10                     # default 1; 0 = unlimited
+  auto-acknowledge = false                  # default true
+}
+```
+
+The URL carries the credentials, which is why the sample takes it from the
+environment rather than from the file.  A value from the environment is read
+as JSON first wherever it parses as JSON; an `amqp://` URL never does, so it
+arrives as written.  A value that does would arrive changed or stop the start:
+one that reads as a number comes back in that number's own spelling — `1e3`
+as `1000`, and a whole number past `Number.MAX_SAFE_INTEGER` possibly with
+other last digits (`20261104123456789` as `20261104123456788`) — and one that
+reads as `null`, a list or an object stops the start with a `ConfigError`.
+Quote such a value inside the variable, or set it in code.
+
+`bindings` and `tls` have no leaf: a
+binding names the actor its queue delivers to, and TLS material is a private
+key, so both are set in code.  The reconnect, circuit-breaker and
+outbound-buffer leaves every broker shares go under the same root — see
+[BrokerActor base](/io/broker-actor-base/#reconnect-with-backoff).
+
 ## Exchanges and routing
 
 | Type | Routing |

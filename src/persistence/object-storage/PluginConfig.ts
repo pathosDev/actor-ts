@@ -16,9 +16,10 @@ import type {
  * function (called per-save with the `persistenceId`).  Returning
  * `undefined` from a resolver means "fall back to the store's default".
  *
- * The `CompressionConfig` / `EncryptionConfig` types themselves are
- * re-exported from the neutral `../PersistenceWriteOptions.js` so
- * actors can import them without depending on the object-storage layer.
+ * The option types themselves (`CompressionConfig`, `EncryptionConfig`,
+ * `IntegrityConfig` and the master-key ring) are declared in the neutral
+ * `../PersistenceOptions.js` and re-exported from there, so actors can
+ * import them without depending on the object-storage layer.
  *
  * Convenience helpers (`compressionByPrefix`, `encryptionByPrefix`)
  * build common resolvers for the longest-prefix-match pattern.

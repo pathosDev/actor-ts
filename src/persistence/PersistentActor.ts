@@ -1,9 +1,11 @@
 import { Actor } from '../Actor.js';
+import { armChainedTimeout, type Cancellable } from '../Scheduler.js';
 import type { Lease } from '../coordination/Lease.js';
+import { MAX_TIMER_DELAY_MS } from '../util/Constants.js';
 import type { Journal } from './Journal.js';
 import { JournalConcurrencyError } from './JournalTypes.js';
 import type { JournalEntry, PersistentEvent, Snapshot } from './JournalTypes.js';
-import { PersistenceExtensionId } from './PersistenceExtension.js';
+import { PersistenceExtensionId, type PersistenceExtension } from './PersistenceExtension.js';
 import type {
   CompressionConfig,
   EncryptionConfig,
@@ -11,7 +13,13 @@ import type {
   PersistenceOptions,
 } from './PersistenceOptions.js';
 import type { SnapshotStore } from './SnapshotStore.js';
-import { replayState } from './Replay.js';
+import {
+  foldReplayHistory,
+  loadReplaySnapshot,
+  readReplayHistory,
+  type ReplayHistory,
+  type ReplayRequest,
+} from './Replay.js';
 import { assertValidPersistenceId } from './storage/PersistenceIdValidator.js';
 import type { EventAdapter, SnapshotAdapter } from './migration/Adapter.js';
 import {
@@ -30,6 +38,76 @@ export type SnapshotPolicy<State, Event> = (
   state: State,
   event: Event,
 ) => boolean;
+
+/**
+ * A recovery ran past `actor-ts.persistence.recovery-timeout` (#874).
+ *
+ * A class rather than a message, for the same reason `SnapshotIntegrityError`
+ * and `JournalIntegrityError` are: `onRecoveryFailure` is documented as
+ * discriminating on what went wrong, and `reason.name === '…'` breaks on any
+ * rewording (#1053).  It says *this backend did not answer*, which is a
+ * different operational fact from a journal that answered with a hole.
+ *
+ * The read it gave up on is not cancelled — nothing in the `Journal` contract
+ * can be — so the error is attribution, not resource recovery.  That is
+ * enough: a replay writes nothing, so a late answer is dropped and the
+ * restart re-reads the true head.
+ */
+export class RecoveryTimeoutError extends Error {
+  constructor(readonly persistenceId: string, readonly timeoutMs: number) {
+    super(
+      `[persistence] '${persistenceId}' recovery did not complete within ${timeoutMs}ms `
+      + '— the journal or snapshot store accepted the request and did not answer '
+      + '(actor-ts.persistence.recovery-timeout)',
+    );
+    this.name = 'RecoveryTimeoutError';
+  }
+}
+
+/**
+ * Settle as `work` does, or reject once `timeoutMs` has passed with a
+ * {@link RecoveryTimeoutError} naming `persistenceId` — the
+ * `actor-ts.persistence.recovery-timeout` ceiling.
+ *
+ * Module-level rather than a method because two recoveries share it:
+ * `PersistentActor`'s and `ReplicatedEventSourcedActor`'s (#1497), which must
+ * fail the same way at the same ceiling.  Internal — no barrel exports it.
+ *
+ * It gives up; it does not cancel — nothing in the `Journal` contract can be
+ * cancelled — so `work` runs on after the rejection and whatever it does with
+ * a late answer has to be harmless.  For both callers it is: the raced phase
+ * writes to no store, and `onRecoveryComplete` runs only once it has
+ * returned, so a late answer completes nothing.
+ *
+ * The timer is cleared on every path.  An un-cleared 30 s timer per
+ * recovered actor would keep the event loop alive well past the point the
+ * work finished — the shape that turns a smoke case into a run that never
+ * exits.
+ *
+ * A deadline past the host timer ceiling (~24.9 days) is a chain of host
+ * timers, because one `setTimeout` fires such a delay early — after 1 ms on
+ * Bun and Node — and the validator admits any finite duration.  A shorter
+ * deadline keeps the one timer it always had.
+ */
+export async function withRecoveryDeadline<T>(
+  work: Promise<T>,
+  persistenceId: string,
+  timeoutMs: number,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let chain: Cancellable | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    const expire = (): void => reject(new RecoveryTimeoutError(persistenceId, timeoutMs));
+    if (timeoutMs > MAX_TIMER_DELAY_MS) chain = armChainedTimeout(expire, timeoutMs);
+    else timer = setTimeout(expire, timeoutMs);
+  });
+  try {
+    return await Promise.race([work, deadline]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    chain?.cancel();
+  }
+}
 
 /** Convenience: snapshot every N events. */
 export function everyNEvents<State, Event>(n: number): SnapshotPolicy<State, Event> {
@@ -130,17 +208,41 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
 
   /**
    * Per-actor compression — overrides the plugin default for THIS actor's
-   * snapshots.  Stores that don't compress (in-memory, SQLite, Cassandra)
-   * ignore the value.  Returning `undefined` (the default) defers to the
-   * plugin's resolver / configured default.
+   * snapshots.  Returning `undefined` (the default) defers to the plugin's
+   * resolver / configured default.
+   *
+   * **Only the object-storage snapshot store compresses.**  Ten of the
+   * eleven snapshot stores accept `PersistenceOptions` and never read it, so
+   * setting an algorithm here buys nothing on SQLite, Postgres, MariaDB,
+   * MSSQL, libSQL, D1, Cassandra, Mongo, DynamoDB or the in-memory reference
+   * store.  Unlike the two hooks below this does not refuse the actor — it
+   * is a performance hint, and a hard failure would make a system-wide
+   * compression default unusable — so it logs one warning naming the store
+   * and the snapshot is written uncompressed (#960).
    */
   compression(): CompressionConfig | undefined { return undefined; }
 
   /**
    * Per-actor encryption — overrides the plugin default for THIS actor's
-   * snapshots.  Honoured by stores that encrypt at rest (object-storage);
-   * other stores ignore it.  Used on both the write path (encrypt) and
-   * the read path (derive subkey from master to decrypt).
+   * snapshots.  Used on both the write path (encrypt) and the read path
+   * (derive subkey from master to decrypt).
+   *
+   * **Only the object-storage snapshot store encrypts.**  Setting this on an
+   * actor backed by any other shipped snapshot store now **refuses the actor
+   * at start** with an `UnsupportedPersistenceOptionError` naming the store,
+   * rather than writing the snapshot in the clear and reporting nothing
+   * (#960).  `{ mode: 'none' }` is accepted everywhere — it is the way to
+   * say "deliberately unencrypted".
+   *
+   * **Snapshots only — never the events (#1430).**  `encryption()` and
+   * `integrity()` on a `PersistentActor` protect its snapshots only: every
+   * journal stores events as plaintext JSON, nothing detects an event edited
+   * in place, and database-side controls — transparent data encryption, an
+   * encrypted volume, access control — are the only protection for events
+   * today.  The journal is never asked, because its contract takes no
+   * `PersistenceOptions`, so no refusal covers it either: an actor that sets
+   * this over the object-storage snapshot store starts cleanly and appends
+   * its events in the clear.
    */
   encryption(): EncryptionConfig | undefined { return undefined; }
 
@@ -149,14 +251,22 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
    * actor's snapshots.  Returning `undefined` (the default) defers to the
    * plugin's resolver / configured default.
    *
-   * **Only the object-storage snapshot store honours this today.**  Ten of
-   * the eleven snapshot stores accept `PersistenceOptions` and never read
-   * it (#960), so on SQLite, Postgres, Cassandra, Mongo, DynamoDB and the
-   * in-memory reference store, configuring `hmac-sha256` here buys no
-   * tamper detection and raises no error — the value is simply dropped.
-   * Treat it as a control you must verify against the store you actually
-   * run, not as one the framework enforces everywhere.  #960 decides
-   * whether an unhonoured directive starts throwing instead.
+   * **Only the object-storage snapshot store signs and verifies.**  Same
+   * refusal as `encryption()` above: configuring `hmac-sha256` against a
+   * snapshot store that does not implement it throws
+   * `UnsupportedPersistenceOptionError` at start instead of silently buying
+   * no tamper detection (#960).  A store is asked through its
+   * `persistenceOptionSupport` declaration, so a third-party store that
+   * declares nothing is treated as unknown and is never refused.
+   *
+   * **Snapshots only — never the events (#1430).**  `encryption()` and
+   * `integrity()` on a `PersistentActor` protect its snapshots only: every
+   * journal stores events as plaintext JSON, nothing detects an event edited
+   * in place, and database-side controls — transparent data encryption, an
+   * encrypted volume, access control — are the only protection for events
+   * today.  A verified snapshot vouches for nothing after it: recovery folds
+   * the journal's events on top of it unchecked, so a row edited in place
+   * changes the recovered state without an error.
    */
   integrity(): IntegrityConfig | undefined { return undefined; }
 
@@ -166,6 +276,12 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
   private _seq = 0;
   private _journal!: Journal;
   private _snapshotStore!: SnapshotStore;
+  /**
+   * The extension the two stores came from, kept so the breakers and the
+   * behaviour settings behind them stay reachable after `preStart` (#874).
+   * Assigned in `preStart` alongside `_journal`, from the same lookup.
+   */
+  private _persistence!: PersistenceExtension;
   private _recovering = true;
   /** Set while a persist is in flight — incoming commands get stashed. */
   private _persisting = false;
@@ -244,19 +360,32 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     // `ActorInitializationError` and supervision decides.
     assertValidPersistenceId(this.persistenceId, 'PersistentActor');
     const ext = this.system.extension(PersistenceExtensionId);
+    this._persistence = ext;
     this._journal = ext.journal;
     this._snapshotStore = ext.snapshotStore;
     // The storage-locality latch (#1356) sits here, at actual use — a
     // cluster whose default stores stay unused must never warn about them.
     ext.noteStoreUse('journal', this._journal);
     ext.noteStoreUse('snapshot-store', this._snapshotStore);
+    // The capability check (#960), at the same seam and before anything
+    // touches storage: an actor that set `encryption()` or `integrity()` on a
+    // store that implements neither is refused here rather than having its
+    // snapshots written in the clear. It sits ahead of the lease and recovery
+    // on purpose — a refusal is a wiring error, and taking a fence or reading
+    // a history first would be work done for an actor that must not run.
+    ext.assertPersistenceOptionsSupported('snapshot-store', this._snapshotStore, this.persistenceOptions());
     // Fencing, before recovery on purpose (#1166): an instance that does not
     // own this entity must not read its history either, or it spends the
     // window until its first write serving answers from state another writer
     // is already moving on.
     await this.acquireLeaseIfConfigured();
     try {
-      await this.recover();
+      // The recovery cap (#874) wraps the replay and nothing else.  The
+      // lease above is taken outside it on purpose: a fence is cheap, it is
+      // the thing that decides whether this instance may read at all, and
+      // holding a recovery permit while waiting on a coordination backend
+      // would let a slow lease starve replays that already own theirs.
+      await ext.withRecoveryPermit(() => this.recover());
     } catch (e) {
       const reason = e instanceof Error ? e : new Error(String(e));
       // Rethrows by default, and then this is the last line that runs:
@@ -299,13 +428,43 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     }
   }
 
-  /** Replay snapshot + journal into `_state` / `_seq`.  Runs no user callbacks. */
+  /**
+   * Replay snapshot + journal into `_state` / `_seq`.  Runs no user callbacks.
+   *
+   * Guards from `actor-ts.persistence` sit around the store calls (#874):
+   *
+   *   - the **breakers**, each around its own store — the snapshot load
+   *     through the snapshot breaker, the journal phase (the `highestSeq`
+   *     probes included, since a stalled backend stalls those exactly as
+   *     readily) through the journal breaker, the fold behind neither — so the
+   *     tenth replay against a dead store fast-fails instead of every
+   *     restarting entity waiting out its own deadline, and neither a dead
+   *     snapshot store nor a history `onEvent` cannot fold is ever counted
+   *     against a journal that is fine (#1496).  What opens them is what they
+   *     guard — appends and this replay for the journal's, this load for the
+   *     snapshot store's — so a store that refuses deletes or snapshot writes
+   *     cannot fail this recovery from another entity's compaction;
+   *   - the **recovery deadline**, around the whole of it, so a backend that
+   *     accepts the connection and then stalls fails this actor at the stall
+   *     rather than leaving it in `preStart` forever.
+   *
+   * The deadline gives up; it does not cancel — nothing in the `Journal`
+   * contract can. That is safe here because a replay writes nothing: `_state`
+   * and `_seq` are assigned only after it returns, so a late-arriving read is
+   * simply dropped and the restart re-reads the true head.
+   */
   private async recover(): Promise<void> {
     this.log.debug(`[persistence] '${this.persistenceId}' recovery starting`);
+    const { recoveryTimeoutMs } = this._persistence.behavior;
+    const replay = (): Promise<void> => this.replayIntoState();
+    await (recoveryTimeoutMs > 0 ? withRecoveryDeadline(replay(), this.persistenceId, recoveryTimeoutMs) : replay());
+  }
+
+  private async replayIntoState(): Promise<void> {
     // The fold, the snapshot fast-path and the two integrity checks —
-    // snapshot (#100) and journal (#122) — all live in `replayState`,
-    // shared with the DevTools time-travel panel (#201).  One
-    // implementation means a debugger reconstructing state cannot
+    // snapshot (#100) and journal (#122) — all live in the three phases of
+    // `replayState`, which the DevTools time-travel panel (#201) runs whole.
+    // One implementation means a debugger reconstructing state cannot
     // quietly disagree with what the actor itself recovers — which is
     // the whole reason to look at it.
     //
@@ -317,7 +476,7 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     // `JournalIntegrityError` through `onRecoveryFailure` is the only
     // honest answer; the panel, which asks about the past rather than
     // the present, opts out of that half.
-    const result = await replayState<Event, State>({
+    const request: ReplayRequest<Event, State> = {
       journal: this._journal,
       snapshotStore: this._snapshotStore,
       persistenceId: this.persistenceId,
@@ -326,31 +485,81 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
       ...(this.eventAdapter() === undefined ? {} : { eventAdapter: this.eventAdapter()! }),
       ...(this.snapshotAdapter() === undefined ? {} : { snapshotAdapter: this.snapshotAdapter()! }),
       ...(this.persistenceOptions() === undefined ? {} : { persistenceOptions: this.persistenceOptions()! }),
-    });
+      // `snapshot-is-optional` is an availability trade the *system* makes,
+      // so it arrives from config rather than from a hook — and `replayState`
+      // refuses it anyway for an actor whose `persistenceOptions` carry an
+      // integrity or encryption config, which is what keeps a tampered
+      // snapshot from being read as an unavailable one.
+      snapshotIsOptional: this._persistence.behavior.snapshotIsOptional,
+      onSnapshotLoadFailure: (error) => this.onSnapshotUnavailable(error),
+      guardSnapshotLoad: (load) => this._persistence.callThroughSnapshotBreaker('load', load),
+    };
+    // Each phase behind its own guard (#1496).  The snapshot load goes
+    // through the snapshot breaker and runs *before* the journal call rather
+    // than inside it: inside, a snapshot store that could not answer failed
+    // the journal call too and was counted by the journal breaker — so ten
+    // entities restarting into a dead snapshot store opened it, and every
+    // append on the node was refused against a journal that had not failed
+    // once.  The fold runs *after* the journal call and behind no breaker, for
+    // the same reason: an `onEvent` or an upcaster that cannot fold one
+    // entity's history is a verdict on that entity, not a journal outage.
+    const snapshot = await loadReplaySnapshot(request);
+    const { history, sequenceNr } = await this._persistence.callThroughJournalBreaker(
+      'replay',
+      () => this.readJournalHistory(request, snapshot),
+    );
+    const result = foldReplayHistory(request, history);
     this._state = result.state;
-    this._seq = result.sequenceNr;
-    if (this._seq === 0) {
-      // Replay found nothing — either a brand-new actor, or a journal
-      // compacted past everything it held.  Only the journal's high-water
-      // mark tells those apart, and `replayState` cannot do it for us: it is
-      // shared with DevTools time travel, where the sequence must stay at
-      // whatever the requested point in history was.
-      //
-      // Getting it wrong is permanent.  Since #379 a backend remembers what
-      // it deleted, so `highestSeq` still reports N after a full compaction
-      // while recovery reported 0 — and the next `persist` sends
-      // expectedSeq=0 into a journal that has seen N, failing with
-      // `JournalConcurrencyError` on every attempt, forever (#628).
-      //
-      // For a new actor `highestSeq` is 0, so this costs one query only when
-      // there was nothing to replay anyway.
-      this._seq = await this._journal.highestSeq(this.persistenceId);
-    }
+    this._seq = sequenceNr;
     if (result.fromSnapshotSequenceNr !== null) {
       this.log.debug(`[persistence] '${this.persistenceId}' loaded snapshot @seq=${result.fromSnapshotSequenceNr}`);
     }
     this.log.debug(
       `[persistence] '${this.persistenceId}' recovery complete: replayed ${result.eventsApplied} event(s), seq=${this._seq}`,
+    );
+  }
+
+  /**
+   * The journal phase of a recovery — the snapshot's trust check, the read,
+   * the history check and the head probe — returning the history to fold and
+   * the sequence the actor resumes from.  One function so it is one call
+   * through the journal breaker, and nothing in it runs user code.
+   */
+  private async readJournalHistory(
+    request: ReplayRequest<Event, State>,
+    snapshot: Snapshot<unknown> | null,
+  ): Promise<{ readonly history: ReplayHistory; readonly sequenceNr: number }> {
+    const history = await readReplayHistory(request, snapshot);
+    if (history.sequenceNr !== 0) return { history, sequenceNr: history.sequenceNr };
+    // Replay found nothing — either a brand-new actor, or a journal
+    // compacted past everything it held.  Only the journal's high-water
+    // mark tells those apart, and `replayState` cannot do it for us: it is
+    // shared with DevTools time travel, where the sequence must stay at
+    // whatever the requested point in history was.
+    //
+    // Getting it wrong is permanent.  Since #379 a backend remembers what
+    // it deleted, so `highestSeq` still reports N after a full compaction
+    // while recovery reported 0 — and the next `persist` sends
+    // expectedSeq=0 into a journal that has seen N, failing with
+    // `JournalConcurrencyError` on every attempt, forever (#628).
+    //
+    // For a new actor `highestSeq` is 0, so this costs one query only when
+    // there was nothing to replay anyway.
+    return { history, sequenceNr: await this._journal.highestSeq(this.persistenceId) };
+  }
+
+  /**
+   * `snapshot-is-optional` turned a failed snapshot load into a full replay.
+   *
+   * `warn`, not `debug`: the recovery succeeded, so nothing else will say
+   * that the snapshot store was unreachable, and a fleet silently replaying
+   * from sequence 1 is a store outage that only shows up as latency.
+   */
+  private onSnapshotUnavailable(error: Error): void {
+    this.log.warn(
+      `[persistence] '${this.persistenceId}': snapshot store could not be read — `
+      + 'recovering by full journal replay (actor-ts.persistence.snapshot-is-optional)',
+      error,
     );
   }
 
@@ -448,8 +657,18 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
       }));
       let written: ReadonlyArray<PersistentEvent<unknown>>;
       try {
-        written = await this._journal.append<unknown>(
-          this.persistenceId, entries, this._seq,
+        // Through the journal breaker (#874), which is the only bound this
+        // call has ever had: a backend that accepts the connection and then
+        // stalls used to leave `_persisting` true forever, and every command
+        // after it stashed until the 1024-entry stash threw from inside the
+        // user's own handler — a supervision restart 1024 messages away from
+        // its cause.  The ceiling is
+        // `actor-ts.circuit-breaker.<journal-breaker>.call-timeout`, and a
+        // `JournalConcurrencyError` is excluded from the failure count so the
+        // ownership verdict below cannot open the breaker for everyone.
+        written = await this._persistence.callThroughJournalBreaker(
+          'append',
+          () => this._journal.append<unknown>(this.persistenceId, entries, this._seq),
         );
       } catch (e) {
         if (e instanceof JournalConcurrencyError) this.onSecondWriterDetected(e);
@@ -525,8 +744,18 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     const wire = snapAdapter ? encodeState(this._state, snapAdapter) : this._state;
     // The store is generic over <State>; when we wrap, we store an envelope
     // and the cast simply re-exposes the typed state to the caller.
-    return this._snapshotStore.save(
-      this.persistenceId, this._seq, wire as unknown as State, this.persistenceOptions(),
+    //
+    // Its own breaker, not the journal's (#874): a snapshot store that is
+    // down must not fast-fail a journal that is fine, and a snapshot is an
+    // optimisation while an append is the write that must land.  Nor does a
+    // refused save count against that breaker (#1496): it guards the load
+    // every recovery starts with, and a store that refuses writes but reads
+    // fine must not fail every recovery on the node.
+    return this._persistence.callThroughSnapshotBreaker(
+      'save',
+      () => this._snapshotStore.save(
+        this.persistenceId, this._seq, wire as unknown as State, this.persistenceOptions(),
+      ),
     );
   }
 
@@ -555,11 +784,27 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
    *
    * `toSeq <= 0` prunes nothing, which is what "compact past the beginning"
    * should mean.
+   *
+   * Each delete goes through its own store's breaker, like every other store
+   * call this actor makes (#1496).  It was the one that did not, so a backend
+   * that accepted a delete and never answered parked the compaction — and the
+   * command awaiting it — with no ceiling, `call-timeout` configured or not.
+   *
+   * Through, but not counted by it: a store that refuses deletes — append-only
+   * grants, a retention policy — still serves every append and every recovery,
+   * and ten refused compactions opened the breaker in front of those for the
+   * whole node.  A refused delete fails this compaction and nothing else.
    */
   protected async deleteHistory(toSeq: number): Promise<void> {
     if (toSeq <= 0) return;
-    await this._snapshotStore.delete(this.persistenceId, toSeq - 1);
-    await this._journal.delete(this.persistenceId, toSeq);
+    await this._persistence.callThroughSnapshotBreaker(
+      'delete',
+      () => this._snapshotStore.delete(this.persistenceId, toSeq - 1),
+    );
+    await this._persistence.callThroughJournalBreaker(
+      'delete',
+      () => this._journal.delete(this.persistenceId, toSeq),
+    );
   }
 
   /** Read back the persisted events — handy for tests. */

@@ -60,7 +60,13 @@ async function main(): Promise<void> {
     detail: databaseConnected ? '' : 'connecting',
   }));
 
-  const binding = await system.http(8558).bind(routes);
+  // The wildcard is spelled out rather than inherited from `system.http`'s
+  // default, because this example is one of the few that genuinely wants it:
+  // the kubelet dials liveness and readiness from outside the pod's network
+  // namespace, so a loopback bind would make the probes fail.  Everything else
+  // under `examples/` binds `127.0.0.1`, and a reader copying this line should
+  // see which of the two they are taking (#756).
+  const binding = await system.http(8558, { host: '0.0.0.0' }).bind(routes);
   console.log(`Kubernetes probes on http://${binding.host}:${binding.port}`);
   console.log(`  Liveness:  GET  /health`);
   console.log(`  Readiness: GET  /ready   (currently DOWN — database not connected)`);

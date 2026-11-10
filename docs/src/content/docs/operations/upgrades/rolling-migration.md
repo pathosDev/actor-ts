@@ -228,7 +228,12 @@ historical bodies.
 Ship the new key as `active`, keep the old as `retired`.
 
 ```ts
-import { ObjectStoragePluginOptions, registerObjectStoragePlugins } from 'actor-ts/persistence';
+import { ActorSystem, ActorSystemOptions } from 'actor-ts';
+import {
+  ObjectStoragePluginOptions,
+  registerObjectStoragePlugins,
+  type ObjectStoragePluginHandles,
+} from 'actor-ts/persistence';
 
 const options = ObjectStoragePluginOptions.create()
   // ... .withBackend(...), .withCompression(...), etc.
@@ -240,7 +245,19 @@ const options = ObjectStoragePluginOptions.create()
     },
     info: 'acme/prod/snapshot/v1',
   });
+let objectStorage: ObjectStoragePluginHandles | undefined;
+const systemOptions = ActorSystemOptions.create().withPersistence({
+  plugins: [async (persistence) => {
+    objectStorage = await registerObjectStoragePlugins(persistence, options);
+  }],
+});
+const system = ActorSystem.create('my-app', systemOptions);
 ```
+
+The plug-in validates the key ring as it runs inside `ActorSystem.create`,
+and the startup waits for it, so an instance shipped with a malformed ring
+fails its startup rather than taking traffic; `objectStorage.close()`
+releases the shared backend once the system has terminated.
 
 After this phase, **new** bodies' manifests stamp `keyVersion = 2`;
 **existing** bodies' manifests still say `keyVersion = 1` and

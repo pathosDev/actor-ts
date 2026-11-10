@@ -69,7 +69,11 @@ type CapRefusal = {
 /**
  * Cluster-wide service registry.  Each node hosts one Receptionist actor.
  * Register/Deregister are authoritative locally; peers learn about
- * registrations through periodic gossip carrying a delta of local keys.
+ * registrations through periodic gossip on the receptionist's own timer.
+ * Every tick sends the full set of local registrations, not a delta, to one
+ * random `up` peer, and the receiver replaces that sender's whole
+ * contribution, so a deregistration travels as an absence from the next
+ * frame.
  *
  * When a peer node leaves, every key entry it contributed is removed and
  * subscribers are notified with an updated Listing.
@@ -185,6 +189,11 @@ export class Receptionist extends Actor<ReceptionistInbox> {
    * plain JSON object, matches nothing, and used to fail the actor through
    * `.exhaustive()`.  One remotely-delivered envelope was enough to take out
    * the node's service discovery (#713).  Drop it and say so instead.
+   *
+   * The warn is for whoever is reading logs; `this.unhandled` is for
+   * everything else (#1178) — the message becomes a `DeadLetter` naming this
+   * receptionist, and `actor_unhandled_total{class}` carries the rate a
+   * single log line cannot.
    */
   private onUnhandled(message: ReceptionistInbox): void {
     this.log.warn(
@@ -192,6 +201,7 @@ export class Receptionist extends Actor<ReceptionistInbox> {
       + `(${(message as { kind?: string })?.kind ?? typeof message}) — `
       + `remote senders must address the receptionist through its own protocol`,
     );
+    this.unhandled(message);
   }
 
   private onRegister(message: Register): void {

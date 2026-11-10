@@ -3,7 +3,8 @@
  * {@link WebsocketServerActor}: it dials a URL and speaks the same typed,
  * codec-encoded protocol.  Built on {@link BrokerActor}, so it inherits
  * reconnect-with-backoff, an outbound buffer that survives reconnects, a
- * circuit breaker, and HOCON options resolution for free.
+ * circuit breaker around the connect — off until `circuitBreaker` names one by
+ * id — and HOCON options resolution for free.
  *
  *     class FeedClient extends WebsocketClientActor<ClientMessage, ServerMessage> {
  *       constructor() {
@@ -23,12 +24,19 @@
 import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import { BrokerActor, type OutboundEnvelope } from '../../io/broker/BrokerActor.js';
+import { metricsOf } from '../../metrics/MetricsExtension.js';
+import { classNameOf } from '../../util/ClassName.js';
 import { redactedUrlLabel } from '../../util/RedactUrlCredentials.js';
 import { jsonCodec, WebsocketDecodeError, type WebsocketCodec } from './WebsocketCodec.js';
-import { WebsocketClientOptionsValidator } from './WebsocketClientOptions.js';
+import {
+  DEFAULT_WEBSOCKET_INBOUND_LOW_WATER_MARK_DIVISOR,
+  WebsocketClientOptionsValidator,
+} from './WebsocketClientOptions.js';
 import type { WebsocketClientOptions, WebsocketClientOptionsType } from './WebsocketClientOptions.js';
 import {
+  isWebsocketClientSignal,
   websocketClientConnected,
   websocketClientDisconnected,
   websocketClientInbound,
@@ -70,7 +78,7 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
   extends BrokerActor<WebsocketClientOptionsType<TOut, TIn>, WebsocketClientMessage<TOut, TIn, TSelf>, WebsocketFrame> {
 
   private socket: WebsocketLike | null = null;
-  private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
   private _codec: WebsocketCodec<TOut, TIn> | null = null;
   /**
    * Rejects the handshake currently in flight, or `null` when none is — see
@@ -83,6 +91,34 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
    * actor: a shape that appears after a reconnect is worth one more line.
    */
   private unrecognisedFrameWarned = false;
+  /**
+   * Whether the "this keepalive cannot send anything" warning has been
+   * emitted — see {@link armKeepAlive}.  Per actor, not per connection:
+   * neither input to that verdict (the runtime's `WebSocket` and this class's
+   * own hook) can change across a reconnect, so a second line would be the
+   * same sentence again once per reconnect, forever.
+   */
+  private keepAliveWarned = false;
+  /**
+   * Decoded inbound frames handed to the mailbox and not yet handed to
+   * `onMessage` — the backlog the inbound high-water mark is measured
+   * against (#1523).  Reset on every connect and clamped at zero on the way
+   * down: frames left over from a previous connection still drain through
+   * the mailbox and would otherwise count against the next one.  The skew
+   * that leaves is bounded by that leftover and errs towards pausing later,
+   * never earlier.
+   */
+  private inboundPending = 0;
+  /** Whether `pause()` has been called on the current socket and not yet undone. */
+  private inboundPaused = false;
+  /** `performance.now()` at the last `pause()`, for the paused-seconds counter. */
+  private inboundPausedSince = 0;
+  /**
+   * Whether the "this runtime cannot pause" warning has been emitted — see
+   * {@link armInboundFlowControl}.  Per actor, like {@link keepAliveWarned}:
+   * the runtime's `WebSocket` does not change across a reconnect.
+   */
+  private inboundFlowControlWarned = false;
 
   constructor(options: WebsocketClientOptions<TOut, TIn> = {}) {
     super(options);
@@ -100,13 +136,61 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
   /** An inbound frame failed to decode.  Only called when onInvalidMessage is 'hook'. */
   protected onInvalidMessage(_error: WebsocketDecodeError): void | Promise<void> {}
   /**
-   * App-level message told to this actor's ref (reachable only when TSelf ≠ never).
+   * The frame the keepalive timer puts on the wire every `pingIntervalMs`, or
+   * `null` to send nothing on this tick.  Default: `null`.
+   *
+   * Override it when the connection has to stay warm through a middlebox that
+   * inspects **payload rather than frames** — which is the whole of what an
+   * application-level keepalive does that a protocol-level ping cannot.  The
+   * framework supplies no default frame on purpose: any bytes it invented
+   * would be an unannounced message in *your* protocol, and a peer that closes
+   * on an unknown message would be severed by its own keepalive.
+   *
+   * The frame bypasses the codec — encode it yourself if the protocol has a
+   * heartbeat message of its own:
+   *
+   *     protected override keepAliveFrame(): WebsocketFrame {
+   *       return { kind: 'text', data: JSON.stringify({ kind: 'heartbeat' }) };
+   *     }
+   *
+   * It is written **straight to the live socket**, not through
+   * {@link sendRaw}: a keepalive is never buffered while disconnected and
+   * never replayed after a reconnect, and a tick that finds no live
+   * connection sends nothing at all rather than queueing behind the
+   * application's own messages (see {@link sendKeepAlive}).  A frame you
+   * want resent belongs in `sendRaw`, which is a different promise.
+   *
+   * Overriding this method is also what tells the connect-time check that a
+   * keepalive is possible at all (see {@link armKeepAlive}).  A tick on which
+   * it returns `null` falls back to the runtime's native `ping()` where there
+   * is one — so a subclass that overrides it and then always returns `null`
+   * gets a timer that may send nothing, by its own choice and without the
+   * warning an un-overridden hook earns.
+   */
+  protected keepAliveFrame(): WebsocketFrame | null { return null; }
+  /**
+   * App-level message told to this actor's ref — your `TSelf` — or anything
+   * else none of the client's own kinds matched, which includes a body a
+   * remote node addressed to this path, even one that spells a signal's
+   * `kind`: a signal also needs the mark only its constructor sets
+   * (`isWebsocketClientSignal`).
    *
    * A `Terminated` from a `context.watch` of your own no longer arrives here —
    * `BrokerActor` intercepts it and offers `onTerminated` instead (#709).
+   *
+   * The default declines it: a warn naming the message's *class*, then
+   * `this.unhandled(message)`, which dead-letters it with this actor as the
+   * recipient and counts it in `actor_unhandled_total{class}` (#1442).  It
+   * used to warn with `String(message)` and stop there, which printed the
+   * payload into the log, left the decline invisible to anything but that
+   * line, and threw on a body whose `toString` is not callable — restarting
+   * the actor, which for a client is a disconnect and a reconnect, on one
+   * peer frame.  The warn stays because it says what the dead-letter record
+   * cannot: that this hook was not overridden.
    */
   protected onSelfMessage(message: TSelf): void | Promise<void> {
-    this.log.warn(`WebsocketClientActor: unhandled self message: ${String(message)}`);
+    this.log.warn(`WebsocketClientActor: unhandled self message: ${classNameOf(message)}`);
+    this.unhandled(message);
   }
 
   /* ----------------------- helpers ------------------------------- */
@@ -146,13 +230,24 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     // is an open type parameter, and ts-pattern cannot build a `Pattern<>` for
     // a union that still contains one.  `.otherwise` is reached exactly when
     // none of our kinds hit, i.e. for an app-level `TSelf` message.
+    //
+    // A signal arm also requires the mark only the signal constructors set
+    // (`isWebsocketClientSignal`), so a body that merely spells a signal's
+    // kind — what a remote node's message to this path decodes to — is not one
+    // of our kinds and lands in `.otherwise` too.  `websocket-client-send`
+    // needs no mark: it is the documented command `websocketSend` builds for
+    // anyone who holds the ref.
     const envelope = command as WebsocketClientSend<TOut> | WebsocketClientSignal<TIn>;
     return match(envelope)
       .with({ kind: 'websocket-client-send' }, (c) => this.onWebsocketClientSend(c))
-      .with({ kind: 'websocket-client-inbound' }, (c) => this.onWebsocketClientInbound(c))
-      .with({ kind: 'websocket-client-invalid' }, (c) => this.onWebsocketClientInvalid(c))
-      .with({ kind: 'websocket-client-connected' }, () => this.onWebsocketClientConnected())
-      .with({ kind: 'websocket-client-disconnected' }, (c) => this.onWebsocketClientDisconnected(c))
+      .with({ kind: 'websocket-client-inbound' }, (c) => isWebsocketClientSignal(c), (c) =>
+        this.onWebsocketClientInbound(c))
+      .with({ kind: 'websocket-client-invalid' }, (c) => isWebsocketClientSignal(c), (c) =>
+        this.onWebsocketClientInvalid(c))
+      .with({ kind: 'websocket-client-connected' }, (c) => isWebsocketClientSignal(c), () =>
+        this.onWebsocketClientConnected())
+      .with({ kind: 'websocket-client-disconnected' }, (c) => isWebsocketClientSignal(c), (c) =>
+        this.onWebsocketClientDisconnected(c))
       .otherwise(() => this.onSelfMessage(command as TSelf));
   }
 
@@ -164,6 +259,10 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
   }
 
   private onWebsocketClientInbound(signal: WebsocketClientInbound<TIn>): void | Promise<void> {
+    // Leaving the mailbox is the event, not finishing `onMessage`: the
+    // backlog the high-water mark bounds is what is *queued*, and a slow
+    // handler holds the next frame in the queue exactly as long either way.
+    this.noteInboundDrained();
     return this.onMessage(signal.message);
   }
 
@@ -181,7 +280,7 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
 
   /* ----------------------- BrokerActor plumbing ------------------ */
 
-  protected configKey(): string { return ConfigKeys.io.broker.websocket; }
+  protected configKey(): string { return ConfigKeys.io.broker.websocket.root; }
   protected builtInDefaultOptions(): Partial<WebsocketClientOptionsType<TOut, TIn>> { return {}; }
   protected requiredOptions(): ReadonlyArray<keyof WebsocketClientOptionsType<TOut, TIn>> { return ['url']; }
   protected override optionsValidator(): WebsocketClientOptionsValidator<TOut, TIn> {
@@ -190,31 +289,31 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
   protected endpointLabel(): string { return this.options.url ?? '<unknown>'; }
 
   protected readOptionsFromConfig(config: Config): Partial<WebsocketClientOptionsType<TOut, TIn>> {
-    const out: { -readonly [K in keyof WebsocketClientOptionsType<TOut, TIn>]?: WebsocketClientOptionsType<TOut, TIn>[K] } = {};
-    if (config.hasPath('url')) out.url = config.getString('url');
-    if (config.hasPath('protocols')) out.protocols = config.getStringList('protocols');
-    if (config.hasPath('pingIntervalMs')) out.pingIntervalMs = config.getDuration('pingIntervalMs');
-    if (config.hasPath('maxFrameBytes')) out.maxFrameBytes = config.getBytes('maxFrameBytes');
-    if (config.hasPath('idleTimeoutMs')) out.idleTimeoutMs = config.getDuration('idleTimeoutMs');
-    if (config.hasPath('connectTimeoutMs')) out.connectTimeoutMs = config.getDuration('connectTimeoutMs');
-    return out;
+    // The reader never touches `codec`, the one field the type parameters
+    // shape, so its answer fits whatever this client sends and receives.
+    return readWebsocketClientOptionsFromConfig(config) as Partial<WebsocketClientOptionsType<TOut, TIn>>;
   }
+
+  protected override retiredLeaves(): RetiredLeaves { return RETIRED_WEBSOCKET_CLIENT_LEAVES; }
 
   protected override idleTimeoutMs(): number | undefined { return this.options.idleTimeoutMs; }
   protected override connectTimeoutMs(): number | undefined { return this.options.connectTimeoutMs; }
 
   /**
    * Route an elapsed read-idle deadline through the same door a `close` event
-   * uses, so `onDisconnected` fires and the ping timer stops whether the drop
-   * was observed or merely deduced.  The explicit `close()` is the difference
+   * uses, so `onDisconnected` fires and the keepalive timer stops whether
+   * the drop was observed or merely deduced.  The explicit `close()` is the difference
    * between the two: after a `close` event the socket is already gone, while
    * an idle timeout fires on one that is still nominally open — and on the
    * connection this feature exists for, still holding a TCP socket to a peer
    * that is not there.
    */
   protected override handleIdleTimeout(cause: Error): void {
-    if (this.socket) { try { this.socket.close(); } catch { /* ignore */ } }
-    this.onSocketDown(cause);
+    // Captured before the close, because a runtime that answers it
+    // synchronously runs the `close` listener — and that nulls the field.
+    const socket = this.socket;
+    if (socket) { try { socket.close(); } catch { /* ignore */ } }
+    this.onSocketDown(cause, socket);
   }
 
   /**
@@ -270,6 +369,119 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     try { ws.binaryType = 'arraybuffer'; } catch { /* socket does not offer it */ }
   }
 
+  /**
+   * Start the keepalive timer for a freshly opened socket — or, when the
+   * configured interval has nothing it could send, say so once and start
+   * nothing.
+   *
+   * `pingIntervalMs` used to arm `setInterval(() => ws.ping?.())`
+   * unconditionally, and `ping()` is not part of the WHATWG `WebSocket`
+   * interface.  Measured on this repository's supported runtimes it exists on
+   * Bun and on neither Node nor Deno, so on two of the three the optional call
+   * plus the empty `catch` made the timer a guaranteed no-op: a documented
+   * mitigation putting zero bytes on the wire and saying nothing about it,
+   * while a blackholed connection stayed `connected` and every send went
+   * nowhere (#751).  **A timer that provably cannot send is worse than no
+   * timer**, because it is the thing that persuades an operator the connection
+   * is being kept warm — hence the refusal to arm one, and the warning in its
+   * place.
+   *
+   * Whether {@link keepAliveFrame} is overridden is read off the prototype
+   * rather than probed by calling it.  A probe cannot tell "this class has no
+   * keepalive" from "the application has nothing to say right now", and those
+   * want opposite answers here; the identity comparison asks the question that
+   * is actually being asked, with no side effect and no speculative frame.
+   */
+  private armKeepAlive(ws: WebsocketLike): void {
+    const intervalMs = this.options.pingIntervalMs;
+    if (!intervalMs || intervalMs <= 0) return;
+    const hasApplicationFrame = this.keepAliveFrame !== WebsocketClientActor.prototype.keepAliveFrame;
+    const hasNativePing = typeof ws.ping === 'function';
+    if (!hasApplicationFrame && !hasNativePing) {
+      this.warnKeepAliveUnsendable(intervalMs);
+      return;
+    }
+    this.keepAliveTimer = setInterval(() => this.sendKeepAlive(ws), intervalMs);
+  }
+
+  /**
+   * One keepalive tick: the application's frame when there is one, otherwise
+   * the runtime's native control frame — on the socket it was armed for, and
+   * only while that socket is the live one.
+   *
+   * The order is the point.  An application frame is the only kind a proxy
+   * that inspects payload can see, and the only kind a peer's own
+   * application-level read deadline counts; `ping()` emits a protocol control
+   * frame, which is a different thing and is not delivered to the peer's
+   * `message` listener on any supported runtime.  It stays as the fallback
+   * rather than being dropped, so a tick on which the hook has nothing to say
+   * does not silently become no traffic at all on the one runtime that can
+   * still send something.
+   *
+   * **The frame goes straight to `ws.send`, never through {@link sendRaw}**,
+   * and the guard above it is the other half of the same decision (#1514).
+   * `sendRaw` is `enqueueOutbound`, which is the *application's* resend
+   * buffer: a bounded, FIFO-evicting queue of messages to replay on the next
+   * connection.  A heartbeat fails both of that buffer's premises.  It is
+   * addressed to one socket, so replaying it onto the next one sends a
+   * keepalive for a connection that no longer exists, against a period that
+   * already elapsed; and it competes for a bounded slot, so on a full buffer
+   * it evicts an application message to make room for itself.
+   *
+   * The window where that happens is narrow but real, and nothing else
+   * closes it.  Every teardown path clears this timer — except
+   * `handleConnectionLost`, which `BrokerActor` reaches when a
+   * `dispatchOutgoing` throws: it flips the state to `disconnected` and
+   * schedules a reconnect *without* running `disconnectImplementation`, so
+   * for the length of the backoff the actor is offline while still holding a
+   * live socket handle and a live keepalive timer.  Measured with
+   * `outboundBuffer: 1`: four evictions in one backoff window, the
+   * application's own message lost, and a stale `heartbeat` as the first
+   * frame on the replacement socket.  With `reconnect: false` there is no
+   * backoff to end it and the timer buffers forever.
+   *
+   * A refused send is swallowed rather than reported, for the same reason a
+   * refused `ping()` is: a keepalive stops a proxy *closing* an idle
+   * connection, and it is `idleTimeoutMs` — not this timer — that concludes
+   * a connection is gone.  Routing the failure into `handleConnectionLost`
+   * instead would hand a keepalive the power to tear down a connection that
+   * the application is still using successfully.
+   */
+  private sendKeepAlive(ws: WebsocketLike): void {
+    if (this.connectionState !== 'connected' || ws !== this.socket) return;
+    const frame = this.keepAliveFrame();
+    if (frame !== null) {
+      try { ws.send(frame.data); } catch { /* ignore — see above */ }
+      return;
+    }
+    // A socket that refuses a ping is not a reason to drop a connection that
+    // is otherwise working — but unlike before, this catch can no longer be
+    // hiding a method that was never there: `armKeepAlive` checked.
+    try { ws.ping?.(); } catch { /* ignore */ }
+  }
+
+  /**
+   * Report a configured `pingIntervalMs` that cannot put anything on the wire.
+   *
+   * Written as an instruction rather than a diagnosis: the operator who set
+   * the interval wanted a keepalive, and both ways to actually get one belong
+   * in the line that tells them they have not.  {@link idleTimeoutMs} is named
+   * alongside because it answers the failure the keepalive was reached for —
+   * a keepalive stops a proxy *closing* an idle connection, and only the read
+   * deadline notices one that was dropped anyway.
+   */
+  private warnKeepAliveUnsendable(intervalMs: number): void {
+    if (this.keepAliveWarned) return;
+    this.keepAliveWarned = true;
+    this.log.warn(
+      `WebsocketClientActor: pingIntervalMs is set (${intervalMs} ms) on `
+      + `${this.redactedEndpointLabel()}, but nothing can be sent — this runtime's WebSocket has `
+      + 'no ping() and keepAliveFrame() is not overridden, so no keepalive timer was started. '
+      + 'Override keepAliveFrame() to supply an application-level frame, and set idleTimeoutMs so '
+      + 'a connection dropped anyway is still detected.',
+    );
+  }
+
   protected async connectImplementation(): Promise<void> {
     const ctor = await websocketClientConstructor.get();
     const ws = ctor.create(this.options.url!, {
@@ -291,13 +503,13 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
         this.connectAbort = null;
         this.socket = ws;
         this.unrecognisedFrameWarned = false;
-        ws.addEventListener('message', (ev: { data: unknown }) => this.handleInbound(ev.data));
-        ws.addEventListener('close', () => this.onSocketDown(new Error('websocket closed')));
-        ws.addEventListener('error', () => this.onSocketDown(new Error('websocket error')));
-        const ping = this.options.pingIntervalMs;
-        if (ping && ping > 0) {
-          this.pingTimer = setInterval(() => { try { ws.ping?.(); } catch { /* ignore */ } }, ping);
-        }
+        ws.addEventListener('message', (ev: { data: unknown }) => this.handleInbound(ev.data, ws));
+        // Both listeners name the socket they speak for: a runtime is free
+        // to deliver either one after this socket has been replaced.
+        ws.addEventListener('close', () => this.onSocketDown(new Error('websocket closed'), ws));
+        ws.addEventListener('error', () => this.onSocketDown(new Error('websocket error'), ws));
+        this.armKeepAlive(ws);
+        this.armInboundFlowControl(ws);
         this.self.tell(websocketClientConnected());
         resolve();
       });
@@ -312,7 +524,7 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
   }
 
   protected async disconnectImplementation(): Promise<void> {
-    if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
+    if (this.keepAliveTimer) { clearInterval(this.keepAliveTimer); this.keepAliveTimer = null; }
     const sock = this.socket;
     this.socket = null;
     if (sock) { try { sock.close(); } catch { /* ignore */ } }
@@ -325,10 +537,35 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
 
   /* ----------------------- inbound ------------------------------- */
 
-  private onSocketDown(cause: Error): void {
+  /**
+   * One connection went down — from an observed `close`/`error`, from an
+   * elapsed read deadline, or from our own oversize close.
+   *
+   * `ws` is the socket the report is *about*, and it is the whole of the
+   * guard.  `this.socket !== null` alone answers "is some connection up",
+   * which is a different question and gave the wrong answer for a late event
+   * from a **superseded** socket (#1514).  Against a blackholed peer — the
+   * deployment `idleTimeoutMs` was built for (#753) — the client's own
+   * `close()` cannot complete its handshake, so the runtime's close/error
+   * arrives whenever TCP gives up, which can be after the reconnect has
+   * already succeeded.  The same window opens without any deadline, because
+   * a real `WebSocket` fires `error` *and then* `close` for one drop and a
+   * short backoff fits between them.  Either way the old guard read the
+   * stale event as the current connection dropping: a second
+   * `onDisconnected` for a healthy connection, the working socket closed,
+   * and a third dial.
+   *
+   * A `null` `ws` is therefore not "unknown, proceed anyway" but "the
+   * connection this call was about is already gone", which is the same
+   * early return — `handleIdleTimeout` reaches it when its own `close()`
+   * fired the listener synchronously.
+   */
+  private onSocketDown(cause: Error, ws: WebsocketLike | null): void {
     if (!this.socket) return; // already handled this connection's drop
+    if (ws !== this.socket) return; // a superseded socket's event, not ours
     this.socket = null;
-    if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
+    if (this.keepAliveTimer) { clearInterval(this.keepAliveTimer); this.keepAliveTimer = null; }
+    this.settleInboundPause();
     this.self.tell(websocketClientDisconnected(cause));
     // Trigger BrokerActor's reconnect cycle.
     this.handleConnectionLost(cause);
@@ -348,14 +585,19 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
    * previous bare `return` left the socket open, so a hostile peer could spend
    * the same heap again, once per frame, for as long as it cared to — and
    * emit one warning line per attempt with it (#750).  A peer that wants
-   * another round now has to pay for a full reconnect, which the inherited
-   * backoff and circuit breaker already throttle.
+   * another round now has to accept a full reconnect first — and only that: a
+   * connect that succeeds resets the reconnect backoff and counts as a success
+   * for a circuit breaker, so neither slows a peer that accepts every connect
+   * and then sends an oversize frame: the client is back on it every
+   * `initialDelayMs` or so.  Throttling that connect-then-drop pattern is a
+   * separate question from either mechanism.
    *
    * Routed through {@link onSocketDown} rather than `handleConnectionLost`
    * directly because the close is *ours*: the peer need not answer it, so
-   * nothing else would clear `pingTimer`, null `this.socket`, or emit
+   * nothing else would clear `keepAliveTimer`, null `this.socket`, or emit
    * `websocketClientDisconnected`.  Calling `handleConnectionLost` bare would
-   * start a reconnect while the old handle and its ping timer were still live.
+   * start a reconnect while the old handle and its keepalive timer were
+   * still live.
    */
   private rejectOversizeFrame(cap: number): void {
     // A label, not the configured URL: whatever the URL carries would
@@ -382,7 +624,7 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     // before the close settles it everywhere; the socket is captured first
     // because `onSocketDown` clears the field.
     const socket = this.socket;
-    this.onSocketDown(new Error('oversize inbound frame'));
+    this.onSocketDown(new Error('oversize inbound frame'), socket);
     try { socket?.close(1009, 'message too big'); } catch { /* ignore */ }
   }
 
@@ -415,7 +657,24 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     );
   }
 
-  private handleInbound(data: unknown): void {
+  /**
+   * One inbound payload from `ws`, or nothing at all when `ws` is no longer
+   * the connection.
+   *
+   * The third listener on a socket needs the same guard the `close` and
+   * `error` ones got (#1514), and here every consequence of missing it lands
+   * on a *different* connection.  Nothing removes a superseded socket's
+   * listeners, so a frame the runtime had already buffered still arrives —
+   * after the actor has told the application that connection is gone.
+   * Acting on it would deliver a message out of order with its own
+   * `onDisconnected`, refresh the *live* connection's read deadline with
+   * traffic that is not its own — the one thing `idleTimeoutMs` must never
+   * do (#753) — and, for an oversize frame, close whichever socket
+   * `this.socket` currently is.  Measured before the guard: a 2 MiB frame on
+   * a superseded socket closed the healthy connection and dialled a third.
+   */
+  private handleInbound(data: unknown, ws: WebsocketLike): void {
+    if (ws !== this.socket) return; // a superseded socket's frame, not ours
     // First, before every reason this frame might be rejected: an
     // unrecognised, oversize or undecodable frame is still the peer speaking,
     // and the read-idle deadline asks whether it is there, not whether it is
@@ -448,5 +707,124 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
       return;
     }
     this.self.tell(websocketClientInbound(decoded));
+    this.noteInboundQueued();
   }
+
+  /* ----------------------- inbound flow control ------------------ */
+
+  /**
+   * Decide, once per connection, whether the high-water mark can be
+   * enforced on this socket — and say so when it cannot.
+   *
+   * The probe is on the socket rather than on the runtime name, the same
+   * way {@link armKeepAlive} asks for `ping`: a hand-rolled `WebsocketLike`
+   * may offer the pair on any runtime, and a future Node may grow it.
+   * Measured today: Bun 1.4.2 has `pause`/`resume`/`isPaused`, Node 26.7
+   * and Deno 2.6.8 have none.  A mark that cannot be enforced is worse
+   * than none, because it is the thing that persuades an operator the
+   * inbound side is bounded — hence the warning rather than silence.
+   */
+  private armInboundFlowControl(ws: WebsocketLike): void {
+    this.inboundPending = 0;
+    this.inboundPaused = false;
+    if (this.options.inboundHighWaterMark === undefined) return;
+    if (typeof ws.pause === 'function' && typeof ws.resume === 'function') return;
+    if (this.inboundFlowControlWarned) return;
+    this.inboundFlowControlWarned = true;
+    this.log.warn(
+      `WebsocketClientActor: inboundHighWaterMark is set (${this.options.inboundHighWaterMark}) on `
+      + `${this.redactedEndpointLabel()}, but this runtime's WebSocket has no pause()/resume() — the `
+      + 'socket cannot be paused, so inbound frames are handed on as they arrive, as before. '
+      + 'Bun 1.4.1+ supports it; Node and Deno do not.',
+    );
+  }
+
+  /** A decoded frame entered the mailbox; pause the socket at the high-water mark. */
+  private noteInboundQueued(): void {
+    this.inboundPending += 1;
+    const high = this.options.inboundHighWaterMark;
+    if (high === undefined || this.inboundPaused || this.inboundPending < high) return;
+    const socket = this.socket;
+    if (socket === null || typeof socket.pause !== 'function') return;
+    try { socket.pause(); } catch { return; }
+    this.inboundPaused = true;
+    this.inboundPausedSince = performance.now();
+  }
+
+  /** A decoded frame left the mailbox; resume a paused socket at the low-water mark. */
+  private noteInboundDrained(): void {
+    if (this.inboundPending > 0) this.inboundPending -= 1;
+    if (!this.inboundPaused) return;
+    const high = this.options.inboundHighWaterMark ?? 0;
+    const low = this.options.inboundLowWaterMark
+      ?? Math.floor(high / DEFAULT_WEBSOCKET_INBOUND_LOW_WATER_MARK_DIVISOR);
+    if (this.inboundPending > low) return;
+    const socket = this.socket;
+    if (socket !== null && typeof socket.resume === 'function') {
+      try { socket.resume(); } catch { /* the connection is going; settle below anyway */ }
+    }
+    this.settleInboundPause();
+  }
+
+  /**
+   * Close out a pause: book the time it lasted and clear the flag.  Called
+   * on resume and when the connection goes while paused, so a socket that
+   * dropped mid-pause is not counted as paused forever.
+   */
+  private settleInboundPause(): void {
+    if (!this.inboundPaused) return;
+    this.inboundPaused = false;
+    const pausedSeconds = (performance.now() - this.inboundPausedSince) / 1000;
+    metricsOf(this.system).counter(
+      'websocket_client_inbound_paused_seconds_total', {},
+      { help: 'Cumulative seconds a WebSocket client socket spent paused by its inbound high-water mark.' },
+    ).inc(pausedSeconds);
+  }
+}
+
+/* ----------------------------- HOCON reader ----------------------------- */
+
+/**
+ * The camelCase spellings the WebSocket client's own leaves had before #1443,
+ * mapped to the leaves that replaced them — see `BrokerActor.retiredLeaves`.
+ * `maxFrameBytes` is the inbound frame cap the docs tell a semi-trusted
+ * deployment to lower; its old spelling, ignored, would have restored the
+ * default with nothing said.
+ */
+const RETIRED_WEBSOCKET_CLIENT_LEAVES: RetiredLeaves = {
+  pingIntervalMs: 'ping-interval',
+  maxFrameBytes: 'max-frame-bytes',
+  idleTimeoutMs: 'idle-timeout',
+  connectTimeoutMs: 'connect-timeout',
+};
+
+/**
+ * Read the `actor-ts.io.broker.websocket` block off the system config, at the
+ * full paths `keys` holds; the reconnect / breaker / buffer leaves are
+ * `BrokerActor`'s.  An unset leaf is omitted.  The three intervals are
+ * durations and `max-frame-bytes` a size.
+ *
+ * The *server* side spells its own policy `actor-ts.http.websocket
+ * .on-invalid-message` and offers `close | drop | hook`; this is the client's,
+ * and its third arm is `disconnect`.  The value lists are not interchangeable —
+ * `WebsocketClientOptionsValidator` is what says so.  `codec` is a pair of
+ * functions and has no leaf.
+ */
+export function readWebsocketClientOptionsFromConfig(
+  config: Config,
+  keys: typeof ConfigKeys.io.broker.websocket = ConfigKeys.io.broker.websocket,
+): Partial<WebsocketClientOptionsType> {
+  const out: { -readonly [K in keyof WebsocketClientOptionsType]?: WebsocketClientOptionsType[K] } = {};
+  if (config.hasPath(keys.url)) out.url = config.getString(keys.url);
+  if (config.hasPath(keys.protocols)) out.protocols = config.getStringList(keys.protocols);
+  if (config.hasPath(keys.pingInterval)) out.pingIntervalMs = config.getDuration(keys.pingInterval);
+  if (config.hasPath(keys.maxFrameBytes)) out.maxFrameBytes = config.getBytes(keys.maxFrameBytes);
+  if (config.hasPath(keys.onInvalidMessage)) {
+    out.onInvalidMessage = config.getString(keys.onInvalidMessage) as WebsocketClientOptionsType['onInvalidMessage'];
+  }
+  if (config.hasPath(keys.idleTimeout)) out.idleTimeoutMs = config.getDuration(keys.idleTimeout);
+  if (config.hasPath(keys.connectTimeout)) out.connectTimeoutMs = config.getDuration(keys.connectTimeout);
+  if (config.hasPath(keys.inboundHighWaterMark)) out.inboundHighWaterMark = config.getInt(keys.inboundHighWaterMark);
+  if (config.hasPath(keys.inboundLowWaterMark)) out.inboundLowWaterMark = config.getInt(keys.inboundLowWaterMark);
+  return out;
 }

@@ -46,7 +46,16 @@ export interface MqttOptionsType extends BrokerCommonOptionsType {
   readonly credentials?: MqttCredentials;
   /** Default QoS used by `publish` / `subscribe` when not overridden per call. */
   readonly qos?: MqttQos;
-  /** Last-will-and-testament published by the broker if the actor disconnects ungracefully. */
+  /**
+   * Last-will-and-testament published by the broker if the actor disconnects
+   * ungracefully.
+   *
+   * Readable from HOCON as `will { topic, payload, qos, retain }`, with one
+   * restriction: `payload` arrives as a **string only**.  A config file has no
+   * spelling for bytes that this project has a precedent for, so a binary will
+   * stays code-only.  An omitted `payload` is the empty one — a legal MQTT
+   * will, and how a retained will is cleared.
+   */
   readonly will?: { readonly topic: string; readonly payload: Uint8Array | string; readonly qos?: MqttQos; readonly retain?: boolean };
   /** Clean-session flag.  Default `true`. */
   readonly cleanSession?: boolean;
@@ -63,6 +72,9 @@ export interface MqttOptionsType extends BrokerCommonOptionsType {
    * Payload codec used by {@link MqttPayload.entity} (inbound decode) and
    * by `publish` when handed a non-string/non-`Uint8Array` entity.
    * Default: {@link mqttJsonCodec}.  One codec per actor.
+   *
+   * No HOCON leaf: a codec is a pair of functions, and a function cannot come
+   * from a config file.
    */
   readonly codec?: MqttCodec<unknown>;
   /**
@@ -150,6 +162,19 @@ export class MqttOptionsValidator extends BrokerOptionsValidator<MqttOptionsType
     this.oneOf('qos', [0, 1, 2]);
     this.oneOf('protocolVersion', [4, 5]);
     this.nonNegativeInt('keepAlive'); // 0 disables keep-alive per the MQTT spec
+    // `will`'s leaves sit one level down, so the field-name helpers cannot
+    // address them.  Both rules guard a value HOCON can now supply: an
+    // absent `will.topic` reads as `''` (see readWillFromConfig), and the
+    // MQTT spec forbids a zero-length topic name.  `will.payload` gets no
+    // rule — an empty will payload is legal and meaningful.
+    if (_s.will !== undefined) {
+      if (typeof _s.will.topic !== 'string' || _s.will.topic.length === 0) {
+        this.fail('will.topic', 'must not be empty', _s.will.topic);
+      }
+      if (_s.will.qos !== undefined && ![0, 1, 2].includes(_s.will.qos)) {
+        this.fail('will.qos', 'must be 0, 1 or 2', _s.will.qos);
+      }
+    }
     const tlsProblem = findBrokerTlsProblem(_s.tls);
     if (tlsProblem !== null) this.fail('tls', tlsProblem);
   }

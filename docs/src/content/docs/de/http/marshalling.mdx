@@ -260,13 +260,17 @@ post(async (req) => {
 ```
 
 Das Framework fängt `HttpError` und produziert eine strukturierte
-Response:
+Response — hier für einen JSON-Body mit einem Komma nach dem letzten Feld,
+dekodiert unter Bun:
 
 ```json
 {
-  "error": "Cannot decode body: Unexpected token } in JSON at position 42"
+  "error": "Cannot decode body: JsonSerializer: document is not valid JSON: JSON Parse error: Property name must be a string literal"
 }
 ```
+
+Alles nach `document is not valid JSON:` ist die Parse-Meldung der Runtime
+selbst, deshalb formulieren Node und Deno denselben Fehler anders.
 
 Für spezifischere Fehler-Responses `reject` nach manuellem
 Decode:

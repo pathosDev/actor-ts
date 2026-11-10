@@ -230,20 +230,50 @@ expose these endpoints.
 - **`/ready`** — "should a load balancer send this pod traffic?"
   Already gated on the framework's own checks: `cluster-membership`
   (this node is `up`) and `cluster-transport` (it is not cut off
-  from every peer).  Add your per-app checks — database reachable,
+  from every peer), plus `startup` while startup tasks run.  To keep
+  a node out of rotation until its shard regions are registered, name
+  the types in `actor-ts.sharding.healthcheck.names` (see
+  [the built-in checks](/observability/management/health-checks/#the-built-in-checks)).
+  Add your per-app checks — database reachable,
   dependencies warm — with `healthChecksOf(system).addReadiness`.
   In-process, `Cluster.bootstrap` gates the same way:
   `actor-ts.cluster.bootstrap.minimum-members` (or
   `awaitReady: { minimumMembers }` in code) keeps a resolved bootstrap
   from meaning anything less than "the cluster reached its expected
   size" — set it to the replica count, exactly like
-  `required-contact-points`.
+  `required-contact-points`.  On a system with
+  [startup tasks](/fundamentals/actor-system/#starting-up) it is gated
+  on `startup` too, which stays false until the startup graph has run
+  every phase — a pod whose startup tasks have not finished takes no
+  traffic, even though its port is already bound.
 - **`/health`** — "would restarting this pod help?"
   Failing means K8s restarts it, so it depends on nothing outside
   the process — the framework's only liveness check is
   `actor-system`.  Never put a database or a downstream service
   here: a shared outage would restart the whole fleet, and the
   restarts would not fix it.
+- **A failed startup ends the process** rather than leaving it
+  unready.  The system shuts itself down through the coordinated
+  shutdown, `runUntilTerminated()` rejects with the startup's error
+  and the container exits non-zero — so Kubernetes restarts it, and a
+  rollout whose startup cannot succeed stalls at its first pod instead
+  of serving until the first request that needed what startup could
+  not do.
+- **The persistence stores open during startup**, so a bad connection
+  string — a wrong host, a wrong password, a driver the image lacks —
+  fails the pod at boot, not at its first persisted message
+  ([opening the stores at
+  startup](/persistence/overview/#opening-the-stores-at-startup)) —
+  except behind the object-storage snapshot and durable-state stores,
+  which open nothing ahead of time, so an unreachable bucket fails
+  their first operation instead.
+  The other side of it: a database that becomes reachable only after
+  the app starts sends the pod into `CrashLoopBackOff` until it is,
+  each attempt failing when the store is refused, or when the
+  `persistence-start` phase's 30 s budget runs out.  If the two are
+  meant to start independently, bring the database up first, or set
+  the persistence behaviour's `autoStart` to false and let the first
+  persisted message find it.
 
 ## App-side wiring
 
@@ -301,6 +331,86 @@ Four pieces in order:
 
 See [Discovery — Kubernetes API](/discovery/seed-providers/kubernetes-api/)
 for the seed provider's full options.
+
+## Secrets as a mounted file
+
+The manifest above hands `DB_PASSWORD` to the process as an environment
+variable.  The [secrets file](/reference/configuration/#secrets-file) keeps
+credentials out of the environment altogether: a `Secret` mounted as a
+file, named by `ACTOR_TS_SECRETS_CONF`, with the
+[profile](/reference/configuration/#profiles) chosen by
+`ACTOR_TS_PROFILE`:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: actor-ts-secrets-conf
+type: Opaque
+stringData:
+  secrets.conf: |
+    my-app.db.password = "s3cr3t"
+---
+# The StatefulSet above, under spec.template.spec:
+containers:
+  - name: app
+    env:
+      - name: ACTOR_TS_PROFILE
+        value: "production"
+      - name: ACTOR_TS_SECRETS_CONF
+        value: /etc/actor-ts/secrets.conf
+    volumeMounts:
+      - name: secrets-conf
+        mountPath: /etc/actor-ts
+        readOnly: true
+volumes:
+  - name: secrets-conf
+    secret:
+      secretName: actor-ts-secrets-conf
+```
+
+- **Withheld whatever it is called.**  Every value the file sets is
+  replaced with `<redacted>` in the config dump and the DevTools panel,
+  in worker threads too; a variable substituted into `application.conf`
+  is withheld only when its key names a secret.
+- **One image, every environment.**  `ACTOR_TS_PROFILE` lays the
+  `profiles.production` block of `application.conf` — and of the secrets
+  file — over its root, and an unknown profile stops the start.
+- **Read once, at startup.**  Kubernetes refreshes a mounted `Secret` in
+  place, but the configuration is not re-read; roll the pods to pick up a
+  change.
+- **A missing file is not an error.**  Without the mount the secrets
+  layer is just empty, and the dump's header says the file was not found.
+  Give a credential no default in `application.conf`, so its absence
+  fails where it is read rather than running on a placeholder.
+
+## The first deployment, and every one after
+
+If the pods start through `Cluster.bootstrap` rather than the hand-wired
+join above, the very first rollout and every rollout after it want one
+setting apart.  On the first, some pod has to found the cluster — which is
+what `actor-ts.cluster.bootstrap.new-cluster-enabled` ships as.  Once the
+cluster exists, turn it off.  Reading it from a variable keeps that a
+one-line change to the manifest rather than a new image:
+
+```hocon
+actor-ts.cluster.bootstrap.new-cluster-enabled = ${?ACTOR_TS_NEW_CLUSTER_ENABLED}
+```
+
+```yaml
+# The StatefulSet above, under spec.template.spec.containers[0].env —
+# added after the first rollout has formed the cluster:
+- name: ACTOR_TS_NEW_CLUSTER_ENABLED
+  value: "off"
+```
+
+From then on a pod that cannot reach its peers at start-up — a NetworkPolicy
+change, an API-server hiccup, a DNS answer that lags pod readiness — fails
+its readiness wait and is restarted, instead of coming up as the founder of a
+second cluster beside the running one.  Every start logs a warning while the
+key is still on, so a deployment that never flipped it says so in its own
+logs.  See [Cluster
+bootstrap](/cluster/cluster-bootstrap/#founding-a-cluster-first-start-only).
 
 ## Rolling updates
 

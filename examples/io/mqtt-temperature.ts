@@ -43,7 +43,7 @@ class TemperatureHub extends MqttActor<Reading, Tick> {
   private readings: Record<string, number[]> = {};
 
   constructor(options: MqttOptionsBuilder) {
-    // Builder-supplied clientId + QoS layer on top of the HOCON brokerUrl.
+    // Builder-supplied clientId + QoS layer on top of the HOCON broker-url.
     super(options.withClientId('temperature-demo').withQos(1));
     this.subscribe('sensors/+/temp');
   }
@@ -81,9 +81,10 @@ async function main(): Promise<void> {
         io: {
           broker: {
             mqtt: {
-              brokerUrl: 'mqtt://localhost:1883',
+              'broker-url': 'mqtt://localhost:1883',
               // credentials: { username: "iot", password: ${MQTT_PASSWORD} }
-              keepAlive: 30,
+              // A duration in whole seconds — MQTT's keep-alive unit.
+              'keep-alive': '30s',
             },
           },
         },

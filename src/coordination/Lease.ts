@@ -5,8 +5,8 @@
  * Four-method contract:
  *   - `acquire()` tries to claim the lease; returns true on success.
  *   - `release()` voluntarily drops ownership.
- *   - `checkAlive()` is a cheap "do I still own this lease?" check used by
- *     failure-detection logic.
+ *   - `checkAlive()` is a cheap "do I still own this lease?" check —
+ *     `LeaseMajority` re-validates a won arbitration with it.
  *   - `onLost(handler)` registers a callback fired if ownership is lost
  *     unexpectedly (TTL expired, another holder took over, etc.).
  *
@@ -60,9 +60,26 @@ export interface Lease {
    */
   release(): Promise<void>;
 
-  /** True if this process currently owns the lease.  Purely local — no IO. */
+  /**
+   * True while this process holds the lease **and** its TTL — measured from
+   * when the last write the backend accepted was *sent* — has not run out.
+   * Purely local — no IO.
+   *
+   * A held flag alone is not an answer (#937).  The flag is only cleared by a
+   * renewal that notices the loss, and a stalled event loop — a GC pause, a
+   * starved container — is exactly what keeps that renewal from running, while
+   * another holder may legitimately take the lease in the meantime.  So the
+   * answer turns false at the deadline, whether or not `onLost` has fired yet.
+   * Measuring from the moment the write was sent rather than answered keeps
+   * the local deadline no later than the one other holders judge the record
+   * by.
+   */
   checkAlive(): boolean;
 
-  /** Register a handler fired when ownership is lost unexpectedly. */
+  /**
+   * Register a handler fired when ownership is lost unexpectedly — including a
+   * TTL that ran out, which the first renewal tick after the deadline reports
+   * instead of extending the lapsed record.
+   */
   onLost(handler: (reason: string) => void): () => void;
 }

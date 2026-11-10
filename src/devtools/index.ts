@@ -22,6 +22,8 @@ export {
   DevToolsOptionsBuilder,
   DevToolsOptionsValidator,
   isLoopbackHost,
+  mergeDevToolsOptions,
+  readDevToolsOptionsFromConfig,
 } from './DevToolsOptions.js';
 export type {
   DevToolsExposure,

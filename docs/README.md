@@ -4,16 +4,17 @@ This directory hosts the Astro Starlight documentation site for
 **actor-ts**.  It's a self-contained sub-project — its own `package.json`,
 `node_modules/`, and build pipeline.  CI under
 `.github/workflows/docs.yml` builds it on every push to `main` and
-deploys the result to **GitHub Pages**:
+deploys the result to **GitHub Pages**, served at the site's own domain
+(`site` in `astro.config.mjs`; no `base`, so every page lives at the root):
 
-> https://pathosDev.github.io/actor-ts/
+> https://actor-ts.dev/
 
 ## Local development
 
 ```bash
 cd docs
 bun install        # one-time
-bun run dev        # starts the Astro dev server at http://localhost:4321/actor-ts/
+bun run dev        # starts the Astro dev server at http://localhost:4321/
 ```
 
 ## Local build
@@ -21,7 +22,7 @@ bun run dev        # starts the Astro dev server at http://localhost:4321/actor-
 ```bash
 cd docs
 bun run build      # produces docs/dist/, identical to what CI deploys
-bun run preview    # serves docs/dist/ at http://localhost:4321/actor-ts/ for inspection
+bun run preview    # serves docs/dist/ at http://localhost:4321/ for inspection
 ```
 
 ## Project layout

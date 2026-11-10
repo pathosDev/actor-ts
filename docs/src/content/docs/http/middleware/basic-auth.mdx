@@ -10,11 +10,10 @@ Credentials are compared in constant time, and a `401` advertises a real
 ```ts
 import { BasicAuth, BasicAuthOptions, withMiddleware } from 'actor-ts/http';
 
-const auth = BasicAuth(
-  BasicAuthOptions.create()
-    .withUsers({ alice: process.env.ALICE_PW! })
-    .withRealm('admin'),
-);
+const basicAuthOptions = BasicAuthOptions.create()
+  .withUsers({ alice: process.env.ALICE_PW! })
+  .withRealm('admin');
+const auth = BasicAuth(basicAuthOptions);
 
 const routes = withMiddleware(auth, adminRoutes);
 ```

@@ -224,6 +224,38 @@ import { Aside } from '@astrojs/starlight/components';
   decision tree.
 </Aside>
 
+## Declining a message — `unhandled()`
+
+The other method worth knowing, and the only one you *call* rather than
+override.  An actor that handles a subset of a wider message type ends
+its `match` with `.otherwise((m) => this.onUnhandled(m))`; what that
+handler does decides whether the drop is visible:
+
+```ts
+class Cashier extends Actor<Command> {
+  override onReceive(message: Command): void {
+    match(message)
+      .with({ kind: 'deposit' }, (m) => this.onDeposit(m))
+      .otherwise((m) => this.onUnhandled(m));
+  }
+
+  private onDeposit(command: DepositCommand): void { /* … */ }
+  private onUnhandled(message: Command): void { this.unhandled(message); }
+}
+```
+
+`this.unhandled(message)` wraps it in a `DeadLetter` naming **this**
+actor as the recipient — not the dead-letter office, because "something,
+somewhere, declined this" is not a diagnosis — publishes it on the
+[event stream](/fundamentals/event-stream/), and ticks
+`actor_unhandled_total{class}`.  The counter is there because the
+[dead-letter queue](/operations/dead-letters/) defaults to `store = off`:
+on a system nobody configured, a dead letter is counted by nothing.
+
+Nothing does this for you.  A handler that simply returns still produces
+no letter and no count, which is correct — the runtime cannot tell an
+actor that meant to ignore a message from one that lost it.
+
 ## Naming yourself — `displayName()`
 
 Not a lifecycle hook, but the other method worth overriding.  It is

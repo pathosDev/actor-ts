@@ -14,7 +14,24 @@ import { Lazy } from '../../util/Lazy.js';
 
 /* --------------------------- credentials ------------------------------ */
 
-const SERVICE_ACCOUNT_DIR = '/var/run/secrets/kubernetes.io/serviceaccount';
+/**
+ * Where a Pod's projected ServiceAccount credential is read from.  The three
+ * files used to be a module-level constant; they are parameters now so a
+ * deployment can name them in HOCON (#859) — a projected volume mounted
+ * somewhere other than the kubelet's default, or a token a sidecar refreshes.
+ *
+ * They describe **one** source and are taken whole, never field by field: the
+ * defect behind #599 was exactly a per-field mix of the mounted credential
+ * with an operator-named API server.
+ */
+export type ServiceAccountPaths = {
+  /** File holding the Pod's namespace. */
+  readonly namespacePath: string;
+  /** File holding the bearer token. */
+  readonly tokenPath: string;
+  /** File holding the PEM CA cert the API server's TLS is pinned to. */
+  readonly caPath: string;
+};
 
 export type K8sCredentials = {
   /** API server URL (defaults to https://kubernetes.default.svc when running in-cluster). */
@@ -23,22 +40,24 @@ export type K8sCredentials = {
   readonly authToken: string;
   /** PEM-encoded CA cert pinned for the API server's TLS. */
   readonly caCert: string;
-  /** Default namespace as read from the SA mount; user-supplied namespace wins where supplied. */
+  /** Namespace as read from the SA mount; a user-supplied `namespace` wins over it. */
   readonly defaultNamespace?: string;
 };
 
 /**
- * Load credentials from the standard ServiceAccount mount points.  Returns
- * `null` (rather than throwing) when none of the files are present so the
- * caller can fall back to explicit options.
+ * Load credentials from the ServiceAccount mount `paths` names.  Returns
+ * `null` (rather than throwing) when the token or the CA cert is not there, so
+ * the caller can fall back to explicit options.
  */
-export async function loadInClusterCredentials(): Promise<K8sCredentials | null> {
+export async function loadInClusterCredentials(
+  paths: ServiceAccountPaths,
+): Promise<K8sCredentials | null> {
   const fs = await fsLazy.get();
   try {
     const [token, caCert, ns] = await Promise.all([
-      fs.readFile(`${SERVICE_ACCOUNT_DIR}/token`, 'utf8').catch(() => null),
-      fs.readFile(`${SERVICE_ACCOUNT_DIR}/ca.crt`, 'utf8').catch(() => null),
-      fs.readFile(`${SERVICE_ACCOUNT_DIR}/namespace`, 'utf8').catch(() => null),
+      fs.readFile(paths.tokenPath, 'utf8').catch(() => null),
+      fs.readFile(paths.caPath, 'utf8').catch(() => null),
+      fs.readFile(paths.namespacePath, 'utf8').catch(() => null),
     ]);
     if (!token || !caCert) return null;
     // KUBERNETES_SERVICE_HOST is set by the kubelet in every Pod.
@@ -95,10 +114,10 @@ export interface MountedCredentialLoader {
 }
 
 /** The token file's `mtimeMs`, or `null` when the mount cannot be stat'ed. */
-async function statMountedToken(): Promise<number | null> {
+async function statMountedToken(paths: ServiceAccountPaths): Promise<number | null> {
   try {
     const fs = await fsLazy.get();
-    const stats = await fs.stat(`${SERVICE_ACCOUNT_DIR}/token`);
+    const stats = await fs.stat(paths.tokenPath);
     return stats.mtimeMs;
   } catch {
     return null;
@@ -114,20 +133,46 @@ async function statMountedToken(): Promise<number | null> {
  * mtime newer than the bytes and miss the rotation entirely until something
  * came back 401.
  */
-async function readMountedCredentials(): Promise<MountedCredentials | null> {
-  const tokenModifiedAt = await statMountedToken();
-  const credentials = await loadInClusterCredentials();
+async function readMountedCredentials(
+  paths: ServiceAccountPaths,
+): Promise<MountedCredentials | null> {
+  const tokenModifiedAt = await statMountedToken(paths);
+  const credentials = await loadInClusterCredentials(paths);
   if (!credentials) return null;
   return { credentials, tokenModifiedAt };
 }
 
-/** The real mount reader — `node:fs/promises` against the kubelet's paths. */
-export const mountedCredentialLoader: MountedCredentialLoader = {
-  read: readMountedCredentials,
-  tokenModifiedAt: statMountedToken,
-};
+/**
+ * The real mount reader — `node:fs/promises` against the files `paths` names.
+ *
+ * A factory rather than the module-level singleton it replaces: the paths are
+ * configuration now (#859), so which files a loader reads is a property of the
+ * lease that built it and not of this module. The `credentialLoader` test seam
+ * is unaffected — an injected loader still replaces this one wholesale.
+ */
+export function createMountedCredentialLoader(paths: ServiceAccountPaths): MountedCredentialLoader {
+  return {
+    read: () => readMountedCredentials(paths),
+    tokenModifiedAt: () => statMountedToken(paths),
+  };
+}
 
 /* --------------------------- HTTPS request ---------------------------- */
+
+/**
+ * The per-call knobs every Lease CRUD wrapper forwards to {@link k8sRequest}.
+ *
+ * `timeoutMs` is required rather than defaulted here on purpose: it is
+ * configuration (`actor-ts.coordination.lease.kubernetes.operation-timeout`),
+ * and a second copy of the number in this file is how the published default and
+ * the effective one drift apart.
+ */
+export type K8sCallOptions = {
+  /** Provide a request-injected client (test override). */
+  readonly client?: K8sFetchClient;
+  /** Ceiling on this one request, in ms. */
+  readonly timeoutMs: number;
+};
 
 export type K8sRequestOptions = {
   readonly method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
@@ -135,6 +180,8 @@ export type K8sRequestOptions = {
   readonly body?: unknown;
   /** Provide a request-injected client (test override). */
   readonly client?: K8sFetchClient;
+  /** Ceiling on this one request, in ms. */
+  readonly timeoutMs: number;
 };
 
 export type K8sResponse = {
@@ -153,6 +200,26 @@ export interface K8sFetchClient {
  * header.  Returns `{ status, body }` — the caller is responsible for
  * mapping HTTP status to lease semantics (200 ok, 404 missing,
  * 409 conflict).
+ *
+ * `timeoutMs` is a wall-clock ceiling on the whole exchange, held by an
+ * `AbortController` and not by `https.request`'s `timeout` option — the
+ * same measurement that shaped the seed provider's request (#1524).  That
+ * option is a *socket* timeout, and Bun 1.4.2 never arms it while a TLS
+ * handshake is pending: against a server that accepts and writes nothing,
+ * `timeout: 300` and `req.setTimeout(300)` both never fire (five seconds
+ * waited), while Node fires them at ~620 ms.  A stalled handshake is what
+ * a wedged API server looks like from here, and this bound is the one the
+ * renewal loop's in-flight guard reasons from — so on the project's primary
+ * runtime a holder whose API server stopped answering mid-handshake kept
+ * its renewal wedged on one request instead of timing out and losing the
+ * lease, which is the failure the lease exists to bound (#1529).  The
+ * abort signal fires at the deadline on both runtimes, so the socket
+ * timeout is not kept alongside it: an inactivity bound of N ms can never
+ * fire before a wall-clock bound of the same N.
+ *
+ * The abort carries a named reason, which both runtimes surface as the
+ * `AbortError`'s `cause`; the rejection unwraps to it so `renewalPass`
+ * reports which host went quiet and after how long rather than "aborted".
  */
 export async function k8sRequest(
   creds: K8sCredentials,
@@ -170,8 +237,12 @@ const defaultClient: Lazy<Promise<K8sFetchClient>> = Lazy.of(async () => {
   const { URL } = await import(urlModule) as typeof import('node:url');
   return {
     async request(creds: K8sCredentials, options: K8sRequestOptions): Promise<K8sResponse> {
+      const url = new URL(options.path, creds.apiServerUrl);
+      const deadline = new AbortController();
+      const timer = setTimeout(() => deadline.abort(new Error(
+        `k8s request timeout: no answer from ${url.host} within ${options.timeoutMs}ms`,
+      )), options.timeoutMs);
       return new Promise<K8sResponse>((resolve, reject) => {
-        const url = new URL(options.path, creds.apiServerUrl);
         const bodyString = options.body === undefined ? null : JSON.stringify(options.body);
         const headers: Record<string, string> = {
           Authorization: `Bearer ${creds.authToken}`,
@@ -188,12 +259,15 @@ const defaultClient: Lazy<Promise<K8sFetchClient>> = Lazy.of(async () => {
           path: url.pathname + url.search,
           headers,
           ca: creds.caCert,
-          // Conservative timeout — beyond this the K8s API server is
-          // probably unreachable; the lease ought to be considered lost.
-          timeout: 10_000,
+          // Beyond this the K8s API server is probably unreachable and the
+          // lease ought to be considered lost.  The number comes from the
+          // caller (`operationTimeoutMs`) rather than sitting here, because
+          // the renewal loop's in-flight guard reasons from it.
+          signal: deadline.signal,
         }, (res) => {
           const chunks: Buffer[] = [];
           res.on('data', (c: Buffer) => chunks.push(c));
+          res.on('error', reject);
           res.on('end', () => {
             const raw = Buffer.concat(chunks).toString('utf8');
             let parsed: unknown = raw;
@@ -204,11 +278,12 @@ const defaultClient: Lazy<Promise<K8sFetchClient>> = Lazy.of(async () => {
             resolve({ status: res.statusCode ?? 0, body: parsed });
           });
         });
-        req.on('error', reject);
-        req.on('timeout', () => { req.destroy(new Error('k8s request timeout')); });
+        req.on('error', (error: Error & { cause?: unknown }) => {
+          reject(error.name === 'AbortError' && error.cause instanceof Error ? error.cause : error);
+        });
         if (bodyString !== null) req.write(bodyString);
         req.end();
-      });
+      }).finally(() => clearTimeout(timer));
     },
   };
 });
@@ -251,10 +326,10 @@ export async function getLease(
   creds: K8sCredentials,
   namespace: string,
   name: string,
-  client?: K8sFetchClient,
+  call: K8sCallOptions,
 ): Promise<K8sLeaseObject | null> {
   const response = await k8sRequest(creds, {
-    method: 'GET', path: leasePath(namespace, name), client,
+    method: 'GET', path: leasePath(namespace, name), ...call,
   });
   if (response.status === 404) return null;
   if (response.status !== 200) throw new K8sLeaseError(`GET lease ${namespace}/${name} → HTTP ${response.status}`, response);
@@ -270,7 +345,7 @@ export async function createLease(
   namespace: string,
   spec: Pick<K8sLeaseObject['spec'], 'holderIdentity' | 'leaseDurationSeconds' | 'acquireTime' | 'renewTime'>,
   name: string,
-  client?: K8sFetchClient,
+  call: K8sCallOptions,
 ): Promise<K8sLeaseObject | null> {
   const body: K8sLeaseObject = {
     apiVersion: 'coordination.k8s.io/v1',
@@ -279,7 +354,7 @@ export async function createLease(
     spec: { ...spec, leaseTransitions: 1 },
   };
   const response = await k8sRequest(creds, {
-    method: 'POST', path: leasePath(namespace), body, client,
+    method: 'POST', path: leasePath(namespace), body, ...call,
   });
   if (response.status === 201) return response.body as K8sLeaseObject;
   if (response.status === 409) return null;
@@ -295,13 +370,13 @@ export async function createLease(
 export async function updateLease(
   creds: K8sCredentials,
   lease: K8sLeaseObject,
-  client?: K8sFetchClient,
+  call: K8sCallOptions,
 ): Promise<K8sLeaseObject | null> {
   const response = await k8sRequest(creds, {
     method: 'PUT',
     path: leasePath(lease.metadata.namespace, lease.metadata.name),
     body: lease,
-    client,
+    ...call,
   });
   if (response.status === 200) return response.body as K8sLeaseObject;
   if (response.status === 409) return null;
@@ -316,10 +391,10 @@ export async function deleteLease(
   creds: K8sCredentials,
   namespace: string,
   name: string,
-  client?: K8sFetchClient,
+  call: K8sCallOptions,
 ): Promise<void> {
   const response = await k8sRequest(creds, {
-    method: 'DELETE', path: leasePath(namespace, name), client,
+    method: 'DELETE', path: leasePath(namespace, name), ...call,
   });
   if (response.status === 200 || response.status === 202 || response.status === 404) return;
   throw new K8sLeaseError(`DELETE lease ${namespace}/${name} → HTTP ${response.status}`, response);

@@ -171,23 +171,31 @@ Self-Filter auf `senderUsername`).
 ### Presence über DistributedData-ORSets
 
 ```ts
-// VoicePresenceActor mutiert ein ORSet pro Schlüssel:
+// VoicePresenceActor mutates an ORSet per key:
 this.dd.update<ORSet<string>>(
-  key, // 'voice.online-users' oder 'voice.room-users.<room>'
+  key, // 'voice.online-users' or 'voice.room-users.<room>'
   () => ORSet.empty<string>(),
   (current) => current.add(this.replicaId, username),
 );
 
-// ...und fächert DD-Änderungen an abonnierte Sessions auf:
-this.dd.subscribe<ORSet<string>>(key, (next) => {
-  const users = [...next.value()];
-  // ein PresenceChanged an jeden lokalen Abonnenten pushen
-});
+// ...subscribes itself to each key it watches, so a change arrives as a message:
+this.dd.subscribe<ORSet<string>>(key, this.self);
+
+// ...and fans the change out to the subscribed sessions on its own turn:
+private onDistributedDataChanged(m: DistributedDataChanged<ORSet<string>>): void {
+  const users = [...m.value.value()];
+  // push a PresenceChanged for m.key to each local subscriber
+}
 ```
 
 Ein globales Set verfolgt, wer online ist; ein Set pro Raum verfolgt,
 wer darin ist. Keine sharded Entity besitzt den Raum-State - es ist
 reine CRDT-Mitgliedschaft plus ein PubSub-Topic.
+
+Der Actor abonniert mit seiner eigenen Ref statt mit einem Callback:
+ein Callback läuft auf dem Turn des Replicators, das Fan-out hielte
+also jeden Merge auf, solange es läuft - siehe
+[Replikation](/de/distributed-data/replication/).
 
 ### HTTP-Front-Door als ClusterSingleton
 

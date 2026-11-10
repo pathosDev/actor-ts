@@ -1,5 +1,5 @@
 /**
- * Round-trip: PUT then GET against a live MinIO bucket.  The
+ * Round-trip: PUT then GET against a live Silo bucket.  The
  * baseline smoke — if this fails everything downstream is moot.
  */
 import { backend, type S3Context } from '../Runner.js';

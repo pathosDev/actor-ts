@@ -21,8 +21,10 @@
  *      (confirms the shutdown pipeline finished).
  *
  * Destructive: removes one node from the cluster (similar to
- * `cluster.leave()` but via the CoordinatedShutdown pipeline).
- * Runs LAST in the suite.
+ * `cluster.leave()` but via the CoordinatedShutdown pipeline), and
+ * the victim's process exits once the pipeline is through.  Runs
+ * after the other destructive scenarios; only 17, which takes the
+ * rest of the cluster down the same way, follows it.
  */
 
 import { clusterLiveNodes, waitFor, type Scenario } from './Types.js';
@@ -100,14 +102,14 @@ export const scenario: Scenario = {
     }
     console.log(`[13] pipeline progressed through ${phases.length} hook phases in correct order`);
 
-    // Note: we deliberately don't assert here that the victim's HTTP
-    // port stops accepting connections — the cluster harness keeps
-    // its OWN control-port server bound separately from the user's
-    // routes, so even after `ServiceUnbind` closes the auto-registered
-    // user server the control port may still respond.  The unit test
-    // in `tests/unit/http/HttpExtension.test.ts` covers the auto-
-    // registration behavior directly; here, the two-marker assertion
-    // (early + late phase) is sufficient evidence the shutdown
-    // pipeline ran end-to-end.
+    // Note: we deliberately don't assert here that the victim's ports
+    // stop answering.  They do — every `newServerAt().bind()` is
+    // auto-registered with `ServiceUnbind`, the control port included
+    // — and since #1567 the victim's PROCESS exits right after the late
+    // marker, because nothing is left to hold its event loop open.
+    // That exit is scenario 17's assertion, made for every remaining
+    // node and observed where it can be: at the container boundary,
+    // by compose.  Here the two-marker assertion (early + late phase)
+    // is the evidence that the pipeline ran end-to-end.
   },
 };

@@ -19,6 +19,23 @@
  * That is why the whole surface — including the streams and request
  * methods whose panels land in later phases (#217, #218, #201, #226) —
  * is declared here up front: the shape is agreed once, and every panel
- * that follows is a pure addition inside version 1.
+ * that follows is a pure addition.
+ *
+ * **History.**  Version 2 (#1546) widened `ConfigSource` — the type of the
+ * existing `source` field of every `config.resolved` entry — from three
+ * names to five, adding `profile` and `secrets`.  Additive as it looks, it
+ * is a type change by the rule above: a version-1 UI maps a source through
+ * a table keyed by the three names it knows, and would render the two new
+ * ones as nothing.  The sixth, `project-reference` (#1785), joined before
+ * version 2 was released, so no client ever saw five as the final word; the
+ * entry's `variables` and the answer's `referencePath` and
+ * `environmentFilePath` came with it, optional fields and so additive.  A
+ * release cut between them would have needed version 3.
+ *
+ * **Pinned** as a literal by `tests/unit/config/DevToolsProtocolVersion.test.ts`,
+ * which also checks that the embedded UI bundle says hello with this number —
+ * `bun run check:ui` hashes the UI sources, not this file.  A bump is a
+ * deliberate protocol change: the commit that makes it runs `bun run build:ui`
+ * and edits that test.
  */
-export const DEVTOOLS_PROTOCOL_VERSION = 1;
+export const DEVTOOLS_PROTOCOL_VERSION = 2;

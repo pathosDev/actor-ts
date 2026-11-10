@@ -11,13 +11,28 @@ name: actor-ts-integration-mongodb
 
 services:
   mongodb:
-    # `latest` deliberately — surface upstream regressions as soon as they ship.
-    # Production users pin their own version.
-    #
     # A plain standalone `mongod`, not a replica set: the backend deliberately
     # needs no multi-document transactions (see MongoJournal's docblock), so the
     # suite proves it works on the simplest possible deployment.
-    image: mongo:latest
+    #
+    # Pinned to the release `latest` resolved to when the pin was written, and
+    # Dependabot moves it (#1597): a new MongoDB arrives as a PR that runs this
+    # suite, so an upstream regression still surfaces within a day — attributable
+    # to the bump, instead of turning the nightly red underneath a run.
+    # Production users pin their own version.
+    image: mongo:9.0.4
+    environment:
+      # MongoDB 8.x refuses to start on kernels 6.19 – 7.0.13 while tcmalloc's
+      # per-CPU caches are on, because those kernels changed the rseq behaviour
+      # the caches rely on (SERVER-121912). GitHub's ubuntu-24.04 runner ships
+      # one of them (Azure's 7.0.0-*), and its patch level does not count as the
+      # fixed 7.0.14 (SERVER-125742, SERVER-136848). The image enables the
+      # caches with `glibc.pthread.rseq=0`. `=1` leaves rseq to glibc, so
+      # tcmalloc falls back to per-thread caches and the check passes. That
+      # costs allocator throughput only, which a functional suite never
+      # measures. Drop this once the runner kernel is past the affected range
+      # or MongoDB recognises it (#1794).
+      GLIBC_TUNABLES: glibc.pthread.rseq=1
     healthcheck:
       # `mongosh` ships with the image, and a successful ping is a stronger gate
       # than an open port — the server accepts connections only after storage

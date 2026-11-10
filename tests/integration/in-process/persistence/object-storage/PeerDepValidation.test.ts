@@ -43,6 +43,38 @@ import { probeIntegrityAvailability } from '../../../../../src/persistence/objec
 
 let dir: string;
 
+/**
+ * Run `body` with `globalThis.crypto.subtle` absent, restoring it afterwards.
+ *
+ * The two probe cases above wipe `crypto` with a bare `{ ...realCrypto,
+ * subtle: undefined }`, which is enough for them: they call one exported
+ * function that touches nothing else.  A *registration* reaches further —
+ * `randomId` draws a temp-file suffix from `getRandomValues`, and identity
+ * claiming calls `randomUUID` — and both live on `Crypto.prototype`, so a
+ * spread copies neither.  The stand-in forwards them explicitly, the way
+ * `FilesystemObjectStorageBackend.etagStrength.test.ts` does, so a case
+ * about the WebCrypto guard cannot fail for a missing CSPRNG instead.
+ */
+async function withoutSubtleCrypto<Result>(body: () => Promise<Result>): Promise<Result> {
+  const realCrypto = globalThis.crypto;
+  const withoutSubtle = {
+    getRandomValues: <View extends ArrayBufferView | null>(array: View): View =>
+      realCrypto.getRandomValues(array),
+    randomUUID: () => realCrypto.randomUUID(),
+    subtle: undefined,
+  } as unknown as Crypto;
+  Object.defineProperty(globalThis, 'crypto', {
+    value: withoutSubtle, configurable: true, writable: true,
+  });
+  try {
+    return await body();
+  } finally {
+    Object.defineProperty(globalThis, 'crypto', {
+      value: realCrypto, configurable: true, writable: true,
+    });
+  }
+}
+
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'actor-ts-peerdep-')); });
 afterEach(() => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } });
 
@@ -173,6 +205,12 @@ describe('eager peer-dep validation (#18, #59)', () => {
     try {
       await expect(probeEncryptionAvailability())
         .rejects.toThrow(/SubtleCrypto is not available/);
+      // The opener is shared by every WebCrypto requirement in this
+      // directory; the tail is the only part that says which one.  Pinned
+      // separately so a refactor that lifts the guard into one helper cannot
+      // quietly collapse the three messages into one generic string.
+      await expect(probeEncryptionAvailability())
+        .rejects.toThrow(/Client-side encryption requires WebCrypto/);
     } finally {
       Object.defineProperty(globalThis, 'crypto', {
         value: realCrypto,
@@ -221,6 +259,10 @@ describe('eager peer-dep validation (#18, #59)', () => {
     try {
       await expect(probeIntegrityAvailability())
         .rejects.toThrow(/SubtleCrypto is not available/);
+      // Same reasoning as the encryption probe above: the tail is what
+      // distinguishes this requirement from the other two.
+      await expect(probeIntegrityAvailability())
+        .rejects.toThrow(/Body integrity requires WebCrypto/);
     } finally {
       Object.defineProperty(globalThis, 'crypto', {
         value: realCrypto,
@@ -235,6 +277,56 @@ describe('eager peer-dep validation (#18, #59)', () => {
       .withBackend({ kind: 'filesystem', dir })
       .withIntegrity({ mode: 'hmac-sha256', integrityKey: new Uint8Array(32).fill(7) });
     await expect(validateObjectStoragePeerDeps(pluginOptions)).resolves.toBeUndefined();
+  });
+
+  /*
+   * #786 gave the filesystem backend a WebCrypto requirement of its own: its
+   * compare-and-swap ETag is a truncated SHA-256, derived on every `put` and
+   * every `get` whatever the codecs are set to.  So a deployment with
+   * compression, encryption and integrity all at `'none'` — which is the
+   * default, and skips all three probes above — still cannot run without
+   * WebCrypto.
+   *
+   * That is the same shape #613 found for integrity, and it gets the same
+   * answer for the same reason: a capability nothing probes fails on the
+   * first `put`, inside a persistence write, rather than at registration.
+   */
+  test('etag probe: the stand-alone pre-flight refuses a filesystem backend with no codecs', async () => {
+    const pluginOptions = ObjectStoragePluginOptions.create()
+      .withBackend({ kind: 'filesystem', dir });
+    const error = await withoutSubtleCrypto(() =>
+      validateObjectStoragePeerDeps(pluginOptions).then(() => null, (e: unknown) => e));
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/SubtleCrypto is not available/);
+    // The tail, so a probe wired to the wrong capability's helper fails here
+    // rather than passing on the shared opening sentence.
+    expect((error as Error).message).toMatch(/compare-and-swap ETag from SHA-256/);
+  });
+
+  test('etag probe: registration fails, not the first put', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('peerdep-fs-etag', sysOptions);
+    const ext = sys.extension(PersistenceExtensionId);
+    const pluginOptions = ObjectStoragePluginOptions.create()
+      .withBackend({ kind: 'filesystem', dir });
+    const error = await withoutSubtleCrypto(() =>
+      registerObjectStoragePlugins(ext, pluginOptions).then(() => null, (e: unknown) => e));
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/SubtleCrypto is not available/);
+    await sys.terminate();
+  });
+
+  test('etag probe: an s3 backend is not subject to it', async () => {
+    // The S3 backend forwards `IfMatch` to the service and returns the
+    // service's own ETag — it derives nothing locally, so it was never part
+    // of #786 and must not inherit its requirement.  Without this case a
+    // probe that fired for every backend would pass every assertion above.
+    const pluginOptions = ObjectStoragePluginOptions.create()
+      .withBackend({ kind: 's3', bucket: 'b', region: 'auto' });
+    await expect(withoutSubtleCrypto(() => validateObjectStoragePeerDeps(pluginOptions)))
+      .resolves.toBeUndefined();
   });
 });
 

@@ -1,9 +1,24 @@
+import type { Config } from '../../config/Config.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { Serializer } from '../../serialization/Serializer.js';
+import {
+  readStoreBoolean,
+  readStoreIdentifier,
+  readStoreInt,
+  readStoreString,
+  storeLeaf,
+} from '../StoreConfig.js';
 import type { LibSqlClientLike } from './LibSqlClient.js';
-import type { LibSqlJournalOptions } from './LibSqlJournalOptions.js';
-import type { LibSqlSnapshotStoreOptions } from '../snapshot-stores/LibSqlSnapshotStoreOptions.js';
-import type { LibSqlDurableStateStoreOptions } from '../durable-state-stores/LibSqlDurableStateStoreOptions.js';
+import type { LibSqlJournalOptions, LibSqlJournalOptionsType } from './LibSqlJournalOptions.js';
+import type {
+  LibSqlSnapshotStoreOptions,
+  LibSqlSnapshotStoreOptionsType,
+} from '../snapshot-stores/LibSqlSnapshotStoreOptions.js';
+import type {
+  LibSqlDurableStateStoreOptions,
+  LibSqlDurableStateStoreOptionsType,
+} from '../durable-state-stores/LibSqlDurableStateStoreOptions.js';
 
 export type RegisterLibSqlPluginsOptionsType = {
   /**
@@ -95,3 +110,82 @@ export type RegisterLibSqlPluginsOptions =
   | Partial<RegisterLibSqlPluginsOptionsType>;
 /** Value alias so `RegisterLibSqlPluginsOptions.create()` resolves to the builder. */
 export const RegisterLibSqlPluginsOptions = RegisterLibSqlPluginsOptionsBuilder;
+
+/**
+ * Read the libSQL journal's block — `actor-ts.persistence.journal.libsql` by
+ * default, or whichever id the plug-in was registered under (#872).  Same shape
+ * and same reasoning as `readPostgresJournalOptionsFromConfig`.
+ *
+ * `auth-token` is a credential with a leaf, unlike the pre-built `client`,
+ * because a token is a *string* an operator has to supply from somewhere: the
+ * leaf ships empty and the documented route is a substitution
+ * (`auth-token = ${?TURSO_AUTH_TOKEN}`), which is the same treatment
+ * `logger.sinks.splunk.token` and `cache.redis.password` already get.  `""`
+ * reads as unset, so the published placeholder never reaches `createClient`.
+ */
+export function readLibSqlJournalOptionsFromConfig(
+  config: Config,
+  blockRoot: string = ConfigKeys.persistence.journal.libsql.root,
+): Partial<LibSqlJournalOptionsType> {
+  if (!config.hasPath(blockRoot)) return {};
+  const keys = ConfigKeys.persistence.journal.libsql;
+  const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
+  const out: { -readonly [K in keyof LibSqlJournalOptionsType]?: LibSqlJournalOptionsType[K] } = {};
+  const url = readStoreString(config, at(keys.url));
+  if (url !== undefined) out.url = url;
+  const authToken = readStoreString(config, at(keys.authToken));
+  if (authToken !== undefined) out.authToken = authToken;
+  const eventsTable = readStoreIdentifier(config, at(keys.eventsTable));
+  if (eventsTable !== undefined) out.eventsTable = eventsTable;
+  const tagsTable = readStoreIdentifier(config, at(keys.tagsTable));
+  if (tagsTable !== undefined) out.tagsTable = tagsTable;
+  const autoCreateTables = readStoreBoolean(config, at(keys.autoCreateTables));
+  if (autoCreateTables !== undefined) out.autoCreateTables = autoCreateTables;
+  return out;
+}
+
+/** Read the libSQL snapshot store's block — see {@link readLibSqlJournalOptionsFromConfig}. */
+export function readLibSqlSnapshotStoreOptionsFromConfig(
+  config: Config,
+  blockRoot: string = ConfigKeys.persistence.snapshotStore.libsql.root,
+): Partial<LibSqlSnapshotStoreOptionsType> {
+  if (!config.hasPath(blockRoot)) return {};
+  const keys = ConfigKeys.persistence.snapshotStore.libsql;
+  const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
+  const out: {
+    -readonly [K in keyof LibSqlSnapshotStoreOptionsType]?: LibSqlSnapshotStoreOptionsType[K]
+  } = {};
+  const url = readStoreString(config, at(keys.url));
+  if (url !== undefined) out.url = url;
+  const authToken = readStoreString(config, at(keys.authToken));
+  if (authToken !== undefined) out.authToken = authToken;
+  const snapshotsTable = readStoreIdentifier(config, at(keys.snapshotsTable));
+  if (snapshotsTable !== undefined) out.snapshotsTable = snapshotsTable;
+  const keepN = readStoreInt(config, at(keys.keepN));
+  if (keepN !== undefined) out.keepN = keepN;
+  const autoCreateTables = readStoreBoolean(config, at(keys.autoCreateTables));
+  if (autoCreateTables !== undefined) out.autoCreateTables = autoCreateTables;
+  return out;
+}
+
+/** Read the libSQL durable-state store's block — see {@link readLibSqlJournalOptionsFromConfig}. */
+export function readLibSqlDurableStateStoreOptionsFromConfig(
+  config: Config,
+  blockRoot: string = ConfigKeys.persistence.durableState.libsql.root,
+): Partial<LibSqlDurableStateStoreOptionsType> {
+  if (!config.hasPath(blockRoot)) return {};
+  const keys = ConfigKeys.persistence.durableState.libsql;
+  const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
+  const out: {
+    -readonly [K in keyof LibSqlDurableStateStoreOptionsType]?: LibSqlDurableStateStoreOptionsType[K]
+  } = {};
+  const url = readStoreString(config, at(keys.url));
+  if (url !== undefined) out.url = url;
+  const authToken = readStoreString(config, at(keys.authToken));
+  if (authToken !== undefined) out.authToken = authToken;
+  const table = readStoreIdentifier(config, at(keys.table));
+  if (table !== undefined) out.table = table;
+  const autoCreateTables = readStoreBoolean(config, at(keys.autoCreateTables));
+  if (autoCreateTables !== undefined) out.autoCreateTables = autoCreateTables;
+  return out;
+}

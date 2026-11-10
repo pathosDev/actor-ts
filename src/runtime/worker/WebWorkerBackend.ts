@@ -16,6 +16,14 @@ import type {
  * (`{ data }` / `{ code }`) consistent with the Node adapter.
  */
 export class WebWorkerBackend implements WorkerBackend {
+  /**
+   * Earned by the `preventDefault()` inside the `error` forwarder of
+   * `WebWorkerAdapter.addEventListener`: on Deno that cancel is what stops
+   * the runtime re-raising the worker's throw as an unhandled rejection; on
+   * Bun the forwarded listener alone would do (#700, #1288).
+   */
+  readonly containsWorkerErrors = true;
+
   spawn(bootstrap: URL, options: WorkerSpawnOptions = {}): WorkerLike {
     const Constructor = (globalThis as { Worker?: typeof Worker }).Worker;
     if (!Constructor) {

@@ -19,6 +19,7 @@ import {
 } from '../../src/Router.js';
 import {
   DEFAULT_SCATTER_GATHER_TIMEOUT_MS,
+  MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATHER_MS,
   ScatterGatherOptions,
 } from '../../src/ScatterGatherOptions.js';
 import type { ActorRef } from '../../src/ActorRef.js';
@@ -844,6 +845,15 @@ describe('Router.scatterGatherFirstCompleted (#153)', () => {
     // A margin that survives scheduler jitter — a Windows timer quantum is
     // 15.6 ms and Bun can fire a whole one early (#477).
     expect(DEFAULT_ASK_TIMEOUT_MS - DEFAULT_SCATTER_GATHER_TIMEOUT_MS).toBeGreaterThanOrEqual(100);
+    // Since #863 the caller's side of that comparison is settable
+    // (`actor-ts.actor.ask-timeout`), so the margin above also has a name the
+    // `ActorSystem` can warn against.  Asserted here as well, because the two
+    // must not drift: raising the scatter default without raising the named
+    // floor would leave the warning checking a threshold the router had
+    // already passed, and the shipped ask default has to clear it or every
+    // untouched system would warn.
+    expect(MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATHER_MS).toBeGreaterThan(DEFAULT_SCATTER_GATHER_TIMEOUT_MS);
+    expect(DEFAULT_ASK_TIMEOUT_MS).toBeGreaterThanOrEqual(MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATHER_MS);
   });
 
   test('nobody answering in time rejects with the per-routee ask timeouts', async () => {
@@ -876,7 +886,6 @@ describe('Router.scatterGatherFirstCompleted (#153)', () => {
       'replicas',
     );
 
-    const startedAtMs = performance.now();
     const answer = pool.ask<string>('q', 4_000);
     // Both are user messages on one FIFO mailbox, so the scatter is already
     // registered by the time the PoisonPill is dequeued.
@@ -884,11 +893,12 @@ describe('Router.scatterGatherFirstCompleted (#153)', () => {
 
     let caught: unknown = null;
     try { await answer; } catch (e) { caught = e; }
-    const elapsedMs = performance.now() - startedAtMs;
 
+    // The message *is* the proof, and it is a stronger one than the elapsed
+    // bound that used to sit beside it: only `postStop` produces this text.
+    // Had the ask instead run out its own 4 s timeout the error would say so,
+    // and the test would fail here rather than on a stopwatch.
     expect((caught as Error).message).toMatch(/stopped while the scatter was still open/);
-    // Without `postStop` settling it, this would have taken the full 2 s.
-    expect(elapsedMs).toBeLessThan(1_000);
 
     await sys.terminate();
   });
@@ -955,18 +965,17 @@ describe('Router.scatterGatherFirstCompleted (#153)', () => {
       'replicas',
     );
 
-    const startedAtMs = performance.now();
     const answers = await Promise.all(
       Array.from({ length: scatters }, (_, i) => pool.ask<string>(`q${i}`, 4_000)),
     );
-    const elapsedMs = performance.now() - startedAtMs;
 
     // Each caller got the answer to its own question, from some routee.
     expect(answers.filter((a, i) => a.endsWith(`:q${i}`))).toHaveLength(scatters);
-    // An `async onReceive` awaiting the fan-out would hold the router's whole
-    // mailbox for one scatter at a time: 500 x 20 ms is ten seconds, twenty
-    // times this budget — and past Bun's own per-test timeout either way.
-    expect(elapsedMs).toBeLessThan(2_500);
+    // The serialised failure this guards against cannot reach this line at
+    // all: an `async onReceive` awaiting the fan-out would hold the router's
+    // mailbox for one scatter at a time, 500 x 20 ms — ten seconds, twice
+    // bun's per-test cap.  The cap is therefore the discriminator, and the
+    // stopwatch that used to be here only restated it less reliably.
 
     await sys.terminate();
   });

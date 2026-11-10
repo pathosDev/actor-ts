@@ -3,6 +3,7 @@ import { Config } from '../../../src/config/Config.js';
 import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import { readDistributedPubSubOptionsFromConfig } from '../../../src/cluster/pubsub/DistributedPubSubOptions.js';
 import { readReceptionistOptionsFromConfig } from '../../../src/discovery/ReceptionistOptions.js';
+import { expectExactOptions } from '../../util/ExactOptions.js';
 
 /**
  * #857 — before this, both mediators were tunable only in code: there was no
@@ -10,7 +11,9 @@ import { readReceptionistOptionsFromConfig } from '../../../src/discovery/Recept
  * readers must get right is the mapping (kebab HOCON leaf → camelCase option
  * field) and the "absent means absent" rule — a key nobody set has to stay
  * out of the returned object entirely, or it would land as an explicit
- * `undefined` and shadow the built-in default underneath it.
+ * `undefined` and shadow the built-in default underneath it.  `toEqual`
+ * cannot see that second half, so every case goes through
+ * `expectExactOptions` (#1447).
  */
 
 describe('readDistributedPubSubOptionsFromConfig', () => {
@@ -25,7 +28,7 @@ describe('readDistributedPubSubOptionsFromConfig', () => {
       }
     `);
 
-    expect(readDistributedPubSubOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readDistributedPubSubOptionsFromConfig(config), {
       gossipIntervalMs: 250,
       maxSubscribersPerTopic: 32,
       maxTopics: 8,
@@ -35,14 +38,15 @@ describe('readDistributedPubSubOptionsFromConfig', () => {
   });
 
   test('an absent block yields nothing at all, not a bag of undefined', () => {
-    expect(readDistributedPubSubOptionsFromConfig(Config.parseString('actor-ts.system.name = x')))
-      .toEqual({});
+    const options = readDistributedPubSubOptionsFromConfig(Config.parseString('actor-ts.system.name = x'));
+
+    expectExactOptions(options, {});
   });
 
   test('the shipped reference.conf resolves to the documented defaults', () => {
     // Locks the published values to the reader: a rename on either side turns
     // into a failure here rather than into a key that quietly stops applying.
-    expect(readDistributedPubSubOptionsFromConfig(Config.parseString(REFERENCE_CONF))).toEqual({
+    expectExactOptions(readDistributedPubSubOptionsFromConfig(Config.parseString(REFERENCE_CONF)), {
       gossipIntervalMs: 1_000,
       maxSubscribersPerTopic: 10_000,
       maxTopics: 10_000,
@@ -62,7 +66,7 @@ describe('readReceptionistOptionsFromConfig', () => {
       }
     `);
 
-    expect(readReceptionistOptionsFromConfig(config)).toEqual({
+    expectExactOptions(readReceptionistOptionsFromConfig(config), {
       gossipIntervalMs: 2_000,
       maxSubscribersPerKey: 16,
       maxSubscriptionsTotal: 64,
@@ -70,12 +74,13 @@ describe('readReceptionistOptionsFromConfig', () => {
   });
 
   test('an absent block yields nothing at all, not a bag of undefined', () => {
-    expect(readReceptionistOptionsFromConfig(Config.parseString('actor-ts.system.name = x')))
-      .toEqual({});
+    const options = readReceptionistOptionsFromConfig(Config.parseString('actor-ts.system.name = x'));
+
+    expectExactOptions(options, {});
   });
 
   test('the shipped reference.conf resolves to the documented defaults', () => {
-    expect(readReceptionistOptionsFromConfig(Config.parseString(REFERENCE_CONF))).toEqual({
+    expectExactOptions(readReceptionistOptionsFromConfig(Config.parseString(REFERENCE_CONF)), {
       gossipIntervalMs: 1_000,
       maxSubscribersPerKey: 1_000,
       maxSubscriptionsTotal: 10_000,

@@ -1,3 +1,5 @@
+import type { Config } from '../config/Config.js';
+import { ConfigKeys } from '../config/ConfigKeys.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 
@@ -90,3 +92,27 @@ export class MetricsRegistryOptionsValidator extends OptionsValidator<MetricsReg
 export type MetricsRegistryOptions = MetricsRegistryOptionsBuilder | Partial<MetricsRegistryOptionsType>;
 /** Value alias so `MetricsRegistryOptions.create()` / `new MetricsRegistryOptions()` resolve to the builder. */
 export const MetricsRegistryOptions = MetricsRegistryOptionsBuilder;
+
+/**
+ * Read the slice of `actor-ts.metrics.*` the in-process registry takes: the
+ * cap.  `name-prefix` in the same block is the prom-client bridge's alone —
+ * this registry is rendered by the framework's own exporter, which has no
+ * prefix to apply.
+ *
+ * The `Config` is a **required argument**, not a `Config.load()` default: the
+ * one consumer is `MetricsExtension.enable()`, which holds an `ActorSystem`
+ * and passes `system.config`, so a self-load would ignore
+ * `ActorSystem.create({ config })` — and, inside a mesh worker, the main
+ * thread's effective config the worker was built from.
+ *
+ * An absent leaf stays absent rather than being filled with
+ * {@link DEFAULT_MAX_SERIES_PER_FAMILY}, so `mergeOptions` can layer explicit
+ * options over this answer per field.  `getInt`, because the cap counts series:
+ * a fraction is refused naming the key rather than reaching the validator.
+ */
+export function readMetricsRegistryOptionsFromConfig(config: Config): Partial<MetricsRegistryOptionsType> {
+  const keys = ConfigKeys.metrics;
+  const out: { -readonly [K in keyof MetricsRegistryOptionsType]?: MetricsRegistryOptionsType[K] } = {};
+  if (config.hasPath(keys.maxSeriesPerFamily)) out.maxSeriesPerFamily = config.getInt(keys.maxSeriesPerFamily);
+  return out;
+}

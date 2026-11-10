@@ -52,6 +52,41 @@ interface NatsOptionsType extends BrokerCommonOptionsType {
 }
 ```
 
+Dieselben Settings kommen auch aus HOCON, unter `actor-ts.io.broker.nats`,
+unterhalb expliziter Optionen und oberhalb der eingebauten Defaults:
+
+```hocon
+actor-ts.io.broker.nats {
+  servers  = ["nats://nats-1:4222", "nats://nats-2:4222"]   # a list, even for one server
+  name     = "my-app"
+  user     = "my-app"
+  password = ${?ACTOR_TS_NATS_PASSWORD}
+  # token  = ${?ACTOR_TS_NATS_TOKEN}   # instead of user and password
+}
+```
+
+Ein Wert aus der Umgebung wird zuerst als JSON gelesen, wo immer er sich als
+JSON parsen lässt.  Ein Passwort oder Token, das sich wie eine Zahl liest, kommt
+in der Schreibweise dieser Zahl zurück — `1e3` als `1000`, `1.50` als `1.5` und
+eine ganze Zahl jenseits von `Number.MAX_SAFE_INTEGER` womöglich mit anderen
+letzten Ziffern (`20261104123456789` als `20261104123456788`) —, und eines, das
+sich wie `null`, eine Liste oder ein Objekt liest, lässt den Start mit einem
+`ConfigError` scheitern; ein schlichtes `12345` bleibt unverändert.
+Einen solchen Wert in der Variablen selbst quoten
+(`ACTOR_TS_NATS_PASSWORD='"1e3"'`) oder im Code setzen.
+
+Benutzer und Passwort in einem `servers`-Eintrag
+(`nats://user:secret@nats-1:4222`) sind **keine** Zugangsdaten: nats.js
+schickt sie nie mit, und sie können dazu führen, dass es Host oder Port des
+Eintrags falsch liest.  Der Actor lehnt einen solchen Eintrag beim Start ab —
+der NATS-Actor wie die drei JetStream-Actors — und maskiert die Zugangsdaten
+in der Ablehnung.  Zugangsdaten gehören in `user` und `password` oder in
+`token`.  `subscriptions` und `tls` haben kein Blatt — das eine benennt
+Actors, das andere ist Zertifikatsmaterial.  Die Reconnect-,
+Circuit-Breaker- und Outbound-Buffer-Blätter, die sich alle Broker teilen,
+gehören unter denselben Root — siehe
+[BrokerActor-Basis](/de/io/broker-actor-base/#reconnect-mit-backoff).
+
 ## Subscriptions und Reconnects
 
 `subscriptions` und das `subscribe`-Kommando zur Laufzeit speisen **dieselbe**
@@ -240,12 +275,13 @@ der Sweet Spot für "weniger als Kafka, mehr als Core-NATS".
 ## Peer-Dependency
 
 ```bash
-npm install nats
-# oder: bun add nats
+npm install @nats-io/transport-node
+# oder: bun add @nats-io/transport-node
 ```
 
-Das Paket `nats` enthält sowohl Core-NATS- als auch JetStream-
-Clients.
+nats.js v3 teilt das frühere Einzelpaket `nats` auf: der Transport trägt
+Core-NATS, JetStream, Key-Value und Object-Store bringen je ein eigenes Paket
+mit. Installiere nur, was du nutzt — Core-NATS braucht allein die erste Zeile.
 
 import { Aside } from '@astrojs/starlight/components';
 

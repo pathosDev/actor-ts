@@ -1,3 +1,9 @@
+import {
+  DEFAULT_AUTO_CREATE_TABLES,
+  DEFAULT_DYNAMODB_BILLING_MODE,
+  DEFAULT_DYNAMODB_PROVISIONED_CAPACITY_UNITS,
+  DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS,
+} from '../Constants.js';
 import { LazyStore, type LazyStoreConfig } from '../LazyStore.js';
 import type { StorageLocality } from '../StorageLocality.js';
 import {
@@ -20,17 +26,28 @@ export type DynamoDbTableSchema = {
 
 /** Wiring every DynamoDB store needs, independent of which contract it implements. */
 export interface DynamoDbStoreConfig extends Omit<LazyStoreConfig<DynamoDbOperations>, 'ownsResource' | 'openResource'> {
-  /** Create the table on first use.  Default `true`. */
+  /**
+   * Create the table when the store opens.  Default `true`
+   * (`DEFAULT_AUTO_CREATE_TABLES`).  Off, the open describes the table
+   * instead, so a missing table or an endpoint out of reach fails the open
+   * rather than the first operation (#1473).
+   */
   readonly autoCreateTables?: boolean;
   /**
-   * On-demand (`PAY_PER_REQUEST`) or provisioned throughput.  Default on-demand:
-   * an event journal's traffic is bursty, and on-demand needs no capacity
-   * planning to get started.
+   * On-demand (`PAY_PER_REQUEST`) or provisioned throughput.  Default on-demand
+   * (`DEFAULT_DYNAMODB_BILLING_MODE`): an event journal's traffic is bursty,
+   * and on-demand needs no capacity planning to get started.
    */
   readonly billingMode?: 'PAY_PER_REQUEST' | 'PROVISIONED';
-  /** Read/write capacity units, used only when `billingMode` is `PROVISIONED`. */
+  /**
+   * Read/write capacity units, used only when `billingMode` is `PROVISIONED`;
+   * unset there, each half falls back to `DEFAULT_DYNAMODB_PROVISIONED_CAPACITY_UNITS`.
+   */
   readonly provisionedThroughput?: { readonly readCapacityUnits: number; readonly writeCapacityUnits: number };
-  /** How long to wait for a freshly created table to become ACTIVE.  Default 30 s. */
+  /**
+   * How long to wait for a freshly created table to become ACTIVE.  Default 30 s
+   * (`DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS`).
+   */
   readonly tableReadyTimeoutMs?: number;
   /**
    * Whether this store opened the client itself.  An injected façade — shared
@@ -38,7 +55,7 @@ export interface DynamoDbStoreConfig extends Omit<LazyStoreConfig<DynamoDbOperat
    * `registerDynamoDbPlugins`, or a fake in tests — is owned by the caller.
    */
   readonly ownsClient: boolean;
-  /** Open the operations façade.  Called once, lazily, on first use. */
+  /** Open the operations façade.  Called lazily, on first use or `start()`, and again after a failed attempt (#1473). */
   openClient(): Promise<DynamoDbOperations>;
 }
 
@@ -109,20 +126,58 @@ export abstract class DynamoDbStore extends LazyStore<DynamoDbOperations> {
       ownsResource: config.ownsClient,
       openResource: () => config.openClient(),
     });
-    this.autoCreateTables = config.autoCreateTables ?? true;
-    this.billingMode = config.billingMode ?? 'PAY_PER_REQUEST';
+    this.autoCreateTables = config.autoCreateTables ?? DEFAULT_AUTO_CREATE_TABLES;
+    this.billingMode = config.billingMode ?? DEFAULT_DYNAMODB_BILLING_MODE;
     this.provisionedThroughput = config.provisionedThroughput;
-    this.tableReadyTimeoutMs = config.tableReadyTimeoutMs ?? 30_000;
+    this.tableReadyTimeoutMs = config.tableReadyTimeoutMs ?? DEFAULT_DYNAMODB_TABLE_READY_TIMEOUT_MS;
   }
 
   /** The tables this store needs.  One for every store the framework ships. */
   protected abstract tables(): DynamoDbTableSchema[];
 
+  /**
+   * The open's schema step, and the round trip that proves the table is
+   * there (#1473).
+   *
+   * `start()` promises that a backend the node cannot reach fails the startup
+   * rather than the first persisted message.  With `autoCreateTables` on,
+   * `CreateTable` and the wait for `ACTIVE` are that round trip.  With it off
+   * — tables the operator provisions — nothing else here talks to DynamoDB,
+   * because the SDK client sends nothing until its first command.  So the
+   * open describes each of the store's own tables once, and a failure fails
+   * the open, naming the store: an endpoint that cannot be reached and a
+   * table that does not exist alike.  `DescribeTable` reads the table's
+   * metadata and needs no write permission.
+   *
+   * Once per open, never per operation: `LazyStore` runs `prepare` once per
+   * successful open inside its memoized init, and again only after a failed
+   * attempt.  Nothing is added after a `CreateTable` that already reached the
+   * backend.
+   */
   protected async prepare(operations: DynamoDbOperations): Promise<void> {
-    if (!this.autoCreateTables) return;
+    if (!this.autoCreateTables) {
+      for (const table of this.tables()) await this.describeOwnTable(operations, table.tableName);
+      return;
+    }
     for (const table of this.tables()) {
       await this.createTable(operations, table);
       await this.waitForActive(operations, table.tableName);
+    }
+  }
+
+  /** See {@link DynamoDbStore.prepare}: one `DescribeTable`, whose failure fails the open. */
+  private async describeOwnTable(operations: DynamoDbOperations, tableName: string): Promise<void> {
+    try {
+      await operations.describeTable({ TableName: tableName });
+    } catch (e) {
+      if (isTableNotFound(e)) {
+        this.fail('open', new Error(
+          `table ${tableName} does not exist, and autoCreateTables (the auto-create-tables leaf) is off — `
+          + 'create the table first, or turn autoCreateTables on',
+          { cause: e },
+        ));
+      }
+      this.fail('open', e);
     }
   }
 
@@ -147,8 +202,10 @@ export abstract class DynamoDbStore extends LazyStore<DynamoDbOperations> {
         ...(this.billingMode === 'PROVISIONED'
           ? {
               ProvisionedThroughput: {
-                ReadCapacityUnits: this.provisionedThroughput?.readCapacityUnits ?? 5,
-                WriteCapacityUnits: this.provisionedThroughput?.writeCapacityUnits ?? 5,
+                ReadCapacityUnits: this.provisionedThroughput?.readCapacityUnits
+                  ?? DEFAULT_DYNAMODB_PROVISIONED_CAPACITY_UNITS,
+                WriteCapacityUnits: this.provisionedThroughput?.writeCapacityUnits
+                  ?? DEFAULT_DYNAMODB_PROVISIONED_CAPACITY_UNITS,
               },
             }
           : {}),

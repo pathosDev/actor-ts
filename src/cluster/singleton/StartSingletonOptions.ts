@@ -1,4 +1,8 @@
+import type { Config } from '../../config/Config.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { Lease } from '../../coordination/Lease.js';
+import { rejectAbsentLeaseKeys } from '../../coordination/LeaseOptions.js';
+import type { AbsentLeaseKeys } from '../../coordination/LeaseOptions.js';
 import type { ActorClassOrFactory } from '../../Actor.js';
 import type { ActorOptions } from '../../ActorOptions.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
@@ -33,8 +37,22 @@ export type StartSingletonOptionsType<T> = {
    * Without a lease the manager keeps its current sync behaviour:
    * spawn the moment cluster gossip says we're leader, no external
    * arbitration.
+   *
+   * Wins over {@link useLease}: a lease passed here is the one used.
    */
   readonly lease?: Lease;
+  /**
+   * Give the singleton a lease built from `actor-ts.coordination.lease` when
+   * no {@link lease} is passed (#1454).  Default: `false`.
+   *
+   * The lease is named `<system>-singleton-<typeName>` and owned by this node —
+   * its cluster address and incarnation — so the file chooses the backend and
+   * nothing about identity.  With `coordination.lease.backend = none` it is
+   * refused when the singleton starts, rather than hosting unprotected while
+   * the option reads as protection.  `false` opts one singleton out of a
+   * deployment-wide `actor-ts.cluster.singleton.use-lease = on`.
+   */
+  readonly useLease?: boolean;
   /**
    * How often to retry `lease.acquire()` after a failed attempt
    * (another holder owns it, transient backend error, etc.).
@@ -141,9 +159,14 @@ export class StartSingletonOptionsBuilder<T> extends OptionsBuilder<StartSinglet
     return this.set('role', role);
   }
 
-  /** Split-brain protection — the leader acquires this lease before spawning. */
+  /** Split-brain protection — the leader acquires this lease before spawning.  Wins over `withUseLease`. */
   withLease(lease: Lease): this {
     return this.set('lease', lease);
+  }
+
+  /** Give the singleton a lease built from `actor-ts.coordination.lease`.  Default: `false`. */
+  withUseLease(useLease: boolean): this {
+    return this.set('useLease', useLease);
   }
 
   /** Retry interval (ms) for `lease.acquire()` after a failed attempt.  Default 5 s. */
@@ -191,6 +214,89 @@ export class StartSingletonOptionsValidator<T> extends OptionsValidator<StartSin
     this.positiveInt('maxHandOverStateBytes');
     this.positiveInt('bufferSize');
   }
+}
+
+/**
+ * The slice of {@link StartSingletonOptionsType} that `actor-ts.cluster
+ * .singleton.*` can express — every field whose value is a number, a string
+ * or a flag (#855).
+ *
+ * The three that are missing are missing because HOCON cannot name them:
+ * `actor`, `actorOptions` and `lease` are objects a config file has no way to
+ * construct.  A lease is still reachable from the file — `useLease` asks for one
+ * built from `actor-ts.coordination.lease` (#1454) — but as a switch, never as
+ * a name: the name is derived per singleton, and a `lease-name` written into
+ * the block is refused.
+ *
+ * Generic over `unknown` on purpose — none of the fields it picks mentions the
+ * command type, so a `SingletonConfigDefaults<TCommand>` would be a type
+ * parameter nothing uses.
+ */
+export type SingletonConfigDefaults = Pick<
+  StartSingletonOptionsType<unknown>,
+  | 'role'
+  | 'bufferSize'
+  | 'handOverTimeoutMs'
+  | 'useLease'
+  | 'acquireRetryIntervalMs'
+  | 'maxHandOverStateBytes'
+  | 'restartOnTermination'
+>;
+
+/**
+ * The lease spelling the singleton block deliberately lacks (#1454): one name
+ * for the block would put every singleton on one record.
+ */
+const ABSENT_SINGLETON_LEASE_KEYS: AbsentLeaseKeys = {
+  'actor-ts.cluster.singleton.lease-name':
+    'a singleton\'s lease is named <system>-singleton-<type>, one per singleton, and one name for the block would '
+    + 'put every singleton on one record; pass a lease built in code with withLease(...) to choose its name',
+};
+
+/**
+ * Read the `actor-ts.cluster.singleton.*` block into the shape
+ * {@link ClusterSingleton.start} and {@link ClusterSingleton.ref} merge under
+ * the caller's options.
+ *
+ * Only keys actually present are returned.  That is the whole point of the
+ * `hasPath` guards: a key read unconditionally comes back `undefined` and,
+ * once spread, shadows the built-in default it was supposed to fall through
+ * to — `mergeOptions` falls through on `undefined`, not on falsy.  A lease
+ * spelling the block lacks is refused first, by `ref()` as well as `start()`.
+ */
+export function readSingletonOptionsFromConfig(config: Config): SingletonConfigDefaults {
+  rejectAbsentLeaseKeys(config, ABSENT_SINGLETON_LEASE_KEYS);
+  const keys = ConfigKeys.cluster.singleton;
+  // Mutable while being filled; consumers see the readonly shape.
+  const out: { -readonly [K in keyof SingletonConfigDefaults]: SingletonConfigDefaults[K] } = {};
+  if (config.hasPath(keys.role)) {
+    // `""` is how a HOCON file says "no opinion" for a string whose absence is
+    // the real default — the same shape `sharding.role` uses.  Here it is not
+    // merely tidy: `reference.conf` merges under everything, so the shipped
+    // placeholder makes `hasPath` true forever, and passing `''` on would both
+    // shadow an explicit `withRole` and fail
+    // `StartSingletonOptionsValidator`'s non-empty check on every node that
+    // configured nothing.
+    const role = config.getString(keys.role);
+    if (role.length > 0) out.role = role;
+  }
+  if (config.hasPath(keys.bufferSize)) out.bufferSize = config.getInt(keys.bufferSize);
+  if (config.hasPath(keys.handOverTimeout)) {
+    out.handOverTimeoutMs = config.getDuration(keys.handOverTimeout);
+  }
+  // Read as a flag only: whether a backend exists to honour it is decided where
+  // the manager is built, so a `withLease(…)` in code can still satisfy it.
+  if (config.hasPath(keys.useLease)) out.useLease = config.getBoolean(keys.useLease);
+  if (config.hasPath(keys.acquireRetryInterval)) {
+    out.acquireRetryIntervalMs = config.getDuration(keys.acquireRetryInterval);
+  }
+  if (config.hasPath(keys.maxHandOverStateBytes)) {
+    out.maxHandOverStateBytes = config.getBytes(keys.maxHandOverStateBytes);
+  }
+  if (config.hasPath(keys.restartOnTermination)) {
+    out.restartOnTermination = config.getBoolean(keys.restartOnTermination);
+  }
+  return out;
 }
 
 /**

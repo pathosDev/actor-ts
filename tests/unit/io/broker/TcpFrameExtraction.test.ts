@@ -13,17 +13,22 @@
  * coverage at all before the move.
  */
 import { describe, expect, test } from 'bun:test';
+import { Config, ConfigError } from '../../../../src/config/Config.js';
+import { ConfigKeys } from '../../../../src/config/ConfigKeys.js';
 import {
-  DEFAULT_MAX_FRAME_LENGTH,
-  DEFAULT_MAX_LINE_LENGTH,
+  DEFAULT_MAX_FRAME_BYTES,
+  DEFAULT_MAX_LINE_BYTES,
   extractFrames,
   extractLengthPrefixedFrames,
   extractLineFrames,
   findFramingViolation,
+  readFramingFromConfig,
+  RETIRED_TCP_FRAMING_LEAVES,
 } from '../../../../src/io/broker/TcpFraming.js';
-import type { FrameExtraction } from '../../../../src/io/broker/TcpFraming.js';
+import type { FrameExtraction, TcpFramingKeys } from '../../../../src/io/broker/TcpFraming.js';
 import { TcpServerOptionsValidator } from '../../../../src/io/broker/TcpServerOptions.js';
 import { TcpSocketOptionsValidator } from '../../../../src/io/broker/TcpSocketOptions.js';
+import { expectExactOptions } from '../../../util/ExactOptions.js';
 
 const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
 const decode = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
@@ -84,7 +89,7 @@ describe('extractLineFrames', () => {
   test('an over-long TERMINATED line reports overflow and stops there', () => {
     const result = extractLineFrames(encode('ok\n' + 'x'.repeat(20) + '\nlater\n'), '\n', 8);
     expect(result.frames).toEqual(['ok']);   // everything before the breach still delivered
-    expect(result.overflow).toMatch(/maxLineLen=8/);
+    expect(result.overflow).toMatch(/maxLineBytes=8/);
   });
 
   test('an over-long UNTERMINATED remainder reports overflow (BRK-1)', () => {
@@ -92,7 +97,10 @@ describe('extractLineFrames', () => {
     // not be able to grow the caller's buffer without limit.
     const result = extractLineFrames(encode('x'.repeat(32)), '\n', 8);
     expect(result.frames).toEqual([]);
-    expect(result.overflow).toMatch(/unterminated line/);
+    // The cap is named in this branch's text too, not only in the terminated
+    // one: the two are separate template strings, and either can keep a stale
+    // field name on its own.
+    expect(result.overflow).toMatch(/unterminated line exceeds maxLineBytes=8/);
   });
 
   test('honours a multi-character delimiter', () => {
@@ -109,11 +117,11 @@ describe('extractLineFrames', () => {
     const unterminated = extractLineFrames(encode('€'.repeat(4)), '\n', 8);  // 12 bytes / 4 units
     expect(unterminated.overflow).toMatch(/unterminated line/);
     const terminated = extractLineFrames(encode('€€€\n'), '\n', 8);          // 9-byte line
-    expect(terminated.overflow).toMatch(/maxLineLen=8/);
+    expect(terminated.overflow).toMatch(/maxLineBytes=8/);
     expect(terminated.frames).toEqual([]);
   });
 
-  test('a line of exactly maxLineLen bytes still passes', () => {
+  test('a line of exactly maxLineBytes still passes', () => {
     // The boundary the byte comparison must not move: `>`, not `>=`.
     const result = extractLineFrames(encode('€€\n'), '\n', 6);
     expect(result.overflow).toBeUndefined();
@@ -186,7 +194,7 @@ describe('extractLineFrames', () => {
 describe('extractLengthPrefixedFrames', () => {
   test('peels whole frames and keeps a partial tail', () => {
     const buffer = concat(lengthPrefixed('one', 'two'), new Uint8Array([0, 0, 0, 9, 1, 2]));
-    const result = extractLengthPrefixedFrames(buffer, DEFAULT_MAX_FRAME_LENGTH);
+    const result = extractLengthPrefixedFrames(buffer, DEFAULT_MAX_FRAME_BYTES);
     expect(result.frames.map((f) => decode(f as Uint8Array))).toEqual(['one', 'two']);
     expect(result.overflow).toBeUndefined();
     // The 9-byte frame is still arriving, so its 6 bytes stay pending.
@@ -195,13 +203,13 @@ describe('extractLengthPrefixedFrames', () => {
 
   test('a header shorter than 4 bytes is kept, not misread', () => {
     const buffer = new Uint8Array([0, 0, 3]);
-    const result = extractLengthPrefixedFrames(buffer, DEFAULT_MAX_FRAME_LENGTH);
+    const result = extractLengthPrefixedFrames(buffer, DEFAULT_MAX_FRAME_BYTES);
     expect(result.frames).toEqual([]);
     expect(result.consumed).toBe(0);
   });
 
   test('a zero-length frame is a frame', () => {
-    const result = extractLengthPrefixedFrames(lengthPrefixed(''), DEFAULT_MAX_FRAME_LENGTH);
+    const result = extractLengthPrefixedFrames(lengthPrefixed(''), DEFAULT_MAX_FRAME_BYTES);
     expect(result.frames.length).toBe(1);
     expect((result.frames[0] as Uint8Array).length).toBe(0);
   });
@@ -211,7 +219,7 @@ describe('extractLengthPrefixedFrames', () => {
     // arrive before checking is what would let it allocate.
     const header = new Uint8Array([0xff, 0xff, 0xff, 0xff]);
     const result = extractLengthPrefixedFrames(header, 1024);
-    expect(result.overflow).toMatch(/maxFrameLen=1024/);
+    expect(result.overflow).toMatch(/maxFrameBytes=1024/);
     expect(result.frames).toEqual([]);
   });
 
@@ -220,7 +228,7 @@ describe('extractLengthPrefixedFrames', () => {
     const result = extractLengthPrefixedFrames(header, 1024);
     // 0x80000000 unsigned = 2 GiB, which is over the cap; signed it would be
     // negative and slip through every `length > cap` test.
-    expect(result.overflow).toMatch(/maxFrameLen/);
+    expect(result.overflow).toMatch(/maxFrameBytes/);
   });
 });
 
@@ -238,10 +246,10 @@ describe('extractFrames — strategy dispatch and defaults', () => {
 
   test('the unset caps fall through to the shipped defaults', () => {
     // Just under the default line cap: no overflow, still pending.
-    const long = 'x'.repeat(DEFAULT_MAX_LINE_LENGTH - 1);
+    const long = 'x'.repeat(DEFAULT_MAX_LINE_BYTES - 1);
     expect(extractFrames(encode(long), { kind: 'lines' }).overflow).toBeUndefined();
     // Just over it.
-    const tooLong = 'x'.repeat(DEFAULT_MAX_LINE_LENGTH + 1);
+    const tooLong = 'x'.repeat(DEFAULT_MAX_LINE_BYTES + 1);
     expect(extractFrames(encode(tooLong), { kind: 'lines' }).overflow).toMatch(/unterminated/);
   });
 });
@@ -254,10 +262,10 @@ describe('findFramingViolation', () => {
   });
 
   test('names the offending field for a NaN cap', () => {
-    expect(findFramingViolation({ kind: 'lines', maxLineLen: Number.NaN })?.field)
-      .toBe('framing.maxLineLen');
-    expect(findFramingViolation({ kind: 'length-prefixed', maxFrameLen: -1 })?.field)
-      .toBe('framing.maxFrameLen');
+    expect(findFramingViolation({ kind: 'lines', maxLineBytes: Number.NaN })?.field)
+      .toBe('framing.maxLineBytes');
+    expect(findFramingViolation({ kind: 'length-prefixed', maxFrameBytes: -1 })?.field)
+      .toBe('framing.maxFrameBytes');
   });
 
   test('rejects an empty delimiter — it would wedge the extractor (#789)', () => {
@@ -279,6 +287,123 @@ describe('findFramingViolation', () => {
   test('a delimiter that is set and non-empty passes', () => {
     expect(findFramingViolation({ kind: 'lines', delimiter: '\r\n' })).toBeUndefined();
     expect(findFramingViolation({ kind: 'lines', delimiter: '\0' })).toBeUndefined();
+  });
+});
+
+/*
+ * Where the framing block meets HOCON (#1443).  The block hangs under both TCP
+ * roots, so its leaves are composed once, by `tcpFramingKeysUnder` in
+ * `ConfigKeys`, and the reader is handed the system config and one root's
+ * keys — the way every broker reader addresses its block.  The two caps are
+ * sizes, read with `getBytes`, so `64K` is 65 536 bytes.  Their camelCase
+ * spellings, which were also the names of the fields until those were named
+ * after the unit they count, are refused by name: both caps bound what an
+ * untrusted peer can make the actor buffer, and an ignored one would restore
+ * the built-in default without a word.
+ */
+describe('readFramingFromConfig', () => {
+  const tcp = ConfigKeys.io.broker.tcp.framing;
+  const tcpServer = ConfigKeys.io.broker.tcpServer.framing;
+
+  /** What reading `hocon` through `keys` throws, or a failure naming its absence. */
+  function refusalOf(hocon: string, keys: TcpFramingKeys): ConfigError {
+    try {
+      readFramingFromConfig(Config.parseString(hocon), keys);
+    } catch (e) {
+      expect(e).toBeInstanceOf(ConfigError);
+      return e as ConfigError;
+    }
+    throw new Error(`nothing refused ${hocon}`);
+  }
+
+  test('the block\'s leaves are kebab-case under both TCP roots, and the caps keep their unit', () => {
+    expectExactOptions(tcp, {
+      root: 'actor-ts.io.broker.tcp.framing',
+      kind: 'actor-ts.io.broker.tcp.framing.kind',
+      delimiter: 'actor-ts.io.broker.tcp.framing.delimiter',
+      maxLineBytes: 'actor-ts.io.broker.tcp.framing.max-line-bytes',
+      maxFrameBytes: 'actor-ts.io.broker.tcp.framing.max-frame-bytes',
+    });
+    expectExactOptions(tcpServer, {
+      root: 'actor-ts.io.broker.tcp-server.framing',
+      kind: 'actor-ts.io.broker.tcp-server.framing.kind',
+      delimiter: 'actor-ts.io.broker.tcp-server.framing.delimiter',
+      maxLineBytes: 'actor-ts.io.broker.tcp-server.framing.max-line-bytes',
+      maxFrameBytes: 'actor-ts.io.broker.tcp-server.framing.max-frame-bytes',
+    });
+  });
+
+  test('the line cap lands in maxLineBytes', () => {
+    const config = Config.parseString(`${tcp.root} { kind = "lines", max-line-bytes = 64 }`);
+    expectExactOptions(readFramingFromConfig(config, tcp), { kind: 'lines', maxLineBytes: 64 });
+  });
+
+  test('the frame cap lands in maxFrameBytes', () => {
+    const config = Config.parseString(`${tcp.root} { kind = "length-prefixed", max-frame-bytes = 4096 }`);
+    expectExactOptions(readFramingFromConfig(config, tcp), { kind: 'length-prefixed', maxFrameBytes: 4096 });
+  });
+
+  test('both caps are sizes: 64K is 65536 bytes', () => {
+    // `getInt` refuses `64K` outright, which is how the cap used to be read.
+    const lines = Config.parseString(`${tcpServer.root} { kind = "lines", max-line-bytes = 64K }`);
+    const prefixed = Config.parseString(`${tcpServer.root} { kind = "length-prefixed", max-frame-bytes = 64K }`);
+    expectExactOptions(readFramingFromConfig(lines, tcpServer), { kind: 'lines', maxLineBytes: 65_536 });
+    expectExactOptions(readFramingFromConfig(prefixed, tcpServer), { kind: 'length-prefixed', maxFrameBytes: 65_536 });
+  });
+
+  test('a delimiter is read beside the line cap, and an unset leaf is omitted', () => {
+    const delimited = Config.parseString(`${tcp.root} { kind = "lines", delimiter = "|" }`);
+    expectExactOptions(readFramingFromConfig(delimited, tcp), { kind: 'lines', delimiter: '|' });
+    const bare = Config.parseString(`${tcp.root}.kind = "length-prefixed"`);
+    expectExactOptions(readFramingFromConfig(bare, tcp), { kind: 'length-prefixed' });
+  });
+
+  test('each root\'s keys read that root\'s block and no other', () => {
+    const config = Config.parseString(`
+      ${tcp.root} { kind = "lines", max-line-bytes = 128 }
+      ${tcpServer.root} { kind = "length-prefixed", max-frame-bytes = 256 }
+    `);
+    expectExactOptions(readFramingFromConfig(config, tcp), { kind: 'lines', maxLineBytes: 128 });
+    expectExactOptions(readFramingFromConfig(config, tcpServer), { kind: 'length-prefixed', maxFrameBytes: 256 });
+  });
+
+  test('the field names are not leaves either, and are refused rather than ignored', () => {
+    // Nothing camelCase is read: not the retired leaf, and not the field name
+    // a reader of the TypeScript might write instead — which would leave the
+    // cap at its default, so the block refuses it, naming the leaves it takes.
+    const lines = refusalOf(`${tcp.root} { kind = "lines", maxLineBytes = 64 }`, tcp);
+    expect(lines.message).toContain(`${tcp.root}.maxLineBytes is not a framing leaf`);
+    expect(lines.message).toContain('max-line-bytes');
+    const prefixed = refusalOf(`${tcp.root} { kind = "length-prefixed", maxFrameBytes = 64 }`, tcp);
+    expect(prefixed.message).toContain(`${tcp.root}.maxFrameBytes is not a framing leaf`);
+  });
+
+  test('the retired table names exactly the two caps, each with its replacement', () => {
+    expect(RETIRED_TCP_FRAMING_LEAVES).toEqual({ maxLineLen: 'max-line-bytes', maxFrameLen: 'max-frame-bytes' });
+  });
+
+  test.each([
+    { retired: 'maxLineLen', current: 'max-line-bytes', kind: 'lines' },
+    { retired: 'maxFrameLen', current: 'max-frame-bytes', kind: 'length-prefixed' },
+  ])('$retired is refused under either root, naming $current and the renamed fields', ({ retired, current, kind }) => {
+    for (const keys of [tcp, tcpServer]) {
+      const refusal = refusalOf(`${keys.root} { kind = "${kind}", ${retired} = 4096 }`, keys);
+      expect(refusal.message).toContain(`${keys.root}.${retired} has been renamed to ${keys.root}.${current}`);
+      // The rename moved the TypeScript fields too, so the default note — no
+      // code change needed — would be false here.
+      expect(refusal.message).toContain('maxLineBytes');
+      expect(refusal.message).toContain('maxFrameBytes');
+      expect(refusal.message).not.toContain('field names and builder methods are unchanged');
+    }
+  });
+
+  test('a retired cap is refused whatever kind it sits beside, before the kind is read', () => {
+    // Beside the other strategy it would never have been read; without a
+    // kind the block could not be read at all.  Neither hides the old name.
+    expect(refusalOf(`${tcp.root} { kind = "bytes", maxFrameLen = 4096 }`, tcp).message)
+      .toContain(`${tcp.root}.maxFrameLen has been renamed`);
+    expect(refusalOf(`${tcpServer.root}.maxLineLen = 4096`, tcpServer).message)
+      .toContain(`${tcpServer.root}.maxLineLen has been renamed`);
   });
 });
 

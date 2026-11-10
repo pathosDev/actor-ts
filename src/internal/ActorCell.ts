@@ -2,12 +2,16 @@ import type { Actor } from '../Actor.js';
 import {
   type ActorContext,
   type Receive,
-  type ThrottleOnExcess,
-  type ThrottleOptions,
   type TimerScheduler,
   StashOutsideHandlerError,
   StashOverflowError,
 } from '../ActorContext.js';
+import {
+  ThrottleOptionsValidator,
+  type ThrottleOnExcess,
+  type ThrottleOptions,
+  type ThrottleOptionsType,
+} from '../ThrottleOptions.js';
 import { ActorPath, assertUserAssignableName } from '../ActorPath.js';
 import { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
@@ -22,17 +26,22 @@ import {
 } from '../metrics/Constants.js';
 import type { MetricsRegistry } from '../metrics/Metrics.js';
 import { metricsOf } from '../metrics/MetricsExtension.js';
+import { OffloadExtensionId, type OffloadRunOptions } from '../worker/OffloadPool.js';
+import type { OffloadTask } from '../worker/OffloadTask.js';
 import { NOOP_TRACER } from '../tracing/NoopTracer.js';
 import type { Span, Tracer } from '../tracing/Tracer.js';
 import type { ActorClassOrFactory } from '../Actor.js';
 import type { ActorOptions } from '../ActorOptions.js';
 import { actorBlueprintOf, type ActorBlueprint } from './ActorBlueprint.js';
+import type { DeploymentEntry } from './Deployment.js';
+import { USER_GUARDIAN_NAME } from './Guardian.js';
 import type { Behavior } from '../typed/Behavior.js';
 import { typedActor } from '../typed/Spawn.js';
 import {
   ActorInitializationError,
   defaultStrategy,
   Directive,
+  RestartBudget,
   type SupervisorStrategy,
 } from '../Supervision.js';
 import {
@@ -60,6 +69,8 @@ import {
   type MessageOutcome,
 } from './Instrumentation.js';
 import { BoundedMailbox } from '../mailbox/BoundedMailbox.js';
+import type { BoundedMailboxOverflow } from '../mailbox/BoundedMailboxOptions.js';
+import { ControlAwareMailbox } from '../mailbox/ControlAwareMailbox.js';
 import { DEFAULT_MAILBOX_OVERFLOW } from '../ActorOptions.js';
 import { DEFAULT_EXPLAIN_CAPACITY } from '../util/Constants.js';
 import { DEFAULT_STASH_CAPACITY, MAILBOX_HIGH_WATER_MARK } from './Constants.js';
@@ -115,7 +126,15 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     );
   }
 
-  private readonly mailbox: Mailbox<TMessage>;
+  /**
+   * Not `readonly`, for exactly one write after the constructor's: the first
+   * start of an actor that declares control messages swaps the queue built
+   * here for one that can serve them, envelopes and all — see
+   * {@link _adoptControlLane}.  Nothing replaces it after that, so from the
+   * first message on the drain loop, the replay paths and every observer see
+   * one queue for the actor's whole life, restarts included.
+   */
+  private mailbox: Mailbox<TMessage>;
   /**
    * Queue depth that trips the next backlog warning; doubles after each one
    * so a genuinely runaway actor escalates instead of repeating.  See
@@ -143,11 +162,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /**
    * Does this actor's mailbox want its drops dead-lettered (#773)?
    *
-   * Copied out of the mailbox in {@link _createMailbox} rather than read
-   * through it on every drop, and `false` for the two shapes that cannot ask:
-   * a mailbox that does not report drops at all, and one built by
-   * `withMailboxCapacity`, which has no door onto the switch — that door is
-   * `withMailbox(() => new BoundedMailbox({ …, deadLetterDrops: true }))`.
+   * Copied out of the mailbox in {@link _wireDropReporting} rather than read
+   * through it on every drop, and `false` for the shapes that cannot ask: a
+   * mailbox that does not report drops at all, and one the framework built
+   * from `withMailboxCapacity` or the global default — the `ControlAwareMailbox`
+   * a declaring actor is given included — which has no door onto the switch.
+   * That door is `withMailbox(() => new BoundedMailbox({ …, deadLetterDrops: true }))`.
    */
   private _deadLetterMailboxDrops = false;
   private actor: Actor<TMessage> | null = null;
@@ -177,13 +197,27 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   private _watchWithMessages = new Map<string, TMessage>();
 
   /**
-   * Restart timestamps for the supervision window, `null` until the first
-   * failure — which for most actors is never.
+   * Sliding-window restart tally for this cell's children, `null` until the
+   * first failure — which for most actors is never.
+   *
+   * A {@link RestartBudget} rather than a bare timestamp array, because this
+   * cell used to keep the array *and* its own arithmetic over it, and the two
+   * implementations of one documented rule disagreed by one: the budget
+   * refuses at `length >= maxRetries` while this granted `maxRetries + 1`.
+   * `maxRetries: 5` therefore meant five restarts in the worker mesh, which
+   * budgets its slot respawns through that class (#734), and six here.
    */
-  private _failureTimes: number[] | null = null;
+  private _restartBudget: RestartBudget | null = null;
+
+  /**
+   * The strategy {@link _restartBudget} was built for.  A budget is bound to
+   * its allowance at construction, so a cell whose strategy is replaced has to
+   * start a new tally rather than keep spending the old one's.
+   */
+  private _restartBudgetStrategy: SupervisorStrategy | null = null;
 
   private _receiveTimeoutMs = 0;
-  private _receiveTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  private _receiveTimeoutHandle: Cancellable | null = null;
 
   /** Envelope currently being handed to the user — drives `context.stash()`. */
   private _currentEnvelope: Envelope<TMessage> | null = null;
@@ -204,11 +238,66 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   private _explain: ExplainRecorder | null = null;
 
   /**
+   * Releases waiting for their message to be handed to the behavior, keyed by
+   * that message — see {@link postSignalEnvelope} for what a release is and
+   * when it fires (#1468).
+   *
+   * `null` rather than an always-present `Map`, and put back to `null` when the
+   * last pending release fires, for the reason {@link _explain} is: the receive
+   * path tests this field once per message, so an actor no releasing sender
+   * talks to pays one null compare for it and nothing else.  An empty map left
+   * behind would cost every later message a lookup for the rest of the actor's
+   * life.
+   *
+   * Keyed by the message rather than by the envelope because the envelope is
+   * not stable on its way through: the arrival stamp copies it while an explain
+   * plan or metrics are on, `unstashAll` re-wraps it, and a caller's own
+   * mailbox may rebuild it.  The message object is what the behavior is handed,
+   * so it is the one identity every route preserves.
+   */
+  private _pendingReleases: Map<unknown, () => void> | null = null;
+
+  /**
    * Tooling actor — see `ActorOptionsType.internal`.  Inherited, so a
    * DevTools websocket connection spawned under the DevTools hub counts
    * as tooling without anyone having to say so twice.
    */
   readonly _internal: boolean;
+
+  /**
+   * This cell is the `/user` guardian.
+   *
+   * Only ever read by a *child*, to decide {@link _applicationTree} — the
+   * guardian is the framework's own actor, so it is the one cell that is the
+   * top of the application's tree without being in it.
+   */
+  private readonly _userGuardian: boolean;
+
+  /**
+   * This cell holds an actor the **application** wrote (#862).
+   *
+   * The discriminator for system-wide application policy — the global
+   * mailbox bound and the per-path deployment entries (#868), both there to
+   * let an operator reach code they cannot edit, and neither allowed to reach
+   * the framework's own actors, whose queues hold cluster invariants together.
+   *
+   * It was a path test (`/user` and below) until the sharded and singleton
+   * populations showed that the path answers a different question: a shard
+   * region is spawned under `/system`, so the entity three levels beneath it
+   * is on a `/system` path while being as much the application's actor as
+   * anything it spawns itself.  So the seed is provenance —
+   * `ActorOptionsType.applicationOwned`, which `ClusterSharding` and
+   * `ClusterSingleton` set on the class they were handed — plus the one
+   * structural case that needs no marker, being a child of `/user`.
+   *
+   * Inherited downward from either seed: an entity's children are the
+   * application's too.  A boolean and not a path walk, because
+   * `ActorPath.elements()` allocates and this is decided in the constructor of
+   * the framework's most-created object.  `_internal` is deliberately not the
+   * discriminator — `SystemPaths` marks only the DevTools group with it, so it
+   * answers a third question again.
+   */
+  private readonly _applicationTree: boolean;
 
   /**
    * Sharding identity when a `Shard` spawned this cell as an entity.
@@ -265,11 +354,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /**
    * User messages {@link run} handles per dispatcher turn (#409).
    *
-   * Resolved once, in the constructor, rather than read per turn: the two
-   * layers behind it — the spawn options and the system's HOCON-resolved
-   * default — are both fixed for the cell's lifetime, and this is read on the
-   * hot path.  The blueprint outlives every restart, so a per-actor budget
-   * survives one for free.
+   * Resolved once, in the constructor, rather than read per turn: the three
+   * layers behind it — the spawn options, the deployment entry matching the
+   * actor's path (#868), and the system's HOCON-resolved default — are all
+   * fixed for the cell's lifetime, and this is read on the hot path.  The
+   * blueprint outlives every restart, and the path does too, so a budget from
+   * either layer survives one for free.
    */
   private readonly throughput: number;
 
@@ -281,14 +371,31 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   ) {
     this._parent = parent;
     this._internal = blueprint.internal === true || parent?._internal === true;
+    // The root is the only cell with no parent, and `/user` and `/system` are
+    // its only two children — so "my parent is the root and I am called
+    // `user`" identifies the user guardian exactly.  The root cell is built
+    // from a literal blueprint rather than through `actorBlueprintOf`, which is
+    // why this is derived from the tree and not from an option.
+    this._userGuardian = parent !== null
+      && parent._parent === null && name === USER_GUARDIAN_NAME;
+    // The guardian itself is excluded: it is the framework's actor, and only
+    // what it is asked to spawn is the application's.
+    this._applicationTree = !this._userGuardian
+      && (blueprint.applicationOwned === true
+        || parent?._applicationTree === true
+        || parent?._userGuardian === true);
     this._entity = blueprint.entity ?? null;
     this._displayNameOverride = blueprint.displayName ?? null;
-    this.throughput = Math.max(1, blueprint.throughput ?? system._actorThroughput);
     const uid = parent ? parent._nextChildUid() : 0;
     this.path = parent
       ? parent.path.child(name, uid)
       : new ActorPath(name, null, system.name, uid);
-    this.mailbox = this._createMailbox(blueprint);
+    // The path first, because the per-path layer is keyed on it; looked up
+    // once, here, and handed on rather than kept — nothing reads it after the
+    // throughput and the queue are decided.
+    const deployment = this._deploymentEntry();
+    this.throughput = Math.max(1, blueprint.throughput ?? deployment?.throughput ?? system._actorThroughput);
+    this.mailbox = this._createMailbox(blueprint, deployment);
     this.self = new LocalActorRef<TMessage>(this);
     this.enqueueSystem({ kind: 'create' });
   }
@@ -370,6 +477,20 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
 
   spawnAnonymous<T>(actor: ActorClassOrFactory<T>, options?: ActorOptions<T>): ActorRef<T> {
     return this._createChild(actorBlueprintOf(actor, options), this._anonymousChildName(), 'generated');
+  }
+
+  /**
+   * @internal `spawnAnonymous` in two halves, for a child that may be created
+   * on another node: the name first, so the parallelism extension can settle
+   * a ref's path before the worker has heard of it, and the local spawn under
+   * that name — with the `generated` source, since it carries the reserved
+   * prefix — when the placement stays here after all.
+   */
+  _nextAnonymousName(): string { return this._anonymousChildName(); }
+
+  /** @internal See {@link _nextAnonymousName}. */
+  _spawnWithGeneratedName<T>(actor: ActorClassOrFactory<T>, name: string, options?: ActorOptions<T>): ActorRef<T> {
+    return this._createChild(actorBlueprintOf(actor, options), name, 'generated');
   }
 
   spawnTyped<T>(behavior: Behavior<T>, name: string): ActorRef<T> {
@@ -652,6 +773,24 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this._watching.set(key, ref);
     if (ref instanceof LocalActorRef) {
       ref.getCell()._addWatcher(this.self);
+      return ref;
+    }
+    // Not a cell on this node.  A clustered system hands the watch to its
+    // remote watcher, which sends it to the node the ref names and turns the
+    // answer into a `watchNotify` on this cell (#918).  Anything else — a
+    // remote ref on a system that never joined a cluster, or a ref shape the
+    // framework does not know how to watch — is said out loud: the old
+    // behaviour was to record the subject and never notify, which is the one
+    // outcome worse than refusing.
+    const remoteWatcher = this.system.cluster.map((cluster) => cluster._remoteWatcher);
+    const accepted = remoteWatcher.isSome() && remoteWatcher.value.watch(this.self, ref);
+    if (!accepted) {
+      this.log.warn(
+        `watch(${ref.path}) cannot deliver Terminated: `
+        + (remoteWatcher.isSome()
+          ? 'the ref is neither a local actor nor a remote actor ref'
+          : 'the ref is not local and this system has not joined a cluster'),
+      );
     }
     return ref;
   }
@@ -662,7 +801,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     if (!this._watching.delete(key)) return ref;
     if (ref instanceof LocalActorRef) {
       ref.getCell()._removeWatcher(this.self);
+      return ref;
     }
+    this.system.cluster.forEach((cluster) => cluster._remoteWatcher.unwatch(this.self, ref));
     return ref;
   }
 
@@ -812,15 +953,49 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     }
   }
 
+  /**
+   * Dead-letter every user message still queued.  Twice on the stop path:
+   * behind the stash, in arrival order, and again after the state flip, for
+   * what a dead-letter callback told this cell from inside the first pass.
+   * Without the second pass that message was neither handled nor
+   * dead-lettered, the one outcome dead letters exist to rule out.
+   */
+  private deadLetterQueuedMessages(): void {
+    for (const env of this.mailbox.drainUser()) {
+      this.system.deadLetters.tell(new DeadLetter(env.message, env.sender, this.self));
+    }
+  }
+
   /* ------------------------- Rate limiting (#83) ------------------------ */
 
+  offload<TArgs extends readonly unknown[], TResult>(
+    task: OffloadTask<TArgs, TResult>,
+    args: TArgs,
+    options?: OffloadRunOptions,
+  ): Promise<TResult> {
+    return this.system.extension(OffloadExtensionId).pool.run(task, args, options);
+  }
+
   throttle(options: ThrottleOptions): void {
+    // A builder and a plain object are interchangeable here (a builder is
+    // structurally its own set fields), so read the argument directly.
+    const settings = options as ThrottleOptionsType;
+    new ThrottleOptionsValidator().validate(settings);
+    // `qps: Infinity` is documented as "remove the limiter" — there is no
+    // bucket to build for an unlimited rate, so route it through the same
+    // clear path as cancelThrottle().  (TokenBucket still rejects non-finite
+    // qps by design; unlimited is the absence of a bucket, not an infinite
+    // one.)
+    if (settings.qps === Infinity) {
+      this.cancelThrottle();
+      return;
+    }
     this._throttleBucket = new TokenBucket({
-      qps: options.qps,
-      burst: options.burst,
-      now: options.now,
+      qps: settings.qps,
+      burst: settings.burst,
+      clock: settings.clock,
     });
-    this._throttleOnExcess = options.onExcess ?? 'pause';
+    this._throttleOnExcess = settings.onExcess ?? 'pause';
     // Switching configs invalidates any pending pause-resume timer
     // (the new bucket may already have tokens) — let the next run()
     // make a fresh decision.
@@ -912,6 +1087,14 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   _mailboxForTest(): Mailbox<TMessage> { return this.mailbox; }
 
   /**
+   * @internal — test-only seam exposing the releases held for queued signals,
+   * so regression tests can assert the cell lets go of them (#1468).  `null`
+   * is "none held", which is also the receive path's cheap case.  NOT for
+   * production use.
+   */
+  _pendingReleasesForTest(): ReadonlyMap<unknown, () => void> | null { return this._pendingReleases; }
+
+  /**
    * The one door every user message goes through on its way into the queue.
    *
    * Single seam so the high-water check cannot be forgotten by a future
@@ -985,6 +1168,10 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this.system.deadLetters.tell(new DeadLetter(env.message, env.sender, this.self));
       return;
     }
+    // On the sender's stack, before the envelope is queued: a `fail` mode
+    // throws out of the `tell` itself, which is the only place the caller
+    // can still be told (#1386).  `null` — the default — is one comparison.
+    if (this.system._messageBoundary !== null) this.system._messageBoundary.check(env.message, this.path);
     this._enqueueUser(env);
   }
 
@@ -992,11 +1179,16 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * @internal — the door a framework lifecycle notification comes through, as
    * opposed to the `postUserEnvelope` every `tell` uses.
    *
-   * Same lane, same position: the envelope lands at the tail of the user queue
-   * and reaches `onReceive` like any other message, which is what keeps the
-   * ordering death-watch documents — everything told to this actor before the
-   * watched one died is handled first, then the notification.  What differs is
-   * that no bound may discard it (#729); see {@link Envelope.undroppable}.
+   * Same lane, same position: the envelope goes wherever this actor's mailbox
+   * type puts any user message — the tail, on a FIFO queue — and reaches
+   * `onReceive` like any other message, which is what keeps the ordering
+   * death-watch documents: everything told to this actor before the watched
+   * one died is handled first, then the notification.  The position is the
+   * mailbox type's to decide, never the door's (#1431): a `ControlAwareMailbox`
+   * whose predicate classes the envelope as control hands it over ahead of
+   * the queue, exactly as it would the same message told.  What the door
+   * changes is that no bound may discard it (#729); see
+   * {@link Envelope.undroppable}.
    *
    * The marker is stamped here rather than by the caller so there is one
    * answer to "which envelopes are exempt", and so a future notification
@@ -1007,13 +1199,114 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * does.  That is the honest outcome — there is no actor left to tell — and it
    * is observable, which is the whole difference from the eviction this
    * replaces.
+   *
+   * **A `release` is how a sender learns that its message was handed over
+   * (#1468).**  A sender that coalesces — keeping at most one message per
+   * recipient queued and overwriting it in place while it waits, so that the
+   * recipient's own mailbox paces what it is told — has to know the moment the
+   * queued message stops being its to change, because from then on the next
+   * change has to become a fresh message.  `tell` cannot say when that is: it
+   * only enqueues.  Releasing on a read of the message's value instead would
+   * wedge the sender, silently, behind any recipient that never reads it.
+   *
+   * It fires exactly once, synchronously, in the recipient's turn, immediately
+   * before the behavior is handed the message — ahead of the handler, so a
+   * handler that throws or rejects cannot skip it.  A replay of the message
+   * after `stash()` / `unstashAll()` is not a second hand-over and fires
+   * nothing.  It never fires for an envelope that is not handed over: one
+   * dead-lettered here because the recipient had already terminated, one still
+   * queued when the recipient terminated, one the cell refuses at dispatch, and
+   * a post the mailbox refused, which throws here, on the sender's stack.  The
+   * cell lets go of the callback on every one of those paths, and holds nothing
+   * at all while no release is pending (see {@link _pendingReleases}).
+   *
+   * Synchronous because anything later loses data.  A release delivered as a
+   * message back to the sender would reach it some time after the hand-over,
+   * and a change the sender merged in that window would land in the message
+   * the recipient already holds — read or not, that value is gone.  Run on this
+   * side of the hand-over, the release is done before the behavior can observe
+   * the message, so every change after it becomes a fresh message.  It is the
+   * sender's code on the recipient's turn, so it must stay short, and a throw
+   * from it is logged rather than charged to the recipient.
+   *
+   * Held by the message object, so one message carries at most one release:
+   * posting an object that is still waiting on its release throws rather than
+   * replacing the first, which would leave that sender waiting for a call that
+   * never comes.  Post a fresh object per release.
+   *
+   * None of this changes the envelope.  This door stamps
+   * {@link Envelope.undroppable} with or without a release, and it is still the
+   * only place that does.  One sender passes a release:
+   * `DistributedData.offerToSubscriber`, whose release empties the
+   * latest-value slot of the subscriber it posts to, so the next change becomes
+   * a fresh notification (#1468).
    */
-  postSignalEnvelope(env: Envelope<TMessage>): void {
+  postSignalEnvelope(env: Envelope<TMessage>, release?: () => void): void {
     if (this.state === 'terminated') {
       this.system.deadLetters.tell(new DeadLetter(env.message, env.sender, this.self));
       return;
     }
-    this._enqueueUser({ ...env, undroppable: true }, true);
+    // Held before the enqueue rather than after it: a third-party `Dispatcher`
+    // may run the turn synchronously inside `_enqueueUser`, and the hand-over
+    // has to find the release already there.
+    if (release !== undefined) this._holdRelease(env.message, release);
+    try {
+      this._enqueueUser({ ...env, undroppable: true }, true);
+    } catch (cause) {
+      // Refused, so never handed over: nothing will ever fire this release.
+      if (release !== undefined) this._takeRelease(env.message);
+      throw cause;
+    }
+  }
+
+  /** Hold `release` until `message` is handed over — see {@link postSignalEnvelope}. */
+  private _holdRelease(message: TMessage, release: () => void): void {
+    const releases = this._pendingReleases ??= new Map<unknown, () => void>();
+    if (releases.has(message)) {
+      throw new Error(
+        `${this.path}: this message is already waiting on a release — post a fresh message object per release`,
+      );
+    }
+    releases.set(message, release);
+  }
+
+  /**
+   * Remove and return the release held for `message`, if there is one.
+   *
+   * Puts the map back to `null` once it is empty: that, and not merely an empty
+   * map, is what returns the receive path to its single null compare.
+   */
+  private _takeRelease(message: TMessage): (() => void) | undefined {
+    const releases = this._pendingReleases;
+    if (releases === null) return undefined;
+    const release = releases.get(message);
+    if (release === undefined) return undefined;
+    releases.delete(message);
+    if (releases.size === 0) this._pendingReleases = null;
+    return release;
+  }
+
+  /**
+   * Fire the release held for `message` as the behavior is about to be handed
+   * it.
+   *
+   * Taken out of the map before it runs, so a release that posts again — the
+   * same object included — finds nothing pending.  A throw is the sender's
+   * defect rather than the recipient's: it is logged and the hand-over goes
+   * ahead, because charging it to the recipient would restart an actor for
+   * code it does not own and lose the message besides.
+   */
+  private _releaseBeforeHandOver(message: TMessage): void {
+    const release = this._takeRelease(message);
+    if (release === undefined) return;
+    try {
+      release();
+    } catch (e) {
+      this.log.error(
+        `a release for ${describeMessageType(message)} threw — the message is handed over regardless`,
+        e,
+      );
+    }
   }
 
   /** @internal */
@@ -1265,7 +1558,13 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    *
    * - **system commands first, every iteration.**  They can suspend, restart
    *   or stop the actor, so re-draining between user messages is what keeps a
-   *   long batch as responsive to lifecycle as an unbatched turn was.
+   *   long batch as responsive to lifecycle as an unbatched turn was.  That
+   *   inner drain carries **no per-turn budget, on purpose** — the refusal is
+   *   argued at {@link Mailbox.enqueueSystem} (#794), which is also where the
+   *   producer ratio that bounds the lane instead is enumerated.  A budget
+   *   here would interleave a supervision decision with the user traffic that
+   *   decision exists to gate, which is the worse trade; proposing one starts
+   *   there, not at this loop.
    * - **`state !== 'running'`** covers a `PoisonPill` handled mid-batch, and
    *   `failToParent` flipping running -> suspended from inside a handler that
    *   threw.  Continuing would deliver messages to an actor its supervisor is
@@ -1393,21 +1692,23 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   /**
-   * Currently unreachable — nothing in the framework emits `watchNotify`; the
-   * two live notify sites are `finalizeTermination` and `_addWatcher`, both
-   * through {@link _notifyWatcher}.  Kept, and kept exempt from the mailbox
-   * bound like the live paths (#729), so that wiring it later cannot
-   * reintroduce the loss by taking the ordinary door.
+   * A death this node did not witness: the cluster's remote watcher enqueues
+   * this when the far node reports a watched actor stopped, or when the far
+   * node itself left (#918).  Exempt from the mailbox bound like the two local
+   * notify sites (#729) — the framework announces a death once.
    *
-   * It is also the one branded-notification path that does **not** first drive
-   * its subject to `terminated` — the target is whatever the command names.
-   * That is why a watcher whose bookkeeping matters (see
-   * `BackoffSupervisor.handleTerminated`) verifies the subject is really gone
-   * rather than resting on the brand alone (#769).
+   * It is the one branded-notification path that does **not** first drive its
+   * subject to `terminated` — the target is whatever the command names, and
+   * only the sender's node saw the death.  That is why a watcher whose
+   * bookkeeping matters (see `BackoffSupervisor.handleTerminated`) verifies
+   * the subject is really gone rather than resting on the brand alone (#769).
    */
   private onWatchNotify(signal: WatchNotifyCommand): void {
     this.postSignalEnvelope({
-      message: frameworkTerminated(signal.target) as unknown as TMessage,
+      message: frameworkTerminated(signal.target, {
+        existenceConfirmed: signal.existenceConfirmed,
+        addressTerminated: signal.addressTerminated,
+      }) as unknown as TMessage,
       sender: null,
     });
   }
@@ -1422,6 +1723,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       const actor = this.blueprint.factory();
       (actor as unknown as { _attach(context: ActorContext<TMessage>): void })._attach(this);
       this.actor = actor;
+      // The first moment the instance exists to be asked, and still before
+      // its first message: this `create` is what the drain loop is running.
+      this._adoptControlLane(actor);
       // Before `preStart`, which can suspend: the assignment above is what
       // makes further drops count themselves directly, so anything held back
       // has to be released in the same synchronous stretch or a drop landing
@@ -1450,6 +1754,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         this.system.eventStream.publish(
           new ActorStarted(this.self, actor.constructor.name, this._parent?.path.toString() ?? null),
         );
+      }
+      // Gated at the call site, before `this.log` is touched: the getter
+      // builds a DisplayNameLogger and renders the path on first use, and an
+      // actor that never logs is meant never to pay for either (#867).
+      if (this.system._diagnostics.debugLifecycle) {
+        this.log.debug(`started — ${actor.constructor.name}`);
       }
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
@@ -1530,11 +1840,20 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this.deadLetterStash();
 
     // Drain any remaining user messages to dead letters
-    for (const env of this.mailbox.drainUser()) {
-      this.system.deadLetters.tell(new DeadLetter(env.message, env.sender, this.self));
-    }
+    this.deadLetterQueuedMessages();
 
     this.state = 'terminated';
+    // Once more after the flip.  Each dead letter above is published on this
+    // stack, and a callback subscriber runs on it, so whatever such a callback
+    // told this cell arrived after the drain and was queued, never to be read.
+    // From the flip on a tell dead-letters at once, so this pass is the last.
+    this.deadLetterQueuedMessages();
+    // Every releasable signal still queued went out with that drain, so none of
+    // their releases will ever fire, and the cell stops holding them (#1468).
+    // After the state flip rather than beside the drain, so that a release
+    // posted from inside it — a dead-letter subscriber running on this stack —
+    // is let go of as well.
+    this._pendingReleases = null;
 
     // Drop this actor's event-stream subscriptions.  Nothing else did:
     // `unsubscribe` had exactly one caller in the whole framework, so a
@@ -1558,6 +1877,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     if (this.system.eventStream.hasSubscribers) {
       this.system.eventStream.publish(new ActorStopped(this.self));
     }
+    if (this.system._diagnostics.debugLifecycle) this.log.debug('stopped');
 
     // Notify watchers.  One shared `Terminated`, one guarded send each — see
     // `_notifyWatcher` for why the loop must not be able to throw.  Built only
@@ -1569,9 +1889,15 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this._watchers.clear();
     }
 
-    // Tell watched targets to drop us from their watcher set
+    // Tell watched targets to drop us from their watcher set — local ones
+    // directly, remote ones through the cluster's remote watcher (#918).
+    let watchedRemotely = false;
     for (const watched of this._watching.values()) {
       if (watched instanceof LocalActorRef) watched.getCell()._removeWatcher(this.self);
+      else watchedRemotely = true;
+    }
+    if (watchedRemotely) {
+      this.system.cluster.forEach((cluster) => cluster._remoteWatcher.unwatchAll(this.self));
     }
     this._watching.clear();
     this._watchWithMessages.clear();
@@ -1650,6 +1976,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         { help: 'Cumulative count of supervisor-driven actor restarts.' },
       ).inc();
       this.system.eventStream.publish(new ActorRestarted(this.self, cause));
+      if (this.system._diagnostics.debugLifecycle) {
+        this.log.debug(`restarted after ${cause.name}: ${cause.message}`);
+      }
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
       this.failToParent(new ActorInitializationError(`Actor ${this.path} failed to restart`, err));
@@ -1657,36 +1986,78 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   /**
-   * The actor's queue.  Three shapes, in precedence order:
+   * The actor's queue.  Five shapes, in precedence order:
    *
    *   1. `withMailbox(...)` — the caller owns the whole queue, bound and
-   *      policy included.
+   *      policy included.  Never replaced, not even for an actor that
+   *      declares control messages (shape 5).
    *   2. `withMailboxCapacity(n)` — a `BoundedMailbox`.  The only place the
-   *      framework picks an overflow policy on a caller's behalf.
-   *   3. Nothing — the unbounded base `Mailbox`.  #310 made bounded the
+   *      framework picks an overflow policy on a caller's behalf: the
+   *      matching deployment entry's, else the global one, else the built-in.
+   *   3. The `mailbox-capacity` of the `actor-ts.deployment` entry matching
+   *      the actor's path (#868), else `actor-ts.mailbox.default.capacity` —
+   *      the same `BoundedMailbox`, from the operator rather than from the
+   *      spawn site (#862), and only for an actor the application wrote.  An
+   *      entry's `0` is shape 4 for the paths it names, whatever the global
+   *      capacity says.  The framework's own stay unbounded under both: a
+   *      shard region or a reliable-delivery producer that sheds messages
+   *      breaks an invariant the application never asked about and cannot see.
+   *      That scope is {@link _applicationTree} — a child of `/user`, or a
+   *      class the framework was *handed* and spawned under `/system` for the
+   *      application (a sharded entity, a singleton instance), plus everything
+   *      either of those two spawns in turn — so a key reaching into
+   *      `/system` names entities and singletons there and nothing else.
+   *   4. Nothing — the unbounded base `Mailbox`.  #310 made bounded the
    *      default and #1148 reversed it: a ceiling that discards the oldest
    *      queued message is not one an actor framework can impose unasked,
    *      because the envelope it evicts is as likely to be a delivery
    *      confirmation (#732) as it is to be telemetry.  The heap is the
-   *      ceiling now, and drawing a lower one is the caller's decision.
-   *      Growth is not silent: the cell warns at
+   *      ceiling now, and drawing a lower one is the caller's — or the
+   *      operator's — decision.  Growth is not silent: the cell warns at
    *      `MAILBOX_HIGH_WATER_MARK` and again at each doubling.
+   *   5. Declared control messages (#1431) — shapes 2 to 4, rebuilt at the
+   *      first start as a `ControlAwareMailbox` with the same bound, when the
+   *      actor's `_controlMessages()` names its control messages.  The queue
+   *      starts out as one of those three because it has to exist before the
+   *      instance does — `tell` works the moment `spawn` returns — and only
+   *      the instance can say it wants the other; see {@link _adoptControlLane}.
+   *      The WebSocket hub is the actor that declares today.
    *
-   * One class of envelope is out of every policy's reach in all three shapes
+   * One class of envelope is out of every policy's reach in all five shapes
    * since #729, and what defines the class is the door rather than the
    * message: whatever arrives through {@link postSignalEnvelope} carries
-   * {@link Envelope.undroppable} and takes `Mailbox.enqueueSignal`.  Two
-   * senders use that door — the death-watch `Terminated` this cell raises for
-   * its watchers, and the `websocket-accept` command a hub receives once its
-   * socket is upgraded (#717).  So a caller who bounds an actor is no longer
-   * choosing to lose its lifecycle signals, or a connection it has already
-   * accepted, along with its backlog.
+   * {@link Envelope.undroppable} and takes `Mailbox.enqueueSignal`.  Four
+   * senders use that door, from five call sites: `ActorCell._notifyWatcher`,
+   * with the `Terminated` of a local death; `ActorCell.onWatchNotify`, with
+   * the `Terminated` of a death another node reported (#918);
+   * `ConnectionWiring.postAcceptCommand`, with the `websocket-accept` that
+   * hands an upgraded socket to its hub (#717); `WebsocketConnection.close`,
+   * with the `close` a connection sends its own actor (#985); and
+   * `DistributedData.offerToSubscriber`, with the `DistributedDataChanged` a
+   * replicator posts to an actor subscribed to one of its keys (#1468) — the
+   * newest, and the one sender that passes a release.  What a dropped one of
+   * those loses is the replicator's mark that a notification is in flight,
+   * state outside the mailbox that nothing corrects: at most one is queued per
+   * subscriber and key, and it keeps its place at the tail while later changes
+   * overwrite its value.  So a caller who bounds an actor is no longer choosing
+   * to lose its lifecycle signals, a connection it has already accepted, a
+   * `closeAll` it has already issued, or the subscription a notification is
+   * holding, along with its backlog.
    *
-   * Drop reporting is wired *after* the choice rather than inside it, so all
-   * three shapes get it on one line.  Wiring it at the construction site is
-   * what made shape 1 invisible to `actor_mailbox_dropped_total` (#1149): the
-   * cell can only pass `onDrop` into a mailbox it builds itself, and shape 1
-   * is by definition one it did not.
+   * The door decides that an envelope survives the bound, never where it
+   * lands (#1431).  Each of the five is queued wherever the mailbox type puts
+   * any message — the tail, on a FIFO queue — which is what keeps death watch
+   * and reply-then-close in order.  Overtaking is the type's to offer, by
+   * classifying the message whichever door it took: shape 5 hands a hub its
+   * accept ahead of the frames already queued because the hub's predicate
+   * classes the accept as control, not because of the door it came through.
+   *
+   * Drop reporting is wired *after* the choice rather than inside it — by
+   * {@link _wireDropReporting}, which shape 5's replacement goes through too —
+   * so every shape gets it the same way.  Wiring it at the construction site
+   * is what made shape 1 invisible to `actor_mailbox_dropped_total` (#1149):
+   * the cell can only pass `onDrop` into a mailbox it builds itself, and shape
+   * 1 is by definition one it did not.
    *
    * Takes `blueprint` as a parameter rather than reading `this.blueprint`:
    * the call sits in the constructor body, and whether the parameter
@@ -1694,26 +2065,146 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * properties versus field initializers.  Passing it makes the question
    * moot.
    */
-  private _createMailbox(blueprint: ActorBlueprint<TMessage>): Mailbox<TMessage> {
-    const mailbox = this._buildMailbox(blueprint);
-    if (reportsDrops(mailbox)) {
-      // Read once, here, rather than per dropped message: the flag is fixed at
-      // the mailbox's construction, and this observer runs on the sender's
-      // stack at the moment the system is already past its capacity.
-      this._deadLetterMailboxDrops = mailbox.deadLetterDrops === true;
-      mailbox.observeDrops((reason, envelope) => this._onMailboxDrop(reason, envelope));
-    }
+  private _createMailbox(
+    blueprint: ActorBlueprint<TMessage>,
+    deployment: DeploymentEntry | undefined,
+  ): Mailbox<TMessage> {
+    const mailbox = this._buildMailbox(blueprint, deployment);
+    this._wireDropReporting(mailbox);
     return mailbox;
   }
 
-  /** The queue itself — see {@link _createMailbox} for the three shapes. */
-  private _buildMailbox(blueprint: ActorBlueprint<TMessage>): Mailbox<TMessage> {
+  /** Register this cell's drop observer on a queue that reports its drops. */
+  private _wireDropReporting(mailbox: Mailbox<TMessage>): void {
+    if (!reportsDrops(mailbox)) return;
+    // Read once, here, rather than per dropped message: the flag is fixed at
+    // the mailbox's construction, and this observer runs on the sender's
+    // stack at the moment the system is already past its capacity.
+    this._deadLetterMailboxDrops = mailbox.deadLetterDrops === true;
+    mailbox.observeDrops((reason, envelope) => this._onMailboxDrop(reason, envelope));
+  }
+
+  /** The queue itself, for shapes 1 to 4 — see {@link _createMailbox}. */
+  private _buildMailbox(
+    blueprint: ActorBlueprint<TMessage>,
+    deployment: DeploymentEntry | undefined,
+  ): Mailbox<TMessage> {
     if (blueprint.mailbox) return blueprint.mailbox();
-    if (blueprint.mailboxCapacity === undefined) return new Mailbox<TMessage>();
-    return new BoundedMailbox<TMessage>({
-      capacity: blueprint.mailboxCapacity,
-      overflow: blueprint.mailboxOverflow ?? DEFAULT_MAILBOX_OVERFLOW,
-    });
+    const bound = this._resolveMailboxBound(blueprint, deployment);
+    return bound === undefined ? new Mailbox<TMessage>() : new BoundedMailbox<TMessage>(bound);
+  }
+
+  /**
+   * The bound a queue the framework builds gets, or `undefined` for none — the
+   * one place shapes 2 to 4 are decided, so that shape 5 holds exactly the
+   * bound of the queue it replaces.
+   *
+   * Capacity: the spawn site's, else the matching deployment entry's (#868),
+   * else — for an actor the application wrote — the global default.  An
+   * entry's `0` stops there and means unbounded: it is how an operator exempts
+   * a path from a global capacity, so it must not fall through to it.
+   * Overflow: the spawn site's, else the entry's, else the global one, else
+   * {@link DEFAULT_MAILBOX_OVERFLOW}.  Each leaf on its own, so an entry that
+   * names only a policy reshapes a spawn site's capacity, as the global policy
+   * already does.
+   *
+   * The two config layers are applied with a plain `??` and not with
+   * `mergeOptions`, which is the same thing for a scalar and the shape
+   * `throughput` resolves with in the constructor.  They deliberately do not
+   * get folded in earlier, in `actorBlueprintOf`: the merged object goes
+   * straight to `ActorOptionsValidator`, whose #661 rule rejects `mailbox`
+   * together with `mailboxCapacity` — so folding a configured capacity into
+   * the blueprint would make every `withMailbox(...)` spawn it reaches throw
+   * the moment an operator set one.
+   */
+  private _resolveMailboxBound(
+    blueprint: ActorBlueprint<TMessage>,
+    deployment: DeploymentEntry | undefined,
+  ): MailboxBound | undefined {
+    const systemDefault = this.system._defaultMailbox;
+    const capacity = blueprint.mailboxCapacity
+      ?? deployment?.mailboxCapacity
+      ?? (this._applicationTree ? systemDefault.capacity : undefined);
+    if (capacity === undefined || capacity === 0) return undefined;
+    return {
+      capacity,
+      overflow: blueprint.mailboxOverflow
+        ?? deployment?.mailboxOverflow
+        ?? systemDefault.overflow
+        ?? DEFAULT_MAILBOX_OVERFLOW,
+    };
+  }
+
+  /**
+   * The `actor-ts.deployment` entry for this actor (#868), or `undefined`.
+   *
+   * Asked only for an actor the application wrote — {@link _applicationTree},
+   * the scope the global bound has — so a key that reaches into `/system`
+   * reaches the sharded entities and singleton instances there and never one
+   * of the framework's own actors, whose queues hold cluster invariants
+   * together.  On a system without the block this is one boolean and one null
+   * check, which is the whole cost of the feature to a spawn.  Never kept on
+   * the cell: the constructor and {@link _adoptControlLane} are its only two
+   * readers, and only an actor that declares control messages reaches the
+   * second.
+   */
+  private _deploymentEntry(): DeploymentEntry | undefined {
+    const deployment = this.system._deployment;
+    return this._applicationTree && deployment !== null ? deployment.lookup(this.path) : undefined;
+  }
+
+  /**
+   * Shape 5 of {@link _createMailbox}: give an actor that declares control
+   * messages the queue that can serve them (#1431).
+   *
+   * Asked here and only here — on the first start, of the instance just
+   * built, before its first message — because this is the earliest the
+   * instance exists and the latest a swap is invisible: the queue had to be
+   * built in the constructor, before there was anyone to ask, and from the
+   * first message on the actor has to see one queue for its whole life.  A
+   * restart builds a new instance and asks it nothing; the predicate is
+   * module-level by contract, so the queue it configured serves the next
+   * incarnation exactly as it served this one.
+   *
+   * A caller's own `withMailbox` is never replaced: that caller chose the
+   * queue, its order and its bound, and keeps exactly what it was given.
+   * Shapes 2 to 4 are, with the bound {@link _resolveMailboxBound} gave the
+   * queue being replaced — which a `ControlAwareMailbox` applies to ordinary
+   * messages only, so a flood is still shed while the control messages stay
+   * out of its reach.  The deployment entry that bound may come from is looked
+   * up again here rather than kept on every cell: its inputs, the path and
+   * the system's compiled block, cannot have changed since the constructor,
+   * and only an actor that declares control messages gets this far.
+   *
+   * What is already queued moves across in order, because `tell` works the
+   * moment `spawn` returns and anything told before the first start is
+   * waiting in the old queue.  System commands go to the new system lane.
+   * User envelopes go through `enqueueSignal`, every one of them, because this
+   * is a transfer and not an arrival: the old queue already admitted each one
+   * under the same bound — counting control messages against it, which the
+   * new queue does not — so there is nothing for the bound to decide again,
+   * and the door the bound does not consult makes "nothing is shed or refused
+   * here" true by construction rather than by an argument about what can have
+   * been queued before a first start.  That door marks nothing: whether an
+   * envelope is undroppable travels on the envelope, so a droppable one stays
+   * droppable at every later eviction, and the predicate classes each one
+   * exactly as it would a fresh arrival.  Suspension carries over, and the
+   * cell's drop observer is registered on the new queue like on any other.
+   */
+  private _adoptControlLane(actor: Actor<TMessage>): void {
+    if (this.blueprint.mailbox !== undefined) return;
+    const isControl = actor._controlMessages();
+    if (isControl === undefined) return;
+    const bound = this._resolveMailboxBound(this.blueprint, this._deploymentEntry());
+    const next = new ControlAwareMailbox<TMessage>(
+      bound === undefined ? { isControl } : { isControl, ...bound },
+    );
+    const previous = this.mailbox;
+    for (const envelope of previous.drainSystem()) next.enqueueSystem(envelope);
+    for (const envelope of previous.drainUser()) next.enqueueSignal(envelope);
+    if (previous.suspended) next.suspend();
+    this.mailbox = next;
+    this._wireDropReporting(next);
   }
 
   /**
@@ -1776,15 +2267,23 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * running without a metrics registry must still get the record — which is
    * why this sits above the early return rather than below it.
    *
-   * The letter carries the message, the sender and this actor, exactly as
-   * every other site here builds theirs.  The envelope's MDC `context` and
-   * tracing `trace` do not survive it: `DeadLetter` has no slot for them and
-   * none of the other loss paths preserve them either, so widening the event
-   * is its own change rather than a rider on this one.
+   * The letter carries the message, the sender and this actor, and — since the
+   * event was widened — the envelope's MDC `context` and tracing `trace` as
+   * {@link DeadLetter.attribution} (#773).  This is the site that made the
+   * widening worth doing: it is the only loss path that still holds a whole
+   * envelope at the moment it gives up on it, so it is the only one that can
+   * say which *request* lost the message rather than only that one was lost.
+   * Every other site here builds its letter from a bare message and a sender,
+   * and an empty attribution there is the truth rather than an omission.
    */
   private _onMailboxDrop(reason: MailboxDropReason, envelope: Envelope<TMessage>): void {
     if (this._deadLetterMailboxDrops) {
-      this.system.deadLetters.tell(new DeadLetter(envelope.message, envelope.sender, this.self));
+      this.system.deadLetters.tell(new DeadLetter(
+        envelope.message,
+        envelope.sender,
+        this.self,
+        { context: envelope.context, trace: envelope.trace },
+      ));
     }
     // The one metric site here that is hot exactly when the system is in
     // trouble: a mailbox sheds load under saturation, so this runs per dropped
@@ -1804,18 +2303,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this._deferredMailboxDrops = deferred;
       return;
     }
-    this._countMailboxDrops(metrics, actor?.constructor.name ?? 'unknown', reason, 1);
-  }
-
-  /** The single writer of `actor_mailbox_dropped_total`. */
-  private _countMailboxDrops(
-    metrics: MetricsRegistry, className: string, reason: MailboxDropReason, delta: number,
-  ): void {
-    metrics.counter(
-      'actor_mailbox_dropped_total',
-      { class: className, reason },
-      { help: 'Cumulative count of user messages a mailbox discarded rather than queued.' },
-    ).inc(delta);
+    countMailboxDrops(metrics, actor?.constructor.name ?? 'unknown', reason, 1);
   }
 
   /**
@@ -1843,7 +2331,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     const metrics = this.system._metricsRegistry;
     if (metrics === null) return;
     for (const [reason, count] of deferred) {
-      this._countMailboxDrops(metrics, className, reason, count);
+      countMailboxDrops(metrics, className, reason, count);
     }
   }
 
@@ -2067,11 +2555,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // own domain message just below.
     let delivered = message;
     let failure: Error | null = null;
-    // A `Terminated` this cell is not going to honour is consumed rather than
+    // A `Terminated` this cell is not going to honour is refused rather than
     // delivered — but it is still a dispatch, so it still ends in the epilogue,
     // exactly as it did when that epilogue was a `finally` and this was an
     // early `return` through it.  Two reasons reach it: the signal has no
-    // provenance, or it names a subject we are not watching.
+    // provenance, or it names a subject we are not watching.  Both dead-letter
+    // it on the way out (#1098), so neither is a silent drop.
     let consumed = false;
     let result: void | Promise<void> = undefined;
     try {
@@ -2094,6 +2583,23 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         } else {
           const key = watchKeyOf(message.actor);
           if (!this._watching.has(key)) {
+            // Ours, but naming a subject this cell no longer watches — an
+            // `unwatch` that lost the race with a death already queued, a
+            // notification for a watch a restart outlived, or the replay of a
+            // notification the behavior stashed, because the registration is
+            // retired by the *first* delivery and a stash does not put it back
+            // (#1098).  Whichever it was, the cell has nothing left to tell
+            // them apart with, so this used to end as a silent drop: an actor
+            // that parked a death while it was busy never heard about it
+            // again and nothing anywhere said so.
+            //
+            // Dead-lettered like the no-provenance branch above, and for the
+            // same reason `fundamentals/death-watch.mdx` gives: a notification
+            // that cannot be delivered is visible rather than gone.  Not
+            // redelivered — that would mean holding the registration open
+            // across the stash, which is a different change and needs a seam
+            // the typed `StashBuffer` does not have yet (#1319).
+            this.system.deadLetters.tell(new DeadLetter(message, env.sender, this.self));
             consumed = true;
           } else {
             this._watching.delete(key);
@@ -2102,21 +2608,40 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
             // no way to reach the per-watcher map.  Doing it here also covers
             // the immediate `Terminated` that `_addWatcher` sends when the
             // target is already gone, because `watchWith` records the message
-            // before it registers.  The envelope keeps the original signal, so
-            // a trace or an explain plan still shows the death that caused this
-            // dispatch.
+            // before it registers.
             if (this._watchWithMessages.has(key)) {
               delivered = this._watchWithMessages.get(key) as TMessage;
               this._watchWithMessages.delete(key);
+              // Re-point the envelope the stash would park at the message the
+              // behavior is actually handed (#1098).  `watchWith` exists to
+              // say "tell me in my own protocol", and a protocol message that
+              // was parked has to come back — but `stash()` parks
+              // `_currentEnvelope`, which still carried the signal, so the
+              // replay met the retired-watch gate above and was consumed.  The
+              // copy is what moves: `env` itself is untouched, so the trace
+              // and the explain-plan entry for *this* dispatch still name the
+              // death that caused it, and only the stashed copy reads as the
+              // domain message it will replay as.
+              this._currentEnvelope = { ...env, message: delivered };
             }
           }
         }
       }
       if (!consumed) {
+        // The hand-over, and the only place a release fires (#1468): before
+        // the behavior is called, so a handler that throws cannot skip it.
+        // While no release is pending — always, for an actor no releasing
+        // sender talks to — a message pays this one null compare and nothing
+        // more: no closure, no clock read, no microtask.
+        if (this._pendingReleases !== null) this._releaseBeforeHandOver(message);
         const behavior = this.behaviorStack[this.behaviorStack.length - 1];
         result = span
           ? tracer.withActiveSpan(span, () => behavior(delivered))
           : behavior(delivered);
+      } else if (this._pendingReleases !== null) {
+        // Refused and dead-lettered above, so never handed over: the release
+        // is let go of without being called.
+        this._takeRelease(message);
       }
     } catch (e) {
       // A handler that threw synchronously — or the watch bookkeeping above,
@@ -2309,15 +2834,18 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     }
   }
 
+  /**
+   * Ask this cell's budget for one restart.  Delegated rather than computed
+   * here: `RestartBudget` is the same sliding window over the same two
+   * allowance fields, and keeping a second copy is what let the two drift
+   * apart in the first place.  See {@link _restartBudget}.
+   */
   private registerRestart(strategy: SupervisorStrategy): boolean {
-    if (strategy.maxRetries < 0) return true;
-    const now = Date.now();
-    if (strategy.withinTimeRangeMs > 0) {
-      const threshold = now - strategy.withinTimeRangeMs;
-      this._failureTimes = (this._failureTimes ?? []).filter(t => t >= threshold);
+    if (this._restartBudget === null || this._restartBudgetStrategy !== strategy) {
+      this._restartBudget = new RestartBudget(strategy);
+      this._restartBudgetStrategy = strategy;
     }
-    (this._failureTimes ??= []).push(now);
-    return this._failureTimes.length <= strategy.maxRetries + 1;
+    return this._restartBudget.registerRestart();
   }
 
   private findChildByRef(ref: ActorRef): ActorCell<any> | null {
@@ -2375,17 +2903,49 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       return;
     }
     this._clearReceiveTimer();
-    this._receiveTimeoutHandle = setTimeout(() => {
-      this.enqueueSystem({ kind: 'receiveTimeout' });
-    }, this._receiveTimeoutMs);
+    // Through the system scheduler rather than a raw `setTimeout`, so a
+    // `ManualScheduler` fires it: a receive timeout is a duration a test wants
+    // to cross deliberately, and on the wall clock the only way to cross a
+    // realistic one is to wait for it (#1424).
+    this._receiveTimeoutHandle = this.system.scheduler.scheduleOnceFunction(
+      this._receiveTimeoutMs,
+      () => { this.enqueueSystem({ kind: 'receiveTimeout' }); },
+    );
   }
 
   private _clearReceiveTimer(): void {
     if (this._receiveTimeoutHandle) {
-      clearTimeout(this._receiveTimeoutHandle);
+      this._receiveTimeoutHandle.cancel();
       this._receiveTimeoutHandle = null;
     }
   }
+}
+
+/** A bound the framework puts on a queue it builds — see `ActorCell._resolveMailboxBound`. */
+type MailboxBound = {
+  readonly capacity: number;
+  readonly overflow: BoundedMailboxOverflow;
+};
+
+/**
+ * @internal The single writer of `actor_mailbox_dropped_total`.
+ *
+ * Two places lose a message to a full mailbox and report it here: the cell's
+ * drop observer, for whatever a bound sheds, and a `WebsocketServerActor`
+ * whose `reply` or `broadcast` met a connection that refused the frame under
+ * `reject` — the queue threw rather than dropped, but the hub then let the
+ * frame go, so the loss is the same one a `drop-new` bound reports.  One
+ * function rather than one `counter(...)` call per site, so the family's labels
+ * and help text cannot drift apart between them.
+ */
+export function countMailboxDrops(
+  metrics: MetricsRegistry, className: string, reason: MailboxDropReason, delta: number,
+): void {
+  metrics.counter(
+    'actor_mailbox_dropped_total',
+    { class: className, reason },
+    { help: 'Cumulative count of user messages a mailbox discarded rather than queued.' },
+  ).inc(delta);
 }
 
 /* ============================= Timer scheduler ============================ */

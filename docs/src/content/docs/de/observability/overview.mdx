@@ -143,6 +143,11 @@ const otelAdapterOptions = OtelAdapterOptions.create().withApi(otel);
 system.extension(TracingExtensionId).enable(otelTracer(otelAdapterOptions));
 ```
 
+`enableOtel(otelAdapterOptions)` baut und installiert denselben Tracer und
+nimmt Name und Version aus
+[`actor-ts.tracing`](/de/reference/configuration/#actor-tstracing), wo die
+Options sie nicht setzen.
+
 Mit aktiviertem Tracing **bekommt jede Actor-Nachricht ihren
 eigenen Span**. Der Span trägt:
 

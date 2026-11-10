@@ -103,25 +103,79 @@ const actorSystemOptions = ActorSystemOptions.create().withPersistence({
 });
 ```
 
-Built-in snapshot stores:
+Built-in snapshot stores.  The third column is the store's own
+`persistenceOptionSupport` declaration — whether it acts on the
+`compression()` / `encryption()` / `integrity()` hooks for the
+snapshots it holds, or merely accepts them.  No row covers events:
+those live in the journal, which none of the hooks reaches — see
+the end of this section:
 
-| Store | When |
-| --- | --- |
-| `InMemorySnapshotStore` | Tests, dev. |
-| `SqliteSnapshotStore` | Single-node production. |
-| `PostgresSnapshotStore` | PostgreSQL-backed production. |
-| `MariaDbSnapshotStore` | MariaDB / MySQL-backed production. |
-| `LibSqlSnapshotStore` | libSQL / Turso — remote SQLite over HTTP. |
-| `MsSqlSnapshotStore` | Microsoft SQL Server-backed production. |
-| `MongoSnapshotStore` | MongoDB-backed production. |
-| `DynamoDbSnapshotStore` | DynamoDB-backed production. |
-| `D1SnapshotStore` | Cloudflare D1 — SQLite at the edge. |
-| `CassandraSnapshotStore` | Distributed — Cassandra / ScyllaDB. |
-| `ObjectStorageSnapshotStore` | Filesystem / S3 with optional encryption. |
-| `CachedSnapshotStore` | Wraps another store with a read-through cache. |
+| Store | When | Honours the three hooks |
+| --- | --- | --- |
+| `InMemorySnapshotStore` | Tests, dev. | No. |
+| `SqliteSnapshotStore` | Single-node production. | Yes — all three, on write and on read, as a sealed row (below). |
+| `PostgresSnapshotStore` | PostgreSQL-backed production. | Yes — all three, on write and on read, as a sealed row (below). |
+| `MariaDbSnapshotStore` | MariaDB / MySQL-backed production. | Yes — all three, on write and on read, as a sealed row (below). |
+| `LibSqlSnapshotStore` | libSQL / Turso — remote SQLite over HTTP. | Yes — all three, on write and on read, as a sealed row (below). |
+| `MsSqlSnapshotStore` | Microsoft SQL Server-backed production. | Yes — all three, on write and on read, as a sealed row (below). |
+| `MongoSnapshotStore` | MongoDB-backed production. | No. |
+| `DynamoDbSnapshotStore` | DynamoDB-backed production. | No. |
+| `D1SnapshotStore` | Cloudflare D1 — SQLite at the edge. | Yes — all three, on write and on read, as a sealed row (below). |
+| `CassandraSnapshotStore` | Distributed — Cassandra / ScyllaDB. | No. |
+| `ObjectStorageSnapshotStore` | Filesystem / S3 with optional encryption. | Yes — all three, on write and on read, for the snapshots it holds. |
+| `CachedSnapshotStore` | Wraps another store with a read-through cache. | Whatever the wrapped store declares; an `encryption()` hook also bypasses the cache — see below. |
+
+A `No` in that column is enforced, not just documented.  Setting
+`encryption()` or `integrity()` on an actor backed by one of those
+stores **refuses the actor at start** with an
+`UnsupportedPersistenceOptionError` naming the store and the field —
+these are security controls, and writing plaintext instead of
+reporting the gap is the failure that refusal exists to prevent.
+`compression()` is a performance hint, so it logs one warning naming
+the store and the snapshot is written uncompressed.  `{ mode: 'none' }`
+is accepted everywhere: it is how you say "deliberately unprotected".
+
+**Sealed rows in the SQL stores** ([#1802](https://github.com/pathosDev/actor-ts/issues/1802)).  The six SQL snapshot
+stores keep their schema: a snapshot written under one of the hooks
+goes into the same `payload` column, as the object-storage stores'
+frame in base64 behind an `ats1:` prefix — the same AES-256-GCM, the
+same per-persistence-id key derivation, the same master-key ring.  The
+frame is bound to its persistence id and sequence number, so a row
+copied under another one fails to decrypt instead of loading as that
+snapshot.  Reading is fail-closed against the hook: under
+`encryption()` or `integrity()`, a row that is plaintext JSON, or a
+frame without encryption or without a tag, is refused — it is either
+older than the hook or was written by someone with access to the
+table.  To turn a hook on over existing snapshots, build the store
+with `withAllowPlaintextRows(true)` until the next save has
+superseded them, then drop it.  `sse-s3` and `sse-kms` ask an object
+store to encrypt on its side and are refused by a SQL store.
+
+A store that declares nothing at all — a third-party implementation
+predating the declaration — is treated as *unknown* and is never
+refused, on the same reasoning as `storageLocality`: a store must not
+be misjudged by a default it did not choose.
+
+`CachedSnapshotStore` is the one row whose answer is not the whole
+story.  It forwards the three hooks to the wrapped store untouched, so
+the column reads as the wrapped store's — but the cache it fills holds
+the *decoded* state.  An actor declaring `encryption()`, or a wrapped
+store that encrypts at rest, is therefore served past the cache, with
+a one-time advisory, until
+`CachedSnapshotStoreOptions.withAllowPlaintextCache(true)` acknowledges
+that the cache is as protected as the store; see
+[Cached snapshot store — Security](/persistence/snapshot-stores/cached-snapshot-store/#security--the-cache-holds-plaintext).
 
 The journal and the snapshot store are independent; you can mix
 them (e.g., Cassandra journal + object-storage snapshot store).
+Mixing them does not carry the object-storage store's protection
+over to the events, though.  `encryption()` and `integrity()` on a
+`PersistentActor` protect its snapshots only: every journal stores
+events as plaintext JSON, nothing detects an event edited in place,
+and database-side controls — transparent data encryption, an
+encrypted volume, access control — are the only protection for
+events today.  No journal is asked, so that actor starts without a
+refusal or a warning.
 
 ## What gets stored
 

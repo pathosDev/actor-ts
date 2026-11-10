@@ -6,11 +6,14 @@ import { ActorOptions } from '../../../src/ActorOptions.js';
 import {
   BoundedMailbox,
   BoundedMailboxOptions,
+  Mailbox,
   MailboxFullError,
   PriorityMailbox,
   PriorityMailboxOptions,
+  type Envelope,
   type MailboxDropReason,
 } from '../../../src/mailbox/index.js';
+import { SystemGroups } from '../../../src/internal/SystemPaths.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
@@ -355,6 +358,109 @@ describe('PriorityMailbox — capacity and overflow', () => {
     expect(mine.length).toBe(2);
     expect(framework).toEqual(mine);
     expect(mbox.droppedCount).toBe(2);
+  });
+});
+
+// #729 — the last hole in the undroppable guarantee.  `enqueueSignal` keeps a
+// lifecycle notification out of every overflow policy on the way IN, and
+// `removeOldest` steps over it on the way out; the replay path was the third
+// door, and this class re-entered its own `enqueue` to reach it — a capacity
+// check that does not read the marker at all.  `BoundedMailbox.prependUser`
+// already consulted it, so the priority bound was the one reader missing.
+//
+// The three policies failed differently, which is why each gets a test.
+// `drop-new` discarded the notification and counted it as ordinary shed
+// traffic; `reject` — the constructor default once a capacity is named — threw
+// `MailboxFullError` inside the replaying actor's own handler; and
+// `drop-lowest-priority` kept it but paid for it by evicting a queued message,
+// because it sheds through `removeOldest`, which does read the marker.  Only
+// the third looked correct from the outside, and it was the one whose cost
+// landed on a bystander.
+describe('PriorityMailbox.prependUser keeps undroppable envelopes (#729)', () => {
+  /** A lifecycle notification the framework cannot send again. */
+  const notification = (label: string): Envelope<string> =>
+    ({ message: label, sender: null, undroppable: true });
+
+  /** Ranks a notification LAST — the adversarial case for this mailbox. */
+  const rankNotificationLast = (message: string): number =>
+    (message.startsWith('death') ? 9 : 0);
+
+  test('drop-new admits the replayed notification instead of discarding it', () => {
+    const reasons: MailboxDropReason[] = [];
+    const mbox = new PriorityMailbox<string>({
+      priorityFor: rankNotificationLast,
+      capacity: 2,
+      overflow: 'drop-new',
+    });
+    for (const label of ['a', 'b']) mbox.enqueue({ message: label, sender: null });
+    mbox.observeDrops((reason) => reasons.push(reason));
+
+    // The likeliest shape of the defect: a full queue, and the replay is the
+    // arrival, so `drop-new` threw the notification away and counted it as an
+    // ordinary shed message.
+    mbox.prependUser([notification('death')]);
+
+    expect(mbox.drainUser().map((e) => e.message)).toEqual(['a', 'b', 'death']);
+    expect(reasons).toEqual([]);
+    expect(mbox.droppedCount).toBe(0);
+  });
+
+  test('reject admits it rather than throwing at the replaying actor', () => {
+    const mbox = new PriorityMailbox<string>({
+      priorityFor: rankNotificationLast,
+      capacity: 2,
+      overflow: 'reject',
+    });
+    for (const label of ['a', 'b']) mbox.enqueue({ message: label, sender: null });
+
+    // `reject` is the constructor default once a capacity is named, so this is
+    // what `unstashAll()` did to an actor that never chose a policy: a throw
+    // inside its own handler, for replaying a message it may not lose.
+    expect(() => mbox.prependUser([notification('death')])).not.toThrow();
+    expect(mbox.drainUser().map((e) => e.message)).toEqual(['a', 'b', 'death']);
+    expect(mbox.droppedCount).toBe(0);
+  });
+
+  test('drop-lowest-priority keeps it even though the ranking puts it last', () => {
+    const reasons: MailboxDropReason[] = [];
+    const mbox = new PriorityMailbox<string>({
+      priorityFor: rankNotificationLast,
+      capacity: 2,
+      overflow: 'drop-lowest-priority',
+    });
+    for (const label of ['a', 'b']) mbox.enqueue({ message: label, sender: null });
+    mbox.observeDrops((reason) => reasons.push(reason));
+
+    mbox.prependUser([notification('death')]);
+
+    // The one policy that never lost the notification, because it sheds through
+    // `removeOldest`, which does read the marker — but it made room for it by
+    // destroying a queued message, since the replay reached it as an ordinary
+    // admission.  Exempt means exempt: nothing is shed, and the queue
+    // overshoots by the one notification instead, the same trade the arriving
+    // lane makes.
+    expect(mbox.size).toBe(3);
+    expect(mbox.drainUser().map((e) => e.message)).toEqual(['a', 'b', 'death']);
+    expect(reasons).toEqual([]);
+  });
+
+  test('the ordinary half of a mixed replay still meets the bound', () => {
+    const reasons: MailboxDropReason[] = [];
+    const mbox = new PriorityMailbox<string>({
+      priorityFor: rankNotificationLast,
+      capacity: 2,
+      overflow: 'drop-new',
+    });
+    for (const label of ['a', 'b']) mbox.enqueue({ message: label, sender: null });
+    mbox.observeDrops((reason) => reasons.push(reason));
+
+    // The exemption is per envelope, not per batch: an ordinary stashed
+    // message riding alongside a notification is still subject to the policy,
+    // or the marker would be a way to smuggle a whole stash past the bound.
+    mbox.prependUser([{ message: 'stashed', sender: null }, notification('death')]);
+
+    expect(mbox.drainUser().map((e) => e.message)).toEqual(['a', 'b', 'death']);
+    expect(reasons).toEqual(['drop-new']);
   });
 });
 
@@ -857,6 +963,219 @@ describe('ActorOptions.withMailbox — end-to-end via actor', () => {
     // remainder is dropped silently by drop-new.
     expect(received.length).toBeGreaterThan(0);
     expect(received.length).toBeLessThanOrEqual(8);
+    await kit.system.terminate();
+  });
+});
+
+describe('a bound never reaches the system queue (#794)', () => {
+  /*
+   * The system lane carries supervision and lifecycle — messages the framework
+   * has no second copy of — so `Mailbox.enqueueSystem` writes straight to the
+   * system ring instead of delegating to `enqueue` the way `enqueueSignal`
+   * does.  That is a deliberate property and not an oversight, which is what
+   * these three are for: capping the lane, in a stock variant or in the base,
+   * turns them red rather than passing unnoticed as an improvement.
+   */
+
+  /** A system command shaped as the cell builds them — only `message` is read. */
+  const systemEnvelope = (sequence: number): Envelope<unknown> =>
+    ({ message: { kind: 'failure', sequence }, sender: null });
+
+  const sequencesOf = (envelopes: Array<Envelope<unknown>>): number[] =>
+    envelopes.map(e => (e.message as { sequence: number }).sequence);
+
+  test('BoundedMailbox bounds the user queue and leaves the system queue alone', () => {
+    const drops: MailboxDropReason[] = [];
+    const mailbox = new BoundedMailbox<string>({
+      capacity: 2,
+      overflow: 'drop-head',
+      onDrop: (reason) => drops.push(reason),
+    });
+
+    for (let sequence = 0; sequence < 10; sequence++) mailbox.enqueueSystem(systemEnvelope(sequence));
+    for (const message of ['a', 'b', 'c', 'd']) mailbox.enqueue({ message, sender: null });
+
+    // The bound is real on the lane it governs — two of the four user
+    // messages were evicted, and both were reported.
+    expect(mailbox.size).toBe(2);
+    expect(drops).toEqual(['drop-head', 'drop-head']);
+
+    // And absent on the lane it does not govern: all ten system commands
+    // survive a capacity of two, in order, and none was counted as a drop.
+    expect(mailbox.hasSystemMessages()).toBe(true);
+    expect(sequencesOf(mailbox.drainSystem())).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(drops.length).toBe(2);
+    expect(mailbox.droppedCount).toBe(2);
+  });
+
+  test('PriorityMailbox neither sheds nor reorders the system queue', () => {
+    // The priority variant is the one that could plausibly get this wrong in
+    // the *other* direction: its user lane is deliberately not FIFO, and a
+    // system command outranks every priority there is by living on a separate
+    // queue rather than by scoring highest on this one.
+    const mailbox = new PriorityMailbox<string>({
+      priorityFor: (message) => (message === 'urgent' ? 0 : 5),
+      capacity: 2,
+      overflow: 'drop-new',
+    });
+
+    for (let sequence = 0; sequence < 6; sequence++) mailbox.enqueueSystem(systemEnvelope(sequence));
+    for (const message of ['low', 'urgent', 'low', 'low']) mailbox.enqueue({ message, sender: null });
+
+    expect(mailbox.size).toBe(2);
+    expect(sequencesOf(mailbox.drainSystem())).toEqual([0, 1, 2, 3, 4, 5]);
+  });
+
+  test('a mailbox of your own that sheds in enqueue does not shed system commands', () => {
+    // The clause worth binding is "including a subclass's own bound".  A
+    // custom mailbox sheds load by overriding `enqueue` — that is the whole
+    // documented seam — and the override must not reach the system lane,
+    // because a subclass that never heard of supervision would otherwise
+    // start dropping it without ever saying so.
+    class SingleUserMessageMailbox<T> extends Mailbox<T> {
+      override enqueue(envelope: Envelope<T>): void {
+        if (this.size >= 1) return;
+        super.enqueue(envelope);
+      }
+    }
+
+    const mailbox = new SingleUserMessageMailbox<string>();
+    for (let sequence = 0; sequence < 5; sequence++) mailbox.enqueueSystem(systemEnvelope(sequence));
+    for (const message of ['a', 'b', 'c']) mailbox.enqueue({ message, sender: null });
+
+    expect(mailbox.size).toBe(1);
+    expect(sequencesOf(mailbox.drainSystem())).toEqual([0, 1, 2, 3, 4]);
+  });
+});
+
+describe('actor-ts.mailbox.default — the global bound (#862)', () => {
+  /**
+   * A TestKit whose only non-default setting is the mailbox block.  Nested and
+   * not `{'actor-ts.mailbox.default.capacity': n}`: a dotted string stays a
+   * literal top-level key, so the system would go on reading the reference
+   * value and every assertion below would be about the default instead.
+   */
+  const kitWithMailboxDefault = (
+    name: string,
+    mailboxDefault: Record<string, number | string>,
+  ): TestKit => {
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({ 'actor-ts': { mailbox: { default: mailboxDefault } } });
+    return TestKit.create(name, kitOptions);
+  };
+
+  /** The queue an actor actually got, through the cell's test seam. */
+  const mailboxOf = (ref: object): unknown =>
+    (ref as { getCell(): { _mailboxForTest(): unknown } }).getCell()._mailboxForTest();
+
+  let release: () => void = () => {};
+  let latch: Promise<void> = Promise.resolve();
+  const arm = (): void => { latch = new Promise<void>((resolve) => { release = resolve; }); };
+
+  /** Wedges on message 0 so the rest genuinely have to queue behind it. */
+  class Latched extends Actor<number> {
+    override async onReceive(n: number): Promise<void> { if (n === 0) await latch; }
+  }
+
+  test('a /user actor that pins no mailbox gets the configured bound', async () => {
+    const kit = kitWithMailboxDefault('mbox-global-bound', { capacity: 4 });
+    arm();
+    const ref = kit.system.spawnAnonymous(Latched);
+
+    // A capacity assertion on an untouched mailbox is what #1020 showed proves
+    // nothing, so this one is made against a queue that has actually shed.
+    for (let i = 0; i < 64; i++) ref.tell(i);
+
+    const mailbox = mailboxOf(ref);
+    expect(mailbox).toBeInstanceOf(BoundedMailbox);
+    const bounded = mailbox as BoundedMailbox<number>;
+    expect(bounded.size).toBeLessThanOrEqual(4);
+    expect(bounded.droppedCount).toBeGreaterThan(0);
+
+    release();
+    await kit.system.terminate();
+  });
+
+  test('the configured overflow policy is the one the bound uses', async () => {
+    // `reject` is the observable policy: it surfaces at the sender instead of
+    // discarding quietly, so this proves the STRING travelled from HOCON into
+    // the mailbox.  A `drop-head` assertion could not tell the configured
+    // policy apart from the built-in one, which is the same value.
+    const kit = kitWithMailboxDefault('mbox-global-overflow', { capacity: 2, overflow: 'reject' });
+    arm();
+    const ref = kit.system.spawnAnonymous(Latched);
+
+    expect(() => { for (let i = 0; i < 32; i++) ref.tell(i); }).toThrow(MailboxFullError);
+
+    release();
+    await kit.system.terminate();
+  });
+
+  test('a per-spawn withMailboxCapacity still wins over the global bound', async () => {
+    const kit = kitWithMailboxDefault('mbox-global-override', { capacity: 4 });
+    arm();
+    const options = ActorOptions.create<number>().withMailboxCapacity(32);
+    const ref = kit.system.spawnAnonymous(Latched, options);
+
+    for (let i = 0; i < 64; i++) ref.tell(i);
+
+    const bounded = mailboxOf(ref) as BoundedMailbox<number>;
+    expect(bounded).toBeInstanceOf(BoundedMailbox);
+    // 32 and not 4: the spawn site is the higher-precedence layer, so an actor
+    // that asked for room keeps it when an operator draws a tighter global line.
+    expect(bounded.size).toBeGreaterThan(4);
+    expect(bounded.size).toBeLessThanOrEqual(32);
+
+    release();
+    await kit.system.terminate();
+  });
+
+  test('withMailbox still wins, and does not start failing validation', async () => {
+    // The regression a merge at `actorBlueprintOf` would have caused: the
+    // merged object reaches `ActorOptionsValidator`, whose #661 rule rejects
+    // `mailbox` together with `mailboxCapacity`, so EVERY withMailbox spawn in
+    // the program would throw the moment an operator set a global capacity.
+    const kit = kitWithMailboxDefault('mbox-global-custom', { capacity: 4 });
+    arm();
+    const supplied = new Mailbox<number>();
+    const options = ActorOptions.create<number>().withMailbox(() => supplied);
+    const ref = kit.system.spawnAnonymous(Latched, options);
+
+    expect(mailboxOf(ref)).toBe(supplied);
+    expect(mailboxOf(ref)).not.toBeInstanceOf(BoundedMailbox);
+
+    release();
+    await kit.system.terminate();
+  });
+
+  test('a framework actor under /system is exempt, and so is the /user guardian', async () => {
+    // A framework actor spawned through `_spawnSystemActor` carries no
+    // `applicationOwned` mark and none of its ancestors is `/user`, so it is
+    // outside the scope.  What the path alone does *not* settle is the
+    // application's own actors underneath one of these — a sharded entity, a
+    // singleton instance; `GlobalMailboxBoundScope.test.ts` holds that half.
+    const kit = kitWithMailboxDefault('mbox-global-system-exempt', { capacity: 4 });
+    const systemRef = kit.system._spawnSystemActor(Latched, SystemGroups.delivery, 'bound-probe');
+
+    expect(mailboxOf(systemRef)).not.toBeInstanceOf(BoundedMailbox);
+    expect(mailboxOf(systemRef)).toBeInstanceOf(Mailbox);
+
+    // The guardian itself is the framework's too — it is the top of the
+    // application's tree without being in it, so it is the one cell excluded
+    // by name.  Reached through the private field because there is no public
+    // handle on a guardian cell, which is itself why the bound cannot be
+    // scoped by anything a caller passes in at the top.
+    const guardian = (kit.system as unknown as {
+      userGuardianCell: { _mailboxForTest(): unknown };
+    }).userGuardianCell;
+    expect(guardian._mailboxForTest()).not.toBeInstanceOf(BoundedMailbox);
+
+    // ...while its child, spawned the way an application spawns, is bounded.
+    const userRef = kit.system.spawnAnonymous(Latched);
+    expect(mailboxOf(userRef)).toBeInstanceOf(BoundedMailbox);
+
     await kit.system.terminate();
   });
 });

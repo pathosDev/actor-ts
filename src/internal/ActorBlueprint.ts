@@ -61,12 +61,7 @@ export function actorBlueprintOf<TMessage>(
 export function actorFactoryOf<TMessage>(
   actor: ActorClassOrFactory<TMessage>,
 ): ActorFactory<TMessage> {
-  const constructible = actor as { prototype?: { constructor?: unknown } };
-  const isClass =
-    typeof actor === 'function' &&
-    typeof constructible.prototype === 'object' &&
-    constructible.prototype?.constructor === actor;
-  if (!isClass) return actor as ActorFactory<TMessage>;
+  if (!isClassForm(actor)) return actor as ActorFactory<TMessage>;
 
   // A class whose constructor takes arguments cannot be spawned by name:
   // `new X()` would silently construct with `undefined` dependencies and fail
@@ -84,4 +79,16 @@ export function actorFactoryOf<TMessage>(
     );
   }
   return () => new (actor as new () => Actor<TMessage>)();
+}
+
+/**
+ * Whether a class-or-factory is the class form.  The parallelism extension
+ * asks the same question for a different reason: a class can be named across
+ * a thread by its export, a factory closure cannot cross at all.
+ */
+export function isClassForm<TMessage>(actor: ActorClassOrFactory<TMessage>): boolean {
+  const constructible = actor as { prototype?: { constructor?: unknown } };
+  return typeof actor === 'function'
+    && typeof constructible.prototype === 'object'
+    && constructible.prototype?.constructor === actor;
 }

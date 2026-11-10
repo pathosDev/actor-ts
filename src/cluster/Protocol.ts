@@ -1,4 +1,10 @@
 import { decodeJsonTree, encodeJsonTree } from '../serialization/JsonTree.js';
+import {
+  defaultReadConstraintsOptions,
+  ReadConstraintsOptionsValidator,
+  type ReadConstraintsOptions,
+  type ReadConstraintsOptionsType,
+} from '../serialization/ReadConstraintsOptions.js';
 import { INITIAL_FRAME_BUFFER_BYTES, RETAINED_FRAME_BUFFER_BYTES } from './Constants.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
 
@@ -13,13 +19,18 @@ import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
  *   - `leaving`    — graceful shutdown in progress.
  *   - `down`       — declared dead, pending removal.
  *   - `removed`    — terminal state.  On the **definitive-removal**
- *     paths (`handleLeave`, downing-provider force-down) the entry
- *     is kept in the local members map as a **tombstone** with a
- *     `removedAt` timestamp so stale gossip can't resurrect the
- *     address; the tombstone is reclaimed once `tombstoneTtlMs`
- *     (default 24 h) elapses.  On the **FD-driven** path the entry
- *     is deleted outright so a healed partition can re-discover
- *     the peer.  Public APIs (`getMembers`, `upMembers`,
+ *     paths (`onLeave`, the downing provider's force-down, an
+ *     operator's `down()`) the entry is kept in the local members
+ *     map as a **tombstone** with a `removedAt` timestamp so stale
+ *     gossip can't resurrect the address; the tombstone is reclaimed
+ *     once `tombstoneTtlMs` (default 24 h) elapses.  The
+ *     **FD-driven** path — no downing provider configured and
+ *     `failure-detector.auto-down = on`, the default (#1426) — deletes
+ *     the entry outright instead.  That buys no recovery: gossip and heartbeats
+ *     target only reachable members, so after a symmetric partition
+ *     neither side hears the other again (#930), and with no
+ *     tombstone left to refuse it, a peer still carrying the address
+ *     re-introduces it.  Public APIs (`getMembers`, `upMembers`,
  *     `reachableMembers`) and `Member.isReachable()` all filter
  *     `removed` out — only direct iteration of the raw map needs
  *     to check the status explicitly.  See #75 + the
@@ -80,6 +91,104 @@ export type StorageIdentitiesData = {
   readonly durableStateStore?: string;
 };
 
+/**
+ * Longest configuration-fact **name** accepted off the wire (#844).  A name is
+ * by convention the HOCON path whose effective value it carries, and the
+ * longest one `reference.conf` ships is well under half of this; the headroom
+ * admits an application publishing a fact of its own.
+ */
+export const MAX_CONFIGURATION_FACT_NAME_LENGTH = 128;
+
+/**
+ * Longest configuration-fact **value** accepted off the wire (#844).  Values
+ * are stringified scalars — a byte count, a duration in milliseconds, an
+ * algorithm name — so this is generous by an order of magnitude and still caps
+ * what one hostile peer can make every member record carry.
+ */
+export const MAX_CONFIGURATION_FACT_VALUE_LENGTH = 128;
+
+/**
+ * How many configuration facts one member record may claim (#844).  The
+ * framework publishes three and the whole point of `checked-paths` is that a
+ * deployment lists a handful; a peer sending thousands is doing something else.
+ * Without a count cap the per-value caps bound each string and nothing bounds
+ * the record — the same asymmetry `MAX_STORAGE_IDENTITY_LENGTH` does not have,
+ * because that shape has three fixed field names and this one has none.
+ */
+export const MAX_CONFIGURATION_FACTS = 16;
+
+/**
+ * The shape a configuration-fact name must have to be admitted, in either
+ * direction (#844).  Deliberately the character set of a HOCON path under this
+ * project's kebab-case convention (#1405), because that is what a name *is* by
+ * convention — and because the diagnostic prints the name, so an unconstrained
+ * one is peer-controlled text in an operator's log.
+ *
+ * It is also the first of two defences against a claim named `__proto__`:
+ * underscores are outside the set.  The second is that
+ * `Member.fromData` writes with `Object.defineProperty` and reads are
+ * `Object.hasOwn`-guarded, so neither half depends on this pattern alone.
+ */
+export const CONFIGURATION_FACT_NAME_PATTERN = /^[a-z0-9][a-z0-9.-]*$/;
+
+/**
+ * Effective configuration values a member claims for itself, keyed by the
+ * name the publisher gave them (#844).  Optional on the wire in both
+ * directions, exactly like {@link StorageIdentitiesData}: absent on nodes that
+ * predate the field, on nodes whose `checked-paths` is empty, and on any fact
+ * the peer does not publish — and absence means **no cross-check**, which is
+ * what keeps a mixed-version or partially-configured cluster silent rather
+ * than wrong.
+ *
+ * The values are *effective*, not configured: the comparison is between what
+ * each node resolved after `explicit options > HOCON > built-in defaults`, so
+ * two nodes that disagree only because one used a builder still compare
+ * unequal.  Comparing config paths instead would have missed that case by
+ * construction, which is the documented-primary one.
+ *
+ * Every string here is member-supplied: `Member.fromData` caps the name, the
+ * value and the count and drops a bad entry rather than the record, because
+ * the field is advisory and the member is not.
+ */
+export type ConfigurationFactsData = Readonly<Record<string, string>>;
+
+/**
+ * Longest application version a member may state (#843).  Semantic versions,
+ * dates, commit hashes and image tags all fit with room to spare; what the cap
+ * bounds is what one hostile or broken peer can make every member record on
+ * every node carry — the same posture as {@link MAX_STORAGE_IDENTITY_LENGTH}.
+ */
+export const MAX_APP_VERSION_LENGTH = 64;
+
+/**
+ * What an application version may be made of (#843): visible ASCII, `!`
+ * through `~`.
+ *
+ * The label is printed — by `Member.toString`, by every log line that prints a
+ * member, by `/cluster/members` — and a peer's arrives off the wire, so the set
+ * is the one that makes printing it harmless.  No control character, which is
+ * how a peer would end a log line early and forge the next one.  No
+ * whitespace, because a trailing space prints exactly like none and compares
+ * unequal, and `Member.toString` separates its fields with spaces.  Nothing
+ * outside ASCII, which takes the bidirectional overrides that reorder what a
+ * terminal shows with it.  Every version scheme in common use still fits:
+ * `2.4.0-rc.1+build.5`, `2026.10.15`, `a1b2c3d`, `orders:1.2.3`.
+ */
+export const APP_VERSION_PATTERN = /^[\x21-\x7E]+$/;
+
+/**
+ * Whether a value is an application version a member may state (#843) — the
+ * one rule both sides apply.  `Member.fromData` drops a peer's label that
+ * fails it, and `ClusterOptionsValidator` refuses this node's own, so a node
+ * can never publish a label that every peer would then silently discard.
+ */
+export function isAppVersion(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= MAX_APP_VERSION_LENGTH
+    && APP_VERSION_PATTERN.test(value);
+}
+
 export type MemberData = {
   readonly address: NodeAddressData;
   readonly status: MemberStatus;
@@ -89,6 +198,17 @@ export type MemberData = {
   readonly roles?: string[];
   /** See {@link StorageIdentitiesData} — omitted when the member claims none. */
   readonly storageIdentities?: StorageIdentitiesData;
+  /** See {@link ConfigurationFactsData} — omitted when the member claims none. */
+  readonly configurationFacts?: ConfigurationFactsData;
+  /**
+   * The application version the member states (#843) — an operator-facing
+   * label, read by nothing that places, routes or downs.  Omitted when the
+   * member states none, and ignored by a node that predates the field, so a
+   * mixed-version cluster carries it as far as the nodes that know it.  A
+   * value that fails {@link isAppVersion} is dropped by `Member.fromData`,
+   * never the record.
+   */
+  readonly appVersion?: string;
   /**
    * Wall-clock instant at which the tombstone was created, set only
    * when `status === 'removed'` (#75).  Travels in gossip so every
@@ -107,26 +227,57 @@ export type MemberData = {
  * `Map` / `Set` / `Date` / `bigint` / `Uint8Array` survives a cross-node
  * `tell` (#450).  What that walker refuses — functions, symbols, `Promise`,
  * `WeakMap` / `WeakSet`, cycles — is refused loudly rather than silently
- * dropped, and class identity is still not preserved: only the `tag` string
- * travels.
+ * dropped.  Class identity is not preserved, and nothing about the class
+ * travels: an instance arrives as a plain object with no type name beside it
+ * (#1474), so a message the receiver has to tell apart says what it is in its
+ * own `kind`.
  */
 export type WireMessage =
   | HelloMessage
   | HelloAcknowledgmentMessage
+  | HelloRefusedMessage
   | HeartbeatMessage
   | HeartbeatAcknowledgmentMessage
+  | MembershipRefusedMessage
   | GossipMessage
   | EnvelopeMessage
-  | LeaveMessage;
+  | LeaveMessage
+  | WatchMessage
+  | UnwatchMessage
+  | WatchTerminatedMessage;
 
+/**
+ * A connection's opening frame.  `wireVersion` and `minWireVersion` announce the
+ * cluster wire versions the sender speaks (#823); a `hello` without them is a
+ * version-1 peer.  Optional on the type for that reason only — this build
+ * always sends both.
+ */
 export type HelloMessage = {
   kind: 'hello';
   self: NodeAddressData;
+  wireVersion?: number;
+  minWireVersion?: number;
 };
 
+/** The acceptor's answer to a `hello` it takes, with the wire version it speaks (#823). */
 export type HelloAcknowledgmentMessage = {
   kind: 'hello-ack';
   self: NodeAddressData;
+  wireVersion?: number;
+};
+
+/**
+ * The acceptor's answer to a `hello` it will not take, sent before it closes
+ * the connection, so the peer's log says why rather than only that the
+ * connection closed (#823).  An older peer does not know the kind and logs it
+ * as an unclaimed frame — with the reason in it.
+ */
+export type HelloRefusedMessage = {
+  kind: 'hello-refused';
+  self: NodeAddressData;
+  wireVersion: number;
+  minWireVersion: number;
+  reason: string;
 };
 
 export type HeartbeatMessage = {
@@ -140,6 +291,24 @@ export type HeartbeatAcknowledgmentMessage = {
   kind: 'heartbeat-ack';
   from: NodeAddressData;
   seq: number;
+};
+
+/**
+ * The answer to a heartbeat from a member the receiver holds as `removed`, in
+ * place of the acknowledgment (#940).
+ *
+ * `subject` is the address of the tombstone the receiver holds — incarnation
+ * included — so the heartbeat's sender can tell "you removed *me*" from "you
+ * removed a previous run at my address".  The sender takes it as nothing more
+ * than "this peer will no longer have me", which is a fact about the peer and
+ * not about itself: it stops crediting that peer with liveness and leaves the
+ * verdict to its own downing provider.  So the frame carries no status claim,
+ * and a forged one achieves what dropping the peer's traffic already would.
+ */
+export type MembershipRefusedMessage = {
+  kind: 'membership-refused';
+  from: NodeAddressData;
+  subject: NodeAddressData;
 };
 
 export type GossipMessage = {
@@ -170,8 +339,27 @@ export type GossipMessage = {
    */
   sequence: number;
   members: MemberData[];
+  /**
+   * Set on the frames a node that is already `up` sends to a seed it has not
+   * met, and on the one answer such a frame gets (#1176).  Only these frames
+   * ever cross between two same-name clusters that formed apart — ordinary
+   * gossip goes to members only — so they are the only ones the island check
+   * reads, and a member this node has simply not heard of yet is never taken
+   * for a foreign cluster.
+   */
+  islandProbe?: true;
 };
 
+/**
+ * A payload addressed to an actor path on the receiving node.
+ *
+ * It carries no type name for its body.  It used to — a `tag` holding the
+ * sender's constructor name, or a literal on the framework's own frames — and
+ * nothing ever read it: the per-path handlers dispatch on `body.kind` and the
+ * trust gate on the path (#1474).  A frame from an older node that still
+ * carries one is an ordinary frame here, because `wireFrameProblem` reads only
+ * `to` and `from`.
+ */
 export type EnvelopeMessage = {
   kind: 'envelope';
   /** Full actor path string of the recipient on the target node. */
@@ -180,8 +368,6 @@ export type EnvelopeMessage = {
   from: string | null;
   /** User payload — carried as a tagged JSON tree, see {@link encodeFrame}. */
   body: unknown;
-  /** Optional: name of a class/type for richer routing. */
-  tag?: string;
   /**
    * Optional MDC snapshot captured at tell-time on the originating
    * node.  Re-installed by `Cluster.handleEnvelope` so the receiving
@@ -201,6 +387,49 @@ export type EnvelopeMessage = {
 export type LeaveMessage = {
   kind: 'leave';
   node: NodeAddressData;
+};
+
+/* ----------------------------- Remote death watch ------------------------- */
+
+/**
+ * The three frames of death watch across a node boundary (#918).  Core kinds
+ * rather than an extension's: `context.watch` is core semantics, and a watch
+ * that silently does nothing on a remote ref is the defect they replace.
+ *
+ * Paths travel in the full `actor-ts://…` form, because that is the only form
+ * `parsePathSegments` reads (#1568).  The watcher's node sends `watch` and
+ * `unwatch`; the watchee's node answers with `watch-terminated` — when the
+ * watched actor stops, or at once when it does not exist, in which case
+ * `existenceConfirmed` is `false`.  A node that goes away sends nothing: the
+ * watcher's node synthesises the notification from membership, which is the
+ * half of death watch that node loss is *for*.
+ */
+export type WatchMessage = {
+  kind: 'watch';
+  /** Full path of the watching actor, on the node that sent this frame. */
+  watcher: string;
+  /** Full path of the watched actor, on the node that receives this frame. */
+  watchee: string;
+};
+
+export type UnwatchMessage = {
+  kind: 'unwatch';
+  watcher: string;
+  watchee: string;
+};
+
+export type WatchTerminatedMessage = {
+  kind: 'watch-terminated';
+  /** Full path of the watching actor, on the node that receives this frame. */
+  watcher: string;
+  /** Full path of the actor that stopped, on the node that sent this frame. */
+  watchee: string;
+  /**
+   * `false` when the watched path resolved to nothing on the watchee's node:
+   * the watcher is told the actor is gone without anyone having seen it live,
+   * which is `Terminated.existenceConfirmed`'s whole meaning.
+   */
+  existenceConfirmed: boolean;
 };
 
 /* -------------------------------- Framing -------------------------------- */
@@ -245,8 +474,9 @@ const HEADER_SIZE = 4;
  * the same chunk.  The `__literal__` escape only protects data *this* encoder
  * produced, so it does nothing here.  The other direction is plainly lossy: an
  * older node reading a newer node's frame sees the tag wrapper as plain data.
- * There is no protocol negotiation yet (#823), so a mixed-version window is a
- * hazard rather than a supported state.
+ * Since v0.18.0 the handshake negotiates a wire version (#823), so nodes on
+ * either side of a break refuse each other instead of exchanging frames like
+ * these; the encoding itself is not versioned.
  */
 export function encodeFrame(message: WireMessage): Uint8Array {
   const json = JSON.stringify(encodeJsonTree(message, { undefinedValues: 'omit' }));
@@ -307,12 +537,32 @@ export class FrameDecoder {
   private readOffset = 0;
   private writeOffset = 0;
   private readonly maxFrameBytes: number;
+  /**
+   * Decode ceilings, applied at two points: `maxDocumentBytes` on the length
+   * prefix, beside {@link maxFrameBytes}, and `maxNestingDepth` on the
+   * tagged-JSON walk of an accepted frame.
+   *
+   * Separate from {@link maxFrameBytes} because the two bound different
+   * things: a frame cap bounds the bytes a peer may make this node buffer, and
+   * these bound the work it may make the *decoder* do with bytes that already
+   * fit — a 16 MiB frame of `[[[[…` is inside every byte cap here and still
+   * overflows the walker's stack without them (#880).
+   */
+  private readonly readConstraints: Required<ReadConstraintsOptionsType>;
 
-  constructor(maxFrameBytes: number = DEFAULT_MAX_FRAME_BYTES) {
+  constructor(
+    maxFrameBytes: number = DEFAULT_MAX_FRAME_BYTES,
+    readConstraints: ReadConstraintsOptions = {},
+  ) {
     if (!Number.isFinite(maxFrameBytes) || maxFrameBytes < 1) {
       throw new Error(`FrameDecoder: maxFrameBytes must be a positive integer, got ${maxFrameBytes}`);
     }
     this.maxFrameBytes = Math.trunc(maxFrameBytes);
+    this.readConstraints = {
+      ...defaultReadConstraintsOptions,
+      ...(readConstraints as Partial<ReadConstraintsOptionsType>),
+    };
+    new ReadConstraintsOptionsValidator().validate(this.readConstraints);
   }
 
   /**
@@ -345,6 +595,25 @@ export class FrameDecoder {
           + `connection terminated to prevent OOM/DoS`,
         );
       }
+      // The second bound on the same prefix, and the earliest point in the
+      // framework at which `max-document-bytes` can be enforced at all: both
+      // serializers check it against bytes that already exist, whereas here
+      // the payload has not arrived yet.
+      //
+      // It answers a different question from the frame cap above — that one is
+      // how many bytes this node will BUFFER for a transport, this one how
+      // large a JSON document it will PARSE — and the difference matters most
+      // on this path, because a frame goes to `JSON.parse` directly and never
+      // through a serializer.  Without the check here the key governed every
+      // untrusted decode in the process except the one whose bytes a hostile
+      // peer actually chooses (#880).
+      const documentCeiling = this.readConstraints.maxDocumentBytes;
+      if (documentCeiling > 0 && length > documentCeiling) {
+        throw new Error(
+          `wire frame of ${length} bytes exceeds maxDocumentBytes ${documentCeiling} — `
+          + `connection terminated before the document is buffered`,
+        );
+      }
       if (this.pendingBytes() < HEADER_SIZE + length) break;
       const payloadStart = this.readOffset + HEADER_SIZE;
       const json = decoder.decode(this.slab.subarray(payloadStart, payloadStart + length));
@@ -362,7 +631,9 @@ export class FrameDecoder {
       // the cheapest way to try — and it lands in the same `push` throw the
       // transport already answers by closing the connection.
       try {
-        out.push(decodeJsonTree(parsed) as WireMessage);
+        out.push(decodeJsonTree(parsed, {
+          maxNestingDepth: this.readConstraints.maxNestingDepth,
+        }) as WireMessage);
       } catch (e) {
         throw new Error(`Invalid wire frame payload: ${(e as Error).message}`);
       }

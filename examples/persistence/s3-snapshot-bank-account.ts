@@ -1,7 +1,8 @@
 /**
  * Object-storage persistence: snapshots in S3 (or filesystem, or MinIO).
  *
- * The same `registerObjectStoragePlugins(...)` call wires:
+ * The same `registerObjectStoragePlugins(...)` call — a plug-in passed to
+ * `ActorSystemOptions.withPersistence({ plugins })` — wires:
  *   - `ObjectStorageSnapshotStore` → registered against the
  *     `PersistenceExtension` snapshot-store registry (config picks it up).
  *   - `ObjectStorageDurableStateStore` → returned in the handles for
@@ -19,8 +20,9 @@
  *
  *   bun run examples/persistence/s3-snapshot-bank-account.ts
  *
- * Pointing at MinIO:
- *   docker run --rm -p 9000:9000 minio/minio server /data
+ * Pointing at MinIO — or Silo, its fork, which keeps the same port,
+ * command and `minioadmin` default credentials:
+ *   docker run --rm -p 9000:9000 pgsty/silo:RELEASE.2026-10-26T00-00-00Z server /data
  *   ACTOR_TS_S3=minio bun run examples/persistence/s3-snapshot-bank-account.ts
  */
 import { match, P } from 'ts-pattern';
@@ -35,7 +37,6 @@ import {
   InMemoryJournal,
   OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID,
   ObjectStoragePluginOptions,
-  PersistenceExtensionId,
   PersistentActor,
   compressionByPrefix,
   everyNEvents,
@@ -45,6 +46,7 @@ import type {
   CompressionConfig,
   EncryptionConfig,
   ObjectStorageBackendSpec,
+  ObjectStoragePluginHandles,
 } from '../../src/persistence/index.js';
 
 type DepositCommand = { kind: 'deposit'; amount: number };
@@ -68,7 +70,14 @@ class Account extends PersistentActor<Command, Event, State> {
   // Per-actor compression — overrides the plugin default.  Each actor
   // gets to pick its own algorithm without touching plugin registration.
   override compression(): CompressionConfig { return { algorithm: 'zstd' }; }
-  // To enable client-side AES encryption per actor, return:
+  // To enable client-side AES encryption per actor, return the override
+  // below.  It encrypts this actor's snapshots and nothing else (#1430).
+  // `encryption()` and `integrity()` on a `PersistentActor` protect its
+  // snapshots only: every journal stores events as plaintext JSON, nothing
+  // detects an event edited in place, and database-side controls —
+  // transparent data encryption, an encrypted volume, access control — are
+  // the only protection for events today.  The InMemoryJournal in `main()`
+  // is no exception.
   //   override encryption(): EncryptionConfig {
   //     return {
   //       mode: 'client-aes256-gcm',
@@ -158,6 +167,27 @@ async function main(): Promise<void> {
   const journal = new InMemoryJournal();
 
   // --- first incarnation: record events + snapshots ---
+  const snapshotPluginOptions = ObjectStoragePluginOptions.create()
+    .withBackend(spec)
+    // The store appends its own 'snapshots/' namespace under this prefix,
+    // keeping its keys disjoint from the durable-state store's (#716).
+    .withPrefix('env-prod/')
+    .withKeepN(2)
+    .withCompression(compressionByPrefix({
+      default: { algorithm: 'gzip' },
+      'large/': { algorithm: 'zstd' },
+    }));
+  // To enable client-side encryption, add to the chain above.  It covers
+  // the snapshots, never the journal's events — see the note on `Account`:
+  //   .withEncryption({
+  //     mode: 'client-aes256-gcm',
+  //     masterKey: new Uint8Array(32).fill(0xab),
+  //     info: 'acme/prod/snapshot/v1',   // required — see EncryptionConfig
+  //   })
+  // The journal is an instance; the snapshot store is a plug-in, registered
+  // inside `create`.  Its peer-dependency probes are awaited before
+  // `whenReady()` resolves, and the handles it returns are kept for `close()`.
+  let firstSnapshotStorage: ObjectStoragePluginHandles | undefined;
   const sys1Options = ActorSystemOptions.create()
     .withConfig({
       'actor-ts': {
@@ -166,23 +196,14 @@ async function main(): Promise<void> {
         },
       },
     })
-    .withPersistence({ journal });
+    .withPersistence({
+      journal,
+      plugins: [async (persistence) => {
+        firstSnapshotStorage = await registerObjectStoragePlugins(persistence, snapshotPluginOptions);
+      }],
+    });
   const sys1 = ActorSystem.create('bank-s3', sys1Options);
-  const snapshotPluginOptions = ObjectStoragePluginOptions.create()
-    .withBackend(spec)
-    .withPrefix('env-prod/snapshots/')
-    .withKeepN(2)
-    .withCompression(compressionByPrefix({
-      default: { algorithm: 'gzip' },
-      'large/': { algorithm: 'zstd' },
-    }));
-  // To enable client-side encryption, add to the chain above:
-  //   .withEncryption({
-  //     mode: 'client-aes256-gcm',
-  //     masterKey: new Uint8Array(32).fill(0xab),
-  //     info: 'acme/prod/snapshot/v1',   // required — see EncryptionConfig
-  //   })
-  await registerObjectStoragePlugins(sys1.extension(PersistenceExtensionId), snapshotPluginOptions);
+  await sys1.whenReady();
 
   const acct1 = sys1.spawn(() => new Account('alice'), 'alice');
   for (const amount of [100, 50, 20, 30, 10, 5, 100]) {
@@ -191,8 +212,15 @@ async function main(): Promise<void> {
   console.log('withdraw 60 →', await acct1.ask({ kind: 'withdraw', amount: 60 }, 500));
   console.log('balance     →', await acct1.ask({ kind: 'balance' }, 500));
   await sys1.terminate();
+  // The plug-in owns the backend both stores share; it is released here,
+  // once the system that wrote through it is down.
+  await firstSnapshotStorage?.close();
 
   // --- second incarnation: recover from the same journal + snapshot bucket ---
+  const restartSnapshotPluginOptions = ObjectStoragePluginOptions.create()
+    .withBackend(spec)
+    .withPrefix('env-prod/');
+  let restartSnapshotStorage: ObjectStoragePluginHandles | undefined;
   const sys2Options = ActorSystemOptions.create()
     .withConfig({
       'actor-ts': {
@@ -201,15 +229,18 @@ async function main(): Promise<void> {
         },
       },
     })
-    .withPersistence({ journal });
+    .withPersistence({
+      journal,
+      plugins: [async (persistence) => {
+        restartSnapshotStorage = await registerObjectStoragePlugins(persistence, restartSnapshotPluginOptions);
+      }],
+    });
   const sys2 = ActorSystem.create('bank-s3-restart', sys2Options);
-  const restartSnapshotPluginOptions = ObjectStoragePluginOptions.create()
-    .withBackend(spec)
-    .withPrefix('env-prod/snapshots/');
-  await registerObjectStoragePlugins(sys2.extension(PersistenceExtensionId), restartSnapshotPluginOptions);
+  await sys2.whenReady();
   const acct2 = sys2.spawn(() => new Account('alice'), 'alice');
   console.log('after restart, balance →', await acct2.ask({ kind: 'balance' }, 500));
   await sys2.terminate();
+  await restartSnapshotStorage?.close();
 
   cleanup();
 }

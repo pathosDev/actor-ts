@@ -1,3 +1,4 @@
+import { DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS } from '../Constants.js';
 import { persistenceIdPage } from '../Journal.js';
 import type { Journal } from '../Journal.js';
 import type { JournalEventBus } from '../JournalEventBus.js';
@@ -72,7 +73,7 @@ export class InMemoryQuery implements PersistenceQuery {
     if (bus) {
       return pushStreamByPersistenceId<E>(journal, persistenceId, fromSeq, bus);
     }
-    const pollIntervalMs = options.pollIntervalMs ?? 1_000;
+    const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS;
     return liveStream<PersistentEvent<E>>(pollIntervalMs, async (lastEmitted) => {
       const fromInclusive = lastEmitted ? lastEmitted.sequenceNr + 1 : fromSeq;
       const events = await journal.read<E>(persistenceId, fromInclusive);
@@ -109,7 +110,7 @@ export class InMemoryQuery implements PersistenceQuery {
     if (bus) {
       return pushStreamByTag<E>(this, spec, fromOffset, bus);
     }
-    const pollIntervalMs = options.pollIntervalMs ?? 1_000;
+    const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS;
     const self = this;
     return liveStream<TaggedEvent<E>>(pollIntervalMs, async (lastEmitted) => {
       const cursor = lastEmitted ? lastEmitted.offset : fromOffset;
@@ -153,7 +154,7 @@ export class InMemoryQuery implements PersistenceQuery {
     if (bus) {
       return pushStreamOfPersistenceIds(readPage, defaultPersistenceIdPageSize, bus);
     }
-    const pollIntervalMs = options.pollIntervalMs ?? 1_000;
+    const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS;
     return pollStreamOfPersistenceIds(readPage, defaultPersistenceIdPageSize, pollIntervalMs);
   }
 

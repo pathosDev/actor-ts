@@ -62,14 +62,16 @@ export type Envelope<T = unknown> = {
    */
   readonly replayed?: boolean;
   /**
-   * This envelope carries a lifecycle notification the framework generated
-   * and cannot send again, so no load-shedding policy may discard it (#729).
+   * This envelope carries something the framework cannot send again, so no
+   * load-shedding policy may discard it (#729).
    *
-   * Two envelopes take it today, and the test for admitting a third is the
-   * property they share, not their subject: the framework built it, the
-   * framework sent it once, and nothing on the framework's side still holds
-   * what it would take to send it again.  Neither is application traffic, so
-   * neither is a message the caller who set the bound was choosing to lose.
+   * Four envelopes take it today, and the test for admitting a fifth is the
+   * property they share, not their subject: it is sent once, nothing on the
+   * framework's side still holds what it would take to send it again, and what
+   * is lost when it is dropped is not a *message* but a piece of state outside
+   * the mailbox that no one else will correct.  So the caller who set the
+   * bound was not choosing to lose it — it is not the traffic they were
+   * shedding, and the loss does not surface where they would look for it.
    *
    * The `Terminated` a death-watch delivers.  The watch was installed through
    * `context.watch`, the framework promised to answer it, and the answer
@@ -86,18 +88,71 @@ export type Envelope<T = unknown> = {
    * ever attach listeners to — buffering inbound frames with nothing to drain
    * them and holding its `maxConnections` slot — for the same one increment.
    *
+   * The `close` a `WebsocketConnection` sends its own actor (#985).  This one
+   * is application-*initiated*, unlike the two above, and admitting it widens
+   * the rule on purpose rather than by stretching it: what a dropped close
+   * loses is a decision about a socket, not a message.  There is no retry and
+   * no sender to back off, nothing else in the process holds that socket, and
+   * a `closeAll(1008, 'rate limited')` that returns normally while the peers
+   * stay connected is a control that failed open — a security outcome, from a
+   * bound the operator set to cap *frames*.
+   *
+   * The `DistributedDataChanged` a DistributedData replicator posts to an actor
+   * subscribed to one of its keys (#1468).  It passes the same test, and again
+   * what a dropped one loses is not a message.  The replicator keeps a
+   * latest-value slot per subscriber and key: at most one notification queued,
+   * its value overwritten in place while it waits, the next one posted only
+   * once the subscriber has been handed it — the release the door carries says
+   * when.  An evicted notification is never handed over, so its slot stays in
+   * flight for ever: every later change lands in a message nobody will read,
+   * nothing is posted again, and the subscriber goes on acting on the last value
+   * it saw.  That mark lives in the replicator, outside the mailbox, and no one
+   * corrects it.  Admitting it costs a bounded overshoot, as the `Terminated`
+   * does — one notification per subscribed key, never more — and it is queued at
+   * the tail like any message, keeping that place while later changes overwrite
+   * its value.
+   *
    * Set by {@link ActorCell.postSignalEnvelope}, which is the only door that
-   * sets it, and read in three places: {@link Mailbox.removeOldest} and
+   * sets it, and read at three seams: {@link Mailbox.removeOldest} and
    * {@link Mailbox.removeNewest}, so an eviction from either end steps over
-   * it; `BoundedMailbox.prependUser`, so a bound that now applies to the
-   * replay path admits it rather than shedding it (#772); and the cell's
-   * throttle gate, so `onExcess: 'drop'` does not silently consume it either.
+   * it; the replay overrides — `BoundedMailbox.prependUser`,
+   * `PriorityMailbox.prependUser` **and** `ControlAwareMailbox.prependUser` —
+   * so a bound that now applies to the replay path admits it rather than
+   * shedding it (#772); and the cell's throttle gate, so `onExcess: 'drop'`
+   * does not silently consume it either.
+   *
+   * Every replay override is named because listing one of them was the last
+   * hole (#729).  The bounds reach the same rule by different routes —
+   * `BoundedMailbox` tests the marker per envelope before it consults its
+   * capacity, `PriorityMailbox` hands the envelope to `enqueueSignal`, and
+   * `ControlAwareMailbox` tests it per envelope in the ordinary half of a
+   * replay, the only half its bound applies to — and a reader who took "the
+   * replay path" to mean "whichever mailbox the list happened to name" would
+   * have re-derived exactly the omission: the priority bound re-entered its
+   * own `enqueue`, whose capacity check does not read this field at all.
+   * `ControlAwareMailbox` reads it nowhere else — its evictions are the
+   * inherited pair above — and the position it gives a signal comes from its
+   * predicate, never from this field (see {@link Mailbox.enqueueSignal}).
    *
    * It travels with the envelope rather than being remembered by the mailbox
-   * because the envelope outlives any one queue position: it survives a
-   * `stash` / `unstashAll` round trip and a `prependUser` replay, and both of
-   * those hand it back to a bound that would otherwise get a second chance to
-   * shed it.
+   * because the envelope outlives any one queue position: `ActorContext.stash()`
+   * parks the envelope the cell is holding, so `unstashAll()` hands the queue
+   * back the very object the exempt door built, and the `prependUser` replay it
+   * takes then meets a bound that would otherwise get a second chance to shed
+   * it.
+   *
+   * **The typed stash is the exception, and it is an open gap (#1319).**
+   * `Behaviors.withStash` cannot park an envelope — `StashBuffer.stash(message)`
+   * takes an arbitrary value where the cell can only park what it is currently
+   * handling — so the buffer keeps bare messages, and its replay half,
+   * `ActorCell.prependUserMessages`, rebuilds them as message-plus-null-sender.
+   * Nothing envelope-level survives that trip: no `context`, no `trace`, no
+   * {@link enqueuedAtMs}, and no marker.  So a typed actor that stashes its own
+   * `Terminated` hands a droppable envelope back to its own bound, and the
+   * guarantee the paragraph above states does not reach it.  The fix belongs on
+   * the typed side rather than here — a buffer that parks envelopes, or a replay
+   * door told which of them were exempt — because every reader of this field
+   * already does the right thing with an envelope that still carries it.
    */
   readonly undroppable?: boolean;
 };
@@ -242,8 +297,8 @@ export class Mailbox<T = unknown> {
 
   /**
    * Queue a framework lifecycle notification — see {@link Envelope.undroppable}
-   * — at the tail of the user lane, **exempt from whatever bound this mailbox
-   * enforces**.
+   * — **exempt from whatever bound this mailbox enforces**, at the position
+   * this mailbox gives any other message: the tail of the user lane, here.
    *
    * Override this whenever you override {@link enqueue} to shed load.  The
    * default here delegates, which is right for a queue that never discards
@@ -256,12 +311,33 @@ export class Mailbox<T = unknown> {
    * `dequeueUser`, its `size` and its `drainUser`, so not even a dead letter
    * comes out of it.
    *
-   * The envelope still arrives at the **tail**, which is what keeps the
-   * documented death-watch ordering intact: every `tell` already queued is
-   * handled first, then the notification.  It is not a priority lane and must
-   * not become one — the system queue is where the framework puts messages
-   * that overtake user traffic, and a `Terminated` deliberately is not one of
-   * those.
+   * **The door decides undroppability, never position (#1431).**  Five call
+   * sites reach it, all through `ActorCell.postSignalEnvelope`:
+   * `ActorCell._notifyWatcher`, with the `Terminated` of a local death;
+   * `ActorCell.onWatchNotify`, with the `Terminated` of a death another node
+   * reported, one hop on the system queue after `RemoteWatcher` queued the
+   * report (#918); `ConnectionWiring.postAcceptCommand`, with the
+   * `websocket-accept` that hands an upgraded socket to its hub (#717);
+   * `WebsocketConnection.close`, with the `close` a connection sends its own
+   * actor (#985); and `DistributedData.offerToSubscriber`, with the
+   * `DistributedDataChanged` a replicator posts to an actor subscribed to one
+   * of its keys (#1468).  Two of those depend on arriving *late*: death watch
+   * promises that every `tell` already queued is handled before the
+   * `Terminated`, and a reply queued before `close()` is written before the
+   * socket shuts.  So this default — like any FIFO mailbox — queues the
+   * envelope at the **tail**, and an override must not move an envelope ahead
+   * *because* it came through here.  What the door adds is exemption from the
+   * bound, and nothing else.
+   *
+   * Overtaking is something a mailbox *type* offers, by classifying messages,
+   * and a message gets the same answer whichever door it took.
+   * `ControlAwareMailbox` is the type that offers it: its predicate classes a
+   * signal like any other message, so a `Terminated` it leaves ordinary keeps
+   * the death-watch order.  A mailbox that reorders everything reorders
+   * signals by its own rule too — `PriorityMailbox` ranks a `Terminated` with
+   * `priorityFor`.  What overtakes all user traffic is the system queue, and
+   * none of the five envelopes belongs there; a close that must not wait is a
+   * different method, `WebsocketConnection.abort()`, which queues nothing.
    */
   enqueueSignal(env: Envelope<T>): void {
     this.enqueue(env);
@@ -276,15 +352,29 @@ export class Mailbox<T = unknown> {
    * push the whole batch onto the call stack as arguments.
    *
    * **Override this whenever you override {@link enqueue} to shed load**, for
-   * the same reason {@link enqueueSignal} says so and the opposite conclusion:
-   * a signal is exempt from a bound, a replay is not.  Leaving the default in
+   * the same reason {@link enqueueSignal} says so: an *ordinary* replayed
+   * message is subject to the bound like any other.  Leaving the default in
    * place is what made a bounded mailbox unbounded on the stash path — a
    * batch the size of the stash arrived past the capacity check, the overflow
    * policy and the drop accounting, so the ceiling an operator tuned against
-   * measured heap was not one (#772).  `BoundedMailbox` and `PriorityMailbox`
-   * both override it, by different routes: the former sheds at the tail to
-   * make room at the head, the latter re-enters `enqueue` so priorities are
-   * recomputed.
+   * measured heap was not one (#772).  All three built-in bounds override it,
+   * by different routes: `BoundedMailbox` sheds at the tail to make room at
+   * the head, `PriorityMailbox` re-ranks so priorities are recomputed, and
+   * `ControlAwareMailbox` puts each envelope back at the head of its own class
+   * and bounds the ordinary half the way `BoundedMailbox` does (#1431).
+   *
+   * **An {@link Envelope.undroppable} envelope is exempt, on this path too.**
+   * This paragraph used to end "a signal is exempt from a bound, a replay is
+   * not", which was true when it was written and was made false by the fix for
+   * #729 — a lifecycle notification that round-tripped through a stash came
+   * back droppable, and two of the three overflow policies destroyed it.  Every
+   * override now admits an undroppable envelope past its bound, the exemption
+   * it would have had arriving fresh: `PriorityMailbox` by handing it to
+   * {@link enqueueSignal}, the other two by testing the marker before they
+   * consult the capacity.  An override that reads this as licence to bound
+   * everything it is handed reintroduces exactly that defect, which is why the
+   * sentence is corrected here rather than only at the call sites that already
+   * got it right.
    *
    * The base is right to be unconditional here — it never discards anything,
    * so there is nothing to consult.
@@ -293,6 +383,83 @@ export class Mailbox<T = unknown> {
     this.userQueue.unshiftAll(envs);
   }
 
+  /**
+   * Queue a framework `SystemCommand` on the lane that overtakes all user
+   * traffic.
+   *
+   * **This lane is deliberately uncapped, and no bound reaches it — including
+   * a subclass's own.**  It writes straight to the private system ring rather
+   * than delegating, which is the deliberate opposite of {@link enqueueSignal}
+   * two methods up: a signal rides the *user* lane and therefore has to go
+   * through whatever store a subclass keeps, while a system command has no
+   * business in that store at all.  So overriding {@link enqueue} to shed load
+   * bounds the user queue and leaves this one alone, and neither
+   * `BoundedMailbox` nor `PriorityMailbox` overrides this method.  A capacity
+   * an operator tunes against measured heap is a user-queue capacity; say so
+   * when you document one.
+   *
+   * The reason is the one {@link Envelope.undroppable} gives one layer up, at
+   * full strength: supervision and lifecycle must never be dropped.  A
+   * discarded `failure` leaves an actor suspended with nobody coming to decide
+   * about it, a discarded `childTerminated` leaks a child registration
+   * forever, and a discarded `terminate` strands the cell — none of which the
+   * framework has a second copy to re-send, and all of which fail *silently*
+   * in the direction of a wedged actor rather than a lost message.  Nor does
+   * the drain loop in `ActorCell.run` carry a per-turn budget, for the
+   * matching reason: a budget would interleave a supervision decision with
+   * user traffic that decision exists to gate, and reordering supervision is a
+   * worse trade than the user-message starvation an unbounded drain admits.
+   *
+   * **What bounds it instead is the producer, and that is the property to
+   * re-check before adding a system-message source.**  Every caller today is
+   * one envelope per event that already costs the node an actor: one `create`
+   * per cell and one `terminate` per stop, one `childTerminated` per child that
+   * finishes stopping, and per supervision decision one `failure` to the parent
+   * plus whatever it fans out over the failing subtree — `suspend`, then
+   * `resume`, `recreate` or `terminate` once the directive is known.  One
+   * `receiveTimeout` per armed timer that expires, and one `watchNotify` per
+   * `Terminated` that a *remote* watch brings home (#918) — a watch this
+   * node's own actor registered, answered once — complete the list.
+   *
+   * `watchNotify` was for a long time the declared variant deliberately **not**
+   * on it, because nothing emitted one; putting it there as "one per watched
+   * death" was this JSDoc's own first mistake.  It still is not how a *local*
+   * death travels: `ActorCell._notifyWatcher` hands a local watcher its
+   * `Terminated` through `postSignalEnvelope`, which is the **user** lane —
+   * exempt from the bound (see {@link Envelope.undroppable}) and still behind
+   * everything already told to that watcher, because that ordering is what
+   * death watch documents.  Watching a thousand local actors adds nothing to
+   * the depth here.  What `RemoteWatcher` enqueues is the one case the arm was
+   * kept wired and exempt for (#729): a death this node did not witness, which
+   * it turns into the branded `Terminated` and re-posts on the user lane.  The
+   * ratio holds for it too — a peer can produce at most one per watch this node
+   * opened, an unsolicited `watch-terminated` matches no entry and enqueues
+   * nothing, and the entry itself was paid for by the watcher's registration.
+   *
+   * That test is about *volume*, not about who can reach the method, which is
+   * why the sharding path does not change the answer even though it looks like
+   * it should.  A remote peer addressing entities in a shard really does drive
+   * this queue: `dispatchEnvelope` only ever reaches a `tell` on the user lane,
+   * but the `Shard` actor handling that user message spawns and watches an
+   * entity, and every entity it spawns eventually lands a `childTerminated`
+   * here at passivation or handoff.  "A cluster peer cannot invoke it" is
+   * therefore true of the call site and beside the point for a queue depth.
+   *
+   * It needs no bound anyway because there is **no amplification**: each
+   * envelope is paid for by one entity cell — its own mailbox, watch
+   * registration and registry entry — that had to exist first and was admitted
+   * through the region's routing bound on the way in.  A peer that can queue N
+   * of these has already made the node hold N actor cells, so the lane is a
+   * strictly smaller copy of a cost accepted upstream; and the envelope is
+   * enqueued *as* the cell goes away, replacing something larger than itself,
+   * so the peak falls rather than rises at the moment the traffic appears.
+   *
+   * A source that broke that ratio — one cheap remote action queueing many
+   * envelopes, or envelopes tied to no resource the node already gates — is
+   * what would need an answer, and the answer would be per-kind coalescing
+   * (collapse duplicate `suspend` / `resume` for the same child) rather than a
+   * cap.  Dropping is the one thing this lane may not do.
+   */
   enqueueSystem(env: Envelope<unknown>): void {
     this.systemQueue.push(env);
   }

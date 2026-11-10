@@ -107,6 +107,12 @@ export class MultiNodeBroker {
    * happened to be running.  A terminated peer is an unroutable destination, and
    * unroutable destinations have always been dropped here.  The race itself is
    * unchanged — only its escalation into an unrelated test's failure is gone.
+   *
+   * Unlike the production broker, which since #1276 counts every drop and
+   * reports it as a folded line, this fork stays **silent by design**: it is a
+   * test harness whose drops are the scenario's own partitions and crashes, and
+   * a line per swallowed teardown race would be noise in the log of the very
+   * test that asked for the crash.
    */
   private onMessage(source: NodeAddress, frame: unknown): void {
     if (this.stopped) return;

@@ -53,6 +53,30 @@ interface RedisStreamsOptionsType extends BrokerCommonOptionsType {
 }
 ```
 
+Dieselben Settings kommen auch aus HOCON, unter
+`actor-ts.io.broker.redis-streams`, unterhalb expliziter Optionen und oberhalb
+der eingebauten Defaults:
+
+```hocon
+actor-ts.io.broker.redis-streams {
+  url     = "redis://localhost:6379"
+  streams = ["orders", "payments"]
+  block   = 5s                      # XREADGROUP block; the default
+  consumer-group {                  # group and consumer are required once the block is there
+    group             = "order-processors"
+    consumer          = "worker-1"
+    create-if-missing = true        # the default
+  }
+}
+```
+
+`block` ist eine Dauer, nimmt `5s` also genauso wie eine bloße
+Millisekundenzahl.  `target` benennt einen Actor und `tls` ist
+Zertifikatsmaterial, keines von beiden hat also ein Blatt.  Die Reconnect-,
+Circuit-Breaker- und Outbound-Buffer-Blätter, die sich alle Broker teilen,
+gehören unter denselben Root — siehe
+[BrokerActor-Basis](/de/io/broker-actor-base/#reconnect-mit-backoff).
+
 ## Konsumieren mit einer Consumer Group
 
 Konsum läuft immer über eine **Consumer Group** — der Actor nutzt
@@ -135,7 +159,8 @@ Der Actor öffnet zwei Verbindungen — einen Producer, einen Consumer —
 und führt beide auf den gemeinsamen
 [`BrokerActor`](/de/io/broker-actor-base/)-Lifecycle zurück.  `reconnect`
 und `circuitBreaker` bedeuten hier also dasselbe wie bei jedem anderen
-Broker:
+Broker — der Breaker per Id benannt, seine Zahlen unter
+`actor-ts.circuit-breaker.<id>`:
 
 ```ts
 const redisStreamsOptions = RedisStreamsOptions.create()
@@ -144,7 +169,7 @@ const redisStreamsOptions = RedisStreamsOptions.create()
   .withConsumerGroup({ group: 'workers', consumer: 'worker-1' })
   .withTarget(handler)
   .withReconnect({ initialDelayMs: 250, maxDelayMs: 30_000, factor: 2 })
-  .withCircuitBreaker(5, 60_000);
+  .withCircuitBreaker('redis-orders');
 ```
 
 Was das konkret bringt:

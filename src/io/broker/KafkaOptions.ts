@@ -37,7 +37,11 @@ export interface KafkaOptionsType extends BrokerCommonOptionsType {
    * material form is reachable from code only.
    */
   readonly ssl?: boolean | TlsTransportOptionsType;
-  /** Producer options. */
+  /**
+   * Producer options.  Readable from HOCON as
+   * `producer { idempotent, allow-auto-topic-creation }`; a block that names
+   * only one of the two keeps the built-in default for the other.
+   */
   readonly producer?: {
     readonly idempotent?: boolean;
     readonly allowAutoTopicCreation?: boolean;
@@ -61,7 +65,11 @@ export interface KafkaOptionsType extends BrokerCommonOptionsType {
      */
     readonly commitTimeoutMs?: number;
   };
-  /** Subscriber that receives every consumed record. */
+  /**
+   * Subscriber that receives every consumed record.  No HOCON leaf: an
+   * `ActorRef` names a live actor in this process, which a config file has no
+   * way to denote.
+   */
   readonly target?: ActorRef<KafkaRecord>;
   /** Topics the consumer subscribes to at connect time. */
   readonly topics?: ReadonlyArray<string>;

@@ -1,4 +1,5 @@
 import type { Snapshot } from './JournalTypes.js';
+import type { PersistenceOptionSupport } from './PersistenceCapabilities.js';
 import type { PersistenceOptions } from './PersistenceOptions.js';
 import type { StorageLocality } from './StorageLocality.js';
 import type { Option } from '../util/Option.js';
@@ -12,8 +13,10 @@ export interface SnapshotStore {
   /**
    * Persist a snapshot at `seq` — typically the seq of the latest event
    * applied.  Optional `options` carry per-call preferences from the
-   * caller (e.g. compression/encryption set on the actor).  Stores that
-   * cannot honour them silently ignore the field.
+   * caller (e.g. compression/encryption set on the actor).  A store that
+   * cannot honour a field ignores it here and says so through
+   * {@link SnapshotStore.persistenceOptionSupport}, which is what lets the
+   * actor be refused at start rather than written unprotected (#960).
    *
    * ### Retention is best-effort; the write is not
    *
@@ -46,7 +49,10 @@ export interface SnapshotStore {
    * Load the newest snapshot for `persistenceId`, or None if none exist.
    * `options.encryption` is required when client-side encryption was
    * used at write time — the store has no other way to obtain the
-   * master key.  Stores that don't encrypt ignore the field.
+   * master key.  Stores that don't encrypt ignore the field and declare
+   * that through {@link SnapshotStore.persistenceOptionSupport}; reading
+   * with `encryption` set against such a store would otherwise hand the
+   * caller plaintext it believes was ciphertext (#960).
    */
   loadLatest<S = unknown>(persistenceId: string, options?: PersistenceOptions): Promise<Option<Snapshot<S>>>;
 
@@ -64,11 +70,61 @@ export interface SnapshotStore {
   readonly storageLocality?: StorageLocality;
 
   /**
+   * Which fields of `PersistenceOptions` this store acts on — see
+   * {@link PersistenceOptionSupport}.  Optional; absence means unknown, and
+   * an unknown store is never refused (#960).
+   */
+  readonly persistenceOptionSupport?: PersistenceOptionSupport;
+
+  /**
+   * Whether this store's **own configuration** keeps `persistenceId`'s
+   * snapshots encrypted at rest (#782).
+   *
+   * A different question from
+   * {@link SnapshotStore.persistenceOptionSupport}, which answers "could this
+   * store encrypt?".  This one answers "is it going to, for this entity?" —
+   * and only the store can answer it, because the directive may never appear
+   * in the `PersistenceOptions` of any call: `ObjectStorageSnapshotStore`
+   * resolves `withEncryption(...)` from its own options whenever the call
+   * carries none, and per-entity resolvers make the answer vary by
+   * `persistenceId`, which is why this takes one.
+   *
+   * It exists for decorators that hold decoded state somewhere the wrapped
+   * store does not control — `CachedSnapshotStore` is the one in tree, and
+   * the reason a caller-owned cache must be told before it writes plaintext
+   * into a Redis the bucket's operators may not administer.  Declared on this
+   * contract alone for that reason: `Journal` and `DurableStateStore` have no
+   * such decorator, and surface nothing reads is surface that rots.
+   *
+   * Optional, and `undefined` is a valid answer: absence means *unknown*, the
+   * same absence-is-meaningful family as `storageLocality` and
+   * `persistenceOptionSupport`, and unknown never refuses anything.  A
+   * third-party store that encrypts and declares nothing is therefore invisible
+   * here — a cost this family accepts so that not declaring cannot become a
+   * behaviour change on upgrade.
+   *
+   * The in-tree stores that cannot encrypt at all deliberately leave it
+   * undeclared rather than answering `false` everywhere: they already say so,
+   * once, through `persistenceOptionSupport.encryption`, and a second
+   * declaration saying the same thing is a second place to forget.
+   */
+  encryptsAtRest?(persistenceId: string): boolean | undefined;
+
+  /**
    * Identity of the database behind this store, minted on first contact and
    * persisted in the database itself — see {@link Journal.storageIdentity}
    * for the full semantics (#1358).  Optional; absence means unknown.
    */
   storageIdentity?(): Promise<string>;
+
+  /**
+   * Open whatever this store connects to now, instead of on its first
+   * operation: idempotent, single-flight with the first operation,
+   * retry-safe after a failure, and rejected after `close()` — see
+   * {@link Journal.start} for the full contract (#1473).  Optional; absence
+   * means there is nothing to open eagerly.
+   */
+  start?(): Promise<void>;
 
   /** Best-effort teardown. */
   close?(): Promise<void>;

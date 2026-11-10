@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -52,7 +52,22 @@ const backends: Array<[string, () => HttpServerBackend]> = [
 ];
 
 const live: Array<{ binding: ServerBinding; system: ActorSystem }> = [];
-afterEach(async () => {
+/**
+ * Once per file, not once per test.
+ *
+ * The seventeen cases in the backend block below used to start an
+ * `ActorSystem` and bind a server each, three backends over, so a file whose
+ * subject is reading files off a disk paid fifty-one server lifecycles for it.
+ * Idle that is about ten milliseconds apiece and invisible; in a full run under
+ * `--parallel` it is the most contention-sensitive thing in the tree, and one
+ * of those cases missed bun's 5 000 ms default by 29 ms (#1504).
+ *
+ * The block now binds one server per backend in `beforeAll` and every case
+ * shares it.  Nothing there mutates server state — they are `fetch` calls
+ * against a static tree — so the isolation the old shape bought was isolation
+ * from nothing.  What it cost was real.
+ */
+afterAll(async () => {
   while (live.length) {
     const { binding, system } = live.shift()!;
     await binding.unbind();
@@ -99,8 +114,20 @@ describe.each(backends)('static files — %s backend', (backendName, mk) => {
     );
   };
 
+  let url = '';
+  /**
+   * The bind moved out of the seventeen test bodies and into here, so the cap
+   * that contains it has to move with it: bun applies the same undeclared
+   * 5 000 ms to a hook as to a test, and a hook that crosses it fails every
+   * case in the block at once with a message that names none of them.
+   *
+   * 30 s for the same reason `BackendTransportFrameCap.test.ts` uses it — far
+   * above any observation, finite so a wedged bind fails in half a minute
+   * rather than burning the job's hour (#1504).
+   */
+  beforeAll(async () => { url = await start(mk, routes()); }, 30_000);
+
   test('serves a file with the correct MIME type', async () => {
-    const url = await start(mk, routes());
     const response = await fetch(`${url}/static/style.css`);
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe('text/css; charset=utf-8');
@@ -108,7 +135,6 @@ describe.each(backends)('static files — %s backend', (backendName, mk) => {
   });
 
   test('resolves the index file for a directory', async () => {
-    const url = await start(mk, routes());
     const response = await fetch(`${url}/static/`);
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('text/html');
@@ -116,7 +142,6 @@ describe.each(backends)('static files — %s backend', (backendName, mk) => {
   });
 
   test('redirects a directory without a trailing slash', async () => {
-    const url = await start(mk, routes());
     const response = await fetch(`${url}/static`, { redirect: 'manual' });
     expect(response.status).toBe(301);
     expect(response.headers.get('location')).toBe('/static/');
@@ -128,14 +153,12 @@ describe.each(backends)('static files — %s backend', (backendName, mk) => {
     // produced `/static?a=1/` here — the slash landing in the query value,
     // so the redirect target addressed a different resource and the
     // documented "query preserved" guarantee held on two backends of three.
-    const url = await start(mk, routes());
     const response = await fetch(`${url}/static?a=1&b=2`, { redirect: 'manual' });
     expect(response.status).toBe(301);
     expect(response.headers.get('location')).toBe('/static/?a=1&b=2');
   });
 
   test('the directory listing heading is the pathname, without the query', async () => {
-    const url = await start(mk, routes());
     const response = await fetch(`${url}/browse/sub/?show=all`);
     expect(response.status).toBe(200);
     const html = await response.text();
@@ -144,28 +167,23 @@ describe.each(backends)('static files — %s backend', (backendName, mk) => {
   });
 
   test('serves a nested file', async () => {
-    const url = await start(mk, routes());
     expect(await (await fetch(`${url}/static/sub/page.txt`)).text()).toBe('hello sub');
   });
 
   test('404 for a missing file', async () => {
-    const url = await start(mk, routes());
     expect((await fetch(`${url}/static/missing.txt`)).status).toBe(404);
   });
 
   test('404 for a dotfile (denied by default)', async () => {
-    const url = await start(mk, routes());
     expect((await fetch(`${url}/static/.secret`)).status).toBe(404);
   });
 
   test('404 for an encoded traversal attempt', async () => {
-    const url = await start(mk, routes());
     const response = await fetch(`${url}/static/%2e%2e%2f%2e%2e%2fpackage.json`);
     expect(response.status).toBe(404);
   });
 
   test('honours conditional If-None-Match with a 304', async () => {
-    const url = await start(mk, routes());
     const first = await fetch(`${url}/static/style.css`);
     const etag = first.headers.get('etag')!;
     expect(etag).toBeTruthy();
@@ -175,7 +193,6 @@ describe.each(backends)('static files — %s backend', (backendName, mk) => {
   });
 
   test('HEAD returns headers with an empty body', async () => {
-    const url = await start(mk, routes());
     const response = await fetch(`${url}/static/style.css`, { method: 'HEAD' });
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toBe('text/css; charset=utf-8');
@@ -183,7 +200,6 @@ describe.each(backends)('static files — %s backend', (backendName, mk) => {
   });
 
   test('serves a single Range as 206', async () => {
-    const url = await start(mk, routes());
     const response = await fetch(`${url}/static/style.css`, { headers: { range: 'bytes=0-3' } });
     expect(response.status).toBe(206);
     expect(response.headers.get('content-range')).toBe('bytes 0-3/6');
@@ -191,14 +207,12 @@ describe.each(backends)('static files — %s backend', (backendName, mk) => {
   });
 
   test('416 for an unsatisfiable Range', async () => {
-    const url = await start(mk, routes());
     const response = await fetch(`${url}/static/style.css`, { headers: { range: 'bytes=99999-' } });
     expect(response.status).toBe(416);
     expect(response.headers.get('content-range')).toBe('bytes */6');
   });
 
   test('browses a directory that has no index', async () => {
-    const url = await start(mk, routes());
     const response = await fetch(`${url}/browse/sub/`);
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('text/html');
@@ -208,7 +222,6 @@ describe.each(backends)('static files — %s backend', (backendName, mk) => {
   });
 
   test('a streamed file arrives byte-for-byte over the wire', async () => {
-    const url = await start(mk, routes());
     const response = await fetch(`${url}/streamed/large.bin`);
     expect(response.status).toBe(200);
     const received = new Uint8Array(await response.arrayBuffer());
@@ -228,7 +241,6 @@ describe.each(backends)('static files — %s backend', (backendName, mk) => {
     // nothing set, a stream body has no length for a backend to measure and
     // every large download would silently become chunked, so what is asserted
     // here is that the length arrives *correct* rather than merely present.
-    const url = await start(mk, routes());
     const response = await fetch(`${url}/streamed/large.bin`);
     expect(response.status).toBe(200);
     if (backendsStatingStreamLength.has(backendName)) {
@@ -243,7 +255,6 @@ describe.each(backends)('static files — %s backend', (backendName, mk) => {
   });
 
   test('a Range against a streaming mount still answers 206 with the window', async () => {
-    const url = await start(mk, routes());
     const response = await fetch(`${url}/streamed/large.bin`, { headers: { range: 'bytes=100-131' } });
     expect(response.status).toBe(206);
     expect(response.headers.get('content-range')).toBe(`bytes 100-131/${LARGE_FILE_SIZE}`);
