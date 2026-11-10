@@ -527,26 +527,32 @@ Eine Entscheidung, die nur Peers downt, ändert an diesem Knoten nichts: Der
 Schalter beantwortet seine eigene Entfernung, nicht ein Downing, das er
 entscheidet.
 
-Ausgeliefert wird **aus**, und keiner der beiden Werte ist für sich genommen
-sicher:
+Ausgeliefert wird **an**:
 
+- **An** beendet ein falsches Selbst-Downing den Knoten.  Die beiden
+  bekannten — `static-quorum` downte einen Cluster, der noch kleiner als
+  `quorum-size` war ([Issue #933](https://github.com/pathosDev/actor-ts/issues/933)),
+  und `keep-oldest` downte jeden Überlebenden, sobald der Knoten mit der
+  niedrigsten Adresse abstürzte
+  ([Issue #932](https://github.com/pathosDev/actor-ts/issues/932)) — sind
+  behoben, und erst damit wurde der Default umgestellt.
 - **Aus** verlässt der Knoten den Cluster und lässt seine Actors weiterlaufen
   — die Entities und Singletons, die er hielt, jede HTTP-Bindung — neben der
   Seite, die gewonnen hat.  Das ist ein zweiter Schreiber, genau das, was eine
   Downing-Entscheidung verhindern soll.
-- **An** beendet ein falsches Selbst-Downing den Knoten, und zwei sind offen:
-  `static-quorum` downt einen Cluster, der beim Hochfahren noch kleiner als
-  `quorum-size` ist ([Issue #933](https://github.com/pathosDev/actor-ts/issues/933)),
-  und `keep-oldest` downt jeden Überlebenden, sobald der Knoten mit der
-  niedrigsten Adresse abstürzt
-  ([Issue #932](https://github.com/pathosDev/actor-ts/issues/932)).
 
-Nur das eigene Urteil dieses Knotens erreicht den Schalter.  Ein Downing, das
-ein **Peer** über diesen Knoten entscheidet, erreicht ihn nicht: die
-Behauptung eines Peers über den eigenen Eintrag dieses Knotens wird
-abgelehnt, also sieht der Knoten nie ein `MemberDown` oder ein `SelfRemoved`
-für sich selbst, und beides zu abonnieren ist kein Weg, ihn herunterzufahren
-([Issue #940](https://github.com/pathosDev/actor-ts/issues/940)).
+Nur das eigene Urteil dieses Knotens erreicht den Schalter.  Die Behauptung
+eines Peers über den eigenen Eintrag dieses Knotens wird abgelehnt, die
+Gewinnerseite kann ihn also nicht direkt downen.  Das muss sie auch nicht:
+Ein Peer, der diesen Knoten entfernt hat, beantwortet seine Heartbeats mit
+einer Ablehnung, der Knoten parkt jeden solchen Peer als unreachable, und
+sobald ihn jeder Peer abgelehnt hat, wird seine eigene Strategie sofort
+gefragt — ein Knoten, der über das Downing-Fenster hinaus pausiert war, tritt
+binnen einer Heartbeat-Runde nach dem Aufwachen ab
+([Issue #940](https://github.com/pathosDev/actor-ts/issues/940)).  Ein
+Selbst-Downing endet in `removed` und meldet `SelfRemoved` für diesen Knoten,
+ob an oder aus — eine Anwendung, die zu eigenen Bedingungen abtreten will,
+kann es abonnieren.
 
 Ein Knoten, den der Schalter herunterfährt, beendet seinen Prozess so, wie
 ein sauberer Stopp es tut.  Mit `exit-process = on` endet der Lauf mit

@@ -20,6 +20,7 @@ import { DEFAULT_MINIMUM_MEMBERS_BEFORE_UP } from '../../../src/cluster/ClusterO
 import { DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS, DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE } from '../../../src/cluster/ClusterOptions.js';
 import { DEFAULT_SPLIT_BRAIN_RESOLVER_STRATEGY } from '../../../src/cluster/downing/DowningFromConfig.js';
 import { DEFAULT_DOWN_ALL_WHEN_UNSTABLE, DEFAULT_STABLE_AFTER_MS } from '../../../src/cluster/downing/SplitBrainResolverOptions.js';
+import { DEFAULT_KEEP_OLDEST_DOWN_IF_ALONE } from '../../../src/cluster/downing/KeepOldestOptions.js';
 import { DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION } from '../../../src/cluster/ClusterOptions.js';
 import { DEFAULT_FAILURE_DETECTOR_AUTO_DOWN } from '../../../src/cluster/ClusterOptions.js';
 import { DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN } from '../../../src/cluster/ClusterOptions.js';
@@ -390,6 +391,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // boolean either way and branches on it, so a published `on` against a
   // shipped `false` would be a real divergence this row catches (#839).
   { key: 'actor-ts.cluster.split-brain-resolver.down-all-when-unstable', kind: 'bool', constant: DEFAULT_DOWN_ALL_WHEN_UNSTABLE },
+  { key: 'actor-ts.cluster.split-brain-resolver.keep-oldest.down-if-alone', kind: 'bool', constant: DEFAULT_KEEP_OLDEST_DOWN_IF_ALONE },
   { key: 'actor-ts.cluster.failure-detector.implementation', kind: 'string', constant: DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION },
   // In the table rather than in FEATURE_SWITCHES for the reason the
   // down-all-when-unstable row gives: `Cluster` resolves the field to a boolean

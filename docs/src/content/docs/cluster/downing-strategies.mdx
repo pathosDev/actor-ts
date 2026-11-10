@@ -14,14 +14,17 @@ A **downing strategy** picks a winning side and forcibly downs the
 losing side.  Each losing node leaves the cluster; the winning side
 continues as the cluster.  Whether a losing node's actors stop as
 well is `actor-ts.cluster.run-coordinated-shutdown-when-down`.  With
-it on, the node runs its
+it on, the shipped default, the node runs its
 [coordinated-shutdown pipeline](/fundamentals/coordinated-shutdown/#when-the-cluster-downs-this-node),
 which ends its actor system unless
-`coordinated-shutdown.terminate-actor-system` is off.  With the
-shipped `off` it only leaves, and its actors keep running beside the
-winners — a second writer for every entity and singleton it hosted.
-Either way a node acts only on its own strategy's verdict: a downing
-the winning side decides about it is not told to it
+`coordinated-shutdown.terminate-actor-system` is off.  With it `off`
+it only leaves, and its actors keep
+running beside the winners — a second writer for every entity and
+singleton it hosted.  Either way a node acts only on its own
+strategy's verdict.  The winning side cannot down it, but it refuses
+its heartbeats, and a node every peer refuses has its own strategy
+asked at once — so a node that was paused or cut off while the others
+removed it stands down once it can hear them again
 ([issue #940](https://github.com/pathosDev/actor-ts/issues/940)).
 
 ```mermaid
@@ -173,12 +176,13 @@ stops the node.  Naming `static-quorum` or `keep-referee` without its key
 is refused at startup, with the missing key in the message.
 
 :::caution[`static-quorum` from a config file is a cluster-wide switch]
-Quorum is checked at *every* membership change, including the initial join,
-and a node below it downs itself.  So `quorum-size = 3` in a config every
-replica shares makes each node leave as it starts, until the third one is
-up — a rolling restart then takes the cluster down rather than through.
-Set it to a value at or below your minimum runtime size, and roll it out
-before the deployment that relies on it.
+Quorum is checked whenever a member is unreachable, and a side below it downs
+itself.  A cluster that is merely smaller than `quorum-size` — still
+bootstrapping, or scaled down — has no partition and is left alone (#933),
+but a crash during a rolling restart is one: with `quorum-size = 3` and one
+replica already restarting, the crash of a second leaves one reachable member,
+and it downs itself.  Set it to a value at or below your minimum runtime size,
+and roll it out before the deployment that relies on it.
 :::
 
 `lease-majority` needs a lease backend as well.  Its lease is built from
@@ -342,11 +346,12 @@ special-purpose deployments.
 ```ts
 import { KeepOldest, KeepOldestOptions } from 'actor-ts/cluster';
 
-const keepOldestOptions = KeepOldestOptions.create().withDownIfAlone(true);
+const keepOldestOptions = KeepOldestOptions.create().withRole('backend');
 new KeepOldest(keepOldestOptions);
 ```
 
-The side containing the **"oldest" member** wins.
+The side containing the **"oldest" member** wins — unless the oldest is
+alone (see `downIfAlone` below).
 
 :::caution["Oldest" here means lowest address, not longest-running]
 Despite the name, this strategy does not track join order — no
@@ -369,9 +374,21 @@ Useful when:
 - You can pin the address of the node that should survive — then the
   strategy is deterministic and needs no quorum arithmetic.
 
-`downIfAlone: true` means "if I'm the oldest but everyone else is
-unreachable, I down myself" — prevents a one-node "winner"
-declaring itself the cluster after a total split.
+`downIfAlone` — on by default, `keep-oldest.down-if-alone` in the config
+file — decides what happens when the oldest is the only member on its side
+of the split, against two or more on the other:
+
+- **On:** the oldest loses and the group carries on.  That is the same
+  answer from both sides: survivors that find a crashed oldest unreachable
+  down it, and an oldest cut off on its own downs itself.
+- **Off:** the side holding the oldest survives and nothing else does.  A
+  crashed oldest is on nobody's side, so every survivor downs itself and the
+  crash of one node — the lowest-addressed, which is also the leader — stops
+  the cluster (#932).  Choose it only if you would rather stop than run
+  without the node you pinned.
+
+Two sides of one member each are not "alone against a group": a two-node
+cluster keeps the oldest either way.
 
 ## KeepReferee
 
@@ -414,8 +431,9 @@ const staticQuorumOptions = StaticQuorumOptions.create().withQuorumSize(3);
 new StaticQuorum(staticQuorumOptions);
 ```
 
-A side wins only if it has at least `quorumSize` reachable members.
-Below the quorum, the side downs itself.
+When some member is unreachable, a side wins only if it has at least
+`quorumSize` reachable members; below the quorum, the side downs itself.
+With nothing unreachable it decides nothing, however small the cluster is.
 
 **Picks:**
 

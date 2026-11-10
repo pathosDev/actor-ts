@@ -498,22 +498,27 @@ node says so at `warn` before the run starts.  A decision that downs only
 peers changes nothing on this node: the switch answers its own removal, not a
 downing it decides.
 
-It ships **off**, and neither value is safe on its own terms:
+It ships **on**:
 
+- **On**, a wrong self-down terminates the node.  The two known ones —
+  `static-quorum` downing a cluster still smaller than `quorum-size`
+  ([issue #933](https://github.com/pathosDev/actor-ts/issues/933)), and
+  `keep-oldest` downing every survivor once the lowest-addressed node crashed
+  ([issue #932](https://github.com/pathosDev/actor-ts/issues/932)) — are
+  fixed, which is when the default moved.
 - **Off**, the node leaves and keeps running its actors — the entities and
   singletons it hosted, any HTTP binding — beside the side that won.  That is
   a second writer, the very thing a downing decision exists to prevent.
-- **On**, a wrong self-down terminates the node, and two are open:
-  `static-quorum` downs a cluster still smaller than `quorum-size` while it
-  bootstraps ([issue #933](https://github.com/pathosDev/actor-ts/issues/933)),
-  and `keep-oldest` downs every survivor once the lowest-addressed node
-  crashes ([issue #932](https://github.com/pathosDev/actor-ts/issues/932)).
 
-Only this node's own verdict reaches the switch.  A downing a **peer** decides
-about this node does not: a peer's claim about this node's own record is
-refused, so the node never sees a `MemberDown` or a `SelfRemoved` for itself,
-and subscribing to either is no way to stand it down
-([issue #940](https://github.com/pathosDev/actor-ts/issues/940)).
+Only this node's own verdict reaches the switch.  A peer's claim about this
+node's own record is refused, so the winning side cannot down it directly.
+It does not have to: a peer that removed this node answers its heartbeats
+with a refusal, the node parks every such peer as unreachable, and once every
+peer has refused it its own strategy is asked at once — a node paused past
+the downing window stands down within a heartbeat round of resuming
+([issue #940](https://github.com/pathosDev/actor-ts/issues/940)).  A self-down
+ends in `removed` and announces `SelfRemoved` for this node, on or off, so an
+application that wants to stand down on its own terms can subscribe to it.
 
 A node the switch stands down ends its process the way a clean stop does.
 With `exit-process = on`, the run exits with `exit-code`, which ships as `0`:

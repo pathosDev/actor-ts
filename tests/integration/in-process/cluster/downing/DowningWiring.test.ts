@@ -905,8 +905,12 @@ function acceptsSpawns(system: ActorSystem): boolean {
   }
 }
 
+/**
+ * This node's own status, tombstone included: a self-down ends in `removed`
+ * (#940), which `getMembers` filters out.
+ */
 function selfStatusOf(node: Node): MemberStatus | undefined {
-  return node.cluster.getMembers().find((m) => m.address.equals(node.cluster.selfAddress))?.status;
+  return node.cluster.selfMember()?.status;
 }
 
 /**
@@ -960,34 +964,35 @@ describe('Cluster + DowningProvider — the shutdown pipeline after a self-down 
     return { seed, peer };
   }
 
-  test('switched on, a self-down leaves, then runs the pipeline with ClusterDowningReason, which ends the system', async () => {
-    const { seed, peer } = await formPair('down-self-runs-pipeline', 64_311, {
-      downing: DOWNS_ITSELF,
-      runCoordinatedShutdownWhenDown: true,
-    });
+  test('unset, a self-down leaves, then runs the pipeline with ClusterDowningReason, which ends the system', async () => {
+    // The default, bound by behaviour rather than by a constant: the key is
+    // left out entirely, so whatever the shipped default is decides this.
+    const { seed, peer } = await formPair('down-self-runs-pipeline', 64_311, { downing: DOWNS_ITSELF });
     const seen = observeFirstPhase(seed);
 
     await peer.cluster.transport.shutdown();
 
     await waitFor(() => seed.sys.isTerminated, 5_000, 25, 'the downed node terminated its ActorSystem');
     // Once, with the downing reason, and after the leave rather than instead
-    // of it: a run started first would find self still `up` here.
+    // of it: a run started first would find self still `up` here.  The leave
+    // ends in `removed`, with `SelfRemoved` (#940).
     expect(seen).toHaveLength(1);
     expect(seen[0]!.reason).toBe(ClusterDowningReason.instance);
-    expect(seen[0]!.selfStatus).toBe('leaving');
+    expect(seen[0]!.selfStatus).toBe('removed');
 
     await peer.sys.terminate();
   }, 15_000);
 
-  test('unset, a self-down only leaves: no pipeline runs and the system stays up', async () => {
-    // The default, bound by behaviour rather than by a constant: the key is
-    // left out entirely, so whatever the shipped default is decides this.
-    const { seed, peer } = await formPair('down-self-leaves-only', 64_321, { downing: DOWNS_ITSELF });
+  test('switched off, a self-down only leaves: no pipeline runs and the system stays up', async () => {
+    const { seed, peer } = await formPair('down-self-leaves-only', 64_321, {
+      downing: DOWNS_ITSELF,
+      runCoordinatedShutdownWhenDown: false,
+    });
     const seen = observeFirstPhase(seed);
     const shutdown = seed.sys.extension(CoordinatedShutdownId);
 
     await peer.cluster.transport.shutdown();
-    await waitFor(() => selfStatusOf(seed) === 'leaving', 5_000, 25, 'the self-down made this node leave');
+    await waitFor(() => selfStatusOf(seed) === 'removed', 5_000, 25, 'the self-down made this node leave');
 
     // Read from a later timer turn than the one that left: the in-memory
     // transport closes at once, so the leave has settled by now and a run
@@ -1016,7 +1021,7 @@ describe('Cluster + DowningProvider — the shutdown pipeline after a self-down 
     await peer.cluster.transport.shutdown();
 
     await waitFor(() => seed.sys.isTerminated, 5_000, 25, 'the downed node terminated its ActorSystem');
-    expect(seen).toEqual([{ reason: ClusterDowningReason.instance, selfStatus: 'leaving' }]);
+    expect(seen).toEqual([{ reason: ClusterDowningReason.instance, selfStatus: 'removed' }]);
     expect(log.records.some((record) => record.level === 'warn'
       && record.message.startsWith('actor-ts.cluster.run-coordinated-shutdown-when-down is on'))).toBe(true);
 
@@ -1040,7 +1045,7 @@ describe('Cluster + DowningProvider — the shutdown pipeline after a self-down 
     await peer.cluster.transport.shutdown();
 
     await waitFor(() => seed.sys.isTerminated, 5_000, 25, 'the downed node terminated its ActorSystem');
-    expect(seen).toEqual([{ reason: ClusterDowningReason.instance, selfStatus: 'leaving' }]);
+    expect(seen).toEqual([{ reason: ClusterDowningReason.instance, selfStatus: 'removed' }]);
 
     await peer.sys.terminate();
   }, 15_000);
@@ -1070,7 +1075,7 @@ describe('Cluster + DowningProvider — the shutdown pipeline after a self-down 
     } finally {
       clearInterval(churn);
     }
-    expect(seen).toEqual([{ reason: ClusterDowningReason.instance, selfStatus: 'leaving' }]);
+    expect(seen).toEqual([{ reason: ClusterDowningReason.instance, selfStatus: 'removed' }]);
 
     await peer.sys.terminate();
   }, 20_000);

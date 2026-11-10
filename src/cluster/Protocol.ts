@@ -237,6 +237,7 @@ export type WireMessage =
   | HelloAcknowledgmentMessage
   | HeartbeatMessage
   | HeartbeatAcknowledgmentMessage
+  | MembershipRefusedMessage
   | GossipMessage
   | EnvelopeMessage
   | LeaveMessage
@@ -265,6 +266,24 @@ export type HeartbeatAcknowledgmentMessage = {
   kind: 'heartbeat-ack';
   from: NodeAddressData;
   seq: number;
+};
+
+/**
+ * The answer to a heartbeat from a member the receiver holds as `removed`, in
+ * place of the acknowledgment (#940).
+ *
+ * `subject` is the address of the tombstone the receiver holds — incarnation
+ * included — so the heartbeat's sender can tell "you removed *me*" from "you
+ * removed a previous run at my address".  The sender takes it as nothing more
+ * than "this peer will no longer have me", which is a fact about the peer and
+ * not about itself: it stops crediting that peer with liveness and leaves the
+ * verdict to its own downing provider.  So the frame carries no status claim,
+ * and a forged one achieves what dropping the peer's traffic already would.
+ */
+export type MembershipRefusedMessage = {
+  kind: 'membership-refused';
+  from: NodeAddressData;
+  subject: NodeAddressData;
 };
 
 export type GossipMessage = {

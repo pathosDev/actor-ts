@@ -794,6 +794,32 @@ konvergieren, bevor ein Downing-Provider entscheidet. Solche
 Aussagen abzuweisen ließe jedem Knoten nur sein eigenes
 Erreichbarkeitsbild.
 
+### Wie ein entfernter Knoten davon erfährt
+
+Die erste Regel heißt, dass kein Peer diesem Knoten sagen kann, dass
+er entfernt wurde — und ein Knoten, den der Rest des Clusters gedownt
+hat, während er pausiert oder abgeschnitten war, lief früher mit allem
+weiter, was er hielt. Ein Peer, der den Lauf dieses Knotens als
+`removed` führt, beantwortet seine Heartbeats deshalb mit einem
+`membership-refused`-Frame statt einer Bestätigung und nennt diesen
+Lauf mit seiner Inkarnation (#940). Der Frame gilt nur als Aussage
+über den **Absender**: „Ich nehme dich nicht zurück". Der Empfänger
+parkt diesen Peer als `unreachable` und lässt ihn nicht mehr durch
+dessen Heartbeats zurückkommen; sein eigener Eintrag bleibt unberührt,
+und das Urteil bleibt bei seiner eigenen Downing-Strategie. Sobald ihn
+jeder Peer abgelehnt hat, gilt die Sicht als stabil, und die Strategie
+wird sofort gefragt statt nach `stable-after`.
+
+Eine gefälschte Ablehnung erreicht also, was das Verwerfen des
+Verkehrs dieses Peers ohnehin erreicht — der Peer wirkt unreachable —,
+und nicht mehr: Der Gossip des echten Peers, der diesen Knoten als
+Mitglied führt, nimmt sie zurück, und eine Ablehnung, die einen
+anderen oder keinen Lauf an dieser Adresse nennt, wird ignoriert. Eine
+Fälschung für *jeden* Peer lässt die Strategie des Knotens über eine
+Sicht entscheiden, in der er allein ist; das ist die Reichweite, die
+das Kappen seines gesamten Verkehrs hat, und der Grund, warum der
+Hinweis unten auch hier gilt.
+
 :::caution[Das ist keine Authentifizierung]
 Die Regeln nehmen die Beliebigkeit heraus — eine Aussage
 braucht jetzt Standing, das dieser Knoten vergeben hat, statt

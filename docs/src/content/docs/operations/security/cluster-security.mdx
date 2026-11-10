@@ -732,6 +732,29 @@ observation, and every node must converge on the same view
 before a downing provider decides. Refusing those claims
 would leave each node with only its own reachability picture.
 
+### How a removed node finds out
+
+The first rule means no peer can tell this node it was removed —
+and a node the rest of the cluster downed while it was paused or
+cut off used to go on running everything it hosted. So a peer that
+holds this node's run as `removed` answers its heartbeats with a
+`membership-refused` frame instead of an acknowledgment, naming that
+run with its incarnation (#940). The frame is taken as a statement
+about the **sender** only: "I will not have you back". The receiver
+parks that peer at `unreachable` and stops letting its heartbeats
+bring it back; its own record stays untouched, and the verdict stays
+with its own downing strategy. Once every peer has refused it, the
+view counts as settled and the strategy is asked at once rather than
+after `stable-after`.
+
+So a forged refusal buys what dropping that peer's traffic already
+buys — the peer looks unreachable — and no more: the real peer's
+gossip, which lists this node as a member, withdraws it, and a
+refusal naming another run at this address, or none, is ignored.
+Forging one for *every* peer makes the node's strategy decide on a
+view in which it is alone; that is the reach of cutting all of its
+traffic, and the reason the caution below applies here too.
+
 :::caution[This is not authentication]
 These rules remove the free-for-all — a claim now needs
 standing this node granted, rather than a large number. They

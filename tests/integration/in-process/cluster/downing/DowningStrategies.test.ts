@@ -105,23 +105,54 @@ describe('KeepMajority', () => {
 });
 
 describe('KeepOldest', () => {
-  test('oldest-reachable side downs the other', () => {
-    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }], [2, 3]);
-    const decision = new KeepOldest().decide(clusterView);
-    expect(decision.has(addr(2).toString())).toBe(true);
-    expect(decision.has(addr(3).toString())).toBe(true);
+  const keys = (...ports: number[]): Set<string> => new Set(ports.map((port) => addr(port).toString()));
+  const five = [{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }, { port: 5 }];
+  const three = [{ port: 1 }, { port: 2 }, { port: 3 }];
+
+  test('the side holding the oldest downs the other, seen from either side', () => {
+    // {1,2} | {3,4,5}: the oldest has company, so it is not alone, and its
+    // side wins although it is the smaller one.
+    expect(new KeepOldest().decide(view(five, [3, 4, 5], 1))).toEqual(keys(3, 4, 5));
+    expect(new KeepOldest().decide(view(five, [1, 2], 3))).toEqual(keys(3, 4, 5));
   });
 
-  test('oldest-unreachable → this side downs itself', () => {
-    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }], [1]);
-    const decision = new KeepOldest().decide(clusterView);
-    // Ports 2 & 3 are reachable but oldest (1) is on other side → they down themselves.
-    expect(decision.has(addr(2).toString())).toBe(true);
-    expect(decision.has(addr(3).toString())).toBe(true);
+  test('a crashed oldest is downed by the survivors, which carry on (#932)', () => {
+    // The oldest is on nobody's side once it has crashed; the strict rule made
+    // every survivor down itself, and one dead node took the cluster with it.
+    expect(new KeepOldest().decide(view(three, [1], 2))).toEqual(keys(1));
+  });
+
+  test('an oldest cut off on its own downs itself, agreeing with the group (#932)', () => {
+    expect(new KeepOldest().decide(view(three, [2, 3], 1))).toEqual(keys(1));
+  });
+
+  test('two sides of one member each keep the oldest — a two-node cluster does not stop', () => {
+    const two = [{ port: 1 }, { port: 2 }];
+    expect(new KeepOldest().decide(view(two, [2], 1))).toEqual(keys(2));
+    expect(new KeepOldest().decide(view(two, [1], 2))).toEqual(keys(2));
+  });
+
+  test('with down-if-alone off, the side holding the oldest survives and nothing else does', () => {
+    const strict = new KeepOldest({ downIfAlone: false });
+    expect(strict.decide(view(three, [1], 2))).toEqual(keys(2, 3));
+    expect(strict.decide(view(three, [2, 3], 1))).toEqual(keys(2, 3));
+  });
+
+  test('nothing unreachable is no partition: no decision, whatever the size', () => {
+    expect(new KeepOldest().decide(view(three, [], 1)).size).toBe(0);
+    expect(new KeepOldest({ downIfAlone: false }).decide(view([{ port: 1 }], [], 1)).size).toBe(0);
   });
 });
 
 describe('StaticQuorum', () => {
+  test('nothing unreachable is no partition, however far below the quorum (#933)', () => {
+    // A single node that has just started, with two more still to come.
+    const quorumOptions = StaticQuorumOptions.create().withQuorumSize(3);
+    expect(new StaticQuorum(quorumOptions).decide(view([{ port: 1 }], [])).size).toBe(0);
+    // And a healthy cluster scaled down below it.
+    expect(new StaticQuorum(quorumOptions).decide(view([{ port: 1 }, { port: 2 }], [])).size).toBe(0);
+  });
+
   test('reachable meets quorum → down unreachable', () => {
     const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
     const quorumOptions = StaticQuorumOptions.create().withQuorumSize(2);
@@ -146,6 +177,16 @@ describe('StaticQuorum', () => {
 });
 
 describe('KeepReferee', () => {
+  test('nothing unreachable is no partition, even below down-all-if-below-quorum (#933)', () => {
+    // The referee and one more node, with a quorum of three still to come:
+    // the rule that downs everyone below it is for a partition, not for a
+    // cluster that has not finished joining.
+    const refereeOptions = KeepRefereeOptions.create()
+      .withRefereeAddress(addr(1).toString())
+      .withDownAllIfBelowQuorum(3);
+    expect(new KeepReferee(refereeOptions).decide(view([{ port: 1 }, { port: 2 }], [])).size).toBe(0);
+  });
+
   test('referee reachable on this side → down the other', () => {
     const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }], [3]);
     const refereeOptions = KeepRefereeOptions.create().withRefereeAddress(addr(1).toString());

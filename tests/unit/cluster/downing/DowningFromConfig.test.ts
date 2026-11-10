@@ -138,7 +138,7 @@ describe('readDowningFromConfig', () => {
     );
     expectExactOptions(
       readDowningFromConfig(over(`${resolver}.active-strategy = keep-oldest`)),
-      new KeepOldest(),
+      new KeepOldest({ downIfAlone: true }),
     );
     expectExactOptions(
       readDowningFromConfig(over(`
@@ -170,13 +170,22 @@ describe('readDowningFromConfig', () => {
       .toEqual(new Set(['sys@h:2']));
   });
 
-  test('keep-oldest has no down-if-alone key to read (#932)', () => {
-    // The flag is deliberately not config-selectable: `KeepOldest.decide`'s
-    // two arms are byte-identical today, so shipping the key would document a
-    // knob that changes nothing.  `NoDeadConfigKeys` would pass it — the field
-    // *is* read — which is why this is asserted on the leaf.
-    expect(Config.loadReference()
-      .hasPath('actor-ts.cluster.split-brain-resolver.keep-oldest.down-if-alone')).toBe(false);
+  test('keep-oldest reads down-if-alone, and a crash of the oldest then leaves the rest running (#932)', () => {
+    const resolver = 'actor-ts.cluster.split-brain-resolver';
+    const over = (overlay: string): Config => Config.loadReference().merge(Config.parseString(overlay));
+    const crashedOldest = view([member(1), member(2), member(3)], [1], 2);
+
+    // Shipped on: the oldest, alone on its side, is the one that goes.
+    const shipped = readDowningFromConfig(over(`${resolver}.active-strategy = keep-oldest`));
+    expect(shipped!.decide(crashedOldest)).toEqual(new Set(['sys@h:1']));
+
+    // Off: the side holding the oldest survives, and nothing else does.
+    const strict = readDowningFromConfig(over(`
+      ${resolver}.active-strategy = keep-oldest
+      ${resolver}.keep-oldest.down-if-alone = off
+    `));
+    expectExactOptions(strict, new KeepOldest({ downIfAlone: false }));
+    expect(strict!.decide(crashedOldest)).toEqual(new Set(['sys@h:2', 'sys@h:3']));
   });
 
   test('static-quorum is built from its quorum size', () => {

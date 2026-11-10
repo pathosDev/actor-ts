@@ -4413,6 +4413,37 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — `actor-ts.cluster.run-coordinated-shutdown-when-down` ships
+  `on`: a node its own downing decision removes now runs the
+  coordinated-shutdown pipeline, which ends its ActorSystem; it used to leave
+  the membership and keep its entities, singletons and HTTP binding running
+  beside the side that won** (#1456). The default was held off while two wrong
+  self-downs were known — `StaticQuorum` downing a cluster below its quorum
+  (#933) and `KeepOldest` downing every survivor of a crashed oldest (#932) —
+  and moves now that both are fixed. With #940, a node the others removed while
+  it was paused or cut off reaches the same decision once it hears them again,
+  so the switch covers that case too. `coordinated-shutdown.terminate-actor-system`
+  and `exit-process` still decide what the run ends in. **Migration:** a
+  deployment that wants a downed node to keep its actors running sets
+  `run-coordinated-shutdown-when-down = off` or
+  `withRunCoordinatedShutdownWhenDown(false)`; either way the self-down now
+  announces `SelfRemoved`.
+
+- **BREAKING — `KeepOldest` lets the rest of the cluster carry on when the
+  oldest member crashes; every survivor used to down itself, so one dead node
+  — the lowest-addressed, which is also the leader — stopped the whole
+  cluster** (#932). `downIfAlone` was a dead branch: both arms returned the
+  same set. It now decides the case it names, an oldest that is the only
+  member on its side against two or more on the other, and is **on by
+  default** — the survivors down a crashed oldest, and an oldest cut off on
+  its own downs itself. Two sides of one member each keep the oldest, so a
+  two-node cluster does not stop. It is readable from the config file as
+  `actor-ts.cluster.split-brain-resolver.keep-oldest.down-if-alone`. With
+  nothing unreachable the strategy decides nothing. **Migration:** a
+  deployment that wants the strict rule — the side holding the oldest
+  survives, nothing else does — sets `keep-oldest.down-if-alone = off` or
+  `withDownIfAlone(false)`.
+
 - **BREAKING — the minimum supported Bun is 1.4.0; `engines.bun` was
   `>=1.3.0`** (#1793). Bun 1.3.x does not deliver runtime behaviour the
   framework relies on — the details are in a security advisory — and the
@@ -6107,6 +6138,43 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **A cluster that is merely smaller than `StaticQuorum`'s `quorum-size`, or
+  than `KeepReferee`'s `down-all-if-below-quorum`, is no longer downed; a node
+  starting with `quorum-size = 3` downed itself on its first stable view,
+  before its peers had joined** (#933). Both strategies now decide nothing
+  while nothing is unreachable — a small cluster has no partition to resolve —
+  as `LeaseMajority` and `KeepMajority` already did. A partition that leaves a
+  side below the quorum still downs that side. The `static-quorum` caution on
+  the downing page says so (EN + DE).
+
+- **A node the rest of the cluster removed now learns of it and takes itself
+  out; it used to keep running the shards and the singleton the survivors had
+  already taken over, and `SelfRemoved` never fired on a real `Cluster`**
+  (#940). Reported from a deployment where a node was paused past the downing
+  window — SIGSTOP, a suspended VM, a long GC pause — and resumed: the
+  survivors acknowledged its heartbeats, the acknowledgment counted as
+  liveness, and the node never saw a partition its downing provider could
+  decide on. A survivor now answers a heartbeat from the run it holds as
+  `removed` with a new `membership-refused` frame naming that run (incarnation
+  included) instead of an acknowledgment. The removed node takes it as a fact
+  about the peer only: the peer is parked at `unreachable` and its later
+  heartbeats no longer bring it back, while the node's own status stays its own
+  to author, so the frame is no remote kill switch. Once every peer has refused
+  it the view is settled and the downing provider is asked at once instead of
+  after `stable-after`; under `KeepMajority` the node downs itself — about
+  200 ms after resuming in the reproduction, against never before. A node's
+  own self-down now ends in `removed` and emits `MemberRemoved` and
+  `SelfRemoved` for it, as `MockCluster` always did. A refusal naming another
+  run at the address (a restart) or carrying no incarnation is ignored, and the
+  real peer's gossip listing this run as a member withdraws a forged one. The
+  same path makes `Cluster.down` — and `POST /cluster/down` — on any one node
+  reach the node it downs: the tombstone gossips to the others, every peer
+  refuses the node, and it stands down, where it used to run on. It holds over
+  an injected transport too (a TLS `TcpTransport`, an in-memory one), whose
+  connections carry no incarnation: the run is read from the heartbeat itself.
+  `scripts/repro/cluster-dual-activity.ts` reproduces both #940 and #1272 with
+  three local processes.
 
 - **`idle-timeout` and `request-timeout` on the Express and Fastify backends
   are reported in effect on Deno 2.7.13 and later, where they hold; they were

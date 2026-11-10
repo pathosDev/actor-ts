@@ -8,8 +8,10 @@ import { StaticQuorumOptionsValidator } from './StaticQuorumOptions.js';
 import type { StaticQuorumOptions, StaticQuorumOptionsType } from './StaticQuorumOptions.js';
 
 /**
- * "Static quorum" — as long as at least `quorumSize` reachable members are
- * up on this side, keep them and down the rest.  Otherwise, down ourselves.
+ * "Static quorum" — when some member is unreachable, and at least
+ * `quorumSize` reachable members are up on this side, keep them and down the
+ * rest; otherwise, down ourselves.  With nothing unreachable it decides
+ * nothing, however small the cluster is (#933).
  *
  * This is the safest SBR choice when you know the expected cluster size
  * and want to avoid split-brain at the cost of availability when sections
@@ -31,6 +33,11 @@ export class StaticQuorum implements DowningProvider {
 
     const reachable = candidates.filter((m) => !view.unreachable.has(addrKey(m)));
     const unreachable = candidates.filter((m) => view.unreachable.has(addrKey(m)));
+    // Nothing unreachable is no partition, and a cluster that is merely smaller
+    // than `quorumSize` — one still bootstrapping, one scaled down — is not a
+    // split to resolve.  Without this the first stable view of a node that had
+    // just started downed it (#933).
+    if (unreachable.length === 0) return new Set();
 
     if (reachable.length >= this.options.quorumSize) {
       return new Set(unreachable.map(addrKey));

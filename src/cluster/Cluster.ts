@@ -104,6 +104,7 @@ import type {
   LeaveMessage,
   MemberData,
   MemberStatus,
+  MembershipRefusedMessage,
   StorageIdentitiesData,
   UnwatchMessage,
   WatchMessage,
@@ -494,6 +495,20 @@ export class Cluster {
    */
   private readonly parkedWithoutResolver = new Set<string>();
   /**
+   * Peers that answered this node's heartbeat with a `membership-refused` —
+   * they hold this run as `removed` — keyed like {@link members} (#940).
+   *
+   * Such a peer still sends frames: an acknowledgment already in flight, a
+   * heartbeat queued while this node was stalled.  The peer is alive, but none
+   * of it is evidence that it will have this node back, so none of it returns
+   * the peer to `up`; the peer stays `unreachable` and this node's own downing
+   * provider decides, which is how a node the cluster removed comes to remove
+   * itself.  A key leaves with its member — a removal, a delete or a restart of
+   * the peer — or when the peer's own gossip lists this run as a member again
+   * ({@link withdrawRefusalOnGossip}).
+   */
+  private readonly refusedBy = new Set<string>();
+  /**
    * Set of unreachable address keys observed at the last downing
    * evaluation.  We only re-invoke the provider when the set
    * actually changes — without this debounce a steady "always one
@@ -634,9 +649,10 @@ export class Cluster {
     this.minimumMembersBeforeUp = options.minimumMembersBeforeUp ?? DEFAULT_MINIMUM_MEMBERS_BEFORE_UP;
     this.minimumMembersBeforeUpPerRole = options.minimumMembersBeforeUpPerRole ?? {};
     this.downing = options.downing ?? null;
-    // Beside `downing` because the two answer one question between them —
-    // who removes a peer the detector has given up on — and
-    // `ClusterOptionsValidator` has already refused the pair in `join`.
+    // Beside `downing` because the two answer one question between them — who
+    // removes a peer the detector has given up on.  The pair is legal: with a
+    // provider configured the switch is inert, since the detector then only
+    // parks a peer and the provider decides (#929; `failureDetectionTick`).
     this.failureDetectorAutoDown = options.failureDetectorAutoDown ?? DEFAULT_FAILURE_DETECTOR_AUTO_DOWN;
     this.runCoordinatedShutdownWhenDown =
       options.runCoordinatedShutdownWhenDown ?? DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN;
@@ -2585,6 +2601,7 @@ export class Cluster {
     match(message)
       .with({ kind: 'heartbeat' }, (m) => this.onHeartbeat(from, m))
       .with({ kind: 'heartbeat-ack' }, () => this.onHeartbeatAcknowledgment())
+      .with({ kind: 'membership-refused' }, (m) => this.onMembershipRefused(from, m))
       .with({ kind: 'gossip' }, (m) => this.onGossip(from, m))
       .with({ kind: 'envelope' }, (m) => this.onEnvelope(from, m))
       .with({ kind: 'leave' }, (m) => this.onLeave(from, m))
@@ -2774,15 +2791,20 @@ export class Cluster {
   private onHeartbeat(from: NodeAddress, message: HeartbeatMessage): void {
     if (!this.isPlausibleHeartbeat(from, message)) return;
     const peer = from;
+    const existing = this.members.get(peer.toString());
+    if (existing !== undefined && this.holdsRemovedRunOf(existing, peer, message)) {
+      this.refuseMembership(existing, peer);
+      return;
+    }
     if (this.watchesLivenessOf(peer)) this.failureDetector.heartbeat(peer);
     // The peer's detector does not need the reply — our own heartbeats feed
     // it, and an acknowledgment is liveness only there — but it keeps the
     // round trip observable from the side that started it.
     this.transport.send(peer, { kind: 'heartbeat-ack', from: this.selfAddress.toJSON(), seq: message.seq });
 
-    // If the peer was unreachable and we see traffic again, flip it back.
-    const existing = this.members.get(peer.toString());
-    if (existing && existing.status === 'unreachable') {
+    // If the peer was unreachable and we see traffic again, flip it back —
+    // unless it has told this node it no longer has it (#940).
+    if (existing && existing.status === 'unreachable' && !this.refusedBy.has(peer.toString())) {
       this.updateMember(existing.withStatus('up'));
       // `updateMember` has announced `MemberUp`, and a listener may have acted
       // on it — downed the peer, say.  A member that is no longer `up` is not
@@ -2793,6 +2815,98 @@ export class Cluster {
       const recovered = this.members.get(peer.toString());
       if (recovered?.status === 'up') this.emit(new MemberReachable(recovered));
     }
+  }
+
+  /**
+   * Whether `stored` is this node's tombstone for the very run that sent this
+   * heartbeat over `peer`'s connection (#940).
+   *
+   * Both incarnations have to be known and equal.  A different one is a restart
+   * at the address, which the gossip merge admits as a new member
+   * ({@link isRestartOf}), so refusing it would turn a routine restart into a
+   * self-down.  A missing one is a peer that predates the field, or a tombstone
+   * learned from one, and the refusal could only name a run it cannot pin —
+   * such a peer is acknowledged as before.
+   *
+   * The run is read from the heartbeat's own `from` when that names the
+   * connection's address, and from the connection otherwise.  A transport the
+   * cluster builds announces the incarnation in its handshake, but an injected
+   * one — a TLS `TcpTransport`, an in-memory one — was constructed before the
+   * incarnation was minted and keys its peers without it, and a refusal that
+   * depended on the connection alone would never be sent there.  Trusting the
+   * payload here costs nothing: the answer goes down the connection the
+   * heartbeat came in on, so a peer that names another run only refuses
+   * itself.
+   */
+  private holdsRemovedRunOf(stored: Member, peer: NodeAddress, message: HeartbeatMessage): boolean {
+    if (stored.status !== 'removed') return false;
+    const removedRun = stored.address.incarnation;
+    if (removedRun === undefined) return false;
+    const claimed = NodeAddress.fromJSON(message.from);
+    const senderRun = claimed.toString() === peer.toString() ? claimed.incarnation : peer.incarnation;
+    return senderRun === removedRun;
+  }
+
+  /**
+   * Answer a heartbeat from a member this node removed with a refusal instead
+   * of an acknowledgment (#940).
+   *
+   * The acknowledgment was what kept a removed node running.  It is credited as
+   * liveness on arrival, so a node the cluster had downed — a process that was
+   * paused past the downing window and resumed, a VM that was suspended — went
+   * on seeing every peer that had removed it as healthy, never saw a partition
+   * for its downing provider to decide on, and kept hosting the shards and the
+   * singleton the survivors had already taken over.
+   *
+   * Sent on the heartbeat's own connection, as the acknowledgment was, and
+   * naming the tombstone's address so the receiver can check the run against
+   * its own.  What the receiver may do with it is in
+   * {@link onMembershipRefused}.
+   */
+  private refuseMembership(stored: Member, peer: NodeAddress): void {
+    const refusal: MembershipRefusedMessage = {
+      kind: 'membership-refused',
+      from: this.selfAddress.toJSON(),
+      subject: stored.address.toJSON(),
+    };
+    this.transport.send(peer, refusal);
+  }
+
+  /**
+   * A peer says it holds this run as `removed` (#940).
+   *
+   * Taken as a fact about the **peer** — it will not have this node back — and
+   * never as one about this node's own status, which stays this node's to
+   * author ({@link maySpeakFor}).  So the peer is parked at `unreachable`, its
+   * heartbeats no longer bring it back ({@link refusedBy}), and the verdict is
+   * left to this node's own downing provider, exactly as for a partition: under
+   * `KeepMajority`, a node every peer refuses is a minority of one and downs
+   * itself once the view has held still for `stable-after`.
+   *
+   * That is what keeps the frame from being a remote kill switch.  Whoever can
+   * forge it for a peer's connection achieves what dropping that peer's traffic
+   * already achieves, and nothing a provider would not also decide on a real
+   * partition.  A refusal naming another run — a tombstone a peer still holds
+   * for this address's previous process — is ignored, as is one from a
+   * connection that is not a member this node holds.
+   */
+  private onMembershipRefused(from: NodeAddress, message: MembershipRefusedMessage): void {
+    const ownRun = this.selfAddress.incarnation;
+    if (ownRun === undefined || message.subject.incarnation !== ownRun) return;
+    if (NodeAddress.fromJSON(message.subject).toString() !== this.selfAddress.toString()) return;
+    const key = from.toString();
+    const member = this.members.get(key);
+    if (member === undefined || member.status === 'removed' || member.address.equals(this.selfAddress)) return;
+    if (!this.refusedBy.has(key)) {
+      this.refusedBy.add(key);
+      this.log.warn(
+        `${from} holds this node as removed and no longer accepts it; treating it as unreachable — `
+        + (this.downing === null
+          ? 'no downing provider is configured, so nothing here will take this node out'
+          : 'this node\'s downing provider decides whether it goes'),
+      );
+    }
+    if (member.status === 'up') this.updateMember(member.withStatus('unreachable'));
   }
 
   /**
@@ -2843,6 +2957,7 @@ export class Cluster {
     // first frame is `[me]` — so a sender is introduced by the loop above, as
     // a self-announcement held to the connection's identity.
     this.rememberGossipSequence(from, message.sequence);
+    this.withdrawRefusalOnGossip(from, message);
 
     // One line and one counter increment per frame and reason, not per refused
     // record: an attacker who has just lost the memory growth must not be
@@ -2858,6 +2973,55 @@ export class Cluster {
     // runs the self-election that threshold was holding.  On the founder there
     // is no leader yet, so the second half is the only one that can act (#837).
     this.leaderActionsTick();
+  }
+
+  /**
+   * A gossip frame from a peer that refused this node, and that still lists
+   * this run as a member, withdraws the refusal (#940).
+   *
+   * A peer that really removed this node never gossips to it — `gossipTick`
+   * targets the members it holds reachable, and a tombstone is not one — so
+   * this frame says the refusal was not that peer's view after all: forged on a
+   * connection that claimed the peer's identity, or overtaken by an operator
+   * who re-admitted nothing, since a removed run cannot be re-admitted.  The
+   * peer then returns to `up` on its next heartbeat, as a parked peer does.  What keeps a forged refusal from
+   * sticking is therefore the real peer's own traffic, which a forger cannot
+   * withhold.
+   */
+  private withdrawRefusalOnGossip(from: NodeAddress, message: GossipMessage): void {
+    const key = from.toString();
+    if (!this.refusedBy.has(key)) return;
+    const ownRun = this.selfAddress.incarnation;
+    const selfKey = this.selfAddress.toString();
+    const listsThisRun = message.members.some((data) =>
+      data.address.incarnation === ownRun
+      && NodeAddress.fromJSON(data.address).toString() === selfKey
+      && data.status !== 'down' && data.status !== 'removed');
+    if (!listsThisRun) return;
+    this.refusedBy.delete(key);
+    this.log.info(`${from} gossips this node as a member again; withdrawing its earlier refusal`);
+  }
+
+  /**
+   * Whether every other member this node holds has refused it — each one is
+   * `unreachable` here because it answered a heartbeat with
+   * `membership-refused` (#940).
+   *
+   * {@link evaluateDowning} consults the provider at once on such a view
+   * instead of waiting out `stable-after`.  The window exists so a verdict is
+   * about a settled fact rather than a view read mid-churn, and this view is
+   * as settled as one gets: no peer is merely silent, each has said, for this
+   * very run, that it removed it.  Waiting would be time spent as a cluster of
+   * one — leading, hosting the singleton, starting every shard the survivors
+   * already run.  The provider still decides; under `KeepMajority` a node
+   * every peer refuses is a minority of one.
+   */
+  private everyPeerRefuses(allMembers: readonly Member[]): boolean {
+    const peers = allMembers.filter((member) =>
+      !member.address.equals(this.selfAddress)
+      && member.status !== 'down' && member.status !== 'removed');
+    return peers.length > 0 && peers.every((member) =>
+      member.status === 'unreachable' && this.refusedBy.has(member.address.toString()));
   }
 
   /**
@@ -3442,7 +3606,8 @@ export class Cluster {
       .sort()
       .join('|');
     const now = Date.now();
-    if (!this.stabilityWindow.observe(fingerprint, unreachable, now)) {
+    const settled = this.stabilityWindow.observe(fingerprint, unreachable, now);
+    if (!settled && !this.everyPeerRefuses(allMembers)) {
       // Escalation is asked first: stopping a cluster that cannot converge at
       // all outranks arbitrating one peer inside it, and the ceiling below
       // would otherwise put the provider in front of a switch an operator
@@ -3519,10 +3684,12 @@ export class Cluster {
    * A decision that includes this node makes it leave, and with
    * {@link runCoordinatedShutdownWhenDown} on also run the coordinated-shutdown
    * pipeline with `ClusterDowningReason` (#1456) — see
-   * {@link leaveAfterDowningSelf}.  This node's own verdict is the whole of
-   * that trigger today: a downing a *peer* decides about this node is refused
-   * at the merge, so it never arrives here.  When #940 lands the trigger moves
-   * to `SelfRemoved`, which covers both.
+   * {@link leaveAfterDowningSelf}, which ends in `SelfRemoved`.  This node's
+   * own verdict is the whole of that trigger: a downing a *peer* decides about
+   * this node is refused at the merge, so it never arrives here.  A node the
+   * peers removed learns of it as a `membership-refused` answer to its
+   * heartbeats, parks those peers, and comes here through its own provider
+   * (#940).
    */
   private applyDowningDecision(toDown: ReadonlySet<string>, fingerprint: string): void {
     this.lastDownedView = fingerprint;
@@ -3570,8 +3737,14 @@ export class Cluster {
    * decide what the run ends in.
    */
   private leaveAfterDowningSelf(): void {
+    const firstLeave = this.started;
     void this.leaveAtOnce().catch((e) =>
       this.log.warn(`self-leave after downing decision failed`, e));
+    // The departure ran synchronously, so self is `leaving` and nothing here
+    // speaks for this node any more.  The peers that decided the same thing
+    // have tombstoned it; this node's own record follows, which is what
+    // announces `MemberRemoved` and `SelfRemoved` for it (#940).
+    if (firstLeave) this.markSelfRemoved();
     if (!this.runCoordinatedShutdownWhenDown) return;
     // At warn, like the escalation's own announcement: an operator who finds
     // this node gone has to be able to find the line that says its own
@@ -3582,6 +3755,24 @@ export class Cluster {
     );
     void this.system.extension(CoordinatedShutdownId).run(ClusterDowningReason.instance).catch((e: unknown) =>
       this.log.error('the coordinated-shutdown pipeline this node started after downing itself halted', e));
+  }
+
+  /**
+   * Move this node's own record to `removed` once its own downing decision has
+   * taken it out, announcing `MemberRemoved` and `SelfRemoved` (#940).
+   *
+   * The one place the real `Cluster` emits `SelfRemoved`.  It was declared,
+   * exported, mapped by the DevTools tap and emitted by `MockCluster`, and
+   * unreachable here: the self record went no further than `leaving`, so the
+   * documented "stop when the cluster evicts me" handler never ran.  Only the
+   * downing route ends here; a graceful {@link leave} still stops at `leaving`.
+   */
+  private markSelfRemoved(): void {
+    const me = this.members.get(this.selfAddress.toString());
+    if (me === undefined || me.status === 'removed') return;
+    // Announces `MemberRemoved` and `SelfRemoved` itself — see
+    // `emitStatusTransition` and `statusEventsOf` (#1428).
+    this.updateMember(me.withRemoved(this.system.clock.now()));
   }
 
   /**
@@ -4172,7 +4363,12 @@ export class Cluster {
     if (previous?.status === 'removed') this.tombstoneCount--;
     if (member.status === 'removed') this.tombstoneCount++;
     this.members.set(key, member);
-    if (member.status === 'removed') this.failureDetector.forget(member.address);
+    if (member.status === 'removed') {
+      this.failureDetector.forget(member.address);
+      // A refusal is about a peer this node can no longer count on; once the
+      // peer is a tombstone itself there is nothing left to count on (#940).
+      this.refusedBy.delete(key);
+    }
   }
 
   /** The matching delete — see {@link setMember}. */
@@ -4186,6 +4382,9 @@ export class Cluster {
     this.reachability.delete(key);
     // Likewise, or the next incarnation's parking would go unreported (#1426).
     this.parkedWithoutResolver.delete(key);
+    // Likewise: a refusal belongs to the run that sent it, and the address's
+    // next incarnation has refused nothing (#940).
+    this.refusedBy.delete(key);
     // Likewise: a high-water mark outliving its member would refuse the first
     // frames of the address's next incarnation, whose counter starts from its
     // own clock rather than from where the previous one left off (#112).

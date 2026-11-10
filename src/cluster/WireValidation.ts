@@ -44,11 +44,11 @@ export function isWireFrame(value: unknown): value is { kind: string } {
  * A `NodeAddressData` whose fields are actually the declared types.
  *
  * The single gate for every address-bearing wire field — `hello.self`,
- * `hello-ack.self`, `heartbeat.from`, `heartbeat-ack.from`, `gossip.from`,
- * every `gossip.members[].address` and `leave.node` — which is why an
- * *optional* `incarnation` is checked here rather than required: making it
- * required would refuse all seven at once from any peer that predates the field
- * (#940).
+ * `hello-ack.self`, `heartbeat.from`, `heartbeat-ack.from`,
+ * `membership-refused.from` and `.subject`, `gossip.from`, every
+ * `gossip.members[].address` and `leave.node` — which is why an *optional*
+ * `incarnation` is checked here rather than required: making it required would
+ * refuse all of them at once from any peer that predates the field (#940).
  *
  * The two field rules with any substance to them — what a port is and what an
  * incarnation is — are `NodeAddress.isPort` and `NodeAddress.isIncarnation`,
@@ -104,6 +104,12 @@ export function wireFrameProblem(frame: { kind: string }): string | null {
       const { from, seq } = frame as { from?: unknown; seq?: unknown };
       if (!isNodeAddressData(from)) return '`from` is not a valid node address';
       return typeof seq === 'number' && Number.isFinite(seq) ? null : '`seq` is not a finite number';
+    }
+
+    case 'membership-refused': {
+      const { from, subject } = frame as { from?: unknown; subject?: unknown };
+      if (!isNodeAddressData(from)) return '`from` is not a valid node address';
+      return isNodeAddressData(subject) ? null : '`subject` is not a valid node address';
     }
 
     case 'gossip': {

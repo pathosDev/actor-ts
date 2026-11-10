@@ -15,17 +15,19 @@ Eine **Downing-Strategie** wählt eine Gewinnerseite und downt die
 Verliererseite zwangsweise. Jeder verlierende Node verlässt den
 Cluster; die Gewinnerseite läuft als Cluster weiter. Ob auch die
 Actors eines verlierenden Nodes stoppen, entscheidet
-`actor-ts.cluster.run-coordinated-shutdown-when-down`. Ist er an,
-führt der Node seine
+`actor-ts.cluster.run-coordinated-shutdown-when-down`. Ist er an, wie
+ausgeliefert, führt der Node seine
 [Coordinated-Shutdown-Pipeline](/de/fundamentals/coordinated-shutdown/#wenn-der-cluster-diesen-knoten-downt)
 aus, die sein Actor-System beendet, sofern
-`coordinated-shutdown.terminate-actor-system` nicht aus ist. Mit
-dem ausgelieferten `off` verlässt er den Cluster nur, und seine
-Actors laufen neben den Gewinnern weiter — ein zweiter Schreiber für
-jede Entity und jeden Singleton, die er hielt. So oder so handelt ein
-Node nur auf das Urteil seiner eigenen Strategie: ein Downing, das
-die Gewinnerseite über ihn entscheidet, wird ihm nicht mitgeteilt
-([Issue #940](https://github.com/pathosDev/actor-ts/issues/940)).
+`coordinated-shutdown.terminate-actor-system` nicht aus ist. Mit `off` verlässt er den Cluster nur, und
+seine Actors laufen neben den Gewinnern weiter — ein zweiter
+Schreiber für jede Entity und jeden Singleton, die er hielt. So oder
+so handelt ein Node nur auf das Urteil seiner eigenen Strategie. Die
+Gewinnerseite kann ihn nicht downen, aber sie lehnt seine Heartbeats
+ab, und bei einem Node, den jeder Peer ablehnt, wird die eigene
+Strategie sofort gefragt — ein Node, der pausiert oder abgeschnitten
+war, während die anderen ihn entfernten, tritt also ab, sobald er sie
+wieder hört ([Issue #940](https://github.com/pathosDev/actor-ts/issues/940)).
 
 ```mermaid
 flowchart LR
@@ -182,13 +184,14 @@ anhält.  `static-quorum` oder `keep-referee` ohne den zugehörigen Key wird
 beim Start abgelehnt, mit dem fehlenden Key in der Meldung.
 
 :::caution[`static-quorum` aus der Config ist ein clusterweiter Schalter]
-Das Quorum wird bei *jeder* Mitgliedsänderung geprüft, auch beim ersten
-Join, und ein Node darunter downt sich selbst.  `quorum-size = 3` in einer
-Config, die alle Replicas teilen, lässt also jeden Node beim Start wieder
-gehen, bis der dritte oben ist — ein Rolling Restart nimmt das Cluster dann
-herunter statt hindurch.  Setze den Wert auf höchstens die kleinste
-Laufzeitgröße und rolle ihn vor dem Deployment aus, das sich darauf
-verlässt.
+Das Quorum wird geprüft, sobald ein Mitglied unreachable ist, und eine Seite
+darunter downt sich selbst.  Ein Cluster, der nur kleiner als `quorum-size`
+ist — noch im Bootstrap oder herunterskaliert —, hat keine Partition und
+bleibt unberührt (#933).  Ein Crash während eines Rolling Restarts ist aber
+eine: Mit `quorum-size = 3` und einer Replica, die gerade neu startet, lässt
+der Crash einer zweiten ein erreichbares Mitglied übrig, und das downt sich
+selbst.  Setze den Wert auf höchstens die kleinste Laufzeitgröße und rolle
+ihn vor dem Deployment aus, das sich darauf verlässt.
 :::
 
 `lease-majority` braucht zusätzlich ein Lease-Backend.  Sein Lease wird aus
@@ -365,11 +368,12 @@ besondere Deployments.
 ```ts
 import { KeepOldest, KeepOldestOptions } from 'actor-ts/cluster';
 
-const keepOldestOptions = KeepOldestOptions.create().withDownIfAlone(true);
+const keepOldestOptions = KeepOldestOptions.create().withRole('backend');
 new KeepOldest(keepOldestOptions);
 ```
 
-Die Seite mit dem **„ältesten“ Mitglied** gewinnt.
+Die Seite mit dem **„ältesten“ Mitglied** gewinnt — außer das älteste
+steht allein (siehe `downIfAlone` unten).
 
 :::caution[„Ältestes“ heißt hier niedrigste Adresse, nicht längste Laufzeit]
 Dem Namen zum Trotz verfolgt diese Strategie keine Join-Reihenfolge —
@@ -393,10 +397,23 @@ Nützlich, wenn:
 - Du die Adresse der Node festlegen kannst, die überleben soll — dann
   ist die Strategie deterministisch und braucht keine Quorum-Arithmetik.
 
-`downIfAlone: true` bedeutet "wenn ich der älteste bin, aber alle
-anderen unreachable sind, downe ich mich selbst" —
-verhindert, dass ein Ein-Node-"Gewinner" sich nach einem
-Komplett-Split selbst zum Cluster erklärt.
+`downIfAlone` — standardmäßig an, in der Config-Datei
+`keep-oldest.down-if-alone` — entscheidet, was passiert, wenn das älteste
+Mitglied allein auf seiner Seite des Splits steht, gegen zwei oder mehr auf
+der anderen:
+
+- **An:** Das älteste verliert, und die Gruppe läuft weiter.  Beide Seiten
+  kommen zur selben Antwort: Überlebende, die ein abgestürztes ältestes als
+  unreachable sehen, downen es, und ein allein abgeschnittenes ältestes downt
+  sich selbst.
+- **Aus:** Die Seite mit dem ältesten überlebt, sonst keine.  Ein
+  abgestürztes ältestes steht auf keiner Seite, also downt sich jeder
+  Überlebende selbst, und der Absturz eines einzigen Nodes — des mit der
+  niedrigsten Adresse, der auch Leader ist — stoppt den Cluster (#932).  Wähle
+  das nur, wenn du lieber stoppst, als ohne den festgelegten Node zu laufen.
+
+Zwei Seiten mit je einem Mitglied sind nicht „allein gegen eine Gruppe“:
+Ein Zwei-Node-Cluster behält das älteste in beiden Fällen.
 
 ## KeepReferee
 
@@ -441,9 +458,10 @@ const staticQuorumOptions = StaticQuorumOptions.create().withQuorumSize(3);
 new StaticQuorum(staticQuorumOptions);
 ```
 
-Eine Seite gewinnt nur, wenn sie mindestens `quorumSize`
-erreichbare Mitglieder hat. Unterhalb des Quorums downt die Seite
-sich selbst.
+Ist ein Mitglied unreachable, gewinnt eine Seite nur, wenn sie
+mindestens `quorumSize` erreichbare Mitglieder hat; unterhalb des
+Quorums downt die Seite sich selbst. Ist nichts unreachable, entscheidet
+sie nichts, egal wie klein der Cluster ist.
 
 **Macht gut:**
 
