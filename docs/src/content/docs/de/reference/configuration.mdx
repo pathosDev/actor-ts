@@ -432,6 +432,7 @@ man daraus erneut zustellt.
 | `cluster.minimum-members-before-up` | `1` | Mitglieder, die vorhanden sein müssen, bevor **irgendetwas** zu `up` befördert wird.  `1` ist das bisherige Verhalten — siehe unten. |
 | `cluster.role.<role>.minimum-members-before-up` | *(nicht gesetzt)* | Schwelle pro Rolle, mit der obigen als UND verknüpft.  In `reference.conf` nur als Kommentar, da Rollennamen zum Deployment gehören. |
 | `cluster.run-coordinated-shutdown-when-down` | `on` | Was ein Node tut, sobald ihn seine **eigene** Downing-Entscheidung entfernt.  `on` verlässt die Mitgliedschaft und führt danach die Coordinated-Shutdown-Pipeline mit `ClusterDowningReason` aus, die das Actor-System beendet; `off` verlässt sie und lässt seine Actors weiterlaufen.  Siehe unten. |
+| `cluster.down-smaller-island` | `off` | Treffen zwei gleichnamige Cluster aufeinander, die sich während einer Start-Partition gebildet haben, downt sich der kleinere selbst (bei Gleichstand der, dessen niedrigste Adresse höher sortiert).  Aus: Das Treffen wird mit error geloggt und die Frames der anderen Insel abgewiesen; ein Operator startet eine Seite neu (#1176). |
 | `cluster.tombstone.time-to-live` | `24h` | Wie lange ein `removed`-Tombstone gehalten wird, bevor er gepruned wird. |
 | `cluster.tombstone.prune-interval` | `5m` | Wie oft der Prune-Durchlauf läuft. |
 | `cluster.tombstone.min-retention` | `0s` | Mindestalter, bevor ein Tombstone gepruned werden darf.  `0` leitet es aus `failure-detector.down-after` ab (6×). |

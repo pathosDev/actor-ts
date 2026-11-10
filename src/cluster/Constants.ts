@@ -293,6 +293,18 @@ export const MAX_NODE_INCARNATION_LENGTH = 128;
 export const COORDINATOR_REGISTRATION_GOSSIP_ROUNDS = 3;
 
 /**
+ * How many seed-retry intervals a node that is already `up` waits between two
+ * dials of the seeds it has not met (#1176).
+ *
+ * A node stops dialling its seeds once it is up, so two clusters that formed
+ * while a startup partition kept them apart never sent each other a frame
+ * again.  Dialling again is what lets them meet; doing it at the joining
+ * cadence would put a steady trickle of frames on every seed for the life of
+ * the cluster, so it is ten times slower — thirty seconds at the default.
+ */
+export const SEED_REDIAL_AFTER_UP_FACTOR = 10;
+
+/**
  * How often a coordinator repeats a conflict release's `HandOff` while the
  * claimant has neither completed it nor stopped claiming the shard (#1272) —
  * see `ShardCoordinator.trackConflictRelease`.  Capped by `handOffTimeoutMs`.

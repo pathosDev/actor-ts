@@ -10,6 +10,7 @@ import {
   DEFAULT_MAX_TOMBSTONES,
   DEFAULT_MINIMUM_MEMBERS_BEFORE_UP,
   DEFAULT_PORT,
+  DEFAULT_DOWN_SMALLER_ISLAND,
   DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN,
   DEFAULT_SEED_RETRY_INTERVAL_MS,
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
@@ -412,6 +413,7 @@ describe('readClusterOptionsFromConfig', () => {
       // (#1456).  Pinned to the constant `Cluster` falls back to, so a shipped
       // `on` would be a divergence this line reports.
       runCoordinatedShutdownWhenDown: DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN,
+      downSmallerIsland: DEFAULT_DOWN_SMALLER_ISLAND,
       // Both ship `[]`, so both always land — and `[]` is behaviourally the
       // same node as an absent key, because `Cluster.join` reads
       // `resolvedOptions.seeds ?? []` and the constructor `options.roles ?? []`

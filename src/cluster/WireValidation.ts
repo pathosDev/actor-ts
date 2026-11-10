@@ -162,10 +162,11 @@ export function wireFrameProblem(frame: { kind: string }): string | null {
     }
 
     case 'gossip': {
-      const { from, sequence, members } = frame as {
-        from?: unknown; sequence?: unknown; members?: unknown;
+      const { from, sequence, members, islandProbe } = frame as {
+        from?: unknown; sequence?: unknown; members?: unknown; islandProbe?: unknown;
       };
       if (!isRunAddressData(from)) return '`from` is not a node address with its incarnation';
+      if (islandProbe !== undefined && islandProbe !== true) return '`islandProbe` is neither absent nor true';
       // Shape only — `Cluster.onGossip` decides whether a well-formed sequence
       // is also *fresh*, and how far ahead of this node's clock it may be.
       if (typeof sequence !== 'number' || !Number.isFinite(sequence)) {

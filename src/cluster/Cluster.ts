@@ -14,6 +14,7 @@ import {
   MAX_REPORTED_UNCLAIMED_WIRE_KINDS,
   MAX_WALL_CLOCK_SKEW_MS,
   OUTBOUND_REFUSAL_REPORT_INTERVAL_MS,
+  SEED_REDIAL_AFTER_UP_FACTOR,
 } from './Constants.js';
 import { countUnhandled } from '../internal/Unhandled.js';
 import { none, some, type Option } from '../util/Option.js';
@@ -43,6 +44,7 @@ import {
   DEFAULT_MAX_TOMBSTONES,
   DEFAULT_MAX_VERSION_SKEW_MS,
   DEFAULT_MINIMUM_MEMBERS_BEFORE_UP,
+  DEFAULT_DOWN_SMALLER_ISLAND,
   DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN,
   DEFAULT_SEED_RETRY_INTERVAL_MS,
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
@@ -176,6 +178,7 @@ const UP_THRESHOLD_STATUSES: ReadonlySet<MemberStatus> = new Set<MemberStatus>([
  */
 const GOSSIP_REFUSAL_REASONS = [
   'map-cap', 'version-skew', 'timestamp-skew', 'replayed-frame', 'self-claim', 'removed-run',
+  'foreign-cluster',
 ] as const;
 
 /** One of {@link GOSSIP_REFUSAL_REASONS}. */
@@ -382,6 +385,7 @@ export class Cluster {
     'replayed-frame': 0,
     'self-claim': 0,
     'removed-run': 0,
+    'foreign-cluster': 0,
   };
 
   /**
@@ -421,6 +425,12 @@ export class Cluster {
   private heartbeatTimer: Cancellable | null = null;
   private fdTimer: Cancellable | null = null;
   private seedTimer: Cancellable | null = null;
+  /** Dials the seeds this node has not met, once it is up — see {@link redialUnmetSeeds}. */
+  private seedRedialTimer: Cancellable | null = null;
+  /** Whether the smaller of two same-name clusters downs itself when they meet (#1176). */
+  private readonly downSmallerIsland: boolean;
+  /** Foreign clusters already reported, by the lowest address of each — one error line per island. */
+  private readonly reportedIslands = new Set<string>();
   private weaklyUpTimer: Cancellable | null = null;
   private tombstonePruneTimer: Cancellable | null = null;
   private selfElectionTimer: Cancellable | null = null;
@@ -666,6 +676,7 @@ export class Cluster {
     // provider configured the switch is inert, since the detector then only
     // parks a peer and the provider decides (#929; `failureDetectionTick`).
     this.failureDetectorAutoDown = options.failureDetectorAutoDown ?? DEFAULT_FAILURE_DETECTOR_AUTO_DOWN;
+    this.downSmallerIsland = options.downSmallerIsland ?? DEFAULT_DOWN_SMALLER_ISLAND;
     this.runCoordinatedShutdownWhenDown =
       options.runCoordinatedShutdownWhenDown ?? DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN;
     // Validated here rather than in `ClusterOptionsValidator`, which is the
@@ -1891,6 +1902,7 @@ export class Cluster {
     this.heartbeatTimer?.cancel();
     this.fdTimer?.cancel();
     this.seedTimer?.cancel();
+    this.seedRedialTimer?.cancel();
     this.weaklyUpTimer?.cancel();
     this.tombstonePruneTimer?.cancel();
     this.selfElectionTimer?.cancel();
@@ -2031,6 +2043,12 @@ export class Cluster {
     this.gossipTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       this.gossipIntervalMs, this.gossipIntervalMs, () => this.gossipTick(),
     );
+    if (this.seedAddrs.length > 0) {
+      const redialMs = this.seedRetryIntervalMs * SEED_REDIAL_AFTER_UP_FACTOR;
+      this.seedRedialTimer = this.system.scheduler.scheduleAtFixedRateFunction(
+        redialMs, redialMs, () => this.redialUnmetSeeds(),
+      );
+    }
     this.heartbeatTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       this.failureDetector.interval, this.failureDetector.interval, () => this.heartbeatTick(),
     );
@@ -2950,6 +2968,10 @@ export class Cluster {
     // one that introduces the sender, and a claim must not be authorised by a
     // membership the same frame just created.
     const senderStatus = this.members.get(from.toString())?.status;
+    if (senderStatus === undefined && this.isFromForeignCluster(from, message)) {
+      this.onForeignCluster(from, message);
+      return;
+    }
     const refusedBefore: GossipRefusalCounts = { ...this.refusalCounts };
 
     for (const data of message.members) {
@@ -2985,6 +3007,121 @@ export class Cluster {
     // runs the self-election that threshold was holding.  On the founder there
     // is no leader yet, so the second half is the only one that can act (#837).
     this.leaderActionsTick();
+  }
+
+  /**
+   * Dial, once more, every seed this node is up without having met (#1176).
+   *
+   * Seed contact used to stop once this node was up, and gossip and
+   * heartbeats only ever go to members already in the map — so two clusters
+   * of the same name that formed while a startup partition kept them apart
+   * never sent each other a frame again, and the fork lasted until one side
+   * restarted.  A slow re-dial is what lets them meet; what then happens is
+   * {@link onForeignCluster}'s.  The frame carries the whole membership, so the
+   * other side can tell how large this island is.
+   */
+  private redialUnmetSeeds(): void {
+    if (this.members.get(this.selfAddress.toString())?.status !== 'up') return;
+    const unmet = this.seedAddrs.filter((seed) => {
+      const known = this.members.get(seed.toString());
+      return known === undefined;
+    });
+    if (unmet.length === 0) return;
+    const gossip: GossipMessage = {
+      kind: 'gossip',
+      from: this.selfAddress.toJSON(),
+      sequence: this.nextGossipSequence(),
+      members: Array.from(this.members.values()).map((member) => this.memberDataForGossip(member)),
+      islandProbe: true,
+    };
+    for (const seed of unmet) this.transport.send(seed, gossip);
+  }
+
+  /**
+   * Whether a gossip frame comes from a node of a second cluster with this
+   * name (#1176): it is an island probe (`GossipMessage.islandProbe`), this
+   * node is up, holds no record of the sender, the sender
+   * announces itself `up` or `leaving` — past joining, so a member of some
+   * cluster — and the frame does not list this node at all.
+   *
+   * The last condition is what tells a foreign island from a member of this
+   * cluster that this node has simply not heard of yet: a node promoted by
+   * this cluster's leader a moment ago gossips a membership that contains this
+   * node, and a node of another island has never heard of it.
+   */
+  private isFromForeignCluster(from: NodeAddress, message: GossipMessage): boolean {
+    if (message.islandProbe !== true) return false;
+    if (this.members.get(this.selfAddress.toString())?.status !== 'up') return false;
+    const selfKey = this.selfAddress.toString();
+    const fromKey = from.toString();
+    let senderIsAMember = false;
+    for (const data of message.members) {
+      const key = NodeAddress.fromJSON(data.address).toString();
+      if (key === selfKey) return false;
+      if (key === fromKey) senderIsAMember = data.status === 'up' || data.status === 'leaving';
+    }
+    return senderIsAMember;
+  }
+
+  /**
+   * A node of a second cluster with this name was heard from: refuse its frame,
+   * say so, and — with `down-smaller-island` on — down this island if it is the
+   * smaller one (#1176).
+   *
+   * Refused, not merged.  Merging would happen by accident the moment one
+   * record crossed — the first-sighting path admits an `up` record and every
+   * third-party record after it — and leave two singletons and two shard maps
+   * believing they are the only ones.  Neither side can repair that.
+   *
+   * The resolution is the same on both sides, computed from what each sees of
+   * the other: the island with fewer live members downs itself, and on a tie
+   * the one whose lowest address sorts higher.  It goes through the ordinary
+   * downing route, so `SelfRemoved` and the shutdown pipeline follow.
+   */
+  private onForeignCluster(from: NodeAddress, message: GossipMessage): void {
+    this.refusalCounts['foreign-cluster'] += 1;
+    const live = (statuses: Iterable<{ status: MemberStatus; key: string }>): string[] => {
+      const out: string[] = [];
+      for (const { status, key } of statuses) {
+        if (status !== 'down' && status !== 'removed') out.push(key);
+      }
+      return out.sort();
+    };
+    const theirs = live(message.members.map((data) => ({
+      status: data.status, key: NodeAddress.fromJSON(data.address).toString(),
+    })));
+    const ours = live(Array.from(this.members.values(), (member) => ({
+      status: member.status, key: member.address.toString(),
+    })));
+    const theirLowest = theirs[0] ?? from.toString();
+    const ourLowest = ours[0] ?? this.selfAddress.toString();
+    const weLose = ours.length < theirs.length || (ours.length === theirs.length && ourLowest > theirLowest);
+    if (!this.reportedIslands.has(theirLowest)) {
+      this.reportedIslands.add(theirLowest);
+      // Answer once with this island's membership: only the side whose seeds
+      // name the other re-dials, and the meeting has to be mutual for the
+      // other side to learn of it — and, with the resolution on, to learn
+      // whether it is the one that goes.
+      this.transport.send(from, {
+        kind: 'gossip',
+        from: this.selfAddress.toJSON(),
+        sequence: this.nextGossipSequence(),
+        members: Array.from(this.members.values()).map((member) => this.memberDataForGossip(member)),
+        islandProbe: true,
+      });
+      this.log.error(
+        `a second cluster named "${this.system.name}" is reachable at ${from}: ${theirs.length} member(s) led from `
+        + `${theirLowest}, against ${ours.length} here.  The two formed apart — a startup partition — and are not `
+        + 'merged; their frames are refused.  '
+        + (this.downSmallerIsland
+          ? (weLose ? 'This is the smaller island, so it downs itself (down-smaller-island = on).'
+            : 'This is the larger island; the other one downs itself (down-smaller-island = on).')
+          : 'Restart the nodes of one side to join the other, or set actor-ts.cluster.down-smaller-island = on.'),
+      );
+    }
+    if (!this.downSmallerIsland || !weLose) return;
+    const decision = new Set(ours);
+    this.applyDowningDecision(decision, `island:${theirLowest}`);
   }
 
   /**
@@ -3199,6 +3336,9 @@ export class Cluster {
       .with('self-claim', () =>
         'a status for this node itself that is neither the one it already holds nor the leader '
         + 'promoting it to up — this node is the author of its own status (#562)')
+      .with('foreign-cluster', () =>
+        'a node of a second cluster with this name — one that formed apart from this one, during a '
+        + 'startup partition — which neither side ever admitted; the two are not merged (#1176)')
       .with('removed-run', () =>
         'a run this node removed — the same address and incarnation as a tombstone it holds; only a '
         + 'restart, with a new incarnation, can join again (#940, #823)')

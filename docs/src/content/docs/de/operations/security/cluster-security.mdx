@@ -1106,7 +1106,7 @@ Abgewiesene Records werden einmal pro Frame gemeldet, nicht
 einmal pro Record — eine WARN-Zeile mit Peer und Anzahl, dazu der
 Zähler `cluster_gossip_records_refused_total{reason}`, dessen
 Label `reason` auf `version-skew`, `map-cap`, `timestamp-skew`,
-`replayed-frame`, `self-claim` und `removed-run` geschlossen ist. Pro
+`replayed-frame`, `self-claim`, `removed-run` und `foreign-cluster` geschlossen ist. Pro
 Record zu loggen würde einem Peer Log-Verstärkung schenken statt des
 Wachstums, das er gerade verloren hat.
 

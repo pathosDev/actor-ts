@@ -339,6 +339,15 @@ export type GossipMessage = {
    */
   sequence: number;
   members: MemberData[];
+  /**
+   * Set on the frames a node that is already `up` sends to a seed it has not
+   * met, and on the one answer such a frame gets (#1176).  Only these frames
+   * ever cross between two same-name clusters that formed apart — ordinary
+   * gossip goes to members only — so they are the only ones the island check
+   * reads, and a member this node has simply not heard of yet is never taken
+   * for a foreign cluster.
+   */
+  islandProbe?: true;
 };
 
 /**

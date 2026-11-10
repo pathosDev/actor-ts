@@ -66,6 +66,14 @@ export const DEFAULT_FAILURE_DETECTOR_AUTO_DOWN = true;
 export const DEFAULT_RUN_COORDINATED_SHUTDOWN_WHEN_DOWN = true;
 
 /**
+ * Built-in default for {@link ClusterOptionsType.downSmallerIsland} — off
+ * (#1176).  Detecting a second cluster of the same name is always on; downing
+ * a side of it is the deployment's decision, because it ends one side's
+ * processes on the strength of a frame from a node this one has never admitted.
+ */
+export const DEFAULT_DOWN_SMALLER_ISLAND = false;
+
+/**
  * Built-in default for {@link ClusterOptionsType.seedRetryIntervalMs} — how
  * long a node waits between two rounds of its join gossip to every seed,
  * which it re-sends until it is up.  3 s balances "give the seed node time
@@ -663,6 +671,15 @@ export type ClusterOptionsType = {
    */
   readonly runCoordinatedShutdownWhenDown?: boolean;
   /**
+   * When this node meets a second cluster of the same name — two islands that
+   * formed while a startup partition kept them apart (#1176) — the smaller one
+   * downs itself; on a tie, the one whose lowest address sorts higher.  Both
+   * sides compute the same answer from what each sees of the other.  Default
+   * {@link DEFAULT_DOWN_SMALLER_ISLAND} (off): the meeting is logged and its
+   * frames refused, and an operator restarts one side.
+   */
+  readonly downSmallerIsland?: boolean;
+  /**
    * Per-frame cap on the cluster wire, in bytes.  Frames whose
    * length-prefix exceeds it are rejected before any payload is
    * buffered, so it bounds what one peer can make this node hold.
@@ -1076,10 +1093,15 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
 
   /**
    * Run the coordinated-shutdown pipeline when this node's own downing
-   * decision removes it, rather than only leaving.  Default `false` (#1456).
+   * decision removes it, rather than only leaving.  Default `true` (#1456).
    */
   withRunCoordinatedShutdownWhenDown(runCoordinatedShutdownWhenDown: boolean): this {
     return this.set('runCoordinatedShutdownWhenDown', runCoordinatedShutdownWhenDown);
+  }
+
+  /** Have the smaller of two same-name clusters down itself when they meet (#1176).  Default `false`. */
+  withDownSmallerIsland(downSmallerIsland = true): this {
+    return this.set('downSmallerIsland', downSmallerIsland);
   }
 
   /** Per-frame wire cap for the cluster's own transport.  Default: 16 MiB. */
@@ -1670,7 +1692,7 @@ export type ClusterConfigDefaults = Partial<Pick<
   | 'weaklyUpAfterMs' | 'publishStatsIntervalMs' | 'shutdownAfterUnsuccessfulJoinMs'
   | 'tombstoneTtlMs' | 'tombstonePruneIntervalMs' | 'tombstoneMinRetentionMs'
   | 'maxMembers' | 'maxTombstones' | 'downing' | 'splitBrainResolver'
-  | 'runCoordinatedShutdownWhenDown'
+  | 'runCoordinatedShutdownWhenDown' | 'downSmallerIsland'
   | 'minimumMembersBeforeUp' | 'minimumMembersBeforeUpPerRole'
   | 'untrustedMode' | 'trustedSelectionPaths'
   | 'configurationCompatibilityEnforce' | 'configurationCompatibilityCheckedPaths'
@@ -1803,6 +1825,7 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
   if (config.hasPath(keys.runCoordinatedShutdownWhenDown)) {
     out.runCoordinatedShutdownWhenDown = config.getBoolean(keys.runCoordinatedShutdownWhenDown);
   }
+  if (config.hasPath(keys.downSmallerIsland)) out.downSmallerIsland = config.getBoolean(keys.downSmallerIsland);
   const tombstone = keys.tombstone;
   if (config.hasPath(tombstone.timeToLive)) out.tombstoneTtlMs = config.getDuration(tombstone.timeToLive);
   if (config.hasPath(tombstone.pruneInterval)) {

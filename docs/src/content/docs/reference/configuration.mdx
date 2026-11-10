@@ -413,6 +413,7 @@ replay from it.
 | `cluster.minimum-members-before-up` | `1` | Members that must be present before **anything** is promoted to `up`.  `1` is the historical behaviour — see below. |
 | `cluster.role.<role>.minimum-members-before-up` | *(unset)* | Per-role threshold, composed with the one above as an AND.  Comment-only in `reference.conf`, since role names are per-deployment. |
 | `cluster.run-coordinated-shutdown-when-down` | `on` | What a node does once its **own** downing decision removes it.  `on` leaves, then runs the coordinated-shutdown pipeline with `ClusterDowningReason`, which ends the actor system; `off` leaves the membership and keeps its actors running.  See below. |
+| `cluster.down-smaller-island` | `off` | When two same-name clusters that formed during a startup partition meet, the smaller one downs itself (on a tie, the one whose lowest address sorts higher).  Off: the meeting is logged at error and the other island's frames are refused; an operator restarts one side (#1176). |
 | `cluster.tombstone.time-to-live` | `24h` | How long a `removed` tombstone is kept before it is pruned. |
 | `cluster.tombstone.prune-interval` | `5m` | How often the prune pass runs. |
 | `cluster.tombstone.min-retention` | `0s` | Floor on tombstone age before pruning is allowed.  `0` derives it from `failure-detector.down-after` (6×). |
