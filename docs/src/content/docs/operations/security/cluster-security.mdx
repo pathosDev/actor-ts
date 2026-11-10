@@ -1012,7 +1012,7 @@ Refused records are reported once per frame rather than once per
 record — a WARN naming the peer and the count, and the counter
 `cluster_gossip_records_refused_total{reason}`, whose `reason`
 label is closed at `version-skew`, `map-cap`, `timestamp-skew`,
-`replayed-frame`, `self-claim` and `removed-run`. Logging per record
+`replayed-frame`, `self-claim`, `removed-run` and `foreign-cluster`. Logging per record
 would hand a peer log amplification in place of the growth it just
 lost.
 

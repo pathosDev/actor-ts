@@ -1657,6 +1657,8 @@ export const ConfigKeys = {
      * `ClusterOptionsType.runCoordinatedShutdownWhenDown`.
      */
     runCoordinatedShutdownWhenDown: 'actor-ts.cluster.run-coordinated-shutdown-when-down',
+    /** `ClusterOptionsType.downSmallerIsland` (#1176). */
+    downSmallerIsland: 'actor-ts.cluster.down-smaller-island',
     /**
      * The peers this node announces itself to at start-up (#836).
      *

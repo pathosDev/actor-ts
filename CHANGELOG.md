@@ -6185,6 +6185,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **Two same-name clusters that formed during a startup partition now meet
+  once it heals, and are not merged by accident; they used to stay forked
+  until one side restarted** (#1176). A node stopped dialling its seeds once it
+  was up, and gossip only goes to members, so the two islands never exchanged
+  a frame again. A node that is up now dials the seeds it has not met every ten
+  seed-retry intervals (30 s by default), with an island probe carrying its
+  whole membership, and the other side answers once. A probe from an `up`
+  sender this node holds no record of, whose membership does not list this
+  node, is refused rather than merged — a silent merge would leave two
+  singletons and two shard maps — logged at error, and counted as
+  `cluster_gossip_records_refused_total{reason="foreign-cluster"}`. With the
+  new `actor-ts.cluster.down-smaller-island = on` (default off) the smaller
+  island downs itself, on a tie the one whose lowest address sorts higher, and
+  `SelfRemoved` and the shutdown pipeline follow.
+
 - **A coordinator applies its coordinator-state load in its own turn and only
   in the leader term it was started for, and places no shard until the load
   has finished; a demotion during the load used to be undone when it landed**

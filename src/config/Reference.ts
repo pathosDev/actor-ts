@@ -557,6 +557,15 @@ actor-ts {
     # peer refuses has its own strategy asked at once (#940).
     run-coordinated-shutdown-when-down = on
 
+    # Two same-name clusters that formed while a startup partition kept them
+    # apart meet once it heals: a node keeps dialling the seeds it has not met
+    # after it is up.  Each side refuses the other's frames and logs the
+    # meeting at error, so the two never merge by accident.  on: the smaller
+    # side also downs itself -- on a tie the side whose lowest address sorts
+    # higher -- and the larger carries on.  off: an operator restarts one side
+    # (#1176).
+    down-smaller-island = off
+
     # Peers this node announces itself to at start-up, "system@host:port" (or
     # "host:port", which takes this system's own name).  Empty is the
     # documented "I am the first node": under the default 'immediate'
