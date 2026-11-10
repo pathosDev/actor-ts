@@ -607,6 +607,11 @@ describe('multi-node sharding failover', () => {
         intervalMs: 10,
         label: 'all three regions registered with the coordinator',
       });
+      // The coordinator's first term holds new placements for its whole
+      // registration window (#1272); the partition below has to start after
+      // it, or the asks wait past the 400 ms in which the cut-off node is
+      // removed and the scenario tests the window instead of the parking.
+      await regions.a.ask<string>({ id: 'warm-up', kind: 'ping' }, 4_000);
 
       const cutOff = spec.addressFor('c');
       spec.partition('a', 'c');

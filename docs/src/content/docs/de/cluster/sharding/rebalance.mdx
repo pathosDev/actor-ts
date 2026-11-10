@@ -343,12 +343,12 @@ eine hat. Jede Region registriert sich beim Leader-Wechsel, den sie
 beobachtet, mit ihren `hostedShards` neu; gefragt werden muss also
 niemand. Ein Shard, den eine Registrierung bereits einem Home
 zugeordnet hat, wird sofort beantwortet; nur was ein *neues* Home
-bräuchte, wartet. Das Warten endet, sobald sich das letzte Mitglied
-registriert, spätestens aber nach drei Gossip-Runden plus einem
-Register-Retry — nie länger als `handOffTimeoutMs` —, ein Mitglied,
-das den Typ nicht betreibt, kostet bei einem Leader-Wechsel also
-dieses Fenster und nicht mehr. Auf ein Mitglied, das den Cluster
-verlässt, wird nicht gewartet.
+bräuchte, wartet — drei Gossip-Runden plus einen Register-Retry lang,
+nie länger als `handOffTimeoutMs`, auch wenn sich jedes Mitglied, das er
+kennt, schon registriert hat: Ein gerade beigetretener Node, allen
+voran die neu gestartete niedrigste Adresse, hat womöglich noch nicht
+von jedem Mitglied gehört.  Eine neue Platzierung kostet bei einem
+Leader-Wechsel also höchstens dieses Fenster.
 
 Läuft das Fenster ab, platziert der Coordinator trotzdem und
 protokolliert, von welchen Mitgliedern keine Registrierung kam.

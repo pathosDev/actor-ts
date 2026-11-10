@@ -6185,6 +6185,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A new leader's coordinator holds new placements for the whole
+  registration window, even once every member it knows of has registered;
+  a leader restarted at the lowest address could still start a shard a
+  survivor ran** (#1272). Measured in `ShardingLeaderRestart` under load, 2 of
+  20 runs. The restarted node had not yet heard of every member when its term
+  began, so the set it waited for was complete in its own view and short of
+  the cluster's, and the barrier lifted before the missing member's claim
+  arrived. The window is now a floor as well as a ceiling, and a term also
+  begins on the first frame served as leader, not only on the queued
+  `LeaderChanged`. 0 of 72 loaded runs fail. The cost: a type started on a
+  cluster that is already up also places its first new shards only after the
+  window — three gossip rounds plus 500 ms, about 3.5 s at the shipped 1 s
+  gossip interval.
+
 - **Two same-name clusters that formed during a startup partition now meet
   once it heals, and are not merged by accident; they used to stay forked
   until one side restarted** (#1176). A node stopped dialling its seeds once it
