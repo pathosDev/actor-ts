@@ -1441,14 +1441,13 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   /**
    * Tell a claimant to give up the shards it does not own.
    *
-   * A `HandOff` rather than an authoritative `ShardHome`, because the region's
-   * `onShardHome` remote branch only forgets the id — it leaves the `Shard`
-   * actor and its entities running, and `sweepEmptyShards` filters on the entry
-   * it just deleted, so the orphan is unreclaimable (#953).  `onHandOff` is the
-   * one region-side path that actually stops them: it marks the shard
-   * `handing-off`, acknowledges, forgets its entities and stops the `Shard`, so
-   * a persistent entity runs `postStop` and flushes before the true owner's copy
-   * takes traffic.  Nothing new is needed for it — the frame is in the protocol
+   * A `HandOff` rather than an authoritative `ShardHome`.  A `ShardHome` naming
+   * another region does stop a copy that still runs on the receiver (#953), but
+   * as a release that answers nobody; `onHandOff` stops it as a hand-off — it
+   * marks the shard `handing-off`, acknowledges, forgets its entities and stops
+   * the `Shard`, so a persistent entity runs `postStop` and flushes before the
+   * true owner's copy takes traffic — and its `HandOffComplete` is what a
+   * tracked release can wait on.  Nothing new is needed for it — the frame is in the protocol
    * and `replyTo` already authenticates the local leg.
    *
    * Deliberately **not** recorded in `rebalanceInProgress`.  That map's timeout

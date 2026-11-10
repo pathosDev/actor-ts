@@ -299,10 +299,10 @@ describe('ShardCoordinator register conflict (#948)', () => {
       label: 'the claimant was told to hand the colliding shard off',
     });
 
-    // A `HandOff` and not a bare authoritative `ShardHome`: the region's
-    // `onShardHome` remote branch only forgets the id and leaves the `Shard`
-    // actor and its entities running (#953), while `onHandOff` stops them — so
-    // this is the frame that makes the release real rather than bookkeeping.
+    // A `HandOff` and not a bare authoritative `ShardHome`: a `ShardHome`
+    // naming another region stops the copy too since #953, but as a release
+    // that answers nobody, while `onHandOff` stops it as a hand-off whose
+    // completion the coordinator can wait on.
     expect(handedOff(stale)).toEqual([victim.shardId]);
 
     // Order matters.  The acknowledgment is what cancels the claimant's 500 ms

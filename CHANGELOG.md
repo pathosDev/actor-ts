@@ -6139,6 +6139,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A region stops a shard the coordinator has homed on another region while it
+  still runs here; the shard and its entities used to keep running beside the
+  new home's copy, out of reach of every cleanup** (#953). `onShardHome` only
+  forgot the id, and `sweepEmptyShards` filters on the entry it had just
+  deleted, so the orphan was never reclaimed — the same entity id live on two
+  nodes, reached by a `ShardHome` rather than a hand-off. The shard is now
+  stopped as a release: no `HandOffComplete` nobody asked for, and no backoff
+  for a shard that is not this region's. A shard placed back while the old copy
+  is still stopping waits for it, buffering its traffic, and is created again
+  once it is gone. Under `rememberEntities`, an entity event already queued for
+  a shard that moved away is no longer relayed, so it cannot edit the registry
+  the new home was shipped. What sat in the stopping shard's mailbox is lost,
+  as it is on a hand-off.
+
 - **A partition that recurs at the same addresses is decided again; the
   downing provider used to be skipped for it without a line in any log**
   (#934). The guard against applying a decision twice remembered the view it

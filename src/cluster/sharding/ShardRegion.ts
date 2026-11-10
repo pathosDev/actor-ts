@@ -329,8 +329,13 @@ type EntityActivity = {
  * `'backing-off'` is the third reason to buffer, and the one with no actor at
  * all: the shard stopped without being asked to, the region keeps it, and
  * nothing re-creates it but its {@link ShardRespawnTick} (#1437).
+ *
+ * `'releasing'` is the fourth: the shard was placed back here while its
+ * previous actor — stopped because the shard had moved away (#953) — is still
+ * shutting down.  A second actor under the same child name cannot exist yet,
+ * so traffic waits until the old one is gone and the new one is created.
  */
-type ShardState = 'owned' | 'handing-off' | 'passivating' | 'backing-off';
+type ShardState = 'owned' | 'handing-off' | 'passivating' | 'backing-off' | 'releasing';
 
 /** Anything the region can route to an entity: a user message, or an id-addressed envelope. */
 type RoutableMessage<TMessage> = TMessage | EntityEnvelope;
@@ -1029,7 +1034,7 @@ export class ShardRegion<TMessage = unknown>
    */
   private shardCannotTakeMessages(shardId: number): boolean {
     const state = this.shardState.get(shardId);
-    return state === 'handing-off' || state === 'passivating' || state === 'backing-off';
+    return state === 'handing-off' || state === 'passivating' || state === 'backing-off' || state === 'releasing';
   }
 
   private deliverLocal(shardId: number, entityId: string, message: TMessage, sender: ActorRef | null): void {
@@ -1902,6 +1907,15 @@ export class ShardRegion<TMessage = unknown>
     this.shardHomeNodes.set(message.shardId, node);
     if (local) {
       this.localShards.add(message.shardId);
+      // Placed back while the actor it had before is still stopping (#953): a
+      // second one cannot be created under the same name yet, so traffic
+      // waits, and `completeShardRelease` creates the shard once the old one
+      // is gone.
+      if (this.releasingShards.has(message.shardId)) {
+        this.shardState.set(message.shardId, 'releasing');
+        this.flushLocationAsks(message.shardId);
+        return;
+      }
       // A shard backing off stays down until its tick (#1437): a placement the
       // coordinator repeats — a leader change re-registers every region — is no
       // reason to re-create a shard that keeps failing.  Whoever waits for its
@@ -1929,6 +1943,7 @@ export class ShardRegion<TMessage = unknown>
       // Moved away: a backoff it was under is not this region's to finish, and
       // what waited for it flushes to the new home below.
       this.dropShardFailure(message.shardId);
+      this.releaseMovedShard(message.shardId);
     }
     // Order matters: the shard actor has to exist before anyone is handed a
     // ref to it, and the ref answers before the buffered traffic replays.
@@ -2146,7 +2161,21 @@ export class ShardRegion<TMessage = unknown>
       this.admitEntity(message.shardId, message.entityId);
       this.entityActivity.set(message.entityId, { shardId: message.shardId, lastActivity: Date.now() });
     }
-    if (this.config.rememberEntities) this.tellCoordinator(message);
+    if (this.relaysEntityEventsOf(message.shardId)) this.tellCoordinator(message);
+  }
+
+  /**
+   * Whether an entity's start or stop is the coordinator's business: only under
+   * `rememberEntities`, and only for a shard this region still owns and is not
+   * releasing.  An event already queued when the shard moved away (#953)
+   * describes a copy the coordinator has handed to another region; relayed, it
+   * would edit the registry the new home was shipped — the reason `onHandOff`
+   * announces nothing as stopped (#632).
+   */
+  private relaysEntityEventsOf(shardId: number): boolean {
+    return this.config.rememberEntities === true
+      && this.localShards.has(shardId)
+      && !this.releasingShards.has(shardId);
   }
 
   private onEntityStopped(message: EntityStopped): void {
@@ -2158,7 +2187,7 @@ export class ShardRegion<TMessage = unknown>
     this.entityActivity.delete(message.entityId);
     this.passivating.delete(message.entityId);
     this.passivationStrategy?.remove(message.entityId);
-    if (this.config.rememberEntities) this.tellCoordinator(message);
+    if (this.relaysEntityEventsOf(message.shardId)) this.tellCoordinator(message);
   }
 
   /**
@@ -2294,6 +2323,40 @@ export class ShardRegion<TMessage = unknown>
   }
 
   /**
+   * The coordinator homed a shard elsewhere that still runs here: stop it
+   * (#953).
+   *
+   * The region used to forget the shard and leave its actor running — its
+   * entities alive, and still reachable through any ref handed out before —
+   * beside the copy on the new home, and nothing reclaimed it afterwards:
+   * `sweepEmptyShards` filters on `localShards`, which no longer named it.
+   * That is the same entity id live on two nodes, reached by a `ShardHome`
+   * rather than by a hand-off, so none of the hand-off's guarantees applied.
+   *
+   * Stopped as a *release*, not a hand-off: nobody asked this region to give
+   * the shard up, so there is no coordinator waiting for `HandOffComplete`,
+   * and the stop must not read as an unexpected death either — that would put
+   * the shard into a backoff for a shard that is not this region's.  A shard
+   * already handing off is left to finish; that stop is under way and
+   * answers its own coordinator.  Nothing is announced as stopped: under
+   * `rememberEntities` the entities moved with the shard, and the registry
+   * the new home is shipped is the record of them (#632).
+   */
+  private releaseMovedShard(shardId: number): void {
+    const shard = this.shards.get(shardId);
+    if (!shard || this.releasingShards.has(shardId) || this.handingOff.has(shardId)) return;
+    this.log.info(
+      `[sharding] shard ${shardId} of '${this.config.typeName}' was homed on another region while it still `
+      + 'ran here; stopping it',
+    );
+    this.passivatingShards.delete(shardId);
+    this.registriesHeldThroughPassivation.delete(shardId);
+    this.releasingShards.add(shardId);
+    this.forgetShardEntities(shardId);
+    shard.stop();
+  }
+
+  /**
    * A released shard is gone (#633, #853).  Nothing is restored and nobody is
    * told: {@link releaseEverything} dropped the ownership in the same step it
    * ordered the stop, so whatever arrived during the stop stays buffered.
@@ -2313,6 +2376,13 @@ export class ShardRegion<TMessage = unknown>
     // A hand-off asked for while the release was stopping the shard — answered
     // now, and only while the refusal that made it answerable still stands.
     if (this.handOffsAwaitingRelease.delete(shardId) && this.registerRefused) this.tellHandOffComplete(shardId);
+    // Placed back here while it stopped (#953): the old actor is gone, so the
+    // shard can be created again, and what waited for it is delivered.
+    if (this.shardState.get(shardId) === 'releasing' && this.localShards.has(shardId) && !this.registerRefused) {
+      this.shardState.set(shardId, 'owned');
+      if (!this.config.proxy) this.ensureShard(shardId);
+      this.flushBuffer(shardId);
+    }
   }
 
   /**
@@ -2806,14 +2876,13 @@ export class ShardRegion<TMessage = unknown>
    * hand-off or a release that overtook it has sent its own stop, and its
    * `Terminated` settles both.
    *
-   * A shard the coordinator moved elsewhere meanwhile is left running, as a
-   * shard moved away without a hand-off always is here: stopping it would take
-   * down the very entity the request found busy, and with it what the region
-   * had routed there before the move.  What arrived for it since went to its
-   * new home with the move, and its state went with the ownership.  Only a
-   * shard still local is marked owned: every other writer keeps a state for
-   * local shards alone, and since no reader tells `'owned'` from no entry,
-   * marking a moved shard would change nothing today but that invariant.
+   * A shard the coordinator moved elsewhere meanwhile has already been released
+   * by the move (#953): its stop is under way, and the answer changes nothing
+   * about it.  What arrived for it since went to its new home with the move,
+   * and its state went with the ownership.  Only a shard still local is marked
+   * owned: every other writer keeps a state for local shards alone, and since
+   * no reader tells `'owned'` from no entry, marking a moved shard would change
+   * nothing today but that invariant.
    */
   private onShardPassivationDeclined(message: ShardPassivationDeclined): void {
     const shardId = message.shardId;

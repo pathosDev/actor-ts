@@ -624,9 +624,8 @@ describe('constant-rate entity recovery (#851)', () => {
     // The first batch starts two of B's; the third waits ahead of both of A's.
     harness.remember(SHARD_B, onB);
     harness.remember(SHARD_A, onA);
-    // A rebalance takes B away while its last entity is still queued.  The ref
-    // is taken first, while B is still local, so its holdings stay readable.
-    const shardB = await harness.shardRef(SHARD_B);
+    // A rebalance takes B away while its last entity is still queued.
+    expect(await harness.entitiesOn(SHARD_B)).toEqual(onB.slice(0, 2).sort());
     harness.moveAway(SHARD_B);
 
     harness.scheduler.fireNext();
@@ -634,7 +633,11 @@ describe('constant-rate entity recovery (#851)', () => {
     expect(await harness.entitiesOn(SHARD_A)).toEqual([...onA].sort());
     // And it is dropped, not started — a region that started it would be
     // running an entity of a shard the coordinator has given to someone else.
-    expect(await entityIdsOf(shardB)).toEqual(onB.slice(0, 2).sort());
+    // Nothing of B runs here at all any more: the shard that moved away is
+    // stopped with the entities it had already started (#953).
+    await awaitCondition(() => !harness.shardIsUp(SHARD_B), {
+      timeoutMs: 2_000, label: 'the shard that moved away was stopped',
+    });
   });
 
   test('a registry shipped twice is queued once', async () => {
