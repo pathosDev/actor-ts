@@ -33,7 +33,7 @@ export class StabilityWindow {
    * The view fingerprint {@link stableSince} refers to, and when it was first
    * seen — the ordinary window's whole state.
    *
-   * Deliberately separate from `Cluster`'s `lastDownedView`, which answers a
+   * Deliberately separate from `AppliedDecision`, which answers a
    * different question: that one is "did we already act on this exact view",
    * this one is "has this view held long enough to be worth acting on".
    * Collapsing them would make an applied decision reset the window and an

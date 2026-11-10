@@ -540,7 +540,7 @@ describe('Cluster + DowningProvider — wiring', () => {
       'the late decision was applied',
     );
 
-    // Re-asked, not asked once and cached: `lastDownedView` is only written
+    // Re-asked, not asked once and cached: `AppliedDecision` is only written
     // when a decision is *applied*, so an undecided view is put to the
     // provider again on every tick.
     expect(invocationsWithPartition).toBeGreaterThan(1);

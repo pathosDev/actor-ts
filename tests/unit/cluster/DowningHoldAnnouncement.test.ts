@@ -429,7 +429,7 @@ describe('what the detector announces while a downing provider holds a peer (#92
       await sleep(1);
     }
 
-    // Re-asked rather than asked once and cached: `lastDownedView` is written
+    // Re-asked rather than asked once and cached: `AppliedDecision` is written
     // only when a decision is *applied*, so an undecided view comes back.
     expect(consultedAboutPartition).toBeGreaterThan(1);
     expect(addressesOf(recorder.down)).toEqual([]);

@@ -332,6 +332,46 @@ describe('the routes that write a tombstone refuse the same run until the prune 
     expectRefused(cluster, run, tombstone);
   });
 
+  test('a partition that recurs at the same address after a restart is decided again (#934)', async () => {
+    // The second partition's view is the first one's byte for byte — membership
+    // is keyed without the incarnation — so a guard that never forgot the view
+    // it last decided on skipped it, silently, and the restarted run stayed
+    // parked with nothing deciding about it.
+    let decisions = 0;
+    const counting: DowningProvider = {
+      decide: (view) => {
+        const verdict = DOWNS_EVERY_UNREACHABLE.decide(view);
+        if (verdict.size > 0) decisions += 1;
+        return verdict;
+      },
+    };
+    const { cluster } = await startNode('recurring-partition', 9_478, { downing: counting });
+    const partitionAndAwaitDecision = async (run: NodeAddress, label: string): Promise<void> => {
+      lastHeardFrom(cluster, run, SILENT_PAST_DOWN_MS);
+      tick(cluster);
+      expect(entryFor(cluster, run)?.status).toBe('unreachable');
+      await awaitCondition(() => {
+        tick(cluster);
+        return entryFor(cluster, run)?.status !== 'unreachable';
+      }, { label });
+    };
+
+    const firstRun = peerRun('recurring-partition', 9_578, 'run-1');
+    announce(cluster, firstRun, Date.now() - EARLIER_START_MS);
+    await partitionAndAwaitDecision(firstRun, 'the first partition was decided');
+    expect(decisions).toBe(1);
+
+    const restarted = peerRun('recurring-partition', 9_578, 'run-2');
+    announce(cluster, restarted, Date.now());
+    expect(entryFor(cluster, restarted)?.status).toBe('up');
+    // A few rounds on the readmitted view, as a live detector would run.
+    tick(cluster, 3);
+
+    await partitionAndAwaitDecision(restarted, 'the same partition, recurring, was decided again');
+    expect(decisions).toBe(2);
+    expect(entryFor(cluster, restarted)?.status).toBe('removed');
+  });
+
   test("the peer's own leave: the same run is refused", async () => {
     const { cluster } = await startNode('refusal-leave', 9_473);
     const run = peerRun('refusal-leave', 9_573, 'run-1');
