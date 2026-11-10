@@ -126,6 +126,7 @@ import {
   SplitBrainResolverOptionsValidator,
 } from './downing/SplitBrainResolverOptions.js';
 import type { SplitBrainResolverOptionsType } from './downing/SplitBrainResolverOptions.js';
+import { AppliedDecision } from './downing/AppliedDecision.js';
 import { StabilityWindow } from './downing/StabilityWindow.js';
 
 type EnvelopeHandler = (env: EnvelopeMessage, from: NodeAddress) => void;
@@ -516,12 +517,12 @@ export class Cluster {
    */
   private readonly refusedBy = new Set<string>();
   /**
-   * Set of unreachable address keys observed at the last downing
-   * evaluation.  We only re-invoke the provider when the set
-   * actually changes — without this debounce a steady "always one
-   * unreachable peer" state would call `decide()` on every tick.
+   * The membership view the last applied downing decision was made on, so the
+   * same view is not decided twice — and forgotten the moment the view moves
+   * on, so a partition that recurs at the same addresses is decided again
+   * (#934).  See {@link AppliedDecision}.
    */
-  private lastDownedView: string | null = null;
+  private readonly appliedDecision = new AppliedDecision();
   /**
    * How long the view must hold still before {@link downing} is consulted
    * (#839) — kept beside the window because the escalation log quotes it.
@@ -3612,6 +3613,7 @@ export class Cluster {
       .map((member) => `${member.address.toString()}:${member.status}`)
       .sort()
       .join('|');
+    this.appliedDecision.observe(fingerprint);
     const now = Date.now();
     const settled = this.stabilityWindow.observe(fingerprint, unreachable, now);
     if (!settled && !this.everyPeerRefuses(allMembers)) {
@@ -3626,14 +3628,15 @@ export class Cluster {
       }
       if (!this.stabilityWindow.hasOutlastedChurn(now)) return;
     }
-    // Debounce only when the LAST evaluation produced an applied
-    // decision.  Strategies that need multiple ticks to converge
-    // (e.g. `LeaseMajority` with an in-flight `acquire()`) will
-    // return an empty set on the first call and a real decision on
-    // a later call WITH THE SAME FINGERPRINT — we must keep
-    // re-asking them.  `lastDownedView === null` means "nothing
-    // committed yet", so we evaluate.
-    if (this.lastDownedView !== null && fingerprint === this.lastDownedView) return;
+    // Debounce only when an evaluation on this very view produced an applied
+    // decision.  Strategies that need multiple ticks to converge (e.g.
+    // `LeaseMajority` with an in-flight `acquire()`) return an empty set on
+    // the first call and a real decision on a later call WITH THE SAME
+    // FINGERPRINT — an empty answer records nothing, so they are asked again.
+    if (this.appliedDecision.covers(fingerprint)) {
+      this.log.debug(`downing: a decision was already applied on this view; not asking again [${fingerprint}]`);
+      return;
+    }
     const view: ClusterPartitionView = {
       allMembers,
       unreachable,
@@ -3699,7 +3702,7 @@ export class Cluster {
    * (#940).
    */
   private applyDowningDecision(toDown: ReadonlySet<string>, fingerprint: string): void {
-    this.lastDownedView = fingerprint;
+    this.appliedDecision.record(fingerprint);
     const selfKey = this.selfAddress.toString();
     const downsSelf = toDown.has(selfKey);
     for (const key of toDown) {

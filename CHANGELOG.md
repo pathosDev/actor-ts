@@ -6139,6 +6139,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A partition that recurs at the same addresses is decided again; the
+  downing provider used to be skipped for it without a line in any log**
+  (#934). The guard against applying a decision twice remembered the view it
+  last decided on and never forgot it, and membership is keyed without the
+  incarnation, so a node removed, restarted at the same port and partitioned
+  off again produced the very same view — and stayed parked with nothing
+  deciding about it. The guard now forgets a view as soon as the cluster has
+  moved on from it, on every evaluation and ahead of the stability window, so
+  the views a restart passes through clear it too; a skipped evaluation is
+  logged at debug.
+
 - **A cluster that is merely smaller than `StaticQuorum`'s `quorum-size`, or
   than `KeepReferee`'s `down-all-if-below-quorum`, is no longer downed; a node
   starting with `quorum-size = 3` downed itself on its first stable view,
