@@ -11,6 +11,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`MultiNodeSpec.restart(role)` brings a role back at the same address as a
+  new process, and `withNodeSetup` re-runs a spec's per-node setup on it**
+  (#1382). A restart at the same `host:port` is the ordinary shape of a pod
+  replacement and had no test: the old system is crashed and terminated (on a
+  virtual clock too), a fresh system and cluster join with a new incarnation,
+  and its seeds default to the other running roles so a restarted seed rejoins
+  instead of founding a second cluster. New multi-node suites cover a restart
+  at the same address, a restarted seed and a node heard from again after it
+  was unreachable, and the #1272 case under traffic: the leader restarts and
+  no entity id is ever live on two nodes — the suite is red without the
+  coordinator's registration barrier. The testing page says how (EN + DE).
+
 - **`encryption()`, `integrity()` and `compression()` work on the SQL
   snapshot and durable-state stores** — SQLite, Postgres, MariaDB, SQL
   Server, libSQL and D1 (#1802). Until now these stores refused an actor

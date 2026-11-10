@@ -40,7 +40,11 @@ export class MultiNodeTransport implements Transport {
 
   async shutdown(): Promise<void> {
     this.stopped = true;
-    MultiNodeTransport.registry.delete(this.self.toString());
+    // Only this instance's own entry: a node restarted at the same address
+    // registers a new transport under the same key, and the old one shutting
+    // down afterwards must not unregister its successor.
+    const key = this.self.toString();
+    if (MultiNodeTransport.registry.get(key) === this) MultiNodeTransport.registry.delete(key);
   }
 
   send(to: NodeAddress, message: WireMessage): void {
