@@ -53,6 +53,8 @@ describe('readShardingOptionsFromConfig', () => {
         rebalance-relative-limit   = 0.25
         acquire-retry-interval     = 1500ms
         use-lease                  = on
+        persist-coordinator-state  = on
+        coordinator-state-load-timeout = 4s
         shard-region-query-timeout = 9s
         entity-recovery {
           strategy = constant-rate
@@ -100,6 +102,8 @@ describe('readShardingOptionsFromConfig', () => {
       rebalanceRelativeLimit: 0.25,
       acquireRetryIntervalMs: 1_500,
       useLease: true,
+      persistCoordinatorState: true,
+      coordinatorStateLoadTimeoutMs: 4_000,
       shardRegionQueryTimeoutMs: 9_000,
       entityRecoveryStrategy: 'constant-rate',
       entityRecoveryConstantRateFrequencyMs: 250,
@@ -174,6 +178,10 @@ describe('readShardingOptionsFromConfig', () => {
       // no coordinator gets a lease until a deployment both asks and names a
       // backend under `actor-ts.coordination.lease` (#1454).
       useLease: false,
+      // Off: a coordinator persists its map only where a deployment asks, and
+      // has a journal the whole cluster shares (#1188).
+      persistCoordinatorState: false,
+      coordinatorStateLoadTimeoutMs: 10_000,
       shardRegionQueryTimeoutMs: 5_000,
       // `all` is today's behaviour, so wiring `entity-recovery` changes nothing
       // for anyone who does not ask for pacing — and the two `constant-rate`
@@ -273,6 +281,8 @@ describe('readShardingOptionsFromConfig', () => {
       rebalanceRelativeLimit: 'actor-ts.sharding.rebalance-relative-limit',
       acquireRetryInterval: 'actor-ts.sharding.acquire-retry-interval',
       useLease: 'actor-ts.sharding.use-lease',
+      persistCoordinatorState: 'actor-ts.sharding.persist-coordinator-state',
+      coordinatorStateLoadTimeout: 'actor-ts.sharding.coordinator-state-load-timeout',
       shardRegionQueryTimeout: 'actor-ts.sharding.shard-region-query-timeout',
       // Declared as three full dotted paths rather than one `entity-recovery`
       // block root (#851).  A root no longer lets an unread leaf through

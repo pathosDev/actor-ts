@@ -97,7 +97,7 @@ type InFlightHandOff = { readonly from: string; readonly timer: Cancellable };
 
 /** The coordinator's own state, reached through its cell — no public surface exposes it. */
 interface CoordinatorInternals {
-  readonly regions: Map<string, { readonly shards: Set<number> }>;
+  readonly regions: Map<string, { readonly node: NodeAddress; readonly shards: Set<number> }>;
   readonly shardHome: Map<number, string>;
   readonly refusedRegions: Set<string>;
   readonly rebalanceInProgress: Map<number, InFlightHandOff>;
@@ -185,16 +185,19 @@ describe('a region refused over its shard count gives up the shards a snapshot s
       .withRebalanceRelativeLimit(0);
     const region = cluster.sharding.start<WorkCommand>(shardingOptions);
 
-    region.tell({ id: WARM_UP_ID, kind: 'work' });
+    // While the load is held the coordinator places nothing (#952, #1188), so
+    // the local region's own registration is what says both actors are live.
+    void region;
     await awaitCondition(() => {
       const coordinator = reachCoordinator(system);
-      return coordinator !== null && store.loadCalls > 0 && coordinator.shardHome.has(warmUpShard);
+      return coordinator !== null && store.loadCalls > 0
+        && [...coordinator.regions.values()].some((info) => info.node.equals(self));
     }, {
       timeoutMs: 4_000,
-      label: 'the local region registered and its warm-up shard has a home, with the snapshot load held',
+      label: 'the local region registered, with the snapshot load held',
     });
     const coordinator = reachCoordinator(system)!;
-    const localKey = coordinator.shardHome.get(warmUpShard)!;
+    const localKey = [...coordinator.regions.entries()].find(([, info]) => info.node.equals(self))![0];
 
     // The load keeps only regions of `up` members, so the peer is one first.
     (cluster as unknown as ClusterInternals).members.set(peer.toString(), new Member(peer, 'up', 1));

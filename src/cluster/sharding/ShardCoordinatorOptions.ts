@@ -21,6 +21,19 @@ export const DEFAULT_REBALANCE_INTERVAL_MS = 2_000;
 export const DEFAULT_HAND_OFF_TIMEOUT_MS = 10_000;
 
 /**
+ * Built-in default for {@link ShardCoordinatorOptionsType.coordinatorStateLoadTimeoutMs}
+ * — how long a coordinator that has just become leader waits for its
+ * `coordinatorStateStore` to load before it places shards without the
+ * snapshot (#1188).  Mirrors
+ * `actor-ts.sharding.coordinator-state-load-timeout = 10s` in `reference.conf`.
+ *
+ * As long as the hand-off timeout, and for the same reason: both bound how
+ * long a new term may hold placement back, and a load slower than that is a
+ * backend in trouble rather than one that is merely remote.
+ */
+export const DEFAULT_COORDINATOR_STATE_LOAD_TIMEOUT_MS = 10_000;
+
+/**
  * Built-in default for {@link ShardCoordinatorOptionsType.rebalanceAbsoluteLimit}
  * — a flat ceiling on shards in flight, off by default so the relative one
  * (which scales with `numShards`) decides alone.  Mirrors
@@ -192,6 +205,13 @@ export type ShardCoordinatorOptionsType = {
    * Register behaviour (backwards-compat).
    */
   readonly coordinatorStateStore?: CoordinatorStateStore;
+  /**
+   * How long, in ms, a coordinator that has just become leader waits for
+   * {@link coordinatorStateStore} to load before it places shards without the
+   * snapshot (#1188).  Default {@link DEFAULT_COORDINATOR_STATE_LOAD_TIMEOUT_MS}.
+   * Inert without a store.
+   */
+  readonly coordinatorStateLoadTimeoutMs?: number;
 };
 
 /**
@@ -294,6 +314,11 @@ export class ShardCoordinatorOptionsBuilder extends OptionsBuilder<ShardCoordina
   /** Persistence backend for the allocation state (`regions` + `shardHome`). */
   withCoordinatorStateStore(coordinatorStateStore: CoordinatorStateStore): this {
     return this.set('coordinatorStateStore', coordinatorStateStore);
+  }
+
+  /** How long a new leader waits for the coordinator-state load, in ms.  Default 10 s. */
+  withCoordinatorStateLoadTimeoutMs(coordinatorStateLoadTimeoutMs: number): this {
+    return this.set('coordinatorStateLoadTimeoutMs', coordinatorStateLoadTimeoutMs);
   }
 }
 

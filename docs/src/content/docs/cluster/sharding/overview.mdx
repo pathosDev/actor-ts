@@ -828,6 +828,36 @@ For state that should survive:
 Without one of these, sharding gives you placement and routing,
 not durability.
 
+### The coordinator's own map
+
+The coordinator keeps **where each shard lives** in memory, and a new leader
+starts from an empty map that it rebuilds from the regions' registrations.
+`actor-ts.sharding.persist-coordinator-state = on` (or
+`withPersistCoordinatorState()`) keeps that map in the persistence
+extension's journal instead, so a new leader — often a node that has just
+restarted, since the leader is the lowest address — starts from the map the
+previous one last wrote (#1188):
+
+```hocon
+actor-ts.sharding {
+  persist-coordinator-state      = on
+  coordinator-state-load-timeout = 10s
+}
+```
+
+The journal has to be **one database for the whole cluster** — the next
+leader reads what the previous one wrote — so a node-local journal on a node
+that expects remote peers is refused when the type starts.  Only the latest
+map is kept: each save compacts the one before it, and a save from a
+coordinator whose view of the stream is stale fails instead of overwriting.
+
+Placement still waits for the regions' own claims after a leader change: the
+map can lag the last allocation, and only a region's registration proves what
+it really runs.  What the map adds is the regions themselves — a new leader
+asks each one it names to register — and the homes of shards nobody has
+claimed yet.  A new leader waits at most `coordinator-state-load-timeout` for
+the map to load and then places shards without it.
+
 ## When to reach for sharding
 
 Three good fits:

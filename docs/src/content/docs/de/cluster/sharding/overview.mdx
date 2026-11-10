@@ -879,6 +879,39 @@ Für State, der überleben soll:
 Ohne eine dieser Lösungen gibt dir Sharding Platzierung und
 Routing, aber keine Durability.
 
+### Die eigene Karte des Coordinators
+
+Der Coordinator hält **wo jeder Shard lebt** im Speicher, und ein neuer Leader
+beginnt mit einer leeren Karte, die er aus den Registrierungen der Regions
+wieder aufbaut.  `actor-ts.sharding.persist-coordinator-state = on` (oder
+`withPersistCoordinatorState()`) hält diese Karte stattdessen im Journal der
+Persistence-Extension, sodass ein neuer Leader — oft ein gerade neu
+gestarteter Node, weil der Leader die niedrigste Adresse ist — mit der Karte
+beginnt, die der vorige zuletzt geschrieben hat (#1188):
+
+```hocon
+actor-ts.sharding {
+  persist-coordinator-state      = on
+  coordinator-state-load-timeout = 10s
+}
+```
+
+Das Journal muss **eine Datenbank für den ganzen Cluster** sein — der nächste
+Leader liest, was der vorige geschrieben hat —, deshalb wird ein node-lokales
+Journal auf einem Node, der entfernte Peers erwartet, beim Start des Typs
+abgelehnt.  Gehalten wird nur die jüngste Karte: Jedes Speichern kompaktiert
+die vorige, und ein Speichern von einem Coordinator, dessen Sicht auf den
+Stream veraltet ist, schlägt fehl, statt zu überschreiben.
+
+Die Platzierung wartet nach einem Leader-Wechsel trotzdem auf die eigenen
+Ansprüche der Regions: Die Karte kann der letzten Zuteilung hinterherhinken,
+und erst die Registrierung einer Region belegt, was sie wirklich betreibt.
+Was die Karte beiträgt, sind die Regions selbst — ein neuer Leader bittet jede,
+die sie nennt, sich zu registrieren — und die Homes von Shards, die noch
+niemand beansprucht hat.  Ein neuer Leader wartet höchstens
+`coordinator-state-load-timeout` auf das Laden der Karte und platziert danach
+ohne sie.
+
 ## Wann zu Sharding greifen
 
 Drei gute Anwendungen:

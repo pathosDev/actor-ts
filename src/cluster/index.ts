@@ -289,6 +289,7 @@ export type {
 // class reached no public entry point (#682).
 export {
   DistributedDataCoordinatorStateStore,
+  JournalCoordinatorStateStore,
 } from './sharding/CoordinatorState.js';
 export type {
   CoordinatorStateStore,

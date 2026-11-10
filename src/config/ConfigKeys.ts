@@ -2433,6 +2433,8 @@ export const ConfigKeys = {
     rebalanceRelativeLimit: 'actor-ts.sharding.rebalance-relative-limit',
     acquireRetryInterval: 'actor-ts.sharding.acquire-retry-interval',
     useLease: 'actor-ts.sharding.use-lease',
+    persistCoordinatorState: 'actor-ts.sharding.persist-coordinator-state',
+    coordinatorStateLoadTimeout: 'actor-ts.sharding.coordinator-state-load-timeout',
     shardRegionQueryTimeout: 'actor-ts.sharding.shard-region-query-timeout',
     entityRecoveryStrategy: 'actor-ts.sharding.entity-recovery.strategy',
     entityRecoveryConstantRateFrequency: 'actor-ts.sharding.entity-recovery.constant-rate.frequency',
