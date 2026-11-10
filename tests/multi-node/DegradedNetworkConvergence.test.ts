@@ -121,6 +121,19 @@ describe('membership converges on a degraded network', () => {
     const spec = specWith(scheduler, 20_234);
     try {
       await spec.start();
+      // Formed on a clean network first, so the degrade below cuts a link
+      // between three members that all know each other.  `start` returns once
+      // every role has joined, which is not the same thing: until #1747 a
+      // joiner stayed `joining` for its first rounds, so the failure detector
+      // had nobody `up` to judge during the degrade and the test passed on
+      // that rather than on the restore it is named for.  Now a promoted joiner
+      // is `up` within a hop, and a link degraded before the view has spread
+      // leaves one side holding the other `unreachable` — which no gossip
+      // heals (#930), and which is not what this test is about.
+      await spec.advanceUntil(
+        () => upCounts(spec).every((count) => count === ROLES.length),
+        { budgetMs: 10_000, description: 'the cluster forms on a clean network' },
+      );
       spec.degrade('a', 'b', { dropProbability: 0.9, reorderWindow: 4 });
       await spec.advance(2_000);
       spec.restore('a', 'b');

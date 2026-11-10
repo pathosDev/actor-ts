@@ -6185,6 +6185,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A joiner learns of its own promotion in one hop, so `Cluster.bootstrap`
+  no longer rejects a healthy join at random** (#1747). The leader promoted
+  a joiner as soon as its record arrived, but the joiner heard of that only
+  when some informed node happened to pick it as the one random target of a
+  gossip round — a 1/(N−1) chance per node per tick — while
+  `Cluster.bootstrap` waits a flat 5 s for the node to see itself `up`.
+  Eight joiners started together against a twelve-node cluster were
+  rejected with `ClusterReadyTimeoutError` six times in eight, every one of
+  them already `up` everywhere else, and under `exit-process` a rejection
+  ends the process — the exact shape of a "stop every node, start every
+  node" upgrade, which the wire-version cut (#823) makes the only one. The
+  leader now sends its view straight to each member it has just promoted;
+  the same eight joiners are all ready in well under a second. Nothing to
+  configure. One visible change: a node can now report a configuration
+  divergence (`MemberConfigurationMismatch`) before `Cluster.join` resolves,
+  so a listener added with `cluster.subscribe` after the join may miss it —
+  subscribe on `system.eventStream` before joining to see every one.
+
 - **A new leader's coordinator holds new placements for the whole
   registration window, even once every member it knows of has registered;
   a leader restarted at the lowest address could still start a shard a

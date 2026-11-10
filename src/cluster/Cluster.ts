@@ -2296,16 +2296,46 @@ export class Cluster {
    * ({@link maySpeakFor} / `isOwnPromotion`) is deliberately untouched — a
    * node whose local view lags the leader's would otherwise refuse a
    * legitimate `up` claim about itself and stay `joining` for good.
+   *
+   * Every member this promotes is told at once (#1747).  The promotion is a
+   * fact about *its* record, and until it reads that record back it is still
+   * `joining` to itself — which is what `awaitReady`, and so
+   * `Cluster.bootstrap`'s default 5 s wait, are waiting on.  Left to
+   * `gossipTick`, it would hear only when some informed node happened to pick
+   * it as the one random target of a round: a 1/(N−1) chance per node per
+   * tick, so the wait grew with the cluster, and eight joiners starting
+   * together against twelve nodes were rejected six times in eight, every one
+   * of them already `up` everywhere else.  One frame per promoted member, sent
+   * once at the promotion, makes the wait a single hop.
    */
   private promoteJoiningMembers(): void {
     if (!this.isLeader()) return;
     if (!this.upThresholdSatisfied()) return;
+    const promoted: NodeAddress[] = [];
     for (const member of this.members.values()) {
       if (member.status === 'joining' || member.status === 'weakly-up') {
         this.log.debug(`leader-promote: ${member.address} ${member.status}→up`);
         this.updateMember(member.withStatus('up'));
+        if (!member.address.equals(this.selfAddress)) promoted.push(member.address);
       }
     }
+    if (promoted.length > 0) this.tellPromoted(promoted);
+  }
+
+  /**
+   * Push this node's view to members it has just promoted — see
+   * {@link promoteJoiningMembers}.  One frame for all of them, as the seed
+   * round sends one: each receiver keeps its own high-water mark for this
+   * node, so a shared sequence is delivered once per peer.
+   */
+  private tellPromoted(promoted: readonly NodeAddress[]): void {
+    const gossip: GossipMessage = {
+      kind: 'gossip',
+      from: this.selfAddress.toJSON(),
+      sequence: this.nextGossipSequence(),
+      members: Array.from(this.members.values()).map((member) => this.memberDataForGossip(member)),
+    };
+    for (const address of promoted) this.transport.send(address, gossip);
   }
 
   /**
