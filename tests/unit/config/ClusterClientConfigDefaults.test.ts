@@ -126,7 +126,8 @@ async function handshakingContactPoint(): Promise<TcpListener> {
           if (frame.kind !== 'hello') continue;
           const acknowledgment: HelloAcknowledgmentMessage = {
             kind: 'hello-ack',
-            self: new NodeAddress('contact-point', '127.0.0.1', boundPort).toJSON(),
+            wireVersion: 2,
+            self: new NodeAddress('contact-point', '127.0.0.1', boundPort, 'test-run').toJSON(),
           };
           sock.write(encodeFrame(acknowledgment));
         }
@@ -388,7 +389,7 @@ describe('the block reaches the code that reads it', () => {
       .withConfig(Config.parseString('actor-ts.cluster.client.receptionist.ask-timeout = 40ms'));
     const system = ActorSystem.create('receptionist-ask-timeout', systemOptions);
     const cluster = new FakeCluster(
-      new NodeAddress('receptionist-ask-timeout', '10.0.0.5', 2_552),
+      new NodeAddress('receptionist-ask-timeout', '10.0.0.5', 2_552, 'test-run'),
       system,
     );
     system.spawn(SilentActor, 'silent');
@@ -397,7 +398,7 @@ describe('the block reaches the code that reads it', () => {
     const startedAt = Date.now();
     cluster.deliver(
       { kind: 'cluster-client-envelope', to: 'silent', askId: 'ask-1', body: { kind: 'ping' } },
-      new NodeAddress('cluster-client', '203.0.113.9', 51_000),
+      new NodeAddress('cluster-client', '203.0.113.9', 51_000, 'test-run'),
     );
     await awaitCondition(() => cluster.sent.length > 0, {
       label: 'the receptionist gave up on the silent actor',

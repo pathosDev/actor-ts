@@ -30,7 +30,14 @@ export class MultiNodeTransport implements Transport {
   private stopped = false;
   private readonly blockedOutgoing = new Set<string>();
 
-  constructor(readonly self: NodeAddress) {}
+  constructor(private identity: NodeAddress) {}
+
+  get self(): NodeAddress { return this.identity; }
+
+  /** See `Transport.adoptIdentity`; the registry key is the address, which does not change. */
+  adoptIdentity(self: NodeAddress): void {
+    if (self.toString() === this.identity.toString()) this.identity = self;
+  }
 
   setHandler(handler: WireHandler): void { this.handler = handler; }
 

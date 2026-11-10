@@ -83,8 +83,8 @@ class RecordingLogger implements Logger {
   withFields(_fields: LogContextData): Logger { return this; }
 }
 
-const addressA = new NodeAddress('fidelity', '127.0.0.1', 21_001);
-const addressB = new NodeAddress('fidelity', '127.0.0.1', 21_002);
+const addressA = new NodeAddress('fidelity', '127.0.0.1', 21_001, 'test-run');
+const addressB = new NodeAddress('fidelity', '127.0.0.1', 21_002, 'test-run');
 
 /**
  * Two transports that have completed a handshake with each other over mock
@@ -112,11 +112,11 @@ function connect(): Link {
   const receiverSocket = mockSocket();
   (sender as unknown as TransportInternals).attachInbound(senderSocket);
   (sender as unknown as TransportInternals).onData(
-    senderSocket, encodeFrame({ kind: 'hello', self: addressB.toJSON() }),
+    senderSocket, encodeFrame({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: addressB.toJSON() }),
   );
   (receiver as unknown as TransportInternals).attachInbound(receiverSocket);
   (receiver as unknown as TransportInternals).onData(
-    receiverSocket, encodeFrame({ kind: 'hello', self: addressA.toJSON() }),
+    receiverSocket, encodeFrame({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: addressA.toJSON() }),
   );
 
   const received: WireMessage[] = [];

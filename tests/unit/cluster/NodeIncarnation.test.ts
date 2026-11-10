@@ -223,8 +223,8 @@ describe('it rides the wire, bounded, and optional in both directions', () => {
   });
 
   test('a frame whose member address carries a bad incarnation is refused whole', () => {
-    // `isNodeAddressData` is the single gate for all eight address-bearing wire
-    // fields, so the bound reaches every one of them through this one guard.
+    // `isNodeAddressData` is the shape gate under every address-bearing wire
+    // field, so the bound reaches every one of them through this one guard.
     const good: MemberData = {
       address: addressData({ incarnation: 'fine' }), status: 'up', version: 1, roles: [],
     };
@@ -234,11 +234,12 @@ describe('it rides the wire, bounded, and optional in both directions', () => {
       version: 1,
       roles: [],
     };
+    const from = addressData({ incarnation: 'sender-run' });
     expect(wireFrameProblem({
-      kind: 'gossip', from: addressData(), sequence: Date.now(), members: [good],
+      kind: 'gossip', from, sequence: Date.now(), members: [good],
     } as unknown as { kind: string })).toBeNull();
     expect(wireFrameProblem({
-      kind: 'gossip', from: addressData(), sequence: Date.now(), members: [good, bad],
+      kind: 'gossip', from, sequence: Date.now(), members: [good, bad],
     } as unknown as { kind: string })).toContain('member[1]');
     expect(wireFrameProblem({
       kind: 'hello', self: addressData({ incarnation: '' }),
@@ -314,5 +315,31 @@ describe('a peer cannot restate this node\'s own incarnation', () => {
     const self = internals(node.cluster).members.get(selfKey);
     expect(self?.status).toBe('up');
     expect(self?.address.incarnation).toBe(localIncarnation);
+  });
+});
+
+describe('cluster wire v2 requires the incarnation past the handshake (#823)', () => {
+  test('a gossip frame naming a member without its run is refused whole', () => {
+    const from = addressData({ incarnation: 'sender-run' });
+    const withRun: MemberData = { address: addressData({ incarnation: 'run' }), status: 'up', version: 1, roles: [] };
+    const withoutRun: MemberData = { address: addressData({ port: 30_002 }), status: 'up', version: 1, roles: [] };
+    expect(wireFrameProblem({ kind: 'gossip', from, sequence: Date.now(), members: [withRun] } as unknown as { kind: string }))
+      .toBeNull();
+    expect(wireFrameProblem({ kind: 'gossip', from, sequence: Date.now(), members: [withRun, withoutRun] } as unknown as { kind: string }))
+      .toContain('member[1]');
+  });
+
+  test('a heartbeat, a leave and a refusal from an address without its run are refused', () => {
+    const noRun = addressData();
+    expect(wireFrameProblem({ kind: 'heartbeat', from: noRun, seq: 1, ts: 0 } as unknown as { kind: string }))
+      .toContain('incarnation');
+    expect(wireFrameProblem({ kind: 'leave', node: noRun } as unknown as { kind: string })).toContain('incarnation');
+    expect(wireFrameProblem({
+      kind: 'membership-refused', from: addressData({ incarnation: 'a' }), subject: noRun,
+    } as unknown as { kind: string })).toContain('incarnation');
+  });
+
+  test('the handshake stays lenient, so a version-1 hello can be refused with a reason', () => {
+    expect(wireFrameProblem({ kind: 'hello', self: addressData() } as unknown as { kind: string })).toBeNull();
   });
 });

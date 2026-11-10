@@ -1106,9 +1106,18 @@ Abgewiesene Records werden einmal pro Frame gemeldet, nicht
 einmal pro Record — eine WARN-Zeile mit Peer und Anzahl, dazu der
 Zähler `cluster_gossip_records_refused_total{reason}`, dessen
 Label `reason` auf `version-skew`, `map-cap`, `timestamp-skew`,
-`replayed-frame` und `self-claim` geschlossen ist. Pro Record zu
-loggen würde einem Peer Log-Verstärkung schenken statt des
+`replayed-frame`, `self-claim` und `removed-run` geschlossen ist. Pro
+Record zu loggen würde einem Peer Log-Verstärkung schenken statt des
 Wachstums, das er gerade verloren hat.
+
+`removed-run` ist ein Record für einen Lauf, den dieser Knoten als
+`removed` führt — dieselbe Adresse *und* dieselbe Inkarnation.  Eine
+Version wählt der Absender und konnte immer über einen Grabstein
+hinaus neu gestempelt werden; eine Inkarnation benennt den Prozess,
+den der Cluster entfernt hat, und nur ein Neustart erzeugt eine neue.
+Seit Cluster-Wire v2 trägt jede Adresse auf einem Frame sie, also kann
+der gedownte Lauf unter keiner Version zurückkommen, während ein
+Neustart an derselben Adresse weiterhin sofort beitritt (#823, #940).
 
 `self-claim` ist die Regel von oben, aus Sicht des Zählers: ein
 Peer behauptet einen Status für den empfangenden Knoten, der

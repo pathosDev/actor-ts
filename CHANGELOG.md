@@ -4438,6 +4438,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — the cluster wire has a version, negotiated in the handshake,
+  and version 2 requires every node address on a frame to name its
+  incarnation; a v0.18.0 node and an older one refuse each other** (#823,
+  #940). Every `hello` and `hello-ack` announces the versions the node speaks;
+  two nodes that share none refuse at the handshake with a new `hello-refused`
+  frame carrying the reason and a WARN on both sides, instead of half-working
+  as the v0.16 and v0.17 breaks did. A version-2 `hello` without an
+  incarnation is refused the same way. Past the handshake every address on a
+  heartbeat, gossip record, `leave` and `membership-refused` must carry its
+  run, which lets a tombstone refuse the *run* it was written for at any
+  version: a process the cluster downed can no longer come back by
+  restamping its version, while a restart — a new incarnation — still joins at
+  once (refusals counted as `cluster_gossip_records_refused_total{reason="removed-run"}`).
+  A transport built before `Cluster.join` — every injected one — is handed the
+  run's identity through a new optional `Transport.adoptIdentity`, and a
+  `ClusterClient` mints an incarnation of its own. **Migration:** no rolling
+  upgrade across this release — stop every node, then start every node on
+  v0.18.0. A custom `Transport` implementation should implement
+  `adoptIdentity` (or announce an address with an incarnation itself); the
+  upgrade page has the table (EN + DE).
+
 - **BREAKING — `actor-ts.cluster.run-coordinated-shutdown-when-down` ships
   `on`: a node its own downing decision removes now runs the
   coordinated-shutdown pipeline, which ends its ActorSystem; it used to leave

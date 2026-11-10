@@ -40,9 +40,9 @@ import { NoopLogger } from '../../../src/Logger.js';
  * turns the check red.
  */
 
-const self = new NodeAddress('silent', '127.0.0.1', 2_551);
-const peerA = new NodeAddress('silent', '10.0.0.1', 2_551);
-const peerB = new NodeAddress('silent', '10.0.0.2', 2_551);
+const self = new NodeAddress('silent', '127.0.0.1', 2_551, 'test-run');
+const peerA = new NodeAddress('silent', '10.0.0.1', 2_551, 'test-run');
+const peerB = new NodeAddress('silent', '10.0.0.2', 2_551, 'test-run');
 
 function member(address: NodeAddress, status: MemberStatus): Member {
   return new Member(address, status, 1, new Set<string>());
@@ -79,7 +79,7 @@ function internals(transport: TcpTransport): TransportInternals {
 function handshake(transport: TcpTransport, peer: NodeAddress): MockSocket {
   const socket = mockSocket();
   internals(transport).attachInbound(socket);
-  internals(transport).onData(socket, encodeFrame({ kind: 'hello', self: peer.toJSON() }));
+  internals(transport).onData(socket, encodeFrame({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: peer.toJSON() }));
   return socket;
 }
 

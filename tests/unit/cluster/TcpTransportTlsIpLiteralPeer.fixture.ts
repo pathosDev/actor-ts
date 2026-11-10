@@ -286,9 +286,9 @@ export async function dialIpLiteralPeer(
   deadlineMs: number,
 ): Promise<DialOutcome> {
   const port = await freePort();
-  const listenerAddress = new NodeAddress(SYSTEM, '127.0.0.1', port);
+  const listenerAddress = new NodeAddress(SYSTEM, '127.0.0.1', port, 'test-run');
   // Never bound — a dialler needs no listener — and never the listener's own address.
-  const diallerAddress = new NodeAddress(SYSTEM, '127.0.0.1', port === 65_535 ? 1 : port + 1);
+  const diallerAddress = new NodeAddress(SYSTEM, '127.0.0.1', port === 65_535 ? 1 : port + 1, 'test-run');
 
   let settle: (outcome: DialOutcome) => void = () => {};
   const outcome = new Promise<DialOutcome>((resolve) => { settle = resolve; });

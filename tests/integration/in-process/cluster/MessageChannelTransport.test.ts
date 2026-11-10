@@ -30,8 +30,8 @@ function makePair(): [PortLike, PortLike] {
 
 describe('MessageChannelTransport', () => {
   test('posts framed BrokeredMessages containing from/to/payload', async () => {
-    const nodeA = new NodeAddress('sys', 'worker', 1);
-    const nodeB = new NodeAddress('sys', 'worker', 2);
+    const nodeA = new NodeAddress('sys', 'worker', 1, 'test-run');
+    const nodeB = new NodeAddress('sys', 'worker', 2, 'test-run');
     const [brokerPort, workerPort] = makePair();
 
     const transport = new MessageChannelTransport(nodeA, workerPort);
@@ -55,8 +55,8 @@ describe('MessageChannelTransport', () => {
   });
 
   test('inbound BrokeredMessages are delivered to the handler', async () => {
-    const self = new NodeAddress('sys', 'worker', 1);
-    const peer = new NodeAddress('sys', 'worker', 2);
+    const self = new NodeAddress('sys', 'worker', 1, 'test-run');
+    const peer = new NodeAddress('sys', 'worker', 2, 'test-run');
     const [brokerPort, workerPort] = makePair();
 
     const transport = new MessageChannelTransport(self, workerPort);
@@ -81,7 +81,7 @@ describe('MessageChannelTransport', () => {
 
   test('send is a no-op after shutdown', async () => {
     const [brokerPort, workerPort] = makePair();
-    const self = new NodeAddress('sys', 'h', 1);
+    const self = new NodeAddress('sys', 'h', 1, 'test-run');
     const transport = new MessageChannelTransport(self, workerPort);
     await transport.start();
 
@@ -91,16 +91,16 @@ describe('MessageChannelTransport', () => {
 
     await transport.shutdown();
 
-    transport.send(new NodeAddress('sys', 'h', 2), { kind: 'heartbeat', from: self.toJSON(), seq: 1, ts: 0 });
+    transport.send(new NodeAddress('sys', 'h', 2, 'test-run'), { kind: 'heartbeat', from: self.toJSON(), seq: 1, ts: 0 });
     // Fixed wait on purpose: the claim is that nothing crosses the port.
     await sleep(10);
     expect(captured.length).toBe(0);
   });
 
   test('peers() reflects addresses seen via inbound messages', async () => {
-    const self = new NodeAddress('sys', 'h', 1);
-    const peer1 = new NodeAddress('sys', 'h', 2);
-    const peer2 = new NodeAddress('sys', 'h', 3);
+    const self = new NodeAddress('sys', 'h', 1, 'test-run');
+    const peer1 = new NodeAddress('sys', 'h', 2, 'test-run');
+    const peer2 = new NodeAddress('sys', 'h', 3, 'test-run');
     const [brokerPort, workerPort] = makePair();
     const transport = new MessageChannelTransport(self, workerPort);
     const handled: unknown[] = [];
@@ -132,7 +132,7 @@ describe('MessageChannelTransport', () => {
     // process), so a peer that identified its process was reported as one that
     // had not.  The recorded object is what the readiness check and every
     // diagnostic actually want.
-    const self = new NodeAddress('sys', 'h', 1);
+    const self = new NodeAddress('sys', 'h', 1, 'test-run');
     const peer = new NodeAddress('sys', 'h', 2, 'incarnation-7');
     const [brokerPort, workerPort] = makePair();
     const transport = new MessageChannelTransport(self, workerPort);
@@ -181,10 +181,10 @@ describe('MessageChannelTransport', () => {
    * `honest` posts the frame that proves the port still works.
    */
   test('the whole hostile corpus crosses a real MessageChannel without escaping (#945)', async () => {
-    const self = new NodeAddress('sys', 'h', 1);
-    const attacker = new NodeAddress('sys', 'h', 2);
-    const thrower = new NodeAddress('sys', 'h', 3);
-    const honest = new NodeAddress('sys', 'h', 4);
+    const self = new NodeAddress('sys', 'h', 1, 'test-run');
+    const attacker = new NodeAddress('sys', 'h', 2, 'test-run');
+    const thrower = new NodeAddress('sys', 'h', 3, 'test-run');
+    const honest = new NodeAddress('sys', 'h', 4, 'test-run');
     const [brokerPort, workerPort] = makePair();
 
     // A `NoopLogger` only because this test deliberately produces a drop of
@@ -233,8 +233,8 @@ describe('WorkerBroker', () => {
   test('routes a message from one transport to another', async () => {
     const broker = new WorkerBroker();
 
-    const addrA = new NodeAddress('sys', 'w', 1);
-    const addrB = new NodeAddress('sys', 'w', 2);
+    const addrA = new NodeAddress('sys', 'w', 1, 'test-run');
+    const addrB = new NodeAddress('sys', 'w', 2, 'test-run');
 
     const [bpA, wpA] = makePair();
     const [bpB, wpB] = makePair();
@@ -261,12 +261,12 @@ describe('WorkerBroker', () => {
 
   test('drops messages addressed to unregistered nodes', async () => {
     const broker = new WorkerBroker();
-    const addrA = new NodeAddress('sys', 'w', 1);
+    const addrA = new NodeAddress('sys', 'w', 1, 'test-run');
     const [bpA, wpA] = makePair();
     broker.register(addrA, bpA);
     const tA = new MessageChannelTransport(addrA, wpA);
     await tA.start();
-    expect(() => tA.send(new NodeAddress('sys', 'w', 99), {
+    expect(() => tA.send(new NodeAddress('sys', 'w', 99, 'test-run'), {
       kind: 'heartbeat', from: addrA.toJSON(), seq: 1, ts: 0,
     })).not.toThrow();
     await tA.shutdown();
@@ -277,7 +277,7 @@ describe('WorkerBroker', () => {
     const broker = new WorkerBroker();
     const [p1] = makePair();
     const [p2] = makePair();
-    const addr = new NodeAddress('sys', 'w', 1);
+    const addr = new NodeAddress('sys', 'w', 1, 'test-run');
     broker.register(addr, p1);
     expect(() => broker.register(addr, p2)).toThrow(/already registered/);
     broker.close();
@@ -285,8 +285,8 @@ describe('WorkerBroker', () => {
 
   test('unregister removes the entry so it becomes unreachable', async () => {
     const broker = new WorkerBroker();
-    const addrA = new NodeAddress('sys', 'w', 1);
-    const addrB = new NodeAddress('sys', 'w', 2);
+    const addrA = new NodeAddress('sys', 'w', 1, 'test-run');
+    const addrB = new NodeAddress('sys', 'w', 2, 'test-run');
     const [bpA, wpA] = makePair();
     const [bpB, wpB] = makePair();
     broker.register(addrA, bpA);
@@ -313,9 +313,9 @@ describe('WorkerBroker', () => {
   test('registered() lists current members', async () => {
     const broker = new WorkerBroker();
     const addrs = [
-      new NodeAddress('sys', 'w', 1),
-      new NodeAddress('sys', 'w', 2),
-      new NodeAddress('sys', 'w', 3),
+      new NodeAddress('sys', 'w', 1, 'test-run'),
+      new NodeAddress('sys', 'w', 2, 'test-run'),
+      new NodeAddress('sys', 'w', 3, 'test-run'),
     ];
     for (const nodeA of addrs) {
       const [p] = makePair();

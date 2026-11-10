@@ -152,7 +152,7 @@ async function startNode(
   let clusterOptions = ClusterOptions.create()
     .withHost('h')
     .withPort(port)
-    .withTransport(options.transport ?? new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
+    .withTransport(options.transport ?? new InMemoryTransport(new NodeAddress(systemName, 'h', port, 'test-run')))
     .withFailureDetector(options.failureDetector ?? SLOW_EVICTION)
     .withFailureDetectorAutoDown(options.failureDetectorAutoDown ?? false)
     .withSplitBrainResolver(options.splitBrainResolver ?? NO_STABILITY_WINDOW)
@@ -179,7 +179,7 @@ async function startNode(
  * of wall clock doing it.
  */
 function introducePhantom(from: Node, to: Node, systemName: string, port: number): void {
-  const phantom = new Member(new NodeAddress(systemName, 'h', port), 'up', Date.now(), new Set());
+  const phantom = new Member(new NodeAddress(systemName, 'h', port, 'test-run'), 'up', Date.now(), new Set());
   const frame: GossipMessage = {
     kind: 'gossip',
     from: from.cluster.selfAddress.toJSON(),
@@ -1130,7 +1130,7 @@ describe('Cluster + DowningProvider — the shutdown pipeline after a self-down 
       downing: DOWNS_ITSELF,
       runCoordinatedShutdownWhenDown: true,
       log,
-      transport: new ShutdownRejectingTransport(new NodeAddress(sysName, 'h', 64_361)),
+      transport: new ShutdownRejectingTransport(new NodeAddress(sysName, 'h', 64_361, 'test-run')),
     });
     const seen = observeFirstPhase(seed);
 
@@ -1152,7 +1152,7 @@ describe('Cluster + DowningProvider — the shutdown pipeline after a self-down 
     const { seed, peer } = await formPair(sysName, 64_371, {
       downing: DOWNS_ITSELF,
       runCoordinatedShutdownWhenDown: true,
-      transport: new ShutdownNeverSettlingTransport(new NodeAddress(sysName, 'h', 64_371)),
+      transport: new ShutdownNeverSettlingTransport(new NodeAddress(sysName, 'h', 64_371, 'test-run')),
     });
     const seen = observeFirstPhase(seed);
 

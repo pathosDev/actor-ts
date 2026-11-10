@@ -72,6 +72,8 @@ type AssertNever<T extends never> = T;
 const CORE_WIRE_KINDS = [
   'hello',
   'hello-ack',
+  // A handshake turned away over the wire version, with the reason (#823).
+  'hello-refused',
   'heartbeat',
   'heartbeat-ack',
   // The answer to a heartbeat from a member held as `removed` (#940).

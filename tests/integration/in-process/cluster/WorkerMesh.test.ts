@@ -81,8 +81,8 @@ async function stopNode(node: Node): Promise<void> {
 describe('WorkerBroker ↔ MessageChannelTransport end-to-end', () => {
   test('two broker-connected nodes see each other as Up', async () => {
     const broker = new WorkerBroker();
-    const addrA = new NodeAddress('wm-two', 'w', 1);
-    const addrB = new NodeAddress('wm-two', 'w', 2);
+    const addrA = new NodeAddress('wm-two', 'w', 1, 'test-run');
+    const addrB = new NodeAddress('wm-two', 'w', 2, 'test-run');
 
     const nodeA = await startNode('wm-two', addrA, broker);
     const nodeB = await startNode('wm-two', addrB, broker, [addrA.toString()]);
@@ -99,8 +99,8 @@ describe('WorkerBroker ↔ MessageChannelTransport end-to-end', () => {
 
   test('messages flow actor-to-actor across the broker: a tell from node A lands on node B', async () => {
     const broker = new WorkerBroker();
-    const addrA = new NodeAddress('wm-msg', 'w', 1);
-    const addrB = new NodeAddress('wm-msg', 'w', 2);
+    const addrA = new NodeAddress('wm-msg', 'w', 1, 'test-run');
+    const addrB = new NodeAddress('wm-msg', 'w', 2, 'test-run');
 
     const nodeA = await startNode('wm-msg', addrA, broker);
     const nodeB = await startNode('wm-msg', addrB, broker, [addrA.toString()]);
@@ -133,8 +133,8 @@ describe('WorkerBroker ↔ MessageChannelTransport end-to-end', () => {
 
   test('a cross-node ask brings its reply back to the asking node', async () => {
     const broker = new WorkerBroker();
-    const addrA = new NodeAddress('wm-ask', 'w', 1);
-    const addrB = new NodeAddress('wm-ask', 'w', 2);
+    const addrA = new NodeAddress('wm-ask', 'w', 1, 'test-run');
+    const addrB = new NodeAddress('wm-ask', 'w', 2, 'test-run');
 
     const nodeA = await startNode('wm-ask', addrA, broker);
     const nodeB = await startNode('wm-ask', addrB, broker, [addrA.toString()]);
@@ -163,8 +163,8 @@ describe('WorkerBroker ↔ MessageChannelTransport end-to-end', () => {
 
   test('the receiver sees the remote sender: context.sender names the actor on the other node (#1561)', async () => {
     const broker = new WorkerBroker();
-    const addrA = new NodeAddress('wm-sender', 'w', 1);
-    const addrB = new NodeAddress('wm-sender', 'w', 2);
+    const addrA = new NodeAddress('wm-sender', 'w', 1, 'test-run');
+    const addrB = new NodeAddress('wm-sender', 'w', 2, 'test-run');
 
     const nodeA = await startNode('wm-sender', addrA, broker);
     const nodeB = await startNode('wm-sender', addrB, broker, [addrA.toString()]);
@@ -206,9 +206,9 @@ describe('WorkerBroker ↔ MessageChannelTransport end-to-end', () => {
   test('three-node mesh: every node sees every other as Up', async () => {
     const broker = new WorkerBroker();
     const addrs = [
-      new NodeAddress('wm-three', 'w', 1),
-      new NodeAddress('wm-three', 'w', 2),
-      new NodeAddress('wm-three', 'w', 3),
+      new NodeAddress('wm-three', 'w', 1, 'test-run'),
+      new NodeAddress('wm-three', 'w', 2, 'test-run'),
+      new NodeAddress('wm-three', 'w', 3, 'test-run'),
     ];
     const nodes: Node[] = [];
     nodes.push(await startNode('wm-three', addrs[0]!, broker));
@@ -228,7 +228,7 @@ describe('WorkerBroker ↔ MessageChannelTransport end-to-end', () => {
 
   test('orphaned sends between unclustered nodes do not crash anything', async () => {
     const broker = new WorkerBroker();
-    const addrA = new NodeAddress('wm-orphan', 'w', 1);
+    const addrA = new NodeAddress('wm-orphan', 'w', 1, 'test-run');
     const nodeA = await startNode('wm-orphan', addrA, broker);
 
     class NoopActor extends Actor<string> { override onReceive(_: string): void {} }
@@ -263,9 +263,9 @@ describe('WorkerBroker — a forged `from` does not survive the hop (#774)', () 
    */
   test('the peer identity the transport reports is the sending port, not the payload', async () => {
     const broker = new WorkerBroker();
-    const hostile = new NodeAddress('wm-forge', 'w', 1);
-    const impersonated = new NodeAddress('wm-forge', 'w', 2);
-    const victim = new NodeAddress('wm-forge', 'w', 3);
+    const hostile = new NodeAddress('wm-forge', 'w', 1, 'test-run');
+    const impersonated = new NodeAddress('wm-forge', 'w', 2, 'test-run');
+    const victim = new NodeAddress('wm-forge', 'w', 3, 'test-run');
 
     const victimChannel = new MessageChannel();
     broker.register(victim, victimChannel.port1 as unknown as PortLike);

@@ -98,7 +98,14 @@ export interface PortLike {
  * on a socket got a `WARN` naming it and the offending field (#1515).
  */
 export class MessageChannelTransport implements Transport {
-  readonly self: NodeAddress;
+  private identity: NodeAddress;
+
+  get self(): NodeAddress { return this.identity; }
+
+  /** See `Transport.adoptIdentity`. */
+  adoptIdentity(self: NodeAddress): void {
+    if (self.toString() === this.identity.toString()) this.identity = self;
+  }
   private readonly port: PortLike;
   private handler: WireHandler = () => {};
   private running = false;
@@ -164,7 +171,7 @@ export class MessageChannelTransport implements Transport {
     log: Logger = new ConsoleLogger(LogLevel.Info),
     clock: Clock = systemClock,
   ) {
-    this.self = self;
+    this.identity = self;
     this.port = port;
     this.log = log;
     this.clock = clock;

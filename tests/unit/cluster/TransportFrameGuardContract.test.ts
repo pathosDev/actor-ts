@@ -50,7 +50,7 @@ const SYSTEM = 'frame-guard';
 let nextPort = 30_000;
 const freshAddress = (): NodeAddress => {
   nextPort += 1;
-  return new NodeAddress(SYSTEM, '127.0.0.1', nextPort);
+  return new NodeAddress(SYSTEM, '127.0.0.1', nextPort, 'test-run');
 };
 
 /** The private socket callbacks the `TcpTransport` arm reaches through. */
@@ -116,7 +116,7 @@ const tcpArm: TransportArm = {
     // The handshake matters: below it every frame is refused for being
     // pre-`hello`, so without it the corpus would pass against a transport
     // with no guard at all.
-    internals.onData(socket, encodeFrame({ kind: 'hello', self: freshAddress().toJSON() }));
+    internals.onData(socket, encodeFrame({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: freshAddress().toJSON() }));
     return {
       deliver: (payload) => internals.onData(socket, encodeFrame(payload as WireMessage)),
       settle: async () => { /* `onData` dispatches inline */ },
@@ -321,7 +321,7 @@ describe('TcpTransport — a handshake naming the receiving node itself is refus
     const internals = transport as unknown as TcpTransportInternals;
     internals.attachInbound(socket);
 
-    internals.onData(socket, encodeFrame({ kind: 'hello', self: self.toJSON() }));
+    internals.onData(socket, encodeFrame({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: self.toJSON() }));
     // A frame that would reach the handler on a connection that had an identity.
     internals.onData(socket, encodeFrame(wellFormedFrame(self)));
 
@@ -356,7 +356,7 @@ describe('TcpTransport — a handshake naming the receiving node itself is refus
       const internals = transport as unknown as TcpTransportInternals;
       internals.attachInbound(socket);
 
-      internals.onData(socket, encodeFrame({ kind: 'hello', self: claim.toJSON() }));
+      internals.onData(socket, encodeFrame({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: claim.toJSON() }));
       internals.onData(socket, encodeFrame(wellFormedFrame(claim)));
 
       expect({ received, peers: transport.peers(), writes: socket.writes.length, closed: socket.closed })
@@ -392,7 +392,7 @@ describe('TcpTransport — a handshake naming the receiving node itself is refus
     await awaitCondition(() => internals.bySocket.has(socket), { label: 'the dial installed its socket' });
     const handlers = dial as TcpSocketHandlers | null;
     if (handlers === null) throw new Error('the transport never dialled');
-    handlers.onData(socket, encodeFrame({ kind: 'hello-ack', self: self.toJSON() }));
+    handlers.onData(socket, encodeFrame({ kind: 'hello-ack', wireVersion: 2, self: self.toJSON() }));
     handlers.onData(socket, encodeFrame(wellFormedFrame(self)));
 
     expect(received).toEqual([]);
@@ -558,7 +558,7 @@ describe('MessageChannelTransport — the known-peer set is bounded', () => {
     transport.setHandler(() => {});
     await transport.start();
     for (let i = 0; i < count; i += 1) {
-      const peer = new NodeAddress(SYSTEM, '10.0.0.1', 1_000 + i);
+      const peer = new NodeAddress(SYSTEM, '10.0.0.1', 1_000 + i, 'test-run');
       port.inject({ from: peer.toJSON(), to: self.toJSON(), payload: wellFormedFrame(peer) });
     }
     return transport;
@@ -581,13 +581,13 @@ describe('MessageChannelTransport — the known-peer set is bounded', () => {
     transport.setHandler(() => {});
     await transport.start();
 
-    const established = new NodeAddress(SYSTEM, '10.0.0.2', 4_242);
+    const established = new NodeAddress(SYSTEM, '10.0.0.2', 4_242, 'test-run');
     port.inject({
       from: established.toJSON(), to: self.toJSON(), payload: wellFormedFrame(established),
     });
 
     for (let i = 0; i < MAX_KNOWN_CHANNEL_PEERS + 200; i += 1) {
-      const stranger = new NodeAddress(SYSTEM, '10.0.0.3', 1_000 + i);
+      const stranger = new NodeAddress(SYSTEM, '10.0.0.3', 1_000 + i, 'test-run');
       port.inject({
         from: stranger.toJSON(), to: self.toJSON(), payload: wellFormedFrame(stranger),
       });
@@ -630,7 +630,7 @@ describe('MessageChannelTransport — the known-peer set is bounded', () => {
     // readable and recording it would succeed — around a payload the wire
     // schema refuses.  #563's poisoned gossip status, i.e. a frame a peer can
     // post at will.
-    const stranger = new NodeAddress(SYSTEM, '10.0.0.6', 7_777);
+    const stranger = new NodeAddress(SYSTEM, '10.0.0.6', 7_777, 'test-run');
     port.inject({
       from: stranger.toJSON(),
       to: self.toJSON(),
@@ -685,18 +685,18 @@ describe('MessageChannelTransport — the known-peer set is bounded', () => {
 
     // The control: an established peer, recorded before the flood, and the
     // reason the readiness assertion below means anything.
-    const established = new NodeAddress(SYSTEM, '10.0.0.7', 8_888);
+    const established = new NodeAddress(SYSTEM, '10.0.0.7', 8_888, 'test-run');
     port.inject({
       from: established.toJSON(), to: self.toJSON(), payload: wellFormedFrame(established),
     });
 
     for (let i = 0; i < MAX_KNOWN_CHANNEL_PEERS; i += 1) {
-      const peer = new NodeAddress(SYSTEM, '10.0.0.4', 1_000 + i);
+      const peer = new NodeAddress(SYSTEM, '10.0.0.4', 1_000 + i, 'test-run');
       port.inject({ from: peer.toJSON(), to: self.toJSON(), payload: wellFormedFrame(peer) });
     }
     received.length = 0;
 
-    const late = new NodeAddress(SYSTEM, '10.0.0.5', 9_999);
+    const late = new NodeAddress(SYSTEM, '10.0.0.5', 9_999, 'test-run');
     port.inject({ from: late.toJSON(), to: self.toJSON(), payload: wellFormedFrame(late) });
 
     expect(received.length).toBe(1);

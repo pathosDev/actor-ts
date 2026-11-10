@@ -339,7 +339,10 @@ Zum Monitoring der Cluster-Gesundheit:
   fließt — eine flache Linie heißt, dieser Knoten hat aufgehört zu
   gossippen.
 - `cluster_gossip_records_refused_total` sollte bei null liegen.
-  Bewegung auf `reason="version-skew"` heißt, gegossipte Versionen
+  Bewegung auf `reason="removed-run"` heißt, ein Lauf, den dieser
+  Knoten entfernt hat, gossipt noch über sich selbst — ein Prozess, der
+  pausiert oder abgeschnitten war und weiterläuft, und der von selbst
+  abtritt (#940). Bewegung auf `reason="version-skew"` heißt, gegossipte Versionen
   liegen weiter vor der Uhr dieses Knotens als `maxVersionSkewMs` —
   entweder ist die Uhr eines Peers abgedriftet, oder jemand versucht,
   eine Adresse vorab zu beanspruchen. Bewegung auf `reason="map-cap"`

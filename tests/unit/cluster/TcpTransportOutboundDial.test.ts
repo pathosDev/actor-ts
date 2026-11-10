@@ -68,7 +68,7 @@ function internals(transport: TcpTransport): TransportInternals {
   return transport as unknown as TransportInternals;
 }
 
-const self = new NodeAddress('dialler', '127.0.0.1', 2_552);
+const self = new NodeAddress('dialler', '127.0.0.1', 2_552, 'test-run');
 
 function heartbeat(seq: number): WireMessage {
   return { kind: 'heartbeat', from: self.toJSON(), seq, ts: seq };
@@ -126,7 +126,7 @@ describe('the dial writes one hello (#1475)', () => {
             // Ack the first hello only, as a peer would: the second one is the
             // defect, and answering it would hide nothing either way.
             if (message.kind === 'hello' && received.filter((m) => m.kind === 'hello').length === 1) {
-              socket.write(encodeFrame({ kind: 'hello-ack', self: peer.toJSON() }));
+              socket.write(encodeFrame({ kind: 'hello-ack', wireVersion: 2, self: peer.toJSON() }));
             }
           }
         },
@@ -135,7 +135,7 @@ describe('the dial writes one hello (#1475)', () => {
       },
     });
     listeners.push(listener);
-    peer = new NodeAddress('listener', '127.0.0.1', listener.port);
+    peer = new NodeAddress('listener', '127.0.0.1', listener.port, 'test-run');
 
     const transport = new TcpTransport(self, new NoopLogger(), { tls: { ca: CA, serverName: 'localhost' } });
     transports.push(transport);
@@ -165,7 +165,7 @@ describe('the dial writes one hello (#1475)', () => {
       },
     };
 
-    transport.send(new NodeAddress('peer', '127.0.0.1', 2_553), heartbeat(1));
+    transport.send(new NodeAddress('peer', '127.0.0.1', 2_553, 'test-run'), heartbeat(1));
     await Promise.resolve();
 
     expect(socket.writes).toHaveLength(1);
@@ -249,7 +249,7 @@ function fireConnectDeadline(transport: TcpTransport, to: NodeAddress): void {
 }
 
 describe('a dial that misses its deadline is given up, and says how far it got (#1475)', () => {
-  const target = new NodeAddress('peer', '10.0.0.9', 2_552);
+  const target = new NodeAddress('peer', '10.0.0.9', 2_552, 'test-run');
   // The two dial deadlines differ on purpose, so each WARN has to name its own.
   const bounds = { connectTimeoutMs: 100, handshakeTimeoutMs: 250, incompleteFrameIdleMs: 900 };
 
@@ -384,7 +384,7 @@ describe('a dial that misses its deadline is given up, and says how far it got (
     const { transport, dials } = dialling();
     transport.send(target, heartbeat(1));
     await dials[0]!.open();
-    internals(transport).onData(dials[0]!.socket, encodeFrame({ kind: 'hello-ack', self: target.toJSON() }));
+    internals(transport).onData(dials[0]!.socket, encodeFrame({ kind: 'hello-ack', wireVersion: 2, self: target.toJSON() }));
 
     await transport.shutdown();
 
@@ -419,7 +419,7 @@ describe('the deadline gives up a real dial, not just its bookkeeping (#1475)', 
     });
     transports.push(transport);
     internals(transport).backend = new NodeTcpBackend();
-    const peer = new NodeAddress('silent', '127.0.0.1', listener.port);
+    const peer = new NodeAddress('silent', '127.0.0.1', listener.port, 'test-run');
 
     transport.send(peer, heartbeat(1));
 
@@ -441,7 +441,7 @@ describe('the deadline gives up a real dial, not just its bookkeeping (#1475)', 
     const log = new CapturingLogger();
     const transport = new TcpTransport(self, log);
     transports.push(transport);
-    const peer = new NodeAddress('gone', '127.0.0.1', port);
+    const peer = new NodeAddress('gone', '127.0.0.1', port, 'test-run');
 
     transport.send(peer, heartbeat(1));
 
@@ -459,15 +459,15 @@ describe('an acked dial is one peer, under however many keys', () => {
     // under the one the peer announced — two keys whenever a seed names a host
     // the peer does not advertise itself as.  `peers()` walked the keys, so
     // the one connection was listed twice.
-    const dialled = new NodeAddress('peer', '10.0.0.9', 2_552);
-    const announced = new NodeAddress('peer', 'node-b.internal', 2_552);
+    const dialled = new NodeAddress('peer', '10.0.0.9', 2_552, 'test-run');
+    const announced = new NodeAddress('peer', 'node-b.internal', 2_552, 'test-run');
     const transport = new TcpTransport(self, new NoopLogger());
     transports.push(transport);
     const dials = heldDialer(transport);
     transport.send(dialled, heartbeat(1));
     await dials[0]!.open();
 
-    internals(transport).onData(dials[0]!.socket, encodeFrame({ kind: 'hello-ack', self: announced.toJSON() }));
+    internals(transport).onData(dials[0]!.socket, encodeFrame({ kind: 'hello-ack', wireVersion: 2, self: announced.toJSON() }));
     expect([...internals(transport).byPeer.keys()].sort()).toEqual([announced.toString(), dialled.toString()].sort());
 
     expect(transport.peers().map(String)).toEqual([announced.toString()]);
@@ -476,14 +476,14 @@ describe('an acked dial is one peer, under however many keys', () => {
   test('a dial acked under the address it dialled is listed once too', async () => {
     // The control: the ordinary case holds one key, and a fix that skipped
     // the dialled key to drop the duplicate would drop this peer entirely.
-    const address = new NodeAddress('peer', '10.0.0.9', 2_552);
+    const address = new NodeAddress('peer', '10.0.0.9', 2_552, 'test-run');
     const transport = new TcpTransport(self, new NoopLogger());
     transports.push(transport);
     const dials = heldDialer(transport);
     transport.send(address, heartbeat(1));
     await dials[0]!.open();
 
-    internals(transport).onData(dials[0]!.socket, encodeFrame({ kind: 'hello-ack', self: address.toJSON() }));
+    internals(transport).onData(dials[0]!.socket, encodeFrame({ kind: 'hello-ack', wireVersion: 2, self: address.toJSON() }));
 
     expect(transport.peers().map(String)).toEqual([address.toString()]);
   });
@@ -498,8 +498,8 @@ describe('an acked dial is one peer, under however many keys', () => {
  */
 describe('a crossing dial is not reported as a hijack', () => {
   /** Sorts after `self`, so `self`'s dial is the one the tie-break keeps. */
-  const nodeB = new NodeAddress('dialler', '127.0.0.2', 2_552);
-  const helloFromB = encodeFrame({ kind: 'hello', self: nodeB.toJSON() });
+  const nodeB = new NodeAddress('dialler', '127.0.0.2', 2_552, 'test-run');
+  const helloFromB = encodeFrame({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: nodeB.toJSON() });
 
   test('the side whose dial survives turns the other away without crying hijack', async () => {
     const log = new CapturingLogger();
@@ -554,7 +554,7 @@ describe('a crossing dial is not reported as a hijack', () => {
    */
   for (const [order, peer] of [
     ['after', nodeB],
-    ['before', new NodeAddress('dialler', '10.0.0.9', 2_552)],
+    ['before', new NodeAddress('dialler', '10.0.0.9', 2_552, 'test-run')],
   ] as const) {
     test(`a second claim on a peer whose dial was acked is a hijack, when the peer sorts ${order} this node`, async () => {
       expect(peer.toString() > self.toString()).toBe(order === 'after');
@@ -565,13 +565,13 @@ describe('a crossing dial is not reported as a hijack', () => {
       transport.send(peer, heartbeat(1));
       await dials[0]!.open();
       const dialled = dials[0]!.socket;
-      internals(transport).onData(dialled, encodeFrame({ kind: 'hello-ack', self: peer.toJSON() }));
+      internals(transport).onData(dialled, encodeFrame({ kind: 'hello-ack', wireVersion: 2, self: peer.toJSON() }));
       const established = internals(transport).byPeer.get(peer.toString());
       expect(established).toBeDefined();
 
       const intruder = recordingSocket();
       internals(transport).attachInbound(intruder);
-      internals(transport).onData(intruder, encodeFrame({ kind: 'hello', self: peer.toJSON() }));
+      internals(transport).onData(intruder, encodeFrame({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: peer.toJSON() }));
 
       expect(internals(transport).byPeer.get(peer.toString())).toBe(established);
       expect({ destroyed: dialled.destroyed, ended: dialled.ended }).toEqual({ destroyed: false, ended: false });

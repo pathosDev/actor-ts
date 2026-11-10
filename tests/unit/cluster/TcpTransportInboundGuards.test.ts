@@ -117,7 +117,7 @@ function fireHandshakeDeadline(transport: TcpTransport, connection: TrackedConne
 }
 
 function newTransport(port: number): TcpTransport {
-  return new TcpTransport(new NodeAddress('inbound-guards', '127.0.0.1', port), new NoopLogger());
+  return new TcpTransport(new NodeAddress('inbound-guards', '127.0.0.1', port, 'test-run'), new NoopLogger());
 }
 
 /**
@@ -139,7 +139,9 @@ function armedDelays(run: () => void): unknown[] {
 function partialHello(bytes: number): Uint8Array {
   const frame = encodeFrame({
     kind: 'hello',
-    self: new NodeAddress('inbound-guards', '10.0.0.7', 2_552).toJSON(),
+    wireVersion: 2,
+    minWireVersion: 2,
+    self: new NodeAddress('inbound-guards', '10.0.0.7', 2_552, 'test-run').toJSON(),
   });
   return frame.subarray(0, bytes);
 }
@@ -171,7 +173,9 @@ describe('an inbound socket cannot hold a half-received frame forever', () => {
 
     internals(transport).onData(socket, encodeFrame({
       kind: 'hello',
-      self: new NodeAddress('inbound-guards', '10.0.0.8', 2_552).toJSON(),
+      wireVersion: 2,
+      minWireVersion: 2,
+      self: new NodeAddress('inbound-guards', '10.0.0.8', 2_552, 'test-run').toJSON(),
     }));
 
     expect(internals(transport).bySocket.get(socket)?.incompleteFrameTimer).toBeNull();
@@ -188,7 +192,9 @@ describe('an inbound socket cannot hold a half-received frame forever', () => {
 
     const frame = encodeFrame({
       kind: 'hello',
-      self: new NodeAddress('inbound-guards', '10.0.0.9', 2_552).toJSON(),
+      wireVersion: 2,
+      minWireVersion: 2,
+      self: new NodeAddress('inbound-guards', '10.0.0.9', 2_552, 'test-run').toJSON(),
     });
     for (let i = 0; i < frame.byteLength - 1; i += 1) {
       internals(transport).onData(socket, frame.subarray(i, i + 1));
@@ -274,7 +280,9 @@ describe('inbound connections are capped', () => {
     // replaced, so the rest of the frame still completes.
     const frame = encodeFrame({
       kind: 'hello',
-      self: new NodeAddress('inbound-guards', '10.0.0.7', 2_552).toJSON(),
+      wireVersion: 2,
+      minWireVersion: 2,
+      self: new NodeAddress('inbound-guards', '10.0.0.7', 2_552, 'test-run').toJSON(),
     });
     internals(transport).onData(socket, frame.subarray(3));
     expect(socket.writes).toHaveLength(1);   // the hello-ack
@@ -306,7 +314,7 @@ describe('a frame the decoder refuses is always reported (#1484)', () => {
 
   test('a stranger past the cap is a WARN, before any handshake', () => {
     const log = new CapturingLogger();
-    const transport = new TcpTransport(new NodeAddress('inbound-guards', '127.0.0.1', 19_501), log);
+    const transport = new TcpTransport(new NodeAddress('inbound-guards', '127.0.0.1', 19_501, 'test-run'), log);
     const socket = mockSocket();
     internals(transport).attachInbound(socket);
 
@@ -318,11 +326,11 @@ describe('a frame the decoder refuses is always reported (#1484)', () => {
 
   test('an established peer past the cap is a WARN that names the association it cost', () => {
     const log = new CapturingLogger();
-    const transport = new TcpTransport(new NodeAddress('inbound-guards', '127.0.0.1', 19_502), log);
+    const transport = new TcpTransport(new NodeAddress('inbound-guards', '127.0.0.1', 19_502, 'test-run'), log);
     const socket = mockSocket();
     internals(transport).attachInbound(socket);
-    const peer = new NodeAddress('inbound-guards', '10.0.0.13', 2_552);
-    internals(transport).onData(socket, encodeFrame({ kind: 'hello', self: peer.toJSON() }));
+    const peer = new NodeAddress('inbound-guards', '10.0.0.13', 2_552, 'test-run');
+    internals(transport).onData(socket, encodeFrame({ kind: 'hello', wireVersion: 2, minWireVersion: 2, self: peer.toJSON() }));
     expect(log.warnings).toEqual([]);
 
     internals(transport).onData(socket, oversizedPrefix());
@@ -396,7 +404,9 @@ describe('an inbound socket that never speaks does not keep its slot', () => {
 
     internals(transport).onData(socket, encodeFrame({
       kind: 'hello',
-      self: new NodeAddress('inbound-guards', '10.0.0.11', 2_552).toJSON(),
+      wireVersion: 2,
+      minWireVersion: 2,
+      self: new NodeAddress('inbound-guards', '10.0.0.11', 2_552, 'test-run').toJSON(),
     }));
 
     const connection = internals(transport).bySocket.get(socket)!;
@@ -421,7 +431,9 @@ describe('an inbound socket that never speaks does not keep its slot', () => {
 
     const frame = encodeFrame({
       kind: 'hello',
-      self: new NodeAddress('inbound-guards', '10.0.0.12', 2_552).toJSON(),
+      wireVersion: 2,
+      minWireVersion: 2,
+      self: new NodeAddress('inbound-guards', '10.0.0.12', 2_552, 'test-run').toJSON(),
     });
     for (let index = 0; index < frame.byteLength; index += 1) {
       internals(transport).onData(socket, frame.subarray(index, index + 1));
@@ -533,7 +545,7 @@ describe('an inbound socket that never speaks does not keep its slot', () => {
 describe('the association-lifecycle bounds are configurable (#846)', () => {
   test('the inbound cap is the configured one, not the shipped one', () => {
     const transport = new TcpTransport(
-      new NodeAddress('inbound-guards', '127.0.0.1', 19_401),
+      new NodeAddress('inbound-guards', '127.0.0.1', 19_401, 'test-run'),
       new NoopLogger(),
       { maxInboundConnections: 3 },
     );
@@ -556,14 +568,14 @@ describe('the association-lifecycle bounds are configurable (#846)', () => {
     // 19_499 is deliberately not listened on: the dial this `send` starts fails
     // on a later tick, well after the three synchronous buffer writes below.
     const transport = new TcpTransport(
-      new NodeAddress('inbound-guards', '127.0.0.1', 19_402),
+      new NodeAddress('inbound-guards', '127.0.0.1', 19_402, 'test-run'),
       new NoopLogger(),
       { outboundQueueSize: 2 },
     );
-    const peer = new NodeAddress('unreachable-peer', '127.0.0.1', 19_499);
+    const peer = new NodeAddress('unreachable-peer', '127.0.0.1', 19_499, 'test-run');
     try {
-      transport.send(peer, { kind: 'hello', self: peer.toJSON() });
-      transport.send(peer, { kind: 'hello-ack', self: peer.toJSON() });
+      transport.send(peer, { kind: 'hello', wireVersion: 2, minWireVersion: 2, self: peer.toJSON() });
+      transport.send(peer, { kind: 'hello-ack', wireVersion: 2, self: peer.toJSON() });
       transport.send(peer, { kind: 'heartbeat', from: peer.toJSON(), seq: 1, ts: 1 });
 
       const pending = internals(transport).byPeer.get(peer.toString())?.pending ?? [];
@@ -578,7 +590,7 @@ describe('the association-lifecycle bounds are configurable (#846)', () => {
   test('the handshake deadline that fires is the configured one', () => {
     const log = new CapturingLogger();
     const transport = new TcpTransport(
-      new NodeAddress('inbound-guards', '127.0.0.1', 19_403),
+      new NodeAddress('inbound-guards', '127.0.0.1', 19_403, 'test-run'),
       log,
       { handshakeTimeoutMs: 250, incompleteFrameIdleMs: 900 },
     );
@@ -597,7 +609,7 @@ describe('the association-lifecycle bounds are configurable (#846)', () => {
   test('the stall deadline that fires is the configured one', () => {
     const log = new CapturingLogger();
     const transport = new TcpTransport(
-      new NodeAddress('inbound-guards', '127.0.0.1', 19_404),
+      new NodeAddress('inbound-guards', '127.0.0.1', 19_404, 'test-run'),
       log,
       // The handshake deadline rides along because the ordering rule resolves
       // the pair: a lone 1500 ms stall deadline would sit under the 5 s default
@@ -624,7 +636,7 @@ describe('the association-lifecycle bounds are configurable (#846)', () => {
     // timer at all.  The delay handed to `setTimeout` is what actually decides
     // when a silent socket goes.
     const transport = new TcpTransport(
-      new NodeAddress('inbound-guards', '127.0.0.1', 19_410),
+      new NodeAddress('inbound-guards', '127.0.0.1', 19_410, 'test-run'),
       new NoopLogger(),
       { handshakeTimeoutMs: 250, incompleteFrameIdleMs: 900 },
     );
@@ -649,7 +661,7 @@ describe('the association-lifecycle bounds are configurable (#846)', () => {
     // it, so that a dial that never opens is given up by the connect deadline
     // even when the two are equal.
     const transport = new TcpTransport(
-      new NodeAddress('inbound-guards', '127.0.0.1', 19_411),
+      new NodeAddress('inbound-guards', '127.0.0.1', 19_411, 'test-run'),
       new NoopLogger(),
       { connectTimeoutMs: 100, handshakeTimeoutMs: 250, incompleteFrameIdleMs: 900 },
     );
@@ -659,7 +671,7 @@ describe('the association-lifecycle bounds are configurable (#846)', () => {
       listen: () => Promise.resolve({ port: 0, close: () => {} }),
       connect: () => new Promise<never>(() => {}),
     };
-    const peer = new NodeAddress('inbound-guards-peer', '127.0.0.1', 19_412);
+    const peer = new NodeAddress('inbound-guards-peer', '127.0.0.1', 19_412, 'test-run');
 
     const armed = armedDelays(() => {
       transport.send(peer, { kind: 'heartbeat', from: peer.toJSON(), seq: 1, ts: 1 });
@@ -673,7 +685,7 @@ describe('the association-lifecycle bounds are configurable (#846)', () => {
     // Unset is the default and means "the handshake deadline", the one bound a
     // dial had before the key existed — not a constant of its own.
     const transport = new TcpTransport(
-      new NodeAddress('inbound-guards', '127.0.0.1', 19_413),
+      new NodeAddress('inbound-guards', '127.0.0.1', 19_413, 'test-run'),
       new NoopLogger(),
       { handshakeTimeoutMs: 250, incompleteFrameIdleMs: 900 },
     );
@@ -681,7 +693,7 @@ describe('the association-lifecycle bounds are configurable (#846)', () => {
       listen: () => Promise.resolve({ port: 0, close: () => {} }),
       connect: () => new Promise<never>(() => {}),
     };
-    const peer = new NodeAddress('inbound-guards-peer', '127.0.0.1', 19_414);
+    const peer = new NodeAddress('inbound-guards-peer', '127.0.0.1', 19_414, 'test-run');
 
     const armed = armedDelays(() => {
       transport.send(peer, { kind: 'heartbeat', from: peer.toJSON(), seq: 1, ts: 1 });
@@ -698,7 +710,7 @@ describe('the association-lifecycle bounds are configurable (#846)', () => {
     const transport = newTransport(19_405);
     const log = new CapturingLogger();
     const defaulted = new TcpTransport(
-      new NodeAddress('inbound-guards', '127.0.0.1', 19_406),
+      new NodeAddress('inbound-guards', '127.0.0.1', 19_406, 'test-run'),
       log,
     );
     const socket = mockSocket();
@@ -714,7 +726,7 @@ describe('the association-lifecycle bounds are configurable (#846)', () => {
     // nothing at all never reaches the stall deadline, so the handshake timer
     // is the only thing that reclaims it.  Inverting the two swaps their roles
     // for a peer that sends three bytes and stops.
-    const address = new NodeAddress('inbound-guards', '127.0.0.1', 19_407);
+    const address = new NodeAddress('inbound-guards', '127.0.0.1', 19_407, 'test-run');
     expect(() => new TcpTransport(address, new NoopLogger(), {
       handshakeTimeoutMs: 5_000,
       incompleteFrameIdleMs: 5_000,
@@ -734,7 +746,7 @@ describe('the association-lifecycle bounds are configurable (#846)', () => {
     // one line after the validator has been and gone — so a rule that only
     // fired when both were supplied was silent for exactly the inputs an
     // operator writes: one key.
-    const address = new NodeAddress('inbound-guards', '127.0.0.1', 19_409);
+    const address = new NodeAddress('inbound-guards', '127.0.0.1', 19_409, 'test-run');
     // The measured hole: this transport used to construct, and resolved to the
     // inverted pair (5000, 1000) the rule exists to prevent.
     expect(() => new TcpTransport(address, new NoopLogger(), { incompleteFrameIdleMs: 1_000 }))
@@ -758,7 +770,7 @@ describe('the association-lifecycle bounds are configurable (#846)', () => {
     // no time for a dial to connect, no room to buffer a send racing the
     // handshake, no inbound connection admitted, no connection allowed to end
     // off a frame boundary.
-    const address = new NodeAddress('inbound-guards', '127.0.0.1', 19_408);
+    const address = new NodeAddress('inbound-guards', '127.0.0.1', 19_408, 'test-run');
     for (const options of [
       { handshakeTimeoutMs: 0 },
       { connectTimeoutMs: 0 },

@@ -313,6 +313,9 @@ For monitoring cluster health:
 - `cluster_gossip_rounds_total` rate confirms gossip is flowing — a
   flat line means this node has stopped gossiping.
 - `cluster_gossip_records_refused_total` should sit at zero. Movement
+  on `reason="removed-run"` means a run this node removed is still
+  gossiping about itself — a process that was paused or cut off and
+  resumed, which stands down on its own (#940). Movement
   on `reason="version-skew"` means gossiped versions are further ahead
   of this node's clock than `maxVersionSkewMs` — either a peer's clock
   has drifted or someone is trying to pre-claim an address. Movement

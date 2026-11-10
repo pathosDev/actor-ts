@@ -660,8 +660,9 @@ actor-ts {
       # path absent here is never gossiped in the first place.
       #
       # Seeded with the wire cap because it is the divergence nothing detects:
-      # there is no protocol negotiation yet (#823), so a frame over a peer's
-      # lower cap kills the whole association and the sender never learns why.
+      # the handshake negotiates the wire version but not the caps (#823), so a
+      # frame over a peer's lower cap kills the whole association and the
+      # sender never learns why.
       # sharding.number-of-shards is deliberately NOT here -- the coordinator
       # already refuses a region whose count disagrees, on the effective value.
       #

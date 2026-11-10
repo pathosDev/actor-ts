@@ -749,15 +749,19 @@ an incarnation; a record without one replaces the old run silently, as
 every record did before
 ([a restart ends the previous run](/cluster/failure-detector/#a-restart-ends-the-previous-run)).
 
-Two limits follow from the tombstone being a version floor rather
-than a ban on a process:
+The tombstone refuses **the run** it was written for, not only its
+version: since cluster wire v2 every address on a frame names its
+incarnation — which process answers there, minted once per
+`Cluster.join` — and a record for the incarnation a tombstone holds is
+refused whatever version it carries
+([issue #823](https://github.com/pathosDev/actor-ts/issues/823),
+[issue #940](https://github.com/pathosDev/actor-ts/issues/940)). A process
+that was downed while still running cannot come back by restamping its
+version; it stands down instead, and only a restart joins again.
 
-- **The same run restamping its version.** A version is a number the
-  peer writes. A process that was downed while still running and
-  announces itself at a fresh version cannot be told from a restart,
-  and is readmitted at once. The refusal holds against a run that
-  keeps speaking at its old version — one that did not notice, or a
-  recording — not against one that sets out to come back.
+One limit remains, because the floor a *restart* has to clear is still a
+version:
+
 - **A keep-out lever for a peer with standing.** A member this node
   holds active may gossip records about other addresses, and a
   `removed` record dated inside the version-skew budget
@@ -766,13 +770,9 @@ than a ban on a process:
   out until it restarts again past that version, or the tombstone
   expires, counted from a `removedAt` the same peer chose.
 
-Both close only once the incarnation — which process answers at an
-address, minted once per `Cluster.join` — is required on the wire, so
-that a refusal can compare processes rather than numbers
-([issue #823](https://github.com/pathosDev/actor-ts/issues/823),
-[issue #940](https://github.com/pathosDev/actor-ts/issues/940)). Today
-it is carried and decides only what a restart announces; no refusal
-compares it.
+A restart carries a new incarnation, so it could be admitted over any
+tombstone of a *previous* run regardless of version; it is not yet,
+which is what keeps this lever open.
 
 ## Where to next
 

@@ -1012,8 +1012,18 @@ Refused records are reported once per frame rather than once per
 record — a WARN naming the peer and the count, and the counter
 `cluster_gossip_records_refused_total{reason}`, whose `reason`
 label is closed at `version-skew`, `map-cap`, `timestamp-skew`,
-`replayed-frame` and `self-claim`. Logging per record would hand a
-peer log amplification in place of the growth it just lost.
+`replayed-frame`, `self-claim` and `removed-run`. Logging per record
+would hand a peer log amplification in place of the growth it just
+lost.
+
+`removed-run` is a record for a run this node holds as `removed` —
+the same address *and* the same incarnation.  A version is the
+sender's to choose and could always be restamped past a tombstone;
+an incarnation names the process the cluster removed, and only a
+restart mints a new one.  Since cluster wire v2 every address on a
+frame carries it, so the run the cluster downed cannot come back
+under any version, while a restart at the same address still joins
+at once (#823, #940).
 
 `self-claim` is the rule above, seen from the counter: a peer
 asserting a status for the receiving node that is neither the one

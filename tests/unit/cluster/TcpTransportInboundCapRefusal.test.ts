@@ -69,6 +69,8 @@ function saturated(): { transport: TcpTransport; admitted: RecordingSocket } {
 
 const hello = encodeFrame({
   kind: 'hello',
+  wireVersion: 2,
+  minWireVersion: 2,
   self: new NodeAddress('refused-peer', '10.0.0.21', 2_552).toJSON(),
 });
 

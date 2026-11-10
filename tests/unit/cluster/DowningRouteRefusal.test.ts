@@ -18,11 +18,12 @@
  *   the same run is readmitted on its next frame.  Under the opt-out
  *   (`auto-down = off`) it removes nothing at all — the peer is parked at
  *   `unreachable`, and its next heartbeat brings it back.
- * - The tombstone is a version floor, not a ban.  A restart (new incarnation,
- *   version from a fresh wall clock) out-versions it and is readmitted at once,
- *   and so is the same run restamping its version, because no refusal compares
- *   incarnations yet (#823, #940).  A peer with standing can use the same floor
- *   the other way round and keep a restart out.
+ * - The tombstone refuses the run, not only its version.  A restart (new
+ *   incarnation, version from a fresh wall clock) out-versions it and is
+ *   readmitted at once; the same run restamping its version is refused, since
+ *   cluster wire v2 carries the incarnation on every address (#823, #940).  A
+ *   peer with standing can still use the version floor the other way round and
+ *   keep a restart out.
  *
  * The peer is simulated: its frames enter through `handleWire`, the entry point
  * every transport calls, so each one meets the replay guard and the merge
@@ -483,7 +484,7 @@ describe("the failure detector's route — the one with no refusal (#1477, #1426
   });
 });
 
-describe('what the tombstone cannot tell apart — a version floor, not a ban (#823, #940)', () => {
+describe('the tombstone refuses the run, and a restart clears it (#823, #940)', () => {
   test('a restart — a new incarnation at a fresh version — is readmitted over the tombstone at once', async () => {
     const { cluster } = await startNode('refusal-restart', 9_478);
     const firstRun = peerRun('refusal-restart', 9_578, 'run-1');
@@ -527,21 +528,19 @@ describe('what the tombstone cannot tell apart — a version floor, not a ban (#
     expect(internals(cluster).failureDetector.decide(restart, Date.now() + SILENT_PAST_DOWN_MS)).toBe('down');
   });
 
-  test('the same run restamping its version is readmitted exactly like a restart', async () => {
-    // The limit, pinned so the docs cannot round it up: the tombstone compares
-    // versions, a version is a number the peer writes, and the incarnation
-    // that would tell this apart from the case above is carried, and no
-    // refusal compares it.  A required incarnation is what moves this test
-    // (#823, #940).
+  test('the same run restamping its version is refused — only a restart comes back (#823, #940)', async () => {
+    // A version is a number the peer writes; the incarnation is which process
+    // it is.  With the incarnation on every address the tombstone refuses the
+    // run it was written for at any version, which is what this case used to
+    // pin as the limit: the same run readmitted like a restart.
     const { cluster } = await startNode('refusal-restamp', 9_479);
     const run = peerRun('refusal-restamp', 9_579, 'run-1');
     announce(cluster, run, Date.now() - EARLIER_START_MS);
     expect(cluster.down(run)).toBe(true);
-    tombstoneOf(cluster, run);
+    const tombstone = tombstoneOf(cluster, run);
 
-    const restampedVersion = Date.now();
-    announce(cluster, run, restampedVersion);
-    expectReadmitted(cluster, run, restampedVersion);
+    announce(cluster, run, Date.now());
+    expectRefused(cluster, run, tombstone);
   });
 
   test('a peer with standing can gossip a tombstone ahead of time and keep a restart out', async () => {
