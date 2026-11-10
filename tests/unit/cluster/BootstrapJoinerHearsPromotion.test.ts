@@ -65,7 +65,7 @@ async function formCluster(): Promise<Cluster> {
   const first = clusters[0]!;
   await awaitCondition(
     () => first.upMembers().length === CLUSTER_SIZE,
-    { timeoutMs: 30_000, intervalMs: 20, label: 'the seed sees the whole cluster up' },
+    { timeoutMs: 20_000, intervalMs: 20, label: 'the seed sees the whole cluster up' },
   );
   return first;
 }
