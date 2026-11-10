@@ -464,6 +464,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * it arrives in another (#952).
    */
   private leaderTerm = 0;
+  /** Whether the current leader term has begun — see {@link beginLeaderTerm}. */
+  private leadingTerm = false;
   /**
    * Conflict releases still waiting on their claimant, by shard id: who was
    * told to give the shard up, how often, and the timer that repeats it
@@ -651,6 +653,12 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    */
   private receiveShardingMessage(message: ShardingMessage, peer: NodeAddress | null): void {
     if (!this.isLeader()) return;
+    // A frame can reach a coordinator that already leads before its own
+    // `leader-changed` event does — the event goes through the mailbox (#952),
+    // behind whatever was queued first.  The term, and its barrier, begin
+    // before the frame is handled, or it would be served by a term that has
+    // not started (#1272).
+    if (!this.leadingTerm) this.beginLeaderTerm();
     // Refused before the lease buffer, not after: an unauthorised frame is
     // never going to be dispatched, and letting it take a slot in a bounded
     // buffer would let a flood of forgeries crowd out the registrations the
@@ -1325,9 +1333,10 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   /* ------------------------- Registration barrier ------------------------- */
 
   /**
-   * Hold every shard placement until the regions of every other `up` member
-   * have registered with this coordinator, or until
-   * {@link registrationWindowMs} has passed (#1272).
+   * Hold every new shard placement for {@link registrationWindowMs} after
+   * this coordinator becomes leader, and longer while a state load is
+   * outstanding (#1272).  The awaited members are tracked so the window's
+   * end can name the ones that never registered.
    *
    * A coordinator runs on every node and takes authority from `isLeader()`, so a
    * leader change hands it over with no protocol between the outgoing and the
@@ -1379,7 +1388,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     const loadTimer = !loading ? null : this.system.scheduler.scheduleOnceFunction(this.coordinatorStateLoadTimeoutMs(), () => {
       this.self.tell({ kind: 'coordinator-state-load-timeout', term } satisfies CoordinatorEvent);
     });
-    this.registrationBarrier = { awaiting, windowTimer, windowElapsed: awaiting.size === 0, loading, loadTimer };
+    this.registrationBarrier = { awaiting, windowTimer, windowElapsed: windowTimer === null, loading, loadTimer };
     this.log.debug(
       `[sharding] coordinator '${this.options.typeName}' became leader; holding shard placement until `
       + `${awaiting.size} member(s) have registered (at most ${timeoutMs} ms)`
@@ -1402,7 +1411,13 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private endRegistrationBarrierIfDone(): void {
     const barrier = this.registrationBarrier;
     if (barrier === null || barrier.loading) return;
-    if (barrier.awaiting.size === 0 || barrier.windowElapsed) this.endRegistrationBarrier();
+    // The window is a floor as well as a ceiling.  The awaited set is this
+    // node's view of who is up when the term began, and a node that has just
+    // joined — the restarted lowest address, which is the case this exists
+    // for — may not have heard of every member yet.  Lifting the moment the
+    // members it knows of have registered placed a shard that a member it had
+    // not heard of still ran (#1272, measured 2 of 20 under load).
+    if (barrier.windowElapsed) this.endRegistrationBarrier();
   }
 
   /**
@@ -2189,14 +2204,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       for (const query of this.statsQueries.values()) query.timer?.cancel();
       this.statsQueries.clear();
       this.endRegistrationBarrierQuietly();
-    } else {
-      // Just became leader (or re-elected): a new term, which placement
-      // waits on until the regions have claimed theirs and, with a state store
-      // configured, the last snapshot has loaded.  A load that fails or finds
-      // nothing leaves the map to the registrations, as without a store.
-      this.leaderTerm += 1;
-      this.beginRegistrationBarrier();
-      if (this.options.coordinatorStateStore) this.startCoordinatorStateLoad(this.leaderTerm);
+      this.leadingTerm = false;
+    } else if (!this.leadingTerm) {
+      this.beginLeaderTerm();
     }
     // Lease-aware coordinators re-evaluate the acquire/release cycle
     // any time the leader role flips — see `reconcileLease()`.  We
@@ -2205,6 +2215,21 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (this.options.lease) {
       this.self.tell({ kind: 'reconcile' } satisfies CoordinatorEvent);
     }
+  }
+
+  /**
+   * Just became leader (or re-elected): a new term, which placement waits on
+   * until the regions have claimed theirs and, with a state store configured,
+   * the last snapshot has loaded.  A load that fails or finds nothing leaves
+   * the map to the registrations, as without a store.  Begun by whichever
+   * comes first, the `leader-changed` event or the first frame served as
+   * leader, and only once per term.
+   */
+  private beginLeaderTerm(): void {
+    this.leadingTerm = true;
+    this.leaderTerm += 1;
+    this.beginRegistrationBarrier();
+    if (this.options.coordinatorStateStore) this.startCoordinatorStateLoad(this.leaderTerm);
   }
 
   private onOtherClusterEvent(): void {

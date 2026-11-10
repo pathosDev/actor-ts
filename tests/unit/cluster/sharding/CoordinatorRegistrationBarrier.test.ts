@@ -124,6 +124,22 @@ async function startHarness(systemName: string): Promise<Harness> {
   return harness;
 }
 
+/**
+ * Begin a fresh leader term on the harness's coordinator, which has led since
+ * it started: the term flag is cleared first, as a step-down would.
+ */
+function startTerm(harness: Harness): void {
+  (harness.coordinator as unknown as { leadingTerm: boolean }).leadingTerm = false;
+  harness.coordinator.onLeaderChanged();
+}
+
+/** Until the barrier has lifted — it holds for the whole registration window (590 ms here). */
+async function barrierLifted(harness: Harness): Promise<void> {
+  await awaitCondition(() => harness.coordinator.registrationBarrier === null, {
+    timeoutMs: 3_000, label: 'the registration barrier lifted',
+  });
+}
+
 /** A peer at `host`, sorting after the local node so the leader never moves. */
 function peer(harness: Harness, host: string, incarnation?: string): NodeAddress {
   return new NodeAddress(harness.systemName, host, 2_551, incarnation);
@@ -167,7 +183,7 @@ describe('a new leader places no shard before the other regions have claimed the
     stageUp(harness, survivor);
 
     // The term starts: a node at the lowest address has just become leader.
-    harness.coordinator.onLeaderChanged();
+    startTerm(harness);
     expect(harness.coordinator.registrationBarrier?.awaiting).toEqual(new Set([survivor.toString()]));
 
     // Its own region asks first — the survivor has not seen the change yet.
@@ -177,8 +193,10 @@ describe('a new leader places no shard before the other regions have claimed the
 
     // The survivor's region re-registers on the LeaderChanged it observes.
     register(harness, survivor, 'survivor', [SHARD]);
+    // Its claim homes the shard at once; only new placements wait for the window.
+    expect(harness.coordinator.shardHome.get(SHARD)).toBe(keyOf(survivor, 'survivor'));
 
-    expect(harness.coordinator.registrationBarrier).toBeNull();
+    await barrierLifted(harness);
     expect(harness.coordinator.shardHome.get(SHARD)).toBe(keyOf(survivor, 'survivor'));
     // The held request was answered with the survivor's home, not placed anew.
     expect(harness.coordinator.pending.has(SHARD)).toBe(false);
@@ -188,12 +206,16 @@ describe('a new leader places no shard before the other regions have claimed the
     const harness = await startHarness('barrier-unclaimed');
     const other = peer(harness, 'other');
     stageUp(harness, other);
-    harness.coordinator.onLeaderChanged();
+    startTerm(harness);
     askLocally(harness);
     expect(harness.coordinator.shardHome.has(SHARD)).toBe(false);
 
     register(harness, other, 'other', []);
+    // Every member it knows of has registered, and still it waits out the
+    // window: a member it has not heard of yet may run the shard (#1272).
+    expect(harness.coordinator.shardHome.has(SHARD)).toBe(false);
 
+    await barrierLifted(harness);
     expect(harness.coordinator.shardHome.has(SHARD)).toBe(true);
     expect(harness.coordinator.pending.has(SHARD)).toBe(false);
   });
@@ -205,7 +227,7 @@ describe('a new leader places no shard before the other regions have claimed the
     const harness = await startHarness('barrier-snapshot-home');
     const other = peer(harness, 'other');
     stageUp(harness, other);
-    harness.coordinator.onLeaderChanged();
+    startTerm(harness);
     askLocally(harness);
 
     const snapshotted = peer(harness, 'snapshotted');
@@ -222,6 +244,7 @@ describe('a new leader places no shard before the other regions have claimed the
     harness.coordinator.shardHome.set(SHARD, snapshottedKey);
 
     register(harness, other, 'other', []);
+    await barrierLifted(harness);
 
     expect(harness.coordinator.shardHome.get(SHARD)).toBe(snapshottedKey);
     expect(harness.coordinator.pending.has(SHARD)).toBe(false);
@@ -230,7 +253,7 @@ describe('a new leader places no shard before the other regions have claimed the
   test('a member that never registers holds placement only for the registration window', async () => {
     const harness = await startHarness('barrier-window');
     stageUp(harness, peer(harness, 'silent'));
-    harness.coordinator.onLeaderChanged();
+    startTerm(harness);
     askLocally(harness);
     expect(harness.coordinator.shardHome.has(SHARD)).toBe(false);
 
@@ -245,28 +268,28 @@ describe('a new leader places no shard before the other regions have claimed the
     const harness = await startHarness('barrier-refused');
     const misconfigured = peer(harness, 'misconfigured');
     stageUp(harness, misconfigured);
-    harness.coordinator.onLeaderChanged();
+    startTerm(harness);
 
     register(harness, misconfigured, 'misconfigured', [], NUM_SHARDS * 2);
 
-    expect(harness.coordinator.registrationBarrier).toBeNull();
+    expect(harness.coordinator.registrationBarrier?.awaiting.has(misconfigured.toString())).toBe(false);
   });
 
   test('a member that leaves the cluster is not waited for', async () => {
     const harness = await startHarness('barrier-left');
     const leaving = peer(harness, 'leaving');
     stageUp(harness, leaving);
-    harness.coordinator.onLeaderChanged();
+    startTerm(harness);
     expect(harness.coordinator.registrationBarrier).not.toBeNull();
 
     (harness.coordinator as unknown as { onMemberRemoved(address: NodeAddress): void }).onMemberRemoved(leaving);
 
-    expect(harness.coordinator.registrationBarrier).toBeNull();
+    expect(harness.coordinator.registrationBarrier?.awaiting.has(leaving.toString())).toBe(false);
   });
 
   test('with no other member up there is nothing to wait for', async () => {
     const harness = await startHarness('barrier-alone');
-    harness.coordinator.onLeaderChanged();
+    startTerm(harness);
 
     expect(harness.coordinator.registrationBarrier).toBeNull();
   });

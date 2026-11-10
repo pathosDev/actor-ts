@@ -300,11 +300,11 @@ narrowed to the type's role when it has one.  Every region
 re-registers with its `hostedShards` on the leader change it
 observes, so nothing has to be asked.  A shard a registration has
 already homed is answered at once; only what would need a *new* home
-waits.  The wait ends the moment the last member registers, and at
-the latest after three gossip rounds plus one register retry — never
-longer than `handOffTimeoutMs` — so a member that does not run the
-type costs that window on a leader change and nothing more.  A
-member that leaves the cluster is not waited for.
+waits — for three gossip rounds plus one register retry, never longer
+than `handOffTimeoutMs`, even once every member it knows of has
+registered: a node that has just joined, the restarted lowest address
+above all, may not have heard of every member yet.  A new placement
+therefore costs at most that window on a leader change.
 
 When the window runs out the coordinator places shards anyway and
 logs which members it had no registration from.  If one of them does
