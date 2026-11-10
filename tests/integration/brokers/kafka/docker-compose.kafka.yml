@@ -19,7 +19,7 @@ services:
     # suite, so an upstream regression still surfaces within a day — attributable
     # to the bump, instead of turning the nightly red underneath a run.
     # Production users pin their own version.
-    image: redpandadata/redpanda:v26.2.3
+    image: redpandadata/redpanda:v26.2.6
     # `redpanda start` with the minimal dev-mode flags.  Default
     # listener on 9092 advertised as `redpanda:9092` so the runner
     # service in the compose bridge can connect via the service name.
