@@ -45,6 +45,26 @@ export class BrokerReconnectFailed {
 }
 
 /**
+ * The broker refused an acknowledgment the actor tried to send it — an AMQP
+ * `channel.ack` that threw, a Kafka commit that failed.  The delivery was
+ * processed but stays unacknowledged, so the broker will redeliver it: one
+ * event is one duplicate on its way (#976).
+ *
+ * Published rather than only logged so it can be counted: a burst of these is
+ * the signal that a channel is dying, and the warn line alone was the one
+ * place the old swallowed failure would ever have shown up.
+ */
+export class BrokerAcknowledgmentFailed {
+  constructor(
+    public readonly actorPath: string,
+    public readonly endpoint: string,
+    /** The queue / topic-partition the delivery came from. */
+    public readonly source: string,
+    public readonly cause: Error,
+  ) {}
+}
+
+/**
  * One outbound message had to be evicted because the buffer was full.
  * The dropped envelope is *not* attached — listeners that need it
  * should use a smaller buffer with explicit overflow handling.

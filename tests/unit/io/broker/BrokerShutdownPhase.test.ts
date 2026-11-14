@@ -134,3 +134,75 @@ describe('broker teardown runs in service-stop', () => {
     expect(RecordingBroker.disconnects).toHaveLength(1);
   });
 });
+
+/**
+ * A broker whose first connect fails and whose second one parks on a gate the
+ * test opens — the "parked in a reconnect" shape #1223 measured.  `handleOpen`
+ * is the driver handle: set when a connect completes, cleared by teardown.
+ */
+class ParkedReconnectBroker extends BrokerActor<RecordingOptions, NoopMessage, string, string> {
+  static attempts = 0;
+  static handleOpen = false;
+  static releaseGate: (() => void) | null = null;
+  static resumed = false;
+
+  constructor(options: Partial<RecordingOptions> = {}) { super(options); }
+
+  protected configKey(): string { return 'actor-ts.io.broker.parked'; }
+  protected builtInDefaultOptions(): Partial<RecordingOptions> {
+    return { endpoint: 'fake://parked', reconnect: { initialDelayMs: 5, randomFactor: 0 } };
+  }
+  protected readOptionsFromConfig(_config: Config): Partial<RecordingOptions> { return {}; }
+  protected requiredOptions(): ReadonlyArray<keyof RecordingOptions> { return ['endpoint']; }
+  protected endpointLabel(): string { return this.options.endpoint ?? '<none>'; }
+
+  protected async connectImplementation(): Promise<void> {
+    ParkedReconnectBroker.attempts += 1;
+    if (ParkedReconnectBroker.attempts === 1) throw new Error('first connect refused');
+    await new Promise<void>((resolve) => { ParkedReconnectBroker.releaseGate = resolve; });
+    ParkedReconnectBroker.handleOpen = true;
+    ParkedReconnectBroker.resumed = true;
+  }
+  protected async disconnectImplementation(): Promise<void> {
+    ParkedReconnectBroker.handleOpen = false;
+  }
+  protected async dispatchOutgoing(): Promise<void> { /* never sends */ }
+  protected onCommand(): void { /* never receives */ }
+}
+
+describe('service-stop ends the instance\'s right to a connection (#1223)', () => {
+  test('a reconnect that resumes after service-stop does not leave a live handle behind', async () => {
+    ParkedReconnectBroker.attempts = 0;
+    ParkedReconnectBroker.handleOpen = false;
+    ParkedReconnectBroker.releaseGate = null;
+    ParkedReconnectBroker.resumed = false;
+    const system = newSystem('broker-parked-reconnect');
+    system.spawn(ParkedReconnectBroker, 'orders');
+    await awaitCondition(() => ParkedReconnectBroker.releaseGate !== null, {
+      timeoutMs: 4_000, label: 'the second connect attempt parked on its gate',
+    });
+
+    // Runs after service-stop has closed the transport and before the
+    // actor-system-terminate stop cascade reaches postStop.
+    system.extension(CoordinatedShutdownId).addTask(Phases.ClusterLeave, 'resume-parked-connect', async () => {
+      ParkedReconnectBroker.releaseGate!();
+      await awaitCondition(() => ParkedReconnectBroker.resumed, {
+        timeoutMs: 4_000, label: 'the parked connect resumed',
+      });
+      // The base class adopts or abandons what the attempt opened once the
+      // subclass's promise settles; give that continuation its turn.  Not
+      // fatal here when it never comes — the assertion below is the verdict.
+      await awaitCondition(() => !ParkedReconnectBroker.handleOpen, {
+        timeoutMs: 1_000, label: 'the resumed connection was abandoned',
+      }).catch(() => undefined);
+    });
+
+    await system.extension(CoordinatedShutdownId).run(UnknownReason.instance);
+
+    expect(ParkedReconnectBroker.resumed).toBe(true);
+    // Before #1223 the resumed attempt adopted the connection with the
+    // transport gate already cleared, so postStop's teardown returned at its
+    // first line and the handle stayed open past the end of the shutdown.
+    expect(ParkedReconnectBroker.handleOpen).toBe(false);
+  });
+});

@@ -113,6 +113,7 @@ class FakeAmqpChannel implements AmqpChannelLike {
   ack(): void {}
   nack(): void {}
   once(): void {}
+  removeListener(): void {}
   async close(): Promise<void> {}
 }
 

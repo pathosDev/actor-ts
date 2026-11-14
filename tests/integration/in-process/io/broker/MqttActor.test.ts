@@ -23,6 +23,7 @@ import { TestKit } from '../../../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
 import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 import { RecordingLogger, type RecordedLog } from '../../../../util/RecordingLogger.js';
+import { acknowledgeDelivery, negativelyAcknowledgeDelivery } from '../../../../../src/io/broker/BrokerAcknowledgment.js';
 
 const enc = new TextEncoder();
 
@@ -97,7 +98,28 @@ class FakeMqttClient implements MqttClientLike {
     this.unsubscribes.push(topic);
     callback?.();
   }
-  end(_force?: boolean, _options?: object, callback?: () => void): void { callback?.(); }
+  end(force?: boolean, _options?: object, callback?: () => void): void {
+    if (force) this.endedForcefully = true;
+    callback?.();
+  }
+
+  /** Set by the actor under `acknowledgment: 'on-reply'` — mqtt.js's per-message hook. */
+  handleMessage?: (packet: MqttInboundPacketLike, callback: (error?: Error) => void) => void;
+  /** Packets whose `handleMessage` callback ran — i.e. whose PUBACK mqtt.js would now send. */
+  readonly released: MqttInboundPacketLike[] = [];
+  /** Whether the actor ended this client with `force` — how it withholds a PUBACK for good. */
+  endedForcefully = false;
+
+  /**
+   * Deliver a PUBLISH the way mqtt.js does: `message` first, then the same
+   * packet through `handleMessage`, whose callback is what sends the PUBACK.
+   * The prototype's `handleMessage` calls back at once.
+   */
+  firePublish(topic: string, payload: Uint8Array, packet: MqttInboundPacketLike): void {
+    this.fireMessage(topic, payload, packet);
+    const hook = this.handleMessage ?? ((_packet, callback): void => callback());
+    hook(packet, () => { this.released.push(packet); });
+  }
 
   fireConnect(): void { for (const listener of [...this.connectListeners]) listener(); }
   fireMessage(topic: string, payload: Uint8Array, packet?: MqttInboundPacketLike): void {
@@ -144,12 +166,18 @@ class TestMqttActor<T = unknown, TSelf = never> extends MqttActor<T, TSelf> {
     return Promise.resolve(this.module as unknown as MqttModuleLike);
   }
 
-  override onMessage(message: MqttMessage<T>): void {
+  override onMessage(message: MqttMessage<T>): void | Promise<void> {
     // Touch entity() so a malformed payload surfaces to onInvalidMessage.
     if (this.decodeOnReceive) message.payload.entity();
+    if (this.failOnReceive) throw new Error('handler failed');
+    if (this.gate !== null) return this.gate.then(() => { this.inbound.push(message); });
     this.inbound.push(message);
   }
   decodeOnReceive = false;
+  /** Make `onMessage` throw — an ordinary failure, not a decode error. */
+  failOnReceive = false;
+  /** Hold `onMessage` until this settles — a handler still processing. */
+  gate: Promise<void> | null = null;
 
   protected override onConnected(): void { this.connectedCount++; }
   protected override onDisconnected(): void { this.disconnectedCount++; }
@@ -1326,5 +1354,191 @@ describe('buildPublishProperties (MQTT 5.0)', () => {
     const publish: MqttPublish = { topic: 'sensor/1', payload: 'x', userProperties: { tag: ['alpha', 'beta', 'gamma'] } };
     const props = buildPublishProperties(publish, 5);
     expect(props?.userProperties?.tag).toEqual(['alpha', 'beta', 'gamma']);
+  });
+});
+
+/* ------------------- acknowledgment after processing (#977) ------------------- */
+
+/** A fan-out target that answers a message carrying a `replyTo` as told. */
+class ReplyingInbox<T> extends Actor<MqttMessage<T>> {
+  readonly received: MqttMessage<T>[] = [];
+  constructor(private readonly reply: 'acknowledge' | 'negative' | 'hold') { super(); }
+  override onReceive(m: MqttMessage<T>): void {
+    this.received.push(m);
+    if (this.reply === 'acknowledge') acknowledgeDelivery(m);
+    else if (this.reply === 'negative') negativelyAcknowledgeDelivery(m, 'not today');
+  }
+}
+
+const qos1: MqttInboundPacketLike = { qos: 1 };
+
+describe('MqttActor acknowledges a message only once it was processed (#977)', () => {
+  test('the PUBACK waits for onMessage to finish', async () => {
+    const sys = makeSystem();
+    try {
+      const mqttOptions = MqttOptions.create().withBrokerUrl('mqtt://x');
+      const actor = new TestMqttActor({ options: mqttOptions, ctorSubs: [{ topic: 'orders/#', qos: 1 }] });
+      let finish: () => void = () => undefined;
+      actor.gate = new Promise<void>((resolve) => { finish = resolve; });
+      await boot(sys, actor);
+      const client = actor.module.last();
+      expect(client.handleMessage).toBeDefined();
+      const packet = { ...qos1 };
+      client.firePublish('orders/1', enc.encode('{}'), packet);
+      await sleep(SETTLE_MS);  // the claim is "not yet released"; see SETTLE_MS
+      expect(client.released).toEqual([]);
+
+      finish();
+      await awaitCondition(() => client.released.length === 1, {
+        timeoutMs: 4_000, label: 'the processed message was released for its PUBACK',
+      });
+      expect(client.released[0]).toBe(packet);
+      expect(actor.inbound).toHaveLength(1);
+      expect(actor.inbound[0]!.replyTo).toBeUndefined();
+      expect(client.endedForcefully).toBe(false);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('onMessage throwing withholds the PUBACK and drops the connection for redelivery', async () => {
+    const sys = makeSystem();
+    try {
+      const mqttOptions = MqttOptions.create().withBrokerUrl('mqtt://x');
+      const actor = new TestMqttActor({ options: mqttOptions, ctorSubs: [{ topic: 'orders/#', qos: 1 }] });
+      await boot(sys, actor);
+      const client = actor.module.last();
+      actor.failOnReceive = true;
+      client.firePublish('orders/1', enc.encode('{}'), { ...qos1 });
+      await awaitCondition(() => client.endedForcefully, {
+        timeoutMs: 4_000, label: 'the failed message dropped the connection',
+      });
+      expect(client.released).toEqual([]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a fan-out target is asked, and the PUBACK waits for its acknowledgment', async () => {
+    const sys = makeSystem();
+    try {
+      const inbox = new ReplyingInbox<unknown>('hold');
+      const inboxRef = sys.spawn(() => inbox, 'inbox');
+      const mqttOptions = MqttOptions.create().withBrokerUrl('mqtt://x');
+      const actor = new TestMqttActor({ options: mqttOptions, ctorSubs: [{ topic: 'orders/#', qos: 1, target: inboxRef }] });
+      await boot(sys, actor);
+      const client = actor.module.last();
+      client.firePublish('orders/1', enc.encode('{}'), { ...qos1 });
+      await awaitCondition(() => inbox.received.length === 1, { timeoutMs: 4_000, label: 'the target got the message' });
+      await sleep(SETTLE_MS);  // the claim is "not yet released"; see SETTLE_MS
+      expect(client.released).toEqual([]);
+      expect(inbox.received[0]!.replyTo).toBeDefined();
+
+      acknowledgeDelivery(inbox.received[0]!);
+      await awaitCondition(() => client.released.length === 1, {
+        timeoutMs: 4_000, label: 'the acknowledged message was released',
+      });
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a negative reply from a target withholds the PUBACK', async () => {
+    const sys = makeSystem();
+    try {
+      const inbox = new ReplyingInbox<unknown>('negative');
+      const inboxRef = sys.spawn(() => inbox, 'inbox');
+      const mqttOptions = MqttOptions.create().withBrokerUrl('mqtt://x');
+      const actor = new TestMqttActor({ options: mqttOptions, ctorSubs: [{ topic: 'orders/#', qos: 1, target: inboxRef }] });
+      await boot(sys, actor);
+      const client = actor.module.last();
+      client.firePublish('orders/1', enc.encode('{}'), { ...qos1 });
+      await awaitCondition(() => client.endedForcefully, {
+        timeoutMs: 4_000, label: 'the refused message dropped the connection',
+      });
+      expect(client.released).toEqual([]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('no reply within acknowledgmentTimeoutMs withholds the PUBACK', async () => {
+    const sys = makeSystem();
+    try {
+      const inbox = new ReplyingInbox<unknown>('hold');
+      const inboxRef = sys.spawn(() => inbox, 'inbox');
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withAcknowledgmentTimeoutMs(50);
+      const actor = new TestMqttActor({ options: mqttOptions, ctorSubs: [{ topic: 'orders/#', qos: 1, target: inboxRef }] });
+      await boot(sys, actor);
+      const client = actor.module.last();
+      client.firePublish('orders/1', enc.encode('{}'), { ...qos1 });
+      await awaitCondition(() => client.endedForcefully, {
+        timeoutMs: 4_000, label: 'the unanswered message dropped the connection',
+      });
+      expect(client.released).toEqual([]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a QoS 0 message that fails is released — there is nothing to redeliver', async () => {
+    const sys = makeSystem();
+    try {
+      const mqttOptions = MqttOptions.create().withBrokerUrl('mqtt://x');
+      const actor = new TestMqttActor({ options: mqttOptions, ctorSubs: [{ topic: 'orders/#' }] });
+      await boot(sys, actor);
+      const client = actor.module.last();
+      actor.failOnReceive = true;
+      const packet: MqttInboundPacketLike = { qos: 0 };
+      client.firePublish('orders/1', enc.encode('{}'), packet);
+      await awaitCondition(() => client.released.length === 1, {
+        timeoutMs: 4_000, label: 'the QoS 0 message was released despite the failure',
+      });
+      expect(client.endedForcefully).toBe(false);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('an undecodable payload onInvalidMessage declines is acknowledged, not redelivered forever', async () => {
+    const sys = makeSystem();
+    try {
+      const mqttOptions = MqttOptions.create().withBrokerUrl('mqtt://x');
+      const actor = new TestMqttActor({ options: mqttOptions, ctorSubs: [{ topic: 'orders/#', qos: 1 }] });
+      actor.decodeOnReceive = true;
+      await boot(sys, actor);
+      const client = actor.module.last();
+      client.firePublish('orders/1', enc.encode('{not json'), { ...qos1 });
+      await awaitCondition(() => client.released.length === 1, {
+        timeoutMs: 4_000, label: 'the undecodable message was released',
+      });
+      expect(actor.decodeErrors).toHaveLength(1);
+      expect(client.endedForcefully).toBe(false);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('acknowledgment = on-delivery leaves the acknowledgment to mqtt.js and asks no target', async () => {
+    const sys = makeSystem();
+    try {
+      const inbox = new ReplyingInbox<unknown>('hold');
+      const inboxRef = sys.spawn(() => inbox, 'inbox');
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withAcknowledgment('on-delivery');
+      const actor = new TestMqttActor({ options: mqttOptions, ctorSubs: [{ topic: 'orders/#', qos: 1, target: inboxRef }] });
+      await boot(sys, actor);
+      const client = actor.module.last();
+      expect(client.handleMessage).toBeUndefined();
+      client.firePublish('orders/1', enc.encode('{}'), { ...qos1 });
+      expect(client.released).toHaveLength(1);
+      await awaitCondition(() => inbox.received.length === 1, { timeoutMs: 4_000, label: 'the target got the message' });
+      expect(inbox.received[0]!.replyTo).toBeUndefined();
+    } finally {
+      await sys.terminate();
+    }
   });
 });

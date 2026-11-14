@@ -13,8 +13,21 @@ export {
   BrokerOptionsError,
   DEFAULT_RECONNECT,
   DEFAULT_OUTBOUND_BUFFER,
+  type BrokerAcknowledgmentMode,
+  type BrokerAcknowledgmentOptionsType,
+  DEFAULT_BROKER_ACKNOWLEDGMENT_MODE,
+  DEFAULT_BROKER_ACKNOWLEDGMENT_TIMEOUT_MS,
 } from './BrokerOptions.js';
+// The reply contract of the `'on-reply'` acknowledgment mode (#975–#977).
 export {
+  type BrokerDeliveryReply,
+  type BrokerReplyableDelivery,
+  acknowledgeDelivery,
+  negativelyAcknowledgeDelivery,
+  BrokerDeliveryNotAcknowledgedError,
+} from './BrokerAcknowledgment.js';
+export {
+  BrokerAcknowledgmentFailed,
   BrokerConnected,
   BrokerDisconnected,
   BrokerReconnectAttempt,

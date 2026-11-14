@@ -5,7 +5,13 @@ import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
+import { BrokerAcknowledgmentTracker, type BrokerDeliveryReply } from './BrokerAcknowledgment.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
+import {
+  DEFAULT_BROKER_ACKNOWLEDGMENT_MODE,
+  DEFAULT_BROKER_ACKNOWLEDGMENT_TIMEOUT_MS,
+  readBrokerAcknowledgmentOptionsFromConfig,
+} from './BrokerOptions.js';
 import { toBrokerDriverTls } from './BrokerTls.js';
 import type { BrokerDriverTlsOptions } from './BrokerTls.js';
 import { KafkaOptionsValidator } from './KafkaOptions.js';
@@ -20,6 +26,12 @@ export type KafkaRecord = {
   readonly value: Uint8Array | null;
   readonly timestamp: string;
   readonly headers: Readonly<Record<string, Uint8Array | string | null>>;
+  /**
+   * Where the target replies `{ kind: 'acknowledgment' }` once it has
+   * processed the record — present only under `acknowledgment: 'on-reply'`
+   * with `commitMode: 'auto'`, the default.  See `acknowledgeDelivery`.
+   */
+  readonly replyTo?: ActorRef<BrokerDeliveryReply>;
 };
 
 /** Outbound Kafka publish envelope.  `key` / `partition` optional. */
@@ -34,15 +46,20 @@ export type KafkaPublish = {
 /**
  * Offset-commit policy (#2):
  *
- *   - `'auto'` — kafkajs commits after the message handler returns
- *     successfully (the default).  At-least-once delivery: the actor
- *     might re-deliver a message if it crashes between handler and
- *     commit, so handlers must be idempotent.
+ *   - `'auto'` (the default) — kafkajs commits the offsets whose handler
+ *     resolved, and the actor resolves it as `acknowledgment` says.  Under
+ *     the default `'on-reply'` that is once the target replied
+ *     `{ kind: 'acknowledgment' }` — **at-least-once**: a negative reply, no
+ *     reply in time, or a crash leaves the offset uncommitted and the record
+ *     is read again, so handlers must be idempotent.  Under `'on-delivery'`
+ *     it is as soon as the record is in the target's mailbox —
+ *     **at-most-once**: a record lost from there is never read again (#975).
  *   - `'manual'` — the consumer pump pauses on each message and
  *     waits for an explicit `{ kind: 'commit', topic, partition,
  *     offset }` command before resolving the kafkajs promise and
  *     advancing the partition.  Combined with idempotent producing,
  *     this gives "exactly-once-with-processing" semantics.
+ *     `acknowledgment` does not apply.
  */
 export type KafkaCommitMode = 'auto' | 'manual';
 
@@ -116,9 +133,14 @@ export type KafkaCommand =
  *
  * **Offset-commit semantics.**
  *
- *   - `commitMode: 'auto'` (default) — kafkajs commits after each
- *     handler returns successfully → **at-least-once**.  Cheap; OK
- *     for idempotent handlers.
+ *   - `commitMode: 'auto'` (default) with `acknowledgment: 'on-reply'`
+ *     (default) — the actor `ask`s the target with each record and kafkajs
+ *     commits it only after the target replied `{ kind: 'acknowledgment' }`
+ *     → **at-least-once** (#975).  A negative reply or no reply within
+ *     `acknowledgmentTimeoutMs` rejects kafkajs's handler, so the offset is
+ *     not committed and the record is read again.
+ *   - `commitMode: 'auto'` with `acknowledgment: 'on-delivery'` — committed
+ *     once the record is in the target's mailbox → **at-most-once**.
  *   - `commitMode: 'manual'` — pump pauses on each message and waits
  *     for an explicit `commit` command from the handler (#2).  The
  *     handler is responsible for sending exactly one `commit` (or
@@ -128,6 +150,17 @@ export type KafkaCommand =
  *     Produces **exactly-once-with-processing**: a message that
  *     successfully passed through `commit` is committed; a crash or
  *     `nack` re-delivers.
+ *
+ * In the default mode the target replies on the record's `replyTo`:
+ *
+ *   class OrderProcessor extends Actor<KafkaRecord> {
+ *     async onReceive(rec: KafkaRecord) {
+ *       await db.insertOrder(JSON.parse(rec.value!.toString()));
+ *       acknowledgeDelivery(rec);   // a throw above means no reply → redelivery
+ *     }
+ *   }
+ *
+ * The manual-commit shape:
  *
  *   const kafka = system.spawnAnonymous(() => new KafkaActor(
  *     KafkaOptions.create()
@@ -163,25 +196,36 @@ export class KafkaActor
    * `nack` / the timeout.
    */
   private readonly pendingCommits = new Map<string, PendingCommit>();
+  /**
+   * The `acknowledgment`-mode replies outstanding on the current consumer —
+   * `commitMode: 'auto'` only.  Replaced per connection and cancelled by
+   * teardown, so `consumer.disconnect` is not held by handlers waiting for
+   * replies that can no longer commit anything.
+   */
+  private acknowledgments: BrokerAcknowledgmentTracker | null = null;
 
   constructor(options: KafkaOptions = {}) { super(options); }
 
   protected configKey(): string { return ConfigKeys.io.broker.kafka.root; }
   protected builtInDefaultOptions(): Partial<KafkaOptionsType> {
-    return { ssl: false, producer: { idempotent: false, allowAutoTopicCreation: false } };
+    return {
+      ssl: false,
+      producer: { idempotent: false, allowAutoTopicCreation: false },
+      acknowledgment: DEFAULT_BROKER_ACKNOWLEDGMENT_MODE,
+      acknowledgmentTimeoutMs: DEFAULT_BROKER_ACKNOWLEDGMENT_TIMEOUT_MS,
+    };
   }
   protected readOptionsFromConfig(config: Config): Partial<KafkaOptionsType> {
-    const read = readKafkaOptionsFromConfig(config);
-    if (read.producer === undefined) return read;
-    // Layered against the built-in defaults leaf by leaf rather than returned
-    // as read.  `mergeOptions` is a shallow spread, so whatever this returns
-    // replaces `builtInDefaultOptions().producer` whole: a HOCON
-    // `producer { idempotent = true }` would otherwise blank
-    // `allowAutoTopicCreation` back to undefined, which is not the per-field
-    // precedence the rest of the options surface promises.  Done here rather
-    // than in the reader, because this is the one method that declares those
-    // defaults; the reader reports exactly what the file says.
-    return { ...read, producer: { ...this.builtInDefaultOptions().producer, ...read.producer } };
+    return readKafkaOptionsFromConfig(config);
+  }
+  /**
+   * Both groups hold independent settings, so each is layered per leaf: a
+   * HOCON `producer { idempotent = true }` keeps the built-in
+   * `allowAutoTopicCreation`, and `withConsumer({ groupId })` keeps a HOCON
+   * `consumer.commit-mode = manual` (#975).
+   */
+  protected override leafMergedOptionGroups(): ReadonlyArray<keyof KafkaOptionsType> {
+    return ['producer', 'consumer'];
   }
   protected override retiredLeaves(): RetiredLeaves { return RETIRED_KAFKA_LEAVES; }
   protected requiredOptions(): ReadonlyArray<keyof KafkaOptionsType> { return ['brokers']; }
@@ -243,6 +287,18 @@ export class KafkaActor
       const target = this.options.target;
       const manualCommit = this.options.consumer.commitMode === 'manual';
       const commitTimeoutMs = this.options.consumer.commitTimeoutMs ?? 30_000;
+      const acknowledgment = this.options.acknowledgment ?? DEFAULT_BROKER_ACKNOWLEDGMENT_MODE;
+      const acknowledgmentTimeoutMs = this.options.acknowledgmentTimeoutMs ?? DEFAULT_BROKER_ACKNOWLEDGMENT_TIMEOUT_MS;
+      const acknowledgments = new BrokerAcknowledgmentTracker(acknowledgment, acknowledgmentTimeoutMs);
+      this.acknowledgments = acknowledgments;
+      // Once per consumer start, so what the actor actually guarantees is in
+      // the log rather than only in the options that produced it (#975).
+      this.log.info(manualCommit
+        ? `KafkaActor: consumer group '${this.options.consumer.groupId}' started — commit mode manual `
+          + `(commit timeout ${commitTimeoutMs} ms)`
+        : `KafkaActor: consumer group '${this.options.consumer.groupId}' started — commit mode auto, `
+          + `acknowledgment ${acknowledgment}`
+          + (acknowledgment === 'on-reply' ? ` (timeout ${acknowledgmentTimeoutMs} ms)` : ''));
 
       // We deliberately don't await `run` — it's a long-running pump.
       void this.consumer.run({
@@ -252,16 +308,33 @@ export class KafkaActor
         autoCommit: !manualCommit,
         eachMessage: async ({ topic, partition, message, heartbeat }: KafkaConsumedMessage): Promise<void> => {
           if (!target) return;
-          target.tell({
+          const record: KafkaRecord = {
             topic, partition,
             offset: message.offset,
             key: message.key,
             value: message.value,
             timestamp: message.timestamp,
             headers: message.headers ?? {},
-          });
+          };
 
-          if (!manualCommit) return;
+          if (!manualCommit) {
+            // Resolving this handler is what lets kafkajs commit the offset,
+            // so it resolves only when the record may be committed — on the
+            // target's acknowledgment under `'on-reply'` (#975).  A rejection
+            // leaves the offset uncommitted: kafkajs re-reads the record.
+            try {
+              await acknowledgments.deliver(target, record);
+            } catch (error) {
+              this.log.warn(
+                `KafkaActor: ${pendingKey(topic, partition, message.offset)} not acknowledged — `
+                + `leaving the offset uncommitted for redelivery: ${(error as Error).message}`,
+              );
+              throw error;
+            }
+            return;
+          }
+
+          target.tell(record);
 
           // Wait for an external `commit` / `nack` before resolving.
           // The promise rejects on `nack`, the timeout, or disconnect
@@ -288,6 +361,10 @@ export class KafkaActor
   }
 
   protected async disconnectImplementation(): Promise<void> {
+    // Give up on every reply still outstanding, for the reason the pending
+    // commits below are rejected: kafkajs waits for in-flight handlers.
+    this.acknowledgments?.cancelAll('KafkaActor: disconnecting before the target replied');
+    this.acknowledgments = null;
     // Reject every still-pending commit so the kafkajs eachMessage
     // pump unwinds cleanly — otherwise consumer.disconnect would
     // hang waiting for the in-flight handler to resolve.
@@ -482,8 +559,10 @@ type KafkaConsumerOptions = NonNullable<KafkaOptionsType['consumer']>;
 /**
  * Read the `actor-ts.io.broker.kafka` block off the system config, at the full
  * paths `keys` holds; the reconnect / breaker / buffer leaves are
- * `BrokerActor`'s.  An unset leaf is omitted, inside the groups too — the
- * actor layers the producer's built-in defaults under what this returns.
+ * `BrokerActor`'s, the `acknowledgment` pair the shared
+ * `readBrokerAcknowledgmentOptionsFromConfig`'s.  An unset leaf is omitted,
+ * inside the groups too — the actor layers both groups leaf by leaf over the
+ * built-in defaults and under the constructor's.
  * `consumer.commit-timeout` is a duration, so `5s` reads as 5000.  `sasl`
  * needs all three of its leaves once it is there.  `target` names an actor
  * and the certificate-material form of `ssl` is code-only.
@@ -506,7 +585,7 @@ export function readKafkaOptionsFromConfig(
   if (config.hasPath(keys.producer.root)) out.producer = readProducerFromConfig(config, keys.producer);
   if (config.hasPath(keys.consumer.root)) out.consumer = readConsumerFromConfig(config, keys.consumer);
   if (config.hasPath(keys.topics)) out.topics = config.getStringList(keys.topics);
-  return out;
+  return { ...out, ...readBrokerAcknowledgmentOptionsFromConfig(config, keys) };
 }
 
 function readProducerFromConfig(

@@ -22,7 +22,9 @@ import {
   type KafkaProducerLike,
   type KafkaRecord,
 } from '../../../../../src/io/broker/KafkaActor.js';
-import { KafkaOptions, KafkaOptionsBuilder } from '../../../../../src/io/broker/KafkaOptions.js';
+import { KafkaOptions, KafkaOptionsBuilder, type KafkaOptionsType } from '../../../../../src/io/broker/KafkaOptions.js';
+import { acknowledgeDelivery, negativelyAcknowledgeDelivery } from '../../../../../src/io/broker/BrokerAcknowledgment.js';
+import { RecordingLogger } from '../../../../util/RecordingLogger.js';
 import { createTestActorSystem } from '../../../../util/TestActorSystem.js';
 
 import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
@@ -193,13 +195,41 @@ class MockKafkaActor extends KafkaActor {
    * rather than dropped — before the reconnect that applies it.
    */
   publicDesiredCount(): number { return this.desiredSubscriptionCount; }
+  /** The options as the three layers resolved them. */
+  publicResolvedOptions(): KafkaOptionsType { return this.options; }
 }
 
 /* --------------------------- Helpers ---------------------------- */
 
+/**
+ * How the target answers a record that arrives with a `replyTo` — one sent
+ * under the default `acknowledgment: 'on-reply'`.  A record without one (a
+ * manual-commit or `'on-delivery'` record) is only captured.
+ */
+type TargetReply = 'acknowledge' | 'negative' | 'hold';
+
 class CapturingTarget extends Actor<KafkaRecord> {
   readonly received: KafkaRecord[] = [];
-  override onReceive(rec: KafkaRecord): void { this.received.push(rec); }
+  constructor(private readonly reply: TargetReply = 'acknowledge') { super(); }
+  override onReceive(rec: KafkaRecord): void {
+    this.received.push(rec);
+    if (this.reply === 'acknowledge') acknowledgeDelivery(rec);
+    else if (this.reply === 'negative') negativelyAcknowledgeDelivery(rec, 'test says no');
+  }
+  /** Answer every held record now. */
+  release(reply: 'acknowledge' | 'negative'): void {
+    for (const rec of this.received) {
+      if (reply === 'acknowledge') acknowledgeDelivery(rec);
+      else negativelyAcknowledgeDelivery(rec, 'test says no');
+    }
+  }
+}
+
+function quietSystem(name: string): ActorSystem {
+  const sysOptions = ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  return ActorSystem.create(name, sysOptions);
 }
 
 /**
@@ -220,12 +250,12 @@ function awaitForwarded(target: CapturingTarget, count: number): Promise<void> {
 }
 
 async function bootActor(
-  sys: ActorSystem, options: KafkaOptionsBuilder,
+  sys: ActorSystem, options: KafkaOptionsBuilder, reply: TargetReply = 'acknowledge',
 ): Promise<{
   actor: ActorRef<KafkaCommand>; mock: MockKafka;
   target: CapturingTarget; instance: MockKafkaActor;
 }> {
-  const target = new CapturingTarget();
+  const target = new CapturingTarget(reply);
   const targetRef = sys.spawn(() => target, 'target');
   const ref = { current: null as MockKafkaActor | null };
   const actor = sys.spawn(
@@ -271,31 +301,145 @@ async function reconnect(instance: MockKafkaActor): Promise<void> {
 /* Tests                                                          */
 /* ============================================================== */
 
-describe('KafkaActor — auto-commit (default)', () => {
-  test('eachMessage resolves immediately and no commitOffsets call is made', async () => {
-    const sysOptions = ActorSystemOptions.create()
-      .withLogger(new NoopLogger())
-      .withLogLevel(LogLevel.Off);
-    const sys = ActorSystem.create('kafka-auto', sysOptions);
+describe('KafkaActor — auto-commit acknowledges on the target\'s reply (#975)', () => {
+  test('the default holds kafkajs\'s handler until the target acknowledges', async () => {
+    const sys = quietSystem('kafka-on-reply');
     try {
       const kafkaOptions = KafkaOptions.create()
         .withBrokers(['fake:9092'])
         .withConsumer({ groupId: 'g1' /* commitMode default = 'auto' */ })
         .withTopics(['orders']);
-      const { mock, target } = await bootActor(sys, kafkaOptions);
+      const { mock, target } = await bootActor(sys, kafkaOptions, 'hold');
       expect(mock.consumer_.manualCommitConfigured).toBe(false);
+      const tracker = mock.consumer_.push('orders', 0, '42');
+      await awaitForwarded(target, 1);
+      // In the mailbox and not yet processed: kafkajs must not be allowed to
+      // commit, which it does the moment this promise resolves.
+      await sleep(SETTLE_MS);  // the claim is "still pending"; see SETTLE_MS
+      expect(tracker.resolved).toBe(false);
+      expect(tracker.rejected).toBe(false);
+      expect(target.received[0]!.replyTo).toBeDefined();
+
+      target.release('acknowledge');
+      await tracker.promise;
+      expect(tracker.resolved).toBe(true);
+      // Auto-mode → kafkajs commits internally; the actor never calls commitOffsets.
+      expect(mock.consumer_.committed).toEqual([]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a negative reply rejects the handler, so the offset is not committed', async () => {
+    const sys = quietSystem('kafka-on-reply-negative');
+    try {
+      const kafkaOptions = KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'g1' })
+        .withTopics(['orders']);
+      const { mock } = await bootActor(sys, kafkaOptions, 'negative');
+      const tracker = mock.consumer_.push('orders', 0, '7');
+      await tracker.promise;
+      expect(tracker.rejected).toBe(true);
+      expect(tracker.rejectError?.message).toContain('test says no');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('no reply within acknowledgmentTimeoutMs rejects the handler', async () => {
+    const sys = quietSystem('kafka-on-reply-timeout');
+    try {
+      const kafkaOptions = KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'g1' })
+        .withTopics(['orders'])
+        .withAcknowledgmentTimeoutMs(50);
+      const { mock } = await bootActor(sys, kafkaOptions, 'hold');
+      const tracker = mock.consumer_.push('orders', 0, '8');
+      await tracker.promise;
+      expect(tracker.rejected).toBe(true);
+      expect(tracker.rejectError?.message).toContain('within 50 ms');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a reply that is not part of the contract does not acknowledge', async () => {
+    const sys = quietSystem('kafka-on-reply-unexpected');
+    try {
+      const kafkaOptions = KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'g1' })
+        .withTopics(['orders']);
+      const { mock, target } = await bootActor(sys, kafkaOptions, 'hold');
+      const tracker = mock.consumer_.push('orders', 0, '9');
+      await awaitForwarded(target, 1);
+      target.received[0]!.replyTo!.tell({ kind: 'done' } as never);
+      await tracker.promise;
+      expect(tracker.rejected).toBe(true);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('stopping the actor gives up on an outstanding reply instead of holding the disconnect', async () => {
+    const sys = quietSystem('kafka-on-reply-stop');
+    try {
+      const kafkaOptions = KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'g1' })
+        .withTopics(['orders']);
+      const { actor, mock, target } = await bootActor(sys, kafkaOptions, 'hold');
+      const tracker = mock.consumer_.push('orders', 0, '10');
+      await awaitForwarded(target, 1);
+      actor.stop();
+      await awaitCondition(() => tracker.rejected, {
+        timeoutMs: 2_000, label: 'teardown rejected the handler waiting for a reply',
+      });
+      expect(tracker.rejectError?.message).toContain('disconnecting');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('acknowledgment = on-delivery resolves the handler as soon as the record is told', async () => {
+    const sys = quietSystem('kafka-on-delivery');
+    try {
+      const kafkaOptions = KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'g1' })
+        .withTopics(['orders'])
+        .withAcknowledgment('on-delivery');
+      const { mock, target } = await bootActor(sys, kafkaOptions, 'hold');
       const tracker = mock.consumer_.push('orders', 0, '42');
       await tracker.promise;
       expect(tracker.resolved).toBe(true);
-      // Tell delivery is async via the mailbox — wait for it, then hold still:
-      // "exactly one record, zero commits" is the claim, and a poll alone
-      // cannot see a second of either.
       await awaitForwarded(target, 1);
       await sleep(SETTLE_MS);  // the upper half of "exactly one"; see SETTLE_MS
       expect(target.received).toHaveLength(1);
       expect(target.received[0]!.offset).toBe('42');
-      // Auto-mode → kafkajs handles commits internally; no commitOffsets call.
+      expect(target.received[0]!.replyTo).toBeUndefined();
       expect(mock.consumer_.committed).toEqual([]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('the consumer start is logged with the effective commit mode and acknowledgment', async () => {
+    const log = new RecordingLogger();
+    const sysOptions = ActorSystemOptions.create().withLogger(log).withLogLevel(LogLevel.Info);
+    const sys = ActorSystem.create('kafka-log-mode', sysOptions);
+    try {
+      const kafkaOptions = KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'g1' })
+        .withTopics(['orders']);
+      await bootActor(sys, kafkaOptions);
+      const started = log.records.filter((record) => record.message.includes("consumer group 'g1' started"));
+      expect(started).toHaveLength(1);
+      expect(started[0]!.level).toBe('info');
+      expect(started[0]!.message).toContain('commit mode auto, acknowledgment on-reply (timeout 30000 ms)');
     } finally {
       await sys.terminate();
     }
@@ -545,11 +689,77 @@ describe('KafkaActor — options parsing', () => {
         .withBrokers(['fake:9092'])
         .withProducer({ idempotent: false });
       const { mock } = await bootActor(sys, kafkaOptions);
-      // Only the field the constructor named is asserted.  Whether the
-      // sibling leaf HOCON set survives underneath it is #975's question —
-      // `mergeOptions` is a shallow spread, so today it does not — and this
-      // test deliberately does not pin that behaviour as intended.
-      expect(mock.producerConfigs[0]?.idempotent).toBe(false);
+      // The leaf the constructor named wins; the sibling HOCON set survives
+      // underneath it, because the group is merged per leaf (#975).
+      expect(mock.producerConfigs[0]).toEqual({ idempotent: false, allowAutoTopicCreation: true });
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('withConsumer({ groupId }) keeps a HOCON consumer.commit-mode = manual (#975)', async () => {
+    const sys = createTestActorSystem({
+      name: 'kafka-consumer-precedence',
+      config: {
+        'actor-ts': {
+          io: { broker: { kafka: { consumer: {
+            'group-id': 'from-hocon', 'commit-mode': 'manual', 'commit-timeout': '5s', 'from-beginning': true,
+          } } } },
+        },
+      },
+    });
+    try {
+      const kafkaOptions = KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'orders' })
+        .withTopics(['orders']);
+      const { mock, instance } = await bootActor(sys, kafkaOptions);
+      // Field by field: the one leaf code named, and every leaf it did not.
+      expect(instance.publicResolvedOptions().consumer).toEqual({
+        groupId: 'orders',
+        commitMode: 'manual',
+        commitTimeoutMs: 5_000,
+        fromBeginning: true,
+      });
+      // And the pump honours it: kafkajs was told not to auto-commit.
+      expect(mock.consumer_.manualCommitConfigured).toBe(true);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('an undefined leaf in withConsumer does not shadow the HOCON one (#975)', async () => {
+    const sys = createTestActorSystem({
+      name: 'kafka-consumer-undefined-leaf',
+      config: { 'actor-ts': { io: { broker: { kafka: { consumer: { 'commit-mode': 'manual' } } } } } },
+    });
+    try {
+      const kafkaOptions = KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'orders', commitMode: undefined })
+        .withTopics(['orders']);
+      const { instance } = await bootActor(sys, kafkaOptions);
+      expect(instance.publicResolvedOptions().consumer).toEqual({ groupId: 'orders', commitMode: 'manual' });
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('HOCON acknowledgment leaves reach the resolved options', async () => {
+    const sys = createTestActorSystem({
+      name: 'kafka-acknowledgment-hocon',
+      config: { 'actor-ts': { io: { broker: { kafka: {
+        acknowledgment: 'on-delivery', 'acknowledgment-timeout': '2s',
+      } } } } },
+    });
+    try {
+      const kafkaOptions = KafkaOptions.create()
+        .withBrokers(['fake:9092'])
+        .withConsumer({ groupId: 'g' })
+        .withTopics(['t']);
+      const { instance } = await bootActor(sys, kafkaOptions);
+      expect(instance.publicResolvedOptions().acknowledgment).toBe('on-delivery');
+      expect(instance.publicResolvedOptions().acknowledgmentTimeoutMs).toBe(2_000);
     } finally {
       await sys.terminate();
     }

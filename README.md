@@ -113,6 +113,8 @@ A short tour of what's in the box:
   NATS, Redis-Streams, gRPC, SSE, raw TCP/UDP and IMAP/SMTP email
   integrations.
   Reconnect-with-backoff, outbound buffer, subscriber fan-out are baked in.
+  Kafka, AMQP and MQTT consume at-least-once by default: a delivery is
+  acknowledged only once the target actor replies that it processed it.
 - **Caching** — pluggable Cache with in-memory, Redis, Memcached backends.
 - **Typed options + fail-fast validation** — one fluent `XOptions` builder per
   configurable thing (or a plain object), with values validated once on the
