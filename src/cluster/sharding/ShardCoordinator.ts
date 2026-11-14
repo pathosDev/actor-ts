@@ -64,18 +64,41 @@ import type {
 
 /* ----------------------- internal mailbox events ----------------------- */
 /**
+ * The coordinator's commands to itself.
+ *
  * The lease-aware path uses internal events instead of inline awaits so
  * cluster-event triggers can't interleave their `reconcile` calls with
  * an in-flight `lease.acquire()`.  Mirrors the same pattern used in
  * `ClusterSingletonManager` (#38).
+ *
+ * Classes, every one of them, matched by `instanceof` (#1267).  They were
+ * plain `{ kind }` objects matched by their string, so anything that reached
+ * the mailbox unattributed and spelled one — a frame delivered through generic
+ * path resolution, with only the envelope trust policy's `/system` refusal in
+ * front of it — was obeyed: `coordinator-state-loaded` rewrote the shard map,
+ * `request-registrations` made the coordinator dial addresses of the sender's
+ * choosing.  An instance can only be minted inside this module.  The `kind`
+ * field stays, for logs and debuggers; nothing dispatches on it.
  */
-type ReconcileEvent = { readonly kind: 'reconcile' };
+abstract class CoordinatorEventBase {}
 
-type LeaseAcquireResultEvent = { readonly kind: 'lease-acquire-result'; readonly got: boolean; readonly error?: Error };
+class ReconcileEvent extends CoordinatorEventBase {
+  readonly kind = 'reconcile' as const;
+}
 
-type LeaseLostEvent = { readonly kind: 'lease-lost'; readonly reason: string };
+class LeaseAcquireResultEvent extends CoordinatorEventBase {
+  readonly kind = 'lease-acquire-result' as const;
+  constructor(readonly got: boolean, readonly error?: Error) { super(); }
+}
 
-type AcquireRetryEvent = { readonly kind: 'acquire-retry' };
+class LeaseLostEvent extends CoordinatorEventBase {
+  readonly kind = 'lease-lost' as const;
+  constructor(readonly reason: string) { super(); }
+}
+
+class AcquireRetryEvent extends CoordinatorEventBase {
+  readonly kind = 'acquire-retry' as const;
+}
 
 /** Where one region lives — all a {@link RegistrationRequest} needs to reach it. */
 type RegionAddress = { readonly path: string; readonly node: NodeAddressData };
@@ -84,29 +107,38 @@ type RegionAddress = { readonly path: string; readonly node: NodeAddressData };
  * The regions an instance about to be replaced knew, told to its replacement
  * through the mailbox the two share — see {@link ShardCoordinator.preRestart}.
  */
-type RequestRegistrationsEvent = {
-  readonly kind: 'request-registrations';
-  readonly regions: ReadonlyArray<RegionAddress>;
-};
+class RequestRegistrationsEvent extends CoordinatorEventBase {
+  readonly kind = 'request-registrations' as const;
+  constructor(readonly regions: ReadonlyArray<RegionAddress>) { super(); }
+}
 
 /** The registration barrier ran out — see `ShardCoordinator.beginRegistrationBarrier`. */
-type RegistrationBarrierTimeoutEvent = { readonly kind: 'registration-barrier-timeout' };
+class RegistrationBarrierTimeoutEvent extends CoordinatorEventBase {
+  readonly kind = 'registration-barrier-timeout' as const;
+}
 
 /** Time to repeat a conflict release — see `ShardCoordinator.trackConflictRelease`. */
-type ConflictReleaseRetryEvent = { readonly kind: 'conflict-release-retry'; readonly shardId: number };
+class ConflictReleaseRetryEvent extends CoordinatorEventBase {
+  readonly kind = 'conflict-release-retry' as const;
+  constructor(readonly shardId: number) { super(); }
+}
 
 /** The cluster's leader moved — handled in the mailbox, not in the cluster's callback (#952). */
-type LeaderChangedEvent = { readonly kind: 'leader-changed' };
+class LeaderChangedEvent extends CoordinatorEventBase {
+  readonly kind = 'leader-changed' as const;
+}
 
 /** The coordinator-state load of leader term `term` finished — see `ShardCoordinator.startCoordinatorStateLoad`. */
-type CoordinatorStateLoadedEvent = {
-  readonly kind: 'coordinator-state-loaded';
-  readonly term: number;
-  readonly data: CoordinatorStateData | null;
-};
+class CoordinatorStateLoadedEvent extends CoordinatorEventBase {
+  readonly kind = 'coordinator-state-loaded' as const;
+  constructor(readonly term: number, readonly data: CoordinatorStateData | null) { super(); }
+}
 
 /** The coordinator-state load of leader term `term` took longer than `coordinatorStateLoadTimeoutMs`. */
-type CoordinatorStateLoadTimeoutEvent = { readonly kind: 'coordinator-state-load-timeout'; readonly term: number };
+class CoordinatorStateLoadTimeoutEvent extends CoordinatorEventBase {
+  readonly kind = 'coordinator-state-load-timeout' as const;
+  constructor(readonly term: number) { super(); }
+}
 
 type CoordinatorEvent =
   | ReconcileEvent
@@ -202,14 +234,9 @@ type RegistrationBarrier = {
   loadTimer: Cancellable | null;
 };
 
+/** One of the coordinator's own commands — an instance minted in this module, never a look-alike (#1267). */
 function isCoordinatorEvent(message: CoordinatorInbox): message is CoordinatorEvent {
-  if (!message || typeof message !== 'object') return false;
-  const discriminator = (message as { kind?: unknown }).kind;
-  return discriminator === 'reconcile' || discriminator === 'lease-acquire-result'
-    || discriminator === 'lease-lost' || discriminator === 'acquire-retry'
-    || discriminator === 'request-registrations' || discriminator === 'registration-barrier-timeout'
-    || discriminator === 'conflict-release-retry' || discriminator === 'leader-changed'
-    || discriminator === 'coordinator-state-loaded' || discriminator === 'coordinator-state-load-timeout';
+  return message instanceof CoordinatorEventBase;
 }
 
 /**
@@ -610,16 +637,16 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
         .with(P.instanceOf(MemberRemoved), (e) => this.self.tell(new MemberRemovedReceived(e.member.address)))
         // Through the mailbox (#952): the handler clears and seeds the maps
         // every other handler reads, so it must not interleave with them.
-        .with(P.instanceOf(LeaderChanged), () => this.self.tell({ kind: 'leader-changed' } satisfies CoordinatorEvent))
+        .with(P.instanceOf(LeaderChanged), () => this.self.tell(new LeaderChangedEvent()))
         .otherwise(() => this.onOtherClusterEvent()),
     );
     if (this.options.lease) {
       this.unsubscribeLeaseLost = this.options.lease.onLost((reason) => {
-        this.self.tell({ kind: 'lease-lost', reason } satisfies CoordinatorEvent);
+        this.self.tell(new LeaseLostEvent(reason));
       });
       // Kick the initial reconcile through the mailbox so the lease
       // path serialises with subsequent cluster events.
-      this.self.tell({ kind: 'reconcile' } satisfies CoordinatorEvent);
+      this.self.tell(new ReconcileEvent());
     }
     const rebalanceIntervalMs = this.options.rebalanceIntervalMs ?? DEFAULT_REBALANCE_INTERVAL_MS;
     this.rebalanceTimer = this.system.scheduler.scheduleAtFixedRateFunction(
@@ -692,7 +719,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       node: info.node.toJSON(),
     }));
     if (regions.length > 0) {
-      this.self.tell({ kind: 'request-registrations', regions } satisfies CoordinatorEvent);
+      this.self.tell(new RequestRegistrationsEvent(regions));
     }
     await super.preRestart(reason, message);
   }
@@ -877,16 +904,16 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
 
   private handleCoordinatorEvent(evt: CoordinatorEvent): void {
     match(evt)
-      .with({ kind: 'reconcile' }, () => this.onReconcile())
-      .with({ kind: 'lease-acquire-result' }, (m) => this.onLeaseAcquireResult(m))
-      .with({ kind: 'lease-lost' }, (m) => this.onLeaseLost(m))
-      .with({ kind: 'acquire-retry' }, () => this.onAcquireRetry())
-      .with({ kind: 'request-registrations' }, (m) => this.onRequestRegistrations(m))
-      .with({ kind: 'registration-barrier-timeout' }, () => this.onRegistrationBarrierTimeout())
-      .with({ kind: 'conflict-release-retry' }, (m) => this.onConflictReleaseRetry(m))
-      .with({ kind: 'leader-changed' }, () => this.onLeaderChanged())
-      .with({ kind: 'coordinator-state-loaded' }, (m) => this.onCoordinatorStateLoaded(m))
-      .with({ kind: 'coordinator-state-load-timeout' }, (m) => this.onCoordinatorStateLoadTimeout(m))
+      .with(P.instanceOf(ReconcileEvent), () => this.onReconcile())
+      .with(P.instanceOf(LeaseAcquireResultEvent), (m) => this.onLeaseAcquireResult(m))
+      .with(P.instanceOf(LeaseLostEvent), (m) => this.onLeaseLost(m))
+      .with(P.instanceOf(AcquireRetryEvent), () => this.onAcquireRetry())
+      .with(P.instanceOf(RequestRegistrationsEvent), (m) => this.onRequestRegistrations(m))
+      .with(P.instanceOf(RegistrationBarrierTimeoutEvent), () => this.onRegistrationBarrierTimeout())
+      .with(P.instanceOf(ConflictReleaseRetryEvent), (m) => this.onConflictReleaseRetry(m))
+      .with(P.instanceOf(LeaderChangedEvent), () => this.onLeaderChanged())
+      .with(P.instanceOf(CoordinatorStateLoadedEvent), (m) => this.onCoordinatorStateLoaded(m))
+      .with(P.instanceOf(CoordinatorStateLoadTimeoutEvent), (m) => this.onCoordinatorStateLoadTimeout(m))
       .exhaustive();
   }
 
@@ -931,11 +958,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private async runAcquire(): Promise<void> {
     try {
       const got = await this.options.lease!.acquire();
-      this.self.tell({ kind: 'lease-acquire-result', got } satisfies CoordinatorEvent);
+      this.self.tell(new LeaseAcquireResultEvent(got));
     } catch (error) {
-      this.self.tell({
-        kind: 'lease-acquire-result', got: false, error: error as Error,
-      } satisfies CoordinatorEvent);
+      this.self.tell(new LeaseAcquireResultEvent(false, error as Error));
     }
   }
 
@@ -997,14 +1022,14 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     // self-correct via the standard "remote send fails →
     // MemberRemoved → invalidateHomesOnNode" flow on the regions.
     // Re-enter the acquire loop in case we're still the leader.
-    this.self.tell({ kind: 'reconcile' } satisfies CoordinatorEvent);
+    this.self.tell(new ReconcileEvent());
   }
 
   private scheduleAcquireRetry(): void {
     const interval = this.options.acquireRetryIntervalMs ?? DEFAULT_ACQUIRE_RETRY_INTERVAL_MS;
     this.acquireRetryTimer?.cancel();
     this.acquireRetryTimer = this.system.scheduler.scheduleOnceFunction(interval, () => {
-      this.self.tell({ kind: 'acquire-retry' } satisfies CoordinatorEvent);
+      this.self.tell(new AcquireRetryEvent());
     });
   }
 
@@ -1502,11 +1527,11 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     if (awaiting.size === 0 && !loading) return;
     const timeoutMs = this.registrationWindowMs();
     const windowTimer = awaiting.size === 0 ? null : this.system.scheduler.scheduleOnceFunction(timeoutMs, () => {
-      this.self.tell({ kind: 'registration-barrier-timeout' } satisfies CoordinatorEvent);
+      this.self.tell(new RegistrationBarrierTimeoutEvent());
     });
     const term = this.leaderTerm;
     const loadTimer = !loading ? null : this.system.scheduler.scheduleOnceFunction(this.coordinatorStateLoadTimeoutMs(), () => {
-      this.self.tell({ kind: 'coordinator-state-load-timeout', term } satisfies CoordinatorEvent);
+      this.self.tell(new CoordinatorStateLoadTimeoutEvent(term));
     });
     this.registrationBarrier = { awaiting, windowTimer, windowElapsed: windowTimer === null, loading, loadTimer };
     this.log.debug(
@@ -1753,7 +1778,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
 
   private scheduleConflictReleaseRetry(shardId: number): Cancellable {
     return this.system.scheduler.scheduleOnceFunction(this.conflictReleaseRetryMs(), () => {
-      this.self.tell({ kind: 'conflict-release-retry', shardId } satisfies CoordinatorEvent);
+      this.self.tell(new ConflictReleaseRetryEvent(shardId));
     });
   }
 
@@ -2443,7 +2468,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     // route through the mailbox so the state machine serialises with
     // any in-flight acquire result.
     if (this.options.lease) {
-      this.self.tell({ kind: 'reconcile' } satisfies CoordinatorEvent);
+      this.self.tell(new ReconcileEvent());
     }
   }
 
@@ -2484,7 +2509,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     const store = this.options.coordinatorStateStore;
     if (!store) return;
     const loaded = (data: CoordinatorStateData | null): void => {
-      this.self.tell({ kind: 'coordinator-state-loaded', term, data } satisfies CoordinatorEvent);
+      this.self.tell(new CoordinatorStateLoadedEvent(term, data));
     };
     store.load(this.options.typeName).then(loaded, (err: unknown) => {
       this.system.log.warn(`[sharding] coordinator-state load failed for '${this.options.typeName}'`, err);
