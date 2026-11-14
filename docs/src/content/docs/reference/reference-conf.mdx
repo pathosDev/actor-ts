@@ -2069,7 +2069,7 @@ actor-ts {
   persistence {
     # Behaviour of every PersistentActor and ReplicatedEventSourcedActor in
     # this system, read once by PersistenceExtension -- a replicated actor's
-    # appends of events from its peers excepted until #958.  The sub-blocks
+    # appends of events from its peers included (#958).  The sub-blocks
     # below are plugin-id namespaces and belong to the backend that owns them;
     # the leaves directly in this block are not, which is why they sit one
     # level above where a plugin id can appear.

@@ -336,10 +336,10 @@ unbegrenzten Mailbox, nichts wirft, und die Supervision läuft nie.
 Abhilfe: **dem Append eine Frist geben.**  Das Journal wird durch
 einen Circuit Breaker gerufen, und dessen Per-Call-Timeout ist das,
 was einen einzelnen Append begrenzt.  Das gilt für jeden
-Journal-Aufruf eines `PersistentActor` und für das eigene `persist`
-und die Recovery eines `ReplicatedEventSourcedActor` — aber noch
-nicht für dessen Anhängen eines Events, das ein Peer geschickt hat;
-das wartet auf #958.  Es wird ungesetzt ausgeliefert, weil genau das
+Journal-Aufruf eines `PersistentActor` und für das eigene `persist`,
+die Recovery und das Anhängen eines Events, das ein Peer geschickt
+hat, eines `ReplicatedEventSourcedActor` (#958).  Es wird ungesetzt
+ausgeliefert, weil genau das
 Weglassen „keine Frist“ ausdrückt:
 
 ```hocon

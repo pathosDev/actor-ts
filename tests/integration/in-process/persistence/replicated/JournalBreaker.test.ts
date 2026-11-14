@@ -17,10 +17,9 @@
  *     re-used number would then exist twice;
  *   - a losing conditional append is the journal answering, not an outage —
  *     it must not open the breaker for every other entity on the node;
- *   - the append of an event received from a peer is **not** behind the
- *     breaker yet.  That path is fire-and-forget and races itself today, and
- *     #958 gives it a serialized append chain, which is where a breaker belongs
- *     on it.
+ *   - the append of an event received from a peer runs through the same
+ *     breaker, inside the serialized append chain #958 introduced — pinned in
+ *     `RemoteAppendChain.test.ts`.
  *
  * Single node over `InMemoryTransport`, like the sibling replicated suites —
  * no OS port is bound.
@@ -35,7 +34,6 @@ import { ClusterOptions } from '../../../../../src/cluster/ClusterOptions.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import {
   DistributedPubSubId,
-  PubSubEnvelope,
   Subscribe,
   SubscribeAcknowledgment,
 } from '../../../../../src/cluster/pubsub/index.js';
@@ -45,11 +43,7 @@ import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { CircuitBreakerOpenError, CircuitBreakerTimeoutError } from '../../../../../src/pattern/CircuitBreaker.js';
 import { gracefulStop } from '../../../../../src/pattern/GracefulStop.js';
 import type { Journal } from '../../../../../src/persistence/Journal.js';
-import {
-  JournalConcurrencyError,
-  type JournalEntry,
-  type PersistentEvent,
-} from '../../../../../src/persistence/JournalTypes.js';
+import { JournalConcurrencyError } from '../../../../../src/persistence/JournalTypes.js';
 import { InMemoryJournal } from '../../../../../src/persistence/journals/InMemoryJournal.js';
 import { PersistenceExtensionId, type PersistenceExtension } from '../../../../../src/persistence/PersistenceExtension.js';
 import type { ReplicatedSnapshot } from '../../../../../src/persistence/replicated/ReplicatedSnapshot.js';
@@ -58,6 +52,8 @@ import {
   type ReplicatedEventEnvelope,
 } from '../../../../../src/persistence/ReplicatedEventSourcedActor.js';
 import { InMemorySnapshotStore } from '../../../../../src/persistence/snapshot-stores/InMemorySnapshotStore.js';
+import { FaultInjectingJournal } from '../../../../../src/testkit/FaultInjectingJournal.js';
+import { FaultInjectingJournalOptions } from '../../../../../src/testkit/FaultInjectingJournalOptions.js';
 import { assertCompletesWithin } from '../../../../util/AsyncAssertions.js';
 import { awaitCondition } from '../../../../util/AwaitCondition.js';
 import {
@@ -69,7 +65,9 @@ import {
 } from '../../../../util/UnavailableJournal.js';
 
 type AddCommand = { readonly kind: 'add'; readonly amount: number };
-type Command = AddCommand;
+/** Keeps the actor's mailbox busy until `gate` settles — nothing else runs in between. */
+type HoldCommand = { readonly kind: 'hold'; readonly gate: Promise<void> };
+type Command = AddCommand | HoldCommand;
 
 type AddedEvent = { readonly kind: 'added'; readonly amount: number };
 type Event = AddedEvent;
@@ -118,6 +116,10 @@ class Counter extends ReplicatedEventSourcedActor<Command, Event, State> {
 
   /** Records rather than rethrows, so a refused persist leaves the actor serving. */
   async onCommand(_state: State, command: Command): Promise<void> {
+    if (command.kind === 'hold') {
+      await command.gate;
+      return;
+    }
     try {
       await this.persist({ kind: 'added', amount: command.amount });
       this.observations.persisted.push(command.amount);
@@ -327,62 +329,28 @@ describe('ReplicatedEventSourcedActor — the local persist goes through the jou
       await stopReplica(replica);
     }
   });
-
-  test('the append of a peer\'s event stays outside the breaker until #958 gives it a serialized append chain', async () => {
-    // Pins the boundary of this change rather than a goal: an envelope from an
-    // authenticated peer is still absorbed AND appended with the breaker open.
-    // #958 moves that fire-and-forget append into its own serialized chain,
-    // where a refusal can be retried instead of logged, and puts the breaker
-    // there — at which point this expectation inverts.
-    const journal = new InMemoryJournal();
-    const replica = await startReplica('journal-breaker-remote', 83_106, journal, 'jb-remote');
-    try {
-      replica.extension.journalBreaker!.setState('open');
-      const peer = 'journal-breaker-peer@h:83199';
-      const envelope: ReplicatedEventEnvelope<Event> = {
-        persistenceId: replica.persistenceId,
-        replica: peer,
-        seqAtReplica: 1,
-        eventId: `${peer}#${'1'.padStart(24, '0')}`,
-        vc: { [peer]: 1 },
-        timestamp: 1_700_000_000_000,
-        event: { kind: 'added', amount: 5 },
-      };
-      replica.ref.tell(
-        new PubSubEnvelope(`replicated-es:${replica.persistenceId}`, envelope, NodeAddress.parse(peer)) as unknown as Command,
-      );
-      await awaitCondition(async () => (await journal.highestSeq(replica.persistenceId)) === 1, {
-        ...WAIT, label: "the peer's event was appended to the local journal",
-      });
-
-      expect(replica.observations.current!.value).toBe(5);
-      expect((await storedEnvelopes(journal, replica.persistenceId))[0]!.replica).toBe(peer);
-      expect(replica.extension.journalBreaker!.state).toBe('open');
-    } finally {
-      await stopReplica(replica);
-    }
-  });
 });
 
 /**
  * `add 1` is cut at the call-timeout and its append lands afterwards; `add 2`
- * then persists.  The journal holds both, the live state shows only the
- * second: nothing folds the late event, and nothing broadcasts it.
+ * then persists.  The late event is folded and broadcast once it has landed,
+ * so the live state shows both (#1732).
  */
 async function landLateThenPersist(replica: Replica, journal: HeldAppendJournal): Promise<void> {
   replica.ref.tell({ kind: 'add', amount: 1 });
   await awaitCondition(() => replica.observations.persistFailures.length === 1, {
     ...WAIT, label: 'the held append was cut at the call-timeout',
   });
+  expect(replica.observations.current!.value).toBe(0);
   journal.landAll();
-  await awaitCondition(async () => (await journal.highestSeq(replica.persistenceId)) === 1, {
-    ...WAIT, label: 'the timed-out append landed late',
+  await awaitCondition(() => replica.observations.current!.value === 1, {
+    ...WAIT, label: 'the timed-out append landed late and was folded',
   });
   replica.ref.tell({ kind: 'add', amount: 2 });
   await awaitCondition(() => replica.observations.persisted.includes(2), {
     ...WAIT, label: 'the next persist succeeded',
   });
-  expect(replica.observations.current!.value).toBe(2);
+  expect(replica.observations.current!.value).toBe(3);
 }
 
 type Restarted = {
@@ -410,77 +378,61 @@ async function restartedState(replica: Replica, name: string): Promise<State> {
   return (await restarted(replica, replica.ref, name)).state;
 }
 
-/**
- * Commits the first append and then answers it the way a connection that
- * dropped before the reply does; everything after answers from `inner`.  The
- * route into a late landing that needs no breaker: the store committed, and
- * the writer was told it failed.
- */
-class FirstAnswerLostJournal implements Journal {
-  private answerLost = false;
-
-  constructor(private readonly inner: Journal) {}
-
-  async append<E = unknown>(
-    persistenceId: string,
-    entries: ReadonlyArray<JournalEntry<E>>,
-    expectedSeq: number,
-  ): Promise<PersistentEvent<E>[]> {
-    const written = await this.inner.append<E>(persistenceId, entries, expectedSeq);
-    if (this.answerLost) return written;
-    this.answerLost = true;
-    throw new Error('connection reset');
-  }
-
-  read<E = unknown>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
-    return this.inner.read<E>(persistenceId, fromSeq, toSeq);
-  }
-
-  highestSeq(persistenceId: string): Promise<number> { return this.inner.highestSeq(persistenceId); }
-  delete(persistenceId: string, toSeq: number): Promise<void> { return this.inner.delete(persistenceId, toSeq); }
-  persistenceIds(): Promise<string[]> { return this.inner.persistenceIds(); }
+/** A second subscriber on the replica's own topic; answers what it receives. */
+async function subscribeProbe(replica: Replica): Promise<unknown[]> {
+  const received: unknown[] = [];
+  const probe = replica.system.spawn(() => new TopicProbe(received), `topic-probe-${replica.observations.recovered.length}`);
+  const mediator = replica.system.extension(DistributedPubSubId).start(replica.cluster);
+  mediator.tell(new Subscribe(`replicated-es:${replica.persistenceId}`, probe, probe));
+  await awaitCondition(() => received.some((m) => m instanceof SubscribeAcknowledgment), {
+    ...WAIT, label: 'the topic probe is subscribed',
+  });
+  return received;
 }
 
-// What the class and `persist` JSDoc say a timed-out append that lands later
-// does: never broadcast, never folded live, and folded by a later recovery
-// only when that recovery replays it — a snapshot taken after it landed
-// already counts it as covered.  The recovered state therefore depends on
-// whether that snapshot is used.
-describe('ReplicatedEventSourcedActor — a timed-out append that lands later (#1497)', () => {
-  test('a snapshot taken after it landed counts it as covered, so a recovery from that snapshot never folds it, and no peer receives it', async () => {
+async function latestSnapshot(replica: Replica): Promise<ReplicatedSnapshot<Event, State> | undefined> {
+  const saved = await replica.extension.snapshotStore
+    .loadLatest<ReplicatedSnapshot<Event, State>>(replica.persistenceId);
+  return saved.isSome() ? saved.value.state : undefined;
+}
+
+/** The first append commits and then fails, as a connection that drops before the reply does. */
+function firstAnswerLostJournal(): FaultInjectingJournal {
+  const journalFaults = FaultInjectingJournalOptions.create()
+    .withFailOn('append')
+    .withFailOnce()
+    .withFailurePoint('after-operation');
+  return new FaultInjectingJournal(new InMemoryJournal(), journalFaults);
+}
+
+// An append whose outcome the caller never saw — cut by `call-timeout`, or
+// committed with the answer lost — is settled once the journal call itself
+// settles: if it landed, the event is folded and broadcast as a successful
+// persist's would have been; if the replica stopped first, its successor
+// waits for the call before it recovers, and re-publishes its own events.
+describe('ReplicatedEventSourcedActor — an append of unknown outcome is settled (#1732)', () => {
+  test('a timed-out append that lands later is folded and broadcast, and a snapshot after it recovers it', async () => {
     const journal = new HeldAppendJournal(new InMemoryJournal());
     const replica = await startReplica('journal-breaker-late-snapshot', 83_107, journal, 'jb-late-snapshot', CALL_TIMEOUT);
     try {
-      const received: unknown[] = [];
-      const probe = replica.system.spawn(() => new TopicProbe(received), 'topic-probe');
-      const mediator = replica.system.extension(DistributedPubSubId).start(replica.cluster);
-      mediator.tell(new Subscribe(`replicated-es:${replica.persistenceId}`, probe, probe));
-      await awaitCondition(() => received.some((m) => m instanceof SubscribeAcknowledgment), {
-        ...WAIT, label: 'the topic probe is subscribed',
-      });
-
+      const received = await subscribeProbe(replica);
       await landLateThenPersist(replica, journal);
-      // The topic is FIFO from this publisher, so a broadcast of the late
-      // event would have arrived ahead of the second one.
-      await awaitCondition(() => received.some(isEnvelope), { ...WAIT, label: 'the second persist was broadcast' });
-      expect(received.filter(isEnvelope).map((e) => e.event.amount)).toEqual([2]);
+      await awaitCondition(() => received.filter(isEnvelope).length === 2, { ...WAIT, label: 'both events were broadcast' });
+      expect(received.filter(isEnvelope).map((e) => e.event.amount)).toEqual([1, 2]);
 
       await replica.observations.current!.snapshotNow();
-      const saved = await replica.extension.snapshotStore
-        .loadLatest<ReplicatedSnapshot<Event, State>>(replica.persistenceId);
-      const snapshot = saved.isSome() ? saved.value.state : undefined;
-      // Both journal positions are behind it, the late event's included.
+      const snapshot = await latestSnapshot(replica);
       expect(snapshot?.journalSeqAtSnapshot).toBe(2);
-      expect(snapshot?.state).toEqual({ value: 2 });
+      expect(snapshot?.state).toEqual({ value: 3 });
 
-      expect(await restartedState(replica, 'counter-from-snapshot')).toEqual({ value: 2 });
+      expect(await restartedState(replica, 'counter-from-snapshot')).toEqual({ value: 3 });
     } finally {
       journal.landAll();
       await stopReplica(replica);
     }
   });
 
-  test('a recovery with no snapshot replays it and folds it', async () => {
+  test('a recovery with no snapshot replays it once', async () => {
     const journal = new HeldAppendJournal(new InMemoryJournal());
     const replica = await startReplica('journal-breaker-late-replay', 83_108, journal, 'jb-late-replay', CALL_TIMEOUT);
     try {
@@ -492,7 +444,7 @@ describe('ReplicatedEventSourcedActor — a timed-out append that lands later (#
     }
   });
 
-  test('with that snapshot unreadable and snapshot-is-optional on, the same history recovers with it folded', async () => {
+  test('with the snapshot unreadable and snapshot-is-optional on, the same history recovers to the same state', async () => {
     const journal = new HeldAppendJournal(new InMemoryJournal());
     const optional: ConfigObject = {
       'actor-ts': {
@@ -512,30 +464,103 @@ describe('ReplicatedEventSourcedActor — a timed-out append that lands later (#
     }
   });
 
-  test('a response lost after the store committed takes the same route, with no breaker involved', async () => {
-    const journal = new FirstAnswerLostJournal(new InMemoryJournal());
+  test('a snapshot taken after the landing but before the fold does not count the event as covered', async () => {
+    const journal = new HeldAppendJournal(new InMemoryJournal());
+    const replica = await startReplica('journal-breaker-late-covered', 83_111, journal, 'jb-late-covered', CALL_TIMEOUT);
+    let release!: () => void;
+    try {
+      replica.ref.tell({ kind: 'add', amount: 1 });
+      await awaitCondition(() => replica.observations.persistFailures.length === 1, {
+        ...WAIT, label: 'the held append was cut at the call-timeout',
+      });
+      // Occupy the mailbox, so the fold of the landed event has to wait: the
+      // mailbox is FIFO, and the fold is told only once the append lands.
+      replica.ref.tell({ kind: 'hold', gate: new Promise<void>((resolve) => { release = resolve; }) });
+      journal.landAll();
+      await awaitCondition(async () => (await journal.highestSeq(replica.persistenceId)) === 1, {
+        ...WAIT, label: 'the timed-out append landed',
+      });
+
+      await replica.observations.current!.snapshotNow();
+      const snapshot = await latestSnapshot(replica);
+      expect(snapshot?.state).toEqual({ value: 0 });
+      // The journal position it records stops short of the unfolded event.
+      expect(snapshot?.journalSeqAtSnapshot).toBe(0);
+
+      release();
+      await awaitCondition(() => replica.observations.current!.value === 1, { ...WAIT, label: 'the landed event was folded' });
+      expect(await restartedState(replica, 'counter-after-early-snapshot')).toEqual({ value: 1 });
+    } finally {
+      release?.();
+      journal.landAll();
+      await stopReplica(replica);
+    }
+  });
+
+  test('a store that commits and then fails is settled by reading the journal back, with no breaker involved', async () => {
+    const journal = firstAnswerLostJournal();
     const replica = await startReplica('journal-breaker-lost-answer', 83_110, journal, 'jb-lost-answer');
     try {
+      const received = await subscribeProbe(replica);
       replica.ref.tell({ kind: 'add', amount: 1 });
       await awaitCondition(() => replica.observations.persistFailures.length === 1, {
         ...WAIT, label: 'the committed append was answered as failed',
       });
-      expect(replica.observations.persistFailures[0]!.message).toContain('connection reset');
+      await awaitCondition(() => replica.observations.current!.value === 1, {
+        ...WAIT, label: 'the read-back found the event and folded it',
+      });
       replica.ref.tell({ kind: 'add', amount: 2 });
       await awaitCondition(() => replica.observations.persisted.includes(2), {
         ...WAIT, label: 'the next persist succeeded',
       });
-      expect(replica.observations.current!.value).toBe(2);
+      expect(replica.observations.current!.value).toBe(3);
+      await awaitCondition(() => received.filter(isEnvelope).length === 2, { ...WAIT, label: 'both events were broadcast' });
 
       await replica.observations.current!.snapshotNow();
       const fromSnapshot = await restarted(replica, replica.ref, 'counter-after-lost-answer');
-      expect(fromSnapshot.state).toEqual({ value: 2 });
+      expect(fromSnapshot.state).toEqual({ value: 3 });
 
-      // The same journal with nothing to start from: the full replay folds it.
+      // The same journal with nothing to start from: the full replay agrees.
       replica.extension.setSnapshotStore(new InMemorySnapshotStore());
       const replayed = await restarted(replica, fromSnapshot.ref, 'counter-replayed-after-lost-answer');
       expect(replayed.state).toEqual({ value: 3 });
     } finally {
+      await stopReplica(replica);
+    }
+  });
+
+  test('a late landing after the actor stopped is recovered and re-published by its successor, and its number is never reused', async () => {
+    const journal = new HeldAppendJournal(new InMemoryJournal());
+    const replica = await startReplica('journal-breaker-late-restart', 83_112, journal, 'jb-late-restart', CALL_TIMEOUT);
+    try {
+      replica.ref.tell({ kind: 'add', amount: 1 });
+      await awaitCondition(() => replica.observations.persistFailures.length === 1, {
+        ...WAIT, label: 'the held append was cut at the call-timeout',
+      });
+      expect(await gracefulStop(replica.ref, TEARDOWN_BUDGET_MS)).toBe(true);
+      const received = await subscribeProbe(replica);
+
+      // The successor waits for its predecessor's append before it reads.
+      const recoveriesBefore = replica.observations.recovered.length;
+      const successor = replica.system.spawn(() => new Counter(replica.persistenceId, replica.observations), 'counter-2');
+      // An absence: the successor must NOT have recovered while the append is held.
+      await new Promise((resolve) => { setTimeout(resolve, 100); });
+      expect(replica.observations.recovered.length).toBe(recoveriesBefore);
+      journal.landAll();
+      await awaitCondition(() => replica.observations.recovered.length === recoveriesBefore + 1, {
+        ...WAIT, label: 'the successor recovered once the append landed',
+      });
+      expect(replica.observations.recovered.at(-1)).toEqual({ value: 1 });
+      // No peer had received it; the successor's recovery publishes it.
+      await awaitCondition(() => received.some(isEnvelope), { ...WAIT, label: 'the late event was re-published' });
+      expect(received.filter(isEnvelope).map((e) => e.event.amount)).toEqual([1]);
+
+      successor.tell({ kind: 'add', amount: 2 });
+      await awaitCondition(() => replica.observations.persisted.includes(2), { ...WAIT, label: 'the next persist succeeded' });
+      const stored = await storedEnvelopes(journal, replica.persistenceId);
+      expect(stored.map((e) => [e.event.amount, e.seqAtReplica])).toEqual([[1, 1], [2, 2]]);
+    } finally {
+      journal.landAll();
       await stopReplica(replica);
     }
   });

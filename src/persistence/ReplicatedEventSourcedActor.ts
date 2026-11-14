@@ -16,15 +16,14 @@ import {
   MAX_REPLICATED_EVENT_ID_LENGTH,
   MAX_VECTOR_CLOCK_ENTRIES,
   REPLICATED_EVENT_ID_ENTROPY_CHARACTERS,
+  REPLICATED_JOURNAL_RETRY_ATTEMPTS,
+  REPLICATED_JOURNAL_RETRY_BACKOFF_MS,
 } from './Constants.js';
 import type { Journal } from './Journal.js';
-import type { PersistentEvent } from './JournalTypes.js';
+import { JournalConcurrencyError, type PersistentEvent } from './JournalTypes.js';
 import { PersistenceExtensionId, type PersistenceExtension } from './PersistenceExtension.js';
 import { withRecoveryDeadline, type SnapshotPolicy } from './PersistentActor.js';
-import {
-  type ConflictResolver,
-  LastWriterWinsResolver,
-} from './replicated/ConflictResolver.js';
+import type { ConflictCandidate, ConflictResolver } from './replicated/ConflictResolver.js';
 import type { ReplicatedSnapshot } from './replicated/ReplicatedSnapshot.js';
 import { loadSnapshotOrNull } from './Replay.js';
 import type { SnapshotStore } from './SnapshotStore.js';
@@ -34,14 +33,15 @@ import { VectorClock, type VectorClockData } from './replicated/VectorClock.js';
 /**
  * Replicated Event Sourcing — multiple nodes can write events for the
  * **same** persistenceId concurrently; vector clocks let every replica
- * recognise the divergent histories and a {@link ConflictResolver}
- * (default: last-writer-wins) decides how to merge them.
+ * recognise the events that were written concurrently, and an optional
+ * {@link ConflictResolver} decides how to reconcile them (#1245).
  *
  * **Mental model.**  The canonical history at each replica is the
  * union of every event ever persisted by any replica, sorted in a
- * deterministic order (by default: `(timestamp, replicaId,
- * sequenceAtReplica)` via `LastWriterWinsResolver`).  State is the
- * fold of `onEvent` over that ordered history.  Two replicas that
+ * deterministic order — `(timestamp, replicaId, sequenceAtReplica)`.
+ * State is the fold of `onEvent` over that ordered history: every event
+ * by default, or, with a resolver, one reconciled event per run of
+ * mutually concurrent events (see `resolver()`).  Two replicas that
  * have received the same set of events compute the same state — that
  * is the convergence guarantee.
  *
@@ -92,31 +92,48 @@ import { VectorClock, type VectorClockData } from './replicated/VectorClock.js';
  * so one breaker in front of it, and an outage either class runs into
  * fast-fails both.
  *
- * Outside it, on purpose:
+ * **The append of an event received from a peer** (#958) runs in the same
+ * chain as every other journal call this actor makes after recovery — each
+ * waits for the one before it — and through the same journal breaker.  It is
+ * retried while an attempt is known to have written nothing, and a spent
+ * budget, or an outcome nothing can settle, fails the actor so its supervisor
+ * sees a journal missing an event its state holds (see `_persistRemote`).
  *
- *   - **The append of an event received from a peer.**  It is
- *     fire-and-forget and races itself (#958); a breaker belongs inside the
- *     serialized append chain that issue introduces, not around the racing
- *     call.
- *   - **What a timed-out local append did.**  `call-timeout` gives up
- *     without cancelling, so the append may still land.  Nothing folds or
- *     broadcasts the event then — only a successful `persist` does either —
- *     so no peer ever receives it, and this replica's journal holds an event
- *     its state does not show.  Whether a later recovery folds it depends on
- *     where that recovery starts.  The landing moves the journal position a
- *     snapshot records past it — the uncancelled append and the next one
- *     both advance `_journalSeq` — so a snapshot taken after it counts the
- *     event as covered, and a recovery from that snapshot never folds it.
- *     A full replay does: no snapshot, or `snapshot-is-optional` falling
- *     back when the snapshot store does not answer.  The recovered state
- *     therefore depends on whether that snapshot was read.  There is no
- *     ambiguous-outcome policy yet; a response lost after the store
- *     committed takes the same route with no breaker involved.
+ * **An append whose outcome `persist` never saw** (#1732) — cut by
+ * `call-timeout`, which gives up without cancelling, or committed by a store
+ * that then lost the answer — is settled once the journal call itself
+ * settles.  A call still waiting for its turn in the chain is cancelled, and
+ * nothing is written.  Otherwise the actor waits for the call: a success
+ * means it landed; a `JournalConcurrencyError` means it did not; any other
+ * error is settled by reading the journal back from the head the append saw
+ * and looking for the event id.  An event that landed is folded and
+ * broadcast, exactly as the successful `persist` would have done — so a peer
+ * receives it, and this replica's state shows it.  Three guards close the
+ * windows around that:
+ *
+ *   - Until the event is folded, its journal position is not counted as
+ *     covered: a snapshot taken in between records the position one short
+ *     of it, and a recovery from that snapshot replays it.
+ *   - A stopped instance leaves what its journal calls still owe to its
+ *     successor on this node, which waits for it before its recovery reads —
+ *     under `recovery-timeout`, like the reads.  The successor therefore
+ *     replays an event that landed late and never mints its `seqAtReplica`
+ *     again.
+ *   - A recovery re-publishes this replica's own events after the snapshot,
+ *     so one that landed after its instance stopped still reaches the peers;
+ *     they deduplicate on the event id.  Best-effort like every publish: a
+ *     peer the mediator does not know yet misses it.
+ *
+ * What stays open: an outcome the journal cannot be read to settle is a
+ * `WARN`, and the event is folded and re-published only by the next recovery
+ * — if it landed.  `afterPersist` never runs for an event that landed late;
+ * its caller was told the write failed.
  *
  * A refused `persist` still consumes the `seqAtReplica` it was minted with.
- * Peers already accept a gap (see `_envelopeRejection`), and the vector clock
- * decides no ordering today (#1245); handing the number back would mint it
- * twice once a timed-out append landed.
+ * Peers already accept a gap (see `_envelopeRejection`), and a skipped
+ * clock component changes no concurrency verdict — `VectorClock.compareTo`
+ * compares components, not how densely they were ticked; handing the number
+ * back would mint it twice once a timed-out append landed.
  *
  *   class ReplicatedCounter extends ReplicatedEventSourcedActor<
  *     Command, Event, { value: number }
@@ -185,6 +202,67 @@ export type ReplicatedEventEnvelope<E> = {
 
 const REPLICATED_TAG = 'replicated-es';
 
+/**
+ * One append waiting in, or run by, the actor's journal chain (#958).
+ *
+ * `started` flips when the chain step asks the journal; until then setting
+ * `cancelled` is definitive — the step skips and `written` answers `null`.
+ * `head` is the position the step read before appending, where a check of an
+ * unknown outcome starts.
+ */
+type AppendTicket = {
+  started: boolean;
+  cancelled: boolean;
+  head: number;
+  written: Promise<number | null>;
+};
+
+/** The append is in the journal, at `sequenceNr`. */
+type WrittenOutcome = { readonly kind: 'written'; readonly sequenceNr: number };
+/** The journal holds no such append. */
+type AbsentOutcome = { readonly kind: 'absent' };
+/** Neither could be established — the journal could not be read. */
+type UnknownOutcome = { readonly kind: 'unknown' };
+/** What an append whose call did not succeed actually did. */
+type AppendOutcome = WrittenOutcome | AbsentOutcome | UnknownOutcome;
+
+/**
+ * Told to itself by an actor whose append of a peer's event failed for good,
+ * so the failure is thrown from a mailbox turn and reaches the supervisor.
+ * A class rather than a shape, so nothing that arrives over the wire can be
+ * one.
+ */
+class RemoteAppendExhausted {
+  constructor(readonly failure: Error) {}
+}
+
+/**
+ * Told to itself by an actor whose local append reached the journal after its
+ * `persist` had failed (#1732), so the fold happens in a mailbox turn.
+ */
+class LandedLate<E> {
+  constructor(readonly envelope: ReplicatedEventEnvelope<E>) {}
+}
+
+/**
+ * Per-system, per-persistence-id: what a stopped instance's journal calls
+ * still owe (#1732).  A timed-out append is not cancelled, so it can land
+ * after its actor stopped — and after a successor's recovery read, which then
+ * never sees it and mints its `seqAtReplica` again.  The successor waits for
+ * this before it reads.  Same `WeakMap` shape as the live-id registry below.
+ */
+const pendingJournalWorkBySystem = new WeakMap<ActorSystem, Map<string, Promise<void>>>();
+
+function getPendingJournalWorkForSystem(system: ActorSystem): Map<string, Promise<void>> {
+  let pending = pendingJournalWorkBySystem.get(system);
+  if (!pending) { pending = new Map(); pendingJournalWorkBySystem.set(system, pending); }
+  return pending;
+}
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => { setTimeout(resolve, milliseconds); });
+}
+
 function topicFor(persistenceId: string): string {
   return `replicated-es:${persistenceId}`;
 }
@@ -235,11 +313,12 @@ function vectorClockRejection(vc: unknown): string | null {
 /**
  * Per-system live-pid registry (#58).  `ReplicatedEventSourcedActor`
  * relies on being the **single writer** for its `persistenceId` on
- * the local node — `_appendOne` reads `highestSeq` and `append` in
- * one mailbox tick under that assumption.  Two actors with the same
+ * the local node — `_appendOne` reads `highestSeq` and then appends
+ * conditionally on it, and the actor's own append chain (#958) only
+ * keeps *one* instance from racing itself.  Two actors with the same
  * pid on the same node violate it: their journal appends race, the
- * second silently drops with `JournalConcurrencyError`, in-memory
- * state diverges between the two instances.
+ * loser fails with `JournalConcurrencyError`, in-memory state diverges
+ * between the two instances.
  *
  * The registry catches this at preStart: the second actor sees the
  * pid already taken and throws.  `WeakMap`-keyed by `ActorSystem`
@@ -330,8 +409,42 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
   abstract onEvent(state: State, event: Event): State;
   abstract onCommand(state: State, command: Command): void | Promise<void>;
 
-  /** Resolver consulted only as the deterministic order comparator. */
-  protected resolver(): ConflictResolver<Event> { return new LastWriterWinsResolver<Event>(); }
+  /**
+   * How events the vector clocks call **concurrent** are reconciled (#1245).
+   * Read once, in `preStart`, before recovery folds anything.
+   *
+   * Two jobs, kept apart.  The canonical order — `(timestamp, replica,
+   * seqAtReplica)` — decides where every event sits in the history, resolver
+   * or not; it is what makes the history the same list on every replica.  The
+   * resolver decides what a run of concurrent events in that list *means*:
+   *
+   *   - **`null` (the default)** — nothing is reconciled.  Every event is
+   *     folded through `onEvent`, in canonical order, concurrent or not.  For
+   *     an event that replaces a value that is last-writer-wins by order: the
+   *     concurrent event stamped later is applied last.  For an event that
+   *     adds, both apply.  This is the fold the class always had.
+   *   - **A {@link ConflictResolver}** — the history is cut into **conflict
+   *     groups**: walking the canonical order, an event joins the current
+   *     group when it is concurrent with every event already in it, and opens
+   *     a new group otherwise.  A group of one is folded as it is; a larger
+   *     one is reduced pairwise through `resolve`, left to right in canonical
+   *     order, and the single event that comes out is folded through
+   *     `onEvent`.  An event that happens after another is never handed to the
+   *     resolver with it.
+   *
+   * The groups are a function of the event set alone, so two replicas holding
+   * the same events fold the same state whatever order they arrived in.  A
+   * resolver that returns one of its inputs carries that input's metadata into
+   * the next pairwise step; a synthesised event carries the later candidate's
+   * `timestamp` and `replica` and the merge of both clocks.  The pairwise steps
+   * run in canonical order, the same on every replica, so convergence needs
+   * `resolve` to be deterministic, not associative.
+   *
+   * `LastWriterWinsResolver` *drops* the losing event of a concurrent pair —
+   * unlike the default, where an additive event from both sides still applies.
+   * Choose it for state that is replaced, not accumulated.
+   */
+  protected resolver(): ConflictResolver<Event> | null { return null; }
 
   /**
    * How often the underlying DistributedPubSub mediator gossips its
@@ -424,6 +537,16 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
   private _events: Array<ReplicatedEventEnvelope<Event>> = [];
   /** Every observed event's `eventId`.  A hit means "already applied". */
   private _seenIds = new Set<string>();
+  /** What {@link resolver} returned at `preStart` — `null` folds every event as it is. */
+  private _conflictResolver: ConflictResolver<Event> | null = null;
+  /**
+   * With a resolver: the last conflict group of `_events`, which the next
+   * in-order arrival may join, or `null` when it is not known — after a
+   * snapshot seeded the history, until the first refold works it out.
+   */
+  private _trailingGroup: Array<ReplicatedEventEnvelope<Event>> | null = [];
+  /** With a resolver: the state folded up to, and excluding, {@link _trailingGroup}. */
+  private _stateBeforeTrailingGroup!: State;
   /**
    * Whether the "history is full, remote events refused" `WARN` has
    * been emitted.  One line rather than one per refused envelope: a
@@ -460,6 +583,27 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
    */
   private _isLeaseHolder = true;
   private _leaseUnsubscribeLost: (() => void) | null = null;
+  /**
+   * The tail of the local journal's write schedule (#958).  Every journal
+   * call this actor makes after recovery — an append, local or a peer's, and
+   * the read that checks whether an append of unknown outcome landed — is
+   * chained behind the one before it, so a head probe never runs while an
+   * earlier append is still in flight.  Never rejects.
+   */
+  private _appendChain: Promise<void> = Promise.resolve();
+  /** Background work that outlives the message that started it — a peer's append and its retries. */
+  private readonly _unsettled = new Set<Promise<void>>();
+  /** Set in `postStop`: background work stops scheduling retries and reports instead of escalating. */
+  private _stopped = false;
+  /**
+   * Events in the journal that are not folded yet, by event id, with their
+   * journal position — what keeps a snapshot from claiming their position
+   * (#1732).  Almost always empty: an entry lives from the write until the
+   * fold, which for a successful `persist` is the same turn.
+   */
+  private readonly _writtenUnfolded = new Map<string, number>();
+  /** This replica's own events the recovery replayed from the journal — re-published once subscribed (#1732). */
+  private _recoveredOwnEvents: Array<ReplicatedEventEnvelope<Event>> = [];
 
   /** Current state — updated after every event apply. */
   protected get state(): State { return this._state; }
@@ -542,6 +686,8 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     this._persistence = ext;
     this._journal = ext.journal;
     this._snapshotStore = ext.snapshotStore;
+    // Before recovery: the replayed history is folded with it.
+    this._conflictResolver = this.resolver();
 
     // 1 + 2. Recovery, guarded as `PersistentActor`'s is (#1497), in two
     //    phases.  The read phase — the snapshot, then the journal after it —
@@ -585,6 +731,19 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
       topicFor(this.persistenceId), this.self, null, /* deliverWithOrigin= */ true,
     ));
 
+    // 4. Re-publish this replica's own events from the replayed journal
+    //    (#1732).  An append whose `persist` failed may still have landed —
+    //    after a `call-timeout`, or with its answer lost — and if this
+    //    replica stopped before it settled, no peer ever received it.
+    //    Nothing marks which events those were, so every own event after the
+    //    snapshot goes out again; peers deduplicate on the event id, and the
+    //    snapshot policy bounds how many that is.  Best-effort like every
+    //    publish here: a peer the mediator does not know yet misses it.
+    for (const own of this._recoveredOwnEvents) {
+      pubsub.tell(new Publish<ReplicatedEventEnvelope<Event>>(topicFor(this.persistenceId), own) as unknown as never);
+    }
+    this._recoveredOwnEvents = [];
+
     await this.onRecoveryComplete(this._state);
   }
 
@@ -601,6 +760,13 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
    * asked to have verified.
    */
   private async _readRecovery(): Promise<ReplicatedRecovery<Event, State>> {
+    // A predecessor on this node may still have an append in flight — one a
+    // `call-timeout` gave up on.  Reading before it settles would miss the
+    // event and mint its `seqAtReplica` again (#1732).  Under the recovery
+    // deadline, like the reads: a store that never answers fails the recovery
+    // rather than wedging it.
+    const predecessor = pendingJournalWorkBySystem.get(this.system)?.get(this.persistenceId);
+    if (predecessor !== undefined) await predecessor;
     const persistence = this._persistence;
     const loaded = await loadSnapshotOrNull(
       () => persistence.callThroughSnapshotBreaker(
@@ -639,8 +805,13 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
    */
   private _applyRecovery(recovery: ReplicatedRecovery<Event, State>): void {
     this._state = this.initialState();
+    this._stateBeforeTrailingGroup = this._state;
+    this._trailingGroup = [];
     const { snapshot, delta } = recovery;
     if (snapshot !== null) {
+      // The snapshot carries the folded state but not its conflict groups;
+      // the first arrival that needs them refolds the seeded history.
+      this._trailingGroup = null;
       this._state = snapshot.state;
       this._vc = VectorClock.fromData(snapshot.vc);
       this._seenIds = new Set(snapshot.seenIds);
@@ -655,8 +826,9 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
       // records the right `journalSeqAtSnapshot`.
       if (persisted.sequenceNr > this._journalSeq) this._journalSeq = persisted.sequenceNr;
       const envelope = persisted.event;
-      if (envelope.replica === replicaId && envelope.seqAtReplica > this._localSeq) {
-        this._localSeq = envelope.seqAtReplica;
+      if (envelope.replica === replicaId) {
+        if (envelope.seqAtReplica > this._localSeq) this._localSeq = envelope.seqAtReplica;
+        this._recoveredOwnEvents.push(envelope);
       }
       // Anything the snapshot already accounts for is a no-op here: `_absorb`
       // deduplicates on the event id the snapshot's `seenIds` carries.
@@ -679,6 +851,18 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
   }
 
   override postStop(): void {
+    this._stopped = true;
+    // Hand what the journal calls still owe to a successor on this node, which
+    // waits for it before its recovery reads (#1732).  `_journal` is unset when
+    // `preStart` failed before the stores were resolved — nothing was written.
+    if (this._journal !== undefined) {
+      const pending = getPendingJournalWorkForSystem(this.system);
+      const drained = this._drain();
+      pending.set(this.persistenceId, drained);
+      void drained.finally(() => {
+        if (pending.get(this.persistenceId) === drained) pending.delete(this.persistenceId);
+      });
+    }
     // Release the live-pid registration so a fresh actor with the
     // same persistenceId can take over (e.g. after a graceful stop
     // + re-spawn).  Must run on every termination path, including
@@ -703,7 +887,9 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     message: Command
       | ReplicatedEventEnvelope<Event>
       | PubSubEnvelope<ReplicatedEventEnvelope<Event>>
-      | SubscribeAcknowledgment,
+      | SubscribeAcknowledgment
+      | RemoteAppendExhausted
+      | LandedLate<Event>,
   ): Promise<void> {
     // Ignore PubSub ack frames — they're informational.
     if (message && typeof message === 'object' && (message as { subscribe?: unknown }).subscribe instanceof Subscribe) {
@@ -714,6 +900,15 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     // class is a shape only the local mediator can have produced (#706).
     if (message instanceof PubSubEnvelope) {
       this._handleTopicDelivery(message);
+      return;
+    }
+    // Only this actor creates either, and only by telling itself.
+    if (message instanceof RemoteAppendExhausted) {
+      this._onRemoteAppendExhausted(message);
+      return;
+    }
+    if (message instanceof LandedLate) {
+      this._onLandedLate(message as LandedLate<Event>);
       return;
     }
     if (this._isEnvelope(message)) {
@@ -763,14 +958,15 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
    *   - `CircuitBreakerTimeoutError` — the call outlived
    *     `actor-ts.circuit-breaker.<journal-breaker>.call-timeout`.  The
    *     timeout gives up; it does not cancel, so the append may still land.
-   *     No peer ever receives such an event, because only a successful
-   *     `persist` broadcasts, and this replica folds it only at a recovery
-   *     that replays it: a snapshot taken after it landed already counts it
-   *     as covered — see "What a timed-out local append did" in the class
-   *     description.
    *
-   * On either, nothing is folded and nothing is broadcast, and the
-   * `seqAtReplica` the event was minted with stays used — see the body.
+   * On either — and on any other journal error — nothing is folded or
+   * broadcast *by this call*, and the `seqAtReplica` the event was minted with
+   * stays used.  If the append landed after all, the actor folds and
+   * broadcasts the event once the journal call settles, without running
+   * `afterPersist` (#1732) — see "An append whose outcome `persist` never
+   * saw" in the class description.  A rejection therefore means "not
+   * confirmed", not "never happened": a command handler that retries one
+   * should be idempotent at the domain level.
    *
    * When a lease is configured (#89) and this replica is NOT the
    * holder, throws — the actor is in observer mode and writes must
@@ -803,18 +999,25 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
       timestamp: Date.now(),
       event,
     };
-    // One call through the breaker for the head probe and the append
-    // together: a backend that stalls the probe stalls the write as surely as
-    // one that stalls the append, and a deadline around the append alone would
-    // leave the first of the two unbounded.  `isStoreOutage` travels with the
+    // One call through the breaker for the wait in the append chain, the head
+    // probe and the append together: a backend that stalls the probe stalls
+    // the write as surely as one that stalls the append, and so does an
+    // earlier append it is queued behind.  `isStoreOutage` travels with the
     // call, so a losing conditional append — the journal answering, not
     // failing — is not counted against the breaker.
-    //
-    // Only this path.  The append of an event received from a peer
-    // (`_absorb`) is fire-and-forget and races itself (#958); its breaker
-    // belongs inside the serialized append chain that issue introduces, not
-    // around the racing call.
-    await this._persistence.callThroughJournalBreaker('append', () => this._appendOne(envelope));
+    const holder: { ticket: AppendTicket | null } = { ticket: null };
+    try {
+      await this._persistence.callThroughJournalBreaker('append', () => {
+        holder.ticket = this._enqueueAppend(envelope);
+        return holder.ticket.written;
+      });
+    } catch (error) {
+      // The caller hears the failure now; what the append actually did is
+      // settled in the background, and an event that landed after all is
+      // folded and broadcast then (#1732).
+      this._track(this._settleLocalAppend(envelope, holder.ticket));
+      throw error;
+    }
     this._absorb(envelope, /* persistLocally= */ false, /* broadcast= */ true);
     afterPersist?.(this._state);
   }
@@ -842,22 +1045,254 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
   }
 
   /**
-   * Append exactly one envelope to the local journal.  We read the
-   * current highestSeq inside the same actor mailbox tick so the
-   * `expectedSeq` argument is always accurate — the actor is the
-   * single writer to its own persistenceId, so no other coroutine
-   * can interleave between the read and the append.
+   * Append exactly one envelope to the local journal: read the head, then
+   * append conditionally on it.  The two awaits span mailbox turns, so the
+   * pair is only race-free because every caller reaches it through
+   * {@link _enqueueAppend} — the single-writer registry (#58) keeps a second
+   * *actor* off this persistence id, and the chain keeps this actor from
+   * racing *itself* (#958).
    *
-   * Updates `_journalSeq` so the next snapshot records the
-   * just-appended journal position.
+   * Records the head it read on `ticket`, where a check of an unknown outcome
+   * starts reading, and answers the sequence number written.
    */
-  private async _appendOne(envelope: ReplicatedEventEnvelope<Event>): Promise<void> {
+  private async _appendOne(envelope: ReplicatedEventEnvelope<Event>, ticket: AppendTicket): Promise<number> {
     const head = await this._journal.highestSeq(this.persistenceId);
+    ticket.head = head;
     const written = await this._journal.append(
       this.persistenceId, [{ event: envelope, tags: [REPLICATED_TAG] }], head,
     );
     const lastWrittenSeq = written[written.length - 1]?.sequenceNr ?? head + 1;
-    if (lastWrittenSeq > this._journalSeq) this._journalSeq = lastWrittenSeq;
+    this._recordWritten(envelope, lastWrittenSeq);
+    return lastWrittenSeq;
+  }
+
+  /**
+   * Note that `envelope` is in the journal at `sequenceNr`.  An event not yet
+   * folded — a local append whose `persist` is still on its way to `_absorb`,
+   * or one that landed after its `persist` gave up — is remembered until it
+   * is, so a snapshot taken in between does not count its position as
+   * covered (see {@link _coveredJournalSeq}).
+   */
+  private _recordWritten(envelope: ReplicatedEventEnvelope<Event>, sequenceNr: number): void {
+    if (sequenceNr > this._journalSeq) this._journalSeq = sequenceNr;
+    const deduplicationKey = this._deduplicationKeyFor(envelope);
+    if (!this._seenIds.has(deduplicationKey)) this._writtenUnfolded.set(deduplicationKey, sequenceNr);
+  }
+
+  /**
+   * The journal position a snapshot may claim: everything up to it is in the
+   * state.  `_journalSeq` unless an event written before it has not been
+   * folded yet, in which case one short of the earliest such event — the
+   * recovery from that snapshot replays it, and anything after it that the
+   * snapshot already holds is deduplicated on its event id.
+   */
+  private _coveredJournalSeq(): number {
+    let covered = this._journalSeq;
+    for (const sequenceNr of this._writtenUnfolded.values()) {
+      if (sequenceNr - 1 < covered) covered = sequenceNr - 1;
+    }
+    return covered;
+  }
+
+  /**
+   * Settle a local append whose `persist` rejected (#1732).  If it is in the
+   * journal after all — a `call-timeout` that gave up on a call that then
+   * landed, or a store that committed and lost the answer — the event is
+   * folded and broadcast, exactly as the successful `persist` would have
+   * done.  Its `seqAtReplica` was never handed back, so nothing else carries
+   * that number.  `afterPersist` does not run: its caller has been told the
+   * write failed.
+   */
+  private async _settleLocalAppend(
+    envelope: ReplicatedEventEnvelope<Event>,
+    ticket: AppendTicket | null,
+  ): Promise<void> {
+    const outcome = await this._settleAppend(envelope, ticket);
+    if (outcome.kind === 'written') {
+      this._landedLate(envelope, outcome.sequenceNr);
+    } else if (outcome.kind === 'unknown') {
+      this.log.warn(
+        `replicated-es '${this.persistenceId}': whether the event ${envelope.eventId} reached the journal could not `
+        + 'be established — the journal could not be read; the next recovery folds and re-publishes it if it did',
+      );
+    }
+  }
+
+  /**
+   * An event of this replica's that reached the journal after its `persist`
+   * had already failed.  Folding it touches the actor's state, so it goes
+   * back through the mailbox; a stopped instance leaves it to its successor,
+   * whose recovery replays it and re-publishes it (see `preStart`).
+   */
+  private _landedLate(envelope: ReplicatedEventEnvelope<Event>, sequenceNr: number): void {
+    this._recordWritten(envelope, sequenceNr);
+    if (this._seenIds.has(this._deduplicationKeyFor(envelope)) || this._stopped) return;
+    this.self.tell(new LandedLate(envelope) as unknown as Command);
+  }
+
+  /** Back in the mailbox: fold the late event and broadcast it, as `persist` would have. */
+  private _onLandedLate(message: LandedLate<Event>): void {
+    this._absorb(message.envelope, /* persistLocally= */ false, /* broadcast= */ true);
+  }
+
+  /**
+   * Settles once every journal call this instance scheduled, and every
+   * retry or settling read still to come, has finished.  What a successor
+   * on this node waits for before it recovers (see `postStop`).
+   */
+  private async _drain(): Promise<void> {
+    for (;;) {
+      const tail = this._appendChain;
+      await tail;
+      if (this._unsettled.size === 0) {
+        if (tail === this._appendChain) return;
+        continue;
+      }
+      await Promise.allSettled([...this._unsettled]);
+    }
+  }
+
+  /**
+   * Run `work` once every journal call scheduled before it has settled, and
+   * make it what the next one waits for.  The chain itself never rejects; the
+   * returned promise carries `work`'s own outcome.
+   */
+  private _enqueueJournalCall<T>(work: () => Promise<T>): Promise<T> {
+    const result = this._appendChain.then(work);
+    this._appendChain = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  /**
+   * Schedule one append in the chain and answer its ticket.  The ticket's
+   * `written` settles with the journal's answer — the sequence number written
+   * — or with `null` when the ticket was cancelled before its turn came, in
+   * which case the journal was never asked.
+   */
+  private _enqueueAppend(envelope: ReplicatedEventEnvelope<Event>): AppendTicket {
+    const ticket: AppendTicket = { started: false, cancelled: false, head: 0, written: Promise.resolve(null) };
+    ticket.written = this._enqueueJournalCall(async () => {
+      if (ticket.cancelled) return null;
+      ticket.started = true;
+      return this._appendOne(envelope, ticket);
+    });
+    return ticket;
+  }
+
+  /**
+   * What an append that was not answered with success actually did: written
+   * (with its position), absent, or unknown.  Waits for the journal call
+   * itself to settle — a breaker's `call-timeout` gives up on it and does not
+   * cancel it — and cancels it first if its turn has not come yet, which is
+   * the one case in which "absent" is known without asking the journal.
+   *
+   * A `JournalConcurrencyError` is the conditional append refused, so nothing
+   * was written.  Any other error may have come after the store committed —
+   * a lost response — and is settled by reading the journal from the head the
+   * append saw, looking for the event id.
+   */
+  private async _settleAppend(
+    envelope: ReplicatedEventEnvelope<Event>,
+    ticket: AppendTicket | null,
+  ): Promise<AppendOutcome> {
+    // The breaker refused before the journal was asked.
+    if (ticket === null) return { kind: 'absent' };
+    ticket.cancelled = true;
+    try {
+      const sequenceNr = await ticket.written;
+      return sequenceNr === null ? { kind: 'absent' } : { kind: 'written', sequenceNr };
+    } catch (error) {
+      if (error instanceof JournalConcurrencyError) return { kind: 'absent' };
+      return this._findLanded(envelope, ticket.head);
+    }
+  }
+
+  /**
+   * Read the journal after `head` for `envelope`'s event id, through the
+   * journal breaker and in the chain, so nothing this actor writes moves
+   * under the read.  Tried {@link REPLICATED_JOURNAL_RETRY_ATTEMPTS} times;
+   * if no read gets an answer the outcome stays unknown.
+   */
+  private async _findLanded(envelope: ReplicatedEventEnvelope<Event>, head: number): Promise<AppendOutcome> {
+    for (let attempt = 1; attempt <= REPLICATED_JOURNAL_RETRY_ATTEMPTS; attempt++) {
+      try {
+        const after = await this._enqueueJournalCall(() => this._persistence.callThroughJournalBreaker(
+          'replay',
+          () => this._journal.read<ReplicatedEventEnvelope<Event>>(this.persistenceId, head + 1),
+        ));
+        const landed = after.find((persisted) => persisted.event.eventId === envelope.eventId);
+        return landed === undefined ? { kind: 'absent' } : { kind: 'written', sequenceNr: landed.sequenceNr };
+      } catch {
+        if (attempt < REPLICATED_JOURNAL_RETRY_ATTEMPTS && !this._stopped) {
+          await sleep(REPLICATED_JOURNAL_RETRY_BACKOFF_MS * attempt);
+        }
+      }
+    }
+    return { kind: 'unknown' };
+  }
+
+  /**
+   * Append an event received from a peer to the local journal (#958) — in
+   * the chain, through the journal breaker, and retried.
+   *
+   * The event is already folded when this starts: the fold is what a peer
+   * sees, and nothing re-sends the event, so it cannot wait on a store.  What
+   * a failure costs is this replica's *on-disk* history, which the next
+   * recovery rebuilds from.  So an attempt that ends absent — the breaker
+   * open, a losing conditional append, an error the journal confirms wrote
+   * nothing — is retried, up to {@link REPLICATED_JOURNAL_RETRY_ATTEMPTS}
+   * attempts with a growing pause.  An attempt whose outcome stays unknown is
+   * not retried, since a second write could land the event twice; it
+   * escalates at once, like a spent budget.
+   *
+   * Escalating fails the actor through its supervisor: a replica whose
+   * journal is missing an event it has folded must not carry on as if it
+   * were whole.  The restarted instance recovers from its journal and so
+   * does not hold the event — the divergence is loud now, not repaired.
+   */
+  private async _persistRemote(envelope: ReplicatedEventEnvelope<Event>): Promise<void> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= REPLICATED_JOURNAL_RETRY_ATTEMPTS; attempt++) {
+      const holder: { ticket: AppendTicket | null } = { ticket: null };
+      try {
+        await this._persistence.callThroughJournalBreaker('append', () => {
+          holder.ticket = this._enqueueAppend(envelope);
+          return holder.ticket.written;
+        });
+        return;
+      } catch (error) {
+        lastError = error;
+        const outcome = await this._settleAppend(envelope, holder.ticket);
+        if (outcome.kind === 'written') return;
+        if (outcome.kind === 'unknown') break;
+      }
+      if (attempt < REPLICATED_JOURNAL_RETRY_ATTEMPTS && !this._stopped) {
+        await sleep(REPLICATED_JOURNAL_RETRY_BACKOFF_MS * attempt);
+      }
+    }
+    this._escalateRemoteAppend(envelope, lastError);
+  }
+
+  private _escalateRemoteAppend(envelope: ReplicatedEventEnvelope<Event>, cause: unknown): void {
+    const failure = new Error(
+      `replicated-es '${this.persistenceId}': the event ${envelope.eventId} from ${envelope.replica} is folded `
+      + 'but could not be written to the local journal — a recovery from this journal would not hold it',
+      { cause },
+    );
+    this.log.error(failure.message, cause);
+    // A stopped instance has no supervisor left to tell; the log line is all.
+    if (!this._stopped) this.self.tell(new RemoteAppendExhausted(failure) as unknown as Command);
+  }
+
+  /** Back in the mailbox: fail, so the supervisor sees the incomplete journal. */
+  private _onRemoteAppendExhausted(message: RemoteAppendExhausted): never {
+    throw message.failure;
+  }
+
+  /** Keep `work` reachable until it settles. */
+  private _track(work: Promise<void>): void {
+    this._unsettled.add(work);
+    void work.finally(() => this._unsettled.delete(work));
   }
 
   /* ----------------------------- absorb event --------------------------- */
@@ -1016,6 +1451,7 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     const deduplicationKey = this._deduplicationKeyFor(envelope);
     if (this._seenIds.has(deduplicationKey)) return;
     this._seenIds.add(deduplicationKey);
+    this._writtenUnfolded.delete(deduplicationKey);
 
     // Fast path: envelope sorts after every existing event → just append.
     const last = this._events[this._events.length - 1];
@@ -1024,28 +1460,17 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
       : this._findInsertIndex(envelope);
     this._events.splice(insertIndex, 0, envelope);
 
-    if (insertIndex === this._events.length - 1) {
-      // Append-only — apply just this event to current state.
-      this._state = this.onEvent(this._state, envelope.event);
-    } else {
-      // Out-of-order arrival — refold from initial state to keep
-      // the canonical sort intact.  Cheap as long as N stays small;
-      // gossip usually delivers in order so this is rare.
-      this._state = this.initialState();
-      for (const persistedEvent of this._events) this._state = this.onEvent(this._state, persistedEvent.event);
-    }
+    this._foldInserted(envelope, insertIndex === this._events.length - 1);
 
     this._vc = this._vc.merge(VectorClock.fromData(envelope.vc));
     this._observedCount += 1;
 
     if (persistLocally) {
-      // Append remote events to OUR local journal so a recovery from
-      // disk replays the full causal history.  Single-writer (us) per
-      // pid means we can read highestSeq + append in one mailbox
-      // tick without races.
-      void this._appendOne(envelope).catch((err) => {
-        this.log.warn(`replicated-es: failed to persist remote event ${deduplicationKey}`, err);
-      });
+      // Append remote events to OUR local journal so a recovery from disk
+      // replays the full causal history — serialized behind every other
+      // journal call this actor makes, so back-to-back envelopes do not race
+      // one head (#958).
+      this._track(this._persistRemote(envelope));
     }
 
     if (broadcast && this._mediator) {
@@ -1060,6 +1485,113 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     if (policy(this._observedCount, this._state, envelope.event)) {
       this._maybeSaveSnapshot();
     }
+  }
+
+  /* -------------------------------- fold -------------------------------- */
+
+  /**
+   * Bring `_state` up to date with an envelope just spliced into `_events`.
+   *
+   * Without a resolver this is the fold the class always had: an envelope
+   * that sorts last is applied on its own, anything else refolds.  With one,
+   * an envelope that sorts last either joins the trailing conflict group —
+   * concurrent with every member — and the group is re-reduced from the state
+   * before it, or opens a new group of one and is applied on its own.
+   */
+  private _foldInserted(envelope: ReplicatedEventEnvelope<Event>, appended: boolean): void {
+    const resolver = this._conflictResolver;
+    if (resolver === null) {
+      if (appended) this._state = this.onEvent(this._state, envelope.event);
+      // Out-of-order arrival — refold to keep the canonical sort intact.
+      // Cheap as long as N stays small; gossip usually delivers in order.
+      else this._refold();
+      return;
+    }
+    const trailing = this._trailingGroup;
+    if (!appended || trailing === null) {
+      this._refold();
+      return;
+    }
+    if (trailing.length > 0 && this._isConcurrentWithAll(envelope, trailing)) {
+      trailing.push(envelope);
+      this._state = this._foldGroup(this._stateBeforeTrailingGroup, trailing, resolver);
+      return;
+    }
+    this._stateBeforeTrailingGroup = this._state;
+    this._trailingGroup = [envelope];
+    this._state = this.onEvent(this._state, envelope.event);
+  }
+
+  /**
+   * Fold the whole canonical history from `initialState()`, cutting it into
+   * conflict groups when a resolver is set (see {@link resolver}).  Records the
+   * trailing group and the state before it, so the next in-order arrival
+   * folds incrementally again.
+   */
+  private _refold(): void {
+    const resolver = this._conflictResolver;
+    let state = this.initialState();
+    if (resolver === null) {
+      for (const observed of this._events) state = this.onEvent(state, observed.event);
+      this._state = state;
+      return;
+    }
+    let group: Array<ReplicatedEventEnvelope<Event>> = [];
+    let before = state;
+    for (const observed of this._events) {
+      if (group.length > 0 && this._isConcurrentWithAll(observed, group)) {
+        group.push(observed);
+        continue;
+      }
+      if (group.length > 0) state = this._foldGroup(state, group, resolver);
+      before = state;
+      group = [observed];
+    }
+    this._trailingGroup = group;
+    this._stateBeforeTrailingGroup = before;
+    this._state = group.length > 0 ? this._foldGroup(before, group, resolver) : before;
+  }
+
+  /**
+   * Fold one conflict group: a lone event as it is, a larger group reduced
+   * pairwise through the resolver in canonical order and folded once.
+   */
+  private _foldGroup(
+    state: State,
+    group: ReadonlyArray<ReplicatedEventEnvelope<Event>>,
+    resolver: ConflictResolver<Event>,
+  ): State {
+    if (group.length === 1) return this.onEvent(state, group[0]!.event);
+    let winner = this._candidateOf(group[0]!);
+    for (let i = 1; i < group.length; i++) {
+      const next = this._candidateOf(group[i]!);
+      const resolved = resolver.resolve(winner, next);
+      if (resolved === next.event) winner = next;
+      else if (resolved !== winner.event) {
+        // A synthesised event.  `next` sorts after `winner`, so its timestamp
+        // is the larger one; the clock covers both.
+        winner = { event: resolved, timestamp: next.timestamp, replica: next.replica, vc: winner.vc.merge(next.vc) };
+      }
+    }
+    return this.onEvent(state, winner.event);
+  }
+
+  private _candidateOf(envelope: ReplicatedEventEnvelope<Event>): ConflictCandidate<Event> {
+    return {
+      event: envelope.event,
+      timestamp: envelope.timestamp,
+      replica: envelope.replica,
+      vc: VectorClock.fromData(envelope.vc),
+    };
+  }
+
+  /** Whether `envelope`'s clock is concurrent with the clock of every member of `group`. */
+  private _isConcurrentWithAll(
+    envelope: ReplicatedEventEnvelope<Event>,
+    group: ReadonlyArray<ReplicatedEventEnvelope<Event>>,
+  ): boolean {
+    const clock = VectorClock.fromData(envelope.vc);
+    return group.every((member) => clock.isConcurrentWith(VectorClock.fromData(member.vc)));
   }
 
   /* ----------------------------- snapshotting --------------------------- */
@@ -1102,7 +1634,7 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
       seenIds: Array.from(this._seenIds),
       events: [...this._events],
       localSeq: this._localSeq,
-      journalSeqAtSnapshot: this._journalSeq,
+      journalSeqAtSnapshot: this._coveredJournalSeq(),
       takenBy: this.replicaId,
       takenAt: Date.now(),
     };

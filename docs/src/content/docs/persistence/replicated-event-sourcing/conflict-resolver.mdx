@@ -6,22 +6,50 @@ description: The strategy that reconciles two concurrent events into one — pai
 When two replicas of the same entity write events concurrently
 (detected via
 [vector clocks](/persistence/replicated-event-sourcing/vector-clocks/)),
-the framework needs to know **which event wins, or how to merge
-the pair**.  That's the **conflict resolver** — a strategy you
-supply by overriding `resolver()` on the actor.
+the framework needs to know **what the concurrent events mean
+together**.  By default it applies all of them; a **conflict
+resolver** — a strategy you supply by overriding `resolver()` on
+the actor — picks one or merges them instead.
 
 ```ts
 import { ReplicatedEventSourcedActor, LastWriterWinsResolver } from 'actor-ts/persistence';
 import type { ConflictResolver } from 'actor-ts/persistence';
 
 class Counter extends ReplicatedEventSourcedActor<Command, Event, State> {
-  // The default is last-writer-wins; override to change it:
+  // The default is null — no resolver; override to reconcile concurrent events:
   protected override resolver(): ConflictResolver<Event> {
     return new LastWriterWinsResolver<Event>();
   }
   // ...
 }
 ```
+
+## The default: no resolver
+
+`resolver()` returns `null` unless you override it, and then
+nothing is reconciled: every event, concurrent or not, goes through
+`onEvent` in the canonical order — `(timestamp, replica,
+seqAtReplica)`, the same list on every replica.  For an event that
+*replaces* a value that already behaves like last-writer-wins (the
+concurrent event stamped later is applied last); for an event that
+*adds*, both sides apply.  Override `resolver()` when neither is what
+your domain means.
+
+## Which events reach the resolver
+
+The canonical order still decides where every event sits.  The
+resolver decides what a run of concurrent events in that order
+means.  Walking the history in canonical order, an event joins the
+current **conflict group** when it is concurrent with every event
+already in it, and opens a new group otherwise.  A group of one is
+folded as it is; a larger group is reduced pairwise through
+`resolve`, left to right in canonical order, and the one event that
+comes out is folded through `onEvent`.  An event that *happens
+after* another is never handed to the resolver with it.
+
+The groups depend on the set of events alone, so two replicas that
+hold the same events fold the same state, whatever order the events
+arrived in.
 
 ## The interface
 
@@ -42,10 +70,12 @@ type ConflictCandidate<E> = {
 ```
 
 Note the **single type parameter** (the event, *not* the state).
-When more than two events are concurrent, the framework folds
-them pairwise through `resolve`, so the whole set reduces to one
-winning event — which is then applied through your normal
-`onEvent`.
+When a group holds more than two events, the framework folds them
+pairwise through `resolve`, so the whole group reduces to one event
+— which is then applied through your normal `onEvent`.  A returned
+input carries its own `timestamp`, `replica` and `vc` into the next
+step; a synthesised event carries the later candidate's `timestamp`
+and `replica` and the merge of both clocks.
 
 ## Two hard contracts
 
@@ -63,7 +93,7 @@ Decide the winner from the candidates' own data (`timestamp`,
 
 ## Built-in resolvers
 
-### `LastWriterWinsResolver` (default)
+### `LastWriterWinsResolver`
 
 ```ts
 protected override resolver(): ConflictResolver<Event> {
@@ -72,9 +102,14 @@ protected override resolver(): ConflictResolver<Event> {
 ```
 
 Higher `timestamp` wins; on a tie the higher (lexicographic)
-`replica` id wins, so every replica converges.  Simple and often
+`replica` id wins, and a tie on both — one replica stamping two
+events in one millisecond — goes to the event whose JSON rendering
+ranks higher, so the winner never depends on argument order and
+every replica converges.  Simple and often
 "good enough."  Caveat: relies on roughly comparable wall clocks
-across replicas — the same trade-off as `LWWRegister`.
+across replicas — the same trade-off as `LWWRegister`.  Unlike the
+default, it **drops** the losing event of a concurrent pair, so use
+it for state that is replaced, not accumulated.
 
 ### `CustomMergeResolver`
 
@@ -132,8 +167,10 @@ class OrderedWins implements ConflictResolver<Event> {
 }
 ```
 
-This is exactly what `LastWriterWinsResolver` does — shown as the
-template for your own tie-breaking.
+This is the order `LastWriterWinsResolver` uses — shown as the
+template for your own tie-breaking.  It is commutative only while
+two candidates never share both `timestamp` and `replica`; the
+built-in breaks that last tie on the payload as well.
 
 ## When a merge is the wrong abstraction
 

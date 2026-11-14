@@ -155,11 +155,13 @@ TTL = faster failover but more renewal traffic.
 ```ts
 class Account extends ReplicatedEventSourcedActor<...> {
   protected override lease(): Lease { /* ... */ }
-  protected override resolver(): ConflictResolver<Event> { /* ← still required */ }
+  protected override resolver(): ConflictResolver<Event> { /* ← still worth deciding */ }
 }
 ```
 
-The resolver is still mandatory.  Why?
+The lease does not make concurrent events impossible, so what they
+mean still needs deciding — the default applies both, which is right
+only when they compose.  Why can they still happen?
 
 - **During failover window**, both the old + new writer might
   briefly write — the old one before it notices its lease is
@@ -171,7 +173,7 @@ The resolver is still mandatory.  Why?
   reconciles when partition heals.
 
 The lease **reduces conflict frequency to near-zero** but
-doesn't eliminate.  Always have a resolver.
+doesn't eliminate.  Decide deliberately: the default, or a resolver.
 
 ## Lease backends
 
