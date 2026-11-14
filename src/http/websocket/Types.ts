@@ -41,6 +41,15 @@ export type WebsocketCloseInfo = {
  * `TextEncoder.encode` would allocate a buffer we'd immediately discard;
  * for the size check alone we hand-roll the byte count, which is the
  * common (small-message) case.
+ *
+ * An unpaired surrogate counts three bytes, because that is what it is sent
+ * as: `TextEncoder` and every socket backend write U+FFFD in its place.  The
+ * count used to take every high surrogate as the start of a pair, so an
+ * unpaired one counted four bytes and swallowed the character after it, and a
+ * run of them came to two thirds of the bytes actually sent (#1369).  Only
+ * text a backend hands over unvalidated can carry one — a valid UTF-8 frame
+ * never decodes to an unpaired surrogate — but the frame cap and the
+ * pre-attach buffer cap are both written in bytes, and are held against this.
  */
 export function utf8ByteLength(text: string): number {
   let bytes = 0;
@@ -48,13 +57,18 @@ export function utf8ByteLength(text: string): number {
     const charCode = text.charCodeAt(i);
     if (charCode < 0x80) bytes += 1;
     else if (charCode < 0x800) bytes += 2;
-    else if (charCode >= 0xd800 && charCode <= 0xdbff) {
-      // High surrogate → 4-byte sequence; consume the low surrogate too.
+    else if (charCode >= 0xd800 && charCode <= 0xdbff && isLowSurrogate(text.charCodeAt(i + 1))) {
+      // A well-formed pair is one code point, four bytes; consume its low half.
       bytes += 4;
       i += 1;
     } else bytes += 3;
   }
   return bytes;
+}
+
+/** `NaN` past the end of the string is not one, which is what ends a pair at the last character. */
+function isLowSurrogate(charCode: number): boolean {
+  return charCode >= 0xdc00 && charCode <= 0xdfff;
 }
 
 /** Payload size of a frame in bytes (UTF-8 length for text). */
