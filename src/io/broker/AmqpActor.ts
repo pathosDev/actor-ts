@@ -5,6 +5,7 @@ import type { RetiredLeaves } from '../../config/RetiredKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
+import { AMQP_DRAIN_TIMEOUT_MS } from '../Constants.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import { toBrokerDriverTls } from './BrokerTls.js';
 import type { BrokerDriverTlsOptions } from './BrokerTls.js';
@@ -141,7 +142,10 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
   }
 
   protected async dispatchOutgoing(env: OutboundEnvelope<AmqpPublish>): Promise<void> {
-    if (!this.channel) throw new Error('AmqpActor: channel not open');
+    // Captured once: teardown nulls the field, and a wait attached through it
+    // after that would attach to nothing and never settle (#981).
+    const channel = this.channel;
+    if (!channel) throw new Error('AmqpActor: channel not open');
     const publish = env.payload;
     // amqplib's channel.publish needs a Buffer specifically — a
     // plain Uint8Array (which our public `AmqpPublish.content`
@@ -154,18 +158,56 @@ export class AmqpActor extends BrokerActor<AmqpOptionsType, AmqpCommand, AmqpPub
     const content = typeof publish.content === 'string'
       ? Buffer.from(publish.content)
       : Buffer.isBuffer(publish.content) ? publish.content : Buffer.from(publish.content);
-    const ok = this.channel.publish(publish.exchange, publish.routingKey, content, {
+    const ok = channel.publish(publish.exchange, publish.routingKey, content, {
       persistent: publish.persistent ?? true,
       headers: publish.headers,
       contentType: publish.contentType,
     });
-    if (!ok) {
-      // Channel-side backpressure — the buffer in amqplib is full.
-      // Wait for `drain` then resolve.  amqplib emits drain on the channel.
-      await new Promise<void>((resolve) => {
-        this.channel?.once('drain', () => resolve());
-      });
-    }
+    if (!ok) await this.awaitDrain(channel);
+  }
+
+  /**
+   * How long a full channel buffer may stay full before the channel is given
+   * up on.  A method so a test can shorten it; see {@link AMQP_DRAIN_TIMEOUT_MS}.
+   */
+  protected drainTimeoutMs(): number { return AMQP_DRAIN_TIMEOUT_MS; }
+
+  /**
+   * Wait out channel-side backpressure: resolve on `drain`, reject on the
+   * channel's `close` or `error` and on {@link drainTimeoutMs} (#981).
+   *
+   * amqplib emits `close` and `error` on a dying channel and never `drain`, so
+   * a wait that listened for `drain` alone had no way to end in exactly the
+   * case that makes backpressure last.  It parked `BrokerActor`'s outbound
+   * drain loop for good, and every later publish was appended behind it and
+   * FIFO-evicted while the actor still read `connected`.  A rejection here is
+   * what the base class already handles: the envelope goes back at the head
+   * of the buffer and the reconnect cycle starts.
+   */
+  private awaitDrain(channel: AmqpChannelLike): Promise<void> {
+    const timeoutMs = this.drainTimeoutMs();
+    return new Promise<void>((resolve, reject) => {
+      const settle = (error: Error | null): void => {
+        clearTimeout(timer);
+        channel.removeListener('drain', onDrain);
+        channel.removeListener('close', onClose);
+        channel.removeListener('error', onError);
+        if (error === null) resolve();
+        else reject(error);
+      };
+      const onDrain = (): void => settle(null);
+      const onClose = (): void => settle(new Error('AmqpActor: channel closed while waiting for drain'));
+      const onError = (cause?: unknown): void => settle(new Error(
+        `AmqpActor: channel failed while waiting for drain: ${cause instanceof Error ? cause.message : String(cause)}`,
+      ));
+      const timer = setTimeout(
+        () => settle(new Error(`AmqpActor: channel did not drain within ${timeoutMs} ms`)),
+        timeoutMs,
+      );
+      channel.once('drain', onDrain);
+      channel.once('close', onClose);
+      channel.once('error', onError);
+    });
   }
 
   protected override onCommand(command: AmqpCommand): void {
@@ -262,7 +304,11 @@ export interface AmqpChannelLike {
   ): boolean;
   ack(message: AmqpRawMessage): void;
   nack(message: AmqpRawMessage, allUpTo: boolean, requeue: boolean): void;
-  once(event: 'drain', listener: () => void): void;
+  once(event: 'drain' | 'close', listener: () => void): void;
+  once(event: 'error', listener: (err: Error) => void): void;
+  /** Detach a listener added with `once` — amqplib's channel is an `EventEmitter`. */
+  removeListener(event: 'drain' | 'close', listener: () => void): void;
+  removeListener(event: 'error', listener: (err: Error) => void): void;
   close(): Promise<void>;
 }
 

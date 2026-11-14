@@ -123,3 +123,18 @@ export const REDIS_STREAMS_WARN_DEDUPLICATION_WINDOW_MS = 30_000;
  * rather than quietly presenting a prefix as if it were the whole value.
  */
 export const MQTT_LOGGED_SUBSCRIBE_FIELD_MAX_CHARACTERS = 128;
+
+/**
+ * How long `AmqpActor` waits for amqplib's `drain` after a `publish` that
+ * reported a full channel buffer, before it gives up on the channel (#981).
+ *
+ * The wait also ends on the channel's `close` or `error`, which is the usual
+ * way it ends badly — amqplib does not emit `drain` on a dying channel.  The
+ * timeout covers the rest: a broker that has stopped reading without closing
+ * anything.  Without a bound one such episode parked the outbound buffer
+ * forever, and every later publish was evicted from it while the actor still
+ * read `connected`.  Thirty seconds is long enough that a broker merely slow
+ * under load is not abandoned, and short enough that a wedged one is noticed
+ * well inside any outbound buffer's useful life.
+ */
+export const AMQP_DRAIN_TIMEOUT_MS = 30_000;
