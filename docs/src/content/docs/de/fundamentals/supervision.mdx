@@ -32,6 +32,15 @@ zurück:
 für jeden Fehler `Restart` zurück.  Verwende die anderen drei, wenn
 Restart nicht die richtige Semantik für deine Domäne ist.
 
+Ein Actor, dessen **Konstruktor wirft**, hatte nie eine Instanz —
+es gibt also nichts neu zu starten und nichts fortzusetzen.  Sein
+Parent wird trotzdem gefragt (die Ursache ist ein
+`ActorInitializationError`), aber `Restart` und `Resume` enden
+beide in einem Stopp: Watcher bekommen `Terminated`, der Parent
+entfernt das Kind, und wartende Nachrichten gehen in Dead Letters.
+Ein Fehler in `preStart` ist etwas anderes — die Instanz existiert,
+und jede Direktive greift wie gewohnt.
+
 ## Ein minimales Beispiel
 
 ```ts
