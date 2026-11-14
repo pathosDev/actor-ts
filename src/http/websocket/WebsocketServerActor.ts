@@ -75,7 +75,11 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
   /** A client completed the upgrade.  Ordered before its first `onMessage`. */
   protected onClientConnected(_client: WebsocketConnection<TOut>): void | Promise<void> {}
 
-  /** A client went away.  Ordered after its last `onMessage`; then it leaves `clients`. */
+  /**
+   * A client went away.  Ordered after its last `onMessage`; then it leaves
+   * `clients`.  Runs only for a client this instance's `onClientConnected`
+   * saw — never, after a restart, for the connections the restart tore down.
+   */
   protected onClientDisconnected(_client: WebsocketConnection<TOut>, _info: WebsocketCloseInfo): void | Promise<void> {}
 
   /** A frame failed to decode.  Only called when the route policy is `'hook'`. */
@@ -247,7 +251,21 @@ export abstract class WebsocketServerActor<TOut, TIn, TSelf = never>
     }
   }
 
+  /**
+   * Only for a client this instance holds.  A restart tears the connection
+   * actors down and their `disconnected` signals reach the *new* instance,
+   * whose `clients` starts empty: running `onClientDisconnected` there would
+   * hand the application a client it was never told had connected.  Keyed on
+   * the id, as the reaper is: ids come from a process-wide counter and are
+   * never reused, so a stale signal cannot name a live entry.
+   */
   private async onWebsocketDisconnected(signal: WebsocketDisconnectedSignal<TOut>): Promise<void> {
+    if (!this._clients.has(signal.connection.id)) {
+      this.log.debug(
+        `WebsocketServerActor: disconnected for ${signal.connection.id}, which this instance never connected — ignored`,
+      );
+      return;
+    }
     await this._endClient(signal.connection, signal.info);
   }
 

@@ -35,7 +35,7 @@ import type { WebsocketCloseInfo } from '../../../../src/http/websocket/Types.js
 import { jsonCodec } from '../../../../src/http/websocket/WebsocketCodec.js';
 import type { WebsocketConnection } from '../../../../src/http/websocket/WebsocketConnection.js';
 import type { WebsocketServerMessage, WebsocketServerRef } from '../../../../src/http/websocket/WebsocketMessages.js';
-import { DEFAULT_WEBSOCKET_POLICY } from '../../../../src/http/websocket/WebsocketPolicy.js';
+import { DEFAULT_WEBSOCKET_POLICY, type ResolvedWebsocketPolicy } from '../../../../src/http/websocket/WebsocketPolicy.js';
 import { WebsocketServerActor } from '../../../../src/http/websocket/WebsocketServerActor.js';
 import { LogLevel } from '../../../../src/Logger.js';
 import type { LocalActorRef } from '../../../../src/internal/LocalActorRef.js';
@@ -140,12 +140,47 @@ class LosingMailbox extends Mailbox<HubMessage> {
   }
 }
 
+/** What every instance of a restarting hub did, tagged with which instance it was. */
+type RestartRecord = {
+  instances: number;
+  readonly events: string[];
+};
+
+/**
+ * A hub that fails on frame `-1`, so its supervisor restarts it — which tears
+ * its connection actors down, and their `disconnected` signals then reach the
+ * new instance.
+ */
+class RestartingHub extends WebsocketServerActor<PongMessage, PingMessage> {
+  private readonly instance: number;
+  constructor(private readonly record: RestartRecord) {
+    super();
+    this.instance = ++record.instances;
+  }
+  onMessage(message: PingMessage): void {
+    if (message.n === -1) throw new Error('asked to fail');
+    this.record.events.push(`${this.instance}:message:${this.connection.id}`);
+  }
+  protected override onClientConnected(client: WebsocketConnection<PongMessage>): void {
+    this.record.events.push(`${this.instance}:connected:${client.id}`);
+  }
+  protected override onClientDisconnected(client: WebsocketConnection<PongMessage>): void {
+    this.record.events.push(`${this.instance}:disconnected:${client.id}`);
+  }
+}
+
 const systems: ActorSystem[] = [];
 const openGates: Array<() => void> = [];
 afterEach(async () => {
   for (const open of openGates.splice(0)) open();
   await Promise.all(systems.splice(0).map((system) => system.terminate()));
 });
+
+/**
+ * No heartbeat: `MockSocket` cannot ping, and the once-per-route warning that
+ * says so would reach whichever case here first asserts there are no warnings.
+ */
+const POLICY: ResolvedWebsocketPolicy = { ...DEFAULT_WEBSOCKET_POLICY, heartbeatIntervalMs: 0 };
 
 const request: HttpRequest = {
   method: 'GET', path: '/ws', headers: {}, query: {}, params: {}, body: null,
@@ -179,7 +214,7 @@ function spawnHub(name: string, options?: ActorOptions<HubMessage>, throttled = 
 function wire(h: HubHarness): MockSocket {
   const socket = new MockSocket();
   wireConnection<PongMessage, PingMessage>(
-    h.system, h.hub, request, socket, jsonCodec<PongMessage, PingMessage>(), DEFAULT_WEBSOCKET_POLICY,
+    h.system, h.hub, request, socket, jsonCodec<PongMessage, PingMessage>(), POLICY,
   );
   return socket;
 }
@@ -295,6 +330,50 @@ describe('a client that went away leaves the hub, whatever its queue sheds (#986
       `disconnected:${probe.id}`,
     ]);
     expect(h.logger.records.filter((r) => r.level === 'warn')).toEqual([]);
+  });
+
+  test('after a restart, the new instance hears no disconnect for a client it never connected', async () => {
+    const logger = new RecordingLogger(LogLevel.Debug);
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(logger)
+      .withLogLevel(LogLevel.Debug);
+    const system = ActorSystem.create('hub-lifecycle-restart', systemOptions);
+    systems.push(system);
+    const record: RestartRecord = { instances: 0, events: [] };
+    const hub: WebsocketServerRef<PongMessage, PingMessage> = system.spawn(() => new RestartingHub(record), 'hub');
+    const wireOne = (): MockSocket => {
+      const socket = new MockSocket();
+      wireConnection<PongMessage, PingMessage>(
+        system, hub, request, socket, jsonCodec<PongMessage, PingMessage>(), POLICY,
+      );
+      return socket;
+    };
+    const connectedCount = (): number => record.events.filter((event) => event.includes(':connected:')).length;
+
+    const first = wireOne();
+    await awaitCondition(() => connectedCount() === 1, { timeoutMs: 4_000, label: 'the first client connected' });
+    first.emit(-1);
+    await awaitCondition(() => record.instances === 2, { timeoutMs: 4_000, label: 'the hub restarted' });
+
+    // A probe connected and disconnected on the new instance: its disconnect
+    // is queued behind anything the torn-down connection reported, so once it
+    // has run, the old one has too.
+    const probe = wireOne();
+    await awaitCondition(() => connectedCount() === 2, { timeoutMs: 4_000, label: 'the probe connected' });
+    probe.hangUp();
+    await awaitCondition(() => record.events.some((event) => event.startsWith('2:disconnected:')), {
+      timeoutMs: 4_000,
+      label: 'the probe disconnected',
+    });
+    await awaitCondition(() => (hub as LocalActorRef<HubMessage>).getCell().mailboxSize === 0, {
+      timeoutMs: 4_000,
+      label: 'the hub drained',
+    });
+
+    const secondInstance = record.events.filter((event) => event.startsWith('2:'));
+    const probeId = secondInstance.find((event) => event.startsWith('2:connected:'))!.slice('2:connected:'.length);
+    expect(secondInstance).toEqual([`2:connected:${probeId}`, `2:disconnected:${probeId}`]);
+    expect(logger.records.some((r) => r.level === 'debug' && r.message.includes('never connected'))).toBe(true);
   });
 
   test('a body that only spells the stop notice evicts nobody', async () => {
