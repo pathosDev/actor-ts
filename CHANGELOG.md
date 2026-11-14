@@ -93,6 +93,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 - **`HttpServerBackend.setStreamFailureHandler`**: a hook that reports a
   streamed response which fails after its first chunk was sent (#979).
 
+- **Server-side WebSocket heartbeat and idle timeout** (#651).
+  `withHeartbeatIntervalMs` / `actor-ts.http.websocket.heartbeat-interval`
+  (default `30s`) pings each peer and drops one that answers nothing within
+  an interval (`1001 'heartbeat timeout'`). A half-open connection used to
+  keep its actor, its `clients` entry and its `maxConnections` slot
+  forever; now it gives them back. `withIdleTimeoutMs` / `idle-timeout`
+  (off by default) closes a connection that has been quiet for that long
+  (`1001 'idle timeout'`). `0` turns either off. Hono on Deno cannot send a
+  ping, so it warns once per route.
+- **One HTTP backend contract suite runs against Fastify, Express and
+  Hono** (#990), in `tests/integration/in-process/http/HttpBackendSuite.ts`.
+  A difference between backends is either a contract failure or a declared
+  deviation with its reason. The suite replaces ten per-backend test files.
+
 ### Fixed
 
 - **A parent's restart budget measures `withinTimeRangeMs` on
@@ -288,6 +302,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `x-ratelimit-*` headers, and the docs give `rateLimit(cached(h))` as the
   correct nesting (#983).
 
+- **A WebSocket hub's `onClientConnected` / `onClientDisconnected` signals
+  can no longer be dropped by a bounded hub mailbox or a dropping throttle**
+  (#986). Before, a departed client could stay in `clients` for the life of
+  the process. If a disconnect is lost anyway, for instance through a custom
+  mailbox, the hub's death-watch on the connection actor catches it: the
+  client is removed, `onClientDisconnected` runs with `1006`, and a warning
+  is logged. After a restart, a hub no longer runs `onClientDisconnected`
+  for connections it never connected.
+
 ### Changed
 
 - **The aggregate coverage floor and the README badge are weighted by lines
@@ -407,6 +430,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   handler is not run twice. *Migration:* pass `onHandlerError: 'release'`
   for an atomic handler that should be retried after a throw, and
   `cacheStatuses` to record a status the new default skips.
+
+- **WebSocket routes ping their peers every 30 s by default** (#651). A peer
+  that answers nothing within one interval is dropped. *Migration:* clients
+  that follow the WebSocket spec answer pings on their own. Set
+  `heartbeat-interval = 0` to keep the old behaviour.
 
 ### Security
 
